@@ -2,7 +2,10 @@
 node_modules/
 
 # build output
+# esbuild bundle
 dist/
+# electron-builder artifacts (.app / .dmg / .zip)
+release/
 out/
 *.tsbuildinfo
 
