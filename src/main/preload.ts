@@ -1,0 +1,93 @@
+import type { WorktreeCleanupMode } from "../shared/types";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
+
+const api = {
+  // sessions
+  listSessions: () => ipcRenderer.invoke("sessions:list"),
+  resumableSessions: () => ipcRenderer.invoke("sessions:resumable"),
+  createSession: (req: unknown) => ipcRenderer.invoke("sessions:create", req),
+  relaunchSession: (id: string) => ipcRenderer.invoke("sessions:relaunch", id),
+  killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),
+  sessionWrite: (id: string, data: string) => ipcRenderer.send("session:write", id, data),
+  sessionResize: (id: string, cols: number, rows: number) =>
+    ipcRenderer.send("session:resize", id, cols, rows),
+  sessionBuffer: (id: string) => ipcRenderer.invoke("session:buffer", id),
+  broadcast: (req: unknown) => ipcRenderer.invoke("sessions:broadcast", req),
+
+  renameSession: (id: string, title: string) => ipcRenderer.invoke("sessions:rename", id, title),
+  renameGroup: (oldKey: string, newKey: string) =>
+    ipcRenderer.invoke("sessions:renameGroup", oldKey, newKey),
+  setGroup: (id: string, group: string | null) => ipcRenderer.invoke("sessions:setGroup", id, group),
+  clearWaiting: (id: string) => ipcRenderer.invoke("sessions:clearWaiting", id),
+
+  // Azure DevOps dashboard
+  adoList: () => ipcRenderer.invoke("ado:list"),
+  adoMe: () => ipcRenderer.invoke("ado:me"),
+  connectorsStatus: () => ipcRenderer.invoke("connectors:status"),
+  updateCheck: () => ipcRenderer.invoke("update:check"),
+  onUpdateAvailable: (cb: (u: unknown) => void) => {
+    const h = (_e: unknown, u: unknown) => cb(u);
+    ipcRenderer.on("update:available", h);
+    return () => ipcRenderer.removeListener("update:available", h);
+  },
+  adoConfigGet: () => ipcRenderer.invoke("ado:config:get"),
+  adoConfigSet: (patch: unknown) => ipcRenderer.invoke("ado:config:set", patch),
+  mcpAdd: (name: string, command: string) => ipcRenderer.invoke("mcp:add", name, command),
+  mcpRemove: (name: string) => ipcRenderer.invoke("mcp:remove", name),
+  adoStates: (type: string) => ipcRenderer.invoke("ado:states", type),
+  adoUpdate: (id: number, patch: unknown) => ipcRenderer.invoke("ado:update", id, patch),
+  adoComments: (id: number) => ipcRenderer.invoke("ado:comments", id),
+  adoAddComment: (id: number, text: string) => ipcRenderer.invoke("ado:comment:add", id, text),
+  openExternal: (url: string) => ipcRenderer.invoke("shell:open", url),
+  pickPath: (opts?: { file?: boolean; defaultPath?: string }) => ipcRenderer.invoke("dialog:pick", opts),
+  // real filesystem path for a dropped File (File.path is gone in modern Electron)
+  getFilePath: (file: File) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return null;
+    }
+  },
+
+  // import from ~/.claude/projects (cmux, terminal, anywhere)
+  listImportable: () => ipcRenderer.invoke("import:list"),
+
+  // repos & worktrees
+  listRepos: () => ipcRenderer.invoke("repos:list"),
+  worktreeState: (wtPath: string) => ipcRenderer.invoke("worktree:state", wtPath),
+  worktreeCleanup: (repo: string, wtPath: string, mode: WorktreeCleanupMode) =>
+    ipcRenderer.invoke("worktree:cleanup", repo, wtPath, mode),
+  repoBranches: (repoPath: string) => ipcRenderer.invoke("repo:branches", repoPath),
+
+  // CLAUDE.md
+  readClaudeMd: (p: string) => ipcRenderer.invoke("claudemd:read", p),
+  saveClaudeMd: (p: string, content: string) => ipcRenderer.invoke("claudemd:save", p, content),
+
+  // hooks / settings / debriefs
+  hooksInstalled: () => ipcRenderer.invoke("hooks:installed"),
+  installHooks: () => ipcRenderer.invoke("hooks:install"),
+  getSettings: () => ipcRenderer.invoke("settings:get"),
+  setSettings: (s: unknown) => ipcRenderer.invoke("settings:set", s),
+  runDebrief: (kind: string) => ipcRenderer.invoke("debrief:run", kind),
+
+  // events from main
+  onSessionData: (cb: (id: string, data: string) => void) => {
+    const h = (_e: unknown, id: string, data: string) => cb(id, data);
+    ipcRenderer.on("session:data", h);
+    return () => ipcRenderer.removeListener("session:data", h);
+  },
+  onSessionsChanged: (cb: (sessions: unknown[]) => void) => {
+    const h = (_e: unknown, s: unknown[]) => cb(s);
+    ipcRenderer.on("sessions:changed", h);
+    return () => ipcRenderer.removeListener("sessions:changed", h);
+  },
+  // tray/dock → renderer commands ("focus-session", "new-session")
+  onUiCommand: (cb: (cmd: string, arg?: string) => void) => {
+    const h = (_e: unknown, cmd: string, arg?: string) => cb(cmd, arg);
+    ipcRenderer.on("ui:command", h);
+    return () => ipcRenderer.removeListener("ui:command", h);
+  },
+};
+
+contextBridge.exposeInMainWorld("mb", api);
+export type MbApi = typeof api;

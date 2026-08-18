@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+out/
+*.tsbuildinfo
+
+# logs & OS cruft
+*.log
+.DS_Store
+
+# local tool state (machine-specific paths / permissions)
+.claude/settings.local.json
+.claude/userpreferences.md
+
+# secrets — nothing credential-shaped ever gets committed.
+# The Azure DevOps PAT lives OUTSIDE this repo: WorkTracker's config.json
+# points azureDevOps.patFile at a file the main process reads at runtime.
+.env
+.env.*
+secrets/
+*.pat
+*_pat.txt
+*pat*.txt
+*.pem
+*.key
+*.p12
+credentials.json
+config.local.json

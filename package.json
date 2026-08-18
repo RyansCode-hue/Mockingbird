@@ -1,0 +1,41 @@
+{
+  "name": "mockingbird",
+  "productName": "Mockingbird",
+  "version": "0.1.0",
+  "description": "Grid manager for parallel Claude CLI sessions — worktrees, status, broadcast, ADO & WorkTracker integration",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "postinstall": "electron-builder install-app-deps && chmod +x node_modules/node-pty/prebuilds/*/spawn-helper node_modules/node-pty/build/Release/spawn-helper 2>/dev/null || true",
+    "typecheck": "tsc --noEmit",
+    "start": "npm run build && electron .",
+    "icon": "electron scripts/make-icon.js && bash scripts/make-icns.sh",
+    "package": "npm run build && electron-builder --mac"
+  },
+  "author": "Ryan Ellerbroek",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.21.5",
+    "typescript": "^5.5.2"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-webgl": "^0.18.0",
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "build": {
+    "appId": "com.ryanellerbroek.mockingbird",
+    "mac": { "category": "public.app-category.developer-tools", "icon": "build/icon.icns" },
+    "files": ["dist/**/*", "package.json"],
+    "npmRebuild": false,
+    "asarUnpack": ["**/node_modules/node-pty/**"]
+  }
+}
