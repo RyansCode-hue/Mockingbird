@@ -20,7 +20,61 @@ declare global {
 //    Main appends to its buffer and sends session:data in the same handler, so
 //    every chunk that arrives before the buffer reply is already inside that
 //    reply: drop it rather than writing it twice, out of order.
-const terms = new Map<string, { term: Terminal; fit: FitAddon; ready: boolean }>();
+interface TermEntry {
+  term: Terminal;
+  fit: FitAddon;
+  ready: boolean;
+  lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
+  inputWired?: boolean; // DOM input listeners attached to xterm's textarea
+  replies: number[]; // timestamps of recent automatic query answers (loop detector)
+  hold: string[] | null; // output parked while the user drags out a selection
+  holdUntil: number; // ms after which parked output is flushed regardless
+}
+const terms = new Map<string, TermEntry>();
+
+// Sequences a terminal legitimately sends on its own: answers to queries the
+// program asked for (cursor position, device attributes, colours) and focus
+// reporting. Everything else that xterm emits without the user touching the
+// pane is suspect — that is how a session ends up running a command nobody
+// typed — so it is dropped and written to ~/.mockingbird/pty-audit.log.
+const TERM_REPLY = new RegExp(
+  "^(?:" +
+    "\\x1b\\[[0-9;?]*[Rcn]" + // cursor position / device attributes / device status
+    "|\\x1b\\[[IO]" + // focus in / focus out reporting
+    "|\\x1b\\][0-9]+;[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)" + // OSC colour answers
+    "|\\x1bP[^\\x1b]*\\x1b\\\\" + // DCS answers (XTGETTCAP, DECRQSS)
+    ")$"
+);
+const USER_INPUT_WINDOW_MS = 400;
+// A terminal answers a handful of queries when a program starts. Answering the
+// same queries over and over means the answer is itself provoking the next
+// query — a feedback loop between xterm and the CLI. Those loops are what has
+// been clearing sessions: bursts of identical writes ~400ms apart, in panes
+// nobody was touching. Past this many answers in the window, stop answering.
+const REPLY_BURST = 4;
+const REPLY_WINDOW_MS = 3000;
+// Output is parked (not written) while a selection drag is in progress, so the
+// highlight survives; released on pointer-up plus a grace period to copy.
+const SELECTION_GRACE_MS = 15_000;
+const HOLD_MAX_BYTES = 512_000;
+
+/** Write everything parked during a selection drag and resume live output. */
+function releaseHold(id: string): void {
+  const e = terms.get(id);
+  if (!e?.hold) return;
+  const parked = e.hold;
+  e.hold = null;
+  e.holdUntil = 0;
+  for (const chunk of parked) e.term.write(chunk);
+}
+
+/** Hold output for this session so a highlight can be dragged without it collapsing. */
+function beginHold(id: string): void {
+  const e = terms.get(id);
+  if (!e || e.hold) return;
+  e.hold = [];
+  e.holdUntil = Date.now() + SELECTION_GRACE_MS;
+}
 
 /** The only path from the UI to a pty: silently no-ops until replay is done. */
 function writeSession(id: string, data: string): void {
@@ -36,7 +90,18 @@ function ensureDataPump(): void {
   pumpWired = true;
   window.mb.onSessionData((id: string, data: string) => {
     const e = terms.get(id);
-    if (e?.ready) e.term.write(data);
+    if (!e?.ready) return;
+    // Writing to xterm while the user drags a highlight collapses the
+    // selection — and a Claude session redraws constantly, so a selection in a
+    // busy pane never survives. Park the output instead and release it once the
+    // drag is done (plus a grace period to hit ⌘C).
+    if (e.hold) {
+      e.hold.push(data);
+      const held = e.hold.reduce((n, c) => n + c.length, 0);
+      if (held > HOLD_MAX_BYTES || Date.now() > e.holdUntil) releaseHold(id);
+      return;
+    }
+    e.term.write(data);
   });
 }
 
@@ -120,6 +185,7 @@ export function TerminalPane({
   onFocus,
   onClose,
   onZoom,
+  onAddTab,
   onReorder,
   onResume,
   onCleanup,
@@ -135,6 +201,7 @@ export function TerminalPane({
   onFocus: () => void;
   onClose: () => void;
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
+  onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
   onReorder?: (srcId: string, targetId: string) => void;
   onResume: () => void;
   onCleanup: () => void;
@@ -196,14 +263,47 @@ export function TerminalPane({
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
-      const e = { term, fit, ready: false };
+      const e: TermEntry = {
+        term,
+        fit,
+        ready: false,
+        lastInput: 0,
+        replies: [],
+        hold: null,
+        holdUntil: 0,
+      };
+      // holding output is only justified while a selection actually exists
+      term.onSelectionChange(() => {
+        if (!term.hasSelection()) releaseHold(session.id);
+      });
       term.onData((d) => {
+        const now = Date.now();
+        if (now - e.lastInput <= USER_INPUT_WINDOW_MS) return writeSession(session.id, d);
+        // no user input behind this: it is either an answer to a query the
+        // program asked for, or something that has no business being typed
+        if (!TERM_REPLY.test(d)) {
+          window.mb.auditWrite(session.id, "dropped-unattributed", d);
+          return;
+        }
+        // a detached terminal (hidden pane / inactive tab) must not answer at
+        // all — nobody is looking, and its answers are what start the loops
+        if (!term.element?.isConnected) {
+          window.mb.auditWrite(session.id, "dropped-reply-while-hidden", d);
+          return;
+        }
+        e.replies = e.replies.filter((t) => now - t < REPLY_WINDOW_MS);
+        e.replies.push(now);
+        if (e.replies.length > REPLY_BURST) {
+          window.mb.auditWrite(session.id, "suppressed-reply-loop", d);
+          return;
+        }
         writeSession(session.id, d);
       });
       // Shift+Enter = newline in the Claude prompt. Terminals send plain CR for
       // both Enter and Shift+Enter, so we translate to ESC+CR (what Option+Enter
       // sends), which the Claude CLI treats as "insert newline, don't submit".
       term.attachCustomKeyEventHandler((ev) => {
+        if (ev.type === "keydown" || ev.type === "keypress") e.lastInput = Date.now();
         if (
           ev.type === "keydown" &&
           ev.key === "Enter" &&
@@ -235,6 +335,18 @@ export function TerminalPane({
     }
     const { term, fit } = entry;
     if (holder.current && !term.element) term.open(holder.current);
+    if (!entry.inputWired && term.textarea) {
+      entry.inputWired = true;
+      const mark = () => {
+        const t = terms.get(session.id);
+        if (t) t.lastInput = Date.now();
+      };
+      // every path a human's input can take into xterm: physical keys, IME
+      // composition, dictation/autofill (input events), and paste
+      for (const ev of ["keydown", "beforeinput", "input", "compositionstart", "compositionupdate", "compositionend", "paste"]) {
+        term.textarea.addEventListener(ev, mark, true);
+      }
+    }
     else if (holder.current && term.element && term.element.parentElement !== holder.current) {
       holder.current.appendChild(term.element);
     }
@@ -260,7 +372,12 @@ export function TerminalPane({
     // ⌘V with an image on the clipboard: forward Ctrl+V (\x16) to the CLI —
     // Claude Code reads the image from the macOS pasteboard itself and shows
     // "[Image #1]". Text pastes fall through to xterm's normal handling.
+    const stamp = () => {
+      const t = terms.get(session.id);
+      if (t) t.lastInput = Date.now(); // mouse/paste count as user input too
+    };
     const onPaste = (e: ClipboardEvent) => {
+      stamp();
       const items = [...(e.clipboardData?.items ?? [])];
       if (items.some((it) => it.type.startsWith("image/"))) {
         e.preventDefault();
@@ -269,10 +386,33 @@ export function TerminalPane({
       }
     };
     const el = holder.current;
+    const onDown = (ev: PointerEvent) => {
+      stamp();
+      if (ev.button === 0) beginHold(session.id); // a drag may be starting
+    };
+    const onUp = () => {
+      const e = terms.get(session.id);
+      if (!e?.hold) return;
+      if (!e.term.hasSelection()) return releaseHold(session.id); // just a click
+      // keep it paused while the highlight stands (released by onSelectionChange
+      // the moment it is dropped), with a cap so a pane can never look frozen
+      e.holdUntil = Date.now() + SELECTION_GRACE_MS;
+      setTimeout(() => {
+        const cur = terms.get(session.id);
+        if (cur?.hold && Date.now() >= cur.holdUntil) releaseHold(session.id);
+      }, SELECTION_GRACE_MS + 50);
+    };
     el?.addEventListener("paste", onPaste, true);
+    el?.addEventListener("pointerdown", onDown, true);
+    el?.addEventListener("wheel", stamp, true);
+    window.addEventListener("pointerup", onUp, true); // the drag can end outside the pane
     return () => {
       ro.disconnect();
       el?.removeEventListener("paste", onPaste, true);
+      el?.removeEventListener("pointerdown", onDown, true);
+      el?.removeEventListener("wheel", stamp, true);
+      window.removeEventListener("pointerup", onUp, true);
+      releaseHold(session.id); // never leave output parked on an unmounted pane
     };
   }, [session.id, dead]);
 
@@ -368,6 +508,18 @@ export function TerminalPane({
               }}
             >
               ⟳
+            </button>
+          )}
+          {onAddTab && !dead && (
+            <button
+              className="icon"
+              title="New tab — turn this pane into a workspace and open another session in it"
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddTab();
+              }}
+            >
+              +
             </button>
           )}
           {onZoom && (
