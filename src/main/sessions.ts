@@ -184,6 +184,39 @@ export class SessionManager {
     return info;
   }
 
+  /**
+   * Restart claude sessions in place — same id, same grid slot, conversation
+   * resumed with --continue. This is what you want after the CLI prints
+   * "Update installed · Restart to update": every pane picks up the new binary
+   * without losing its history. Shells and dead panes are left alone.
+   */
+  restartAll(includeBusy: boolean): {
+    restarted: string[];
+    skipped: string[];
+    failed: { id: string; error: string }[];
+  } {
+    const restarted: string[] = [];
+    const skipped: string[] = [];
+    const failed: { id: string; error: string }[] = [];
+    for (const s of [...this.live.values()]) {
+      const { id, status, shell } = s.info;
+      if (shell || status === "dead") continue;
+      if (!includeBusy && (status === "working" || status === "waiting")) {
+        skipped.push(id); // mid-turn: killing it would drop the answer in flight
+        continue;
+      }
+      this.kill(id, false); // keep the store entry so relaunch can resume it
+      try {
+        if (this.relaunch(id)) restarted.push(id);
+        else failed.push({ id, error: "no persisted session to resume" });
+      } catch (err) {
+        failed.push({ id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    this.emitChanged();
+    return { restarted, skipped, failed };
+  }
+
   /** Relaunch a persisted session in its old cwd, resuming the conversation. */
   relaunch(id: string): SessionInfo | null {
     const old = this.store.state.sessions.find((s) => s.id === id);
