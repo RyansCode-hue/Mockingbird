@@ -8,7 +8,9 @@ const api = {
   createSession: (req: unknown) => ipcRenderer.invoke("sessions:create", req),
   relaunchSession: (id: string) => ipcRenderer.invoke("sessions:relaunch", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),
+  restartAllSessions: (includeBusy: boolean) => ipcRenderer.invoke("sessions:restartAll", includeBusy),
   sessionWrite: (id: string, data: string) => ipcRenderer.send("session:write", id, data),
+  auditWrite: (id: string, kind: string, data: string) => ipcRenderer.send("session:audit", id, kind, data),
   sessionResize: (id: string, cols: number, rows: number) =>
     ipcRenderer.send("session:resize", id, cols, rows),
   sessionBuffer: (id: string) => ipcRenderer.invoke("session:buffer", id),

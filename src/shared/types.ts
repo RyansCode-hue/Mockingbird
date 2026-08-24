@@ -45,6 +45,20 @@ export function topOfKey(key: string): string {
   return splitGroupKey(key).top;
 }
 
+/**
+ * Canonicalize a group value typed by a user or seeded by the UI. Path syntax is
+ * intentional: "5038/backend" means the backend workspace inside group 5038.
+ * Anything past the first "/" collapses into the workspace segment.
+ */
+export function normalizeGroupPath(value: string): string {
+  const v = value.trim();
+  if (!v) return "";
+  const { top, sub } = splitGroupKey(v);
+  const t = sanitizeSegment(top);
+  const s = sub ? sanitizeSegment(sub) : null;
+  return s ? `${t}/${s}` : t;
+}
+
 /** Split a group key into its group and (optional) workspace. */
 export function splitGroupKey(key: string): { top: string; sub: string | null } {
   const i = key.indexOf("/");

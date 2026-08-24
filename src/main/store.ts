@@ -53,6 +53,21 @@ export class Store {
     }
   }
 
+  /**
+   * Append one line to ~/.mockingbird/pty-audit.log. Every byte written to a
+   * pty that did not come from a keystroke lands here — that is the only way to
+   * tell, after the fact, what typed a command nobody typed.
+   */
+  static audit(line: string): void {
+    try {
+      const f = path.join(MB_DIR, "pty-audit.log");
+      if (fs.existsSync(f) && fs.statSync(f).size > 2_000_000) fs.renameSync(f, f + ".1");
+      fs.appendFileSync(f, `${new Date().toISOString()} ${line}\n`);
+    } catch {
+      /* diagnostics must never break a session */
+    }
+  }
+
   save(): void {
     // write-then-rename: save() runs on every status flip, so a crash mid-write
     // would otherwise leave a truncated state.json and lose every session

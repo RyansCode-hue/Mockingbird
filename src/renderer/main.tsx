@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
 import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches } from "../shared/types";
-import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
+import { slugBranch, normalizeGroupPath, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
   interface Window {
@@ -11,7 +11,7 @@ declare global {
   }
 }
 
-type ModalKind = "new" | "import" | "help" | null;
+type ModalKind = "new" | "import" | "help" | "restart" | null;
 type Tab = "sessions" | "dashboard" | "worktracker" | "settings";
 const TAB_LABELS: Record<Tab, string> = {
   sessions: "Sessions",
@@ -61,6 +61,11 @@ function App() {
   const [zoomed, setZoomed] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [newLaunch, setNewLaunch] = useState<"claude" | "shell">("claude");
+  // seeds New Session's Group field — set to "top/sub" by a workspace's + button
+  const [newGroup, setNewGroup] = useState("");
+  // a lone pane's "+" promotes it to a workspace, but only once the new session
+  // actually exists — cancelling the dialog must leave the pane exactly as it was
+  const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
   const [tab, setTab] = useState<Tab>(() => loadLS<Tab>("mb.tab", "sessions"));
   useEffect(() => localStorage.setItem("mb.tab", JSON.stringify(tab)), [tab]);
   const [theme, setTheme] = useState<"dark" | "light">(() => loadLS<"dark" | "light">("mb.theme", "dark"));
@@ -655,10 +660,24 @@ function App() {
     />
   );
 
-  const onCreated = (s: SessionInfo) => {
+  const onCreated = async (s: SessionInfo) => {
+    if (pendingWs) {
+      await window.mb.setGroup(pendingWs.id, pendingWs.key); // the lone pane joins its new workspace
+      setPendingWs(null);
+    }
     refresh();
     jumpToSession(s);
     setModal(null);
+  };
+
+  /** "+" on a pane that isn't in a workspace yet: open a second tab beside it. */
+  const startWorkspaceFrom = (s: SessionInfo) => {
+    const top = topOf(s);
+    const key = `${top}/${nextSubName(top)}`;
+    setPendingWs({ id: s.id, key });
+    setNewGroup(key);
+    setNewLaunch("claude");
+    setModal("new");
   };
 
   const focusedSession = sessions.find((s) => s.id === focused) ?? null;
@@ -717,7 +736,7 @@ function App() {
             }}
           />
         )}
-        {tab === "settings" && <SettingsView sessions={sessions} theme={theme} onTheme={setTheme} />}
+        {tab === "settings" && <SettingsView sessions={sessions} theme={theme} onTheme={setTheme} onRestartAll={() => setModal("restart")} />}
         {tab === "worktracker" && (
           <div className="wt-page">
             <div className="board-filter">
@@ -1046,6 +1065,7 @@ function App() {
                     onFocus={() => setFocused(s.id)}
                     onClose={onCloseOverride ?? (() => hide(s.id))}
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
+                    onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
                     onReorder={reorder}
                     onResume={() => resumeDead(s)}
                     onCleanup={() => requestClose(s)}
@@ -1094,6 +1114,17 @@ function App() {
                           <span className="t">{s.ticketTitle ?? s.title}</span>
                         </button>
                       ))}
+                      <button
+                        className="ws-add"
+                        title={`New tab in “${cell.sub}”`}
+                        onClick={() => {
+                          setNewGroup(key);
+                          setNewLaunch("claude");
+                          setModal("new");
+                        }}
+                      >
+                        +
+                      </button>
                     </div>
                     {paneFor(active, true, () => hideSessions(cell.list))}
                   </div>
@@ -1185,6 +1216,7 @@ function App() {
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },
             { label: "New terminal (no Claude)", run: () => { setNewLaunch("shell"); setModal("new"); } },
+            { label: "Restart all Claude sessions", run: () => setModal("restart") },
             { label: "Sessions grid", run: () => setTab("sessions") },
             { label: "Dashboard — ticket board", run: () => setTab("dashboard") },
             { label: "Settings / Broadcast / CLAUDE.md", kbd: "⌘⇧B", run: () => setTab("settings") },
@@ -1255,12 +1287,16 @@ function App() {
         <NewSessionModal
           existingGroups={groupKeys}
           initialLaunch={newLaunch}
+          initialGroup={newGroup}
           onClose={() => {
             setModal(null);
             setNewLaunch("claude");
+            setNewGroup("");
+            setPendingWs(null); // cancelled — the pane stays a plain pane
           }}
           onCreated={(s) => {
             setNewLaunch("claude");
+            setNewGroup("");
             onCreated(s);
           }}
         />
@@ -1278,6 +1314,18 @@ function App() {
             }
           }}
           onDone={() => setModal(null)}
+        />
+      )}
+      {modal === "restart" && (
+        <RestartAllDialog
+          sessions={sessions}
+          onClose={() => setModal(null)}
+          onDone={(ids) => {
+            // the ptys are new: drop the cached terminals so each pane re-attaches
+            // and replays the fresh buffer instead of showing the dead one
+            ids.forEach(disposeTerm);
+            refresh();
+          }}
         />
       )}
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
@@ -1546,6 +1594,43 @@ const stateRank = (s: string) => {
   const i = STATE_ORDER.indexOf(s);
   return i < 0 ? STATE_ORDER.length : i;
 };
+
+// Terminal columns. A ticket you'd start work on never sits in one, so the
+// New Session picker leaves them out — you pick from the working columns of
+// the board (Approved/Planning/Parked/In Progress/QA and the like).
+const DONE_STATES = ["done", "closed", "removed", "completed", "resolved", "cut", "abandoned"];
+const isWorkingState = (state: string) => {
+  const s = state.toLowerCase();
+  return !DONE_STATES.some((d) => s === d || s.startsWith(d + " ") || s.endsWith(" " + d));
+};
+
+/**
+ * Group tickets into board columns. Order of preference: the column order you
+ * dragged into place on the Dashboard, then Azure DevOps' own workflow order
+ * for the work item type, then a generic fallback. Terminal columns are dropped
+ * entirely — you don't start work from Done.
+ */
+function ticketsByColumn(
+  items: AdoWorkItem[],
+  workflowOrder: string[] = []
+): { state: string; items: AdoWorkItem[] }[] {
+  const custom = loadLS<string[]>("mb.board.colOrder", []);
+  const order = custom.length ? custom : workflowOrder;
+  const byState = new Map<string, AdoWorkItem[]>();
+  for (const t of items) {
+    if (!isWorkingState(t.state)) continue;
+    const list = byState.get(t.state);
+    if (list) list.push(t);
+    else byState.set(t.state, [t]);
+  }
+  const rank = (c: string) => {
+    const i = order.indexOf(c);
+    return i < 0 ? order.length + stateRank(c) : i;
+  };
+  return [...byState.entries()]
+    .map(([state, list]) => ({ state, items: list.sort((a, b) => a.id - b.id) }))
+    .sort((a, b) => rank(a.state) - rank(b.state) || a.state.localeCompare(b.state));
+}
 
 function DashboardBoard({
   sessions,
@@ -2239,6 +2324,82 @@ function GroupDialog({
 // ---- close-session dialog (design 1e) ----
 type CleanupMode = "keep" | "push" | "discard";
 
+/**
+ * Restart every Claude pane in place. The CLI prints "Update installed ·
+ * Restart to update" when it upgrades itself, and each running claude keeps the
+ * old binary until it is restarted — this does the whole grid at once.
+ */
+function RestartAllDialog({
+  sessions,
+  onClose,
+  onDone,
+}: {
+  sessions: SessionInfo[];
+  onClose: () => void;
+  onDone: (restarted: string[]) => void;
+}) {
+  const [includeBusy, setIncludeBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const live = sessions.filter((s) => s.status !== "dead" && !s.shell);
+  const active = live.filter((s) => s.status === "working" || s.status === "waiting");
+  const count = includeBusy ? live.length : live.length - active.length;
+
+  const run = async () => {
+    setBusy(true);
+    setError("");
+    const r = await window.mb.restartAllSessions(includeBusy);
+    if (r?.error) {
+      setError(r.error);
+      setBusy(false);
+      return;
+    }
+    if (r.failed?.length) {
+      setError(`${r.failed.length} couldn't restart: ${r.failed.map((f: any) => f.error).join("; ")}`);
+      setBusy(false);
+      onDone(r.restarted ?? []);
+      return;
+    }
+    onDone(r.restarted ?? []);
+    onClose();
+  };
+
+  return (
+    <div className="modal-back" onMouseDown={onClose}>
+      <div className="modal close-dlg" onMouseDown={(e) => e.stopPropagation()}>
+        <h3>Restart Claude sessions?</h3>
+        <div className="sub-h">
+          Each pane relaunches with <code>--continue</code>, so conversations, grid position, and
+          groups are kept. Plain terminals and dead panes are left alone.
+        </div>
+        {active.length > 0 && (
+          <label className="check-line" style={{ marginTop: 10 }}>
+            <input
+              type="checkbox"
+              checked={includeBusy}
+              onChange={(e) => setIncludeBusy(e.target.checked)}
+            />
+            <span style={{ marginLeft: 6 }}>
+              also restart the {active.length} session{active.length === 1 ? "" : "s"} that{" "}
+              {active.length === 1 ? "is" : "are"} working or waiting — their in-flight turn is lost
+            </span>
+          </label>
+        )}
+        {error && <div className="err">{error}</div>}
+        <div className="row" style={{ marginTop: 14 }}>
+          <button className="outline" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="primary" onClick={run} disabled={busy || count === 0}>
+            {busy ? "restarting…" : count === 0 ? "nothing to restart" : `Restart ${count} session${count === 1 ? "" : "s"}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CloseSessionDialog({
   session,
   wt,
@@ -2558,10 +2719,12 @@ function SettingsView({
   sessions,
   theme,
   onTheme,
+  onRestartAll,
 }: {
   sessions: SessionInfo[];
   theme: "dark" | "light";
   onTheme: (t: "dark" | "light") => void;
+  onRestartAll: () => void;
 }) {
   const [s, setS] = useState<Settings | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -2698,8 +2861,19 @@ function SettingsView({
           >
             Check for updates
           </button>
+          <button
+            className="outline"
+            onClick={onRestartAll}
+            title="Relaunch every Claude pane with --continue — what the CLI's “Restart to update” needs"
+          >
+            Restart all Claude sessions
+          </button>
           {updNote && <span className="wi-note">{updNote}</span>}
         </div>
+        <span className="wi-note">
+          The Claude CLI updates itself in the background; each running session keeps the old build
+          until it restarts. Restarting resumes every conversation.
+        </span>
 
         <div className="row">
           {savedAt && <span className="kbd foot-hint" style={{ color: "var(--teal-text)" }}>saved ✓</span>}
@@ -2844,11 +3018,13 @@ function SettingsView({
 function NewSessionModal({
   existingGroups,
   initialLaunch,
+  initialGroup,
   onClose,
   onCreated,
 }: {
   existingGroups: string[];
   initialLaunch?: "claude" | "shell";
+  initialGroup?: string; // "5038" or "5038/backend" — a workspace path adds a tab there
   onClose: () => void;
   onCreated: (s: SessionInfo) => void;
 }) {
@@ -2858,11 +3034,13 @@ function NewSessionModal({
   const [sel, setSel] = useState<RepoEntry | null>(null);
   const [ticketId, setTicketId] = useState("");
   const [ticketTitle, setTicketTitle] = useState("");
-  const [group, setGroup] = useState("");
+  const [group, setGroup] = useState(initialGroup ?? "");
   const [useWorktree, setUseWorktree] = useState(true);
   const [error, setError] = useState("");
   // ADO ticket picker — same flow as the dashboard's Start session
-  const [tickets, setTickets] = useState<AdoWorkItem[]>([]);
+  const [allTickets, setAllTickets] = useState<AdoWorkItem[]>([]);
+  const [who, setWho] = useState(""); // "" until identity resolves; "*" = anyone
+  const [stateOrder, setStateOrder] = useState<string[]>([]); // ADO workflow order
   const [adoDown, setAdoDown] = useState(false);
   const [ticketSel, setTicketSel] = useState("");
   const [sendTicket, setSendTicket] = useState(true);
@@ -2876,9 +3054,18 @@ function NewSessionModal({
     });
     window.mb.adoList().then((r: { items: AdoWorkItem[]; me: string } | { error: string }) => {
       if ("error" in r) return setAdoDown(true); // manual entry still works
-      // only the PAT owner's tickets — identity comes from the PAT, so this is
-      // automatically whoever's WorkTracker config the app is pointed at
-      setTickets(r.me ? r.items.filter((i) => i.assignedTo === r.me) : r.items);
+      // keep everyone's tickets: the picker defaults to yours (identity comes
+      // from the PAT) but you can pick up someone else's
+      setAllTickets(r.items);
+      setWho(r.me || "*");
+      // ADO returns a type's states in workflow order — that is the column order
+      // of the real board, so the picker reads top-to-bottom the way it looks
+      const types = [...new Set(r.items.map((i) => i.type))];
+      Promise.all(
+        types.map((t) =>
+          window.mb.adoStates(t).then((x: string[] | { error: string }) => (Array.isArray(x) ? x : []))
+        )
+      ).then((lists) => setStateOrder([...new Set(lists.flat())]));
     });
   }, []);
 
@@ -2898,9 +3085,25 @@ function NewSessionModal({
     };
   }, [sel]);
 
+  // people who actually have tickets on the board, you first
+  const people = useMemo(() => {
+    const names = [...new Set(allTickets.map((t) => t.assignedTo).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b)
+    );
+    const mine = who && who !== "*" ? names.filter((n) => n === who) : [];
+    return [...mine, ...names.filter((n) => !mine.includes(n))];
+  }, [allTickets, who]);
+
+  const tickets = useMemo(
+    () => (who && who !== "*" ? allTickets.filter((t) => t.assignedTo === who) : allTickets),
+    [allTickets, who]
+  );
+  const columns = useMemo(() => ticketsByColumn(tickets, stateOrder), [tickets, stateOrder]);
+  const pickable = useMemo(() => columns.flatMap((c) => c.items), [columns]);
+
   const pickTicket = (val: string) => {
     setTicketSel(val);
-    const t = tickets.find((x) => String(x.id) === val);
+    const t = allTickets.find((x) => String(x.id) === val);
     if (t) {
       setTicketId(String(t.id));
       setTicketTitle(suggestTicketName(t.title));
@@ -2911,12 +3114,12 @@ function NewSessionModal({
   const branch = ticketId && ticketTitle ? slugBranch(ticketId, ticketTitle) : "";
 
   const create = async () => {
-    const t = tickets.find((x) => String(x.id) === ticketSel);
+    const t = allTickets.find((x) => String(x.id) === ticketSel);
     const info = await window.mb.createSession({
       repoPath: sel?.path ?? null,
       ticketId: ticketId || undefined,
       ticketTitle: ticketTitle || undefined,
-      taskGroup: sanitizeSegment(group) || undefined,
+      taskGroup: normalizeGroupPath(group) || undefined,
       useWorktree: useWorktree && !!sel,
       ...(useWorktree && sel && baseBranch ? { baseBranch } : {}),
       shell: launch === "shell",
@@ -2952,23 +3155,51 @@ function NewSessionModal({
           ))}
         </div>
         <label>
-          My Azure DevOps tickets{" "}
+          Azure DevOps tickets{" "}
           <span className="wi-note">
             {adoDown
               ? "board unavailable — manual entry below"
-              : tickets.length
+              : pickable.length
                 ? "optional — fills the fields below"
-                : "none assigned to you — manual entry below"}
+                : "nothing in the working columns — manual entry below"}
           </span>
         </label>
-        <select value={ticketSel} onChange={(e) => pickTicket(e.target.value)} disabled={adoDown || tickets.length === 0}>
-          <option value="">none / manual</option>
-          {tickets.map((t) => (
-            <option key={t.id} value={String(t.id)}>
-              #{t.id} · {t.title} ({t.state})
-            </option>
-          ))}
-        </select>
+        <div style={{ display: "flex", gap: 10 }}>
+          <select
+            style={{ flex: "0 0 34%" }}
+            value={who}
+            onChange={(e) => {
+              setWho(e.target.value);
+              setTicketSel(""); // the old pick may not belong to this person
+            }}
+            disabled={adoDown || !allTickets.length}
+            title="Whose tickets to choose from"
+          >
+            <option value="*">Anyone</option>
+            {people.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+          <select
+            style={{ flex: 1 }}
+            value={ticketSel}
+            onChange={(e) => pickTicket(e.target.value)}
+            disabled={adoDown || pickable.length === 0}
+          >
+            <option value="">none / manual</option>
+            {columns.map((c) => (
+              <optgroup key={c.state} label={c.state}>
+                {c.items.map((t) => (
+                  <option key={t.id} value={String(t.id)}>
+                    #{t.id} · {t.title}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </div>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ flex: 1 }}>
             <label>Ticket #</label>
@@ -2979,11 +3210,16 @@ function NewSessionModal({
             <input type="text" placeholder="filterOrgsByFoundation" value={ticketTitle} onChange={(e) => setTicketTitle(e.target.value)} />
           </div>
           <div style={{ flex: 1.4 }}>
-            <label>Group</label>
+            <label>
+              Group
+              {splitGroupKey(group).sub && (
+                <span className="hint-inline"> → tab in “{splitGroupKey(group).sub}”</span>
+              )}
+            </label>
             <input
               type="text"
               list="mb-groups"
-              placeholder={ticketId ? `defaults to ${ticketId.replace(/^#/, "")}` : "optional"}
+              placeholder={ticketId ? `defaults to ${ticketId.replace(/^#/, "")}` : "optional — group or group/workspace"}
               value={group}
               onChange={(e) => setGroup(e.target.value)}
             />

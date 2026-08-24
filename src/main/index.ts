@@ -219,11 +219,19 @@ ipcMain.handle("sessions:resumable", () => sessions.resumable());
 ipcMain.handle("sessions:create", (_e, req) => safe("sessions:create", () => sessions.create(req))());
 ipcMain.handle("sessions:relaunch", (_e, id) => safe("sessions:relaunch", () => sessions.relaunch(id))());
 ipcMain.handle("sessions:kill", (_e, id, forget) => sessions.kill(id, forget));
+ipcMain.handle("sessions:restartAll", (_e, includeBusy) =>
+  safe("sessions:restartAll", () => sessions.restartAll(!!includeBusy))()
+);
 ipcMain.handle("session:buffer", (_e, id) => sessions.buffer(id));
 ipcMain.handle("sessions:broadcast", (_e, req) =>
   sessions.broadcast(req.message, req.sessionIds ?? [], req.whenIdle ?? true)
 );
 ipcMain.on("session:write", (_e, id, data) => sessions.write(id, data));
+// Audit trail for the "something typed /clear into my session" class of bug:
+// the renderer reports any pty write it did not attribute to a keystroke.
+ipcMain.on("session:audit", (_e, id, kind, data) =>
+  Store.audit(`${kind} session=${id} bytes=${JSON.stringify(String(data).slice(0, 300))}`)
+);
 ipcMain.on("session:resize", (_e, id, cols, rows) => sessions.resize(id, cols, rows));
 
 ipcMain.handle("repos:list", () => safe("repos:list", () => indexRepos(store.settings.repoRoots))());

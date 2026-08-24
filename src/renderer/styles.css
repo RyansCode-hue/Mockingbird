@@ -375,6 +375,13 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .ws-tab .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-tab:hover { color: var(--text-1); background: var(--fill-subtle); }
 .ws-tab.on { background: var(--bg-pane); color: var(--text-1); }
+.ws-add {
+  flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 1px dashed var(--line-btn);
+  border-radius: 5px; background: none; color: var(--text-3); font: 400 13px/1 var(--mono);
+  cursor: pointer;
+}
+.ws-add:hover { color: var(--text-1); border-color: var(--line-btn-hover); border-style: solid; background: var(--fill-subtle); }
+.hint-inline { color: var(--text-3); font-weight: 400; }
 .pane.embedded { border: none; border-radius: 0; box-shadow: none; flex: 1; min-height: 0; }
 .pane.embedded.focused { border: none; }
 
