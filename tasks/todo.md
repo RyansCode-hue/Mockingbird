@@ -826,3 +826,110 @@ existing pattern, the existing pattern wins (per the handoff README).
       process (3–4 `execFileSync` per pane per 10s) — it should move to
       `execFile` + one cache per cwd. Same for `git fetch`/`git push` during
       session create/cleanup, which block every pty while they run.
+
+## Iteration 41 — cmux-style "+" tabs in workspaces
+
+- [x] **Workspace tab strip** gains a `+` at the end: opens New Session with the
+      Group field pre-seeded to that workspace's path (`5038/backend`) and the
+      label reading `GROUP → TAB IN "BACKEND"`, so the session joins as a tab
+      instead of taking its own grid cell.
+- [x] **Lone panes get `+` too** (pane header, next to ⛶): promotes the pane to
+      a workspace and opens a second tab beside it. The existing session only
+      moves once the new one is actually created — cancelling the dialog leaves
+      the pane exactly as it was (verified: cancel → still 1 plain pane, no
+      stray workspace).
+- [x] Restored path syntax in the Group field. Iteration 40's review pass had
+      sanitized it to a single segment, which silently broke the documented
+      `5038/backend` workspace syntax; `normalizeGroupPath()` in
+      `src/shared/types.ts` now canonicalizes group + one workspace segment and
+      is the single definition both the field and the `+` buttons use.
+- [x] Verified with real clicks in the harness: workspace `+` → backend went
+      2 tabs → 3 with the new tab fronted and the grid still 2 cells; pane `+`
+      → lone "api refactor" became workspace TABS with `api refactor | new
+      session | +`; clicking an existing tab still switches panes.
+
+## Iteration 42 — ticket picker: board columns, grouped, any assignee
+
+- [x] **Working columns only.** The New Session ticket dropdown drops terminal
+      states (Done/Closed/Removed/Resolved/Completed/Cut/Abandoned) — you pick
+      from the columns you actually work out of (Approved (Do), Planning,
+      Parked, In Progress, QA…). The Dashboard board is unchanged; it still
+      shows every column.
+- [x] **Grouped by column, in board order.** `<optgroup>` per state. Order of
+      preference: the column order dragged into place on the Dashboard
+      (`mb.board.colOrder`), then Azure DevOps' own workflow order for the work
+      item type (fetched via `adoStates`), then the generic `STATE_ORDER` rank.
+      Reordering columns on the board reorders the picker.
+- [x] **Any assignee.** A person dropdown next to it (Anyone / you first / other
+      names on the board) replaces the hard "only my tickets" filter. Defaults
+      to the PAT owner, so the old behavior is still what you get on open.
+      Changing person clears the current pick so a stale selection can't leak.
+- [x] Verified in the harness with fixtures across 7 states and 2 assignees:
+      as "Ryan" → Approved (Do), Planning, In Progress; as "Anyone" → Approved
+      (Do) → Planning → Parked → In Progress → QA, Done/Closed absent in both;
+      picking another person's QA ticket filled ticket #, name, and branch
+      5044-donorMatchTuning.
+
+## Iteration 43 — restart every Claude session at once
+
+- [x] The CLI updates itself in the background and prints "Update installed ·
+      Restart to update"; each running `claude` keeps the old build until its
+      process restarts. Added **Restart all Claude sessions**:
+      Settings → Updates, and ⌘K → "Restart all Claude sessions".
+- [x] `SessionManager.restartAll(includeBusy)` kills and relaunches each live
+      session through the existing `relaunch()` path — same id, so grid slot,
+      group, worktree, and title are kept, and `--continue` resumes the
+      conversation. Shells and dead panes are skipped (a shell has no CLI to
+      update; a dead pane already has its Resume button).
+- [x] Sessions that are **working or waiting are skipped by default** — killing
+      one mid-turn loses the answer in flight. The dialog says how many are busy
+      and offers an explicit opt-in checkbox to include them.
+- [x] Renderer disposes the cached xterm for each restarted id so panes
+      re-attach to the new pty and replay its buffer instead of showing a dead
+      terminal.
+- [x] Verified in the harness: with 1 working / 1 waiting / 1 idle the button
+      read "Restart 1 session"; ticking the opt-in changed it to "Restart 3
+      sessions"; running it restarted all three and the status bar went to
+      3 working · 0 waiting · 0 idle.
+
+## Iteration 44 — the /clear cause, found
+
+Forensics, not theory. Claude Code writes a transcript per session under
+`~/.claude/projects/`, and a `/clear` is recorded in it as
+`<command-name>/clear</command-name>`. Every `/clear` across every project,
+with the gap between them:
+
+    2026-08-17T17:03:39.789Z              donor-raw-etl-worktrees-mb-msqglypk
+    2026-08-17T17:03:39.797Z   +0.008s    -Users-ryanellerbroek
+    2026-08-17T17:03:40.184Z   +0.387s    donor-raw-etl-worktrees-mb-msqglypk
+    2026-08-17T17:03:40.193Z   +0.009s    -Users-ryanellerbroek
+    …12 more, same two sessions, every ~394ms…
+
+Two sessions cleared within ~8ms of each other, repeating every ~400ms, a
+dozen times. That is not a person typing and not an idle timeout — it is a
+feedback loop. xterm answers queries it finds in terminal output (cursor
+position, device attributes, OSC colour). The answer goes to the pty, the CLI
+redraws, the redraw contains the query again, xterm answers again — one lap
+per round-trip, ~400ms. The CLI ends up acting on the injected bytes, and one
+of the things it does is clear the session. Sessions in hidden panes keep
+looping because a cached terminal keeps parsing output whether or not it is
+on screen — which matches "windows nobody was interacting with".
+
+- [x] A detached terminal (hidden pane, background workspace tab) never answers
+      a query at all. Nobody is looking; its answers only start loops.
+- [x] A visible terminal answers at most 4 queries per 3s. Startup needs a
+      handful; a loop needs unlimited. Past the cap, answering stops.
+- [x] Anything else that is not traceable to real input in that pane
+      (keystroke, IME/dictation, paste, mouse) never reaches the pty.
+- [x] Everything dropped is written to `~/.mockingbird/pty-audit.log` with the
+      exact bytes, so the next occurrence names itself instead of being guessed.
+
+## Iteration 45 — selection survives live output
+
+Highlighting in a busy pane collapsed as soon as new output arrived, because
+writing to xterm during a drag drops the selection — and a Claude session
+redraws constantly. Output for a pane is now parked (not written) from
+pointer-down while a highlight stands, and released the moment the selection
+is dropped (`onSelectionChange`), with a 15s cap so a pane can never look
+frozen. Verified in the harness with output streaming at 8 lines/sec: the
+highlight stays put instead of vanishing.
