@@ -90,9 +90,30 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Next
 
-- **Cross-session transcript search** (design 1f): search every session's
-  scrollback — "which session touched the auth middleware?" — with hits that
-  jump to the pane and position.
+- **Ticket pipeline — "finish ticket" grown up.** Track where each ticket
+  actually is, not just its ADO column. The real lifecycle: creation → BA →
+  coding (sessions usually start here, sometimes at BA) → local testing →
+  PR into dev/UAT → stakeholder testing → feedback loops back to local
+  testing → approved → PR into prod/main → staging/prod testing → comms to
+  users → moved to Done at next standup. The ticket dialog gets a stage rail
+  showing that journey with per-stage actions: "create PR to dev" (commit,
+  push, open the ADO PR, link the work item, scaffold the ticket-doc folder —
+  Description + Security_Considerations per the team workflow), "record
+  stakeholder feedback" (loops the stage back), "create PR to main", "post
+  comms", "done". Code review stages carry the security + clean-code
+  checklist. Open design question: where stage state lives — ADO custom
+  field, ticket comment convention, or the WorkTracker folder.
+- **Inbox mode.** A queue view of every session blocked on you, oldest first,
+  each showing its last lines and the actual question — with an inline reply
+  box that pastes into the pty, then advances to the next. The full version of
+  ⌥⇥: you answer the fleet without ever hunting the grid.
+- **Transcript indexer.** One background index over Claude Code's own
+  transcripts (`~/.claude/projects`, which include token usage) that four
+  other items sit on: cross-session search, "catch me up" summaries, real
+  cost/token meters, and the weekly rollup. Build the substrate once.
+- **Cross-session transcript search** (design 1f, sits on the indexer):
+  search every session's scrollback — "which session touched the auth
+  middleware?" — with hits that jump to the pane and position.
 - **Session health watchdog**: notice the CLI's self-update ("Restart to
   update" in any pane) and surface one "restart all" prompt; detect hung
   sessions (working with no output for N minutes) and offer a repaint/resume.
@@ -113,7 +134,7 @@ agreed direction, **Later** is worth doing once the foundations settle.
   so SETUP.md becomes optional reading.
 - **Session presets**: one-click recurring setups (repo + branch scheme +
   kickoff prompt), e.g. "review session on dev", "test-runner shell".
-- **Weekly rollup**: the daily debrief digests already exist — compose them
-  into a weekly log with per-ticket time and outcomes.
-- **Richer pane rail** (design handoff): token/cost per session and PR status
-  once the ADO PR surface is wired.
+- **Weekly rollup** (sits on the indexer): compose the daily debrief digests
+  and transcript stats into a weekly log with per-ticket time and outcomes.
+- **Richer pane rail** (design handoff, sits on the indexer): token/cost per
+  session and PR status once the ADO PR surface is wired.
