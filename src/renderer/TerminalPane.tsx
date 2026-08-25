@@ -27,10 +27,9 @@ interface TermEntry {
   lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
   inputWired?: boolean; // DOM input listeners attached to xterm's textarea
   replies: number[]; // timestamps of recent automatic query answers (loop detector)
-  hold: string[] | null; // output parked while the user drags out a selection
-  holdUntil: number; // ms after which parked output is flushed regardless
 }
 const terms = new Map<string, TermEntry>();
+(window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
 
 // Sequences a terminal legitimately sends on its own: answers to queries the
 // program asked for (cursor position, device attributes, colours) and focus
@@ -53,28 +52,6 @@ const USER_INPUT_WINDOW_MS = 400;
 // nobody was touching. Past this many answers in the window, stop answering.
 const REPLY_BURST = 4;
 const REPLY_WINDOW_MS = 3000;
-// Output is parked (not written) while a selection drag is in progress, so the
-// highlight survives; released on pointer-up plus a grace period to copy.
-const SELECTION_GRACE_MS = 15_000;
-const HOLD_MAX_BYTES = 512_000;
-
-/** Write everything parked during a selection drag and resume live output. */
-function releaseHold(id: string): void {
-  const e = terms.get(id);
-  if (!e?.hold) return;
-  const parked = e.hold;
-  e.hold = null;
-  e.holdUntil = 0;
-  for (const chunk of parked) e.term.write(chunk);
-}
-
-/** Hold output for this session so a highlight can be dragged without it collapsing. */
-function beginHold(id: string): void {
-  const e = terms.get(id);
-  if (!e || e.hold) return;
-  e.hold = [];
-  e.holdUntil = Date.now() + SELECTION_GRACE_MS;
-}
 
 /** The only path from the UI to a pty: silently no-ops until replay is done. */
 function writeSession(id: string, data: string): void {
@@ -91,16 +68,6 @@ function ensureDataPump(): void {
   window.mb.onSessionData((id: string, data: string) => {
     const e = terms.get(id);
     if (!e?.ready) return;
-    // Writing to xterm while the user drags a highlight collapses the
-    // selection — and a Claude session redraws constantly, so a selection in a
-    // busy pane never survives. Park the output instead and release it once the
-    // drag is done (plus a grace period to hit ⌘C).
-    if (e.hold) {
-      e.hold.push(data);
-      const held = e.hold.reduce((n, c) => n + c.length, 0);
-      if (held > HOLD_MAX_BYTES || Date.now() > e.holdUntil) releaseHold(id);
-      return;
-    }
     e.term.write(data);
   });
 }
@@ -269,13 +236,7 @@ export function TerminalPane({
         ready: false,
         lastInput: 0,
         replies: [],
-        hold: null,
-        holdUntil: 0,
       };
-      // holding output is only justified while a selection actually exists
-      term.onSelectionChange(() => {
-        if (!term.hasSelection()) releaseHold(session.id);
-      });
       term.onData((d) => {
         const now = Date.now();
         if (now - e.lastInput <= USER_INPUT_WINDOW_MS) return writeSession(session.id, d);
@@ -386,33 +347,14 @@ export function TerminalPane({
       }
     };
     const el = holder.current;
-    const onDown = (ev: PointerEvent) => {
-      stamp();
-      if (ev.button === 0) beginHold(session.id); // a drag may be starting
-    };
-    const onUp = () => {
-      const e = terms.get(session.id);
-      if (!e?.hold) return;
-      if (!e.term.hasSelection()) return releaseHold(session.id); // just a click
-      // keep it paused while the highlight stands (released by onSelectionChange
-      // the moment it is dropped), with a cap so a pane can never look frozen
-      e.holdUntil = Date.now() + SELECTION_GRACE_MS;
-      setTimeout(() => {
-        const cur = terms.get(session.id);
-        if (cur?.hold && Date.now() >= cur.holdUntil) releaseHold(session.id);
-      }, SELECTION_GRACE_MS + 50);
-    };
     el?.addEventListener("paste", onPaste, true);
-    el?.addEventListener("pointerdown", onDown, true);
+    el?.addEventListener("pointerdown", stamp, true);
     el?.addEventListener("wheel", stamp, true);
-    window.addEventListener("pointerup", onUp, true); // the drag can end outside the pane
     return () => {
       ro.disconnect();
       el?.removeEventListener("paste", onPaste, true);
-      el?.removeEventListener("pointerdown", onDown, true);
+      el?.removeEventListener("pointerdown", stamp, true);
       el?.removeEventListener("wheel", stamp, true);
-      window.removeEventListener("pointerup", onUp, true);
-      releaseHold(session.id); // never leave output parked on an unmounted pane
     };
   }, [session.id, dead]);
 

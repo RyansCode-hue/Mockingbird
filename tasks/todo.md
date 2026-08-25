@@ -933,3 +933,21 @@ pointer-down while a highlight stands, and released the moment the selection
 is dropped (`onSelectionChange`), with a 15s cap so a pane can never look
 frozen. Verified in the harness with output streaming at 8 lines/sec: the
 highlight stays put instead of vanishing.
+
+## Iteration 46 — selection regression reverted, snap layouts
+
+- [x] **Reverted the output-parking "fix".** Measured with xterm's own API in
+      the harness: a selection survives writes untouched (`hasSelection()` stays
+      true, `getSelection()` returns the same text after live output). Parking
+      output never solved a real problem — and it caused a worse one: the DOM
+      renderer repaints on write, so with writes parked the highlight didn't
+      draw until release, and then drew stale. Writes go straight through again.
+      Verified with dispatched mouse events: the highlight paints during the
+      drag and stays put while output streams.
+- [x] **Layout button replaces the `A 1 2 3 4` column control.** A flyout of six
+      zone templates (two columns, two rows, three columns, big-left, big-top,
+      quadrants) in the spirit of Windows snap layouts, remembered per group.
+      A template governs only when its zone count matches the open panes: with
+      fewer panes the zones collapse so nothing empty holds space, with more the
+      extras flow into equal cells below. Edge-dragging still fine-tunes.
+      Not yet built: dragging a pane onto a specific zone.

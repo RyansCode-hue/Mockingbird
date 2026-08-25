@@ -21,6 +21,47 @@ const TAB_LABELS: Record<Tab, string> = {
 };
 type ColsPref = number | "auto";
 
+/**
+ * Snap-layout templates, in the spirit of Windows' snap layouts: pick an
+ * arrangement rather than a column count. `zones` are CSS grid areas
+ * (row-start / col-start / row-end / col-end) assigned to panes in order.
+ * A template only governs when the pane count matches its zone count —
+ * with fewer panes the zones collapse so nothing empty holds space, with more
+ * the extras flow into equal cells below.
+ */
+interface GridLayout {
+  id: string;
+  label: string;
+  cols: number;
+  rows: number;
+  zones: string[];
+}
+const LAYOUTS: GridLayout[] = [
+  { id: "cols-2", label: "Two columns", cols: 2, rows: 1, zones: ["1/1/2/2", "1/2/2/3"] },
+  { id: "rows-2", label: "Two rows", cols: 1, rows: 2, zones: ["1/1/2/2", "2/1/3/2"] },
+  { id: "cols-3", label: "Three columns", cols: 3, rows: 1, zones: ["1/1/2/2", "1/2/2/3", "1/3/2/4"] },
+  { id: "big-left", label: "Big left, two stacked", cols: 2, rows: 2, zones: ["1/1/3/2", "1/2/2/3", "2/2/3/3"] },
+  { id: "big-top", label: "Big top, two below", cols: 2, rows: 2, zones: ["1/1/2/3", "2/1/3/2", "2/2/3/3"] },
+  { id: "quad", label: "Four quadrants", cols: 2, rows: 2, zones: ["1/1/2/2", "1/2/2/3", "2/1/3/2", "2/2/3/3"] },
+];
+
+/** Miniature of a layout's zones, drawn the way the snap-layout flyout shows them. */
+function LayoutThumb({ layout }: { layout: GridLayout }) {
+  return (
+    <span
+      className="lay-thumb"
+      style={{
+        gridTemplateColumns: `repeat(${layout.cols}, 1fr)`,
+        gridTemplateRows: `repeat(${layout.rows}, 1fr)`,
+      }}
+    >
+      {layout.zones.map((z, i) => (
+        <i key={i} style={{ gridArea: z }} />
+      ))}
+    </span>
+  );
+}
+
 function gridCols(n: number): number {
   if (n <= 1) return 1;
   if (n <= 4) return 2;
@@ -79,6 +120,10 @@ function App() {
   const [editing, setEditing] = useState<{ kind: "session" | "group" | "sub"; key: string; value: string } | null>(null);
   const [sideCollapsed, setSideCollapsed] = useState<boolean>(() => loadLS("mb.side", false));
   const [colsPref, setColsPref] = useState<ColsPref>(() => loadLS<ColsPref>("mb.cols", "auto"));
+  // chosen snap layout per group ("" = auto). Kept per group because a ticket
+  // with two panes and one with five want different arrangements.
+  const [layouts, setLayouts] = useState<Record<string, string>>(() => loadLS("mb.layout", {}));
+  const [layoutOpen, setLayoutOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadLS<string[]>("mb.collapsed", [])));
   useEffect(() => localStorage.setItem("mb.collapsed", JSON.stringify([...collapsed])), [collapsed]);
@@ -118,6 +163,7 @@ function App() {
   // persist grid arrangement across restarts (design: Interactions & Behavior)
   useEffect(() => localStorage.setItem("mb.shown", JSON.stringify(shown)), [shown]);
   useEffect(() => localStorage.setItem("mb.cols", JSON.stringify(colsPref)), [colsPref]);
+  useEffect(() => localStorage.setItem("mb.layout", JSON.stringify(layouts)), [layouts]);
   useEffect(() => localStorage.setItem("mb.side", JSON.stringify(sideCollapsed)), [sideCollapsed]);
 
   const reorder = (srcId: string, targetId: string) =>
@@ -361,8 +407,22 @@ function App() {
   }, [gridSessions, workSessions, zoomed]);
 
   // the grid grows with the cell count — equal cells, no filler tiles
-  const cols = zoomed ? 1 : colsPref === "auto" ? gridCols(Math.max(1, cells.length)) : colsPref;
-  const rows = Math.max(1, Math.ceil(Math.max(1, cells.length) / cols));
+  // the active group's chosen template, applied only when it fits the panes
+  const layout = useMemo(() => {
+    const id = activeGroup ? layouts[activeGroup] : layouts[""];
+    const l = LAYOUTS.find((x) => x.id === id);
+    return !zoomed && l && l.zones.length === cells.length ? l : null;
+  }, [layouts, activeGroup, cells.length, zoomed]);
+
+  const curLayoutId = (activeGroup ? layouts[activeGroup] : layouts[""]) ?? "";
+  const cols = zoomed
+    ? 1
+    : layout
+      ? layout.cols
+      : colsPref === "auto"
+        ? gridCols(Math.max(1, cells.length))
+        : colsPref;
+  const rows = layout ? layout.rows : Math.max(1, Math.ceil(Math.max(1, cells.length) / cols));
   // pane density follows column count (design 1b); a fullscreened pane is instrumented
   const density: PaneDensity = zoomed ? "max" : cols >= 4 ? "min" : cols === 3 ? "std" : "max";
 
@@ -708,14 +768,53 @@ function App() {
         <span className="spacer" />
         {tab === "sessions" && (
           <>
-            <span className="seg">
-              {(["auto", 1, 2, 3, 4] as const).map((c) => (
-                <button key={c} className={colsPref === c ? "on" : ""} onClick={() => setColsPref(c)}>
-                  {c === "auto" ? "A" : c}
-                </button>
-              ))}
+            <span className="lay-wrap">
+              <button
+                className="outline"
+                onClick={() => setLayoutOpen((o) => !o)}
+                title="Layout — arrange this group's panes"
+              >
+                ▦ Layout
+              </button>
+              {layoutOpen && (
+                <>
+                  <div className="who-back" onMouseDown={() => setLayoutOpen(false)} />
+                  <div className="lay-pop">
+                    <div className="lay-grid">
+                      {LAYOUTS.map((l) => (
+                        <button
+                          key={l.id}
+                          className={`lay-opt ${curLayoutId === l.id ? "on" : ""}`}
+                          title={`${l.label} — fits ${l.zones.length} panes`}
+                          onClick={() => {
+                            setLayouts((p) => ({ ...p, [activeGroup ?? ""]: l.id }));
+                            setLayoutOpen(false);
+                          }}
+                        >
+                          <LayoutThumb layout={l} />
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      className={`lay-auto ${!curLayoutId ? "on" : ""}`}
+                      onClick={() => {
+                        setLayouts((p) => ({ ...p, [activeGroup ?? ""]: "" }));
+                        setLayoutOpen(false);
+                      }}
+                    >
+                      Auto — fit panes to the window
+                    </button>
+                    <div className="lay-note">
+                      {layout
+                        ? "Drag any pane edge to fine-tune."
+                        : curLayoutId
+                          ? `Applies with ${LAYOUTS.find((l) => l.id === curLayoutId)?.zones.length} panes open — ${cells.length} open now.`
+                          : "Panes fill the window automatically."}
+                    </div>
+                  </div>
+                </>
+              )}
             </span>
-            <span className="lbl">cols</span>
             <span className="vdiv" />
             <button className="outline" onClick={() => setModal("import")}>Import</button>
           </>
@@ -1041,8 +1140,9 @@ function App() {
                 const row = Math.floor(i / cols);
                 // the last pane of an incomplete row spans the leftover columns —
                 // no dead cells (3 sessions in 2 cols → bottom pane full width)
+                const zone = layout?.zones[i];
                 const remainder = cells.length % cols;
-                const span = !zoomed && remainder !== 0 && i === cells.length - 1 ? cols - col : 1;
+                const span = !zoomed && !layout && remainder !== 0 && i === cells.length - 1 ? cols - col : 1;
                 const canX = !zoomed && col + span - 1 < cols - 1;
                 const canY = !zoomed && row < rows - 1;
                 const resize =
@@ -1074,6 +1174,12 @@ function App() {
                 );
                 if (cell.kind === "session") {
                   const pane = paneFor(cell.s, false);
+                  if (zone)
+                    return (
+                      <div key={`zone-${cell.s.id}`} className="spanwrap" style={{ gridArea: zone }}>
+                        {pane}
+                      </div>
+                    );
                   return span > 1 ? (
                     <div key={`span-${cell.s.id}`} className="spanwrap" style={{ gridColumn: `span ${span}` }}>
                       {pane}
@@ -1090,7 +1196,7 @@ function App() {
                   <div
                     key={`ws-${cell.sub}`}
                     className={`ws-pane ${anyWaiting ? "st-waiting" : ""}`}
-                    style={span > 1 ? { gridColumn: `span ${span}` } : undefined}
+                    style={zone ? { gridArea: zone } : span > 1 ? { gridColumn: `span ${span}` } : undefined}
                   >
                     <div className="ws-tabs">
                       <span
