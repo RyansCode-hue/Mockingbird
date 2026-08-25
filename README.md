@@ -64,5 +64,56 @@ Without those, the Assistant does what it can and tells you what it couldn't rea
 
 ## Roadmap
 
-- v2: ADO ticket sidebar (reads WorkTracker `config.json` + PAT), start-session-from-ticket, draft comments → `pending-comments.md`
-- v3: quick notes → weekly log, dashboard tab, richer session summaries for the wrap-up
+Ordered by intent: **Now** is being designed or actively hurts, **Next** is
+agreed direction, **Later** is worth doing once the foundations settle.
+
+### Now
+
+- **Grouping & workspaces rework.** The current model grew feature by feature
+  and it shows — groups, sub-groups, workspace tabs, and grid visibility each
+  have their own rules. Replace it with one mental model and consistent
+  gestures. Decisions already made in design review: moving a session into a
+  group keeps your current panes and opens just the moved one; clicking a group
+  header always restores the layout you last had; workspace tabs show only the
+  sessions you opened; the grid stays one-group-at-a-time but individual panes
+  can be **pinned** to survive group switches; drop on a pane's tab strip = add
+  as tab, drop on its body = reorder; dragging a sidebar row onto a pane adds
+  it as a tab there.
+- **Finish snap layouts.** The Layout flyout shipped; still missing the
+  FancyZones half — dragging a pane highlights the zone under the cursor and
+  drops it into that slot, and templates should offer per-zone "open a session
+  here" affordances instead of only applying when the pane count matches.
+- **Main-process responsiveness.** All git work (`worktreeState` polling per
+  pane, `fetch`/`push` during session create/cleanup) runs synchronously on the
+  process that owns every pty — a slow repo or VPN freezes typing in every
+  pane. Move to async `execFile` with one cached poller per cwd.
+
+### Next
+
+- **Cross-session transcript search** (design 1f): search every session's
+  scrollback — "which session touched the auth middleware?" — with hits that
+  jump to the pane and position.
+- **Session health watchdog**: notice the CLI's self-update ("Restart to
+  update" in any pane) and surface one "restart all" prompt; detect hung
+  sessions (working with no output for N minutes) and offer a repaint/resume.
+- **Notification controls**: per-session mute and app-wide quiet hours — today
+  every waiting flip notifies, which trains you to ignore them.
+- **Scrollback that survives restarts**: resumed sessions get their
+  conversation back via `--continue`, but the pane's visual history starts
+  empty; persist per-session scrollback to disk and replay on relaunch.
+- **Draft comment queue** (design 1d): compose ADO comments in the ticket
+  dialog offline-style, review the queue, then post in one batch — instead of
+  posting immediately.
+
+### Later
+
+- **Signed + notarized builds with real auto-update** — no right-click→Open
+  for new users, updates install themselves (needs an Apple Developer ID).
+- **First-run wizard**: hooks → repo roots → ADO PAT as a guided flow in-app,
+  so SETUP.md becomes optional reading.
+- **Session presets**: one-click recurring setups (repo + branch scheme +
+  kickoff prompt), e.g. "review session on dev", "test-runner shell".
+- **Weekly rollup**: the daily debrief digests already exist — compose them
+  into a weekly log with per-ticket time and outcomes.
+- **Richer pane rail** (design handoff): token/cost per session and PR status
+  once the ADO PR surface is wired.
