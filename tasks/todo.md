@@ -951,3 +951,22 @@ highlight stays put instead of vanishing.
       fewer panes the zones collapse so nothing empty holds space, with more the
       extras flow into equal cells below. Edge-dragging still fine-tunes.
       Not yet built: dragging a pane onto a specific zone.
+
+## Iteration 47 — the real selection killer: mouse-tracking enable mid-drag
+
+Root cause found in xterm's own source: on mouse-protocol change,
+`onProtocolChange` calls `selectionService.disable()` — immediately, mid-drag
+included. The Claude CLI toggles mouse tracking as part of its redraw, so a
+highlight tracked the cursor until the enable sequence was parsed, then froze
+("stops following after a bit; select again and it works" — by then the CLI
+had toggled it off again). Plain output was never the problem, which is why
+the output-parking attempt fixed nothing.
+
+- [x] While a drag is in progress or a highlight stands, mouse-tracking
+      *enable* sequences (CSI ? 1000/1001/1002/1003/1005/1006/1015/1016 h) are
+      parked; everything else renders live. Parked enables are delivered on
+      pointer-up / selection-clear, so the CLI ends up in exactly the state it
+      asked for. Disables always pass through — they only help.
+- [x] Verified through the real pump path in the harness: enable arriving
+      mid-drag → mode stays `none`, sequence held; pointer-up → flushed, mode
+      becomes `drag`; disables untouched; output kept rendering throughout.

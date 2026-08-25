@@ -27,6 +27,8 @@ interface TermEntry {
   lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
   inputWired?: boolean; // DOM input listeners attached to xterm's textarea
   replies: number[]; // timestamps of recent automatic query answers (loop detector)
+  dragging: boolean; // a selection drag is in progress in this pane
+  heldModes: string[]; // mouse-tracking enables parked until the selection is done
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
@@ -53,6 +55,34 @@ const USER_INPUT_WINDOW_MS = 400;
 const REPLY_BURST = 4;
 const REPLY_WINDOW_MS = 3000;
 
+// When a program enables mouse tracking, xterm disables its selection service
+// on the spot — mid-drag included (protocol change → selectionService.disable()
+// in xterm's own source). The Claude CLI toggles mouse tracking as part of its
+// redraw, so a highlight would track the cursor and then freeze the instant the
+// enable sequence was parsed. While a drag is in progress or a highlight
+// stands, exactly that sequence is parked and delivered once the selection is
+// done; all other output renders live.
+const MOUSE_ENABLE_RE = /\x1b\[\?((?:\d+;)*\d+)h/g;
+const MOUSE_MODE_PARAMS = new Set(["1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016"]);
+
+function parkMouseEnables(e: TermEntry, data: string): string {
+  if (!e.dragging && !e.term.hasSelection()) return data;
+  if (!data.includes("\x1b[?")) return data;
+  return data.replace(MOUSE_ENABLE_RE, (m, params: string) => {
+    if (!params.split(";").some((p) => MOUSE_MODE_PARAMS.has(p))) return m;
+    e.heldModes.push(m);
+    return "";
+  });
+}
+
+/** Deliver parked mouse-mode enables once no selection needs protecting. */
+function flushHeldModes(e: TermEntry): void {
+  if (!e.heldModes.length || e.dragging || e.term.hasSelection()) return;
+  const seq = e.heldModes.join("");
+  e.heldModes = [];
+  e.term.write(seq);
+}
+
 /** The only path from the UI to a pty: silently no-ops until replay is done. */
 function writeSession(id: string, data: string): void {
   if (terms.get(id)?.ready) window.mb.sessionWrite(id, data);
@@ -68,7 +98,7 @@ function ensureDataPump(): void {
   window.mb.onSessionData((id: string, data: string) => {
     const e = terms.get(id);
     if (!e?.ready) return;
-    e.term.write(data);
+    e.term.write(parkMouseEnables(e, data));
   });
 }
 
@@ -236,6 +266,8 @@ export function TerminalPane({
         ready: false,
         lastInput: 0,
         replies: [],
+        dragging: false,
+        heldModes: [],
       };
       term.onData((d) => {
         const now = Date.now();
@@ -260,6 +292,7 @@ export function TerminalPane({
         }
         writeSession(session.id, d);
       });
+      term.onSelectionChange(() => flushHeldModes(e)); // selection dropped → CLI gets mouse mode back
       // Shift+Enter = newline in the Claude prompt. Terminals send plain CR for
       // both Enter and Shift+Enter, so we translate to ESC+CR (what Option+Enter
       // sends), which the Claude CLI treats as "insert newline, don't submit".
@@ -337,6 +370,19 @@ export function TerminalPane({
       const t = terms.get(session.id);
       if (t) t.lastInput = Date.now(); // mouse/paste count as user input too
     };
+    const onDown = (ev: PointerEvent) => {
+      stamp();
+      if (ev.button === 0) {
+        const t = terms.get(session.id);
+        if (t) t.dragging = true; // a selection drag may be starting
+      }
+    };
+    const endDrag = () => {
+      const t = terms.get(session.id);
+      if (!t?.dragging) return;
+      t.dragging = false;
+      flushHeldModes(t); // no-op while a highlight still stands
+    };
     const onPaste = (e: ClipboardEvent) => {
       stamp();
       const items = [...(e.clipboardData?.items ?? [])];
@@ -348,13 +394,23 @@ export function TerminalPane({
     };
     const el = holder.current;
     el?.addEventListener("paste", onPaste, true);
-    el?.addEventListener("pointerdown", stamp, true);
+    el?.addEventListener("pointerdown", onDown, true);
     el?.addEventListener("wheel", stamp, true);
+    // the drag can end anywhere on screen, not just over the pane
+    window.addEventListener("pointerup", endDrag, true);
+    window.addEventListener("pointercancel", endDrag, true);
     return () => {
       ro.disconnect();
       el?.removeEventListener("paste", onPaste, true);
-      el?.removeEventListener("pointerdown", stamp, true);
+      el?.removeEventListener("pointerdown", onDown, true);
       el?.removeEventListener("wheel", stamp, true);
+      window.removeEventListener("pointerup", endDrag, true);
+      window.removeEventListener("pointercancel", endDrag, true);
+      const t = terms.get(session.id);
+      if (t) {
+        t.dragging = false;
+        if (t.heldModes.length && !t.term.hasSelection()) flushHeldModes(t);
+      }
     };
   }, [session.id, dead]);
 
