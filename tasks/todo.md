@@ -1017,3 +1017,18 @@ mouse mode stays `none` throughout.
 - [x] Verified in the harness against the real capture: wantsMouse latched with
       mode `none`; wheel → correct SGR reports both directions; wheel while
       selected → nothing, selection intact.
+
+## Iteration 50 — highlight made visible and cmux-parity semantics
+
+- [x] The dark theme's selection color was `#3a372f` — near-invisible against
+      the `#201f1c` pane background, so selections looked broken even when the
+      machinery worked. Now translucent white (`rgba(255,255,255,.35)`, dimmer
+      when the pane is unfocused), stock-terminal style; light theme gets a
+      translucent blue.
+- [x] cmux-parity behavior: release copies to the clipboard and the pane
+      resumes immediately; output holds only during the drag itself; nothing in
+      our code ever clears a highlight (both auto-clear timers removed) — it
+      stays until you click elsewhere or the CLI redraws over it, exactly like
+      a normal terminal. Wheel is inert only mid-drag.
+- [x] Verified with a real drag: white highlight visible across the dragged
+      rows, still standing 3s after release with hold released and text intact.

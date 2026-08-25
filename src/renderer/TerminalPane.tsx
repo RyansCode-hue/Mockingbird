@@ -96,18 +96,17 @@ function flushHold(e: TermEntry): void {
 function pumpWrite(e: TermEntry, data: string): void {
   const chunk = stripMouseEnables(e, data);
   if (!chunk) return;
-  const selecting = e.dragging || e.term.hasSelection();
-  if (selecting) {
+  // park only while the drag is in progress — once released the text is
+  // already on the clipboard, so live redraws may reflow the highlight away
+  // exactly as they would in any terminal. An idle pane keeps it indefinitely.
+  if (e.dragging) {
     if (!e.hold) {
       e.hold = [];
       e.holdStart = Date.now();
     }
     e.hold.push(chunk);
     const bytes = e.hold.reduce((n, c) => n + c.length, 0);
-    if (Date.now() - e.holdStart > HOLD_MAX_MS || bytes > HOLD_MAX_BYTES) {
-      e.term.clearSelection(); // the flush would clear it anyway — be explicit
-      flushHold(e);
-    }
+    if (Date.now() - e.holdStart > HOLD_MAX_MS || bytes > HOLD_MAX_BYTES) flushHold(e);
     return;
   }
   if (e.hold) flushHold(e);
@@ -178,14 +177,18 @@ const TERM_THEMES = {
     foreground: "#c9c3b8",
     cursor: "#e0a34a",
     cursorAccent: "#201f1c",
-    selectionBackground: "#3a372f",
+    // translucent white, like stock xterm — the old #3a372f was near-invisible
+    // against the pane background, so selections looked broken even when live
+    selectionBackground: "rgba(255, 255, 255, 0.35)",
+    selectionInactiveBackground: "rgba(255, 255, 255, 0.22)",
   },
   light: {
     background: "#fbf9f5",
     foreground: "#4f4a3f",
     cursor: "#a06a12",
     cursorAccent: "#fbf9f5",
-    selectionBackground: "#e6dcc2",
+    selectionBackground: "rgba(30, 60, 110, 0.25)",
+    selectionInactiveBackground: "rgba(30, 60, 110, 0.15)",
   },
 };
 
@@ -327,9 +330,6 @@ export function TerminalPane({
         holdStart: 0,
         wantsMouse: false,
       };
-      term.onSelectionChange(() => {
-        if (!term.hasSelection() && !e.dragging) flushHold(e);
-      });
       term.onData((d) => {
         const now = Date.now();
         if (now - e.lastInput <= USER_INPUT_WINDOW_MS) return writeSession(session.id, d);
@@ -442,30 +442,16 @@ export function TerminalPane({
       if (!t?.dragging) return;
       t.dragging = false;
       if (!t.term.hasSelection()) return flushHold(t); // just a click — resume instantly
-      // copy-on-select: finishing a highlight puts it on the clipboard. The
-      // highlight lingers briefly as confirmation, then clears so the pane
-      // resumes live output.
+      // copy-on-select, cmux-style: release puts the text on the clipboard and
+      // the pane resumes immediately. The highlight is never cleared by us —
+      // it stays until a click elsewhere or the CLI redraws over it.
       const text = t.term.getSelection();
       if (text) {
         navigator.clipboard.writeText(text).catch(() => {
           /* clipboard permission denied — the selection still stands for ⌘C */
         });
-        setTimeout(() => {
-          const cur = terms.get(session.id);
-          if (cur?.term.hasSelection() && cur.term.getSelection() === text && !cur.dragging) {
-            cur.term.clearSelection(); // onSelectionChange flushes the hold
-          }
-        }, 1500);
       }
-    };
-    const onCopy = () => {
-      // they got what they came for: drop the highlight and let the pane catch up
-      const t = terms.get(session.id);
-      if (!t) return;
-      setTimeout(() => {
-        t.term.clearSelection();
-        flushHold(t);
-      }, 200);
+      flushHold(t);
     };
     const onPaste = (e: ClipboardEvent) => {
       stamp();
@@ -485,7 +471,7 @@ export function TerminalPane({
       // reports it expects, so scrolling scrolls the transcript — xterm's
       // fallback would send arrow keys, which the CLI reads as history
       if (!t?.stripMouse || !t.wantsMouse || !t.ready) return;
-      if (t.hold || t.term.hasSelection()) return; // frozen frame: nothing to scroll
+      if (t.hold || t.dragging) return; // mid-drag the frame is frozen
       const screen = t.term.element?.querySelector(".xterm-screen");
       if (!screen) return;
       ev.preventDefault();
@@ -499,7 +485,6 @@ export function TerminalPane({
     };
     el?.addEventListener("pointerdown", onDown, true);
     el?.addEventListener("wheel", onWheel, { capture: true, passive: false });
-    el?.addEventListener("copy", onCopy, true);
     window.addEventListener("pointerup", endDrag, true);
     window.addEventListener("pointercancel", endDrag, true);
     return () => {
@@ -507,7 +492,6 @@ export function TerminalPane({
       el?.removeEventListener("paste", onPaste, true);
       el?.removeEventListener("pointerdown", onDown, true);
       el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
-      el?.removeEventListener("copy", onCopy, true);
       window.removeEventListener("pointerup", endDrag, true);
       window.removeEventListener("pointercancel", endDrag, true);
       const t = terms.get(session.id);
