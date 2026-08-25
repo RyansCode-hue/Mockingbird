@@ -32,6 +32,7 @@ interface TermEntry {
   dragging: boolean; // selection drag in progress
   hold: string[] | null; // output parked while a selection stands
   holdStart: number;
+  wantsMouse: boolean; // the CLI asked for mouse tracking (we stripped it)
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
@@ -113,6 +114,8 @@ function pumpWrite(e: TermEntry, data: string): void {
   e.term.write(chunk);
 }
 
+const MOUSE_DISABLE_RE = /\x1b\[\?((?:\d+;)*\d+)l/g;
+
 function stripMouseEnables(e: TermEntry, data: string): string {
   if (!e.stripMouse) return data;
   let chunk = e.carry + data;
@@ -123,9 +126,15 @@ function stripMouseEnables(e: TermEntry, data: string): string {
     chunk = chunk.slice(0, -tail[0].length);
   }
   if (!chunk.includes("\x1b[?")) return chunk;
-  return chunk.replace(MOUSE_ENABLE_RE, (m, params: string) =>
-    params.split(";").some((p) => MOUSE_MODE_PARAMS.has(p)) ? "" : m
-  );
+  // remember what the CLI wanted: the wheel handler answers on its behalf
+  for (const m of chunk.matchAll(MOUSE_DISABLE_RE)) {
+    if (m[1].split(";").some((p) => MOUSE_MODE_PARAMS.has(p))) e.wantsMouse = false;
+  }
+  return chunk.replace(MOUSE_ENABLE_RE, (m, params: string) => {
+    if (!params.split(";").some((p) => MOUSE_MODE_PARAMS.has(p))) return m;
+    e.wantsMouse = true;
+    return "";
+  });
 }
 
 /** The only path from the UI to a pty: silently no-ops until replay is done. */
@@ -316,6 +325,7 @@ export function TerminalPane({
         dragging: false,
         hold: null,
         holdStart: 0,
+        wantsMouse: false,
       };
       term.onSelectionChange(() => {
         if (!term.hasSelection() && !e.dragging) flushHold(e);
@@ -431,7 +441,22 @@ export function TerminalPane({
       const t = terms.get(session.id);
       if (!t?.dragging) return;
       t.dragging = false;
-      if (!t.term.hasSelection()) flushHold(t); // just a click — resume instantly
+      if (!t.term.hasSelection()) return flushHold(t); // just a click — resume instantly
+      // copy-on-select: finishing a highlight puts it on the clipboard. The
+      // highlight lingers briefly as confirmation, then clears so the pane
+      // resumes live output.
+      const text = t.term.getSelection();
+      if (text) {
+        navigator.clipboard.writeText(text).catch(() => {
+          /* clipboard permission denied — the selection still stands for ⌘C */
+        });
+        setTimeout(() => {
+          const cur = terms.get(session.id);
+          if (cur?.term.hasSelection() && cur.term.getSelection() === text && !cur.dragging) {
+            cur.term.clearSelection(); // onSelectionChange flushes the hold
+          }
+        }, 1500);
+      }
     };
     const onCopy = () => {
       // they got what they came for: drop the highlight and let the pane catch up
@@ -453,8 +478,27 @@ export function TerminalPane({
     };
     const el = holder.current;
     el?.addEventListener("paste", onPaste, true);
+    const onWheel = (ev: WheelEvent) => {
+      stamp();
+      const t = terms.get(session.id);
+      // the CLI asked for the mouse (we withheld it): deliver wheel as the SGR
+      // reports it expects, so scrolling scrolls the transcript — xterm's
+      // fallback would send arrow keys, which the CLI reads as history
+      if (!t?.stripMouse || !t.wantsMouse || !t.ready) return;
+      if (t.hold || t.term.hasSelection()) return; // frozen frame: nothing to scroll
+      const screen = t.term.element?.querySelector(".xterm-screen");
+      if (!screen) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const r = screen.getBoundingClientRect();
+      const col = Math.min(t.term.cols, Math.max(1, Math.floor(((ev.clientX - r.left) / r.width) * t.term.cols) + 1));
+      const row = Math.min(t.term.rows, Math.max(1, Math.floor(((ev.clientY - r.top) / r.height) * t.term.rows) + 1));
+      const btn = ev.deltaY < 0 ? 64 : 65;
+      const n = Math.min(3, Math.max(1, Math.round(Math.abs(ev.deltaY) / 40)));
+      writeSession(session.id, `\x1b[<${btn};${col};${row}M`.repeat(n));
+    };
     el?.addEventListener("pointerdown", onDown, true);
-    el?.addEventListener("wheel", stamp, true);
+    el?.addEventListener("wheel", onWheel, { capture: true, passive: false });
     el?.addEventListener("copy", onCopy, true);
     window.addEventListener("pointerup", endDrag, true);
     window.addEventListener("pointercancel", endDrag, true);
@@ -462,7 +506,7 @@ export function TerminalPane({
       ro.disconnect();
       el?.removeEventListener("paste", onPaste, true);
       el?.removeEventListener("pointerdown", onDown, true);
-      el?.removeEventListener("wheel", stamp, true);
+      el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
       el?.removeEventListener("copy", onCopy, true);
       window.removeEventListener("pointerup", endDrag, true);
       window.removeEventListener("pointercancel", endDrag, true);

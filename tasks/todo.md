@@ -1000,3 +1000,20 @@ Fix (both halves, claude panes only — shells untouched):
 Verified with the real capture replayed through the pump: selection text
 byte-identical after a full generation's redraws; release → pane catches up;
 mouse mode stays `none` throughout.
+
+## Iteration 49 — copy-on-select, and wheel scrolls the transcript again
+
+- [x] Stripping the CLI's mouse modes left xterm's fallback wheel behavior:
+      arrow keys, which the CLI reads as prompt history. The pane now remembers
+      what the CLI asked for (`wantsMouse`, cleared on the matching disable) and
+      the wheel handler answers on its behalf with the SGR reports it expects
+      (`ESC[<64/65;col;rowM`, up to 3 per tick) — transcript scrolls natively,
+      arrows stay for history, and the mouse protocol still never activates in
+      xterm, so selection keeps working. With a highlight standing the wheel is
+      inert (the frame is frozen). Shell panes untouched.
+- [x] Copy-on-select: finishing a highlight puts it on the clipboard; the
+      highlight lingers ~1.5s as confirmation, then clears so the pane resumes
+      live output. Manual ⌘C still works during the linger.
+- [x] Verified in the harness against the real capture: wantsMouse latched with
+      mode `none`; wheel → correct SGR reports both directions; wheel while
+      selected → nothing, selection intact.
