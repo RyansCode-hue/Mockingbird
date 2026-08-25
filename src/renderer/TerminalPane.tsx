@@ -27,10 +27,15 @@ interface TermEntry {
   lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
   inputWired?: boolean; // DOM input listeners attached to xterm's textarea
   replies: number[]; // timestamps of recent automatic query answers (loop detector)
-  hold: string[] | null; // output parked while the user drags out a selection
-  holdUntil: number; // ms after which parked output is flushed regardless
+  stripMouse: boolean; // claude panes: the CLI never gets the mouse (see below)
+  carry: string; // trailing partial escape sequence held until the next chunk
+  dragging: boolean; // selection drag in progress
+  hold: string[] | null; // output parked while a selection stands
+  holdStart: number;
+  wantsMouse: boolean; // the CLI asked for mouse tracking (we stripped it)
 }
 const terms = new Map<string, TermEntry>();
+(window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
 
 // Sequences a terminal legitimately sends on its own: answers to queries the
 // program asked for (cursor position, device attributes, colours) and focus
@@ -53,27 +58,82 @@ const USER_INPUT_WINDOW_MS = 400;
 // nobody was touching. Past this many answers in the window, stop answering.
 const REPLY_BURST = 4;
 const REPLY_WINDOW_MS = 3000;
-// Output is parked (not written) while a selection drag is in progress, so the
-// highlight survives; released on pointer-up plus a grace period to copy.
-const SELECTION_GRACE_MS = 15_000;
-const HOLD_MAX_BYTES = 512_000;
 
-/** Write everything parked during a selection drag and resume live output. */
-function releaseHold(id: string): void {
-  const e = terms.get(id);
-  if (!e?.hold) return;
+// The moment a program enables mouse tracking, xterm clears any selection and
+// disables its selection service entirely (protocol change → selectionService.
+// disable() — which is clearSelection() + enabled=false, in xterm's source).
+// Claude Code's newer TUI latches mouse tracking (and the alt screen) on for
+// whole generations, so selection in a claude pane froze or died mid-drag —
+// while shell panes, which never enable it, selected fine.
+//
+// Claude panes therefore never hand the CLI the mouse: tracking-enable
+// sequences are stripped from the display stream. Selection then behaves like
+// a normal terminal, and the wheel still scrolls the CLI's alt-screen UI —
+// with no mouse protocol active, xterm converts wheel to arrow keys there
+// (the same thing iTerm does by default). Shell panes are untouched, so vim
+// and htop keep full mouse support.
+const MOUSE_ENABLE_RE = /\x1b\[\?((?:\d+;)*\d+)h/g;
+const MOUSE_MODE_PARAMS = new Set(["1000", "1001", "1002", "1003", "1005", "1006", "1015", "1016"]);
+// a chunk can end mid-sequence; hold the unfinished tail for the next chunk
+const PARTIAL_CSI_RE = /\x1b(?:\[[?0-9;]*)?$/;
+
+// xterm clears a selection the moment a write touches the selected rows, and
+// the claude TUI redraws its whole frame continuously while generating — so a
+// selection inside it died within a second. While a drag is in progress or a
+// highlight stands, output is parked and the pane freezes at the moment of
+// selection; everything parked is written the instant the selection is
+// dropped, with a time/size cap so a pane can never stall.
+const HOLD_MAX_MS = 15_000;
+const HOLD_MAX_BYTES = 400_000;
+
+function flushHold(e: TermEntry): void {
+  if (!e.hold) return;
   const parked = e.hold;
   e.hold = null;
-  e.holdUntil = 0;
-  for (const chunk of parked) e.term.write(chunk);
+  for (const c of parked) e.term.write(c);
 }
 
-/** Hold output for this session so a highlight can be dragged without it collapsing. */
-function beginHold(id: string): void {
-  const e = terms.get(id);
-  if (!e || e.hold) return;
-  e.hold = [];
-  e.holdUntil = Date.now() + SELECTION_GRACE_MS;
+function pumpWrite(e: TermEntry, data: string): void {
+  const chunk = stripMouseEnables(e, data);
+  if (!chunk) return;
+  // park only while the drag is in progress — once released the text is
+  // already on the clipboard, so live redraws may reflow the highlight away
+  // exactly as they would in any terminal. An idle pane keeps it indefinitely.
+  if (e.dragging) {
+    if (!e.hold) {
+      e.hold = [];
+      e.holdStart = Date.now();
+    }
+    e.hold.push(chunk);
+    const bytes = e.hold.reduce((n, c) => n + c.length, 0);
+    if (Date.now() - e.holdStart > HOLD_MAX_MS || bytes > HOLD_MAX_BYTES) flushHold(e);
+    return;
+  }
+  if (e.hold) flushHold(e);
+  e.term.write(chunk);
+}
+
+const MOUSE_DISABLE_RE = /\x1b\[\?((?:\d+;)*\d+)l/g;
+
+function stripMouseEnables(e: TermEntry, data: string): string {
+  if (!e.stripMouse) return data;
+  let chunk = e.carry + data;
+  e.carry = "";
+  const tail = chunk.match(PARTIAL_CSI_RE);
+  if (tail) {
+    e.carry = tail[0];
+    chunk = chunk.slice(0, -tail[0].length);
+  }
+  if (!chunk.includes("\x1b[?")) return chunk;
+  // remember what the CLI wanted: the wheel handler answers on its behalf
+  for (const m of chunk.matchAll(MOUSE_DISABLE_RE)) {
+    if (m[1].split(";").some((p) => MOUSE_MODE_PARAMS.has(p))) e.wantsMouse = false;
+  }
+  return chunk.replace(MOUSE_ENABLE_RE, (m, params: string) => {
+    if (!params.split(";").some((p) => MOUSE_MODE_PARAMS.has(p))) return m;
+    e.wantsMouse = true;
+    return "";
+  });
 }
 
 /** The only path from the UI to a pty: silently no-ops until replay is done. */
@@ -91,17 +151,7 @@ function ensureDataPump(): void {
   window.mb.onSessionData((id: string, data: string) => {
     const e = terms.get(id);
     if (!e?.ready) return;
-    // Writing to xterm while the user drags a highlight collapses the
-    // selection — and a Claude session redraws constantly, so a selection in a
-    // busy pane never survives. Park the output instead and release it once the
-    // drag is done (plus a grace period to hit ⌘C).
-    if (e.hold) {
-      e.hold.push(data);
-      const held = e.hold.reduce((n, c) => n + c.length, 0);
-      if (held > HOLD_MAX_BYTES || Date.now() > e.holdUntil) releaseHold(id);
-      return;
-    }
-    e.term.write(data);
+    pumpWrite(e, data);
   });
 }
 
@@ -127,14 +177,18 @@ const TERM_THEMES = {
     foreground: "#c9c3b8",
     cursor: "#e0a34a",
     cursorAccent: "#201f1c",
-    selectionBackground: "#3a372f",
+    // translucent white, like stock xterm — the old #3a372f was near-invisible
+    // against the pane background, so selections looked broken even when live
+    selectionBackground: "rgba(255, 255, 255, 0.35)",
+    selectionInactiveBackground: "rgba(255, 255, 255, 0.22)",
   },
   light: {
     background: "#fbf9f5",
     foreground: "#4f4a3f",
     cursor: "#a06a12",
     cursorAccent: "#fbf9f5",
-    selectionBackground: "#e6dcc2",
+    selectionBackground: "rgba(30, 60, 110, 0.25)",
+    selectionInactiveBackground: "rgba(30, 60, 110, 0.15)",
   },
 };
 
@@ -213,6 +267,8 @@ export function TerminalPane({
   const dead = session.status === "dead";
   const waiting = session.status === "waiting";
   const [editTitle, setEditTitle] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const commitTitle = async () => {
     const v = editTitle?.trim();
@@ -269,13 +325,13 @@ export function TerminalPane({
         ready: false,
         lastInput: 0,
         replies: [],
+        stripMouse: !session.shell,
+        carry: "",
+        dragging: false,
         hold: null,
-        holdUntil: 0,
+        holdStart: 0,
+        wantsMouse: false,
       };
-      // holding output is only justified while a selection actually exists
-      term.onSelectionChange(() => {
-        if (!term.hasSelection()) releaseHold(session.id);
-      });
       term.onData((d) => {
         const now = Date.now();
         if (now - e.lastInput <= USER_INPUT_WINDOW_MS) return writeSession(session.id, d);
@@ -325,7 +381,7 @@ export function TerminalPane({
         .sessionBuffer(session.id)
         .then((buf: string) => {
           if (terms.get(session.id) !== e) return; // disposed while in flight
-          if (buf) term.write(buf, () => (e.ready = true));
+          if (buf) term.write(stripMouseEnables(e, buf), () => (e.ready = true));
           else e.ready = true;
         })
         .catch((err: unknown) => {
@@ -376,6 +432,36 @@ export function TerminalPane({
       const t = terms.get(session.id);
       if (t) t.lastInput = Date.now(); // mouse/paste count as user input too
     };
+    const onDown = (ev: PointerEvent) => {
+      stamp();
+      if (ev.button === 0) {
+        const t = terms.get(session.id);
+        if (t) t.dragging = true;
+      }
+    };
+    const endDrag = () => {
+      const t = terms.get(session.id);
+      if (!t?.dragging) return;
+      t.dragging = false;
+      if (!t.term.hasSelection()) return flushHold(t); // just a click — resume instantly
+      // copy-on-select, cmux-style: release puts the text on the clipboard and
+      // the pane resumes immediately. The highlight is never cleared by us —
+      // it stays until a click elsewhere or the CLI redraws over it.
+      const text = t.term.getSelection();
+      if (text) {
+        navigator.clipboard.writeText(text).then(
+          () => {
+            setCopied(true);
+            if (copiedTimer.current) clearTimeout(copiedTimer.current);
+            copiedTimer.current = setTimeout(() => setCopied(false), 1600);
+          },
+          () => {
+            /* clipboard permission denied — the selection still stands for ⌘C */
+          }
+        );
+      }
+      flushHold(t);
+    };
     const onPaste = (e: ClipboardEvent) => {
       stamp();
       const items = [...(e.clipboardData?.items ?? [])];
@@ -386,33 +472,42 @@ export function TerminalPane({
       }
     };
     const el = holder.current;
-    const onDown = (ev: PointerEvent) => {
-      stamp();
-      if (ev.button === 0) beginHold(session.id); // a drag may be starting
-    };
-    const onUp = () => {
-      const e = terms.get(session.id);
-      if (!e?.hold) return;
-      if (!e.term.hasSelection()) return releaseHold(session.id); // just a click
-      // keep it paused while the highlight stands (released by onSelectionChange
-      // the moment it is dropped), with a cap so a pane can never look frozen
-      e.holdUntil = Date.now() + SELECTION_GRACE_MS;
-      setTimeout(() => {
-        const cur = terms.get(session.id);
-        if (cur?.hold && Date.now() >= cur.holdUntil) releaseHold(session.id);
-      }, SELECTION_GRACE_MS + 50);
-    };
     el?.addEventListener("paste", onPaste, true);
+    const onWheel = (ev: WheelEvent) => {
+      stamp();
+      const t = terms.get(session.id);
+      // the CLI asked for the mouse (we withheld it): deliver wheel as the SGR
+      // reports it expects, so scrolling scrolls the transcript — xterm's
+      // fallback would send arrow keys, which the CLI reads as history
+      if (!t?.stripMouse || !t.wantsMouse || !t.ready) return;
+      if (t.hold || t.dragging) return; // mid-drag the frame is frozen
+      const screen = t.term.element?.querySelector(".xterm-screen");
+      if (!screen) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const r = screen.getBoundingClientRect();
+      const col = Math.min(t.term.cols, Math.max(1, Math.floor(((ev.clientX - r.left) / r.width) * t.term.cols) + 1));
+      const row = Math.min(t.term.rows, Math.max(1, Math.floor(((ev.clientY - r.top) / r.height) * t.term.rows) + 1));
+      const btn = ev.deltaY < 0 ? 64 : 65;
+      const n = Math.min(3, Math.max(1, Math.round(Math.abs(ev.deltaY) / 40)));
+      writeSession(session.id, `\x1b[<${btn};${col};${row}M`.repeat(n));
+    };
     el?.addEventListener("pointerdown", onDown, true);
-    el?.addEventListener("wheel", stamp, true);
-    window.addEventListener("pointerup", onUp, true); // the drag can end outside the pane
+    el?.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    window.addEventListener("pointerup", endDrag, true);
+    window.addEventListener("pointercancel", endDrag, true);
     return () => {
       ro.disconnect();
       el?.removeEventListener("paste", onPaste, true);
       el?.removeEventListener("pointerdown", onDown, true);
-      el?.removeEventListener("wheel", stamp, true);
-      window.removeEventListener("pointerup", onUp, true);
-      releaseHold(session.id); // never leave output parked on an unmounted pane
+      el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
+      window.removeEventListener("pointerup", endDrag, true);
+      window.removeEventListener("pointercancel", endDrag, true);
+      const t = terms.get(session.id);
+      if (t) {
+        t.dragging = false;
+        flushHold(t); // never leave a hidden pane frozen
+      }
     };
   }, [session.id, dead]);
 
@@ -593,6 +688,7 @@ export function TerminalPane({
               }
             }}
           />
+          {copied && <span className="copy-toast">Copied ✓</span>}
           {waiting && (
             <div className="wait-banner">
               <span className="dot sm waiting" />

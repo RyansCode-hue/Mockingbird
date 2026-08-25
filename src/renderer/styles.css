@@ -743,3 +743,44 @@ input[type=checkbox] { accent-color: var(--teal); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- snap layout picker ---- */
+.lay-wrap { position: relative; display: inline-flex; }
+.lay-pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  background: var(--bg-pane); border: 1px solid var(--line-strong); border-radius: 10px;
+  padding: 10px; box-shadow: 0 18px 40px rgba(0, 0, 0, .45); width: 260px;
+}
+.lay-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.lay-opt {
+  padding: 6px; border: 1px solid var(--line-btn); border-radius: 8px; background: none; cursor: pointer;
+}
+.lay-opt:hover { border-color: var(--line-btn-hover); background: var(--fill-subtle); }
+.lay-opt.on { border-color: var(--amber); }
+.lay-thumb {
+  display: grid; gap: 2px; width: 100%; height: 34px;
+}
+.lay-thumb i { background: var(--text-3); border-radius: 2px; opacity: .55; }
+.lay-opt:hover .lay-thumb i, .lay-opt.on .lay-thumb i { opacity: .9; }
+.lay-auto {
+  margin-top: 8px; width: 100%; padding: 6px; border: 1px solid var(--line-btn); border-radius: 8px;
+  background: none; color: var(--text-2); font: 400 11px var(--mono); cursor: pointer;
+}
+.lay-auto:hover { color: var(--text-1); border-color: var(--line-btn-hover); }
+.lay-auto.on { border-color: var(--amber); color: var(--text-1); }
+.lay-note { margin-top: 8px; font: 400 10px var(--mono); color: var(--text-3); line-height: 1.5; }
+
+/* transient confirmation after copy-on-select */
+.copy-toast {
+  position: absolute; right: 14px; bottom: 14px; z-index: 6;
+  padding: 4px 10px; border-radius: 6px;
+  background: var(--bg-pane-header); border: 1px solid var(--line-strong);
+  color: var(--teal-text); font: 500 10.5px var(--mono);
+  pointer-events: none;
+  animation: copytoast 1.6s ease forwards;
+}
+@keyframes copytoast {
+  0% { opacity: 0; transform: translateY(4px); }
+  10%, 75% { opacity: 1; transform: none; }
+  100% { opacity: 0; }
+}

@@ -933,3 +933,113 @@ pointer-down while a highlight stands, and released the moment the selection
 is dropped (`onSelectionChange`), with a 15s cap so a pane can never look
 frozen. Verified in the harness with output streaming at 8 lines/sec: the
 highlight stays put instead of vanishing.
+
+## Iteration 46 — selection regression reverted, snap layouts
+
+- [x] **Reverted the output-parking "fix".** Measured with xterm's own API in
+      the harness: a selection survives writes untouched (`hasSelection()` stays
+      true, `getSelection()` returns the same text after live output). Parking
+      output never solved a real problem — and it caused a worse one: the DOM
+      renderer repaints on write, so with writes parked the highlight didn't
+      draw until release, and then drew stale. Writes go straight through again.
+      Verified with dispatched mouse events: the highlight paints during the
+      drag and stays put while output streams.
+- [x] **Layout button replaces the `A 1 2 3 4` column control.** A flyout of six
+      zone templates (two columns, two rows, three columns, big-left, big-top,
+      quadrants) in the spirit of Windows snap layouts, remembered per group.
+      A template governs only when its zone count matches the open panes: with
+      fewer panes the zones collapse so nothing empty holds space, with more the
+      extras flow into equal cells below. Edge-dragging still fine-tunes.
+      Not yet built: dragging a pane onto a specific zone.
+
+## Iteration 47 — the real selection killer: mouse-tracking enable mid-drag
+
+Root cause found in xterm's own source: on mouse-protocol change,
+`onProtocolChange` calls `selectionService.disable()` — immediately, mid-drag
+included. The Claude CLI toggles mouse tracking as part of its redraw, so a
+highlight tracked the cursor until the enable sequence was parsed, then froze
+("stops following after a bit; select again and it works" — by then the CLI
+had toggled it off again). Plain output was never the problem, which is why
+the output-parking attempt fixed nothing.
+
+- [x] While a drag is in progress or a highlight stands, mouse-tracking
+      *enable* sequences (CSI ? 1000/1001/1002/1003/1005/1006/1015/1016 h) are
+      parked; everything else renders live. Parked enables are delivered on
+      pointer-up / selection-clear, so the CLI ends up in exactly the state it
+      asked for. Disables always pass through — they only help.
+- [x] Verified through the real pump path in the harness: enable arriving
+      mid-drag → mode stays `none`, sequence held; pointer-up → flushed, mode
+      becomes `drag`; disables untouched; output kept rendering throughout.
+
+## Iteration 48 — selection: the actual mechanism, in two parts
+
+Captured raw bytes from a real generating claude session and bisected them
+against a live selection in the harness. Two independent killers, which is why
+each earlier single fix failed:
+
+1. Claude Code's newer TUI latches mouse tracking + the alt screen on for whole
+   generations (`?1000/1002/1003/1006h`, `?1049h` — captured, never released).
+   xterm answers a mouse-protocol enable with clearSelection() + selection
+   service disabled. This arrived with a CLI self-update — nothing in our pane
+   code changed — and shells never enable it, which is why shell panes always
+   selected fine.
+2. xterm clears a selection when a write touches the selected rows, and the
+   claude TUI redraws its whole frame continuously (bisect: killed by plain
+   `2K`/`1A`/`H` redraw sequences). Appends don't do this, which is why plain
+   streaming tests passed.
+
+Fix (both halves, claude panes only — shells untouched):
+- mouse-tracking enables are stripped from the display stream (split-chunk
+  safe via a carry buffer; history replay stripped too). Wheel still scrolls
+  the CLI's alt-screen UI — with no mouse protocol, xterm converts wheel to
+  arrow keys there, iTerm's default for such apps.
+- while a drag is in progress or a highlight stands, output is parked and the
+  pane freezes at the moment of selection; released the instant the selection
+  drops (or after copy, 15s, or 400KB — whichever first).
+
+Verified with the real capture replayed through the pump: selection text
+byte-identical after a full generation's redraws; release → pane catches up;
+mouse mode stays `none` throughout.
+
+## Iteration 49 — copy-on-select, and wheel scrolls the transcript again
+
+- [x] Stripping the CLI's mouse modes left xterm's fallback wheel behavior:
+      arrow keys, which the CLI reads as prompt history. The pane now remembers
+      what the CLI asked for (`wantsMouse`, cleared on the matching disable) and
+      the wheel handler answers on its behalf with the SGR reports it expects
+      (`ESC[<64/65;col;rowM`, up to 3 per tick) — transcript scrolls natively,
+      arrows stay for history, and the mouse protocol still never activates in
+      xterm, so selection keeps working. With a highlight standing the wheel is
+      inert (the frame is frozen). Shell panes untouched.
+- [x] Copy-on-select: finishing a highlight puts it on the clipboard; the
+      highlight lingers ~1.5s as confirmation, then clears so the pane resumes
+      live output. Manual ⌘C still works during the linger.
+- [x] Verified in the harness against the real capture: wantsMouse latched with
+      mode `none`; wheel → correct SGR reports both directions; wheel while
+      selected → nothing, selection intact.
+
+## Iteration 50 — highlight made visible and cmux-parity semantics
+
+- [x] The dark theme's selection color was `#3a372f` — near-invisible against
+      the `#201f1c` pane background, so selections looked broken even when the
+      machinery worked. Now translucent white (`rgba(255,255,255,.35)`, dimmer
+      when the pane is unfocused), stock-terminal style; light theme gets a
+      translucent blue.
+- [x] cmux-parity behavior: release copies to the clipboard and the pane
+      resumes immediately; output holds only during the drag itself; nothing in
+      our code ever clears a highlight (both auto-clear timers removed) — it
+      stays until you click elsewhere or the CLI redraws over it, exactly like
+      a normal terminal. Wheel is inert only mid-drag.
+- [x] Verified with a real drag: white highlight visible across the dragged
+      rows, still standing 3s after release with hold released and text intact.
+
+## Iteration 51 — "Copied ✓" confirmation
+
+- [x] Finishing a highlight shows a small "Copied ✓" pill in the pane's bottom
+      right (teal on the header background), fading out over ~1.6s. It only
+      appears when the clipboard write actually succeeded — a denied write
+      shows nothing and leaves the selection standing for ⌘C.
+- [x] Harness note: the sandboxed browser denies clipboard writes, so the
+      trigger can't fire there; the toast's placement/style verified by
+      injection, the trigger path relies on the same promise the (confirmed
+      working) copy uses.
