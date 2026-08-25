@@ -4,17 +4,19 @@ Grid manager for parallel Claude CLI sessions — git worktrees, live status, br
 
 ## Setup (first time)
 
+**New machine? Follow [SETUP.md](SETUP.md)** — clone-to-working-app, including
+your own Azure DevOps PAT and first-run steps. Short version:
+
 ```bash
-cd ~/Code/Mockingbird
 npm install
-npm start
+npm start            # dev run
+npm run package      # → release/mac-arm64/Mockingbird.app → copy to /Applications
 ```
 
-Note: `npm install` compiles node-pty natively and needs Xcode Command Line Tools (`xcode-select --install` if you don't have them). If a `node_modules` folder exists from another machine, delete it first: `rm -rf node_modules package-lock.json`.
-
-Then in the app, click **install now** in the sidebar to add the status hooks to `~/.claude/settings.json` (they coexist with your existing WorkTracker SessionEnd hook).
-
-To build a real .app for your Dock: `npm run package` → `dist/mac-arm64/Mockingbird.app` (also emits a DMG + zip in `dist/`). Copy it to /Applications and launch from the Dock — it runs independently of any terminal (add it to Login Items if you want it always up). Native deps use node-pty's prebuilt binaries (`npmRebuild: false`), so packaging doesn't need a working C++ toolchain.
+Then Settings → install hooks (adds status hooks to `~/.claude/settings.json`,
+merged with whatever is already there). Native deps use node-pty's prebuilt
+binaries (`npmRebuild: false`), so packaging doesn't need a working C++
+toolchain.
 
 **Updates:** dev runs pick up renderer changes with `npm run build` + ⌘R (main-process changes need a restart). The packaged app checks GitHub for new releases (on launch and every 6h) once `package.json` has a `"repository": "github:<owner>/<repo>"` field — a newer release triggers a native notification and a teal "⭮ vX.Y available" link in the status bar (Settings → Check for updates works manually too). To ship an update: bump `version`, `npm run package`, create a GitHub release tagged `vX.Y.Z` with the DMG/zip attached. True silent auto-update would additionally need an Apple Developer ID signature + notarization.
 
