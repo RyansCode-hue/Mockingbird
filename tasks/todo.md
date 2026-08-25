@@ -970,3 +970,33 @@ the output-parking attempt fixed nothing.
 - [x] Verified through the real pump path in the harness: enable arriving
       mid-drag → mode stays `none`, sequence held; pointer-up → flushed, mode
       becomes `drag`; disables untouched; output kept rendering throughout.
+
+## Iteration 48 — selection: the actual mechanism, in two parts
+
+Captured raw bytes from a real generating claude session and bisected them
+against a live selection in the harness. Two independent killers, which is why
+each earlier single fix failed:
+
+1. Claude Code's newer TUI latches mouse tracking + the alt screen on for whole
+   generations (`?1000/1002/1003/1006h`, `?1049h` — captured, never released).
+   xterm answers a mouse-protocol enable with clearSelection() + selection
+   service disabled. This arrived with a CLI self-update — nothing in our pane
+   code changed — and shells never enable it, which is why shell panes always
+   selected fine.
+2. xterm clears a selection when a write touches the selected rows, and the
+   claude TUI redraws its whole frame continuously (bisect: killed by plain
+   `2K`/`1A`/`H` redraw sequences). Appends don't do this, which is why plain
+   streaming tests passed.
+
+Fix (both halves, claude panes only — shells untouched):
+- mouse-tracking enables are stripped from the display stream (split-chunk
+  safe via a carry buffer; history replay stripped too). Wheel still scrolls
+  the CLI's alt-screen UI — with no mouse protocol, xterm converts wheel to
+  arrow keys there, iTerm's default for such apps.
+- while a drag is in progress or a highlight stands, output is parked and the
+  pane freezes at the moment of selection; released the instant the selection
+  drops (or after copy, 15s, or 400KB — whichever first).
+
+Verified with the real capture replayed through the pump: selection text
+byte-identical after a full generation's redraws; release → pane catches up;
+mouse mode stays `none` throughout.
