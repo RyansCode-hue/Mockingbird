@@ -267,6 +267,8 @@ export function TerminalPane({
   const dead = session.status === "dead";
   const waiting = session.status === "waiting";
   const [editTitle, setEditTitle] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const commitTitle = async () => {
     const v = editTitle?.trim();
@@ -447,9 +449,16 @@ export function TerminalPane({
       // it stays until a click elsewhere or the CLI redraws over it.
       const text = t.term.getSelection();
       if (text) {
-        navigator.clipboard.writeText(text).catch(() => {
-          /* clipboard permission denied — the selection still stands for ⌘C */
-        });
+        navigator.clipboard.writeText(text).then(
+          () => {
+            setCopied(true);
+            if (copiedTimer.current) clearTimeout(copiedTimer.current);
+            copiedTimer.current = setTimeout(() => setCopied(false), 1600);
+          },
+          () => {
+            /* clipboard permission denied — the selection still stands for ⌘C */
+          }
+        );
       }
       flushHold(t);
     };
@@ -679,6 +688,7 @@ export function TerminalPane({
               }
             }}
           />
+          {copied && <span className="copy-toast">Copied ✓</span>}
           {waiting && (
             <div className="wait-banner">
               <span className="dot sm waiting" />

@@ -769,3 +769,18 @@ input[type=checkbox] { accent-color: var(--teal); }
 .lay-auto:hover { color: var(--text-1); border-color: var(--line-btn-hover); }
 .lay-auto.on { border-color: var(--amber); color: var(--text-1); }
 .lay-note { margin-top: 8px; font: 400 10px var(--mono); color: var(--text-3); line-height: 1.5; }
+
+/* transient confirmation after copy-on-select */
+.copy-toast {
+  position: absolute; right: 14px; bottom: 14px; z-index: 6;
+  padding: 4px 10px; border-radius: 6px;
+  background: var(--bg-pane-header); border: 1px solid var(--line-strong);
+  color: var(--teal-text); font: 500 10.5px var(--mono);
+  pointer-events: none;
+  animation: copytoast 1.6s ease forwards;
+}
+@keyframes copytoast {
+  0% { opacity: 0; transform: translateY(4px); }
+  10%, 75% { opacity: 1; transform: none; }
+  100% { opacity: 0; }
+}

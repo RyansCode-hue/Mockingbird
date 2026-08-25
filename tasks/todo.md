@@ -1032,3 +1032,14 @@ mouse mode stays `none` throughout.
       a normal terminal. Wheel is inert only mid-drag.
 - [x] Verified with a real drag: white highlight visible across the dragged
       rows, still standing 3s after release with hold released and text intact.
+
+## Iteration 51 — "Copied ✓" confirmation
+
+- [x] Finishing a highlight shows a small "Copied ✓" pill in the pane's bottom
+      right (teal on the header background), fading out over ~1.6s. It only
+      appears when the clipboard write actually succeeded — a denied write
+      shows nothing and leaves the selection standing for ⌘C.
+- [x] Harness note: the sandboxed browser denies clipboard writes, so the
+      trigger can't fire there; the toast's placement/style verified by
+      injection, the trigger path relies on the same promise the (confirmed
+      working) copy uses.
