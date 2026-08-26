@@ -1043,3 +1043,14 @@ mouse mode stays `none` throughout.
       trigger can't fire there; the toast's placement/style verified by
       injection, the trigger path relies on the same promise the (confirmed
       working) copy uses.
+
+## Iteration 52 — trackpad scroll speed in claude panes
+
+- [x] The synthesized wheel reports sent at least one scroll per wheel event —
+      fine for a mouse (few chunky ±120 events), wild for a trackpad (dozens of
+      tiny pixel deltas per second → dozens of reports). Deltas now accumulate
+      into whole lines using the pane's real cell height with the remainder
+      carried (the same conversion xterm applies natively), direction flips
+      reset the remainder, and deltaMode line/page units are normalized.
+      Verified: 120px across 30 trackpad events → 6 reports, equal to one
+      120px mouse notch.

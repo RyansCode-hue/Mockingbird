@@ -33,6 +33,7 @@ interface TermEntry {
   hold: string[] | null; // output parked while a selection stands
   holdStart: number;
   wantsMouse: boolean; // the CLI asked for mouse tracking (we stripped it)
+  wheelAcc: number; // accumulated wheel pixels not yet emitted as scroll lines
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
@@ -331,6 +332,7 @@ export function TerminalPane({
         hold: null,
         holdStart: 0,
         wantsMouse: false,
+        wheelAcc: 0,
       };
       term.onData((d) => {
         const now = Date.now();
@@ -486,10 +488,21 @@ export function TerminalPane({
       ev.preventDefault();
       ev.stopPropagation();
       const r = screen.getBoundingClientRect();
+      const cellH = r.height / t.term.rows;
+      // trackpads stream dozens of tiny pixel deltas per second — emitting a
+      // report per event scrolls wildly fast. Accumulate to whole lines (cell
+      // heights) and carry the remainder, the same conversion xterm applies to
+      // its own native mouse handling. deltaMode: 0=pixels, 1=lines, 2=pages.
+      const px = ev.deltaMode === 1 ? ev.deltaY * cellH : ev.deltaMode === 2 ? ev.deltaY * r.height : ev.deltaY;
+      if (Math.sign(px) !== Math.sign(t.wheelAcc)) t.wheelAcc = 0; // direction flip
+      t.wheelAcc += px;
+      const lines = Math.trunc(t.wheelAcc / cellH);
+      if (!lines) return; // not a full line yet — swallowed, never arrow-key fallback
+      t.wheelAcc -= lines * cellH;
       const col = Math.min(t.term.cols, Math.max(1, Math.floor(((ev.clientX - r.left) / r.width) * t.term.cols) + 1));
       const row = Math.min(t.term.rows, Math.max(1, Math.floor(((ev.clientY - r.top) / r.height) * t.term.rows) + 1));
-      const btn = ev.deltaY < 0 ? 64 : 65;
-      const n = Math.min(3, Math.max(1, Math.round(Math.abs(ev.deltaY) / 40)));
+      const btn = lines < 0 ? 64 : 65;
+      const n = Math.min(10, Math.abs(lines));
       writeSession(session.id, `\x1b[<${btn};${col};${row}M`.repeat(n));
     };
     el?.addEventListener("pointerdown", onDown, true);
