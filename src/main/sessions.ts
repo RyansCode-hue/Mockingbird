@@ -85,7 +85,11 @@ export class SessionManager {
     } else {
       // repo-less: claude sessions run in the WorkTracker (assistant), plain
       // terminals just open at home
-      cwd = repoPath ?? (req.shell ? os.homedir() : expandHome(settings.workTrackerPath));
+      // repo-less: debrief assistants live in the WorkTracker folder (their
+      // instructions and digests are there); plain chats and shells run in
+      // home — which is also where claude finds conversations started from a
+      // bare terminal, so --continue/--resume can pick those up
+      cwd = repoPath ?? (req.debrief ? expandHome(settings.workTrackerPath) : os.homedir());
     }
 
     const args: string[] = [];

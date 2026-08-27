@@ -3367,8 +3367,13 @@ function NewSessionModal({
         {error && <div className="err">{error}</div>}
         <div className="row">
           <button className="outline" onClick={onClose}>Cancel</button>
-          <button className="primary" onClick={create} disabled={launch === "claude" && !sel && useWorktree}>
-            {launch === "shell" ? "Open terminal" : "Start claude"}
+          {launch === "claude" && !sel && (
+            <span className="wi-note" style={{ marginRight: "auto" }}>
+              no repo — starts a plain Claude chat (fully tracked: resumable, restartable)
+            </span>
+          )}
+          <button className="primary" onClick={create}>
+            {launch === "shell" ? "Open terminal" : sel ? "Start claude" : "Start chat"}
           </button>
         </div>
       </div>

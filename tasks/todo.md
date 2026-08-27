@@ -1054,3 +1054,21 @@ mouse mode stays `none` throughout.
       reset the remainder, and deltaMode line/page units are normalized.
       Verified: 120px across 30 trackpad events → 6 reports, equal to one
       120px mouse notch.
+
+## Iteration 53 — "my chat became a regular terminal": diagnosed + chat sessions
+
+Process-tree + state.json forensics: the affected panes were `shell: true`
+records — Terminal panes with `claude` typed in by hand and then renamed.
+When that claude exits (typically the CLI's update prompt), a real claude pane
+goes red with Resume, but a shell-hosted one just drops to the zsh prompt; on
+app restart the record faithfully restores a plain shell. Those panes also
+miss every claude-pane protection (mouse stripping, selection fixes) —
+confirmed by mouse-protocol reports in the audit log for one of them.
+
+- [x] Repo-less Claude chats are now first-class: New Session with no repo
+      selected starts a plain chat (button reads "Start chat", with a note) —
+      tracked, resumable, restartable like any session.
+- [x] Repo-less non-debrief sessions run in $HOME instead of the WorkTracker
+      folder — home is also where claude keeps conversations started from bare
+      terminals, so --continue/--resume can reach the previously lost chats.
+      Debrief assistants stay in WorkTracker (their instructions live there).
