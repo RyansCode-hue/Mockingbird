@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
 import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches } from "../shared/types";
-import { slugBranch, normalizeGroupPath, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
+import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
   interface Window {
@@ -3140,7 +3140,33 @@ function NewSessionModal({
   const [sel, setSel] = useState<RepoEntry | null>(null);
   const [ticketId, setTicketId] = useState("");
   const [ticketTitle, setTicketTitle] = useState("");
-  const [group, setGroup] = useState(initialGroup ?? "");
+  // Group + Workspace as two explicit selectors ("workspace" = what the path
+  // syntax called a sub-group). Seeded initialGroup ("top" or "top/sub") comes
+  // from a workspace's + button; a seeded name that doesn't exist yet lands in
+  // the matching "new …" input instead.
+  const allTops = useMemo(() => [...new Set(existingGroups.map(topOfKey))], [existingGroups]);
+  const subsOf = (top: string) =>
+    [...new Set(
+      existingGroups
+        .filter((g) => g.startsWith(top + "/"))
+        .map((g) => splitGroupKey(g).sub)
+        .filter((x): x is string => !!x)
+    )];
+  const seed = initialGroup ? splitGroupKey(initialGroup) : null;
+  const [grpSel, setGrpSel] = useState<string>(() =>
+    seed ? (allTops.includes(seed.top) ? seed.top : "__new") : ""
+  );
+  const [grpNew, setGrpNew] = useState(() => (seed && !allTops.includes(seed.top) ? seed.top : ""));
+  const [wsSel, setWsSel] = useState<string>(() => {
+    if (!seed?.sub) return "";
+    return subsOf(seed.top).includes(seed.sub) ? seed.sub : "__new";
+  });
+  const [wsNew, setWsNew] = useState(() =>
+    seed?.sub && !subsOf(seed.top).includes(seed.sub) ? seed.sub : ""
+  );
+  const effTop = grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
+  const effSub = wsSel === "__new" ? sanitizeSegment(wsNew) : wsSel;
+  const group = effTop ? (effSub ? `${effTop}/${effSub}` : effTop) : "";
   const [useWorktree, setUseWorktree] = useState(true);
   const [error, setError] = useState("");
   // ADO ticket picker — same flow as the dashboard's Start session
@@ -3225,7 +3251,7 @@ function NewSessionModal({
       repoPath: sel?.path ?? null,
       ticketId: ticketId || undefined,
       ticketTitle: ticketTitle || undefined,
-      taskGroup: normalizeGroupPath(group) || undefined,
+      taskGroup: group || undefined,
       useWorktree: useWorktree && !!sel,
       ...(useWorktree && sel && baseBranch ? { baseBranch } : {}),
       shell: launch === "shell",
@@ -3315,25 +3341,62 @@ function NewSessionModal({
             <label>Ticket name</label>
             <input type="text" placeholder="filterOrgsByFoundation" value={ticketTitle} onChange={(e) => setTicketTitle(e.target.value)} />
           </div>
-          <div style={{ flex: 1.4 }}>
-            <label>
-              Group
-              {splitGroupKey(group).sub && (
-                <span className="hint-inline"> → tab in “{splitGroupKey(group).sub}”</span>
-              )}
-            </label>
-            <input
-              type="text"
-              list="mb-groups"
-              placeholder={ticketId ? `defaults to ${ticketId.replace(/^#/, "")}` : "optional — group or group/workspace"}
-              value={group}
-              onChange={(e) => setGroup(e.target.value)}
-            />
-            <datalist id="mb-groups">
-              {existingGroups.map((g) => (
-                <option key={g} value={g} />
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label>Group</label>
+            <select
+              value={grpSel}
+              onChange={(e) => {
+                setGrpSel(e.target.value);
+                setWsSel("");
+                setWsNew("");
+              }}
+            >
+              <option value="">
+                {ticketId ? `auto — ticket ${ticketId.replace(/^#/, "")}` : "none"}
+              </option>
+              {allTops.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
               ))}
-            </datalist>
+              <option value="__new">new group…</option>
+            </select>
+            {grpSel === "__new" && (
+              <input
+                type="text"
+                autoFocus
+                placeholder="group name"
+                value={grpNew}
+                onChange={(e) => setGrpNew(e.target.value)}
+                style={{ marginTop: 6 }}
+              />
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <label>
+              Workspace
+              {effSub && <span className="hint-inline"> → opens as a tab</span>}
+            </label>
+            <select value={wsSel} onChange={(e) => setWsSel(e.target.value)} disabled={!effTop}>
+              <option value="">{effTop ? "none — its own pane" : "pick a group first"}</option>
+              {(grpSel && grpSel !== "__new" ? subsOf(grpSel) : []).map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+              <option value="__new">new workspace…</option>
+            </select>
+            {wsSel === "__new" && (
+              <input
+                type="text"
+                placeholder="workspace name"
+                value={wsNew}
+                onChange={(e) => setWsNew(e.target.value)}
+                style={{ marginTop: 6 }}
+              />
+            )}
           </div>
         </div>
         <div className="check-line">

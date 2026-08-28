@@ -1072,3 +1072,18 @@ confirmed by mouse-protocol reports in the audit log for one of them.
       folder — home is also where claude keeps conversations started from bare
       terminals, so --continue/--resume can reach the previously lost chats.
       Debrief assistants stay in WorkTracker (their instructions live there).
+
+## Iteration 54 — Group and Workspace as real selectors in New Session
+
+- [x] The single Group text field (with its `group/workspace` path syntax) is
+      replaced by two explicit controls: **Group** — auto (ticket #) / none,
+      any existing group, or "new group…" with a name input — and
+      **Workspace** — none (its own pane), the chosen group's existing
+      workspaces, or "new workspace…". The workspace select stays disabled
+      until a group is picked; changing group resets it. "Workspace" is now
+      the user-facing name for what the path syntax called a sub-group.
+- [x] The + buttons still seed the modal: an existing workspace preselects it,
+      a not-yet-created name lands pre-filled under "new workspace…".
+- [x] Verified in the harness: selects populated from live groups
+      (none/5038/5101 + backend under 5038), and creating with a new workspace
+      name produced `taskGroup: "5038/etl work"` in the create payload.
