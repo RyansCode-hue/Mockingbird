@@ -3135,6 +3135,15 @@ function NewSessionModal({
   onCreated: (s: SessionInfo) => void;
 }) {
   const [launch, setLaunch] = useState<"claude" | "shell">(initialLaunch ?? "claude");
+  // model/effort ride the claude command line (--model / --effort); the last
+  // choice is remembered because people tend to have a working default
+  const [model, setModel] = useState(() => loadLS("mb.newModel", ""));
+  const [modelCustom, setModelCustom] = useState(() => loadLS("mb.newModelCustom", ""));
+  const [effort, setEffort] = useState(() => loadLS("mb.newEffort", ""));
+  useEffect(() => localStorage.setItem("mb.newModel", JSON.stringify(model)), [model]);
+  useEffect(() => localStorage.setItem("mb.newModelCustom", JSON.stringify(modelCustom)), [modelCustom]);
+  useEffect(() => localStorage.setItem("mb.newEffort", JSON.stringify(effort)), [effort]);
+  const effModel = model === "__custom" ? modelCustom.trim() : model;
   const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<RepoEntry | null>(null);
@@ -3255,6 +3264,8 @@ function NewSessionModal({
       useWorktree: useWorktree && !!sel,
       ...(useWorktree && sel && baseBranch ? { baseBranch } : {}),
       shell: launch === "shell",
+      ...(launch === "claude" && effModel ? { model: effModel } : {}),
+      ...(launch === "claude" && effort ? { effort } : {}),
       initialPrompt:
         launch === "claude" && t && sendTicket
           ? ticketKickoffPrompt(t.id, t.title, t.description)
@@ -3274,6 +3285,40 @@ function NewSessionModal({
           <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>Claude</button>
           <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
         </span>
+        {launch === "claude" && (
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <div style={{ flex: 1 }}>
+              <label>Model</label>
+              <select value={model} onChange={(e) => setModel(e.target.value)}>
+                <option value="">default — whatever claude is set to</option>
+                <option value="opus">Opus</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="haiku">Haiku</option>
+                <option value="__custom">custom model id…</option>
+              </select>
+              {model === "__custom" && (
+                <input
+                  type="text"
+                  placeholder="e.g. claude-fable-5"
+                  value={modelCustom}
+                  onChange={(e) => setModelCustom(e.target.value)}
+                  style={{ marginTop: 6 }}
+                />
+              )}
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Effort</label>
+              <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+                <option value="">default</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
+            </div>
+          </div>
+        )}
         <label>Repo</label>
         <input type="text" autoFocus placeholder="search ~/Code + ~/Personal Projects…" value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="pick-list">

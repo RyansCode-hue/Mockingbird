@@ -95,6 +95,8 @@ export class SessionManager {
     const args: string[] = [];
     if (req.resumeSessionId) args.push("--resume", req.resumeSessionId);
     else if (req.resume) args.push("--continue");
+    if (req.model) args.push("--model", req.model);
+    if (req.effort) args.push("--effort", req.effort);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
 
     // Spawn via a login shell: /bin/zsh always execs cleanly under posix_spawnp,
@@ -150,6 +152,8 @@ export class SessionManager {
       waitingSince: null,
       debrief: req.debrief || undefined,
       shell: req.shell || undefined,
+      model: req.model || undefined,
+      effort: req.effort || undefined,
     };
 
     // reuseId re-creates an existing id (relaunch): kill the old pty first or it
@@ -240,6 +244,8 @@ export class SessionManager {
       title: old.title,
       debrief: old.debrief,
       shell: old.shell,
+      model: old.model ?? undefined,
+      effort: old.effort ?? undefined,
     });
     return info;
   }

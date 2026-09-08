@@ -3,6 +3,8 @@ export type SessionStatus = "working" | "waiting" | "idle" | "dead";
 export interface SessionInfo {
   id: string;
   title: string;
+  model?: string | null; // persisted so relaunch resumes on the same model
+  effort?: string | null;
   repoPath: string | null; // null for assistant/free sessions
   cwd: string; // where claude runs (worktree path, repo path, or WorkTracker)
   branch: string | null;
@@ -108,6 +110,8 @@ export interface NewSessionRequest {
   baseBranch?: string; // new branch: fetch origin/<base> first and branch off it (dev/uat flow)
   initialPrompt?: string; // sent to the claude session once it's up (e.g. the ADO ticket)
   shell?: boolean; // open a plain zsh terminal instead of launching claude
+  model?: string; // claude --model (alias like "opus" or a full model id)
+  effort?: string; // claude --effort (low | medium | high | xhigh | max)
 }
 
 export interface RepoBranches {

@@ -1107,3 +1107,17 @@ confirmed by mouse-protocol reports in the audit log for one of them.
       byte-identical; a click-attributed clear still clears.
 - [x] Mis-themed sessions re-detect on their next claude start —
       Settings → Restart all Claude sessions.
+
+## Iteration 56 — pick model and effort when starting a session
+
+- [x] New Session (Claude launch) gains **Model** (default / Opus / Sonnet /
+      Haiku / custom model id…) and **Effort** (default / low / medium / high /
+      xhigh / max) selects, passed to the CLI as `--model` / `--effort`.
+      "default" sends no flag, so claude's own configuration applies. The last
+      choice is remembered across sessions.
+- [x] Both values persist on the session record and ride through relaunch, so
+      a restored or restarted session comes back on the same model and effort.
+      Panes at full density show a `model · effort` chip next to the branch.
+- [x] Verified in the harness: picking Opus + xhigh produced
+      `model: "opus", effort: "xhigh"` in the create payload and both were
+      remembered for the next open.

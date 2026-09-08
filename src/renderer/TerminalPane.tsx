@@ -601,6 +601,11 @@ export function TerminalPane({
           </span>
         )}
         {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
+        {density === "max" && (session.model || session.effort) && (
+          <span className="chip" title="model · effort for this session">
+            {[session.model, session.effort].filter(Boolean).join(" · ")}
+          </span>
+        )}
         {density === "max" && session.ticketId && (
           <span className={`chip ${dead ? "" : "teal"}`}>
             #{session.ticketId.replace(/^#/, "")}{dead ? "" : " · Active"}
