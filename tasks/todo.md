@@ -1087,3 +1087,23 @@ confirmed by mouse-protocol reports in the audit log for one of them.
 - [x] Verified in the harness: selects populated from live groups
       (none/5038/5101 + backend under 5038), and creating with a new workspace
       name produced `taskGroup: "5038/etl work"` in the create payload.
+
+## Iteration 55 — white diff panel + iTerm-grade selection persistence
+
+- [x] **White box = Claude's /diff panel in light theme.** The CLI picks
+      light/dark by querying the terminal background at startup; the reply
+      throttle from the /clear fix (4 answers per 3s, none while hidden) could
+      eat that answer, so claude guessed light. The gate is now shaped like the
+      actual loop signature: answers always flow (hidden panes included); only
+      the SAME answer repeating more than 8× within 5s is suppressed,
+      self-recovering each window. Verified: the OSC-11 background answer is
+      forwarded again.
+- [x] **The real selection-killer, final layer:** xterm subscribes
+      clearSelection to coreService.onUserInput — which fires for its own
+      automatic query answers, and the claude TUI queries constantly. In claude
+      panes clearSelection is gated on real user input in the last 400ms:
+      auto-replies can't nuke a highlight; typing and clicking still clear.
+      Verified: selection survives 20 rounds of redraw+CPR+colour queries
+      byte-identical; a click-attributed clear still clears.
+- [x] Mis-themed sessions re-detect on their next claude start —
+      Settings → Restart all Claude sessions.

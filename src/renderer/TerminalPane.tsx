@@ -26,7 +26,9 @@ interface TermEntry {
   ready: boolean;
   lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
   inputWired?: boolean; // DOM input listeners attached to xterm's textarea
-  replies: number[]; // timestamps of recent automatic query answers (loop detector)
+  lastReply: string; // loop detector: the same answer repeating means the
+  lastReplyCount: number; // answer itself is provoking the next question
+  lastReplyStart: number;
   stripMouse: boolean; // claude panes: the CLI never gets the mouse (see below)
   carry: string; // trailing partial escape sequence held until the next chunk
   dragging: boolean; // selection drag in progress
@@ -52,13 +54,14 @@ const TERM_REPLY = new RegExp(
     ")$"
 );
 const USER_INPUT_WINDOW_MS = 400;
-// A terminal answers a handful of queries when a program starts. Answering the
-// same queries over and over means the answer is itself provoking the next
-// query — a feedback loop between xterm and the CLI. Those loops are what has
-// been clearing sessions: bursts of identical writes ~400ms apart, in panes
-// nobody was touching. Past this many answers in the window, stop answering.
-const REPLY_BURST = 4;
-const REPLY_WINDOW_MS = 3000;
+// Loop detector for automatic query answers. A program starting up asks a
+// varied handful of questions (device attributes, cursor position, colours —
+// including the background-colour probe the claude TUI uses to pick light or
+// dark, so answers must flow even for hidden panes). A feedback loop looks
+// different: the SAME answer repeating on a short period, indefinitely. Only
+// that is suppressed.
+const REPLY_LOOP_COUNT = 8;
+const REPLY_LOOP_WINDOW_MS = 5000;
 
 // The moment a program enables mouse tracking, xterm clears any selection and
 // disables its selection service entirely (protocol change → selectionService.
@@ -325,7 +328,9 @@ export function TerminalPane({
         fit,
         ready: false,
         lastInput: 0,
-        replies: [],
+        lastReply: "",
+        lastReplyCount: 0,
+        lastReplyStart: 0,
         stripMouse: !session.shell,
         carry: "",
         dragging: false,
@@ -343,17 +348,16 @@ export function TerminalPane({
           window.mb.auditWrite(session.id, "dropped-unattributed", d);
           return;
         }
-        // a detached terminal (hidden pane / inactive tab) must not answer at
-        // all — nobody is looking, and its answers are what start the loops
-        if (!term.element?.isConnected) {
-          window.mb.auditWrite(session.id, "dropped-reply-while-hidden", d);
-          return;
-        }
-        e.replies = e.replies.filter((t) => now - t < REPLY_WINDOW_MS);
-        e.replies.push(now);
-        if (e.replies.length > REPLY_BURST) {
-          window.mb.auditWrite(session.id, "suppressed-reply-loop", d);
-          return;
+        if (d === e.lastReply && now - e.lastReplyStart < REPLY_LOOP_WINDOW_MS) {
+          e.lastReplyCount++;
+          if (e.lastReplyCount > REPLY_LOOP_COUNT) {
+            window.mb.auditWrite(session.id, "suppressed-reply-loop", d);
+            return;
+          }
+        } else {
+          e.lastReply = d;
+          e.lastReplyCount = 1;
+          e.lastReplyStart = now;
         }
         writeSession(session.id, d);
       });
