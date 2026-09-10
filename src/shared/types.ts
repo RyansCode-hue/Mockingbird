@@ -5,6 +5,7 @@ export interface SessionInfo {
   title: string;
   model?: string | null; // persisted so relaunch resumes on the same model
   effort?: string | null;
+  exitCode?: number | null; // set when the process ends; shown on the dead pane
   repoPath: string | null; // null for assistant/free sessions
   cwd: string; // where claude runs (worktree path, repo path, or WorkTracker)
   branch: string | null;

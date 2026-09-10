@@ -272,6 +272,26 @@ export function TerminalPane({
   const waiting = session.status === "waiting";
   const [editTitle, setEditTitle] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [exitTail, setExitTail] = useState<string | null>(null);
+  useEffect(() => {
+    if (!dead) {
+      setExitTail(null);
+      return;
+    }
+    let alive = true;
+    window.mb.sessionBuffer(session.id).then((buf: string) => {
+      if (!alive) return;
+      const text = (buf || "")
+        .replace(/\x1b\[[0-9;?<>=]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\|\x1b[()=>][A-Za-z0-9]?|\x1b[78]|\r/g, "")
+        .split("\n")
+        .map((l) => l.trimEnd())
+        .filter((l) => l.trim().length > 0);
+      setExitTail(text.slice(-12).join("\n"));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [dead, session.id]);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const commitTitle = async () => {
@@ -683,7 +703,17 @@ export function TerminalPane({
 
       {dead ? (
         <div className="dead-body">
-          <div>process exited · history preserved</div>
+          <div>
+            process exited
+            {typeof session.exitCode === "number" ? ` · code ${session.exitCode}` : ""} · history preserved
+          </div>
+          {exitTail ? (
+            <pre className="dead-tail" title="the last lines the process wrote before exiting">
+              {exitTail}
+            </pre>
+          ) : (
+            <div className="dead-tail-none">no output captured before it exited</div>
+          )}
           <div className="row">
             <button className="outline strong" onClick={onResume}>Resume</button>
             <button className="outline" onClick={onCleanup}>Close &amp; clean up</button>

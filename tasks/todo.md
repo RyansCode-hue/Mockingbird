@@ -1121,3 +1121,18 @@ confirmed by mouse-protocol reports in the audit log for one of them.
 - [x] Verified in the harness: picking Opus + xhigh produced
       `model: "opus", effort: "xhigh"` in the create payload and both were
       remembered for the next open.
+
+## Iteration 57 — the Resume loop, and dead panes that hide the error
+
+- [x] **Resume loop**: relaunch always passed `--continue`, which exits at once
+      when the cwd has no conversation yet. A session that died at startup
+      therefore could never be resumed — every Resume re-died. relaunch now
+      checks `~/.claude/projects/<cwd>` for a transcript and launches fresh
+      (same repo/branch/model/effort) when there is nothing to continue.
+- [x] **Dead panes show why**: the pane records the process exit code and
+      renders the last dozen lines it wrote (ANSI-stripped) above the Resume /
+      Close buttons — the red message that used to flash and vanish is now
+      legible. Verified in the harness with a fixture that exited code 1.
+- [ ] The original startup failure for #4859 is still unidentified (no hook
+      ever fired from that worktree; `--model opus --effort xhigh` launches
+      fine in a raw pty). The exit tail will name it next time.

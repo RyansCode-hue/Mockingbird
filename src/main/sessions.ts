@@ -2,6 +2,8 @@ import * as pty from "node-pty";
 import { randomUUID } from "crypto";
 import { execFileSync } from "child_process";
 import * as os from "os";
+import * as fs from "fs";
+import * as path from "path";
 import { WebContents } from "electron";
 import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch } from "../shared/types";
 import { Store, expandHome } from "./store";
@@ -9,6 +11,24 @@ import { createWorktree } from "./worktrees";
 import { adoEnv } from "./ado";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
+
+/**
+ * Whether claude has a conversation to `--continue` in this cwd. Claude keeps
+ * transcripts under ~/.claude/projects/<cwd with separators dashed>/; a
+ * directory with no transcript means claude never reached a prompt there.
+ */
+function hasConversation(cwd: string): boolean {
+  const projects = path.join(os.homedir(), ".claude", "projects");
+  const candidates = [cwd.replace(/\//g, "-"), cwd.replace(/[^A-Za-z0-9]/g, "-")];
+  return candidates.some((enc) => {
+    const dir = path.join(projects, enc);
+    try {
+      return fs.readdirSync(dir).some((f) => f.endsWith(".jsonl"));
+    } catch {
+      return false; // no directory → no conversation
+    }
+  });
+}
 
 interface LiveSession {
   info: SessionInfo;
@@ -177,8 +197,9 @@ export class SessionManager {
       sess.buffer = (sess.buffer + data).slice(-BUFFER_MAX);
       this.wc?.send("session:data", info.id, data);
     });
-    proc.onExit(() => {
+    proc.onExit(({ exitCode }) => {
       if (this.live.get(info.id) !== sess) return;
+      info.exitCode = exitCode;
       this.setStatus(info.id, "dead");
     });
 
@@ -231,6 +252,9 @@ export class SessionManager {
     if (!old) return null;
     // create() re-adds the record; only forget the old one once it has, or a
     // failed relaunch (missing worktree, spawn error) erases the session for good
+    // --continue exits immediately when the cwd has no conversation yet (a
+    // session that died at startup); such a session relaunches fresh instead
+    const resume = !old.shell && hasConversation(old.cwd);
     const info = this.create({
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
@@ -239,7 +263,7 @@ export class SessionManager {
       useWorktree: !!old.branch,
       taskGroup: old.taskGroup ?? undefined,
       extraDirs: old.extraDirs,
-      resume: true,
+      resume,
       reuseId: old.id, // same id → persisted grid position and group still apply
       title: old.title,
       debrief: old.debrief,

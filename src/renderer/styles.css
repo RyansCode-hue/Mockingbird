@@ -341,6 +341,13 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
   gap: 10px; font: 400 10.5px var(--mono); color: var(--text-3);
 }
 .dead-body .row { display: flex; gap: 8px; }
+.dead-tail {
+  max-width: min(92%, 880px); max-height: 40%; overflow: auto; margin: 0;
+  padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--bg-pane-header); color: var(--text-2);
+  font: 400 10.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; text-align: left;
+}
+.dead-tail-none { color: var(--text-3); font-style: italic; }
 
 /* assistant pane */
 .pane.kind-assistant { border-color: rgba(79, 179, 165, .28); }
