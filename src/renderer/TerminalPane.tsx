@@ -140,6 +140,28 @@ function stripMouseEnables(e: TermEntry, data: string): string {
   });
 }
 
+/**
+ * The claude TUI's side panel (its /diff view) draws a literal "×" in the top
+ * rows of the right half of the screen. Its cell — 1-based, as mouse reports
+ * count — is how a close click can be delivered to the CLI without ever
+ * typing into the prompt.
+ */
+function findPanelClose(term: Terminal): { col: number; row: number } | null {
+  const buf = term.buffer.active;
+  const rows = Math.min(4, term.rows);
+  for (let y = 0; y < rows; y++) {
+    const line = buf.getLine(buf.viewportY + y)?.translateToString(true) ?? "";
+    const x = line.lastIndexOf("×");
+    if (x >= term.cols / 2) return { col: x + 1, row: y + 1 };
+  }
+  return null;
+}
+
+/** Press and release at a cell, in the SGR mouse encoding the CLI asked for. */
+function clickCell(id: string, cell: { col: number; row: number }): void {
+  writeSession(id, `\x1b[<0;${cell.col};${cell.row}M\x1b[<0;${cell.col};${cell.row}m`);
+}
+
 /** The only path from the UI to a pty: silently no-ops until replay is done. */
 function writeSession(id: string, data: string): void {
   if (terms.get(id)?.ready) window.mb.sessionWrite(id, data);
@@ -272,6 +294,7 @@ export function TerminalPane({
   const waiting = session.status === "waiting";
   const [editTitle, setEditTitle] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [panelClose, setPanelClose] = useState<{ col: number; row: number } | null>(null);
   const [exitTail, setExitTail] = useState<string | null>(null);
   useEffect(() => {
     if (!dead) {
@@ -359,6 +382,19 @@ export function TerminalPane({
         wantsMouse: false,
         wheelAcc: 0,
       };
+      // the side panel appears and disappears with output; recheck at most
+      // twice a second so the header's "hide diff" button tracks it
+      let panelCheck: ReturnType<typeof setTimeout> | null = null;
+      term.onWriteParsed(() => {
+        if (panelCheck) return;
+        panelCheck = setTimeout(() => {
+          panelCheck = null;
+          const found = e.wantsMouse ? findPanelClose(term) : null;
+          setPanelClose((prev) =>
+            (prev?.col === found?.col && prev?.row === found?.row) ? prev : found
+          );
+        }, 500);
+      });
       term.onData((d) => {
         const now = Date.now();
         if (now - e.lastInput <= USER_INPUT_WINDOW_MS) return writeSession(session.id, d);
@@ -499,6 +535,22 @@ export function TerminalPane({
     };
     const el = holder.current;
     el?.addEventListener("paste", onPaste, true);
+    const onClick = (ev: MouseEvent) => {
+      const t = terms.get(session.id);
+      if (!t?.wantsMouse || !t.ready || t.term.hasSelection()) return;
+      const target = findPanelClose(t.term);
+      if (!target) return;
+      const screen = t.term.element?.querySelector(".xterm-screen");
+      if (!screen) return;
+      const r = screen.getBoundingClientRect();
+      const col = Math.floor(((ev.clientX - r.left) / r.width) * t.term.cols) + 1;
+      const row = Math.floor(((ev.clientY - r.top) / r.height) * t.term.rows) + 1;
+      if (Math.abs(col - target.col) <= 1 && row === target.row) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        clickCell(session.id, target);
+      }
+    };
     const onWheel = (ev: WheelEvent) => {
       stamp();
       const t = terms.get(session.id);
@@ -531,6 +583,7 @@ export function TerminalPane({
     };
     el?.addEventListener("pointerdown", onDown, true);
     el?.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    el?.addEventListener("click", onClick, true);
     window.addEventListener("pointerup", endDrag, true);
     window.addEventListener("pointercancel", endDrag, true);
     return () => {
@@ -538,6 +591,7 @@ export function TerminalPane({
       el?.removeEventListener("paste", onPaste, true);
       el?.removeEventListener("pointerdown", onDown, true);
       el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
+      el?.removeEventListener("click", onClick, true);
       window.removeEventListener("pointerup", endDrag, true);
       window.removeEventListener("pointercancel", endDrag, true);
       const t = terms.get(session.id);
@@ -645,6 +699,18 @@ export function TerminalPane({
               }}
             >
               ⟳
+            </button>
+          )}
+          {panelClose && !dead && (
+            <button
+              className="icon"
+              title="Hide the CLI's diff side panel (same as its × or /diff)"
+              onClick={(e) => {
+                e.stopPropagation();
+                clickCell(session.id, panelClose);
+              }}
+            >
+              ⊟
             </button>
           )}
           {onAddTab && !dead && (

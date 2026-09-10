@@ -1136,3 +1136,21 @@ confirmed by mouse-protocol reports in the audit log for one of them.
 - [ ] The original startup failure for #4859 is still unidentified (no hook
       ever fired from that worktree; `--model opus --effort xhigh` launches
       fine in a raw pty). The exit tail will name it next time.
+
+## Iteration 58 — hide the CLI's diff panel
+
+The white box in wide claude panes is Claude Code's own /diff side panel
+(fullscreen TUI, auto-opens when the terminal is wide). Its × never worked in
+Mockingbird because claude panes are deliberately denied the mouse protocol.
+
+- [x] Header gains ⊟ "hide diff" while a panel is showing. It locates the
+      panel's literal "×" glyph in the screen buffer and delivers a mouse
+      press/release at that cell — the CLI's own close, never a keystroke into
+      the prompt (typing /diff would submit any drafted text along with it).
+- [x] Clicking the × glyph directly works the same way.
+- [x] Presentation: the panel now renders dark — the light look was the theme
+      misdetection fixed in iteration 55; sessions started before that build
+      stay light until restarted. The panel's content is CLI-drawn text and
+      cannot be restyled beyond that.
+- [x] Verified in the harness: button appears with a panel present; click →
+      `ESC[<0;69;1M ESC[<0;69;1m` at the ×'s cell.
