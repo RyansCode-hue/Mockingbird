@@ -1154,3 +1154,21 @@ Mockingbird because claude panes are deliberately denied the mouse protocol.
       cannot be restyled beyond that.
 - [x] Verified in the harness: button appears with a panel present; click →
       `ESC[<0;69;1M ESC[<0;69;1m` at the ×'s cell.
+
+## Iteration 59 — hide-diff button missing on long-lived sessions
+
+- [x] The button gated on having seen the CLI's mouse-tracking request in the
+      pane's history; a session running for hours has scrolled that startup
+      sequence out of the 400KB replay, so wantsMouse stayed false and neither
+      the button nor wheel-scroll worked. Claude panes now start from
+      "wants the mouse" and only an explicit disable turns it off.
+- [x] Panel detection no longer requires a drawn border: the panel is a
+      background-filled box whose top row is spaces ending in the close glyph.
+      A ×-family glyph as the last character of a top-right row is enough; a
+      plain "x" additionally needs a box-drawing border on that row. Scan
+      widened to six rows.
+- [x] Verified in the harness: borderless panel, no enable sequence in history
+      → button shown, click delivered at the × cell.
+- Note: the panel still renders white in sessions started before the theme fix
+  — claude reads the terminal background once, at its own startup. Restart the
+  session (Settings → Restart all) to get the dark panel.

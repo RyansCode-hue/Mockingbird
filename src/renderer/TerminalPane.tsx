@@ -146,13 +146,25 @@ function stripMouseEnables(e: TermEntry, data: string): string {
  * count — is how a close click can be delivered to the CLI without ever
  * typing into the prompt.
  */
+// The panel is a background-filled box, so its top row is usually spaces
+// ending in the close glyph; a dedicated multiplication-sign glyph is proof
+// enough on its own, a plain "x" only alongside a drawn border.
+const PANEL_CLOSE_GLYPHS = new Set(["×", "✕", "✖", "⨯"]);
+const PANEL_BORDER_RE = /[─━╌┄┈╭┌╮┐]/;
 function findPanelClose(term: Terminal): { col: number; row: number } | null {
   const buf = term.buffer.active;
-  const rows = Math.min(4, term.rows);
+  const rows = Math.min(6, term.rows);
   for (let y = 0; y < rows; y++) {
     const line = buf.getLine(buf.viewportY + y)?.translateToString(true) ?? "";
-    const x = line.lastIndexOf("×");
-    if (x >= term.cols / 2) return { col: x + 1, row: y + 1 };
+    const trimmed = line.trimEnd();
+    if (!trimmed) continue;
+    const x = trimmed.length - 1;
+    const glyph = trimmed[x];
+    if (x < term.cols / 2) continue;
+    const right = trimmed.slice(Math.floor(term.cols / 2));
+    const isClose =
+      PANEL_CLOSE_GLYPHS.has(glyph) || ((glyph === "x" || glyph === "X") && PANEL_BORDER_RE.test(right));
+    if (isClose) return { col: x + 1, row: y + 1 };
   }
   return null;
 }
@@ -375,11 +387,14 @@ export function TerminalPane({
         lastReplyCount: 0,
         lastReplyStart: 0,
         stripMouse: !session.shell,
+        // the CLI's TUI requests mouse tracking at startup; a long-lived
+        // session's replayed history may have scrolled that request out, so
+        // claude panes start from "wants it" and only a disable turns it off
         carry: "",
         dragging: false,
         hold: null,
         holdStart: 0,
-        wantsMouse: false,
+        wantsMouse: !session.shell,
         wheelAcc: 0,
       };
       // the side panel appears and disappears with output; recheck at most
