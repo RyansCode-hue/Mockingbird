@@ -773,6 +773,33 @@ export function TerminalPane({
               <span className="v">{session.repoPath.split("/").pop()}</span>
             </div>
           )}
+          <div className="cell folder" title={session.cwd}>
+            <span className="k">Folder</span>
+            <span className="v">
+              {session.cwd.split("/").pop()}
+              <button
+                className="mini"
+                title={`Open ${session.cwd} in VS Code`}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const r = await window.mb.openInEditor(session.cwd);
+                  if (r?.error) alert(`Couldn't open VS Code: ${r.error}`);
+                }}
+              >
+                VS Code
+              </button>
+              <button
+                className="mini"
+                title={`Reveal ${session.cwd} in Finder`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.mb.revealPath(session.cwd);
+                }}
+              >
+                Finder
+              </button>
+            </span>
+          </div>
           {session.queuedCount ? (
             <div className="cell">
               <span className="k">Queued</span>

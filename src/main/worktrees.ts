@@ -1,4 +1,4 @@
-import type { WorktreeCleanupMode } from "../shared/types";
+import type { WorktreeCleanupMode, WorktreeEntry } from "../shared/types";
 import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
@@ -121,4 +121,47 @@ export function cleanupWorktree(
     /* branch may be checked out elsewhere or already gone */
   }
   return { removed: true };
+}
+
+/**
+ * Every `<repo>-worktrees/<name>` checkout beside the given repos, with enough
+ * state to decide whether it is a stray: branch, dirt, ahead/behind, age, and
+ * whether a live session currently runs in it. A folder that is not a readable
+ * git worktree is reported with `error` rather than skipped.
+ */
+export function listWorktrees(repos: { name: string; path: string }[], liveCwds: string[]): WorktreeEntry[] {
+  const out: WorktreeEntry[] = [];
+  const live = new Set(liveCwds);
+  for (const repo of repos) {
+    const wtRoot = path.join(path.dirname(repo.path), `${path.basename(repo.path)}-worktrees`);
+    let names: string[];
+    try {
+      names = fs.readdirSync(wtRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+    } catch {
+      continue; // no worktrees folder for this repo
+    }
+    for (const name of names) {
+      const wtPath = path.join(wtRoot, name);
+      let ageDays = 0;
+      try {
+        ageDays = Math.floor((Date.now() - fs.statSync(wtPath).mtimeMs) / 86_400_000);
+      } catch {
+        /* keep 0 */
+      }
+      const base = { repoPath: repo.path, repoName: repo.name, path: wtPath, name, ageDays, inUse: live.has(wtPath) };
+      try {
+        const st = worktreeState(wtPath);
+        out.push({ ...base, branch: st.branch, dirty: st.dirty, dirtyFiles: st.dirtyFiles, ahead: st.ahead, behind: st.behind });
+      } catch (err) {
+        out.push({ ...base, branch: "", dirty: false, dirtyFiles: 0, ahead: 0, behind: 0, error: err instanceof Error ? err.message.split("\n")[0] : String(err) });
+      }
+    }
+  }
+  return out.sort((a, b) => a.repoName.localeCompare(b.repoName) || b.ageDays - a.ageDays);
+}
+
+/** Remove a worktree folder (the branch is kept). */
+export function removeWorktree(repoPath: string, wtPath: string): void {
+  git(repoPath, ["worktree", "remove", "--force", wtPath]);
+  git(repoPath, ["worktree", "prune"]);
 }

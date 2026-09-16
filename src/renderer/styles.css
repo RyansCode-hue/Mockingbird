@@ -791,3 +791,22 @@ input[type=checkbox] { accent-color: var(--teal); }
   10%, 75% { opacity: 1; transform: none; }
   100% { opacity: 0; }
 }
+
+/* worktree janitor */
+.wt-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.wt-row {
+  display: grid; grid-template-columns: 110px 1fr auto auto; gap: 10px; align-items: center;
+  padding: 6px 8px; border: 1px solid var(--line-soft); border-radius: 6px; font: 400 10.5px var(--mono);
+}
+.wt-row.live { border-color: rgba(79, 179, 165, .35); }
+.wt-repo { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wt-name { color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wt-meta { color: var(--text-3); white-space: nowrap; }
+.wt-live { color: var(--teal-text); }
+/* rail: folder cell with open buttons */
+.rail .cell.folder .v { display: inline-flex; align-items: center; gap: 6px; }
+.rail .cell .mini {
+  padding: 1px 6px; border: 1px solid var(--line-btn); border-radius: 4px; background: none;
+  color: var(--text-3); font: 400 9.5px var(--mono); cursor: pointer;
+}
+.rail .cell .mini:hover { color: var(--text-1); border-color: var(--line-btn-hover); }

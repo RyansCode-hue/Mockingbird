@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
-import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches } from "../shared/types";
+import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
@@ -1796,6 +1796,7 @@ function DashboardBoard({
   const [busy, setBusy] = useState(false);
   const [attachId, setAttachId] = useState("");
   const [branchMode, setBranchMode] = useState<"new" | "existing">("new");
+  const [dashWorktree, setDashWorktree] = useState(true);
   const [branchInfo, setBranchInfo] = useState<RepoBranches | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [existingBranch, setExistingBranch] = useState("");
@@ -1978,12 +1979,14 @@ function DashboardBoard({
       repoPath,
       ticketId: String(detail.id),
       ticketTitle: ticketName || suggestTicketName(detail.title),
-      useWorktree: true,
-      ...(branchMode === "existing"
-        ? { branchName: existingBranch }
-        : baseBranch
-          ? { baseBranch }
-          : {}),
+      useWorktree: dashWorktree,
+      ...(!dashWorktree
+        ? {}
+        : branchMode === "existing"
+          ? { branchName: existingBranch }
+          : baseBranch
+            ? { baseBranch }
+            : {}),
       initialPrompt: prompt,
     });
     setBusy(false);
@@ -2197,6 +2200,14 @@ function DashboardBoard({
                     <option key={r.path} value={r.path}>{r.name}</option>
                   ))}
                 </select>
+                <div className="check-line" style={{ marginTop: 6 }}>
+                  <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
+                  <label htmlFor="dash-wt" style={{ margin: 0 }}>
+                    isolated worktree
+                    <span className="wi-note"> {dashWorktree ? "own folder + branch" : "off — repo checkout, current branch"}</span>
+                  </label>
+                </div>
+                {dashWorktree && (
                 <div className="pills" style={{ marginTop: 6 }}>
                   <button className={`pill ${branchMode === "new" ? "on" : ""}`} onClick={() => setBranchMode("new")}>
                     New branch
@@ -2208,7 +2219,8 @@ function DashboardBoard({
                     Existing branch
                   </button>
                 </div>
-                {branchMode === "new" ? (
+                )}
+                {!dashWorktree ? null : branchMode === "new" ? (
                   <>
                     <input
                       type="text"
@@ -2821,6 +2833,80 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
 }
 
 // ---- settings tab: general config (with native pickers) + the control room ----
+
+/** Settings card: every <repo>-worktrees checkout, with strays removable. */
+function WorktreeJanitor() {
+  const [list, setList] = useState<WorktreeEntry[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = async () => {
+    const r = await window.mb.listWorktrees();
+    if (r?.error) return setError(r.error);
+    setError("");
+    setList(r);
+  };
+  useEffect(() => {
+    load();
+  }, []);
+  const remove = async (w: WorktreeEntry) => {
+    const risk = w.dirty
+      ? `${w.name} has ${w.dirtyFiles} uncommitted file${w.dirtyFiles === 1 ? "" : "s"} — they will be lost. `
+      : w.ahead
+        ? `${w.name} has ${w.ahead} unpushed commit${w.ahead === 1 ? "" : "s"} on ${w.branch} (the branch is kept). `
+        : "";
+    if (!window.confirm(`${risk}Remove the worktree folder ${w.path}?`)) return;
+    setBusy(w.path);
+    const r = await window.mb.removeWorktree(w.repoPath, w.path);
+    setBusy(null);
+    if (r?.error) return setError(r.error);
+    load();
+  };
+  const strays = list?.filter((w) => !w.inUse) ?? [];
+  return (
+    <div className="set-card">
+      <h3>Worktrees</h3>
+      <label>
+        Isolated checkouts{" "}
+        <span className="wi-note">
+          one per ticket session, beside each repo in <code>&lt;repo&gt;-worktrees/</code> · {list ? `${list.length} total · ${strays.length} not in use` : "scanning…"}
+        </span>
+      </label>
+      {error && <div className="err">{error}</div>}
+      {list && list.length === 0 && <div className="wi-note">none — sessions are running in repo checkouts</div>}
+      {list && list.length > 0 && (
+        <div className="wt-list">
+          {list.map((w) => (
+            <div key={w.path} className={`wt-row ${w.inUse ? "live" : ""}`}>
+              <span className="wt-repo">{w.repoName}</span>
+              <span className="wt-name" title={w.path}>{w.name}</span>
+              <span className="wt-meta">
+                {w.error
+                  ? `⚠ ${w.error}`
+                  : [
+                      w.branch,
+                      w.dirty ? `${w.dirtyFiles} dirty` : "clean",
+                      w.ahead ? `↑${w.ahead}` : null,
+                      w.behind ? `↓${w.behind}` : null,
+                      w.ageDays ? `${w.ageDays}d` : "today",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+              </span>
+              {w.inUse ? (
+                <span className="wt-live">in use</span>
+              ) : (
+                <button className="outline" disabled={busy === w.path} onClick={() => remove(w)}>
+                  {busy === w.path ? "removing…" : "Remove"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsView({
   sessions,
   theme,
@@ -2986,6 +3072,8 @@ function SettingsView({
           <button className="primary" onClick={save}>Save</button>
         </div>
       </div>
+
+      <WorktreeJanitor />
 
       <div className="set-card">
         <h3>Connectors</h3>
@@ -3176,7 +3264,15 @@ function NewSessionModal({
   const effTop = grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
   const effSub = wsSel === "__new" ? sanitizeSegment(wsNew) : wsSel;
   const group = effTop ? (effSub ? `${effTop}/${effSub}` : effTop) : "";
-  const [useWorktree, setUseWorktree] = useState(true);
+  // Isolated worktree only earns its keep with a ticket (branch-per-ticket) or
+  // parallel sessions; solo work belongs in the real checkout. An explicit
+  // choice is remembered; otherwise picking a ticket turns it on.
+  const wtPref = loadLS<boolean | null>("mb.newWorktree", null);
+  const [useWorktree, setUseWorktreeRaw] = useState<boolean>(wtPref ?? false);
+  const setUseWorktree = (v: boolean) => {
+    setUseWorktreeRaw(v);
+    localStorage.setItem("mb.newWorktree", JSON.stringify(v));
+  };
   const [error, setError] = useState("");
   // ADO ticket picker — same flow as the dashboard's Start session
   const [allTickets, setAllTickets] = useState<AdoWorkItem[]>([]);
@@ -3248,6 +3344,7 @@ function NewSessionModal({
     if (t) {
       setTicketId(String(t.id));
       setTicketTitle(suggestTicketName(t.title));
+      if (wtPref === null) setUseWorktreeRaw(true); // ticket → its own branch, unless told otherwise
     }
   };
 
@@ -3446,7 +3543,10 @@ function NewSessionModal({
         </div>
         <div className="check-line">
           <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} id="wt" />
-          <label htmlFor="wt" style={{ margin: 0 }}>git worktree{branch ? ` → ${branch}` : ""}</label>
+          <label htmlFor="wt" style={{ margin: 0 }}>
+            isolated git worktree{branch ? ` → ${branch}` : ""}
+            <span className="wi-note"> {useWorktree ? "own folder + branch; safe for parallel sessions" : "off — works in the repo checkout on its current branch"}</span>
+          </label>
         </div>
         {useWorktree && sel && branchInfo && branchInfo.branches.length > 0 && (
           <select

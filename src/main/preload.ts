@@ -57,6 +57,10 @@ const api = {
   // repos & worktrees
   listRepos: () => ipcRenderer.invoke("repos:list"),
   worktreeState: (wtPath: string) => ipcRenderer.invoke("worktree:state", wtPath),
+  listWorktrees: () => ipcRenderer.invoke("worktrees:list"),
+  removeWorktree: (repo: string, wtPath: string) => ipcRenderer.invoke("worktrees:remove", repo, wtPath),
+  revealPath: (p: string) => ipcRenderer.invoke("path:reveal", p),
+  openInEditor: (p: string) => ipcRenderer.invoke("path:openEditor", p),
   worktreeCleanup: (repo: string, wtPath: string, mode: WorktreeCleanupMode) =>
     ipcRenderer.invoke("worktree:cleanup", repo, wtPath, mode),
   repoBranches: (repoPath: string) => ipcRenderer.invoke("repo:branches", repoPath),

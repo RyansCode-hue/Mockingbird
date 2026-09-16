@@ -33,6 +33,22 @@ export interface WorktreeStateInfo {
 
 export type WorktreeCleanupMode = "keep" | "push" | "discard";
 
+/** One entry of the worktree janitor: a `<repo>-worktrees/<name>` checkout. */
+export interface WorktreeEntry {
+  repoPath: string;
+  repoName: string;
+  path: string;
+  name: string;
+  branch: string;
+  dirty: boolean;
+  dirtyFiles: number;
+  ahead: number;
+  behind: number;
+  ageDays: number;
+  inUse: boolean; // a live session runs here
+  error?: string; // not a readable git worktree
+}
+
 // ---- group paths -----------------------------------------------------------
 // A session's taskGroup is a path: "5038" is a group, "5038/backend" is the
 // "backend" workspace inside group 5038. Every producer and consumer of that

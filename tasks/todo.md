@@ -1183,3 +1183,22 @@ Mockingbird because claude panes are deliberately denied the mouse protocol.
       (key auto-repeat + output storm left the modal mounted, zero remounts),
       so this is the probable cause rather than a proven one. Blur removed;
       dim kept.
+
+## Iteration 61 — worktrees only when they earn it
+
+- [x] New Session: the isolated-worktree checkbox now defaults **off**; picking
+      a ticket turns it on (branch-per-ticket is where the isolation pays). An
+      explicit choice is remembered and wins over the ticket rule. Off = the
+      session runs in the repo checkout on its current branch.
+- [x] Dashboard "start session from ticket" gets the same checkbox (default on);
+      off hides the branch controls and runs in the checkout.
+- [x] Pane rail shows the session's folder with **VS Code** and **Finder**
+      buttons (`open -a "Visual Studio Code"` / `shell.showItemInFolder`); an
+      open failure is reported, not swallowed.
+- [x] Settings → **Worktrees**: every `<repo>-worktrees/*` checkout with branch,
+      dirt, ahead/behind, age, and whether a live session runs in it; strays get
+      a Remove button (confirm names what would be lost; the branch is kept;
+      removal refuses while a live session is inside).
+- [x] Verified in the harness: modal default off → on after ticket pick; rail
+      folder cell with both buttons; janitor lists live + stray rows with
+      Remove only on the stray.

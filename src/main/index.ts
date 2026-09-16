@@ -1,12 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, shell } from "electron";
-import { execFileSync } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Store, expandHome } from "./store";
 import { SessionManager } from "./sessions";
 import { indexRepos } from "./repos";
-import { worktreeState, cleanupWorktree, listBranches } from "./worktrees";
+import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree } from "./worktrees";
 import { installHooks, hooksInstalled, watchEvents } from "./hooks";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
@@ -238,6 +238,36 @@ ipcMain.handle("repos:list", () => safe("repos:list", () => indexRepos(store.set
 ipcMain.handle("worktree:state", (_e, wtPath) => safe("worktree:state", () => worktreeState(wtPath))());
 ipcMain.handle("worktree:cleanup", (_e, repo, wtPath, mode) =>
   safe("worktree:cleanup", () => cleanupWorktree(repo, wtPath, mode))()
+);
+ipcMain.handle("worktrees:list", () =>
+  safe("worktrees:list", () =>
+    listWorktrees(
+      indexRepos(store.settings.repoRoots),
+      sessions.list().map((s) => s.cwd)
+    )
+  )()
+);
+ipcMain.handle("worktrees:remove", (_e, repo, wtPath) =>
+  safe("worktrees:remove", () => {
+    if (sessions.list().some((s) => s.cwd === wtPath && s.status !== "dead")) {
+      throw new Error("a live session is running in that worktree — close it first");
+    }
+    removeWorktree(repo, wtPath);
+    return true;
+  })()
+);
+ipcMain.handle("path:reveal", (_e, p) => {
+  shell.showItemInFolder(expandHome(p));
+  return true;
+});
+ipcMain.handle("path:openEditor", (_e, p) =>
+  safeAsync("path:openEditor", () =>
+    new Promise<boolean>((resolve, reject) => {
+      // `open -a` needs no `code` shim on PATH; failure (VS Code not installed)
+      // surfaces to the caller instead of vanishing
+      execFile("open", ["-a", "Visual Studio Code", expandHome(p)], (err) => (err ? reject(err) : resolve(true)));
+    })
+  )()
 );
 ipcMain.handle("repo:branches", (_e, repoPath) =>
   safe("repo:branches", () => listBranches(expandHome(repoPath)))()
