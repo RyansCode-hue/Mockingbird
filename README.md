@@ -22,7 +22,7 @@ toolchain.
 
 ## What it does (v1)
 
-- **+ Session** — fuzzy-pick a repo from `~/Code` / `~/Personal Projects`, then either **pick one of your ADO tickets from the dropdown** (auto-fills ticket #, name, and offers to send the ticket title + description to Claude as its first prompt) or enter a ticket manually (# and name → branch `5038-filterOrgsByFoundation`). New branches are cut from a freshly fetched `origin/dev`-style base (changeable). Mockingbird creates the git worktree and launches `claude` in it; multiple sessions per ticket group together in the sidebar.
+- **+ Session** — fuzzy-pick a repo from `~/Code` / `~/Personal Projects`, then either **pick one of your ADO tickets from the dropdown** (auto-fills ticket #, name, and offers to send the ticket title + description to Claude as its first prompt) or enter a ticket manually (# and name → branch `5038-filterOrgsByFoundation`). New branches are cut from a freshly fetched `origin/dev`-style base (changeable). Mockingbird checks the branch out in the repo itself and launches `claude` there (tick **isolated worktree** only to run a second session on the same repo — it gets a separate `<repo>-worktrees/` folder); multiple sessions per ticket group together in the sidebar.
 - **Tabs** — the top bar is always visible with four tabs: **Sessions** (the grid), **Dashboard** (the ADO board), **WorkTracker** (debriefs), and **Settings** (app config with native folder pickers, a light/dark theme switch, plus the CLAUDE.md editor and Broadcast panel). New session is always one click away.
 - **WorkTracker tab** — the morning brief and 4pm wrap-up run here as their own panes, not in the coding grid (the tab shows an amber dot when a debrief is waiting on you). The wrap-up reads `session-digests/<date>.md`, written at kick-off from every live session's metadata and ANSI-stripped terminal tail — a passive snapshot from memory, so no session is messaged or interrupted. Both debriefs also get `session-digests/ado-snapshot-<date>.md` — your open work items' live states, descriptions, and recent comments pulled at kickoff via the app's own PAT — so ticket truth doesn't depend on Claude Code having an ADO connector (PR review votes still do). Debrief panes are ephemeral and don't survive restarts.
 - **Grid** — click sessions in the sidebar to show/hide them in the grid. The grid grows with the number of open sessions — no filler tiles. **Resize a pane like a window from its own edges**: right edge for width, bottom edge for height, corner grip for both — neighboring panes absorb the change so everything stays grid-aligned (double-click a handle to even out; sizes persist). ⛶ fullscreens a pane (⌘E / esc); – hides a pane (session keeps running). **The grid shows one group at a time**: click a group header to switch to that group (collapsing the others — ▸ toggles one individually, with a short slide on the swap), toggle rows within the group to hide/show individual panes, and clicking a session from another group switches the grid over to it. **Each group remembers which of its sessions were visible** — switching back restores that subset; click the active group's header again to re-show all of it.
@@ -103,6 +103,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
   comms", "done". Code review stages carry the security + clean-code
   checklist. Open design question: where stage state lives — ADO custom
   field, ticket comment convention, or the WorkTracker folder.
+- **Changes panel — VS Code's Source Control view, native.** A sidebar (or
+  per-pane toggle) listing the focused session's changed files vs. its base
+  branch, with a real syntax-highlighted diff viewer, live via a worktree
+  watcher, an "N files · +120 −8" badge on the pane, Open-in-VS-Code per file,
+  and stage → commit → push → "create PR to dev" buttons — the review surface
+  the ticket pipeline needs before promoting. Replaces the CLI's cramped
+  text-mode /diff panel (which the ⊟ button already hides).
 - **Inbox mode.** A queue view of every session blocked on you, oldest first,
   each showing its last lines and the actual question — with an inline reply
   box that pastes into the pty, then advances to the next. The full version of

@@ -1202,3 +1202,25 @@ Mockingbird because claude panes are deliberately denied the mouse protocol.
 - [x] Verified in the harness: modal default off → on after ticket pick; rail
       folder cell with both buttons; janitor lists live + stray rows with
       Remove only on the stray.
+
+## Iteration 62 — branches in the checkout; worktrees opt-in only
+
+- [x] Ticket sessions now create their branch **in the repo checkout itself**
+      (`git switch -c <ticket> origin/<base>` after a fetch; existing local or
+      origin branches are switched to / tracked). No worktree folder, so VS
+      Code launch/debug configs on the repo keep working.
+- [x] Refuses loudly instead of surprising you: uncommitted changes on the
+      current branch ("commit or stash…"), or another live session already on
+      a different branch in that checkout ("close it, or tick isolated
+      worktree") — one branch per checkout is the constraint worktrees existed
+      for.
+- [x] "Isolated worktree" is a plain opt-in checkbox (New Session + Dashboard),
+      default off, remembered. Relaunch of an in-checkout session runs where it
+      was without switching branches; worktree sessions relaunch as worktrees.
+- [x] Roadmap: Changes panel (native Source Control view + diff viewer + PR
+      buttons) added under Next.
+- [x] Verified: real scratch repo with an origin — new branch lands on
+      origin/dev with no `-worktrees` dir; dirty checkout refused; occupied
+      checkout refused; existing branch switches. Harness: ticket pick leaves
+      worktree off, base-branch select shown, payload `useWorktree:false,
+      baseBranch:"dev"`.

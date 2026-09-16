@@ -7,7 +7,7 @@ import * as path from "path";
 import { WebContents } from "electron";
 import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch } from "../shared/types";
 import { Store, expandHome } from "./store";
-import { createWorktree } from "./worktrees";
+import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
@@ -96,12 +96,21 @@ export class SessionManager {
     let branch: string | null = null;
     let repoPath = req.repoPath ? expandHome(req.repoPath) : null;
 
+    const wanted =
+      req.branchName?.trim() ||
+      (req.ticketId && req.ticketTitle ? slugBranch(req.ticketId, req.ticketTitle) : null);
     if (repoPath && req.useWorktree) {
-      branch =
-        req.branchName?.trim() ||
-        (req.ticketId && req.ticketTitle ? slugBranch(req.ticketId, req.ticketTitle) : null) ||
-        `mb-${Date.now().toString(36)}`;
+      branch = wanted || `mb-${Date.now().toString(36)}`;
       cwd = createWorktree(repoPath, branch, req.baseBranch);
+    } else if (repoPath && wanted) {
+      // ticket branch in the checkout itself — one branch per checkout, so
+      // another live session there on a different branch blocks this
+      const other = [...this.live.values()].find(
+        (s) => s.info.cwd === repoPath && s.info.status !== "dead" && s.info.branch && s.info.branch !== wanted
+      );
+      checkoutBranch(repoPath, wanted, req.baseBranch, other?.info.branch ?? undefined);
+      branch = wanted;
+      cwd = repoPath;
     } else {
       // repo-less: claude sessions run in the WorkTracker (assistant), plain
       // terminals just open at home
@@ -259,8 +268,11 @@ export class SessionManager {
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
       ticketTitle: old.ticketTitle ?? undefined,
-      branchName: old.branch ?? undefined,
-      useWorktree: !!old.branch,
+      // a worktree session has cwd ≠ repoPath and is recreated as one; an
+      // in-checkout session just runs where it was, on whatever branch is out
+      ...(old.branch && old.repoPath && old.cwd !== expandHome(old.repoPath)
+        ? { branchName: old.branch, useWorktree: true }
+        : { useWorktree: false }),
       taskGroup: old.taskGroup ?? undefined,
       extraDirs: old.extraDirs,
       resume,

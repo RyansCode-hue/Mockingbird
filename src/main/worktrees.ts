@@ -165,3 +165,53 @@ export function removeWorktree(repoPath: string, wtPath: string): void {
   git(repoPath, ["worktree", "remove", "--force", wtPath]);
   git(repoPath, ["worktree", "prune"]);
 }
+
+/**
+ * Check a branch out in the repo checkout itself (no worktree), so VS Code
+ * debug/launch configs on the repo just work. Refuses loudly when the checkout
+ * cannot safely switch: uncommitted changes, or another live session already
+ * on a different branch there (a checkout has one branch at a time — that is
+ * the one thing worktrees exist to solve).
+ *  - branch exists locally → switch to it
+ *  - branch exists on origin only → fetch and track it
+ *  - new branch → fetch origin/<base> (dev/uat) and branch off it; falls back
+ *    to the local base if the fetch fails
+ */
+export function checkoutBranch(repoPath: string, branch: string, baseBranch?: string, occupiedBy?: string): void {
+  if (occupiedBy) {
+    throw new Error(
+      `${path.basename(repoPath)} is already checked out on ${occupiedBy} by a running session. ` +
+        `Close that session, or tick "isolated worktree" to work on both at once.`
+    );
+  }
+  const current = git(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (current === branch) return;
+  const dirty = git(repoPath, ["status", "--porcelain"]);
+  if (dirty) {
+    const n = dirty.split("\n").length;
+    throw new Error(
+      `${path.basename(repoPath)} has ${n} uncommitted change${n === 1 ? "" : "s"} on ${current}. ` +
+        `Commit or stash before switching to ${branch}, or tick "isolated worktree".`
+    );
+  }
+  const hasLocal = git(repoPath, ["branch", "--list", branch]).length > 0;
+  const hasRemote = git(repoPath, ["branch", "-r", "--list", `origin/${branch}`]).length > 0;
+  if (hasLocal) {
+    git(repoPath, ["switch", branch]);
+  } else if (hasRemote) {
+    git(repoPath, ["fetch", "origin", branch]);
+    git(repoPath, ["switch", "--track", "-c", branch, `origin/${branch}`]);
+  } else if (baseBranch) {
+    let base = `origin/${baseBranch}`;
+    try {
+      git(repoPath, ["fetch", "origin", baseBranch]);
+    } catch (err) {
+      if (git(repoPath, ["branch", "--list", baseBranch]).length === 0) throw err;
+      console.error(`[worktrees] fetch origin/${baseBranch} failed, branching off local ${baseBranch}:`, err);
+      base = baseBranch;
+    }
+    git(repoPath, ["switch", "-c", branch, base]);
+  } else {
+    git(repoPath, ["switch", "-c", branch]);
+  }
+}

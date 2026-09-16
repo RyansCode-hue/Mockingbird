@@ -1796,7 +1796,7 @@ function DashboardBoard({
   const [busy, setBusy] = useState(false);
   const [attachId, setAttachId] = useState("");
   const [branchMode, setBranchMode] = useState<"new" | "existing">("new");
-  const [dashWorktree, setDashWorktree] = useState(true);
+  const [dashWorktree, setDashWorktree] = useState(false);
   const [branchInfo, setBranchInfo] = useState<RepoBranches | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [existingBranch, setExistingBranch] = useState("");
@@ -1980,13 +1980,11 @@ function DashboardBoard({
       ticketId: String(detail.id),
       ticketTitle: ticketName || suggestTicketName(detail.title),
       useWorktree: dashWorktree,
-      ...(!dashWorktree
-        ? {}
-        : branchMode === "existing"
-          ? { branchName: existingBranch }
-          : baseBranch
-            ? { baseBranch }
-            : {}),
+      ...(branchMode === "existing"
+        ? { branchName: existingBranch }
+        : baseBranch
+          ? { baseBranch }
+          : {}),
       initialPrompt: prompt,
     });
     setBusy(false);
@@ -2204,10 +2202,9 @@ function DashboardBoard({
                   <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
                   <label htmlFor="dash-wt" style={{ margin: 0 }}>
                     isolated worktree
-                    <span className="wi-note"> {dashWorktree ? "own folder + branch" : "off — repo checkout, current branch"}</span>
+                    <span className="wi-note"> {dashWorktree ? "separate folder — for a second session on this repo" : "off — branch is checked out in the repo itself"}</span>
                   </label>
                 </div>
-                {dashWorktree && (
                 <div className="pills" style={{ marginTop: 6 }}>
                   <button className={`pill ${branchMode === "new" ? "on" : ""}`} onClick={() => setBranchMode("new")}>
                     New branch
@@ -2219,8 +2216,7 @@ function DashboardBoard({
                     Existing branch
                   </button>
                 </div>
-                )}
-                {!dashWorktree ? null : branchMode === "new" ? (
+                {branchMode === "new" ? (
                   <>
                     <input
                       type="text"
@@ -3264,9 +3260,9 @@ function NewSessionModal({
   const effTop = grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
   const effSub = wsSel === "__new" ? sanitizeSegment(wsNew) : wsSel;
   const group = effTop ? (effSub ? `${effTop}/${effSub}` : effTop) : "";
-  // Isolated worktree only earns its keep with a ticket (branch-per-ticket) or
-  // parallel sessions; solo work belongs in the real checkout. An explicit
-  // choice is remembered; otherwise picking a ticket turns it on.
+  // Ticket sessions get a branch in the repo checkout itself (VS Code debug
+  // configs keep working). An isolated worktree is opt-in — only for running
+  // two sessions on one repo at once. The choice is remembered.
   const wtPref = loadLS<boolean | null>("mb.newWorktree", null);
   const [useWorktree, setUseWorktreeRaw] = useState<boolean>(wtPref ?? false);
   const setUseWorktree = (v: boolean) => {
@@ -3344,7 +3340,6 @@ function NewSessionModal({
     if (t) {
       setTicketId(String(t.id));
       setTicketTitle(suggestTicketName(t.title));
-      if (wtPref === null) setUseWorktreeRaw(true); // ticket → its own branch, unless told otherwise
     }
   };
 
@@ -3359,7 +3354,7 @@ function NewSessionModal({
       ticketTitle: ticketTitle || undefined,
       taskGroup: group || undefined,
       useWorktree: useWorktree && !!sel,
-      ...(useWorktree && sel && baseBranch ? { baseBranch } : {}),
+      ...(sel && baseBranch ? { baseBranch } : {}),
       shell: launch === "shell",
       ...(launch === "claude" && effModel ? { model: effModel } : {}),
       ...(launch === "claude" && effort ? { effort } : {}),
@@ -3544,11 +3539,18 @@ function NewSessionModal({
         <div className="check-line">
           <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} id="wt" />
           <label htmlFor="wt" style={{ margin: 0 }}>
-            isolated git worktree{branch ? ` → ${branch}` : ""}
-            <span className="wi-note"> {useWorktree ? "own folder + branch; safe for parallel sessions" : "off — works in the repo checkout on its current branch"}</span>
+            isolated worktree
+            <span className="wi-note">
+              {" "}
+              {useWorktree
+                ? `separate folder${branch ? ` on ${branch}` : ""} — for a second session on this repo`
+                : branch
+                  ? `off — switches the repo checkout to ${branch}`
+                  : "off — runs in the repo checkout on its current branch"}
+            </span>
           </label>
         </div>
-        {useWorktree && sel && branchInfo && branchInfo.branches.length > 0 && (
+        {sel && branch && branchInfo && branchInfo.branches.length > 0 && (
           <select
             value={baseBranch}
             onChange={(e) => setBaseBranch(e.target.value)}
