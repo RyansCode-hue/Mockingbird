@@ -1172,3 +1172,14 @@ Mockingbird because claude panes are deliberately denied the mouse protocol.
 - Note: the panel still renders white in sessions started before the theme fix
   — claude reads the terminal background once, at its own startup. Restart the
   session (Settings → Restart all) to get the dark panel.
+
+## Iteration 60 — New Session modal flickering
+
+- [x] Both full-screen overlays (`.modal-back`, the popover backdrop) used
+      `backdrop-filter: blur()`. Chromium re-filters the backdrop on every
+      repaint beneath it, and beneath the modal sit live terminals repainting
+      continuously — on some GPU paths that thrashes into on/off flashing that
+      reads as the modal opening and closing. Not reproducible in the harness
+      (key auto-repeat + output storm left the modal mounted, zero remounts),
+      so this is the probable cause rather than a proven one. Blur removed;
+      dim kept.

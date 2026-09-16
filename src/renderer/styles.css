@@ -411,8 +411,8 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 
 /* ---- command palette (1c) ---- */
 .scrim {
-  position: fixed; inset: 0; background: rgba(12, 11, 10, .55);
-  backdrop-filter: blur(1.5px); z-index: 60;
+  position: fixed; inset: 0; background: rgba(12, 11, 10, .62);
+  z-index: 60;
 }
 .palette {
   position: fixed; top: 44px; left: 50%; transform: translateX(-50%); width: 520px;
@@ -451,8 +451,8 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 
 /* ---- dialogs & modals ---- */
 .modal-back {
-  position: fixed; inset: 0; background: rgba(12, 11, 10, .55);
-  backdrop-filter: blur(1.5px);
+  position: fixed; inset: 0; background: rgba(12, 11, 10, .62);
+  
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
 .modal {
