@@ -46,6 +46,7 @@ export interface WorktreeEntry {
   behind: number;
   ageDays: number;
   inUse: boolean; // a live session runs here
+  legacy: boolean; // still in the old <repo>-worktrees/ layout
   error?: string; // not a readable git worktree
 }
 

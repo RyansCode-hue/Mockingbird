@@ -6,7 +6,7 @@ import * as path from "path";
 import { Store, expandHome } from "./store";
 import { SessionManager } from "./sessions";
 import { indexRepos } from "./repos";
-import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree } from "./worktrees";
+import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree } from "./worktrees";
 import { installHooks, hooksInstalled, watchEvents } from "./hooks";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
@@ -254,6 +254,25 @@ ipcMain.handle("worktrees:remove", (_e, repo, wtPath) =>
     }
     removeWorktree(repo, wtPath);
     return true;
+  })()
+);
+ipcMain.handle("worktrees:migrate", (_e, repo, wtPath) =>
+  safe("worktrees:migrate", () => {
+    if (sessions.list().some((s) => s.cwd === wtPath && s.status !== "dead")) {
+      throw new Error("a live session is running in that worktree — close it first");
+    }
+    const dest = migrateWorktree(repo, wtPath);
+    // previous sessions must follow their checkout, or resuming them would
+    // try to re-add a branch that is already checked out at the new path
+    let touched = false;
+    for (const rec of store.state.sessions) {
+      if (rec.cwd === wtPath) {
+        rec.cwd = dest;
+        touched = true;
+      }
+    }
+    if (touched) store.save();
+    return dest;
   })()
 );
 ipcMain.handle("path:reveal", (_e, p) => {

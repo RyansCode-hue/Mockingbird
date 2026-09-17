@@ -803,6 +803,7 @@ input[type=checkbox] { accent-color: var(--teal); }
 .wt-name { color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wt-meta { color: var(--text-3); white-space: nowrap; }
 .wt-live { color: var(--teal-text); }
+.wt-legacy { color: var(--text-3); font-size: 9.5px; font-style: italic; }
 /* rail: folder cell with open buttons */
 .rail .cell.folder .v { display: inline-flex; align-items: center; gap: 6px; }
 .rail .cell .mini {

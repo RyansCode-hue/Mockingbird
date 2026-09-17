@@ -1224,3 +1224,21 @@ Mockingbird because claude panes are deliberately denied the mouse protocol.
       checkout refused; existing branch switches. Harness: ticket pick leaves
       worktree off, base-branch select shown, payload `useWorktree:false,
       baseBranch:"dev"`.
+
+## Iteration 63 — one worktrees/ folder, a subfolder per repo
+
+- [x] Worktrees now live at `<parent>/worktrees/<repo>/<branch>` (e.g.
+      `~/Code/worktrees/backoffice/5038-…`) instead of a `<repo>-worktrees`
+      folder beside every repo. The old layout is still read, never written:
+      a branch already checked out there is reused rather than re-added.
+- [x] Settings → Worktrees tags old-layout entries and offers "Move N
+      old-layout worktrees into worktrees/" (`git worktree move`; in-use ones
+      skipped; emptied `<repo>-worktrees` folders removed; previous-session
+      records follow their checkout so Resume still works).
+- [x] Ticket sessions default back to an isolated worktree (the in-checkout
+      branch mode stays as the unticked option; the choice is remembered).
+      Repo scanner skips `worktrees/`.
+- [x] Verified on a real scratch repo: new worktree lands in
+      worktrees/backoffice/, legacy branch reused, migration moves it, git
+      still lists it, branch intact, old folder gone. Harness: old-layout tag +
+      Move button fire the migration.

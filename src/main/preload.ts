@@ -59,6 +59,7 @@ const api = {
   worktreeState: (wtPath: string) => ipcRenderer.invoke("worktree:state", wtPath),
   listWorktrees: () => ipcRenderer.invoke("worktrees:list"),
   removeWorktree: (repo: string, wtPath: string) => ipcRenderer.invoke("worktrees:remove", repo, wtPath),
+  migrateWorktree: (repo: string, wtPath: string) => ipcRenderer.invoke("worktrees:migrate", repo, wtPath),
   revealPath: (p: string) => ipcRenderer.invoke("path:reveal", p),
   openInEditor: (p: string) => ipcRenderer.invoke("path:openEditor", p),
   worktreeCleanup: (repo: string, wtPath: string, mode: WorktreeCleanupMode) =>

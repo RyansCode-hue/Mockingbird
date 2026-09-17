@@ -1796,7 +1796,7 @@ function DashboardBoard({
   const [busy, setBusy] = useState(false);
   const [attachId, setAttachId] = useState("");
   const [branchMode, setBranchMode] = useState<"new" | "existing">("new");
-  const [dashWorktree, setDashWorktree] = useState(false);
+  const [dashWorktree, setDashWorktree] = useState(true);
   const [branchInfo, setBranchInfo] = useState<RepoBranches | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [existingBranch, setExistingBranch] = useState("");
@@ -2202,7 +2202,7 @@ function DashboardBoard({
                   <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
                   <label htmlFor="dash-wt" style={{ margin: 0 }}>
                     isolated worktree
-                    <span className="wi-note"> {dashWorktree ? "separate folder — for a second session on this repo" : "off — branch is checked out in the repo itself"}</span>
+                    <span className="wi-note"> {dashWorktree ? "own folder under worktrees/<repo>/" : "off — branch is checked out in the repo itself"}</span>
                   </label>
                 </div>
                 <div className="pills" style={{ marginTop: 6 }}>
@@ -2858,15 +2858,35 @@ function WorktreeJanitor() {
     load();
   };
   const strays = list?.filter((w) => !w.inUse) ?? [];
+  const movable = list?.filter((w) => w.legacy && !w.inUse && !w.error) ?? [];
+  const migrate = async (ws: WorktreeEntry[]) => {
+    setBusy("migrate");
+    const failures: string[] = [];
+    for (const w of ws) {
+      const r = await window.mb.migrateWorktree(w.repoPath, w.path);
+      if (r?.error) failures.push(`${w.name}: ${r.error}`);
+    }
+    setBusy(null);
+    setError(failures.join(" · "));
+    load();
+  };
   return (
     <div className="set-card">
       <h3>Worktrees</h3>
       <label>
         Isolated checkouts{" "}
         <span className="wi-note">
-          one per ticket session, beside each repo in <code>&lt;repo&gt;-worktrees/</code> · {list ? `${list.length} total · ${strays.length} not in use` : "scanning…"}
+          one folder beside your repos: <code>worktrees/&lt;repo&gt;/&lt;branch&gt;</code> · {list ? `${list.length} total · ${strays.length} not in use` : "scanning…"}
         </span>
       </label>
+      {movable.length > 0 && (
+        <div className="row" style={{ justifyContent: "flex-start", gap: 8, marginTop: 4 }}>
+          <button className="outline" disabled={busy === "migrate"} onClick={() => migrate(movable)}>
+            {busy === "migrate" ? "moving…" : `Move ${movable.length} old-layout worktree${movable.length === 1 ? "" : "s"} into worktrees/`}
+          </button>
+          <span className="wi-note">from <code>&lt;repo&gt;-worktrees/</code> · in-use ones are skipped</span>
+        </div>
+      )}
       {error && <div className="err">{error}</div>}
       {list && list.length === 0 && <div className="wi-note">none — sessions are running in repo checkouts</div>}
       {list && list.length > 0 && (
@@ -2874,7 +2894,10 @@ function WorktreeJanitor() {
           {list.map((w) => (
             <div key={w.path} className={`wt-row ${w.inUse ? "live" : ""}`}>
               <span className="wt-repo">{w.repoName}</span>
-              <span className="wt-name" title={w.path}>{w.name}</span>
+              <span className="wt-name" title={w.path}>
+                {w.name}
+                {w.legacy && <span className="wt-legacy"> old layout</span>}
+              </span>
               <span className="wt-meta">
                 {w.error
                   ? `⚠ ${w.error}`
@@ -3260,9 +3283,9 @@ function NewSessionModal({
   const effTop = grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
   const effSub = wsSel === "__new" ? sanitizeSegment(wsNew) : wsSel;
   const group = effTop ? (effSub ? `${effTop}/${effSub}` : effTop) : "";
-  // Ticket sessions get a branch in the repo checkout itself (VS Code debug
-  // configs keep working). An isolated worktree is opt-in — only for running
-  // two sessions on one repo at once. The choice is remembered.
+  // Picking a ticket defaults to an isolated worktree under
+  // <parent>/worktrees/<repo>/<branch>; unticked, the branch is checked out in
+  // the repo itself. An explicit choice is remembered and wins.
   const wtPref = loadLS<boolean | null>("mb.newWorktree", null);
   const [useWorktree, setUseWorktreeRaw] = useState<boolean>(wtPref ?? false);
   const setUseWorktree = (v: boolean) => {
@@ -3543,7 +3566,7 @@ function NewSessionModal({
             <span className="wi-note">
               {" "}
               {useWorktree
-                ? `separate folder${branch ? ` on ${branch}` : ""} — for a second session on this repo`
+                ? `worktrees/${sel?.name ?? "<repo>"}/${branch || "<branch>"} — its own folder, safe beside other sessions`
                 : branch
                   ? `off — switches the repo checkout to ${branch}`
                   : "off — runs in the repo checkout on its current branch"}

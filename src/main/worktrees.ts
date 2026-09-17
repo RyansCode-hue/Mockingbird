@@ -18,9 +18,21 @@ function git(repo: string, args: string[]): string {
  *    (falls back to the local base if the fetch fails, e.g. offline)
  *  - new branch, no base → branch off the repo's current HEAD (legacy behavior)
  */
+/** Worktrees live in one folder beside the repos: `<parent>/worktrees/<repo>/<branch>`. */
+export function worktreeRoot(repoPath: string): string {
+  return path.join(path.dirname(repoPath), "worktrees", path.basename(repoPath));
+}
+/** The earlier layout, `<parent>/<repo>-worktrees/<branch>` — still read, never written. */
+export function legacyWorktreeRoot(repoPath: string): string {
+  return path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`);
+}
+
 export function createWorktree(repoPath: string, branch: string, baseBranch?: string): string {
-  const parent = path.dirname(repoPath);
-  const wtRoot = path.join(parent, `${path.basename(repoPath)}-worktrees`);
+  // a branch can only be checked out once: if the old layout already holds it,
+  // keep using that checkout rather than failing on `worktree add`
+  const legacy = path.join(legacyWorktreeRoot(repoPath), branch);
+  if (fs.existsSync(legacy)) return legacy;
+  const wtRoot = worktreeRoot(repoPath);
   fs.mkdirSync(wtRoot, { recursive: true });
   const wtPath = path.join(wtRoot, branch);
   if (fs.existsSync(wtPath)) return wtPath; // reuse (multiple sessions per task)
@@ -133,12 +145,12 @@ export function listWorktrees(repos: { name: string; path: string }[], liveCwds:
   const out: WorktreeEntry[] = [];
   const live = new Set(liveCwds);
   for (const repo of repos) {
-    const wtRoot = path.join(path.dirname(repo.path), `${path.basename(repo.path)}-worktrees`);
+   for (const [wtRoot, legacy] of [[worktreeRoot(repo.path), false], [legacyWorktreeRoot(repo.path), true]] as const) {
     let names: string[];
     try {
       names = fs.readdirSync(wtRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
     } catch {
-      continue; // no worktrees folder for this repo
+      continue; // this layout has no folder for the repo
     }
     for (const name of names) {
       const wtPath = path.join(wtRoot, name);
@@ -148,7 +160,7 @@ export function listWorktrees(repos: { name: string; path: string }[], liveCwds:
       } catch {
         /* keep 0 */
       }
-      const base = { repoPath: repo.path, repoName: repo.name, path: wtPath, name, ageDays, inUse: live.has(wtPath) };
+      const base = { repoPath: repo.path, repoName: repo.name, path: wtPath, name, ageDays, inUse: live.has(wtPath), legacy };
       try {
         const st = worktreeState(wtPath);
         out.push({ ...base, branch: st.branch, dirty: st.dirty, dirtyFiles: st.dirtyFiles, ahead: st.ahead, behind: st.behind });
@@ -156,6 +168,7 @@ export function listWorktrees(repos: { name: string; path: string }[], liveCwds:
         out.push({ ...base, branch: "", dirty: false, dirtyFiles: 0, ahead: 0, behind: 0, error: err instanceof Error ? err.message.split("\n")[0] : String(err) });
       }
     }
+   }
   }
   return out.sort((a, b) => a.repoName.localeCompare(b.repoName) || b.ageDays - a.ageDays);
 }
@@ -214,4 +227,19 @@ export function checkoutBranch(repoPath: string, branch: string, baseBranch?: st
   } else {
     git(repoPath, ["switch", "-c", branch]);
   }
+}
+
+/** Move an old-layout worktree into `worktrees/<repo>/`; returns its new path. */
+export function migrateWorktree(repoPath: string, oldPath: string): string {
+  const dest = path.join(worktreeRoot(repoPath), path.basename(oldPath));
+  if (fs.existsSync(dest)) throw new Error(`${dest} already exists`);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  git(repoPath, ["worktree", "move", oldPath, dest]);
+  // drop the emptied <repo>-worktrees folder
+  try {
+    fs.rmdirSync(path.dirname(oldPath));
+  } catch {
+    /* other worktrees still live there */
+  }
+  return dest;
 }
