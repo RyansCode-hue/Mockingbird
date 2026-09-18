@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, shell } from "electron";
-import { execFile, execFileSync } from "child_process";
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -8,6 +8,8 @@ import { SessionManager } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree } from "./worktrees";
 import { installHooks, hooksInstalled, watchEvents } from "./hooks";
+import { readUsage, watchUsage } from "./usage";
+import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
@@ -194,6 +196,7 @@ app.whenReady().then(() => {
   sessions.onChanged = updateTray;
   updateTray();
   setInterval(updateTray, 60_000); // keep wait durations in the dropdown fresh
+  watchUsage((u) => BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", u));
   watchEvents(sessions, (info, status) => {
     notifySession(
       info.id,
@@ -275,18 +278,20 @@ ipcMain.handle("worktrees:migrate", (_e, repo, wtPath) =>
     return dest;
   })()
 );
-ipcMain.handle("path:reveal", (_e, p) => {
-  shell.showItemInFolder(expandHome(p));
-  return true;
-});
-ipcMain.handle("path:openEditor", (_e, p) =>
-  safeAsync("path:openEditor", () =>
-    new Promise<boolean>((resolve, reject) => {
-      // `open -a` needs no `code` shim on PATH; failure (VS Code not installed)
-      // surfaces to the caller instead of vanishing
-      execFile("open", ["-a", "Visual Studio Code", expandHome(p)], (err) => (err ? reject(err) : resolve(true)));
-    })
-  )()
+// The explorer addresses files by session id + relative path, so the renderer
+// can only reach into folders a live session actually runs in.
+function sessionRoot(sessionId: string): string {
+  const s = sessions.list().find((x) => x.id === sessionId);
+  if (!s) throw new Error("Session is no longer running");
+  return s.cwd;
+}
+ipcMain.handle("files:list", (_e, id, rel) => safeAsync("files:list", () => listDir(sessionRoot(id), rel))());
+ipcMain.handle("files:read", (_e, id, rel) => safeAsync("files:read", () => readFile(sessionRoot(id), rel))());
+ipcMain.handle("files:changes", (_e, id, scope) =>
+  safeAsync("files:changes", () => gitChanges(sessionRoot(id), scope))()
+);
+ipcMain.handle("files:diff", (_e, id, rel, scope, untracked) =>
+  safeAsync("files:diff", () => fileDiff(sessionRoot(id), rel, scope, untracked))()
 );
 ipcMain.handle("repo:branches", (_e, repoPath) =>
   safe("repo:branches", () => listBranches(expandHome(repoPath)))()
@@ -308,6 +313,7 @@ ipcMain.handle("claudemd:save", (_e, p, content) =>
   })()
 );
 
+ipcMain.handle("usage:get", () => readUsage());
 ipcMain.handle("hooks:installed", () => hooksInstalled());
 ipcMain.handle("hooks:install", () => installHooks());
 ipcMain.handle("settings:get", () => store.settings);

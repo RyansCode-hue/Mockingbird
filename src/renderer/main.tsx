@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
-import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry } from "../shared/types";
+import { FilePanel } from "./FilePanel";
+import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
@@ -159,6 +160,9 @@ function App() {
   };
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean } | null>(null);
+  const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [filesOpen, setFilesOpen] = useState<boolean>(() => loadLS("mb.filesOpen", false));
+  useEffect(() => localStorage.setItem("mb.filesOpen", JSON.stringify(filesOpen)), [filesOpen]);
 
   // persist grid arrangement across restarts (design: Interactions & Behavior)
   useEffect(() => localStorage.setItem("mb.shown", JSON.stringify(shown)), [shown]);
@@ -228,7 +232,10 @@ function App() {
       if (cmd === "focus-session" && arg) jumpToRef.current(arg);
     });
     const offUpd = window.mb.onUpdateAvailable((u: any) => u?.newer && setUpdate(u));
+    window.mb.usageGet().then((u: UsageInfo | null) => setUsage(u));
+    const offUsage = window.mb.onUsageChanged((u: UsageInfo | null) => setUsage(u));
     return () => {
+      offUsage();
       off();
       offUi();
       offUpd();
@@ -662,6 +669,11 @@ function App() {
       setModal("new");
       return;
     }
+    if (cmd && !e.shiftKey && !e.ctrlKey && e.key === "b" && tab === "sessions") {
+      handled();
+      setFilesOpen((o) => !o);
+      return;
+    }
     if (cmd && e.shiftKey && e.key.toLowerCase() === "b") {
       handled();
       setTab("settings");
@@ -815,6 +827,13 @@ function App() {
                 </>
               )}
             </span>
+            <button
+              className={`outline ${filesOpen ? "on" : ""}`}
+              onClick={() => setFilesOpen((o) => !o)}
+              title="File explorer for the focused session — browse, view files, see diffs (⌘B)"
+            >
+              ▤ Files
+            </button>
             <span className="vdiv" />
             <button className="outline" onClick={() => setModal("import")}>Import</button>
           </>
@@ -1163,6 +1182,10 @@ function App() {
                     paneIndex={i}
                     embedded={embedded}
                     onFocus={() => setFocused(s.id)}
+                    onOpenFiles={() => {
+                      setFocused(s.id);
+                      setFilesOpen(true);
+                    }}
                     onClose={onCloseOverride ?? (() => hide(s.id))}
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
                     onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
@@ -1239,6 +1262,17 @@ function App() {
             </div>
           )}
         </div>
+        {filesOpen && (
+          <FilePanel
+            session={focusedSession}
+            onClose={() => setFilesOpen(false)}
+            onInsert={(text) => {
+              if (!focusedSession) return;
+              window.mb.sessionWrite(focusedSession.id, text);
+              focusTerm(focusedSession.id);
+            }}
+          />
+        )}
         </>
         )}
       </div>
@@ -1286,6 +1320,7 @@ function App() {
             </span>
           );
         })}
+        <UsageStat usage={usage} />
         <span className="right">
           {update?.newer && (
             <span
@@ -1446,6 +1481,40 @@ interface PaletteAction {
   run: () => void;
 }
 
+/** Plan usage in the status bar: 5-hour and weekly windows, as last reported by any session. */
+function UsageStat({ usage }: { usage: UsageInfo | null }) {
+  // reset times pass while the app sits open with no session reporting
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  if (!usage) return null;
+  // a window whose reset time has passed no longer describes the current window
+  const current = (w?: UsageWindow) => (w && (w.resetsAt === null || w.resetsAt > now) ? w : undefined);
+  const windows = [
+    { label: "5h", name: "5-hour window", w: current(usage.fiveHour) },
+    { label: "wk", name: "Weekly window", w: current(usage.sevenDay) },
+  ].filter((x): x is { label: string; name: string; w: UsageWindow } => !!x.w);
+  if (windows.length === 0) return null;
+  const title =
+    windows
+      .map(({ name, w }) =>
+        `${name}: ${Math.round(w.usedPct)}% used` +
+        (w.resetsAt ? ` · resets ${new Date(w.resetsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "")
+      )
+      .join("\n") + `\nreported ${fmtElapsed(usage.at)} ago`;
+  return (
+    <span className="usage" title={title}>
+      {windows.map(({ label, w }) => (
+        <span key={label} className={w.usedPct >= 90 ? "hot" : ""}>
+          {label} {Math.round(w.usedPct)}%
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function CommandPalette({
   sessions,
   gridSessions,
@@ -1583,6 +1652,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌥⇥", "next waiting session (oldest first)"],
     ["⌘E", "fullscreen the focused pane (esc restores)"],
     ["⌘⌃1–4", "grid columns (also switches pane detail level)"],
+    ["⌘B", "file explorer for the focused session — files, viewer, diffs"],
     ["⌘⇧B", "Settings tab — broadcast + CLAUDE.md"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],
     ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a pane"],

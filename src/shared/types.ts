@@ -158,6 +158,49 @@ export interface BroadcastRequest {
   whenIdle: boolean; // queue for busy sessions, deliver on Stop
 }
 
+// ---- in-app file explorer ----------------------------------------------------
+export interface FileEntry {
+  name: string;
+  path: string; // relative to the session folder
+  dir: boolean;
+}
+
+export interface FileContent {
+  binary: boolean;
+  size: number;
+  content: string;
+  truncated: boolean; // only the head of a very large file was read
+}
+
+/** M modified · A added · D deleted · R renamed · U untracked */
+export type GitChangeStatus = "M" | "A" | "D" | "R" | "U";
+
+export interface GitChange {
+  path: string;
+  from?: string; // previous path of a rename
+  status: GitChangeStatus;
+}
+
+/** "working" = uncommitted vs HEAD · "branch" = everything since the fork from the base branch */
+export type ChangeScope = "working" | "branch";
+
+export interface GitChanges {
+  changes: GitChange[];
+  base: string; // what the changes are measured against
+}
+
+export interface UsageWindow {
+  usedPct: number; // 0-100
+  resetsAt: number | null; // epoch ms
+}
+
+/** Plan rate-limit usage (account-wide), as last reported by any session. */
+export interface UsageInfo {
+  fiveHour?: UsageWindow;
+  sevenDay?: UsageWindow;
+  at: number; // epoch ms of the report
+}
+
 export const DEFAULT_SETTINGS: Settings = {
   repoRoots: ["~/Code", "~/Personal Projects"],
   workTrackerPath: "~/Code/WorkTracker",

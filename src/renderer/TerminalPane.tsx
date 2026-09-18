@@ -276,6 +276,7 @@ export function TerminalPane({
   paneIndex,
   onFocus,
   onClose,
+  onOpenFiles,
   onZoom,
   onAddTab,
   onReorder,
@@ -292,6 +293,8 @@ export function TerminalPane({
   paneIndex: number;
   onFocus: () => void;
   onClose: () => void;
+  /** Show this session's folder in the explorer dock. */
+  onOpenFiles?: () => void;
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
   onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
   onReorder?: (srcId: string, targetId: string) => void;
@@ -777,27 +780,15 @@ export function TerminalPane({
             <span className="k">Folder</span>
             <span className="v">
               {session.cwd.split("/").pop()}
-              <button
-                className="mini"
-                title={`Open ${session.cwd} in VS Code`}
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  const r = await window.mb.openInEditor(session.cwd);
-                  if (r?.error) alert(`Couldn't open VS Code: ${r.error}`);
-                }}
-              >
-                VS Code
-              </button>
-              <button
-                className="mini"
-                title={`Reveal ${session.cwd} in Finder`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  window.mb.revealPath(session.cwd);
-                }}
-              >
-                Finder
-              </button>
+              {onOpenFiles && (
+                <button
+                  className="mini"
+                  title={`Browse ${session.cwd} — files, viewer, diffs (⌘B)`}
+                  onClick={onOpenFiles}
+                >
+                  Files
+                </button>
+              )}
             </span>
           </div>
           {session.queuedCount ? (

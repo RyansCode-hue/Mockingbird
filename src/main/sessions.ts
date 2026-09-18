@@ -9,6 +9,7 @@ import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch } from "../sh
 import { Store, expandHome } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
+import { usageReporterArgs } from "./usage";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
 
@@ -127,6 +128,7 @@ export class SessionManager {
     if (req.model) args.push("--model", req.model);
     if (req.effort) args.push("--effort", req.effort);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
+    if (!req.shell) args.push(...usageReporterArgs());
 
     // Spawn via a login shell: /bin/zsh always execs cleanly under posix_spawnp,
     // handles claude being a wrapper script, and brings the user's PATH along.
