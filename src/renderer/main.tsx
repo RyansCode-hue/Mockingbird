@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
 import { FilePanel } from "./FilePanel";
+import { LayoutIcon, FilesIcon } from "./Icons";
 import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
@@ -786,7 +787,7 @@ function App() {
                 onClick={() => setLayoutOpen((o) => !o)}
                 title="Layout — arrange this group's panes"
               >
-                ▦ Layout
+                <LayoutIcon /> Layout
               </button>
               {layoutOpen && (
                 <>
@@ -832,7 +833,7 @@ function App() {
               onClick={() => setFilesOpen((o) => !o)}
               title="File explorer for the focused session — browse, view files, see diffs (⌘B)"
             >
-              ▤ Files
+              <FilesIcon /> Files
             </button>
             <span className="vdiv" />
             <button className="outline" onClick={() => setModal("import")}>Import</button>

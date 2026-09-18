@@ -109,6 +109,7 @@ button {
   font: 500 10.5px var(--ui); transition: color .12s, background .12s, border-color .12s;
 }
 button:hover { color: var(--text-1); background: var(--fill-subtle); }
+button .ico { vertical-align: -2.5px; margin-right: 3px; }
 button.outline { border-color: var(--line-btn); color: var(--text-2); }
 button.outline:hover { border-color: var(--line-btn-hover); color: var(--text-1); background: transparent; }
 button.outline.strong { border-color: var(--line-btn-hover); color: var(--text-1); }
