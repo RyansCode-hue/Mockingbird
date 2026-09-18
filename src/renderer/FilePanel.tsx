@@ -33,11 +33,45 @@ const STATUS_TITLE: Record<GitChange["status"], string> = {
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
-export function FilePanel({
+const SLIDE_MS = 200;
+
+/**
+ * Slides the explorer in and out. The panel is only mounted while visible or
+ * mid-slide, so a closed explorer polls nothing. The wrapper animates its width
+ * around a fixed-width panel, which makes the panel travel instead of squash.
+ */
+export function FileDock({ open, ...panel }: { open: boolean } & Omit<React.ComponentProps<typeof FilePanel>, "onWidth">) {
+  const [mounted, setMounted] = useState(open);
+  const [entered, setEntered] = useState(false);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      // two frames: the zero-width state has to paint before the transition can run
+      let r = requestAnimationFrame(() => (r = requestAnimationFrame(() => setEntered(true))));
+      return () => cancelAnimationFrame(r);
+    }
+    setEntered(false);
+    // a timer rather than transitionend — reduced-motion users get no transition event
+    const t = setTimeout(() => setMounted(false), SLIDE_MS);
+    return () => clearTimeout(t);
+  }, [open]);
+  if (!mounted) return null;
+  return (
+    <div className="fp-slide" style={{ width: entered ? width : 0 }}>
+      <FilePanel {...panel} onWidth={setWidth} />
+    </div>
+  );
+}
+
+function FilePanel({
   session,
   onClose,
   onInsert,
+  onWidth,
 }: {
+  /** Reports the panel's full width so the slide wrapper can size to it. */
+  onWidth: (w: number) => void;
   session: SessionInfo | null;
   onClose: () => void;
   /** Type text into the focused session's prompt. */
@@ -59,6 +93,9 @@ export function FilePanel({
   const [changes, setChanges] = useState<Result<GitChanges> | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [open, setOpen] = useState<OpenFile | null>(null);
+
+  const total = treeW + (open ? viewerW : 0) + 1; // +1: the dock's left border
+  useEffect(() => onWidth(total), [total, onWidth]);
 
   const sid = session?.id ?? null;
   const root = session?.cwd ?? null;
@@ -183,7 +220,7 @@ export function FilePanel({
   };
 
   return (
-    <div className="fp-dock">
+    <div className="fp-dock" style={{ width: total }}>
       <div className="fp-handle" onPointerDown={startResize} />
       {open && (
         <FileViewer

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
-import { FilePanel } from "./FilePanel";
+import { FileDock } from "./FilePanel";
 import { LayoutIcon, FilesIcon } from "./Icons";
 import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
@@ -758,11 +758,6 @@ function App() {
   return (
     <div className="app">
       <div className="topbar">
-        {tab === "sessions" && (
-          <button className="icon" onClick={() => setSideCollapsed(!sideCollapsed)} title={sideCollapsed ? "Show sidebar" : "Hide sidebar"}>
-            {sideCollapsed ? "▹" : "◃"}
-          </button>
-        )}
         <span className="brand">
           <span className="mark">🪶</span>
           <span className="name">Mockingbird</span>
@@ -910,6 +905,18 @@ function App() {
         {tab === "sessions" && (
         <>
         <div className={`sidebar ${sideCollapsed ? "collapsed" : ""}`}>
+          <div className="side-head">
+            <button
+              className={`burger ${sideCollapsed ? "" : "open"}`}
+              onClick={() => setSideCollapsed(!sideCollapsed)}
+              title={sideCollapsed ? "Show sidebar" : "Hide sidebar"}
+              aria-label={sideCollapsed ? "Show sidebar" : "Hide sidebar"}
+              aria-expanded={!sideCollapsed}
+            >
+              <span /><span /><span />
+            </button>
+            <span className="side-title">Sessions</span>
+          </div>
           <div className="scroll">
             <input
               className="filter"
@@ -1263,17 +1270,16 @@ function App() {
             </div>
           )}
         </div>
-        {filesOpen && (
-          <FilePanel
-            session={focusedSession}
-            onClose={() => setFilesOpen(false)}
-            onInsert={(text) => {
-              if (!focusedSession) return;
-              window.mb.sessionWrite(focusedSession.id, text);
-              focusTerm(focusedSession.id);
-            }}
-          />
-        )}
+        <FileDock
+          open={filesOpen}
+          session={focusedSession}
+          onClose={() => setFilesOpen(false)}
+          onInsert={(text) => {
+            if (!focusedSession) return;
+            window.mb.sessionWrite(focusedSession.id, text);
+            focusTerm(focusedSession.id);
+          }}
+        />
         </>
         )}
       </div>
