@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, shell } from "electron";
-import { execFileSync } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -337,6 +337,22 @@ ipcMain.handle("ado:update", (_e, id, patch) =>
 );
 ipcMain.handle("ado:me", () => safeAsync("ado:me", () => adoIdentity(store))());
 ipcMain.handle("update:check", () => safeAsync("update:check", () => checkForUpdate())());
+// Each CLI updates itself (`claude update` / `codex update`); running panes keep
+// the old build until they restart, which the Settings UI offers right after.
+ipcMain.handle("agents:update", (_e, agent) =>
+  safeAsync("agents:update", () => {
+    const kind = agent === "codex" ? "codex" : "claude";
+    const bin = sessions.binFor(kind);
+    return new Promise<string>((resolve, reject) => {
+      execFile("/bin/zsh", ["-lc", `${JSON.stringify(bin)} update 2>&1`], { timeout: 180_000 }, (err, stdout) => {
+        const out = String(stdout).trim();
+        if (err) return reject(new Error(out || err.message));
+        sessions.resetBinCache(); // a self-updater may have moved the binary
+        resolve(out.split("\n").slice(-2).join(" · "));
+      });
+    });
+  })()
+);
 // ---- connectors (Settings → Connectors card) ----
 const wtFile = (name: string) => path.join(expandHome(store.settings.workTrackerPath), name);
 const readJson = (file: string): any => {

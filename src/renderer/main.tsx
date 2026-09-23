@@ -3020,6 +3020,7 @@ function SettingsView({
   const [hooksOk, setHooksOk] = useState(true);
   const [identity, setIdentity] = useState<{ display: string; email: string; project: string } | { error: string } | null>(null);
   const [conn, setConn] = useState<{ az: boolean; global: string[]; project: string[] } | null>(null);
+  const [updating, setUpdating] = useState<"claude" | "codex" | null>(null);
   const [updNote, setUpdNote] = useState("");
   const [adoCfg, setAdoCfg] = useState<{ orgUrl: string; project: string; patFile: string } | null>(null);
   const [connSaved, setConnSaved] = useState(false);
@@ -3169,9 +3170,29 @@ function SettingsView({
           </button>
           {updNote && <span className="wi-note">{updNote}</span>}
         </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          {(["claude", "codex"] as const).map((a) => (
+            <button
+              key={a}
+              className="outline"
+              disabled={updating === a}
+              title={`Run \`${a} update\` — new models (and fixes) need the newest CLI. Restart sessions afterwards.`}
+              onClick={async () => {
+                setUpdating(a);
+                setUpdNote(`updating ${a}…`);
+                const r = await window.mb.agentUpdate(a);
+                setUpdating(null);
+                setUpdNote(r?.error ? `${a} update failed: ${r.error}` : `${a}: ${r} — restart sessions to use it`);
+              }}
+            >
+              {updating === a ? "Updating…" : a === "claude" ? "Update Claude Code" : "Update Codex"}
+            </button>
+          ))}
+        </div>
         <span className="wi-note">
-          The Claude CLI updates itself in the background; each running session keeps the old build
-          until it restarts. Restarting resumes every conversation.
+          Each CLI updates itself; every running session keeps the old build until it restarts.
+          A model the CLI doesn't know yet (“Claude Code needs to update”) means: update, then restart
+          sessions — restarting resumes every conversation.
         </span>
 
         <div className="row">

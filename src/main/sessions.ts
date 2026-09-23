@@ -5,7 +5,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, AgentKind } from "../shared/types";
 import { Store, expandHome } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
@@ -41,6 +41,11 @@ export class SessionManager {
   /** Drop the cached claude path so a Settings change takes effect immediately. */
   resetBinCache(): void {
     this.resolvedBins.clear();
+  }
+
+  /** The binary a fresh session of this agent would launch. */
+  binFor(kind: AgentKind): string {
+    return this.resolveBin(agentFor(kind));
   }
 
   private resolveBin(agent: AgentAdapter): string {
