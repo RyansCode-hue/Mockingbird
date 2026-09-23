@@ -1,3 +1,6 @@
+/** Which coding-agent CLI a session runs. */
+export type AgentKind = "claude" | "codex";
+
 export type SessionStatus = "working" | "waiting" | "idle" | "dead";
 
 export interface SessionInfo {
@@ -21,6 +24,7 @@ export interface SessionInfo {
   queuedCount?: number; // broadcasts queued for this session (live only)
   debrief?: boolean; // morning brief / wrap-up — lives on the WorkTracker tab, not the grid
   shell?: boolean; // plain terminal (no claude) — excluded from broadcasts/re-reads
+  agent?: AgentKind; // absent on sessions persisted before Codex support — those are Claude
 }
 
 export interface WorktreeStateInfo {
@@ -128,6 +132,7 @@ export interface NewSessionRequest {
   baseBranch?: string; // new branch: fetch origin/<base> first and branch off it (dev/uat flow)
   initialPrompt?: string; // sent to the claude session once it's up (e.g. the ADO ticket)
   shell?: boolean; // open a plain zsh terminal instead of launching claude
+  agent?: AgentKind; // which CLI to launch (default claude)
   model?: string; // claude --model (alias like "opus" or a full model id)
   effort?: string; // claude --effort (low | medium | high | xhigh | max)
 }
@@ -148,6 +153,7 @@ export interface Settings {
   repoRoots: string[];
   workTrackerPath: string;
   claudeBin: string;
+  codexBin: string;
   debriefs: { enabled: boolean; morning: string; wrapUp: string }; // "HH:MM"
   notifications: boolean;
 }
@@ -205,6 +211,7 @@ export const DEFAULT_SETTINGS: Settings = {
   repoRoots: ["~/Code", "~/Personal Projects"],
   workTrackerPath: "~/Code/WorkTracker",
   claudeBin: "claude",
+  codexBin: "codex",
   debriefs: { enabled: false, morning: "09:00", wrapUp: "16:00" },
   notifications: true,
 };

@@ -4,7 +4,7 @@ import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
 import { FileDock } from "./FilePanel";
 import { LayoutIcon, FilesIcon } from "./Icons";
-import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
+import type { AgentKind, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
@@ -103,7 +103,7 @@ function App() {
   const [focused, setFocused] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
-  const [newLaunch, setNewLaunch] = useState<"claude" | "shell">("claude");
+  const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
   // seeds New Session's Group field — set to "top/sub" by a workspace's + button
   const [newGroup, setNewGroup] = useState("");
   // a lone pane's "+" promotes it to a workspace, but only once the new session
@@ -1101,7 +1101,7 @@ function App() {
               <>
                 <h2>
                   <span>Previous</span>
-                  <button className="icon" title="Relaunch every previous session (claude --continue)" onClick={restoreAll}>
+                  <button className="icon" title="Relaunch every previous session, resuming its conversation" onClick={restoreAll}>
                     ↺ restore all
                   </button>
                 </h2>
@@ -1110,7 +1110,7 @@ function App() {
                     <span className="dot dead" />
                     <span className="name">{s.title}</span>
                     <button
-                      title="Relaunch with claude --continue"
+                      title="Relaunch, resuming the conversation"
                       onClick={async () => {
                         const info = await window.mb.relaunchSession(s.id);
                         if (info?.error) return alert(`Couldn't relaunch: ${info.error}`);
@@ -1363,8 +1363,9 @@ function App() {
           onClose={() => setPaletteOpen(false)}
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },
+            { label: "New Codex session", run: () => { setNewLaunch("codex"); setModal("new"); } },
             { label: "New terminal (no Claude)", run: () => { setNewLaunch("shell"); setModal("new"); } },
-            { label: "Restart all Claude sessions", run: () => setModal("restart") },
+            { label: "Restart all agent sessions", run: () => setModal("restart") },
             { label: "Sessions grid", run: () => setTab("sessions") },
             { label: "Dashboard — ticket board", run: () => setTab("dashboard") },
             { label: "Settings / Broadcast / CLAUDE.md", kbd: "⌘⇧B", run: () => setTab("settings") },
@@ -2559,7 +2560,7 @@ function RestartAllDialog({
   return (
     <div className="modal-back" onMouseDown={onClose}>
       <div className="modal close-dlg" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>Restart Claude sessions?</h3>
+        <h3>Restart agent sessions?</h3>
         <div className="sub-h">
           Each pane relaunches with <code>--continue</code>, so conversations, grid position, and
           groups are kept. Plain terminals and dead panes are left alone.
@@ -3053,6 +3054,10 @@ function SettingsView({
     const p = await window.mb.pickPath({ file: true, defaultPath: "/usr/local/bin" });
     if (p) upd({ claudeBin: p });
   };
+  const pickCodexBin = async () => {
+    const p = await window.mb.pickPath({ file: true, defaultPath: "/usr/local/bin" });
+    if (p) upd({ codexBin: p });
+  };
   const save = async () => {
     await window.mb.setSettings(s);
     setSavedAt(Date.now());
@@ -3095,6 +3100,12 @@ function SettingsView({
         <div className="path-row">
           <span className="p">{s.claudeBin}</span>
           <button className="outline" onClick={pickClaudeBin}>Browse…</button>
+        </div>
+
+        <label>codex binary <span className="wi-note">OpenAI Codex CLI (npm i -g @openai/codex · codex login)</span></label>
+        <div className="path-row">
+          <span className="p">{s.codexBin ?? "codex"}</span>
+          <button className="outline" onClick={pickCodexBin}>Browse…</button>
         </div>
 
         <div className="check-line">
@@ -3152,9 +3163,9 @@ function SettingsView({
           <button
             className="outline"
             onClick={onRestartAll}
-            title="Relaunch every Claude pane with --continue — what the CLI's “Restart to update” needs"
+            title="Relaunch every Claude and Codex pane, resuming each conversation — what the CLI's “Restart to update” needs"
           >
-            Restart all Claude sessions
+            Restart all agent sessions
           </button>
           {updNote && <span className="wi-note">{updNote}</span>}
         </div>
@@ -3305,6 +3316,8 @@ function SettingsView({
   );
 }
 
+type LaunchKind = AgentKind | "shell";
+
 function NewSessionModal({
   existingGroups,
   initialLaunch,
@@ -3313,21 +3326,28 @@ function NewSessionModal({
   onCreated,
 }: {
   existingGroups: string[];
-  initialLaunch?: "claude" | "shell";
+  initialLaunch?: LaunchKind;
   initialGroup?: string; // "5038" or "5038/backend" — a workspace path adds a tab there
   onClose: () => void;
   onCreated: (s: SessionInfo) => void;
 }) {
-  const [launch, setLaunch] = useState<"claude" | "shell">(initialLaunch ?? "claude");
-  // model/effort ride the claude command line (--model / --effort); the last
-  // choice is remembered because people tend to have a working default
+  const [launch, setLaunch] = useState<LaunchKind>(initialLaunch ?? "claude");
+  const isAgent = launch !== "shell";
+  const agentLabel = launch === "codex" ? "Codex" : "Claude";
+  // model/effort ride the agent's command line; the last choice is remembered
+  // per agent because people tend to have a working default for each
   const [model, setModel] = useState(() => loadLS("mb.newModel", ""));
   const [modelCustom, setModelCustom] = useState(() => loadLS("mb.newModelCustom", ""));
   const [effort, setEffort] = useState(() => loadLS("mb.newEffort", ""));
+  const [codexModel, setCodexModel] = useState(() => loadLS("mb.newCodexModel", ""));
+  const [codexEffort, setCodexEffort] = useState(() => loadLS("mb.newCodexEffort", ""));
   useEffect(() => localStorage.setItem("mb.newModel", JSON.stringify(model)), [model]);
   useEffect(() => localStorage.setItem("mb.newModelCustom", JSON.stringify(modelCustom)), [modelCustom]);
   useEffect(() => localStorage.setItem("mb.newEffort", JSON.stringify(effort)), [effort]);
-  const effModel = model === "__custom" ? modelCustom.trim() : model;
+  useEffect(() => localStorage.setItem("mb.newCodexModel", JSON.stringify(codexModel)), [codexModel]);
+  useEffect(() => localStorage.setItem("mb.newCodexEffort", JSON.stringify(codexEffort)), [codexEffort]);
+  const effModel = launch === "codex" ? codexModel.trim() : model === "__custom" ? modelCustom.trim() : model;
+  const effEffort = launch === "codex" ? codexEffort : effort;
   const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<RepoEntry | null>(null);
@@ -3456,10 +3476,11 @@ function NewSessionModal({
       useWorktree: useWorktree && !!sel,
       ...(sel && baseBranch ? { baseBranch } : {}),
       shell: launch === "shell",
-      ...(launch === "claude" && effModel ? { model: effModel } : {}),
-      ...(launch === "claude" && effort ? { effort } : {}),
+      ...(isAgent ? { agent: launch } : {}),
+      ...(isAgent && effModel ? { model: effModel } : {}),
+      ...(isAgent && effEffort ? { effort: effEffort } : {}),
       initialPrompt:
-        launch === "claude" && t && sendTicket
+        isAgent && t && sendTicket
           ? ticketKickoffPrompt(t.id, t.title, t.description)
           : undefined,
     });
@@ -3475,8 +3496,33 @@ function NewSessionModal({
         <label>Launch</label>
         <span className="seg" style={{ display: "inline-flex" }}>
           <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>Claude</button>
+          <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">Codex</button>
           <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
         </span>
+        {launch === "codex" && (
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <div style={{ flex: 1 }}>
+              <label>Model <span className="wi-note">blank = whatever codex is set to</span></label>
+              <input
+                type="text"
+                placeholder="e.g. gpt-5.6-sol"
+                value={codexModel}
+                onChange={(e) => setCodexModel(e.target.value)}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Reasoning</label>
+              <select value={codexEffort} onChange={(e) => setCodexEffort(e.target.value)}>
+                <option value="">default</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </div>
+          </div>
+        )}
         {launch === "claude" && (
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <div style={{ flex: 1 }}>
@@ -3663,10 +3709,10 @@ function NewSessionModal({
             ))}
           </select>
         )}
-        {ticketSel && launch === "claude" && (
+        {ticketSel && isAgent && (
           <div className="check-line">
             <input type="checkbox" checked={sendTicket} onChange={(e) => setSendTicket(e.target.checked)} id="ntk" />
-            <label htmlFor="ntk" style={{ margin: 0 }}>send ticket title + description to Claude</label>
+            <label htmlFor="ntk" style={{ margin: 0 }}>send ticket title + description to {agentLabel}</label>
           </div>
         )}
         {launch === "shell" && !sel && (
@@ -3677,13 +3723,13 @@ function NewSessionModal({
         {error && <div className="err">{error}</div>}
         <div className="row">
           <button className="outline" onClick={onClose}>Cancel</button>
-          {launch === "claude" && !sel && (
+          {isAgent && !sel && (
             <span className="wi-note" style={{ marginRight: "auto" }}>
-              no repo — starts a plain Claude chat (fully tracked: resumable, restartable)
+              no repo — starts a plain {agentLabel} chat (fully tracked: resumable, restartable)
             </span>
           )}
           <button className="primary" onClick={create}>
-            {launch === "shell" ? "Open terminal" : sel ? "Start claude" : "Start chat"}
+            {launch === "shell" ? "Open terminal" : sel ? `Start ${agentLabel.toLowerCase()}` : "Start chat"}
           </button>
         </div>
       </div>

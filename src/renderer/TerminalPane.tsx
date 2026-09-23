@@ -705,6 +705,7 @@ export function TerminalPane({
         )}
         {assistant && density !== "min" && <span className="chip teal">assistant</span>}
         {session.shell && density !== "min" && <span className="chip">shell</span>}
+        {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <span className="controls">
           {!dead && (

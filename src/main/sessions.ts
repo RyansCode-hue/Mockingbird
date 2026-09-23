@@ -9,27 +9,9 @@ import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch } from "../sh
 import { Store, expandHome } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
-import { usageReporterArgs } from "./usage";
+import { agentFor, AgentAdapter } from "./agents";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
-
-/**
- * Whether claude has a conversation to `--continue` in this cwd. Claude keeps
- * transcripts under ~/.claude/projects/<cwd with separators dashed>/; a
- * directory with no transcript means claude never reached a prompt there.
- */
-function hasConversation(cwd: string): boolean {
-  const projects = path.join(os.homedir(), ".claude", "projects");
-  const candidates = [cwd.replace(/\//g, "-"), cwd.replace(/[^A-Za-z0-9]/g, "-")];
-  return candidates.some((enc) => {
-    const dir = path.join(projects, enc);
-    try {
-      return fs.readdirSync(dir).some((f) => f.endsWith(".jsonl"));
-    } catch {
-      return false; // no directory → no conversation
-    }
-  });
-}
 
 interface LiveSession {
   info: SessionInfo;
@@ -43,7 +25,7 @@ export class SessionManager {
   private live = new Map<string, LiveSession>();
   private wc: WebContents | null = null;
 
-  private resolvedBin: string | null = null;
+  private resolvedBins = new Map<string, string>();
 
   /** Called whenever the session list changes — drives the tray + Dock badge. */
   onChanged: (() => void) | null = null;
@@ -58,23 +40,28 @@ export class SessionManager {
   /** Resolve the claude binary via a login shell so packaged .app launches find it too. */
   /** Drop the cached claude path so a Settings change takes effect immediately. */
   resetBinCache(): void {
-    this.resolvedBin = null;
+    this.resolvedBins.clear();
   }
 
-  private resolveClaude(): string {
-    if (this.resolvedBin) return this.resolvedBin;
-    const bin = this.store.settings.claudeBin;
-    if (bin.includes("/")) return (this.resolvedBin = expandHome(bin));
-    try {
-      const found = execFileSync("/bin/zsh", ["-lc", `command -v ${bin}`], { encoding: "utf8" })
-        .trim()
-        .split("\n")
-        .pop();
-      if (found) return (this.resolvedBin = found);
-    } catch {
-      /* fall through to bare name */
+  private resolveBin(agent: AgentAdapter): string {
+    const cached = this.resolvedBins.get(agent.binSetting);
+    if (cached) return cached;
+    const bin = this.store.settings[agent.binSetting];
+    let resolved = bin;
+    if (bin.includes("/")) resolved = expandHome(bin);
+    else {
+      try {
+        const found = execFileSync("/bin/zsh", ["-lc", `command -v ${bin}`], { encoding: "utf8" })
+          .trim()
+          .split("\n")
+          .pop();
+        if (found) resolved = found;
+      } catch {
+        /* fall through to the bare name — the launch shell reports it if it's missing */
+      }
     }
-    return (this.resolvedBin = bin);
+    this.resolvedBins.set(agent.binSetting, resolved);
+    return resolved;
   }
 
   attach(wc: WebContents): void {
@@ -122,13 +109,7 @@ export class SessionManager {
       cwd = repoPath ?? (req.debrief ? expandHome(settings.workTrackerPath) : os.homedir());
     }
 
-    const args: string[] = [];
-    if (req.resumeSessionId) args.push("--resume", req.resumeSessionId);
-    else if (req.resume) args.push("--continue");
-    if (req.model) args.push("--model", req.model);
-    if (req.effort) args.push("--effort", req.effort);
-    for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    if (!req.shell) args.push(...usageReporterArgs());
+    const agent = agentFor(req.agent);
 
     // Spawn via a login shell: /bin/zsh always execs cleanly under posix_spawnp,
     // handles claude being a wrapper script, and brings the user's PATH along.
@@ -136,8 +117,7 @@ export class SessionManager {
     const shellArgs = ["-il"];
     let claudeArgs: string[] = shellArgs;
     if (!req.shell) {
-      const bin = this.resolveClaude();
-      const cmdline = [bin, ...args].map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(" ");
+      const cmdline = [this.resolveBin(agent), ...agent.launchArgs(req)].map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(" ");
       claudeArgs = ["-ilc", `exec ${cmdline}`];
     }
     let proc: pty.IPty;
@@ -157,8 +137,8 @@ export class SessionManager {
       });
     } catch (err) {
       throw new Error(
-        `Failed to launch ${req.shell ? "a terminal" : `"${this.resolveClaude()}"`} in ${cwd}: ${err instanceof Error ? err.message : err}. ` +
-          `If claude isn't found, set its full path in Settings → claude binary (try: which claude).`
+        `Failed to launch ${req.shell ? "a terminal" : `"${this.resolveBin(agent)}"`} in ${cwd}: ${err instanceof Error ? err.message : err}. ` +
+          `If it isn't found, set its full path in Settings → ${agent.label.toLowerCase()} binary.`
       );
     }
 
@@ -185,6 +165,7 @@ export class SessionManager {
       shell: req.shell || undefined,
       model: req.model || undefined,
       effort: req.effort || undefined,
+      agent: req.shell ? undefined : req.agent ?? "claude",
     };
 
     // reuseId re-creates an existing id (relaunch): kill the old pty first or it
@@ -215,7 +196,7 @@ export class SessionManager {
     });
 
     // kickoff prompt (e.g. the ADO ticket) — sent once claude has had time to boot
-    if (req.initialPrompt && !req.shell) {
+    if (req.initialPrompt && !req.shell && !agent.promptInArgs) {
       const prompt = req.initialPrompt;
       setTimeout(() => this.sendMessage(info.id, prompt), 6000);
     }
@@ -265,7 +246,7 @@ export class SessionManager {
     // failed relaunch (missing worktree, spawn error) erases the session for good
     // --continue exits immediately when the cwd has no conversation yet (a
     // session that died at startup); such a session relaunches fresh instead
-    const resume = !old.shell && hasConversation(old.cwd);
+    const resume = !old.shell && agentFor(old.agent).hasConversation(old.cwd);
     const info = this.create({
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
@@ -284,6 +265,7 @@ export class SessionManager {
       shell: old.shell,
       model: old.model ?? undefined,
       effort: old.effort ?? undefined,
+      agent: old.agent,
     });
     return info;
   }
