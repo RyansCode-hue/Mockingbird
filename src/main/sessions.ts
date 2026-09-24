@@ -14,6 +14,23 @@ import { mcpLaunch } from "./messaging";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
 
+/**
+ * The app's environment minus any Claude Code session markers. When Mockingbird
+ * is started from inside a Claude Code session, those markers (CLAUDECODE,
+ * CLAUDE_CODE_CHILD_SESSION, the parent's session id and messaging socket)
+ * would make every pane a child of that session: transcripts go unsaved, so
+ * nothing can be resumed. Panes start login shells, which re-apply anything the
+ * user sets in their own profile.
+ */
+function paneEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined || k === "CLAUDECODE" || /^CLAUDE_(CODE_|PID$|EFFORT$|AGENT_SDK_|PREVIEW_)/.test(k)) continue;
+    env[k] = v;
+  }
+  return env;
+}
+
 interface LiveSession {
   info: SessionInfo;
   proc: pty.IPty;
@@ -137,7 +154,7 @@ export class SessionManager {
         rows: 32,
         cwd,
         env: {
-          ...process.env,
+          ...paneEnv(),
           MOCKINGBIRD: "1",
           // debriefs get PAT auth for the az DevOps CLI (AZURE_DEVOPS_EXT_PAT)
           // so ticket/PR queries work without az login or an MCP server
