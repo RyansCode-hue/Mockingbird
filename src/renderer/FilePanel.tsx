@@ -412,7 +412,7 @@ interface DiffLine {
 
 const MAX_DIFF_LINES = 20000;
 
-function parseDiff(text: string): { lines: DiffLine[]; binary: boolean; clipped: boolean } {
+export function parseDiff(text: string): { lines: DiffLine[]; binary: boolean; clipped: boolean } {
   const lines: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;

@@ -1,0 +1,90 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { beforeEach, describe, expect, it } from "vitest";
+import { readUsage, setClaudePlan, usageReporterArgs } from "../src/main/usage";
+
+const mb = path.join(os.homedir(), ".mockingbird");
+const writeClaude = (payload: unknown) => {
+  fs.mkdirSync(mb, { recursive: true });
+  fs.writeFileSync(path.join(mb, "usage.json"), JSON.stringify(payload));
+};
+const codexDir = path.join(os.homedir(), ".codex", "sessions", "2026", "09", "24");
+
+beforeEach(() => {
+  fs.rmSync(path.join(mb, "usage.json"), { force: true });
+  fs.rmSync(path.join(os.homedir(), ".codex"), { recursive: true, force: true });
+  setClaudePlan(null);
+});
+
+describe("Claude usage", () => {
+  it("is null until a session has reported", () => {
+    expect(readUsage().claude).toBeNull();
+  });
+  it("reads the 5-hour and weekly windows, plus model weeklies when present, and the plan", () => {
+    setClaudePlan("max");
+    writeClaude({
+      rate_limits: {
+        five_hour: { used_percentage: 5, resets_at: 1790289000 },
+        seven_day: { used_percentage: 18, resets_at: "2026-09-27T18:00:00Z" },
+        seven_day_opus: { used_percentage: 13, resets_at: 1790532000 },
+        seven_day_oauth_apps: { used_percentage: 99, resets_at: 1790532000 },
+      },
+    });
+    const c = readUsage().claude!;
+    expect(c.plan).toBe("Max");
+    expect(c.limits).toEqual([
+      { label: "5-hour limit", usedPct: 5, resetsAt: 1790289000_000 },
+      { label: "Weekly · all models", usedPct: 18, resetsAt: Date.parse("2026-09-27T18:00:00Z") },
+      { label: "Weekly · Opus", usedPct: 13, resetsAt: 1790532000_000 },
+    ]);
+  });
+  it("is null for an API-key login (no rate limits) or a corrupt file", () => {
+    writeClaude({ rate_limits: null });
+    expect(readUsage().claude).toBeNull();
+    fs.writeFileSync(path.join(mb, "usage.json"), "{not json");
+    expect(readUsage().claude).toBeNull();
+  });
+});
+
+describe("Codex usage", () => {
+  const event = (rl: unknown, ts = "2026-09-24T16:07:39.339Z") =>
+    JSON.stringify({ timestamp: ts, type: "event_msg", payload: { type: "token_count", rate_limits: rl } });
+
+  it("reads the newest rate-limit event from the session log", () => {
+    fs.mkdirSync(codexDir, { recursive: true });
+    const lines = [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/x" } }),
+      event({ primary: { used_percent: 10, window_minutes: 300, resets_at: 1 }, plan_type: "plus" }, "2026-09-24T15:00:00Z"),
+      JSON.stringify({ type: "response_item", payload: { text: "unrelated" } }),
+      event({ primary: { used_percent: 1, window_minutes: 300, resets_at: 1790284045 }, secondary: { used_percent: 4, window_minutes: 10080, resets_at: 1790616570 }, plan_type: "plus" }),
+    ];
+    fs.writeFileSync(path.join(codexDir, "rollout-a.jsonl"), lines.join("\n") + "\n");
+    const c = readUsage().codex!;
+    expect(c).toMatchObject({ agent: "codex", plan: "Plus", at: Date.parse("2026-09-24T16:07:39.339Z") });
+    expect(c.limits).toEqual([
+      { label: "5-hour limit", usedPct: 1, resetsAt: 1790284045_000 },
+      { label: "Weekly limit", usedPct: 4, resetsAt: 1790616570_000 },
+    ]);
+  });
+  it("shows nothing rather than a guess when the format isn't recognised", () => {
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, "rollout-b.jsonl"), event({ something_new: { pct: 5 } }) + "\n");
+    expect(readUsage().codex).toBeNull();
+  });
+});
+
+describe("usageReporterArgs", () => {
+  const settings = path.join(os.homedir(), ".claude", "settings.json");
+  it("adds Mockingbird's statusline when the user has none", () => {
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, JSON.stringify({ hooks: {} }));
+    const args = usageReporterArgs();
+    expect(args[0]).toBe("--settings");
+    expect(JSON.parse(fs.readFileSync(args[1], "utf8")).statusLine.command).toContain("statusline.sh");
+  });
+  it("stays out of the way of the user's own statusLine", () => {
+    fs.writeFileSync(settings, JSON.stringify({ statusLine: { type: "command", command: "mine.sh" } }));
+    expect(usageReporterArgs()).toEqual([]);
+  });
+});

@@ -1242,3 +1242,33 @@ Mockingbird because claude panes are deliberately denied the mouse protocol.
       worktrees/backoffice/, legacy branch reused, migration moves it, git
       still lists it, branch intact, old folder gone. Harness: old-layout tag +
       Move button fire the migration.
+
+# Test suite (v1.0.2 → feature/test-suite)
+
+Vitest, plain Node — Electron is stubbed; every test gets its own temp HOME so
+nothing touches the real ~/.mockingbird, ~/.claude or ~/.codex.
+
+- [x] Harness: vitest config, electron stub, per-file temp HOME, git repo fixture
+- [x] shared/types — slugBranch, group path helpers
+- [x] files — listing, reads (binary/large), `../` and symlink escapes, changes + diffs in both scopes
+- [x] worktrees — nested branch names, migration keeps prefixes, default base
+- [x] agents — Claude/Codex launch args, resume detection (cli vs exec rollouts)
+- [x] usage — Claude payload (incl. model weeklies), Codex rollout tails, statusline opt-out
+- [x] hooks — merge into existing settings, refuse invalid JSON, Codex only with the CLI
+- [x] messaging — relay over the socket: list, send, self/unknown/debrief, rate limit; MCP JSON-RPC
+- [x] sessions — delivery timing (idle, busy, typing, manual), pane env scrubbing
+- [x] shell — fenced output, exit codes, missing commands
+- [x] setup — Azure DevOps timeout doesn't block local checks
+- [x] renderer — diff parser, usage reset text
+- [x] CI — GitHub Actions on macOS: typecheck + tests on every push
+
+## Review
+
+75 tests across 11 files, ~2.5s. Each test file runs with its own temp HOME.
+Reintroducing three bugs fixed earlier (symlink escape, Codex detected by the
+~/.codex folder, one-level worktree scan) each fails the suite. Writing the
+delivery tests found a real bug: an agent message waited for 8s of no typing,
+then was appended to the user's unsent draft and submitted with it. Fixed —
+messages now wait while a draft is pending (keystrokes or a paste since the last
+Enter), and a draft left alone for 2 minutes gets the message placed after it
+without Enter.

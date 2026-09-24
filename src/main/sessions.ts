@@ -23,7 +23,7 @@ const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-rende
  * nothing can be resumed. Panes start login shells, which re-apply anything the
  * user sets in their own profile.
  */
-function paneEnv(): Record<string, string> {
+export function paneEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (v === undefined || k === "CLAUDECODE" || /^CLAUDE_(CODE_|PID$|EFFORT$|AGENT_SDK_|PREVIEW_)/.test(k)) continue;
@@ -38,6 +38,7 @@ interface LiveSession {
   buffer: string;
   queued: { text: string; submit: boolean }[]; // messages to deliver when idle
   lastInput: number; // ms of the user's last write into this pane
+  draft: boolean; // the user has typed since their last Enter — the prompt holds unsent text
   flushTimer: NodeJS.Timeout | null; // retry while the user is typing
   claudeId: string | null; // Claude Code's own session_id, claimed from the first hook event
 }
@@ -198,7 +199,7 @@ export class SessionManager {
         /* already dead */
       }
     }
-    const sess: LiveSession = { info, proc, buffer: "", queued: [], claudeId: null, lastInput: 0, flushTimer: null };
+    const sess: LiveSession = { info, proc, buffer: "", queued: [], claudeId: null, lastInput: 0, draft: false, flushTimer: null };
     this.live.set(info.id, sess);
     this.store.upsertSession(info);
 
@@ -375,6 +376,11 @@ export class SessionManager {
     const s = this.live.get(id);
     if (!s) return;
     s.lastInput = Date.now();
+    // Enter sends the draft and Ctrl-C clears it; escape sequences (arrows, focus
+    // reports) don't add text — except a bracketed paste, which is text.
+    // Anything else leaves unsent text in the prompt.
+    if (/[\r\x03]/.test(data) && !data.startsWith("\x1b[200~")) s.draft = false;
+    else if (!data.startsWith("\x1b") || data.startsWith("\x1b[200~")) s.draft = true;
     s.proc.write(data);
   }
 
@@ -416,8 +422,8 @@ export class SessionManager {
   /**
    * Deliver a message from another agent session. An idle session gets it now;
    * a busy or blocked one gets it when its turn ends (Enter would otherwise answer
-   * a pending permission prompt). Either way it waits while the user is typing in
-   * that pane, so it never lands in the middle of their draft.
+   * a pending permission prompt). While the user has unsent text in that prompt
+   * it waits for them to send it; see flushQueued.
    */
   deliverAgentMessage(id: string, message: string, submit: boolean): string {
     const s = this.live.get(id);
@@ -426,7 +432,7 @@ export class SessionManager {
     if (s.info.status === "idle") {
       this.flushQueued(s);
       this.emitChanged();
-      return s.queued.length ? "queued — the user is typing in that pane" : submit ? "delivered" : "placed in its prompt for the user to send";
+      return s.queued.length ? "queued — the user has an unsent draft in that pane" : submit ? "delivered" : "placed in its prompt for the user to send";
     }
     this.emitChanged();
     return "queued until its current turn ends";
@@ -495,20 +501,32 @@ export class SessionManager {
     return inCwd[0];
   }
 
-  /** Deliver messages queued while a session was busy, then mark it working again. */
+  /**
+   * Deliver messages queued while a session was busy, then mark it working
+   * again. Pasting next to an unsent draft would send the user's half-written
+   * prompt with it, so a pending draft holds the queue until the user sends it
+   * (their turn then ends in idle, which flushes). A draft left untouched for
+   * DRAFT_GIVE_UP_MS gets the messages placed after it without Enter, for the
+   * user to see and send themselves.
+   */
   private flushQueued(s: LiveSession): void {
     if (!s.queued.length || s.info.status === "dead") return;
-    const QUIET_MS = 8000;
-    const typedAgo = Date.now() - s.lastInput;
-    if (typedAgo < QUIET_MS) {
-      if (s.flushTimer) clearTimeout(s.flushTimer);
-      s.flushTimer = setTimeout(() => {
-        s.flushTimer = null;
-        if (this.live.get(s.info.id) === s && s.info.status === "idle") this.flushQueued(s);
-      }, QUIET_MS - typedAgo + 200);
-      return;
+    const DRAFT_GIVE_UP_MS = 120_000;
+    const RECHECK_MS = 5_000;
+    const idleFor = Date.now() - s.lastInput;
+    let msgs = s.queued.splice(0);
+    if (s.draft) {
+      if (idleFor < DRAFT_GIVE_UP_MS) {
+        s.queued.unshift(...msgs);
+        if (s.flushTimer) clearTimeout(s.flushTimer);
+        s.flushTimer = setTimeout(() => {
+          s.flushTimer = null;
+          if (this.live.get(s.info.id) === s && s.info.status === "idle") this.flushQueued(s);
+        }, Math.min(RECHECK_MS, DRAFT_GIVE_UP_MS - idleFor));
+        return;
+      }
+      msgs = msgs.map((m) => ({ ...m, submit: false }));
     }
-    const msgs = s.queued.splice(0);
     for (const m of msgs) this.sendMessage(s.info.id, m.text, m.submit);
     if (msgs.some((m) => m.submit)) this.setStatus(s.info.id, "working");
     else this.emitChanged();

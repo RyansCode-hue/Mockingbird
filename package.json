@@ -2,7 +2,7 @@
   "name": "mockingbird",
   "productName": "Mockingbird",
   "version": "1.0.2",
-  "description": "Grid manager for parallel Claude CLI sessions — worktrees, status, broadcast, ADO & WorkTracker integration",
+  "description": "Grid manager for parallel Claude CLI sessions \u2014 worktrees, status, broadcast, ADO & WorkTracker integration",
   "main": "dist/main.js",
   "scripts": {
     "build": "node esbuild.mjs",
@@ -10,18 +10,21 @@
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron .",
     "icon": "electron scripts/make-icon.js && bash scripts/make-icns.sh",
-    "package": "npm run build && electron-builder --mac"
+    "package": "npm run build && electron-builder --mac",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "author": "Ryan Ellerbroek",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^20.14.0",
+    "@types/node": "^22.20.4",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "electron": "^42.0.0",
     "electron-builder": "^26.0.0",
-    "esbuild": "^0.21.5",
-    "typescript": "^5.5.2"
+    "esbuild": "^0.28.2",
+    "typescript": "^5.5.2",
+    "vitest": "^5.0.1"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

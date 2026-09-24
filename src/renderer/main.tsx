@@ -4,6 +4,7 @@ import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
 import { FileDock } from "./FilePanel";
 import { SetupWizard } from "./SetupWizard";
+import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
 import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
@@ -1581,19 +1582,6 @@ function StatusDots({ list }: { list: SessionInfo[] }) {
 
 type UsageShow = "claude" | "codex" | "both";
 const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
-
-/** "Resets in 4 hr 18 min" within a day, else "Resets Sun 2:00 PM". */
-function resetText(resetsAt: number | null, now: number): string {
-  if (resetsAt === null) return "";
-  const mins = Math.round((resetsAt - now) / 60_000);
-  if (mins <= 0) return "Reset";
-  if (mins < 60) return `Resets in ${mins} min`;
-  if (mins < 24 * 60) return `Resets in ${Math.floor(mins / 60)} hr ${mins % 60} min`;
-  return `Resets ${new Date(resetsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
-}
-
-/** A window whose reset has passed starts over at 0 until the next report says otherwise. */
-const pctNow = (l: UsageLimit, now: number) => (l.resetsAt !== null && l.resetsAt <= now ? 0 : l.usedPct);
 
 /**
  * Plan usage in the status bar — Claude, Codex, or both — with a popover of
