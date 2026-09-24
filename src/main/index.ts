@@ -12,6 +12,7 @@ import { readUsage, watchUsage } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
+import { userShell, whichSync, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
@@ -370,17 +371,14 @@ ipcMain.handle("update:check", () => safeAsync("update:check", () => checkForUpd
 // Each CLI updates itself (`claude update` / `codex update`); running panes keep
 // the old build until they restart, which the Settings UI offers right after.
 ipcMain.handle("agents:update", (_e, agent) =>
-  safeAsync("agents:update", () => {
+  safeAsync("agents:update", async () => {
     const kind = agent === "codex" ? "codex" : "claude";
     const bin = sessions.binFor(kind);
-    return new Promise<string>((resolve, reject) => {
-      execFile("/bin/zsh", ["-lc", `${JSON.stringify(bin)} update 2>&1`], { timeout: 180_000 }, (err, stdout) => {
-        const out = String(stdout).trim();
-        if (err) return reject(new Error(out || err.message));
-        sessions.resetBinCache(); // a self-updater may have moved the binary
-        resolve(out.split("\n").slice(-2).join(" · "));
-      });
-    });
+    if (!bin.includes("/")) throw new Error(`${kind} isn't installed (not found on your shell's PATH)`);
+    const r = await userShell(`${quote(bin)} update 2>&1`, 180_000);
+    if (r.code !== 0) throw new Error(r.out || `${kind} update exited with code ${r.code}`);
+    sessions.resetBinCache(); // a self-updater may have moved the binary
+    return r.out.split("\n").slice(-2).join(" · ");
   })()
 );
 // ---- connectors (Settings → Connectors card) ----
@@ -398,13 +396,7 @@ const readJson = (file: string): any => {
 
 ipcMain.handle("connectors:status", () =>
   safe("connectors:status", () => {
-    let az = false;
-    try {
-      execFileSync("/bin/zsh", ["-lc", "command -v az"], { encoding: "utf8" });
-      az = true;
-    } catch {
-      /* az not installed */
-    }
+    const az = whichSync("az") !== null;
     const globalMcp = Object.keys(readJson(path.join(os.homedir(), ".claude.json")).mcpServers ?? {});
     const projectMcp = Object.keys(readJson(wtFile(".mcp.json")).mcpServers ?? {});
     return { az, global: globalMcp, project: projectMcp };

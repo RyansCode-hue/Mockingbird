@@ -10,6 +10,7 @@ import { Store, expandHome } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
 import { agentFor, AgentAdapter } from "./agents";
+import { whichSync } from "./shell";
 import { mcpLaunch } from "./messaging";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
@@ -75,15 +76,8 @@ export class SessionManager {
     let resolved = bin;
     if (bin.includes("/")) resolved = expandHome(bin);
     else {
-      try {
-        const found = execFileSync("/bin/zsh", ["-lc", `command -v ${bin}`], { encoding: "utf8" })
-          .trim()
-          .split("\n")
-          .pop();
-        if (found) resolved = found;
-      } catch {
-        /* fall through to the bare name — the launch shell reports it if it's missing */
-      }
+      // a bare name means "not found" to callers; the pane's own shell reports it on launch
+      resolved = whichSync(bin) ?? bin;
     }
     this.resolvedBins.set(agent.binSetting, resolved);
     return resolved;
