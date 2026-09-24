@@ -27,10 +27,24 @@ const api = {
   adoMe: () => ipcRenderer.invoke("ado:me"),
   connectorsStatus: () => ipcRenderer.invoke("connectors:status"),
   updateCheck: () => ipcRenderer.invoke("update:check"),
+  appVersion: () => ipcRenderer.invoke("app:version"),
+  setupStatus: () => ipcRenderer.invoke("setup:status"),
+  agentUpdate: (agent: string) => ipcRenderer.invoke("agents:update", agent),
   onUpdateAvailable: (cb: (u: unknown) => void) => {
     const h = (_e: unknown, u: unknown) => cb(u);
     ipcRenderer.on("update:available", h);
     return () => ipcRenderer.removeListener("update:available", h);
+  },
+  filesList: (id: string, rel: string) => ipcRenderer.invoke("files:list", id, rel),
+  filesRead: (id: string, rel: string) => ipcRenderer.invoke("files:read", id, rel),
+  filesChanges: (id: string, scope: string) => ipcRenderer.invoke("files:changes", id, scope),
+  filesDiff: (id: string, rel: string, scope: string, untracked: boolean) =>
+    ipcRenderer.invoke("files:diff", id, rel, scope, untracked),
+  usageGet: () => ipcRenderer.invoke("usage:get"),
+  onUsageChanged: (cb: (u: unknown) => void) => {
+    const h = (_e: unknown, u: unknown) => cb(u);
+    ipcRenderer.on("usage:changed", h);
+    return () => ipcRenderer.removeListener("usage:changed", h);
   },
   adoConfigGet: () => ipcRenderer.invoke("ado:config:get"),
   adoConfigSet: (patch: unknown) => ipcRenderer.invoke("ado:config:set", patch),
@@ -57,6 +71,9 @@ const api = {
   // repos & worktrees
   listRepos: () => ipcRenderer.invoke("repos:list"),
   worktreeState: (wtPath: string) => ipcRenderer.invoke("worktree:state", wtPath),
+  listWorktrees: () => ipcRenderer.invoke("worktrees:list"),
+  removeWorktree: (repo: string, wtPath: string) => ipcRenderer.invoke("worktrees:remove", repo, wtPath),
+  migrateWorktree: (repo: string, wtPath: string) => ipcRenderer.invoke("worktrees:migrate", repo, wtPath),
   worktreeCleanup: (repo: string, wtPath: string, mode: WorktreeCleanupMode) =>
     ipcRenderer.invoke("worktree:cleanup", repo, wtPath, mode),
   repoBranches: (repoPath: string) => ipcRenderer.invoke("repo:branches", repoPath),

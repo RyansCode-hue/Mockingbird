@@ -3,7 +3,7 @@ import * as path from "path";
 import { RepoEntry } from "../shared/types";
 import { expandHome } from "./store";
 
-const SKIP = new Set(["node_modules", ".git", "dist", "build", "Library", ".Trash"]);
+const SKIP = new Set(["node_modules", ".git", "dist", "build", "Library", ".Trash", "worktrees"]);
 
 /** Scan configured roots (depth <= 3) for git repos. */
 export function indexRepos(roots: string[]): RepoEntry[] {

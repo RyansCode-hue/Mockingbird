@@ -13,6 +13,55 @@ const CLAUDE_SETTINGS = path.join(os.homedir(), ".claude", "settings.json");
 // without it, a permission approval stays amber until the whole turn finishes.
 const HOOK_EVENTS = ["Stop", "Notification", "UserPromptSubmit", "PreToolUse"] as const;
 
+// Codex uses the same hook format in its own file. It has no Notification event:
+// PermissionRequest is its "blocked on you", and because that fires after
+// PreToolUse, PostToolUse is what flips an approved tool back to working.
+const CODEX_DIR = path.join(os.homedir(), ".codex");
+const CODEX_HOOKS = path.join(CODEX_DIR, "hooks.json");
+const CODEX_EVENTS = ["Stop", "PermissionRequest", "UserPromptSubmit", "PreToolUse", "PostToolUse"] as const;
+
+/**
+ * Codex hooks are only managed where the Codex CLI is installed. ~/.codex alone
+ * proves nothing: the ChatGPT and Codex desktop apps create it too, and they
+ * also read ~/.codex/hooks.json. `codexBin` is the resolved binary path, or null.
+ */
+const codexPresent = (codexBin: string | null) => !!codexBin && fs.existsSync(codexBin);
+
+/** Parse a JSON config we are about to rewrite; an unparseable file aborts rather than being replaced. */
+function readConfig(file: string): any {
+  if (!fs.existsSync(file)) return {};
+  const raw = fs.readFileSync(file, "utf8");
+  try {
+    return raw.trim() ? JSON.parse(raw) : {};
+  } catch (err) {
+    throw new Error(
+      `${file} is not valid JSON (${(err as Error).message}). ` +
+        `Fix or move that file, then install hooks again — Mockingbird will not overwrite it.`
+    );
+  }
+}
+
+/** Add our hook command to each event, leaving every existing hook in place. */
+function mergeHooks(config: any, events: readonly string[]): void {
+  config.hooks = config.hooks ?? {};
+  for (const event of events) {
+    const existing: any[] = config.hooks[event] ?? [];
+    if (!JSON.stringify(existing).includes(HOOK_SCRIPT)) {
+      existing.push({ hooks: [{ type: "command", command: `"${HOOK_SCRIPT}" ${event}` }] });
+      config.hooks[event] = existing;
+    }
+  }
+}
+
+function wired(file: string, events: readonly string[]): boolean {
+  try {
+    const config = JSON.parse(fs.readFileSync(file, "utf8"));
+    return events.every((ev) => JSON.stringify(config.hooks?.[ev] ?? []).includes(HOOK_SCRIPT));
+  } catch {
+    return false; // missing or unreadable counts as not installed — the UI offers the install
+  }
+}
+
 const SCRIPT = `#!/bin/bash
 # Mockingbird status hook — appends Claude Code hook events for the app to tail.
 payload=$(cat)
@@ -21,53 +70,36 @@ exit 0
 `;
 
 /** Write hook.sh and merge our hooks into ~/.claude/settings.json (preserving existing hooks). */
-export function installHooks(): { installed: boolean; message: string } {
+export function installHooks(codexBin: string | null): { installed: boolean; message: string } {
   fs.mkdirSync(MB_DIR, { recursive: true });
   fs.writeFileSync(HOOK_SCRIPT, SCRIPT, { mode: 0o755 });
   if (!fs.existsSync(EVENTS_FILE)) fs.writeFileSync(EVENTS_FILE, "");
 
-  let settings: any = {};
-  if (fs.existsSync(CLAUDE_SETTINGS)) {
-    // an unparseable existing file must abort: the write below replaces the
-    // whole document, so proceeding would wipe the user's real Claude settings
-    const raw = fs.readFileSync(CLAUDE_SETTINGS, "utf8");
-    try {
-      settings = raw.trim() ? JSON.parse(raw) : {};
-    } catch (err) {
-      throw new Error(
-        `~/.claude/settings.json is not valid JSON (${(err as Error).message}). ` +
-          `Fix or move that file, then install hooks again — Mockingbird will not overwrite it.`
-      );
-    }
-  }
-  settings.hooks = settings.hooks ?? {};
-
-  for (const event of HOOK_EVENTS) {
-    const cmd = `"${HOOK_SCRIPT}" ${event}`;
-    const existing: any[] = settings.hooks[event] ?? [];
-    const already = JSON.stringify(existing).includes(HOOK_SCRIPT);
-    if (!already) {
-      existing.push({ hooks: [{ type: "command", command: cmd }] });
-      settings.hooks[event] = existing;
-    }
-  }
-
+  const settings = readConfig(CLAUDE_SETTINGS);
+  mergeHooks(settings, HOOK_EVENTS);
   fs.mkdirSync(path.dirname(CLAUDE_SETTINGS), { recursive: true });
   fs.writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
-  return { installed: true, message: "Hooks installed into ~/.claude/settings.json" };
+
+  if (!codexPresent(codexBin)) return { installed: true, message: "Hooks installed into ~/.claude/settings.json" };
+  const codex = readConfig(CODEX_HOOKS);
+  mergeHooks(codex, CODEX_EVENTS);
+  fs.writeFileSync(CODEX_HOOKS, JSON.stringify(codex, null, 2));
+  return {
+    installed: true,
+    message:
+      "Hooks installed into ~/.claude/settings.json and ~/.codex/hooks.json. " +
+      "Codex ignores new hooks until you approve them once: type /hooks in any Codex session.",
+  };
 }
 
-export function hooksInstalled(): boolean {
-  try {
-    const settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, "utf8"));
-    // every event must be wired — an older install missing PreToolUse counts
-    // as not installed so the UI offers the one-click upgrade
-    return HOOK_EVENTS.every((ev) =>
-      JSON.stringify(settings.hooks?.[ev] ?? []).includes(HOOK_SCRIPT)
-    );
-  } catch {
-    return false;
-  }
+export function hookStatus(codexBin: string | null): { claude: boolean; codex: boolean | null } {
+  return { claude: wired(CLAUDE_SETTINGS, HOOK_EVENTS), codex: codexPresent(codexBin) ? wired(CODEX_HOOKS, CODEX_EVENTS) : null };
+}
+
+export function hooksInstalled(codexBin: string | null): boolean {
+  // every event must be wired — an older install missing one counts as not
+  // installed so the UI offers the one-click upgrade
+  return wired(CLAUDE_SETTINGS, HOOK_EVENTS) && (!codexPresent(codexBin) || wired(CODEX_HOOKS, CODEX_EVENTS));
 }
 
 /** Tail events.jsonl and route status changes to the session manager. */
@@ -113,11 +145,15 @@ export function watchEvents(
           }
           // Stop → idle · Notification → waiting · UserPromptSubmit/PreToolUse → working
           // (PreToolUse is what flips an approved permission back to working immediately)
-          const status =
-            evt.event === "Stop" ? "idle" : evt.event === "Notification" ? "waiting" : "working";
+          const blocked = evt.event === "Notification" || evt.event === "PermissionRequest";
+          const status = evt.event === "Stop" ? "idle" : blocked ? "waiting" : "working";
           // Notification payloads carry a specific message ("Claude needs your
           // permission to use Bash") — surfaced in the pane's waiting banner.
-          const reason = evt.event === "Notification" ? msg : undefined;
+          const tool = typeof evt.payload?.tool_name === "string" ? evt.payload.tool_name : "a tool";
+          const reason =
+            evt.event === "Notification" ? msg
+            : evt.event === "PermissionRequest" ? `Codex needs your permission to use ${tool}`
+            : undefined;
           const info = sessions.statusByCwd(cwd, status, reason, claudeId);
           if (info && (status === "idle" || status === "waiting")) {
             onStatus(info, status);

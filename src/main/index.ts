@@ -1,13 +1,17 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, shell } from "electron";
-import { execFileSync } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Store, expandHome } from "./store";
 import { SessionManager } from "./sessions";
 import { indexRepos } from "./repos";
-import { worktreeState, cleanupWorktree, listBranches } from "./worktrees";
+import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree } from "./worktrees";
 import { installHooks, hooksInstalled, watchEvents } from "./hooks";
+import { readUsage, watchUsage } from "./usage";
+import { listDir, readFile, gitChanges, fileDiff } from "./files";
+import { Messaging } from "./messaging";
+import { setupStatus } from "./setup";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
@@ -140,7 +144,18 @@ function createWindow(): void {
   sessions.attach(win.webContents);
 }
 
+// One instance per user: a second copy would overwrite ~/.mockingbird/state.json
+// and take over the agent-messaging socket from the first. Opening the app again
+// just brings the running window forward.
+const isPrimary = app.requestSingleInstanceLock();
+if (!isPrimary) {
+  app.quit(); // asynchronous — startup below checks isPrimary so nothing runs meanwhile
+} else {
+  app.on("second-instance", () => focusPane());
+}
+
 app.whenReady().then(() => {
+  if (!isPrimary) return;
   // node-pty ships spawn-helper without its exec bit (microsoft/node-pty#850) —
   // the cause of "posix_spawnp failed" on macOS. Repair every candidate location.
   const ptyRoot = path.join(__dirname, "..", "node_modules", "node-pty");
@@ -194,6 +209,17 @@ app.whenReady().then(() => {
   sessions.onChanged = updateTray;
   updateTray();
   setInterval(updateTray, 60_000); // keep wait durations in the dropdown fresh
+  new Messaging(
+    sessions,
+    () => store.settings.agentMessagesSubmit !== false,
+    (from, to) =>
+      notifySession(
+        from.id,
+        "Agents paused messaging",
+        `${from.ticketTitle ?? from.title} ↔ ${to.ticketTitle ?? to.title} hit the message limit — check on them`
+      )
+  ).start();
+  watchUsage((u) => BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", u));
   watchEvents(sessions, (info, status) => {
     notifySession(
       info.id,
@@ -239,6 +265,57 @@ ipcMain.handle("worktree:state", (_e, wtPath) => safe("worktree:state", () => wo
 ipcMain.handle("worktree:cleanup", (_e, repo, wtPath, mode) =>
   safe("worktree:cleanup", () => cleanupWorktree(repo, wtPath, mode))()
 );
+ipcMain.handle("worktrees:list", () =>
+  safe("worktrees:list", () =>
+    listWorktrees(
+      indexRepos(store.settings.repoRoots),
+      sessions.list().map((s) => s.cwd)
+    )
+  )()
+);
+ipcMain.handle("worktrees:remove", (_e, repo, wtPath) =>
+  safe("worktrees:remove", () => {
+    if (sessions.list().some((s) => s.cwd === wtPath && s.status !== "dead")) {
+      throw new Error("a live session is running in that worktree — close it first");
+    }
+    removeWorktree(repo, wtPath);
+    return true;
+  })()
+);
+ipcMain.handle("worktrees:migrate", (_e, repo, wtPath) =>
+  safe("worktrees:migrate", () => {
+    if (sessions.list().some((s) => s.cwd === wtPath && s.status !== "dead")) {
+      throw new Error("a live session is running in that worktree — close it first");
+    }
+    const dest = migrateWorktree(repo, wtPath);
+    // previous sessions must follow their checkout, or resuming them would
+    // try to re-add a branch that is already checked out at the new path
+    let touched = false;
+    for (const rec of store.state.sessions) {
+      if (rec.cwd === wtPath) {
+        rec.cwd = dest;
+        touched = true;
+      }
+    }
+    if (touched) store.save();
+    return dest;
+  })()
+);
+// The explorer addresses files by session id + relative path, so the renderer
+// can only reach into folders a live session actually runs in.
+function sessionRoot(sessionId: string): string {
+  const s = sessions.list().find((x) => x.id === sessionId);
+  if (!s) throw new Error("Session is no longer running");
+  return s.cwd;
+}
+ipcMain.handle("files:list", (_e, id, rel) => safeAsync("files:list", () => listDir(sessionRoot(id), rel))());
+ipcMain.handle("files:read", (_e, id, rel) => safeAsync("files:read", () => readFile(sessionRoot(id), rel))());
+ipcMain.handle("files:changes", (_e, id, scope) =>
+  safeAsync("files:changes", () => gitChanges(sessionRoot(id), scope))()
+);
+ipcMain.handle("files:diff", (_e, id, rel, scope, untracked) =>
+  safeAsync("files:diff", () => fileDiff(sessionRoot(id), rel, scope, untracked))()
+);
 ipcMain.handle("repo:branches", (_e, repoPath) =>
   safe("repo:branches", () => listBranches(expandHome(repoPath)))()
 );
@@ -259,8 +336,16 @@ ipcMain.handle("claudemd:save", (_e, p, content) =>
   })()
 );
 
-ipcMain.handle("hooks:installed", () => hooksInstalled());
-ipcMain.handle("hooks:install", () => installHooks());
+ipcMain.handle("usage:get", () => readUsage());
+// the resolved binary is a path only when it was found; a bare name means not installed
+const codexBinPath = () => {
+  const bin = sessions.binFor("codex");
+  return bin.includes("/") ? bin : null;
+};
+ipcMain.handle("hooks:installed", () => hooksInstalled(codexBinPath()));
+ipcMain.handle("hooks:install", () => safe("hooks:install", () => installHooks(codexBinPath()))());
+ipcMain.handle("app:version", () => app.getVersion());
+ipcMain.handle("setup:status", () => safeAsync("setup:status", () => setupStatus(store, sessions))());
 ipcMain.handle("settings:get", () => store.settings);
 ipcMain.handle("settings:set", (_e, s) => {
   store.setSettings(s);
@@ -282,6 +367,22 @@ ipcMain.handle("ado:update", (_e, id, patch) =>
 );
 ipcMain.handle("ado:me", () => safeAsync("ado:me", () => adoIdentity(store))());
 ipcMain.handle("update:check", () => safeAsync("update:check", () => checkForUpdate())());
+// Each CLI updates itself (`claude update` / `codex update`); running panes keep
+// the old build until they restart, which the Settings UI offers right after.
+ipcMain.handle("agents:update", (_e, agent) =>
+  safeAsync("agents:update", () => {
+    const kind = agent === "codex" ? "codex" : "claude";
+    const bin = sessions.binFor(kind);
+    return new Promise<string>((resolve, reject) => {
+      execFile("/bin/zsh", ["-lc", `${JSON.stringify(bin)} update 2>&1`], { timeout: 180_000 }, (err, stdout) => {
+        const out = String(stdout).trim();
+        if (err) return reject(new Error(out || err.message));
+        sessions.resetBinCache(); // a self-updater may have moved the binary
+        resolve(out.split("\n").slice(-2).join(" · "));
+      });
+    });
+  })()
+);
 // ---- connectors (Settings → Connectors card) ----
 const wtFile = (name: string) => path.join(expandHome(store.settings.workTrackerPath), name);
 const readJson = (file: string): any => {

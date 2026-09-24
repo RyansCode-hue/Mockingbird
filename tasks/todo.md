@@ -1043,3 +1043,202 @@ mouse mode stays `none` throughout.
       trigger can't fire there; the toast's placement/style verified by
       injection, the trigger path relies on the same promise the (confirmed
       working) copy uses.
+
+## Iteration 52 — trackpad scroll speed in claude panes
+
+- [x] The synthesized wheel reports sent at least one scroll per wheel event —
+      fine for a mouse (few chunky ±120 events), wild for a trackpad (dozens of
+      tiny pixel deltas per second → dozens of reports). Deltas now accumulate
+      into whole lines using the pane's real cell height with the remainder
+      carried (the same conversion xterm applies natively), direction flips
+      reset the remainder, and deltaMode line/page units are normalized.
+      Verified: 120px across 30 trackpad events → 6 reports, equal to one
+      120px mouse notch.
+
+## Iteration 53 — "my chat became a regular terminal": diagnosed + chat sessions
+
+Process-tree + state.json forensics: the affected panes were `shell: true`
+records — Terminal panes with `claude` typed in by hand and then renamed.
+When that claude exits (typically the CLI's update prompt), a real claude pane
+goes red with Resume, but a shell-hosted one just drops to the zsh prompt; on
+app restart the record faithfully restores a plain shell. Those panes also
+miss every claude-pane protection (mouse stripping, selection fixes) —
+confirmed by mouse-protocol reports in the audit log for one of them.
+
+- [x] Repo-less Claude chats are now first-class: New Session with no repo
+      selected starts a plain chat (button reads "Start chat", with a note) —
+      tracked, resumable, restartable like any session.
+- [x] Repo-less non-debrief sessions run in $HOME instead of the WorkTracker
+      folder — home is also where claude keeps conversations started from bare
+      terminals, so --continue/--resume can reach the previously lost chats.
+      Debrief assistants stay in WorkTracker (their instructions live there).
+
+## Iteration 54 — Group and Workspace as real selectors in New Session
+
+- [x] The single Group text field (with its `group/workspace` path syntax) is
+      replaced by two explicit controls: **Group** — auto (ticket #) / none,
+      any existing group, or "new group…" with a name input — and
+      **Workspace** — none (its own pane), the chosen group's existing
+      workspaces, or "new workspace…". The workspace select stays disabled
+      until a group is picked; changing group resets it. "Workspace" is now
+      the user-facing name for what the path syntax called a sub-group.
+- [x] The + buttons still seed the modal: an existing workspace preselects it,
+      a not-yet-created name lands pre-filled under "new workspace…".
+- [x] Verified in the harness: selects populated from live groups
+      (none/5038/5101 + backend under 5038), and creating with a new workspace
+      name produced `taskGroup: "5038/etl work"` in the create payload.
+
+## Iteration 55 — white diff panel + iTerm-grade selection persistence
+
+- [x] **White box = Claude's /diff panel in light theme.** The CLI picks
+      light/dark by querying the terminal background at startup; the reply
+      throttle from the /clear fix (4 answers per 3s, none while hidden) could
+      eat that answer, so claude guessed light. The gate is now shaped like the
+      actual loop signature: answers always flow (hidden panes included); only
+      the SAME answer repeating more than 8× within 5s is suppressed,
+      self-recovering each window. Verified: the OSC-11 background answer is
+      forwarded again.
+- [x] **The real selection-killer, final layer:** xterm subscribes
+      clearSelection to coreService.onUserInput — which fires for its own
+      automatic query answers, and the claude TUI queries constantly. In claude
+      panes clearSelection is gated on real user input in the last 400ms:
+      auto-replies can't nuke a highlight; typing and clicking still clear.
+      Verified: selection survives 20 rounds of redraw+CPR+colour queries
+      byte-identical; a click-attributed clear still clears.
+- [x] Mis-themed sessions re-detect on their next claude start —
+      Settings → Restart all Claude sessions.
+
+## Iteration 56 — pick model and effort when starting a session
+
+- [x] New Session (Claude launch) gains **Model** (default / Opus / Sonnet /
+      Haiku / custom model id…) and **Effort** (default / low / medium / high /
+      xhigh / max) selects, passed to the CLI as `--model` / `--effort`.
+      "default" sends no flag, so claude's own configuration applies. The last
+      choice is remembered across sessions.
+- [x] Both values persist on the session record and ride through relaunch, so
+      a restored or restarted session comes back on the same model and effort.
+      Panes at full density show a `model · effort` chip next to the branch.
+- [x] Verified in the harness: picking Opus + xhigh produced
+      `model: "opus", effort: "xhigh"` in the create payload and both were
+      remembered for the next open.
+
+## Iteration 57 — the Resume loop, and dead panes that hide the error
+
+- [x] **Resume loop**: relaunch always passed `--continue`, which exits at once
+      when the cwd has no conversation yet. A session that died at startup
+      therefore could never be resumed — every Resume re-died. relaunch now
+      checks `~/.claude/projects/<cwd>` for a transcript and launches fresh
+      (same repo/branch/model/effort) when there is nothing to continue.
+- [x] **Dead panes show why**: the pane records the process exit code and
+      renders the last dozen lines it wrote (ANSI-stripped) above the Resume /
+      Close buttons — the red message that used to flash and vanish is now
+      legible. Verified in the harness with a fixture that exited code 1.
+- [ ] The original startup failure for #4859 is still unidentified (no hook
+      ever fired from that worktree; `--model opus --effort xhigh` launches
+      fine in a raw pty). The exit tail will name it next time.
+
+## Iteration 58 — hide the CLI's diff panel
+
+The white box in wide claude panes is Claude Code's own /diff side panel
+(fullscreen TUI, auto-opens when the terminal is wide). Its × never worked in
+Mockingbird because claude panes are deliberately denied the mouse protocol.
+
+- [x] Header gains ⊟ "hide diff" while a panel is showing. It locates the
+      panel's literal "×" glyph in the screen buffer and delivers a mouse
+      press/release at that cell — the CLI's own close, never a keystroke into
+      the prompt (typing /diff would submit any drafted text along with it).
+- [x] Clicking the × glyph directly works the same way.
+- [x] Presentation: the panel now renders dark — the light look was the theme
+      misdetection fixed in iteration 55; sessions started before that build
+      stay light until restarted. The panel's content is CLI-drawn text and
+      cannot be restyled beyond that.
+- [x] Verified in the harness: button appears with a panel present; click →
+      `ESC[<0;69;1M ESC[<0;69;1m` at the ×'s cell.
+
+## Iteration 59 — hide-diff button missing on long-lived sessions
+
+- [x] The button gated on having seen the CLI's mouse-tracking request in the
+      pane's history; a session running for hours has scrolled that startup
+      sequence out of the 400KB replay, so wantsMouse stayed false and neither
+      the button nor wheel-scroll worked. Claude panes now start from
+      "wants the mouse" and only an explicit disable turns it off.
+- [x] Panel detection no longer requires a drawn border: the panel is a
+      background-filled box whose top row is spaces ending in the close glyph.
+      A ×-family glyph as the last character of a top-right row is enough; a
+      plain "x" additionally needs a box-drawing border on that row. Scan
+      widened to six rows.
+- [x] Verified in the harness: borderless panel, no enable sequence in history
+      → button shown, click delivered at the × cell.
+- Note: the panel still renders white in sessions started before the theme fix
+  — claude reads the terminal background once, at its own startup. Restart the
+  session (Settings → Restart all) to get the dark panel.
+
+## Iteration 60 — New Session modal flickering
+
+- [x] Both full-screen overlays (`.modal-back`, the popover backdrop) used
+      `backdrop-filter: blur()`. Chromium re-filters the backdrop on every
+      repaint beneath it, and beneath the modal sit live terminals repainting
+      continuously — on some GPU paths that thrashes into on/off flashing that
+      reads as the modal opening and closing. Not reproducible in the harness
+      (key auto-repeat + output storm left the modal mounted, zero remounts),
+      so this is the probable cause rather than a proven one. Blur removed;
+      dim kept.
+
+## Iteration 61 — worktrees only when they earn it
+
+- [x] New Session: the isolated-worktree checkbox now defaults **off**; picking
+      a ticket turns it on (branch-per-ticket is where the isolation pays). An
+      explicit choice is remembered and wins over the ticket rule. Off = the
+      session runs in the repo checkout on its current branch.
+- [x] Dashboard "start session from ticket" gets the same checkbox (default on);
+      off hides the branch controls and runs in the checkout.
+- [x] Pane rail shows the session's folder with **VS Code** and **Finder**
+      buttons (`open -a "Visual Studio Code"` / `shell.showItemInFolder`); an
+      open failure is reported, not swallowed.
+- [x] Settings → **Worktrees**: every `<repo>-worktrees/*` checkout with branch,
+      dirt, ahead/behind, age, and whether a live session runs in it; strays get
+      a Remove button (confirm names what would be lost; the branch is kept;
+      removal refuses while a live session is inside).
+- [x] Verified in the harness: modal default off → on after ticket pick; rail
+      folder cell with both buttons; janitor lists live + stray rows with
+      Remove only on the stray.
+
+## Iteration 62 — branches in the checkout; worktrees opt-in only
+
+- [x] Ticket sessions now create their branch **in the repo checkout itself**
+      (`git switch -c <ticket> origin/<base>` after a fetch; existing local or
+      origin branches are switched to / tracked). No worktree folder, so VS
+      Code launch/debug configs on the repo keep working.
+- [x] Refuses loudly instead of surprising you: uncommitted changes on the
+      current branch ("commit or stash…"), or another live session already on
+      a different branch in that checkout ("close it, or tick isolated
+      worktree") — one branch per checkout is the constraint worktrees existed
+      for.
+- [x] "Isolated worktree" is a plain opt-in checkbox (New Session + Dashboard),
+      default off, remembered. Relaunch of an in-checkout session runs where it
+      was without switching branches; worktree sessions relaunch as worktrees.
+- [x] Roadmap: Changes panel (native Source Control view + diff viewer + PR
+      buttons) added under Next.
+- [x] Verified: real scratch repo with an origin — new branch lands on
+      origin/dev with no `-worktrees` dir; dirty checkout refused; occupied
+      checkout refused; existing branch switches. Harness: ticket pick leaves
+      worktree off, base-branch select shown, payload `useWorktree:false,
+      baseBranch:"dev"`.
+
+## Iteration 63 — one worktrees/ folder, a subfolder per repo
+
+- [x] Worktrees now live at `<parent>/worktrees/<repo>/<branch>` (e.g.
+      `~/Code/worktrees/backoffice/5038-…`) instead of a `<repo>-worktrees`
+      folder beside every repo. The old layout is still read, never written:
+      a branch already checked out there is reused rather than re-added.
+- [x] Settings → Worktrees tags old-layout entries and offers "Move N
+      old-layout worktrees into worktrees/" (`git worktree move`; in-use ones
+      skipped; emptied `<repo>-worktrees` folders removed; previous-session
+      records follow their checkout so Resume still works).
+- [x] Ticket sessions default back to an isolated worktree (the in-checkout
+      branch mode stays as the unticked option; the choice is remembered).
+      Repo scanner skips `worktrees/`.
+- [x] Verified on a real scratch repo: new worktree lands in
+      worktrees/backoffice/, legacy branch reused, migration moves it, git
+      still lists it, branch intact, old folder gone. Harness: old-layout tag +
+      Move button fire the migration.

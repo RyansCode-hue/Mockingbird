@@ -26,13 +26,16 @@ interface TermEntry {
   ready: boolean;
   lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
   inputWired?: boolean; // DOM input listeners attached to xterm's textarea
-  replies: number[]; // timestamps of recent automatic query answers (loop detector)
+  lastReply: string; // loop detector: the same answer repeating means the
+  lastReplyCount: number; // answer itself is provoking the next question
+  lastReplyStart: number;
   stripMouse: boolean; // claude panes: the CLI never gets the mouse (see below)
   carry: string; // trailing partial escape sequence held until the next chunk
   dragging: boolean; // selection drag in progress
   hold: string[] | null; // output parked while a selection stands
   holdStart: number;
   wantsMouse: boolean; // the CLI asked for mouse tracking (we stripped it)
+  wheelAcc: number; // accumulated wheel pixels not yet emitted as scroll lines
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
@@ -51,13 +54,14 @@ const TERM_REPLY = new RegExp(
     ")$"
 );
 const USER_INPUT_WINDOW_MS = 400;
-// A terminal answers a handful of queries when a program starts. Answering the
-// same queries over and over means the answer is itself provoking the next
-// query — a feedback loop between xterm and the CLI. Those loops are what has
-// been clearing sessions: bursts of identical writes ~400ms apart, in panes
-// nobody was touching. Past this many answers in the window, stop answering.
-const REPLY_BURST = 4;
-const REPLY_WINDOW_MS = 3000;
+// Loop detector for automatic query answers. A program starting up asks a
+// varied handful of questions (device attributes, cursor position, colours —
+// including the background-colour probe the claude TUI uses to pick light or
+// dark, so answers must flow even for hidden panes). A feedback loop looks
+// different: the SAME answer repeating on a short period, indefinitely. Only
+// that is suppressed.
+const REPLY_LOOP_COUNT = 8;
+const REPLY_LOOP_WINDOW_MS = 5000;
 
 // The moment a program enables mouse tracking, xterm clears any selection and
 // disables its selection service entirely (protocol change → selectionService.
@@ -134,6 +138,40 @@ function stripMouseEnables(e: TermEntry, data: string): string {
     e.wantsMouse = true;
     return "";
   });
+}
+
+/**
+ * The claude TUI's side panel (its /diff view) draws a literal "×" in the top
+ * rows of the right half of the screen. Its cell — 1-based, as mouse reports
+ * count — is how a close click can be delivered to the CLI without ever
+ * typing into the prompt.
+ */
+// The panel is a background-filled box, so its top row is usually spaces
+// ending in the close glyph; a dedicated multiplication-sign glyph is proof
+// enough on its own, a plain "x" only alongside a drawn border.
+const PANEL_CLOSE_GLYPHS = new Set(["×", "✕", "✖", "⨯"]);
+const PANEL_BORDER_RE = /[─━╌┄┈╭┌╮┐]/;
+function findPanelClose(term: Terminal): { col: number; row: number } | null {
+  const buf = term.buffer.active;
+  const rows = Math.min(6, term.rows);
+  for (let y = 0; y < rows; y++) {
+    const line = buf.getLine(buf.viewportY + y)?.translateToString(true) ?? "";
+    const trimmed = line.trimEnd();
+    if (!trimmed) continue;
+    const x = trimmed.length - 1;
+    const glyph = trimmed[x];
+    if (x < term.cols / 2) continue;
+    const right = trimmed.slice(Math.floor(term.cols / 2));
+    const isClose =
+      PANEL_CLOSE_GLYPHS.has(glyph) || ((glyph === "x" || glyph === "X") && PANEL_BORDER_RE.test(right));
+    if (isClose) return { col: x + 1, row: y + 1 };
+  }
+  return null;
+}
+
+/** Press and release at a cell, in the SGR mouse encoding the CLI asked for. */
+function clickCell(id: string, cell: { col: number; row: number }): void {
+  writeSession(id, `\x1b[<0;${cell.col};${cell.row}M\x1b[<0;${cell.col};${cell.row}m`);
 }
 
 /** The only path from the UI to a pty: silently no-ops until replay is done. */
@@ -238,6 +276,7 @@ export function TerminalPane({
   paneIndex,
   onFocus,
   onClose,
+  onOpenFiles,
   onZoom,
   onAddTab,
   onReorder,
@@ -254,6 +293,8 @@ export function TerminalPane({
   paneIndex: number;
   onFocus: () => void;
   onClose: () => void;
+  /** Show this session's folder in the explorer dock. */
+  onOpenFiles?: () => void;
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
   onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
   onReorder?: (srcId: string, targetId: string) => void;
@@ -268,6 +309,27 @@ export function TerminalPane({
   const waiting = session.status === "waiting";
   const [editTitle, setEditTitle] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [panelClose, setPanelClose] = useState<{ col: number; row: number } | null>(null);
+  const [exitTail, setExitTail] = useState<string | null>(null);
+  useEffect(() => {
+    if (!dead) {
+      setExitTail(null);
+      return;
+    }
+    let alive = true;
+    window.mb.sessionBuffer(session.id).then((buf: string) => {
+      if (!alive) return;
+      const text = (buf || "")
+        .replace(/\x1b\[[0-9;?<>=]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\|\x1b[()=>][A-Za-z0-9]?|\x1b[78]|\r/g, "")
+        .split("\n")
+        .map((l) => l.trimEnd())
+        .filter((l) => l.trim().length > 0);
+      setExitTail(text.slice(-12).join("\n"));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [dead, session.id]);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const commitTitle = async () => {
@@ -324,14 +386,33 @@ export function TerminalPane({
         fit,
         ready: false,
         lastInput: 0,
-        replies: [],
+        lastReply: "",
+        lastReplyCount: 0,
+        lastReplyStart: 0,
         stripMouse: !session.shell,
+        // the CLI's TUI requests mouse tracking at startup; a long-lived
+        // session's replayed history may have scrolled that request out, so
+        // claude panes start from "wants it" and only a disable turns it off
         carry: "",
         dragging: false,
         hold: null,
         holdStart: 0,
-        wantsMouse: false,
+        wantsMouse: !session.shell,
+        wheelAcc: 0,
       };
+      // the side panel appears and disappears with output; recheck at most
+      // twice a second so the header's "hide diff" button tracks it
+      let panelCheck: ReturnType<typeof setTimeout> | null = null;
+      term.onWriteParsed(() => {
+        if (panelCheck) return;
+        panelCheck = setTimeout(() => {
+          panelCheck = null;
+          const found = e.wantsMouse ? findPanelClose(term) : null;
+          setPanelClose((prev) =>
+            (prev?.col === found?.col && prev?.row === found?.row) ? prev : found
+          );
+        }, 500);
+      });
       term.onData((d) => {
         const now = Date.now();
         if (now - e.lastInput <= USER_INPUT_WINDOW_MS) return writeSession(session.id, d);
@@ -341,17 +422,16 @@ export function TerminalPane({
           window.mb.auditWrite(session.id, "dropped-unattributed", d);
           return;
         }
-        // a detached terminal (hidden pane / inactive tab) must not answer at
-        // all — nobody is looking, and its answers are what start the loops
-        if (!term.element?.isConnected) {
-          window.mb.auditWrite(session.id, "dropped-reply-while-hidden", d);
-          return;
-        }
-        e.replies = e.replies.filter((t) => now - t < REPLY_WINDOW_MS);
-        e.replies.push(now);
-        if (e.replies.length > REPLY_BURST) {
-          window.mb.auditWrite(session.id, "suppressed-reply-loop", d);
-          return;
+        if (d === e.lastReply && now - e.lastReplyStart < REPLY_LOOP_WINDOW_MS) {
+          e.lastReplyCount++;
+          if (e.lastReplyCount > REPLY_LOOP_COUNT) {
+            window.mb.auditWrite(session.id, "suppressed-reply-loop", d);
+            return;
+          }
+        } else {
+          e.lastReply = d;
+          e.lastReplyCount = 1;
+          e.lastReplyStart = now;
         }
         writeSession(session.id, d);
       });
@@ -473,6 +553,22 @@ export function TerminalPane({
     };
     const el = holder.current;
     el?.addEventListener("paste", onPaste, true);
+    const onClick = (ev: MouseEvent) => {
+      const t = terms.get(session.id);
+      if (!t?.wantsMouse || !t.ready || t.term.hasSelection()) return;
+      const target = findPanelClose(t.term);
+      if (!target) return;
+      const screen = t.term.element?.querySelector(".xterm-screen");
+      if (!screen) return;
+      const r = screen.getBoundingClientRect();
+      const col = Math.floor(((ev.clientX - r.left) / r.width) * t.term.cols) + 1;
+      const row = Math.floor(((ev.clientY - r.top) / r.height) * t.term.rows) + 1;
+      if (Math.abs(col - target.col) <= 1 && row === target.row) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        clickCell(session.id, target);
+      }
+    };
     const onWheel = (ev: WheelEvent) => {
       stamp();
       const t = terms.get(session.id);
@@ -486,14 +582,26 @@ export function TerminalPane({
       ev.preventDefault();
       ev.stopPropagation();
       const r = screen.getBoundingClientRect();
+      const cellH = r.height / t.term.rows;
+      // trackpads stream dozens of tiny pixel deltas per second — emitting a
+      // report per event scrolls wildly fast. Accumulate to whole lines (cell
+      // heights) and carry the remainder, the same conversion xterm applies to
+      // its own native mouse handling. deltaMode: 0=pixels, 1=lines, 2=pages.
+      const px = ev.deltaMode === 1 ? ev.deltaY * cellH : ev.deltaMode === 2 ? ev.deltaY * r.height : ev.deltaY;
+      if (Math.sign(px) !== Math.sign(t.wheelAcc)) t.wheelAcc = 0; // direction flip
+      t.wheelAcc += px;
+      const lines = Math.trunc(t.wheelAcc / cellH);
+      if (!lines) return; // not a full line yet — swallowed, never arrow-key fallback
+      t.wheelAcc -= lines * cellH;
       const col = Math.min(t.term.cols, Math.max(1, Math.floor(((ev.clientX - r.left) / r.width) * t.term.cols) + 1));
       const row = Math.min(t.term.rows, Math.max(1, Math.floor(((ev.clientY - r.top) / r.height) * t.term.rows) + 1));
-      const btn = ev.deltaY < 0 ? 64 : 65;
-      const n = Math.min(3, Math.max(1, Math.round(Math.abs(ev.deltaY) / 40)));
+      const btn = lines < 0 ? 64 : 65;
+      const n = Math.min(10, Math.abs(lines));
       writeSession(session.id, `\x1b[<${btn};${col};${row}M`.repeat(n));
     };
     el?.addEventListener("pointerdown", onDown, true);
     el?.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    el?.addEventListener("click", onClick, true);
     window.addEventListener("pointerup", endDrag, true);
     window.addEventListener("pointercancel", endDrag, true);
     return () => {
@@ -501,6 +609,7 @@ export function TerminalPane({
       el?.removeEventListener("paste", onPaste, true);
       el?.removeEventListener("pointerdown", onDown, true);
       el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
+      el?.removeEventListener("click", onClick, true);
       window.removeEventListener("pointerup", endDrag, true);
       window.removeEventListener("pointercancel", endDrag, true);
       const t = terms.get(session.id);
@@ -584,6 +693,11 @@ export function TerminalPane({
           </span>
         )}
         {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
+        {density === "max" && (session.model || session.effort) && (
+          <span className="chip" title="model · effort for this session">
+            {[session.model, session.effort].filter(Boolean).join(" · ")}
+          </span>
+        )}
         {density === "max" && session.ticketId && (
           <span className={`chip ${dead ? "" : "teal"}`}>
             #{session.ticketId.replace(/^#/, "")}{dead ? "" : " · Active"}
@@ -591,6 +705,7 @@ export function TerminalPane({
         )}
         {assistant && density !== "min" && <span className="chip teal">assistant</span>}
         {session.shell && density !== "min" && <span className="chip">shell</span>}
+        {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <span className="controls">
           {!dead && (
@@ -603,6 +718,18 @@ export function TerminalPane({
               }}
             >
               ⟳
+            </button>
+          )}
+          {panelClose && !dead && (
+            <button
+              className="icon"
+              title="Hide the CLI's diff side panel (same as its × or /diff)"
+              onClick={(e) => {
+                e.stopPropagation();
+                clickCell(session.id, panelClose);
+              }}
+            >
+              ⊟
             </button>
           )}
           {onAddTab && !dead && (
@@ -650,6 +777,21 @@ export function TerminalPane({
               <span className="v">{session.repoPath.split("/").pop()}</span>
             </div>
           )}
+          <div className="cell folder" title={session.cwd}>
+            <span className="k">Folder</span>
+            <span className="v">
+              {session.cwd.split("/").pop()}
+              {onOpenFiles && (
+                <button
+                  className="mini"
+                  title={`Browse ${session.cwd} — files, viewer, diffs (⌘B)`}
+                  onClick={onOpenFiles}
+                >
+                  Files
+                </button>
+              )}
+            </span>
+          </div>
           {session.queuedCount ? (
             <div className="cell">
               <span className="k">Queued</span>
@@ -661,7 +803,17 @@ export function TerminalPane({
 
       {dead ? (
         <div className="dead-body">
-          <div>process exited · history preserved</div>
+          <div>
+            process exited
+            {typeof session.exitCode === "number" ? ` · code ${session.exitCode}` : ""} · history preserved
+          </div>
+          {exitTail ? (
+            <pre className="dead-tail" title="the last lines the process wrote before exiting">
+              {exitTail}
+            </pre>
+          ) : (
+            <div className="dead-tail-none">no output captured before it exited</div>
+          )}
           <div className="row">
             <button className="outline strong" onClick={onResume}>Resume</button>
             <button className="outline" onClick={onCleanup}>Close &amp; clean up</button>

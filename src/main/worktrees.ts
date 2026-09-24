@@ -1,4 +1,4 @@
-import type { WorktreeCleanupMode } from "../shared/types";
+import type { WorktreeCleanupMode, WorktreeEntry } from "../shared/types";
 import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
@@ -18,9 +18,21 @@ function git(repo: string, args: string[]): string {
  *    (falls back to the local base if the fetch fails, e.g. offline)
  *  - new branch, no base → branch off the repo's current HEAD (legacy behavior)
  */
+/** Worktrees live in one folder beside the repos: `<parent>/worktrees/<repo>/<branch>`. */
+export function worktreeRoot(repoPath: string): string {
+  return path.join(path.dirname(repoPath), "worktrees", path.basename(repoPath));
+}
+/** The earlier layout, `<parent>/<repo>-worktrees/<branch>` — still read, never written. */
+export function legacyWorktreeRoot(repoPath: string): string {
+  return path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`);
+}
+
 export function createWorktree(repoPath: string, branch: string, baseBranch?: string): string {
-  const parent = path.dirname(repoPath);
-  const wtRoot = path.join(parent, `${path.basename(repoPath)}-worktrees`);
+  // a branch can only be checked out once: if the old layout already holds it,
+  // keep using that checkout rather than failing on `worktree add`
+  const legacy = path.join(legacyWorktreeRoot(repoPath), branch);
+  if (fs.existsSync(legacy)) return legacy;
+  const wtRoot = worktreeRoot(repoPath);
   fs.mkdirSync(wtRoot, { recursive: true });
   const wtPath = path.join(wtRoot, branch);
   if (fs.existsSync(wtPath)) return wtPath; // reuse (multiple sessions per task)
@@ -50,6 +62,12 @@ export function createWorktree(repoPath: string, branch: string, baseBranch?: st
   return wtPath;
 }
 
+/** The integration branch new work usually starts from, by team convention. */
+export function pickDefaultBase(branches: string[]): string | null {
+  const preferred = ["dev", "develop", "development", "uat", "main", "master"];
+  return preferred.find((b) => branches.includes(b)) ?? null;
+}
+
 /** Local + origin branches for a repo, with a best-guess dev/uat base branch. */
 export function listBranches(repoPath: string): { branches: string[]; defaultBase: string | null } {
   const locals = git(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
@@ -61,9 +79,7 @@ export function listBranches(repoPath: string): { branches: string[]; defaultBas
     .map((b) => b.replace(/^origin\//, ""))
     .filter((b) => b !== "HEAD");
   const branches = [...new Set([...remotes, ...locals])].sort();
-  const preferred = ["dev", "develop", "development", "uat", "main", "master"];
-  const defaultBase = preferred.find((b) => branches.includes(b)) ?? null;
-  return { branches, defaultBase };
+  return { branches, defaultBase: pickDefaultBase(branches) };
 }
 
 export interface WorktreeState {
@@ -121,4 +137,132 @@ export function cleanupWorktree(
     /* branch may be checked out elsewhere or already gone */
   }
   return { removed: true };
+}
+
+/**
+ * Every `<repo>-worktrees/<name>` checkout beside the given repos, with enough
+ * state to decide whether it is a stray: branch, dirt, ahead/behind, age, and
+ * whether a live session currently runs in it. A folder that is not a readable
+ * git worktree is reported with `error` rather than skipped.
+ */
+/**
+ * Checkouts under a worktree root, as paths relative to it. A branch like
+ * `fix/login` nests a folder, so a directory without a `.git` entry is
+ * descended into rather than reported. An unreadable root means that layout has
+ * no folder for the repo.
+ */
+function findCheckouts(wtRoot: string, rel = "", depth = 0): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(path.join(wtRoot, rel), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  if (rel && entries.some((e) => e.name === ".git")) return [rel];
+  if (depth >= 4) return rel ? [rel] : []; // too deep to be a branch path — report it as-is
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+    .flatMap((e) => findCheckouts(wtRoot, rel ? path.join(rel, e.name) : e.name, depth + 1));
+}
+
+export function listWorktrees(repos: { name: string; path: string }[], liveCwds: string[]): WorktreeEntry[] {
+  const out: WorktreeEntry[] = [];
+  const live = new Set(liveCwds);
+  for (const repo of repos) {
+   for (const [wtRoot, legacy] of [[worktreeRoot(repo.path), false], [legacyWorktreeRoot(repo.path), true]] as const) {
+    for (const name of findCheckouts(wtRoot)) {
+      const wtPath = path.join(wtRoot, name);
+      let ageDays = 0;
+      try {
+        ageDays = Math.floor((Date.now() - fs.statSync(wtPath).mtimeMs) / 86_400_000);
+      } catch {
+        /* keep 0 */
+      }
+      const base = { repoPath: repo.path, repoName: repo.name, path: wtPath, name, ageDays, inUse: live.has(wtPath), legacy };
+      try {
+        const st = worktreeState(wtPath);
+        out.push({ ...base, branch: st.branch, dirty: st.dirty, dirtyFiles: st.dirtyFiles, ahead: st.ahead, behind: st.behind });
+      } catch (err) {
+        out.push({ ...base, branch: "", dirty: false, dirtyFiles: 0, ahead: 0, behind: 0, error: err instanceof Error ? err.message.split("\n")[0] : String(err) });
+      }
+    }
+   }
+  }
+  return out.sort((a, b) => a.repoName.localeCompare(b.repoName) || b.ageDays - a.ageDays);
+}
+
+/** Remove a worktree folder (the branch is kept). */
+export function removeWorktree(repoPath: string, wtPath: string): void {
+  git(repoPath, ["worktree", "remove", "--force", wtPath]);
+  git(repoPath, ["worktree", "prune"]);
+}
+
+/**
+ * Check a branch out in the repo checkout itself (no worktree), so VS Code
+ * debug/launch configs on the repo just work. Refuses loudly when the checkout
+ * cannot safely switch: uncommitted changes, or another live session already
+ * on a different branch there (a checkout has one branch at a time — that is
+ * the one thing worktrees exist to solve).
+ *  - branch exists locally → switch to it
+ *  - branch exists on origin only → fetch and track it
+ *  - new branch → fetch origin/<base> (dev/uat) and branch off it; falls back
+ *    to the local base if the fetch fails
+ */
+export function checkoutBranch(repoPath: string, branch: string, baseBranch?: string, occupiedBy?: string): void {
+  if (occupiedBy) {
+    throw new Error(
+      `${path.basename(repoPath)} is already checked out on ${occupiedBy} by a running session. ` +
+        `Close that session, or tick "isolated worktree" to work on both at once.`
+    );
+  }
+  const current = git(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (current === branch) return;
+  const dirty = git(repoPath, ["status", "--porcelain"]);
+  if (dirty) {
+    const n = dirty.split("\n").length;
+    throw new Error(
+      `${path.basename(repoPath)} has ${n} uncommitted change${n === 1 ? "" : "s"} on ${current}. ` +
+        `Commit or stash before switching to ${branch}, or tick "isolated worktree".`
+    );
+  }
+  const hasLocal = git(repoPath, ["branch", "--list", branch]).length > 0;
+  const hasRemote = git(repoPath, ["branch", "-r", "--list", `origin/${branch}`]).length > 0;
+  if (hasLocal) {
+    git(repoPath, ["switch", branch]);
+  } else if (hasRemote) {
+    git(repoPath, ["fetch", "origin", branch]);
+    git(repoPath, ["switch", "--track", "-c", branch, `origin/${branch}`]);
+  } else if (baseBranch) {
+    let base = `origin/${baseBranch}`;
+    try {
+      git(repoPath, ["fetch", "origin", baseBranch]);
+    } catch (err) {
+      if (git(repoPath, ["branch", "--list", baseBranch]).length === 0) throw err;
+      console.error(`[worktrees] fetch origin/${baseBranch} failed, branching off local ${baseBranch}:`, err);
+      base = baseBranch;
+    }
+    git(repoPath, ["switch", "-c", branch, base]);
+  } else {
+    git(repoPath, ["switch", "-c", branch]);
+  }
+}
+
+/** Move an old-layout worktree into `worktrees/<repo>/`; returns its new path. */
+export function migrateWorktree(repoPath: string, oldPath: string): string {
+  const legacyRoot = legacyWorktreeRoot(repoPath);
+  const rel = path.relative(legacyRoot, oldPath); // keeps a `fix/` prefix intact
+  if (!rel || rel.startsWith("..")) throw new Error(`${oldPath} is not under ${legacyRoot}`);
+  const dest = path.join(worktreeRoot(repoPath), rel);
+  if (fs.existsSync(dest)) throw new Error(`${dest} already exists`);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  git(repoPath, ["worktree", "move", oldPath, dest]);
+  // drop folders the move emptied, up to and including <repo>-worktrees
+  for (let dir = path.dirname(oldPath); dir.startsWith(legacyRoot); dir = path.dirname(dir)) {
+    try {
+      fs.rmdirSync(dir);
+    } catch {
+      break; // other worktrees still live there
+    }
+  }
+  return dest;
 }

@@ -2,8 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
-import type { SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches } from "../shared/types";
-import { slugBranch, normalizeGroupPath, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
+import { FileDock } from "./FilePanel";
+import { SetupWizard } from "./SetupWizard";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
+import type { AgentKind, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
+import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
   interface Window {
@@ -11,7 +14,7 @@ declare global {
   }
 }
 
-type ModalKind = "new" | "import" | "help" | "restart" | null;
+type ModalKind = "new" | "import" | "help" | "restart" | "setup" | null;
 type Tab = "sessions" | "dashboard" | "worktracker" | "settings";
 const TAB_LABELS: Record<Tab, string> = {
   sessions: "Sessions",
@@ -101,7 +104,7 @@ function App() {
   const [focused, setFocused] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
-  const [newLaunch, setNewLaunch] = useState<"claude" | "shell">("claude");
+  const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
   // seeds New Session's Group field — set to "top/sub" by a workspace's + button
   const [newGroup, setNewGroup] = useState("");
   // a lone pane's "+" promotes it to a workspace, but only once the new session
@@ -159,6 +162,13 @@ function App() {
   };
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean } | null>(null);
+  const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => {
+    window.mb.appVersion().then((v: string) => setAppVersion(v));
+  }, []);
+  const [filesOpen, setFilesOpen] = useState<boolean>(() => loadLS("mb.filesOpen", false));
+  useEffect(() => localStorage.setItem("mb.filesOpen", JSON.stringify(filesOpen)), [filesOpen]);
 
   // persist grid arrangement across restarts (design: Interactions & Behavior)
   useEffect(() => localStorage.setItem("mb.shown", JSON.stringify(shown)), [shown]);
@@ -209,12 +219,17 @@ function App() {
     return live;
   };
 
-  // first launch: open the how-to-use popup once
+  // First launch opens the setup wizard. Installs that predate it (the help
+  // popup was already seen) are marked set up without being interrupted.
   useEffect(() => {
-    if (!loadLS("mb.helpSeen", false)) {
-      setModal("help");
-      localStorage.setItem("mb.helpSeen", "true");
-    }
+    window.mb.getSettings().then(async (s: Settings) => {
+      if (s.setupDone) return;
+      if (loadLS("mb.helpSeen", false)) await window.mb.setSettings({ ...s, setupDone: true });
+      else {
+        localStorage.setItem("mb.helpSeen", "true");
+        setModal("setup");
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -228,7 +243,10 @@ function App() {
       if (cmd === "focus-session" && arg) jumpToRef.current(arg);
     });
     const offUpd = window.mb.onUpdateAvailable((u: any) => u?.newer && setUpdate(u));
+    window.mb.usageGet().then((u: UsageInfo | null) => setUsage(u));
+    const offUsage = window.mb.onUsageChanged((u: UsageInfo | null) => setUsage(u));
     return () => {
+      offUsage();
       off();
       offUi();
       offUpd();
@@ -394,17 +412,17 @@ function App() {
       if (!sub) out.push({ kind: "session", s });
       else if (!seen.has(sub)) {
         seen.add(sub);
-        // tabs list ALL of the workspace's sessions — the workspace is the
-        // visibility unit; any shown member brings the whole pane
+        // tabs are the workspace's members that are in the grid, so closing a
+        // tab hides just that session; the pane goes when its last tab does
         out.push({
           kind: "workspace",
           sub,
-          list: workSessions.filter((x) => topOf(x) === topOf(s) && subOf(x) === sub),
+          list: workSessions.filter((x) => topOf(x) === topOf(s) && subOf(x) === sub && shown.includes(x.id)),
         });
       }
     }
     return out;
-  }, [gridSessions, workSessions, zoomed]);
+  }, [gridSessions, workSessions, zoomed, shown]);
 
   // the grid grows with the cell count — equal cells, no filler tiles
   // the active group's chosen template, applied only when it fits the panes
@@ -500,6 +518,11 @@ function App() {
     }
     return [...g.entries()];
   }, [visible]);
+
+  // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
+  // the rest are open exactly while the workspace is in the grid.
+  const [wsOpen, setWsOpen] = useState<Record<string, boolean>>(() => loadLS("mb.wsOpen", {}));
+  useEffect(() => localStorage.setItem("mb.wsOpen", JSON.stringify(wsOpen)), [wsOpen]);
 
   const bySub = (list: SessionInfo[]): [string, SessionInfo[]][] => {
     const m = new Map<string, SessionInfo[]>();
@@ -662,6 +685,11 @@ function App() {
       setModal("new");
       return;
     }
+    if (cmd && !e.shiftKey && !e.ctrlKey && e.key === "b" && tab === "sessions") {
+      handled();
+      setFilesOpen((o) => !o);
+      return;
+    }
     if (cmd && e.shiftKey && e.key.toLowerCase() === "b") {
       handled();
       setTab("settings");
@@ -745,15 +773,10 @@ function App() {
   return (
     <div className="app">
       <div className="topbar">
-        {tab === "sessions" && (
-          <button className="icon" onClick={() => setSideCollapsed(!sideCollapsed)} title={sideCollapsed ? "Show sidebar" : "Hide sidebar"}>
-            {sideCollapsed ? "▹" : "◃"}
-          </button>
-        )}
         <span className="brand">
           <span className="mark">🪶</span>
           <span className="name">Mockingbird</span>
-          <span className="ver">v0.1</span>
+          {appVersion && <span className="ver">v{appVersion}</span>}
         </span>
         <span className="tabs">
           {(["sessions", "dashboard", "worktracker", "settings"] as const).map((t) => (
@@ -774,7 +797,7 @@ function App() {
                 onClick={() => setLayoutOpen((o) => !o)}
                 title="Layout — arrange this group's panes"
               >
-                ▦ Layout
+                <LayoutIcon /> Layout
               </button>
               {layoutOpen && (
                 <>
@@ -815,6 +838,13 @@ function App() {
                 </>
               )}
             </span>
+            <button
+              className={`outline ${filesOpen ? "on" : ""}`}
+              onClick={() => setFilesOpen((o) => !o)}
+              title="File explorer for the focused session — browse, view files, see diffs (⌘B)"
+            >
+              <FilesIcon /> Files
+            </button>
             <span className="vdiv" />
             <button className="outline" onClick={() => setModal("import")}>Import</button>
           </>
@@ -835,7 +865,15 @@ function App() {
             }}
           />
         )}
-        {tab === "settings" && <SettingsView sessions={sessions} theme={theme} onTheme={setTheme} onRestartAll={() => setModal("restart")} />}
+        {tab === "settings" && (
+          <SettingsView
+            sessions={sessions}
+            theme={theme}
+            onTheme={setTheme}
+            onRestartAll={() => setModal("restart")}
+            onSetup={() => setModal("setup")}
+          />
+        )}
         {tab === "worktracker" && (
           <div className="wt-page">
             <div className="board-filter">
@@ -890,6 +928,18 @@ function App() {
         {tab === "sessions" && (
         <>
         <div className={`sidebar ${sideCollapsed ? "collapsed" : ""}`}>
+          <div className="side-head">
+            <button
+              className={`burger ${sideCollapsed ? "" : "open"}`}
+              onClick={() => setSideCollapsed(!sideCollapsed)}
+              title={sideCollapsed ? "Show sidebar" : "Hide sidebar"}
+              aria-label={sideCollapsed ? "Show sidebar" : "Hide sidebar"}
+              aria-expanded={!sideCollapsed}
+            >
+              <span /><span /><span />
+            </button>
+            <span className="side-title">Sessions</span>
+          </div>
           <div className="scroll">
             <input
               className="filter"
@@ -936,21 +986,24 @@ function App() {
                         });
                       }}
                     >
-                      {collapsed.has(key) ? "▸" : "▾"}
+                      <ChevronIcon open={!collapsed.has(key)} />
                     </span>
                     <span className="txt">{groupTitle(key, list)}</span>
-                    <span className="gcount">{list.length}</span>
                   </div>
                 )}
-                {!collapsed.has(key) && bySub(list).map(([sub, subList]) => (
-                  <div key={sub || "_"} className={sub ? "sub-rows" : undefined}>
+                {!collapsed.has(key) && bySub(list).map(([sub, subList]) => {
+                  const wsKey = `${key}/${sub}`;
+                  const inGrid = subList.some((s) => shown.includes(s.id));
+                  const open = !sub || (wsOpen[wsKey] ?? inGrid);
+                  return (
+                  <div key={sub || "_"} className={sub ? "ws-folder" : "loose-rows"}>
                     {sub && (
                       <div
-                        className="sub-label"
+                        className={`sub-label ${inGrid ? "in-grid" : ""}`}
                         title="click to show/minimize this workspace · ✎/double-click to rename · ✕ dissolves it (sessions stay) · drop a session to move it in"
                         onClick={() =>
                           deferClick(() =>
-                            subList.some((s) => shown.includes(s.id))
+                            inGrid
                               ? hideSessions(subList) // minimize the workspace
                               : focusSub(key, subList)
                           )
@@ -958,19 +1011,30 @@ function App() {
                         onDoubleClick={(e) => {
                           e.stopPropagation();
                           cancelClick();
-                          setRenameDlg({ kind: "sub", key: `${key}/${sub}`, initial: sub });
+                          setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
                         }}
                         onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => dropToGroup(e, `${key}/${sub}`)}
+                        onDrop={(e) => dropToGroup(e, wsKey)}
                       >
+                        <span
+                          className="ws-chev"
+                          title={open ? "Hide sessions" : "Show sessions"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setWsOpen((p) => ({ ...p, [wsKey]: !open }));
+                          }}
+                        >
+                          <ChevronIcon open={open} />
+                        </span>
+                        <FolderIcon open={inGrid} />
                         <span className="txt">{sub}</span>
-                        <span className="gcount">{subList.length}</span>
+                        <StatusDots list={subList} />
                         <button
                           title="Rename workspace"
                           onClick={(e) => {
                             e.stopPropagation();
                             cancelClick();
-                            setRenameDlg({ kind: "sub", key: `${key}/${sub}`, initial: sub });
+                            setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
                           }}
                         >
                           ✎
@@ -987,7 +1051,7 @@ function App() {
                         </button>
                       </div>
                     )}
-                    {subList.map((s) => {
+                    {open && subList.map((s) => {
                   const idx = shown.indexOf(s.id);
                   return (
                     <div
@@ -1031,7 +1095,13 @@ function App() {
                             setEditing({ kind: "session", key: s.id, value: s.ticketTitle ?? s.title });
                           }}
                         >
-                          {s.ticketTitle ?? s.title}
+                          <span className="nm">{s.ticketTitle ?? s.title}</span>
+                          {(s.branch || s.agent === "codex") && (
+                            <span className="br">
+                              {s.agent === "codex" ? "codex · " : ""}
+                              {s.branch && s.branch !== (s.ticketTitle ?? s.title) ? s.branch : s.repoPath?.split("/").pop() ?? ""}
+                            </span>
+                          )}
                         </span>
                       )}
                       <button
@@ -1066,7 +1136,8 @@ function App() {
                   );
                 })}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ))}
 
@@ -1074,7 +1145,7 @@ function App() {
               <>
                 <h2>
                   <span>Previous</span>
-                  <button className="icon" title="Relaunch every previous session (claude --continue)" onClick={restoreAll}>
+                  <button className="icon" title="Relaunch every previous session, resuming its conversation" onClick={restoreAll}>
                     ↺ restore all
                   </button>
                 </h2>
@@ -1083,7 +1154,7 @@ function App() {
                     <span className="dot dead" />
                     <span className="name">{s.title}</span>
                     <button
-                      title="Relaunch with claude --continue"
+                      title="Relaunch, resuming the conversation"
                       onClick={async () => {
                         const info = await window.mb.relaunchSession(s.id);
                         if (info?.error) return alert(`Couldn't relaunch: ${info.error}`);
@@ -1163,6 +1234,10 @@ function App() {
                     paneIndex={i}
                     embedded={embedded}
                     onFocus={() => setFocused(s.id)}
+                    onOpenFiles={() => {
+                      setFocused(s.id);
+                      setFilesOpen(true);
+                    }}
                     onClose={onCloseOverride ?? (() => hide(s.id))}
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
                     onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
@@ -1218,6 +1293,18 @@ function App() {
                         >
                           <span className={`dot sm ${s.status}`} />
                           <span className="t">{s.ticketTitle ?? s.title}</span>
+                          <span
+                            className="ws-x"
+                            role="button"
+                            aria-label={`Hide ${s.ticketTitle ?? s.title} from the grid`}
+                            title="Hide from the grid (session keeps running — click it in the sidebar to bring it back)"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              hide(s.id);
+                            }}
+                          >
+                            ×
+                          </span>
                         </button>
                       ))}
                       <button
@@ -1239,6 +1326,16 @@ function App() {
             </div>
           )}
         </div>
+        <FileDock
+          open={filesOpen}
+          session={focusedSession}
+          onClose={() => setFilesOpen(false)}
+          onInsert={(text) => {
+            if (!focusedSession) return;
+            window.mb.sessionWrite(focusedSession.id, text);
+            focusTerm(focusedSession.id);
+          }}
+        />
         </>
         )}
       </div>
@@ -1286,6 +1383,7 @@ function App() {
             </span>
           );
         })}
+        <UsageStat usage={usage} />
         <span className="right">
           {update?.newer && (
             <span
@@ -1301,7 +1399,8 @@ function App() {
               className="hooks-bad"
               title="Session status (working/waiting/idle) needs Claude Code hooks — click to install"
               onClick={async () => {
-                await window.mb.installHooks();
+                const r = await window.mb.installHooks();
+                if (r?.error) return alert(`Couldn't install hooks: ${r.error}`);
                 setHooksOk(true);
               }}
             >
@@ -1321,8 +1420,10 @@ function App() {
           onClose={() => setPaletteOpen(false)}
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },
+            { label: "New Codex session", run: () => { setNewLaunch("codex"); setModal("new"); } },
             { label: "New terminal (no Claude)", run: () => { setNewLaunch("shell"); setModal("new"); } },
-            { label: "Restart all Claude sessions", run: () => setModal("restart") },
+            { label: "Restart all agent sessions", run: () => setModal("restart") },
+            { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
             { label: "Sessions grid", run: () => setTab("sessions") },
             { label: "Dashboard — ticket board", run: () => setTab("dashboard") },
             { label: "Settings / Broadcast / CLAUDE.md", kbd: "⌘⇧B", run: () => setTab("settings") },
@@ -1435,6 +1536,15 @@ function App() {
         />
       )}
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
+      {modal === "setup" && (
+        <SetupWizard
+          onClose={() => setModal(null)}
+          onFinish={() => {
+            setNewLaunch("claude");
+            setModal("new");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1444,6 +1554,56 @@ interface PaletteAction {
   label: string;
   kbd?: string;
   run: () => void;
+}
+
+/** One dot per session (up to 3, then a count), so a collapsed workspace still shows who's busy or blocked. */
+function StatusDots({ list }: { list: SessionInfo[] }) {
+  const order = { waiting: 0, working: 1, idle: 2, dead: 3 } as const;
+  const sorted = [...list].sort((a, b) => order[a.status] - order[b.status]);
+  const MAX = 3;
+  const extra = sorted.length - MAX;
+  return (
+    <span className="sdots" title={`${list.length} session${list.length === 1 ? "" : "s"}`}>
+      {sorted.slice(0, MAX).map((s) => (
+        <span key={s.id} className={`dot xs ${s.status}`} />
+      ))}
+      {extra > 0 && <span className="more">+{extra}</span>}
+    </span>
+  );
+}
+
+/** Plan usage in the status bar: 5-hour and weekly windows, as last reported by any session. */
+function UsageStat({ usage }: { usage: UsageInfo | null }) {
+  // reset times pass while the app sits open with no session reporting
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  if (!usage) return null;
+  // a window whose reset time has passed no longer describes the current window
+  const current = (w?: UsageWindow) => (w && (w.resetsAt === null || w.resetsAt > now) ? w : undefined);
+  const windows = [
+    { label: "5h", name: "5-hour window", w: current(usage.fiveHour) },
+    { label: "wk", name: "Weekly window", w: current(usage.sevenDay) },
+  ].filter((x): x is { label: string; name: string; w: UsageWindow } => !!x.w);
+  if (windows.length === 0) return null;
+  const title =
+    windows
+      .map(({ name, w }) =>
+        `${name}: ${Math.round(w.usedPct)}% used` +
+        (w.resetsAt ? ` · resets ${new Date(w.resetsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "")
+      )
+      .join("\n") + `\nreported ${fmtElapsed(usage.at)} ago`;
+  return (
+    <span className="usage" title={title}>
+      {windows.map(({ label, w }) => (
+        <span key={label} className={w.usedPct >= 90 ? "hot" : ""}>
+          {label} {Math.round(w.usedPct)}%
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function CommandPalette({
@@ -1583,6 +1743,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌥⇥", "next waiting session (oldest first)"],
     ["⌘E", "fullscreen the focused pane (esc restores)"],
     ["⌘⌃1–4", "grid columns (also switches pane detail level)"],
+    ["⌘B", "file explorer for the focused session — files, viewer, diffs"],
     ["⌘⇧B", "Settings tab — broadcast + CLAUDE.md"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],
     ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a pane"],
@@ -1796,6 +1957,7 @@ function DashboardBoard({
   const [busy, setBusy] = useState(false);
   const [attachId, setAttachId] = useState("");
   const [branchMode, setBranchMode] = useState<"new" | "existing">("new");
+  const [dashWorktree, setDashWorktree] = useState(true);
   const [branchInfo, setBranchInfo] = useState<RepoBranches | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [existingBranch, setExistingBranch] = useState("");
@@ -1978,7 +2140,7 @@ function DashboardBoard({
       repoPath,
       ticketId: String(detail.id),
       ticketTitle: ticketName || suggestTicketName(detail.title),
-      useWorktree: true,
+      useWorktree: dashWorktree,
       ...(branchMode === "existing"
         ? { branchName: existingBranch }
         : baseBranch
@@ -2197,6 +2359,13 @@ function DashboardBoard({
                     <option key={r.path} value={r.path}>{r.name}</option>
                   ))}
                 </select>
+                <div className="check-line" style={{ marginTop: 6 }}>
+                  <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
+                  <label htmlFor="dash-wt" style={{ margin: 0 }}>
+                    isolated worktree
+                    <span className="wi-note"> {dashWorktree ? "own folder under worktrees/<repo>/" : "off — branch is checked out in the repo itself"}</span>
+                  </label>
+                </div>
                 <div className="pills" style={{ marginTop: 6 }}>
                   <button className={`pill ${branchMode === "new" ? "on" : ""}`} onClick={() => setBranchMode("new")}>
                     New branch
@@ -2474,7 +2643,7 @@ function RestartAllDialog({
   return (
     <div className="modal-back" onMouseDown={onClose}>
       <div className="modal close-dlg" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>Restart Claude sessions?</h3>
+        <h3>Restart agent sessions?</h3>
         <div className="sub-h">
           Each pane relaunches with <code>--continue</code>, so conversations, grid position, and
           groups are kept. Plain terminals and dead panes are left alone.
@@ -2821,22 +2990,168 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
 }
 
 // ---- settings tab: general config (with native pickers) + the control room ----
+
+/** Settings card: every <repo>-worktrees checkout, with strays removable. */
+function WorktreeJanitor() {
+  const [list, setList] = useState<WorktreeEntry[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const load = async () => {
+    const r = await window.mb.listWorktrees();
+    if (r?.error) return setError(r.error);
+    setError("");
+    setList(r);
+    // a rescan drops selections for worktrees that are gone or now in use
+    const removable = new Set((r as WorktreeEntry[]).filter((w) => !w.inUse).map((w) => w.path));
+    setSelected((s) => new Set([...s].filter((p) => removable.has(p))));
+  };
+  useEffect(() => {
+    load();
+  }, []);
+  const riskOf = (w: WorktreeEntry) =>
+    w.dirty
+      ? `${w.name}: ${w.dirtyFiles} uncommitted file${w.dirtyFiles === 1 ? "" : "s"} will be lost`
+      : w.ahead
+        ? `${w.name}: ${w.ahead} unpushed commit${w.ahead === 1 ? "" : "s"} on ${w.branch} (the branch is kept)`
+        : null;
+  // one confirmation for the whole batch, listing every worktree that would lose work;
+  // removals run one at a time and every failure is reported, not just the first
+  const remove = async (ws: WorktreeEntry[]) => {
+    if (ws.length === 0) return;
+    const risks = ws.map(riskOf).filter(Boolean) as string[];
+    const what = ws.length === 1 ? `the worktree folder ${ws[0].path}` : `${ws.length} worktree folders`;
+    const msg = (risks.length ? `${risks.join("\n")}\n\n` : "") + `Remove ${what}?`;
+    if (!window.confirm(msg)) return;
+    setBusy("remove");
+    const failures: string[] = [];
+    for (const w of ws) {
+      const r = await window.mb.removeWorktree(w.repoPath, w.path);
+      if (r?.error) failures.push(`${w.name}: ${r.error}`);
+    }
+    setBusy(null);
+    await load(); // reload first: it clears the error, and these failures must stay visible
+    setError(failures.join(" · "));
+  };
+  const strays = list?.filter((w) => !w.inUse) ?? [];
+  const chosen = strays.filter((w) => selected.has(w.path));
+  const toggle = (path: string) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      n.has(path) ? n.delete(path) : n.add(path);
+      return n;
+    });
+  const allChosen = strays.length > 0 && chosen.length === strays.length;
+  const movable = list?.filter((w) => w.legacy && !w.inUse && !w.error) ?? [];
+  const migrate = async (ws: WorktreeEntry[]) => {
+    setBusy("migrate");
+    const failures: string[] = [];
+    for (const w of ws) {
+      const r = await window.mb.migrateWorktree(w.repoPath, w.path);
+      if (r?.error) failures.push(`${w.name}: ${r.error}`);
+    }
+    setBusy(null);
+    await load(); // reload first: it clears the error, and these failures must stay visible
+    setError(failures.join(" · "));
+  };
+  return (
+    <div className="set-card">
+      <h3>Worktrees</h3>
+      <label>
+        Isolated checkouts{" "}
+        <span className="wi-note">
+          one folder beside your repos: <code>worktrees/&lt;repo&gt;/&lt;branch&gt;</code> · {list ? `${list.length} total · ${strays.length} not in use` : "scanning…"}
+        </span>
+      </label>
+      {movable.length > 0 && (
+        <div className="row" style={{ justifyContent: "flex-start", gap: 8, marginTop: 4 }}>
+          <button className="outline" disabled={busy === "migrate"} onClick={() => migrate(movable)}>
+            {busy === "migrate" ? "moving…" : `Move ${movable.length} old-layout worktree${movable.length === 1 ? "" : "s"} into worktrees/`}
+          </button>
+          <span className="wi-note">from <code>&lt;repo&gt;-worktrees/</code> · in-use ones are skipped</span>
+        </div>
+      )}
+      {strays.length > 0 && (
+        <div className="row" style={{ justifyContent: "flex-start", gap: 10, marginTop: 4 }}>
+          <label className="check-line" style={{ margin: 0, textTransform: "none", letterSpacing: 0 }}>
+            <input
+              type="checkbox"
+              checked={allChosen}
+              onChange={() => setSelected(allChosen ? new Set() : new Set(strays.map((w) => w.path)))}
+            />
+            <span>all {strays.length} not in use</span>
+          </label>
+          <button className="outline" disabled={chosen.length === 0 || busy === "remove"} onClick={() => remove(chosen)}>
+            {busy === "remove" ? "removing…" : `Remove ${chosen.length || ""} selected`}
+          </button>
+        </div>
+      )}
+      {error && <div className="err">{error}</div>}
+      {list && list.length === 0 && <div className="wi-note">none — sessions are running in repo checkouts</div>}
+      {list && list.length > 0 && (
+        <div className="wt-list">
+          {list.map((w) => (
+            <div key={w.path} className={`wt-row ${w.inUse ? "live" : ""} ${selected.has(w.path) ? "sel" : ""}`}>
+              <input
+                type="checkbox"
+                className="wt-check"
+                disabled={w.inUse}
+                checked={selected.has(w.path)}
+                onChange={() => toggle(w.path)}
+                title={w.inUse ? "in use by a session" : "select for removal"}
+              />
+              <span className="wt-repo">{w.repoName}</span>
+              <span className="wt-name" title={w.path}>
+                {w.name}
+                {w.legacy && <span className="wt-legacy"> old layout</span>}
+              </span>
+              <span className="wt-meta">
+                {w.error
+                  ? `⚠ ${w.error}`
+                  : [
+                      w.branch,
+                      w.dirty ? `${w.dirtyFiles} dirty` : "clean",
+                      w.ahead ? `↑${w.ahead}` : null,
+                      w.behind ? `↓${w.behind}` : null,
+                      w.ageDays ? `${w.ageDays}d` : "today",
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+              </span>
+              {w.inUse ? (
+                <span className="wt-live">in use</span>
+              ) : (
+                <button className="outline" disabled={busy === "remove"} onClick={() => remove([w])}>
+                  Remove
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsView({
   sessions,
   theme,
   onTheme,
   onRestartAll,
+  onSetup,
 }: {
   sessions: SessionInfo[];
   theme: "dark" | "light";
   onTheme: (t: "dark" | "light") => void;
   onRestartAll: () => void;
+  onSetup: () => void;
 }) {
   const [s, setS] = useState<Settings | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [hooksOk, setHooksOk] = useState(true);
   const [identity, setIdentity] = useState<{ display: string; email: string; project: string } | { error: string } | null>(null);
   const [conn, setConn] = useState<{ az: boolean; global: string[]; project: string[] } | null>(null);
+  const [updating, setUpdating] = useState<"claude" | "codex" | null>(null);
   const [updNote, setUpdNote] = useState("");
   const [adoCfg, setAdoCfg] = useState<{ orgUrl: string; project: string; patFile: string } | null>(null);
   const [connSaved, setConnSaved] = useState(false);
@@ -2870,6 +3185,10 @@ function SettingsView({
   const pickClaudeBin = async () => {
     const p = await window.mb.pickPath({ file: true, defaultPath: "/usr/local/bin" });
     if (p) upd({ claudeBin: p });
+  };
+  const pickCodexBin = async () => {
+    const p = await window.mb.pickPath({ file: true, defaultPath: "/usr/local/bin" });
+    if (p) upd({ codexBin: p });
   };
   const save = async () => {
     await window.mb.setSettings(s);
@@ -2915,6 +3234,25 @@ function SettingsView({
           <button className="outline" onClick={pickClaudeBin}>Browse…</button>
         </div>
 
+        <label>codex binary <span className="wi-note">OpenAI Codex CLI (npm i -g @openai/codex · codex login)</span></label>
+        <div className="path-row">
+          <span className="p">{s.codexBin ?? "codex"}</span>
+          <button className="outline" onClick={pickCodexBin}>Browse…</button>
+        </div>
+
+        <label>Agent-to-agent messages <span className="wi-note">sessions can message each other with the mockingbird tools</span></label>
+        <div className="check-line">
+          <input
+            type="checkbox"
+            id="amsub"
+            checked={s.agentMessagesSubmit !== false}
+            onChange={(e) => upd({ agentMessagesSubmit: e.target.checked })}
+          />
+          <label htmlFor="amsub" style={{ margin: 0 }}>
+            send automatically — off: the message waits in the receiving prompt until you press Enter
+          </label>
+        </div>
+
         <div className="check-line">
           <input
             type="checkbox"
@@ -2944,7 +3282,8 @@ function SettingsView({
             <button
               className="outline"
               onClick={async () => {
-                await window.mb.installHooks();
+                const r = await window.mb.installHooks();
+                if (r?.error) return alert(`Couldn't install hooks: ${r.error}`);
                 setHooksOk(true);
               }}
             >
@@ -2970,15 +3309,38 @@ function SettingsView({
           <button
             className="outline"
             onClick={onRestartAll}
-            title="Relaunch every Claude pane with --continue — what the CLI's “Restart to update” needs"
+            title="Relaunch every Claude and Codex pane, resuming each conversation — what the CLI's “Restart to update” needs"
           >
-            Restart all Claude sessions
+            Restart all agent sessions
+          </button>
+          <button className="outline" onClick={onSetup} title="Re-run the first-launch setup: agents, hooks, repos, Azure DevOps">
+            Run setup
           </button>
           {updNote && <span className="wi-note">{updNote}</span>}
         </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          {(["claude", "codex"] as const).map((a) => (
+            <button
+              key={a}
+              className="outline"
+              disabled={updating === a}
+              title={`Run \`${a} update\` — new models (and fixes) need the newest CLI. Restart sessions afterwards.`}
+              onClick={async () => {
+                setUpdating(a);
+                setUpdNote(`updating ${a}…`);
+                const r = await window.mb.agentUpdate(a);
+                setUpdating(null);
+                setUpdNote(r?.error ? `${a} update failed: ${r.error}` : `${a}: ${r} — restart sessions to use it`);
+              }}
+            >
+              {updating === a ? "Updating…" : a === "claude" ? "Update Claude Code" : "Update Codex"}
+            </button>
+          ))}
+        </div>
         <span className="wi-note">
-          The Claude CLI updates itself in the background; each running session keeps the old build
-          until it restarts. Restarting resumes every conversation.
+          Each CLI updates itself; every running session keeps the old build until it restarts.
+          A model the CLI doesn't know yet (“Claude Code needs to update”) means: update, then restart
+          sessions — restarting resumes every conversation.
         </span>
 
         <div className="row">
@@ -2986,6 +3348,8 @@ function SettingsView({
           <button className="primary" onClick={save}>Save</button>
         </div>
       </div>
+
+      <WorktreeJanitor />
 
       <div className="set-card">
         <h3>Connectors</h3>
@@ -3121,6 +3485,8 @@ function SettingsView({
   );
 }
 
+type LaunchKind = AgentKind | "shell";
+
 function NewSessionModal({
   existingGroups,
   initialLaunch,
@@ -3129,19 +3495,69 @@ function NewSessionModal({
   onCreated,
 }: {
   existingGroups: string[];
-  initialLaunch?: "claude" | "shell";
+  initialLaunch?: LaunchKind;
   initialGroup?: string; // "5038" or "5038/backend" — a workspace path adds a tab there
   onClose: () => void;
   onCreated: (s: SessionInfo) => void;
 }) {
-  const [launch, setLaunch] = useState<"claude" | "shell">(initialLaunch ?? "claude");
+  const [launch, setLaunch] = useState<LaunchKind>(initialLaunch ?? "claude");
+  const isAgent = launch !== "shell";
+  const agentLabel = launch === "codex" ? "Codex" : "Claude";
+  // model/effort ride the agent's command line; the last choice is remembered
+  // per agent because people tend to have a working default for each
+  const [model, setModel] = useState(() => loadLS("mb.newModel", ""));
+  const [modelCustom, setModelCustom] = useState(() => loadLS("mb.newModelCustom", ""));
+  const [effort, setEffort] = useState(() => loadLS("mb.newEffort", ""));
+  const [codexModel, setCodexModel] = useState(() => loadLS("mb.newCodexModel", ""));
+  const [codexEffort, setCodexEffort] = useState(() => loadLS("mb.newCodexEffort", ""));
+  useEffect(() => localStorage.setItem("mb.newModel", JSON.stringify(model)), [model]);
+  useEffect(() => localStorage.setItem("mb.newModelCustom", JSON.stringify(modelCustom)), [modelCustom]);
+  useEffect(() => localStorage.setItem("mb.newEffort", JSON.stringify(effort)), [effort]);
+  useEffect(() => localStorage.setItem("mb.newCodexModel", JSON.stringify(codexModel)), [codexModel]);
+  useEffect(() => localStorage.setItem("mb.newCodexEffort", JSON.stringify(codexEffort)), [codexEffort]);
+  const effModel = launch === "codex" ? codexModel.trim() : model === "__custom" ? modelCustom.trim() : model;
+  const effEffort = launch === "codex" ? codexEffort : effort;
   const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<RepoEntry | null>(null);
   const [ticketId, setTicketId] = useState("");
   const [ticketTitle, setTicketTitle] = useState("");
-  const [group, setGroup] = useState(initialGroup ?? "");
-  const [useWorktree, setUseWorktree] = useState(true);
+  // Group + Workspace as two explicit selectors ("workspace" = what the path
+  // syntax called a sub-group). Seeded initialGroup ("top" or "top/sub") comes
+  // from a workspace's + button; a seeded name that doesn't exist yet lands in
+  // the matching "new …" input instead.
+  const allTops = useMemo(() => [...new Set(existingGroups.map(topOfKey))], [existingGroups]);
+  const subsOf = (top: string) =>
+    [...new Set(
+      existingGroups
+        .filter((g) => g.startsWith(top + "/"))
+        .map((g) => splitGroupKey(g).sub)
+        .filter((x): x is string => !!x)
+    )];
+  const seed = initialGroup ? splitGroupKey(initialGroup) : null;
+  const [grpSel, setGrpSel] = useState<string>(() =>
+    seed ? (allTops.includes(seed.top) ? seed.top : "__new") : ""
+  );
+  const [grpNew, setGrpNew] = useState(() => (seed && !allTops.includes(seed.top) ? seed.top : ""));
+  const [wsSel, setWsSel] = useState<string>(() => {
+    if (!seed?.sub) return "";
+    return subsOf(seed.top).includes(seed.sub) ? seed.sub : "__new";
+  });
+  const [wsNew, setWsNew] = useState(() =>
+    seed?.sub && !subsOf(seed.top).includes(seed.sub) ? seed.sub : ""
+  );
+  const effTop = grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
+  const effSub = wsSel === "__new" ? sanitizeSegment(wsNew) : wsSel;
+  const group = effTop ? (effSub ? `${effTop}/${effSub}` : effTop) : "";
+  // Picking a ticket defaults to an isolated worktree under
+  // <parent>/worktrees/<repo>/<branch>; unticked, the branch is checked out in
+  // the repo itself. An explicit choice is remembered and wins.
+  const wtPref = loadLS<boolean | null>("mb.newWorktree", null);
+  const [useWorktree, setUseWorktreeRaw] = useState<boolean>(wtPref ?? false);
+  const setUseWorktree = (v: boolean) => {
+    setUseWorktreeRaw(v);
+    localStorage.setItem("mb.newWorktree", JSON.stringify(v));
+  };
   const [error, setError] = useState("");
   // ADO ticket picker — same flow as the dashboard's Start session
   const [allTickets, setAllTickets] = useState<AdoWorkItem[]>([]);
@@ -3225,12 +3641,15 @@ function NewSessionModal({
       repoPath: sel?.path ?? null,
       ticketId: ticketId || undefined,
       ticketTitle: ticketTitle || undefined,
-      taskGroup: normalizeGroupPath(group) || undefined,
+      taskGroup: group || undefined,
       useWorktree: useWorktree && !!sel,
-      ...(useWorktree && sel && baseBranch ? { baseBranch } : {}),
+      ...(sel && baseBranch ? { baseBranch } : {}),
       shell: launch === "shell",
+      ...(isAgent ? { agent: launch } : {}),
+      ...(isAgent && effModel ? { model: effModel } : {}),
+      ...(isAgent && effEffort ? { effort: effEffort } : {}),
       initialPrompt:
-        launch === "claude" && t && sendTicket
+        isAgent && t && sendTicket
           ? ticketKickoffPrompt(t.id, t.title, t.description)
           : undefined,
     });
@@ -3246,8 +3665,67 @@ function NewSessionModal({
         <label>Launch</label>
         <span className="seg" style={{ display: "inline-flex" }}>
           <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>Claude</button>
+          <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">Codex</button>
           <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
         </span>
+        {launch === "codex" && (
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <div style={{ flex: 1 }}>
+              <label>Model <span className="wi-note">blank = whatever codex is set to</span></label>
+              <input
+                type="text"
+                placeholder="e.g. gpt-5.6-sol"
+                value={codexModel}
+                onChange={(e) => setCodexModel(e.target.value)}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Reasoning</label>
+              <select value={codexEffort} onChange={(e) => setCodexEffort(e.target.value)}>
+                <option value="">default</option>
+                <option value="minimal">minimal</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+              </select>
+            </div>
+          </div>
+        )}
+        {launch === "claude" && (
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <div style={{ flex: 1 }}>
+              <label>Model</label>
+              <select value={model} onChange={(e) => setModel(e.target.value)}>
+                <option value="">default — whatever claude is set to</option>
+                <option value="opus">Opus</option>
+                <option value="sonnet">Sonnet</option>
+                <option value="haiku">Haiku</option>
+                <option value="__custom">custom model id…</option>
+              </select>
+              {model === "__custom" && (
+                <input
+                  type="text"
+                  placeholder="e.g. claude-fable-5"
+                  value={modelCustom}
+                  onChange={(e) => setModelCustom(e.target.value)}
+                  style={{ marginTop: 6 }}
+                />
+              )}
+            </div>
+            <div style={{ flex: 1 }}>
+              <label>Effort</label>
+              <select value={effort} onChange={(e) => setEffort(e.target.value)}>
+                <option value="">default</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+                <option value="xhigh">xhigh</option>
+                <option value="max">max</option>
+              </select>
+            </div>
+          </div>
+        )}
         <label>Repo</label>
         <input type="text" autoFocus placeholder="search ~/Code + ~/Personal Projects…" value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="pick-list">
@@ -3315,32 +3793,79 @@ function NewSessionModal({
             <label>Ticket name</label>
             <input type="text" placeholder="filterOrgsByFoundation" value={ticketTitle} onChange={(e) => setTicketTitle(e.target.value)} />
           </div>
-          <div style={{ flex: 1.4 }}>
-            <label>
-              Group
-              {splitGroupKey(group).sub && (
-                <span className="hint-inline"> → tab in “{splitGroupKey(group).sub}”</span>
-              )}
-            </label>
-            <input
-              type="text"
-              list="mb-groups"
-              placeholder={ticketId ? `defaults to ${ticketId.replace(/^#/, "")}` : "optional — group or group/workspace"}
-              value={group}
-              onChange={(e) => setGroup(e.target.value)}
-            />
-            <datalist id="mb-groups">
-              {existingGroups.map((g) => (
-                <option key={g} value={g} />
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label>Group</label>
+            <select
+              value={grpSel}
+              onChange={(e) => {
+                setGrpSel(e.target.value);
+                setWsSel("");
+                setWsNew("");
+              }}
+            >
+              <option value="">
+                {ticketId ? `auto — ticket ${ticketId.replace(/^#/, "")}` : "none"}
+              </option>
+              {allTops.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
               ))}
-            </datalist>
+              <option value="__new">new group…</option>
+            </select>
+            {grpSel === "__new" && (
+              <input
+                type="text"
+                autoFocus
+                placeholder="group name"
+                value={grpNew}
+                onChange={(e) => setGrpNew(e.target.value)}
+                style={{ marginTop: 6 }}
+              />
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <label>
+              Workspace
+              {effSub && <span className="hint-inline"> → opens as a tab</span>}
+            </label>
+            <select value={wsSel} onChange={(e) => setWsSel(e.target.value)} disabled={!effTop}>
+              <option value="">{effTop ? "none — its own pane" : "pick a group first"}</option>
+              {(grpSel && grpSel !== "__new" ? subsOf(grpSel) : []).map((w) => (
+                <option key={w} value={w}>
+                  {w}
+                </option>
+              ))}
+              <option value="__new">new workspace…</option>
+            </select>
+            {wsSel === "__new" && (
+              <input
+                type="text"
+                placeholder="workspace name"
+                value={wsNew}
+                onChange={(e) => setWsNew(e.target.value)}
+                style={{ marginTop: 6 }}
+              />
+            )}
           </div>
         </div>
         <div className="check-line">
           <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} id="wt" />
-          <label htmlFor="wt" style={{ margin: 0 }}>git worktree{branch ? ` → ${branch}` : ""}</label>
+          <label htmlFor="wt" style={{ margin: 0 }}>
+            isolated worktree
+            <span className="wi-note">
+              {" "}
+              {useWorktree
+                ? `worktrees/${sel?.name ?? "<repo>"}/${branch || "<branch>"} — its own folder, safe beside other sessions`
+                : branch
+                  ? `off — switches the repo checkout to ${branch}`
+                  : "off — runs in the repo checkout on its current branch"}
+            </span>
+          </label>
         </div>
-        {useWorktree && sel && branchInfo && branchInfo.branches.length > 0 && (
+        {sel && branch && branchInfo && branchInfo.branches.length > 0 && (
           <select
             value={baseBranch}
             onChange={(e) => setBaseBranch(e.target.value)}
@@ -3353,10 +3878,10 @@ function NewSessionModal({
             ))}
           </select>
         )}
-        {ticketSel && launch === "claude" && (
+        {ticketSel && isAgent && (
           <div className="check-line">
             <input type="checkbox" checked={sendTicket} onChange={(e) => setSendTicket(e.target.checked)} id="ntk" />
-            <label htmlFor="ntk" style={{ margin: 0 }}>send ticket title + description to Claude</label>
+            <label htmlFor="ntk" style={{ margin: 0 }}>send ticket title + description to {agentLabel}</label>
           </div>
         )}
         {launch === "shell" && !sel && (
@@ -3367,8 +3892,13 @@ function NewSessionModal({
         {error && <div className="err">{error}</div>}
         <div className="row">
           <button className="outline" onClick={onClose}>Cancel</button>
-          <button className="primary" onClick={create} disabled={launch === "claude" && !sel && useWorktree}>
-            {launch === "shell" ? "Open terminal" : "Start claude"}
+          {isAgent && !sel && (
+            <span className="wi-note" style={{ marginRight: "auto" }}>
+              no repo — starts a plain {agentLabel} chat (fully tracked: resumable, restartable)
+            </span>
+          )}
+          <button className="primary" onClick={create}>
+            {launch === "shell" ? "Open terminal" : sel ? `Start ${agentLabel.toLowerCase()}` : "Start chat"}
           </button>
         </div>
       </div>

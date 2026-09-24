@@ -1,39 +1,48 @@
 # 🪶 Mockingbird
 
-Grid manager for parallel Claude CLI sessions — git worktrees, live status, broadcast, and WorkTracker/Azure DevOps integration.
+Run Claude Code and OpenAI Codex sessions side by side, one per branch or ticket — git worktrees, live status, a file explorer with diffs, agents that can message each other, and Azure DevOps integration.
 
 ## Setup (first time)
 
+**New machine? Follow [SETUP.md](SETUP.md).** It covers installing a build you
+were sent *or* building from source, the first-run wizard, your own Azure DevOps
+PAT, and the optional Codex setup. Short version from source:
+
 ```bash
-cd ~/Code/Mockingbird
 npm install
-npm start
+npm start            # dev run
+npm run package      # → release/mac-arm64/Mockingbird.app → copy to /Applications (package under Node 22)
 ```
 
-Note: `npm install` compiles node-pty natively and needs Xcode Command Line Tools (`xcode-select --install` if you don't have them). If a `node_modules` folder exists from another machine, delete it first: `rm -rf node_modules package-lock.json`.
+The first launch opens a setup wizard that checks your agents, installs the
+status hooks, and sets your repo folders. Native deps use node-pty's prebuilt
+binaries (`npmRebuild: false`), so packaging doesn't need a working C++
+toolchain.
 
-Then in the app, click **install now** in the sidebar to add the status hooks to `~/.claude/settings.json` (they coexist with your existing WorkTracker SessionEnd hook).
-
-To build a real .app for your Dock: `npm run package` → `dist/mac-arm64/Mockingbird.app` (also emits a DMG + zip in `dist/`). Copy it to /Applications and launch from the Dock — it runs independently of any terminal (add it to Login Items if you want it always up). Native deps use node-pty's prebuilt binaries (`npmRebuild: false`), so packaging doesn't need a working C++ toolchain.
-
-**Updates:** dev runs pick up renderer changes with `npm run build` + ⌘R (main-process changes need a restart). The packaged app checks GitHub for new releases (on launch and every 6h) once `package.json` has a `"repository": "github:<owner>/<repo>"` field — a newer release triggers a native notification and a teal "⭮ vX.Y available" link in the status bar (Settings → Check for updates works manually too). To ship an update: bump `version`, `npm run package`, create a GitHub release tagged `vX.Y.Z` with the DMG/zip attached. True silent auto-update would additionally need an Apple Developer ID signature + notarization.
+**Updates:** Settings → **Update Claude Code** / **Update Codex** runs each CLI's own updater — needed when a new model (e.g. a new Opus) says the CLI must update — then **Restart all agent sessions** moves every pane onto the new build without losing conversations. For Mockingbird itself: dev runs pick up renderer changes with `npm run build` + ⌘R (main-process changes need a restart). The packaged app checks GitHub for new releases (on launch and every 6h) once `package.json` has a `"repository": "github:<owner>/<repo>"` field — a newer release triggers a native notification and a teal "⭮ vX.Y available" link in the status bar (Settings → Check for updates works manually too). To ship an update: bump `version`, `npm run package` (under Node 22), create a GitHub release tagged `vX.Y.Z` with the DMG/zip attached. True silent auto-update would additionally need an Apple Developer ID signature + notarization.
 
 ## What it does (v1)
 
-- **+ Session** — fuzzy-pick a repo from `~/Code` / `~/Personal Projects`, then either **pick one of your ADO tickets from the dropdown** (auto-fills ticket #, name, and offers to send the ticket title + description to Claude as its first prompt) or enter a ticket manually (# and name → branch `5038-filterOrgsByFoundation`). New branches are cut from a freshly fetched `origin/dev`-style base (changeable). Mockingbird creates the git worktree and launches `claude` in it; multiple sessions per ticket group together in the sidebar.
+- **+ Session** — fuzzy-pick a repo from your repo roots (set in the setup wizard; `~/Code` and `~/Personal Projects` by default), choose **Claude**, **Codex**, or a plain **Terminal**, then either **pick one of your ADO tickets from the dropdown** (auto-fills ticket #, name, and offers to send the ticket title + description to the agent as its first prompt) or enter a ticket manually (# and name → branch `5038-filterOrgsByFoundation`). New branches are cut from a freshly fetched `origin/dev`-style base (changeable). Ticket sessions get an isolated worktree in one tidy place — `worktrees/<repo>/<branch>` beside your repos — and the agent launches there; untick **isolated worktree** to check the branch out in the repo itself instead (the choice is remembered); multiple sessions per ticket group together in the sidebar.
+- **Claude or Codex** — every session runs one of two coding agents: Claude Code, or OpenAI's **Codex CLI** (`npm i -g @openai/codex`, then `codex login` with your ChatGPT subscription — no API key). Pick it in New Session (with its own model / reasoning-effort choices, remembered per agent); Codex panes carry a `codex` chip. Status dots, broadcasts, ticket kickoff prompts, restore-after-restart (`codex resume --last`), the Files explorer and the close-session dialog all work the same for both. Settings → install hooks writes Codex's hooks to `~/.codex/hooks.json` alongside Claude's; **Codex ignores new hooks until you approve them once — type `/hooks` in any Codex session** (and answer its one-time "trust this directory?" prompt per worktree). Codex has no `Notification` event, so its `PermissionRequest` is what turns a pane amber. Plan usage in the status bar is Claude-only for now — Codex doesn't expose its rate limits.
+- **Agents talk to each other** — every Claude and Codex session gets a small Mockingbird MCP server with two tools: `list_sessions` (id, title, agent, repo, branch, group, status, and whether it shares your ticket group) and `send_message(to, message)`. Ask a session to "tell the backoffice session about the API change" and the message is typed into that pane's prompt, labelled with who sent it and that it came from an agent, not you; the receiver replies the same way. Delivery is immediate when the target is idle, waits for the end of its turn when it's busy or blocked on a permission prompt, and waits until you've stopped typing in that pane for 8s so it never lands in your draft. Guardrails: at most 8 messages between any two sessions per 5 minutes (the 9th is refused and you get a notification), 8k characters per message, shells and debriefs can't be messaged, and the relay socket (`~/.mockingbird/mb.sock`) is owner-only. Settings → **Agent-to-agent messages** switches auto-send off, so incoming messages sit in the prompt until you press Enter. The server runs on the app's own binary (`ELECTRON_RUN_AS_NODE`), so it needs no Node install, and it's passed per-session (`--mcp-config` / `-c mcp_servers…`), so your own CLI configs aren't touched. Sessions started before this build need a restart to get the tools.
 - **Tabs** — the top bar is always visible with four tabs: **Sessions** (the grid), **Dashboard** (the ADO board), **WorkTracker** (debriefs), and **Settings** (app config with native folder pickers, a light/dark theme switch, plus the CLAUDE.md editor and Broadcast panel). New session is always one click away.
+- **Setup wizard** — first launch walks through agents (is `claude` / `codex` installed and signed in), status hooks, repo roots, and Azure DevOps, each step checking the machine's real state; reopen it from ⌘K → Setup or Settings → **Run setup**.
 - **WorkTracker tab** — the morning brief and 4pm wrap-up run here as their own panes, not in the coding grid (the tab shows an amber dot when a debrief is waiting on you). The wrap-up reads `session-digests/<date>.md`, written at kick-off from every live session's metadata and ANSI-stripped terminal tail — a passive snapshot from memory, so no session is messaged or interrupted. Both debriefs also get `session-digests/ado-snapshot-<date>.md` — your open work items' live states, descriptions, and recent comments pulled at kickoff via the app's own PAT — so ticket truth doesn't depend on Claude Code having an ADO connector (PR review votes still do). Debrief panes are ephemeral and don't survive restarts.
-- **Grid** — click sessions in the sidebar to show/hide them in the grid. The grid grows with the number of open sessions — no filler tiles. **Resize a pane like a window from its own edges**: right edge for width, bottom edge for height, corner grip for both — neighboring panes absorb the change so everything stays grid-aligned (double-click a handle to even out; sizes persist). ⛶ fullscreens a pane (⌘E / esc); – hides a pane (session keeps running). **The grid shows one group at a time**: click a group header to switch to that group (collapsing the others — ▸ toggles one individually, with a short slide on the swap), toggle rows within the group to hide/show individual panes, and clicking a session from another group switches the grid over to it. **Each group remembers which of its sessions were visible** — switching back restores that subset; click the active group's header again to re-show all of it.
-- **Status dots** — teal=working, amber=needs your input, grey=idle, red=dead. Driven by Claude Code hooks (Stop / Notification / UserPromptSubmit / PreToolUse — the last one flips an approved permission back to *working* the moment the tool starts, instead of staying amber until the turn ends), with native notifications when a session finishes or needs you.
+- **Grid** — click sessions in the sidebar to show/hide them in the grid. The grid grows with the number of open sessions — no filler tiles. **Resize a pane like a window from its own edges**: right edge for width, bottom edge for height, corner grip for both — neighboring panes absorb the change so everything stays grid-aligned (double-click a handle to even out; sizes persist). ⛶ fullscreens a pane (⌘E / esc); – hides a pane (session keeps running). **The grid shows one group at a time**: click a group header to switch to it, toggle rows to hide/show individual panes, and clicking a session from another group switches the grid over to it. **Each group remembers which of its sessions were visible** — switching back restores that subset; click the active group's header again to re-show all of it. **▦ Layout** offers snap-layout templates per group.
+- **Status dots** — teal=working, amber=needs your input, grey=idle, red=dead. Driven by hooks both agents call: Claude Code's Stop / Notification / UserPromptSubmit / PreToolUse, and Codex's Stop / PermissionRequest / UserPromptSubmit / PreToolUse / PostToolUse (Codex has no Notification event — PermissionRequest is its amber). An approved permission flips back to *working* the moment the tool starts. Native notifications fire when a session finishes or needs you.
+- **Plan usage** — the status bar shows your Claude plan's 5-hour and weekly usage (`5h 22%` `wk 27%`, red at 90%; hover for reset times). Sessions report it through a Mockingbird statusline passed with `--settings`, so numbers appear after a session's first response and cover the whole account. Sessions skip it if you have your own `statusLine` in `~/.claude/settings.json`, and API-key logins have no plan limits to show.
+- **File explorer** — **Files** (or `⌘B`, or a pane's **Files** button) docks a VS Code-style explorer on the right of the Sessions tab. It follows the focused session: click into a pathlight session and you see that worktree, click a backoffice session and you see that one (each tree remembers its expanded folders). Double-click a file to view it beside the grid — read-only, selectable, so you can copy from it and paste into any session; the open file stays put while you move between panes. **@** types `@path` into the focused session's prompt. Changed files are colored in the tree (blue modified · green added/untracked · red deleted), and the **Changes** tab lists them with a unified diff per file — **Uncommitted** (vs the last commit) or **Whole branch** (everything since the branch forked from its `dev`/`main`-style base, commits included). Tree, change list, and the open file re-poll every 5s while the window is visible. Files are addressed by session id + relative path, so the renderer can't read outside a live session's folder.
 - **CLAUDE.md** — edit the global or any active repo's CLAUDE.md in-app; on save, every live session is told to re-read it. Busy sessions get the message when they finish their current task, so nothing is interrupted.
 - **Broadcast** — send any instruction to all/selected sessions once, instead of repeating yourself.
 - **Debriefs** — "Morning brief" / "4pm wrap-up" buttons (or auto-schedule in Settings) spawn an Assistant session in your WorkTracker folder that follows `instructions/morning.md` / `wrap-up.md`. Answer its interview questions right in the pane.
-- **Previous sessions** — after an app restart, ↺ relaunches a session in its old worktree with `claude --continue`, resuming the conversation. **↺ restore all** relaunches everything; relaunched sessions keep their id, so they return to their old grid slot and group. Renderer-only changes don't even need that — rebuild and hit `⌘R` (View → Reload) and the sessions keep running.
-- **Groups & sub-groups** — sessions sharing a ticket # group automatically; click a header to focus the whole group in the grid. Name a group `5038/backend` (or set a sub-group in the ⤷ dialog) for cmux-style workspaces: sub-groups appear indented in the sidebar and as **tabs in the group bar above the grid** — click a tab to show just that slice, All to show the group. The group bar always names the active group and how many of its sessions are visible. To manage them: drag a sidebar row onto another group's header, click a row's ⤷ (or ⌘K → "Change group…") for a move/create/remove dialog, or set the Group field in New Session (suggests existing groups, defaults to the ticket #). Double-click a group header to rename it.
+- **Previous sessions** — after an app restart, ↺ relaunches a session in its old worktree and resumes the conversation (`claude --continue`, or `codex resume --last` for Codex panes). **↺ restore all** relaunches everything; relaunched sessions keep their id, so they return to their old grid slot and group. Renderer-only changes don't even need that — rebuild and hit `⌘R` (View → Reload) and the sessions keep running.
+- **Groups and workspaces** — sessions sharing a ticket # group automatically. The sidebar is an outline: each **group** is a plain header, and inside it each **workspace** is a folder row with up to three status dots (waiting first, then `+N`) — the folder is open while that workspace is in the grid, and its sessions fold away otherwise (the chevron opens or closes them by hand). Session rows show the name and, underneath, the branch (and `codex` for Codex panes). Name a group `5038/backend` (or set a workspace in the ⤷ dialog) to put sessions in a workspace: it shows in the grid as **one pane with a tab per session**. Each tab's **×** hides just that session from the grid (it keeps running); the pane goes when its last tab does, and clicking the workspace's folder brings them all back. To manage: drag a sidebar row onto another group or workspace, drop one loose session onto another to make a workspace of the two, click a row's ⤷ (or ⌘K → "Change group…") for a move/create/remove dialog, or set the Group field in New Session. Double-click a group or workspace to rename it; a workspace's ✕ dissolves it (its sessions move up into the group).
 - **Command palette & keyboard layer** — `⌘K` opens a palette with every action plus jump-to-session (waiting sessions show their reason and wait time). `⌘N` new session · `⌘1–9` jump to pane · `⌥⇥` next waiting session (oldest first) · `⌘E` fullscreen pane (esc restores) · `⌘⌃1–4` column count · `⌘⇧B` broadcast · `⌘/` how-to-use popup (also auto-opens on first launch).
 - **Dashboard (board)** — an ADO-style kanban read via the WorkTracker folder's `config.json` + PAT file. A filter bar scopes the board: an **"Assigned to" multi-select** (defaults to you — the PAT's owner — check any mix of people, "Unassigned" included, or Everyone; the whole project loads, capped honestly at the 200 most recent) and **column show/hide toggles**. Both persist. Columns are the real ADO states — **drag a card to another column to change its state** (optimistic, reverts on API error). Clicking a card opens a **centered work-item dialog like ADO's**: title/description/discussion (read + **post comments**) in the main column, state and session actions in the sidebar — start a worktree session from the ticket (auto-grouped under its id) or attach an existing one. Starting a session offers **New branch** (fetches the freshest `origin/dev`-style base — auto-detected per repo, changeable — and branches off it) or **Existing branch** (local or origin), and by default **sends the ticket title + description to the Claude session as its first prompt** so it starts working with full context. Cards carry ADO's type colors and show live session dots plus the assignee when viewing Everyone. The PAT never leaves the Electron main process.
 - **Pane density tiers** — pane chrome follows the column count: 4 cols shows dot + name only, 3 cols adds branch + elapsed, 1–2 cols adds a context rail (elapsed · git ahead/behind/dirty · repo · queued broadcasts).
 - **Close-session safety** — closing a session whose worktree is dirty or unpushed opens a dialog: keep worktree (default), commit WIP + push + remove, or discard (never the default). Clean worktrees close silently.
+- **Worktree janitor** — Settings → **Worktrees** lists every isolated checkout with its branch, dirty/ahead/behind state and age. Tick any that aren't in use (or "all not in use") and remove them in one go; a single confirmation lists every one that would lose uncommitted files or unpushed commits, and each failure is reported and stays ticked for a retry. Old `<repo>-worktrees/` folders can be moved into the new layout.
 - **Control room** — Broadcast and CLAUDE.md share one panel: edit + "Save & re-read in N", compose a broadcast, and watch per-session delivery states (`delivered · queued busy · skipped dead`).
 - **Menu bar + Dock** — the 🪶 tray item counts sessions *blocked on you* (never working ones), lists them oldest-wait-first, and clicking one focuses that pane. The Dock badge shows the same waiting count, and the Dock/app icon is the feather on the design's dark tile (regenerate with `npm run icon` → `build/icon.png` + `build/icon.icns`; dev runs set it at launch, packaged builds embed it).
 
@@ -46,7 +55,8 @@ SF Mono) for anything the machine produced, and one hard rule — **amber
 dot: teal working · amber waiting (pulsing) · grey idle · red dead. Not yet
 implemented from the handoff: cross-session transcript search (1f), the
 draft-comment queue from the ADO design (1d ships as the Dashboard without
-`pending-comments.md`), and token/cost + PR instrumentation in the pane rail.
+`pending-comments.md`), and per-pane token/cost + PR instrumentation in the rail
+(plan-level Claude usage is in the status bar).
 
 ## Debrief prerequisites
 
@@ -62,5 +72,116 @@ Without those, the Assistant does what it can and tells you what it couldn't rea
 
 ## Roadmap
 
-- v2: ADO ticket sidebar (reads WorkTracker `config.json` + PAT), start-session-from-ticket, draft comments → `pending-comments.md`
-- v3: quick notes → weekly log, dashboard tab, richer session summaries for the wrap-up
+Ordered by intent: **Now** is being designed or actively hurts, **Next** is
+agreed direction, **Later** is worth doing once the foundations settle.
+
+### Now
+
+- **Grouping & workspaces rework — second half.** Shipped: the outline-tree
+  sidebar (groups → workspace folders → sessions, with status summaries),
+  workspace tabs that show only the sessions you opened, and × on a tab to hide
+  one session. Still to do from the design review: moving a session into a
+  group keeps your current panes and opens just the moved one; clicking a group
+  header always restores the layout you last had; individual panes can be
+  **pinned** to survive group switches; drop on a pane's tab strip = add as tab,
+  drop on its body = reorder; dragging a sidebar row onto a pane adds it as a
+  tab there.
+- **Finish snap layouts.** The Layout flyout shipped; still missing the
+  FancyZones half — dragging a pane highlights the zone under the cursor and
+  drops it into that slot, and templates should offer per-zone "open a session
+  here" affordances instead of only applying when the pane count matches.
+- **Main-process responsiveness.** All git work (`worktreeState` polling per
+  pane, `fetch`/`push` during session create/cleanup) runs synchronously on the
+  process that owns every pty — a slow repo or VPN freezes typing in every
+  pane. Move to async `execFile` with one cached poller per cwd.
+
+### Next
+
+- **Ticket pipeline — "finish ticket" grown up.** Track where each ticket
+  actually is, not just its ADO column. The real lifecycle: creation → BA →
+  coding (sessions usually start here, sometimes at BA) → local testing →
+  PR into dev/UAT → stakeholder testing → feedback loops back to local
+  testing → approved → PR into prod/main → staging/prod testing → comms to
+  users → moved to Done at next standup. The ticket dialog gets a stage rail
+  showing that journey with per-stage actions: "create PR to dev" (commit,
+  push, open the ADO PR, link the work item, scaffold the ticket-doc folder —
+  Description + Security_Considerations per the team workflow), "record
+  stakeholder feedback" (loops the stage back), "create PR to main", "post
+  comms", "done". Code review stages carry the security + clean-code
+  checklist. Open design question: where stage state lives — ADO custom
+  field, ticket comment convention, or the WorkTracker folder.
+- **Changes panel, next steps.** The explorer's Changes tab covers the file
+  list and per-file diffs. Still to come: syntax highlighting, a worktree
+  watcher instead of the 5s poll, an "N files · +120 −8" badge on the pane,
+  and stage → commit → push → "create PR to dev" buttons — the review surface
+  the ticket pipeline needs before promoting.
+- **Cross-agent review.** A button in the Changes tab starts a session with
+  the *other* agent (Codex for a Claude branch, Claude for a Codex one) to review
+  the branch's diff, and the findings come back to the original session over
+  agent messaging — a second model's opinion before every PR.
+- **Undo an agent's turn.** Snapshot the worktree when each prompt is submitted
+  (from the hook Mockingbird already gets) into a private ref like
+  `refs/mockingbird/snapshots/<session>/…` — no tokens, and the branch, index
+  and history are untouched. Undo restores the files to before that turn,
+  including changes made by shell commands and by either agent (Claude's own
+  `/rewind` only covers its edit tools). Keep the last 10 turns per session;
+  git stores only files that changed, so a typical turn costs a few KB.
+  Gitignored files are skipped, and any single file over ~5 MB is skipped and
+  reported. The conversation isn't rewound, only the files.
+- **Conflict early warning.** When two sessions in the same repo change the same
+  file in different worktrees, flag both panes before it becomes a merge
+  conflict.
+- **Tests for Mockingbird.** There's no test suite. Start from the harnesses
+  used to build the explorer, messaging relay, setup checks and delivery timing,
+  and run them in CI on every push.
+- **Inbox mode.** A queue view of every session blocked on you, oldest first,
+  each showing its last lines and the actual question — with an inline reply
+  box that pastes into the pty, then advances to the next. The full version of
+  ⌥⇥: you answer the fleet without ever hunting the grid.
+- **Transcript indexer.** One background index over Claude Code's own
+  transcripts (`~/.claude/projects`, which include token usage) that four
+  other items sit on: cross-session search, "catch me up" summaries, real
+  cost/token meters, and the weekly rollup. Build the substrate once.
+- **Cross-session transcript search** (design 1f, sits on the indexer):
+  search every session's scrollback — "which session touched the auth
+  middleware?" — with hits that jump to the pane and position.
+- **Session health watchdog**: the manual half shipped (Settings → Update
+  Claude Code / Update Codex, then Restart all agent sessions). Still to do:
+  notice the CLI's self-update ("Restart to update" in any pane, or a model the
+  CLI doesn't know yet) and surface that as one prompt; detect hung sessions
+  (working with no output for N minutes) and offer a repaint/resume.
+- **Agent messaging, next steps.** Sessions can already message each other
+  (`list_sessions` / `send_message`, with a per-pair rate limit). Still to do: a
+  visible message log (who told whom what, from the pane rail), a per-group
+  switch between auto-send and leave-in-prompt (today it's one global
+  setting), and a "Team" broadcast from the group bar that asks every session in
+  a group for a status report.
+- **Codex parity.** Plan usage for Codex (its 5h/weekly limits aren't exposed
+  officially — only undocumented fields in its session files), a watched test
+  of the PermissionRequest → amber path, and model suggestions in New Session
+  instead of a free-text field.
+- **Notification controls**: per-session mute and app-wide quiet hours — today
+  every waiting flip notifies, which trains you to ignore them.
+- **Scrollback that survives restarts**: resumed sessions get their
+  conversation back via `--continue`, but the pane's visual history starts
+  empty; persist per-session scrollback to disk and replay on relaunch.
+- **Draft comment queue** (design 1d): compose ADO comments in the ticket
+  dialog offline-style, review the queue, then post in one batch — instead of
+  posting immediately.
+
+### Later
+
+- **Signed + notarized builds with real auto-update** — no right-click→Open
+  for new users, updates install themselves (needs an Apple Developer ID).
+- **Continue in the other agent.** Hand a session to Codex or Claude with a
+  generated summary of what's done and what's next — for when one hits its usage
+  limit or gets stuck.
+- **Run the app per worktree.** A Run button that starts the repo's dev server
+  on a free port, so two branches of the same app don't fight over
+  `localhost:3000`, with the URL shown in the pane rail.
+- **Session presets**: one-click recurring setups (repo + branch scheme +
+  kickoff prompt), e.g. "review session on dev", "test-runner shell".
+- **Weekly rollup** (sits on the indexer): compose the daily debrief digests
+  and transcript stats into a weekly log with per-ticket time and outcomes.
+- **Richer pane rail** (design handoff, sits on the indexer): token/cost per
+  session and PR status once the ADO PR surface is wired.

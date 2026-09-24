@@ -1,8 +1,8 @@
 {
   "name": "mockingbird",
   "productName": "Mockingbird",
-  "version": "0.1.0",
-  "description": "Grid manager for parallel Claude CLI sessions \u2014 worktrees, status, broadcast, ADO & WorkTracker integration",
+  "version": "1.0.0",
+  "description": "Grid manager for parallel Claude CLI sessions — worktrees, status, broadcast, ADO & WorkTracker integration",
   "main": "dist/main.js",
   "scripts": {
     "build": "node esbuild.mjs",
