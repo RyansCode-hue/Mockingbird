@@ -985,7 +985,6 @@ function App() {
                       <ChevronIcon open={!collapsed.has(key)} />
                     </span>
                     <span className="txt">{groupTitle(key, list)}</span>
-                    <StatusDots list={list} />
                   </div>
                 )}
                 {!collapsed.has(key) && bySub(list).map(([sub, subList]) => {
@@ -1553,14 +1552,15 @@ interface PaletteAction {
   run: () => void;
 }
 
-/** One dot per session (up to 6, then a count), so a collapsed row still shows who's busy or blocked. */
+/** One dot per session (up to 3, then a count), so a collapsed workspace still shows who's busy or blocked. */
 function StatusDots({ list }: { list: SessionInfo[] }) {
   const order = { waiting: 0, working: 1, idle: 2, dead: 3 } as const;
   const sorted = [...list].sort((a, b) => order[a.status] - order[b.status]);
-  const extra = sorted.length - 6;
+  const MAX = 3;
+  const extra = sorted.length - MAX;
   return (
     <span className="sdots" title={`${list.length} session${list.length === 1 ? "" : "s"}`}>
-      {sorted.slice(0, 6).map((s) => (
+      {sorted.slice(0, MAX).map((s) => (
         <span key={s.id} className={`dot xs ${s.status}`} />
       ))}
       {extra > 0 && <span className="more">+{extra}</span>}
