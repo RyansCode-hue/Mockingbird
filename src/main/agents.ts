@@ -4,13 +4,19 @@ import * as path from "path";
 import type { AgentKind, NewSessionRequest, Settings } from "../shared/types";
 import { expandHome } from "./store";
 import { usageReporterArgs } from "./usage";
+import type { McpLaunch } from "./messaging";
+
+export interface LaunchContext {
+  /** The per-session Mockingbird MCP server that lets agents message each other. */
+  mcp: McpLaunch;
+}
 
 /** Everything that differs between the coding-agent CLIs a session can run. */
 export interface AgentAdapter {
   label: string;
   /** The Settings field holding this agent's binary name or path. */
   binSetting: keyof Pick<Settings, "claudeBin" | "codexBin">;
-  launchArgs(req: NewSessionRequest): string[];
+  launchArgs(req: NewSessionRequest, ctx: LaunchContext): string[];
   /**
    * Whether a resume would find a conversation in this cwd. Both CLIs exit (or
    * open a picker) when asked to resume nothing, so such a session starts fresh.
@@ -24,7 +30,7 @@ const claude: AgentAdapter = {
   label: "Claude",
   binSetting: "claudeBin",
   promptInArgs: false,
-  launchArgs(req) {
+  launchArgs(req, ctx) {
     const args: string[] = [];
     if (req.resumeSessionId) args.push("--resume", req.resumeSessionId);
     else if (req.resume) args.push("--continue");
@@ -32,6 +38,14 @@ const claude: AgentAdapter = {
     if (req.effort) args.push("--effort", req.effort);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
     args.push(...usageReporterArgs());
+    // --mcp-config adds to the user's own servers; the allow rule spares a
+    // permission prompt on every message
+    args.push(
+      "--mcp-config",
+      JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...ctx.mcp } } }),
+      "--allowedTools",
+      "mcp__mockingbird__list_sessions,mcp__mockingbird__send_message"
+    );
     return args;
   },
   // Claude keeps transcripts under ~/.claude/projects/<cwd with separators dashed>/
@@ -70,7 +84,7 @@ const codex: AgentAdapter = {
   label: "Codex",
   binSetting: "codexBin",
   promptInArgs: true,
-  launchArgs(req) {
+  launchArgs(req, ctx) {
     const args: string[] = [];
     if (req.resumeSessionId) args.push("resume", req.resumeSessionId);
     else if (req.resume) args.push("resume", "--last"); // scoped to the cwd by codex itself
@@ -78,7 +92,15 @@ const codex: AgentAdapter = {
     // -c values are parsed as TOML, so the string needs its quotes
     if (req.effort) args.push("-c", `model_reasoning_effort="${req.effort}"`);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    if (req.initialPrompt) args.push(req.initialPrompt);
+    // -c values are TOML; JSON strings, arrays and this flat table are valid TOML too
+    const env = Object.entries(ctx.mcp.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+    args.push(
+      "-c", `mcp_servers.mockingbird.command=${JSON.stringify(ctx.mcp.command)}`,
+      "-c", `mcp_servers.mockingbird.args=${JSON.stringify(ctx.mcp.args)}`,
+      "-c", `mcp_servers.mockingbird.env={${env}}`,
+      "-c", `mcp_servers.mockingbird.default_tools_approval_mode="approve"`
+    );
+    if (req.initialPrompt) args.push(req.initialPrompt); // positional — must stay last
     return args;
   },
   // Codex files rollouts by date (~/.codex/sessions/YYYY/MM/DD/), not by folder,

@@ -3155,6 +3155,19 @@ function SettingsView({
           <button className="outline" onClick={pickCodexBin}>Browse…</button>
         </div>
 
+        <label>Agent-to-agent messages <span className="wi-note">sessions can message each other with the mockingbird tools</span></label>
+        <div className="check-line">
+          <input
+            type="checkbox"
+            id="amsub"
+            checked={s.agentMessagesSubmit !== false}
+            onChange={(e) => upd({ agentMessagesSubmit: e.target.checked })}
+          />
+          <label htmlFor="amsub" style={{ margin: 0 }}>
+            send automatically — off: the message waits in the receiving prompt until you press Enter
+          </label>
+        </div>
+
         <div className="check-line">
           <input
             type="checkbox"

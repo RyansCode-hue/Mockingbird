@@ -10,6 +10,7 @@ import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWork
 import { installHooks, hooksInstalled, watchEvents } from "./hooks";
 import { readUsage, watchUsage } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
+import { Messaging } from "./messaging";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
@@ -196,6 +197,16 @@ app.whenReady().then(() => {
   sessions.onChanged = updateTray;
   updateTray();
   setInterval(updateTray, 60_000); // keep wait durations in the dropdown fresh
+  new Messaging(
+    sessions,
+    () => store.settings.agentMessagesSubmit !== false,
+    (from, to) =>
+      notifySession(
+        from.id,
+        "Agents paused messaging",
+        `${from.ticketTitle ?? from.title} ↔ ${to.ticketTitle ?? to.title} hit the message limit — check on them`
+      )
+  ).start();
   watchUsage((u) => BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", u));
   watchEvents(sessions, (info, status) => {
     notifySession(

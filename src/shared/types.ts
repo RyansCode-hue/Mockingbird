@@ -154,6 +154,7 @@ export interface Settings {
   workTrackerPath: string;
   claudeBin: string;
   codexBin: string;
+  agentMessagesSubmit?: boolean; // agent-to-agent messages auto-send (default) or wait in the prompt
   debriefs: { enabled: boolean; morning: string; wrapUp: string }; // "HH:MM"
   notifications: boolean;
 }

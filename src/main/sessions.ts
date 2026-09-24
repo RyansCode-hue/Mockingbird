@@ -10,6 +10,7 @@ import { Store, expandHome } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
 import { agentFor, AgentAdapter } from "./agents";
+import { mcpLaunch } from "./messaging";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
 
@@ -17,7 +18,9 @@ interface LiveSession {
   info: SessionInfo;
   proc: pty.IPty;
   buffer: string;
-  queued: string[]; // messages to deliver when idle
+  queued: { text: string; submit: boolean }[]; // messages to deliver when idle
+  lastInput: number; // ms of the user's last write into this pane
+  flushTimer: NodeJS.Timeout | null; // retry while the user is typing
   claudeId: string | null; // Claude Code's own session_id, claimed from the first hook event
 }
 
@@ -121,8 +124,9 @@ export class SessionManager {
     // shell sessions skip claude entirely — just an interactive zsh in the cwd.
     const shellArgs = ["-il"];
     let claudeArgs: string[] = shellArgs;
+    const id = req.reuseId ?? randomUUID().slice(0, 8);
     if (!req.shell) {
-      const cmdline = [this.resolveBin(agent), ...agent.launchArgs(req)].map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(" ");
+      const cmdline = [this.resolveBin(agent), ...agent.launchArgs(req, { mcp: mcpLaunch(id) })].map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(" ");
       claudeArgs = ["-ilc", `exec ${cmdline}`];
     }
     let proc: pty.IPty;
@@ -148,7 +152,7 @@ export class SessionManager {
     }
 
     const info: SessionInfo = {
-      id: req.reuseId ?? randomUUID().slice(0, 8),
+      id,
       title:
         req.title ??
         (req.ticketId && req.ticketTitle
@@ -183,7 +187,7 @@ export class SessionManager {
         /* already dead */
       }
     }
-    const sess: LiveSession = { info, proc, buffer: "", queued: [], claudeId: null };
+    const sess: LiveSession = { info, proc, buffer: "", queued: [], claudeId: null, lastInput: 0, flushTimer: null };
     this.live.set(info.id, sess);
     this.store.upsertSession(info);
 
@@ -357,7 +361,10 @@ export class SessionManager {
   }
 
   write(id: string, data: string): void {
-    this.live.get(id)?.proc.write(data);
+    const s = this.live.get(id);
+    if (!s) return;
+    s.lastInput = Date.now();
+    s.proc.write(data);
   }
 
   resize(id: string, cols: number, rows: number): void {
@@ -386,13 +393,32 @@ export class SessionManager {
     this.emitChanged();
   }
 
-  /** Inject a chat message into a session (paste + submit). */
-  sendMessage(id: string, message: string): void {
+  /** Inject a chat message into a session (paste, then submit unless told not to). */
+  sendMessage(id: string, message: string, submit = true): void {
     const s = this.live.get(id);
     if (!s) return;
     // bracketed paste so multi-line messages arrive as one prompt
     s.proc.write(`\x1b[200~${message}\x1b[201~`);
-    setTimeout(() => s.proc.write("\r"), 120);
+    if (submit) setTimeout(() => s.proc.write("\r"), 120);
+  }
+
+  /**
+   * Deliver a message from another agent session. An idle session gets it now;
+   * a busy or blocked one gets it when its turn ends (Enter would otherwise answer
+   * a pending permission prompt). Either way it waits while the user is typing in
+   * that pane, so it never lands in the middle of their draft.
+   */
+  deliverAgentMessage(id: string, message: string, submit: boolean): string {
+    const s = this.live.get(id);
+    if (!s) throw new Error(`session ${id} is not running`);
+    s.queued.push({ text: message, submit });
+    if (s.info.status === "idle") {
+      this.flushQueued(s);
+      this.emitChanged();
+      return s.queued.length ? "queued — the user is typing in that pane" : submit ? "delivered" : "placed in its prompt for the user to send";
+    }
+    this.emitChanged();
+    return "queued until its current turn ends";
   }
 
   /** Broadcast to sessions; queue for busy ones (delivered on the next idle).
@@ -411,7 +437,7 @@ export class SessionManager {
       // answer whatever prompt is blocking the session — including a pending
       // permission request the user has not looked at yet
       if (!whenIdle || s.info.status === "idle") this.sendMessage(id, message);
-      else s.queued.push(message);
+      else s.queued.push({ text: message, submit: true });
     }
     this.emitChanged();
   }
@@ -460,10 +486,21 @@ export class SessionManager {
 
   /** Deliver messages queued while a session was busy, then mark it working again. */
   private flushQueued(s: LiveSession): void {
-    if (!s.queued.length) return;
+    if (!s.queued.length || s.info.status === "dead") return;
+    const QUIET_MS = 8000;
+    const typedAgo = Date.now() - s.lastInput;
+    if (typedAgo < QUIET_MS) {
+      if (s.flushTimer) clearTimeout(s.flushTimer);
+      s.flushTimer = setTimeout(() => {
+        s.flushTimer = null;
+        if (this.live.get(s.info.id) === s && s.info.status === "idle") this.flushQueued(s);
+      }, QUIET_MS - typedAgo + 200);
+      return;
+    }
     const msgs = s.queued.splice(0);
-    for (const m of msgs) this.sendMessage(s.info.id, m);
-    this.setStatus(s.info.id, "working");
+    for (const m of msgs) this.sendMessage(s.info.id, m.text, m.submit);
+    if (msgs.some((m) => m.submit)) this.setStatus(s.info.id, "working");
+    else this.emitChanged();
   }
 
   private setStatus(id: string, status: SessionStatus, reason?: string): void {
