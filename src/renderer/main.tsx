@@ -2913,29 +2913,52 @@ function WorktreeJanitor() {
   const [list, setList] = useState<WorktreeEntry[] | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const load = async () => {
     const r = await window.mb.listWorktrees();
     if (r?.error) return setError(r.error);
     setError("");
     setList(r);
+    // a rescan drops selections for worktrees that are gone or now in use
+    const removable = new Set((r as WorktreeEntry[]).filter((w) => !w.inUse).map((w) => w.path));
+    setSelected((s) => new Set([...s].filter((p) => removable.has(p))));
   };
   useEffect(() => {
     load();
   }, []);
-  const remove = async (w: WorktreeEntry) => {
-    const risk = w.dirty
-      ? `${w.name} has ${w.dirtyFiles} uncommitted file${w.dirtyFiles === 1 ? "" : "s"} — they will be lost. `
+  const riskOf = (w: WorktreeEntry) =>
+    w.dirty
+      ? `${w.name}: ${w.dirtyFiles} uncommitted file${w.dirtyFiles === 1 ? "" : "s"} will be lost`
       : w.ahead
-        ? `${w.name} has ${w.ahead} unpushed commit${w.ahead === 1 ? "" : "s"} on ${w.branch} (the branch is kept). `
-        : "";
-    if (!window.confirm(`${risk}Remove the worktree folder ${w.path}?`)) return;
-    setBusy(w.path);
-    const r = await window.mb.removeWorktree(w.repoPath, w.path);
+        ? `${w.name}: ${w.ahead} unpushed commit${w.ahead === 1 ? "" : "s"} on ${w.branch} (the branch is kept)`
+        : null;
+  // one confirmation for the whole batch, listing every worktree that would lose work;
+  // removals run one at a time and every failure is reported, not just the first
+  const remove = async (ws: WorktreeEntry[]) => {
+    if (ws.length === 0) return;
+    const risks = ws.map(riskOf).filter(Boolean) as string[];
+    const what = ws.length === 1 ? `the worktree folder ${ws[0].path}` : `${ws.length} worktree folders`;
+    const msg = (risks.length ? `${risks.join("\n")}\n\n` : "") + `Remove ${what}?`;
+    if (!window.confirm(msg)) return;
+    setBusy("remove");
+    const failures: string[] = [];
+    for (const w of ws) {
+      const r = await window.mb.removeWorktree(w.repoPath, w.path);
+      if (r?.error) failures.push(`${w.name}: ${r.error}`);
+    }
     setBusy(null);
-    if (r?.error) return setError(r.error);
-    load();
+    await load(); // reload first: it clears the error, and these failures must stay visible
+    setError(failures.join(" · "));
   };
   const strays = list?.filter((w) => !w.inUse) ?? [];
+  const chosen = strays.filter((w) => selected.has(w.path));
+  const toggle = (path: string) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      n.has(path) ? n.delete(path) : n.add(path);
+      return n;
+    });
+  const allChosen = strays.length > 0 && chosen.length === strays.length;
   const movable = list?.filter((w) => w.legacy && !w.inUse && !w.error) ?? [];
   const migrate = async (ws: WorktreeEntry[]) => {
     setBusy("migrate");
@@ -2945,8 +2968,8 @@ function WorktreeJanitor() {
       if (r?.error) failures.push(`${w.name}: ${r.error}`);
     }
     setBusy(null);
+    await load(); // reload first: it clears the error, and these failures must stay visible
     setError(failures.join(" · "));
-    load();
   };
   return (
     <div className="set-card">
@@ -2965,12 +2988,35 @@ function WorktreeJanitor() {
           <span className="wi-note">from <code>&lt;repo&gt;-worktrees/</code> · in-use ones are skipped</span>
         </div>
       )}
+      {strays.length > 0 && (
+        <div className="row" style={{ justifyContent: "flex-start", gap: 10, marginTop: 4 }}>
+          <label className="check-line" style={{ margin: 0, textTransform: "none", letterSpacing: 0 }}>
+            <input
+              type="checkbox"
+              checked={allChosen}
+              onChange={() => setSelected(allChosen ? new Set() : new Set(strays.map((w) => w.path)))}
+            />
+            <span>all {strays.length} not in use</span>
+          </label>
+          <button className="outline" disabled={chosen.length === 0 || busy === "remove"} onClick={() => remove(chosen)}>
+            {busy === "remove" ? "removing…" : `Remove ${chosen.length || ""} selected`}
+          </button>
+        </div>
+      )}
       {error && <div className="err">{error}</div>}
       {list && list.length === 0 && <div className="wi-note">none — sessions are running in repo checkouts</div>}
       {list && list.length > 0 && (
         <div className="wt-list">
           {list.map((w) => (
-            <div key={w.path} className={`wt-row ${w.inUse ? "live" : ""}`}>
+            <div key={w.path} className={`wt-row ${w.inUse ? "live" : ""} ${selected.has(w.path) ? "sel" : ""}`}>
+              <input
+                type="checkbox"
+                className="wt-check"
+                disabled={w.inUse}
+                checked={selected.has(w.path)}
+                onChange={() => toggle(w.path)}
+                title={w.inUse ? "in use by a session" : "select for removal"}
+              />
               <span className="wt-repo">{w.repoName}</span>
               <span className="wt-name" title={w.path}>
                 {w.name}
@@ -2992,8 +3038,8 @@ function WorktreeJanitor() {
               {w.inUse ? (
                 <span className="wt-live">in use</span>
               ) : (
-                <button className="outline" disabled={busy === w.path} onClick={() => remove(w)}>
-                  {busy === w.path ? "removing…" : "Remove"}
+                <button className="outline" disabled={busy === "remove"} onClick={() => remove([w])}>
+                  Remove
                 </button>
               )}
             </div>
