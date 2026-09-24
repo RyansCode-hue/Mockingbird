@@ -41,15 +41,23 @@ launch, right-click the app → **Open** once. Don't launch the copy inside
 
 ## 3. First run
 
-1. **Install hooks** — Settings → *Claude Code hooks* → Install (or the
-   ⚠ prompt in the status bar). This adds four hooks to
-   `~/.claude/settings.json` (merged, never overwriting what's there). They're
-   how panes know working / waiting-on-you / idle.
-2. **Repo roots** — Settings → *Repo roots*: the folders New Session scans for
-   repositories (e.g. `~/Code`).
-3. Press **⌘/** anytime for the how-to-use popup, **⌘K** for every command.
+The first launch opens a **setup wizard** (reopen it anytime: ⌘K → *Setup*, or
+Settings → *Run setup*). Each step checks this Mac's real state, so it's safe to
+re-run and it resumes where you left off:
 
-That's enough to use the session grid. The rest is optional.
+1. **Agents** — finds `claude` (required) and `codex` (optional) on your PATH and
+   whether each is signed in; shows the exact command if not.
+2. **Status hooks** — one button adds Mockingbird's hooks for both agents,
+   next to any hooks you already have. Codex also asks you to trust them once:
+   type `/hooks` in a Codex pane.
+3. **Repos** — the folders New Session scans (defaults `~/Code` and
+   `~/Personal Projects`, relative to *your* home — add or remove any).
+4. **Azure DevOps** (optional) — WorkTracker folder, org URL, project and PAT
+   file (see section 4); *Connect* only shows green after a live sign-in check.
+5. **Done** — the few shortcuts worth knowing, then straight into New Session.
+
+Nothing in the app is tied to the machine it was built on: every default path is
+`~`-relative, and all Azure DevOps details come from your own config.
 
 ## 4. Azure DevOps (Dashboard, ticket picker, debrief snapshots)
 

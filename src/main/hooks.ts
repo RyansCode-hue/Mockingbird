@@ -88,6 +88,10 @@ export function installHooks(): { installed: boolean; message: string } {
   };
 }
 
+export function hookStatus(): { claude: boolean; codex: boolean | null } {
+  return { claude: wired(CLAUDE_SETTINGS, HOOK_EVENTS), codex: codexPresent() ? wired(CODEX_HOOKS, CODEX_EVENTS) : null };
+}
+
 export function hooksInstalled(): boolean {
   // every event must be wired — an older install missing one counts as not
   // installed so the UI offers the one-click upgrade

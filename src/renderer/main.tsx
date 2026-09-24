@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
 import { FileDock } from "./FilePanel";
+import { SetupWizard } from "./SetupWizard";
 import { LayoutIcon, FilesIcon } from "./Icons";
 import type { AgentKind, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
@@ -13,7 +14,7 @@ declare global {
   }
 }
 
-type ModalKind = "new" | "import" | "help" | "restart" | null;
+type ModalKind = "new" | "import" | "help" | "restart" | "setup" | null;
 type Tab = "sessions" | "dashboard" | "worktracker" | "settings";
 const TAB_LABELS: Record<Tab, string> = {
   sessions: "Sessions",
@@ -214,12 +215,17 @@ function App() {
     return live;
   };
 
-  // first launch: open the how-to-use popup once
+  // First launch opens the setup wizard. Installs that predate it (the help
+  // popup was already seen) are marked set up without being interrupted.
   useEffect(() => {
-    if (!loadLS("mb.helpSeen", false)) {
-      setModal("help");
-      localStorage.setItem("mb.helpSeen", "true");
-    }
+    window.mb.getSettings().then(async (s: Settings) => {
+      if (s.setupDone) return;
+      if (loadLS("mb.helpSeen", false)) await window.mb.setSettings({ ...s, setupDone: true });
+      else {
+        localStorage.setItem("mb.helpSeen", "true");
+        setModal("setup");
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -850,7 +856,15 @@ function App() {
             }}
           />
         )}
-        {tab === "settings" && <SettingsView sessions={sessions} theme={theme} onTheme={setTheme} onRestartAll={() => setModal("restart")} />}
+        {tab === "settings" && (
+          <SettingsView
+            sessions={sessions}
+            theme={theme}
+            onTheme={setTheme}
+            onRestartAll={() => setModal("restart")}
+            onSetup={() => setModal("setup")}
+          />
+        )}
         {tab === "worktracker" && (
           <div className="wt-page">
             <div className="board-filter">
@@ -1343,7 +1357,8 @@ function App() {
               className="hooks-bad"
               title="Session status (working/waiting/idle) needs Claude Code hooks — click to install"
               onClick={async () => {
-                await window.mb.installHooks();
+                const r = await window.mb.installHooks();
+                if (r?.error) return alert(`Couldn't install hooks: ${r.error}`);
                 setHooksOk(true);
               }}
             >
@@ -1366,6 +1381,7 @@ function App() {
             { label: "New Codex session", run: () => { setNewLaunch("codex"); setModal("new"); } },
             { label: "New terminal (no Claude)", run: () => { setNewLaunch("shell"); setModal("new"); } },
             { label: "Restart all agent sessions", run: () => setModal("restart") },
+            { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
             { label: "Sessions grid", run: () => setTab("sessions") },
             { label: "Dashboard — ticket board", run: () => setTab("dashboard") },
             { label: "Settings / Broadcast / CLAUDE.md", kbd: "⌘⇧B", run: () => setTab("settings") },
@@ -1478,6 +1494,15 @@ function App() {
         />
       )}
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
+      {modal === "setup" && (
+        <SetupWizard
+          onClose={() => setModal(null)}
+          onFinish={() => {
+            setNewLaunch("claude");
+            setModal("new");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -3055,11 +3080,13 @@ function SettingsView({
   theme,
   onTheme,
   onRestartAll,
+  onSetup,
 }: {
   sessions: SessionInfo[];
   theme: "dark" | "light";
   onTheme: (t: "dark" | "light") => void;
   onRestartAll: () => void;
+  onSetup: () => void;
 }) {
   const [s, setS] = useState<Settings | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -3197,7 +3224,8 @@ function SettingsView({
             <button
               className="outline"
               onClick={async () => {
-                await window.mb.installHooks();
+                const r = await window.mb.installHooks();
+                if (r?.error) return alert(`Couldn't install hooks: ${r.error}`);
                 setHooksOk(true);
               }}
             >
@@ -3226,6 +3254,9 @@ function SettingsView({
             title="Relaunch every Claude and Codex pane, resuming each conversation — what the CLI's “Restart to update” needs"
           >
             Restart all agent sessions
+          </button>
+          <button className="outline" onClick={onSetup} title="Re-run the first-launch setup: agents, hooks, repos, Azure DevOps">
+            Run setup
           </button>
           {updNote && <span className="wi-note">{updNote}</span>}
         </div>

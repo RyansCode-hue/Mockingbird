@@ -154,6 +154,7 @@ export interface Settings {
   workTrackerPath: string;
   claudeBin: string;
   codexBin: string;
+  setupDone?: boolean; // the first-run wizard was finished or skipped
   agentMessagesSubmit?: boolean; // agent-to-agent messages auto-send (default) or wait in the prompt
   debriefs: { enabled: boolean; morning: string; wrapUp: string }; // "HH:MM"
   notifications: boolean;
@@ -194,6 +195,24 @@ export type ChangeScope = "working" | "branch";
 export interface GitChanges {
   changes: GitChange[];
   base: string; // what the changes are measured against
+}
+
+// ---- first-run setup ---------------------------------------------------------
+export interface AgentCheck {
+  found: boolean;
+  path: string | null;
+  version: string | null;
+  signedIn: boolean | null; // null = could not tell (detail says why)
+  detail?: string;
+}
+
+export interface SetupStatus {
+  claude: AgentCheck;
+  codex: AgentCheck;
+  hooks: { claude: boolean; codex: boolean | null }; // codex null = Codex not set up on this Mac
+  repoRoots: { path: string; exists: boolean; repos: number }[];
+  workTrackerPath: string;
+  ado: { connected: boolean; display?: string; detail: string };
 }
 
 export interface UsageWindow {

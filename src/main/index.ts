@@ -11,6 +11,7 @@ import { installHooks, hooksInstalled, watchEvents } from "./hooks";
 import { readUsage, watchUsage } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { Messaging } from "./messaging";
+import { setupStatus } from "./setup";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
@@ -326,7 +327,8 @@ ipcMain.handle("claudemd:save", (_e, p, content) =>
 
 ipcMain.handle("usage:get", () => readUsage());
 ipcMain.handle("hooks:installed", () => hooksInstalled());
-ipcMain.handle("hooks:install", () => installHooks());
+ipcMain.handle("hooks:install", () => safe("hooks:install", () => installHooks())());
+ipcMain.handle("setup:status", () => safeAsync("setup:status", () => setupStatus(store, sessions))());
 ipcMain.handle("settings:get", () => store.settings);
 ipcMain.handle("settings:set", (_e, s) => {
   store.setSettings(s);

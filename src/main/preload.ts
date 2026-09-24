@@ -27,6 +27,7 @@ const api = {
   adoMe: () => ipcRenderer.invoke("ado:me"),
   connectorsStatus: () => ipcRenderer.invoke("connectors:status"),
   updateCheck: () => ipcRenderer.invoke("update:check"),
+  setupStatus: () => ipcRenderer.invoke("setup:status"),
   agentUpdate: (agent: string) => ipcRenderer.invoke("agents:update", agent),
   onUpdateAvailable: (cb: (u: unknown) => void) => {
     const h = (_e: unknown, u: unknown) => cb(u);
