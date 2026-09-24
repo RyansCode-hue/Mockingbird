@@ -115,6 +115,25 @@ agreed direction, **Later** is worth doing once the foundations settle.
   watcher instead of the 5s poll, an "N files · +120 −8" badge on the pane,
   and stage → commit → push → "create PR to dev" buttons — the review surface
   the ticket pipeline needs before promoting.
+- **Cross-agent review.** A button in the Changes tab starts a session with
+  the *other* agent (Codex for a Claude branch, Claude for a Codex one) to review
+  the branch's diff, and the findings come back to the original session over
+  agent messaging — a second model's opinion before every PR.
+- **Undo an agent's turn.** Snapshot the worktree when each prompt is submitted
+  (from the hook Mockingbird already gets) into a private ref like
+  `refs/mockingbird/snapshots/<session>/…` — no tokens, and the branch, index
+  and history are untouched. Undo restores the files to before that turn,
+  including changes made by shell commands and by either agent (Claude's own
+  `/rewind` only covers its edit tools). Keep the last 10 turns per session;
+  git stores only files that changed, so a typical turn costs a few KB.
+  Gitignored files are skipped, and any single file over ~5 MB is skipped and
+  reported. The conversation isn't rewound, only the files.
+- **Conflict early warning.** When two sessions in the same repo change the same
+  file in different worktrees, flag both panes before it becomes a merge
+  conflict.
+- **Tests for Mockingbird.** There's no test suite. Start from the harnesses
+  used to build the explorer, messaging relay, setup checks and delivery timing,
+  and run them in CI on every push.
 - **Inbox mode.** A queue view of every session blocked on you, oldest first,
   each showing its last lines and the actual question — with an inline reply
   box that pastes into the pty, then advances to the next. The full version of
@@ -154,6 +173,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 - **Signed + notarized builds with real auto-update** — no right-click→Open
   for new users, updates install themselves (needs an Apple Developer ID).
+- **Continue in the other agent.** Hand a session to Codex or Claude with a
+  generated summary of what's done and what's next — for when one hits its usage
+  limit or gets stuck.
+- **Run the app per worktree.** A Run button that starts the repo's dev server
+  on a free port, so two branches of the same app don't fight over
+  `localhost:3000`, with the URL shown in the pane rail.
 - **Session presets**: one-click recurring setups (repo + branch scheme +
   kickoff prompt), e.g. "review session on dev", "test-runner shell".
 - **Weekly rollup** (sits on the indexer): compose the daily debrief digests

@@ -163,6 +163,10 @@ function App() {
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean } | null>(null);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [appVersion, setAppVersion] = useState("");
+  useEffect(() => {
+    window.mb.appVersion().then((v: string) => setAppVersion(v));
+  }, []);
   const [filesOpen, setFilesOpen] = useState<boolean>(() => loadLS("mb.filesOpen", false));
   useEffect(() => localStorage.setItem("mb.filesOpen", JSON.stringify(filesOpen)), [filesOpen]);
 
@@ -772,7 +776,7 @@ function App() {
         <span className="brand">
           <span className="mark">🪶</span>
           <span className="name">Mockingbird</span>
-          <span className="ver">v0.1</span>
+          {appVersion && <span className="ver">v{appVersion}</span>}
         </span>
         <span className="tabs">
           {(["sessions", "dashboard", "worktracker", "settings"] as const).map((t) => (

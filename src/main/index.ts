@@ -144,7 +144,18 @@ function createWindow(): void {
   sessions.attach(win.webContents);
 }
 
+// One instance per user: a second copy would overwrite ~/.mockingbird/state.json
+// and take over the agent-messaging socket from the first. Opening the app again
+// just brings the running window forward.
+const isPrimary = app.requestSingleInstanceLock();
+if (!isPrimary) {
+  app.quit(); // asynchronous — startup below checks isPrimary so nothing runs meanwhile
+} else {
+  app.on("second-instance", () => focusPane());
+}
+
 app.whenReady().then(() => {
+  if (!isPrimary) return;
   // node-pty ships spawn-helper without its exec bit (microsoft/node-pty#850) —
   // the cause of "posix_spawnp failed" on macOS. Repair every candidate location.
   const ptyRoot = path.join(__dirname, "..", "node_modules", "node-pty");
@@ -328,6 +339,7 @@ ipcMain.handle("claudemd:save", (_e, p, content) =>
 ipcMain.handle("usage:get", () => readUsage());
 ipcMain.handle("hooks:installed", () => hooksInstalled());
 ipcMain.handle("hooks:install", () => safe("hooks:install", () => installHooks())());
+ipcMain.handle("app:version", () => app.getVersion());
 ipcMain.handle("setup:status", () => safeAsync("setup:status", () => setupStatus(store, sessions))());
 ipcMain.handle("settings:get", () => store.settings);
 ipcMain.handle("settings:set", (_e, s) => {
