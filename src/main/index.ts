@@ -8,7 +8,7 @@ import { SessionManager } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree } from "./worktrees";
 import { installHooks, hooksInstalled, watchEvents } from "./hooks";
-import { readUsage, watchUsage } from "./usage";
+import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
@@ -220,6 +220,18 @@ app.whenReady().then(() => {
         `${from.ticketTitle ?? from.title} ↔ ${to.ticketTitle ?? to.title} hit the message limit — check on them`
       )
   ).start();
+  // the plan name isn't in Claude's statusline payload; `claude auth status` has it
+  void (async () => {
+    const bin = sessions.binFor("claude");
+    if (!bin.includes("/")) return;
+    const r = await userShell(`${quote(bin)} auth status 2>/dev/null`);
+    try {
+      setClaudePlan(JSON.parse(r.out).subscriptionType ?? null);
+    } catch {
+      console.warn(`usage: couldn't read the Claude plan from auth status: ${r.out.slice(0, 200)}`);
+    }
+    BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", readUsage());
+  })();
   watchUsage((u) => BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", u));
   watchEvents(sessions, (info, status) => {
     notifySession(

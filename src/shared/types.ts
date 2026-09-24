@@ -215,16 +215,24 @@ export interface SetupStatus {
   ado: { connected: boolean; display?: string; detail: string };
 }
 
-export interface UsageWindow {
+/** One plan rate-limit window, e.g. the 5-hour limit or the weekly one. */
+export interface UsageLimit {
+  label: string; // "5-hour limit", "Weekly · all models", "Weekly · Opus"
   usedPct: number; // 0-100
   resetsAt: number | null; // epoch ms
 }
 
-/** Plan rate-limit usage (account-wide), as last reported by any session. */
-export interface UsageInfo {
-  fiveHour?: UsageWindow;
-  sevenDay?: UsageWindow;
+/** An agent's plan usage (account-wide), as last reported by any of its sessions. */
+export interface AgentUsage {
+  agent: AgentKind;
+  plan: string | null; // "Max", "Plus" — null when the CLI didn't say
+  limits: UsageLimit[];
   at: number; // epoch ms of the report
+}
+
+export interface UsageReport {
+  claude: AgentUsage | null;
+  codex: AgentUsage | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

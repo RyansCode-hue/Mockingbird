@@ -5,7 +5,7 @@ import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, short
 import { FileDock } from "./FilePanel";
 import { SetupWizard } from "./SetupWizard";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
@@ -162,7 +162,7 @@ function App() {
   };
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean } | null>(null);
-  const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [usage, setUsage] = useState<UsageReport | null>(null);
   const [settingsJump, setSettingsJump] = useState<{ section: SettingsSection; n: number } | null>(null);
   const openControlRoom = () => {
     setSettingsJump((p) => ({ section: "control", n: (p?.n ?? 0) + 1 }));
@@ -248,8 +248,8 @@ function App() {
       if (cmd === "focus-session" && arg) jumpToRef.current(arg);
     });
     const offUpd = window.mb.onUpdateAvailable((u: any) => u?.newer && setUpdate(u));
-    window.mb.usageGet().then((u: UsageInfo | null) => setUsage(u));
-    const offUsage = window.mb.onUsageChanged((u: UsageInfo | null) => setUsage(u));
+    window.mb.usageGet().then((u: UsageReport | { error: string }) => !("error" in u) && setUsage(u));
+    const offUsage = window.mb.onUsageChanged((u: UsageReport) => setUsage(u));
     return () => {
       offUsage();
       off();
@@ -1389,7 +1389,7 @@ function App() {
             </span>
           );
         })}
-        <UsageStat usage={usage} />
+        <UsageMeter usage={usage} />
         <span className="right">
           {update?.newer && (
             <span
@@ -1579,36 +1579,113 @@ function StatusDots({ list }: { list: SessionInfo[] }) {
   );
 }
 
-/** Plan usage in the status bar: 5-hour and weekly windows, as last reported by any session. */
-function UsageStat({ usage }: { usage: UsageInfo | null }) {
-  // reset times pass while the app sits open with no session reporting
+type UsageShow = "claude" | "codex" | "both";
+const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
+
+/** "Resets in 4 hr 18 min" within a day, else "Resets Sun 2:00 PM". */
+function resetText(resetsAt: number | null, now: number): string {
+  if (resetsAt === null) return "";
+  const mins = Math.round((resetsAt - now) / 60_000);
+  if (mins <= 0) return "Reset";
+  if (mins < 60) return `Resets in ${mins} min`;
+  if (mins < 24 * 60) return `Resets in ${Math.floor(mins / 60)} hr ${mins % 60} min`;
+  return `Resets ${new Date(resetsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
+}
+
+/** A window whose reset has passed starts over at 0 until the next report says otherwise. */
+const pctNow = (l: UsageLimit, now: number) => (l.resetsAt !== null && l.resetsAt <= now ? 0 : l.usedPct);
+
+/**
+ * Plan usage in the status bar — Claude, Codex, or both — with a popover of
+ * every limit. Both agents report account-wide numbers from their sessions.
+ */
+function UsageMeter({ usage }: { usage: UsageReport | null }) {
+  const [show, setShow] = useState<UsageShow>(() => loadLS("mb.usageShow", "both"));
+  useEffect(() => localStorage.setItem("mb.usageShow", JSON.stringify(show)), [show]);
+  const [open, setOpen] = useState(false);
+  // resets pass while the app sits open with no session reporting
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 60_000);
+    const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
-  if (!usage) return null;
-  // a window whose reset time has passed no longer describes the current window
-  const current = (w?: UsageWindow) => (w && (w.resetsAt === null || w.resetsAt > now) ? w : undefined);
-  const windows = [
-    { label: "5h", name: "5-hour window", w: current(usage.fiveHour) },
-    { label: "wk", name: "Weekly window", w: current(usage.sevenDay) },
-  ].filter((x): x is { label: string; name: string; w: UsageWindow } => !!x.w);
-  if (windows.length === 0) return null;
-  const title =
-    windows
-      .map(({ name, w }) =>
-        `${name}: ${Math.round(w.usedPct)}% used` +
-        (w.resetsAt ? ` · resets ${new Date(w.resetsAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "")
-      )
-      .join("\n") + `\nreported ${fmtElapsed(usage.at)} ago`;
+  const agents = (show === "both" ? (["claude", "codex"] as const) : ([show] as const)).filter(Boolean) as ("claude" | "codex")[];
+  const shown = agents.map((a) => ({ a, u: usage?.[a] ?? null }));
+  const compact = shown.filter((x) => x.u);
+  const short = (l: UsageLimit) => (l.label.startsWith("5-hour") ? "5h" : l.label.startsWith("Weekly") ? "wk" : l.label);
+
   return (
-    <span className="usage" title={title}>
-      {windows.map(({ label, w }) => (
-        <span key={label} className={w.usedPct >= 90 ? "hot" : ""}>
-          {label} {Math.round(w.usedPct)}%
-        </span>
-      ))}
+    <span className="usage-wrap">
+      <span className="usage" onClick={() => setOpen((o) => !o)} title="Plan usage — click for details">
+        {compact.length === 0 ? (
+          <span className="dim">usage</span>
+        ) : (
+          compact.map(({ a, u }) => (
+            <span key={a} className="usage-agent">
+              {agents.length > 1 && <span className="dim">{AGENT_NAME[a]}</span>}
+              {u!.limits
+                .filter((l) => l.label === "5-hour limit" || l.label.startsWith("Weekly · all") || l.label === "Weekly limit")
+                .map((l) => (
+                  <span key={l.label} className={pctNow(l, now) >= 90 ? "hot" : ""}>
+                    {short(l)} {Math.round(pctNow(l, now))}%
+                  </span>
+                ))}
+            </span>
+          ))
+        )}
+      </span>
+      {open && (
+        <>
+          <div className="who-back" onMouseDown={() => setOpen(false)} />
+          <div className="usage-pop">
+            {shown.map(({ a, u }) => (
+              <div key={a} className="usage-sec">
+                <div className="usage-head">
+                  {AGENT_NAME[a]} plan usage limits{u?.plan ? ` · ${u.plan}` : ""}
+                </div>
+                {!u ? (
+                  <div className="usage-empty">
+                    {a === "claude"
+                      ? "No report yet — appears after a Claude session's first response."
+                      : "No report yet — appears after a Codex session's first turn."}
+                  </div>
+                ) : (
+                  <>
+                    {u.limits.map((l) => {
+                      const pct = pctNow(l, now);
+                      return (
+                        <div key={l.label} className="usage-row">
+                          <div className="usage-line">
+                            <span className="usage-label">{l.label}</span>
+                            <span className="usage-reset">{resetText(l.resetsAt, now)}</span>
+                            <span className="usage-pct">{Math.round(pct)}%</span>
+                          </div>
+                          <div className="usage-bar">
+                            <span className={pct >= 90 ? "hot" : ""} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div className="usage-foot">
+                      reported {fmtElapsed(u.at)} ago{a === "codex" ? " · read from Codex's session logs" : ""}
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+            <div className="usage-show">
+              <span>Show</span>
+              <span className="seg">
+                {(["claude", "codex", "both"] as const).map((v) => (
+                  <button key={v} className={show === v ? "on" : ""} onClick={() => setShow(v)}>
+                    {v === "both" ? "Both" : AGENT_NAME[v]}
+                  </button>
+                ))}
+              </span>
+            </div>
+          </div>
+        </>
+      )}
     </span>
   );
 }
