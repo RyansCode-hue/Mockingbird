@@ -38,8 +38,29 @@ async function checkAgent(sessions: SessionManager, kind: AgentKind): Promise<Ag
   return { found: true, path, version, signedIn: r.code === 0 && /logged in/i.test(r.out), detail: r.code === 0 ? undefined : r.out.slice(0, 200) };
 }
 
+const ADO_TIMEOUT_MS = 10_000;
+
+async function checkAdo(store: Store): Promise<SetupStatus["ado"]> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Azure DevOps didn't answer within ${ADO_TIMEOUT_MS / 1000}s — check the org URL, or your VPN`)),
+      ADO_TIMEOUT_MS
+    );
+  });
+  try {
+    const me = await Promise.race([adoIdentity(store), timeout]);
+    return { connected: true, display: me.display, detail: `${me.org} · ${me.project}` };
+  } catch (err) {
+    return { connected: false, detail: (err as Error).message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Everything the setup wizard shows, read from the machine rather than from saved flags. */
 export async function setupStatus(store: Store, sessions: SessionManager): Promise<SetupStatus> {
+  const adoCheck = checkAdo(store); // network — runs alongside the local checks, bounded
   const [claude, codex] = await Promise.all([checkAgent(sessions, "claude"), checkAgent(sessions, "codex")]);
   const repoRoots = store.settings.repoRoots.map((root) => {
     const repos = indexRepos([root]);
@@ -51,17 +72,11 @@ export async function setupStatus(store: Store, sessions: SessionManager): Promi
     }
     return { path: root, exists, repos: repos.length };
   });
-  let ado: SetupStatus["ado"];
-  try {
-    const me = await adoIdentity(store);
-    ado = { connected: true, display: me.display, detail: `${me.org} · ${me.project}` };
-  } catch (err) {
-    ado = { connected: false, detail: (err as Error).message };
-  }
+  const ado = await adoCheck;
   return {
     claude,
     codex,
-    hooks: hookStatus(),
+    hooks: hookStatus(codex.path),
     repoRoots,
     workTrackerPath: store.settings.workTrackerPath,
     ado,

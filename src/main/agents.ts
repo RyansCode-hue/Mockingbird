@@ -62,7 +62,12 @@ const claude: AgentAdapter = {
   },
 };
 
-/** The cwd a Codex rollout was recorded in — the first line is a session_meta event. */
+/**
+ * The cwd of an interactive Codex rollout, or null. The first line is a
+ * session_meta event; only `source: "cli"` (the TUI Mockingbird runs) counts —
+ * `codex resume --last` skips `exec` runs, and desktop-app threads aren't
+ * CLI conversations.
+ */
 function rolloutCwd(file: string): string | null {
   let fd: number | null = null;
   try {
@@ -71,13 +76,45 @@ function rolloutCwd(file: string): string | null {
     const n = fs.readSync(fd, buf, 0, buf.length, 0);
     // the meta line runs to tens of KB (it embeds the system prompt), so the
     // field is matched in the head rather than parsing the whole line
-    const m = /"cwd":("(?:[^"\\]|\\.)*")/.exec(buf.toString("utf8", 0, n));
+    const head = buf.toString("utf8", 0, n);
+    if (!/"source":"cli"/.test(head)) return null;
+    const m = /"cwd":("(?:[^"\\]|\\.)*")/.exec(head);
     return m ? (JSON.parse(m[1]) as string) : null;
   } catch {
     return null; // unreadable rollout — it cannot be resumed either
   } finally {
     if (fd !== null) fs.closeSync(fd);
   }
+}
+
+const ROLLOUT_SCAN_LIMIT = 2000; // newest files read per index; older conversations start fresh
+const INDEX_TTL_MS = 30_000;
+let cwdIndex: { cwds: Set<string>; at: number } | null = null;
+
+/** Folders that have an interactive Codex conversation to resume. */
+function codexCwds(): Set<string> {
+  if (cwdIndex && Date.now() - cwdIndex.at < INDEX_TTL_MS) return cwdIndex.cwds;
+  const root = path.join(os.homedir(), ".codex", "sessions");
+  const ls = (dir: string): string[] => {
+    try {
+      return fs.readdirSync(dir).sort().reverse();
+    } catch {
+      return []; // no Codex history (yet) at this level
+    }
+  };
+  const cwds = new Set<string>();
+  let read = 0;
+  scan: for (const y of ls(root))
+    for (const m of ls(path.join(root, y)))
+      for (const d of ls(path.join(root, y, m)))
+        for (const f of ls(path.join(root, y, m, d))) {
+          if (!f.endsWith(".jsonl")) continue;
+          if (++read > ROLLOUT_SCAN_LIMIT) break scan;
+          const cwd = rolloutCwd(path.join(root, y, m, d, f));
+          if (cwd) cwds.add(cwd);
+        }
+  cwdIndex = { cwds, at: Date.now() };
+  return cwds;
 }
 
 const codex: AgentAdapter = {
@@ -104,22 +141,10 @@ const codex: AgentAdapter = {
     return args;
   },
   // Codex files rollouts by date (~/.codex/sessions/YYYY/MM/DD/), not by folder,
-  // so finding one for a cwd means reading headers — newest day first.
+  // so finding one for a cwd means reading headers, newest first. Bounded, and
+  // one index read serves a whole restore-all burst.
   hasConversation(cwd) {
-    const root = path.join(os.homedir(), ".codex", "sessions");
-    const ls = (dir: string): string[] => {
-      try {
-        return fs.readdirSync(dir).sort().reverse();
-      } catch {
-        return [];
-      }
-    };
-    for (const y of ls(root))
-      for (const m of ls(path.join(root, y)))
-        for (const d of ls(path.join(root, y, m)))
-          for (const f of ls(path.join(root, y, m, d)))
-            if (f.endsWith(".jsonl") && rolloutCwd(path.join(root, y, m, d, f)) === cwd) return true;
-    return false;
+    return codexCwds().has(cwd);
   },
 };
 

@@ -20,8 +20,12 @@ const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_HOOKS = path.join(CODEX_DIR, "hooks.json");
 const CODEX_EVENTS = ["Stop", "PermissionRequest", "UserPromptSubmit", "PreToolUse", "PostToolUse"] as const;
 
-/** Codex hooks are only managed on machines that have Codex set up. */
-const codexPresent = () => fs.existsSync(CODEX_DIR);
+/**
+ * Codex hooks are only managed where the Codex CLI is installed. ~/.codex alone
+ * proves nothing: the ChatGPT and Codex desktop apps create it too, and they
+ * also read ~/.codex/hooks.json. `codexBin` is the resolved binary path, or null.
+ */
+const codexPresent = (codexBin: string | null) => !!codexBin && fs.existsSync(codexBin);
 
 /** Parse a JSON config we are about to rewrite; an unparseable file aborts rather than being replaced. */
 function readConfig(file: string): any {
@@ -66,7 +70,7 @@ exit 0
 `;
 
 /** Write hook.sh and merge our hooks into ~/.claude/settings.json (preserving existing hooks). */
-export function installHooks(): { installed: boolean; message: string } {
+export function installHooks(codexBin: string | null): { installed: boolean; message: string } {
   fs.mkdirSync(MB_DIR, { recursive: true });
   fs.writeFileSync(HOOK_SCRIPT, SCRIPT, { mode: 0o755 });
   if (!fs.existsSync(EVENTS_FILE)) fs.writeFileSync(EVENTS_FILE, "");
@@ -76,7 +80,7 @@ export function installHooks(): { installed: boolean; message: string } {
   fs.mkdirSync(path.dirname(CLAUDE_SETTINGS), { recursive: true });
   fs.writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
 
-  if (!codexPresent()) return { installed: true, message: "Hooks installed into ~/.claude/settings.json" };
+  if (!codexPresent(codexBin)) return { installed: true, message: "Hooks installed into ~/.claude/settings.json" };
   const codex = readConfig(CODEX_HOOKS);
   mergeHooks(codex, CODEX_EVENTS);
   fs.writeFileSync(CODEX_HOOKS, JSON.stringify(codex, null, 2));
@@ -88,14 +92,14 @@ export function installHooks(): { installed: boolean; message: string } {
   };
 }
 
-export function hookStatus(): { claude: boolean; codex: boolean | null } {
-  return { claude: wired(CLAUDE_SETTINGS, HOOK_EVENTS), codex: codexPresent() ? wired(CODEX_HOOKS, CODEX_EVENTS) : null };
+export function hookStatus(codexBin: string | null): { claude: boolean; codex: boolean | null } {
+  return { claude: wired(CLAUDE_SETTINGS, HOOK_EVENTS), codex: codexPresent(codexBin) ? wired(CODEX_HOOKS, CODEX_EVENTS) : null };
 }
 
-export function hooksInstalled(): boolean {
+export function hooksInstalled(codexBin: string | null): boolean {
   // every event must be wired — an older install missing one counts as not
   // installed so the UI offers the one-click upgrade
-  return wired(CLAUDE_SETTINGS, HOOK_EVENTS) && (!codexPresent() || wired(CODEX_HOOKS, CODEX_EVENTS));
+  return wired(CLAUDE_SETTINGS, HOOK_EVENTS) && (!codexPresent(codexBin) || wired(CODEX_HOOKS, CODEX_EVENTS));
 }
 
 /** Tail events.jsonl and route status changes to the session manager. */

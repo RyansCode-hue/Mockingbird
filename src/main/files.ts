@@ -2,16 +2,31 @@ import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import type { FileEntry, FileContent, GitChange, GitChanges, ChangeScope } from "../shared/types";
-import { listBranches } from "./worktrees";
+import { pickDefaultBase } from "./worktrees";
 
 const MAX_FILE_BYTES = 1_500_000;
 const MAX_DIFF_BYTES = 3_000_000;
 
-/** Resolve a worktree-relative path, refusing anything that climbs out of the root. */
-function resolveIn(root: string, rel: string): string {
+const inside = (root: string, p: string) => p === root || p.startsWith(root + path.sep);
+
+/**
+ * Resolve a worktree-relative path, refusing anything outside the root — both
+ * lexically (`../`) and after following symlinks, since reading and listing
+ * follow them. A path that doesn't exist yet is only checked lexically; the
+ * read that follows reports it missing.
+ */
+async function resolveIn(root: string, rel: string): Promise<string> {
   const full = path.resolve(root, rel);
-  if (full !== root && !full.startsWith(root + path.sep)) {
-    throw new Error(`Path is outside the session folder: ${rel}`);
+  if (!inside(root, full)) throw new Error(`Path is outside the session folder: ${rel}`);
+  let real: string;
+  try {
+    real = await fs.promises.realpath(full);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return full;
+    throw err;
+  }
+  if (!inside(await fs.promises.realpath(root), real)) {
+    throw new Error(`${rel} links outside the session folder (to ${real}) — not shown`);
   }
   return full;
 }
@@ -33,14 +48,14 @@ function git(root: string, args: string[], okCodes: number[] = [0]): Promise<str
 }
 
 export async function listDir(root: string, rel: string): Promise<FileEntry[]> {
-  const entries = await fs.promises.readdir(resolveIn(root, rel), { withFileTypes: true });
+  const entries = await fs.promises.readdir(await resolveIn(root, rel), { withFileTypes: true });
   const out: FileEntry[] = [];
   for (const e of entries) {
     if (e.name === ".git" || e.name === ".DS_Store") continue;
     let dir = e.isDirectory();
     if (e.isSymbolicLink()) {
       try {
-        dir = (await fs.promises.stat(resolveIn(root, path.join(rel, e.name)))).isDirectory();
+        dir = (await fs.promises.stat(path.join(root, rel, e.name))).isDirectory();
       } catch {
         dir = false; // dangling link — listed as a file; opening it reports the real error
       }
@@ -51,7 +66,7 @@ export async function listDir(root: string, rel: string): Promise<FileEntry[]> {
 }
 
 export async function readFile(root: string, rel: string): Promise<FileContent> {
-  const full = resolveIn(root, rel);
+  const full = await resolveIn(root, rel);
   const stat = await fs.promises.stat(full);
   if (stat.isDirectory()) throw new Error(`${rel} is a folder`);
   const fh = await fs.promises.open(full, "r");
@@ -66,9 +81,24 @@ export async function readFile(root: string, rel: string): Promise<FileContent> 
   }
 }
 
+// The base branch changes rarely; resolving it per poll would re-list every ref
+// every few seconds.
+const BASE_TTL_MS = 5 * 60_000;
+const baseCache = new Map<string, { name: string | null; at: number }>();
+
+async function defaultBaseOf(root: string): Promise<string | null> {
+  const hit = baseCache.get(root);
+  if (hit && Date.now() - hit.at < BASE_TTL_MS) return hit.name;
+  const refs = await git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/origin"]);
+  const branches = refs.split("\n").filter(Boolean).map((b) => b.replace(/^origin\//, ""));
+  const name = pickDefaultBase(branches);
+  baseCache.set(root, { name, at: Date.now() });
+  return name;
+}
+
 /** The commit a "branch" scope compares against: where HEAD forked from the repo's base branch. */
 async function branchBase(root: string): Promise<{ sha: string; name: string }> {
-  const { defaultBase } = listBranches(root);
+  const defaultBase = await defaultBaseOf(root);
   if (!defaultBase) throw new Error("No dev/main-style base branch found to compare against");
   for (const ref of [`origin/${defaultBase}`, defaultBase]) {
     try {
@@ -112,7 +142,7 @@ export async function gitChanges(root: string, scope: ChangeScope): Promise<GitC
 }
 
 export async function fileDiff(root: string, rel: string, scope: ChangeScope, untracked: boolean): Promise<string> {
-  resolveIn(root, rel);
+  await resolveIn(root, rel);
   const out = untracked
     ? await git(root, ["diff", "--no-index", "--", "/dev/null", rel], [0, 1])
     : await git(root, ["diff", "-M", scope === "branch" ? (await branchBase(root)).sha : "HEAD", "--", rel]);

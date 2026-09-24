@@ -62,6 +62,12 @@ export function createWorktree(repoPath: string, branch: string, baseBranch?: st
   return wtPath;
 }
 
+/** The integration branch new work usually starts from, by team convention. */
+export function pickDefaultBase(branches: string[]): string | null {
+  const preferred = ["dev", "develop", "development", "uat", "main", "master"];
+  return preferred.find((b) => branches.includes(b)) ?? null;
+}
+
 /** Local + origin branches for a repo, with a best-guess dev/uat base branch. */
 export function listBranches(repoPath: string): { branches: string[]; defaultBase: string | null } {
   const locals = git(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
@@ -73,9 +79,7 @@ export function listBranches(repoPath: string): { branches: string[]; defaultBas
     .map((b) => b.replace(/^origin\//, ""))
     .filter((b) => b !== "HEAD");
   const branches = [...new Set([...remotes, ...locals])].sort();
-  const preferred = ["dev", "develop", "development", "uat", "main", "master"];
-  const defaultBase = preferred.find((b) => branches.includes(b)) ?? null;
-  return { branches, defaultBase };
+  return { branches, defaultBase: pickDefaultBase(branches) };
 }
 
 export interface WorktreeState {
@@ -141,18 +145,32 @@ export function cleanupWorktree(
  * whether a live session currently runs in it. A folder that is not a readable
  * git worktree is reported with `error` rather than skipped.
  */
+/**
+ * Checkouts under a worktree root, as paths relative to it. A branch like
+ * `fix/login` nests a folder, so a directory without a `.git` entry is
+ * descended into rather than reported. An unreadable root means that layout has
+ * no folder for the repo.
+ */
+function findCheckouts(wtRoot: string, rel = "", depth = 0): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(path.join(wtRoot, rel), { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  if (rel && entries.some((e) => e.name === ".git")) return [rel];
+  if (depth >= 4) return rel ? [rel] : []; // too deep to be a branch path — report it as-is
+  return entries
+    .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+    .flatMap((e) => findCheckouts(wtRoot, rel ? path.join(rel, e.name) : e.name, depth + 1));
+}
+
 export function listWorktrees(repos: { name: string; path: string }[], liveCwds: string[]): WorktreeEntry[] {
   const out: WorktreeEntry[] = [];
   const live = new Set(liveCwds);
   for (const repo of repos) {
    for (const [wtRoot, legacy] of [[worktreeRoot(repo.path), false], [legacyWorktreeRoot(repo.path), true]] as const) {
-    let names: string[];
-    try {
-      names = fs.readdirSync(wtRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
-    } catch {
-      continue; // this layout has no folder for the repo
-    }
-    for (const name of names) {
+    for (const name of findCheckouts(wtRoot)) {
       const wtPath = path.join(wtRoot, name);
       let ageDays = 0;
       try {
@@ -231,15 +249,20 @@ export function checkoutBranch(repoPath: string, branch: string, baseBranch?: st
 
 /** Move an old-layout worktree into `worktrees/<repo>/`; returns its new path. */
 export function migrateWorktree(repoPath: string, oldPath: string): string {
-  const dest = path.join(worktreeRoot(repoPath), path.basename(oldPath));
+  const legacyRoot = legacyWorktreeRoot(repoPath);
+  const rel = path.relative(legacyRoot, oldPath); // keeps a `fix/` prefix intact
+  if (!rel || rel.startsWith("..")) throw new Error(`${oldPath} is not under ${legacyRoot}`);
+  const dest = path.join(worktreeRoot(repoPath), rel);
   if (fs.existsSync(dest)) throw new Error(`${dest} already exists`);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   git(repoPath, ["worktree", "move", oldPath, dest]);
-  // drop the emptied <repo>-worktrees folder
-  try {
-    fs.rmdirSync(path.dirname(oldPath));
-  } catch {
-    /* other worktrees still live there */
+  // drop folders the move emptied, up to and including <repo>-worktrees
+  for (let dir = path.dirname(oldPath); dir.startsWith(legacyRoot); dir = path.dirname(dir)) {
+    try {
+      fs.rmdirSync(dir);
+    } catch {
+      break; // other worktrees still live there
+    }
   }
   return dest;
 }

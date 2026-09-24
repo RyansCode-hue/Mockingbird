@@ -337,8 +337,13 @@ ipcMain.handle("claudemd:save", (_e, p, content) =>
 );
 
 ipcMain.handle("usage:get", () => readUsage());
-ipcMain.handle("hooks:installed", () => hooksInstalled());
-ipcMain.handle("hooks:install", () => safe("hooks:install", () => installHooks())());
+// the resolved binary is a path only when it was found; a bare name means not installed
+const codexBinPath = () => {
+  const bin = sessions.binFor("codex");
+  return bin.includes("/") ? bin : null;
+};
+ipcMain.handle("hooks:installed", () => hooksInstalled(codexBinPath()));
+ipcMain.handle("hooks:install", () => safe("hooks:install", () => installHooks(codexBinPath()))());
 ipcMain.handle("app:version", () => app.getVersion());
 ipcMain.handle("setup:status", () => safeAsync("setup:status", () => setupStatus(store, sessions))());
 ipcMain.handle("settings:get", () => store.settings);

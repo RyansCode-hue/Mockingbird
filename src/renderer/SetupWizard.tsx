@@ -66,13 +66,19 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
   useEffect(() => {
     recheck();
     window.mb.getSettings().then(setSettings);
-    window.mb.adoConfigGet().then((r: any) => r && !r.error && setAdo(r));
+    window.mb.adoConfigGet().then((r: any) => {
+      if (r?.error) setError(`Couldn't read your existing Azure DevOps config: ${r.error}`);
+      else if (r) setAdo(r);
+    });
   }, []);
 
   const saveSettings = async (patch: Partial<Settings>) => {
-    if (!settings) return;
-    const next = { ...settings, ...patch };
-    await window.mb.setSettings(next);
+    // Skip can be pressed before settings arrive; read them now rather than drop the write
+    const cur: Settings | { error: string } = settings ?? (await window.mb.getSettings());
+    if ("error" in cur) return setError(`Couldn't read settings: ${cur.error}`);
+    const next = { ...cur, ...patch };
+    const r = await window.mb.setSettings(next);
+    if (r?.error) return setError(`Couldn't save settings: ${r.error}`);
     setSettings(next);
     await recheck();
   };

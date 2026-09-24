@@ -212,6 +212,9 @@ export class Messaging {
 
       const key = [me.id, to].sort().join("|");
       const now = Date.now();
+      for (const [k, times] of this.pairs) {
+        if (times.every((t) => now - t >= PAIR_WINDOW_MS)) this.pairs.delete(k);
+      }
       const recent = (this.pairs.get(key) ?? []).filter((t) => now - t < PAIR_WINDOW_MS);
       if (recent.length >= PAIR_LIMIT) {
         this.onLoopLimit(me, target);
