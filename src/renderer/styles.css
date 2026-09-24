@@ -963,12 +963,19 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .sess-item .name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-item .name .br { font: 400 9.5px var(--mono); color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sess-item.shown { box-shadow: inset 2px 0 0 var(--teal); }
+/* the close sits over the end of the title, so it costs no width while hidden */
+.ws-tab { position: relative; }
 .ws-tab .ws-x {
-  margin-left: 2px; width: 14px; height: 14px; border-radius: 3px; display: inline-flex; align-items: center;
-  justify-content: center; font-size: 12px; line-height: 1; color: var(--text-4); opacity: 0;
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  width: 16px; height: 16px; border-radius: 4px; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; line-height: 1; color: var(--text-2); background: var(--bg-pane);
+  box-shadow: -6px 0 6px var(--bg-pane); opacity: 0; transition: opacity .1s, background .1s, color .1s;
 }
-.ws-tab:hover .ws-x, .ws-tab.on .ws-x { opacity: 1; }
-.ws-tab .ws-x:hover { background: var(--fill-selected); color: var(--text-1); }
+.ws-tab:hover .ws-x { opacity: 1; }
+.ws-tab .ws-x:hover {
+  color: var(--red); background: color-mix(in srgb, var(--red) 22%, var(--bg-pane));
+  box-shadow: -6px 0 6px var(--bg-pane);
+}
 .group-label { font: 600 11.5px var(--ui); letter-spacing: 0; text-transform: none; color: var(--text-2); margin: 12px 2px 3px; gap: 6px; }
 .group-label:hover .txt { color: var(--text-1); }
 .sess-item.shown { background: var(--fill-subtle); }
