@@ -37,3 +37,20 @@ export const FilesIcon = () => (
     <path d="M7.75 4.5v2.75h2.75" />
   </Icon>
 );
+
+/** A folder; open while its workspace is in the grid. */
+export const FolderIcon = ({ open }: { open?: boolean }) => (
+  <Icon>
+    {open ? (
+      <path d="M2 12.5V4.25A1.25 1.25 0 0 1 3.25 3h3l1.5 1.75h4.5A1.25 1.25 0 0 1 13.5 6v1M2 12.5l1.6-4.6a1 1 0 0 1 .95-.65h9.6a.75.75 0 0 1 .7 1l-1.45 4.25H2z" />
+    ) : (
+      <path d="M2 4.25A1.25 1.25 0 0 1 3.25 3h3l1.5 1.75h5A1.25 1.25 0 0 1 14 6v6a1.25 1.25 0 0 1-1.25 1.25h-9.5A1.25 1.25 0 0 1 2 12z" />
+    )}
+  </Icon>
+);
+
+export const ChevronIcon = ({ open }: { open: boolean }) => (
+  <Icon>
+    <path d={open ? "M4.5 6.5 8 10l3.5-3.5" : "M6.5 4.5 10 8l-3.5 3.5"} />
+  </Icon>
+);

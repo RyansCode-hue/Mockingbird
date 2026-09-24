@@ -4,7 +4,7 @@ import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
 import { FileDock } from "./FilePanel";
 import { SetupWizard } from "./SetupWizard";
-import { LayoutIcon, FilesIcon } from "./Icons";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
 import type { AgentKind, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
@@ -408,17 +408,17 @@ function App() {
       if (!sub) out.push({ kind: "session", s });
       else if (!seen.has(sub)) {
         seen.add(sub);
-        // tabs list ALL of the workspace's sessions — the workspace is the
-        // visibility unit; any shown member brings the whole pane
+        // tabs are the workspace's members that are in the grid, so closing a
+        // tab hides just that session; the pane goes when its last tab does
         out.push({
           kind: "workspace",
           sub,
-          list: workSessions.filter((x) => topOf(x) === topOf(s) && subOf(x) === sub),
+          list: workSessions.filter((x) => topOf(x) === topOf(s) && subOf(x) === sub && shown.includes(x.id)),
         });
       }
     }
     return out;
-  }, [gridSessions, workSessions, zoomed]);
+  }, [gridSessions, workSessions, zoomed, shown]);
 
   // the grid grows with the cell count — equal cells, no filler tiles
   // the active group's chosen template, applied only when it fits the panes
@@ -514,6 +514,11 @@ function App() {
     }
     return [...g.entries()];
   }, [visible]);
+
+  // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
+  // the rest are open exactly while the workspace is in the grid.
+  const [wsOpen, setWsOpen] = useState<Record<string, boolean>>(() => loadLS("mb.wsOpen", {}));
+  useEffect(() => localStorage.setItem("mb.wsOpen", JSON.stringify(wsOpen)), [wsOpen]);
 
   const bySub = (list: SessionInfo[]): [string, SessionInfo[]][] => {
     const m = new Map<string, SessionInfo[]>();
@@ -977,21 +982,25 @@ function App() {
                         });
                       }}
                     >
-                      {collapsed.has(key) ? "▸" : "▾"}
+                      <ChevronIcon open={!collapsed.has(key)} />
                     </span>
                     <span className="txt">{groupTitle(key, list)}</span>
-                    <span className="gcount">{list.length}</span>
+                    <StatusDots list={list} />
                   </div>
                 )}
-                {!collapsed.has(key) && bySub(list).map(([sub, subList]) => (
-                  <div key={sub || "_"} className={sub ? "sub-rows" : undefined}>
+                {!collapsed.has(key) && bySub(list).map(([sub, subList]) => {
+                  const wsKey = `${key}/${sub}`;
+                  const inGrid = subList.some((s) => shown.includes(s.id));
+                  const open = !sub || (wsOpen[wsKey] ?? inGrid);
+                  return (
+                  <div key={sub || "_"} className={sub ? "ws-folder" : "loose-rows"}>
                     {sub && (
                       <div
-                        className="sub-label"
+                        className={`sub-label ${inGrid ? "in-grid" : ""}`}
                         title="click to show/minimize this workspace · ✎/double-click to rename · ✕ dissolves it (sessions stay) · drop a session to move it in"
                         onClick={() =>
                           deferClick(() =>
-                            subList.some((s) => shown.includes(s.id))
+                            inGrid
                               ? hideSessions(subList) // minimize the workspace
                               : focusSub(key, subList)
                           )
@@ -999,19 +1008,30 @@ function App() {
                         onDoubleClick={(e) => {
                           e.stopPropagation();
                           cancelClick();
-                          setRenameDlg({ kind: "sub", key: `${key}/${sub}`, initial: sub });
+                          setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
                         }}
                         onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => dropToGroup(e, `${key}/${sub}`)}
+                        onDrop={(e) => dropToGroup(e, wsKey)}
                       >
+                        <span
+                          className="ws-chev"
+                          title={open ? "Hide sessions" : "Show sessions"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setWsOpen((p) => ({ ...p, [wsKey]: !open }));
+                          }}
+                        >
+                          <ChevronIcon open={open} />
+                        </span>
+                        <FolderIcon open={inGrid} />
                         <span className="txt">{sub}</span>
-                        <span className="gcount">{subList.length}</span>
+                        <StatusDots list={subList} />
                         <button
                           title="Rename workspace"
                           onClick={(e) => {
                             e.stopPropagation();
                             cancelClick();
-                            setRenameDlg({ kind: "sub", key: `${key}/${sub}`, initial: sub });
+                            setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
                           }}
                         >
                           ✎
@@ -1028,7 +1048,7 @@ function App() {
                         </button>
                       </div>
                     )}
-                    {subList.map((s) => {
+                    {open && subList.map((s) => {
                   const idx = shown.indexOf(s.id);
                   return (
                     <div
@@ -1072,7 +1092,13 @@ function App() {
                             setEditing({ kind: "session", key: s.id, value: s.ticketTitle ?? s.title });
                           }}
                         >
-                          {s.ticketTitle ?? s.title}
+                          <span className="nm">{s.ticketTitle ?? s.title}</span>
+                          {(s.branch || s.agent === "codex") && (
+                            <span className="br">
+                              {s.agent === "codex" ? "codex · " : ""}
+                              {s.branch && s.branch !== (s.ticketTitle ?? s.title) ? s.branch : s.repoPath?.split("/").pop() ?? ""}
+                            </span>
+                          )}
                         </span>
                       )}
                       <button
@@ -1107,7 +1133,8 @@ function App() {
                   );
                 })}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             ))}
 
@@ -1263,6 +1290,18 @@ function App() {
                         >
                           <span className={`dot sm ${s.status}`} />
                           <span className="t">{s.ticketTitle ?? s.title}</span>
+                          <span
+                            className="ws-x"
+                            role="button"
+                            aria-label={`Hide ${s.ticketTitle ?? s.title} from the grid`}
+                            title="Hide from the grid (session keeps running — click it in the sidebar to bring it back)"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              hide(s.id);
+                            }}
+                          >
+                            ×
+                          </span>
                         </button>
                       ))}
                       <button
@@ -1512,6 +1551,21 @@ interface PaletteAction {
   label: string;
   kbd?: string;
   run: () => void;
+}
+
+/** One dot per session (up to 6, then a count), so a collapsed row still shows who's busy or blocked. */
+function StatusDots({ list }: { list: SessionInfo[] }) {
+  const order = { waiting: 0, working: 1, idle: 2, dead: 3 } as const;
+  const sorted = [...list].sort((a, b) => order[a.status] - order[b.status]);
+  const extra = sorted.length - 6;
+  return (
+    <span className="sdots" title={`${list.length} session${list.length === 1 ? "" : "s"}`}>
+      {sorted.slice(0, 6).map((s) => (
+        <span key={s.id} className={`dot xs ${s.status}`} />
+      ))}
+      {extra > 0 && <span className="more">+{extra}</span>}
+    </span>
+  );
 }
 
 /** Plan usage in the status bar: 5-hour and weekly windows, as last reported by any session. */
