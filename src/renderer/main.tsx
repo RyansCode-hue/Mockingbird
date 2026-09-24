@@ -5,7 +5,7 @@ import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, short
 import { FileDock } from "./FilePanel";
 import { SetupWizard } from "./SetupWizard";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
-import type { AgentKind, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageInfo, UsageWindow } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
@@ -163,6 +163,11 @@ function App() {
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean } | null>(null);
   const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [settingsJump, setSettingsJump] = useState<{ section: SettingsSection; n: number } | null>(null);
+  const openControlRoom = () => {
+    setSettingsJump((p) => ({ section: "control", n: (p?.n ?? 0) + 1 }));
+    setTab("settings");
+  };
   const [appVersion, setAppVersion] = useState("");
   useEffect(() => {
     window.mb.appVersion().then((v: string) => setAppVersion(v));
@@ -692,7 +697,7 @@ function App() {
     }
     if (cmd && e.shiftKey && e.key.toLowerCase() === "b") {
       handled();
-      setTab("settings");
+      openControlRoom();
       return;
     }
     if (cmd && !e.shiftKey && e.key === "e" && (focused || zoomed)) {
@@ -872,6 +877,7 @@ function App() {
             onTheme={setTheme}
             onRestartAll={() => setModal("restart")}
             onSetup={() => setModal("setup")}
+            jump={settingsJump}
           />
         )}
         {tab === "worktracker" && (
@@ -1426,7 +1432,8 @@ function App() {
             { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
             { label: "Sessions grid", run: () => setTab("sessions") },
             { label: "Dashboard — ticket board", run: () => setTab("dashboard") },
-            { label: "Settings / Broadcast / CLAUDE.md", kbd: "⌘⇧B", run: () => setTab("settings") },
+            { label: "Broadcast / CLAUDE.md (control room)", kbd: "⌘⇧B", run: openControlRoom },
+            { label: "Settings", run: () => setTab("settings") },
             { label: "Import sessions", run: () => setModal("import") },
             { label: "WorkTracker — debriefs", run: () => setTab("worktracker") },
             { label: "Morning brief", run: () => { window.mb.runDebrief("morning"); setTab("worktracker"); } },
@@ -1744,7 +1751,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌘E", "fullscreen the focused pane (esc restores)"],
     ["⌘⌃1–4", "grid columns (also switches pane detail level)"],
     ["⌘B", "file explorer for the focused session — files, viewer, diffs"],
-    ["⌘⇧B", "Settings tab — broadcast + CLAUDE.md"],
+    ["⌘⇧B", "control room — broadcast + CLAUDE.md"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],
     ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a pane"],
     ["⌘/", "this popup"],
@@ -3133,353 +3140,419 @@ function WorktreeJanitor() {
   );
 }
 
+const SETTINGS_SECTIONS = [
+  { id: "general", label: "General" },
+  { id: "agents", label: "Agents" },
+  { id: "repos", label: "Repos" },
+  { id: "ado", label: "Azure DevOps" },
+  { id: "debriefs", label: "Debriefs" },
+  { id: "control", label: "Control room" },
+  { id: "about", label: "About" },
+] as const;
+type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
+
+/** One setting: name and a short note on the left, its control on the right. */
+function SetRow({ title, note, children }: { title: React.ReactNode; note?: React.ReactNode; children?: React.ReactNode }) {
+  return (
+    <div className="set-row">
+      <div className="set-row-text">
+        <div className="set-row-title">{title}</div>
+        {note && <div className="set-row-note">{note}</div>}
+      </div>
+      {children && <div className="set-row-ctl">{children}</div>}
+    </div>
+  );
+}
+
+function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button className={`toggle ${on ? "on" : ""}`} role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)}>
+      <span />
+    </button>
+  );
+}
+
 function SettingsView({
   sessions,
   theme,
   onTheme,
   onRestartAll,
   onSetup,
+  jump,
 }: {
   sessions: SessionInfo[];
   theme: "dark" | "light";
   onTheme: (t: "dark" | "light") => void;
   onRestartAll: () => void;
   onSetup: () => void;
+  /** Open a specific section, e.g. the control room from ⌘⇧B. */
+  jump: { section: SettingsSection; n: number } | null;
 }) {
+  const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? loadLS("mb.setSection", "general"));
+  useEffect(() => {
+    if (jump) setSection(jump.section);
+  }, [jump]);
+  useEffect(() => localStorage.setItem("mb.setSection", JSON.stringify(section)), [section]);
   const [s, setS] = useState<Settings | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  const [hooksOk, setHooksOk] = useState(true);
-  const [identity, setIdentity] = useState<{ display: string; email: string; project: string } | { error: string } | null>(null);
-  const [conn, setConn] = useState<{ az: boolean; global: string[]; project: string[] } | null>(null);
+  const [saveState, setSaveState] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [status, setStatus] = useState<SetupStatus | { error: string } | null>(null);
+  const [conn, setConn] = useState<{ az: boolean; global: string[]; project: string[] } | { error: string } | null>(null);
   const [updating, setUpdating] = useState<"claude" | "codex" | null>(null);
+  const [agentNote, setAgentNote] = useState("");
   const [updNote, setUpdNote] = useState("");
   const [adoCfg, setAdoCfg] = useState<{ orgUrl: string; project: string; patFile: string } | null>(null);
-  const [connSaved, setConnSaved] = useState(false);
+  const [adoNote, setAdoNote] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [connecting, setConnecting] = useState(false);
   const [mcpName, setMcpName] = useState("");
   const [mcpCmd, setMcpCmd] = useState("");
+  const [mcpErr, setMcpErr] = useState("");
+  const [version, setVersion] = useState("");
 
-  const loadConnectors = () => {
-    window.mb.adoMe().then(setIdentity);
-    window.mb.connectorsStatus().then((r: any) => r && !r.error && setConn(r));
-    window.mb.adoConfigGet().then((r: any) => r && !r.error && setAdoCfg(r));
+  const loadStatus = () => {
+    setStatus(null);
+    window.mb.setupStatus().then(setStatus);
   };
+  const loadConnectors = () => window.mb.connectorsStatus().then(setConn);
   useEffect(() => {
     window.mb.getSettings().then(setS);
-    window.mb.hooksInstalled().then(setHooksOk);
+    window.mb.appVersion().then(setVersion);
+    window.mb.adoConfigGet().then((r: any) => {
+      if (r?.error) setAdoNote({ ok: false, msg: `Couldn't read your Azure DevOps config: ${r.error}` });
+      else setAdoCfg(r);
+    });
+    loadStatus();
     loadConnectors();
   }, []);
   if (!s) return <div className="settings-page" />;
 
-  const upd = (patch: Partial<Settings>) => {
-    setS({ ...s, ...patch });
-    setSavedAt(null);
+  // every change saves immediately — there is no Save button to forget
+  const upd = async (patch: Partial<Settings>) => {
+    const next = { ...s, ...patch };
+    setS(next);
+    const r = await window.mb.setSettings(next);
+    setSaveState(r?.error ? { ok: false, msg: `Couldn't save: ${r.error}` } : { ok: true, msg: "Saved" });
+    if (patch.repoRoots || patch.claudeBin || patch.codexBin) loadStatus();
+  };
+  const pickBin = async (key: "claudeBin" | "codexBin") => {
+    const p = await window.mb.pickPath({ file: true, defaultPath: "/usr/local/bin" });
+    if (p) upd({ [key]: p });
   };
   const addRoot = async () => {
     const p = await window.mb.pickPath({ defaultPath: s.repoRoots[0] ?? "~" });
     if (p) upd({ repoRoots: [...new Set([...s.repoRoots, p])] });
   };
-  const pickWorkTracker = async () => {
-    const p = await window.mb.pickPath({ defaultPath: s.workTrackerPath });
-    if (p) upd({ workTrackerPath: p });
+  const connectAdo = async () => {
+    if (!adoCfg) return;
+    setConnecting(true);
+    const r = await window.mb.adoConfigSet(adoCfg);
+    if (r?.error) {
+      setConnecting(false);
+      return setAdoNote({ ok: false, msg: `Couldn't save: ${r.error}` });
+    }
+    const me = await window.mb.adoMe();
+    setConnecting(false);
+    setAdoNote(me?.error ? { ok: false, msg: me.error } : { ok: true, msg: `Connected as ${me.display}` });
+    loadStatus();
   };
-  const pickClaudeBin = async () => {
-    const p = await window.mb.pickPath({ file: true, defaultPath: "/usr/local/bin" });
-    if (p) upd({ claudeBin: p });
-  };
-  const pickCodexBin = async () => {
-    const p = await window.mb.pickPath({ file: true, defaultPath: "/usr/local/bin" });
-    if (p) upd({ codexBin: p });
-  };
-  const save = async () => {
-    await window.mb.setSettings(s);
-    setSavedAt(Date.now());
-  };
+  const st = status && !("error" in status) ? status : null;
+  const agentLine = (a?: AgentCheck) =>
+    !a ? "checking…" : !a.found ? "not installed" : `${a.version ?? ""}${a.signedIn === true ? " · signed in" : a.signedIn === false ? " · not signed in" : ""}`;
 
   return (
-    <div className="settings-page">
-      <div className="set-card">
-        <h3>General</h3>
-        <label>Theme</label>
-        <span className="seg" style={{ alignSelf: "flex-start" }}>
-          <button className={theme === "dark" ? "on" : ""} onClick={() => onTheme("dark")}>Dark</button>
-          <button className={theme === "light" ? "on" : ""} onClick={() => onTheme("light")}>Light</button>
-        </span>
-
-        <label>Repo roots <span className="wi-note">folders scanned for repos in New Session</span></label>
-        {s.repoRoots.map((r) => (
-          <div key={r} className="path-row">
-            <span className="p">{r}</span>
-            <button
-              className="danger"
-              title="Remove"
-              onClick={() => upd({ repoRoots: s.repoRoots.filter((x) => x !== r) })}
-            >
-              ✕
-            </button>
-          </div>
+    <div className="settings-page set2">
+      <nav className="set-nav">
+        {SETTINGS_SECTIONS.map((x) => (
+          <button key={x.id} className={section === x.id ? "on" : ""} onClick={() => setSection(x.id)}>
+            {x.label}
+          </button>
         ))}
-        <div className="row" style={{ justifyContent: "flex-start", marginTop: 6 }}>
-          <button className="outline" onClick={addRoot}>Add folder…</button>
-        </div>
+        {saveState && <span className={`set-saved ${saveState.ok ? "" : "bad"}`}>{saveState.msg}</span>}
+      </nav>
 
-        <label>WorkTracker folder <span className="wi-note">debriefs + ADO config live here</span></label>
-        <div className="path-row">
-          <span className="p">{s.workTrackerPath}</span>
-          <button className="outline" onClick={pickWorkTracker}>Browse…</button>
-        </div>
-
-        <label>claude binary</label>
-        <div className="path-row">
-          <span className="p">{s.claudeBin}</span>
-          <button className="outline" onClick={pickClaudeBin}>Browse…</button>
-        </div>
-
-        <label>codex binary <span className="wi-note">OpenAI Codex CLI (npm i -g @openai/codex · codex login)</span></label>
-        <div className="path-row">
-          <span className="p">{s.codexBin ?? "codex"}</span>
-          <button className="outline" onClick={pickCodexBin}>Browse…</button>
-        </div>
-
-        <label>Agent-to-agent messages <span className="wi-note">sessions can message each other with the mockingbird tools</span></label>
-        <div className="check-line">
-          <input
-            type="checkbox"
-            id="amsub"
-            checked={s.agentMessagesSubmit !== false}
-            onChange={(e) => upd({ agentMessagesSubmit: e.target.checked })}
-          />
-          <label htmlFor="amsub" style={{ margin: 0 }}>
-            send automatically — off: the message waits in the receiving prompt until you press Enter
-          </label>
-        </div>
-
-        <div className="check-line">
-          <input
-            type="checkbox"
-            checked={s.debriefs.enabled}
-            onChange={(e) => upd({ debriefs: { ...s.debriefs, enabled: e.target.checked } })}
-            id="dbe"
-          />
-          <label htmlFor="dbe" style={{ margin: 0 }}>
-            auto-run debriefs at {s.debriefs.morning} / {s.debriefs.wrapUp} (weekdays, app open)
-          </label>
-        </div>
-        <div className="check-line">
-          <input
-            type="checkbox"
-            checked={s.notifications}
-            onChange={(e) => upd({ notifications: e.target.checked })}
-            id="ntf"
-          />
-          <label htmlFor="ntf" style={{ margin: 0 }}>native notifications</label>
-        </div>
-
-        <label>Claude Code hooks <span className="wi-note">how sessions report working / waiting / idle</span></label>
-        {hooksOk ? (
-          <span className="hooks-ok">installed ✓ — ~/.claude/settings.json</span>
-        ) : (
-          <div className="row" style={{ justifyContent: "flex-start", marginTop: 2 }}>
-            <button
-              className="outline"
-              onClick={async () => {
-                const r = await window.mb.installHooks();
-                if (r?.error) return alert(`Couldn't install hooks: ${r.error}`);
-                setHooksOk(true);
-              }}
-            >
-              Install hooks
-            </button>
-          </div>
-        )}
-        <label>Updates</label>
-        <div className="row" style={{ justifyContent: "flex-start", marginTop: 2, gap: 8 }}>
-          <button
-            className="outline"
-            onClick={async () => {
-              setUpdNote("checking…");
-              const r = await window.mb.updateCheck();
-              if (r === null) setUpdNote('no update source — set "repository" in package.json to a GitHub repo');
-              else if (r?.error) setUpdNote(`check failed: ${r.error}`);
-              else if (r.newer) setUpdNote(`v${r.latest} available — see the status bar link, or GitHub releases`);
-              else setUpdNote(`up to date ✓ (v${r.current})`);
-            }}
-          >
-            Check for updates
-          </button>
-          <button
-            className="outline"
-            onClick={onRestartAll}
-            title="Relaunch every Claude and Codex pane, resuming each conversation — what the CLI's “Restart to update” needs"
-          >
-            Restart all agent sessions
-          </button>
-          <button className="outline" onClick={onSetup} title="Re-run the first-launch setup: agents, hooks, repos, Azure DevOps">
-            Run setup
-          </button>
-          {updNote && <span className="wi-note">{updNote}</span>}
-        </div>
-        <div className="row" style={{ marginTop: 8 }}>
-          {(["claude", "codex"] as const).map((a) => (
-            <button
-              key={a}
-              className="outline"
-              disabled={updating === a}
-              title={`Run \`${a} update\` — new models (and fixes) need the newest CLI. Restart sessions afterwards.`}
-              onClick={async () => {
-                setUpdating(a);
-                setUpdNote(`updating ${a}…`);
-                const r = await window.mb.agentUpdate(a);
-                setUpdating(null);
-                setUpdNote(r?.error ? `${a} update failed: ${r.error}` : `${a}: ${r} — restart sessions to use it`);
-              }}
-            >
-              {updating === a ? "Updating…" : a === "claude" ? "Update Claude Code" : "Update Codex"}
-            </button>
-          ))}
-        </div>
-        <span className="wi-note">
-          Each CLI updates itself; every running session keeps the old build until it restarts.
-          A model the CLI doesn't know yet (“Claude Code needs to update”) means: update, then restart
-          sessions — restarting resumes every conversation.
-        </span>
-
-        <div className="row">
-          {savedAt && <span className="kbd foot-hint" style={{ color: "var(--teal-text)" }}>saved ✓</span>}
-          <button className="primary" onClick={save}>Save</button>
-        </div>
-      </div>
-
-      <WorktreeJanitor />
-
-      <div className="set-card">
-        <h3>Connectors</h3>
-
-        <label>Azure DevOps <span className="wi-note">powers the Dashboard, ticket picker, and debrief snapshot · stored in WorkTracker/config.json</span></label>
-        {adoCfg && (
+      <div className={`set-body ${section === "control" ? "wide" : ""}`}>
+        {section === "general" && (
           <>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                type="text"
-                style={{ flex: 2 }}
-                placeholder="org URL — https://dev.azure.com/YourOrg"
-                value={adoCfg.orgUrl}
-                onChange={(e) => {
-                  setAdoCfg({ ...adoCfg, orgUrl: e.target.value });
-                  setConnSaved(false);
+            <h2>General</h2>
+            <SetRow title="Theme">
+              <span className="seg">
+                <button className={theme === "dark" ? "on" : ""} onClick={() => onTheme("dark")}>Dark</button>
+                <button className={theme === "light" ? "on" : ""} onClick={() => onTheme("light")}>Light</button>
+              </span>
+            </SetRow>
+            <SetRow title="Notifications" note="When a session finishes or needs you">
+              <Toggle label="Notifications" on={s.notifications} onChange={(v) => upd({ notifications: v })} />
+            </SetRow>
+            <SetRow title="Setup wizard" note="Agents, status hooks, repo folders, Azure DevOps">
+              <button className="outline" onClick={onSetup}>Run setup</button>
+            </SetRow>
+          </>
+        )}
+
+        {section === "agents" && (
+          <>
+            <h2>Agents</h2>
+            {status && "error" in status && <div className="err">Couldn't check agents: {status.error}</div>}
+            <SetRow title="Claude Code" note={agentLine(st?.claude)}>
+              <button
+                className="outline"
+                disabled={updating !== null}
+                onClick={async () => {
+                  setUpdating("claude");
+                  const r = await window.mb.agentUpdate("claude");
+                  setUpdating(null);
+                  setAgentNote(r?.error ? `Claude Code update failed: ${r.error}` : `Claude Code: ${r} — restart sessions to use it`);
+                  loadStatus();
                 }}
-              />
-              <input
-                type="text"
-                style={{ flex: 1 }}
-                placeholder="project"
-                value={adoCfg.project}
-                onChange={(e) => {
-                  setAdoCfg({ ...adoCfg, project: e.target.value });
-                  setConnSaved(false);
+              >
+                {updating === "claude" ? "Updating…" : "Update"}
+              </button>
+            </SetRow>
+            <SetRow title="Codex" note={agentLine(st?.codex)}>
+              <button
+                className="outline"
+                disabled={updating !== null || (st !== null && !st.codex.found)}
+                onClick={async () => {
+                  setUpdating("codex");
+                  const r = await window.mb.agentUpdate("codex");
+                  setUpdating(null);
+                  setAgentNote(r?.error ? `Codex update failed: ${r.error}` : `Codex: ${r} — restart sessions to use it`);
+                  loadStatus();
                 }}
-              />
+              >
+                {updating === "codex" ? "Updating…" : "Update"}
+              </button>
+            </SetRow>
+            {agentNote && <div className="set-note">{agentNote}</div>}
+            <SetRow
+              title="Restart all sessions"
+              note="Moves every pane onto the newest CLI build and resumes each conversation — needed after an update, or when a new model says the CLI must update"
+            >
+              <button className="outline" onClick={onRestartAll}>Restart</button>
+            </SetRow>
+            <SetRow
+              title="Status hooks"
+              note={
+                !st
+                  ? "checking…"
+                  : st.hooks.codex === false
+                    ? "Codex hooks missing — Codex panes won't show working / waiting / idle"
+                    : st.hooks.claude
+                      ? `Installed for Claude Code${st.hooks.codex ? " and Codex (Codex asks you to trust them once: /hooks)" : ""}`
+                      : "Not installed — panes won't show working / waiting / idle"
+              }
+            >
+              {st && (!st.hooks.claude || st.hooks.codex === false) ? (
+                <button
+                  className="outline"
+                  onClick={async () => {
+                    const r = await window.mb.installHooks();
+                    if (r?.error) setAgentNote(`Couldn't install hooks: ${r.error}`);
+                    loadStatus();
+                  }}
+                >
+                  Install
+                </button>
+              ) : st ? (
+                <span className="set-ok">✓</span>
+              ) : null}
+            </SetRow>
+            <SetRow
+              title="Auto-send agent messages"
+              note="Sessions can message each other. Off: an incoming message waits in the prompt until you press Enter"
+            >
+              <Toggle label="Auto-send agent messages" on={s.agentMessagesSubmit !== false} onChange={(v) => upd({ agentMessagesSubmit: v })} />
+            </SetRow>
+            <SetRow title="Claude Code binary" note={s.claudeBin}>
+              <button className="outline" onClick={() => pickBin("claudeBin")}>Change…</button>
+            </SetRow>
+            <SetRow title="Codex binary" note={s.codexBin ?? "codex"}>
+              <button className="outline" onClick={() => pickBin("codexBin")}>Change…</button>
+            </SetRow>
+          </>
+        )}
+
+        {section === "repos" && (
+          <>
+            <h2>Repos</h2>
+            <p className="set-lede">New Session lists the git repos under these folders.</p>
+            {s.repoRoots.map((r) => {
+              const found = st?.repoRoots.find((x) => x.path === r);
+              return (
+                <SetRow
+                  key={r}
+                  title={r}
+                  note={!found ? "" : !found.exists ? "folder not found" : `${found.repos} repo${found.repos === 1 ? "" : "s"}`}
+                >
+                  <button className="danger" title="Remove" onClick={() => upd({ repoRoots: s.repoRoots.filter((x) => x !== r) })}>
+                    ✕
+                  </button>
+                </SetRow>
+              );
+            })}
+            <div className="set-actions">
+              <button className="outline" onClick={addRoot}>Add folder…</button>
             </div>
-            <div className="path-row" style={{ marginTop: 6 }}>
-              <span className="p">{adoCfg.patFile || "PAT file — a text file containing your Personal Access Token"}</span>
+            <WorktreeJanitor />
+          </>
+        )}
+
+        {section === "ado" && (
+          <>
+            <h2>Azure DevOps</h2>
+            <p className="set-lede">
+              Powers the Dashboard, the ticket picker in New Session, and debrief snapshots. Use your own personal access
+              token — the board's "assigned to me" follows whoever owns it.
+            </p>
+            <SetRow
+              title="Connection"
+              note={!st ? "checking…" : st.ado.connected ? `Connected as ${st.ado.display} · ${st.ado.detail}` : st.ado.detail}
+            >
+              {st && <span className={st.ado.connected ? "set-ok" : "set-bad"}>{st.ado.connected ? "✓" : "✕"}</span>}
+            </SetRow>
+            <SetRow title="WorkTracker folder" note={`${s.workTrackerPath} — holds config.json and debrief notes`}>
               <button
                 className="outline"
                 onClick={async () => {
-                  const p = await window.mb.pickPath({ file: true, defaultPath: s.workTrackerPath });
-                  if (p) {
-                    setAdoCfg({ ...adoCfg, patFile: p });
-                    setConnSaved(false);
-                  }
+                  const p = await window.mb.pickPath({ defaultPath: s.workTrackerPath });
+                  if (p) upd({ workTrackerPath: p });
                 }}
               >
-                Browse…
+                Change…
+              </button>
+            </SetRow>
+            {adoCfg && (
+              <div className="set-form">
+                <label>Organization URL</label>
+                <input type="text" placeholder="https://dev.azure.com/YourOrg" value={adoCfg.orgUrl} onChange={(e) => setAdoCfg({ ...adoCfg, orgUrl: e.target.value })} />
+                <label>Project</label>
+                <input type="text" placeholder="YourProject" value={adoCfg.project} onChange={(e) => setAdoCfg({ ...adoCfg, project: e.target.value })} />
+                <label>Token file</label>
+                <div className="path-row">
+                  <span className="p">{adoCfg.patFile || "a text file containing your personal access token"}</span>
+                  <button
+                    className="outline"
+                    onClick={async () => {
+                      const p = await window.mb.pickPath({ file: true, defaultPath: s.workTrackerPath });
+                      if (p) setAdoCfg({ ...adoCfg, patFile: p });
+                    }}
+                  >
+                    Browse…
+                  </button>
+                </div>
+                <div className="set-actions">
+                  <button
+                    className="outline strong"
+                    disabled={connecting || !adoCfg.orgUrl.trim() || !adoCfg.project.trim() || !adoCfg.patFile.trim()}
+                    onClick={connectAdo}
+                  >
+                    {connecting ? "Connecting…" : "Save and connect"}
+                  </button>
+                </div>
+              </div>
+            )}
+            {adoNote && <div className={adoNote.ok ? "set-note ok" : "err"}>{adoNote.msg}</div>}
+          </>
+        )}
+
+        {section === "debriefs" && (
+          <>
+            <h2>Debriefs</h2>
+            <p className="set-lede">
+              The morning brief and 4pm wrap-up run an assistant in your WorkTracker folder that follows{" "}
+              <code>instructions/morning.md</code> and <code>wrap-up.md</code> there.
+            </p>
+            <SetRow title="Run automatically" note={`${s.debriefs.morning} and ${s.debriefs.wrapUp}, weekdays, while the app is open`}>
+              <Toggle label="Run debriefs automatically" on={s.debriefs.enabled} onChange={(v) => upd({ debriefs: { ...s.debriefs, enabled: v } })} />
+            </SetRow>
+            <SetRow
+              title="Azure CLI"
+              note={
+                conn === null
+                  ? "checking…"
+                  : "error" in conn
+                    ? `Couldn't check: ${conn.error}`
+                    : conn.az
+                      ? "Found — your token is passed to debrief sessions, so az boards / az repos work without az login"
+                      : "Not installed — debriefs still get the ticket snapshot"
+              }
+            />
+            <h3 className="set-sub">MCP servers for debrief sessions</h3>
+            <p className="set-lede">
+              Optional. Saved to WorkTracker/.mcp.json; Claude Code asks you to approve each on first use.
+              {conn && !("error" in conn) && conn.global.length > 0 && ` Also configured for every session: ${conn.global.join(", ")} (manage with claude mcp).`}
+            </p>
+            {conn && !("error" in conn) &&
+              conn.project.map((n) => (
+                <SetRow key={n} title={n}>
+                  <button
+                    className="danger"
+                    title="Remove"
+                    onClick={async () => {
+                      const r = await window.mb.mcpRemove(n);
+                      setMcpErr(r?.error ? `Couldn't remove ${n}: ${r.error}` : "");
+                      loadConnectors();
+                    }}
+                  >
+                    ✕
+                  </button>
+                </SetRow>
+              ))}
+            <div className="set-inline">
+              <input type="text" style={{ flex: 1 }} placeholder="azure-devops" value={mcpName} onChange={(e) => setMcpName(e.target.value)} />
+              <input type="text" style={{ flex: 2.2 }} placeholder="npx -y @azure-devops/mcp YourOrg" value={mcpCmd} onChange={(e) => setMcpCmd(e.target.value)} />
+              <button
+                className="outline"
+                disabled={!mcpName.trim() || !mcpCmd.trim()}
+                onClick={async () => {
+                  const r = await window.mb.mcpAdd(mcpName.trim(), mcpCmd.trim());
+                  if (r?.error) return setMcpErr(`Couldn't add ${mcpName.trim()}: ${r.error}`);
+                  setMcpErr("");
+                  setMcpName("");
+                  setMcpCmd("");
+                  loadConnectors();
+                }}
+              >
+                Add
               </button>
             </div>
-            <div className="row" style={{ justifyContent: "flex-start", marginTop: 8, gap: 8 }}>
-              <button
-                className="primary"
-                disabled={!adoCfg.orgUrl.trim() || !adoCfg.project.trim() || !adoCfg.patFile.trim()}
-                onClick={async () => {
-                  const r = await window.mb.adoConfigSet(adoCfg);
-                  if (!r?.error) {
-                    setConnSaved(true);
-                    loadConnectors();
-                  }
-                }}
-              >
-                Save connector
-              </button>
-              {connSaved && <span className="kbd" style={{ color: "var(--teal-text)" }}>saved ✓</span>}
+            {mcpErr && <div className="err">{mcpErr}</div>}
+          </>
+        )}
+
+        {section === "control" && (
+          <>
+            <h2>Control room</h2>
+            <p className="set-lede">Broadcast an instruction to many sessions at once, or edit CLAUDE.md and have every session re-read it.</p>
+            <div className="set-card p0">
+              <ControlRoomPanel sessions={sessions} />
             </div>
           </>
         )}
-        <div className="wi-note" style={{ marginTop: 5 }}>
-          {identity === null
-            ? "resolving identity…"
-            : "error" in identity
-              ? "not connected — fill in org, project, and PAT file above"
-              : `connected as ${identity.display}${identity.email ? ` (${identity.email})` : ""} · project ${identity.project} — identity comes from the PAT, so each user's own config makes the app theirs`}
-        </div>
 
-        <label>az CLI — debrief sessions</label>
-        <div className="wi-note">
-          {conn === null
-            ? "checking…"
-            : conn.az
-              ? "az found · your PAT is auto-injected into debrief sessions (AZURE_DEVOPS_EXT_PAT), so az boards / az repos work without az login"
-              : "az CLI not found — debriefs still get the ticket snapshot; install Azure CLI if your instructions use az commands"}
-        </div>
-
-        <label>
-          MCP servers — debrief sessions{" "}
-          <span className="wi-note">optional (snapshot + az cover tickets) · saved to WorkTracker/.mcp.json — Claude Code asks approval on first use</span>
-        </label>
-        {(conn?.project ?? []).map((n) => (
-          <div key={n} className="path-row">
-            <span className="p">{n}</span>
-            <button className="danger" title="Remove" onClick={() => window.mb.mcpRemove(n).then(loadConnectors)}>
-              ✕
-            </button>
-          </div>
-        ))}
-        <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-          <input
-            type="text"
-            style={{ flex: 1 }}
-            placeholder="name — e.g. azure-devops"
-            value={mcpName}
-            onChange={(e) => setMcpName(e.target.value)}
-          />
-          <input
-            type="text"
-            style={{ flex: 2.2 }}
-            placeholder="command — e.g. npx -y @azure-devops/mcp YourOrg"
-            value={mcpCmd}
-            onChange={(e) => setMcpCmd(e.target.value)}
-          />
-          <button
-            className="outline"
-            disabled={!mcpName.trim() || !mcpCmd.trim()}
-            onClick={async () => {
-              const r = await window.mb.mcpAdd(mcpName.trim(), mcpCmd.trim());
-              if (!r?.error) {
-                setMcpName("");
-                setMcpCmd("");
-                loadConnectors();
-              }
-            }}
-          >
-            Add
-          </button>
-        </div>
-        <div className="wi-note" style={{ marginTop: 5 }}>
-          {conn && conn.global.length
-            ? `also configured globally in Claude Code (all sessions): ${conn.global.join(", ")} — manage those with claude mcp`
-            : "global Claude Code servers (all sessions) are managed with claude mcp from a terminal"}
-        </div>
-      </div>
-
-      <div className="set-card p0">
-        <ControlRoomPanel sessions={sessions} />
+        {section === "about" && (
+          <>
+            <h2>About</h2>
+            <SetRow title="Mockingbird" note={version ? `Version ${version}` : ""}>
+              <button
+                className="outline"
+                onClick={async () => {
+                  setUpdNote("Checking…");
+                  const r = await window.mb.updateCheck();
+                  if (r === null) setUpdNote('No update source — set "repository" in package.json to a GitHub repo');
+                  else if (r?.error) setUpdNote(`Check failed: ${r.error}`);
+                  else if (r.newer) setUpdNote(`Version ${r.latest} is available — see the link in the status bar`);
+                  else setUpdNote(`Up to date (${r.current})`);
+                }}
+              >
+                Check for updates
+              </button>
+            </SetRow>
+            {updNote && <div className="set-note">{updNote}</div>}
+            <SetRow title="Guide" note="Every feature and shortcut">
+              <span className="kbd">⌘/</span>
+            </SetRow>
+          </>
+        )}
       </div>
     </div>
   );

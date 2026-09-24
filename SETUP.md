@@ -74,7 +74,7 @@ Launch it from /Applications — not the copy inside `release/`, which the next
 ## 3. First run: the setup wizard
 
 The first launch opens a setup wizard. Reopen it anytime from ⌘K → *Setup* or
-Settings → **Run setup**. Each step checks this Mac's real state, so it's safe
+Settings → General → **Run setup**. Each step checks this Mac's real state, so it's safe
 to re-run and it picks up where you left off:
 
 1. **Agents** — finds `claude` (required) and `codex` (optional) on your PATH
@@ -108,13 +108,14 @@ keyed to whoever owns the token — someone else's PAT would show you their work
    pbpaste > ~/Code/WorkTracker/secrets/ado_pat.txt
    ```
 
-3. In the wizard's Azure DevOps step (or Settings → **Connectors**), fill in:
+3. In the wizard's Azure DevOps step (or Settings → **Azure DevOps**), fill in:
    - WorkTracker folder — e.g. `~/Code/WorkTracker`
    - Organization URL — `https://dev.azure.com/YourOrg`
    - Project — your project name
    - Token file — the file from step 2
 
-   and press **Connect**. It should show *Connected as \<you\>*.
+   and press **Connect** (**Save and connect** in Settings). It should show
+   *Connected as \<you\>*.
 
 The PAT never leaves Mockingbird's main process, and the `secrets/` /
 `*_pat.txt` naming is chosen so it's easy to keep out of commits. When the token
@@ -137,8 +138,8 @@ Plan usage in the status bar is Claude-only; Codex doesn't expose its limits.
 Nothing to set up. Every Claude and Codex pane gets `list_sessions` and
 `send_message` tools, so you can say "tell the backoffice session the field is
 now `organizationId`" and it lands in that pane's prompt. Sessions started
-before an app update need a restart to get the tools. Settings → **Agent-to-agent
-messages** switches auto-send off if you'd rather press Enter on each one.
+before an app update need a restart to get the tools. Settings → Agents →
+**Auto-send agent messages** switches it off if you'd rather press Enter on each one.
 
 ## 7. Debriefs (optional)
 
@@ -149,8 +150,8 @@ what it can and says what it couldn't reach.
 
 ## 8. Keeping things up to date
 
-- **Claude Code / Codex** — Settings → **Update Claude Code** / **Update Codex**,
-  then **Restart all agent sessions**. You need this when a new model (e.g. a new
+- **Claude Code / Codex** — Settings → Agents → **Update** next to each,
+  then **Restart all sessions**. You need this when a new model (e.g. a new
   Opus) says the CLI must update. Restarting relaunches every pane in place and
   resumes its conversation; groups and grid slots survive.
 - **Mockingbird** — a teal "⭮ vX.Y available" link appears in the status bar
