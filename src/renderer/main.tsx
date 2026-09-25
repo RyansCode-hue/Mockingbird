@@ -1818,6 +1818,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌘B", "file explorer for the focused session — files, viewer, diffs"],
     ["⌘⇧B", "control room — broadcast + CLAUDE.md"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],
+    ["⇧click", "select more than a screen: click where it starts, scroll, shift-click where it ends — it's copied"],
     ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a pane"],
     ["⌘/", "this popup"],
   ];
