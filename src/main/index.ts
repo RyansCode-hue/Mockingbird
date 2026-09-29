@@ -7,7 +7,7 @@ import { Store, expandHome } from "./store";
 import { SessionManager } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree } from "./worktrees";
-import { installHooks, hooksInstalled, watchEvents } from "./hooks";
+import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { Messaging } from "./messaging";
@@ -233,6 +233,7 @@ app.whenReady().then(() => {
     BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", readUsage());
   })();
   watchUsage((u) => BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", u));
+  ensureHookScript();
   watchEvents(sessions, (info, status) => {
     notifySession(
       info.id,

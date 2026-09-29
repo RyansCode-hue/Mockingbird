@@ -25,6 +25,8 @@ export interface SessionInfo {
   debrief?: boolean; // morning brief / wrap-up — lives on the WorkTracker tab, not the grid
   shell?: boolean; // plain terminal (no claude) — excluded from broadcasts/re-reads
   agent?: AgentKind; // absent on sessions persisted before Codex support — those are Claude
+  /** The agent conversation last seen running in this pane (from its hook events) — what a relaunch resumes. */
+  conversation?: { agent: AgentKind; id: string };
 }
 
 export interface WorktreeStateInfo {
@@ -133,6 +135,8 @@ export interface NewSessionRequest {
   initialPrompt?: string; // sent to the claude session once it's up (e.g. the ADO ticket)
   shell?: boolean; // open a plain zsh terminal instead of launching claude
   agent?: AgentKind; // which CLI to launch (default claude)
+  /** Terminal sessions only: resume this conversation inside the shell, then drop back to the shell prompt. */
+  shellResume?: { agent: AgentKind; id: string };
   model?: string; // claude --model (alias like "opus" or a full model id)
   effort?: string; // claude --effort (low | medium | high | xhigh | max)
 }

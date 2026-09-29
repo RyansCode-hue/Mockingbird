@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { execFileSync } from "child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { installHooks, hookStatus, hooksInstalled, watchEvents } from "../src/main/hooks";
 
@@ -54,38 +55,51 @@ describe("installHooks", () => {
   });
 });
 
+describe("hook script", () => {
+  it("records the pane the event came from, inherited through the agent's environment", () => {
+    installHooks(null);
+    const script = path.join(os.homedir(), ".mockingbird", "hook.sh");
+    const before = fs.existsSync(events) ? fs.readFileSync(events, "utf8").length : 0;
+    execFileSync(script, ["Stop"], { input: JSON.stringify({ session_id: "c9", cwd: "/w" }), env: { ...process.env, MOCKINGBIRD_SESSION: "pane42" } });
+    execFileSync(script, ["Stop"], { input: JSON.stringify({ session_id: "c9", cwd: "/w" }), env: { ...process.env, MOCKINGBIRD_SESSION: "" } });
+    const [inPane, outside] = fs.readFileSync(events, "utf8").slice(before).trim().split("\n").map((l) => JSON.parse(l));
+    expect(inPane).toMatchObject({ event: "Stop", pane: "pane42", payload: { session_id: "c9", cwd: "/w" } });
+    expect(outside.pane).toBe("");
+  });
+});
+
 describe("watchEvents", () => {
-  it("turns hook events into session statuses", async () => {
+  it("turns hook events into session statuses, routed by pane and conversation", async () => {
     installHooks(null); // creates events.jsonl
-    const seen: [string, string, string | undefined, string | undefined][] = [];
+    const seen: any[] = [];
     const fakeSessions = {
-      statusByCwd: (cwd: string, status: string, reason?: string, id?: string) => {
-        seen.push([cwd, status, reason, id]);
+      statusFromHook: (ev: any) => {
+        seen.push([ev.status, ev.reason, ev.paneId, ev.conversationId, ev.agent]);
         return { id: "s1", title: "t" } as any;
       },
     };
     watchEvents(fakeSessions as any, () => {});
-    const line = (event: string, payload: object) => JSON.stringify({ event, ts: 1, payload: { cwd: "/w", session_id: "c1", ...payload } }) + "\n";
+    const line = (event: string, payload: object, pane = "p1") => JSON.stringify({ event, ts: 1, pane, payload: { cwd: "/w", session_id: "c1", ...payload } }) + "\n";
     fs.appendFileSync(
       events,
-      line("UserPromptSubmit", {}) +
+      line("UserPromptSubmit", { transcript_path: "/h/.claude/projects/x/c1.jsonl" }) +
         line("Notification", { message: "Claude needs your permission to use Bash" }) +
         line("PreToolUse", {}) +
         line("Notification", { message: "Claude is waiting for your input" }) +
-        line("PermissionRequest", { tool_name: "Bash" }) +
-        line("Stop", {}) +
+        line("PermissionRequest", { tool_name: "Bash", transcript_path: "/h/.codex/sessions/r.jsonl" }) +
+        line("Stop", {}, "") +
         "not json\n" +
         JSON.stringify({ event: "Stop", payload: {} }) + "\n"
     );
     await new Promise((r) => setTimeout(r, 1500));
     fs.unwatchFile(events);
     expect(seen).toEqual([
-      ["/w", "working", undefined, "c1"],
-      ["/w", "waiting", "Claude needs your permission to use Bash", "c1"],
-      ["/w", "working", undefined, "c1"],
-      ["/w", "idle", undefined, "c1"], // the idle reminder isn't "blocked on you"
-      ["/w", "waiting", "Codex needs your permission to use Bash", "c1"],
-      ["/w", "idle", undefined, "c1"],
+      ["working", undefined, "p1", "c1", "claude"],
+      ["waiting", "Claude needs your permission to use Bash", "p1", "c1", "claude"],
+      ["working", undefined, "p1", "c1", "claude"],
+      ["idle", undefined, "p1", "c1", "claude"], // the idle reminder isn't "blocked on you"
+      ["waiting", "Codex needs your permission to use Bash", "p1", "c1", "codex"],
+      ["idle", undefined, undefined, "c1", "claude"], // no pane (agent run outside Mockingbird): cwd + conversation decide
     ]);
   });
 });

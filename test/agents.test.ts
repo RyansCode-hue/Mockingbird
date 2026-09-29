@@ -52,6 +52,23 @@ describe("Codex launch", () => {
   });
 });
 
+describe("conversationExists", () => {
+  it("Claude: finds a transcript by id in any project folder", () => {
+    const dir = path.join(os.homedir(), ".claude", "projects", "-Users-me-Code-app");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "abc-123.jsonl"), "{}\n");
+    expect(agentFor("claude").conversationExists("abc-123")).toBe(true);
+    expect(agentFor("claude").conversationExists("nope")).toBe(false);
+  });
+  it("Codex: matches the id at the end of a rollout's file name", () => {
+    const dir = path.join(os.homedir(), ".codex", "sessions", "2026", "09", "20");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "rollout-2026-09-20T10-00-00-0199aaaa-bbbb.jsonl"), "{}\n");
+    expect(agentFor("codex").conversationExists("0199aaaa-bbbb")).toBe(true);
+    expect(agentFor("codex").conversationExists("bbbb")).toBe(false);
+  });
+});
+
 describe("resume detection", () => {
   it("Claude: a transcript in the folder's project directory counts", () => {
     const cwd = "/Users/nick/Code/app";

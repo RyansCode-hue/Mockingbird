@@ -10,7 +10,7 @@ import { Store, expandHome } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
 import { agentFor, AgentAdapter } from "./agents";
-import { whichSync } from "./shell";
+import { whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
@@ -137,9 +137,15 @@ export class SessionManager {
     const shellArgs = ["-il"];
     let claudeArgs: string[] = shellArgs;
     const id = req.reuseId ?? randomUUID().slice(0, 8);
+    const commandFor = (a: AgentAdapter, r: NewSessionRequest) =>
+      [this.resolveBin(a), ...a.launchArgs(r, { mcp: mcpLaunch(id) })].map(quote).join(" ");
     if (!req.shell) {
-      const cmdline = [this.resolveBin(agent), ...agent.launchArgs(req, { mcp: mcpLaunch(id) })].map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(" ");
-      claudeArgs = ["-ilc", `exec ${cmdline}`];
+      claudeArgs = ["-ilc", `exec ${commandFor(agent, req)}`];
+    } else if (req.shellResume) {
+      // a terminal that had an agent running in it: bring the conversation
+      // back, and leave the user at the shell prompt when they quit it
+      const a = agentFor(req.shellResume.agent);
+      claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id })}; exec /bin/zsh -il`];
     }
     let proc: pty.IPty;
     try {
@@ -151,6 +157,10 @@ export class SessionManager {
         env: {
           ...paneEnv(),
           MOCKINGBIRD: "1",
+          // inherited by the agent and its hooks — including an agent the user
+          // starts by hand inside a terminal pane — so every hook event names
+          // its pane exactly; a folder alone is ambiguous (see statusFromHook)
+          MOCKINGBIRD_SESSION: id,
           // debriefs get PAT auth for the az DevOps CLI (AZURE_DEVOPS_EXT_PAT)
           // so ticket/PR queries work without az login or an MCP server
           ...(req.debrief ? adoEnv(this.store) : {}),
@@ -187,6 +197,7 @@ export class SessionManager {
       model: req.model || undefined,
       effort: req.effort || undefined,
       agent: req.shell ? undefined : req.agent ?? "claude",
+      conversation: req.shellResume ?? (req.resumeSessionId ? { agent: req.agent ?? "claude", id: req.resumeSessionId } : undefined),
     };
 
     // reuseId re-creates an existing id (relaunch): kill the old pty first or it
@@ -267,7 +278,12 @@ export class SessionManager {
     // failed relaunch (missing worktree, spawn error) erases the session for good
     // --continue exits immediately when the cwd has no conversation yet (a
     // session that died at startup); such a session relaunches fresh instead
-    const resume = !old.shell && agentFor(old.agent).hasConversation(old.cwd);
+    // Resume the exact conversation this pane last ran when it's still on disk;
+    // otherwise fall back to "most recent in this folder", which is ambiguous
+    // when several chats started in the same folder (home, WorkTracker).
+    const conv = old.conversation && agentFor(old.conversation.agent).conversationExists(old.conversation.id) ? old.conversation : null;
+    const sameAgent = conv && conv.agent === (old.agent ?? "claude");
+    const resume = !old.shell && !sameAgent && agentFor(old.agent).hasConversation(old.cwd);
     const info = this.create({
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
@@ -280,6 +296,7 @@ export class SessionManager {
       taskGroup: old.taskGroup ?? undefined,
       extraDirs: old.extraDirs,
       resume,
+      ...(old.shell ? (conv ? { shellResume: conv } : {}) : sameAgent ? { resumeSessionId: conv!.id } : {}),
       reuseId: old.id, // same id → persisted grid position and group still apply
       title: old.title,
       debrief: old.debrief,
@@ -460,42 +477,64 @@ export class SessionManager {
   }
 
   /**
-   * Called by the hooks watcher. cwd alone does not identify a session —
-   * debriefs and assistant sessions share the WorkTracker directory and two
-   * sessions can share one worktree — so events are routed by Claude Code's own
-   * session_id, claimed by the first event a session emits.
+   * Called by the hooks watcher. Every pane exports MOCKINGBIRD_SESSION, which
+   * its agent's hooks inherit, so an event names its pane exactly. Events
+   * without it (a pane started by an older build) fall back to the agent's own
+   * conversation id, then to the folder — which is ambiguous: two panes can
+   * share a folder, and an agent that cd's reports the new folder.
    */
-  statusByCwd(
-    cwd: string,
-    status: SessionStatus,
-    reason?: string,
-    claudeId?: string
-  ): SessionInfo | null {
-    const s = this.matchSession(cwd, claudeId);
+  statusFromHook(ev: {
+    status: SessionStatus;
+    cwd?: string;
+    reason?: string;
+    conversationId?: string;
+    agent?: AgentKind;
+    paneId?: string;
+  }): SessionInfo | null {
+    const s = (ev.paneId && this.live.get(ev.paneId)) || this.matchSession(ev.cwd, ev.conversationId);
     if (!s) return null;
-    this.setStatus(s.info.id, status, reason);
+    if (ev.conversationId) this.noteConversation(s, ev.agent ?? s.info.agent ?? "claude", ev.conversationId);
+    this.setStatus(s.info.id, ev.status, ev.reason);
     // deliver queued broadcasts whenever the session frees up (a session can
     // reach idle from waiting too — e.g. a declined permission, or the idle
     // reminder — and those queues used to strand forever)
-    if (status === "idle") this.flushQueued(s);
+    if (ev.status === "idle") this.flushQueued(s);
     return s.info;
   }
 
-  private matchSession(cwd: string, claudeId?: string): LiveSession | null {
-    const inCwd = [...this.live.values()].filter((s) => s.info.cwd === cwd);
+  /** Folder-only form, for callers that have nothing else to route by. */
+  statusByCwd(cwd: string, status: SessionStatus, reason?: string, conversationId?: string): SessionInfo | null {
+    return this.statusFromHook({ cwd, status, reason, conversationId });
+  }
+
+  /** The pane's current conversation is what a relaunch resumes; /clear starts a new one. */
+  private noteConversation(s: LiveSession, agent: AgentKind, id: string): void {
+    s.claudeId = id;
+    const cur = s.info.conversation;
+    if (cur?.id === id && cur.agent === agent) return;
+    s.info.conversation = { agent, id };
+    this.store.upsertSession(s.info);
+  }
+
+  private matchSession(cwd: string | undefined, conversationId?: string): LiveSession | null {
+    const all = [...this.live.values()];
+    if (conversationId) {
+      const bound = all.find((s) => s.claudeId === conversationId);
+      if (bound) return bound; // wherever it has cd'd to since
+    }
+    if (!cwd) return null;
+    const inCwd = all.filter((s) => s.info.cwd === cwd);
     if (!inCwd.length) return null;
-    if (claudeId) {
-      const bound = inCwd.find((s) => s.claudeId === claudeId);
-      if (bound) return bound;
+    if (conversationId) {
       const free = inCwd.find((s) => s.claudeId === null);
       if (free) {
-        free.claudeId = claudeId;
+        free.claudeId = conversationId;
         return free;
       }
-      // every session in this cwd is bound to some other claude run (the CLI was
+      // every session in this cwd is bound to some other run (the CLI was
       // restarted inside a pane): rebind the newest one rather than misroute
       const newest = inCwd[inCwd.length - 1];
-      newest.claudeId = claudeId;
+      newest.claudeId = conversationId;
       return newest;
     }
     return inCwd[0];

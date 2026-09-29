@@ -24,6 +24,8 @@ export interface AgentAdapter {
   hasConversation(cwd: string): boolean;
   /** True when the kickoff prompt travels in launchArgs instead of being typed in after boot. */
   promptInArgs: boolean;
+  /** Whether this agent still has the conversation with this id on disk (so `--resume <id>` will find it). */
+  conversationExists(id: string): boolean;
 }
 
 const claude: AgentAdapter = {
@@ -47,6 +49,16 @@ const claude: AgentAdapter = {
       "mcp__mockingbird__list_sessions,mcp__mockingbird__send_message"
     );
     return args;
+  },
+  conversationExists(id) {
+    const projects = path.join(os.homedir(), ".claude", "projects");
+    let dirs: string[];
+    try {
+      dirs = fs.readdirSync(projects);
+    } catch {
+      return false; // no Claude history on this machine
+    }
+    return dirs.some((d) => fs.existsSync(path.join(projects, d, `${id}.jsonl`)));
   },
   // Claude keeps transcripts under ~/.claude/projects/<cwd with separators dashed>/
   hasConversation(cwd) {
@@ -90,6 +102,29 @@ function rolloutCwd(file: string): string | null {
 const ROLLOUT_SCAN_LIMIT = 2000; // newest files read per index; older conversations start fresh
 const INDEX_TTL_MS = 30_000;
 let cwdIndex: { cwds: Set<string>; at: number } | null = null;
+
+const ROLLOUT_NAME_RE = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/;
+
+/** Rollout file names, newest first, bounded like the cwd index. */
+function codexRolloutNames(): string[] {
+  const root = path.join(os.homedir(), ".codex", "sessions");
+  const ls = (dir: string): string[] => {
+    try {
+      return fs.readdirSync(dir).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  const out: string[] = [];
+  for (const y of ls(root))
+    for (const m of ls(path.join(root, y)))
+      for (const d of ls(path.join(root, y, m)))
+        for (const f of ls(path.join(root, y, m, d))) {
+          if (f.endsWith(".jsonl")) out.push(f);
+          if (out.length >= ROLLOUT_SCAN_LIMIT) return out;
+        }
+  return out;
+}
 
 /** Folders that have an interactive Codex conversation to resume. */
 function codexCwds(): Set<string> {
@@ -145,6 +180,10 @@ const codex: AgentAdapter = {
   // one index read serves a whole restore-all burst.
   hasConversation(cwd) {
     return codexCwds().has(cwd);
+  },
+  // rollouts are named rollout-<YYYY-MM-DDTHH-MM-SS>-<conversation id>.jsonl
+  conversationExists(id) {
+    return codexRolloutNames().some((f) => ROLLOUT_NAME_RE.exec(f)?.[1] === id);
   },
 };
 

@@ -62,12 +62,24 @@ function wired(file: string, events: readonly string[]): boolean {
   }
 }
 
+// "pane" is the MOCKINGBIRD_SESSION the pane exported, inherited through the
+// agent — empty for agents run outside Mockingbird.
 const SCRIPT = `#!/bin/bash
-# Mockingbird status hook — appends Claude Code hook events for the app to tail.
+# Mockingbird status hook — appends agent hook events for the app to tail.
 payload=$(cat)
-printf '{"event":"%s","ts":%s,"payload":%s}\\n' "$1" "$(date +%s)" "$payload" >> "${EVENTS_FILE}"
+printf '{"event":"%s","ts":%s,"pane":"%s","payload":%s}\\n' "$1" "$(date +%s)" "\${MOCKINGBIRD_SESSION:-}" "$payload" >> "${EVENTS_FILE}"
 exit 0
 `;
+
+/** Keep hook.sh current: installs from older builds wrote a script without the pane id. */
+export function ensureHookScript(): void {
+  try {
+    if (fs.readFileSync(HOOK_SCRIPT, "utf8") === SCRIPT) return;
+  } catch {
+    return; // hooks were never installed — the Install button writes it
+  }
+  fs.writeFileSync(HOOK_SCRIPT, SCRIPT, { mode: 0o755 });
+}
 
 /** Write hook.sh and merge our hooks into ~/.claude/settings.json (preserving existing hooks). */
 export function installHooks(codexBin: string | null): { installed: boolean; message: string } {
@@ -131,16 +143,21 @@ export function watchEvents(
         if (!line.trim()) continue;
         try {
           const evt = JSON.parse(line);
-          const cwd: string | undefined = evt.payload?.cwd;
-          if (!cwd) continue;
+          const cwd: string | undefined = typeof evt.payload?.cwd === "string" ? evt.payload.cwd : undefined;
+          if (!cwd && !evt.pane) continue;
           const msg = typeof evt.payload?.message === "string" ? evt.payload.message : undefined;
           // Claude Code's ~60s idle reminder ("Claude is waiting for your input")
           // is not blocked-on-you — treat it as idle so finished sessions don't
           // flip amber a minute after you walk away.
-          const claudeId: string | undefined =
+          const conversationId: string | undefined =
             typeof evt.payload?.session_id === "string" ? evt.payload.session_id : undefined;
+          const paneId = typeof evt.pane === "string" && evt.pane ? evt.pane : undefined;
+          // the transcript's location says which agent wrote the event
+          const transcript = typeof evt.payload?.transcript_path === "string" ? evt.payload.transcript_path : "";
+          const agent = transcript.includes("/.codex/") ? ("codex" as const) : ("claude" as const);
+          const route = { cwd, conversationId, paneId, agent };
           if (evt.event === "Notification" && msg && /waiting for your input/i.test(msg)) {
-            sessions.statusByCwd(cwd, "idle", undefined, claudeId);
+            sessions.statusFromHook({ ...route, status: "idle" });
             continue;
           }
           // Stop → idle · Notification → waiting · UserPromptSubmit/PreToolUse → working
@@ -154,7 +171,7 @@ export function watchEvents(
             evt.event === "Notification" ? msg
             : evt.event === "PermissionRequest" ? `Codex needs your permission to use ${tool}`
             : undefined;
-          const info = sessions.statusByCwd(cwd, status, reason, claudeId);
+          const info = sessions.statusFromHook({ ...route, status, reason });
           if (info && (status === "idle" || status === "waiting")) {
             onStatus(info, status);
           }
