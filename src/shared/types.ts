@@ -239,11 +239,13 @@ export interface CollabParticipantSpec {
   model: string;
   effort: string | null; // the CLI's effort / reasoning level; null = its default
   readsCode: boolean; // may read the room's repository
+  runsCommands?: boolean; // may run tests/builds in the room's disposable copy of the repo (implies readsCode)
 }
 
 export interface CollabParticipant extends CollabModel {
   effort: string | null;
   readsCode: boolean;
+  runsCommands?: boolean;
   removed?: boolean; // left the room; kept so its past messages keep their name
   color: number; // palette slot, stable for the room's life
   conversationId: string | null; // the model's own CLI conversation, resumed every turn
@@ -276,6 +278,8 @@ export interface CollabRoom {
   speaking: string | null; // participant key mid-turn
   plan: { text: string; by: string; approved: boolean; at: number } | null;
   implementedIn: string | null; // session id started from the approved plan
+  /** A disposable git worktree of the repo where command-running models work; never the user's checkout. */
+  workspacePath?: string | null;
   createdAt: number;
 }
 

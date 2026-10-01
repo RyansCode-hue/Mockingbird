@@ -373,6 +373,7 @@ const collab = new CollabRooms(
 );
 ipcMain.handle("collab:models", () => ({ presets: COLLAB_MODELS, efforts: COLLAB_EFFORTS }));
 ipcMain.handle("collab:repo", (_e, id, repo) => safe("collab:repo", () => collab.setRepo(id, repo))());
+ipcMain.handle("collab:resetCopy", (_e, id) => safe("collab:resetCopy", () => collab.resetTestCopy(id))());
 ipcMain.handle("collab:participants", (_e, id, specs) => safe("collab:participants", () => collab.setParticipants(id, specs))());
 ipcMain.handle("collab:list", () => safe("collab:list", () => collab.list())());
 ipcMain.handle("collab:create", (_e, spec) => safe("collab:create", () => collab.create(spec))());

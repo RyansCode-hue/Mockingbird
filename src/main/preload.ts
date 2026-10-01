@@ -32,6 +32,7 @@ const api = {
   collabList: () => ipcRenderer.invoke("collab:list"),
   collabCreate: (spec: unknown) => ipcRenderer.invoke("collab:create", spec),
   collabRepo: (id: string, repo: string | null) => ipcRenderer.invoke("collab:repo", id, repo),
+  collabResetCopy: (id: string) => ipcRenderer.invoke("collab:resetCopy", id),
   collabParticipants: (id: string, specs: unknown) => ipcRenderer.invoke("collab:participants", id, specs),
   collabDelete: (id: string) => ipcRenderer.invoke("collab:delete", id),
   collabSend: (id: string, text: string) => ipcRenderer.invoke("collab:send", id, text),

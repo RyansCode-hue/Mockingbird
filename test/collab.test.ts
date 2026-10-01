@@ -2,6 +2,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "child_process";
+import { makeTestCopy } from "../src/main/testCopy";
 import { CollabRooms, COLLAB_MODELS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
 import type { CollabParticipantSpec } from "../src/shared/types";
 import type { CollabRoom } from "../src/shared/types";
@@ -285,9 +287,10 @@ describe("CLI commands", () => {
   });
   it("Codex: read-only sandbox on the first turn, effort on every turn", () => {
     const first = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: "high", readsCode: true }, "/tmp/r.txt");
-    expect(first).toBe(`'/bin/codex' exec -c 'model_reasoning_effort="high"' --disable apps --disable plugins -c 'mcp_servers={}' -c 'approval_policy="never"' --json --skip-git-repo-check -s read-only -m 'gpt-6-astra' -o '/tmp/r.txt' -`);
+    expect(first).toBe(`'/bin/codex' exec -c 'model_reasoning_effort="high"' --disable apps --disable plugins -c 'mcp_servers={}' -c 'approval_policy="never"' -c 'sandbox_mode="read-only"' --json --skip-git-repo-check -m 'gpt-6-astra' -o '/tmp/r.txt' -`);
     const later = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: null, readsCode: true, conversationId: "t1" }, "/tmp/r.txt");
-    expect(later).toBe(`'/bin/codex' exec resume 't1' --disable apps --disable plugins -c 'mcp_servers={}' -c 'approval_policy="never"' --json --skip-git-repo-check -o '/tmp/r.txt' -`);
+    // resume takes no -s, so the sandbox is set on every turn rather than left to the user's config
+    expect(later).toBe(`'/bin/codex' exec resume 't1' --disable apps --disable plugins -c 'mcp_servers={}' -c 'approval_policy="never"' -c 'sandbox_mode="read-only"' --json --skip-git-repo-check -o '/tmp/r.txt' -`);
   });
 });
 
@@ -373,5 +376,134 @@ describe("changing a room's repository", () => {
     c.setRepo(room.id, null);
     expect(room.messages.at(-1)!.text).toMatch(/Repository removed/);
     expect(() => c.setRepo(room.id, path.join(dir, "nope"))).toThrow(/doesn't exist/);
+  });
+});
+
+describe("models that run commands", () => {
+  const sh = (cwd: string, ...args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
+  /** A repo with a commit, an ignored folder, an uncommitted edit and an untracked file. */
+  function gitRepo(): string {
+    const repo = fs.mkdtempSync(path.join(os.homedir(), "repo-"));
+    sh(repo, "init", "-q");
+    fs.writeFileSync(path.join(repo, ".gitignore"), "node_modules/\n");
+    fs.writeFileSync(path.join(repo, "a.txt"), "committed\n");
+    sh(repo, "add", ".");
+    sh(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init");
+    fs.writeFileSync(path.join(repo, "a.txt"), "edited\n");
+    fs.mkdirSync(path.join(repo, "src"));
+    fs.writeFileSync(path.join(repo, "src", "new.txt"), "untracked\n");
+    fs.mkdirSync(path.join(repo, "node_modules"));
+    fs.writeFileSync(path.join(repo, "node_modules", "dep.js"), "ignored\n");
+    return repo;
+  }
+
+  it("the test copy is the repo as it stands — uncommitted work included, ignored files not — with its own git", async () => {
+    const repo = gitRepo();
+    const dest = path.join(fs.mkdtempSync(path.join(os.homedir(), "copy-")), "work");
+    expect(await makeTestCopy(repo, dest)).toMatch(/^[0-9a-f]{7} \+ uncommitted changes and 1 untracked file$/);
+    expect(fs.readFileSync(path.join(dest, "a.txt"), "utf8")).toBe("edited\n");
+    expect(fs.readFileSync(path.join(dest, "src", "new.txt"), "utf8")).toBe("untracked\n");
+    expect(fs.existsSync(path.join(dest, "node_modules"))).toBe(false);
+    // a clone, not a worktree: git in the copy never writes into the real repo's .git
+    expect(fs.statSync(path.join(dest, ".git")).isDirectory()).toBe(true);
+    expect(sh(repo, "worktree", "list").split("\n")).toHaveLength(1);
+    fs.writeFileSync(path.join(dest, "a.txt"), "scribbled\n");
+    sh(dest, "add", ".");
+    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("edited\n");
+    expect(sh(repo, "status", "--porcelain")).toBe("M a.txt\n?? src/"); // the repo's index is untouched (output trimmed)
+  });
+
+  it("refuses a folder that isn't a git repository, leaving nothing behind", async () => {
+    const dest = path.join(fs.mkdtempSync(path.join(os.homedir(), "copy-")), "work");
+    await expect(makeTestCopy(fs.mkdtempSync(path.join(os.homedir(), "plain-")), dest)).rejects.toThrow(/git rev-parse failed/);
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+
+  it("they work in the room's test copy, made on first need; readers in the repo; lookups never run commands", async () => {
+    const repo = gitRepo();
+    const seen: { key: string; cwd: string; runs: boolean; prompt: string }[] = [];
+    const runTurn: TurnRunner = async (p, prompt, ctx) => {
+      seen.push({ key: p.key, cwd: ctx.cwd, runs: !!p.runsCommands, prompt });
+      return { text: "ok\nSTANCE: CONTINUE — x", conversationId: `${p.key}-c` };
+    };
+    const dir = fs.mkdtempSync(path.join(os.homedir(), "collab-"));
+    const c = new CollabRooms(dir, runTurn, () => {}, vi.fn(), () => null);
+    const [gpt6, opus, fable] = specs("gpt6", "opus", "fable");
+    const room = c.create({ title: "t", brief: "b", repoPath: repo, mode: "step", participants: [{ ...gpt6, runsCommands: true, readsCode: false }, opus, { ...fable, readsCode: false }] });
+    expect(room.participants[0]).toMatchObject({ runsCommands: true, readsCode: true }); // running implies reading
+    expect(room.workspacePath).toBeNull();
+    await c.run(room.id);
+    const copy = path.join(dir, "work", room.id);
+    expect(room.workspacePath).toBe(copy);
+    expect(seen.map((s) => [s.key, s.cwd])).toEqual([["gpt6", copy], ["opus", repo], ["fable", path.join(dir, room.id)]]);
+    expect(room.messages.some((m) => m.speaker === "system" && /^Made a test copy of repo-\w+ \([0-9a-f]{7} \+ uncommitted/.test(m.text))).toBe(true);
+    expect(seen[0].prompt).toContain(`run commands — tests, builds, scripts — in a disposable copy of the repository at ${copy}, made from ${repo}`);
+    expect(seen[0].prompt).toMatch(/Docker isn't/);
+    expect(seen[1].prompt).toMatch(/In the room: GPT-6 Astra \(reads the code, runs commands\), Claude Fable 5.1\./);
+
+    // the copy is reused from turn to turn — work a model did there (installs, builds) survives
+    fs.writeFileSync(path.join(copy, "built.txt"), "x");
+    await c.run(room.id);
+    expect(seen[3].cwd).toBe(copy);
+    expect(fs.existsSync(path.join(copy, "built.txt"))).toBe(true);
+
+    // a command-running reader answers lookups from the real checkout, without its commands
+    seen.length = 0;
+    c.setParticipants(room.id, [{ ...gpt6, key: "gpt6", runsCommands: true, readsCode: true }, { ...fable, key: "fable", readsCode: false }]);
+    await c.askCodeReader(room.id, "fable", "where is export?");
+    expect(seen[0]).toMatchObject({ key: "gpt6", cwd: repo, runs: false });
+  });
+
+  it("the copy is thrown away on reset, on a new repository and with the room", async () => {
+    const repo = gitRepo();
+    const dir = fs.mkdtempSync(path.join(os.homedir(), "collab-"));
+    const c = new CollabRooms(dir, async (p) => ({ text: "ok\nSTANCE: CONTINUE — x", conversationId: `${p.key}-c` }), () => {}, vi.fn(), () => null);
+    const room = c.create({ title: "t", brief: "b", repoPath: repo, mode: "step", participants: specs("gpt6", "opus").map((s) => ({ ...s, runsCommands: true })) });
+    const copy = path.join(dir, "work", room.id);
+    await c.run(room.id);
+    expect(fs.existsSync(copy)).toBe(true);
+    c.resetTestCopy(room.id);
+    expect(fs.existsSync(copy)).toBe(false);
+    expect(room.workspacePath).toBeNull();
+    expect(room.messages.at(-1)!.text).toMatch(/^Test copy reset/);
+    await c.run(room.id);
+    c.setRepo(room.id, gitRepo());
+    expect(fs.existsSync(copy)).toBe(false);
+    await c.run(room.id);
+    expect(fs.existsSync(copy)).toBe(true);
+    c.delete(room.id);
+    expect(fs.existsSync(copy)).toBe(false);
+  });
+
+  it("a failed copy is that model's turn error; the others carry on", async () => {
+    const dir = fs.mkdtempSync(path.join(os.homedir(), "collab-"));
+    const c = new CollabRooms(dir, async (p) => ({ text: "ok\nSTANCE: CONTINUE — x", conversationId: `${p.key}-c` }), () => {}, vi.fn(), () => null);
+    const plain = fs.mkdtempSync(path.join(os.homedir(), "plain-"));
+    const room = c.create({ title: "t", brief: "b", repoPath: plain, mode: "step", participants: [{ ...specs("gpt6")[0], runsCommands: true }, ...specs("opus")] });
+    await c.run(room.id);
+    expect(room.messages.find((m) => m.kind === "error")!.text).toMatch(/^GPT-6 Astra couldn't take its turn: git rev-parse failed/);
+    expect(said(room)).toContain("1:opus");
+  });
+
+  it("a room from before this build loads with nobody running commands", () => {
+    const dir = fs.mkdtempSync(path.join(os.homedir(), "collab-"));
+    fs.writeFileSync(
+      path.join(dir, "old2.json"),
+      JSON.stringify({ id: "old2", title: "t", brief: "b", repoPath: null, participants: [{ key: "opus", label: "O", agent: "claude", model: "m", conversationId: null, lastSeen: 0, readsCode: true }], messages: [], mode: "step", maxRounds: 1, round: 0, running: false, speaking: null, plan: null, implementedIn: null, createdAt: 1 })
+    );
+    const c = new CollabRooms(dir, async () => ({ text: "", conversationId: "" }), () => {}, vi.fn(), () => null);
+    expect(c.get("old2").participants[0].runsCommands).toBe(false);
+    expect(c.get("old2").workspacePath).toBeNull();
+  });
+
+  it("CLI: Claude gets Bash inside its OS sandbox; Codex a workspace-write sandbox with the network — edit tools stay off", () => {
+    const base = { key: "k", label: "L", color: 0, lastSeen: 0, conversationId: "c1", effort: null, readsCode: true, runsCommands: true };
+    const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5" });
+    const settings = JSON.parse(/--settings '([^']+)'/.exec(cl)![1]);
+    expect(settings.sandbox).toEqual({ enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowLocalBinding: true, allowedDomains: ["*"] } });
+    expect(cl).toMatch(/--disallowedTools Edit Write MultiEdit NotebookEdit$/);
+    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r");
+    expect(cx).toContain(`-c 'sandbox_mode="workspace-write"' -c 'sandbox_workspace_write.network_access=true'`);
+    expect(cx).not.toContain("read-only");
   });
 });

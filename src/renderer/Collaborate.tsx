@@ -147,7 +147,7 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
   const seated = room.participants.filter((p) => !p.removed);
   const openModels = () => {
     setRepoDraft(room.repoPath ?? "");
-    setEditing(seated.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, readsCode: p.readsCode })));
+    setEditing(seated.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, readsCode: p.readsCode, runsCommands: !!p.runsCommands })));
   };
   // braces matter: scrollIntoView returns a Promise in current Chromium, and React
   // would call a returned value as the effect's cleanup (crashing on unmount)
@@ -194,14 +194,27 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
             <span
               key={p.key}
               className={`collab-chip c-${p.color} ${room.speaking === p.key ? "speaking" : ""}`}
-              title={`${p.model}${p.effort ? ` · effort ${p.effort}` : ""}${room.repoPath ? (p.readsCode ? " · reads the code" : " · no code access") : ""}`}
+              title={`${p.model}${p.effort ? ` · effort ${p.effort}` : ""}${
+                room.repoPath ? (p.runsCommands ? " · reads the code, runs commands in a test copy" : p.readsCode ? " · reads the code" : " · no code access") : ""
+              }`}
             >
               {p.label}
               {p.effort && <span className="eff">{p.effort}</span>}
               {room.repoPath && p.readsCode && <span className="eff" aria-label="reads the code">{"</>"}</span>}
+              {room.repoPath && p.runsCommands && <span className="eff" aria-label="runs commands">{"$_"}</span>}
             </span>
           ))}
           <button className="outline" onClick={() => (editing ? setEditing(null) : openModels())}>Models</button>
+          {room.workspacePath && (
+            <button
+              className="outline"
+              disabled={room.running || !!busy}
+              title={`Models run commands in ${room.workspacePath}. Resetting throws it away; the next turn copies the repository again, with your latest changes.`}
+              onClick={() => call("reset", () => window.mb.collabResetCopy(room.id))}
+            >
+              Reset test copy
+            </button>
+          )}
         </div>
         <button className="icon" title="Delete this room" onClick={() => window.confirm(`Delete "${room.title}"?`) && call("delete", () => window.mb.collabDelete(room.id)).then((r) => !isErr(r) && onDeleted())}>
           ✕
@@ -440,10 +453,24 @@ function SeatEditor({
               ))}
             </select>
             {hasRepo ? (
-              <label className="seat-code" title="May read the room's repository; models that can't, ask the first one that can">
-                <input type="checkbox" checked={s.readsCode} onChange={(e) => set(i, { readsCode: e.target.checked })} />
-                reads code
-              </label>
+              <>
+                <label className="seat-code" title="May read the room's repository; models that can't, ask the first one that can">
+                  <input
+                    type="checkbox"
+                    checked={s.readsCode}
+                    onChange={(e) => set(i, e.target.checked ? { readsCode: true } : { readsCode: false, runsCommands: false })}
+                  />
+                  reads code
+                </label>
+                <label className="seat-code" title="May run tests, builds and scripts in a disposable copy of the repository — never your checkout. Implies reading the code.">
+                  <input
+                    type="checkbox"
+                    checked={!!s.runsCommands}
+                    onChange={(e) => set(i, e.target.checked ? { runsCommands: true, readsCode: true } : { runsCommands: false })}
+                  />
+                  runs commands
+                </label>
+              </>
             ) : (
               <span className="seat-code off" title="Pick a repository to choose which models read the code">no repository</span>
             )}
@@ -460,7 +487,7 @@ function SeatEditor({
           className="outline"
           onClick={() => {
             const m = unused ?? catalog.presets[0];
-            onChange([...seats, { label: unused ? m.label : "", agent: m.agent, model: unused ? m.model : "", effort: null, readsCode: true }]);
+            onChange([...seats, { label: unused ? m.label : "", agent: m.agent, model: unused ? m.model : "", effort: null, readsCode: true, runsCommands: false }]);
           }}
         >
           Add model

@@ -17,6 +17,7 @@ import { MB_DIR } from "./store";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
 import { mcpLaunch, type McpLaunch } from "./messaging";
+import { makeTestCopy } from "./testCopy";
 
 /** The models a room can seat; each runs through the CLI and plan the user already has. */
 export const COLLAB_MODELS: CollabModel[] = [
@@ -40,17 +41,24 @@ const active = (room: CollabRoom) => room.participants.filter((p) => !p.removed)
 /** Who's in the room and who can read the code — repeated each turn, since it can change. */
 function rosterLine(room: CollabRoom, p: CollabParticipant): string {
   const others = active(room).filter((x) => x.key !== p.key);
-  const readers = active(room).filter((x) => x.readsCode && room.repoPath);
   const access = !room.repoPath
     ? "There's no repository for this discussion."
-    : p.readsCode
+    : p.runsCommands
+      ? `You can read the code and run commands — tests, builds, scripts — in a disposable copy of the repository at ${room.workspacePath ?? "(made when your turn starts)"}, ` +
+        `made from ${room.repoPath} with the user's uncommitted work (you're in it). ${
+          p.agent === "codex" ? "Use shell commands" : "Use Bash to run things and your file tools to read"
+        }. Anything you change there is thrown away and never reaches the user's code, but don't implement the feature: run things to check facts and test ideas. ` +
+        "Files git ignores (like node_modules) aren't copied — install dependencies first if a command needs them. The network is available; Docker isn't, so ask the user to start any containers you need. " +
+        "MCP and app tools are switched off in this discussion."
+      : p.readsCode
       ? `You can read the repository at ${room.repoPath} (you're in it) — ${
           p.agent === "codex" ? "read and search it with shell commands like cat, ls, rg and git log" : "read and search it with your file tools"
         }. Don't change anything: nothing is edited until the user approves a plan. MCP and app tools are switched off in this discussion.`
       : codeReaderFor(room, p.key)
       ? `There's a repository, but you can't read it yourself. When something depends on the code, call the ask_code_reader tool: ${codeReaderFor(room, p.key)!.label} looks it up and the answer comes back within your turn.`
       : "There's a repository, but nobody in the room can read it right now.";
-  return `In the room: ${others.map((o) => o.label + (room.repoPath && o.readsCode ? " (reads the code)" : "")).join(", ") || "only you"}. ${access}`;
+  const role = (o: CollabParticipant) => (!room.repoPath ? "" : o.runsCommands ? " (reads the code, runs commands)" : o.readsCode ? " (reads the code)" : "");
+  return `In the room: ${others.map((o) => o.label + role(o)).join(", ") || "only you"}. ${access}`;
 }
 
 /** One model turn. Throws when the CLI fails; the room records it and moves on. */
@@ -156,8 +164,10 @@ export class CollabRooms {
         room.participants.forEach((p, i) => {
           p.effort ??= null;
           p.readsCode ??= true;
+          p.runsCommands ??= false;
           p.color ??= i % PALETTE_SIZE;
         });
+        room.workspacePath ??= null;
         this.rooms.set(room.id, room);
       } catch (err) {
         console.error(`collab: skipping unreadable room ${f}:`, err);
@@ -194,6 +204,7 @@ export class CollabRooms {
       speaking: null,
       plan: null,
       implementedIn: null,
+      workspacePath: null,
       createdAt: Date.now(),
     };
     for (const s of spec.participants) room.participants.push(this.seat(room, s));
@@ -221,7 +232,8 @@ export class CollabRooms {
       agent: s.agent,
       model,
       effort: s.effort || null,
-      readsCode: !!s.readsCode,
+      readsCode: !!s.readsCode || !!s.runsCommands,
+      runsCommands: !!s.runsCommands,
       color,
       conversationId: null,
       lastSeen: 0,
@@ -248,14 +260,17 @@ export class CollabRooms {
       if (!p) {
         const seat = this.seat(room, s);
         room.participants.push(seat);
-        notes.push(`${seat.label} joined${room.repoPath && seat.readsCode ? " and can read the code" : ""}.`);
+        notes.push(`${seat.label} joined${!room.repoPath ? "" : seat.runsCommands ? " and can read the code and run commands" : seat.readsCode ? " and can read the code" : ""}.`);
         continue;
       }
       if (s.effort && !COLLAB_EFFORTS[p.agent].includes(s.effort)) throw new Error(`${s.effort} isn't an effort level for ${p.label}`);
-      if (p.readsCode !== !!s.readsCode && room.repoPath) notes.push(`${p.label} ${s.readsCode ? "can now read" : "can no longer read"} the code.`);
+      const reads = !!s.readsCode || !!s.runsCommands;
+      if (p.readsCode !== reads && room.repoPath) notes.push(`${p.label} ${reads ? "can now read" : "can no longer read"} the code.`);
+      if (!!p.runsCommands !== !!s.runsCommands && room.repoPath) notes.push(`${p.label} ${s.runsCommands ? "can now run" : "can no longer run"} commands.`);
       p.removed = false;
       p.effort = s.effort || null;
-      p.readsCode = !!s.readsCode;
+      p.readsCode = reads;
+      p.runsCommands = !!s.runsCommands;
       if (s.label.trim()) p.label = s.label.trim();
     }
     // the speaking order follows the specs
@@ -275,6 +290,7 @@ export class CollabRooms {
     if (repoPath === room.repoPath) return room;
     if (repoPath && !fs.existsSync(repoPath)) throw new Error(`${repoPath} doesn't exist`);
     room.repoPath = repoPath;
+    this.dropTestCopy(room); // it was made from the old repository
     this.note(room, repoPath ? `Repository set to ${path.basename(repoPath)}.` : "Repository removed — models no longer read code.");
     this.save(room);
     return room;
@@ -282,8 +298,29 @@ export class CollabRooms {
 
   delete(id: string): void {
     this.stop(id);
+    const room = this.rooms.get(id);
+    if (room) this.dropTestCopy(room);
     this.rooms.delete(id);
     fs.rmSync(this.file(id), { force: true });
+  }
+
+  /** Throw the test copy away; the next command-running turn makes a fresh one from the repo as it is now. */
+  resetTestCopy(id: string): CollabRoom {
+    const room = this.get(id);
+    if (room.running) throw new Error("Wait for the current turn to finish, or stop it");
+    this.dropTestCopy(room);
+    this.note(room, "Test copy reset — the next model that runs commands gets a fresh copy of the repository.");
+    this.save(room);
+    return room;
+  }
+
+  private dropTestCopy(room: CollabRoom): void {
+    fs.rmSync(this.testCopyDir(room), { recursive: true, force: true });
+    room.workspacePath = null;
+  }
+
+  private testCopyDir(room: CollabRoom): string {
+    return path.join(this.dir, "work", room.id);
   }
 
   setMode(id: string, mode: CollabMode, maxRounds?: number): CollabRoom {
@@ -364,10 +401,11 @@ export class CollabRooms {
     room.speaking = p.key;
     this.save(room);
     const shown = room.messages.length;
-    const prompt = buildPrompt(room, p, extra);
     try {
+      const cwd = await this.cwdFor(room, p);
+      const prompt = buildPrompt(room, p, extra);
       const askTool = !!codeReaderFor(room, p.key) && !p.readsCode;
-      const r = await this.runTurn(p, prompt, { cwd: this.cwdFor(room, p), signal, tag: `collab-${room.id}.${p.key}`, askTool });
+      const r = await this.runTurn(p, prompt, { cwd, signal, tag: `collab-${room.id}.${p.key}`, askTool });
       if (signal.aborted) return "stopped" as const;
       p.conversationId = r.conversationId;
       p.lastSeen = shown;
@@ -417,7 +455,8 @@ export class CollabRooms {
     }
     this.lookups.set(countKey, asked + 1);
 
-    const seat: CollabParticipant = { ...reader, conversationId: reader.lookupConversationId ?? null };
+    // lookups read the real checkout, so they never run commands — that's what the test copy is for
+    const seat: CollabParticipant = { ...reader, runsCommands: false, conversationId: reader.lookupConversationId ?? null };
     const prompt = reader.lookupConversationId
       ? `Question from ${asker.label}:\n${q}`
       : [
@@ -511,8 +550,19 @@ export class CollabRooms {
     room.messages.push({ id: randomUUID().slice(0, 8), speaker: "system", text, round: room.round, at: Date.now() });
   }
 
-  /** Models that read the code run in the repo; the rest in the room's own empty folder. */
-  private cwdFor(room: CollabRoom, p: CollabParticipant): string {
+  /**
+   * Models that run commands work in the room's test copy (made on first need);
+   * those that only read work in the repo; the rest in the room's own empty folder.
+   */
+  private async cwdFor(room: CollabRoom, p: CollabParticipant): Promise<string> {
+    if (room.repoPath && p.runsCommands) {
+      const dest = this.testCopyDir(room);
+      if (room.workspacePath && fs.existsSync(path.join(dest, ".git"))) return dest;
+      const made = await makeTestCopy(room.repoPath, dest);
+      room.workspacePath = dest;
+      this.note(room, `Made a test copy of ${path.basename(room.repoPath)} (${made}) for the models that run commands. Changes there never reach your code.`);
+      return dest;
+    }
     if (room.repoPath && p.readsCode) return room.repoPath;
     const d = path.join(this.dir, room.id);
     fs.mkdirSync(d, { recursive: true });
@@ -530,9 +580,24 @@ export class CollabRooms {
 }
 
 /**
- * One read-only Claude turn; a seat without code access can't read files either.
- * --strict-mcp-config with no --mcp-config leaves no MCP servers: their tools can
- * act outside the folder (post messages, change other systems).
+ * Claude's OS sandbox for a seat that runs commands: Bash runs without asking,
+ * can write only inside its cwd (the test copy), can't escape the sandbox, and
+ * can reach the network (package installs, local services).
+ */
+const CLAUDE_COMMAND_SANDBOX = JSON.stringify({
+  sandbox: {
+    enabled: true,
+    autoAllowBashIfSandboxed: true,
+    allowUnsandboxedCommands: false,
+    network: { allowLocalBinding: true, allowedDomains: ["*"] },
+  },
+});
+
+/**
+ * One Claude turn. Edit tools are always off; Bash only for a seat that runs
+ * commands (then sandboxed to the test copy); a seat without code access can't
+ * read files either. --strict-mcp-config with no --mcp-config leaves no MCP
+ * servers: their tools can act outside the folder (post messages, change other systems).
  */
 export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLaunch): string {
   return [
@@ -547,16 +612,20 @@ export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLa
       : []),
     ...(p.conversationId ? ["--resume", quote(p.conversationId)] : []),
     ...(p.effort ? ["--effort", quote(p.effort)] : []),
-    "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash",
-    ...(p.readsCode ? [] : ["Read", "Grep", "Glob", "LS"]),
+    ...(p.runsCommands ? ["--settings", quote(CLAUDE_COMMAND_SANDBOX)] : []),
+    "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit",
+    ...(p.runsCommands ? [] : ["Bash"]),
+    ...(p.readsCode || p.runsCommands ? [] : ["Read", "Grep", "Glob", "LS"]),
   ].join(" ");
 }
 
 /**
- * One read-only Codex turn; its reply is written to `lastFile`. Headless Codex
- * can't ask for approval, so in a folder it doesn't trust it refuses even to
- * read; approval_policy=never lets it act within the sandbox, and the
- * read-only sandbox is what keeps it from writing. Apps, plugins and MCP
+ * One Codex turn; its reply is written to `lastFile`. Headless Codex can't ask
+ * for approval, so in a folder it doesn't trust it refuses even to read;
+ * approval_policy=never lets it act within the sandbox, and the sandbox is what
+ * keeps it from writing: read-only, or for a seat that runs commands
+ * workspace-write with the network on — writes confined to its cwd (the test
+ * copy) and temp folders. The sandbox goes in -c because `exec resume` has no -s. Apps, plugins and MCP
  * servers are switched off — their tools act outside the sandbox — and any MCP
  * call that slips through needs approval, which "never" refuses.
  */
@@ -571,16 +640,19 @@ export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: st
         "mcp_servers.mockingbird.tool_timeout_sec=600",
       ].map((c) => `-c ${quote(c)} `).join("")
     : "";
+  const sandbox = p.runsCommands
+    ? `-c ${quote('sandbox_mode="workspace-write"')} -c ${quote("sandbox_workspace_write.network_access=true")} `
+    : `-c ${quote('sandbox_mode="read-only"')} `;
   const flags =
     (p.effort ? `-c ${quote(`model_reasoning_effort="${p.effort}"`)} ` : "") +
-    `--disable apps --disable plugins -c ${quote("mcp_servers={}")} ${askFlags}-c ${quote('approval_policy="never"')} `;
+    `--disable apps --disable plugins -c ${quote("mcp_servers={}")} ${askFlags}-c ${quote('approval_policy="never"')} ${sandbox}`;
   return p.conversationId
     ? `${quote(bin)} exec resume ${quote(p.conversationId)} ${flags}--json --skip-git-repo-check -o ${quote(lastFile)} -`
-    : `${quote(bin)} exec ${flags}--json --skip-git-repo-check -s read-only -m ${quote(p.model)} -o ${quote(lastFile)} -`;
+    : `${quote(bin)} exec ${flags}--json --skip-git-repo-check -m ${quote(p.model)} -o ${quote(lastFile)} -`;
 }
 
 /**
- * Real turns through the CLIs, read-only. The tag is exported as
+ * Real turns through the CLIs. The tag is exported as
  * MOCKINGBIRD_SESSION so these runs' hook events are never mistaken for a pane's.
  */
 export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): TurnRunner {
@@ -588,9 +660,11 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
     const env = { ...paneEnv(), MOCKINGBIRD_SESSION: tag };
     const ask = askTool ? mcpLaunch(tag) : undefined;
     const bin = binFor(p.agent);
+    // installs and test suites can take a while; a reading turn that runs this long is stuck
+    const timeoutMs = p.runsCommands ? 30 * 60_000 : 10 * 60_000;
     if (!bin.includes("/")) throw new Error(`${p.agent} isn't installed`);
     if (p.agent === "claude") {
-      const r = await userShellWithInput(claudeTurnCommand(bin, p, ask), prompt, { cwd, env, signal });
+      const r = await userShellWithInput(claudeTurnCommand(bin, p, ask), prompt, { cwd, env, signal, timeoutMs });
       let out: any;
       try {
         out = JSON.parse(r.out);
@@ -603,7 +677,7 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mb-collab-"));
     const last = path.join(tmp, "reply.txt");
     try {
-      const r = await userShellWithInput(codexTurnCommand(bin, p, last, ask), prompt, { cwd, env, signal });
+      const r = await userShellWithInput(codexTurnCommand(bin, p, last, ask), prompt, { cwd, env, signal, timeoutMs });
       const thread = /"thread_id":"([^"]+)"/.exec(r.out)?.[1] ?? p.conversationId;
       let text = "";
       try {
