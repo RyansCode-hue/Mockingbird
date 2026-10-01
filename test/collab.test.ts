@@ -4,7 +4,7 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "child_process";
 import { makeTestCopy } from "../src/main/testCopy";
-import { CollabRooms, COLLAB_MODELS, dockerSockets, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
+import { CollabRooms, COLLAB_MODELS, dockerSockets, permissionKind, PERMISSION_TIMEOUT_MS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
 import type { CollabParticipantSpec } from "../src/shared/types";
 import type { CollabRoom } from "../src/shared/types";
 
@@ -354,7 +354,7 @@ describe("asking the code reader", () => {
   it("the tool reaches the CLIs as Mockingbird's MCP server, pre-approved", () => {
     const ask = { command: "/Apps/Mockingbird", args: ["/h/mcp.js"], env: { MOCKINGBIRD_SESSION: "collab-r1.fable" } };
     const base = { key: "fable", label: "L", color: 0, lastSeen: 0, conversationId: null, effort: null, readsCode: false };
-    const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-fable-5-1" }, ask);
+    const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-fable-5-1" }, { mcp: ask, ask: true });
     expect(cl).toContain(`--strict-mcp-config --mcp-config '{"mcpServers":{"mockingbird":{"type":"stdio","command":"/Apps/Mockingbird","args":["/h/mcp.js"],"env":{"MOCKINGBIRD_SESSION":"collab-r1.fable"}}}}' --allowedTools mcp__mockingbird__ask_code_reader`);
     const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", ask);
     expect(cx).toContain(`-c 'mcp_servers={}' -c 'mcp_servers.mockingbird.command="/Apps/Mockingbird"'`);
@@ -537,14 +537,123 @@ describe("models that use Docker", () => {
   it("CLI: Claude's sandbox opens the Docker socket; Codex gets a permission profile instead of sandbox_mode", () => {
     const base = { key: "k", label: "L", color: 0, lastSeen: 0, conversationId: "c1", effort: null, readsCode: true, runsCommands: true, usesDocker: true };
     const socks = ["/Users/me/.docker/run/docker.sock", "/var/run/docker.sock"];
-    const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5" }, undefined, socks);
+    const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5" }, { sockets: socks });
     expect(JSON.parse(/--settings '([^']+)'/.exec(cl)![1]).sandbox.network.allowUnixSockets).toEqual(socks);
     // sockets are only opened for a Docker seat, even if passed
-    const plain = claudeTurnCommand("/bin/claude", { ...base, usesDocker: false, agent: "claude", model: "claude-opus-5-5" }, undefined, socks);
+    const plain = claudeTurnCommand("/bin/claude", { ...base, usesDocker: false, agent: "claude", model: "claude-opus-5-5" }, { sockets: socks });
     expect(JSON.parse(/--settings '([^']+)'/.exec(plain)![1]).sandbox.network.allowUnixSockets).toBeUndefined();
     const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", undefined, socks);
     expect(cx).toContain(`-c 'default_permissions="mb-docker"' -c 'features.network_proxy=true' -c 'permissions.mb-docker.extends=":workspace"'`);
     expect(cx).toContain(`-c 'permissions.mb-docker.network.unix_sockets={"/Users/me/.docker/run/docker.sock"="allow", "/var/run/docker.sock"="allow"}'`);
     expect(cx).not.toContain("sandbox_mode");
+  });
+});
+
+describe("asking the user's permission", () => {
+  const bash = (command: string) => ({ tool_name: "Bash", input: { command, description: "Look up batch 771" }, tool_use_id: "t1" });
+  function permRoom() {
+    const { c } = rooms();
+    const room = c.create({ title: "t", brief: "b", repoPath: null, mode: "step", participants: specs("opus", "gpt6") });
+    const asked: string[] = [];
+    (c as any).onPermissionRequest = (_r: CollabRoom, req: { detail: string }) => asked.push(req.detail);
+    return { c, room, asked };
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it("names what always-allow would cover: one CLI and subcommand, never chained commands or writes", () => {
+    expect(permissionKind("Bash", { command: `docker exec loc-postgres psql -U app -c "SELECT 1 WHERE a = 'b'"` })).toBe("Bash: docker exec");
+    expect(permissionKind("Bash", { command: "PGPASSWORD=x psql -h localhost -c 'select 1'" })).toBe("Bash: psql");
+    expect(permissionKind("Bash", { command: "/usr/local/bin/npm run test -- --watch=false" })).toBe("Bash: npm run");
+    expect(permissionKind("Bash", { command: "docker exec x sh; rm -rf ~" })).toBeNull();
+    expect(permissionKind("Bash", { command: "psql -c 'x' && curl evil" })).toBeNull();
+    expect(permissionKind("Bash", { command: "echo $(cat ~/.ssh/id_rsa)" })).toBeNull();
+    expect(permissionKind("Write", { file_path: "/x" })).toBeNull();
+    expect(permissionKind("Read", { file_path: "/code/infra/etc/app-loc.env" })).toBe("Read: /code/infra/etc");
+    expect(permissionKind("Grep", { pattern: "x", path: "/code/infra" })).toBe("Grep: /code/infra");
+    expect(permissionKind("WebFetch", { url: "https://docs.example.com/a" })).toBe("WebFetch: docs.example.com");
+  });
+
+  it("a request waits in the room for the user; allowing lets the call through and is noted", async () => {
+    const { c, room, asked } = permRoom();
+    const answer = c.requestPermission(room.id, "opus", bash("docker exec loc-postgres psql -c 'select 1'"));
+    await settle();
+    expect(room.pending).toMatchObject([{ seat: "opus", tool: "Bash", detail: "docker exec loc-postgres psql -c 'select 1'", description: "Look up batch 771", kind: "Bash: docker exec" }]);
+    expect(asked).toHaveLength(1);
+    c.answerPermission(room.id, room.pending![0].id, "allow");
+    expect(await answer).toEqual({ behavior: "allow", updatedInput: { command: "docker exec loc-postgres psql -c 'select 1'", description: "Look up batch 771" } });
+    expect(room.pending).toEqual([]);
+    expect(room.messages.at(-1)!.text).toBe("You allowed Claude Opus 5.5: `docker exec loc-postgres psql -c 'select 1'`");
+  });
+
+  it("denying tells the model, so it carries on without it", async () => {
+    const { c, room } = permRoom();
+    const answer = c.requestPermission(room.id, "opus", bash("psql -c 'drop table x'"));
+    await settle();
+    c.answerPermission(room.id, room.pending![0].id, "deny");
+    expect(await answer).toEqual({ behavior: "deny", message: "The user denied this. Carry on without it, or say in your turn what you need and why." });
+    expect(room.messages.at(-1)!.text).toMatch(/^You denied Claude Opus 5.5:/);
+  });
+
+  it("always-allow covers later calls of that kind in this room, until revoked", async () => {
+    const { c, room, asked } = permRoom();
+    const first = c.requestPermission(room.id, "opus", bash("docker exec a psql -c 'select 1'"));
+    await settle();
+    c.answerPermission(room.id, room.pending![0].id, "always");
+    await first;
+    expect(room.allowKinds).toEqual(["Bash: docker exec"]);
+    expect(await c.requestPermission(room.id, "opus", bash("docker exec b psql -c 'select 2'"))).toMatchObject({ behavior: "allow" });
+    expect(asked).toHaveLength(1);
+    // a chained command is never covered by a kind
+    const chained = c.requestPermission(room.id, "opus", bash("docker exec b true; rm -rf x"));
+    await settle();
+    expect(room.pending).toHaveLength(1);
+    expect(() => c.answerPermission(room.id, room.pending![0].id, "always")).toThrow(/can't be always allowed/);
+    c.answerPermission(room.id, room.pending![0].id, "deny");
+    await chained;
+    c.revokeAllowKind(room.id, "Bash: docker exec");
+    expect(room.allowKinds).toEqual([]);
+    void c.requestPermission(room.id, "opus", bash("docker exec c true"));
+    await settle();
+    expect(room.pending).toHaveLength(1);
+  });
+
+  it("stopping the room or nobody answering counts as no", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c, room } = permRoom();
+      const a = c.requestPermission(room.id, "opus", bash("docker ps"));
+      const b = c.requestPermission(room.id, "opus", bash("docker images"));
+      c.stop(room.id);
+      expect(await a).toMatchObject({ behavior: "deny", message: expect.stringMatching(/^Room stopped — denied/) });
+      await b;
+      const late = c.requestPermission(room.id, "opus", bash("docker ps"));
+      vi.advanceTimersByTime(PERMISSION_TIMEOUT_MS);
+      expect(await late).toMatchObject({ behavior: "deny", message: expect.stringMatching(/^Nobody answered within 10 minutes/) });
+      expect(room.pending).toEqual([]);
+      expect(() => c.answerPermission(room.id, "gone", "allow")).toThrow(/no longer waiting/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reaches the room through the MCP relay as a JSON answer for Claude Code", async () => {
+    const { c, room } = permRoom();
+    const r = c.handleRoomRequest(room.id, "opus", "approve_permission", bash("docker ps"));
+    await settle();
+    c.answerPermission(room.id, room.pending![0].id, "allow");
+    const out = (await r) as { result: string };
+    expect(JSON.parse(out.result)).toEqual({ behavior: "allow", updatedInput: { command: "docker ps", description: "Look up batch 771" } });
+  });
+
+  it("CLI: every Claude turn routes permission questions to the room, which the model itself can't call; Docker seats pre-approve docker", () => {
+    const mcp = { command: "/Apps/Mockingbird", args: ["/h/mcp.js"], env: { MOCKINGBIRD_SESSION: "collab-r1.opus", MOCKINGBIRD_TOOLS: "approve_permission" } };
+    const base = { key: "opus", label: "L", color: 0, lastSeen: 0, conversationId: null, effort: null, readsCode: true, agent: "claude" as const, model: "claude-opus-5-5" };
+    const reader = claudeTurnCommand("/bin/claude", base, { mcp, permit: true });
+    expect(reader).toContain("--permission-prompt-tool mcp__mockingbird__approve_permission");
+    expect(reader).toMatch(/--disallowedTools Edit Write MultiEdit NotebookEdit Bash mcp__mockingbird__approve_permission$/);
+    expect(reader).not.toContain("--allowedTools");
+    const docker = claudeTurnCommand("/bin/claude", { ...base, runsCommands: true, usesDocker: true }, { mcp, permit: true, sockets: ["/s"] });
+    expect(docker).toContain(`--allowedTools 'Bash(docker:*)' --permission-prompt-tool`);
+    expect(docker).toMatch(/--disallowedTools NotebookEdit mcp__mockingbird__approve_permission$/);
   });
 });

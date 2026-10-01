@@ -9,6 +9,7 @@ import type {
   CollabModel,
   CollabParticipant,
   CollabParticipantSpec,
+  CollabPermissionRequest,
   CollabRoom,
   NewSessionRequest,
   SessionInfo,
@@ -145,18 +146,64 @@ const SYNTH_INSTRUCTION =
   "Where the models disagreed and it wasn't settled, say so and give your recommendation. " +
   "This is a document, not a turn — don't add a STANCE line.";
 
+export const PERMISSION_TIMEOUT_MS = 10 * 60_000;
+
+// CLIs whose first word says little on its own: "always allow" covers the subcommand
+const SUBCOMMAND_CLIS = new Set(["docker", "git", "npm", "npx", "pnpm", "yarn", "dotnet", "go", "cargo", "kubectl", "gh", "brew", "pip", "uv", "poetry", "make"]);
+// anything that chains or substitutes commands: the first word wouldn't describe what runs
+const SHELL_CHAINING = /[;&|`\n]|\$\(|>\s*\(|<\s*\(/;
+
+/**
+ * What "always allow" would cover for a tool call: one CLI (and subcommand) for a
+ * plain command; one folder for reads, one site for fetches, so allowing a file
+ * never allows the whole disk; null for chained commands and for writes — those
+ * only ever reach the user from outside the test copy.
+ */
+export function permissionKind(tool: string, input: Record<string, unknown>): string | null {
+  if (tool === "Bash") {
+    const cmd = String(input.command ?? "").trim();
+    if (!cmd || SHELL_CHAINING.test(cmd)) return null;
+    const words = cmd.split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)); // env assignments in front
+    const head = words[0]?.split("/").pop();
+    if (!head) return null;
+    return `Bash: ${SUBCOMMAND_CLIS.has(head) && words[1] && !words[1].startsWith("-") ? `${head} ${words[1]}` : head}`;
+  }
+  if (["Edit", "Write", "MultiEdit", "NotebookEdit"].includes(tool)) return null;
+  if (typeof input.file_path === "string") return `${tool}: ${path.dirname(input.file_path)}`;
+  if (typeof input.path === "string") return `${tool}: ${input.path}`;
+  if (typeof input.url === "string") {
+    try {
+      return `${tool}: ${new URL(input.url).host}`;
+    } catch {
+      return null; // not a URL the tool could fetch either
+    }
+  }
+  return tool;
+}
+
+function permissionDetail(tool: string, input: Record<string, unknown>): string {
+  if (typeof input.command === "string") return input.command;
+  if (typeof input.file_path === "string") return input.file_path;
+  if (typeof input.url === "string") return input.url;
+  return JSON.stringify(input, null, 2).slice(0, 4000);
+}
+
+type PermissionAnswer = { behavior: "allow"; updatedInput: Record<string, unknown> } | { behavior: "deny"; message: string };
+
 /** Rooms persisted as one JSON file each; the runner advances them turn by turn. */
 export class CollabRooms {
   private rooms = new Map<string, CollabRoom>();
   private aborts = new Map<string, AbortController>();
   private lookups = new Map<string, number>(); // `${room}.${seat}.${round}` → questions asked this turn
+  private waiting = new Map<string, (answer: "allow" | "deny", why: string) => void>(); // permission request id → its turn
 
   constructor(
     private dir: string,
     private runTurn: TurnRunner,
     private onChange: (room: CollabRoom) => void,
     private startSession: (req: NewSessionRequest) => SessionInfo,
-    private defaultBase: (repoPath: string) => string | null
+    private defaultBase: (repoPath: string) => string | null,
+    private onPermissionRequest: (room: CollabRoom, req: CollabPermissionRequest) => void = () => {}
   ) {
     fs.mkdirSync(dir, { recursive: true });
     for (const f of fs.readdirSync(dir)) {
@@ -174,6 +221,8 @@ export class CollabRooms {
           p.color ??= i % PALETTE_SIZE;
         });
         room.workspacePath ??= null;
+        room.pending = []; // their turns ended with the app
+        room.allowKinds ??= [];
         this.rooms.set(room.id, room);
       } catch (err) {
         console.error(`collab: skipping unreadable room ${f}:`, err);
@@ -358,7 +407,77 @@ export class CollabRooms {
   }
 
   stop(id: string): void {
+    for (const r of this.rooms.get(id)?.pending ?? []) this.waiting.get(r.id)?.("deny", "Room stopped — denied");
     this.aborts.get(id)?.abort();
+  }
+
+  /**
+   * A Claude model's tool call that its permissions don't cover (Claude routes the
+   * question here with --permission-prompt-tool). Kinds the user always allows in
+   * this room pass straight through; anything else waits on the user's answer,
+   * and silence counts as no.
+   */
+  async requestPermission(roomId: string, seatKey: string, args: Record<string, unknown>): Promise<PermissionAnswer> {
+    const room = this.get(roomId);
+    const seat = room.participants.find((p) => p.key === seatKey && !p.removed);
+    const tool = String(args.tool_name ?? "");
+    const input = (args.input && typeof args.input === "object" ? args.input : {}) as Record<string, unknown>;
+    if (!seat) return { behavior: "deny", message: "You're no longer in this room." };
+    const kind = permissionKind(tool, input);
+    if (kind && room.allowKinds?.includes(kind)) return { behavior: "allow", updatedInput: input };
+    const req: CollabPermissionRequest = {
+      id: randomUUID().slice(0, 8),
+      seat: seatKey,
+      tool,
+      detail: permissionDetail(tool, input),
+      ...(typeof input.description === "string" ? { description: input.description } : {}),
+      kind,
+      at: Date.now(),
+    };
+    (room.pending ??= []).push(req);
+    this.save(room);
+    this.onPermissionRequest(room, req);
+    const { answer, why } = await new Promise<{ answer: "allow" | "deny"; why: string }>((resolve) => {
+      const timer = setTimeout(() => settle("deny", `Nobody answered within ${PERMISSION_TIMEOUT_MS / 60_000} minutes — denied`), PERMISSION_TIMEOUT_MS);
+      const settle = (answer: "allow" | "deny", why: string) => {
+        clearTimeout(timer);
+        this.waiting.delete(req.id);
+        room.pending = (room.pending ?? []).filter((r) => r.id !== req.id);
+        resolve({ answer, why });
+      };
+      this.waiting.set(req.id, settle);
+    });
+    this.note(room, `${why} ${seat.label}: ${tool === "Bash" ? `\`${req.detail}\`` : `${tool} ${req.detail}`}`);
+    this.save(room);
+    return answer === "allow"
+      ? { behavior: "allow", updatedInput: input }
+      : {
+          behavior: "deny",
+          message: `${why === "You denied" ? "The user denied this" : why}. Carry on without it, or say in your turn what you need and why.`,
+        };
+  }
+
+  /** The user's answer to a waiting request; "always" also allows its kind for the rest of the room. */
+  answerPermission(roomId: string, requestId: string, decision: "allow" | "deny" | "always"): CollabRoom {
+    const room = this.get(roomId);
+    const req = room.pending?.find((r) => r.id === requestId);
+    const settle = this.waiting.get(requestId);
+    if (!req || !settle) throw new Error("That request is no longer waiting — its turn ended.");
+    if (decision === "always") {
+      if (!req.kind) throw new Error("That kind of call can't be always allowed; allow it once instead.");
+      if (!room.allowKinds?.includes(req.kind)) (room.allowKinds ??= []).push(req.kind);
+    }
+    settle(decision === "deny" ? "deny" : "allow", decision === "deny" ? "You denied" : decision === "always" ? `You allowed (and always allow ${req.kind} in this room)` : "You allowed");
+    return room;
+  }
+
+  /** Stop always allowing a kind of call in this room. */
+  revokeAllowKind(roomId: string, kind: string): CollabRoom {
+    const room = this.get(roomId);
+    room.allowKinds = (room.allowKinds ?? []).filter((k) => k !== kind);
+    this.note(room, `${kind} needs your approval again.`);
+    this.save(room);
+    return room;
   }
 
   /** Advance the room by its mode: one round, N rounds, or until every model agrees (capped). */
@@ -440,8 +559,9 @@ export class CollabRooms {
 
   /** A request from a room model's MCP tool (tagged collab-<room>.<seat>). */
   async handleRoomRequest(roomId: string, seatKey: string, op: string, args: Record<string, unknown>): Promise<{ result: unknown } | { error: string }> {
-    if (op !== "ask_code_reader") return { error: `Unknown tool: ${op}` };
+    if (op !== "ask_code_reader" && op !== "approve_permission") return { error: `Unknown tool: ${op}` };
     try {
+      if (op === "approve_permission") return { result: JSON.stringify(await this.requestPermission(roomId, seatKey, args)) };
       return { result: await this.askCodeReader(roomId, seatKey, String(args.question ?? "")) };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -634,23 +754,34 @@ export function dockerSockets(home = os.homedir()): string[] {
  * access can't read files either. --strict-mcp-config with no --mcp-config leaves no MCP
  * servers: their tools can act outside the folder (post messages, change other systems).
  */
-export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLaunch, sockets: string[] = []): string {
+export function claudeTurnCommand(
+  bin: string,
+  p: CollabParticipant,
+  // mcp: the room's MCP server, with whichever of its tools this turn gets — asking
+  // the code reader (ask), and routing permission questions to the user (permit)
+  opts: { mcp?: McpLaunch; ask?: boolean; permit?: boolean; sockets?: string[] } = {}
+): string {
+  const allowed = [...(opts.mcp && opts.ask ? ["mcp__mockingbird__ask_code_reader"] : []), ...(p.usesDocker ? [quote("Bash(docker:*)")] : [])];
+  const permit = !!(opts.mcp && opts.permit);
   return [
     quote(bin),
     "-p",
     "--model", quote(p.model),
     "--output-format", "json",
     "--strict-mcp-config",
-    // the one MCP tool a room allows: asking the code reader
-    ...(ask
-      ? ["--mcp-config", quote(JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...ask } } })), "--allowedTools", "mcp__mockingbird__ask_code_reader"]
-      : []),
+    ...(opts.mcp ? ["--mcp-config", quote(JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...opts.mcp } } }))] : []),
+    // a Docker seat's docker commands are pre-approved: Claude holds some for
+    // approval even inside the sandbox (nested quotes, -e), and the seat is trusted with Docker anyway
+    ...(allowed.length ? ["--allowedTools", ...allowed] : []),
+    ...(permit ? ["--permission-prompt-tool", "mcp__mockingbird__approve_permission"] : []),
     ...(p.conversationId ? ["--resume", quote(p.conversationId)] : []),
     ...(p.effort ? ["--effort", quote(p.effort)] : []),
-    ...(p.runsCommands
-      ? ["--settings", quote(claudeCommandSandbox(p.usesDocker ? sockets : [])), "--permission-mode", "acceptEdits", "--disallowedTools", "NotebookEdit"]
-      : ["--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]),
+    ...(p.runsCommands ? ["--settings", quote(claudeCommandSandbox(p.usesDocker ? opts.sockets ?? [] : [])), "--permission-mode", "acceptEdits"] : []),
+    "--disallowedTools",
+    ...(p.runsCommands ? ["NotebookEdit"] : ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]),
     ...(p.readsCode || p.runsCommands ? [] : ["Read", "Grep", "Glob", "LS"]),
+    // the permission tool answers Claude Code, never the model
+    ...(permit ? ["mcp__mockingbird__approve_permission"] : []),
   ].join(" ");
 }
 
@@ -706,14 +837,16 @@ export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: st
 export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): TurnRunner {
   return async (p, prompt, { cwd, signal, tag, askTool }) => {
     const env = { ...paneEnv(), MOCKINGBIRD_SESSION: tag };
-    const ask = askTool ? mcpLaunch(tag) : undefined;
     const sockets = p.usesDocker ? dockerSockets() : [];
+    // Claude asks the user (in the room) about calls its permissions don't cover; Codex has no such hook
+    const tools = [...(askTool ? ["ask_code_reader"] : []), ...(p.agent === "claude" ? ["approve_permission"] : [])];
+    const mcp = tools.length ? mcpLaunch(tag, tools) : undefined;
     const bin = binFor(p.agent);
     // installs and test suites can take a while; a reading turn that runs this long is stuck
     const timeoutMs = p.runsCommands ? 30 * 60_000 : 10 * 60_000;
     if (!bin.includes("/")) throw new Error(`${p.agent} isn't installed`);
     if (p.agent === "claude") {
-      const r = await userShellWithInput(claudeTurnCommand(bin, p, ask, sockets), prompt, { cwd, env, signal, timeoutMs });
+      const r = await userShellWithInput(claudeTurnCommand(bin, p, { mcp, ask: askTool, permit: true, sockets }), prompt, { cwd, env, signal, timeoutMs });
       let out: any;
       try {
         out = JSON.parse(r.out);
@@ -726,7 +859,7 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mb-collab-"));
     const last = path.join(tmp, "reply.txt");
     try {
-      const r = await userShellWithInput(codexTurnCommand(bin, p, last, ask, sockets), prompt, { cwd, env, signal, timeoutMs });
+      const r = await userShellWithInput(codexTurnCommand(bin, p, last, askTool ? mcp : undefined, sockets), prompt, { cwd, env, signal, timeoutMs });
       const thread = /"thread_id":"([^"]+)"/.exec(r.out)?.[1] ?? p.conversationId;
       let text = "";
       try {

@@ -1102,6 +1102,14 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .collab-chip.speaking { opacity: 1; background: var(--fill-selected); }
 .collab-plan { margin: 12px 20px 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--fill-subtle); }
 .collab-plan.approved { border-color: var(--teal); }
+.collab-ask-card { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--amber); border-radius: 8px; background: var(--fill-waiting); }
+.collab-ask-why { font: 400 12px var(--ui); color: var(--text-2); margin: 6px 0 0; }
+.collab-ask-detail { margin: 8px 0; padding: 8px 10px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; font: 400 11.5px var(--mono); color: var(--text-1); background: var(--fill-subtle); border-radius: 6px; }
+.collab-ask-warn { font: 500 11.5px var(--ui); color: var(--red); margin-bottom: 8px; }
+.collab-ask-card .set-actions code { font: 400 11px var(--mono); }
+.collab-kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.collab-kind { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 7px; border: 1px solid var(--line-med); border-radius: 5px; font: 400 11px var(--mono); }
+.collab-needs { color: var(--amber); font-weight: 500; }
 .collab-plan-head { display: flex; align-items: center; gap: 10px; font: 500 12px var(--ui); color: var(--text-1); }
 .collab-plan-head > :last-child { margin-left: auto; }
 .collab-transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }

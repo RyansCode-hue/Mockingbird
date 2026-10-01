@@ -33,6 +33,13 @@ const api = {
   collabCreate: (spec: unknown) => ipcRenderer.invoke("collab:create", spec),
   collabRepo: (id: string, repo: string | null) => ipcRenderer.invoke("collab:repo", id, repo),
   collabResetCopy: (id: string) => ipcRenderer.invoke("collab:resetCopy", id),
+  collabPermission: (id: string, reqId: string, decision: "allow" | "deny" | "always") => ipcRenderer.invoke("collab:permission", id, reqId, decision),
+  collabRevokeKind: (id: string, kind: string) => ipcRenderer.invoke("collab:revokeKind", id, kind),
+  onCollabFocus: (cb: (roomId: string) => void) => {
+    const h = (_e: unknown, id: string) => cb(id);
+    ipcRenderer.on("collab:focus", h);
+    return () => ipcRenderer.removeListener("collab:focus", h);
+  },
   collabParticipants: (id: string, specs: unknown) => ipcRenderer.invoke("collab:participants", id, specs),
   collabDelete: (id: string) => ipcRenderer.invoke("collab:delete", id),
   collabSend: (id: string, text: string) => ipcRenderer.invoke("collab:send", id, text),

@@ -369,10 +369,28 @@ const collab = new CollabRooms(
   cliTurnRunner((agent) => sessions.binFor(agent)),
   (room) => BrowserWindow.getAllWindows()[0]?.webContents.send("collab:changed", room),
   (req) => sessions.create(req),
-  (repo) => listBranches(repo).defaultBase
+  (repo) => listBranches(repo).defaultBase,
+  (room, req) => {
+    // the model's turn is waiting on this, so it's shown whatever the notifications setting
+    const who = room.participants.find((p) => p.key === req.seat)?.label ?? req.seat;
+    const n = new Notification({
+      title: `${who} is asking permission`,
+      body: `${room.title}\n${req.tool === "Bash" ? req.detail : `${req.tool} ${req.detail}`}`.slice(0, 240),
+    });
+    n.on("click", () => {
+      const w = BrowserWindow.getAllWindows()[0];
+      if (!w) return;
+      w.show();
+      w.focus();
+      w.webContents.send("collab:focus", room.id);
+    });
+    n.show();
+  }
 );
 ipcMain.handle("collab:models", () => ({ presets: COLLAB_MODELS, efforts: COLLAB_EFFORTS }));
 ipcMain.handle("collab:repo", (_e, id, repo) => safe("collab:repo", () => collab.setRepo(id, repo))());
+ipcMain.handle("collab:permission", (_e, id, reqId, decision) => safe("collab:permission", () => collab.answerPermission(id, reqId, decision))());
+ipcMain.handle("collab:revokeKind", (_e, id, kind) => safe("collab:revokeKind", () => collab.revokeAllowKind(id, kind))());
 ipcMain.handle("collab:resetCopy", (_e, id) => safe("collab:resetCopy", () => collab.resetTestCopy(id))());
 ipcMain.handle("collab:participants", (_e, id, specs) => safe("collab:participants", () => collab.setParticipants(id, specs))());
 ipcMain.handle("collab:list", () => safe("collab:list", () => collab.list())());

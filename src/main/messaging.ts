@@ -31,7 +31,9 @@ const readline = require("readline");
 const SOCK = process.env.MOCKINGBIRD_SOCK;
 const FROM = process.env.MOCKINGBIRD_SESSION;
 
-// A Collaborate room's model gets one tool: asking the room's code reader.
+// A Collaborate room's model gets the tools named in MOCKINGBIRD_TOOLS: asking
+// the room's code reader, and (for Claude's --permission-prompt-tool, never the
+// model itself) asking the user to allow a tool call.
 const ROOM_TOOLS = [
   {
     name: "ask_code_reader",
@@ -47,7 +49,17 @@ const ROOM_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "approve_permission",
+    description: "Asks the user, in the Mockingbird room, to allow or deny a tool call. Called by Claude Code itself, not by the model.",
+    inputSchema: {
+      type: "object",
+      properties: { tool_name: { type: "string" }, input: { type: "object" }, tool_use_id: { type: "string" } },
+      required: ["tool_name", "input"],
+    },
+  },
 ];
+const ROOM_TOOL_NAMES = (process.env.MOCKINGBIRD_TOOLS || "ask_code_reader").split(",");
 
 const SESSION_TOOLS = [
   {
@@ -117,7 +129,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     case "ping":
       return ok({});
     case "tools/list":
-      return ok({ tools: FROM && FROM.startsWith("collab-") ? ROOM_TOOLS : SESSION_TOOLS });
+      return ok({ tools: FROM && FROM.startsWith("collab-") ? ROOM_TOOLS.filter((t) => ROOM_TOOL_NAMES.includes(t.name)) : SESSION_TOOLS });
     case "tools/call": {
       const name = msg.params && msg.params.name;
       const r = await ask({ op: name, args: (msg.params && msg.params.arguments) || {} });
@@ -132,7 +144,8 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
 
 let scriptWritten = false;
 
-export function mcpLaunch(sessionId: string): McpLaunch {
+/** How an agent starts the Mockingbird MCP server; `tools` picks a room model's tools (sessions get theirs). */
+export function mcpLaunch(sessionId: string, tools?: string[]): McpLaunch {
   if (!scriptWritten) {
     fs.mkdirSync(MB_DIR, { recursive: true });
     fs.writeFileSync(MCP_SCRIPT, SCRIPT);
@@ -141,7 +154,7 @@ export function mcpLaunch(sessionId: string): McpLaunch {
   return {
     command: process.execPath,
     args: [MCP_SCRIPT],
-    env: { ELECTRON_RUN_AS_NODE: "1", MOCKINGBIRD_SESSION: sessionId, MOCKINGBIRD_SOCK: SOCK },
+    env: { ELECTRON_RUN_AS_NODE: "1", MOCKINGBIRD_SESSION: sessionId, MOCKINGBIRD_SOCK: SOCK, ...(tools ? { MOCKINGBIRD_TOOLS: tools.join(",") } : {}) },
   };
 }
 

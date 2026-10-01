@@ -282,7 +282,22 @@ export interface CollabRoom {
   implementedIn: string | null; // session id started from the approved plan
   /** A disposable git worktree of the repo where command-running models work; never the user's checkout. */
   workspacePath?: string | null;
+  /** A model's tool calls waiting for the user to allow or deny them (gone if the app quits). */
+  pending?: CollabPermissionRequest[];
+  /** Kinds of call the user chose to always allow in this room, e.g. "Bash: docker exec". */
+  allowKinds?: string[];
   createdAt: number;
+}
+
+/** A Claude model asking, mid-turn, to use a tool its permissions don't already cover. */
+export interface CollabPermissionRequest {
+  id: string;
+  seat: string; // participant key
+  tool: string; // Bash, Write, WebFetch…
+  detail: string; // the command, the path, or the call's input
+  description?: string; // the model's own one-line account of the call
+  kind: string | null; // what "always allow" would cover; null when that would be unsafe to generalise
+  at: number;
 }
 
 /** One plan rate-limit window, e.g. the 5-hour limit or the weekly one. */

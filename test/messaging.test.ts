@@ -150,6 +150,19 @@ describe("MCP server script", () => {
     p.kill();
     expect(JSON.parse(out.trim()).result.tools.map((t: any) => t.name)).toEqual(["ask_code_reader"]);
   });
+  it("offers a room model the tools its launch names", async () => {
+    const list = async (tools: string) => {
+      const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SESSION: "collab-r1.opus", MOCKINGBIRD_TOOLS: tools } });
+      let out = "";
+      p.stdout.on("data", (d) => (out += d));
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
+      await new Promise((r) => setTimeout(r, 800));
+      p.kill();
+      return JSON.parse(out.trim()).result.tools.map((t: any) => t.name);
+    };
+    expect(await list("approve_permission")).toEqual(["approve_permission"]);
+    expect(await list("ask_code_reader,approve_permission")).toEqual(["ask_code_reader", "approve_permission"]);
+  });
   it("explains itself when the app isn't running", async () => {
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SOCK: "/tmp/mb-no-such.sock" } });
     let out = "";

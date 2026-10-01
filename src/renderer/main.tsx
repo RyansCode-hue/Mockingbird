@@ -114,6 +114,16 @@ function App() {
   // actually exists — cancelling the dialog must leave the pane exactly as it was
   const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
   const [tab, setTab] = useState<Tab>(() => loadLS<Tab>("mb.tab", "sessions"));
+  // a room to open, from a permission-request notification (the counter re-triggers the same room)
+  const [focusRoom, setFocusRoom] = useState<{ id: string; n: number } | null>(null);
+  useEffect(
+    () =>
+      window.mb.onCollabFocus((id: string) => {
+        setTab("collaborate");
+        setFocusRoom((f) => ({ id, n: (f?.n ?? 0) + 1 }));
+      }),
+    []
+  );
   useEffect(() => localStorage.setItem("mb.tab", JSON.stringify(tab)), [tab]);
   const [theme, setTheme] = useState<"dark" | "light">(() => loadLS<"dark" | "light">("mb.theme", "dark"));
   useEffect(() => {
@@ -886,6 +896,7 @@ function App() {
         )}
         {tab === "collaborate" && (
           <CollaborateView
+            focusRoom={focusRoom}
             onOpenSession={(id) => {
               setTab("sessions");
               // the session was just created; give the list a moment to include it

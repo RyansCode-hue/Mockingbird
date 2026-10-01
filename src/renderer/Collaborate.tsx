@@ -14,7 +14,7 @@ const CUSTOM = "__custom";
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** Rooms where several models discuss an idea; edits only happen after the user approves a plan. */
-export function CollaborateView({ onOpenSession }: { onOpenSession: (sessionId: string) => void }) {
+export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (sessionId: string) => void; focusRoom?: { id: string; n: number } | null }) {
   const [rooms, setRooms] = useState<CollabRoom[]>([]);
   const [catalog, setCatalog] = useState<Catalog>({ presets: [], efforts: { claude: [], codex: [] } });
   const [selected, setSelected] = useState<string | "new" | null>(null);
@@ -32,6 +32,10 @@ export function CollaborateView({ onOpenSession }: { onOpenSession: (sessionId: 
     );
   }, []);
 
+  useEffect(() => {
+    if (focusRoom) setSelected(focusRoom.id);
+  }, [focusRoom]);
+
   const room = rooms.find((r) => r.id === selected) ?? null;
 
   return (
@@ -47,6 +51,7 @@ export function CollaborateView({ onOpenSession }: { onOpenSession: (sessionId: 
             <span className="s">
               {r.participants.map((p) => p.label.replace(/^Claude /, "")).join(" · ")} · round {r.round}
               {r.plan?.approved ? " · plan approved" : ""}
+              {!!r.pending?.length && <span className="collab-needs"> · needs your OK</span>}
             </span>
           </button>
         ))}
@@ -153,7 +158,7 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
   // would call a returned value as the effect's cleanup (crashing on unmount)
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [room.messages.length, room.speaking]);
+  }, [room.messages.length, room.speaking, room.pending?.length]);
 
   const call = async (what: string, fn: () => Promise<unknown>) => {
     setBusy(what);
@@ -235,6 +240,17 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
           </div>
           <RepoPicker value={repoDraft} onChange={setRepoDraft} />
           <SeatEditor seats={editing} onChange={setEditing} catalog={catalog} hasRepo={!!repoDraft} colors={color} />
+          {!!room.allowKinds?.length && (
+            <div className="collab-kinds">
+              <span className="wi-note">Always allowed in this room:</span>
+              {room.allowKinds.map((k) => (
+                <span key={k} className="collab-kind">
+                  <code>{k.replace(/^Bash: /, "")}</code>
+                  <button className="icon" title="Ask me again" onClick={() => call("revoke", () => window.mb.collabRevokeKind(room.id, k))}>✕</button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="set-actions">
             <button className="primary" disabled={editing.length < 1} onClick={saveModels}>Save</button>
             <button className="outline" onClick={() => setEditing(null)}>Cancel</button>
@@ -299,6 +315,28 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
             <span className="who">{label[room.speaking]}</span> is thinking…
           </div>
         )}
+        {(room.pending ?? []).map((r) => (
+          <div key={r.id} className={`collab-ask-card c-${color[r.seat] ?? 0}`}>
+            <div className="collab-msg-head">
+              <span className="who">{label[r.seat] ?? r.seat}</span>
+              <span className="wi-note">asks to use {r.tool} — its turn waits for you (denied after 10 minutes)</span>
+            </div>
+            {r.description && <div className="collab-ask-why">{r.description}</div>}
+            <pre className="collab-ask-detail">{r.detail}</pre>
+            {["Edit", "Write", "MultiEdit"].includes(r.tool) && (
+              <div className="collab-ask-warn">This writes outside the test copy — possibly into your own code.</div>
+            )}
+            <div className="set-actions">
+              <button className="primary" onClick={() => call("permission", () => window.mb.collabPermission(room.id, r.id, "allow"))}>Allow</button>
+              {r.kind && (
+                <button className="outline" onClick={() => call("permission", () => window.mb.collabPermission(room.id, r.id, "always"))}>
+                  Always allow <code>{r.kind.replace(/^Bash: /, "").replace(/^(\w+): /, "$1 in ")}</code> in this room
+                </button>
+              )}
+              <button className="outline" onClick={() => call("permission", () => window.mb.collabPermission(room.id, r.id, "deny"))}>Deny</button>
+            </div>
+          </div>
+        ))}
         <div ref={endRef} />
       </div>
 
