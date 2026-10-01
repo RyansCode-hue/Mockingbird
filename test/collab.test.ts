@@ -439,6 +439,9 @@ describe("models that run commands", () => {
     expect(room.messages.some((m) => m.speaker === "system" && /^Made a test copy of repo-\w+ \([0-9a-f]{7} \+ uncommitted/.test(m.text))).toBe(true);
     expect(seen[0].prompt).toContain(`run commands — tests, builds, scripts — in a disposable copy of the repository at ${copy}, made from ${repo}`);
     expect(seen[0].prompt).toMatch(/Docker isn't/);
+    expect(seen[0].prompt).not.toMatch(/write files there/); // Codex writes with its shell
+    expect(seen[2].prompt).not.toMatch(/write files/);
+    expect(buildPrompt(room, { ...room.participants[1], runsCommands: true })).toMatch(/your file tools to read and to write files there/);
     expect(seen[1].prompt).toMatch(/In the room: GPT-6 Astra \(reads the code, runs commands\), Claude Fable 5.1\./);
 
     // the copy is reused from turn to turn — work a model did there (installs, builds) survives
@@ -496,12 +499,12 @@ describe("models that run commands", () => {
     expect(c.get("old2").workspacePath).toBeNull();
   });
 
-  it("CLI: Claude gets Bash inside its OS sandbox; Codex a workspace-write sandbox with the network — edit tools stay off", () => {
+  it("CLI: Claude gets Bash in its OS sandbox and file edits confined to its cwd; Codex a workspace-write sandbox with the network", () => {
     const base = { key: "k", label: "L", color: 0, lastSeen: 0, conversationId: "c1", effort: null, readsCode: true, runsCommands: true };
     const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5" });
     const settings = JSON.parse(/--settings '([^']+)'/.exec(cl)![1]);
     expect(settings.sandbox).toEqual({ enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { allowLocalBinding: true, allowedDomains: ["*"] } });
-    expect(cl).toMatch(/--disallowedTools Edit Write MultiEdit NotebookEdit$/);
+    expect(cl).toMatch(/--permission-mode acceptEdits --disallowedTools NotebookEdit$/);
     const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r");
     expect(cx).toContain(`-c 'sandbox_mode="workspace-write"' -c 'sandbox_workspace_write.network_access=true'`);
     expect(cx).not.toContain("read-only");

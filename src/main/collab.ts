@@ -46,7 +46,7 @@ function rosterLine(room: CollabRoom, p: CollabParticipant): string {
     : p.runsCommands
       ? `You can read the code and run commands — tests, builds, scripts — in a disposable copy of the repository at ${room.workspacePath ?? "(made when your turn starts)"}, ` +
         `made from ${room.repoPath} with the user's uncommitted work (you're in it). ${
-          p.agent === "codex" ? "Use shell commands" : "Use Bash to run things and your file tools to read"
+          p.agent === "codex" ? "Use shell commands" : "Use Bash to run things, and your file tools to read and to write files there (test scripts, probes, trial changes)"
         }. Anything you change there is thrown away and never reaches the user's code, but don't implement the feature: run things to check facts and test ideas. ` +
         "Files git ignores (like node_modules) aren't copied — install dependencies first if a command needs them. The network is available; Docker isn't, so ask the user to start any containers you need. " +
         "MCP and app tools are switched off in this discussion."
@@ -594,9 +594,12 @@ const CLAUDE_COMMAND_SANDBOX = JSON.stringify({
 });
 
 /**
- * One Claude turn. Edit tools are always off; Bash only for a seat that runs
- * commands (then sandboxed to the test copy); a seat without code access can't
- * read files either. --strict-mcp-config with no --mcp-config leaves no MCP
+ * One Claude turn. A seat that runs commands works in the test copy: Bash in the
+ * OS sandbox, and file edits auto-accepted only inside its cwd (acceptEdits
+ * refuses paths outside it headless) — scripts are written with Write because
+ * Bash refuses heredocs that look like obfuscation. Every other seat works on
+ * the real checkout, so its edit tools and Bash are off; a seat without code
+ * access can't read files either. --strict-mcp-config with no --mcp-config leaves no MCP
  * servers: their tools can act outside the folder (post messages, change other systems).
  */
 export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLaunch): string {
@@ -612,9 +615,9 @@ export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLa
       : []),
     ...(p.conversationId ? ["--resume", quote(p.conversationId)] : []),
     ...(p.effort ? ["--effort", quote(p.effort)] : []),
-    ...(p.runsCommands ? ["--settings", quote(CLAUDE_COMMAND_SANDBOX)] : []),
-    "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit",
-    ...(p.runsCommands ? [] : ["Bash"]),
+    ...(p.runsCommands
+      ? ["--settings", quote(CLAUDE_COMMAND_SANDBOX), "--permission-mode", "acceptEdits", "--disallowedTools", "NotebookEdit"]
+      : ["--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]),
     ...(p.readsCode || p.runsCommands ? [] : ["Read", "Grep", "Glob", "LS"]),
   ].join(" ");
 }
