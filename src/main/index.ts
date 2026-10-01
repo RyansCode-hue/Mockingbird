@@ -12,6 +12,7 @@ import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
+import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, cliTurnRunner } from "./collab";
 import { userShell, whichSync, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
@@ -359,6 +360,30 @@ const codexBinPath = () => {
 ipcMain.handle("hooks:installed", () => hooksInstalled(codexBinPath()));
 ipcMain.handle("hooks:install", () => safe("hooks:install", () => installHooks(codexBinPath()))());
 ipcMain.handle("app:version", () => app.getVersion());
+
+// ---- Collaborate rooms ----
+const collab = new CollabRooms(
+  COLLAB_DIR,
+  cliTurnRunner((agent) => sessions.binFor(agent)),
+  (room) => BrowserWindow.getAllWindows()[0]?.webContents.send("collab:changed", room),
+  (req) => sessions.create(req),
+  (repo) => listBranches(repo).defaultBase
+);
+ipcMain.handle("collab:models", () => COLLAB_MODELS);
+ipcMain.handle("collab:list", () => safe("collab:list", () => collab.list())());
+ipcMain.handle("collab:create", (_e, spec) => safe("collab:create", () => collab.create(spec))());
+ipcMain.handle("collab:delete", (_e, id) => safe("collab:delete", () => collab.delete(id))());
+ipcMain.handle("collab:send", (_e, id, text) => safe("collab:send", () => collab.send(id, text))());
+ipcMain.handle("collab:run", (_e, id) => {
+  // runs for minutes; progress arrives as collab:changed, failures are logged and shown in the room
+  collab.run(id).catch((err) => logError("collab:run", err));
+  return true;
+});
+ipcMain.handle("collab:stop", (_e, id) => safe("collab:stop", () => collab.stop(id))());
+ipcMain.handle("collab:mode", (_e, id, mode, rounds) => safe("collab:mode", () => collab.setMode(id, mode, rounds))());
+ipcMain.handle("collab:synthesize", (_e, id, key) => safeAsync("collab:synthesize", () => collab.synthesize(id, key))());
+ipcMain.handle("collab:approve", (_e, id, messageId) => safe("collab:approve", () => collab.approve(id, messageId))());
+ipcMain.handle("collab:implement", (_e, id, key) => safe("collab:implement", () => collab.implement(id, key))());
 ipcMain.handle("setup:status", () => safeAsync("setup:status", () => setupStatus(store, sessions))());
 ipcMain.handle("settings:get", () => store.settings);
 ipcMain.handle("settings:set", (_e, s) => {

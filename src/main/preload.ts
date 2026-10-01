@@ -28,6 +28,22 @@ const api = {
   connectorsStatus: () => ipcRenderer.invoke("connectors:status"),
   updateCheck: () => ipcRenderer.invoke("update:check"),
   appVersion: () => ipcRenderer.invoke("app:version"),
+  collabModels: () => ipcRenderer.invoke("collab:models"),
+  collabList: () => ipcRenderer.invoke("collab:list"),
+  collabCreate: (spec: unknown) => ipcRenderer.invoke("collab:create", spec),
+  collabDelete: (id: string) => ipcRenderer.invoke("collab:delete", id),
+  collabSend: (id: string, text: string) => ipcRenderer.invoke("collab:send", id, text),
+  collabRun: (id: string) => ipcRenderer.invoke("collab:run", id),
+  collabStop: (id: string) => ipcRenderer.invoke("collab:stop", id),
+  collabMode: (id: string, mode: string, rounds?: number) => ipcRenderer.invoke("collab:mode", id, mode, rounds),
+  collabSynthesize: (id: string, key: string) => ipcRenderer.invoke("collab:synthesize", id, key),
+  collabApprove: (id: string, messageId: string) => ipcRenderer.invoke("collab:approve", id, messageId),
+  collabImplement: (id: string, key: string) => ipcRenderer.invoke("collab:implement", id, key),
+  onCollabChanged: (cb: (room: unknown) => void) => {
+    const h = (_e: unknown, r: unknown) => cb(r);
+    ipcRenderer.on("collab:changed", h);
+    return () => ipcRenderer.removeListener("collab:changed", h);
+  },
   setupStatus: () => ipcRenderer.invoke("setup:status"),
   agentUpdate: (agent: string) => ipcRenderer.invoke("agents:update", agent),
   onUpdateAvailable: (cb: (u: unknown) => void) => {

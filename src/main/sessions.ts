@@ -491,7 +491,9 @@ export class SessionManager {
     agent?: AgentKind;
     paneId?: string;
   }): SessionInfo | null {
-    const s = (ev.paneId && this.live.get(ev.paneId)) || this.matchSession(ev.cwd, ev.conversationId);
+    // a tagged event that names no live pane comes from something else Mockingbird
+    // runs (a Collaborate room) or a closed pane — never guess a pane for it
+    const s = ev.paneId ? this.live.get(ev.paneId) ?? null : this.matchSession(ev.cwd, ev.conversationId);
     if (!s) return null;
     if (ev.conversationId) this.noteConversation(s, ev.agent ?? s.info.agent ?? "claude", ev.conversationId);
     this.setStatus(s.info.id, ev.status, ev.reason);

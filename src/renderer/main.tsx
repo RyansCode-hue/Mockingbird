@@ -4,6 +4,7 @@ import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
 import { FileDock } from "./FilePanel";
 import { SetupWizard } from "./SetupWizard";
+import { CollaborateView } from "./Collaborate";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
 import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit } from "../shared/types";
@@ -16,11 +17,12 @@ declare global {
 }
 
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | null;
-type Tab = "sessions" | "dashboard" | "worktracker" | "settings";
+type Tab = "sessions" | "dashboard" | "worktracker" | "collaborate" | "settings";
 const TAB_LABELS: Record<Tab, string> = {
   sessions: "Sessions",
   dashboard: "Dashboard",
   worktracker: "WorkTracker",
+  collaborate: "Collaborate",
   settings: "Settings",
 };
 type ColsPref = number | "auto";
@@ -785,7 +787,7 @@ function App() {
           {appVersion && <span className="ver">v{appVersion}</span>}
         </span>
         <span className="tabs">
-          {(["sessions", "dashboard", "worktracker", "settings"] as const).map((t) => (
+          {(["sessions", "dashboard", "worktracker", "collaborate", "settings"] as const).map((t) => (
             <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>
               {TAB_LABELS[t]}
               {t === "worktracker" && debriefSessions.some((s) => s.status === "waiting") && (
@@ -879,6 +881,15 @@ function App() {
             onRestartAll={() => setModal("restart")}
             onSetup={() => setModal("setup")}
             jump={settingsJump}
+          />
+        )}
+        {tab === "collaborate" && (
+          <CollaborateView
+            onOpenSession={(id) => {
+              setTab("sessions");
+              // the session was just created; give the list a moment to include it
+              setTimeout(() => jumpToRef.current(id), 300);
+            }}
           />
         )}
         {tab === "worktracker" && (

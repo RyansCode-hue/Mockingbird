@@ -219,6 +219,50 @@ export interface SetupStatus {
   ado: { connected: boolean; display?: string; detail: string };
 }
 
+// ---- Collaborate: rooms where several models discuss an idea -----------------
+
+/** How a room advances: one round per click, N rounds, or until every model agrees. */
+export type CollabMode = "step" | "auto" | "consensus";
+
+export interface CollabModel {
+  key: string; // "gpt6", "opus", "fable"
+  label: string; // "GPT-6 Astra"
+  agent: AgentKind;
+  model: string; // the CLI's model id
+}
+
+export interface CollabParticipant extends CollabModel {
+  conversationId: string | null; // the model's own CLI conversation, resumed every turn
+  lastSeen: number; // index into messages: everything before it has been shown to this model
+}
+
+export interface CollabMessage {
+  id: string;
+  speaker: string; // "you", "system", or a participant key
+  text: string;
+  round: number; // 0 for the brief and messages between rounds
+  at: number;
+  stance?: "agree" | "continue"; // a model's closing STANCE line
+  kind?: "plan" | "error";
+}
+
+export interface CollabRoom {
+  id: string;
+  title: string;
+  brief: string;
+  repoPath: string | null; // readable during discussion; edited only after a plan is approved
+  participants: CollabParticipant[];
+  messages: CollabMessage[];
+  mode: CollabMode;
+  maxRounds: number; // auto: rounds per run · consensus: safety cap
+  round: number; // rounds completed
+  running: boolean;
+  speaking: string | null; // participant key mid-turn
+  plan: { text: string; by: string; approved: boolean; at: number } | null;
+  implementedIn: string | null; // session id started from the approved plan
+  createdAt: number;
+}
+
 /** One plan rate-limit window, e.g. the 5-hour limit or the weekly one. */
 export interface UsageLimit {
   label: string; // "5-hour limit", "Weekly · all models", "Weekly · Opus"

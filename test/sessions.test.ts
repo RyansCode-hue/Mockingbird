@@ -127,6 +127,12 @@ describe("routing hook events", () => {
     m.statusFromHook({ paneId: "b", cwd: "/home", status: "working" });
     expect([status("a"), status("b")]).toEqual(["idle", "working"]);
   });
+  it("ignores events tagged with an id that isn't a pane (a Collaborate room's runs)", () => {
+    const { m, add, status } = manager();
+    add("a", "idle", "/code/app");
+    expect(m.statusFromHook({ paneId: "collab-123", cwd: "/code/app", status: "working" })).toBeNull();
+    expect(status("a")).toBe("idle");
+  });
   it("follows a conversation after its agent cd's to another pane's folder", () => {
     const { m, add, status } = manager();
     add("work", "idle", "/code/app");

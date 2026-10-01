@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "child_process";
+import { execFile, execFileSync, spawn } from "child_process";
 
 // Commands that need the user's CLIs run in the same shell setup as the panes.
 // Panes start `zsh -il`, which reads ~/.zshrc — where nvm and ~/.local/bin are
@@ -51,3 +51,34 @@ export function whichSync(bin: string): string | null {
 }
 
 export const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * Like userShell, with `input` piped to stdin, a working directory, extra
+ * environment, and an AbortSignal that kills the command (Stop in a room).
+ */
+export function userShellWithInput(
+  cmd: string,
+  input: string,
+  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal } = {}
+): Promise<ShellResult> {
+  return new Promise((resolve) => {
+    const child = spawn("/bin/zsh", ["-ilc", fenced(cmd)], { cwd: opts.cwd, env: opts.env ?? process.env, signal: opts.signal });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    const timer = setTimeout(() => child.kill("SIGTERM"), opts.timeoutMs ?? 600_000);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ code: 1, out: (err as Error).name === "AbortError" ? "stopped" : err.message });
+    });
+    child.on("close", (code, sig) => {
+      clearTimeout(timer);
+      const out = unfence(stdout);
+      if (code === 0) return resolve({ code: 0, out });
+      resolve({ code: code ?? 1, out: out || stderr.trim() || (sig ? `killed (${sig})` : `exited with code ${code}`) });
+    });
+    child.stdin.on("error", () => {}); // the CLI may exit before reading all of stdin; close reports that
+    child.stdin.end(input);
+  });
+}

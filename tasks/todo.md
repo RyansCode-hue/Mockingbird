@@ -1272,3 +1272,35 @@ then was appended to the user's unsent draft and submitted with it. Fixed —
 messages now wait while a draft is pending (keystrokes or a paste since the last
 Enter), and a draft left alone for 2 minutes gets the message placed after it
 without Enter.
+
+# Collaborate tab (feature/collaborate)
+
+Rooms where GPT-6 Astra (Codex CLI), Claude Opus 5.5 and Claude Fable 5.1 discuss
+an idea or feature; edits only happen after the user approves a plan.
+
+Decisions (user, 2026-10-01): round-robin turns; pacing switchable like Shift+Tab —
+Step / Auto (N rounds) / Until agreed (cap); repo readable during discussion,
+edits only after approving one model's proposal or an agreed plan.
+
+- [x] collab.ts: rooms persisted in ~/.mockingbird/collab, round-robin runner with
+      the three pacing modes, stop, per-turn errors that don't stall the room
+- [x] turns via the CLIs (no API keys): `claude -p --resume`, `codex exec resume`;
+      read-only during discussion; runs tagged so hook events never hit a pane
+- [x] stance protocol (STANCE: AGREE / CONTINUE) for "until agreed"
+- [x] plan: approve a message, or have one model write up the plan; approve it
+- [x] implement: start a normal Claude/Codex session on a new worktree branch with
+      the approved plan as its kickoff prompt
+- [x] Collaborate tab: rooms list, transcript, composer with mode chip (Shift+Tab)
+- [x] tests for the runner, prompts, stances, modes, approval → session
+- [x] README
+
+## Review
+
+Real run (no mocks): GPT-6 Astra, Opus 5.5 and Fable 5.1, two Step rounds then a
+Fable write-up — ~8-10s per turn, 67s total. The models addressed each other by
+name, refined each other's points, all reported "agree" by round 2, and the plan
+came back structured (goal, decisions, steps, files, risks, verification).
+16 unit tests cover modes, stances, stop, errors, prompts, approval and
+implementation; 107 total. Room runs export MOCKINGBIRD_SESSION=collab-<id> and
+pane routing now ignores tagged events that name no pane, so a model reading a
+repo never moves a session's status dot.
