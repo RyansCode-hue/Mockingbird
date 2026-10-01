@@ -1317,3 +1317,26 @@ Fable answered with the right word in the same turn. Found along the way: headle
 Codex refused to read files in an untrusted folder (approval needed, none possible) and
 reached for an external MCP read tool; both fixed and verified (reads work, writes
 still "operation not permitted"). 124 tests.
+
+## Collaborate page redesign — option A (thread + inspector) with B (rounds grid) toggle
+
+- [x] Pure view logic in `src/renderer/collabView.ts` (+ tests): round dividers, rounds grid
+      (user messages between rounds), agreement count for the latest round, long-message fold
+- [x] Room rail: collapsible to initials (running / needs-you dots); preference remembered
+- [x] Slim header: title, round, "N of M agree", waiting-requests button, Thread | Rounds toggle,
+      inspector toggle
+- [x] Thread view: round dividers, folded long messages (latest stays open), anchors for jumps
+- [x] Rounds view: one column per model, one row per round, cells open in place
+- [x] Approval cards pinned above the composer (both views) with a live waiting timer
+- [x] Inspector: models + permission badges + Edit, repository, test copy + Reset, always-allowed
+      (revoke), plan (write up / approve / implement / jump), delete room
+- [x] Composer keeps pacing, Run/Stop, Send; Write up plan moves to the inspector
+- [x] Verify: typecheck, tests, build, screenshot the running app
+
+**Review.** Built as planned. Checked in the built-in browser against a copy of the Atticus room
+(8 rounds, 3 models, a waiting approval): thread with round dividers and folds, approval pinned
+with a live timer, inspector, Rounds grid (3 columns × 8 rounds, the user's 8 messages between
+rounds). Found and fixed while looking: a stale `.collab-room` column rule stacked the inspector
+under the thread; permission badges truncated model names (moved to their own line); below
+1000px the inspector squeezed the thread to nothing (it now floats over it); grid summaries kept
+markdown `*`. 153 tests.
