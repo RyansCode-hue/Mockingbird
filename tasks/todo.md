@@ -1304,3 +1304,16 @@ came back structured (goal, decisions, steps, files, risks, verification).
 implementation; 107 total. Room runs export MOCKINGBIRD_SESSION=collab-<id> and
 pane routing now ignores tagged events that name no pane, so a model reading a
 repo never moves a session's status dot.
+
+## Collaborate: seats, effort, code access, asking the reader (feature/collab-participants)
+
+- [x] seats: any Claude/Codex model id, per-seat effort and code access, order; add/remove mid-room
+- [x] non-readers get an ask_code_reader MCP tool; the reader answers in its own lookup thread, mid-turn
+- [x] room turns run with no MCP servers/apps/plugins (Codex: approval_policy=never inside the read-only sandbox)
+
+Review: real runs — a Codex reader read secret.txt while a Claude non-reader couldn't;
+then the non-reader called ask_code_reader mid-turn, the relay ran Astra's lookup, and
+Fable answered with the right word in the same turn. Found along the way: headless
+Codex refused to read files in an untrusted folder (approval needed, none possible) and
+reached for an external MCP read tool; both fixed and verified (reads work, writes
+still "operation not permitted"). 124 tests.

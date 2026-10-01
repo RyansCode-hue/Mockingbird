@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { CollabMode, CollabModel, CollabRoom, RepoEntry } from "../shared/types";
+import type { AgentKind, CollabMode, CollabModel, CollabParticipantSpec, CollabRoom, RepoEntry } from "../shared/types";
 
 const MODES: { id: CollabMode; label: string; note: string }[] = [
   { id: "step", label: "Step", note: "one round, then waits for you" },
@@ -9,17 +9,19 @@ const MODES: { id: CollabMode; label: string; note: string }[] = [
 const nextMode = (m: CollabMode): CollabMode => MODES[(MODES.findIndex((x) => x.id === m) + 1) % MODES.length].id;
 
 type Result<T> = T | { error: string };
+type Catalog = { presets: CollabModel[]; efforts: Record<AgentKind, string[]> };
+const CUSTOM = "__custom";
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** Rooms where several models discuss an idea; edits only happen after the user approves a plan. */
 export function CollaborateView({ onOpenSession }: { onOpenSession: (sessionId: string) => void }) {
   const [rooms, setRooms] = useState<CollabRoom[]>([]);
-  const [models, setModels] = useState<CollabModel[]>([]);
+  const [catalog, setCatalog] = useState<Catalog>({ presets: [], efforts: { claude: [], codex: [] } });
   const [selected, setSelected] = useState<string | "new" | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    window.mb.collabModels().then(setModels);
+    window.mb.collabModels().then(setCatalog);
     window.mb.collabList().then((r: Result<CollabRoom[]>) => {
       if (isErr(r)) return setError(r.error);
       setRooms(r);
@@ -53,7 +55,7 @@ export function CollaborateView({ onOpenSession }: { onOpenSession: (sessionId: 
         {error && <div className="err">{error}</div>}
         {selected === "new" || !room ? (
           <NewRoom
-            models={models}
+            catalog={catalog}
             onCreated={(r) => {
               setRooms((rs) => [r, ...rs.filter((x) => x.id !== r.id)]);
               setSelected(r.id);
@@ -63,6 +65,7 @@ export function CollaborateView({ onOpenSession }: { onOpenSession: (sessionId: 
         ) : (
           <Room
             room={room}
+            catalog={catalog}
             onDeleted={() => {
               setRooms((rs) => rs.filter((r) => r.id !== room.id));
               setSelected("new");
@@ -75,20 +78,20 @@ export function CollaborateView({ onOpenSession }: { onOpenSession: (sessionId: 
   );
 }
 
-function NewRoom({ models, onCreated }: { models: CollabModel[]; onCreated: (r: CollabRoom) => void }) {
+function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: CollabRoom) => void }) {
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
-  const [picked, setPicked] = useState<string[]>([]);
+  const [seats, setSeats] = useState<CollabParticipantSpec[]>([]);
   const [repo, setRepo] = useState("");
   const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [mode, setMode] = useState<CollabMode>("auto");
   const [error, setError] = useState("");
-  useEffect(() => setPicked(models.map((m) => m.key)), [models]);
+  useEffect(() => setSeats(catalog.presets.map((m) => ({ label: m.label, agent: m.agent, model: m.model, effort: null, readsCode: true }))), [catalog]);
   useEffect(() => {
     window.mb.listRepos().then((r: Result<RepoEntry[]>) => (isErr(r) ? setError(`Couldn't list repos: ${r.error}`) : setRepos(r)));
   }, []);
   const create = async () => {
-    const r: Result<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, models: picked, mode });
+    const r: Result<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, participants: seats, mode });
     if (isErr(r)) return setError(r.error);
     onCreated(r);
   };
@@ -100,19 +103,7 @@ function NewRoom({ models, onCreated }: { models: CollabModel[]; onCreated: (r: 
         changed until you approve a plan — then one model implements it in a normal session on a new branch.
       </p>
       <label>Models <span className="wi-note">they speak in this order</span></label>
-      <div className="collab-models">
-        {models.map((m) => (
-          <label key={m.key} className={`collab-model c-${m.key} ${picked.includes(m.key) ? "on" : ""}`}>
-            <input
-              type="checkbox"
-              checked={picked.includes(m.key)}
-              onChange={(e) => setPicked((p) => (e.target.checked ? [...p, m.key] : p.filter((k) => k !== m.key)))}
-            />
-            {m.label}
-            <span className="via">via {m.agent === "codex" ? "Codex" : "Claude Code"}</span>
-          </label>
-        ))}
-      </div>
+      <SeatEditor seats={seats} onChange={setSeats} catalog={catalog} hasRepo={!!repo} />
       <label>Title</label>
       <input type="text" placeholder="CSV export for the donor list" value={title} onChange={(e) => setTitle(e.target.value)} />
       <label>The idea or feature</label>
@@ -133,7 +124,7 @@ function NewRoom({ models, onCreated }: { models: CollabModel[]; onCreated: (r: 
       <ModeSeg mode={mode} onMode={setMode} />
       {error && <div className="err">{error}</div>}
       <div className="set-actions">
-        <button className="primary" disabled={!brief.trim() || picked.length < 2} onClick={create}>
+        <button className="primary" disabled={!brief.trim() || seats.length < 2} onClick={create}>
           Start discussion
         </button>
       </div>
@@ -153,12 +144,17 @@ function ModeSeg({ mode, onMode }: { mode: CollabMode; onMode: (m: CollabMode) =
   );
 }
 
-function Room({ room, onDeleted, onOpenSession }: { room: CollabRoom; onDeleted: () => void; onOpenSession: (id: string) => void }) {
+function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; catalog: Catalog; onDeleted: () => void; onOpenSession: (id: string) => void }) {
   const [draft, setDraft] = useState("");
+  const [editing, setEditing] = useState<CollabParticipantSpec[] | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
   const label = useMemo(() => Object.fromEntries(room.participants.map((p) => [p.key, p.label])), [room.participants]);
+  const color = useMemo(() => Object.fromEntries(room.participants.map((p) => [p.key, p.color])), [room.participants]);
+  const seated = room.participants.filter((p) => !p.removed);
+  const openModels = () =>
+    setEditing(seated.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, readsCode: p.readsCode })));
   useEffect(() => endRef.current?.scrollIntoView({ block: "end" }), [room.messages.length, room.speaking]);
 
   const call = async (what: string, fn: () => Promise<unknown>) => {
@@ -168,6 +164,11 @@ function Room({ room, onDeleted, onOpenSession }: { room: CollabRoom; onDeleted:
     setBusy("");
     if (isErr(r)) setError(r.error);
     return r;
+  };
+  const saveModels = async () => {
+    if (!editing) return;
+    const r = await call("models", () => window.mb.collabParticipants(room.id, editing));
+    if (!isErr(r)) setEditing(null);
   };
   const setMode = (mode: CollabMode, rounds?: number) => call("mode", () => window.mb.collabMode(room.id, mode, rounds));
   const send = async () => {
@@ -187,14 +188,36 @@ function Room({ room, onDeleted, onOpenSession }: { room: CollabRoom; onDeleted:
           </span>
         </div>
         <div className="collab-people">
-          {room.participants.map((p) => (
-            <span key={p.key} className={`collab-chip c-${p.key} ${room.speaking === p.key ? "speaking" : ""}`}>{p.label}</span>
+          {seated.map((p) => (
+            <span
+              key={p.key}
+              className={`collab-chip c-${p.color} ${room.speaking === p.key ? "speaking" : ""}`}
+              title={`${p.model}${p.effort ? ` · effort ${p.effort}` : ""}${room.repoPath ? (p.readsCode ? " · reads the code" : " · no code access") : ""}`}
+            >
+              {p.label}
+              {p.effort && <span className="eff">{p.effort}</span>}
+              {room.repoPath && p.readsCode && <span className="eff" aria-label="reads the code">{"</>"}</span>}
+            </span>
           ))}
+          <button className="outline" onClick={() => (editing ? setEditing(null) : openModels())}>Models</button>
         </div>
         <button className="icon" title="Delete this room" onClick={() => window.confirm(`Delete "${room.title}"?`) && call("delete", () => window.mb.collabDelete(room.id)).then((r) => !isErr(r) && onDeleted())}>
           ✕
         </button>
       </header>
+
+      {editing && (
+        <div className="collab-models-panel">
+          <div className="set-lede">
+            Changes apply from each model's next turn. A model you add reads the whole discussion first; one you remove keeps its past messages.
+          </div>
+          <SeatEditor seats={editing} onChange={setEditing} catalog={catalog} hasRepo={!!room.repoPath} colors={color} />
+          <div className="set-actions">
+            <button className="primary" disabled={editing.length < 1} onClick={saveModels}>Save</button>
+            <button className="outline" onClick={() => setEditing(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
 
       {room.plan && (
         <div className={`collab-plan ${room.plan.approved ? "approved" : ""}`}>
@@ -226,14 +249,15 @@ function Room({ room, onDeleted, onOpenSession }: { room: CollabRoom; onDeleted:
 
       <div className="collab-transcript">
         {room.messages.map((m) => (
-          <div key={m.id} className={`collab-msg ${m.speaker === "you" ? "you" : m.speaker === "system" ? "sys" : `c-${m.speaker}`} ${m.kind ?? ""}`}>
+          <div key={m.id} className={`collab-msg ${m.speaker === "you" ? "you" : m.speaker === "system" ? "sys" : `c-${color[m.speaker] ?? 0}`} ${m.kind ?? ""}`}>
             {m.speaker !== "system" && (
               <div className="collab-msg-head">
                 <span className="who">{m.speaker === "you" ? "You" : label[m.speaker] ?? m.speaker}</span>
+                {m.kind === "lookup" && <span className="wi-note">looked up the code for {label[m.askedBy ?? ""] ?? m.askedBy}</span>}
                 {m.round > 0 && m.speaker !== "you" && <span className="wi-note">round {m.round}</span>}
                 {m.kind === "plan" && <span className="collab-stance plan">plan</span>}
                 {m.stance && <span className={`collab-stance ${m.stance}`}>{m.stance === "agree" ? "agrees" : "continue"}</span>}
-                {m.speaker !== "you" && m.kind !== "error" && (
+                {m.speaker !== "you" && m.kind !== "error" && m.kind !== "lookup" && (
                   <button
                     className="collab-approve"
                     title="Approve this as the plan — then a model can implement it"
@@ -248,7 +272,7 @@ function Room({ room, onDeleted, onOpenSession }: { room: CollabRoom; onDeleted:
           </div>
         ))}
         {room.speaking && (
-          <div className={`collab-msg thinking c-${room.speaking}`}>
+          <div className={`collab-msg thinking c-${color[room.speaking] ?? 0}`}>
             <span className="who">{label[room.speaking]}</span> is thinking…
           </div>
         )}
@@ -318,10 +342,7 @@ function SynthMenu({ room, busy, onPick }: { room: CollabRoom; busy: boolean; on
 
 function ImplementMenu({ room, onDone, setError }: { room: CollabRoom; onDone: (sessionId: string) => void; setError: (e: string) => void }) {
   const [open, setOpen] = useState(false);
-  const [models, setModels] = useState<CollabModel[]>([]);
-  useEffect(() => {
-    window.mb.collabModels().then(setModels);
-  }, []);
+  const models = room.participants.filter((p) => !p.removed);
   return (
     <span className="collab-menu">
       <button className="primary" onClick={() => setOpen((o) => !o)} title="Start a session that makes the changes, on a new branch in its own worktree">
@@ -340,10 +361,107 @@ function ImplementMenu({ room, onDone, setError }: { room: CollabRoom; onDone: (
               }}
             >
               {m.label}
+              {m.effort ? ` · ${m.effort}` : ""}
             </button>
           ))}
         </div>
       )}
     </span>
+  );
+}
+
+/** Edit a room's seats: which models, in what order, their effort, and who may read the code. */
+function SeatEditor({
+  seats,
+  onChange,
+  catalog,
+  hasRepo,
+  colors = {},
+}: {
+  seats: CollabParticipantSpec[];
+  onChange: (s: CollabParticipantSpec[]) => void;
+  catalog: Catalog;
+  hasRepo: boolean;
+  colors?: Record<string, number>; // existing seats keep their room color
+}) {
+  const set = (i: number, patch: Partial<CollabParticipantSpec>) => onChange(seats.map((s, j) => (j === i ? { ...s, ...patch } : s)));
+  const move = (i: number, d: -1 | 1) => {
+    const j = i + d;
+    if (j < 0 || j >= seats.length) return;
+    const next = [...seats];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+  const presetOf = (s: CollabParticipantSpec) => catalog.presets.find((m) => m.agent === s.agent && m.model === s.model)?.key ?? CUSTOM;
+  const unused = catalog.presets.find((m) => !seats.some((s) => s.agent === m.agent && s.model === m.model));
+  const readers = seats.filter((s) => s.readsCode).length;
+  return (
+    <div className="seat-editor">
+      {seats.map((s, i) => {
+        const preset = presetOf(s);
+        return (
+          <div key={s.key ?? `new-${i}`} className="seat-row">
+            <span className={`seat-dot c-${(s.key !== undefined ? colors[s.key] : undefined) ?? i % 6}`} />
+            <select
+              value={preset}
+              title={s.key ? "Changing the model starts it on a fresh conversation" : undefined}
+              onChange={(e) => {
+                const m = catalog.presets.find((x) => x.key === e.target.value);
+                if (m) set(i, { label: m.label, agent: m.agent, model: m.model, effort: null, key: undefined });
+                else set(i, { label: "", model: "", key: undefined });
+              }}
+            >
+              {catalog.presets.map((m) => (
+                <option key={m.key} value={m.key}>{m.label}</option>
+              ))}
+              <option value={CUSTOM}>Other model…</option>
+            </select>
+            {preset === CUSTOM && (
+              <>
+                <select value={s.agent} onChange={(e) => set(i, { agent: e.target.value as AgentKind, effort: null, key: undefined })}>
+                  <option value="claude">Claude Code</option>
+                  <option value="codex">Codex</option>
+                </select>
+                <input
+                  type="text"
+                  placeholder={s.agent === "codex" ? "gpt-6-astra-mini" : "claude-sonnet-5"}
+                  value={s.model}
+                  onChange={(e) => set(i, { model: e.target.value, label: e.target.value, key: undefined })}
+                />
+              </>
+            )}
+            <select value={s.effort ?? ""} onChange={(e) => set(i, { effort: e.target.value || null })} title="Effort / reasoning level">
+              <option value="">default effort</option>
+              {catalog.efforts[s.agent].map((e) => (
+                <option key={e} value={e}>{e}</option>
+              ))}
+            </select>
+            <label className="seat-code" title={hasRepo ? "May read the room's repository" : "Pick a repository to give models code access"}>
+              <input type="checkbox" disabled={!hasRepo} checked={hasRepo && s.readsCode} onChange={(e) => set(i, { readsCode: e.target.checked })} />
+              reads code
+            </label>
+            <span className="seat-move">
+              <button className="icon" disabled={i === 0} onClick={() => move(i, -1)} title="Speak earlier">↑</button>
+              <button className="icon" disabled={i === seats.length - 1} onClick={() => move(i, 1)} title="Speak later">↓</button>
+            </span>
+            <button className="icon danger" title="Remove from the room" onClick={() => onChange(seats.filter((_, j) => j !== i))}>✕</button>
+          </div>
+        );
+      })}
+      <div className="seat-add">
+        <button
+          className="outline"
+          onClick={() => {
+            const m = unused ?? catalog.presets[0];
+            onChange([...seats, { label: unused ? m.label : "", agent: m.agent, model: unused ? m.model : "", effort: null, readsCode: true }]);
+          }}
+        >
+          Add model
+        </button>
+        {hasRepo && seats.length > 0 && (
+          <span className="wi-note">{readers === seats.length ? "all of them can read the code" : `${readers} of ${seats.length} can read the code`}</span>
+        )}
+      </div>
+    </div>
   );
 }

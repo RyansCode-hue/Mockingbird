@@ -26,9 +26,12 @@
   --red: #cf6a5a;
   --git-add: #8fb573;
   --git-mod: #6fa3d8;
-  --m-gpt6: #7fc3a0;
-  --m-opus: #d4a07a;
-  --m-fable: #a79ad8;
+  --m-0: #7fc3a0;
+  --m-1: #d4a07a;
+  --m-2: #a79ad8;
+  --m-3: #6fb3d8;
+  --m-4: #d88fb0;
+  --m-5: #b8c46a;
   --diff-add: rgba(143, 181, 115, .14);
   --diff-del: rgba(207, 106, 90, .15);
   --line-strong: rgba(255, 255, 255, .09);
@@ -75,9 +78,12 @@
   --red: #b84632;
   --git-add: #4d7d2c;
   --git-mod: #2f6aa8;
-  --m-gpt6: #2f7f57;
-  --m-opus: #9a5a2c;
-  --m-fable: #5b4ba3;
+  --m-0: #2f7f57;
+  --m-1: #9a5a2c;
+  --m-2: #5b4ba3;
+  --m-3: #2a6f99;
+  --m-4: #a03f6d;
+  --m-5: #6b7520;
   --diff-add: rgba(77, 125, 44, .14);
   --diff-del: rgba(184, 70, 50, .13);
   --line-strong: rgba(0, 0, 0, .13);
@@ -1088,28 +1094,18 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .collab-new-room input[type=text], .collab-new-room textarea, .collab-new-room select {
   width: 100%; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 6px; padding: 7px 9px; font: 400 12px var(--ui);
 }
-.collab-models { display: flex; flex-direction: column; gap: 6px; }
-.collab-model { display: flex !important; align-items: center; gap: 8px; margin: 0 !important; padding: 8px 10px; border: 1px solid var(--line-med); border-radius: 6px; font: 500 12px var(--ui) !important; color: var(--text-2) !important; cursor: pointer; }
-.collab-model.on { color: var(--text-1) !important; border-color: var(--line-strong); }
-.collab-model .via { margin-left: auto; font: 400 10px var(--mono); color: var(--text-4); }
 .collab-room { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .collab-head { display: flex; align-items: center; gap: 14px; padding: 12px 20px; border-bottom: 1px solid var(--line-soft); background: var(--bg-chrome); }
 .collab-title { display: flex; flex-direction: column; min-width: 0; }
 .collab-people { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 .collab-chip { font: 500 10.5px var(--ui); padding: 3px 8px; border-radius: 10px; border: 1px solid currentColor; opacity: .75; }
 .collab-chip.speaking { opacity: 1; background: var(--fill-selected); }
-.c-gpt6 .who, .collab-chip.c-gpt6, .collab-model.c-gpt6.on { color: var(--m-gpt6) !important; }
-.c-opus .who, .collab-chip.c-opus, .collab-model.c-opus.on { color: var(--m-opus) !important; }
-.c-fable .who, .collab-chip.c-fable, .collab-model.c-fable.on { color: var(--m-fable) !important; }
 .collab-plan { margin: 12px 20px 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--fill-subtle); }
 .collab-plan.approved { border-color: var(--teal); }
 .collab-plan-head { display: flex; align-items: center; gap: 10px; font: 500 12px var(--ui); color: var(--text-1); }
 .collab-plan-head > :last-child { margin-left: auto; }
 .collab-transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
 .collab-msg { max-width: 860px; padding: 10px 12px; border-radius: 8px; background: var(--bg-pane); border: 1px solid var(--line-soft); }
-.collab-msg.c-gpt6 { border-left: 3px solid var(--m-gpt6); }
-.collab-msg.c-opus { border-left: 3px solid var(--m-opus); }
-.collab-msg.c-fable { border-left: 3px solid var(--m-fable); }
 .collab-msg.you { align-self: flex-end; background: var(--fill-selected); max-width: 640px; }
 .collab-msg.sys { align-self: center; background: transparent; border: none; font: 400 11px var(--ui); color: var(--text-3); padding: 2px; }
 .collab-msg.error { border-color: var(--red); }
@@ -1133,3 +1129,32 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .collab-pop { position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 20; min-width: 170px; display: flex; flex-direction: column; padding: 4px; background: var(--bg-pane); border: 1px solid var(--line-strong); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.3); }
 .collab-plan .collab-pop { bottom: auto; top: calc(100% + 6px); }
 .collab-pop button { text-align: left; border: none; padding: 6px 8px; font: 400 12px var(--ui); }
+.c-0 .who, .collab-chip.c-0 { color: var(--m-0) !important; }
+.collab-msg.c-0 { border-left: 3px solid var(--m-0); }
+.seat-dot.c-0 { background: var(--m-0); }
+.c-1 .who, .collab-chip.c-1 { color: var(--m-1) !important; }
+.collab-msg.c-1 { border-left: 3px solid var(--m-1); }
+.seat-dot.c-1 { background: var(--m-1); }
+.c-2 .who, .collab-chip.c-2 { color: var(--m-2) !important; }
+.collab-msg.c-2 { border-left: 3px solid var(--m-2); }
+.seat-dot.c-2 { background: var(--m-2); }
+.c-3 .who, .collab-chip.c-3 { color: var(--m-3) !important; }
+.collab-msg.c-3 { border-left: 3px solid var(--m-3); }
+.seat-dot.c-3 { background: var(--m-3); }
+.c-4 .who, .collab-chip.c-4 { color: var(--m-4) !important; }
+.collab-msg.c-4 { border-left: 3px solid var(--m-4); }
+.seat-dot.c-4 { background: var(--m-4); }
+.c-5 .who, .collab-chip.c-5 { color: var(--m-5) !important; }
+.collab-msg.c-5 { border-left: 3px solid var(--m-5); }
+.seat-dot.c-5 { background: var(--m-5); }
+.collab-chip .eff { margin-left: 5px; font: 400 9px var(--mono); opacity: .8; }
+.seat-editor { display: flex; flex-direction: column; gap: 6px; }
+.seat-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line-med); border-radius: 6px; }
+.seat-row select, .seat-row input[type=text] { width: auto !important; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 5px; padding: 4px 6px; font: 400 11.5px var(--ui); }
+.seat-row input[type=text] { flex: 1; min-width: 120px; font-family: var(--mono) !important; }
+.seat-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.seat-code { display: inline-flex !important; align-items: center; gap: 5px; margin: 0 0 0 auto !important; font: 400 11px var(--ui) !important; color: var(--text-2) !important; white-space: nowrap; }
+.seat-move { display: inline-flex; }
+.seat-add { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.collab-msg.lookup { background: transparent; border-style: dashed; max-width: 760px; margin-left: 24px; }
+.collab-msg.lookup .collab-text { font-size: 11.5px; color: var(--text-3); }

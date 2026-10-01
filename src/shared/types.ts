@@ -231,8 +231,23 @@ export interface CollabModel {
   model: string; // the CLI's model id
 }
 
+/** A seat in a room as the user configures it. */
+export interface CollabParticipantSpec {
+  key?: string; // an existing participant's key; omitted for a new seat
+  label: string;
+  agent: AgentKind;
+  model: string;
+  effort: string | null; // the CLI's effort / reasoning level; null = its default
+  readsCode: boolean; // may read the room's repository
+}
+
 export interface CollabParticipant extends CollabModel {
+  effort: string | null;
+  readsCode: boolean;
+  removed?: boolean; // left the room; kept so its past messages keep their name
+  color: number; // palette slot, stable for the room's life
   conversationId: string | null; // the model's own CLI conversation, resumed every turn
+  lookupConversationId?: string | null; // a code reader's separate thread for answering others' questions
   lastSeen: number; // index into messages: everything before it has been shown to this model
 }
 
@@ -243,7 +258,8 @@ export interface CollabMessage {
   round: number; // 0 for the brief and messages between rounds
   at: number;
   stance?: "agree" | "continue"; // a model's closing STANCE line
-  kind?: "plan" | "error";
+  kind?: "plan" | "error" | "lookup"; // lookup: a code reader answering another model's question
+  askedBy?: string; // lookup: the participant who asked
 }
 
 export interface CollabRoom {

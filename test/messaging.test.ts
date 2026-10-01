@@ -19,6 +19,7 @@ const live = [
 const delivered: { to: string; text: string; submit: boolean }[] = [];
 const loops: string[] = [];
 let submit = true;
+let relay: Messaging;
 const launch = mcpLaunch("front");
 const sock = launch.env.MOCKINGBIRD_SOCK;
 
@@ -42,7 +43,8 @@ beforeAll(async () => {
       return sub ? "delivered" : "placed in its prompt for the user to send";
     },
   };
-  new Messaging(fakeSessions as any, () => submit, (a, b) => loops.push(`${a.id}->${b.id}`)).start();
+  relay = new Messaging(fakeSessions as any, () => submit, (a, b) => loops.push(`${a.id}->${b.id}`));
+  relay.start();
   for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise((r) => setTimeout(r, 20));
 });
 afterAll(() => fs.rmSync(sock, { force: true }));
@@ -105,6 +107,18 @@ describe("relay", () => {
   });
 });
 
+describe("room requests", () => {
+  it("are routed to Collaborate by their collab-<room>.<seat> tag", async () => {
+    const seen: any[] = [];
+    relay.setRoomHandler(async (room, seat, op, args) => {
+      seen.push([room, seat, op, args]);
+      return { result: "found it in src/x.ts" };
+    });
+    expect(await ask({ op: "ask_code_reader", from: "collab-r1.fable", args: { question: "where?" } })).toEqual({ result: "found it in src/x.ts" });
+    expect(seen).toEqual([["r1", "fable", "ask_code_reader", { question: "where?" }]]);
+  });
+});
+
 describe("MCP server script", () => {
   it("speaks JSON-RPC over stdio and relays tool calls", async () => {
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env } });
@@ -126,6 +140,15 @@ describe("MCP server script", () => {
     expect(JSON.parse(byId[3].result.content[0].text).you.id).toBe("front");
     expect(byId[4].result).toMatchObject({ isError: true, content: [{ text: "That is your own session." }] });
     expect(byId[5].error.code).toBe(-32601);
+  });
+  it("offers a room model only the ask_code_reader tool", async () => {
+    const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SESSION: "collab-r1.fable" } });
+    let out = "";
+    p.stdout.on("data", (d) => (out += d));
+    p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
+    await new Promise((r) => setTimeout(r, 800));
+    p.kill();
+    expect(JSON.parse(out.trim()).result.tools.map((t: any) => t.name)).toEqual(["ask_code_reader"]);
   });
   it("explains itself when the app isn't running", async () => {
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SOCK: "/tmp/mb-no-such.sock" } });

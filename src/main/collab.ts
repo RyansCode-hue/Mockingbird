@@ -3,10 +3,12 @@ import * as os from "os";
 import * as path from "path";
 import { randomUUID } from "crypto";
 import type {
+  AgentKind,
   CollabMessage,
   CollabMode,
   CollabModel,
   CollabParticipant,
+  CollabParticipantSpec,
   CollabRoom,
   NewSessionRequest,
   SessionInfo,
@@ -14,6 +16,7 @@ import type {
 import { MB_DIR } from "./store";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
+import { mcpLaunch, type McpLaunch } from "./messaging";
 
 /** The models a room can seat; each runs through the CLI and plan the user already has. */
 export const COLLAB_MODELS: CollabModel[] = [
@@ -22,14 +25,49 @@ export const COLLAB_MODELS: CollabModel[] = [
   { key: "fable", label: "Claude Fable 5.1", agent: "claude", model: "claude-fable-5-1" },
 ];
 
+/** Effort levels each CLI accepts (Claude's --effort, Codex's model_reasoning_effort). */
+export const COLLAB_EFFORTS: Record<AgentKind, string[]> = {
+  claude: ["low", "medium", "high", "xhigh", "max"],
+  codex: ["minimal", "low", "medium", "high", "xhigh"],
+};
+
 const DEFAULT_ROUNDS: Record<CollabMode, number> = { step: 1, auto: 3, consensus: 6 };
+const PALETTE_SIZE = 6;
+const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]{0,80}$/;
+
+const active = (room: CollabRoom) => room.participants.filter((p) => !p.removed);
+
+/** Who's in the room and who can read the code — repeated each turn, since it can change. */
+function rosterLine(room: CollabRoom, p: CollabParticipant): string {
+  const others = active(room).filter((x) => x.key !== p.key);
+  const readers = active(room).filter((x) => x.readsCode && room.repoPath);
+  const access = !room.repoPath
+    ? "There's no repository for this discussion."
+    : p.readsCode
+      ? `You can read the repository at ${room.repoPath} (you're in it) — ${
+          p.agent === "codex" ? "read and search it with shell commands like cat, ls, rg and git log" : "read and search it with your file tools"
+        }. Don't change anything: nothing is edited until the user approves a plan. MCP and app tools are switched off in this discussion.`
+      : codeReaderFor(room, p.key)
+      ? `There's a repository, but you can't read it yourself. When something depends on the code, call the ask_code_reader tool: ${codeReaderFor(room, p.key)!.label} looks it up and the answer comes back within your turn.`
+      : "There's a repository, but nobody in the room can read it right now.";
+  return `In the room: ${others.map((o) => o.label + (room.repoPath && o.readsCode ? " (reads the code)" : "")).join(", ") || "only you"}. ${access}`;
+}
 
 /** One model turn. Throws when the CLI fails; the room records it and moves on. */
 export type TurnRunner = (
   p: CollabParticipant,
   prompt: string,
-  ctx: { cwd: string; signal: AbortSignal; tag: string }
+  // askTool: give this model the ask_code_reader tool (it can't read the repo, someone else can)
+  ctx: { cwd: string; signal: AbortSignal; tag: string; askTool: boolean }
 ) => Promise<{ text: string; conversationId: string }>;
+
+const MAX_LOOKUPS_PER_TURN = 4;
+const MAX_QUESTION = 4000;
+
+/** The seat a non-reader's questions go to: the first model in speaking order that reads the code. */
+function codeReaderFor(room: CollabRoom, askerKey: string): CollabParticipant | undefined {
+  return room.repoPath ? active(room).find((x) => x.readsCode && x.key !== askerKey) : undefined;
+}
 
 const STANCE_RE = /\n?\s*STANCE:\s*(AGREE|CONTINUE)\b[^\n]*\s*$/i;
 
@@ -47,7 +85,11 @@ function speakerName(room: CollabRoom, speaker: string): string {
 
 function transcriptLines(room: CollabRoom, msgs: CollabMessage[]): string {
   return msgs
-    .map((m) => `[${speakerName(room, m.speaker)}]${m.stance ? ` (stance: ${m.stance})` : ""}\n${m.text}`)
+    .map((m) =>
+      m.kind === "lookup"
+        ? `[${speakerName(room, m.speaker)} answering ${speakerName(room, m.askedBy ?? "")}'s code question]\n${m.text}`
+        : `[${speakerName(room, m.speaker)}]${m.stance ? ` (stance: ${m.stance})` : ""}\n${m.text}`
+    )
     .join("\n\n");
 }
 
@@ -55,17 +97,16 @@ function transcriptLines(room: CollabRoom, msgs: CollabMessage[]): string {
 export function buildPrompt(room: CollabRoom, p: CollabParticipant, extra?: string): string {
   const unseen = room.messages
     .slice(p.lastSeen)
-    .filter((m) => m.speaker !== p.key && m.speaker !== "system" && m.kind !== "error");
+    // a model's own words aren't repeated back — except lookups, which a reader
+    // answered in its separate lookup thread; and a lookup this model asked for
+    // was already answered inside its own turn
+    .filter((m) => (m.speaker !== p.key || m.kind === "lookup") && m.speaker !== "system" && m.kind !== "error" && m.askedBy !== p.key);
   const parts: string[] = [];
   if (!p.conversationId) {
-    const others = room.participants.filter((x) => x.key !== p.key).map((x) => x.label);
     parts.push(
-      `You are ${p.label}, one of ${room.participants.length} AI models in a discussion that Mockingbird is running for the user, who moderates. ` +
-        (others.length ? `The others are ${others.join(" and ")}. ` : "") +
-        "Turns go round-robin; you'll see what each of them says.",
-      room.repoPath
-        ? `You are in the repository at ${room.repoPath}. Read and search it to ground what you say. Don't edit files or run commands — nothing is changed until the user approves a plan.`
-        : "There's no repository for this discussion; work from the brief.",
+      `You are ${p.label}, one of ${active(room).length} AI models in a discussion that Mockingbird is running for the user, who moderates. ` +
+        "Turns go round-robin; you'll see what each of the others says. Models may join or leave along the way.",
+      rosterLine(room, p),
       [
         "How to take part:",
         "- Build on, challenge or refine what the others said. Be concrete; disagree when you disagree.",
@@ -78,6 +119,7 @@ export function buildPrompt(room: CollabRoom, p: CollabParticipant, extra?: stri
     const sofar = unseen.filter((m) => m !== room.messages[0]); // the brief is already above
     if (sofar.length) parts.push(`The discussion so far:\n\n${transcriptLines(room, sofar)}`);
   } else {
+    parts.push(rosterLine(room, p));
     parts.push(unseen.length ? `New since your last turn:\n\n${transcriptLines(room, unseen)}` : "Nobody has spoken since your last turn.");
   }
   parts.push(extra ?? "It's your turn.");
@@ -94,6 +136,7 @@ const SYNTH_INSTRUCTION =
 export class CollabRooms {
   private rooms = new Map<string, CollabRoom>();
   private aborts = new Map<string, AbortController>();
+  private lookups = new Map<string, number>(); // `${room}.${seat}.${round}` → questions asked this turn
 
   constructor(
     private dir: string,
@@ -110,6 +153,11 @@ export class CollabRooms {
         // a turn in flight when the app quit is lost; the room waits for the user
         room.running = false;
         room.speaking = null;
+        room.participants.forEach((p, i) => {
+          p.effort ??= null;
+          p.readsCode ??= true;
+          p.color ??= i % PALETTE_SIZE;
+        });
         this.rooms.set(room.id, room);
       } catch (err) {
         console.error(`collab: skipping unreadable room ${f}:`, err);
@@ -127,18 +175,17 @@ export class CollabRooms {
     return room;
   }
 
-  create(spec: { title: string; brief: string; repoPath: string | null; models: string[]; mode?: CollabMode }): CollabRoom {
+  create(spec: { title: string; brief: string; repoPath: string | null; participants: CollabParticipantSpec[]; mode?: CollabMode }): CollabRoom {
     const brief = spec.brief.trim();
     if (!brief) throw new Error("Describe the idea or feature to discuss");
-    const models = spec.models.map((k) => COLLAB_MODELS.find((m) => m.key === k)).filter((m): m is CollabModel => !!m);
-    if (models.length < 2) throw new Error("Pick at least two models");
+    if (spec.participants.length < 2) throw new Error("Pick at least two models");
     const mode = spec.mode ?? "auto";
     const room: CollabRoom = {
       id: randomUUID().slice(0, 8),
       title: spec.title.trim() || brief.split("\n")[0].slice(0, 60),
       brief,
       repoPath: spec.repoPath,
-      participants: models.map((m) => ({ ...m, conversationId: null, lastSeen: 0 })),
+      participants: [],
       messages: [{ id: randomUUID().slice(0, 8), speaker: "you", text: brief, round: 0, at: Date.now() }],
       mode,
       maxRounds: DEFAULT_ROUNDS[mode],
@@ -149,7 +196,75 @@ export class CollabRooms {
       implementedIn: null,
       createdAt: Date.now(),
     };
+    for (const s of spec.participants) room.participants.push(this.seat(room, s));
     this.rooms.set(room.id, room);
+    this.save(room);
+    return room;
+  }
+
+  /** A new participant from a spec, validated, with its own key and color. */
+  private seat(room: CollabRoom, s: CollabParticipantSpec): CollabParticipant {
+    if (s.agent !== "claude" && s.agent !== "codex") throw new Error(`Unknown agent "${s.agent}"`);
+    const model = s.model.trim();
+    if (!MODEL_ID_RE.test(model)) throw new Error(`"${s.model}" isn't a valid model id`);
+    if (s.effort && !COLLAB_EFFORTS[s.agent].includes(s.effort)) {
+      throw new Error(`${s.effort} isn't an effort level ${s.agent === "codex" ? "Codex" : "Claude"} accepts`);
+    }
+    const used = new Set(room.participants.filter((p) => !p.removed).map((p) => p.color));
+    const color = [...Array(PALETTE_SIZE).keys()].find((c) => !used.has(c)) ?? room.participants.length % PALETTE_SIZE;
+    const preset = COLLAB_MODELS.find((m) => m.agent === s.agent && m.model === model);
+    let key = preset?.key ?? model.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    while (room.participants.some((p) => p.key === key)) key = `${key}-${randomUUID().slice(0, 4)}`;
+    return {
+      key,
+      label: s.label.trim() || preset?.label || model,
+      agent: s.agent,
+      model,
+      effort: s.effort || null,
+      readsCode: !!s.readsCode,
+      color,
+      conversationId: null,
+      lastSeen: 0,
+    };
+  }
+
+  /**
+   * Set the room's seats. Existing seats (by key) keep their conversation — effort
+   * and code access apply from their next turn; seats left out leave the room;
+   * new specs join and see the whole discussion on their first turn.
+   */
+  setParticipants(id: string, specs: CollabParticipantSpec[]): CollabRoom {
+    const room = this.get(id);
+    const kept = new Set(specs.filter((s) => s.key).map((s) => s.key));
+    if (specs.length < 1) throw new Error("A room needs at least one model");
+    const notes: string[] = [];
+    for (const p of room.participants) {
+      if (p.removed || kept.has(p.key)) continue;
+      p.removed = true;
+      notes.push(`${p.label} left the room.`);
+    }
+    for (const s of specs) {
+      const p = s.key ? room.participants.find((x) => x.key === s.key) : undefined;
+      if (!p) {
+        const seat = this.seat(room, s);
+        room.participants.push(seat);
+        notes.push(`${seat.label} joined${room.repoPath && seat.readsCode ? " and can read the code" : ""}.`);
+        continue;
+      }
+      if (s.effort && !COLLAB_EFFORTS[p.agent].includes(s.effort)) throw new Error(`${s.effort} isn't an effort level for ${p.label}`);
+      if (p.readsCode !== !!s.readsCode && room.repoPath) notes.push(`${p.label} ${s.readsCode ? "can now read" : "can no longer read"} the code.`);
+      p.removed = false;
+      p.effort = s.effort || null;
+      p.readsCode = !!s.readsCode;
+      if (s.label.trim()) p.label = s.label.trim();
+    }
+    // the speaking order follows the specs
+    const order = specs.map((s) => s.key);
+    room.participants.sort((a, b) => {
+      const ia = order.indexOf(a.key), ib = order.indexOf(b.key);
+      return (ia < 0 ? 1e9 : ia) - (ib < 0 ? 1e9 : ib);
+    });
+    for (const n of notes) this.note(room, n);
     this.save(room);
     return room;
   }
@@ -197,8 +312,10 @@ export class CollabRooms {
         const roundNo = room.round + 1;
         let agreed = 0;
         let failed = 0;
-        for (const p of room.participants) {
+        const seats = active(room);
+        for (const p of seats) {
           if (ac.signal.aborted) break;
+          if (p.removed) continue; // left the room mid-round
           const r = await this.turn(room, p, ac.signal, roundNo);
           if (r === "agree") agreed++;
           if (r === "error") failed++;
@@ -209,12 +326,12 @@ export class CollabRooms {
         }
         room.round = roundNo;
         rounds++;
-        if (failed === room.participants.length) {
+        if (failed === seats.length) {
           this.note(room, "Every model failed this round, so the room stopped. Check the errors above.");
           break;
         }
-        if (room.mode === "consensus" && agreed === room.participants.length) {
-          this.note(room, `All ${room.participants.length} models agree. Approve a proposal, or have one write up the plan.`);
+        if (room.mode === "consensus" && agreed === seats.length) {
+          this.note(room, `All ${seats.length} models agree. Approve a proposal, or have one write up the plan.`);
           break;
         }
         if (room.mode === "step") break;
@@ -238,7 +355,8 @@ export class CollabRooms {
     const shown = room.messages.length;
     const prompt = buildPrompt(room, p, extra);
     try {
-      const r = await this.runTurn(p, prompt, { cwd: this.cwdFor(room), signal, tag: `collab-${room.id}` });
+      const askTool = !!codeReaderFor(room, p.key) && !p.readsCode;
+      const r = await this.runTurn(p, prompt, { cwd: this.cwdFor(room, p), signal, tag: `collab-${room.id}.${p.key}`, askTool });
       if (signal.aborted) return "stopped" as const;
       p.conversationId = r.conversationId;
       p.lastSeen = shown;
@@ -256,11 +374,71 @@ export class CollabRooms {
     }
   }
 
+  /** A request from a room model's MCP tool (tagged collab-<room>.<seat>). */
+  async handleRoomRequest(roomId: string, seatKey: string, op: string, args: Record<string, unknown>): Promise<{ result: unknown } | { error: string }> {
+    if (op !== "ask_code_reader") return { error: `Unknown tool: ${op}` };
+    try {
+      return { result: await this.askCodeReader(roomId, seatKey, String(args.question ?? "")) };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * A model that can't read the code asks one that can. The reader answers in its
+   * own lookup thread (so the discussion isn't cluttered and it keeps what it has
+   * learned of the codebase), and the exchange is added to the transcript.
+   */
+  async askCodeReader(roomId: string, askerKey: string, question: string): Promise<string> {
+    const room = this.get(roomId);
+    const asker = active(room).find((p) => p.key === askerKey);
+    if (!asker) throw new Error("You're no longer in this room.");
+    const q = question.trim();
+    if (!q) throw new Error("The question is empty.");
+    if (q.length > MAX_QUESTION) throw new Error(`The question is ${q.length} characters; keep it under ${MAX_QUESTION}.`);
+    const reader = codeReaderFor(room, askerKey);
+    if (!reader) throw new Error("Nobody in this room can read the code right now.");
+    const roundNo = room.round + 1;
+    const countKey = `${room.id}.${askerKey}.${roundNo}`;
+    const asked = this.lookups.get(countKey) ?? 0;
+    if (asked >= MAX_LOOKUPS_PER_TURN) {
+      throw new Error(`That's ${MAX_LOOKUPS_PER_TURN} questions this turn — finish your turn with what you have, or ask again next round.`);
+    }
+    this.lookups.set(countKey, asked + 1);
+
+    const seat: CollabParticipant = { ...reader, conversationId: reader.lookupConversationId ?? null };
+    const prompt = reader.lookupConversationId
+      ? `Question from ${asker.label}:\n${q}`
+      : [
+          `You are ${reader.label}, the code reader for a discussion Mockingbird is running about:\n${room.brief}`,
+          `The other models can't read the repository at ${room.repoPath}; they send you questions about it. Answer from the code itself: ` +
+            `${reader.agent === "codex" ? "search and read it with shell commands like rg, cat, ls and git log" : "search and read it with your file tools"}, ` +
+            "give file paths (and line numbers where useful), quote short snippets when they help, and say plainly when something isn't there. " +
+            "Your answer goes straight back to the asker mid-turn: be direct and complete, under about 250 words. Don't change anything.",
+          `Question from ${asker.label}:\n${q}`,
+        ].join("\n\n");
+    const signal = this.aborts.get(room.id)?.signal ?? new AbortController().signal;
+    const r = await this.runTurn(seat, prompt, { cwd: room.repoPath!, signal, tag: `collab-${room.id}.${reader.key}`, askTool: false });
+    reader.lookupConversationId = r.conversationId;
+    const answer = r.text.trim();
+    room.messages.push({
+      id: randomUUID().slice(0, 8),
+      speaker: reader.key,
+      askedBy: asker.key,
+      kind: "lookup",
+      text: `${asker.label} asked: ${q}\n\n${answer}`,
+      round: roundNo,
+      at: Date.now(),
+    });
+    this.save(room);
+    return answer;
+  }
+
   /** Ask one model to write the discussion up as a plan, for the user to approve. */
   async synthesize(id: string, key: string): Promise<CollabRoom> {
     const room = this.get(id);
     if (room.running) throw new Error("Wait for the current round to finish, or stop it");
-    const p = room.participants.find((x) => x.key === key);
+    const p = active(room).find((x) => x.key === key);
     if (!p) throw new Error("That model isn't in this room");
     const ac = new AbortController();
     this.aborts.set(id, ac);
@@ -295,8 +473,8 @@ export class CollabRooms {
     const room = this.get(id);
     if (!room.plan?.approved) throw new Error("Approve a plan first");
     if (!room.repoPath) throw new Error("This room has no repository to implement in");
-    const m = COLLAB_MODELS.find((x) => x.key === key);
-    if (!m) throw new Error("Unknown model");
+    const m = active(room).find((x) => x.key === key);
+    if (!m) throw new Error("That model isn't in this room");
     const slug = room.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || room.id;
     const info = this.startSession({
       repoPath: room.repoPath,
@@ -305,10 +483,11 @@ export class CollabRooms {
       baseBranch: this.defaultBase(room.repoPath) ?? undefined,
       agent: m.agent,
       model: m.model,
+      ...(m.effort ? { effort: m.effort } : {}),
       taskGroup: "Collaborate",
       title: `Collab — ${room.title}`,
       initialPrompt:
-        `Implement this plan. It was worked out by ${room.participants.map((p) => p.label).join(", ")} ` +
+        `Implement this plan. It was worked out by ${active(room).map((p) => p.label).join(", ")} ` +
         `in a Mockingbird Collaborate room and approved by the user.\n\n${room.plan.text}`,
     });
     room.implementedIn = info.id;
@@ -321,8 +500,9 @@ export class CollabRooms {
     room.messages.push({ id: randomUUID().slice(0, 8), speaker: "system", text, round: room.round, at: Date.now() });
   }
 
-  private cwdFor(room: CollabRoom): string {
-    if (room.repoPath) return room.repoPath;
+  /** Models that read the code run in the repo; the rest in the room's own empty folder. */
+  private cwdFor(room: CollabRoom, p: CollabParticipant): string {
+    if (room.repoPath && p.readsCode) return room.repoPath;
     const d = path.join(this.dir, room.id);
     fs.mkdirSync(d, { recursive: true });
     return d;
@@ -339,24 +519,67 @@ export class CollabRooms {
 }
 
 /**
+ * One read-only Claude turn; a seat without code access can't read files either.
+ * --strict-mcp-config with no --mcp-config leaves no MCP servers: their tools can
+ * act outside the folder (post messages, change other systems).
+ */
+export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLaunch): string {
+  return [
+    quote(bin),
+    "-p",
+    "--model", quote(p.model),
+    "--output-format", "json",
+    "--strict-mcp-config",
+    // the one MCP tool a room allows: asking the code reader
+    ...(ask
+      ? ["--mcp-config", quote(JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...ask } } })), "--allowedTools", "mcp__mockingbird__ask_code_reader"]
+      : []),
+    ...(p.conversationId ? ["--resume", quote(p.conversationId)] : []),
+    ...(p.effort ? ["--effort", quote(p.effort)] : []),
+    "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash",
+    ...(p.readsCode ? [] : ["Read", "Grep", "Glob", "LS"]),
+  ].join(" ");
+}
+
+/**
+ * One read-only Codex turn; its reply is written to `lastFile`. Headless Codex
+ * can't ask for approval, so in a folder it doesn't trust it refuses even to
+ * read; approval_policy=never lets it act within the sandbox, and the
+ * read-only sandbox is what keeps it from writing. Apps, plugins and MCP
+ * servers are switched off — their tools act outside the sandbox — and any MCP
+ * call that slips through needs approval, which "never" refuses.
+ */
+export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: string, ask?: McpLaunch): string {
+  // the one MCP tool a room allows: asking the code reader (pre-approved; a lookup can take minutes)
+  const askFlags = ask
+    ? [
+        `mcp_servers.mockingbird.command=${JSON.stringify(ask.command)}`,
+        `mcp_servers.mockingbird.args=${JSON.stringify(ask.args)}`,
+        `mcp_servers.mockingbird.env={${Object.entries(ask.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")}}`,
+        'mcp_servers.mockingbird.default_tools_approval_mode="approve"',
+        "mcp_servers.mockingbird.tool_timeout_sec=600",
+      ].map((c) => `-c ${quote(c)} `).join("")
+    : "";
+  const flags =
+    (p.effort ? `-c ${quote(`model_reasoning_effort="${p.effort}"`)} ` : "") +
+    `--disable apps --disable plugins -c ${quote("mcp_servers={}")} ${askFlags}-c ${quote('approval_policy="never"')} `;
+  return p.conversationId
+    ? `${quote(bin)} exec resume ${quote(p.conversationId)} ${flags}--json --skip-git-repo-check -o ${quote(lastFile)} -`
+    : `${quote(bin)} exec ${flags}--json --skip-git-repo-check -s read-only -m ${quote(p.model)} -o ${quote(lastFile)} -`;
+}
+
+/**
  * Real turns through the CLIs, read-only. The tag is exported as
  * MOCKINGBIRD_SESSION so these runs' hook events are never mistaken for a pane's.
  */
 export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): TurnRunner {
-  return async (p, prompt, { cwd, signal, tag }) => {
+  return async (p, prompt, { cwd, signal, tag, askTool }) => {
     const env = { ...paneEnv(), MOCKINGBIRD_SESSION: tag };
+    const ask = askTool ? mcpLaunch(tag) : undefined;
     const bin = binFor(p.agent);
     if (!bin.includes("/")) throw new Error(`${p.agent} isn't installed`);
     if (p.agent === "claude") {
-      const cmd = [
-        quote(bin),
-        "-p",
-        "--model", quote(p.model),
-        "--output-format", "json",
-        ...(p.conversationId ? ["--resume", quote(p.conversationId)] : []),
-        "--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash",
-      ].join(" ");
-      const r = await userShellWithInput(cmd, prompt, { cwd, env, signal });
+      const r = await userShellWithInput(claudeTurnCommand(bin, p, ask), prompt, { cwd, env, signal });
       let out: any;
       try {
         out = JSON.parse(r.out);
@@ -369,10 +592,7 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mb-collab-"));
     const last = path.join(tmp, "reply.txt");
     try {
-      const cmd = p.conversationId
-        ? `${quote(bin)} exec resume ${quote(p.conversationId)} --json --skip-git-repo-check -o ${quote(last)} -`
-        : `${quote(bin)} exec --json --skip-git-repo-check -s read-only -m ${quote(p.model)} -o ${quote(last)} -`;
-      const r = await userShellWithInput(cmd, prompt, { cwd, env, signal });
+      const r = await userShellWithInput(codexTurnCommand(bin, p, last, ask), prompt, { cwd, env, signal });
       const thread = /"thread_id":"([^"]+)"/.exec(r.out)?.[1] ?? p.conversationId;
       let text = "";
       try {

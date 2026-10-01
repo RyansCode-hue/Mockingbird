@@ -12,7 +12,7 @@ import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
-import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, cliTurnRunner } from "./collab";
+import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
 import { userShell, whichSync, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
@@ -211,7 +211,7 @@ app.whenReady().then(() => {
   sessions.onChanged = updateTray;
   updateTray();
   setInterval(updateTray, 60_000); // keep wait durations in the dropdown fresh
-  new Messaging(
+  const messaging = new Messaging(
     sessions,
     () => store.settings.agentMessagesSubmit !== false,
     (from, to) =>
@@ -220,7 +220,9 @@ app.whenReady().then(() => {
         "Agents paused messaging",
         `${from.ticketTitle ?? from.title} ↔ ${to.ticketTitle ?? to.title} hit the message limit — check on them`
       )
-  ).start();
+  );
+  messaging.start();
+  messaging.setRoomHandler((roomId, seat, op, args) => collab.handleRoomRequest(roomId, seat, op, args));
   // the plan name isn't in Claude's statusline payload; `claude auth status` has it
   void (async () => {
     const bin = sessions.binFor("claude");
@@ -369,7 +371,8 @@ const collab = new CollabRooms(
   (req) => sessions.create(req),
   (repo) => listBranches(repo).defaultBase
 );
-ipcMain.handle("collab:models", () => COLLAB_MODELS);
+ipcMain.handle("collab:models", () => ({ presets: COLLAB_MODELS, efforts: COLLAB_EFFORTS }));
+ipcMain.handle("collab:participants", (_e, id, specs) => safe("collab:participants", () => collab.setParticipants(id, specs))());
 ipcMain.handle("collab:list", () => safe("collab:list", () => collab.list())());
 ipcMain.handle("collab:create", (_e, spec) => safe("collab:create", () => collab.create(spec))());
 ipcMain.handle("collab:delete", (_e, id) => safe("collab:delete", () => collab.delete(id))());

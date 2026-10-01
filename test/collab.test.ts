@@ -2,7 +2,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { CollabRooms, buildPrompt, parseStance, type TurnRunner } from "../src/main/collab";
+import { CollabRooms, COLLAB_MODELS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
+import type { CollabParticipantSpec } from "../src/shared/types";
 import type { CollabRoom } from "../src/shared/types";
 
 /** A runner whose replies come from a script: reply(modelKey, turnNumberForThatModel, prompt). */
@@ -20,9 +21,15 @@ function rooms(reply: (key: string, n: number, prompt: string) => string | Error
   const startSession = vi.fn((req: any) => ({ id: "sess1", ...req }) as any);
   const dir = fs.mkdtempSync(path.join(os.homedir(), "collab-"));
   const c = new CollabRooms(dir, runTurn, () => {}, startSession, () => "dev");
-  const make = (over: object = {}) => c.create({ title: "Export feature", brief: "Design CSV export", repoPath: null, models: ["gpt6", "opus", "fable"], ...over });
+  const make = (over: object = {}) => c.create({ title: "Export feature", brief: "Design CSV export", repoPath: null, participants: specs("gpt6", "opus", "fable"), ...over });
   return { c, make, prompts, startSession, dir };
 }
+/** Preset seats by key, all reading code. */
+const specs = (...keys: string[]): CollabParticipantSpec[] =>
+  keys.map((k) => {
+    const m = COLLAB_MODELS.find((x) => x.key === k)!;
+    return { label: m.label, agent: m.agent, model: m.model, effort: null, readsCode: true };
+  });
 const said = (room: CollabRoom) => room.messages.filter((m) => m.speaker !== "you" && m.speaker !== "system").map((m) => `${m.round}:${m.speaker}`);
 
 describe("parseStance", () => {
@@ -36,8 +43,8 @@ describe("parseStance", () => {
 describe("rooms", () => {
   it("needs a brief and at least two models", () => {
     const { c } = rooms();
-    expect(() => c.create({ title: "", brief: " ", repoPath: null, models: ["gpt6", "opus"] })).toThrow(/Describe/);
-    expect(() => c.create({ title: "", brief: "x", repoPath: null, models: ["gpt6"] })).toThrow(/two models/);
+    expect(() => c.create({ title: "", brief: " ", repoPath: null, participants: specs("gpt6", "opus") })).toThrow(/Describe/);
+    expect(() => c.create({ title: "", brief: "x", repoPath: null, participants: specs("gpt6") })).toThrow(/two models/);
   });
   it("goes round-robin; step mode runs one round", async () => {
     const { c, make } = rooms();
@@ -120,7 +127,8 @@ describe("what each model is told", () => {
     c.send(room.id, "Keep it under 50 lines please");
     await vi.waitFor(() => expect(room.round).toBe(2));
     const gptSecond = prompts.filter((p) => p.key === "gpt6")[1].prompt;
-    expect(gptSecond).toMatch(/^New since your last turn:/);
+    expect(gptSecond).toMatch(/^In the room: Claude Opus 5.5, Claude Fable 5.1\. There's no repository/);
+    expect(gptSecond).toMatch(/\n\nNew since your last turn:/);
     expect(gptSecond).toMatch(/\[Claude Opus 5.5\]/);
     expect(gptSecond).toMatch(/\[User\]\nKeep it under 50 lines please/);
     expect(gptSecond).not.toMatch(/gpt6 thoughts/); // its own words aren't repeated back
@@ -129,7 +137,7 @@ describe("what each model is told", () => {
   it("mentions the repo only when the room has one", () => {
     const { make } = rooms();
     const withRepo = make({ repoPath: "/code/app" });
-    expect(buildPrompt(withRepo, withRepo.participants[0])).toMatch(/You are in the repository at \/code\/app.*Don't edit files/s);
+    expect(buildPrompt(withRepo, withRepo.participants[0])).toMatch(/You can read the repository at \/code\/app.*shell commands like cat.*Don't change anything.*MCP and app tools are switched off/s);
   });
 });
 
@@ -169,5 +177,184 @@ describe("plans and implementation", () => {
     );
     expect(startSession.mock.calls.at(-1)![0].initialPrompt).toMatch(/approved by the user\.\n\nopus thoughts$/);
     expect(room.implementedIn).toBe("sess1");
+  });
+});
+
+describe("seats: adding, removing, effort and code access", () => {
+  const seat = (room: CollabRoom, key: string) => room.participants.find((p) => p.key === key)!;
+  const asSpecs = (room: CollabRoom) =>
+    room.participants.filter((p) => !p.removed).map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, readsCode: p.readsCode }));
+
+  it("takes any Claude or Codex model id, with a valid effort for that CLI", () => {
+    const { c } = rooms();
+    const room = c.create({
+      title: "t", brief: "b", repoPath: null,
+      participants: [
+        { label: "", agent: "claude", model: "claude-sonnet-5", effort: "max", readsCode: true },
+        { label: "Fast GPT", agent: "codex", model: "gpt-6-astra-mini", effort: "minimal", readsCode: false },
+      ],
+    });
+    expect(room.participants.map((p) => [p.key, p.label, p.effort, p.color])).toEqual([
+      ["claude-sonnet-5", "claude-sonnet-5", "max", 0],
+      ["gpt-6-astra-mini", "Fast GPT", "minimal", 1],
+    ]);
+    expect(() => c.create({ title: "", brief: "b", repoPath: null, participants: [...specs("opus"), { label: "", agent: "codex", model: "x", effort: "max", readsCode: true }] })).toThrow(/max isn't an effort level Codex accepts/);
+    expect(() => c.create({ title: "", brief: "b", repoPath: null, participants: [...specs("opus"), { label: "", agent: "claude", model: "a b; rm", effort: null, readsCode: true }] })).toThrow(/isn't a valid model id/);
+  });
+  it("a model added mid-discussion catches up on everything on its first turn", async () => {
+    const { c, make, prompts } = rooms();
+    const room = make({ mode: "step", participants: specs("gpt6", "opus") });
+    await c.run(room.id);
+    c.setParticipants(room.id, [...asSpecs(room), ...specs("fable")]);
+    expect(room.messages.at(-1)!.text).toBe("Claude Fable 5.1 joined and can read the code.".replace(" and can read the code", ""));
+    await c.run(room.id);
+    const first = prompts.find((p) => p.key === "fable")!.prompt;
+    expect(first).toMatch(/You are Claude Fable 5.1, one of 3 AI models/);
+    expect(first).toMatch(/\[GPT-6 Astra\][\s\S]*\[Claude Opus 5.5\][\s\S]*\[GPT-6 Astra\]/); // round 1 and round 2 so far
+    expect(said(room)).toEqual(["1:gpt6", "1:opus", "2:gpt6", "2:opus", "2:fable"]);
+  });
+  it("a removed model stops taking turns but keeps its name on what it said", async () => {
+    const { c, make } = rooms();
+    const room = make({ mode: "step" });
+    await c.run(room.id);
+    c.setParticipants(room.id, asSpecs(room).filter((s) => s.key !== "opus"));
+    expect(room.messages.at(-1)!.text).toBe("Claude Opus 5.5 left the room.");
+    await c.run(room.id);
+    expect(said(room)).toEqual(["1:gpt6", "1:opus", "1:fable", "2:gpt6", "2:fable"]);
+    expect(seat(room, "opus")).toMatchObject({ removed: true, label: "Claude Opus 5.5" });
+  });
+  it("changing effort keeps the model's conversation; the new effort applies next turn", async () => {
+    const { c, make } = rooms();
+    const room = make({ mode: "step" });
+    await c.run(room.id);
+    c.setParticipants(room.id, asSpecs(room).map((s) => (s.key === "opus" ? { ...s, effort: "xhigh" } : s)));
+    expect(seat(room, "opus")).toMatchObject({ effort: "xhigh", conversationId: "opus-conv" });
+    expect(() => c.setParticipants(room.id, asSpecs(room).map((s) => (s.key === "gpt6" ? { ...s, effort: "max" } : s)))).toThrow(/max isn't an effort level for GPT-6 Astra/);
+  });
+  it("speaking order follows the order given", async () => {
+    const { c, make } = rooms();
+    const room = make({ mode: "step" });
+    c.setParticipants(room.id, asSpecs(room).reverse());
+    await c.run(room.id);
+    expect(said(room)).toEqual(["1:fable", "1:opus", "1:gpt6"]);
+  });
+  it("only code readers run in the repo; everyone is told who can read it", async () => {
+    const cwds: Record<string, string> = {};
+    const prompts: Record<string, string> = {};
+    const runTurn: TurnRunner = async (p, prompt, ctx) => {
+      cwds[p.key] = ctx.cwd;
+      prompts[p.key] = prompt;
+      return { text: "ok\nSTANCE: CONTINUE — x", conversationId: "c" };
+    };
+    const c = new CollabRooms(fs.mkdtempSync(path.join(os.homedir(), "collab-")), runTurn, () => {}, vi.fn(), () => null);
+    const room = c.create({ title: "t", brief: "b", repoPath: "/code/app", participants: specs("gpt6", "opus").map((s, i) => ({ ...s, readsCode: i === 0 })), mode: "step" });
+    await c.run(room.id);
+    expect(cwds.gpt6).toBe("/code/app");
+    expect(cwds.opus).not.toBe("/code/app");
+    expect(prompts.opus).toMatch(/you can't read it yourself\. When something depends on the code, call the ask_code_reader tool: GPT-6 Astra looks it up/);
+    expect(prompts.gpt6).toMatch(/In the room: Claude Opus 5.5\. You can read the repository/);
+    c.setParticipants(room.id, room.participants.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: null, readsCode: true })));
+    expect(room.messages.at(-1)!.text).toBe("Claude Opus 5.5 can now read the code.");
+  });
+  it("a room from the previous build loads with everyone reading code at default effort", () => {
+    const dir = fs.mkdtempSync(path.join(os.homedir(), "collab-"));
+    const old = { id: "old1", title: "t", brief: "b", repoPath: null, messages: [], mode: "step", maxRounds: 1, round: 0, running: false, speaking: null, plan: null, implementedIn: null, createdAt: 1,
+      participants: [{ key: "opus", label: "Claude Opus 5.5", agent: "claude", model: "claude-opus-5-5", conversationId: null, lastSeen: 0 }] };
+    fs.writeFileSync(path.join(dir, "old1.json"), JSON.stringify(old));
+    const c = new CollabRooms(dir, async () => ({ text: "", conversationId: "" }), () => {}, vi.fn(), () => null);
+    expect(c.get("old1").participants[0]).toMatchObject({ effort: null, readsCode: true, color: 0 });
+  });
+  it("implementing uses the chosen seat's model and effort", async () => {
+    const { c, startSession } = rooms();
+    const room = c.create({ title: "t", brief: "b", repoPath: "/code/app", mode: "step", participants: [...specs("gpt6"), { ...specs("opus")[0], effort: "high" }] });
+    await c.run(room.id);
+    c.approve(room.id, room.messages.find((m) => m.speaker === "gpt6")!.id);
+    c.implement(room.id, "opus");
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agent: "claude", model: "claude-opus-5-5", effort: "high" }));
+  });
+});
+
+describe("CLI commands", () => {
+  const base = { key: "k", label: "L", color: 0, lastSeen: 0, conversationId: null as string | null };
+  it("Claude: model, effort, resume; never edits; no file tools without code access", () => {
+    const reader = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5", effort: "max", readsCode: true, conversationId: "abc" });
+    expect(reader).toBe("'/bin/claude' -p --model 'claude-opus-5-5' --output-format json --strict-mcp-config --resume 'abc' --effort 'max' --disallowedTools Edit Write MultiEdit NotebookEdit Bash");
+    const blind = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-fable-5-1", effort: null, readsCode: false });
+    expect(blind).toMatch(/--disallowedTools Edit Write MultiEdit NotebookEdit Bash Read Grep Glob LS$/);
+    expect(blind).not.toMatch(/--effort|--resume/);
+  });
+  it("Codex: read-only sandbox on the first turn, effort on every turn", () => {
+    const first = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: "high", readsCode: true }, "/tmp/r.txt");
+    expect(first).toBe(`'/bin/codex' exec -c 'model_reasoning_effort="high"' --disable apps --disable plugins -c 'mcp_servers={}' -c 'approval_policy="never"' --json --skip-git-repo-check -s read-only -m 'gpt-6-astra' -o '/tmp/r.txt' -`);
+    const later = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra", effort: null, readsCode: true, conversationId: "t1" }, "/tmp/r.txt");
+    expect(later).toBe(`'/bin/codex' exec resume 't1' --disable apps --disable plugins -c 'mcp_servers={}' -c 'approval_policy="never"' --json --skip-git-repo-check -o '/tmp/r.txt' -`);
+  });
+});
+
+describe("asking the code reader", () => {
+  function lookupRoom(reply: (key: string, prompt: string, ctx: any) => string = (k) => `${k}\nSTANCE: CONTINUE — x`) {
+    const calls: { key: string; prompt: string; ctx: any; conv: string | null }[] = [];
+    const runTurn: TurnRunner = async (p, prompt, ctx) => {
+      calls.push({ key: p.key, prompt, ctx, conv: p.conversationId });
+      return { text: reply(p.key, prompt, ctx), conversationId: `${p.key}-${prompt.startsWith("You are") && prompt.includes("code reader") ? "lookup" : "main"}` };
+    };
+    const c = new CollabRooms(fs.mkdtempSync(path.join(os.homedir(), "collab-")), runTurn, () => {}, vi.fn(), () => null);
+    const room = c.create({
+      title: "t", brief: "Design CSV export", repoPath: "/code/app", mode: "step",
+      participants: [{ ...specs("gpt6")[0], readsCode: true }, { ...specs("fable")[0], readsCode: false }],
+    });
+    return { c, room, calls };
+  }
+
+  it("only models without code access get the tool, and only when someone can read", async () => {
+    const { c, room, calls } = lookupRoom();
+    await c.run(room.id);
+    expect(calls.map((x) => [x.key, x.ctx.askTool, x.ctx.tag])).toEqual([
+      ["gpt6", false, `collab-${room.id}.gpt6`],
+      ["fable", true, `collab-${room.id}.fable`],
+    ]);
+    expect(calls[1].prompt).toMatch(/call the ask_code_reader tool: GPT-6 Astra looks it up and the answer comes back within your turn/);
+  });
+  it("the reader answers in its own lookup thread, in the repo; the exchange joins the transcript", async () => {
+    const { c, room, calls } = lookupRoom((k, prompt) => (prompt.includes("code reader") || prompt.startsWith("Question from") ? "It's in src/export.ts:42 (buildQuery)." : `${k}\nSTANCE: CONTINUE — x`));
+    const answer = await c.askCodeReader(room.id, "fable", "Where is the export query built?");
+    expect(answer).toBe("It's in src/export.ts:42 (buildQuery).");
+    const q = calls.at(-1)!;
+    expect(q).toMatchObject({ key: "gpt6", conv: null, ctx: { cwd: "/code/app", askTool: false } });
+    expect(q.prompt).toMatch(/You are GPT-6 Astra, the code reader[\s\S]*shell commands like rg[\s\S]*Question from Claude Fable 5.1:\nWhere is the export query built\?/);
+    expect(room.messages.at(-1)).toMatchObject({ speaker: "gpt6", askedBy: "fable", kind: "lookup", text: "Claude Fable 5.1 asked: Where is the export query built?\n\nIt's in src/export.ts:42 (buildQuery)." });
+    expect(room.participants[0].lookupConversationId).toBe("gpt6-lookup");
+    expect(room.participants[0].conversationId).toBeNull(); // the discussion thread is untouched
+
+    await c.askCodeReader(room.id, "fable", "And the CSV writer?");
+    expect(calls.at(-1)!).toMatchObject({ conv: "gpt6-lookup", prompt: "Question from Claude Fable 5.1:\nAnd the CSV writer?" });
+  });
+  it("the asker isn't shown its own lookup again; the others see it", async () => {
+    const { c, room, calls } = lookupRoom();
+    await c.askCodeReader(room.id, "fable", "Where is it?");
+    await c.run(room.id);
+    const gpt = calls.filter((x) => x.key === "gpt6" && x.prompt.includes("one of 2 AI models"))[0].prompt;
+    expect(gpt).toMatch(/\[GPT-6 Astra answering Claude Fable 5.1's code question\]/); // the reader sees its exchange in context
+    const fable = calls.filter((x) => x.key === "fable").at(-1)!.prompt;
+    expect(fable).not.toMatch(/answering Claude Fable 5.1's code question/);
+  });
+  it("caps questions per turn and refuses when nobody can read the code", async () => {
+    const { c, room } = lookupRoom();
+    for (let i = 0; i < 4; i++) await c.askCodeReader(room.id, "fable", `q${i}`);
+    await expect(c.askCodeReader(room.id, "fable", "q5")).rejects.toThrow(/That's 4 questions this turn/);
+    const r = await c.handleRoomRequest(room.id, "fable", "ask_code_reader", { question: "q6" });
+    expect(r).toEqual({ error: expect.stringMatching(/4 questions this turn/) });
+    c.setParticipants(room.id, room.participants.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: null, readsCode: false })));
+    await expect(c.askCodeReader(room.id, "fable", "q")).rejects.toThrow(/Nobody in this room can read the code/);
+    expect(await c.handleRoomRequest(room.id, "fable", "rm_rf", {})).toEqual({ error: "Unknown tool: rm_rf" });
+  });
+  it("the tool reaches the CLIs as Mockingbird's MCP server, pre-approved", () => {
+    const ask = { command: "/Apps/Mockingbird", args: ["/h/mcp.js"], env: { MOCKINGBIRD_SESSION: "collab-r1.fable" } };
+    const base = { key: "fable", label: "L", color: 0, lastSeen: 0, conversationId: null, effort: null, readsCode: false };
+    const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-fable-5-1" }, ask);
+    expect(cl).toContain(`--strict-mcp-config --mcp-config '{"mcpServers":{"mockingbird":{"type":"stdio","command":"/Apps/Mockingbird","args":["/h/mcp.js"],"env":{"MOCKINGBIRD_SESSION":"collab-r1.fable"}}}}' --allowedTools mcp__mockingbird__ask_code_reader`);
+    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", ask);
+    expect(cx).toContain(`-c 'mcp_servers={}' -c 'mcp_servers.mockingbird.command="/Apps/Mockingbird"'`);
+    expect(cx).toContain(`-c 'mcp_servers.mockingbird.default_tools_approval_mode="approve"' -c 'mcp_servers.mockingbird.tool_timeout_sec=600'`);
   });
 });

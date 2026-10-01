@@ -31,7 +31,25 @@ const readline = require("readline");
 const SOCK = process.env.MOCKINGBIRD_SOCK;
 const FROM = process.env.MOCKINGBIRD_SESSION;
 
-const TOOLS = [
+// A Collaborate room's model gets one tool: asking the room's code reader.
+const ROOM_TOOLS = [
+  {
+    name: "ask_code_reader",
+    description:
+      "You can't read this discussion's repository yourself; this asks the model in the room that can. " +
+      "It searches and reads the code to answer your question, and its answer comes back here within your turn. " +
+      "Ask a specific, self-contained question (what to look for, which part of the system), e.g. " +
+      "\"How does the donor export build its query, and which file is it in?\" Each turn allows a few questions.",
+    inputSchema: {
+      type: "object",
+      properties: { question: { type: "string", description: "What you need to know about the code" } },
+      required: ["question"],
+      additionalProperties: false,
+    },
+  },
+];
+
+const SESSION_TOOLS = [
   {
     name: "list_sessions",
     description:
@@ -99,7 +117,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
     case "ping":
       return ok({});
     case "tools/list":
-      return ok({ tools: TOOLS });
+      return ok({ tools: FROM && FROM.startsWith("collab-") ? ROOM_TOOLS : SESSION_TOOLS });
     case "tools/call": {
       const name = msg.params && msg.params.name;
       const r = await ask({ op: name, args: (msg.params && msg.params.arguments) || {} });
@@ -129,8 +147,17 @@ export function mcpLaunch(sessionId: string): McpLaunch {
 
 type Reply = { result: unknown } | { error: string };
 
+/** Handles requests from Collaborate rooms' models (their tag is "collab-<room>.<seat>"). */
+export type RoomRequestHandler = (roomId: string, seatKey: string, op: string, args: Record<string, unknown>) => Promise<Reply>;
+
 export class Messaging {
   private pairs = new Map<string, number[]>();
+  private roomHandler: RoomRequestHandler | null = null;
+
+  /** Collaborate registers here; until then room tools report that they're unavailable. */
+  setRoomHandler(h: RoomRequestHandler): void {
+    this.roomHandler = h;
+  }
 
   constructor(
     private sessions: SessionManager,
@@ -145,6 +172,7 @@ export class Messaging {
       console.error(`messaging: socket path too long (${SOCK}) — agents cannot message each other`);
       return;
     }
+    fs.mkdirSync(MB_DIR, { recursive: true });
     try {
       fs.unlinkSync(SOCK); // a previous run's socket — nothing is listening on it any more
     } catch (err) {
@@ -153,14 +181,14 @@ export class Messaging {
     const server = net.createServer({ allowHalfOpen: true }, (conn) => {
       let buf = "";
       conn.on("data", (d) => (buf += d));
-      conn.on("end", () => {
+      conn.on("end", async () => {
         let reply: Reply;
         try {
-          reply = this.handle(JSON.parse(buf));
+          reply = await this.dispatch(JSON.parse(buf));
         } catch (err) {
           reply = { error: `Bad request: ${(err as Error).message}` };
         }
-        conn.end(JSON.stringify(reply));
+        if (!conn.destroyed) conn.end(JSON.stringify(reply));
       });
       conn.on("error", (err) => console.warn("messaging: connection error:", err.message));
     });
@@ -177,6 +205,14 @@ export class Messaging {
 
   private live(): SessionInfo[] {
     return this.sessions.list().filter((s) => s.status !== "dead" && !s.shell);
+  }
+
+  /** Room models (tagged collab-<room>.<seat>) go to Collaborate; everything else is a session. */
+  private async dispatch(req: { op?: string; from?: string; args?: Record<string, unknown> }): Promise<Reply> {
+    const m = /^collab-([^.]+)\.(.+)$/.exec(req.from ?? "");
+    if (!m) return this.handle(req);
+    if (!this.roomHandler) return { error: "Collaborate isn't ready yet — try again in a moment." };
+    return this.roomHandler(m[1], m[2], String(req.op ?? ""), req.args ?? {});
   }
 
   private handle(req: { op?: string; from?: string; args?: Record<string, unknown> }): Reply {
