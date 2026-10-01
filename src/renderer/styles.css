@@ -1158,6 +1158,7 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .seat-add { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 .collab-msg.lookup { background: transparent; border-style: dashed; max-width: 760px; margin-left: 24px; }
 .collab-msg.lookup .collab-text { font-size: 11.5px; color: var(--text-3); }
+.seat-code + .seat-code { margin-left: 0 !important; } /* the group sits right; only the first pushes */
 .seat-code.off { color: var(--text-4) !important; font-style: italic; }
 .repo-picker { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .repo-picker select { background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 5px; padding: 4px 6px; font: 400 11.5px var(--ui); }

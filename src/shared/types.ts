@@ -240,12 +240,14 @@ export interface CollabParticipantSpec {
   effort: string | null; // the CLI's effort / reasoning level; null = its default
   readsCode: boolean; // may read the room's repository
   runsCommands?: boolean; // may run tests/builds in the room's disposable copy of the repo (implies readsCode)
+  usesDocker?: boolean; // may also use Docker, which reaches past the sandbox (implies runsCommands)
 }
 
 export interface CollabParticipant extends CollabModel {
   effort: string | null;
   readsCode: boolean;
   runsCommands?: boolean;
+  usesDocker?: boolean;
   removed?: boolean; // left the room; kept so its past messages keep their name
   color: number; // palette slot, stable for the room's life
   conversationId: string | null; // the model's own CLI conversation, resumed every turn

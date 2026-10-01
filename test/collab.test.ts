@@ -4,7 +4,7 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "child_process";
 import { makeTestCopy } from "../src/main/testCopy";
-import { CollabRooms, COLLAB_MODELS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
+import { CollabRooms, COLLAB_MODELS, dockerSockets, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
 import type { CollabParticipantSpec } from "../src/shared/types";
 import type { CollabRoom } from "../src/shared/types";
 
@@ -508,5 +508,43 @@ describe("models that run commands", () => {
     const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r");
     expect(cx).toContain(`-c 'sandbox_mode="workspace-write"' -c 'sandbox_workspace_write.network_access=true'`);
     expect(cx).not.toContain("read-only");
+  });
+});
+
+describe("models that use Docker", () => {
+  it("using Docker implies running commands and reading the code; the model is told the rules, the others who has it", () => {
+    const { c } = rooms();
+    const [gpt6, opus] = specs("gpt6", "opus");
+    const room = c.create({ title: "t", brief: "b", repoPath: "/code/app", mode: "step", participants: [{ ...gpt6, readsCode: false, usesDocker: true }, opus] });
+    expect(room.participants[0]).toMatchObject({ usesDocker: true, runsCommands: true, readsCode: true });
+    const own = buildPrompt(room, room.participants[0]);
+    expect(own).toMatch(/You can use Docker .*never mount or change the user's own folders/);
+    expect(own).not.toMatch(/Docker isn't available/);
+    expect(buildPrompt(room, room.participants[1])).toMatch(/GPT-6 Astra \(reads the code, runs commands, uses Docker\)/);
+    c.setParticipants(room.id, [{ ...gpt6, key: "gpt6", runsCommands: true, usesDocker: false }, { ...opus, key: "opus", usesDocker: true }]);
+    expect(room.messages.slice(-3).map((m) => m.text)).toEqual(["GPT-6 Astra can no longer use Docker.", "Claude Opus 5.5 can now run commands.", "Claude Opus 5.5 can now use Docker."]);
+    expect(room.participants.map((p) => [p.key, !!p.runsCommands, !!p.usesDocker])).toEqual([["gpt6", true, false], ["opus", true, true]]);
+  });
+
+  it("finds the daemon sockets that exist, linked and resolved", () => {
+    const home = fs.mkdtempSync(path.join(os.homedir(), "dock-"));
+    expect(dockerSockets(home).filter((s) => s.startsWith(home))).toEqual([]);
+    fs.mkdirSync(path.join(home, ".docker", "run"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".docker", "run", "docker.sock"), "");
+    expect(dockerSockets(home)).toContain(path.join(home, ".docker", "run", "docker.sock"));
+  });
+
+  it("CLI: Claude's sandbox opens the Docker socket; Codex gets a permission profile instead of sandbox_mode", () => {
+    const base = { key: "k", label: "L", color: 0, lastSeen: 0, conversationId: "c1", effort: null, readsCode: true, runsCommands: true, usesDocker: true };
+    const socks = ["/Users/me/.docker/run/docker.sock", "/var/run/docker.sock"];
+    const cl = claudeTurnCommand("/bin/claude", { ...base, agent: "claude", model: "claude-opus-5-5" }, undefined, socks);
+    expect(JSON.parse(/--settings '([^']+)'/.exec(cl)![1]).sandbox.network.allowUnixSockets).toEqual(socks);
+    // sockets are only opened for a Docker seat, even if passed
+    const plain = claudeTurnCommand("/bin/claude", { ...base, usesDocker: false, agent: "claude", model: "claude-opus-5-5" }, undefined, socks);
+    expect(JSON.parse(/--settings '([^']+)'/.exec(plain)![1]).sandbox.network.allowUnixSockets).toBeUndefined();
+    const cx = codexTurnCommand("/bin/codex", { ...base, agent: "codex", model: "gpt-6-astra" }, "/tmp/r", undefined, socks);
+    expect(cx).toContain(`-c 'default_permissions="mb-docker"' -c 'features.network_proxy=true' -c 'permissions.mb-docker.extends=":workspace"'`);
+    expect(cx).toContain(`-c 'permissions.mb-docker.network.unix_sockets={"/Users/me/.docker/run/docker.sock"="allow", "/var/run/docker.sock"="allow"}'`);
+    expect(cx).not.toContain("sandbox_mode");
   });
 });

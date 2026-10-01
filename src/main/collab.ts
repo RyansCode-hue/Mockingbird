@@ -48,7 +48,11 @@ function rosterLine(room: CollabRoom, p: CollabParticipant): string {
         `made from ${room.repoPath} with the user's uncommitted work (you're in it). ${
           p.agent === "codex" ? "Use shell commands" : "Use Bash to run things, and your file tools to read and to write files there (test scripts, probes, trial changes)"
         }. Anything you change there is thrown away and never reaches the user's code, but don't implement the feature: run things to check facts and test ideas. ` +
-        "Files git ignores (like node_modules) aren't copied — install dependencies first if a command needs them. The network is available; Docker isn't, so ask the user to start any containers you need. " +
+        "Files git ignores (like node_modules) aren't copied — install dependencies first if a command needs them. The network is available. " +
+        (p.usesDocker
+          ? "You can use Docker (docker, docker compose) — start, stop and inspect containers, and run new ones. Docker reaches past your sandbox, so: " +
+            "never mount or change the user's own folders (mount only the test copy), don't remove containers, images or volumes you didn't create, and stop what you started once you're done. "
+          : "Docker isn't available to you, so ask the user to start any containers you need. ") +
         "MCP and app tools are switched off in this discussion."
       : p.readsCode
       ? `You can read the repository at ${room.repoPath} (you're in it) — ${
@@ -57,7 +61,8 @@ function rosterLine(room: CollabRoom, p: CollabParticipant): string {
       : codeReaderFor(room, p.key)
       ? `There's a repository, but you can't read it yourself. When something depends on the code, call the ask_code_reader tool: ${codeReaderFor(room, p.key)!.label} looks it up and the answer comes back within your turn.`
       : "There's a repository, but nobody in the room can read it right now.";
-  const role = (o: CollabParticipant) => (!room.repoPath ? "" : o.runsCommands ? " (reads the code, runs commands)" : o.readsCode ? " (reads the code)" : "");
+  const role = (o: CollabParticipant) =>
+    !room.repoPath ? "" : o.runsCommands ? ` (reads the code, runs commands${o.usesDocker ? ", uses Docker" : ""})` : o.readsCode ? " (reads the code)" : "";
   return `In the room: ${others.map((o) => o.label + role(o)).join(", ") || "only you"}. ${access}`;
 }
 
@@ -165,6 +170,7 @@ export class CollabRooms {
           p.effort ??= null;
           p.readsCode ??= true;
           p.runsCommands ??= false;
+          p.usesDocker ??= false;
           p.color ??= i % PALETTE_SIZE;
         });
         room.workspacePath ??= null;
@@ -232,8 +238,9 @@ export class CollabRooms {
       agent: s.agent,
       model,
       effort: s.effort || null,
-      readsCode: !!s.readsCode || !!s.runsCommands,
-      runsCommands: !!s.runsCommands,
+      readsCode: !!s.readsCode || !!s.runsCommands || !!s.usesDocker,
+      runsCommands: !!s.runsCommands || !!s.usesDocker,
+      usesDocker: !!s.usesDocker,
       color,
       conversationId: null,
       lastSeen: 0,
@@ -260,17 +267,25 @@ export class CollabRooms {
       if (!p) {
         const seat = this.seat(room, s);
         room.participants.push(seat);
-        notes.push(`${seat.label} joined${!room.repoPath ? "" : seat.runsCommands ? " and can read the code and run commands" : seat.readsCode ? " and can read the code" : ""}.`);
+        notes.push(
+          `${seat.label} joined${
+            !room.repoPath ? "" : seat.usesDocker ? " and can read the code, run commands and use Docker" : seat.runsCommands ? " and can read the code and run commands" : seat.readsCode ? " and can read the code" : ""
+          }.`
+        );
         continue;
       }
       if (s.effort && !COLLAB_EFFORTS[p.agent].includes(s.effort)) throw new Error(`${s.effort} isn't an effort level for ${p.label}`);
-      const reads = !!s.readsCode || !!s.runsCommands;
+      const docker = !!s.usesDocker;
+      const runs = !!s.runsCommands || docker;
+      const reads = !!s.readsCode || runs;
       if (p.readsCode !== reads && room.repoPath) notes.push(`${p.label} ${reads ? "can now read" : "can no longer read"} the code.`);
-      if (!!p.runsCommands !== !!s.runsCommands && room.repoPath) notes.push(`${p.label} ${s.runsCommands ? "can now run" : "can no longer run"} commands.`);
+      if (!!p.runsCommands !== runs && room.repoPath) notes.push(`${p.label} ${runs ? "can now run" : "can no longer run"} commands.`);
+      if (!!p.usesDocker !== docker && room.repoPath) notes.push(`${p.label} ${docker ? "can now use" : "can no longer use"} Docker.`);
       p.removed = false;
       p.effort = s.effort || null;
       p.readsCode = reads;
-      p.runsCommands = !!s.runsCommands;
+      p.runsCommands = runs;
+      p.usesDocker = docker;
       if (s.label.trim()) p.label = s.label.trim();
     }
     // the speaking order follows the specs
@@ -456,7 +471,7 @@ export class CollabRooms {
     this.lookups.set(countKey, asked + 1);
 
     // lookups read the real checkout, so they never run commands — that's what the test copy is for
-    const seat: CollabParticipant = { ...reader, runsCommands: false, conversationId: reader.lookupConversationId ?? null };
+    const seat: CollabParticipant = { ...reader, runsCommands: false, usesDocker: false, conversationId: reader.lookupConversationId ?? null };
     const prompt = reader.lookupConversationId
       ? `Question from ${asker.label}:\n${q}`
       : [
@@ -582,16 +597,33 @@ export class CollabRooms {
 /**
  * Claude's OS sandbox for a seat that runs commands: Bash runs without asking,
  * can write only inside its cwd (the test copy), can't escape the sandbox, and
- * can reach the network (package installs, local services).
+ * can reach the network (package installs, local services). A Docker seat also
+ * gets the Docker socket — and through the daemon, everything Docker can reach.
  */
-const CLAUDE_COMMAND_SANDBOX = JSON.stringify({
-  sandbox: {
-    enabled: true,
-    autoAllowBashIfSandboxed: true,
-    allowUnsandboxedCommands: false,
-    network: { allowLocalBinding: true, allowedDomains: ["*"] },
-  },
-});
+function claudeCommandSandbox(dockerSockets: string[]): string {
+  return JSON.stringify({
+    sandbox: {
+      enabled: true,
+      autoAllowBashIfSandboxed: true,
+      allowUnsandboxedCommands: false,
+      network: { allowLocalBinding: true, allowedDomains: ["*"], ...(dockerSockets.length ? { allowUnixSockets: dockerSockets } : {}) },
+    },
+  });
+}
+
+/** The Docker daemon sockets on this Mac (Docker Desktop, OrbStack, Colima), both as linked and as resolved. */
+export function dockerSockets(home = os.homedir()): string[] {
+  const out = new Set<string>();
+  for (const s of ["/var/run/docker.sock", `${home}/.docker/run/docker.sock`, `${home}/.orbstack/run/docker.sock`, `${home}/.colima/default/docker.sock`]) {
+    try {
+      out.add(fs.realpathSync(s));
+      out.add(s);
+    } catch {
+      /* no daemon socket at this path */
+    }
+  }
+  return [...out];
+}
 
 /**
  * One Claude turn. A seat that runs commands works in the test copy: Bash in the
@@ -602,7 +634,7 @@ const CLAUDE_COMMAND_SANDBOX = JSON.stringify({
  * access can't read files either. --strict-mcp-config with no --mcp-config leaves no MCP
  * servers: their tools can act outside the folder (post messages, change other systems).
  */
-export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLaunch): string {
+export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLaunch, sockets: string[] = []): string {
   return [
     quote(bin),
     "-p",
@@ -616,7 +648,7 @@ export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLa
     ...(p.conversationId ? ["--resume", quote(p.conversationId)] : []),
     ...(p.effort ? ["--effort", quote(p.effort)] : []),
     ...(p.runsCommands
-      ? ["--settings", quote(CLAUDE_COMMAND_SANDBOX), "--permission-mode", "acceptEdits", "--disallowedTools", "NotebookEdit"]
+      ? ["--settings", quote(claudeCommandSandbox(p.usesDocker ? sockets : [])), "--permission-mode", "acceptEdits", "--disallowedTools", "NotebookEdit"]
       : ["--disallowedTools", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]),
     ...(p.readsCode || p.runsCommands ? [] : ["Read", "Grep", "Glob", "LS"]),
   ].join(" ");
@@ -632,7 +664,7 @@ export function claudeTurnCommand(bin: string, p: CollabParticipant, ask?: McpLa
  * servers are switched off — their tools act outside the sandbox — and any MCP
  * call that slips through needs approval, which "never" refuses.
  */
-export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: string, ask?: McpLaunch): string {
+export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: string, ask?: McpLaunch, sockets: string[] = []): string {
   // the one MCP tool a room allows: asking the code reader (pre-approved; a lookup can take minutes)
   const askFlags = ask
     ? [
@@ -643,9 +675,22 @@ export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: st
         "mcp_servers.mockingbird.tool_timeout_sec=600",
       ].map((c) => `-c ${quote(c)} `).join("")
     : "";
-  const sandbox = p.runsCommands
-    ? `-c ${quote('sandbox_mode="workspace-write"')} -c ${quote("sandbox_workspace_write.network_access=true")} `
-    : `-c ${quote('sandbox_mode="read-only"')} `;
+  // a Docker seat needs a permission profile (the legacy sandbox settings can't
+  // open a unix socket); profiles don't combine with sandbox_mode, so it's one or the other
+  const sandbox = p.usesDocker
+    ? [
+        'default_permissions="mb-docker"',
+        "features.network_proxy=true",
+        'permissions.mb-docker.extends=":workspace"',
+        "permissions.mb-docker.network.enabled=true",
+        'permissions.mb-docker.network.domains={"*"="allow"}',
+        "permissions.mb-docker.network.allow_local_binding=true",
+        // an inline table: -c splits dotted keys on every dot, quoted or not
+        `permissions.mb-docker.network.unix_sockets={${sockets.map((s) => `${JSON.stringify(s)}="allow"`).join(", ")}}`,
+      ].map((c) => `-c ${quote(c)} `).join("")
+    : p.runsCommands
+      ? `-c ${quote('sandbox_mode="workspace-write"')} -c ${quote("sandbox_workspace_write.network_access=true")} `
+      : `-c ${quote('sandbox_mode="read-only"')} `;
   const flags =
     (p.effort ? `-c ${quote(`model_reasoning_effort="${p.effort}"`)} ` : "") +
     `--disable apps --disable plugins -c ${quote("mcp_servers={}")} ${askFlags}-c ${quote('approval_policy="never"')} ${sandbox}`;
@@ -662,12 +707,13 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
   return async (p, prompt, { cwd, signal, tag, askTool }) => {
     const env = { ...paneEnv(), MOCKINGBIRD_SESSION: tag };
     const ask = askTool ? mcpLaunch(tag) : undefined;
+    const sockets = p.usesDocker ? dockerSockets() : [];
     const bin = binFor(p.agent);
     // installs and test suites can take a while; a reading turn that runs this long is stuck
     const timeoutMs = p.runsCommands ? 30 * 60_000 : 10 * 60_000;
     if (!bin.includes("/")) throw new Error(`${p.agent} isn't installed`);
     if (p.agent === "claude") {
-      const r = await userShellWithInput(claudeTurnCommand(bin, p, ask), prompt, { cwd, env, signal, timeoutMs });
+      const r = await userShellWithInput(claudeTurnCommand(bin, p, ask, sockets), prompt, { cwd, env, signal, timeoutMs });
       let out: any;
       try {
         out = JSON.parse(r.out);
@@ -680,7 +726,7 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mb-collab-"));
     const last = path.join(tmp, "reply.txt");
     try {
-      const r = await userShellWithInput(codexTurnCommand(bin, p, last, ask), prompt, { cwd, env, signal, timeoutMs });
+      const r = await userShellWithInput(codexTurnCommand(bin, p, last, ask, sockets), prompt, { cwd, env, signal, timeoutMs });
       const thread = /"thread_id":"([^"]+)"/.exec(r.out)?.[1] ?? p.conversationId;
       let text = "";
       try {

@@ -147,7 +147,7 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
   const seated = room.participants.filter((p) => !p.removed);
   const openModels = () => {
     setRepoDraft(room.repoPath ?? "");
-    setEditing(seated.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, readsCode: p.readsCode, runsCommands: !!p.runsCommands })));
+    setEditing(seated.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, readsCode: p.readsCode, runsCommands: !!p.runsCommands, usesDocker: !!p.usesDocker })));
   };
   // braces matter: scrollIntoView returns a Promise in current Chromium, and React
   // would call a returned value as the effect's cleanup (crashing on unmount)
@@ -195,13 +195,20 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
               key={p.key}
               className={`collab-chip c-${p.color} ${room.speaking === p.key ? "speaking" : ""}`}
               title={`${p.model}${p.effort ? ` · effort ${p.effort}` : ""}${
-                room.repoPath ? (p.runsCommands ? " · reads the code, runs commands in a test copy" : p.readsCode ? " · reads the code" : " · no code access") : ""
+                room.repoPath
+                  ? p.runsCommands
+                    ? ` · reads the code, runs commands in a test copy${p.usesDocker ? ", uses Docker" : ""}`
+                    : p.readsCode
+                      ? " · reads the code"
+                      : " · no code access"
+                  : ""
               }`}
             >
               {p.label}
               {p.effort && <span className="eff">{p.effort}</span>}
               {room.repoPath && p.readsCode && <span className="eff" aria-label="reads the code">{"</>"}</span>}
               {room.repoPath && p.runsCommands && <span className="eff" aria-label="runs commands">{"$_"}</span>}
+              {room.repoPath && p.usesDocker && <span className="eff" aria-label="uses Docker">docker</span>}
             </span>
           ))}
           <button className="outline" onClick={() => (editing ? setEditing(null) : openModels())}>Models</button>
@@ -458,7 +465,7 @@ function SeatEditor({
                   <input
                     type="checkbox"
                     checked={s.readsCode}
-                    onChange={(e) => set(i, e.target.checked ? { readsCode: true } : { readsCode: false, runsCommands: false })}
+                    onChange={(e) => set(i, e.target.checked ? { readsCode: true } : { readsCode: false, runsCommands: false, usesDocker: false })}
                   />
                   reads code
                 </label>
@@ -466,9 +473,20 @@ function SeatEditor({
                   <input
                     type="checkbox"
                     checked={!!s.runsCommands}
-                    onChange={(e) => set(i, e.target.checked ? { runsCommands: true, readsCode: true } : { runsCommands: false })}
+                    onChange={(e) => set(i, e.target.checked ? { runsCommands: true, readsCode: true } : { runsCommands: false, usesDocker: false })}
                   />
                   runs commands
+                </label>
+                <label
+                  className="seat-code"
+                  title="May use Docker: start, stop and run containers. Docker works outside the sandbox — a container can mount any folder — so this model is no longer limited to the test copy. Implies running commands."
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!s.usesDocker}
+                    onChange={(e) => set(i, e.target.checked ? { usesDocker: true, runsCommands: true, readsCode: true } : { usesDocker: false })}
+                  />
+                  uses Docker
                 </label>
               </>
             ) : (
@@ -487,7 +505,7 @@ function SeatEditor({
           className="outline"
           onClick={() => {
             const m = unused ?? catalog.presets[0];
-            onChange([...seats, { label: unused ? m.label : "", agent: m.agent, model: unused ? m.model : "", effort: null, readsCode: true, runsCommands: false }]);
+            onChange([...seats, { label: unused ? m.label : "", agent: m.agent, model: unused ? m.model : "", effort: null, readsCode: true, runsCommands: false, usesDocker: false }]);
           }}
         >
           Add model
