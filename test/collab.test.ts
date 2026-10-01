@@ -358,3 +358,20 @@ describe("asking the code reader", () => {
     expect(cx).toContain(`-c 'mcp_servers.mockingbird.default_tools_approval_mode="approve"' -c 'mcp_servers.mockingbird.tool_timeout_sec=600'`);
   });
 });
+
+describe("changing a room's repository", () => {
+  it("lets a room started without one gain code readers, keeping conversations", async () => {
+    const { c, make, dir } = rooms();
+    const room = make({ mode: "step" });
+    await c.run(room.id);
+    const repo = fs.mkdtempSync(path.join(os.homedir(), "repo-"));
+    c.setRepo(room.id, repo);
+    expect(room.repoPath).toBe(repo);
+    expect(room.messages.at(-1)!.text).toBe(`Repository set to ${path.basename(repo)}.`);
+    expect(room.participants.every((p) => p.conversationId)).toBe(true);
+    expect(buildPrompt(room, room.participants[0])).toMatch(/You can read the repository at/);
+    c.setRepo(room.id, null);
+    expect(room.messages.at(-1)!.text).toMatch(/Repository removed/);
+    expect(() => c.setRepo(room.id, path.join(dir, "nope"))).toThrow(/doesn't exist/);
+  });
+});

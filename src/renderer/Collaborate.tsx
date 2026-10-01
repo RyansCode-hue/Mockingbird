@@ -83,13 +83,9 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
   const [brief, setBrief] = useState("");
   const [seats, setSeats] = useState<CollabParticipantSpec[]>([]);
   const [repo, setRepo] = useState("");
-  const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [mode, setMode] = useState<CollabMode>("auto");
   const [error, setError] = useState("");
   useEffect(() => setSeats(catalog.presets.map((m) => ({ label: m.label, agent: m.agent, model: m.model, effort: null, readsCode: true }))), [catalog]);
-  useEffect(() => {
-    window.mb.listRepos().then((r: Result<RepoEntry[]>) => (isErr(r) ? setError(`Couldn't list repos: ${r.error}`) : setRepos(r)));
-  }, []);
   const create = async () => {
     const r: Result<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, participants: seats, mode });
     if (isErr(r)) return setError(r.error);
@@ -102,6 +98,8 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
         Pick the models, describe the idea, and they'll discuss it in turns. They can read a repo for context, but nothing is
         changed until you approve a plan — then one model implements it in a normal session on a new branch.
       </p>
+      <label>Repository <span className="wi-note">optional — pick one to let models read the code</span></label>
+      <RepoPicker value={repo} onChange={setRepo} bare />
       <label>Models <span className="wi-note">they speak in this order</span></label>
       <SeatEditor seats={seats} onChange={setSeats} catalog={catalog} hasRepo={!!repo} />
       <label>Title</label>
@@ -113,13 +111,6 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
         value={brief}
         onChange={(e) => setBrief(e.target.value)}
       />
-      <label>Repository <span className="wi-note">optional — read-only while they discuss</span></label>
-      <select value={repo} onChange={(e) => setRepo(e.target.value)}>
-        <option value="">No repository — ideas only</option>
-        {repos.map((r) => (
-          <option key={r.path} value={r.path}>{r.name}</option>
-        ))}
-      </select>
       <label>Pacing</label>
       <ModeSeg mode={mode} onMode={setMode} />
       {error && <div className="err">{error}</div>}
@@ -147,15 +138,22 @@ function ModeSeg({ mode, onMode }: { mode: CollabMode; onMode: (m: CollabMode) =
 function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; catalog: Catalog; onDeleted: () => void; onOpenSession: (id: string) => void }) {
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<CollabParticipantSpec[] | null>(null);
+  const [repoDraft, setRepoDraft] = useState<string>(room.repoPath ?? "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
   const label = useMemo(() => Object.fromEntries(room.participants.map((p) => [p.key, p.label])), [room.participants]);
   const color = useMemo(() => Object.fromEntries(room.participants.map((p) => [p.key, p.color])), [room.participants]);
   const seated = room.participants.filter((p) => !p.removed);
-  const openModels = () =>
+  const openModels = () => {
+    setRepoDraft(room.repoPath ?? "");
     setEditing(seated.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, readsCode: p.readsCode })));
-  useEffect(() => endRef.current?.scrollIntoView({ block: "end" }), [room.messages.length, room.speaking]);
+  };
+  // braces matter: scrollIntoView returns a Promise in current Chromium, and React
+  // would call a returned value as the effect's cleanup (crashing on unmount)
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [room.messages.length, room.speaking]);
 
   const call = async (what: string, fn: () => Promise<unknown>) => {
     setBusy(what);
@@ -167,6 +165,10 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
   };
   const saveModels = async () => {
     if (!editing) return;
+    if ((repoDraft || null) !== room.repoPath) {
+      const rr = await call("repo", () => window.mb.collabRepo(room.id, repoDraft || null));
+      if (isErr(rr)) return;
+    }
     const r = await call("models", () => window.mb.collabParticipants(room.id, editing));
     if (!isErr(r)) setEditing(null);
   };
@@ -211,7 +213,8 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
           <div className="set-lede">
             Changes apply from each model's next turn. A model you add reads the whole discussion first; one you remove keeps its past messages.
           </div>
-          <SeatEditor seats={editing} onChange={setEditing} catalog={catalog} hasRepo={!!room.repoPath} colors={color} />
+          <RepoPicker value={repoDraft} onChange={setRepoDraft} />
+          <SeatEditor seats={editing} onChange={setEditing} catalog={catalog} hasRepo={!!repoDraft} colors={color} />
           <div className="set-actions">
             <button className="primary" disabled={editing.length < 1} onClick={saveModels}>Save</button>
             <button className="outline" onClick={() => setEditing(null)}>Cancel</button>
@@ -436,10 +439,14 @@ function SeatEditor({
                 <option key={e} value={e}>{e}</option>
               ))}
             </select>
-            <label className="seat-code" title={hasRepo ? "May read the room's repository" : "Pick a repository to give models code access"}>
-              <input type="checkbox" disabled={!hasRepo} checked={hasRepo && s.readsCode} onChange={(e) => set(i, { readsCode: e.target.checked })} />
-              reads code
-            </label>
+            {hasRepo ? (
+              <label className="seat-code" title="May read the room's repository; models that can't, ask the first one that can">
+                <input type="checkbox" checked={s.readsCode} onChange={(e) => set(i, { readsCode: e.target.checked })} />
+                reads code
+              </label>
+            ) : (
+              <span className="seat-code off" title="Pick a repository to choose which models read the code">no repository</span>
+            )}
             <span className="seat-move">
               <button className="icon" disabled={i === 0} onClick={() => move(i, -1)} title="Speak earlier">↑</button>
               <button className="icon" disabled={i === seats.length - 1} onClick={() => move(i, 1)} title="Speak later">↓</button>
@@ -463,5 +470,29 @@ function SeatEditor({
         )}
       </div>
     </div>
+  );
+}
+
+/** The room's repository: what code readers read and where an approved plan is implemented. */
+function RepoPicker({ value, onChange, bare }: { value: string; onChange: (v: string) => void; bare?: boolean }) {
+  const [repos, setRepos] = useState<RepoEntry[]>([]);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    window.mb.listRepos().then((r: Result<RepoEntry[]>) => (isErr(r) ? setError(`Couldn't list repos: ${r.error}`) : setRepos(r)));
+  }, []);
+  const select = (
+    <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">No repository — ideas only</option>
+      {value && !repos.some((r) => r.path === value) && <option value={value}>{value.split("/").pop()}</option>}
+      {repos.map((r) => (
+        <option key={r.path} value={r.path}>{r.name}</option>
+      ))}
+    </select>
+  );
+  return (
+    <>
+      {bare ? select : <div className="repo-picker"><span className="wi-note">Repository</span>{select}</div>}
+      {error && <div className="err">{error}</div>}
+    </>
   );
 }

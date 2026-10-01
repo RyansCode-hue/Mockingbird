@@ -269,6 +269,17 @@ export class CollabRooms {
     return room;
   }
 
+  /** Point the room at a repository (or none). Conversations continue; readers read the new one from their next turn. */
+  setRepo(id: string, repoPath: string | null): CollabRoom {
+    const room = this.get(id);
+    if (repoPath === room.repoPath) return room;
+    if (repoPath && !fs.existsSync(repoPath)) throw new Error(`${repoPath} doesn't exist`);
+    room.repoPath = repoPath;
+    this.note(room, repoPath ? `Repository set to ${path.basename(repoPath)}.` : "Repository removed — models no longer read code.");
+    this.save(room);
+    return room;
+  }
+
   delete(id: string): void {
     this.stop(id);
     this.rooms.delete(id);

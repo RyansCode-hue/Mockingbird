@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
@@ -863,6 +863,7 @@ function App() {
       </div>
 
       <div className="body">
+        <ViewErrorBoundary resetKey={tab}>
         {tab === "dashboard" && (
           <DashboardBoard
             sessions={sessions}
@@ -1356,6 +1357,7 @@ function App() {
         />
         </>
         )}
+        </ViewErrorBoundary>
       </div>
 
       <div className="statusbar">
@@ -1573,6 +1575,35 @@ interface PaletteAction {
   label: string;
   kbd?: string;
   run: () => void;
+}
+
+/**
+ * Keeps a crash in one tab's view from blanking the whole window: the error is
+ * shown with a way to retry, the top bar keeps working, and switching tabs
+ * starts the view fresh.
+ */
+class ViewErrorBoundary extends React.Component<{ resetKey: string; children: React.ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error("[mockingbird] view crashed:", error, info.componentStack);
+  }
+  componentDidUpdate(prev: { resetKey: string }) {
+    if (prev.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: null });
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="view-error">
+        <strong>This view hit an error.</strong>
+        <code>{this.state.error.message}</code>
+        <span className="wi-note">Your sessions are still running. Reload the view, or switch tabs.</span>
+        <button className="outline" onClick={() => this.setState({ error: null })}>Reload view</button>
+      </div>
+    );
+  }
 }
 
 /** One dot per session (up to 3, then a count), so a collapsed workspace still shows who's busy or blocked. */
