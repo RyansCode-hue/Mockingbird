@@ -100,11 +100,26 @@ function updateTray(): void {
   const working = list.filter((s) => s.status === "working").length;
   const idle = list.filter((s) => s.status === "idle").length;
   const dead = list.filter((s) => s.status === "dead").length;
+  // Collaborate models waiting on an approval are blocked on the user too
+  const asks = collab.list().flatMap((r) => (r.pending ?? []).map((q) => ({ room: r, q }))).sort((a, b) => a.q.at - b.q.at);
+  const blocked = waiting.length + asks.length;
 
-  tray.setTitle(waiting.length ? `🪶 ${waiting.length}` : "🪶", { fontType: "monospacedDigit" });
-  app.dock?.setBadge(waiting.length ? String(waiting.length) : "");
+  tray.setTitle(blocked ? `🪶 ${blocked}` : "🪶", { fontType: "monospacedDigit" });
+  app.dock?.setBadge(blocked ? String(blocked) : "");
 
   const template: Electron.MenuItemConstructorOptions[] = [];
+  if (asks.length) {
+    template.push({ label: `MODELS ASKING YOU · ${asks.length}`, enabled: false });
+    for (const { room, q } of asks) {
+      const who = room.participants.find((p) => p.key === q.seat)?.label ?? q.seat;
+      const what = (q.tool === "Bash" ? q.detail : `${q.tool} ${q.detail}`).replace(/\s+/g, " ");
+      template.push({
+        label: `${who}: ${what.length > 48 ? `${what.slice(0, 47)}…` : what}   ${fmtWait(q.at)}`,
+        click: () => focusRoom(room.id),
+      });
+    }
+    template.push({ type: "separator" });
+  }
   if (waiting.length) {
     template.push({ label: `WAITING FOR YOU · ${waiting.length}`, enabled: false });
     for (const s of waiting) {
@@ -368,29 +383,35 @@ ipcMain.handle("app:version", () => app.getVersion());
 const collab = new CollabRooms(
   COLLAB_DIR,
   cliTurnRunner((agent) => sessions.binFor(agent)),
-  (room) => BrowserWindow.getAllWindows()[0]?.webContents.send("collab:changed", room),
+  (room) => {
+    BrowserWindow.getAllWindows()[0]?.webContents.send("collab:changed", room);
+    updateTray(); // a model waiting on the user counts as blocked
+  },
   (req) => sessions.create(req),
   (repo) => listBranches(repo).defaultBase,
-  (room, req) => {
+  (room, req, reminder) => {
     // the model's turn is waiting on this, so it's shown whatever the notifications setting
     const who = room.participants.find((p) => p.key === req.seat)?.label ?? req.seat;
     const n = new Notification({
-      title: `${who} is asking permission`,
+      title: reminder ? `Still waiting: ${who} is asking permission` : `${who} is asking permission`,
       body: `${room.title}\n${req.tool === "Bash" ? req.detail : `${req.tool} ${req.detail}`}`.slice(0, 240),
     });
-    n.on("click", () => {
-      const w = BrowserWindow.getAllWindows()[0];
-      if (!w) return;
-      w.show();
-      w.focus();
-      w.webContents.send("collab:focus", room.id);
-    });
+    n.on("click", () => focusRoom(room.id));
     n.show();
   }
 );
+
+function focusRoom(roomId: string): void {
+  const w = BrowserWindow.getAllWindows()[0];
+  if (!w) return;
+  w.show();
+  w.focus();
+  w.webContents.send("collab:focus", roomId);
+}
 ipcMain.handle("collab:models", () => ({ presets: COLLAB_MODELS, efforts: COLLAB_EFFORTS }));
 ipcMain.handle("collab:repo", (_e, id, repo) => safe("collab:repo", () => collab.setRepo(id, repo))());
 ipcMain.handle("collab:permission", (_e, id, reqId, decision) => safe("collab:permission", () => collab.answerPermission(id, reqId, decision))());
+ipcMain.handle("collab:askTimeout", (_e, id, minutes) => safe("collab:askTimeout", () => collab.setAskTimeout(id, Number(minutes)))());
 ipcMain.handle("collab:revokeKind", (_e, id, kind) => safe("collab:revokeKind", () => collab.revokeAllowKind(id, kind))());
 ipcMain.handle("collab:resetCopy", (_e, id) => safe("collab:resetCopy", () => collab.resetTestCopy(id))());
 ipcMain.handle("collab:participants", (_e, id, specs) => safe("collab:participants", () => collab.setParticipants(id, specs))());

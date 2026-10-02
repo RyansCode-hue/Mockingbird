@@ -334,6 +334,8 @@ export interface CollabRoom {
   pending?: CollabPermissionRequest[];
   /** Kinds of call the user chose to always allow in this room, e.g. "Bash: docker exec". */
   allowKinds?: string[];
+  /** How long a model's request waits for the user before it counts as no (default 10). */
+  askTimeoutMin?: number;
   createdAt: number;
 }
 
@@ -353,6 +355,8 @@ export interface UsageLimit {
   label: string; // "5-hour limit", "Weekly · all models", "Weekly · Opus"
   usedPct: number; // 0-100
   resetsAt: number | null; // epoch ms
+  /** Shown instead of a percentage when there's no reading for this window. */
+  note?: string;
 }
 
 /** An agent's plan usage (account-wide), as last reported by any of its sessions. */

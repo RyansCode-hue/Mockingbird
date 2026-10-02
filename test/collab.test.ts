@@ -4,7 +4,7 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "child_process";
 import { makeTestCopy } from "../src/main/testCopy";
-import { CollabRooms, COLLAB_MODELS, dockerSockets, permissionKind, PERMISSION_TIMEOUT_MS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
+import { CollabRooms, COLLAB_MODELS, dockerSockets, permissionKind, DEFAULT_ASK_TIMEOUT_MIN, PERMISSION_REMIND_MS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
 import type { CollabParticipantSpec } from "../src/shared/types";
 import type { CollabRoom } from "../src/shared/types";
 
@@ -627,10 +627,51 @@ describe("asking the user's permission", () => {
       expect(await a).toMatchObject({ behavior: "deny", message: expect.stringMatching(/^Room stopped — denied/) });
       await b;
       const late = c.requestPermission(room.id, "opus", bash("docker ps"));
-      vi.advanceTimersByTime(PERMISSION_TIMEOUT_MS);
+      vi.advanceTimersByTime(DEFAULT_ASK_TIMEOUT_MIN * 60_000);
       expect(await late).toMatchObject({ behavior: "deny", message: expect.stringMatching(/^Nobody answered within 10 minutes/) });
       expect(room.pending).toEqual([]);
       expect(() => c.answerPermission(room.id, "gone", "allow")).toThrow(/no longer waiting/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reminds the user once if a request is still waiting after 3 minutes, and not after it's answered", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c } = rooms();
+      const room = c.create({ title: "t", brief: "b", repoPath: null, mode: "step", participants: specs("opus", "gpt6") });
+      const calls: boolean[] = [];
+      (c as any).onPermissionRequest = (_r: CollabRoom, _q: unknown, reminder: boolean) => calls.push(reminder);
+      const slow = c.requestPermission(room.id, "opus", bash("docker ps"));
+      vi.advanceTimersByTime(PERMISSION_REMIND_MS);
+      expect(calls).toEqual([false, true]);
+      vi.advanceTimersByTime(PERMISSION_REMIND_MS);
+      expect(calls).toEqual([false, true]); // once
+      c.answerPermission(room.id, room.pending![0].id, "allow");
+      await slow;
+      const quick = c.requestPermission(room.id, "opus", bash("docker images"));
+      c.answerPermission(room.id, room.pending![0].id, "deny");
+      await quick;
+      vi.advanceTimersByTime(PERMISSION_REMIND_MS);
+      expect(calls).toEqual([false, true, false]); // answered before the reminder was due
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits as long as the room says, within the allowed choices", async () => {
+    vi.useFakeTimers();
+    try {
+      const { c } = rooms();
+      const room = c.create({ title: "t", brief: "b", repoPath: null, mode: "step", participants: specs("opus", "gpt6") });
+      expect(() => c.setAskTimeout(room.id, 45)).toThrow(/Choose 5, 10, 15, 20 minutes/);
+      c.setAskTimeout(room.id, 20);
+      const a = c.requestPermission(room.id, "opus", bash("docker ps"));
+      vi.advanceTimersByTime(DEFAULT_ASK_TIMEOUT_MIN * 60_000);
+      expect(room.pending).toHaveLength(1); // the default would have given up by now
+      vi.advanceTimersByTime(10 * 60_000);
+      expect(await a).toMatchObject({ behavior: "deny", message: expect.stringMatching(/^Nobody answered within 20 minutes/) });
     } finally {
       vi.useRealTimers();
     }

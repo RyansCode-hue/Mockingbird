@@ -530,7 +530,9 @@ function AskCard({ room, req, label, color, call }: { room: CollabRoom; req: Col
         <span className={`seat-dot c-${color[req.seat] ?? 0}`} />
         <span className="who">{label[req.seat] ?? req.seat}</span>
         <span className="collab-meta">asks to {req.tool === "Bash" ? "run" : `use ${req.tool}`}</span>
-        <span className="collab-ask-timer" title="Denied automatically after 10 minutes">waiting {waited(req.at, now)}</span>
+        <span className="collab-ask-timer" title={`Denied automatically after ${room.askTimeoutMin ?? 10} minutes`}>
+          waiting {waited(req.at, now)} of {room.askTimeoutMin ?? 10}m
+        </span>
       </div>
       {req.description && <div className="collab-ask-why">{req.description}</div>}
       <pre className="collab-ask-detail">{req.detail}</pre>
@@ -620,17 +622,28 @@ function Inspector({
         </section>
       )}
 
-      {!!room.allowKinds?.length && (
+      {seated.some((p) => p.agent === "claude") && (
         <section>
-          <div className="ins-head">Always allowed</div>
-          <div className="collab-kinds">
-            {room.allowKinds.map((k) => (
-              <span key={k} className="collab-kind">
-                <code>{k.replace(/^Bash: /, "").replace(/^(\w+): /, "$1 in ")}</code>
-                <button className="icon" title="Ask me again" onClick={() => call("revoke", () => window.mb.collabRevokeKind(room.id, k))}>✕</button>
-              </span>
-            ))}
-          </div>
+          <div className="ins-head">Approvals</div>
+          <label className="ins-row" title="How long a model's request waits for you before it counts as no; the model's turn waits with it">
+            Wait for my answer
+            <select value={room.askTimeoutMin ?? 10} onChange={(e) => call("timeout", () => window.mb.collabAskTimeout(room.id, Number(e.target.value)))}>
+              {[5, 10, 15, 20].map((m) => (
+                <option key={m} value={m}>{m} min</option>
+              ))}
+            </select>
+          </label>
+          {!!room.allowKinds?.length && <div className="ins-note">Always allowed here:</div>}
+          {!!room.allowKinds?.length && (
+            <div className="collab-kinds">
+              {room.allowKinds.map((k) => (
+                <span key={k} className="collab-kind">
+                  <code>{k.replace(/^Bash: /, "").replace(/^(\w+): /, "$1 in ")}</code>
+                  <button className="icon" title="Ask me again" onClick={() => call("revoke", () => window.mb.collabRevokeKind(room.id, k))}>✕</button>
+                </span>
+              ))}
+            </div>
+          )}
         </section>
       )}
 

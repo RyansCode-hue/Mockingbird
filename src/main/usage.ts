@@ -5,6 +5,8 @@ import { MB_DIR } from "./store";
 import type { AgentUsage, UsageLimit, UsageReport } from "../shared/types";
 
 const USAGE_FILE = path.join(MB_DIR, "usage.json");
+// the last payload that carried the 5-hour window — the CLI leaves it out of some
+const FIVE_HOUR_FILE = path.join(MB_DIR, "usage-5h.json");
 const STATUSLINE_SCRIPT = path.join(MB_DIR, "statusline.sh");
 const STATUSLINE_SETTINGS = path.join(MB_DIR, "statusline-settings.json");
 const CLAUDE_SETTINGS = path.join(os.homedir(), ".claude", "settings.json");
@@ -13,12 +15,18 @@ const CLAUDE_SETTINGS = path.join(os.homedir(), ".claude", "settings.json");
 // The script prints nothing (so no status line is drawn) and swaps the file in
 // with mv so the watcher never reads a half-written document. Payloads carry
 // no limits until a session's first API response, so those are dropped rather
-// than allowed to replace another session's real numbers.
+// than allowed to replace another session's real numbers. Some payloads carry
+// the weekly window but not the 5-hour one, so the last one that had it is kept too.
 const SCRIPT = `#!/bin/bash
 # Mockingbird usage reporter — saves Claude Code's statusline payload for the app to read.
 tmp="${USAGE_FILE}.$$"
 cat > "$tmp"
-if grep -Eq '"(five_hour|seven_day)"' "$tmp"; then mv -f "$tmp" "${USAGE_FILE}"; else rm -f "$tmp"; fi
+if grep -Eq '"(five_hour|seven_day)"' "$tmp"; then
+  if grep -q '"five_hour"' "$tmp"; then cp -f "$tmp" "${FIVE_HOUR_FILE}.$$" && mv -f "${FIVE_HOUR_FILE}.$$" "${FIVE_HOUR_FILE}"; fi
+  mv -f "$tmp" "${USAGE_FILE}"
+else
+  rm -f "$tmp"
+fi
 exit 0
 `;
 
@@ -65,6 +73,17 @@ export function setClaudePlan(plan: string | null): void {
 // Model-scoped weekly windows the Claude CLI reports when the plan has them.
 const CLAUDE_MODEL_WEEKLY: Record<string, string> = { seven_day_opus: "Opus", seven_day_sonnet: "Sonnet" };
 
+/** The 5-hour window from the last payload that had one, while that window is still open. */
+function openFiveHourWindow(): { used_percentage: number; resets_at: unknown } | null {
+  try {
+    const w = JSON.parse(fs.readFileSync(FIVE_HOUR_FILE, "utf8")).rate_limits?.five_hour;
+    const resets = toMs(w?.resets_at);
+    return typeof w?.used_percentage === "number" && resets !== null && resets > Date.now() ? w : null;
+  } catch {
+    return null; // never seen one, or unreadable — the panel says there's no reading
+  }
+}
+
 function readClaude(): AgentUsage | null {
   let raw: string;
   try {
@@ -84,10 +103,14 @@ function readClaude(): AgentUsage | null {
   const add = (label: string, w: any) => {
     if (typeof w?.used_percentage === "number") limits.push({ label, usedPct: w.used_percentage, resetsAt: toMs(w.resets_at) });
   };
-  add("5-hour limit", rl?.five_hour);
+  const fiveHour = rl?.five_hour ?? openFiveHourWindow();
+  add("5-hour limit", fiveHour);
   add("Weekly · all models", rl?.seven_day);
   for (const [key, name] of Object.entries(CLAUDE_MODEL_WEEKLY)) add(`Weekly · ${name}`, rl?.[key]);
   if (!limits.length) return null;
+  if (typeof fiveHour?.used_percentage !== "number") {
+    limits.unshift({ label: "5-hour limit", usedPct: 0, resetsAt: null, note: "no reading yet" });
+  }
   return { agent: "claude", plan: claudePlan, limits, at: fs.statSync(USAGE_FILE).mtimeMs };
 }
 

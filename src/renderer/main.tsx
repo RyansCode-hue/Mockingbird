@@ -8,7 +8,7 @@ import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
 
 declare global {
@@ -182,6 +182,15 @@ function App() {
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean; source: "release" | "branch" } | null>(null);
   const [upd, setUpd] = useState<UpdateProgress>({ state: "idle", done: [], log: [] });
+  // Collaborate models waiting on an approval, per room — badged on the tab wherever you are
+  const [roomAsks, setRoomAsks] = useState<Record<string, number>>({});
+  useEffect(() => {
+    window.mb.collabList().then((rooms: CollabRoom[] | { error: string }) => {
+      if (Array.isArray(rooms)) setRoomAsks(Object.fromEntries(rooms.map((r) => [r.id, r.pending?.length ?? 0])));
+    });
+    return window.mb.onCollabChanged((r: CollabRoom) => setRoomAsks((p) => ({ ...p, [r.id]: r.pending?.length ?? 0 })));
+  }, []);
+  const asksWaiting = Object.values(roomAsks).reduce((a, b) => a + b, 0);
   const [updOutcome, setUpdOutcome] = useState<(UpdateOutcome & { restoreErrors?: string[] }) | null>(null);
   useEffect(() => {
     window.mb.updateStatus().then((p: UpdateProgress) => setUpd(p));
@@ -842,6 +851,11 @@ function App() {
               {TAB_LABELS[t]}
               {t === "worktracker" && debriefSessions.some((s) => s.status === "waiting") && (
                 <span className="dot sm waiting" style={{ marginLeft: 6 }} />
+              )}
+              {t === "collaborate" && asksWaiting > 0 && (
+                <span className="tab-badge" title={`${asksWaiting} request${asksWaiting === 1 ? "" : "s"} from models waiting on you`}>
+                  {asksWaiting}
+                </span>
               )}
             </button>
           ))}
@@ -1767,8 +1781,13 @@ function UsageMeter({ usage }: { usage: UsageReport | null }) {
                         <div key={l.label} className="usage-row">
                           <div className="usage-line">
                             <span className="usage-label">{l.label}</span>
-                            <span className="usage-reset">{resetText(l.resetsAt, now)}</span>
-                            <span className="usage-pct">{Math.round(pct)}%</span>
+                            <span
+                              className="usage-reset"
+                              title={l.note ? "Claude Code reports this window with a reply in a Claude pane; Collaborate turns don't report it" : undefined}
+                            >
+                              {l.note ?? resetText(l.resetsAt, now)}
+                            </span>
+                            <span className="usage-pct">{l.note ? "—" : `${Math.round(pct)}%`}</span>
                           </div>
                           <div className="usage-bar">
                             <span className={pct >= 90 ? "hot" : ""} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
@@ -1784,8 +1803,7 @@ function UsageMeter({ usage }: { usage: UsageReport | null }) {
               </div>
             ))}
             <div className="usage-show">
-              <span>Show</span>
-              <span className="seg">
+              <span className="seg" title="Whose usage to list">
                 {(["claude", "codex", "both"] as const).map((v) => (
                   <button key={v} className={show === v ? "on" : ""} onClick={() => setShow(v)}>
                     {v === "both" ? "Both" : AGENT_NAME[v]}

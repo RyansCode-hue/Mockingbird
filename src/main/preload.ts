@@ -46,6 +46,7 @@ const api = {
   collabResetCopy: (id: string) => ipcRenderer.invoke("collab:resetCopy", id),
   collabPermission: (id: string, reqId: string, decision: "allow" | "deny" | "always") => ipcRenderer.invoke("collab:permission", id, reqId, decision),
   collabRevokeKind: (id: string, kind: string) => ipcRenderer.invoke("collab:revokeKind", id, kind),
+  collabAskTimeout: (id: string, minutes: number) => ipcRenderer.invoke("collab:askTimeout", id, minutes),
   onCollabFocus: (cb: (roomId: string) => void) => {
     const h = (_e: unknown, id: string) => cb(id);
     ipcRenderer.on("collab:focus", h);

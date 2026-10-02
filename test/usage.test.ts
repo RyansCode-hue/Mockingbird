@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -13,6 +14,7 @@ const codexDir = path.join(os.homedir(), ".codex", "sessions", "2026", "09", "24
 
 beforeEach(() => {
   fs.rmSync(path.join(mb, "usage.json"), { force: true });
+  fs.rmSync(path.join(mb, "usage-5h.json"), { force: true });
   fs.rmSync(path.join(os.homedir(), ".codex"), { recursive: true, force: true });
   setClaudePlan(null);
 });
@@ -38,6 +40,27 @@ describe("Claude usage", () => {
       { label: "Weekly · all models", usedPct: 18, resetsAt: Date.parse("2026-09-27T18:00:00Z") },
       { label: "Weekly · Opus", usedPct: 13, resetsAt: 1790532000_000 },
     ]);
+  });
+  it("keeps the 5-hour window from an earlier report while it's open, when the latest leaves it out", () => {
+    const later = Math.floor(Date.now() / 1000) + 3600;
+    fs.writeFileSync(path.join(mb, "usage-5h.json"), JSON.stringify({ rate_limits: { five_hour: { used_percentage: 42, resets_at: later } } }));
+    writeClaude({ rate_limits: { seven_day: { used_percentage: 11, resets_at: later + 86400 } } });
+    expect(readUsage().claude!.limits.map((l) => [l.label, l.usedPct])).toEqual([["5-hour limit", 42], ["Weekly · all models", 11]]);
+  });
+  it("says there's no 5-hour reading, rather than hiding the row, once that window has closed", () => {
+    const past = Math.floor(Date.now() / 1000) - 60;
+    fs.writeFileSync(path.join(mb, "usage-5h.json"), JSON.stringify({ rate_limits: { five_hour: { used_percentage: 80, resets_at: past } } }));
+    writeClaude({ rate_limits: { seven_day: { used_percentage: 11, resets_at: past + 86400 * 3 } } });
+    expect(readUsage().claude!.limits[0]).toEqual({ label: "5-hour limit", usedPct: 0, resetsAt: null, note: "no reading yet" });
+  });
+  it("the reporter keeps the last payload that had the 5-hour window", () => {
+    usageReporterArgs();
+    const report = (payload: unknown) => execFileSync(path.join(mb, "statusline.sh"), { input: JSON.stringify(payload) });
+    report({ rate_limits: { five_hour: { used_percentage: 7, resets_at: 1 }, seven_day: { used_percentage: 1, resets_at: 2 } } });
+    report({ rate_limits: { seven_day: { used_percentage: 2, resets_at: 2 } } });
+    report({ model: { id: "x" } }); // no limits yet: dropped
+    expect(JSON.parse(fs.readFileSync(path.join(mb, "usage.json"), "utf8")).rate_limits).toEqual({ seven_day: { used_percentage: 2, resets_at: 2 } });
+    expect(JSON.parse(fs.readFileSync(path.join(mb, "usage-5h.json"), "utf8")).rate_limits.five_hour.used_percentage).toBe(7);
   });
   it("is null for an API-key login (no rate limits) or a corrupt file", () => {
     writeClaude({ rate_limits: null });

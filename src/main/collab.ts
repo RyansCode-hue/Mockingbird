@@ -146,7 +146,14 @@ const SYNTH_INSTRUCTION =
   "Where the models disagreed and it wasn't settled, say so and give your recommendation. " +
   "This is a document, not a turn — don't add a STANCE line.";
 
-export const PERMISSION_TIMEOUT_MS = 10 * 60_000;
+/**
+ * How long a request may wait for the user, in minutes: the choices, and the
+ * default. A turn that runs commands is cut off at 30 minutes, so a wait can't
+ * be allowed to take most of it.
+ */
+export const ASK_TIMEOUTS_MIN = [5, 10, 15, 20];
+export const DEFAULT_ASK_TIMEOUT_MIN = 10;
+export const PERMISSION_REMIND_MS = 3 * 60_000;
 
 // CLIs whose first word says little on its own: "always allow" covers the subcommand
 const SUBCOMMAND_CLIS = new Set(["docker", "git", "npm", "npx", "pnpm", "yarn", "dotnet", "go", "cargo", "kubectl", "gh", "brew", "pip", "uv", "poetry", "make"]);
@@ -203,7 +210,8 @@ export class CollabRooms {
     private onChange: (room: CollabRoom) => void,
     private startSession: (req: NewSessionRequest) => SessionInfo,
     private defaultBase: (repoPath: string) => string | null,
-    private onPermissionRequest: (room: CollabRoom, req: CollabPermissionRequest) => void = () => {}
+    // reminder: the request is still waiting PERMISSION_REMIND_MS later
+    private onPermissionRequest: (room: CollabRoom, req: CollabPermissionRequest, reminder: boolean) => void = () => {}
   ) {
     fs.mkdirSync(dir, { recursive: true });
     for (const f of fs.readdirSync(dir)) {
@@ -436,11 +444,14 @@ export class CollabRooms {
     };
     (room.pending ??= []).push(req);
     this.save(room);
-    this.onPermissionRequest(room, req);
+    this.onPermissionRequest(room, req, false);
+    const minutes = room.askTimeoutMin ?? DEFAULT_ASK_TIMEOUT_MIN;
     const { answer, why } = await new Promise<{ answer: "allow" | "deny"; why: string }>((resolve) => {
-      const timer = setTimeout(() => settle("deny", `Nobody answered within ${PERMISSION_TIMEOUT_MS / 60_000} minutes — denied`), PERMISSION_TIMEOUT_MS);
+      const timer = setTimeout(() => settle("deny", `Nobody answered within ${minutes} minutes — denied`), minutes * 60_000);
+      const remind = setTimeout(() => this.onPermissionRequest(room, req, true), PERMISSION_REMIND_MS);
       const settle = (answer: "allow" | "deny", why: string) => {
         clearTimeout(timer);
+        clearTimeout(remind);
         this.waiting.delete(req.id);
         room.pending = (room.pending ?? []).filter((r) => r.id !== req.id);
         resolve({ answer, why });
@@ -468,6 +479,15 @@ export class CollabRooms {
       if (!room.allowKinds?.includes(req.kind)) (room.allowKinds ??= []).push(req.kind);
     }
     settle(decision === "deny" ? "deny" : "allow", decision === "deny" ? "You denied" : decision === "always" ? `You allowed (and always allow ${req.kind} in this room)` : "You allowed");
+    return room;
+  }
+
+  /** How long this room's requests wait for an answer. */
+  setAskTimeout(roomId: string, minutes: number): CollabRoom {
+    const room = this.get(roomId);
+    if (!ASK_TIMEOUTS_MIN.includes(minutes)) throw new Error(`Choose ${ASK_TIMEOUTS_MIN.join(", ")} minutes`);
+    room.askTimeoutMin = minutes;
+    this.save(room);
     return room;
   }
 
