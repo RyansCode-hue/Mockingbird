@@ -1356,4 +1356,13 @@ markdown `*`. 153 tests.
 - [x] `package:app` script (app only, no dmg/zip)
 - [x] Tests: remote matching, clone discovery, step runner (order, failure, cancel), the helper
       script for real in temp dirs (success, restore on failure), outcome reading
-- [ ] Verify end to end with a throwaway 1.1.6 bump: build in the clone, restart, relaunch
+- [x] Verify end to end with a throwaway 1.1.6 bump: build in the clone, restart, relaunch
+
+**Review.** Verified for real, without touching GitHub or /Applications: a throwaway clone one
+commit behind a local mirror whose main had this feature — the runner checked it, pulled
+(fast-forward to 334a980), ran npm install and `npm run package:app`, and reported ready with a
+fresh 1.1.5 bundle (~35s). Then the real installer swapped a copy of the installed app for that
+bundle in a throwaway Applications folder after its stand-in process quit, removed the backup,
+"reopened" it, and the next-launch reader said "Updated to 1.1.5." with the sessions to restore.
+Not yet seen: the in-app click-through and relaunch on the real install (needs a newer version
+on main). 173 tests.
