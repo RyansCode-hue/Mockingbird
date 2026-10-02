@@ -159,9 +159,14 @@ what it can and says what it couldn't reach.
   compares against the latest GitHub release, or — when none is published —
   the version on `main`. The repository is private, so the check needs the
   [GitHub CLI](https://cli.github.com) signed in with an account that can see
-  it: `brew install gh`, then `gh auth login` once. To update a build-it-yourself
-  install: `git pull`, `npm install`, `npm run package`, and copy the app into
-  /Applications again (section 2, option B).
+  it: `brew install gh`, then `gh auth login` once. If you built it yourself
+  (section 2, option B), click the link → **Update**: Mockingbird pulls and
+  builds the new version in your clone while you keep working, then
+  **Restart to update** swaps it in and reopens with your sessions. It needs
+  the clone clean and on `main`, and Node 22. Settings → About shows which
+  folder it builds from (**Choose…** if it picked the wrong one). By hand,
+  it's `git pull`, `npm install`, `npm run package`, then copy the app into
+  /Applications again.
 
 ## 9. Good to know
 

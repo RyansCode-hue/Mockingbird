@@ -12,6 +12,7 @@
     "start": "npm run build && electron .",
     "icon": "electron scripts/make-icon.js && bash scripts/make-icns.sh",
     "package": "npm run build && electron-builder --mac",
+    "package:app": "npm run build && electron-builder --mac --dir",
     "test": "vitest run",
     "test:watch": "vitest"
   },

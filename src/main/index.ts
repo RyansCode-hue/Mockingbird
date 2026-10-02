@@ -3,8 +3,8 @@ import { execFile, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Store, expandHome } from "./store";
-import { SessionManager } from "./sessions";
+import { Store, expandHome, MB_DIR } from "./store";
+import { SessionManager, paneEnv } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree } from "./worktrees";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
@@ -17,7 +17,8 @@ import { userShell, whichSync, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
-import { checkForUpdate } from "./updates";
+import { checkForUpdate, updateRepo } from "./updates";
+import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 
 const store = new Store();
 // debrief panes are ephemeral reviews — don't carry them across restarts
@@ -520,6 +521,65 @@ ipcMain.handle("ado:comment:add", (_e, id, text) =>
   safeAsync("ado:comment:add", () => addComment(store, id, text))()
 );
 // native folder/file picker for the Settings tab — no more typing paths
+// ---- in-app update: build in the user's clone, then restart into it ----
+// read once: the update (if any) this launch is the end of
+let updateOutcome = isPrimary ? takeUpdateOutcome(MB_DIR, app.getVersion()) : null;
+const findClone = async () => {
+  const repo = updateRepo();
+  if (!repo) throw new Error("This build doesn't name its GitHub repository, so it can't update itself.");
+  return findSourceClone({ configured: store.settings.updateSource, roots: store.settings.repoRoots, ...repo });
+};
+const updater = new UpdateRunner({
+  exec: loginShellExec(paneEnv()),
+  currentVersion: app.getVersion(),
+  findClone,
+  onProgress: (p) => BrowserWindow.getAllWindows()[0]?.webContents.send("update:progress", p),
+});
+ipcMain.handle("update:status", () => updater.progress);
+ipcMain.handle("update:prepare", () => {
+  // runs for minutes; progress (and any failure) arrives as update:progress
+  updater.prepare().catch((err) => logError("update:prepare", err));
+  return updater.progress;
+});
+ipcMain.handle("update:cancel", () => updater.cancel());
+ipcMain.handle("update:outcome", () => {
+  const o = updateOutcome;
+  updateOutcome = null;
+  return o;
+});
+ipcMain.handle("update:source", () =>
+  safeAsync("update:source", async () => {
+    try {
+      return { configured: store.settings.updateSource ?? null, found: await findClone() };
+    } catch (err) {
+      return { configured: store.settings.updateSource ?? null, found: null, problem: err instanceof Error ? err.message : String(err) };
+    }
+  })()
+);
+ipcMain.handle("update:install", () =>
+  safe("update:install", () => {
+    const p = updater.progress;
+    if (p.state !== "ready" || !p.appPath || !p.version) throw new Error("There's no finished build to install yet.");
+    if (!app.isPackaged) throw new Error("This is a development run (npm start); updates install into the packaged app.");
+    const targetApp = path.resolve(app.getPath("exe"), "..", "..", "..");
+    if (path.resolve(p.appPath) === targetApp) {
+      throw new Error("Mockingbird is running from the clone's release folder, which the build replaces. Install it in /Applications (SETUP.md) and update from there.");
+    }
+    startInstaller({
+      mbDir: MB_DIR,
+      pid: process.pid,
+      builtApp: p.appPath,
+      targetApp,
+      from: app.getVersion(),
+      to: p.version,
+      sessions: sessions.list().filter((s) => s.status !== "dead").map((s) => s.id),
+    });
+    updater.markInstalling();
+    setTimeout(() => app.quit(), 300); // let this reply reach the window first
+    return true;
+  })()
+);
+
 ipcMain.handle("dialog:pick", async (_e, opts) => {
   const win = BrowserWindow.getAllWindows()[0];
   const r = await dialog.showOpenDialog(win, {

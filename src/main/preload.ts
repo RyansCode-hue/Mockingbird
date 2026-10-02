@@ -27,6 +27,17 @@ const api = {
   adoMe: () => ipcRenderer.invoke("ado:me"),
   connectorsStatus: () => ipcRenderer.invoke("connectors:status"),
   updateCheck: () => ipcRenderer.invoke("update:check"),
+  updateStatus: () => ipcRenderer.invoke("update:status"),
+  updatePrepare: () => ipcRenderer.invoke("update:prepare"),
+  updateCancel: () => ipcRenderer.invoke("update:cancel"),
+  updateInstall: () => ipcRenderer.invoke("update:install"),
+  updateOutcome: () => ipcRenderer.invoke("update:outcome"),
+  updateSource: () => ipcRenderer.invoke("update:source"),
+  onUpdateProgress: (cb: (p: unknown) => void) => {
+    const h = (_e: unknown, p: unknown) => cb(p);
+    ipcRenderer.on("update:progress", h);
+    return () => ipcRenderer.removeListener("update:progress", h);
+  },
   appVersion: () => ipcRenderer.invoke("app:version"),
   collabModels: () => ipcRenderer.invoke("collab:models"),
   collabList: () => ipcRenderer.invoke("collab:list"),

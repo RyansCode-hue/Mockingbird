@@ -1340,3 +1340,20 @@ rounds). Found and fixed while looking: a stale `.collab-room` column rule stack
 under the thread; permission badges truncated model names (moved to their own line); below
 1000px the inspector squeezed the thread to nothing (it now floats over it); grid summaries kept
 markdown `*`. 153 tests.
+
+## In-app update: pull, build, restart
+
+- [x] `src/main/selfUpdate.ts`: find the source clone (Settings override, else a repo under the
+      repo folders whose origin is the update repo); preflight (tracked changes, branch, Node ≥ 22);
+      steps fetch → ff-only merge → npm install → build → electron-builder --dir; verify the built
+      version; streamed log; cancel
+- [x] Installer helper (bash, detached, clean env): waits for the app to quit, sets the old bundle
+      aside, ditto's the new one in, restores on failure, writes a result, relaunches
+- [x] Startup: read the marker + result → "Updated to X" / "Update failed: …"; auto-restore the
+      sessions that were live
+- [x] IPC + UI: status-bar link opens the update panel (steps, log tail, Cancel / Restart to
+      update / Retry); Settings → About shows the source folder (Change) and Update
+- [x] `package:app` script (app only, no dmg/zip)
+- [x] Tests: remote matching, clone discovery, step runner (order, failure, cancel), the helper
+      script for real in temp dirs (success, restore on failure), outcome reading
+- [ ] Verify end to end with a throwaway 1.1.6 bump: build in the clone, restart, relaunch

@@ -93,7 +93,15 @@ export async function checkUpdateWith(deps: UpdateDeps): Promise<UpdateInfo | nu
   return { current: deps.current, latest, url: `https://github.com/${repo.owner}/${repo.repo}`, newer: isNewer(deps.current, latest), source: "branch" };
 }
 
+function appPackage(): UpdateDeps["pkg"] {
+  return JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "package.json"), "utf8"));
+}
+
+/** The GitHub repository this build updates from, or null when it doesn't name one. */
+export function updateRepo(): { owner: string; repo: string } | null {
+  return repoFromPackage(appPackage());
+}
+
 export function checkForUpdate(): Promise<UpdateInfo | null> {
-  const pkg = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "package.json"), "utf8"));
-  return checkUpdateWith({ pkg, current: app.getVersion(), token: ghToken, fetch });
+  return checkUpdateWith({ pkg: appPackage(), current: app.getVersion(), token: ghToken, fetch });
 }

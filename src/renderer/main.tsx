@@ -5,9 +5,10 @@ import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, short
 import { FileDock } from "./FilePanel";
 import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
+import { UpdatePanel } from "./UpdatePanel";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 
 declare global {
@@ -16,7 +17,7 @@ declare global {
   }
 }
 
-type ModalKind = "new" | "import" | "help" | "restart" | "setup" | null;
+type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | null;
 type Tab = "sessions" | "dashboard" | "worktracker" | "collaborate" | "settings";
 const TAB_LABELS: Record<Tab, string> = {
   sessions: "Sessions",
@@ -175,6 +176,25 @@ function App() {
   };
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean; source: "release" | "branch" } | null>(null);
+  const [upd, setUpd] = useState<UpdateProgress>({ state: "idle", done: [], log: [] });
+  const [updOutcome, setUpdOutcome] = useState<(UpdateOutcome & { restoreErrors?: string[] }) | null>(null);
+  useEffect(() => {
+    window.mb.updateStatus().then((p: UpdateProgress) => setUpd(p));
+    return window.mb.onUpdateProgress((p: UpdateProgress) => setUpd(p));
+  }, []);
+  // After an update restart: say how it went, and bring back the sessions that were open
+  useEffect(() => {
+    window.mb.updateOutcome().then(async (o: UpdateOutcome | null) => {
+      if (!o) return;
+      const restoreErrors: string[] = [];
+      for (const id of o.sessions) {
+        const r = await window.mb.relaunchSession(id);
+        if (r?.error) restoreErrors.push(r.error);
+      }
+      setUpdOutcome({ ...o, restoreErrors });
+      refresh();
+    });
+  }, []);
   const [usage, setUsage] = useState<UsageReport | null>(null);
   const [settingsJump, setSettingsJump] = useState<{ section: SettingsSection; n: number } | null>(null);
   const openControlRoom = () => {
@@ -891,6 +911,7 @@ function App() {
             onTheme={setTheme}
             onRestartAll={() => setModal("restart")}
             onSetup={() => setModal("setup")}
+            onUpdate={() => setModal("update")}
             jump={settingsJump}
           />
         )}
@@ -1416,13 +1437,34 @@ function App() {
         })}
         <UsageMeter usage={usage} />
         <span className="right">
-          {update?.newer && (
+          {updOutcome && (
             <span
-              className="update-link"
-              title={update.source === "release" ? "A newer Mockingbird is out — click to open the release" : "A newer Mockingbird is on GitHub — update with git pull, then npm run package"}
-              onClick={() => window.mb.openExternal(update.url)}
+              className={`update-note ${updOutcome.ok ? "" : "bad"}`}
+              title={[
+                updOutcome.message,
+                updOutcome.restoreErrors?.length ? `Sessions that couldn't come back: ${updOutcome.restoreErrors.join("; ")}` : "",
+                `Log: ${updOutcome.logPath}`,
+              ].filter(Boolean).join("\n")}
             >
-              ⭮ v{update.latest} available
+              {updOutcome.ok ? `✓ ${updOutcome.message}` : `✕ ${updOutcome.message}`}
+              <button className="icon" title="Dismiss" onClick={() => setUpdOutcome(null)}>✕</button>
+            </span>
+          )}
+          {(upd.state !== "idle" || update?.newer) && (
+            <span
+              className={`update-link ${upd.state === "failed" ? "bad" : ""}`}
+              title="Update Mockingbird from your clone — it builds while you work and restarts when you say"
+              onClick={() => setModal("update")}
+            >
+              {upd.state === "preparing"
+                ? `⭮ building${update?.latest ? ` v${update.latest}` : ""}…`
+                : upd.state === "ready"
+                  ? `⭮ restart to update to v${upd.version}`
+                  : upd.state === "failed"
+                    ? "⭮ update failed"
+                    : upd.state === "installing"
+                      ? "⭮ restarting…"
+                      : `⭮ v${update!.latest} available`}
             </span>
           )}
           {!hooksOk && (
@@ -1568,6 +1610,15 @@ function App() {
         />
       )}
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
+      {modal === "update" && (
+        <UpdatePanel
+          progress={upd}
+          current={appVersion}
+          latest={update?.newer ? update.latest : undefined}
+          onClose={() => setModal(null)}
+          onOpenGitHub={update ? () => window.mb.openExternal(update.url) : undefined}
+        />
+      )}
       {modal === "setup" && (
         <SetupWizard
           onClose={() => setModal(null)}
@@ -3297,6 +3348,7 @@ function SettingsView({
   onTheme,
   onRestartAll,
   onSetup,
+  onUpdate,
   jump,
 }: {
   sessions: SessionInfo[];
@@ -3304,6 +3356,7 @@ function SettingsView({
   onTheme: (t: "dark" | "light") => void;
   onRestartAll: () => void;
   onSetup: () => void;
+  onUpdate: () => void;
   /** Open a specific section, e.g. the control room from ⌘⇧B. */
   jump: { section: SettingsSection; n: number } | null;
 }) {
@@ -3660,12 +3713,10 @@ function SettingsView({
                   const where = (u: { source: string }) => (u.source === "release" ? "the latest release" : "the newest version on GitHub");
                   if (r === null) setUpdNote("This build doesn't say where its updates come from, so it can't check.");
                   else if (r?.error) setUpdNote(`Couldn't check: ${r.error}`);
-                  else if (r.newer)
-                    setUpdNote(
-                      r.source === "release"
-                        ? `Version ${r.latest} is available — download it from the link in the status bar.`
-                        : `Version ${r.latest} is on GitHub. Update with git pull, then npm run package (see SETUP.md).`
-                    );
+                  else if (r.newer) {
+                    setUpdNote(`Version ${r.latest} is available.`);
+                    onUpdate();
+                  }
                   else if (r.latest === r.current) setUpdNote(`Up to date — ${r.current} is ${where(r)}.`);
                   else setUpdNote(`Up to date — you're on ${r.current}, ahead of ${where(r)} (${r.latest}).`);
                 }}
@@ -3674,6 +3725,7 @@ function SettingsView({
               </button>
             </SetRow>
             {updNote && <div className="set-note">{updNote}</div>}
+            <UpdateSourceRow onUpdate={onUpdate} />
             <SetRow title="Guide" note="Every feature and shortcut">
               <span className="kbd">⌘/</span>
             </SetRow>
@@ -3681,6 +3733,36 @@ function SettingsView({
         )}
       </div>
     </div>
+  );
+}
+
+/** Where in-app updates build from: the user's clone, found automatically or chosen. */
+function UpdateSourceRow({ onUpdate }: { onUpdate: () => void }) {
+  const [src, setSrc] = useState<{ configured: string | null; found: string | null; problem?: string } | null>(null);
+  const load = () => window.mb.updateSource().then((r: any) => setSrc(r?.error ? { configured: null, found: null, problem: r.error } : r));
+  useEffect(() => {
+    load();
+  }, []);
+  const choose = async (dir: string | null) => {
+    const s: Settings = await window.mb.getSettings();
+    await window.mb.setSettings({ ...s, updateSource: dir });
+    load();
+  };
+  const note = !src
+    ? "Looking for your clone…"
+    : src.problem
+      ? src.problem
+      : src.found
+        ? `${src.found}${src.configured ? "" : " (found automatically)"}`
+        : "No clone of Mockingbird under your repo folders — updates can't build until you clone it or choose its folder.";
+  return (
+    <SetRow title="Updates build from" note={note}>
+      <button className="outline" onClick={async () => { const d = await window.mb.pickPath({ defaultPath: src?.found ?? undefined }); if (d) choose(d); }}>
+        Choose…
+      </button>
+      {src?.configured && <button className="outline" onClick={() => choose(null)}>Find automatically</button>}
+      <button className="outline" disabled={!src?.found} onClick={onUpdate}>Update…</button>
+    </SetRow>
   );
 }
 

@@ -162,6 +162,40 @@ export interface Settings {
   agentMessagesSubmit?: boolean; // agent-to-agent messages auto-send (default) or wait in the prompt
   debriefs: { enabled: boolean; morning: string; wrapUp: string }; // "HH:MM"
   notifications: boolean;
+  updateSource?: string | null; // the clone in-app updates pull and build; found under repoRoots when unset
+}
+
+export type UpdateStepId = "check" | "node" | "pull" | "install" | "build" | "verify";
+
+export const UPDATE_STEPS: { id: UpdateStepId; label: string }[] = [
+  { id: "check", label: "Check your clone" },
+  { id: "node", label: "Check Node" },
+  { id: "pull", label: "Pull the latest code" },
+  { id: "install", label: "Install dependencies" },
+  { id: "build", label: "Build the app" },
+  { id: "verify", label: "Check the new build" },
+];
+
+/** An in-app update: pulling and building in the user's clone, then restarting into it. */
+export interface UpdateProgress {
+  state: "idle" | "preparing" | "ready" | "failed" | "installing";
+  step?: UpdateStepId; // running, or where it failed
+  done: UpdateStepId[];
+  error?: string;
+  log: string[]; // the tail of the steps' output
+  clone?: string;
+  version?: string; // the built version, once ready
+  appPath?: string; // the built bundle, once ready
+}
+
+/** How the update this launch follows went; the sessions open before it come back. */
+export interface UpdateOutcome {
+  ok: boolean;
+  from: string;
+  to: string;
+  message: string;
+  sessions: string[];
+  logPath: string;
 }
 
 export interface BroadcastRequest {
