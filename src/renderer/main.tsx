@@ -174,7 +174,7 @@ function App() {
     refresh();
   };
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
-  const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean } | null>(null);
+  const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean; source: "release" | "branch" } | null>(null);
   const [usage, setUsage] = useState<UsageReport | null>(null);
   const [settingsJump, setSettingsJump] = useState<{ section: SettingsSection; n: number } | null>(null);
   const openControlRoom = () => {
@@ -1419,7 +1419,7 @@ function App() {
           {update?.newer && (
             <span
               className="update-link"
-              title="A newer Mockingbird is out — click to open the release"
+              title={update.source === "release" ? "A newer Mockingbird is out — click to open the release" : "A newer Mockingbird is on GitHub — update with git pull, then npm run package"}
               onClick={() => window.mb.openExternal(update.url)}
             >
               ⭮ v{update.latest} available
@@ -3657,10 +3657,17 @@ function SettingsView({
                 onClick={async () => {
                   setUpdNote("Checking…");
                   const r = await window.mb.updateCheck();
-                  if (r === null) setUpdNote('No update source — set "repository" in package.json to a GitHub repo');
-                  else if (r?.error) setUpdNote(`Check failed: ${r.error}`);
-                  else if (r.newer) setUpdNote(`Version ${r.latest} is available — see the link in the status bar`);
-                  else setUpdNote(`Up to date (${r.current})`);
+                  const where = (u: { source: string }) => (u.source === "release" ? "the latest release" : "the newest version on GitHub");
+                  if (r === null) setUpdNote("This build doesn't say where its updates come from, so it can't check.");
+                  else if (r?.error) setUpdNote(`Couldn't check: ${r.error}`);
+                  else if (r.newer)
+                    setUpdNote(
+                      r.source === "release"
+                        ? `Version ${r.latest} is available — download it from the link in the status bar.`
+                        : `Version ${r.latest} is on GitHub. Update with git pull, then npm run package (see SETUP.md).`
+                    );
+                  else if (r.latest === r.current) setUpdNote(`Up to date — ${r.current} is ${where(r)}.`);
+                  else setUpdNote(`Up to date — you're on ${r.current}, ahead of ${where(r)} (${r.latest}).`);
                 }}
               >
                 Check for updates

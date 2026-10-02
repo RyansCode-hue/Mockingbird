@@ -154,8 +154,14 @@ what it can and says what it couldn't reach.
   then **Restart all sessions**. You need this when a new model (e.g. a new
   Opus) says the CLI must update. Restarting relaunches every pane in place and
   resumes its conversation; groups and grid slots survive.
-- **Mockingbird** — a teal "⭮ vX.Y available" link appears in the status bar
-  when a newer release is published. Install it the same way as section 2.
+- **Mockingbird** — Settings → About → **Check for updates** (it also checks on
+  its own and shows a teal "⭮ vX.Y available" link in the status bar). It
+  compares against the latest GitHub release, or — when none is published —
+  the version on `main`. The repository is private, so the check needs the
+  [GitHub CLI](https://cli.github.com) signed in with an account that can see
+  it: `brew install gh`, then `gh auth login` once. To update a build-it-yourself
+  install: `git pull`, `npm install`, `npm run package`, and copy the app into
+  /Applications again (section 2, option B).
 
 ## 9. Good to know
 

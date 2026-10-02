@@ -190,7 +190,7 @@ app.whenReady().then(() => {
           notifiedVersion = u.latest;
           const n = new Notification({
             title: "Mockingbird update available",
-            body: `v${u.latest} is out (you're on v${u.current}). Click to open the release.`,
+            body: `v${u.latest} is out (you're on v${u.current}). ${u.source === "release" ? "Click to open the release." : "Update with git pull, then npm run package."}`,
           });
           n.on("click", () => shell.openExternal(u.url));
           n.show();

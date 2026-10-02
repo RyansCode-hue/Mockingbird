@@ -3,6 +3,7 @@
   "productName": "Mockingbird",
   "version": "1.1.5",
   "description": "Grid manager for parallel Claude CLI sessions — worktrees, status, broadcast, ADO & WorkTracker integration",
+  "repository": "github:RyansCode-hue/Mockingbird",
   "main": "dist/main.js",
   "scripts": {
     "build": "node esbuild.mjs",
