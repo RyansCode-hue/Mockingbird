@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentKind, CollabMessage, CollabMode, CollabModel, CollabParticipantSpec, CollabPermissionRequest, CollabRoom, RepoEntry } from "../shared/types";
-import { agreement, initials, isLong, roundsGrid, summaryOf, threadItems, waited } from "./collabView";
+import type { AgentKind, CollabMessage, CollabMode, CollabParticipantSpec, CollabPermissionRequest, CollabRoom, RepoEntry } from "../shared/types";
+import { CUSTOM_MODEL as CUSTOM, agreement, initials, isErr, isLong, roundsGrid, summaryOf, threadItems, waited, type Catalog } from "./collabView";
+import { ModelsSection } from "./CollabModels";
 
 const MODES: { id: CollabMode; label: string; note: string }[] = [
   { id: "step", label: "Step", note: "one round, then waits for you" },
@@ -10,9 +11,6 @@ const MODES: { id: CollabMode; label: string; note: string }[] = [
 const nextMode = (m: CollabMode): CollabMode => MODES[(MODES.findIndex((x) => x.id === m) + 1) % MODES.length].id;
 
 type Result<T> = T | { error: string };
-type Catalog = { presets: CollabModel[]; efforts: Record<AgentKind, string[]> };
-const CUSTOM = "__custom";
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** A remembered UI preference; storage can be unavailable, and then the default applies. */
 function usePref<T extends string | boolean>(key: string, initial: T): [T, (v: T) => void] {
@@ -149,7 +147,7 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
         changed until you approve a plan — then one model implements it in a normal session on a new branch.
       </p>
       <label>Repository <span className="wi-note">optional — pick one to let models read the code</span></label>
-      <RepoPicker value={repo} onChange={setRepo} bare />
+      <RepoPicker value={repo} onChange={setRepo} />
       <label>Models <span className="wi-note">they speak in this order</span></label>
       <SeatEditor seats={seats} onChange={setSeats} catalog={catalog} hasRepo={!!repo} />
       <label>Title</label>
@@ -189,8 +187,6 @@ type Call = (what: string, fn: () => Promise<unknown>) => Promise<unknown>;
 
 function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; catalog: Catalog; onDeleted: () => void; onOpenSession: (id: string) => void }) {
   const [draft, setDraft] = useState("");
-  const [editing, setEditing] = useState<CollabParticipantSpec[] | null>(null);
-  const [repoDraft, setRepoDraft] = useState<string>(room.repoPath ?? "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [view, setView] = usePref<"thread" | "rounds">("mb.collab.view", "thread");
@@ -210,10 +206,6 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
       else n.add(id);
       return n;
     });
-  const openModels = () => {
-    setRepoDraft(room.repoPath ?? "");
-    setEditing(seated.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, readsCode: p.readsCode, runsCommands: !!p.runsCommands, usesDocker: !!p.usesDocker })));
-  };
   // braces matter: scrollIntoView returns a Promise in current Chromium, and React
   // would call a returned value as the effect's cleanup (crashing on unmount)
   useEffect(() => {
@@ -227,15 +219,6 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
     setBusy("");
     if (isErr(r)) setError(r.error);
     return r;
-  };
-  const saveModels = async () => {
-    if (!editing) return;
-    if ((repoDraft || null) !== room.repoPath) {
-      const rr = await call("repo", () => window.mb.collabRepo(room.id, repoDraft || null));
-      if (isErr(rr)) return;
-    }
-    const r = await call("models", () => window.mb.collabParticipants(room.id, editing));
-    if (!isErr(r)) setEditing(null);
   };
   const setMode = (mode: CollabMode, rounds?: number) => call("mode", () => window.mb.collabMode(room.id, mode, rounds));
   const send = async () => {
@@ -275,20 +258,6 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
             ▥
           </button>
         </header>
-
-        {editing && (
-          <div className="collab-models-panel">
-            <div className="set-lede">
-              Changes apply from each model's next turn. A model you add reads the whole discussion first; one you remove keeps its past messages.
-            </div>
-            <RepoPicker value={repoDraft} onChange={setRepoDraft} />
-            <SeatEditor seats={editing} onChange={setEditing} catalog={catalog} hasRepo={!!repoDraft} colors={color} />
-            <div className="set-actions">
-              <button className="primary" disabled={editing.length < 1} onClick={saveModels}>Save</button>
-              <button className="outline" onClick={() => setEditing(null)}>Cancel</button>
-            </div>
-          </div>
-        )}
 
         {view === "thread" ? (
           <Thread room={room} label={label} color={color} open={open} toggle={toggle} call={call} endRef={endRef} />
@@ -348,7 +317,7 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
           busy={busy}
           call={call}
           setError={setError}
-          onEditModels={() => (editing ? setEditing(null) : openModels())}
+          catalog={catalog}
           onJump={jumpTo}
           onOpenSession={onOpenSession}
           onDeleted={onDeleted}
@@ -556,7 +525,7 @@ function Inspector({
   busy,
   call,
   setError,
-  onEditModels,
+  catalog,
   onJump,
   onOpenSession,
   onDeleted,
@@ -565,7 +534,7 @@ function Inspector({
   busy: string;
   call: Call;
   setError: (e: string) => void;
-  onEditModels: () => void;
+  catalog: Catalog;
   onJump: (messageId: string) => void;
   onOpenSession: (id: string) => void;
   onDeleted: () => void;
@@ -575,31 +544,7 @@ function Inspector({
   const planMsg = [...room.messages].reverse().find((m) => m.kind === "plan" || (room.plan && m.text === room.plan.text && m.speaker === room.plan.by));
   return (
     <aside className="collab-inspector">
-      <section>
-        <div className="ins-head">
-          Models
-          <button className="link" onClick={onEditModels}>Edit</button>
-        </div>
-        {seated.map((p) => (
-          <div key={p.key} className={`ins-model c-${p.color} ${room.speaking === p.key ? "speaking" : ""}`} title={`${p.model}${p.effort ? ` · effort ${p.effort}` : ""}`}>
-            <span className={`seat-dot c-${p.color}`} />
-            <span className="who">{p.label}</span>
-            {p.effort && <span className="ins-eff">{p.effort}</span>}
-            <span className="ins-perms">
-              {room.repoPath && p.readsCode && <span title="Reads the code">{"</>"}</span>}
-              {room.repoPath && p.runsCommands && <span title="Runs commands in the test copy">{"$_"}</span>}
-              {room.repoPath && p.usesDocker && <span title="Uses Docker">docker</span>}
-              {room.repoPath && !p.readsCode && <span className="off" title="Asks a code reader">no code</span>}
-            </span>
-          </div>
-        ))}
-        {room.speaking && <div className="ins-note">{room.participants.find((p) => p.key === room.speaking)?.label} is taking its turn…</div>}
-      </section>
-
-      <section>
-        <div className="ins-head">Repository</div>
-        <div className="ins-value" title={room.repoPath ?? undefined}>{room.repoPath ? room.repoPath.split("/").pop() : "None — models discuss without code"}</div>
-      </section>
+      <ModelsSection room={room} catalog={catalog} call={call} />
 
       {runsCommands && (
         <section>
@@ -741,13 +686,11 @@ function SeatEditor({
   onChange,
   catalog,
   hasRepo,
-  colors = {},
 }: {
   seats: CollabParticipantSpec[];
   onChange: (s: CollabParticipantSpec[]) => void;
   catalog: Catalog;
   hasRepo: boolean;
-  colors?: Record<string, number>; // existing seats keep their room color
 }) {
   const set = (i: number, patch: Partial<CollabParticipantSpec>) => onChange(seats.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   const move = (i: number, d: -1 | 1) => {
@@ -766,7 +709,7 @@ function SeatEditor({
         const preset = presetOf(s);
         return (
           <div key={s.key ?? `new-${i}`} className="seat-row">
-            <span className={`seat-dot c-${(s.key !== undefined ? colors[s.key] : undefined) ?? i % 6}`} />
+            <span className={`seat-dot c-${i % 6}`} />
             <select
               value={preset}
               title={s.key ? "Changing the model starts it on a fresh conversation" : undefined}
@@ -861,7 +804,7 @@ function SeatEditor({
 }
 
 /** The room's repository: what code readers read and where an approved plan is implemented. */
-function RepoPicker({ value, onChange, bare }: { value: string; onChange: (v: string) => void; bare?: boolean }) {
+function RepoPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -878,7 +821,7 @@ function RepoPicker({ value, onChange, bare }: { value: string; onChange: (v: st
   );
   return (
     <>
-      {bare ? select : <div className="repo-picker"><span className="wi-note">Repository</span>{select}</div>}
+      {select}
       {error && <div className="err">{error}</div>}
     </>
   );

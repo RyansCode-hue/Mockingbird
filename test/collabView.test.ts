@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agreement, initials, isLong, roundsGrid, summaryOf, threadItems, waited } from "../src/renderer/collabView";
+import { accessFlags, accessOf, agreement, initials, isLong, moveSeat, roundsGrid, specsOf, summaryOf, threadItems, waited } from "../src/renderer/collabView";
 import type { CollabMessage, CollabParticipant, CollabRoom } from "../src/shared/types";
 
 let n = 0;
@@ -76,5 +76,28 @@ describe("small formats", () => {
     expect(initials("How to make Atticus-Snipper (Pathways) perform better")).toBe("MA");
     expect(initials("CSV export")).toBe("CE");
     expect(initials("")).toBe("?");
+  });
+});
+
+describe("editing models in the sidebar", () => {
+  it("treats code access as one ladder: none, read, run, docker", () => {
+    for (const a of ["none", "read", "run", "docker"] as const) expect(accessOf(accessFlags(a))).toBe(a);
+    expect(accessFlags("run")).toEqual({ readsCode: true, runsCommands: true, usesDocker: false });
+    // older seats that only stored readsCode
+    expect(accessOf({ readsCode: true })).toBe("read");
+    expect(accessOf({ readsCode: false })).toBe("none");
+  });
+  it("turns the seated models into the specs a change sends, keeping keys so conversations carry on", () => {
+    const r = room([], { participants: [seat("opus", { effort: "high", runsCommands: true }), seat("gone", { removed: true }), seat("gpt6", { agent: "codex", readsCode: false })] });
+    expect(specsOf(r.participants)).toEqual([
+      { key: "opus", label: "opus", agent: "claude", model: "opus", effort: "high", readsCode: true, runsCommands: true, usesDocker: false },
+      { key: "gpt6", label: "gpt6", agent: "codex", model: "gpt6", effort: null, readsCode: false, runsCommands: false, usesDocker: false },
+    ]);
+  });
+  it("moves a seat into another's place in the speaking order", () => {
+    const s = [{ key: "a" }, { key: "b" }, { key: "c" }];
+    expect(moveSeat(s, "c", "a").map((x) => x.key)).toEqual(["c", "a", "b"]);
+    expect(moveSeat(s, "a", "c").map((x) => x.key)).toEqual(["b", "c", "a"]);
+    expect(moveSeat(s, "a", "zz")).toBe(s);
   });
 });

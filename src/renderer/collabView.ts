@@ -1,4 +1,11 @@
-import type { CollabMessage, CollabParticipant, CollabRoom } from "../shared/types";
+import type { AgentKind, CollabMessage, CollabModel, CollabParticipant, CollabParticipantSpec, CollabRoom } from "../shared/types";
+
+/** The models a room can seat, and the effort levels each CLI takes. */
+export type Catalog = { presets: CollabModel[]; efforts: Record<AgentKind, string[]> };
+/** The value the model picker uses for "Other model…". */
+export const CUSTOM_MODEL = "__custom";
+/** IPC replies carry failures as { error }. */
+export const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 const isModel = (m: CollabMessage) => m.speaker !== "you" && m.speaker !== "system";
 
@@ -86,4 +93,39 @@ export function waited(since: number, now: number): string {
 export function initials(title: string): string {
   const words = title.replace(/[^A-Za-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w && !/^(a|an|the|to|of|and|for|how|on|in)$/i.test(w));
   return ((words[0]?.[0] ?? "?") + (words[1]?.[0] ?? "")).toUpperCase();
+}
+
+/** What a model may do with the room's repository — each level includes the ones before it. */
+export type Access = "none" | "read" | "run" | "docker";
+export const ACCESS_LEVELS: { id: Access; label: string; note: string }[] = [
+  { id: "none", label: "none", note: "No code — asks a model that reads it" },
+  { id: "read", label: "read", note: "Reads the repository" },
+  { id: "run", label: "run", note: "Reads, and runs tests and builds in a disposable test copy" },
+  { id: "docker", label: "docker", note: "Runs commands and uses Docker, which reaches past the sandbox" },
+];
+
+export function accessOf(p: { readsCode: boolean; runsCommands?: boolean; usesDocker?: boolean }): Access {
+  return p.usesDocker ? "docker" : p.runsCommands ? "run" : p.readsCode ? "read" : "none";
+}
+
+export function accessFlags(a: Access): { readsCode: boolean; runsCommands: boolean; usesDocker: boolean } {
+  return { readsCode: a !== "none", runsCommands: a === "run" || a === "docker", usesDocker: a === "docker" };
+}
+
+/** The room's seated models as the specs setParticipants takes (keys kept, so conversations carry on). */
+export function specsOf(participants: CollabParticipant[]): CollabParticipantSpec[] {
+  return participants
+    .filter((p) => !p.removed)
+    .map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, ...accessFlags(accessOf(p)) }));
+}
+
+/** Move one seat to another's place in the speaking order. */
+export function moveSeat<T extends { key?: string }>(specs: T[], fromKey: string, toKey: string): T[] {
+  const from = specs.findIndex((s) => s.key === fromKey);
+  const to = specs.findIndex((s) => s.key === toKey);
+  if (from < 0 || to < 0 || from === to) return specs;
+  const next = [...specs];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
 }
