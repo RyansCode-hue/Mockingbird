@@ -9,7 +9,7 @@ import { UpdatePanel } from "./UpdatePanel";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
 import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome } from "../shared/types";
-import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
+import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
 
 declare global {
   interface Window {
@@ -167,7 +167,12 @@ function App() {
       renameDlg.kind === "group"
         ? sanitizeSegment(v)
         : `${topOfKey(renameDlg.key)}/${sanitizeSegment(v)}`;
-    if (next !== renameDlg.key) {
+    if (!next) return;
+    if (renameDlg.key === "ungrouped") {
+      // "ungrouped" is the absence of a group, not a stored one: naming it groups its sessions
+      for (const m of groupUngrouped(workSessions, next)) await window.mb.setGroup(m.id, m.group);
+      migrateGroupKeys(renameDlg.key, next);
+    } else if (next !== renameDlg.key) {
       await window.mb.renameGroup(renameDlg.key, next);
       migrateGroupKeys(renameDlg.key, next);
     }
@@ -376,10 +381,24 @@ function App() {
     if (zoomed === id) setZoomed(null);
   };
 
+  /**
+   * A workspace's sidebar folder follows the grid — open while it's shown,
+   * closed once minimized. The chevron only peeks until the next show/minimize.
+   */
+  const folderFollowsGrid = (list: SessionInfo[]) =>
+    setWsOpen((p) => {
+      const keys = list.map((s) => s.taskGroup).filter((g): g is string => !!g && splitGroupKey(g).sub !== null);
+      if (!keys.some((k) => k in p)) return p;
+      const n = { ...p };
+      for (const k of keys) delete n[k];
+      return n;
+    });
+
   /** Minimize a whole workspace (all member sessions) from the grid at once. */
   const hideSessions = (list: SessionInfo[]) => {
     setShown((p) => p.filter((id) => !list.some((s) => s.id === id)));
     if (zoomed && list.some((s) => s.id === zoomed)) setZoomed(null);
+    folderFollowsGrid(list);
   };
 
   const jumpToSession = (s: SessionInfo) => {
@@ -576,6 +595,7 @@ function App() {
    *  No focusTerm — see focusGroup (it would kill double-click rename). */
   const focusSub = (top: string, list: SessionInfo[]) => {
     setZoomed(null);
+    folderFollowsGrid(list);
     if (activeGroup && top !== activeGroup) {
       setShown(list.map((s) => s.id));
       collapseOthers(top);
@@ -1007,24 +1027,22 @@ function App() {
                     onClick={() => deferClick(() => focusGroup(key, list))}
                     onDoubleClick={() => {
                       cancelClick();
-                      if (key !== "ungrouped") setRenameDlg({ kind: "group", key, initial: key });
+                      setRenameDlg({ kind: "group", key, initial: key === "ungrouped" ? "" : key });
                     }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => dropToGroup(e, key === "ungrouped" ? null : key)}
                   >
-                    {key !== "ungrouped" && (
-                      <button
-                        className="glbtn"
-                        title="Rename group"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          cancelClick();
-                          setRenameDlg({ kind: "group", key, initial: key });
-                        }}
-                      >
-                        ✎
-                      </button>
-                    )}
+                    <button
+                      className="glbtn"
+                      title={key === "ungrouped" ? "Name this group — its sessions become a group" : "Rename group"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        cancelClick();
+                        setRenameDlg({ kind: "group", key, initial: key === "ungrouped" ? "" : key });
+                      }}
+                    >
+                      ✎
+                    </button>
                     <span
                       className="chev"
                       title={collapsed.has(key) ? "Expand" : "Collapse"}
@@ -1347,11 +1365,11 @@ function App() {
                           <span
                             className="ws-x"
                             role="button"
-                            aria-label={`Hide ${s.ticketTitle ?? s.title} from the grid`}
-                            title="Hide from the grid (session keeps running — click it in the sidebar to bring it back)"
+                            aria-label={`Close ${s.ticketTitle ?? s.title}`}
+                            title="Close session"
                             onClick={(e) => {
                               e.stopPropagation();
-                              hide(s.id);
+                              requestClose(s);
                             }}
                           >
                             ×
@@ -1557,7 +1575,7 @@ function App() {
 
       {renameDlg && (
         <RenameDialog
-          title={renameDlg.kind === "group" ? "Rename group" : "Rename workspace"}
+          title={renameDlg.kind === "sub" ? "Rename workspace" : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}
           initial={renameDlg.initial}
           onSave={applyRename}
           onClose={() => setRenameDlg(null)}

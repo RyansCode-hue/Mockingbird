@@ -86,6 +86,20 @@ export function normalizeGroupPath(value: string): string {
 }
 
 /** Split a group key into its group and (optional) workspace. */
+/**
+ * Naming the "ungrouped" bucket makes it a real group: each session in it moves
+ * to `name`, keeping its workspace (a session with a literal "ungrouped/x" group
+ * goes to "name/x").
+ */
+export function groupUngrouped(sessions: { id: string; taskGroup?: string | null }[], name: string): { id: string; group: string }[] {
+  return sessions
+    .filter((s) => topOfKey(s.taskGroup ?? "ungrouped") === "ungrouped")
+    .map((s) => {
+      const sub = s.taskGroup ? splitGroupKey(s.taskGroup).sub : null;
+      return { id: s.id, group: sub ? `${name}/${sub}` : name };
+    });
+}
+
 export function splitGroupKey(key: string): { top: string; sub: string | null } {
   const i = key.indexOf("/");
   if (i < 0) return { top: key || "ungrouped", sub: null };

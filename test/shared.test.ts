@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { slugBranch, sanitizeSegment, splitGroupKey, normalizeGroupPath, topOfKey } from "../src/shared/types";
+import { slugBranch, sanitizeSegment, splitGroupKey, normalizeGroupPath, topOfKey, groupUngrouped } from "../src/shared/types";
 
 describe("slugBranch", () => {
   it("joins the ticket number and a dashed title", () => {
@@ -25,5 +25,22 @@ describe("group paths", () => {
   });
   it("never lets a typed name add a path level", () => {
     expect(sanitizeSegment(" front/end ")).toBe("front-end");
+  });
+});
+
+describe("naming the ungrouped bucket", () => {
+  it("moves every session without a group into the new one, keeping workspaces, and leaves grouped ones alone", () => {
+    const sessions = [
+      { id: "a", taskGroup: null },
+      { id: "b" },
+      { id: "c", taskGroup: "5101" },
+      { id: "d", taskGroup: "5101/etl" },
+      { id: "e", taskGroup: "ungrouped/scratch" },
+    ];
+    expect(groupUngrouped(sessions, "perf")).toEqual([
+      { id: "a", group: "perf" },
+      { id: "b", group: "perf" },
+      { id: "e", group: "perf/scratch" },
+    ]);
   });
 });
