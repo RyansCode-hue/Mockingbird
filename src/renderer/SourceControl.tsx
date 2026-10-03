@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { GitChange, GitChanges, ScmEntry, ScmStatus } from "../shared/types";
 import { useFolderRefresh } from "./folderWatch";
+import { SparkleIcon } from "./Icons";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -39,6 +40,14 @@ export function SourceControl({
   const [closed, setClosed] = useState<Set<string>>(() => new Set(["branch"]));
   const [branch, setBranch] = useState<Result<GitChanges> | null>(null);
   const broken = useRef(false);
+  // the message box grows with what's in it (a generated body), up to a point
+  const msgRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const ta = msgRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight + 2, 220)}px`;
+  }, [message, status]);
 
   const load = useCallback(async () => {
     const r: Result<ScmStatus> = await window.mb.scmStatus(sessionId);
@@ -55,10 +64,21 @@ export function SourceControl({
   }, [load]);
   useFolderRefresh(root, () => !broken.current && load());
 
+  // read once for the section's title (which base, how many files), then kept fresh while it's open
+  const branchOpen = !closed.has("branch");
   useEffect(() => {
-    if (closed.has("branch")) return;
+    if (!branchOpen && branch !== null) return;
     window.mb.filesChanges(sessionId, "branch").then((r: Result<GitChanges>) => setBranch(r));
-  }, [closed, sessionId, status]);
+  }, [branchOpen, sessionId, status]);
+
+  const generate = async () => {
+    setBusy("generate");
+    setError("");
+    const r: Result<{ message: string; scope: "staged" | "all"; agent: string }> = await window.mb.scmCommitMessage(sessionId);
+    setBusy("");
+    if (isErr(r)) setError(r.error);
+    else setMessage(r.message);
+  };
 
   const act = async (what: string, fn: () => Promise<unknown>) => {
     setBusy(what);
@@ -136,10 +156,10 @@ export function SourceControl({
     </div>
   );
 
-  const section = (key: string, title: string, list: ScmEntry[], group: "staged" | "unstaged" | "conflicted", actions?: React.ReactNode) =>
+  const section = (key: string, title: string, list: ScmEntry[], group: "staged" | "unstaged" | "conflicted", actions?: React.ReactNode, hint?: string) =>
     list.length > 0 && (
       <>
-        <div className="sc-sec" onClick={() => toggle(key)}>
+        <div className="sc-sec" title={hint} onClick={() => toggle(key)}>
           <span className="sc-chev">{closed.has(key) ? "▸" : "▾"}</span>
           {title}
           <span className="fp-count">{list.length}</span>
@@ -170,26 +190,39 @@ export function SourceControl({
           {busy === "push" ? "Pushing…" : pushLabel}
         </button>
       </div>
-      <textarea
-        className="sc-msg"
-        rows={2}
-        placeholder={`Message (⌘↵ to commit on ${status.branch ?? "HEAD"})`}
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            commit();
-          }
-        }}
-      />
+      <div className="sc-msg-wrap">
+        <textarea
+          ref={msgRef}
+          className="sc-msg"
+          rows={2}
+          placeholder={busy === "generate" ? "Writing a message from the changes…" : `Message (⌘↵ to commit on ${status.branch ?? "HEAD"})`}
+          value={message}
+          disabled={busy === "generate"}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              commit();
+            }
+          }}
+        />
+        <button
+          className={`icon sc-gen ${busy === "generate" ? "busy" : ""}`}
+          disabled={!!busy || (!staged.length && !unstaged.length)}
+          title={`Generate a commit message from ${staged.length ? "the staged changes" : "all changes (nothing is staged)"} — written by the session's agent`}
+          aria-label="Generate commit message"
+          onClick={generate}
+        >
+          <SparkleIcon />
+        </button>
+      </div>
       <button className="primary sc-commit" disabled={!!busy || (!staged.length && !unstaged.length)} onClick={commit}>
         {busy === "commit" ? "Committing…" : staged.length ? `Commit ${staged.length}` : "Commit"}
       </button>
       {error && <div className="fp-note err">{error}</div>}
       <div className="fp-scroll sc-list">
         {!staged.length && !unstaged.length && !conflicted.length && <div className="fp-note">No changes — the working tree matches the last commit.</div>}
-        {section("conflicted", "Merge conflicts", conflicted, "conflicted")}
+        {section("conflicted", "Merge conflicts", conflicted, "conflicted", undefined, "Files git couldn't merge — fix them, then stage")}
         {section(
           "staged",
           "Staged changes",
@@ -197,7 +230,8 @@ export function SourceControl({
           "staged",
           <button className="icon" title="Unstage all" onClick={() => act("unstage", () => window.mb.scmUnstage(sessionId, staged.map((e) => e.path)))}>
             −
-          </button>
+          </button>,
+          "What the next commit will contain"
         )}
         {section(
           "unstaged",
@@ -211,11 +245,16 @@ export function SourceControl({
             <button className="icon" title="Stage all changes" onClick={() => act("stage", () => window.mb.scmStage(sessionId, unstaged.map((e) => e.path)))}>
               +
             </button>
-          </>
+          </>,
+          "Uncommitted edits since the last commit that aren't staged yet"
         )}
-        <div className="sc-sec" onClick={() => toggle("branch")}>
+        <div
+          className="sc-sec"
+          title={`Everything this branch changed since it split off ${branch && !isErr(branch) ? branch.base : "its base branch"} — commits and uncommitted work together: what a pull request would contain`}
+          onClick={() => toggle("branch")}
+        >
           <span className="sc-chev">{closed.has("branch") ? "▸" : "▾"}</span>
-          Whole branch
+          Branch vs {branch && !isErr(branch) ? branch.base : "base"}
           {branch && !isErr(branch) && <span className="fp-count">{branch.changes.length}</span>}
         </div>
         {!closed.has("branch") &&
@@ -227,7 +266,7 @@ export function SourceControl({
             <div className="fp-note">No changes since {branch.base}</div>
           ) : (
             <>
-              <div className="fp-note">Everything since it forked from {branch.base} — commits and uncommitted work</div>
+              <div className="fp-note">What a pull request into {branch.base.replace(/^origin\//, "")} would contain — this branch's commits and uncommitted work</div>
               {branch.changes.map((c: GitChange) => (
                 <div
                   key={`b:${c.path}`}

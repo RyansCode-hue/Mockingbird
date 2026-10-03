@@ -1168,7 +1168,11 @@ function App() {
             <ExplorerTree
               session={focusedSession}
               activePath={activePath}
+              editor={editor}
               onOpen={(path, status) => openInEditor(path, { status })}
+              onActivate={(key) => setEditor((e) => ({ ...e, active: key }))}
+              onCloseTab={(key) => setEditor((e) => closeTab(e, key))}
+              onQuickOpen={() => setModal("quickopen")}
             />
           )}
           {sideView === "scm" &&

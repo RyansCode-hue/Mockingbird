@@ -97,3 +97,16 @@ describe("result lines in a narrow side bar", () => {
     expect(aroundMatch("a donor", [[2, 7]]).text).toBe("a donor");
   });
 });
+
+describe("file type badges", () => {
+  it("labels a file by its name or extension, and leaves unknown types plain", async () => {
+    const { fileBadge } = await import("../src/renderer/fileIcons");
+    expect(fileBadge("src/app.tsx")?.label).toBe("TSX");
+    expect(fileBadge("api/views.py")?.label).toBe("PY");
+    expect(fileBadge("Dockerfile")?.label).toBe("DK");
+    expect(fileBadge("package.json")?.label).toBe("NPM");
+    expect(fileBadge("config/.env.local")?.label).toBe("ENV");
+    expect(fileBadge("LICENSE")).toBeNull();
+    expect(fileBadge("notes.weird")).toBeNull();
+  });
+});

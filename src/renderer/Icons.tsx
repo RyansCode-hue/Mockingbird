@@ -116,3 +116,19 @@ export const SearchIcon = () => (
     <path d="M10.25 10.25l3.5 3.5" />
   </Icon>
 );
+
+/** A four-pointed sparkle: written by a model. */
+export const SparkleIcon = () => (
+  <Icon>
+    <path d="M8 1.75c.35 2.9 1.35 3.9 4.25 4.25C9.35 6.35 8.35 7.35 8 10.25 7.65 7.35 6.65 6.35 3.75 6M8 1.75C7.65 4.65 6.65 5.65 3.75 6" />
+    <path d="M12.5 10.25c.15 1.2.55 1.6 1.75 1.75-1.2.15-1.6.55-1.75 1.75-.15-1.2-.55-1.6-1.75-1.75 1.2-.15 1.6-.55 1.75-1.75z" />
+  </Icon>
+);
+
+/** A page with a folded corner: a file with no type badge. */
+export const FileIcon = () => (
+  <Icon>
+    <path d="M4.25 1.75h4.5l3 3v8.5a1 1 0 0 1-1 1h-6.5a1 1 0 0 1-1-1v-10.5a1 1 0 0 1 1-1z" />
+    <path d="M8.75 1.75v3h3" />
+  </Icon>
+);

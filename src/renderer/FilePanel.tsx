@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges } from "../shared/types";
+import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, WorktreeStateInfo } from "../shared/types";
 import { highlightLines, languageFor } from "./highlight";
 import { tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
+import { fileBadge } from "./fileIcons";
+import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -29,28 +31,52 @@ const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/"))
 
 const SLIDE_MS = 200;
 
+/** A file's type badge, or a plain file icon for types without one. */
+function FileGlyph({ path }: { path: string }) {
+  const b = fileBadge(path);
+  if (!b) return <span className="fp-glyph plain"><FileIcon /></span>;
+  return (
+    <span className="fp-glyph" style={{ "--c": b.color } as React.CSSProperties}>
+      {b.label}
+    </span>
+  );
+}
+
 /**
- * The Explorer view's tree for the focused session's folder. Changed files and
- * the folders holding them are marked; a click opens a file in its own tab.
- * a double-click keeps it open. Only mounted while the view shows, so a hidden
- * explorer polls nothing.
+ * The Explorer view for the focused session's folder: a summary of what changed
+ * since the last commit, the open editors, and the file tree — type badges,
+ * indent guides, changed files and the folders holding them marked. A click
+ * opens a file in its own tab. Only mounted while the view shows, so a hidden
+ * explorer reads nothing.
  */
 export function ExplorerTree({
   session,
   activePath,
+  editor,
   onOpen,
+  onActivate,
+  onCloseTab,
+  onQuickOpen,
 }: {
   session: SessionInfo | null;
   /** The active editor tab's file, if it's in this folder: highlighted in the tree. */
   activePath: string | null;
+  editor: EditorState;
   onOpen: (path: string, status: GitChange["status"] | undefined) => void;
+  onActivate: (key: string) => void;
+  onCloseTab: (key: string) => void;
+  onQuickOpen: () => void;
 }) {
   // expanded folders are remembered per folder-on-disk, so flipping between
   // sessions restores each tree the way it was left
   const [expandedByRoot, setExpandedByRoot] = useState<Record<string, string[]>>(() => loadLS("mb.files.expanded", {}));
   useEffect(() => localStorage.setItem("mb.files.expanded", JSON.stringify(expandedByRoot)), [expandedByRoot]);
+  const [shut, setShut] = useState<string[]>(() => loadLS("mb.files.shutSections", []));
+  useEffect(() => localStorage.setItem("mb.files.shutSections", JSON.stringify(shut)), [shut]);
+  const toggleSection = (k: string) => setShut((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
   const [dirs, setDirs] = useState<Record<string, Result<FileEntry[]>>>({});
   const [changes, setChanges] = useState<Result<GitChanges> | null>(null);
+  const [git, setGit] = useState<WorktreeStateInfo | null>(null);
 
   const sid = session?.id ?? null;
   const root = session?.cwd ?? null;
@@ -72,6 +98,7 @@ export function ExplorerTree({
   useEffect(() => {
     setDirs({});
     setChanges(null);
+    setGit(null);
   }, [root]);
 
   // A failing change list (not a git repo) isn't asked again on every change —
@@ -79,13 +106,14 @@ export function ExplorerTree({
   const gitBroken = useRef(false);
   const refresh = useCallback(
     (retryGit = false) => {
-      if (!sid) return;
+      if (!sid || !root) return;
       loadDir(sid, "");
       for (const rel of expanded) loadDir(sid, rel);
       if (gitBroken.current && !retryGit) return;
       loadChanges(sid).then((r) => (gitBroken.current = isErr(r)));
+      window.mb.worktreeState(root).then((r: WorktreeStateInfo | { error: string }) => setGit(r && !("error" in r) ? r : null));
     },
-    [sid, expanded, loadDir, loadChanges]
+    [sid, root, expanded, loadDir, loadChanges]
   );
   useEffect(() => refresh(true), [sid, root]);
   // sessions edit files underneath us: refresh when the folder changes
@@ -114,6 +142,8 @@ export function ExplorerTree({
     return s;
   }, [changeList]);
 
+  const guides = (depth: number) => Array.from({ length: depth }, (_, i) => <span key={i} className="fp-guide" />);
+
   const renderTree = (rel: string, depth: number): React.ReactNode => {
     const list = dirs[rel];
     if (!list) return <div className="fp-note" style={{ paddingLeft: 12 + depth * 12 }}>loading…</div>;
@@ -122,43 +152,124 @@ export function ExplorerTree({
     return list.map((e) => {
       const ch = changeByPath.get(e.path);
       const cls = ch ? `st-${ch.status}` : e.dir && dirtyDirs.has(e.path) ? "st-dir" : "";
+      const open = e.dir && expanded.has(e.path);
       return (
         <React.Fragment key={e.path}>
           <div
-            className={`fp-row ${cls} ${activePath === e.path ? "sel" : ""}`}
-            style={{ paddingLeft: 8 + depth * 12 }}
+            className={`fp-row ${cls} ${activePath === e.path ? "active" : ""}`}
             title={e.path}
             onClick={() => (e.dir ? toggleDir(e.path) : onOpen(e.path, ch?.status))}
           >
-            <span className="fp-tw">{e.dir ? (expanded.has(e.path) ? "▾" : "▸") : ""}</span>
+            {guides(depth)}
+            {e.dir ? (
+              <span className={`fp-folder ${open ? "open" : ""}`}>
+                <FolderIcon open={open} />
+              </span>
+            ) : (
+              <FileGlyph path={e.path} />
+            )}
             <span className="fp-name">{e.name}</span>
             {ch && <span className="fp-badge" title={STATUS_TITLE[ch.status]}>{ch.status}</span>}
-            {!ch && cls === "st-dir" && <span className="fp-badge">●</span>}
+            {!ch && cls === "st-dir" && <span className="fp-badge" title="Has changed files">●</span>}
           </div>
-          {e.dir && expanded.has(e.path) && renderTree(e.path, depth + 1)}
+          {open && renderTree(e.path, depth + 1)}
         </React.Fragment>
       );
     });
   };
 
   if (!session) return <div className="fp-note">Click into a session to browse its folder.</div>;
+  const total = git ? git.insertions + git.deletions : 0;
   return (
     <>
-      <div className="fp-head">
-        <span className="fp-title" title={root ?? undefined}>
-          {baseName(root!)}
-          {session.branch && <span className="fp-branch"> · {session.branch}</span>}
-        </span>
-        <button
-          className="icon"
-          title="Collapse all folders"
-          onClick={() => root && setExpandedByRoot((m) => ({ ...m, [root]: [] }))}
-        >
-          ⊟
-        </button>
-        <button className="icon" title="Refresh" onClick={() => refresh(true)}>⟳</button>
+      <div className="ex-head">
+        <div className="ex-title">
+          <span className="ex-name" title={root!}>{baseName(root!)}</span>
+          <span className="ex-acts">
+            <button className="icon" title="Go to file (⌘P)" onClick={onQuickOpen}>
+              <SearchIcon />
+            </button>
+            <button className="icon" title="Collapse all folders" onClick={() => root && setExpandedByRoot((m) => ({ ...m, [root]: [] }))}>
+              ⊟
+            </button>
+            <button className="icon" title="Refresh" onClick={() => refresh(true)}>⟳</button>
+          </span>
+        </div>
+        {git && (
+          <div className="ex-branch" title={`${git.ahead} commit${git.ahead === 1 ? "" : "s"} to push, ${git.behind} to pull`}>
+            {git.branch} · ↑{git.ahead} ↓{git.behind}
+          </div>
+        )}
+        {git &&
+          (git.dirty ? (
+            <>
+              {total > 0 && (
+                <div className="ex-bar" title={`+${git.insertions} −${git.deletions} lines in tracked files`}>
+                  <span className="add" style={{ width: `${(git.insertions / total) * 100}%` }} />
+                  <span className="del" style={{ width: `${(git.deletions / total) * 100}%` }} />
+                </div>
+              )}
+              <div className="ex-sum">
+                {git.dirtyFiles} file{git.dirtyFiles === 1 ? "" : "s"}
+                {total > 0 && (
+                  <>
+                    {" · "}
+                    <span className="add">+{git.insertions}</span> <span className="del">−{git.deletions}</span>
+                  </>
+                )}{" "}
+                since the last commit
+              </div>
+            </>
+          ) : (
+            <div className="ex-sum">No changes since the last commit</div>
+          ))}
       </div>
-      <div className="fp-scroll">{renderTree("", 0)}</div>
+      <div className="fp-scroll">
+        {editor.tabs.length > 0 && (
+          <>
+            <div className="ex-sec" onClick={() => toggleSection("open")}>
+              <ChevronIcon open={!shut.includes("open")} />
+              Open editors <span className="fp-count">{editor.tabs.length}</span>
+            </div>
+            {!shut.includes("open") &&
+              editor.tabs.map((t) => {
+                const key = tabKey(t);
+                const elsewhere = t.root !== root;
+                return (
+                  <div
+                    key={key}
+                    className={`fp-row ex-open ${t.status ? `st-${t.status}` : ""} ${key === editor.active ? "active" : ""}`}
+                    title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}`}
+                    onClick={() => onActivate(key)}
+                  >
+                    <FileGlyph path={t.path} />
+                    <span className="fp-name">
+                      {baseName(t.path)}
+                      {t.mode === "diff" && <span className="fp-dir">{t.source?.kind === "scm" && t.source.staged ? "staged" : "diff"}</span>}
+                      <span className="fp-dir">{elsewhere ? baseName(t.root) : dirName(t.path)}</span>
+                    </span>
+                    <button
+                      className="icon ex-x"
+                      title="Close"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        onCloseTab(key);
+                      }}
+                    >
+                      ×
+                    </button>
+                    {t.status && <span className="fp-badge">{t.status}</span>}
+                  </div>
+                );
+              })}
+          </>
+        )}
+        <div className="ex-sec" onClick={() => toggleSection("files")}>
+          <ChevronIcon open={!shut.includes("files")} />
+          Files
+        </div>
+        {!shut.includes("files") && renderTree("", 0)}
+      </div>
     </>
   );
 }

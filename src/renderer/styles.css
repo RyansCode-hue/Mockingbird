@@ -911,12 +911,44 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .fp-note.err { color: var(--red); white-space: pre-wrap; }
 .fp-note.warn { color: var(--amber-text); white-space: pre-wrap; }
 .fp-row {
-  display: flex; align-items: center; gap: 4px; height: 22px; padding-right: 10px; cursor: pointer;
+  display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px 0 8px; cursor: pointer;
   font-size: 12px; color: var(--text-2); white-space: nowrap; user-select: none;
 }
+.fp-row.active { background: color-mix(in srgb, var(--teal) 11%, transparent); box-shadow: inset 2px 0 0 var(--teal); color: var(--text-1); }
+/* indent guides: one per level, the line under the parent's icon */
+.fp-guide { align-self: stretch; flex-shrink: 0; width: 14px; margin-right: -6px; background: linear-gradient(var(--line-strong2), var(--line-strong2)) no-repeat 9px 0 / 1px 100%; }
+.fp-glyph {
+  width: 20px; flex-shrink: 0; text-align: center; font: 700 7.5px/13px var(--mono); letter-spacing: -.2px;
+  color: var(--c); background: color-mix(in srgb, var(--c) 17%, transparent); border-radius: 3px;
+}
+.fp-glyph.plain { background: none; color: var(--text-4); display: grid; place-items: center; }
+.fp-glyph.plain .ico { width: 13px; height: 13px; }
+.fp-folder { width: 20px; flex-shrink: 0; display: grid; place-items: center; color: var(--amber-text-dim); }
+.fp-folder.open { color: var(--amber); }
+.fp-folder .ico { width: 15px; height: 15px; }
+/* Explorer: what changed since the last commit, then the open editors and the tree */
+.ex-head { padding: 2px 12px 9px; border-bottom: 1px solid var(--line-soft); flex-shrink: 0; }
+.ex-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.ex-name { font: 500 13px var(--ui); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ex-branch { font: 400 10px var(--mono); color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.ex-acts { margin-left: auto; display: flex; flex-shrink: 0; }
+.ex-acts button { padding: 2px 4px; color: var(--text-4); }
+.ex-acts button:hover { color: var(--text-1); }
+.ex-bar { display: flex; height: 5px; border-radius: 3px; overflow: hidden; margin: 9px 0 5px; background: var(--fill-subtle); }
+.ex-bar .add { background: var(--git-add); }
+.ex-bar .del { background: var(--red); }
+.ex-sum { font: 400 10px var(--mono); color: var(--text-4); margin-top: 4px; }
+.ex-bar + .ex-sum { margin-top: 0; }
+.ex-sum .add { color: var(--git-add); }
+.ex-sum .del { color: var(--red); }
+.ex-sec { display: flex; align-items: center; gap: 5px; padding: 8px 10px 4px; font: 500 9.5px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); cursor: pointer; user-select: none; }
+.ex-sec:hover { color: var(--text-1); }
+.ex-sec .ico { width: 11px; height: 11px; }
+.fp-row.ex-open { padding-left: 14px; }
+.ex-x { padding: 0 4px; font-size: 13px; line-height: 1; color: var(--text-4); visibility: hidden; }
+.fp-row.ex-open:hover .ex-x, .fp-row.ex-open.active .ex-x { visibility: visible; }
 .fp-row:hover { background: var(--fill-subtle); }
 .fp-row.sel { background: var(--fill-selected); color: var(--text-1); }
-.fp-tw { width: 12px; flex-shrink: 0; font-size: 9px; color: var(--text-4); text-align: center; }
 .fp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .fp-badge { flex-shrink: 0; font: 500 10px var(--mono); }
 .fp-row.st-M, .fp-row.st-R, .fp-row.st-dir .fp-badge { color: var(--git-mod); }
@@ -1322,6 +1354,12 @@ button.link.danger { color: var(--red); }
 .sc-push { margin-left: auto; padding: 2px 8px; font-size: 10.5px; white-space: nowrap; }
 .sc-msg { margin: 0 10px; resize: vertical; min-height: 40px; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 6px; padding: 6px 8px; font: 400 11.5px var(--ui); }
 .sc-msg:focus { outline: none; border-color: var(--line-focus); }
+.sc-msg-wrap { position: relative; display: flex; flex-direction: column; }
+.sc-msg-wrap .sc-msg { padding-right: 28px; }
+.sc-gen { position: absolute; top: 4px; right: 14px; padding: 3px; color: var(--text-4); }
+.sc-gen:hover:not(:disabled) { color: var(--amber); }
+.sc-gen.busy { color: var(--amber); animation: sc-gen-pulse 1s ease-in-out infinite; }
+@keyframes sc-gen-pulse { 50% { opacity: .35; } }
 .sc-commit { margin: 6px 10px 6px; }
 .sc-list { flex: 1; min-height: 0; }
 .sc-sec { display: flex; align-items: center; gap: 5px; padding: 6px 8px 4px; font: 500 9.5px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); cursor: pointer; user-select: none; }

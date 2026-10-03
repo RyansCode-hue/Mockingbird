@@ -87,6 +87,7 @@ const api = {
   },
   filesSearch: (id: string, query: string, opts: { regex: boolean; matchCase: boolean }) => ipcRenderer.invoke("files:search", id, query, opts),
   scmStatus: (id: string) => ipcRenderer.invoke("scm:status", id),
+  scmCommitMessage: (id: string) => ipcRenderer.invoke("scm:commitMessage", id),
   scmStage: (id: string, paths: string[]) => ipcRenderer.invoke("scm:stage", id, paths),
   scmUnstage: (id: string, paths: string[]) => ipcRenderer.invoke("scm:unstage", id, paths),
   scmDiscard: (id: string, entries: { path: string; untracked: boolean }[]) => ipcRenderer.invoke("scm:discard", id, entries),

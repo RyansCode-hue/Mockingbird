@@ -13,17 +13,18 @@ import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
+import { generateCommitMessage } from "./commitMessage";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
 import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
-import { userShell, which, quote } from "./shell";
+import { userShell, userShellWithInput, which, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn } from "./ado";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { ModelCatalog } from "../shared/types";
+import type { AgentKind, ModelCatalog } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 
 const store = new Store();
@@ -388,6 +389,17 @@ ipcMain.handle("scm:unstage", (_e, id, paths) => safeAsync("scm:unstage", () => 
 ipcMain.handle("scm:discard", (_e, id, entries) => safeAsync("scm:discard", () => scmDiscard(sessionRoot(id), entries, (abs) => shell.trashItem(abs)))());
 ipcMain.handle("scm:commit", (_e, id, message) => safeAsync("scm:commit", () => scmCommit(sessionRoot(id), String(message ?? "")))());
 ipcMain.handle("scm:push", (_e, id) => safeAsync("scm:push", () => scmPush(sessionRoot(id)))());
+// a commit message from the folder's staged change (or all of it), written by the
+// session's own agent — or the other one when that isn't installed
+ipcMain.handle("scm:commitMessage", (_e, id) =>
+  safeAsync("scm:commitMessage", async () => {
+    const s = sessions.list().find((x) => x.id === id);
+    if (!s) throw new Error("Session is no longer running");
+    const want: AgentKind = s.agent ?? "claude";
+    const agent: AgentKind = sessions.binFor(want).includes("/") ? want : want === "claude" ? "codex" : "claude";
+    return { ...(await generateCommitMessage(s.cwd, agent, sessions.binFor(agent), userShellWithInput, paneEnv())), agent };
+  })()
+);
 ipcMain.handle("scm:diff", (_e, id, rel, staged, untracked) => safeAsync("scm:diff", () => scmDiff(sessionRoot(id), rel, !!staged, !!untracked))());
 ipcMain.handle("repo:branches", (_e, repoPath) =>
   safeAsync("repo:branches", () => listBranches(expandHome(repoPath)))()
