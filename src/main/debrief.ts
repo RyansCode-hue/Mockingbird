@@ -41,12 +41,12 @@ export function writeSessionDigest(sessions: SessionManager, store: Store): stri
  * driven by your existing instruction files — flagged `debrief` so they live
  * on the WorkTracker tab instead of the sessions grid.
  */
-export function runDebrief(kind: "morning" | "wrapUp", sessions: SessionManager, store: Store): void {
+export async function runDebrief(kind: "morning" | "wrapUp", sessions: SessionManager, store: Store): Promise<void> {
   const wt = expandHome(store.settings.workTrackerPath);
   const file = kind === "morning" ? "instructions/morning.md" : "instructions/wrap-up.md";
   const title = kind === "morning" ? "Morning brief" : "4pm wrap-up";
 
-  const info = sessions.create({
+  const info = await sessions.create({
     repoPath: null,
     useWorktree: false,
     taskGroup: "assistant",
@@ -111,7 +111,7 @@ export function startScheduler(sessions: SessionManager, store: Store): void {
     for (const [kind, time] of [["morning", s.morning], ["wrapUp", s.wrapUp]] as const) {
       if (hhmm === time && lastFired[kind] !== today) {
         lastFired[kind] = today;
-        runDebrief(kind, sessions, store);
+        runDebrief(kind, sessions, store).catch((err) => console.error(`[debrief] scheduled ${kind} failed to start:`, err));
       }
     }
   }, 30_000);

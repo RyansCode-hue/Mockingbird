@@ -1,6 +1,5 @@
 import * as pty from "node-pty";
 import { randomUUID } from "crypto";
-import { execFileSync } from "child_process";
 import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
@@ -10,7 +9,7 @@ import { Store, expandHome } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
 import { agentFor, AgentAdapter } from "./agents";
-import { whichSync, quote } from "./shell";
+import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
@@ -70,9 +69,24 @@ export class SessionManager {
     return this.resolveBin(agentFor(kind));
   }
 
+  /**
+   * Look up every agent's binary without blocking — at startup and after a
+   * Settings change — so binFor() is a cache hit by the time a session starts.
+   */
+  async warmBins(): Promise<void> {
+    for (const agent of [agentFor("claude"), agentFor("codex")]) {
+      const bin = this.store.settings[agent.binSetting];
+      if (this.resolvedBins.has(agent.binSetting) || bin.includes("/")) continue;
+      const found = await which(bin);
+      // a bare name means "not found", as in resolveBin — cached too, so nothing looks it up again
+      if (!this.resolvedBins.has(agent.binSetting)) this.resolvedBins.set(agent.binSetting, found ?? bin);
+    }
+  }
+
   private resolveBin(agent: AgentAdapter): string {
     const cached = this.resolvedBins.get(agent.binSetting);
     if (cached) return cached;
+    // cold: warmBins() hasn't finished (or found nothing) — look it up now
     const bin = this.store.settings[agent.binSetting];
     let resolved = bin;
     if (bin.includes("/")) resolved = expandHome(bin);
@@ -98,7 +112,7 @@ export class SessionManager {
     return this.store.state.sessions.filter((s) => !liveIds.has(s.id));
   }
 
-  create(req: NewSessionRequest): SessionInfo {
+  async create(req: NewSessionRequest): Promise<SessionInfo> {
     const settings = this.store.settings;
     let cwd: string;
     let branch: string | null = null;
@@ -109,14 +123,14 @@ export class SessionManager {
       (req.ticketId && req.ticketTitle ? slugBranch(req.ticketId, req.ticketTitle) : null);
     if (repoPath && req.useWorktree) {
       branch = wanted || `mb-${Date.now().toString(36)}`;
-      cwd = createWorktree(repoPath, branch, req.baseBranch);
+      cwd = await createWorktree(repoPath, branch, req.baseBranch);
     } else if (repoPath && wanted) {
       // ticket branch in the checkout itself — one branch per checkout, so
       // another live session there on a different branch blocks this
       const other = [...this.live.values()].find(
         (s) => s.info.cwd === repoPath && s.info.status !== "dead" && s.info.branch && s.info.branch !== wanted
       );
-      checkoutBranch(repoPath, wanted, req.baseBranch, other?.info.branch ?? undefined);
+      await checkoutBranch(repoPath, wanted, req.baseBranch, other?.info.branch ?? undefined);
       branch = wanted;
       cwd = repoPath;
     } else {
@@ -243,11 +257,11 @@ export class SessionManager {
    * "Update installed · Restart to update": every pane picks up the new binary
    * without losing its history. Shells and dead panes are left alone.
    */
-  restartAll(includeBusy: boolean): {
+  async restartAll(includeBusy: boolean): Promise<{
     restarted: string[];
     skipped: string[];
     failed: { id: string; error: string }[];
-  } {
+  }> {
     const restarted: string[] = [];
     const skipped: string[] = [];
     const failed: { id: string; error: string }[] = [];
@@ -260,7 +274,7 @@ export class SessionManager {
       }
       this.kill(id, false); // keep the store entry so relaunch can resume it
       try {
-        if (this.relaunch(id)) restarted.push(id);
+        if (await this.relaunch(id)) restarted.push(id);
         else failed.push({ id, error: "no persisted session to resume" });
       } catch (err) {
         failed.push({ id, error: err instanceof Error ? err.message : String(err) });
@@ -271,7 +285,7 @@ export class SessionManager {
   }
 
   /** Relaunch a persisted session in its old cwd, resuming the conversation. */
-  relaunch(id: string): SessionInfo | null {
+  async relaunch(id: string): Promise<SessionInfo | null> {
     const old = this.store.state.sessions.find((s) => s.id === id);
     if (!old) return null;
     // create() re-adds the record; only forget the old one once it has, or a
@@ -284,7 +298,7 @@ export class SessionManager {
     const conv = old.conversation && agentFor(old.conversation.agent).conversationExists(old.conversation.id) ? old.conversation : null;
     const sameAgent = conv && conv.agent === (old.agent ?? "claude");
     const resume = !old.shell && !sameAgent && agentFor(old.agent).hasConversation(old.cwd);
-    const info = this.create({
+    const info = await this.create({
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
       ticketTitle: old.ticketTitle ?? undefined,

@@ -92,25 +92,42 @@ Without those, the Assistant does what it can and tells you what it couldn't rea
 Ordered by intent: **Now** is being designed or actively hurts, **Next** is
 agreed direction, **Later** is worth doing once the foundations settle.
 
+### Shipped recently
+
+- **Collaborate rooms** — models discuss an idea with you; per-model effort
+  and access (none · read · run · docker), a disposable test copy, approvals
+  in the room (with a Dock count, tab badge and reminder), plans you approve
+  before anything is implemented; edited from the room's sidebar.
+- **In-app updates** — Check for updates against the private repo (via the
+  GitHub CLI), then Update pulls and builds in your clone and restarts into it,
+  bringing your sessions back.
+- **Main-process responsiveness** — git work (every pane's status poll,
+  fetch/push on session create and close) no longer blocks the process that
+  carries every pane's keystrokes: 10 panes polling a large repo went from one
+  ~0.5 s freeze to stalls under 10 ms. Panes in the same folder share one read.
+- **Tests** — 180+ Vitest tests, run in CI on every push.
+- **Usage panel** — Claude and Codex plan limits like claude.ai's, including
+  the 5-hour window between reports.
+
 ### Now
 
+- **Transcript indexer** *(next up)*. One background index over Claude Code's
+  own transcripts (`~/.claude/projects`, which include token usage) that four
+  other items sit on: cross-session search, "catch me up" summaries, real
+  cost/token meters, and the weekly rollup. Build the substrate once.
 - **Grouping & workspaces rework — second half.** Shipped: the outline-tree
   sidebar (groups → workspace folders → sessions, with status summaries),
-  workspace tabs that show only the sessions you opened, and × on a tab to hide
-  one session. Still to do from the design review: moving a session into a
-  group keeps your current panes and opens just the moved one; clicking a group
-  header always restores the layout you last had; individual panes can be
-  **pinned** to survive group switches; drop on a pane's tab strip = add as tab,
-  drop on its body = reorder; dragging a sidebar row onto a pane adds it as a
-  tab there.
+  workspace tabs, × on any session closes it, naming the "ungrouped" bucket
+  makes it a group, and minimizing a workspace folds its folder. Still to do
+  from the design review: moving a session into a group keeps your current
+  panes and opens just the moved one; clicking a group header always restores
+  the layout you last had; individual panes can be **pinned** to survive group
+  switches; drop on a pane's tab strip = add as tab, drop on its body =
+  reorder; dragging a sidebar row onto a pane adds it as a tab there.
 - **Finish snap layouts.** The Layout flyout shipped; still missing the
   FancyZones half — dragging a pane highlights the zone under the cursor and
   drops it into that slot, and templates should offer per-zone "open a session
   here" affordances instead of only applying when the pane count matches.
-- **Main-process responsiveness.** All git work (`worktreeState` polling per
-  pane, `fetch`/`push` during session create/cleanup) runs synchronously on the
-  process that owns every pty — a slow repo or VPN freezes typing in every
-  pane. Move to async `execFile` with one cached poller per cwd.
 
 ### Next
 
@@ -148,17 +165,6 @@ agreed direction, **Later** is worth doing once the foundations settle.
 - **Conflict early warning.** When two sessions in the same repo change the same
   file in different worktrees, flag both panes before it becomes a merge
   conflict.
-- **Tests for Mockingbird.** There's no test suite. Start from the harnesses
-  used to build the explorer, messaging relay, setup checks and delivery timing,
-  and run them in CI on every push.
-- **Inbox mode.** A queue view of every session blocked on you, oldest first,
-  each showing its last lines and the actual question — with an inline reply
-  box that pastes into the pty, then advances to the next. The full version of
-  ⌥⇥: you answer the fleet without ever hunting the grid.
-- **Transcript indexer.** One background index over Claude Code's own
-  transcripts (`~/.claude/projects`, which include token usage) that four
-  other items sit on: cross-session search, "catch me up" summaries, real
-  cost/token meters, and the weekly rollup. Build the substrate once.
 - **Cross-session transcript search** (design 1f, sits on the indexer):
   search every session's scrollback — "which session touched the auth
   middleware?" — with hits that jump to the pane and position.
@@ -188,8 +194,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Later
 
-- **Signed + notarized builds with real auto-update** — no right-click→Open
-  for new users, updates install themselves (needs an Apple Developer ID).
+- **Signed + notarized builds.** Updating is covered by the in-app Update
+  (pull, build, restart). What's left needs an Apple Developer ID: no
+  right-click→Open for new users, and updates that install in the background.
+- **Inbox mode.** A queue of everything blocked on you — waiting sessions and
+  Collaborate requests — each with its question and an inline reply box,
+  answered one after another. Notifications, the menu-bar list, ⌥⇥ and the
+  Collaborate badge cover most of this today; worth it once many things wait
+  at once.
 - **Continue in the other agent.** Hand a session to Codex or Claude with a
   generated summary of what's done and what's next — for when one hits its usage
   limit or gets stuck.

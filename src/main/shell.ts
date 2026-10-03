@@ -34,6 +34,16 @@ export function userShell(cmd: string, timeoutMs = 20_000): Promise<ShellResult>
 }
 
 /** Absolute path of a command as the user's shell resolves it, or null when it isn't installed. */
+export async function which(bin: string): Promise<string | null> {
+  const r = await userShell(`command -v ${quote(bin)}`, 15_000);
+  const path = r.code === 0 ? r.out.split("\n").pop()?.trim() : null; // command -v exits 1 when the name isn't found
+  return path && path.startsWith("/") ? path : null;
+}
+
+/**
+ * `which`, blocking — it starts a login shell, so it holds up every pane for a
+ * moment. Only for the rare cold path where a caller can't wait.
+ */
 export function whichSync(bin: string): string | null {
   try {
     const out = unfence(

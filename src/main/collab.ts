@@ -208,8 +208,8 @@ export class CollabRooms {
     private dir: string,
     private runTurn: TurnRunner,
     private onChange: (room: CollabRoom) => void,
-    private startSession: (req: NewSessionRequest) => SessionInfo,
-    private defaultBase: (repoPath: string) => string | null,
+    private startSession: (req: NewSessionRequest) => Promise<SessionInfo> | SessionInfo,
+    private defaultBase: (repoPath: string) => Promise<string | null> | string | null,
     // reminder: the request is still waiting PERMISSION_REMIND_MS later
     private onPermissionRequest: (room: CollabRoom, req: CollabPermissionRequest, reminder: boolean) => void = () => {}
   ) {
@@ -674,18 +674,18 @@ export class CollabRooms {
   }
 
   /** Hand the approved plan to one model as a normal session on a new branch — the only place edits happen. */
-  implement(id: string, key: string): SessionInfo {
+  async implement(id: string, key: string): Promise<SessionInfo> {
     const room = this.get(id);
     if (!room.plan?.approved) throw new Error("Approve a plan first");
     if (!room.repoPath) throw new Error("This room has no repository to implement in");
     const m = active(room).find((x) => x.key === key);
     if (!m) throw new Error("That model isn't in this room");
     const slug = room.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || room.id;
-    const info = this.startSession({
+    const info = await this.startSession({
       repoPath: room.repoPath,
       useWorktree: true,
       branchName: `collab-${slug}`,
-      baseBranch: this.defaultBase(room.repoPath) ?? undefined,
+      baseBranch: (await this.defaultBase(room.repoPath)) ?? undefined,
       agent: m.agent,
       model: m.model,
       ...(m.effort ? { effort: m.effort } : {}),

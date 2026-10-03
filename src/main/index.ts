@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, shell } from "electron";
-import { execFile, execFileSync } from "child_process";
+import { execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -13,7 +13,7 @@ import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
 import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
-import { userShell, whichSync, quote } from "./shell";
+import { userShell, which, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
@@ -140,7 +140,7 @@ function updateTray(): void {
       BrowserWindow.getAllWindows()[0]?.webContents.send("ui:command", "new-session");
     },
   });
-  template.push({ label: "Run 4pm wrap-up", click: () => runDebrief("wrapUp", sessions, store) });
+  template.push({ label: "Run 4pm wrap-up", click: () => runDebrief("wrapUp", sessions, store).catch((err) => logError("debrief:wrapUp", err)) });
   tray.setContextMenu(Menu.buildFromTemplate(template));
 }
 
@@ -194,6 +194,8 @@ app.whenReady().then(() => {
     }
   }
   createWindow();
+  // find claude/codex in the background now, so the first session doesn't block on a login shell
+  sessions.warmBins().catch((err) => logError("startup:warmBins", err));
 
   // update polling: notify once per new version; user updates when they choose
   let notifiedVersion = "";
@@ -275,11 +277,11 @@ app.on("window-all-closed", () => {
 // ---- IPC ----
 ipcMain.handle("sessions:list", () => sessions.list());
 ipcMain.handle("sessions:resumable", () => sessions.resumable());
-ipcMain.handle("sessions:create", (_e, req) => safe("sessions:create", () => sessions.create(req))());
-ipcMain.handle("sessions:relaunch", (_e, id) => safe("sessions:relaunch", () => sessions.relaunch(id))());
+ipcMain.handle("sessions:create", (_e, req) => safeAsync("sessions:create", () => sessions.create(req))());
+ipcMain.handle("sessions:relaunch", (_e, id) => safeAsync("sessions:relaunch", () => sessions.relaunch(id))());
 ipcMain.handle("sessions:kill", (_e, id, forget) => sessions.kill(id, forget));
 ipcMain.handle("sessions:restartAll", (_e, includeBusy) =>
-  safe("sessions:restartAll", () => sessions.restartAll(!!includeBusy))()
+  safeAsync("sessions:restartAll", () => sessions.restartAll(!!includeBusy))()
 );
 ipcMain.handle("session:buffer", (_e, id) => sessions.buffer(id));
 ipcMain.handle("sessions:broadcast", (_e, req) =>
@@ -294,12 +296,12 @@ ipcMain.on("session:audit", (_e, id, kind, data) =>
 ipcMain.on("session:resize", (_e, id, cols, rows) => sessions.resize(id, cols, rows));
 
 ipcMain.handle("repos:list", () => safe("repos:list", () => indexRepos(store.settings.repoRoots))());
-ipcMain.handle("worktree:state", (_e, wtPath) => safe("worktree:state", () => worktreeState(wtPath))());
+ipcMain.handle("worktree:state", (_e, wtPath) => safeAsync("worktree:state", () => worktreeState(wtPath))());
 ipcMain.handle("worktree:cleanup", (_e, repo, wtPath, mode) =>
-  safe("worktree:cleanup", () => cleanupWorktree(repo, wtPath, mode))()
+  safeAsync("worktree:cleanup", () => cleanupWorktree(repo, wtPath, mode))()
 );
 ipcMain.handle("worktrees:list", () =>
-  safe("worktrees:list", () =>
+  safeAsync("worktrees:list", () =>
     listWorktrees(
       indexRepos(store.settings.repoRoots),
       sessions.list().map((s) => s.cwd)
@@ -307,20 +309,20 @@ ipcMain.handle("worktrees:list", () =>
   )()
 );
 ipcMain.handle("worktrees:remove", (_e, repo, wtPath) =>
-  safe("worktrees:remove", () => {
+  safeAsync("worktrees:remove", async () => {
     if (sessions.list().some((s) => s.cwd === wtPath && s.status !== "dead")) {
       throw new Error("a live session is running in that worktree — close it first");
     }
-    removeWorktree(repo, wtPath);
+    await removeWorktree(repo, wtPath);
     return true;
   })()
 );
 ipcMain.handle("worktrees:migrate", (_e, repo, wtPath) =>
-  safe("worktrees:migrate", () => {
+  safeAsync("worktrees:migrate", async () => {
     if (sessions.list().some((s) => s.cwd === wtPath && s.status !== "dead")) {
       throw new Error("a live session is running in that worktree — close it first");
     }
-    const dest = migrateWorktree(repo, wtPath);
+    const dest = await migrateWorktree(repo, wtPath);
     // previous sessions must follow their checkout, or resuming them would
     // try to re-add a branch that is already checked out at the new path
     let touched = false;
@@ -350,7 +352,7 @@ ipcMain.handle("files:diff", (_e, id, rel, scope, untracked) =>
   safeAsync("files:diff", () => fileDiff(sessionRoot(id), rel, scope, untracked))()
 );
 ipcMain.handle("repo:branches", (_e, repoPath) =>
-  safe("repo:branches", () => listBranches(expandHome(repoPath)))()
+  safeAsync("repo:branches", () => listBranches(expandHome(repoPath)))()
 );
 
 ipcMain.handle("claudemd:read", (_e, p) => {
@@ -388,7 +390,7 @@ const collab = new CollabRooms(
     updateTray(); // a model waiting on the user counts as blocked
   },
   (req) => sessions.create(req),
-  (repo) => listBranches(repo).defaultBase,
+  async (repo) => (await listBranches(repo)).defaultBase,
   (room, req, reminder) => {
     // the model's turn is waiting on this, so it's shown whatever the notifications setting
     const who = room.participants.find((p) => p.key === req.seat)?.label ?? req.seat;
@@ -428,15 +430,16 @@ ipcMain.handle("collab:stop", (_e, id) => safe("collab:stop", () => collab.stop(
 ipcMain.handle("collab:mode", (_e, id, mode, rounds) => safe("collab:mode", () => collab.setMode(id, mode, rounds))());
 ipcMain.handle("collab:synthesize", (_e, id, key) => safeAsync("collab:synthesize", () => collab.synthesize(id, key))());
 ipcMain.handle("collab:approve", (_e, id, messageId) => safe("collab:approve", () => collab.approve(id, messageId))());
-ipcMain.handle("collab:implement", (_e, id, key) => safe("collab:implement", () => collab.implement(id, key))());
+ipcMain.handle("collab:implement", (_e, id, key) => safeAsync("collab:implement", () => collab.implement(id, key))());
 ipcMain.handle("setup:status", () => safeAsync("setup:status", () => setupStatus(store, sessions))());
 ipcMain.handle("settings:get", () => store.settings);
 ipcMain.handle("settings:set", (_e, s) => {
   store.setSettings(s);
   sessions.resetBinCache(); // a new claude path must apply without a restart
+  sessions.warmBins().catch((err) => logError("settings:warmBins", err));
   return store.settings;
 });
-ipcMain.handle("debrief:run", (_e, kind) => runDebrief(kind, sessions, store));
+ipcMain.handle("debrief:run", (_e, kind) => safeAsync("debrief:run", () => runDebrief(kind, sessions, store))());
 ipcMain.handle("import:list", () => safe("import:list", () => listClaudeConversations())());
 ipcMain.handle("sessions:rename", (_e, id, title) => sessions.rename(id, title));
 ipcMain.handle("sessions:renameGroup", (_e, oldKey, newKey) => sessions.renameGroup(oldKey, newKey));
@@ -478,8 +481,8 @@ const readJson = (file: string): any => {
 };
 
 ipcMain.handle("connectors:status", () =>
-  safe("connectors:status", () => {
-    const az = whichSync("az") !== null;
+  safeAsync("connectors:status", async () => {
+    const az = (await which("az")) !== null;
     const globalMcp = Object.keys(readJson(path.join(os.homedir(), ".claude.json")).mcpServers ?? {});
     const projectMcp = Object.keys(readJson(wtFile(".mcp.json")).mcpServers ?? {});
     return { az, global: globalMcp, project: projectMcp };

@@ -2,7 +2,7 @@ import { app } from "electron";
 import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { whichSync } from "./shell";
+import { which } from "./shell";
 
 export interface UpdateInfo {
   current: string;
@@ -38,9 +38,9 @@ export function isNewer(a: string, b: string): boolean {
  * identify. Not signed in is an ordinary state, not a failure: the check then
  * goes unauthenticated and explains a 404.
  */
-function ghToken(): Promise<string | null> {
-  const gh = whichSync("gh");
-  if (!gh) return Promise.resolve(null);
+async function ghToken(): Promise<string | null> {
+  const gh = await which("gh");
+  if (!gh) return null;
   return new Promise((resolve) =>
     execFile(gh, ["auth", "token", "--hostname", "github.com"], { timeout: 10_000 }, (err, stdout) => resolve(err ? null : stdout.trim() || null))
   );

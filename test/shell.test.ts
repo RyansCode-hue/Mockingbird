@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { userShell, whichSync, quote } from "../src/main/shell";
+import { userShell, which, whichSync, quote } from "../src/main/shell";
 
 describe("userShell", () => {
   it("returns the command's output and exit code, fenced from rc-file noise", async () => {
@@ -7,6 +7,18 @@ describe("userShell", () => {
   });
   it("succeeds with empty output", async () => {
     expect(await userShell("true")).toEqual({ code: 0, out: "" });
+  });
+});
+
+describe("which", () => {
+  it("finds commands without blocking, and returns null for missing ones", async () => {
+    let ticks = 0;
+    const tick = setInterval(() => ticks++, 1);
+    const ls = await which("ls");
+    clearInterval(tick);
+    expect(ls).toMatch(/^\/.*\/ls$/);
+    expect(ticks).toBeGreaterThan(0);
+    expect(await which("definitely-not-a-command-mb")).toBeNull();
   });
 });
 

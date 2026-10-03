@@ -1366,3 +1366,24 @@ bundle in a throwaway Applications folder after its stand-in process quit, remov
 "reopened" it, and the next-launch reader said "Updated to 1.1.5." with the sessions to restore.
 Not yet seen: the in-app click-through and relaunch on the real install (needs a newer version
 on main). 173 tests.
+
+## Main-process responsiveness
+
+- [x] `worktrees.ts`: one async `git()` (execFile, timeouts — local ops 30s, fetch/push 2 min);
+      every export async
+- [x] `worktreeState`: one shared poll per folder — concurrent calls share a run, results reused
+      for a few seconds (every pane polls every 10s)
+- [x] `sessions.create` async (worktree create / branch checkout no longer block); callers:
+      IPC, Collaborate implement, debriefs
+- [x] CLI lookups off the main thread: resolve claude/codex paths at startup in the background;
+      `gh` / `az` lookups async
+- [x] Drop unused sync imports
+- [x] Tests: the event loop keeps running during git work; concurrent state polls share one run;
+      existing worktree/session/collab tests updated for async
+
+**Review.** Every git call in the main process is async (execFile, 30s / 2-min timeouts, no
+terminal prompts); worktree status reads are shared per folder for 3s; session create, relaunch,
+restart-all, debriefs and Collaborate's implement await the git work; claude/codex paths are
+looked up in the background at startup and after Settings changes, gh/az lookups are async.
+Measured on atticus-snipper, 10 panes polling status: before, one 488 ms freeze (every pane's
+typing stalls); after, longest stall 8 ms and the round takes 43 ms instead of 487. 187 tests.

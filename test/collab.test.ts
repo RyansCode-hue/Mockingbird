@@ -166,14 +166,14 @@ describe("plans and implementation", () => {
     const { c, make, startSession } = rooms();
     const noRepo = make({ mode: "step" });
     await c.run(noRepo.id);
-    expect(() => c.implement(noRepo.id, "gpt6")).toThrow(/Approve a plan first/);
+    await expect(c.implement(noRepo.id, "gpt6")).rejects.toThrow(/Approve a plan first/);
     c.approve(noRepo.id, noRepo.messages.find((m) => m.speaker === "gpt6")!.id);
-    expect(() => c.implement(noRepo.id, "gpt6")).toThrow(/no repository/);
+    await expect(c.implement(noRepo.id, "gpt6")).rejects.toThrow(/no repository/);
 
     const room = make({ mode: "step", repoPath: "/code/app", title: "CSV Export: v2!" });
     await c.run(room.id);
     c.approve(room.id, room.messages.find((m) => m.speaker === "opus")!.id);
-    c.implement(room.id, "gpt6");
+    await c.implement(room.id, "gpt6");
     expect(startSession).toHaveBeenCalledWith(
       expect.objectContaining({ repoPath: "/code/app", useWorktree: true, branchName: "collab-csv-export-v2", baseBranch: "dev", agent: "codex", model: "gpt-6-astra", taskGroup: "Collaborate" })
     );
@@ -271,7 +271,7 @@ describe("seats: adding, removing, effort and code access", () => {
     const room = c.create({ title: "t", brief: "b", repoPath: "/code/app", mode: "step", participants: [...specs("gpt6"), { ...specs("opus")[0], effort: "high" }] });
     await c.run(room.id);
     c.approve(room.id, room.messages.find((m) => m.speaker === "gpt6")!.id);
-    c.implement(room.id, "opus");
+    await c.implement(room.id, "opus");
     expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agent: "claude", model: "claude-opus-5-5", effort: "high" }));
   });
 });
