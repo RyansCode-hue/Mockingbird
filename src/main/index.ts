@@ -16,7 +16,7 @@ import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner }
 import { userShell, which, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
-import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
+import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn } from "./ado";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits } from "./transcripts";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
@@ -455,6 +455,10 @@ ipcMain.handle("ado:update", (_e, id, patch) =>
   safeAsync("ado:update", () => updateWorkItem(store, id, patch))()
 );
 ipcMain.handle("ado:me", () => safeAsync("ado:me", () => adoIdentity(store))());
+ipcMain.handle("ado:boards", (_e, fresh) => safeAsync("ado:boards", () => teamBoards(store, !!fresh))());
+ipcMain.handle("ado:moveToColumn", (_e, id, type, board, column) =>
+  safeAsync("ado:moveToColumn", () => moveToBoardColumn(store, Number(id), String(type), String(board), String(column)))()
+);
 ipcMain.handle("update:check", () => safeAsync("update:check", () => checkForUpdate())());
 // Each CLI updates itself (`claude update` / `codex update`); running panes keep
 // the old build until they restart, which the Settings UI offers right after.

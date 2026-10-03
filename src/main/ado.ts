@@ -1,12 +1,13 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Store, expandHome } from "./store";
-import { AdoWorkItem, AdoComment } from "../shared/types";
+import { AdoWorkItem, AdoComment, AdoBoard } from "../shared/types";
 
 interface AdoConfig {
   orgUrl: string;
   project: string;
   pat: string;
+  team?: string; // azureDevOps.team; the project's default team when unset
 }
 
 /**
@@ -37,7 +38,7 @@ function loadAdoConfig(store: Store): AdoConfig {
     throw new Error(`Couldn't read PAT file ${patPath}: ${err instanceof Error ? err.message : err}`);
   }
   if (!pat) throw new Error(`PAT file ${patPath} is empty`);
-  return { orgUrl: String(ado.orgUrl).replace(/\/+$/, ""), project: String(ado.project), pat };
+  return { orgUrl: String(ado.orgUrl).replace(/\/+$/, ""), project: String(ado.project), pat, ...(ado.team ? { team: String(ado.team) } : {}) };
 }
 
 async function adoFetch(cfg: AdoConfig, url: string, init?: RequestInit): Promise<any> {
@@ -84,9 +85,11 @@ export async function adoIdentity(store: Store): Promise<{ display: string; emai
 // Display name AND email, because ADO sometimes spells connectionData's display
 // name differently than System.AssignedTo on work items; email is the stable key.
 let cachedMe: { display: string; email: string } | null = null;
+let boardsCache: { at: number; value: { team: string; boards: AdoBoard[] } } | null = null;
 /** Drop cached identity after the ADO connector config changes. */
 export function resetAdoCache(): void {
   cachedMe = null;
+  boardsCache = null;
 }
 async function whoAmI(cfg: AdoConfig): Promise<{ display: string; email: string }> {
   if (cachedMe) return cachedMe;
@@ -142,6 +145,7 @@ export async function listWorkItems(
     "System.AssignedTo",
     "System.ChangedDate",
     "System.Description",
+    "System.BoardColumn",
   ].join(",");
   const r = await adoFetch(cfg, `${base}/_apis/wit/workitems?ids=${ids.join(",")}&fields=${fields}&${API}`);
   const items = (r.value ?? []).map((v: any): AdoWorkItem => ({
@@ -152,6 +156,7 @@ export async function listWorkItems(
     assignedTo: v.fields["System.AssignedTo"]?.displayName ?? "",
     changed: v.fields["System.ChangedDate"] ?? "",
     description: htmlToText(v.fields["System.Description"] ?? ""),
+    ...(v.fields["System.BoardColumn"] ? { boardColumn: String(v.fields["System.BoardColumn"]) } : {}),
     url: `${base}/_workitems/edit/${v.id}`,
   }));
   // resolve "me" to the exact spelling the work items use (match by email first,
@@ -302,4 +307,63 @@ export async function updateWorkItem(
     }
   );
   return { id: r.id };
+}
+
+const BOARDS_TTL_MS = 10 * 60_000;
+
+/**
+ * The team's boards — their columns, the state each work item type has in each
+ * column, and the Kanban column field — so the Dashboard shows the board the
+ * team really uses rather than raw states. Team: azureDevOps.team, else the
+ * project's default team.
+ */
+export async function teamBoards(store: Store, fresh = false): Promise<{ team: string; boards: AdoBoard[] }> {
+  if (!fresh && boardsCache && Date.now() - boardsCache.at < BOARDS_TTL_MS) return boardsCache.value;
+  const cfg = loadAdoConfig(store);
+  const project = encodeURIComponent(cfg.project);
+  let team = cfg.team;
+  if (!team) {
+    const p = await adoFetch(cfg, `${cfg.orgUrl}/_apis/projects/${project}?${API}`);
+    team = p.defaultTeam?.name;
+    if (!team) throw new Error(`Project ${cfg.project} has no default team — set azureDevOps.team in the WorkTracker config.json`);
+  }
+  const tbase = `${cfg.orgUrl}/${project}/${encodeURIComponent(team!)}`;
+  const list = await adoFetch(cfg, `${tbase}/_apis/work/boards?${API}`);
+  const boards: AdoBoard[] = await Promise.all(
+    (list.value ?? []).map(async (b: any) => {
+      const d = await adoFetch(cfg, `${tbase}/_apis/work/boards/${b.id}?${API}`);
+      return {
+        id: String(b.id),
+        name: String(b.name),
+        columnField: d.fields?.columnField?.referenceName ?? null,
+        columns: (d.columns ?? []).map((c: any) => ({ name: String(c.name), type: c.columnType, stateMappings: c.stateMappings ?? {} })),
+      };
+    })
+  );
+  const value = { team: team!, boards };
+  boardsCache = { at: Date.now(), value };
+  return value;
+}
+
+/**
+ * Move a work item to a board column: its state becomes the column's state for
+ * its type, and the Kanban column field is set, which is what tells columns
+ * that share a state (Idea / Approved / Planning) apart.
+ */
+export async function moveToBoardColumn(store: Store, id: number, type: string, boardName: string, column: string): Promise<{ id: number; state: string }> {
+  const { boards } = await teamBoards(store);
+  const board = boards.find((b) => b.name === boardName);
+  if (!board) throw new Error(`The ${boardName} board wasn't found`);
+  const col = board.columns.find((c) => c.name === column);
+  const state = col?.stateMappings[type];
+  if (!col || !state) throw new Error(`A ${type} can't go in ${column} on the ${boardName} board`);
+  const cfg = loadAdoConfig(store);
+  const ops = [{ op: "add", path: "/fields/System.State", value: state }];
+  if (board.columnField) ops.push({ op: "add", path: `/fields/${board.columnField}`, value: column });
+  const r = await adoFetch(cfg, `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_apis/wit/workitems/${id}?${API}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json-patch+json" },
+    body: JSON.stringify(ops),
+  });
+  return { id: r.id, state };
 }

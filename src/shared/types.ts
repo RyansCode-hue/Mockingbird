@@ -117,6 +117,22 @@ export interface AdoWorkItem {
   changed: string; // ISO date of last change
   description: string; // flattened plain text
   url: string; // browser link to the work item
+  boardColumn?: string; // the column it sits in on the team's board (System.BoardColumn)
+}
+
+/** One column of a team's Azure Boards board, and the state each work item type has there. */
+export interface AdoBoardColumn {
+  name: string;
+  type: "incoming" | "inProgress" | "outgoing";
+  stateMappings: Record<string, string>; // work item type → state
+}
+
+/** A team's board as Azure DevOps defines it — the columns the team actually uses. */
+export interface AdoBoard {
+  id: string;
+  name: string;
+  columns: AdoBoardColumn[];
+  columnField: string | null; // the Kanban column field: tells columns that share a state apart
 }
 
 export interface AdoComment {

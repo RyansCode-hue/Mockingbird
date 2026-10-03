@@ -102,6 +102,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
 - **In-app updates** — Check for updates against the private repo (via the
   GitHub CLI), then Update pulls and builds in your clone and restarts into it,
   bringing your sessions back.
+- **Dashboard = your real ADO board** — columns, order and state mapping
+  read from your team's Azure Boards board (pick among its boards); cards sit
+  in the column ADO recorded, and dropping one sets that column (and its
+  state). A Columns list reorders and hides columns per board.
+- **Drag and drop shows where things land** — an outline or a line on the
+  side, a label saying what the drop will do, and edge scrolling; for
+  sessions, panes, board columns and cards, and Collaborate models.
 - **Search every conversation (⌘⇧F)** — a local index of every Claude and
   Codex transcript on the Mac (open, closed, or never opened in Mockingbird):
   what was said, the files touched and the commands run. A hit opens where it

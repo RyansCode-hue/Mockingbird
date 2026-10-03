@@ -7,10 +7,11 @@ import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
 import { TranscriptSearch } from "./TranscriptSearch";
+import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
 
 declare global {
@@ -2162,7 +2163,7 @@ function ticketsByColumn(
   items: AdoWorkItem[],
   workflowOrder: string[] = []
 ): { state: string; items: AdoWorkItem[] }[] {
-  const custom = loadLS<string[]>("mb.board.colOrder", []);
+  const custom = loadLS<Record<string, { order: string[] }> | null>("mb.board.prefs", null)?.states?.order ?? loadLS<string[]>("mb.board.colOrder", []);
   const order = custom.length ? custom : workflowOrder;
   const byState = new Map<string, AdoWorkItem[]>();
   for (const t of items) {
@@ -2199,22 +2200,39 @@ function DashboardBoard({
   const [me, setMe] = useState("");
   const [who, setWho] = useState<string[] | null>(() => loadLS<string[] | null>("mb.board.who", null));
   const [whoOpen, setWhoOpen] = useState(false);
-  const [hiddenCols, setHiddenCols] = useState<Set<string>>(() => new Set(loadLS<string[]>("mb.board.hidden", [])));
-  const [colOrder, setColOrder] = useState<string[]>(() => loadLS<string[]>("mb.board.colOrder", []));
   useEffect(() => {
     if (who !== null) localStorage.setItem("mb.board.who", JSON.stringify(who));
   }, [who]);
-  useEffect(() => localStorage.setItem("mb.board.hidden", JSON.stringify([...hiddenCols])), [hiddenCols]);
-  useEffect(() => localStorage.setItem("mb.board.colOrder", JSON.stringify(colOrder)), [colOrder]);
 
-  // custom order first (drag columns to match your real ADO board), new states appended
-  const orderedCols = useMemo(() => {
-    const custom = colOrder.filter((c) => stateCols.includes(c));
-    return [...custom, ...stateCols.filter((c) => !custom.includes(c))];
-  }, [stateCols, colOrder]);
+  // The team's Azure Boards board — its real columns — when it can be read; work item states otherwise
+  const [boardsInfo, setBoardsInfo] = useState<{ team: string; boards: AdoBoard[] } | { error: string } | null>(null);
+  const [boardName, setBoardName] = useState<string>(() => loadLS("mb.board.name", ""));
+  useEffect(() => localStorage.setItem("mb.board.name", JSON.stringify(boardName)), [boardName]);
+  const boards = boardsInfo && !("error" in boardsInfo) ? boardsInfo.boards : null;
+  const board = boards ? boards.find((b) => b.name === boardName) ?? pickBoard(items ?? [], boards) : null;
+
+  // column order and hidden columns, kept per board ("states" when there's no board)
+  const [colPrefs, setColPrefs] = useState<Record<string, { order: string[]; hidden: string[] }>>(
+    () =>
+      loadLS<Record<string, { order: string[]; hidden: string[] }> | null>("mb.board.prefs", null) ?? {
+        states: { order: loadLS<string[]>("mb.board.colOrder", []), hidden: loadLS<string[]>("mb.board.hidden", []) },
+      }
+  );
+  useEffect(() => localStorage.setItem("mb.board.prefs", JSON.stringify(colPrefs)), [colPrefs]);
+  const prefKey = board ? `board:${board.name}` : "states";
+  const defaultHidden = board ? board.columns.filter((c) => c.type === "outgoing").map((c) => c.name) : [];
+  const prefs = colPrefs[prefKey] ?? { order: [], hidden: defaultHidden };
+  const setPrefs = (p: { order: string[]; hidden: string[] }) => setColPrefs((all) => ({ ...all, [prefKey]: p }));
+  const allCols = board ? board.columns.map((c) => c.name) : stateCols;
+  const orderedCols = orderColumns(allCols, prefs.order);
+  const hiddenCols = new Set(prefs.hidden);
+  const toggleHidden = (c: string) => setPrefs({ ...prefs, hidden: hiddenCols.has(c) ? prefs.hidden.filter((x) => x !== c) : [...prefs.hidden, c] });
+  const [colsOpen, setColsOpen] = useState(false);
+  /** The column a card sits in: its board column, or its state without a board. */
+  const colOfItem = (it: AdoWorkItem) => (board ? columnOf(it, board) : it.state);
 
   const drag = useDrag();
-  const reorderCols = (src: string, target: string, side: Side) => setColOrder(placeBeside(orderedCols, src, target, side));
+  const reorderCols = (src: string, target: string, side: Side) => setPrefs({ ...prefs, order: placeBeside(orderedCols, src, target, side) });
   /** What dropping the current drag on a column would do: move a column beside it, or move a ticket into it. */
   const columnTarget = (e: React.DragEvent, col: string) => {
     const srcCol = dragging("text/mb-col");
@@ -2223,7 +2241,26 @@ function DashboardBoard({
       return srcCol === col || samePlace(orderedCols, srcCol, col, side) ? null : { key: `c:${col}`, side, outcome: `Put ${srcCol} ${side} ${col}` };
     }
     const it = items?.find((i) => String(i.id) === dragging("text/mb-wi"));
-    return it && it.state !== col ? { key: `c:${col}`, outcome: `#${it.id}: ${it.state} → ${col}` } : null;
+    if (!it) return null;
+    if (!board) return it.state !== col ? { key: `c:${col}`, outcome: `#${it.id}: ${it.state} → ${col}` } : null;
+    const mv = cardMove(it, board, col);
+    return mv ? { key: `c:${col}`, outcome: `#${it.id} → ${col}${mv.stateChanges ? ` (${it.state} → ${mv.state})` : ""}` } : null;
+  };
+
+  /** Drop a card in a board column: the column (and its state for the card's type) is saved to ADO. */
+  const moveCard = async (id: number, col: string) => {
+    const prev = items?.find((i) => i.id === id);
+    if (!prev) return;
+    if (!board) return changeState(id, col);
+    const mv = cardMove(prev, board, col);
+    if (!mv) return;
+    setError("");
+    setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, boardColumn: col, state: mv.state } : i)) : p));
+    const r = await window.mb.adoMoveToColumn(id, prev.type, board.name, col);
+    if (r?.error) {
+      setItems((p) => (p ? p.map((i) => (i.id === id ? prev : i)) : p));
+      setError(`Couldn't move ${id} to ${col}: ${r.error}`);
+    }
   };
   // detail edit state
   const [title, setTitle] = useState("");
@@ -2265,8 +2302,9 @@ function DashboardBoard({
     };
   }, [repoPath]);
 
-  const load = async () => {
+  const load = async (fresh = false) => {
     setError("");
+    window.mb.adoBoards(fresh).then((b: { team: string; boards: AdoBoard[] } | { error: string }) => setBoardsInfo(b));
     const r: { items: AdoWorkItem[]; total: number; me: string } | { error: string } =
       await window.mb.adoList();
     if ("error" in r) {
@@ -2472,32 +2510,84 @@ function DashboardBoard({
           )}
         </span>
         <span className="vdiv" />
-        <span className="flbl">Columns</span>
-        <span className="pills">
-          {orderedCols.map((c) => (
-            <button
-              key={c}
-              className={`pill ${hiddenCols.has(c) ? "" : "on"}`}
-              title={hiddenCols.has(c) ? "Show column" : "Hide column"}
-              onClick={() =>
-                setHiddenCols((p) => {
-                  const n = new Set(p);
-                  n.has(c) ? n.delete(c) : n.add(c);
-                  return n;
-                })
-              }
+        {boards && boards.length > 0 && (
+          <>
+            <span className="flbl">Board</span>
+            <select
+              className="board-pick"
+              value={board?.name ?? ""}
+              title={boardsInfo && !("error" in boardsInfo) ? `${boardsInfo.team}'s boards in Azure DevOps` : undefined}
+              onChange={(e) => setBoardName(e.target.value)}
             >
-              {c}
-            </button>
-          ))}
+              {boards.map((b) => (
+                <option key={b.id} value={b.name}>{b.name}</option>
+              ))}
+            </select>
+          </>
+        )}
+        <span className="who-wrap">
+          <button className="who-btn" onClick={() => setColsOpen((o) => !o)}>
+            Columns {hiddenCols.size > 0 && <span className="kbd">{orderedCols.length - [...hiddenCols].filter((c) => orderedCols.includes(c)).length}/{orderedCols.length}</span>}{" "}
+            <span className="kbd">▾</span>
+          </button>
+          {colsOpen && (
+            <>
+              <div className="who-back" onMouseDown={() => setColsOpen(false)} />
+              <div className="who-pop cols-pop">
+                <div className="who-hint cols-src">
+                  {board
+                    ? `${board.name} board · ${boardsInfo && !("error" in boardsInfo) ? boardsInfo.team : ""} — as set up in Azure DevOps`
+                    : boardsInfo && "error" in boardsInfo
+                      ? `Showing work item states — couldn't read your team's board: ${boardsInfo.error}`
+                      : "Showing work item states"}
+                </div>
+                {orderedCols.map((c) => {
+                  const n = visibleItems.filter((i) => colOfItem(i) === c).length;
+                  return (
+                    <div
+                      key={c}
+                      className={`who-row col-row ${hiddenCols.has(c) ? "" : "on"}`}
+                      data-drop={cue(drag, `cl:${c}`)}
+                      onDragOver={(e) => {
+                        const src = dragging("text/mb-col");
+                        const side = sideOf(e, e.currentTarget, "y");
+                        overTarget(e, !src || src === c || samePlace(orderedCols, src, c, side) ? null : { key: `cl:${c}`, side, outcome: `Put ${src} ${side} ${c}` });
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const src = e.dataTransfer.getData("text/mb-col");
+                        if (src && src !== c) reorderCols(src, c, sideOf(e, e.currentTarget, "y"));
+                      }}
+                    >
+                      <span className="col-grip" draggable title="Drag to reorder" onDragStart={(e) => beginDrag(e, "text/mb-col", c, `Moving column ${c}`)}>
+                        ⋮⋮
+                      </span>
+                      <span className={`ck ${hiddenCols.has(c) ? "" : "on"}`} title={hiddenCols.has(c) ? "Show column" : "Hide column"} onClick={() => toggleHidden(c)}>
+                        {hiddenCols.has(c) ? "" : "✓"}
+                      </span>
+                      <span onClick={() => toggleHidden(c)}>{c}</span>
+                      <span className="cnt">{n}</span>
+                    </div>
+                  );
+                })}
+                <div className="who-div" />
+                <div className="who-row" onClick={() => setPrefs({ order: [], hidden: defaultHidden })}>
+                  {board ? "Reset to the board's order" : "Reset order"}
+                </div>
+              </div>
+            </>
+          )}
         </span>
         <span style={{ marginLeft: "auto" }} />
         <span className="flbl-info">
           {items ? `${visibleItems.length} items` : ""}
+          {board && items && visibleItems.some((i) => colOfItem(i) === null)
+            ? ` · ${visibleItems.filter((i) => colOfItem(i) === null).length} on other boards`
+            : ""}
           {total > (items?.length ?? 0) ? ` · showing ${items!.length} of ${total}` : ""}
           {syncedAt ? ` · synced ${fmtElapsed(syncedAt)} ago` : " · syncing…"}
         </span>
-        <button className="outline" onClick={() => load()}>Refresh</button>
+        <button className="outline" onClick={() => load(true)}>Refresh</button>
       </div>
       {error && <div className="err board-err">{error}</div>}
       <div className="board-cols">
@@ -2506,7 +2596,7 @@ function DashboardBoard({
           <div className="wi-empty" style={{ padding: 14 }}>No active work items.</div>
         )}
         {orderedCols.filter((c) => !hiddenCols.has(c)).map((col) => {
-          const colItems = visibleItems.filter((i) => i.state === col);
+          const colItems = visibleItems.filter((i) => colOfItem(i) === col);
           return (
             <div
               key={col}
@@ -2518,7 +2608,7 @@ function DashboardBoard({
                 const movedCol = e.dataTransfer.getData("text/mb-col");
                 if (movedCol) return movedCol !== col && reorderCols(movedCol, col, sideOf(e, e.currentTarget, "x"));
                 const id = parseInt(e.dataTransfer.getData("text/mb-wi"), 10);
-                if (id) changeState(id, col);
+                if (id) moveCard(id, col);
               }}
             >
               <div
