@@ -1318,3 +1318,21 @@ button.link.danger { color: var(--red); }
 .col-row .col-grip:hover { color: var(--text-2); }
 .col-row .ck, .col-row > span:nth-child(3) { cursor: pointer; }
 .col-row:not(.on) > span:nth-child(3) { color: var(--text-4); }
+/* Source Control view (explorer) */
+.sc { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.sc-branch { display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px; font: 400 11px var(--ui); color: var(--text-2); }
+.sc-br { font-weight: 500; color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sc-ab { font: 400 10px var(--mono); color: var(--text-4); white-space: nowrap; }
+.sc-push { margin-left: auto; padding: 2px 8px; font-size: 10.5px; white-space: nowrap; }
+.sc-msg { margin: 0 10px; resize: vertical; min-height: 40px; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 6px; padding: 6px 8px; font: 400 11.5px var(--ui); }
+.sc-msg:focus { outline: none; border-color: var(--line-focus); }
+.sc-commit { margin: 6px 10px 6px; }
+.sc-list { flex: 1; min-height: 0; }
+.sc-sec { display: flex; align-items: center; gap: 5px; padding: 6px 8px 4px; font: 500 9.5px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); cursor: pointer; user-select: none; }
+.sc-sec:hover { color: var(--text-1); }
+.sc-chev { width: 9px; color: var(--text-4); }
+.sc-sec .sc-acts, .sc-row .sc-acts { margin-left: auto; display: none; gap: 0; }
+.sc-sec:hover .sc-acts, .sc-row:hover .sc-acts { display: inline-flex; }
+.sc-sec .sc-acts button, .sc-row .sc-acts button { padding: 0 5px; font-size: 12px; }
+.sc-row { padding-left: 22px !important; }
+.fp-row.st-C .fp-badge { color: var(--red); }

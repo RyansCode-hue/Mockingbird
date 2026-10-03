@@ -10,6 +10,7 @@ import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWork
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
+import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmDiff } from "./scm";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
 import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
@@ -353,6 +354,14 @@ ipcMain.handle("files:changes", (_e, id, scope) =>
 ipcMain.handle("files:diff", (_e, id, rel, scope, untracked) =>
   safeAsync("files:diff", () => fileDiff(sessionRoot(id), rel, scope, untracked))()
 );
+// Source control for a session's folder (addressed by session id, like the explorer)
+ipcMain.handle("scm:status", (_e, id) => safeAsync("scm:status", () => scmStatus(sessionRoot(id)))());
+ipcMain.handle("scm:stage", (_e, id, paths) => safeAsync("scm:stage", () => scmStage(sessionRoot(id), paths))());
+ipcMain.handle("scm:unstage", (_e, id, paths) => safeAsync("scm:unstage", () => scmUnstage(sessionRoot(id), paths))());
+ipcMain.handle("scm:discard", (_e, id, entries) => safeAsync("scm:discard", () => scmDiscard(sessionRoot(id), entries, (abs) => shell.trashItem(abs)))());
+ipcMain.handle("scm:commit", (_e, id, message) => safeAsync("scm:commit", () => scmCommit(sessionRoot(id), String(message ?? "")))());
+ipcMain.handle("scm:push", (_e, id) => safeAsync("scm:push", () => scmPush(sessionRoot(id)))());
+ipcMain.handle("scm:diff", (_e, id, rel, staged, untracked) => safeAsync("scm:diff", () => scmDiff(sessionRoot(id), rel, !!staged, !!untracked))());
 ipcMain.handle("repo:branches", (_e, repoPath) =>
   safeAsync("repo:branches", () => listBranches(expandHome(repoPath)))()
 );

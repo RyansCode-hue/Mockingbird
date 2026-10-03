@@ -195,6 +195,24 @@ export interface Settings {
   updateSource?: string | null; // the clone in-app updates pull and build; found under repoRoots when unset
 }
 
+/** M modified · A added · D deleted · R renamed · U untracked · C conflicted */
+export type ScmStatusCode = "M" | "A" | "D" | "R" | "U" | "C";
+export interface ScmEntry {
+  path: string;
+  from?: string;
+  status: ScmStatusCode;
+}
+/** A session folder's git state, grouped like VS Code's Source Control view. */
+export interface ScmStatus {
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  staged: ScmEntry[];
+  unstaged: ScmEntry[];
+  conflicted: ScmEntry[];
+}
+
 /** A conversation that matched a search across every transcript on this Mac, and how to open it. */
 export interface TranscriptHit {
   id: string; // the agent's conversation id

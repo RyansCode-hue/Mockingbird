@@ -1,4 +1,4 @@
-import { execFile } from "child_process";
+import { git } from "./git";
 import * as fs from "fs";
 import * as path from "path";
 import type { FileEntry, FileContent, GitChange, GitChanges, ChangeScope } from "../shared/types";
@@ -15,7 +15,7 @@ const inside = (root: string, p: string) => p === root || p.startsWith(root + pa
  * follow them. A path that doesn't exist yet is only checked lexically; the
  * read that follows reports it missing.
  */
-async function resolveIn(root: string, rel: string): Promise<string> {
+export async function resolveIn(root: string, rel: string): Promise<string> {
   const full = path.resolve(root, rel);
   if (!inside(root, full)) throw new Error(`Path is outside the session folder: ${rel}`);
   let real: string;
@@ -29,22 +29,6 @@ async function resolveIn(root: string, rel: string): Promise<string> {
     throw new Error(`${rel} links outside the session folder (to ${real}) — not shown`);
   }
   return full;
-}
-
-/** git with its exit code exposed — `diff --no-index` exits 1 when it found differences. */
-function git(root: string, args: string[], okCodes: number[] = [0]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      ["-C", root, ...args],
-      { encoding: "utf8", maxBuffer: MAX_DIFF_BYTES * 2 },
-      (err, stdout, stderr) => {
-        const code = err ? ((err as any).code as number | string | undefined) : 0;
-        if (!err || (typeof code === "number" && okCodes.includes(code))) return resolve(stdout);
-        reject(new Error((stderr || err.message).trim()));
-      }
-    );
-  });
 }
 
 export async function listDir(root: string, rel: string): Promise<FileEntry[]> {
@@ -132,8 +116,8 @@ function parseNameStatus(z: string): GitChange[] {
 export async function gitChanges(root: string, scope: ChangeScope): Promise<GitChanges> {
   const base = scope === "branch" ? await branchBase(root) : { sha: "HEAD", name: "HEAD" };
   const [tracked, untracked] = await Promise.all([
-    git(root, ["diff", "--name-status", "-z", "-M", base.sha]),
-    git(root, ["ls-files", "--others", "--exclude-standard", "-z"]),
+    git(root, ["diff", "--name-status", "-z", "-M", base.sha], { trim: false }),
+    git(root, ["ls-files", "--others", "--exclude-standard", "-z"], { trim: false }),
   ]);
   const changes = parseNameStatus(tracked);
   for (const p of untracked.split("\0").filter(Boolean)) changes.push({ path: p, status: "U" });
@@ -144,8 +128,8 @@ export async function gitChanges(root: string, scope: ChangeScope): Promise<GitC
 export async function fileDiff(root: string, rel: string, scope: ChangeScope, untracked: boolean): Promise<string> {
   await resolveIn(root, rel);
   const out = untracked
-    ? await git(root, ["diff", "--no-index", "--", "/dev/null", rel], [0, 1])
-    : await git(root, ["diff", "-M", scope === "branch" ? (await branchBase(root)).sha : "HEAD", "--", rel]);
+    ? await git(root, ["diff", "--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false })
+    : await git(root, ["diff", "-M", scope === "branch" ? (await branchBase(root)).sha : "HEAD", "--", rel], { trim: false });
   if (out.length > MAX_DIFF_BYTES) throw new Error("Diff is too large to display");
   return out;
 }

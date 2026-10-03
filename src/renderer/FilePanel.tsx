@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, ChangeScope } from "../shared/types";
+import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges } from "../shared/types";
+import { SourceControl, type DiffSource } from "./SourceControl";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -10,7 +11,9 @@ interface OpenFile {
   root: string;
   path: string;
   mode: "file" | "diff";
-  change?: GitChange;
+  /** Set when the file has changes: its status letter, and which diff to show. */
+  status?: string;
+  source?: DiffSource;
 }
 
 function loadLS<T>(key: string, fallback: T): T {
@@ -78,11 +81,9 @@ function FilePanel({
   onInsert: (text: string) => void;
 }) {
   const [view, setView] = useState<"files" | "changes">(() => loadLS("mb.files.view", "files"));
-  const [scope, setScope] = useState<ChangeScope>(() => loadLS("mb.files.scope", "working"));
   const [treeW, setTreeW] = useState<number>(() => loadLS("mb.files.treeW", 270));
   const [viewerW, setViewerW] = useState<number>(() => loadLS("mb.files.viewerW", 560));
   useEffect(() => localStorage.setItem("mb.files.view", JSON.stringify(view)), [view]);
-  useEffect(() => localStorage.setItem("mb.files.scope", JSON.stringify(scope)), [scope]);
   useEffect(() => localStorage.setItem("mb.files.treeW", JSON.stringify(treeW)), [treeW]);
   useEffect(() => localStorage.setItem("mb.files.viewerW", JSON.stringify(viewerW)), [viewerW]);
 
@@ -106,8 +107,9 @@ function FilePanel({
     setDirs((d) => (JSON.stringify(d[rel]) === JSON.stringify(r) ? d : { ...d, [rel]: r }));
   }, []);
 
-  const loadChanges = useCallback(async (id: string, sc: ChangeScope) => {
-    const r: Result<GitChanges> = await window.mb.filesChanges(id, sc);
+  // the Files tree marks what changed since the last commit
+  const loadChanges = useCallback(async (id: string) => {
+    const r: Result<GitChanges> = await window.mb.filesChanges(id, "working");
     setChanges((c) => (JSON.stringify(c) === JSON.stringify(r) ? c : r));
     return r;
   }, []);
@@ -123,8 +125,8 @@ function FilePanel({
     if (!sid) return;
     loadDir(sid, "");
     for (const rel of expanded) loadDir(sid, rel);
-    return loadChanges(sid, scope);
-  }, [sid, expanded, scope, loadDir, loadChanges]);
+    return loadChanges(sid);
+  }, [sid, expanded, loadDir, loadChanges]);
 
   // Sessions edit files underneath us, so the tree and change list re-poll while
   // the window is visible. A failing change list (not a git repo) stops the poll
@@ -140,7 +142,7 @@ function FilePanel({
       refreshRef.current()?.then((r) => (gitBroken.current = isErr(r)));
     }, 5000);
     return () => clearInterval(t);
-  }, [sid, root, scope]);
+  }, [sid, root]);
 
   const toggleDir = (rel: string) => {
     if (!root || !sid) return;
@@ -164,10 +166,10 @@ function FilePanel({
     return s;
   }, [changeList]);
 
-  const openFile = (path: string, mode: "file" | "diff", change?: GitChange) => {
+  const openFile = (path: string, mode: "file" | "diff", change?: GitChange, source?: DiffSource) => {
     if (!sid || !root) return;
     setSelected(path);
-    setOpen({ sessionId: sid, root, path, mode, change });
+    setOpen({ sessionId: sid, root, path, mode, status: change?.status, source });
   };
 
   const renderTree = (rel: string, depth: number): React.ReactNode => {
@@ -226,7 +228,6 @@ function FilePanel({
         <FileViewer
           key={`${open.root}:${open.path}`}
           open={open}
-          scope={scope}
           width={viewerW}
           onMode={(mode) => setOpen({ ...open, mode })}
           onClose={() => setOpen(null)}
@@ -245,7 +246,7 @@ function FilePanel({
         <div className="fp-tabs">
           <button className={view === "files" ? "on" : ""} onClick={() => setView("files")}>Files</button>
           <button className={view === "changes" ? "on" : ""} onClick={() => setView("changes")}>
-            Changes{changeList.length > 0 && <span className="fp-count">{changeList.length}</span>}
+            Source Control{changeList.length > 0 && <span className="fp-count">{changeList.length}</span>}
           </button>
         </div>
         {!session ? (
@@ -253,52 +254,13 @@ function FilePanel({
         ) : view === "files" ? (
           <div className="fp-scroll">{renderTree("", 0)}</div>
         ) : (
-          <>
-            <div className="fp-scope">
-              <button
-                className={scope === "working" ? "on" : ""}
-                title="Uncommitted work, compared with the last commit"
-                onClick={() => setScope("working")}
-              >
-                Uncommitted
-              </button>
-              <button
-                className={scope === "branch" ? "on" : ""}
-                title="Everything this branch changed since it forked from its base — commits and uncommitted work"
-                onClick={() => setScope("branch")}
-              >
-                Whole branch
-              </button>
-            </div>
-            <div className="fp-scroll">
-              {changes === null ? (
-                <div className="fp-note">loading…</div>
-              ) : isErr(changes) ? (
-                <div className="fp-note err">{changes.error}</div>
-              ) : changeList.length === 0 ? (
-                <div className="fp-note">no changes vs {changes.base}</div>
-              ) : (
-                <>
-                  <div className="fp-note">vs {changes.base}</div>
-                  {changeList.map((c) => (
-                    <div
-                      key={c.path}
-                      className={`fp-row st-${c.status} ${selected === c.path ? "sel" : ""}`}
-                      style={{ paddingLeft: 10 }}
-                      title={c.from ? `${c.from} → ${c.path}` : c.path}
-                      onClick={() => openFile(c.path, "diff", c)}
-                    >
-                      <span className="fp-name">
-                        {baseName(c.path)}
-                        <span className="fp-dir">{dirName(c.path)}</span>
-                      </span>
-                      <span className="fp-badge" title={STATUS_TITLE[c.status]}>{c.status}</span>
-                    </div>
-                  ))}
-                </>
-              )}
-            </div>
-          </>
+          <SourceControl
+            key={sid}
+            sessionId={sid!}
+            selected={selected}
+            onOpenDiff={(path, source, status) => openFile(path, "diff", { path, status: status === "C" ? "M" : (status as GitChange["status"]) }, source)}
+            onOpenFile={(path) => openFile(path, "file")}
+          />
         )}
       </div>
     </div>
@@ -307,14 +269,12 @@ function FilePanel({
 
 function FileViewer({
   open,
-  scope,
   width,
   onMode,
   onClose,
   onInsert,
 }: {
   open: OpenFile;
-  scope: ChangeScope;
   width: number;
   onMode: (m: "file" | "diff") => void;
   onClose: () => void;
@@ -322,13 +282,17 @@ function FileViewer({
 }) {
   const [file, setFile] = useState<Result<FileContent> | null>(null);
   const [diff, setDiff] = useState<Result<string> | null>(null);
-  const deleted = open.change?.status === "D";
+  const deleted = open.status === "D";
 
   useEffect(() => {
     let live = true;
     const load = async () => {
       if (open.mode === "diff") {
-        const r: Result<string> = await window.mb.filesDiff(open.sessionId, open.path, scope, open.change?.status === "U");
+        const src = open.source;
+        const r: Result<string> =
+          src?.kind === "scm"
+            ? await window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
+            : await window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U");
         if (live) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
       } else {
         const r: Result<FileContent> = await window.mb.filesRead(open.sessionId, open.path);
@@ -343,7 +307,7 @@ function FileViewer({
       live = false;
       clearInterval(t);
     };
-  }, [open.sessionId, open.path, open.mode, open.change?.status, scope]);
+  }, [open.sessionId, open.path, open.mode, open.status, open.source?.kind, open.source && "staged" in open.source ? open.source.staged : false]);
 
   return (
     <div className="fp-viewer" style={{ width }}>
@@ -352,7 +316,7 @@ function FileViewer({
           {baseName(open.path)}
           <span className="fp-dir">{dirName(open.path)}</span>
         </span>
-        {open.change && (
+        {(open.source || open.status) && (
           <span className="fp-seg">
             <button className={open.mode === "diff" ? "on" : ""} onClick={() => onMode("diff")}>Diff</button>
             <button className={open.mode === "file" ? "on" : ""} disabled={deleted} onClick={() => onMode("file")}>File</button>

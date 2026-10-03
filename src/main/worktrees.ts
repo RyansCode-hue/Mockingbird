@@ -1,31 +1,7 @@
 import type { WorktreeCleanupMode, WorktreeEntry } from "../shared/types";
-import { execFile } from "child_process";
+import { git } from "./git";
 import * as fs from "fs";
 import * as path from "path";
-
-const LOCAL_TIMEOUT_MS = 30_000;
-const NETWORK_TIMEOUT_MS = 120_000; // fetch / push over a slow VPN
-
-/**
- * git, off the main thread. This process also carries every pane's keystrokes,
- * so a slow repo or remote must never block it. No terminal prompts: a remote
- * that wants a password fails instead of hanging.
- */
-function git(repo: string, args: string[]): Promise<string> {
-  const timeout = args[0] === "fetch" || args[0] === "push" ? NETWORK_TIMEOUT_MS : LOCAL_TIMEOUT_MS;
-  return new Promise((resolve, reject) =>
-    execFile(
-      "git",
-      ["-C", repo, ...args],
-      { encoding: "utf8", timeout, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
-      (err, stdout, stderr) => {
-        if (!err) return resolve(stdout.trim());
-        const why = err.killed ? `timed out after ${timeout / 1000}s` : (stderr || err.message).trim();
-        reject(new Error(`git ${args.join(" ")} (in ${repo}): ${why}`));
-      }
-    )
-  );
-}
 
 /** Worktrees live in one folder beside the repos: `<parent>/worktrees/<repo>/<branch>`. */
 export function worktreeRoot(repoPath: string): string {

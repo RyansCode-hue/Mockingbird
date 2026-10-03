@@ -77,6 +77,13 @@ const api = {
   filesList: (id: string, rel: string) => ipcRenderer.invoke("files:list", id, rel),
   filesRead: (id: string, rel: string) => ipcRenderer.invoke("files:read", id, rel),
   filesChanges: (id: string, scope: string) => ipcRenderer.invoke("files:changes", id, scope),
+  scmStatus: (id: string) => ipcRenderer.invoke("scm:status", id),
+  scmStage: (id: string, paths: string[]) => ipcRenderer.invoke("scm:stage", id, paths),
+  scmUnstage: (id: string, paths: string[]) => ipcRenderer.invoke("scm:unstage", id, paths),
+  scmDiscard: (id: string, entries: { path: string; untracked: boolean }[]) => ipcRenderer.invoke("scm:discard", id, entries),
+  scmCommit: (id: string, message: string) => ipcRenderer.invoke("scm:commit", id, message),
+  scmPush: (id: string) => ipcRenderer.invoke("scm:push", id),
+  scmDiff: (id: string, rel: string, staged: boolean, untracked: boolean) => ipcRenderer.invoke("scm:diff", id, rel, staged, untracked),
   filesDiff: (id: string, rel: string, scope: string, untracked: boolean) =>
     ipcRenderer.invoke("files:diff", id, rel, scope, untracked),
   usageGet: () => ipcRenderer.invoke("usage:get"),
