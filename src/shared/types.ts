@@ -409,6 +409,8 @@ export interface RunService {
   /** When it counts as up: a port accepting connections, or a log line matching a pattern. */
   ready?: { port?: string; log?: string };
   compose?: { file: string; services?: string[] };
+  /** How to run it under the debugger, when it can be. */
+  debug?: RunDebug;
 }
 
 export interface RunProfile {
@@ -444,6 +446,55 @@ export interface RunServiceState {
   startedAt: number;
   /** Why it failed or stopped, when not by request. */
   error?: string;
+  /** The debug session it runs under, when started with Debug. */
+  debug?: string;
+}
+
+// ---- debugging ------------------------------------------------------------------
+
+/** How a service runs under the debugger. Ports and paths may use the same ${…} placeholders as its command. */
+export type RunDebug =
+  | { type: "python"; module?: string; program?: string; args?: string[]; python?: string; justMyCode?: boolean }
+  | { type: "node"; program?: string; runtimeExecutable?: string; runtimeArgs?: string[]; args?: string[] }
+  | { type: "chrome"; url: string; webRoot?: string }
+  | { type: "dotnet"; program: string; args?: string[]; build?: string }
+  | { type: "python-attach"; port: string; pathMappings?: { localRoot: string; remoteRoot: string }[] };
+
+export interface DebugSessionInfo {
+  id: string;
+  /** Set for a child session an adapter started (a browser page, a subprocess). */
+  parentId: string | null;
+  name: string;
+  worktree: string;
+  repo: string;
+  service: string;
+  state: "starting" | "running" | "stopped" | "ended";
+  stopped?: { threadId: number; reason: string; description?: string; text?: string };
+  threads: { id: number; name: string }[];
+  error?: string;
+}
+
+export interface DebugFrame {
+  id: number;
+  name: string;
+  /** Absolute; null for frames without source (native, generated). */
+  path: string | null;
+  line: number;
+  column: number;
+}
+
+export interface DebugScope {
+  name: string;
+  ref: number;
+  expensive: boolean;
+}
+
+export interface DebugVariable {
+  name: string;
+  value: string;
+  type?: string;
+  /** Non-zero when it has children to expand. */
+  ref: number;
 }
 
 // ---- first-run setup ---------------------------------------------------------

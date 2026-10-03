@@ -1561,3 +1561,49 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .bp-x:hover { color: var(--text-1); }
 .bp-spacer { flex: 1; }
 .log-term { flex: 1; min-height: 0; padding: 4px 0 4px 10px; overflow: hidden; }
+
+/* ---- debugger: editor gutter ---- */
+.fp-gutter.bp-gutter { cursor: pointer; }
+.fp-gutter.bp-gutter:hover { color: var(--text-2); }
+.fp-bp { position: absolute; left: 3px; width: 9px; height: 9px; border-radius: 50%; background: var(--red); pointer-events: none; z-index: 2; }
+.fp-bp.inline { position: static; flex-shrink: 0; width: 8px; height: 8px; }
+.fp-paused { position: absolute; left: 0; right: 0; pointer-events: none; background: color-mix(in srgb, var(--amber) 22%, transparent); }
+.fp-paused-arrow { position: absolute; left: 2px; font-size: 9px; line-height: 17px; color: var(--amber); pointer-events: none; z-index: 3; }
+
+/* ---- debugger: Run and Debug view ---- */
+.rv-bug .ico { width: 12px; height: 12px; }
+.rv-bug:hover:not(:disabled) { color: var(--amber); }
+.dv { padding-bottom: 8px; margin-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+.dv-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px 6px 12px; }
+.dv-title { flex: 1; min-width: 0; font-size: 12px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dv-state { margin-left: 6px; font: 400 10px var(--mono); color: var(--text-4); }
+.dv-ctl { display: flex; gap: 1px; }
+.dv-ctl button { padding: 1px 5px; font-size: 13px; }
+.dv-ctl .dv-stop { color: var(--red); }
+.dv-frame { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 10px 0 14px; cursor: pointer; font-size: 11.5px; white-space: nowrap; }
+.dv-frame:hover { background: var(--fill-subtle); }
+.dv-frame.on { background: color-mix(in srgb, var(--amber) 14%, transparent); }
+.dv-frame.lib { opacity: .55; }
+.dv-fn { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-1); }
+.dv-loc { margin-left: auto; font: 400 10px var(--mono); color: var(--text-4); }
+.dv-scope { display: flex; align-items: center; gap: 4px; height: 21px; padding-left: 10px; cursor: pointer; font-size: 11.5px; color: var(--text-2); }
+.dv-var { display: flex; align-items: baseline; gap: 6px; min-height: 20px; padding-right: 8px; cursor: default; font: 400 11px/20px var(--mono); }
+.dv-var:hover { background: var(--fill-subtle); }
+.dv-tw { width: 10px; flex-shrink: 0; color: var(--text-4); font-size: 9px; }
+.dv-name { color: var(--m-2); flex-shrink: 0; }
+.dv-val { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.dv-x { margin-left: auto; padding: 0 4px; visibility: hidden; }
+.dv-var:hover .dv-x, .dv-frame:hover .dv-x { visibility: visible; }
+.dv-add { margin: 2px 10px 4px; width: calc(100% - 20px); background: var(--fill-subtle); border: 1px solid var(--line-med); border-radius: 4px; padding: 3px 6px; color: var(--text-1); font: 400 11px var(--mono); }
+.dv-add:focus { outline: none; border-color: var(--line-focus); }
+
+/* ---- debugger: Debug Console (bottom panel) ---- */
+.dc { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dc-out { flex: 1; min-height: 0; overflow: auto; padding: 6px 12px; font: 400 11.5px/1.5 var(--mono); color: var(--text-2); white-space: pre-wrap; word-break: break-word; user-select: text; }
+.dc-line.stderr { color: var(--red); }
+.dc-line.important { color: var(--amber-text); }
+.dc-line.input { color: var(--text-4); }
+.dc-line.result { color: var(--m-0); }
+.dc-in { display: flex; align-items: center; gap: 6px; padding: 4px 8px 6px 12px; border-top: 1px solid var(--line-soft); }
+.dc-prompt { color: var(--amber); font: 600 12px var(--mono); }
+.dc-in input { flex: 1; background: none; border: 0; outline: none; color: var(--text-1); font: 400 11.5px var(--mono); }

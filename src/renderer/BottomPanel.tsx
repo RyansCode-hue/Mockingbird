@@ -1,6 +1,73 @@
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { RunServiceState } from "../shared/types";
 import { LogTerm, disposeLog } from "./LogTerm";
+import { addOutput, clearOutput, useDebug } from "./debugStore";
+
+export const DEBUG_CONSOLE = "__debug-console";
+
+/** What debuggers print, and a prompt that evaluates in the paused frame. */
+function DebugConsole() {
+  const debug = useDebug();
+  const [input, setInput] = useState("");
+  const [history, setHistory] = useState<string[]>([]);
+  const [at, setAt] = useState(-1);
+  const end = useRef<HTMLDivElement>(null);
+  // braces matter: scrollIntoView returns a promise in newer Chromium, and an effect may only return a cleanup
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "end" });
+  }, [debug.output.length]);
+  const target = debug.sessions.find((s) => s.state === "stopped") ?? debug.sessions.filter((s) => s.state !== "ended").pop();
+  const names = new Map(debug.sessions.map((s) => [s.id, s.name]));
+  const run = async () => {
+    const expr = input.trim();
+    if (!expr) return;
+    setHistory((h) => [...h.filter((x) => x !== expr), expr]);
+    setAt(-1);
+    setInput("");
+    addOutput({ sid: target?.id ?? "", category: "input", text: `› ${expr}\n` });
+    if (!target) return addOutput({ sid: "", category: "stderr", text: "Nothing is being debugged.\n" });
+    const frame = debug.selected[target.id] ?? debug.paused[target.id]?.frame ?? null;
+    const r = await window.mb.debugEvaluate(target.id, expr, frame?.id, "repl");
+    addOutput({ sid: target.id, category: "error" in r ? "stderr" : "result", text: `${"error" in r ? r.error : r.result}\n` });
+  };
+  return (
+    <div className="dc">
+      <div className="dc-out">
+        {debug.output.length === 0 && <div className="fp-note">Debugger output and evaluation results appear here.</div>}
+        {debug.output.map((o, i) => (
+          <span key={i} className={`dc-line ${o.category}`} title={names.get(o.sid)}>
+            {o.text}
+          </span>
+        ))}
+        <div ref={end} />
+      </div>
+      <div className="dc-in">
+        <span className="dc-prompt">›</span>
+        <input
+          placeholder={target ? `Evaluate in ${target.name}${target.state === "stopped" ? " (paused frame)" : ""}` : "Start a service with Debug to evaluate here"}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") run();
+            if (e.key === "ArrowUp" && history.length) {
+              e.preventDefault();
+              const i = at < 0 ? history.length - 1 : Math.max(0, at - 1);
+              setAt(i);
+              setInput(history[i]);
+            }
+            if (e.key === "ArrowDown" && at >= 0) {
+              e.preventDefault();
+              const i = at + 1;
+              setAt(i >= history.length ? -1 : i);
+              setInput(i >= history.length ? "" : history[i]);
+            }
+          }}
+        />
+        <button className="icon" title="Clear the console" onClick={clearOutput}>⌫</button>
+      </div>
+    </div>
+  );
+}
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
@@ -24,7 +91,10 @@ export function BottomPanel({
   onResize: (h: number) => void;
 }) {
   const worktrees = new Set(states.map((s) => s.worktree));
-  const shown = states.find((s) => s.id === active) ?? states[0] ?? null;
+  const debug = useDebug();
+  const hasConsole = debug.sessions.length > 0 || debug.output.length > 0;
+  const consoleOn = hasConsole && (active === DEBUG_CONSOLE || !states.length);
+  const shown = consoleOn ? null : states.find((s) => s.id === active) ?? states[0] ?? null;
   const startResize = (e: React.PointerEvent) => {
     e.preventDefault();
     const startY = e.clientY;
@@ -43,6 +113,11 @@ export function BottomPanel({
     <div className="bp" style={{ height }}>
       <div className="bp-grip" onPointerDown={startResize} />
       <div className="bp-tabs" role="tablist">
+        {hasConsole && (
+          <div role="tab" aria-selected={consoleOn} className={`bp-tab ${consoleOn ? "on" : ""}`} onClick={() => onActive(DEBUG_CONSOLE)}>
+            Debug Console
+          </div>
+        )}
         {states.map((s) => (
           <div
             key={s.id}
@@ -80,7 +155,7 @@ export function BottomPanel({
           ✕
         </button>
       </div>
-      {shown ? <LogTerm key={shown.id} id={shown.id} /> : <div className="fp-note">Nothing has run yet — start a service from Run and Debug.</div>}
+      {consoleOn ? <DebugConsole /> : shown ? <LogTerm key={shown.id} id={shown.id} /> : <div className="fp-note">Nothing has run yet — start a service from Run and Debug.</div>}
     </div>
   );
 }

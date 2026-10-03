@@ -6,6 +6,8 @@ import * as path from "path";
 import { buildOverride, composeConfig, composeProject, writeOverride } from "./composeOverride";
 import { DEFAULT_SIDE_BY_SIDE, expand, loadProfile, mainCheckout, parseEnvFile, slotPorts, startOrder } from "./runProfile";
 import { copyPrepared, setupCommand } from "./runPrepare";
+import type { DebugManager } from "./dap/session";
+import type { debugTargetFor } from "./dap/targets";
 import { quote } from "./shell";
 import type { RunProfile, RunService, RunServiceState } from "../shared/types";
 
@@ -105,6 +107,8 @@ export class RunManager {
       profileFor?: (repo: string) => RunProfile | null;
       mainOf?: (worktree: string) => Promise<string>;
       readyTimeoutMs?: number;
+      debugger?: DebugManager;
+      debugTarget?: typeof debugTargetFor;
     }
   ) {}
 
@@ -187,7 +191,7 @@ export class RunManager {
    * Start a worktree's services. Ports another process holds are reported
    * (blocked) rather than taken; the user decides whether to stop that process.
    */
-  async start(worktree: string, opts: { mode: "swap" | "side"; services?: string[] }): Promise<StartResult> {
+  async start(worktree: string, opts: { mode: "swap" | "side"; services?: string[]; debug?: string[] }): Promise<StartResult> {
     const { repo, profile } = await this.profile(worktree);
     const slot = this.slotFor(repo, worktree, opts.mode, profile);
     if (opts.mode === "swap") {
@@ -216,7 +220,7 @@ export class RunManager {
     const started: string[] = [];
     const ids: string[] = [];
     for (const s of todo) {
-      const l = await this.launch(worktree, repo, profile, s, slot, ports);
+      const l = opts.debug?.includes(s.name) ? await this.launchDebug(worktree, repo, s, slot, ports) : await this.launch(worktree, repo, profile, s, slot, ports);
       started.push(s.name);
       ids.push(l.state.id);
       if (!(await this.whenReady(l, s, ports))) break; // it died: what depends on it isn't started
@@ -238,7 +242,8 @@ export class RunManager {
     this.offered.delete(worktree);
   }
 
-  private async launch(worktree: string, repo: string, profile: RunProfile, s: RunService, slot: number, ports: Map<string, number>): Promise<Live> {
+  /** A service's working folder, environment (env files, then its own env) and placeholder context. */
+  private serviceSetup(worktree: string, repo: string, s: RunService, slot: number, ports: Map<string, number>) {
     const ctx = { ports, slot, worktree };
     const cwd = path.join(worktree, s.cwd);
     const env: Record<string, string> = { ...this.deps.baseEnv(), MOCKINGBIRD_RUN: s.name, FORCE_COLOR: "1" };
@@ -253,8 +258,12 @@ export class RunManager {
       Object.assign(env, parseEnvFile(text));
     }
     for (const [k, v] of Object.entries(s.env ?? {})) env[k] = expand(v, ctx);
+    return { ctx, cwd, env, command: expand(s.command, ctx) };
+  }
 
-    let command = expand(s.command, ctx);
+  private async launch(worktree: string, repo: string, profile: RunProfile, s: RunService, slot: number, ports: Map<string, number>): Promise<Live> {
+    const { ctx, cwd, env, command: plain } = this.serviceSetup(worktree, repo, s, slot, ports);
+    let command = plain;
     let down: string | undefined;
     if (s.kind === "compose") {
       const docker = await this.deps.docker();
@@ -267,7 +276,50 @@ export class RunManager {
       command = `${base} up --remove-orphans ${(s.compose!.services ?? []).map(quote).join(" ")}`.trim();
       down = `${base} down --remove-orphans`;
     }
+    return this.spawnLive(worktree, repo, s, slot, ports, ctx, command, cwd, env, down);
+  }
 
+  /**
+   * Run a service under the debugger. The adapter asks for the program to be
+   * started in a terminal (runInTerminal), so it runs on its own terminal like
+   * any service — same log tab, same stop — with the debugger attached.
+   */
+  private async launchDebug(worktree: string, repo: string, s: RunService, slot: number, ports: Map<string, number>): Promise<Live> {
+    if (!this.deps.debugger || !this.deps.debugTarget) throw new Error("Debugging isn't available");
+    if (s.kind === "compose") throw new Error(`${s.name} is a Docker Compose service — debugging inside containers comes in a later stage`);
+    const { ctx, cwd, env, command } = this.serviceSetup(worktree, repo, s, slot, ports);
+    const target = await this.deps.debugTarget(s, { cwd, env, command, expand: (x) => expand(x, ctx), onProgress: (m) => this.deps.emit("run:progress", worktree, m) });
+    let resolveLive!: (l: Live) => void;
+    const started = new Promise<Live>((r) => (resolveLive = r));
+    const runInTerminal = async (req: { cwd: string; args: string[]; env?: Record<string, string | null> }) => {
+      const e = { ...env };
+      for (const [k, v] of Object.entries(req.env ?? {})) if (v === null) delete e[k];
+      else e[k] = v;
+      const cmd = [...target.pre, `exec ${req.args.map(quote).join(" ")}`].join(" && ");
+      const l = this.spawnLive(worktree, repo, s, slot, ports, ctx, cmd, req.cwd || cwd, e, undefined, target.notes);
+      resolveLive(l);
+      return l.state.pid ?? undefined;
+    };
+    const sessionId = await this.deps.debugger.launch({ worktree, repo, service: s.name, name: s.name, adapterID: target.adapterID, connect: target.connect, config: target.config, runInTerminal });
+    const l = await Promise.race([started, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`The debugger started but never ran ${s.name}`)), 30_000))]);
+    l.state.debug = sessionId;
+    this.changed();
+    return l;
+  }
+
+  private spawnLive(
+    worktree: string,
+    repo: string,
+    s: RunService,
+    slot: number,
+    ports: Map<string, number>,
+    ctx: { ports: Map<string, number>; slot: number; worktree: string },
+    command: string,
+    cwd: string,
+    env: Record<string, string>,
+    down?: string,
+    notes: string[] = []
+  ): Live {
     const id = runId(worktree, s.name);
     const state: RunServiceState = {
       id,
@@ -286,7 +338,7 @@ export class RunManager {
     let resolveExit!: () => void;
     const l: Live = { state, proc: null, buffer: prior?.buffer ? `${prior.buffer}\r\n` : "", exited: new Promise((r) => (resolveExit = r)), stopRequested: false, down };
     this.live.set(id, l);
-    const header = `\x1b[2m$ ${command}\x1b[0m\r\n`;
+    const header = `\x1b[2m$ ${command}\x1b[0m\r\n${notes.map((n) => `\x1b[33m${n}\x1b[0m\r\n`).join("")}`;
     l.buffer += header;
     this.deps.emit("run:data", id, header);
     try {
@@ -374,6 +426,8 @@ export class RunManager {
     l.stopRequested = true;
     l.state.status = "stopping";
     this.changed();
+    // the debugger first: disconnecting ends the debuggee cleanly
+    if (l.state.debug) await this.deps.debugger?.stop(l.state.debug).catch(() => {});
     const pid = l.state.pid;
     const signal = (sig: NodeJS.Signals) => {
       try {

@@ -83,7 +83,7 @@ const api = {
   runProfile: (id: string) => ipcRenderer.invoke("run:profile", id),
   runSaveProfile: (id: string, profile: unknown) => ipcRenderer.invoke("run:saveProfile", id, profile),
   runDraft: (id: string) => ipcRenderer.invoke("run:draft", id),
-  runStart: (id: string, opts: { mode: "swap" | "side"; services?: string[] }) => ipcRenderer.invoke("run:start", id, opts),
+  runStart: (id: string, opts: { mode: "swap" | "side"; services?: string[]; debug?: string[] }) => ipcRenderer.invoke("run:start", id, opts),
   runStopListeners: (id: string, pids: number[]) => ipcRenderer.invoke("run:stopListeners", id, pids),
   runStop: (id: string, services?: string[]) => ipcRenderer.invoke("run:stop", id, services),
   runPrepare: (id: string) => ipcRenderer.invoke("run:prepare", id),
@@ -91,6 +91,41 @@ const api = {
   runBuffer: (runId: string) => ipcRenderer.invoke("run:buffer", runId),
   runClear: (runId: string) => ipcRenderer.invoke("run:clear", runId),
   runStopById: (runId: string) => ipcRenderer.invoke("run:stopById", runId),
+  onRunProgress: (cb: (worktree: string, msg: string) => void) => {
+    const h = (_e: unknown, w: string, m: string) => cb(w, m);
+    ipcRenderer.on("run:progress", h);
+    return () => ipcRenderer.removeListener("run:progress", h);
+  },
+  debugBreakpoints: (id: string) => ipcRenderer.invoke("debug:breakpoints", id),
+  debugSetBreakpoints: (id: string, rel: string, lines: number[]) => ipcRenderer.invoke("debug:setBreakpoints", id, rel, lines),
+  debugSessions: () => ipcRenderer.invoke("debug:sessions"),
+  debugControl: (sid: string, op: string, threadId?: number) => ipcRenderer.invoke("debug:control", sid, op, threadId),
+  debugStack: (sid: string, threadId: number) => ipcRenderer.invoke("debug:stack", sid, threadId),
+  debugScopes: (sid: string, frameId: number) => ipcRenderer.invoke("debug:scopes", sid, frameId),
+  debugVariables: (sid: string, ref: number) => ipcRenderer.invoke("debug:variables", sid, ref),
+  debugEvaluate: (sid: string, expr: string, frameId: number | undefined, context: string) => ipcRenderer.invoke("debug:evaluate", sid, expr, frameId, context),
+  debugStop: (sid: string) => ipcRenderer.invoke("debug:stop", sid),
+  debugPrune: () => ipcRenderer.invoke("debug:prune"),
+  onDebugChanged: (cb: (sessions: unknown) => void) => {
+    const h = (_e: unknown, s: unknown) => cb(s);
+    ipcRenderer.on("debug:changed", h);
+    return () => ipcRenderer.removeListener("debug:changed", h);
+  },
+  onDebugOutput: (cb: (sid: string, category: string, text: string) => void) => {
+    const h = (_e: unknown, sid: string, c: string, t: string) => cb(sid, c, t);
+    ipcRenderer.on("debug:output", h);
+    return () => ipcRenderer.removeListener("debug:output", h);
+  },
+  onDebugStopped: (cb: (sid: string, at: unknown) => void) => {
+    const h = (_e: unknown, sid: string, at: unknown) => cb(sid, at);
+    ipcRenderer.on("debug:stopped", h);
+    return () => ipcRenderer.removeListener("debug:stopped", h);
+  },
+  onBreakpointsChanged: (cb: (repo: string) => void) => {
+    const h = (_e: unknown, r: string) => cb(r);
+    ipcRenderer.on("debug:breakpointsChanged", h);
+    return () => ipcRenderer.removeListener("debug:breakpointsChanged", h);
+  },
   runWrite: (runId: string, data: string) => ipcRenderer.send("run:write", runId, data),
   runResize: (runId: string, cols: number, rows: number) => ipcRenderer.send("run:resize", runId, cols, rows),
   onRunChanged: (cb: (states: unknown) => void) => {

@@ -19,7 +19,8 @@ import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon } from "./Icons";
 import { RunView } from "./RunView";
 import { BottomPanel } from "./BottomPanel";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState } from "../shared/types";
+import { addOutput, onStopped } from "./debugStore";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, type OptionalTab } from "../shared/types";
 
 declare global {
@@ -962,6 +963,35 @@ function App() {
     const reveal = o.line ? { line: o.line, at: Date.now() } : undefined;
     setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path, mode: o.mode ?? "file", status: o.status, source: o.source, reveal }));
   };
+  /**
+   * Show a debugger location in the editor. Files are read through a pane
+   * whose folder holds them (the focused one first), so the editor's folder
+   * boundary still applies; library code outside every pane's folder isn't opened.
+   */
+  const openFrame = (frame: DebugFrame) => {
+    if (!frame.path) return;
+    const inside = (s: SessionInfo) => frame.path!.startsWith(s.cwd + "/");
+    const s = focusedSession && inside(focusedSession) ? focusedSession : sessions.find(inside);
+    if (!s) {
+      addOutput({ sid: "", category: "important", text: `${frame.path}:${frame.line} isn't inside an open session's folder, so it isn't shown.\n` });
+      return;
+    }
+    const reveal = { line: frame.line, at: Date.now() };
+    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path: frame.path!.slice(s.cwd.length + 1), mode: "file", reveal }));
+  };
+  const openFrameRef = useRef(openFrame);
+  openFrameRef.current = openFrame;
+  // where the debugger stops, the editor opens, with the debug controls beside it
+  useEffect(
+    () =>
+      onStopped((_sid, at) => {
+        if (at.frame) openFrameRef.current(at.frame);
+        setTab("sessions");
+        setSideView("run");
+        setSideCollapsed(false);
+      }),
+    []
+  );
   const activeTab = editor.tabs.find((t) => tabKey(t) === editor.active) ?? null;
   const activePath = activeTab && focusedSession && activeTab.root === focusedSession.cwd ? activeTab.path : null;
 
@@ -1249,6 +1279,7 @@ function App() {
                 window.mb.sessionWrite(focusedSession.id, text);
                 focusTerm(focusedSession.id);
               }}
+              onOpenFrame={openFrame}
             />
           )}
           {sideView === "sessions" && (

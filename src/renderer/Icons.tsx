@@ -142,3 +142,11 @@ export const RunDebugIcon = () => (
     <path d="M10 10.25H9M15 10.25h-1M10 12.75H9M15 12.75h-1M12 9v5" />
   </Icon>
 );
+
+/** A bug: run under the debugger. */
+export const BugIcon = () => (
+  <Icon>
+    <ellipse cx="8" cy="9.25" rx="3.25" ry="4" />
+    <path d="M6 5.75a2 2 0 0 1 4 0M8 5.25v8M4.75 8H2.5M13.5 8h-2.25M4.9 11.25 3 12.5M11.1 11.25 13 12.5M5 6.5 3.25 5.25M11 6.5l1.75-1.25" />
+  </Icon>
+);

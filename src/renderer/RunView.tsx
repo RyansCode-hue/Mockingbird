@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
-import type { RunProfile, RunServiceState, SessionInfo } from "../shared/types";
-import { SparkleIcon } from "./Icons";
+import type { DebugFrame, RunProfile, RunServiceState, SessionInfo } from "../shared/types";
+import { BugIcon, SparkleIcon } from "./Icons";
+import { DebugPanel } from "./DebugPanel";
+import { useDebug } from "./debugStore";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -36,13 +38,19 @@ export function RunView({
   states,
   onShowLog,
   onAskSession,
+  onOpenFrame,
 }: {
   session: SessionInfo | null;
   states: RunServiceState[];
   onShowLog: (runId: string) => void;
   /** Type a request into the session's pane (to fix a blocker in the code). */
   onAskSession: (text: string) => void;
+  /** Show a debugger frame's file at its line. */
+  onOpenFrame: (frame: DebugFrame) => void;
 }) {
+  const dbg = useDebug();
+  const [progress, setProgress] = useState("");
+  useEffect(() => window.mb.onRunProgress((w: string, m: string) => w === session?.cwd && setProgress(m)), [session?.cwd]);
   const [info, setInfo] = useState<Result<ProfileInfo> | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -99,8 +107,10 @@ export function RunView({
       setBusy("");
     }
   };
-  const start = async (services?: string[]) => {
-    const r = await act("start", () => window.mb.runStart(session.id, { mode, services }));
+  const start = async (services?: string[], debug?: string[]) => {
+    setProgress("");
+    const r = await act(debug ? "debug" : "start", () => window.mb.runStart(session.id, { mode, services, debug }));
+    setProgress("");
     if (r && !isErr(r) && "blocked" in r) setConflicts({ list: r.blocked, services });
     else if (r && !isErr(r) && r.ids?.length) onShowLog(r.ids[r.ids.length - 1]);
   };
@@ -227,7 +237,11 @@ export function RunView({
         </div>
       )}
       {error && <div className="fp-note err">{error}</div>}
+      {busy === "debug" && <div className="fp-note">{progress || "Starting the debugger…"}</div>}
       <div className="fp-scroll">
+        {dbg.sessions.some((d) => d.worktree === worktree) && (
+          <DebugPanel sessions={dbg.sessions.filter((d) => d.worktree === worktree)} paneSessionId={session.id} onOpenFrame={onOpenFrame} />
+        )}
         {profile.services.map((s) => {
           const st = stateOf(s.name);
           const active = st && ACTIVE.has(st.status);
@@ -253,7 +267,14 @@ export function RunView({
                     <button className="icon" title="Stop (and what depends on it)" disabled={!!busy} onClick={() => act("stop", () => window.mb.runStop(session.id, [s.name]))}>■</button>
                   </>
                 ) : (
-                  <button className="icon" title="Start (and what it depends on)" disabled={!!busy} onClick={() => start([s.name])}>▶</button>
+                  <>
+                    <button className="icon" title="Start (and what it depends on)" disabled={!!busy} onClick={() => start([s.name])}>▶</button>
+                    {s.kind !== "compose" && (
+                      <button className="icon rv-bug" title="Debug — start it under the debugger (what it depends on starts normally)" disabled={!!busy} onClick={() => start([s.name], [s.name])}>
+                        <BugIcon />
+                      </button>
+                    )}
+                  </>
                 )}
               </span>
               {st?.status === "failed" && <div className="rv-err">{st.error}</div>}

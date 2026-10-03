@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, WorktreeStateInfo } from "../shared/types";
 import { highlightLines, languageFor } from "./highlight";
 import { tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { fileBadge } from "./fileIcons";
+import { useBreakpoints, useDebug } from "./debugStore";
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
 
 type Result<T> = T | { error: string };
@@ -471,13 +472,13 @@ function FileViewer({
         ) : file === null ? <div className="fp-note">loading…</div>
           : isErr(file) ? <div className="fp-note err">{file.error}</div>
           : file.binary ? <div className="fp-note">Binary file · {file.size.toLocaleString()} bytes — not shown</div>
-          : <CodeView file={file} path={open.path} reveal={open.reveal} />}
+          : <CodeView file={file} path={open.path} reveal={open.reveal} sessionId={open.sessionId} root={open.root} />}
       </div>
     </div>
   );
 }
 
-function CodeView({ file, path, reveal }: { file: FileContent; path: string; reveal?: { line: number; at: number } }) {
+function CodeView({ file, path, reveal, sessionId, root }: { file: FileContent; path: string; reveal?: { line: number; at: number }; sessionId: string; root: string }) {
   const text = file.content.endsWith("\n") ? file.content.slice(0, -1) : file.content;
   const gutter = useMemo(() => {
     const n = text.split("\n").length;
@@ -501,13 +502,48 @@ function CodeView({ file, path, reveal }: { file: FileContent; path: string; rev
     setMark({ top, height: lh, at: reveal.at });
   }, [reveal?.at]);
 
+  // breakpoints: click a line number; the paused line (or the frame picked in the call stack) is marked
+  const bp = useBreakpoints(sessionId);
+  const lines = bp.map[path] ?? [];
+  const debug = useDebug();
+  const abs = `${root}/${path}`;
+  const here = Object.entries(debug.selected)
+    .map(([sid, f]) => (f && f.path === abs && debug.sessions.find((x) => x.id === sid)?.state === "stopped" ? f.line : null))
+    .filter((l): l is number => l !== null);
+  const gutterRef = useRef<HTMLPreElement>(null);
+  const [metrics, setMetrics] = useState<{ top: number; lh: number } | null>(null);
+  useLayoutEffect(() => {
+    const g = gutterRef.current;
+    if (!g) return;
+    const cs = getComputedStyle(g);
+    setMetrics({ top: parseFloat(cs.paddingTop), lh: parseFloat(cs.lineHeight) });
+  }, []);
+  const lineCount = gutter.length ? gutter.split("\n").length - 1 : 0;
+  const onGutter = (e: React.MouseEvent) => {
+    if (!metrics) return;
+    const y = e.clientY - (e.currentTarget as HTMLElement).getBoundingClientRect().top - metrics.top;
+    const line = Math.floor(y / metrics.lh) + 1;
+    if (line >= 1 && line <= lineCount) bp.toggle(path, line);
+  };
+
   return (
     <>
       {file.truncated && (
         <div className="fp-note">Large file — showing the first part of {file.size.toLocaleString()} bytes</div>
       )}
       <div className="fp-code">
-        <pre className="fp-gutter">{gutter}</pre>
+        <pre ref={gutterRef} className="fp-gutter bp-gutter" title="Click a line number to set or clear a breakpoint" onClick={onGutter}>
+          {gutter}
+        </pre>
+        {metrics &&
+          lines.map((l) => <span key={`bp${l}`} className="fp-bp" style={{ top: metrics.top + (l - 1) * metrics.lh + (metrics.lh - 9) / 2 }} />)}
+        {metrics &&
+          here.map((l) => (
+            <React.Fragment key={`at${l}`}>
+              <div className="fp-paused" style={{ top: metrics.top + (l - 1) * metrics.lh, height: metrics.lh }} />
+              <span className="fp-paused-arrow" style={{ top: metrics.top + (l - 1) * metrics.lh }}>▶</span>
+            </React.Fragment>
+          ))}
         {/* highlight.js escapes the file's text; the only markup is its own spans */}
         <pre ref={textRef} className="fp-text hl" dangerouslySetInnerHTML={{ __html: html }} />
         {mark && <div key={mark.at} className="fp-reveal" style={{ top: mark.top, height: mark.height }} />}

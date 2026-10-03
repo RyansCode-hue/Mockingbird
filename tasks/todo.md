@@ -1430,4 +1430,10 @@ stopped its whole process group; a real Claude draft of cst-tracking came back v
 Not yet run against Ryan's real apps (they touch shared DBs) — first real runs go through Ryan.
 
 ## Stage 2 — Debugger core (DAP)
+- [x] DAP client (framing, seq matching, reverse requests), DebugManager (child sessions, breakpoints per repo)
+- [x] Pinned adapters with SHA-256 (debugpy pure wheel, js-debug, netcoredbg), installer
+- [x] Python target: command → debugpy launch (runInTerminal into the service's own pty; --reload dropped)
+- [x] UI: gutter breakpoints + paused line, debug controls / call stack / variables / watch / breakpoints, Debug Console
+- Review: real debugpy test (break, locals, eval, step, continue); real uvicorn+FastAPI request stopped in the endpoint.
+  Harness caught an effect returning scrollIntoView's promise (crash in newer Chromium) — fixed.
 ## Stage 3 — Per-stack debugging

@@ -11,6 +11,8 @@ import { FolderWatcher } from "./watch";
 import { RunManager } from "./run";
 import { loadProfile, mainCheckout, profilePath, saveProfile } from "./runProfile";
 import { draftProfile } from "./runDraft";
+import { DebugManager } from "./dap/session";
+import { debugTargetFor } from "./dap/targets";
 import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
@@ -38,8 +40,12 @@ store.save();
 const sessions = new SessionManager(store);
 const toWindow = (channel: string, ...args: unknown[]) => BrowserWindow.getAllWindows()[0]?.webContents.send(channel, ...args);
 
-// Run and Debug: a repo's services per worktree, each on its own terminal
+// Run and Debug: a repo's services per worktree, each on its own terminal,
+// optionally under the debugger
+const debug = new DebugManager({ emit: toWindow });
 const runs = new RunManager({
+  debugger: debug,
+  debugTarget: debugTargetFor,
   spawn: (command, opts) => pty.spawn("/bin/zsh", ["-ilc", command], { name: "xterm-256color", cols: 120, rows: 30, cwd: opts.cwd, env: opts.env }),
   emit: toWindow,
   baseEnv: () => paneEnv() as Record<string, string>,
@@ -423,7 +429,11 @@ ipcMain.handle("run:draft", (_e, id) =>
 );
 ipcMain.handle("run:start", (_e, id, opts) =>
   safeAsync("run:start", () =>
-    runs.start(sessionRoot(id), { mode: opts?.mode === "side" ? "side" : "swap", services: Array.isArray(opts?.services) ? opts.services.map(String) : undefined })
+    runs.start(sessionRoot(id), {
+      mode: opts?.mode === "side" ? "side" : "swap",
+      services: Array.isArray(opts?.services) ? opts.services.map(String) : undefined,
+      debug: Array.isArray(opts?.debug) ? opts.debug.map(String) : undefined,
+    })
   )()
 );
 ipcMain.handle("run:stopListeners", (_e, id, pids) =>
@@ -436,6 +446,38 @@ ipcMain.handle("run:prepare", (_e, id) => safeAsync("run:prepare", () => runs.pr
 ipcMain.handle("run:states", () => runs.states());
 ipcMain.handle("run:buffer", (_e, runId) => runs.buffer(String(runId)));
 ipcMain.handle("run:clear", (_e, runId) => runs.clear(String(runId)));
+// the debugger: breakpoints are the repo's (relative paths), sessions are addressed by their own id
+ipcMain.handle("debug:breakpoints", (_e, id) =>
+  safeAsync("debug:breakpoints", async () => {
+    const repo = await mainCheckout(sessionRoot(id));
+    return { repo, breakpoints: debug.breakpoints(repo) };
+  })()
+);
+ipcMain.handle("debug:setBreakpoints", (_e, id, rel, lines) =>
+  safeAsync("debug:setBreakpoints", async () => {
+    const repo = await mainCheckout(sessionRoot(id));
+    const r = await debug.setBreakpoints(repo, String(rel), Array.isArray(lines) ? lines.map(Number) : []);
+    toWindow("debug:breakpointsChanged", repo);
+    return r;
+  })()
+);
+ipcMain.handle("debug:sessions", () => debug.infos());
+ipcMain.handle("debug:control", (_e, sid, op, threadId) =>
+  safeAsync("debug:control", () => {
+    if (!["continue", "next", "stepIn", "stepOut", "pause"].includes(op)) throw new Error(`Unknown debug command: ${op}`);
+    return debug.control(String(sid), op, typeof threadId === "number" ? threadId : undefined);
+  })()
+);
+ipcMain.handle("debug:stack", (_e, sid, threadId) => safeAsync("debug:stack", () => debug.stackTrace(String(sid), Number(threadId)))());
+ipcMain.handle("debug:scopes", (_e, sid, frameId) => safeAsync("debug:scopes", () => debug.scopes(String(sid), Number(frameId)))());
+ipcMain.handle("debug:variables", (_e, sid, ref) => safeAsync("debug:variables", () => debug.variables(String(sid), Number(ref)))());
+ipcMain.handle("debug:evaluate", (_e, sid, expr, frameId, context) =>
+  safeAsync("debug:evaluate", () =>
+    debug.evaluate(String(sid), String(expr), typeof frameId === "number" ? frameId : undefined, context === "watch" || context === "hover" ? context : "repl")
+  )()
+);
+ipcMain.handle("debug:stop", (_e, sid) => safeAsync("debug:stop", () => debug.stop(String(sid)))());
+ipcMain.handle("debug:prune", () => debug.prune());
 ipcMain.handle("run:stopById", (_e, runId) => safeAsync("run:stopById", () => runs.stopById(String(runId)))());
 ipcMain.on("run:write", (_e, runId, data) => runs.write(String(runId), String(data)));
 ipcMain.on("run:resize", (_e, runId, cols, rows) => runs.resize(String(runId), Number(cols), Number(rows)));
