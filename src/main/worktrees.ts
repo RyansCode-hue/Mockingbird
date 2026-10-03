@@ -1,5 +1,5 @@
 import type { WorktreeCleanupMode, WorktreeEntry } from "../shared/types";
-import { git } from "./git";
+import { git, upstreamOf } from "./git";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -79,6 +79,7 @@ export interface WorktreeState {
   dirty: boolean;
   dirtyFiles: number;
   branch: string;
+  upstream: string | null;
   ahead: number;
   behind: number;
   /** Lines added and removed in tracked files since the last commit (new files aren't counted). */
@@ -95,10 +96,12 @@ export function parseShortstat(out: string): { insertions: number; deletions: nu
 }
 
 async function readState(wtPath: string): Promise<WorktreeState> {
-  const [porcelain, branch, counts, stat] = await Promise.all([
+  const [porcelain, branch, upstream, counts, stat] = await Promise.all([
     git(wtPath, ["status", "--porcelain"]),
     // the branch name, even before its first commit; "HEAD" when detached
     git(wtPath, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] }).then((b) => b || "HEAD"),
+    // what the counts are against; a branch made from origin/dev tracks it until published
+    upstreamOf(wtPath),
     // "<behind> <ahead>" in one call; fails when the branch has no upstream
     git(wtPath, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]).catch(() => "0 0"),
     // before the first commit there's no HEAD to diff against: nothing to count yet
@@ -109,7 +112,7 @@ async function readState(wtPath: string): Promise<WorktreeState> {
   ]);
   const dirtyFiles = porcelain ? porcelain.split("\n").length : 0;
   const [behind, ahead] = counts.split(/\s+/).map((n) => parseInt(n, 10) || 0);
-  return { dirty: dirtyFiles > 0, dirtyFiles, branch, ahead: ahead ?? 0, behind: behind ?? 0, ...parseShortstat(stat) };
+  return { dirty: dirtyFiles > 0, dirtyFiles, branch, upstream: upstream || null, ahead: ahead ?? 0, behind: behind ?? 0, ...parseShortstat(stat) };
 }
 
 export const STATE_TTL_MS = 3_000;

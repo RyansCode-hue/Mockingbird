@@ -11,7 +11,7 @@ import { FolderWatcher } from "./watch";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
-import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmDiff } from "./scm";
+import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
 import { Messaging } from "./messaging";
@@ -389,6 +389,11 @@ ipcMain.handle("scm:unstage", (_e, id, paths) => safeAsync("scm:unstage", () => 
 ipcMain.handle("scm:discard", (_e, id, entries) => safeAsync("scm:discard", () => scmDiscard(sessionRoot(id), entries, (abs) => shell.trashItem(abs)))());
 ipcMain.handle("scm:commit", (_e, id, message) => safeAsync("scm:commit", () => scmCommit(sessionRoot(id), String(message ?? "")))());
 ipcMain.handle("scm:push", (_e, id) => safeAsync("scm:push", () => scmPush(sessionRoot(id)))());
+ipcMain.handle("scm:pull", (_e, id) => safeAsync("scm:pull", () => scmPull(sessionRoot(id)))());
+ipcMain.handle("scm:fetch", (_e, id) => safeAsync("scm:fetch", () => scmFetch(sessionRoot(id)))());
+ipcMain.handle("scm:graph", (_e, id, limit) => safeAsync("scm:graph", () => scmGraph(sessionRoot(id), Math.min(2000, Math.max(20, Number(limit) || 150))))());
+ipcMain.handle("scm:commitFiles", (_e, id, sha) => safeAsync("scm:commitFiles", () => scmCommitFiles(sessionRoot(id), String(sha)))());
+ipcMain.handle("scm:commitDiff", (_e, id, sha, rel) => safeAsync("scm:commitDiff", () => scmCommitDiff(sessionRoot(id), String(sha), String(rel)))());
 // a commit message from the folder's staged change (or all of it), written by the
 // session's own agent — or the other one when that isn't installed
 ipcMain.handle("scm:commitMessage", (_e, id) =>

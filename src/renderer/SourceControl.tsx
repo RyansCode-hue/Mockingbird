@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { GitChange, GitChanges, ScmEntry, ScmStatus } from "../shared/types";
 import { useFolderRefresh } from "./folderWatch";
 import { SparkleIcon } from "./Icons";
+import { CommitGraph } from "./CommitGraph";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -10,8 +11,11 @@ const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/"))
 
 const TITLE: Record<ScmEntry["status"], string> = { M: "Modified", A: "Added", D: "Deleted", R: "Renamed", U: "Untracked", C: "Conflict" };
 
-/** Which diff a row opens: staged/unstaged from Source Control, or the whole branch against its base. */
-export type DiffSource = { kind: "scm"; staged: boolean; untracked: boolean } | { kind: "branch"; untracked: boolean };
+/** Which diff a row opens: staged/unstaged from Source Control, the whole branch against its base, or one commit from the graph. */
+export type DiffSource =
+  | { kind: "scm"; staged: boolean; untracked: boolean }
+  | { kind: "branch"; untracked: boolean }
+  | { kind: "commit"; sha: string; untracked: false };
 
 /**
  * VS Code's Source Control view for a session's folder: conflicts, staged and
@@ -38,6 +42,8 @@ export function SourceControl({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [closed, setClosed] = useState<Set<string>>(() => new Set(["branch"]));
+  // refetch the graph only when what it draws can have moved
+  const graphKey = status && !isErr(status) ? `${status.branch}|${status.upstream}|${status.ahead}|${status.behind}` : "";
   const [branch, setBranch] = useState<Result<GitChanges> | null>(null);
   const broken = useRef(false);
   // the message box grows with what's in it (a generated body), up to a point
@@ -171,24 +177,47 @@ export function SourceControl({
       </>
     );
 
-  const pushLabel = !status.upstream ? "Publish branch" : status.ahead ? `Push ↑${status.ahead}` : "Push";
+  const pushLabel = !status.published ? "Publish branch" : status.ahead ? `Push ↑${status.ahead}` : "Push";
+  const s = (n: number) => (n === 1 ? "" : "s");
   return (
     <div className="sc">
-      <div className="sc-branch" title={status.upstream ? `Tracking ${status.upstream}` : "Not on origin yet"}>
-        <span className="sc-br">⎇ {status.branch ?? "detached HEAD"}</span>
-        {status.upstream && (
-          <span className="sc-ab">
-            ↑{status.ahead} ↓{status.behind}
+      <div className="sc-branch">
+        <span className="sc-who">
+          <span className="sc-br" title={status.branch ?? undefined}>⎇ {status.branch ?? "detached HEAD"}</span>
+          <span
+            className="sc-ab"
+            title={
+              status.upstream
+                ? `Compared with ${status.upstream} (as of the last fetch): ↑${status.ahead} commit${s(status.ahead)} here that it doesn't have, ↓${status.behind} commit${s(status.behind)} there that this branch doesn't have`
+                : "This branch doesn't track a remote branch yet"
+            }
+          >
+            {status.upstream ? `↑${status.ahead} ↓${status.behind} vs ${status.upstream}` : "not on origin yet"}
           </span>
-        )}
-        <button
-          className="outline sc-push"
-          disabled={!!busy || !status.branch || (!!status.upstream && status.ahead === 0)}
-          title={status.upstream ? `Push to ${status.upstream}` : "Push this branch to origin and track it"}
-          onClick={() => act("push", () => window.mb.scmPush(sessionId))}
-        >
-          {busy === "push" ? "Pushing…" : pushLabel}
-        </button>
+        </span>
+        <span className="sc-sync">
+          <button className="icon" disabled={!!busy} title="Fetch — check origin for new commits (updates ↑↓ and the graph)" onClick={() => act("fetch", () => window.mb.scmFetch(sessionId))}>
+            {busy === "fetch" ? "…" : "⇣"}
+          </button>
+          {status.upstream && status.behind > 0 && (
+            <button
+              className="outline"
+              disabled={!!busy}
+              title={`Bring the ${status.behind} new commit${s(status.behind)} on ${status.upstream} into this branch — fast-forward only, so nothing is merged or rewritten; if both sides have moved it says so and changes nothing`}
+              onClick={() => act("pull", () => window.mb.scmPull(sessionId))}
+            >
+              {busy === "pull" ? "Pulling…" : `Pull ↓${status.behind}`}
+            </button>
+          )}
+          <button
+            className="outline"
+            disabled={!!busy || !status.branch || (status.published && status.ahead === 0)}
+            title={status.published ? `Push to ${status.upstream}` : `Push this branch to origin/${status.branch} and track it there${status.upstream ? ` (it tracks ${status.upstream} until then — pushing never goes there)` : ""}`}
+            onClick={() => act("push", () => window.mb.scmPush(sessionId))}
+          >
+            {busy === "push" ? "Pushing…" : pushLabel}
+          </button>
+        </span>
       </div>
       <div className="sc-msg-wrap">
         <textarea
@@ -283,6 +312,17 @@ export function SourceControl({
               ))}
             </>
           ))}
+        <div className="sc-sec" title="The commit history of this branch, the branch it tracks and the base it was made from" onClick={() => toggle("graph")}>
+          <span className="sc-chev">{closed.has("graph") ? "▸" : "▾"}</span>
+          Graph
+        </div>
+        {!closed.has("graph") && (
+          <CommitGraph
+            sessionId={sessionId}
+            refreshKey={graphKey}
+            onOpenDiff={(path, sha, st) => onOpenDiff(path, { kind: "commit", sha, untracked: false }, st)}
+          />
+        )}
       </div>
     </div>
   );

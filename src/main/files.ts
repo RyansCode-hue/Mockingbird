@@ -80,6 +80,16 @@ async function defaultBaseOf(root: string): Promise<string | null> {
   return name;
 }
 
+/** The base branch as a ref git can read — origin/dev when the remote has it, else the local one; null when there's none. */
+export async function baseRef(root: string): Promise<string | null> {
+  const name = await defaultBaseOf(root);
+  if (!name) return null;
+  for (const ref of [`origin/${name}`, name]) {
+    if (await git(root, ["rev-parse", "--verify", "-q", ref]).then(() => true, () => false)) return ref;
+  }
+  return null;
+}
+
 /** The commit a "branch" scope compares against: where HEAD forked from the repo's base branch. */
 async function branchBase(root: string): Promise<{ sha: string; name: string }> {
   const defaultBase = await defaultBaseOf(root);
@@ -94,7 +104,7 @@ async function branchBase(root: string): Promise<{ sha: string; name: string }> 
   throw new Error(`Cannot find a common ancestor with ${defaultBase}`);
 }
 
-function parseNameStatus(z: string): GitChange[] {
+export function parseNameStatus(z: string): GitChange[] {
   const parts = z.split("\0").filter(Boolean);
   const out: GitChange[] = [];
   for (let i = 0; i < parts.length; ) {

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { scmCommit, scmDiff, scmDiscard, scmPush, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
+import { parseRefs, scmCommit, scmCommitDiff, scmCommitFiles, scmDiff, scmDiscard, scmFetch, scmGraph, scmPull, scmPush, scmStage, scmStatus, scmUnstage } from "../src/main/scm";
 import { git, makeRepo, tempDir } from "./helpers";
 
 const id = ["-c", "user.name=t", "-c", "user.email=t@t"];
@@ -107,5 +107,90 @@ describe("source control actions", () => {
     expect(await scmDiff(repo, "a.txt", false, false)).toMatch(/-two\n\+three/);
     fs.writeFileSync(path.join(repo, "n.txt"), "new\n");
     expect(await scmDiff(repo, "n.txt", false, true)).toMatch(/\+new/);
+  });
+});
+
+/** A repo with a bare origin whose dev branch has moved on, and a feature branch made from origin/dev the way Mockingbird makes worktrees. */
+function featureFromDev() {
+  const remote = path.join(tempDir("origin"), "o.git");
+  git(path.dirname(remote), "init", "-q", "--bare", remote);
+  const repo = makeRepo({ "a.txt": "a\n" });
+  git(repo, "branch", "-M", "dev");
+  git(repo, "remote", "add", "origin", remote);
+  git(repo, "push", "-q", "-u", "origin", "dev");
+  git(repo, "checkout", "-q", "-b", "feature/x", "origin/dev"); // tracks origin/dev
+  // someone else lands two commits on dev
+  const other = path.join(tempDir("other"), "o");
+  git(path.dirname(other), "clone", "-q", "-b", "dev", remote, other);
+  git(other, ...id, "commit", "-q", "--allow-empty", "-m", "dev one");
+  git(other, ...id, "commit", "-q", "--allow-empty", "-m", "dev two");
+  git(other, "push", "-q", "origin", "dev");
+  return { repo, remote };
+}
+
+describe("a branch made from origin/dev", () => {
+  it("isn't published until pushed — and Push publishes it under its own name, never into dev", async () => {
+    const { repo, remote } = featureFromDev();
+    const st = await scmStatus(repo);
+    expect(st).toMatchObject({ branch: "feature/x", upstream: "origin/dev", published: false });
+    git(repo, ...id, "commit", "-q", "--allow-empty", "-m", "mine");
+    expect(await scmPush(repo)).toEqual({ upstream: "origin/feature/x" });
+    expect(git(remote, "log", "-1", "--format=%s", "dev")).not.toBe("mine");
+    expect(git(remote, "log", "-1", "--format=%s", "feature/x")).toBe("mine");
+    expect(await scmStatus(repo)).toMatchObject({ upstream: "origin/feature/x", published: true });
+  });
+
+  it("pulls dev's new commits by fast-forward after a fetch", async () => {
+    const { repo } = featureFromDev();
+    await scmFetch(repo);
+    expect((await scmStatus(repo)).behind).toBe(2);
+    expect(await scmPull(repo)).toEqual({ pulled: 2 });
+    expect(git(repo, "log", "-1", "--format=%s")).toBe("dev two");
+  });
+
+  it("refuses to pull when both sides moved, explaining why, and changes nothing", async () => {
+    const { repo } = featureFromDev();
+    git(repo, ...id, "commit", "-q", "--allow-empty", "-m", "mine");
+    const before = git(repo, "rev-parse", "HEAD");
+    await expect(scmPull(repo)).rejects.toThrow(/both moved/);
+    expect(git(repo, "rev-parse", "HEAD")).toBe(before);
+  });
+});
+
+describe("the commit graph", () => {
+  it("shows HEAD, its upstream and the base with their refs, newest first", async () => {
+    const { repo } = featureFromDev();
+    await scmFetch(repo);
+    git(repo, ...id, "commit", "-q", "--allow-empty", "-m", "mine");
+    const g = await scmGraph(repo);
+    expect(g.refs).toEqual(["HEAD", "origin/dev"]);
+    expect(g.commits.map((c) => c.subject)).toEqual(expect.arrayContaining(["mine", "dev two", "dev one", "initial"]));
+    const mine = g.commits.find((c) => c.subject === "mine")!;
+    expect(mine.refs).toEqual([{ name: "feature/x", kind: "head" }]);
+    expect(g.commits.find((c) => c.subject === "dev two")!.refs).toContainEqual({ name: "origin/dev", kind: "remote" });
+    expect(g.head).toBe(mine.sha);
+  });
+
+  it("lists a commit's files and diffs one of them", async () => {
+    const repo = makeRepo({ "a.txt": "one\n" });
+    fs.writeFileSync(path.join(repo, "a.txt"), "two\n");
+    fs.writeFileSync(path.join(repo, "b.txt"), "new\n");
+    git(repo, "add", "-A");
+    git(repo, ...id, "commit", "-q", "-m", "change");
+    const sha = git(repo, "rev-parse", "HEAD");
+    expect(await scmCommitFiles(repo, sha)).toEqual([{ path: "a.txt", status: "M" }, { path: "b.txt", status: "A" }]);
+    expect(await scmCommitDiff(repo, sha, "a.txt")).toMatch(/-one\n\+two/);
+    const first = git(repo, "rev-list", "--max-parents=0", "HEAD");
+    expect(await scmCommitFiles(repo, first)).toEqual([{ path: "a.txt", status: "A" }]);
+    await expect(scmCommitFiles(repo, "HEAD; rm -rf /")).rejects.toThrow(/Not a commit/);
+  });
+
+  it("reads decorations into kinds", () => {
+    expect(parseRefs("HEAD -> feature/x, origin/feature/x, origin/HEAD, tag: v1.2, dev", ["origin"])).toEqual([
+      { name: "feature/x", kind: "head" },
+      { name: "origin/feature/x", kind: "remote" },
+      { name: "v1.2", kind: "tag" },
+      { name: "dev", kind: "local" },
+    ]);
   });
 });

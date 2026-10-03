@@ -1,6 +1,6 @@
-import { git } from "./git";
-import { resolveIn } from "./files";
-import type { ScmEntry, ScmStatus, ScmStatusCode } from "../shared/types";
+import { git, upstreamOf } from "./git";
+import { baseRef, parseNameStatus, resolveIn } from "./files";
+import type { GitChange, GraphCommit, GraphRef, ScmEntry, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
 
 /**
  * Source control for a session's folder, like VS Code's view: what's staged,
@@ -12,7 +12,7 @@ const code = (c: string): ScmStatusCode => (c === "A" ? "A" : c === "D" ? "D" : 
 
 /** `git status --porcelain=v2 --branch -z` → the view's groups. */
 export function parseStatus(out: string): ScmStatus {
-  const st: ScmStatus = { branch: null, upstream: null, ahead: 0, behind: 0, staged: [], unstaged: [], conflicted: [] };
+  const st: ScmStatus = { branch: null, upstream: null, published: false, ahead: 0, behind: 0, staged: [], unstaged: [], conflicted: [] };
   const parts = out.split("\0");
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
@@ -38,6 +38,7 @@ export function parseStatus(out: string): ScmStatus {
       st.unstaged.push({ path: p.slice(2), status: "U" });
     }
   }
+  st.published = !!st.upstream && !!st.branch && st.upstream.slice(st.upstream.indexOf("/") + 1) === st.branch;
   return st;
 }
 
@@ -83,12 +84,115 @@ export async function scmCommit(root: string, message: string): Promise<{ sha: s
   return { sha: await git(root, ["rev-parse", "--short", "HEAD"]) };
 }
 
-/** Push the branch, setting its upstream on origin the first time. */
+/**
+ * Push the branch to its own name on origin. The first push publishes it and
+ * makes that its upstream — including a branch that so far tracked the branch
+ * it was made from (origin/dev), which a plain `git push` would aim at dev.
+ */
 export async function scmPush(root: string): Promise<{ upstream: string }> {
   const st = await scmStatus(root);
   if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to push to");
-  await git(root, st.upstream ? ["push", "-q"] : ["push", "-q", "-u", "origin", "HEAD"]);
-  return { upstream: st.upstream ?? `origin/${st.branch}` };
+  await git(root, st.published ? ["push", "-q"] : ["push", "-q", "-u", "origin", "HEAD"]);
+  return { upstream: st.published ? st.upstream! : `origin/${st.branch}` };
+}
+
+/**
+ * Bring in what the upstream has that this branch doesn't — fast-forward only,
+ * so a pull never makes a merge commit, rewrites anything, or stops halfway in
+ * conflicts. When both sides have moved, or local edits are in the way, git's
+ * refusal is passed on and nothing changes.
+ */
+export async function scmPull(root: string): Promise<{ pulled: number }> {
+  const st = await scmStatus(root);
+  if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to pull into");
+  if (!st.upstream) throw new Error("This branch doesn't track a remote branch yet, so there's nothing to pull");
+  try {
+    await git(root, ["pull", "--ff-only", "-q"]);
+  } catch (err) {
+    const msg = (err as Error).message;
+    if (/not possible to fast-forward|diverg/i.test(msg)) {
+      throw new Error(
+        `This branch and ${st.upstream} have both moved, so they can't be fast-forwarded. Ask the session to merge or rebase ${st.upstream}, then come back.`
+      );
+    }
+    throw err;
+  }
+  const after = await scmStatus(root);
+  return { pulled: st.behind - after.behind };
+}
+
+/** Update the remote branches (what ↑/↓ and the graph compare against), dropping deleted ones. */
+export async function scmFetch(root: string): Promise<void> {
+  await git(root, ["fetch", "--prune", "-q"]);
+}
+
+const SEP = "\x1f";
+const END = "\x1e";
+
+/** `%D` decorations → refs: the checked-out branch, other local branches, remote branches, tags. */
+export function parseRefs(decoration: string, remotes: string[]): GraphRef[] {
+  const out: GraphRef[] = [];
+  for (const raw of decoration.split(", ").map((r) => r.trim()).filter(Boolean)) {
+    if (raw.startsWith("HEAD -> ")) out.push({ name: raw.slice(8), kind: "head" });
+    else if (raw === "HEAD") out.push({ name: "HEAD", kind: "head" });
+    else if (raw.startsWith("tag: ")) out.push({ name: raw.slice(5), kind: "tag" });
+    else if (raw.endsWith("/HEAD")) continue; // origin/HEAD just points at the default branch
+    else if (remotes.some((r) => raw.startsWith(`${r}/`))) out.push({ name: raw, kind: "remote" });
+    else out.push({ name: raw, kind: "local" });
+  }
+  return out;
+}
+
+export function parseLog(out: string, remotes: string[]): GraphCommit[] {
+  return out
+    .split(END)
+    .map((r) => r.replace(/^\n/, ""))
+    .filter(Boolean)
+    .map((r) => {
+      const [sha, parents, refs, subject, author, at] = r.split(SEP);
+      return { sha, parents: parents ? parents.split(" ") : [], refs: parseRefs(refs, remotes), subject, author, at: parseInt(at, 10) * 1000 };
+    });
+}
+
+/**
+ * The commit graph: HEAD, the branch it tracks and the base branch it was made
+ * from (origin/dev), newest first in topological order — so the branch's own
+ * commits, what's new on dev, and where they forked all show.
+ */
+export async function scmGraph(root: string, limit = 150): Promise<ScmGraph> {
+  const hasHead = await git(root, ["rev-parse", "--verify", "-q", "HEAD"]).then(() => true, () => false);
+  if (!hasHead) return { commits: [], head: null, refs: [], more: false };
+  const [upstream, base, remotes] = await Promise.all([
+    upstreamOf(root),
+    baseRef(root),
+    git(root, ["remote"]).then((r) => r.split("\n").filter(Boolean)),
+  ]);
+  const refs = [...new Set(["HEAD", upstream, base].filter((r): r is string => !!r))];
+  const out = await git(root, ["log", "--topo-order", `-n${limit + 1}`, `--format=%H${SEP}%P${SEP}%D${SEP}%s${SEP}%an${SEP}%at${END}`, ...refs, "--"], { trim: false });
+  const commits = parseLog(out, remotes);
+  return { commits: commits.slice(0, limit), head: await git(root, ["rev-parse", "HEAD"]), refs, more: commits.length > limit };
+}
+
+const SHA = /^[0-9a-f]{7,40}$/;
+
+/** The files a commit changed (a merge: against its first parent, as VS Code shows it). */
+export async function scmCommitFiles(root: string, sha: string): Promise<GitChange[]> {
+  if (!SHA.test(sha)) throw new Error(`Not a commit: ${sha}`);
+  const isRoot = (await git(root, ["rev-list", "--parents", "-n1", sha])).split(" ").length === 1;
+  const out = isRoot
+    ? await git(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", sha], { trim: false })
+    : await git(root, ["diff", "--name-status", "-z", "-M", `${sha}^1`, sha], { trim: false });
+  return parseNameStatus(out);
+}
+
+/** One file's change in a commit. */
+export async function scmCommitDiff(root: string, sha: string, rel: string): Promise<string> {
+  if (!SHA.test(sha)) throw new Error(`Not a commit: ${sha}`);
+  await resolveIn(root, rel);
+  const isRoot = (await git(root, ["rev-list", "--parents", "-n1", sha])).split(" ").length === 1;
+  return isRoot
+    ? git(root, ["show", "--format=", sha, "--", rel], { trim: false })
+    : git(root, ["diff", "-M", `${sha}^1`, sha, "--", rel], { trim: false });
 }
 
 /** The diff for one file as the view shows it: staged against HEAD, or unstaged against the index. */

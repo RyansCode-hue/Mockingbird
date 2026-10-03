@@ -27,3 +27,13 @@ export function git(cwd: string, args: string[], opts: { okCodes?: number[]; tri
     )
   );
 }
+
+/** The remote branch `cwd`'s branch tracks (e.g. origin/dev), or null when it tracks none or HEAD is detached. */
+export async function upstreamOf(cwd: string): Promise<string | null> {
+  try {
+    return (await git(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])) || null;
+  } catch (err) {
+    if (/no upstream|does not point to a branch|HEAD does not point|no such branch|bad revision/i.test((err as Error).message)) return null;
+    throw err;
+  }
+}

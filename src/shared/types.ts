@@ -33,6 +33,8 @@ export interface WorktreeStateInfo {
   dirty: boolean;
   dirtyFiles: number;
   branch: string;
+  /** What ahead/behind count against (e.g. origin/dev, or the branch's own remote), or null when nothing is tracked. */
+  upstream: string | null;
   ahead: number;
   behind: number;
   insertions: number;
@@ -199,6 +201,31 @@ export interface Settings {
 
 /** M modified · A added · D deleted · R renamed · U untracked · C conflicted */
 export type ScmStatusCode = "M" | "A" | "D" | "R" | "U" | "C";
+/** A ref shown on a commit in the graph. */
+export interface GraphRef {
+  name: string;
+  kind: "head" | "local" | "remote" | "tag";
+}
+
+export interface GraphCommit {
+  sha: string;
+  parents: string[];
+  refs: GraphRef[];
+  subject: string;
+  author: string;
+  /** Commit time, ms. */
+  at: number;
+}
+
+/** The commit graph Source Control shows: HEAD, its upstream and the base branch, newest first. */
+export interface ScmGraph {
+  commits: GraphCommit[];
+  head: string | null;
+  /** The refs drawn, e.g. ["HEAD", "origin/dev"]. */
+  refs: string[];
+  more: boolean;
+}
+
 export interface ScmEntry {
   path: string;
   from?: string;
@@ -208,6 +235,12 @@ export interface ScmEntry {
 export interface ScmStatus {
   branch: string | null;
   upstream: string | null;
+  /**
+   * The upstream is this branch's own remote branch. A branch made from
+   * origin/dev tracks origin/dev until it's published: it can pull from dev, but
+   * pushing must go to its own name, never into dev.
+   */
+  published: boolean;
   ahead: number;
   behind: number;
   staged: ScmEntry[];

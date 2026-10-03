@@ -110,3 +110,33 @@ describe("file type badges", () => {
     expect(fileBadge("notes.weird")).toBeNull();
   });
 });
+
+describe("commit graph lanes", () => {
+  const rows = async (commits: { sha: string; parents: string[] }[]) => (await import("../src/renderer/graphLayout")).layoutGraph(commits);
+
+  it("keeps a straight history in one lane", async () => {
+    const r = await rows([{ sha: "c", parents: ["b"] }, { sha: "b", parents: ["a"] }, { sha: "a", parents: [] }]);
+    expect(r.map((x) => x.lane)).toEqual([0, 0, 0]);
+    expect(r[2].after).toEqual([]);
+  });
+
+  it("opens a lane for a merge's second parent and closes it where the branches meet", async () => {
+    // m merges f into d; f and d both come from a
+    const r = await rows([
+      { sha: "m", parents: ["d", "f"] },
+      { sha: "f", parents: ["a"] },
+      { sha: "d", parents: ["a"] },
+      { sha: "a", parents: [] },
+    ]);
+    expect(r[0]).toMatchObject({ lane: 0, after: ["d", "f"] });
+    expect(r[1]).toMatchObject({ lane: 1, after: ["d", "a"] });
+    // d's parent a is already awaited in lane 1, so d joins it there rather than doubling it
+    expect(r[2]).toMatchObject({ lane: 0, after: [null, "a"] });
+    expect(r[3].lane).toBe(1);
+  });
+
+  it("puts a second branch tip in its own lane", async () => {
+    const r = await rows([{ sha: "x", parents: ["a"] }, { sha: "y", parents: ["a"] }, { sha: "a", parents: [] }]);
+    expect(r.map((x) => x.lane)).toEqual([0, 1, 0]);
+  });
+});

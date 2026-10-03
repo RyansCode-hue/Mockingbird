@@ -599,7 +599,19 @@ export function TerminalPane({
 
   const assistant = session.kind === "assistant" && !session.shell; // repo-less shells aren't assistants
   const shortcut = paneIndex < 9 ? `⌘${paneIndex + 1}` : "";
-  const gitStr = git ? `↑${git.ahead} ↓${git.behind} ${git.dirty ? `· ${git.dirtyFiles} file${git.dirtyFiles === 1 ? "" : "s"}` : "· clean"}` : null;
+  const gitStr = git
+    ? `${git.upstream ? `↑${git.ahead} ↓${git.behind}` : "not on origin"} · ${git.dirty ? `${git.dirtyFiles} uncommitted` : "clean"}`
+    : null;
+  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const gitTitle = git
+    ? [
+        git.upstream
+          ? `Compared with ${git.upstream} as of the last fetch: ↑ ${plural(git.ahead, "commit")} here it doesn't have (to push), ↓ ${plural(git.behind, "commit")} there this branch doesn't have (to pull).`
+          : "This branch doesn't track a remote branch yet.",
+        git.dirty ? `${plural(git.dirtyFiles, "file")} with uncommitted changes (edited or new).` : "No uncommitted changes.",
+        "Click for Source Control — Pull, Push, the graph.",
+      ].join("\n")
+    : "";
   const meta = fmtElapsed(session.createdAt);
 
   return (
@@ -747,7 +759,7 @@ export function TerminalPane({
             <span className="v">{fmtElapsed(session.createdAt, true)}</span>
           </div>
           {gitStr && (
-            <div className="cell">
+            <div className={`cell ${onOpenChanges ? "click" : ""}`} title={gitTitle} onClick={onOpenChanges}>
               <span className="k">Git</span>
               <span className={`v ${git!.dirty ? "red" : "teal"}`}>{gitStr}</span>
             </div>

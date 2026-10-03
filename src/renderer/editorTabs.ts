@@ -23,7 +23,9 @@ export const MAX_TABS = 24;
 
 /** One tab per file per view: a staged diff and the working-tree diff of a file are different tabs, as in VS Code. */
 export const tabKey = (f: OpenFile) =>
-  `${f.root}:${f.path}:${f.source?.kind ?? "file"}:${f.source && "staged" in f.source && f.source.staged ? "staged" : ""}`;
+  `${f.root}:${f.path}:${f.source?.kind ?? "file"}:${
+    f.source?.kind === "commit" ? f.source.sha : f.source && "staged" in f.source && f.source.staged ? "staged" : ""
+  }`;
 
 /**
  * Open a file in its own tab: one already open is activated (and updated);

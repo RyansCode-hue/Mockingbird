@@ -349,13 +349,17 @@ export function EditorDock({
                 role="tab"
                 aria-selected={key === editor.active}
                 className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""}`}
-                title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : ""}`}
+                title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : t.source?.kind === "commit" ? ` (commit ${t.source.sha.slice(0, 8)})` : ""}`}
                 onClick={() => onActivate(key)}
                 onAuxClick={(e) => e.button === 1 && onClose(key)}
               >
                 <span className="fp-tab-name">
                   {baseName(t.path)}
-                  {t.mode === "diff" && <span className="fp-tab-kind">{t.source?.kind === "scm" && t.source.staged ? " · staged" : " · diff"}</span>}
+                  {t.mode === "diff" && (
+                    <span className="fp-tab-kind">
+                      {t.source?.kind === "scm" && t.source.staged ? " · staged" : t.source?.kind === "commit" ? ` · ${t.source.sha.slice(0, 7)}` : " · diff"}
+                    </span>
+                  )}
                 </span>
                 <button
                   className="fp-tab-x"
@@ -414,7 +418,9 @@ function FileViewer({
       const r: Result<string> =
         src?.kind === "scm"
           ? await window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
-          : await window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U");
+          : src?.kind === "commit"
+            ? await window.mb.scmCommitDiff(open.sessionId, src.sha, open.path)
+            : await window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U");
       if (live.current) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
     } else {
       const r: Result<FileContent> = await window.mb.filesRead(open.sessionId, open.path);
