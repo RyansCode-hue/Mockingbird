@@ -7,6 +7,7 @@ import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
 import { QuickOpen } from "./QuickOpen";
 import { EMPTY_EDITOR, closeTab, openTab, pinTab, tabKey, updateTab } from "./editorTabs";
+import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
@@ -932,19 +933,26 @@ function App() {
   // cached state the pane rails read, so this costs no extra git work)
   const [scmCount, setScmCount] = useState(0);
   const focusedCwd = tab === "sessions" ? focusedSession?.cwd ?? null : null;
+  const scmSeq = useRef(0);
+  const loadScmCount = () => {
+    const n = ++scmSeq.current;
+    if (!focusedCwd) return setScmCount(0);
+    window.mb.worktreeState(focusedCwd).then((r: WorktreeStateInfo | { error: string }) => n === scmSeq.current && setScmCount("error" in r ? 0 : r.dirtyFiles));
+  };
+  useEffect(loadScmCount, [focusedCwd]);
+  useFolderRefresh(focusedCwd, loadScmCount);
+
+  // the main process watches live sessions' repository folders, so views of
+  // them refresh on a change (folders outside a repository — home, WorkTracker
+  // — are left to the slower poll rather than watched recursively)
+  const watchKey = sessions
+    .filter((s) => s.repoPath && s.status !== "dead")
+    .map((s) => s.id)
+    .sort()
+    .join(",");
   useEffect(() => {
-    setScmCount(0);
-    if (!focusedCwd) return;
-    let live = true;
-    const load = () =>
-      window.mb.worktreeState(focusedCwd).then((r: WorktreeStateInfo | { error: string }) => live && setScmCount("error" in r ? 0 : r.dirtyFiles));
-    load();
-    const t = setInterval(() => !document.hidden && load(), 5000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
-  }, [focusedCwd]);
+    window.mb.watchFolders(watchKey ? watchKey.split(",") : []);
+  }, [watchKey]);
 
   const startSideResize = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -1168,6 +1176,7 @@ function App() {
               <SourceControl
                 key={focusedSession.id}
                 sessionId={focusedSession.id}
+                root={focusedSession.cwd}
                 selected={activePath}
                 onOpenDiff={(path, source, status) => openInEditor(path, { preview: true, mode: "diff", source, status: status === "C" ? "M" : status })}
                 onOpenFile={(path) => openInEditor(path, { preview: false })}
@@ -1506,6 +1515,10 @@ function App() {
                     onOpenFiles={() => {
                       setFocused(s.id);
                       showView("explorer");
+                    }}
+                    onOpenChanges={() => {
+                      setFocused(s.id);
+                      showView("scm");
                     }}
                     onClose={onCloseOverride ?? (() => hide(s.id))}
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { checkoutBranch, createWorktree, listWorktrees, migrateWorktree, pickDefaultBase, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
+import { checkoutBranch, createWorktree, forgetState, listWorktrees, migrateWorktree, parseShortstat, pickDefaultBase, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
 import { git, makeRepo } from "./helpers";
 
 describe("pickDefaultBase", () => {
@@ -84,5 +84,37 @@ describe("git without blocking", () => {
     const repo = makeRepo();
     fs.writeFileSync(path.join(repo, "README.md"), "changed\n");
     await expect(checkoutBranch(repo, "feat/x")).rejects.toThrow(/1 uncommitted change on main/);
+  });
+});
+
+describe("a folder's uncommitted lines", () => {
+  it("counts lines added and removed in tracked files, and forgets a cached read on request", async () => {
+    const repo = makeRepo({ "a.txt": "one\ntwo\nthree\n" });
+    expect(await worktreeState(repo)).toMatchObject({ dirty: false, insertions: 0, deletions: 0 });
+    fs.writeFileSync(path.join(repo, "a.txt"), "one\nTWO\nthree\nfour\n");
+    fs.writeFileSync(path.join(repo, "new.txt"), "x\n");
+    forgetState(repo); // what a folder-change notice does
+    expect(await worktreeState(repo)).toMatchObject({ dirtyFiles: 2, insertions: 2, deletions: 1 });
+  });
+
+  it("reads git's shortstat wording, singular or plural", () => {
+    expect(parseShortstat(" 3 files changed, 120 insertions(+), 8 deletions(-)")).toEqual({ insertions: 120, deletions: 8 });
+    expect(parseShortstat(" 1 file changed, 1 insertion(+)")).toEqual({ insertions: 1, deletions: 0 });
+    expect(parseShortstat("")).toEqual({ insertions: 0, deletions: 0 });
+  });
+
+  it("names the branch, or HEAD when detached", async () => {
+    const repo = makeRepo();
+    expect((await worktreeState(repo)).branch).toBe("main");
+    git(repo, "checkout", "-q", "--detach");
+    forgetState(repo);
+    expect((await worktreeState(repo)).branch).toBe("HEAD");
+  });
+
+  it("counts nothing before the first commit instead of failing", async () => {
+    const dir = fs.mkdtempSync(path.join(require("os").homedir(), "fresh-"));
+    git(dir, "init", "-q");
+    fs.writeFileSync(path.join(dir, "a.txt"), "x\n");
+    expect(await worktreeState(dir)).toMatchObject({ dirtyFiles: 1, insertions: 0, deletions: 0 });
   });
 });

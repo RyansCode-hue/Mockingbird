@@ -6,7 +6,8 @@ import * as path from "path";
 import { Store, expandHome, MB_DIR } from "./store";
 import { SessionManager, paneEnv } from "./sessions";
 import { indexRepos } from "./repos";
-import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree } from "./worktrees";
+import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
+import { FolderWatcher } from "./watch";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
@@ -356,6 +357,23 @@ ipcMain.handle("files:changes", (_e, id, scope) =>
 );
 ipcMain.handle("files:diff", (_e, id, rel, scope, untracked) =>
   safeAsync("files:diff", () => fileDiff(sessionRoot(id), rel, scope, untracked))()
+);
+// Folders the window shows are watched, so its views refresh on a change instead
+// of polling. Addressed by session id, like the explorer: only live sessions' folders.
+const folderWatcher = new FolderWatcher(
+  (root) => {
+    forgetState(root);
+    BrowserWindow.getAllWindows()[0]?.webContents.send("folder:changed", root);
+  },
+  (root, err) => logError(`folder watch ${root}`, err)
+);
+ipcMain.handle(
+  "folders:watch",
+  safe("folders:watch", (_e: unknown, ids: unknown) => {
+    const live = new Map(sessions.list().map((s) => [s.id, s.cwd]));
+    const roots = (Array.isArray(ids) ? ids : []).map((id) => live.get(String(id))).filter((r): r is string => !!r);
+    return folderWatcher.set(roots);
+  })
 );
 ipcMain.handle("files:all", (_e, id) => safeAsync("files:all", () => listAllFiles(sessionRoot(id)))());
 ipcMain.handle("files:search", (_e, id, query, opts) =>

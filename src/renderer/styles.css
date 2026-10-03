@@ -270,6 +270,11 @@ body.fp-resizing .sidebar { transition: none; }
 }
 .chip.teal { color: var(--teal-text); background: rgba(79, 179, 165, .12); }
 .chip.amber { color: var(--amber-text); background: var(--fill-waiting); }
+/* a pane's uncommitted changes; opens Source Control */
+button.chip.changes { cursor: pointer; border: 0; color: var(--git-mod); flex-shrink: 0; }
+button.chip.changes:hover { color: var(--text-1); background: var(--fill-selected); }
+.chip.changes .add { color: var(--git-add); }
+.chip.changes .del { color: var(--red); }
 
 /* ---- terminal grid ---- */
 .main { flex: 1; min-width: 0; overflow: hidden; background: var(--bg-app); display: flex; flex-direction: column; }

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges } from "../shared/types";
 import { highlightLines, languageFor } from "./highlight";
 import { tabKey, type EditorState, type OpenFile, type Tab } from "./editorTabs";
+import { useFolderRefresh } from "./folderWatch";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -73,28 +74,22 @@ export function ExplorerTree({
     setChanges(null);
   }, [root]);
 
-  const refresh = useCallback(() => {
-    if (!sid) return;
-    loadDir(sid, "");
-    for (const rel of expanded) loadDir(sid, rel);
-    return loadChanges(sid);
-  }, [sid, expanded, loadDir, loadChanges]);
-
-  // Sessions edit files underneath us, so the tree and change list re-poll while
-  // the window is visible. A failing change list (not a git repo) stops the poll
-  // instead of failing every few seconds; the refresh button retries.
-  const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
+  // A failing change list (not a git repo) isn't asked again on every change —
+  // the tree still refreshes; the refresh button retries the change list.
   const gitBroken = useRef(false);
-  useEffect(() => {
-    gitBroken.current = false;
-    refreshRef.current()?.then((r) => (gitBroken.current = isErr(r)));
-    const t = setInterval(() => {
-      if (document.hidden || gitBroken.current) return;
-      refreshRef.current()?.then((r) => (gitBroken.current = isErr(r)));
-    }, 5000);
-    return () => clearInterval(t);
-  }, [sid, root]);
+  const refresh = useCallback(
+    (retryGit = false) => {
+      if (!sid) return;
+      loadDir(sid, "");
+      for (const rel of expanded) loadDir(sid, rel);
+      if (gitBroken.current && !retryGit) return;
+      loadChanges(sid).then((r) => (gitBroken.current = isErr(r)));
+    },
+    [sid, expanded, loadDir, loadChanges]
+  );
+  useEffect(() => refresh(true), [sid, root]);
+  // sessions edit files underneath us: refresh when the folder changes
+  useFolderRefresh(root, refresh);
 
   const toggleDir = (rel: string) => {
     if (!root || !sid) return;
@@ -162,7 +157,7 @@ export function ExplorerTree({
         >
           ⊟
         </button>
-        <button className="icon" title="Refresh" onClick={() => refresh()}>⟳</button>
+        <button className="icon" title="Refresh" onClick={() => refresh(true)}>⟳</button>
       </div>
       <div className="fp-scroll">{renderTree("", 0)}</div>
     </>
@@ -299,30 +294,32 @@ function FileViewer({
   useEffect(() => localStorage.setItem("mb.files.diffLayout", JSON.stringify(layout)), [layout]);
   const deleted = open.status === "D";
 
+  const live = useRef(true);
+  useEffect(
+    () => () => {
+      live.current = false;
+    },
+    []
+  );
+  const load = async () => {
+    if (open.mode === "diff") {
+      const src = open.source;
+      const r: Result<string> =
+        src?.kind === "scm"
+          ? await window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
+          : await window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U");
+      if (live.current) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
+    } else {
+      const r: Result<FileContent> = await window.mb.filesRead(open.sessionId, open.path);
+      if (live.current) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
+    }
+  };
   useEffect(() => {
-    let live = true;
-    const load = async () => {
-      if (open.mode === "diff") {
-        const src = open.source;
-        const r: Result<string> =
-          src?.kind === "scm"
-            ? await window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
-            : await window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U");
-        if (live) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
-      } else {
-        const r: Result<FileContent> = await window.mb.filesRead(open.sessionId, open.path);
-        if (live) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
-      }
-    };
     load();
-    // keep up with the session's edits; unchanged content keeps the same state
-    // object, so a text selection survives the poll
-    const t = setInterval(() => !document.hidden && load(), 5000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
   }, [open.sessionId, open.path, open.mode, open.status, open.source?.kind, open.source && "staged" in open.source ? open.source.staged : false]);
+  // keep up with the session's edits; unchanged content keeps the same state
+  // object, so a text selection survives the refresh
+  useFolderRefresh(open.root, load);
 
   return (
     <div className="fp-viewer">

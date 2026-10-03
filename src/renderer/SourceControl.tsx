@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { GitChange, GitChanges, ScmEntry, ScmStatus } from "../shared/types";
+import { useFolderRefresh } from "./folderWatch";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -19,11 +20,14 @@ export type DiffSource = { kind: "scm"; staged: boolean; untracked: boolean } | 
  */
 export function SourceControl({
   sessionId,
+  root,
   selected,
   onOpenDiff,
   onOpenFile,
 }: {
   sessionId: string;
+  /** The session's folder: its changes refresh the view. */
+  root: string;
   selected: string | null;
   onOpenDiff: (path: string, source: DiffSource, status: ScmEntry["status"]) => void;
   onOpenFile: (path: string) => void;
@@ -42,15 +46,14 @@ export function SourceControl({
     setStatus((s) => (JSON.stringify(s) === JSON.stringify(r) ? s : r));
   }, [sessionId]);
 
-  // the session edits files underneath the view, so it re-reads while visible;
-  // a folder that isn't a repository stops the poll (the refresh button retries)
+  // the session edits files underneath the view, so it re-reads when the folder
+  // changes; a folder that isn't a repository isn't asked again
   useEffect(() => {
     setStatus(null);
     setBranch(null);
     load();
-    const t = setInterval(() => !document.hidden && !broken.current && load(), 4000);
-    return () => clearInterval(t);
   }, [load]);
+  useFolderRefresh(root, () => !broken.current && load());
 
   useEffect(() => {
     if (closed.has("branch")) return;

@@ -79,6 +79,12 @@ const api = {
   filesRead: (id: string, rel: string) => ipcRenderer.invoke("files:read", id, rel),
   filesChanges: (id: string, scope: string) => ipcRenderer.invoke("files:changes", id, scope),
   filesAll: (id: string) => ipcRenderer.invoke("files:all", id),
+  watchFolders: (ids: string[]) => ipcRenderer.invoke("folders:watch", ids),
+  onFolderChanged: (cb: (root: string) => void) => {
+    const h = (_e: unknown, root: string) => cb(root);
+    ipcRenderer.on("folder:changed", h);
+    return () => ipcRenderer.removeListener("folder:changed", h);
+  },
   filesSearch: (id: string, query: string, opts: { regex: boolean; matchCase: boolean }) => ipcRenderer.invoke("files:search", id, query, opts),
   scmStatus: (id: string) => ipcRenderer.invoke("scm:status", id),
   scmStage: (id: string, paths: string[]) => ipcRenderer.invoke("scm:stage", id, paths),

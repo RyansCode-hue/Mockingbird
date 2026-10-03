@@ -35,6 +35,8 @@ export interface WorktreeStateInfo {
   branch: string;
   ahead: number;
   behind: number;
+  insertions: number;
+  deletions: number;
 }
 
 export type WorktreeCleanupMode = "keep" | "push" | "discard";

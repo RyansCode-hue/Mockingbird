@@ -81,21 +81,43 @@ export interface WorktreeState {
   branch: string;
   ahead: number;
   behind: number;
+  /** Lines added and removed in tracked files since the last commit (new files aren't counted). */
+  insertions: number;
+  deletions: number;
+}
+
+/** `git diff --shortstat`'s " 3 files changed, 120 insertions(+), 8 deletions(-)". */
+export function parseShortstat(out: string): { insertions: number; deletions: number } {
+  return {
+    insertions: parseInt(/(\d+) insertions?\(\+\)/.exec(out)?.[1] ?? "0", 10),
+    deletions: parseInt(/(\d+) deletions?\(-\)/.exec(out)?.[1] ?? "0", 10),
+  };
 }
 
 async function readState(wtPath: string): Promise<WorktreeState> {
-  const [porcelain, branch, counts] = await Promise.all([
+  const [porcelain, branch, counts, stat] = await Promise.all([
     git(wtPath, ["status", "--porcelain"]),
-    git(wtPath, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    // the branch name, even before its first commit; "HEAD" when detached
+    git(wtPath, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] }).then((b) => b || "HEAD"),
     // "<behind> <ahead>" in one call; fails when the branch has no upstream
     git(wtPath, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]).catch(() => "0 0"),
+    // before the first commit there's no HEAD to diff against: nothing to count yet
+    git(wtPath, ["diff", "--shortstat", "HEAD"]).catch((err: Error) => {
+      if (/bad revision|unknown revision|ambiguous argument 'HEAD'/i.test(err.message)) return "";
+      throw err;
+    }),
   ]);
   const dirtyFiles = porcelain ? porcelain.split("\n").length : 0;
   const [behind, ahead] = counts.split(/\s+/).map((n) => parseInt(n, 10) || 0);
-  return { dirty: dirtyFiles > 0, dirtyFiles, branch, ahead: ahead ?? 0, behind: behind ?? 0 };
+  return { dirty: dirtyFiles > 0, dirtyFiles, branch, ahead: ahead ?? 0, behind: behind ?? 0, ...parseShortstat(stat) };
 }
 
 export const STATE_TTL_MS = 3_000;
+
+/** Drop a folder's cached state — its files just changed, so the next read must be fresh. */
+export function forgetState(wtPath: string): void {
+  stateCache.delete(wtPath);
+}
 const stateCache = new Map<string, { at: number; state: Promise<WorktreeState> }>();
 
 /**

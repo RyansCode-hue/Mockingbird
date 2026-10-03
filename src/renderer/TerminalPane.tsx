@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { SessionInfo, WorktreeStateInfo } from "../shared/types";
 import { stripMouseEnables } from "./mouseModes";
+import { useFolderRefresh } from "./folderWatch";
 
 declare global {
   interface Window {
@@ -238,6 +239,7 @@ export function TerminalPane({
   onFocus,
   onClose,
   onOpenFiles,
+  onOpenChanges,
   onZoom,
   onAddTab,
   onReorder,
@@ -257,6 +259,8 @@ export function TerminalPane({
   onClose: () => void;
   /** Show this session's folder in the explorer dock. */
   onOpenFiles?: () => void;
+  /** Open Source Control for this pane's folder. */
+  onOpenChanges?: () => void;
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
   onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
   onReorder?: (srcId: string, targetId: string) => void;
@@ -309,26 +313,20 @@ export function TerminalPane({
     return () => clearInterval(iv);
   }, [waiting]);
 
-  // git state for the instrumented rail, polled ~10s (design open question 2:
-  // per visible pane, not centrally — only instrumented panes poll)
+  // git state for the header's change count and the rail, read when the folder
+  // changes (panes in one folder share one read in the main process)
   const [git, setGit] = useState<WorktreeStateInfo | null>(null);
-  useEffect(() => {
-    if (density !== "max" || !session.repoPath || dead) {
-      setGit(null);
-      return;
-    }
-    let alive = true;
-    const poll = () =>
-      window.mb.worktreeState(session.cwd).then((r: WorktreeStateInfo | { error: string }) => {
-        if (alive && r && !("error" in r)) setGit(r);
-      });
-    poll();
-    const iv = setInterval(poll, 10000);
-    return () => {
-      alive = false;
-      clearInterval(iv);
-    };
-  }, [density, session.cwd, session.repoPath, dead]);
+  const gitRoot = density !== "min" && session.repoPath && !dead ? session.cwd : null;
+  const gitSeq = useRef(0);
+  const readGit = () => {
+    const n = ++gitSeq.current;
+    if (!gitRoot) return setGit(null);
+    window.mb.worktreeState(gitRoot).then((r: WorktreeStateInfo | { error: string }) => {
+      if (n === gitSeq.current) setGit(r && !("error" in r) ? r : null);
+    });
+  };
+  useEffect(readGit, [gitRoot]);
+  useFolderRefresh(gitRoot, readGit, 30_000);
 
   useEffect(() => {
     if (dead) return; // dead panes show the resume body instead of the terminal
@@ -601,7 +599,7 @@ export function TerminalPane({
 
   const assistant = session.kind === "assistant" && !session.shell; // repo-less shells aren't assistants
   const shortcut = paneIndex < 9 ? `⌘${paneIndex + 1}` : "";
-  const gitStr = git ? `↑${git.ahead} ↓${git.behind} ${git.dirty ? `· ${git.dirtyFiles} dirty` : "· clean"}` : null;
+  const gitStr = git ? `↑${git.ahead} ↓${git.behind} ${git.dirty ? `· ${git.dirtyFiles} file${git.dirtyFiles === 1 ? "" : "s"}` : "· clean"}` : null;
   const meta = fmtElapsed(session.createdAt);
 
   return (
@@ -658,6 +656,24 @@ export function TerminalPane({
           </span>
         )}
         {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
+        {git?.dirty && (
+          <button
+            className="chip changes"
+            title={`${git.dirtyFiles} uncommitted file${git.dirtyFiles === 1 ? "" : "s"}: +${git.insertions} −${git.deletions} lines in tracked files — open Source Control`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenChanges?.();
+            }}
+          >
+            {git.dirtyFiles} file{git.dirtyFiles === 1 ? "" : "s"}
+            {(git.insertions > 0 || git.deletions > 0) && (
+              <>
+                {" · "}
+                <span className="add">+{git.insertions}</span> <span className="del">−{git.deletions}</span>
+              </>
+            )}
+          </button>
+        )}
         {density === "max" && (session.model || session.effort) && (
           <span className="chip" title="model · effort for this session">
             {[session.model, session.effort].filter(Boolean).join(" · ")}
