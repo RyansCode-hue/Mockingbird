@@ -103,7 +103,7 @@ const ROLLOUT_SCAN_LIMIT = 2000; // newest files read per index; older conversat
 const INDEX_TTL_MS = 30_000;
 let cwdIndex: { cwds: Set<string>; at: number } | null = null;
 
-const ROLLOUT_NAME_RE = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/;
+export const ROLLOUT_NAME_RE = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/;
 
 /** Rollout file names, newest first, bounded like the cwd index. */
 function codexRolloutNames(): string[] {

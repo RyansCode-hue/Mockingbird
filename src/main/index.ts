@@ -18,6 +18,7 @@ import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache } from "./ado";
 import { checkForUpdate, updateRepo } from "./updates";
+import { TranscriptIndex, linkHits } from "./transcripts";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 
 const store = new Store();
@@ -196,6 +197,7 @@ app.whenReady().then(() => {
   createWindow();
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   sessions.warmBins().catch((err) => logError("startup:warmBins", err));
+  startTranscriptIndex();
 
   // update polling: notify once per new version; user updates when they choose
   let notifiedVersion = "";
@@ -545,6 +547,48 @@ ipcMain.handle("ado:comment:add", (_e, id, text) =>
   safeAsync("ado:comment:add", () => addComment(store, id, text))()
 );
 // native folder/file picker for the Settings tab — no more typing paths
+// ---- transcript index: search every Claude/Codex conversation on this Mac ----
+const transcriptRoots = { claude: path.join(os.homedir(), ".claude", "projects"), codex: path.join(os.homedir(), ".codex", "sessions") };
+let transcripts: TranscriptIndex | null = null;
+let transcriptsProblem: string | null = null;
+
+/** Open the index and keep it current: now, when transcripts change (debounced), and every 5 minutes. */
+function startTranscriptIndex(): void {
+  try {
+    transcripts = new TranscriptIndex(path.join(MB_DIR, "transcripts.db"), transcriptRoots);
+  } catch (err) {
+    transcriptsProblem = logError("transcripts:open", err);
+    return;
+  }
+  const sync = () => transcripts!.sync().catch((err) => (transcriptsProblem = logError("transcripts:sync", err)));
+  void sync();
+  let timer: NodeJS.Timeout | null = null;
+  for (const root of Object.values(transcriptRoots)) {
+    try {
+      fs.watch(root, { recursive: true }, () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(sync, 3000); // a reply writes many lines; index once it settles
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") logError(`transcripts:watch ${root}`, err);
+    }
+  }
+  setInterval(sync, 5 * 60_000);
+}
+
+ipcMain.handle("transcripts:search", (_e, q) =>
+  safe("transcripts:search", () => {
+    if (!transcripts) throw new Error(transcriptsProblem ?? "The transcript index isn't open yet.");
+    return {
+      hits: linkHits(transcripts.search(String(q ?? "")), sessions.list(), sessions.resumable(), collab.list()),
+      indexing: transcripts.indexing ? transcripts.progress : null,
+      lastSync: transcripts.lastSync,
+      problem: transcriptsProblem,
+      ...transcripts.stats(),
+    };
+  })()
+);
+
 // ---- in-app update: build in the user's clone, then restart into it ----
 // read once: the update (if any) this launch is the end of
 let updateOutcome = isPrimary ? takeUpdateOutcome(MB_DIR, app.getVersion()) : null;

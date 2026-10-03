@@ -179,6 +179,22 @@ export interface Settings {
   updateSource?: string | null; // the clone in-app updates pull and build; found under repoRoots when unset
 }
 
+/** A conversation that matched a search across every transcript on this Mac, and how to open it. */
+export interface TranscriptHit {
+  id: string; // the agent's conversation id
+  agent: AgentKind;
+  cwd: string;
+  title: string;
+  started: number;
+  updated: number;
+  model: string | null;
+  snippet: string; // \u0001…\u0002 mark the matched words
+  at: number;
+  kind: "message" | "tool";
+  /** pane: it's open · previous: a closed Mockingbird session that resumes it · room: a Collaborate model's · resume: open it as a new session */
+  open: { how: "pane" | "previous"; sessionId: string } | { how: "room"; roomId: string; roomTitle: string } | { how: "resume" };
+}
+
 export type UpdateStepId = "check" | "node" | "pull" | "install" | "build" | "verify";
 
 export const UPDATE_STEPS: { id: UpdateStepId; label: string }[] = [

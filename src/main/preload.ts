@@ -27,6 +27,7 @@ const api = {
   adoMe: () => ipcRenderer.invoke("ado:me"),
   connectorsStatus: () => ipcRenderer.invoke("connectors:status"),
   updateCheck: () => ipcRenderer.invoke("update:check"),
+  searchTranscripts: (q: string) => ipcRenderer.invoke("transcripts:search", q),
   updateStatus: () => ipcRenderer.invoke("update:status"),
   updatePrepare: () => ipcRenderer.invoke("update:prepare"),
   updateCancel: () => ipcRenderer.invoke("update:cancel"),

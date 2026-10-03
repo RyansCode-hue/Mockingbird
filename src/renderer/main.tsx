@@ -6,9 +6,10 @@ import { FileDock } from "./FilePanel";
 import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
+import { TranscriptSearch } from "./TranscriptSearch";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
 
 declare global {
@@ -17,7 +18,7 @@ declare global {
   }
 }
 
-type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | null;
+type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "search" | null;
 type Tab = "sessions" | "dashboard" | "worktracker" | "collaborate" | "settings";
 const TAB_LABELS: Record<Tab, string> = {
   sessions: "Sessions",
@@ -757,6 +758,11 @@ function App() {
       setFilesOpen((o) => !o);
       return;
     }
+    if (cmd && e.shiftKey && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      setModal("search");
+      return;
+    }
     if (cmd && e.shiftKey && e.key.toLowerCase() === "b") {
       handled();
       openControlRoom();
@@ -814,6 +820,29 @@ function App() {
       onClick={(e) => e.stopPropagation()}
     />
   );
+
+  /** Open a search hit wherever it lives; returns why it couldn't be opened. */
+  const openTranscript = async (h: TranscriptHit): Promise<string | null> => {
+    if (h.open.how === "pane") {
+      jumpTo(h.open.sessionId);
+      return null;
+    }
+    if (h.open.how === "room") {
+      setTab("collaborate");
+      const roomId = h.open.roomId;
+      setFocusRoom((f) => ({ id: roomId, n: (f?.n ?? 0) + 1 }));
+      return null;
+    }
+    const info =
+      h.open.how === "previous"
+        ? await window.mb.relaunchSession(h.open.sessionId)
+        : await window.mb.createSession({ repoPath: h.cwd || null, useWorktree: false, resumeSessionId: h.id, agent: h.agent, title: h.title.slice(0, 60) });
+    if (!info) return "That session is no longer saved.";
+    if (info.error) return info.error;
+    await refresh();
+    jumpToSession(info);
+    return null;
+  };
 
   const onCreated = async (s: SessionInfo) => {
     if (pendingWs) {
@@ -1026,12 +1055,17 @@ function App() {
             <span className="side-title">Sessions</span>
           </div>
           <div className="scroll">
-            <input
-              className="filter"
-              placeholder="Filter sessions"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
+            <div className="filter-row">
+              <input
+                className="filter"
+                placeholder="Filter sessions"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+              <button className="icon" title="Search every conversation — open, closed, or never opened (⌘⇧F)" onClick={() => setModal("search")}>
+                ⌕
+              </button>
+            </div>
             {groups.map(([key, list]) => (
               <div key={key}>
                 {(
@@ -1532,6 +1566,7 @@ function App() {
             { label: "Sessions grid", run: () => setTab("sessions") },
             { label: "Dashboard — ticket board", run: () => setTab("dashboard") },
             { label: "Broadcast / CLAUDE.md (control room)", kbd: "⌘⇧B", run: openControlRoom },
+            { label: "Search every conversation — open, closed, or never opened", kbd: "⌘⇧F", run: () => setModal("search") },
             { label: "Settings", run: () => setTab("settings") },
             { label: "Import sessions", run: () => setModal("import") },
             { label: "WorkTracker — debriefs", run: () => setTab("worktracker") },
@@ -1642,6 +1677,7 @@ function App() {
         />
       )}
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
+      {modal === "search" && <TranscriptSearch onClose={() => setModal(null)} onOpen={openTranscript} />}
       {modal === "update" && (
         <UpdatePanel
           progress={upd}
@@ -1957,6 +1993,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌘⌃1–4", "grid columns (also switches pane detail level)"],
     ["⌘B", "file explorer for the focused session — files, viewer, diffs"],
     ["⌘⇧B", "control room — broadcast + CLAUDE.md"],
+    ["⌘⇧F", "search every Claude and Codex conversation on this Mac, and open the one you find"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],
     ["⇧click", "select more than a screen: click where it starts, scroll, shift-click where it ends — it's copied"],
     ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a pane"],

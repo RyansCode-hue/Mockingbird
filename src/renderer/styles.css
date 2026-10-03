@@ -1279,3 +1279,20 @@ button.link.danger { color: var(--red); }
 .ins-card-foot .spacer { flex: 1; }
 .ins-add { margin-top: 2px; border: 1px dashed var(--line-strong2); border-radius: 6px; background: transparent; padding: 4px; font: 500 11px var(--ui); color: var(--text-3); }
 .ins-add:hover { color: var(--text-1); background: var(--fill-subtle); }
+/* search across every conversation (⌘⇧F) */
+.filter-row { display: flex; align-items: center; gap: 2px; margin-bottom: 10px; }
+.filter-row .filter { flex: 1; min-width: 0; margin-bottom: 0; }
+.filter-row button.icon { font-size: 14px; padding: 2px 6px; }
+.palette.ts-search { width: 720px; max-width: calc(100vw - 40px); max-height: 76vh; }
+.ts-hint { padding: 14px; font: 400 12px/1.5 var(--ui); color: var(--text-3); }
+.palette .row.ts-row { flex-direction: column; align-items: stretch; gap: 4px; }
+.ts-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ts-top .lab { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.ts-top .state { flex: 1; min-width: 0; }
+.ts-agent { font: 500 9px var(--mono); padding: 0 5px; border-radius: 4px; border: 1px solid var(--line-med); color: var(--text-3); flex-shrink: 0; }
+.ts-when { font: 400 10px var(--mono); color: var(--text-4); flex-shrink: 0; }
+.ts-open { font: 500 10px var(--ui); color: var(--teal-text); flex-shrink: 0; }
+.ts-open.resume { color: var(--text-3); }
+.ts-snip { font: 400 11.5px/1.45 var(--ui); color: var(--text-3); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+.ts-snip.tool { font-family: var(--mono); font-size: 10.5px; }
+.ts-snip mark { background: var(--fill-waiting); color: var(--text-1); border-radius: 2px; padding: 0 1px; }

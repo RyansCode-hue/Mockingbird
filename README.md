@@ -37,6 +37,7 @@ toolchain.
 - **CLAUDE.md** — edit the global or any active repo's CLAUDE.md in-app; on save, every live session is told to re-read it. Busy sessions get the message when they finish their current task, so nothing is interrupted.
 - **Broadcast** — send any instruction to all/selected sessions once, instead of repeating yourself.
 - **Debriefs** — "Morning brief" / "4pm wrap-up" buttons (or auto-schedule in Settings) spawn an Assistant session in your WorkTracker folder that follows `instructions/morning.md` / `wrap-up.md`. Answer its interview questions right in the pane.
+- **Search every conversation** — ⌘⇧F (or ⌕ by the sidebar filter, or ⌘K) searches every Claude and Codex conversation on this Mac — open, closed, or never opened in Mockingbird — by what was said, the files it touched and the commands it ran. Each result opens where it lives: **go to pane**, **restore session** (a closed Mockingbird session), **open room** (a Collaborate model's), or **open as session** (resumes it in its folder). The index (`~/.mockingbird/transcripts.db`) stays on this Mac, is built in the background on first launch (a few seconds), and keeps up as transcripts grow; tool output isn't indexed.
 - **Previous sessions** — after an app restart (an update, a reboot, a quit), ↺ relaunches a session in its old folder and resumes **the exact conversation that pane last ran** (`claude --resume <id>` / `codex resume <id>`), not just the folder's most recent one — which matters when several chats started in the same folder. **Terminal panes remember too:** if you ran `claude` or `codex` inside a terminal, it comes back with that conversation resumed, and quitting it leaves you at the terminal prompt. Mockingbird learns each pane's conversation from the status hooks (every pane exports `MOCKINGBIRD_SESSION`, so events are matched to the right pane even when an agent `cd`s elsewhere); `/clear` moves it to the new conversation. Starting Claude in your home folder, it asks whether to trust the folder first, as it always does there. **↺ restore all** relaunches everything; relaunched sessions keep their id, so they return to their old grid slot and group. Renderer-only changes don't even need that — rebuild and hit `⌘R` (View → Reload) and the sessions keep running.
 - **Groups and workspaces** — sessions sharing a ticket # group automatically. The sidebar is an outline: each **group** is a plain header, and inside it each **workspace** is a folder row with up to three status dots (waiting first, then `+N`) — the folder is open while that workspace is in the grid, and its sessions fold away otherwise (the chevron opens or closes them by hand). Session rows show the name and, underneath, the branch (and `codex` for Codex panes). Name a group `5038/backend` (or set a workspace in the ⤷ dialog) to put sessions in a workspace: it shows in the grid as **one pane with a tab per session**. Each tab's **×** hides just that session from the grid (it keeps running); the pane goes when its last tab does, and clicking the workspace's folder brings them all back. To manage: drag a sidebar row onto another group or workspace, drop one loose session onto another to make a workspace of the two, click a row's ⤷ (or ⌘K → "Change group…") for a move/create/remove dialog, or set the Group field in New Session. Double-click a group or workspace to rename it; a workspace's ✕ dissolves it (its sessions move up into the group).
 - **Command palette & keyboard layer** — `⌘K` opens a palette with every action plus jump-to-session (waiting sessions show their reason and wait time). `⌘N` new session · `⌘1–9` jump to pane · `⌥⇥` next waiting session (oldest first) · `⌘E` fullscreen pane (esc restores) · `⌘⌃1–4` column count · `⌘⇧B` broadcast · `⌘/` how-to-use popup (also auto-opens on first launch).
@@ -101,6 +102,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
 - **In-app updates** — Check for updates against the private repo (via the
   GitHub CLI), then Update pulls and builds in your clone and restarts into it,
   bringing your sessions back.
+- **Search every conversation (⌘⇧F)** — a local index of every Claude and
+  Codex transcript on the Mac (open, closed, or never opened in Mockingbird):
+  what was said, the files touched and the commands run. A hit opens where it
+  lives — its pane, the closed session (restored), its Collaborate room, or a
+  new session that resumes it.
 - **Main-process responsiveness** — git work (every pane's status poll,
   fetch/push on session create and close) no longer blocks the process that
   carries every pane's keystrokes: 10 panes polling a large repo went from one
@@ -111,10 +117,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Transcript indexer** *(next up)*. One background index over Claude Code's
-  own transcripts (`~/.claude/projects`, which include token usage) that four
-  other items sit on: cross-session search, "catch me up" summaries, real
-  cost/token meters, and the weekly rollup. Build the substrate once.
+- **Token & cost meters** *(next up, on the transcript index)*. The index
+  already keeps every reply's token usage; show real tokens (and an estimated
+  cost) per session in the pane rail, plus a daily total.
 - **Grouping & workspaces rework — second half.** Shipped: the outline-tree
   sidebar (groups → workspace folders → sessions, with status summaries),
   workspace tabs, × on any session closes it, naming the "ungrouped" bucket
@@ -165,9 +170,6 @@ agreed direction, **Later** is worth doing once the foundations settle.
 - **Conflict early warning.** When two sessions in the same repo change the same
   file in different worktrees, flag both panes before it becomes a merge
   conflict.
-- **Cross-session transcript search** (design 1f, sits on the indexer):
-  search every session's scrollback — "which session touched the auth
-  middleware?" — with hits that jump to the pane and position.
 - **Session health watchdog**: the manual half shipped (Settings → Agents →
   Update, then Restart all sessions). Still to do:
   notice the CLI's self-update ("Restart to update" in any pane, or a model the

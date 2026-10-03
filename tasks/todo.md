@@ -1387,3 +1387,26 @@ restart-all, debriefs and Collaborate's implement await the git work; claude/cod
 looked up in the background at startup and after Settings changes, gh/az lookups are async.
 Measured on atticus-snipper, 10 panes polling status: before, one 488 ms freeze (every pane's
 typing stalls); after, longest stall 8 ms and the round takes 43 ms instead of 487. 187 tests.
+
+## Transcript indexer + search across every conversation
+
+- [x] `src/main/transcripts.ts`: SQLite (node:sqlite, FTS5) at ~/.mockingbird/transcripts.db;
+      Claude (~/.claude/projects) and Codex (~/.codex/sessions) parsed into conversations
+      (id, agent, cwd, title, times, model), searchable chunks (messages + tool inputs: commands,
+      file paths, patterns, URLs; not tool output), and per-reply usage for the meters later
+- [x] Incremental: per-file byte offset (transcripts only grow); partial last lines wait; schema
+      version rebuilds; work in ~8ms slices with yields so panes never stall
+- [x] Refresh on fs.watch (debounced) + every 5 min
+- [x] Search: safe FTS query from free text, best hit per conversation with snippet, ranked;
+      each hit says how to open it — live pane, previous session (restore), Collaborate room,
+      or resume as a new session
+- [x] UI: search modal (⌘⇧F, and from ⌘K) with snippets, agent, folder, age, and the action
+- [x] Tests: both formats parsed from fixtures, append-only increments, query escaping, ranking
+      and grouping, linking; measure the stall while indexing the real transcripts
+
+**Review.** node:sqlite (FTS5) — built into Electron 42's Node 24 and CI's Node 22, so no native
+module. Real data: 154 conversations / 223 files (Claude + Codex, ~360 MB) indexed in 3.6 s with
+the longest stall 26 ms; an up-to-date pass is ~50 ms; searches 2–15 ms; index 41 MB. Results
+link to the live pane, the closed session, the Collaborate room, or resume. Checked in the
+browser: ⌘⇧F, highlighted snippets, restore and resume calls. Usage per reply is stored for the
+meters. 195 tests.
