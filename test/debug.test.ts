@@ -191,7 +191,8 @@ describe("debugging real JavaScript", () => {
   }, 120_000);
 
   const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-  it.skipIf(!fs.existsSync(chrome))("opens a dev server's page in Chrome and stops at a breakpoint in its script", async () => {
+  // a real Chrome needs a desktop session: CI runners have none, so this runs on a developer's Mac only
+  it.skipIf(!fs.existsSync(chrome) || !!process.env.CI)("opens a dev server's page in Chrome and stops at a breakpoint in its script", async () => {
     const dir = fs.realpathSync(tempDir("dbg-web"));
     fs.writeFileSync(path.join(dir, "index.html"), '<!doctype html><html><body><script src="main.js"></script></body></html>');
     fs.writeFileSync(path.join(dir, "main.js"), ["function greet(name) {", "  const message = 'hello ' + name;", "  document.title = message;", "}", "setTimeout(() => greet('mockingbird'), 500);", ""].join("\n"));
@@ -217,4 +218,82 @@ describe("debugging real JavaScript", () => {
       await dbg.stopAll();
     }
   }, 120_000);
+});
+
+describe("reading a .NET service's command for the debugger", () => {
+  it("finds the project and the app's arguments", async () => {
+    const { inferDotnet } = await import("../src/main/dap/targets");
+    const repo = tempDir("dn");
+    fs.mkdirSync(path.join(repo, "Quantous.Admin/Server"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "Quantous.Admin/Server/Quantous.Admin.Server.csproj"), "<Project/>");
+    expect(inferDotnet("dotnet run --project Quantous.Admin/Server --no-launch-profile --urls https://localhost:5012 -- --seed", repo)).toEqual({
+      type: "dotnet",
+      program: "Quantous.Admin/Server/Quantous.Admin.Server.csproj",
+      args: ["--urls", "https://localhost:5012", "--seed"],
+    });
+    expect(inferDotnet("ASPNETCORE_ENVIRONMENT=Development dotnet watch run --project api/Api.csproj", repo)?.program).toBe("api/Api.csproj");
+    expect(inferDotnet("dotnet test", repo)).toBeNull();
+  });
+});
+
+// the newest installed SDK decides the target framework, so the test builds wherever .NET is
+const dotnetMajor = (() => {
+  try {
+    return parseInt(require("child_process").execFileSync("dotnet", ["--version"], { encoding: "utf8" }).trim().split(".")[0], 10) || 0;
+  } catch {
+    return 0;
+  }
+})();
+const hasDotnet = dotnetMajor >= 6;
+
+describe("debugging a real .NET program", () => {
+  it.skipIf(!hasDotnet)("builds it on the service's terminal, stops at a breakpoint, and forwards its output to the log", async () => {
+    const dir = fs.realpathSync(tempDir("dbg-dotnet"));
+    fs.mkdirSync(path.join(dir, "app"));
+    fs.writeFileSync(
+      path.join(dir, "app", "app.csproj"),
+      `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net${dotnetMajor}.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>`
+    );
+    fs.writeFileSync(
+      path.join(dir, "app", "Program.cs"),
+      ["static int Add(int a, int b)", "{", "    var total = a + b;", "    return total;", "}", 'Console.WriteLine($"sum {Add(4, 5)}");', ""].join("\n")
+    );
+    const events: any[] = [];
+    const dbg = new DebugManager({ emit: (ch, ...a) => events.push([ch, ...a]), breakpointsDir: path.join(dir, ".bp") });
+    await dbg.setBreakpoints(dir, "app/Program.cs", [3]);
+    const runShell = (command: string, cwd: string, env: Record<string, string>) =>
+      new Promise<{ code: number; out: string }>((res) => require("child_process").exec(command, { cwd, env }, (err: any, out: string, se: string) => res({ code: err ? err.code ?? 1 : 0, out: out + se })));
+    const runs = new RunManager({
+      spawn: (command, o) => pty.spawn("/bin/sh", ["-c", command], { name: "xterm-256color", cols: 120, rows: 30, cwd: o.cwd, env: o.env }),
+      emit: (ch, ...a) => events.push([ch, ...a]),
+      baseEnv: () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME!, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1" }),
+      docker: async () => "docker",
+      runShell,
+      profileFor: () => validateProfile({ services: [{ name: "app", command: "dotnet run --project app" }] }, dir),
+      mainOf: async () => dir,
+      debugger: dbg,
+      debugTarget: (s, ctx) => debugTargetFor(s, { ...ctx, debugRoot: cache }),
+    });
+    try {
+      const r = (await runs.start(dir, { mode: "side", debug: ["app"] })) as { ids: string[] };
+      let e: any;
+      for (let i = 0; i < 600 && !e; i++) {
+        e = events.find((x) => x[0] === "debug:stopped");
+        await new Promise((res) => setTimeout(res, 100));
+      }
+      expect(e, JSON.stringify(events.filter((x) => x[0] === "debug:output").map((x) => x[3])).slice(0, 600)).toBeTruthy();
+      expect(e[2].frame).toMatchObject({ path: path.join(dir, "app", "Program.cs"), line: 3 });
+      const locals = await dbg.variables(e[1], (await dbg.scopes(e[1], e[2].frame.id))[0].ref);
+      expect(locals.filter((v) => ["a", "b"].includes(v.name)).map((v) => `${v.name}=${v.value}`).sort()).toEqual(["a=4", "b=5"]);
+      await dbg.control(e[1], "continue", e[2].threadId);
+      for (let i = 0; i < 100 && !runs.buffer(r.ids[0]).includes("sum 9"); i++) await new Promise((res) => setTimeout(res, 100));
+      expect(runs.buffer(r.ids[0])).toContain("dotnet build"); // the build ran on the service's own terminal
+      expect(runs.buffer(r.ids[0])).toContain("sum 9");
+      for (let i = 0; i < 50 && runs.states()[0].status !== "stopped"; i++) await new Promise((res) => setTimeout(res, 100));
+      expect(runs.states()[0]).toMatchObject({ status: "stopped", exitCode: 0 });
+    } finally {
+      await runs.stopAll();
+      await dbg.stopAll();
+    }
+  }, 240_000);
 });

@@ -25,6 +25,10 @@ export interface LaunchOptions {
   /** Run the debuggee in a terminal (the adapter's runInTerminal request); returns its pid. */
   runInTerminal?: (args: { cwd: string; args: string[]; env?: Record<string, string | null>; title?: string }) => Promise<number | undefined>;
   parentId?: string;
+  /** The program's output, when the debugger runs it itself (no terminal): child sessions report here too. */
+  onOutput?: (category: string, text: string) => void;
+  /** The top session ended, with the program's exit code when the adapter reported one. */
+  onEnded?: (exitCode: number | null) => void;
 }
 
 interface Live {
@@ -33,6 +37,7 @@ interface Live {
   opts: LaunchOptions;
   dispose(): void;
   exceptionFilters: string[];
+  exitCode: number | null;
 }
 
 const short = () => crypto.randomBytes(4).toString("hex");
@@ -136,7 +141,7 @@ export class DebugManager {
     } catch (err) {
       throw new Error(`Couldn't start the debugger: ${(err as Error).message}`);
     }
-    const l: Live = { info, conn: c.conn, opts, dispose: c.dispose, exceptionFilters: [] };
+    const l: Live = { info, conn: c.conn, opts, dispose: c.dispose, exceptionFilters: [], exitCode: null };
     this.live.set(id, l);
     this.wire(l);
     this.changed();
@@ -153,6 +158,16 @@ export class DebugManager {
 
   private async handshake(l: Live) {
     const { conn, opts } = l;
+    // listen before asking: some adapters (netcoredbg) send "initialized" in the same
+    // breath as the initialize reply, before an await here would get to listen
+    const initialized = new Promise<void>((resolve) => {
+      const h = (event: string) => {
+        if (event !== "initialized") return;
+        conn.off("event", h);
+        resolve();
+      };
+      conn.on("event", h);
+    });
     const caps = await conn.request("initialize", {
       clientID: "mockingbird",
       clientName: "Mockingbird",
@@ -170,14 +185,6 @@ export class DebugManager {
       locale: "en",
     });
     l.exceptionFilters = (caps.exceptionBreakpointFilters ?? []).filter((f: any) => f.default).map((f: any) => f.filter);
-    const initialized = new Promise<void>((resolve) => {
-      const h = (event: string) => {
-        if (event !== "initialized") return;
-        conn.off("event", h);
-        resolve();
-      };
-      conn.on("event", h);
-    });
     // most adapters answer launch only after configurationDone, so it's awaited last
     const launched = conn.request(opts.config.request, opts.config, 180_000);
     launched.catch(() => {}); // reported below; a failure before "initialized" ends the wait
@@ -232,7 +239,11 @@ export class DebugManager {
           this.refreshThreads(l);
           break;
         case "output":
-          if (body.category !== "telemetry" && typeof body.output === "string") this.output(info.id, body.category ?? "console", body.output);
+          if (body.category !== "telemetry" && typeof body.output === "string") {
+            this.output(info.id, body.category ?? "console", body.output);
+            // the program's own output (not the debugger's notes) also goes to its service log
+            if (body.category === "stdout" || body.category === "stderr") l.opts.onOutput?.(body.category, body.output);
+          }
           break;
         case "debugpyAttach": {
           // debugpy following a subprocess (uvicorn --reload's worker): attach to it as a child session
@@ -251,7 +262,10 @@ export class DebugManager {
         }
         case "terminated":
         case "exited":
-          if (event === "exited" && typeof body.exitCode === "number") this.output(info.id, "console", `Exited with code ${body.exitCode}\n`);
+          if (event === "exited" && typeof body.exitCode === "number") {
+            l.exitCode = body.exitCode;
+            this.output(info.id, "console", `Exited with code ${body.exitCode}\n`);
+          }
           if (event === "terminated") this.end(l);
           break;
       }
@@ -295,6 +309,7 @@ export class DebugManager {
     }
     // children end with their parent
     for (const c of this.live.values()) if (c.info.parentId === l.info.id) this.end(c);
+    if (!l.info.parentId) l.opts.onEnded?.(l.exitCode);
     this.changed();
   }
 

@@ -77,6 +77,8 @@ interface Live {
   stopRequested: boolean;
   /** For compose services: how to take the stack down after the foreground process ends. */
   down?: string;
+  /** For a service the debugger runs itself: called when its session ends. */
+  endVirtual?: (exitCode: number | null) => void;
 }
 
 const runId = (worktree: string, service: string) => crypto.createHash("sha1").update(`${worktree}\0${service}`).digest("hex").slice(0, 12);
@@ -291,6 +293,36 @@ export class RunManager {
     const first = (s.ports ?? []).find((p) => p.url) ?? s.ports?.[0];
     const url = first ? expand((first.url ?? "http://localhost:${port}").replace(/\$\{port\}/g, String(ports.get(first.name))), ctx) : undefined;
     const target = await this.deps.debugTarget(s, { cwd, env, command, url, expand: (x) => expand(x, ctx), onProgress: (m) => this.deps.emit("run:progress", worktree, m) });
+    if (target.kind === "internal") {
+      // the build runs on the service's terminal, visibly; then the debugger runs the program
+      // itself, and its output is forwarded into the same log
+      const b = this.spawnLive(worktree, repo, s, slot, ports, ctx, target.internal!.build, cwd, env, undefined, target.notes);
+      await b.exited;
+      if (b.state.exitCode !== 0) {
+        b.state.status = "failed";
+        b.state.error = "The build failed — see the log";
+        this.changed();
+        return b;
+      }
+      const loc = await this.deps.runShell(target.internal!.locate, cwd, env);
+      const program = loc.out.trim().split("\n").pop()?.trim() ?? "";
+      if (loc.code !== 0 || !program) throw new Error(`Couldn't find what the build produced: ${loc.out.trim().slice(0, 200) || `exit ${loc.code}`}`);
+      const l = this.virtualLive(b);
+      const sessionId = await this.deps.debugger.launch({
+        worktree,
+        repo,
+        service: s.name,
+        name: s.name,
+        adapterID: target.adapterID,
+        connect: target.connect,
+        config: { ...target.config, program },
+        onOutput: (_c, text) => this.append(l, text.replace(/\r?\n/g, "\r\n")),
+        onEnded: (code) => l.endVirtual?.(code),
+      });
+      l.state.debug = sessionId;
+      this.changed();
+      return l;
+    }
     if (target.kind === "alongside") {
       // the service runs as usual; once it's up, the debugger opens beside it
       const l = await this.launch(worktree, repo, profile, s, slot, ports);
@@ -314,6 +346,35 @@ export class RunManager {
     const sessionId = await this.deps.debugger.launch({ worktree, repo, service: s.name, name: s.name, adapterID: target.adapterID, connect: target.connect, config: target.config, runInTerminal });
     const l = await Promise.race([started, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`The debugger started but never ran ${s.name}`)), 30_000))]);
     l.state.debug = sessionId;
+    this.changed();
+    return l;
+  }
+
+  private append(l: Live, text: string) {
+    if (this.live.get(l.state.id) !== l) return;
+    l.buffer = (l.buffer + text).slice(-BUFFER_MAX);
+    this.deps.emit("run:data", l.state.id, text);
+  }
+
+  /**
+   * A service the debugger runs itself, with no terminal of its own: it
+   * continues the build's log and lives as long as the debug session.
+   */
+  private virtualLive(build: Live): Live {
+    let resolveExit!: () => void;
+    const state: RunServiceState = { ...build.state, status: "starting", pid: null, exitCode: null, startedAt: Date.now() };
+    const l: Live = { state, proc: null, buffer: build.buffer, exited: new Promise((r) => (resolveExit = r)), stopRequested: false };
+    l.endVirtual = (code) => {
+      state.exitCode = code;
+      if (l.stopRequested || !code) state.status = "stopped";
+      else {
+        state.status = "failed";
+        state.error ??= `Exited with code ${code}`;
+      }
+      resolveExit();
+      this.changed();
+    };
+    this.live.set(state.id, l);
     this.changed();
     return l;
   }
@@ -433,13 +494,20 @@ export class RunManager {
   }
 
   private async stopOne(l: Live): Promise<void> {
-    if (!l.proc || l.state.pid === null) return;
+    const virtual = !l.proc && !!l.endVirtual;
+    if (!virtual && (!l.proc || l.state.pid === null)) return;
     l.stopRequested = true;
     l.state.status = "stopping";
+    // taken now: ending the debugger may end the process, which clears it
+    const pid = l.state.pid ?? 0;
     this.changed();
     // the debugger first: disconnecting ends the debuggee cleanly
     if (l.state.debug) await this.deps.debugger?.stop(l.state.debug).catch(() => {});
-    const pid = l.state.pid;
+    if (virtual) {
+      await Promise.race([l.exited, new Promise((r) => setTimeout(r, STOP_GRACE_MS))]);
+      if (l.state.status === "stopping") l.endVirtual!(null);
+      return;
+    }
     const signal = (sig: NodeJS.Signals) => {
       try {
         this.kill(-pid, sig); // the whole process group: the shell and everything it started

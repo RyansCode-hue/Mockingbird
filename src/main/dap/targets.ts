@@ -3,7 +3,8 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
-import { DEBUG_DIR, DEBUGPY, JS_DEBUG, ensureAdapter, spawnStdioAdapter } from "./adapters";
+import { DEBUG_DIR, DEBUGPY, JS_DEBUG, NETCOREDBG, ensureAdapter, spawnStdioAdapter } from "./adapters";
+import { quote } from "../shell";
 import { connectTcp } from "./client";
 import type { Connection } from "./session";
 import type { RunDebug } from "../../shared/types";
@@ -15,7 +16,13 @@ export interface DebugTarget {
    * (runInTerminal). "alongside": the service runs as usual and the debugger
    * attaches beside it — a browser opened on a dev server's page.
    */
-  kind: "terminal" | "alongside";
+  kind: "terminal" | "alongside" | "internal";
+  /**
+   * For "internal" targets (the debugger runs the program itself): a build to
+   * run first on the service's terminal, and a command that prints the built
+   * program's path, which becomes the configuration's `program`.
+   */
+  internal?: { build: string; locate: string };
   adapterID: string;
   connect: () => Promise<Connection>;
   config: Record<string, unknown> & { request: "launch" | "attach" };
@@ -122,7 +129,7 @@ export async function debugTargetFor(
       if (py.droppedReload) notes.push("--reload is off while debugging: a reloader restarts the process the debugger is attached to. Restart to pick up changes.");
       if (pre.length) notes.push(`These run first, in the same terminal: ${pre.join(" && ")}`);
     } else {
-      const js = inferNode(ctx.command, ctx.cwd, ctx.url);
+      const js = inferNode(ctx.command, ctx.cwd, ctx.url) ?? inferDotnet(ctx.command, ctx.cwd);
       if (!js) throw new Error(`Mockingbird can't tell how to debug ${service.name} from its command — add a "debug" section to its run setup`);
       debug = js;
       // a node program runs only the last && step under the debugger; earlier steps run first
@@ -158,6 +165,35 @@ export async function debugTargetFor(
       },
       pre,
       notes,
+    };
+  }
+  if (debug.type === "dotnet") {
+    const dir = await ensureAdapter(NETCOREDBG, ctx.onProgress, ctx.debugRoot);
+    const target = path.resolve(ctx.cwd, ctx.expand(debug.program));
+    const isDll = target.endsWith(".dll");
+    // a project runs from its own folder (its content root: appsettings.json, wwwroot)
+    const projectDir = isDll ? ctx.cwd : target.endsWith("proj") ? path.dirname(target) : target;
+    const build = debug.build ? ctx.expand(debug.build) : isDll ? "true" : `dotnet build ${quote(target)} -c Debug -nologo`;
+    const locate = isDll ? `echo ${quote(target)}` : `dotnet msbuild ${quote(target)} -getProperty:TargetPath -p:Configuration=Debug -nologo`;
+    return {
+      kind: "internal",
+      adapterID: "coreclr",
+      connect: async () => spawnStdioAdapter(path.join(dir, "netcoredbg", "netcoredbg"), ["--interpreter=vscode"], { ...process.env, ...env } as Record<string, string>, projectDir),
+      config: {
+        request: "launch",
+        type: "coreclr",
+        name: service.name,
+        program: "",
+        args: (debug.args ?? []).map(ctx.expand),
+        cwd: projectDir,
+        env,
+        stopAtEntry: false,
+        justMyCode: true,
+        console: "internalConsole",
+      },
+      internal: { build, locate },
+      pre: [],
+      notes: [...notes, "Hot reload is off while debugging (netcoredbg can't do it on macOS). Restart to pick up changes."],
     };
   }
   if (debug.type === "node" || debug.type === "chrome") {
@@ -259,6 +295,43 @@ function jsDebugConnector(dir: string): () => Promise<Connection> {
       },
     };
   };
+}
+
+/**
+ * Read `dotnet run` / `dotnet watch run` for netcoredbg: the project (from
+ * --project, or the folder), and the arguments the app gets — --urls and
+ * whatever follows `--`. Launch profiles aren't applied under the debugger,
+ * so URLs belong in --urls or ASPNETCORE_URLS.
+ */
+export function inferDotnet(command: string, cwd: string): Extract<RunDebug, { type: "dotnet" }> | null {
+  const steps = command.split(/\s*&&\s*/);
+  const words = shellWords(steps[steps.length - 1]);
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+  if (path.basename(words[0] ?? "") !== "dotnet") return null;
+  let i = 1;
+  if (words[i] === "watch") i++;
+  if (words[i] !== "run") return null;
+  i++;
+  let project = ".";
+  const args: string[] = [];
+  for (; i < words.length; i++) {
+    const w = words[i];
+    if (w === "--") {
+      args.push(...words.slice(i + 1));
+      break;
+    }
+    if (w === "--project" || w === "-p") project = words[++i] ?? ".";
+    else if (w.startsWith("--project=")) project = w.slice(10);
+    else if (w === "--urls") args.push("--urls", words[++i] ?? "");
+    else if (["-c", "--configuration", "-f", "--framework", "--launch-profile", "-lp"].includes(w)) i++;
+  }
+  let program = project;
+  if (!/\.(cs|fs|vb)proj$/.test(project)) {
+    const dir = path.resolve(cwd, project);
+    const proj = fs.existsSync(dir) ? fs.readdirSync(dir).find((f) => /\.(cs|fs|vb)proj$/.test(f)) : undefined;
+    if (proj) program = path.join(project, proj);
+  }
+  return { type: "dotnet", program, args };
 }
 
 const FRONTEND = /(^|\/)(vite|next|react-scripts|ng|nuxt|astro|svelte-kit|webpack-dev-server)$/;
