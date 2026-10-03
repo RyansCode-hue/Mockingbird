@@ -16,8 +16,10 @@ import { Pick, Select } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { resetText, pctNow } from "./usageFormat";
-import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon } from "./Icons";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog } from "../shared/types";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon } from "./Icons";
+import { RunView } from "./RunView";
+import { BottomPanel } from "./BottomPanel";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, type OptionalTab } from "../shared/types";
 
 declare global {
@@ -28,12 +30,13 @@ declare global {
 
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
 /** What the side bar shows, picked from the activity bar as in VS Code. */
-type SideView = "sessions" | "explorer" | "scm" | "search";
+type SideView = "sessions" | "explorer" | "scm" | "search" | "run";
 const SIDE_VIEWS: { id: SideView; label: string; keys?: string; Icon: () => React.JSX.Element }[] = [
   { id: "sessions", label: "Sessions", Icon: SessionsIcon },
   { id: "explorer", label: "Explorer", keys: "⇧⌘E", Icon: FilesIcon },
   { id: "scm", label: "Source Control", keys: "⌃⇧G", Icon: SourceControlIcon },
   { id: "search", label: "Search", keys: "⇧⌘F", Icon: SearchIcon },
+  { id: "run", label: "Run and Debug", keys: "⇧⌘D", Icon: RunDebugIcon },
 ];
 type Tab = "sessions" | "dashboard" | "worktracker" | "collaborate" | "settings";
 const TAB_LABELS: Record<Tab, string> = {
@@ -250,6 +253,22 @@ function App() {
   const [search, setSearch] = useState<SearchState>(() => ({ q: "", ...loadLS("mb.search", { scope: "conversations", regex: false, matchCase: false }) }));
   useEffect(() => localStorage.setItem("mb.search", JSON.stringify({ scope: search.scope, regex: search.regex, matchCase: search.matchCase })), [search.scope, search.regex, search.matchCase]);
   const [searchFocus, setSearchFocus] = useState(0);
+  // Run and Debug: every service's state, and the log panel under the grid (⌘J)
+  const [runStates, setRunStates] = useState<RunServiceState[]>([]);
+  useEffect(() => {
+    window.mb.runStates().then(setRunStates);
+    return window.mb.onRunChanged(setRunStates);
+  }, []);
+  const [panelOpen, setPanelOpen] = useState<boolean>(() => loadLS("mb.panel.open", false));
+  useEffect(() => localStorage.setItem("mb.panel.open", JSON.stringify(panelOpen)), [panelOpen]);
+  const [panelH, setPanelH] = useState<number>(() => loadLS("mb.panel.h", 260));
+  useEffect(() => localStorage.setItem("mb.panel.h", JSON.stringify(panelH)), [panelH]);
+  const [panelTab, setPanelTab] = useState<string | null>(null);
+  const showLog = (id: string) => {
+    setPanelTab(id);
+    setPanelOpen(true);
+  };
+  const runningIn = (cwd: string) => runStates.filter((s) => s.worktree === cwd && (s.status === "running" || s.status === "starting")).length;
   /** Show a side bar view, from anywhere: the side bar lives on the Sessions tab. */
   const showView = (v: SideView) => {
     setTab("sessions");
@@ -818,6 +837,16 @@ function App() {
       showView("explorer");
       return;
     }
+    if (cmd && e.shiftKey && e.key.toLowerCase() === "d") {
+      handled();
+      showView("run");
+      return;
+    }
+    if (cmd && !e.shiftKey && !e.ctrlKey && e.key === "j" && tab === "sessions") {
+      handled();
+      setPanelOpen((o) => !o);
+      return;
+    }
     if (e.ctrlKey && e.shiftKey && !cmd && e.key.toLowerCase() === "g") {
       handled();
       showView("scm");
@@ -1147,7 +1176,8 @@ function App() {
         <nav className="activitybar" aria-label="Side bar views">
           {SIDE_VIEWS.map(({ id, label, keys, Icon }) => {
             const on = sideView === id && !sideCollapsed;
-            const badge = id === "sessions" ? counts.waiting : id === "scm" ? scmCount : 0;
+            const badge =
+              id === "sessions" ? counts.waiting : id === "scm" ? scmCount : id === "run" ? runStates.filter((s) => s.status === "running" || s.status === "starting").length : 0;
             return (
               <button
                 key={id}
@@ -1159,7 +1189,10 @@ function App() {
               >
                 <Icon />
                 {badge > 0 && (
-                  <span className={`ab-badge ${id === "sessions" ? "waiting" : ""}`} title={id === "sessions" ? `${badge} waiting on you` : `${badge} uncommitted file${badge === 1 ? "" : "s"}`}>
+                  <span
+                    className={`ab-badge ${id === "sessions" ? "waiting" : ""}`}
+                    title={id === "sessions" ? `${badge} waiting on you` : id === "run" ? `${badge} service${badge === 1 ? "" : "s"} running` : `${badge} uncommitted file${badge === 1 ? "" : "s"}`}
+                  >
                     {badge > 99 ? "99+" : badge}
                   </span>
                 )}
@@ -1204,6 +1237,18 @@ function App() {
               focusKey={searchFocus}
               onOpenConversation={openTranscript}
               onOpenFile={(path, line) => openInEditor(path, { line })}
+            />
+          )}
+          {sideView === "run" && (
+            <RunView
+              session={focusedSession}
+              states={runStates}
+              onShowLog={showLog}
+              onAskSession={(text) => {
+                if (!focusedSession) return;
+                window.mb.sessionWrite(focusedSession.id, text);
+                focusTerm(focusedSession.id);
+              }}
             />
           )}
           {sideView === "sessions" && (
@@ -1531,6 +1576,11 @@ function App() {
                       setFocused(s.id);
                       showView("scm");
                     }}
+                    runCount={runningIn(s.cwd)}
+                    onOpenRun={() => {
+                      setFocused(s.id);
+                      showView("run");
+                    }}
                     onClose={onCloseOverride ?? (() => hide(s.id))}
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
                     onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
@@ -1633,6 +1683,16 @@ function App() {
                 );
               })}
             </div>
+          )}
+          {panelOpen && (
+            <BottomPanel
+              states={runStates}
+              active={panelTab}
+              height={panelH}
+              onActive={setPanelTab}
+              onHide={() => setPanelOpen(false)}
+              onResize={setPanelH}
+            />
           )}
         </div>
         </>
@@ -1752,6 +1812,8 @@ function App() {
             { label: "Search — conversations, or the focused session's files", kbd: "⌘⇧F", run: () => showView("search") },
             { label: "Explorer — the focused session's folder", kbd: "⌘⇧E", run: () => showView("explorer") },
             { label: "Source Control — stage, commit, push", kbd: "⌃⇧G", run: () => showView("scm") },
+            { label: "Run and Debug — start the focused worktree's services", kbd: "⌘⇧D", run: () => showView("run") },
+            { label: "Toggle the log panel", kbd: "⌘J", run: () => (setTab("sessions"), setPanelOpen((o) => !o)) },
             { label: "Settings", run: () => setTab("settings") },
             { label: "Import sessions", run: () => setModal("import") },
             ...(shownTab("worktracker")
@@ -2188,6 +2250,8 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌘B", "show or hide the side bar"],
     ["⌘⇧E", "Explorer — the focused session's folder"],
     ["⌃⇧G", "Source Control — stage, commit, push"],
+    ["⌘⇧D", "Run and Debug — the focused worktree's services; swap or side by side"],
+    ["⌘J", "the log panel under the grid"],
     ["⌘⇧B", "control room — broadcast + CLAUDE.md"],
     ["⌘⇧F", "search every conversation on this Mac, or the focused session's files"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],

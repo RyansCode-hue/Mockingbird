@@ -192,15 +192,18 @@ const TERM_THEMES = {
   },
 };
 
-function currentTermTheme() {
+export function currentTermTheme() {
   return document.documentElement.dataset.theme === "light" ? TERM_THEMES.light : TERM_THEMES.dark;
 }
 
 /** Restyle every live terminal when the app theme flips. */
+/** Other terminals (run logs) that follow the app theme. */
+export const termThemeListeners = new Set<(theme: ReturnType<typeof currentTermTheme>) => void>();
+
 export function applyTermTheme(light: boolean): void {
-  for (const { term } of terms.values()) {
-    term.options.theme = light ? TERM_THEMES.light : TERM_THEMES.dark;
-  }
+  const theme = light ? TERM_THEMES.light : TERM_THEMES.dark;
+  for (const { term } of terms.values()) term.options.theme = theme;
+  for (const l of termThemeListeners) l(theme);
 }
 
 export type PaneDensity = "min" | "std" | "max";
@@ -240,6 +243,8 @@ export function TerminalPane({
   onClose,
   onOpenFiles,
   onOpenChanges,
+  runCount,
+  onOpenRun,
   onZoom,
   onAddTab,
   onReorder,
@@ -261,6 +266,9 @@ export function TerminalPane({
   onOpenFiles?: () => void;
   /** Open Source Control for this pane's folder. */
   onOpenChanges?: () => void;
+  /** How many of this worktree's services are running (Run and Debug), and opening that view. */
+  runCount?: number;
+  onOpenRun?: () => void;
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
   onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
   onReorder?: (srcId: string, targetId: string) => void;
@@ -668,6 +676,18 @@ export function TerminalPane({
           </span>
         )}
         {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
+        {!!runCount && density !== "min" && (
+          <button
+            className="chip running"
+            title={`${runCount} service${runCount === 1 ? "" : "s"} of this worktree running — open Run and Debug`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenRun?.();
+            }}
+          >
+            ▶ {runCount}
+          </button>
+        )}
         {git?.dirty && (
           <button
             className="chip changes"

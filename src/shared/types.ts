@@ -382,6 +382,70 @@ export interface GitChanges {
   base: string; // what the changes are measured against
 }
 
+// ---- run ----------------------------------------------------------------------
+
+/** A port a service listens on: `base` is its standard number (slot 0); other slots add slot × step. */
+export interface RunPort {
+  name: string;
+  base: number;
+  /** What to open in a browser, with ${port} for the slot's number, e.g. "https://localhost:${port}". */
+  url?: string;
+}
+
+export interface RunService {
+  name: string;
+  /** "process": a command on its own terminal. "compose": `docker compose up` with a per-worktree override. */
+  kind: "process" | "compose";
+  /** Relative to the worktree. */
+  cwd: string;
+  /** A shell command; ${port:<name>}, ${slot} and ${worktree} are filled in when it starts. */
+  command: string;
+  env?: Record<string, string>;
+  /** Relative to the worktree; read as KEY=VALUE lines into the environment. */
+  envFiles?: string[];
+  ports?: RunPort[];
+  /** Services that must be ready first. */
+  dependsOn?: string[];
+  /** When it counts as up: a port accepting connections, or a log line matching a pattern. */
+  ready?: { port?: string; log?: string };
+  compose?: { file: string; services?: string[] };
+}
+
+export interface RunProfile {
+  /** The repository's main checkout; every worktree of it shares this profile. */
+  repo: string;
+  services: RunService[];
+  prepare?: {
+    /** Gitignored files or globs to copy from the main checkout into a worktree that lacks them. */
+    copy?: string[];
+    /** Setup commands, each run only while its `ifMissing` path doesn't exist. */
+    commands?: { cwd: string; command: string; ifMissing: string }[];
+  };
+  sideBySide?: { slots: number; step: number };
+  /** Things that stop this repo running side by side, with the change that fixes each. */
+  blockers?: { what: string; fix: string }[];
+  /** Origins sign-in must allow for each slot (Entra/B2C redirect URIs), listed for the user to register. */
+  notes?: string[];
+}
+
+export type RunStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
+
+/** One running (or last-run) service of one worktree. */
+export interface RunServiceState {
+  id: string;
+  service: string;
+  worktree: string;
+  repo: string;
+  slot: number;
+  status: RunStatus;
+  ports: { name: string; port: number; url?: string }[];
+  pid: number | null;
+  exitCode: number | null;
+  startedAt: number;
+  /** Why it failed or stopped, when not by request. */
+  error?: string;
+}
+
 // ---- first-run setup ---------------------------------------------------------
 export interface AgentCheck {
   found: boolean;

@@ -132,3 +132,13 @@ export const FileIcon = () => (
     <path d="M8.75 1.75v3h3" />
   </Icon>
 );
+
+/** A play triangle with a small bug: Run and Debug. */
+export const RunDebugIcon = () => (
+  <Icon>
+    <path d="M3.5 2.75v10.5L9 10" />
+    <path d="M3.5 2.75 11.5 8" />
+    <ellipse cx="12" cy="11.5" rx="2" ry="2.5" />
+    <path d="M10 10.25H9M15 10.25h-1M10 12.75H9M15 12.75h-1M12 9v5" />
+  </Icon>
+);

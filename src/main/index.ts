@@ -8,6 +8,10 @@ import { SessionManager, paneEnv } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
 import { FolderWatcher } from "./watch";
+import { RunManager } from "./run";
+import { loadProfile, mainCheckout, profilePath, saveProfile } from "./runProfile";
+import { draftProfile } from "./runDraft";
+import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
@@ -32,6 +36,20 @@ const store = new Store();
 store.state.sessions = store.state.sessions.filter((s) => !s.debrief);
 store.save();
 const sessions = new SessionManager(store);
+const toWindow = (channel: string, ...args: unknown[]) => BrowserWindow.getAllWindows()[0]?.webContents.send(channel, ...args);
+
+// Run and Debug: a repo's services per worktree, each on its own terminal
+const runs = new RunManager({
+  spawn: (command, opts) => pty.spawn("/bin/zsh", ["-ilc", command], { name: "xterm-256color", cols: 120, rows: 30, cwd: opts.cwd, env: opts.env }),
+  emit: toWindow,
+  baseEnv: () => paneEnv() as Record<string, string>,
+  docker: async () => {
+    const bin = await which("docker");
+    if (!bin) throw new Error("Docker isn't installed (or isn't on your shell's PATH)");
+    return bin;
+  },
+  runShell: (command, cwd, env) => userShellWithInput(command, "", { cwd, env, timeoutMs: 120_000 }),
+});
 
 const LOG = path.join(require("os").homedir(), ".mockingbird", "main.log");
 function logError(context: string, err: unknown): string {
@@ -278,6 +296,20 @@ app.whenReady().then(() => {
   });
 });
 
+// services Mockingbird started stop with it — nothing keeps holding ports or containers
+let runsStopped = false;
+app.on("before-quit", (e) => {
+  if (runsStopped || !runs.states().some((s) => s.status === "running" || s.status === "starting" || s.status === "stopping")) return;
+  e.preventDefault();
+  const done = () => {
+    runsStopped = true;
+    app.quit();
+  };
+  Promise.race([runs.stopAll(), new Promise((r) => setTimeout(r, 15_000))])
+    .catch((err) => logError("run:stopAll on quit", err))
+    .finally(done);
+});
+
 app.on("window-all-closed", () => {
   app.quit();
 });
@@ -376,6 +408,37 @@ ipcMain.handle(
     return folderWatcher.set(roots);
   })
 );
+ipcMain.handle("run:profile", (_e, id) =>
+  safeAsync("run:profile", async () => {
+    const worktree = sessionRoot(id);
+    const repo = await mainCheckout(worktree);
+    return { worktree, repo, file: profilePath(repo), profile: loadProfile(repo) };
+  })()
+);
+ipcMain.handle("run:saveProfile", (_e, id, profile) =>
+  safeAsync("run:saveProfile", async () => saveProfile(profile, await mainCheckout(sessionRoot(id))))()
+);
+ipcMain.handle("run:draft", (_e, id) =>
+  safeAsync("run:draft", async () => draftProfile(await mainCheckout(sessionRoot(id)), sessions.binFor("claude"), userShellWithInput, paneEnv() as Record<string, string>))()
+);
+ipcMain.handle("run:start", (_e, id, opts) =>
+  safeAsync("run:start", () =>
+    runs.start(sessionRoot(id), { mode: opts?.mode === "side" ? "side" : "swap", services: Array.isArray(opts?.services) ? opts.services.map(String) : undefined })
+  )()
+);
+ipcMain.handle("run:stopListeners", (_e, id, pids) =>
+  safe("run:stopListeners", () => runs.stopListeners(sessionRoot(id), (Array.isArray(pids) ? pids : []).map(Number)))()
+);
+ipcMain.handle("run:stop", (_e, id, services) =>
+  safeAsync("run:stop", () => runs.stop(sessionRoot(id), Array.isArray(services) ? services.map(String) : undefined))()
+);
+ipcMain.handle("run:prepare", (_e, id) => safeAsync("run:prepare", () => runs.prepare(sessionRoot(id)))());
+ipcMain.handle("run:states", () => runs.states());
+ipcMain.handle("run:buffer", (_e, runId) => runs.buffer(String(runId)));
+ipcMain.handle("run:clear", (_e, runId) => runs.clear(String(runId)));
+ipcMain.handle("run:stopById", (_e, runId) => safeAsync("run:stopById", () => runs.stopById(String(runId)))());
+ipcMain.on("run:write", (_e, runId, data) => runs.write(String(runId), String(data)));
+ipcMain.on("run:resize", (_e, runId, cols, rows) => runs.resize(String(runId), Number(cols), Number(rows)));
 ipcMain.handle("files:all", (_e, id) => safeAsync("files:all", () => listAllFiles(sessionRoot(id)))());
 ipcMain.handle("files:search", (_e, id, query, opts) =>
   safeAsync("files:search", () =>

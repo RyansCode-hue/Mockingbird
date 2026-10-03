@@ -1410,3 +1410,24 @@ the longest stall 26 ms; an up-to-date pass is ~50 ms; searches 2–15 ms; index
 link to the live pane, the closed session, the Collaborate room, or resume. Checked in the
 browser: ⌘⇧F, highlighted snippets, restore and resume calls. Usage per reply is stored for the
 meters. 195 tests.
+
+---
+
+# Run and Debug (plan: ~/.claude/plans/twinkly-foraging-token.md) — 2026-10-03
+
+## Stage 1 — Run
+- [x] Types: RunProfile / RunService / RunState
+- [x] runProfile.ts: per-repo store, main-checkout lookup, validation, placeholders, slot ports, worktree→slot map
+- [x] composeOverride.ts: `docker compose config` → override (worktree mounts/env_file, per-slot names, !override ports)
+- [x] run.ts: RunManager on node-pty, process-group stop, ready detection, dependsOn, swap, preflight (lsof), before-quit
+- [x] Prepare: copy gitignored files from main checkout, guarded setup commands
+- [x] Draft with Claude (read-only tools) → validated profile
+- [x] UI: Run and Debug activity, bottom panel logs (⌘J), pane running dot
+- [x] Tests + harness + README; ff main
+
+Review (stage 1): real Compose accepted the generated override (names, ports, mounts, env_file moved); a real pty run
+stopped its whole process group; a real Claude draft of cst-tracking came back valid in 22 s with sensible blockers.
+Not yet run against Ryan's real apps (they touch shared DBs) — first real runs go through Ryan.
+
+## Stage 2 — Debugger core (DAP)
+## Stage 3 — Per-stack debugging

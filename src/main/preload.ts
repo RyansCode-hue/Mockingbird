@@ -80,6 +80,29 @@ const api = {
   filesChanges: (id: string, scope: string) => ipcRenderer.invoke("files:changes", id, scope),
   filesAll: (id: string) => ipcRenderer.invoke("files:all", id),
   watchFolders: (ids: string[]) => ipcRenderer.invoke("folders:watch", ids),
+  runProfile: (id: string) => ipcRenderer.invoke("run:profile", id),
+  runSaveProfile: (id: string, profile: unknown) => ipcRenderer.invoke("run:saveProfile", id, profile),
+  runDraft: (id: string) => ipcRenderer.invoke("run:draft", id),
+  runStart: (id: string, opts: { mode: "swap" | "side"; services?: string[] }) => ipcRenderer.invoke("run:start", id, opts),
+  runStopListeners: (id: string, pids: number[]) => ipcRenderer.invoke("run:stopListeners", id, pids),
+  runStop: (id: string, services?: string[]) => ipcRenderer.invoke("run:stop", id, services),
+  runPrepare: (id: string) => ipcRenderer.invoke("run:prepare", id),
+  runStates: () => ipcRenderer.invoke("run:states"),
+  runBuffer: (runId: string) => ipcRenderer.invoke("run:buffer", runId),
+  runClear: (runId: string) => ipcRenderer.invoke("run:clear", runId),
+  runStopById: (runId: string) => ipcRenderer.invoke("run:stopById", runId),
+  runWrite: (runId: string, data: string) => ipcRenderer.send("run:write", runId, data),
+  runResize: (runId: string, cols: number, rows: number) => ipcRenderer.send("run:resize", runId, cols, rows),
+  onRunChanged: (cb: (states: unknown) => void) => {
+    const h = (_e: unknown, s: unknown) => cb(s);
+    ipcRenderer.on("run:changed", h);
+    return () => ipcRenderer.removeListener("run:changed", h);
+  },
+  onRunData: (cb: (id: string, data: string) => void) => {
+    const h = (_e: unknown, id: string, d: string) => cb(id, d);
+    ipcRenderer.on("run:data", h);
+    return () => ipcRenderer.removeListener("run:data", h);
+  },
   onFolderChanged: (cb: (root: string) => void) => {
     const h = (_e: unknown, root: string) => cb(root);
     ipcRenderer.on("folder:changed", h);
