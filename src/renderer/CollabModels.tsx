@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import type { AgentKind, CollabParticipant, CollabParticipantSpec, CollabRoom, RepoEntry } from "../shared/types";
-import { ChevronIcon } from "./Icons";
+import { ChevronIcon, DockerIcon, ReadIcon, RunIcon } from "./Icons";
 import { Pick, Select } from "./Menu";
-import { ACCESS_LEVELS, CUSTOM_MODEL as CUSTOM, accessFlags, accessOf, isErr, moveSeat, presetOptions, specsOf, type Access, type Catalog } from "./collabView";
+import { ACCESS_LEVELS, CUSTOM_MODEL as CUSTOM, accessFlags, accessOf, hasAccess, isErr, moveSeat, presetOptions, specsOf, toggleAccess, type Access, type Catalog } from "./collabView";
 import { beginDrag, cue, dragging, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 
 type Call = (what: string, fn: () => Promise<unknown>) => Promise<unknown>;
@@ -124,16 +124,30 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
                 </label>
                 <div className="ins-field">
                   <span>Access</span>
-                  <span className={`seg ins-access ${room.repoPath ? "" : "off"}`}>
-                    {ACCESS_LEVELS.map((a) => (
+                  <span className={`ins-chips ${room.repoPath ? "" : "off"}`}>
+                    <button
+                      className={`ins-chip ${access === "none" ? "on" : ""}`}
+                      title="No code — asks a model that reads it"
+                      disabled={!room.repoPath}
+                      onClick={() => update(p.key, accessFlags("none"))}
+                    >
+                      none
+                    </button>
+                    {([
+                      ["read", ReadIcon, "Reads the repository"],
+                      ["run", RunIcon, "Runs tests and builds in a disposable test copy — turns on read"],
+                      ["docker", DockerIcon, "Uses Docker, which reaches past the sandbox — turns on read and run"],
+                    ] as const).map(([level, Ico, tip]) => (
                       <button
-                        key={a.id}
-                        className={access === a.id ? "on" : ""}
-                        title={a.note}
+                        key={level}
+                        className={`ins-chip ${hasAccess(access, level) ? "on" : ""}`}
+                        title={tip}
                         disabled={!room.repoPath}
-                        onClick={() => update(p.key, accessFlags(a.id as Access))}
+                        aria-pressed={hasAccess(access, level)}
+                        onClick={() => update(p.key, accessFlags(toggleAccess(access, level)))}
                       >
-                        {a.label}
+                        <Ico />
+                        {level}
                       </button>
                     ))}
                   </span>

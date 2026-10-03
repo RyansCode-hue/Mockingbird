@@ -112,6 +112,20 @@ export const ACCESS_LEVELS: { id: Access; label: string; note: string }[] = [
   { id: "docker", label: "docker", note: "Runs commands and uses Docker, which reaches past the sandbox" },
 ];
 
+const RANK: Record<Access, number> = { none: 0, read: 1, run: 2, docker: 3 };
+const BY_RANK: Access[] = ["none", "read", "run", "docker"];
+
+/** Is this permission on? Each level includes the ones before it. */
+export const hasAccess = (current: Access, level: Access) => RANK[current] >= RANK[level];
+
+/**
+ * Click one permission on or off, keeping the rules: Docker needs run, run
+ * needs read. On turns on what it needs; off turns off what needs it.
+ */
+export function toggleAccess(current: Access, level: Exclude<Access, "none">): Access {
+  return hasAccess(current, level) ? BY_RANK[RANK[level] - 1] : level;
+}
+
 export function accessOf(p: { readsCode: boolean; runsCommands?: boolean; usesDocker?: boolean }): Access {
   return p.usesDocker ? "docker" : p.runsCommands ? "run" : p.readsCode ? "read" : "none";
 }

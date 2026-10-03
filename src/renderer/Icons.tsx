@@ -63,3 +63,30 @@ export const PanelRightIcon = ({ open }: { open?: boolean }) => (
     {open && <path d="M11.6 5.5h1.1M11.6 7.5h1.1M11.6 9.5h1.1" />}
   </Icon>
 );
+
+/** An eye — reads the code. */
+export const ReadIcon = () => (
+  <Icon>
+    <path d="M1.75 8s2.25-4.25 6.25-4.25S14.25 8 14.25 8 12 12.25 8 12.25 1.75 8 1.75 8z" />
+    <circle cx="8" cy="8" r="1.9" />
+  </Icon>
+);
+
+/** A terminal prompt — runs commands. */
+export const RunIcon = () => (
+  <Icon>
+    <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+    <path d="M4.5 6.25 6.75 8 4.5 9.75M8.25 10h3.25" />
+  </Icon>
+);
+
+/** Stacked containers — uses Docker. */
+export const DockerIcon = () => (
+  <Icon>
+    <rect x="2" y="7.5" width="3.5" height="3" rx=".5" />
+    <rect x="6.25" y="7.5" width="3.5" height="3" rx=".5" />
+    <rect x="10.5" y="7.5" width="3.5" height="3" rx=".5" />
+    <rect x="6.25" y="3.75" width="3.5" height="3" rx=".5" />
+    <path d="M1.75 12.5h12.5" />
+  </Icon>
+);

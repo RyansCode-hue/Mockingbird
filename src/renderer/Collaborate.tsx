@@ -659,7 +659,7 @@ function Inspector({
 
       <section className="ins-foot">
         <button
-          className="link danger"
+          className="outline danger-btn"
           onClick={() => window.confirm(`Delete "${room.title}"?`) && call("delete", () => window.mb.collabDelete(room.id)).then((r) => !isErr(r) && onDeleted())}
         >
           Delete room

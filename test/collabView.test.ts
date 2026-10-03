@@ -101,3 +101,16 @@ describe("editing models in the sidebar", () => {
     expect(moveSeat(s, "a", "zz")).toBe(s);
   });
 });
+
+describe("access chips", () => {
+  it("light every permission a level includes, and toggle one at a time within the rules", async () => {
+    const { hasAccess, toggleAccess } = await import("../src/renderer/collabView");
+    expect(["read", "run", "docker"].map((l) => hasAccess("docker", l as any))).toEqual([true, true, true]);
+    expect(["read", "run", "docker"].map((l) => hasAccess("read", l as any))).toEqual([true, false, false]);
+    expect(toggleAccess("none", "docker")).toBe("docker"); // turning docker on brings read and run
+    expect(toggleAccess("docker", "docker")).toBe("run"); // off: just docker
+    expect(toggleAccess("docker", "run")).toBe("read"); // run off takes docker with it
+    expect(toggleAccess("run", "read")).toBe("none"); // read off takes everything
+    expect(toggleAccess("read", "run")).toBe("run");
+  });
+});
