@@ -157,11 +157,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
   checklist. Open design question: where stage state lives — ADO custom
   field, ticket comment convention, or the WorkTracker folder.
 - **VS Code workbench** *(in progress, in stages; 1.2.0 when it's done)*.
-  Shipped: the Source Control view (stage / unstage / discard, commit, push).
-  Next: editor tabs (several files and diffs open at once), syntax
-  highlighting and a side-by-side diff; then an activity bar to switch the
-  side bar between Sessions, Explorer, Source Control, Search and
-  Collaborate; ⌘P quick open; ⌘⇧F as one search over Conversations | Files.
+  Shipped: the Source Control view (stage / unstage / discard, commit, push);
+  editor tabs (several files and diffs open at once), syntax highlighting and
+  a side-by-side diff.
+  Next: an activity bar to switch the side bar between Sessions, Explorer,
+  Source Control, Search and Collaborate; ⌘P quick open; ⌘⇧F as one search
+  over Conversations | Files.
   Later: "create PR to dev" (with the ticket pipeline), a worktree watcher
   instead of polling, and an "N files · +120 −8" badge on each pane.
 - **Cross-agent review.** A button in Source Control starts a session with

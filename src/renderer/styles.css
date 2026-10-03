@@ -1380,3 +1380,40 @@ button.link.danger { color: var(--red); }
 button.danger-btn { color: var(--red); border-color: color-mix(in srgb, var(--red) 55%, transparent); }
 button.danger-btn:hover { color: #fff; background: var(--red); border-color: var(--red); }
 .collab-inspector .ins-foot { align-items: center; }
+/* explorer editor: tabs over the file viewer */
+.fp-editor { display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; background: var(--bg-app); border-right: 1px solid var(--line-med); }
+.fp-editor .fp-viewer { border-right: none; }
+.fp-tabbar { display: flex; flex-shrink: 0; overflow-x: auto; background: var(--bg-sidebar); border-bottom: 1px solid var(--line-soft); scrollbar-width: thin; }
+.fp-tab { display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 2px 0 10px; max-width: 210px; flex-shrink: 0; border-right: 1px solid var(--line-soft); font: 400 11px var(--ui); color: var(--text-3); cursor: pointer; white-space: nowrap; }
+.fp-tab:hover { color: var(--text-1); }
+.fp-tab.on { background: var(--bg-app); color: var(--text-1); box-shadow: inset 0 2px 0 var(--teal); }
+.fp-tab-name { overflow: hidden; text-overflow: ellipsis; }
+.fp-tab-kind { color: var(--text-4); font-size: 10px; }
+.fp-tab.st-M .fp-tab-name, .fp-tab.st-R .fp-tab-name { color: var(--git-mod); }
+.fp-tab.st-A .fp-tab-name, .fp-tab.st-U .fp-tab-name { color: var(--git-add); }
+.fp-tab.st-D .fp-tab-name { color: var(--red); }
+.fp-tab-x { border: none; background: none; padding: 0 5px; border-radius: 4px; font-size: 13px; line-height: 1; color: var(--text-4); visibility: hidden; }
+.fp-tab:hover .fp-tab-x, .fp-tab.on .fp-tab-x { visibility: visible; }
+.fp-tab-x:hover { color: var(--text-1); background: var(--fill-selected); }
+/* side-by-side diff */
+.fp-diff.split { min-width: 0; }
+.fp-diff.split .srow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.fp-diff.split .srow > .dl { min-width: 0; }
+.fp-diff.split .srow .tx { flex: 1; min-width: 0; }
+.fp-diff.split .srow > .dl:first-child { border-right: 1px solid var(--line-soft); }
+.fp-diff.split .tx { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fp-diff.split .dl.hunk .tx, .fp-diff.split .dl.note .tx { padding-left: 10px; }
+.fp-diff .dl.empty { background: var(--fill-subtle); }
+/* syntax highlighting (highlight.js classes), from the theme's own palette */
+.hl .hljs-keyword, .hl .hljs-selector-tag, .hl .hljs-built_in, .hl .hljs-doctag { color: var(--m-2); }
+.hl .hljs-string, .hl .hljs-template-tag, .hl .hljs-template-variable, .hl .hljs-addition { color: var(--m-0); }
+.hl .hljs-number, .hl .hljs-literal, .hl .hljs-regexp, .hl .hljs-symbol, .hl .hljs-bullet { color: var(--m-1); }
+.hl .hljs-title, .hl .hljs-title.function_, .hl .hljs-section { color: var(--m-3); }
+.hl .hljs-type, .hl .hljs-title.class_, .hl .hljs-selector-class, .hl .hljs-selector-id { color: var(--m-5); }
+.hl .hljs-tag, .hl .hljs-name, .hl .hljs-attribute, .hl .hljs-meta .hljs-keyword { color: var(--m-4); }
+.hl .hljs-attr, .hl .hljs-property, .hl .hljs-variable, .hl .hljs-params { color: var(--text-1); }
+.hl .hljs-comment, .hl .hljs-quote { color: var(--text-4); font-style: italic; }
+.hl .hljs-meta { color: var(--text-3); }
+.hl .hljs-deletion { color: var(--red); }
+.hl .hljs-strong { font-weight: 600; }
+.hl .hljs-emphasis { font-style: italic; }

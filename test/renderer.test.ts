@@ -35,3 +35,40 @@ describe("usage reset text", () => {
     expect(pctNow({ label: "5-hour limit", usedPct: 41, resetsAt: now + 1 }, now)).toBe(41);
   });
 });
+
+describe("syntax highlighting", () => {
+  it("knows a file's language by its name", async () => {
+    const { languageFor } = await import("../src/renderer/highlight");
+    expect(languageFor("src/a.tsx")).toBe("typescript");
+    expect(languageFor("Dockerfile")).toBe("dockerfile");
+    expect(languageFor("api/views.py")).toBe("python");
+    expect(languageFor("notes.txt")).toBeNull();
+  });
+  it("keeps a comment spanning lines colored on every line, and escapes the source", async () => {
+    const { highlightLines } = await import("../src/renderer/highlight");
+    const lines = highlightLines("/* one\n   two */\nconst a = '<b>';", "javascript");
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('<span class="hljs-comment">/* one</span>');
+    expect(lines[1]).toBe('<span class="hljs-comment">   two */</span>');
+    expect(lines[2]).toContain("&lt;b&gt;");
+    expect(lines[2]).not.toContain("<b>");
+    expect(highlightLines("<script>x</script>", null)).toEqual(["&lt;script&gt;x&lt;/script&gt;"]);
+  });
+});
+
+describe("side-by-side diff", () => {
+  it("pairs a run of removals with the additions after it, context on both sides", async () => {
+    const { parseDiff, splitRows } = await import("../src/renderer/FilePanel");
+    const { lines } = parseDiff(["@@ -1,4 +1,3 @@", " keep", "-old 1", "-old 2", "+new 1", " tail"].join("\n"));
+    expect(splitRows(lines)).toEqual([{ hunk: 0 }, { left: 1, right: 1 }, { left: 2, right: 4 }, { left: 3, right: null }, { left: 5, right: 5 }]);
+  });
+  it("highlights each hunk on its own, so an unclosed comment can't color the next one", async () => {
+    const { parseDiff, highlightDiff } = await import("../src/renderer/FilePanel");
+    const { lines } = parseDiff(["@@ -1,1 +1,1 @@", "-/* old", "+/* new", "@@ -9,1 +9,1 @@", " const a = 1;"].join("\n"));
+    const html = highlightDiff(lines, "a.ts");
+    expect(html[1]).toContain("hljs-comment");
+    expect(html[2]).toContain("hljs-comment");
+    expect(html[4]).not.toContain("hljs-comment");
+    expect(html[4]).toContain("hljs-keyword");
+  });
+});
