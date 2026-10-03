@@ -1377,7 +1377,6 @@ button.danger-btn:hover { color: #fff; background: var(--red); border-color: var
 .collab-inspector .ins-foot { align-items: center; }
 /* explorer editor: tabs over the file viewer */
 .fp-editor { display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; background: var(--bg-app); border-right: 1px solid var(--line-med); }
-.fp-tab.preview .fp-tab-name { font-style: italic; }
 .fp-tabbar { display: flex; flex-shrink: 0; overflow-x: auto; background: var(--bg-sidebar); border-bottom: 1px solid var(--line-soft); scrollbar-width: thin; }
 .fp-tab { display: flex; align-items: center; gap: 2px; height: 30px; padding: 0 2px 0 10px; max-width: 210px; flex-shrink: 0; border-right: 1px solid var(--line-soft); font: 400 11px var(--ui); color: var(--text-3); cursor: pointer; white-space: nowrap; }
 .fp-tab:hover { color: var(--text-1); }

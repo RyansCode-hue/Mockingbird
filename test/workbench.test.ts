@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fuzzyFilter, fuzzyMatch } from "../src/renderer/fuzzy";
-import { EMPTY_EDITOR, closeTab, openTab, pinTab, tabKey, MAX_TABS, type OpenFile } from "../src/renderer/editorTabs";
+import { EMPTY_EDITOR, closeTab, openTab, tabKey, MAX_TABS, type OpenFile } from "../src/renderer/editorTabs";
 
 const file = (path: string, extra: Partial<OpenFile> = {}): OpenFile => ({ sessionId: "s", root: "/r", path, mode: "file", ...extra });
 
@@ -29,38 +29,33 @@ describe("quick open matching", () => {
 
 describe("editor tabs", () => {
   it("opens a file once, and activates it when opened again", () => {
-    let s = openTab(EMPTY_EDITOR, file("a.ts"), false);
-    s = openTab(s, file("b.ts"), false);
-    s = openTab(s, file("a.ts"), false);
+    let s = openTab(EMPTY_EDITOR, file("a.ts"));
+    s = openTab(s, file("b.ts"));
+    s = openTab(s, file("a.ts"));
     expect(s.tabs.map((t) => t.path)).toEqual(["a.ts", "b.ts"]);
     expect(s.active).toBe(tabKey(file("a.ts")));
   });
 
-  it("replaces the preview tab with the next preview, and keeps a pinned one", () => {
-    let s = openTab(EMPTY_EDITOR, file("kept.ts"), false);
-    s = openTab(s, file("peek1.ts"), true);
-    s = openTab(s, file("peek2.ts"), true);
-    expect(s.tabs.map((t) => `${t.path}${t.preview ? "*" : ""}`)).toEqual(["kept.ts", "peek2.ts*"]);
-    s = pinTab(s, tabKey(file("peek2.ts")));
-    s = openTab(s, file("peek3.ts"), true);
-    expect(s.tabs.map((t) => `${t.path}${t.preview ? "*" : ""}`)).toEqual(["kept.ts", "peek2.ts", "peek3.ts*"]);
-    // opening a preview tab for real keeps it
-    s = openTab(s, file("peek3.ts"), false);
-    expect(s.tabs[2].preview).toBe(false);
+  it("gives every file its own tab", () => {
+    let s = openTab(EMPTY_EDITOR, file("a.ts"));
+    s = openTab(s, file("b.ts"));
+    s = openTab(s, file("c.ts"));
+    expect(s.tabs.map((t) => t.path)).toEqual(["a.ts", "b.ts", "c.ts"]);
+    expect(s.active).toBe(tabKey(file("c.ts")));
   });
 
   it("keeps a staged diff and the working-tree diff of a file as separate tabs", () => {
-    let s = openTab(EMPTY_EDITOR, file("a.ts", { mode: "diff", source: { kind: "scm", staged: true, untracked: false } }), false);
-    s = openTab(s, file("a.ts", { mode: "diff", source: { kind: "scm", staged: false, untracked: false } }), false);
+    let s = openTab(EMPTY_EDITOR, file("a.ts", { mode: "diff", source: { kind: "scm", staged: true, untracked: false } }));
+    s = openTab(s, file("a.ts", { mode: "diff", source: { kind: "scm", staged: false, untracked: false } }));
     expect(s.tabs).toHaveLength(2);
   });
 
   it("closes the oldest tab past the limit, and activates the neighbor of a closed active tab", () => {
     let s = EMPTY_EDITOR;
-    for (let i = 0; i <= MAX_TABS; i++) s = openTab(s, file(`f${i}.ts`), false);
+    for (let i = 0; i <= MAX_TABS; i++) s = openTab(s, file(`f${i}.ts`));
     expect(s.tabs).toHaveLength(MAX_TABS);
     expect(s.tabs[0].path).toBe("f1.ts");
-    s = openTab(s, file("f5.ts"), false);
+    s = openTab(s, file("f5.ts"));
     s = closeTab(s, tabKey(file("f5.ts")));
     expect(s.active).toBe(tabKey(file("f6.ts")));
     s = closeTab(s, tabKey(file(`f${MAX_TABS}.ts`)));

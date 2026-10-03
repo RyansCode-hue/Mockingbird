@@ -6,7 +6,7 @@ import { EditorDock, ExplorerTree } from "./FilePanel";
 import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
 import { QuickOpen } from "./QuickOpen";
-import { EMPTY_EDITOR, closeTab, openTab, pinTab, tabKey, updateTab } from "./editorTabs";
+import { EMPTY_EDITOR, closeTab, openTab, tabKey, updateTab } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
@@ -919,12 +919,12 @@ function App() {
 
   const focusedSession = sessions.find((s) => s.id === focused) ?? null;
 
-  /** Open a file of the focused session's folder in the editor; a preview tab is replaced by the next preview. */
-  const openInEditor = (path: string, o: { preview: boolean; mode?: "file" | "diff"; status?: string; source?: DiffSource; line?: number | null }) => {
+  /** Open a file of the focused session's folder in its own editor tab. */
+  const openInEditor = (path: string, o: { mode?: "file" | "diff"; status?: string; source?: DiffSource; line?: number | null } = {}) => {
     const s = focusedSession;
     if (!s) return;
     const reveal = o.line ? { line: o.line, at: Date.now() } : undefined;
-    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path, mode: o.mode ?? "file", status: o.status, source: o.source, reveal }, o.preview));
+    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path, mode: o.mode ?? "file", status: o.status, source: o.source, reveal }));
   };
   const activeTab = editor.tabs.find((t) => tabKey(t) === editor.active) ?? null;
   const activePath = activeTab && focusedSession && activeTab.root === focusedSession.cwd ? activeTab.path : null;
@@ -1168,7 +1168,7 @@ function App() {
             <ExplorerTree
               session={focusedSession}
               activePath={activePath}
-              onOpen={(path, status, preview) => openInEditor(path, { preview, status })}
+              onOpen={(path, status) => openInEditor(path, { status })}
             />
           )}
           {sideView === "scm" &&
@@ -1178,8 +1178,8 @@ function App() {
                 sessionId={focusedSession.id}
                 root={focusedSession.cwd}
                 selected={activePath}
-                onOpenDiff={(path, source, status) => openInEditor(path, { preview: true, mode: "diff", source, status: status === "C" ? "M" : status })}
-                onOpenFile={(path) => openInEditor(path, { preview: false })}
+                onOpenDiff={(path, source, status) => openInEditor(path, { mode: "diff", source, status: status === "C" ? "M" : status })}
+                onOpenFile={(path) => openInEditor(path)}
               />
             ) : (
               <div className="fp-note">Click into a session to see its changes.</div>
@@ -1191,7 +1191,7 @@ function App() {
               onState={setSearch}
               focusKey={searchFocus}
               onOpenConversation={openTranscript}
-              onOpenFile={(path, line, preview) => openInEditor(path, { preview, line })}
+              onOpenFile={(path, line) => openInEditor(path, { line })}
             />
           )}
           {sideView === "sessions" && (
@@ -1445,8 +1445,7 @@ function App() {
           editor={editor}
           onActivate={(key) => setEditor((e) => ({ ...e, active: key }))}
           onClose={(key) => setEditor((e) => closeTab(e, key))}
-          onPin={(key) => setEditor((e) => pinTab(e, key))}
-          onMode={(key, mode) => setEditor((e) => pinTab(updateTab(e, key, { mode }), key))}
+          onMode={(key, mode) => setEditor((e) => updateTab(e, key, { mode }))}
           onInsert={(text) => {
             if (!focusedSession) return;
             window.mb.sessionWrite(focusedSession.id, text);
@@ -1853,7 +1852,7 @@ function App() {
       <DragLabel />
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
       {modal === "quickopen" && (
-        <QuickOpen session={focusedSession} onClose={() => setModal(null)} onOpen={(path, line, preview) => openInEditor(path, { preview, line })} />
+        <QuickOpen session={focusedSession} onClose={() => setModal(null)} onOpen={(path, line) => openInEditor(path, { line })} />
       )}
       {modal === "update" && (
         <UpdatePanel

@@ -78,7 +78,7 @@ export function SearchView({
   /** Changes each time ⌘⇧F is pressed, to focus and select the query. */
   focusKey: number;
   onOpenConversation: (hit: TranscriptHit) => Promise<string | null>;
-  onOpenFile: (path: string, line: number, preview: boolean) => void;
+  onOpenFile: (path: string, line: number) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -142,10 +142,10 @@ export function SearchView({
     setBusy(false);
     if (err) conv.setError(err);
   };
-  const openAt = (i: number, preview: boolean) => {
+  const openAt = (i: number) => {
     const h = flat[i];
     if (!h) return;
-    if ("line" in h) onOpenFile(h.path, h.line, preview);
+    if ("line" in h) onOpenFile(h.path, h.line);
     else openConv(h);
   };
 
@@ -174,7 +174,7 @@ export function SearchView({
               e.preventDefault();
               setSel((s) => Math.max(0, s - 1));
             }
-            if (e.key === "Enter") openAt(sel, !(e.metaKey || e.ctrlKey));
+            if (e.key === "Enter") openAt(sel);
             if (e.key === "Escape" && state.q) set({ q: "" });
           }}
         />
@@ -243,8 +243,7 @@ export function SearchView({
                           className={`sv-hit sv-line ${i === sel ? "sel" : ""}`}
                           title={`${p}:${h.line}`}
                           onMouseEnter={() => setSel(i)}
-                          onClick={() => onOpenFile(h.path, h.line, true)}
-                          onDoubleClick={() => onOpenFile(h.path, h.line, false)}
+                          onClick={() => onOpenFile(h.path, h.line)}
                         >
                           <span className="sv-ln">{h.line}</span>
                           <span className="sv-tx">

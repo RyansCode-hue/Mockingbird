@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges } from "../shared/types";
 import { highlightLines, languageFor } from "./highlight";
-import { tabKey, type EditorState, type OpenFile, type Tab } from "./editorTabs";
+import { tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 
 type Result<T> = T | { error: string };
@@ -31,7 +31,7 @@ const SLIDE_MS = 200;
 
 /**
  * The Explorer view's tree for the focused session's folder. Changed files and
- * the folders holding them are marked; a click opens a file in a preview tab,
+ * the folders holding them are marked; a click opens a file in its own tab.
  * a double-click keeps it open. Only mounted while the view shows, so a hidden
  * explorer polls nothing.
  */
@@ -43,7 +43,7 @@ export function ExplorerTree({
   session: SessionInfo | null;
   /** The active editor tab's file, if it's in this folder: highlighted in the tree. */
   activePath: string | null;
-  onOpen: (path: string, status: GitChange["status"] | undefined, preview: boolean) => void;
+  onOpen: (path: string, status: GitChange["status"] | undefined) => void;
 }) {
   // expanded folders are remembered per folder-on-disk, so flipping between
   // sessions restores each tree the way it was left
@@ -128,8 +128,7 @@ export function ExplorerTree({
             className={`fp-row ${cls} ${activePath === e.path ? "sel" : ""}`}
             style={{ paddingLeft: 8 + depth * 12 }}
             title={e.path}
-            onClick={() => (e.dir ? toggleDir(e.path) : onOpen(e.path, ch?.status, true))}
-            onDoubleClick={() => !e.dir && onOpen(e.path, ch?.status, false)}
+            onClick={() => (e.dir ? toggleDir(e.path) : onOpen(e.path, ch?.status))}
           >
             <span className="fp-tw">{e.dir ? (expanded.has(e.path) ? "▾" : "▸") : ""}</span>
             <span className="fp-name">{e.name}</span>
@@ -174,14 +173,12 @@ export function EditorDock({
   editor,
   onActivate,
   onClose,
-  onPin,
   onMode,
   onInsert,
 }: {
   editor: EditorState;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
-  onPin: (key: string) => void;
   onMode: (key: string, mode: "file" | "diff") => void;
   onInsert: (text: string) => void;
 }) {
@@ -195,7 +192,7 @@ export function EditorDock({
   }, []);
   const open = editor.tabs.find((t) => tabKey(t) === editor.active) ?? null;
   // the last tab shown stays rendered while the dock slides closed
-  const [shown, setShown] = useState<Tab | null>(open);
+  const [shown, setShown] = useState<OpenFile | null>(open);
   const [entered, setEntered] = useState(false);
   useEffect(() => {
     if (open) {
@@ -240,10 +237,9 @@ export function EditorDock({
                 key={key}
                 role="tab"
                 aria-selected={key === editor.active}
-                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.preview ? "preview" : ""} ${t.status ? `st-${t.status}` : ""}`}
-                title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : ""}${t.preview ? " — preview: double-click to keep it open" : ""}`}
+                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""}`}
+                title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : ""}`}
                 onClick={() => onActivate(key)}
-                onDoubleClick={() => onPin(key)}
                 onAuxClick={(e) => e.button === 1 && onClose(key)}
               >
                 <span className="fp-tab-name">

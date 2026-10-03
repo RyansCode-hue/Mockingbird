@@ -13,38 +13,27 @@ export interface OpenFile {
   reveal?: { line: number; at: number };
 }
 
-export interface Tab extends OpenFile {
-  /** A preview tab is replaced by the next file opened with a single click; opening it for real keeps it. */
-  preview: boolean;
-}
-
 export interface EditorState {
-  tabs: Tab[];
+  tabs: OpenFile[];
   active: string | null;
 }
 
 export const EMPTY_EDITOR: EditorState = { tabs: [], active: null };
-export const MAX_TABS = 12;
+export const MAX_TABS = 24;
 
 /** One tab per file per view: a staged diff and the working-tree diff of a file are different tabs, as in VS Code. */
 export const tabKey = (f: OpenFile) =>
   `${f.root}:${f.path}:${f.source?.kind ?? "file"}:${f.source && "staged" in f.source && f.source.staged ? "staged" : ""}`;
 
 /**
- * Open a file, VS Code-style: an open tab is activated (and updated); a preview
- * open replaces the current preview tab in place; past MAX_TABS the oldest
- * tab that isn't the new one closes.
+ * Open a file in its own tab: one already open is activated (and updated);
+ * past MAX_TABS the oldest tab closes.
  */
-export function openTab(s: EditorState, f: OpenFile, preview: boolean): EditorState {
+export function openTab(s: EditorState, f: OpenFile): EditorState {
   const key = tabKey(f);
   const i = s.tabs.findIndex((t) => tabKey(t) === key);
-  if (i >= 0) {
-    const tabs = s.tabs.map((t, j) => (j === i ? { ...t, ...f, preview: t.preview && preview } : t));
-    return { tabs, active: key };
-  }
-  const tab: Tab = { ...f, preview };
-  const p = preview ? s.tabs.findIndex((t) => t.preview) : -1;
-  const tabs = p >= 0 ? s.tabs.map((t, j) => (j === p ? tab : t)) : [...s.tabs, tab];
+  if (i >= 0) return { tabs: s.tabs.map((t, j) => (j === i ? { ...t, ...f } : t)), active: key };
+  const tabs = [...s.tabs, f];
   return { tabs: tabs.length > MAX_TABS ? tabs.slice(-MAX_TABS) : tabs, active: key };
 }
 
@@ -55,11 +44,6 @@ export function closeTab(s: EditorState, key: string): EditorState {
   const tabs = s.tabs.filter((_, j) => j !== i);
   const active = key !== s.active ? s.active : tabs.length ? tabKey(tabs[Math.min(i, tabs.length - 1)]) : null;
   return { tabs, active };
-}
-
-/** Keep a tab: it stops being the preview tab. */
-export function pinTab(s: EditorState, key: string): EditorState {
-  return { ...s, tabs: s.tabs.map((t) => (tabKey(t) === key ? { ...t, preview: false } : t)) };
 }
 
 /** Change a tab in place (file ⇄ diff); its key is unchanged. */

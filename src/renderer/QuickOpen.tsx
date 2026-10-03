@@ -31,7 +31,7 @@ export function QuickOpen({
 }: {
   session: SessionInfo | null;
   onClose: () => void;
-  onOpen: (path: string, line: number | null, preview: boolean) => void;
+  onOpen: (path: string, line: number | null) => void;
 }) {
   const [q, setQ] = useState("");
   const [list, setList] = useState<Result<FileList> | null>(null);
@@ -54,10 +54,10 @@ export function QuickOpen({
     listRef.current?.querySelector(".row.sel")?.scrollIntoView({ block: "nearest" });
   }, [sel]);
 
-  const open = (i: number, preview: boolean) => {
+  const open = (i: number) => {
     const m = matches[i];
     if (!m) return;
-    onOpen(m.path, line, preview);
+    onOpen(m.path, line);
     onClose();
   };
 
@@ -82,7 +82,7 @@ export function QuickOpen({
                 e.preventDefault();
                 setSel((s) => Math.max(0, s - 1));
               }
-              if (e.key === "Enter") open(sel, !(e.metaKey || e.ctrlKey));
+              if (e.key === "Enter") open(sel);
             }}
           />
         </div>
@@ -99,7 +99,7 @@ export function QuickOpen({
             matches.map((m, i) => {
               const cut = m.path.lastIndexOf("/") + 1;
               return (
-                <div key={m.path} className={`row ${i === sel ? "sel" : ""}`} onMouseEnter={() => setSel(i)} onClick={() => open(i, true)}>
+                <div key={m.path} className={`row ${i === sel ? "sel" : ""}`} onMouseEnter={() => setSel(i)} onClick={() => open(i)}>
                   <span className="lab">
                     <Highlighted text={m.path.slice(cut)} positions={m.positions} offset={cut} />
                   </span>
@@ -117,7 +117,7 @@ export function QuickOpen({
               ? `${list.files.length.toLocaleString()} files${list.truncated ? " (first 50,000)" : ""}${list.unreadable ? ` · ${list.unreadable} folder${list.unreadable === 1 ? "" : "s"} unreadable` : ""}`
               : ""}
           </span>
-          <span className="right">↑↓ choose · ↵ open · ⌘↵ keep open · esc close</span>
+          <span className="right">↑↓ choose · ↵ open · esc close</span>
         </div>
       </div>
     </>
