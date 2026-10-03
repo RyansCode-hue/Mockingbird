@@ -18,7 +18,7 @@ import { DragLabel, beginDrag, cue, dragging, installDragListeners, overTarget, 
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon } from "./Icons";
 import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog } from "../shared/types";
-import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
+import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, type OptionalTab } from "../shared/types";
 
 declare global {
   interface Window {
@@ -143,6 +143,10 @@ function App() {
     []
   );
   useEffect(() => localStorage.setItem("mb.tab", JSON.stringify(tab)), [tab]);
+  // tabs turned off in Settings leave the top bar (and the palette); one opened
+  // anyway — by a notification or a search hit — shows while it's the active tab
+  const [hiddenTabs, setHiddenTabs] = useState<OptionalTab[]>([]);
+  const shownTab = (t: Tab) => !(hiddenTabs as Tab[]).includes(t);
   const [theme, setTheme] = useState<"dark" | "light">(() => loadLS<"dark" | "light">("mb.theme", "dark"));
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -302,6 +306,9 @@ function App() {
   // popup was already seen) are marked set up without being interrupted.
   useEffect(() => {
     window.mb.getSettings().then(async (s: Settings) => {
+      const hidden = s.hiddenTabs ?? [];
+      setHiddenTabs(hidden);
+      setTab((t) => ((hidden as Tab[]).includes(t) ? "sessions" : t));
       if (s.setupDone) return;
       if (loadLS("mb.helpSeen", false)) await window.mb.setSettings({ ...s, setupDone: true });
       else {
@@ -978,7 +985,7 @@ function App() {
           {appVersion && <span className="ver">v{appVersion}</span>}
         </span>
         <span className="tabs">
-          {(["sessions", "dashboard", "worktracker", "collaborate", "settings"] as const).map((t) => (
+          {(["sessions", "dashboard", "worktracker", "collaborate", "settings"] as const).filter((t) => shownTab(t) || tab === t).map((t) => (
             <button key={t} className={`tab ${tab === t ? "on" : ""}`} onClick={() => setTab(t)}>
               {TAB_LABELS[t]}
               {t === "worktracker" && debriefSessions.some((s) => s.status === "waiting") && (
@@ -1071,6 +1078,7 @@ function App() {
             onSetup={() => setModal("setup")}
             onUpdate={() => setModal("update")}
             jump={settingsJump}
+            onHiddenTabs={setHiddenTabs}
           />
         )}
         {tab === "collaborate" && (
@@ -1738,7 +1746,7 @@ function App() {
             { label: "Restart all agent sessions", run: () => setModal("restart") },
             { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
             { label: "Sessions grid", run: () => setTab("sessions") },
-            { label: "Dashboard — ticket board", run: () => setTab("dashboard") },
+            ...(shownTab("dashboard") ? [{ label: "Dashboard — ticket board", run: () => setTab("dashboard") }] : []),
             { label: "Broadcast / CLAUDE.md (control room)", kbd: "⌘⇧B", run: openControlRoom },
             { label: "Go to file…", kbd: "⌘P", run: () => { setTab("sessions"); setModal("quickopen"); } },
             { label: "Search — conversations, or the focused session's files", kbd: "⌘⇧F", run: () => showView("search") },
@@ -1746,9 +1754,14 @@ function App() {
             { label: "Source Control — stage, commit, push", kbd: "⌃⇧G", run: () => showView("scm") },
             { label: "Settings", run: () => setTab("settings") },
             { label: "Import sessions", run: () => setModal("import") },
-            { label: "WorkTracker — debriefs", run: () => setTab("worktracker") },
-            { label: "Morning brief", run: () => { window.mb.runDebrief("morning"); setTab("worktracker"); } },
-            { label: "4pm wrap-up", run: () => { window.mb.runDebrief("wrapUp"); setTab("worktracker"); } },
+            ...(shownTab("worktracker")
+              ? [
+                  { label: "WorkTracker — debriefs", run: () => setTab("worktracker") },
+                  { label: "Morning brief", run: () => { window.mb.runDebrief("morning"); setTab("worktracker"); } },
+                  { label: "4pm wrap-up", run: () => { window.mb.runDebrief("wrapUp"); setTab("worktracker"); } },
+                ]
+              : []),
+            ...(shownTab("collaborate") ? [{ label: "Collaborate — rooms", run: () => setTab("collaborate") }] : []),
             ...(focusedSession
               ? [
                   {
@@ -3694,6 +3707,7 @@ function SettingsView({
   onSetup,
   onUpdate,
   jump,
+  onHiddenTabs,
 }: {
   sessions: SessionInfo[];
   theme: "dark" | "light";
@@ -3703,6 +3717,7 @@ function SettingsView({
   onUpdate: () => void;
   /** Open a specific section, e.g. the control room from ⌘⇧B. */
   jump: { section: SettingsSection; n: number } | null;
+  onHiddenTabs: (tabs: OptionalTab[]) => void;
 }) {
   const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? loadLS("mb.setSection", "general"));
   useEffect(() => {
@@ -3793,6 +3808,28 @@ function SettingsView({
               <span className="seg">
                 <button className={theme === "dark" ? "on" : ""} onClick={() => onTheme("dark")}>Dark</button>
                 <button className={theme === "light" ? "on" : ""} onClick={() => onTheme("light")}>Light</button>
+              </span>
+            </SetRow>
+            <SetRow title="Tabs" note="Turned-off tabs leave the top bar and the command palette. A notification or search result can still open one; WorkTracker debriefs and Collaborate rooms keep running.">
+              <span className="tab-toggles">
+                {OPTIONAL_TABS.map((t) => {
+                  const hidden = s.hiddenTabs ?? [];
+                  const on = !hidden.includes(t);
+                  return (
+                    <label key={t} className="tab-toggle">
+                      <Toggle
+                        label={`Show ${TAB_LABELS[t]}`}
+                        on={on}
+                        onChange={(v) => {
+                          const next = v ? hidden.filter((x) => x !== t) : [...hidden, t];
+                          upd({ hiddenTabs: next });
+                          onHiddenTabs(next);
+                        }}
+                      />
+                      {TAB_LABELS[t]}
+                    </label>
+                  );
+                })}
               </span>
             </SetRow>
             <SetRow title="Notifications" note="When a session finishes or needs you">

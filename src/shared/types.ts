@@ -197,7 +197,13 @@ export interface Settings {
   debriefs: { enabled: boolean; morning: string; wrapUp: string }; // "HH:MM"
   notifications: boolean;
   updateSource?: string | null; // the clone in-app updates pull and build; found under repoRoots when unset
+  /** Top-bar tabs turned off in Settings; they can still open from a notification or a search result. */
+  hiddenTabs?: OptionalTab[];
 }
+
+/** The top-bar tabs that can be turned off. Sessions and Settings always show. */
+export type OptionalTab = "dashboard" | "worktracker" | "collaborate";
+export const OPTIONAL_TABS: OptionalTab[] = ["dashboard", "worktracker", "collaborate"];
 
 /** M modified · A added · D deleted · R renamed · U untracked · C conflicted */
 export type ScmStatusCode = "M" | "A" | "D" | "R" | "U" | "C";
