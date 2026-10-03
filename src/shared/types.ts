@@ -213,6 +213,22 @@ export interface ScmStatus {
   conflicted: ScmEntry[];
 }
 
+/** A model a CLI can run, as the CLI itself describes it. */
+export interface ModelChoice {
+  id: string; // what --model gets: an alias ("opus"), or a full id
+  label: string;
+  description?: string;
+  efforts?: string[]; // this model's own effort/reasoning levels (Codex lists them)
+  defaultEffort?: string;
+  group?: string; // "Latest", "Your account", "Codex models", "Recently used"
+}
+
+/** Every model and effort level each CLI offers on this Mac. */
+export interface ModelCatalog {
+  claude: { models: ModelChoice[]; efforts: string[] };
+  codex: { models: ModelChoice[]; efforts: string[] };
+}
+
 /** A conversation that matched a search across every transcript on this Mac, and how to open it. */
 export interface TranscriptHit {
   id: string; // the agent's conversation id

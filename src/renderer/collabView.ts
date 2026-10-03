@@ -1,7 +1,15 @@
 import type { AgentKind, CollabMessage, CollabModel, CollabParticipant, CollabParticipantSpec, CollabRoom } from "../shared/types";
 
-/** The models a room can seat, and the effort levels each CLI takes. */
-export type Catalog = { presets: CollabModel[]; efforts: Record<AgentKind, string[]> };
+/** The models a room can seat (read from the CLIs), the seats a new room starts with, and each CLI's effort levels. */
+export type Catalog = { presets: CollabModel[]; defaults?: CollabModel[]; efforts: Record<AgentKind, string[]> };
+
+/** The catalog as dropdown choices, grouped by CLI, plus "Other model id…". */
+export function presetOptions(catalog: Catalog, custom: string): { value: string; label: string; group?: string }[] {
+  return [
+    ...catalog.presets.map((m) => ({ value: m.key, label: m.label, group: m.agent === "codex" ? "Codex" : "Claude" })),
+    { value: custom, label: "Other model id…", group: "Other" },
+  ];
+}
 /** The value the model picker uses for "Other model…". */
 export const CUSTOM_MODEL = "__custom";
 /** IPC replies carry failures as { error }. */

@@ -7,11 +7,12 @@ import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
 import { TranscriptSearch, Snippet } from "./TranscriptSearch";
+import { Pick, Select } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
 
 declare global {
@@ -2513,7 +2514,7 @@ function DashboardBoard({
         {boards && boards.length > 0 && (
           <>
             <span className="flbl">Board</span>
-            <select
+            <Pick
               className="board-pick"
               value={board?.name ?? ""}
               title={boardsInfo && !("error" in boardsInfo) ? `${boardsInfo.team}'s boards in Azure DevOps` : undefined}
@@ -2522,7 +2523,7 @@ function DashboardBoard({
               {boards.map((b) => (
                 <option key={b.id} value={b.name}>{b.name}</option>
               ))}
-            </select>
+            </Pick>
           </>
         )}
         <span className="who-wrap">
@@ -2708,11 +2709,11 @@ function DashboardBoard({
               </div>
               <div className="wi-form bd-side">
                 <label>State</label>
-                <select value={state} onChange={(e) => setState(e.target.value)}>
+                <Pick value={state} onChange={(e) => setState(e.target.value)}>
                   {[...new Set([state, ...typeStates])].map((s) => (
                     <option key={s} value={s}>{s}</option>
                   ))}
-                </select>
+                </Pick>
                 <div className="wi-sec">Sessions on this ticket</div>
                 {linked.length === 0 && <div className="wi-empty">None yet.</div>}
                 {linked.map((s) => (
@@ -2723,12 +2724,12 @@ function DashboardBoard({
                   </div>
                 ))}
                 <label>New session</label>
-                <select value={repoPath} onChange={(e) => setRepoPath(e.target.value)}>
+                <Pick value={repoPath} onChange={(e) => setRepoPath(e.target.value)}>
                   <option value="">repo…</option>
                   {repos.map((r) => (
                     <option key={r.path} value={r.path}>{r.name}</option>
                   ))}
-                </select>
+                </Pick>
                 <div className="check-line" style={{ marginTop: 6 }}>
                   <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
                   <label htmlFor="dash-wt" style={{ margin: 0 }}>
@@ -2757,7 +2758,7 @@ function DashboardBoard({
                       title="Short name — becomes the branch/worktree suffix"
                     />
                     {branchInfo && branchInfo.branches.length > 0 && (
-                      <select
+                      <Pick
                         value={baseBranch}
                         onChange={(e) => setBaseBranch(e.target.value)}
                         style={{ marginTop: 6 }}
@@ -2767,11 +2768,11 @@ function DashboardBoard({
                         {branchInfo.branches.map((b) => (
                           <option key={b} value={b}>base: origin/{b}</option>
                         ))}
-                      </select>
+                      </Pick>
                     )}
                   </>
                 ) : (
-                  <select
+                  <Pick
                     value={existingBranch}
                     onChange={(e) => setExistingBranch(e.target.value)}
                     style={{ marginTop: 6 }}
@@ -2780,7 +2781,7 @@ function DashboardBoard({
                     {(branchInfo?.branches ?? []).map((b) => (
                       <option key={b} value={b}>{b}</option>
                     ))}
-                  </select>
+                  </Pick>
                 )}
                 <div className="check-line">
                   <input
@@ -2813,12 +2814,12 @@ function DashboardBoard({
                 {attachable.length > 0 && (
                   <>
                     <label>Attach existing</label>
-                    <select value={attachId} onChange={(e) => setAttachId(e.target.value)}>
+                    <Pick value={attachId} onChange={(e) => setAttachId(e.target.value)}>
                       <option value="">choose session…</option>
                       {attachable.map((s) => (
                         <option key={s.id} value={s.id}>{s.ticketTitle ?? s.title}</option>
                       ))}
-                    </select>
+                    </Pick>
                     <button
                       className="outline"
                       style={{ marginTop: 7 }}
@@ -2916,12 +2917,12 @@ function GroupDialog({
           you click Move.
         </div>
         <label>Group</label>
-        <select value={top} onChange={(e) => setTop(e.target.value)}>
+        <Pick value={top} onChange={(e) => setTop(e.target.value)}>
           {tops.map((t) => (
             <option key={t} value={t}>{t}</option>
           ))}
           <option value="__new__">new group…</option>
-        </select>
+        </Pick>
         {isNew && (
           <input
             type="text"
@@ -3286,12 +3287,12 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
             {dirty && <span className="unsaved">unsaved</span>}
             {ioError && <span className="err-inline">{ioError}</span>}
           </div>
-          <select value={target} onChange={(e) => setTarget(e.target.value)}>
+          <Pick value={target} onChange={(e) => setTarget(e.target.value)}>
             <option value="~/.claude/CLAUDE.md">global — ~/.claude/CLAUDE.md</option>
             {repoPaths.map((p) => (
               <option key={p} value={`${p}/CLAUDE.md`}>{p.split("/").pop()} — {p}/CLAUDE.md</option>
             ))}
-          </select>
+          </Pick>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />
           <div className="ft">
             <span className="diff">{dirty ? `${changedLines} line${changedLines === 1 ? "" : "s"} changed` : "no changes"}</span>
@@ -3984,6 +3985,17 @@ function NewSessionModal({
   const [effort, setEffort] = useState(() => loadLS("mb.newEffort", ""));
   const [codexModel, setCodexModel] = useState(() => loadLS("mb.newCodexModel", ""));
   const [codexEffort, setCodexEffort] = useState(() => loadLS("mb.newCodexEffort", ""));
+  // the models and effort levels the CLIs offer on this Mac (read from the CLIs, not built in)
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  useEffect(() => {
+    window.mb.modelCatalog().then((c: ModelCatalog | { error: string }) => !("error" in c) && setCatalog(c));
+  }, []);
+  const [codexCustom, setCodexCustom] = useState(false);
+  useEffect(() => {
+    // a saved model the catalog doesn't list is a custom id: show it in the text box
+    if (catalog && codexModel && !catalog.codex.models.some((m) => m.id === codexModel)) setCodexCustom(true);
+  }, [catalog]);
+  const codexInfo = catalog?.codex.models.find((m) => m.id === codexModel);
   useEffect(() => localStorage.setItem("mb.newModel", JSON.stringify(model)), [model]);
   useEffect(() => localStorage.setItem("mb.newModelCustom", JSON.stringify(modelCustom)), [modelCustom]);
   useEffect(() => localStorage.setItem("mb.newEffort", JSON.stringify(effort)), [effort]);
@@ -4145,24 +4157,34 @@ function NewSessionModal({
         {launch === "codex" && (
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <div style={{ flex: 1 }}>
-              <label>Model <span className="wi-note">blank = whatever codex is set to</span></label>
-              <input
-                type="text"
-                placeholder="e.g. gpt-5.6-sol"
-                value={codexModel}
-                onChange={(e) => setCodexModel(e.target.value)}
+              <label>Model</label>
+              <Select
+                value={codexCustom ? "__custom" : codexModel}
+                placeholder={codexModel || "Default"}
+                options={[
+                  { value: "", label: "Default", description: "Whatever codex is set to" },
+                  ...(catalog?.codex.models ?? []).map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
+                  { value: "__custom", label: "Other model id…", group: "Other" },
+                ]}
+                onChange={(v) => {
+                  setCodexCustom(v === "__custom");
+                  if (v !== "__custom") setCodexModel(v);
+                }}
               />
+              {codexCustom && (
+                <input type="text" placeholder="e.g. gpt-6-luna" value={codexModel} onChange={(e) => setCodexModel(e.target.value)} style={{ marginTop: 6 }} />
+              )}
             </div>
             <div style={{ flex: 1 }}>
               <label>Reasoning</label>
-              <select value={codexEffort} onChange={(e) => setCodexEffort(e.target.value)}>
-                <option value="">default</option>
-                <option value="minimal">minimal</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-              </select>
+              <Select
+                value={codexEffort}
+                options={[
+                  { value: "", label: codexInfo?.defaultEffort ? `Default (${codexInfo.defaultEffort})` : "Default" },
+                  ...(codexInfo?.efforts ?? catalog?.codex.efforts ?? ["low", "medium", "high", "xhigh"]).map((e) => ({ value: e, label: e })),
+                ]}
+                onChange={setCodexEffort}
+              />
             </div>
           </div>
         )}
@@ -4170,17 +4192,20 @@ function NewSessionModal({
           <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
             <div style={{ flex: 1 }}>
               <label>Model</label>
-              <select value={model} onChange={(e) => setModel(e.target.value)}>
-                <option value="">default — whatever claude is set to</option>
-                <option value="opus">Opus</option>
-                <option value="sonnet">Sonnet</option>
-                <option value="haiku">Haiku</option>
-                <option value="__custom">custom model id…</option>
-              </select>
+              <Select
+                value={model}
+                placeholder={model || "Default"}
+                options={[
+                  { value: "", label: "Default", description: "Whatever claude is set to" },
+                  ...(catalog?.claude.models ?? []).map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
+                  { value: "__custom", label: "Other model id…", group: "Other" },
+                ]}
+                onChange={setModel}
+              />
               {model === "__custom" && (
                 <input
                   type="text"
-                  placeholder="e.g. claude-fable-5"
+                  placeholder="e.g. claude-sonnet-5-5"
                   value={modelCustom}
                   onChange={(e) => setModelCustom(e.target.value)}
                   style={{ marginTop: 6 }}
@@ -4189,14 +4214,11 @@ function NewSessionModal({
             </div>
             <div style={{ flex: 1 }}>
               <label>Effort</label>
-              <select value={effort} onChange={(e) => setEffort(e.target.value)}>
-                <option value="">default</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-                <option value="max">max</option>
-              </select>
+              <Select
+                value={effort}
+                options={[{ value: "", label: "Default" }, ...(catalog?.claude.efforts ?? ["low", "medium", "high", "xhigh", "max"]).map((e) => ({ value: e, label: e }))]}
+                onChange={setEffort}
+              />
             </div>
           </div>
         )}
@@ -4223,7 +4245,7 @@ function NewSessionModal({
           </span>
         </label>
         <div style={{ display: "flex", gap: 10 }}>
-          <select
+          <Pick
             style={{ flex: "0 0 34%" }}
             value={who}
             onChange={(e) => {
@@ -4239,8 +4261,8 @@ function NewSessionModal({
                 {p}
               </option>
             ))}
-          </select>
-          <select
+          </Pick>
+          <Pick
             style={{ flex: 1 }}
             value={ticketSel}
             onChange={(e) => pickTicket(e.target.value)}
@@ -4256,7 +4278,7 @@ function NewSessionModal({
                 ))}
               </optgroup>
             ))}
-          </select>
+          </Pick>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ flex: 1 }}>
@@ -4271,7 +4293,7 @@ function NewSessionModal({
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ flex: 1 }}>
             <label>Group</label>
-            <select
+            <Pick
               value={grpSel}
               onChange={(e) => {
                 setGrpSel(e.target.value);
@@ -4288,7 +4310,7 @@ function NewSessionModal({
                 </option>
               ))}
               <option value="__new">new group…</option>
-            </select>
+            </Pick>
             {grpSel === "__new" && (
               <input
                 type="text"
@@ -4305,7 +4327,7 @@ function NewSessionModal({
               Workspace
               {effSub && <span className="hint-inline"> → opens as a tab</span>}
             </label>
-            <select value={wsSel} onChange={(e) => setWsSel(e.target.value)} disabled={!effTop}>
+            <Pick value={wsSel} onChange={(e) => setWsSel(e.target.value)} disabled={!effTop}>
               <option value="">{effTop ? "none — its own pane" : "pick a group first"}</option>
               {(grpSel && grpSel !== "__new" ? subsOf(grpSel) : []).map((w) => (
                 <option key={w} value={w}>
@@ -4313,7 +4335,7 @@ function NewSessionModal({
                 </option>
               ))}
               <option value="__new">new workspace…</option>
-            </select>
+            </Pick>
             {wsSel === "__new" && (
               <input
                 type="text"
@@ -4340,7 +4362,7 @@ function NewSessionModal({
           </label>
         </div>
         {sel && branch && branchInfo && branchInfo.branches.length > 0 && (
-          <select
+          <Pick
             value={baseBranch}
             onChange={(e) => setBaseBranch(e.target.value)}
             style={{ marginTop: 8 }}
@@ -4350,7 +4372,7 @@ function NewSessionModal({
             {branchInfo.branches.map((b) => (
               <option key={b} value={b}>base: origin/{b}</option>
             ))}
-          </select>
+          </Pick>
         )}
         {ticketSel && isAgent && (
           <div className="check-line">
@@ -4371,7 +4393,7 @@ function NewSessionModal({
               no repo — starts a plain {agentLabel} chat (fully tracked: resumable, restartable)
             </span>
           )}
-          <button className="primary" onClick={create}>
+          <button className="primary cta" onClick={create}>
             {launch === "shell" ? "Open terminal" : sel ? `Start ${agentLabel.toLowerCase()}` : "Start chat"}
           </button>
         </div>

@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentKind, CollabMessage, CollabMode, CollabParticipantSpec, CollabPermissionRequest, CollabRoom, RepoEntry } from "../shared/types";
-import { CUSTOM_MODEL as CUSTOM, agreement, initials, isErr, isLong, roundsGrid, summaryOf, threadItems, waited, type Catalog } from "./collabView";
+import { CUSTOM_MODEL as CUSTOM, agreement, initials, isErr, isLong, presetOptions, roundsGrid, summaryOf, threadItems, waited, type Catalog } from "./collabView";
 import { ModelsSection } from "./CollabModels";
-import { MenuButton } from "./Menu";
+import { MenuButton, Pick, Select } from "./Menu";
 import { PanelRightIcon } from "./Icons";
 
 const MODES: { id: CollabMode; label: string; note: string }[] = [
@@ -135,7 +135,7 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
   const [repo, setRepo] = useState("");
   const [mode, setMode] = useState<CollabMode>("auto");
   const [error, setError] = useState("");
-  useEffect(() => setSeats(catalog.presets.map((m) => ({ label: m.label, agent: m.agent, model: m.model, effort: null, readsCode: true }))), [catalog]);
+  useEffect(() => setSeats((catalog.defaults ?? catalog.presets).map((m) => ({ label: m.label, agent: m.agent, model: m.model, effort: null, readsCode: true }))), [catalog]);
   const create = async () => {
     const r: Result<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, participants: seats, mode });
     if (isErr(r)) return setError(r.error);
@@ -609,11 +609,11 @@ function Inspector({
           <div className="ins-head">Approvals</div>
           <label className="ins-row" title="How long a model's request waits for you before it counts as no; the model's turn waits with it">
             Wait for my answer
-            <select value={room.askTimeoutMin ?? 10} onChange={(e) => call("timeout", () => window.mb.collabAskTimeout(room.id, Number(e.target.value)))}>
+            <Pick value={room.askTimeoutMin ?? 10} onChange={(e) => call("timeout", () => window.mb.collabAskTimeout(room.id, Number(e.target.value)))}>
               {[5, 10, 15, 20].map((m) => (
                 <option key={m} value={m}>{m} min</option>
               ))}
-            </select>
+            </Pick>
           </label>
           {!!room.allowKinds?.length && <div className="ins-note">Always allowed here:</div>}
           {!!room.allowKinds?.length && (
@@ -723,7 +723,7 @@ function SeatEditor({
     onChange(next);
   };
   const presetOf = (s: CollabParticipantSpec) => catalog.presets.find((m) => m.agent === s.agent && m.model === s.model)?.key ?? CUSTOM;
-  const unused = catalog.presets.find((m) => !seats.some((s) => s.agent === m.agent && s.model === m.model));
+  const unused = [...(catalog.defaults ?? []), ...catalog.presets].find((m) => !seats.some((s) => s.agent === m.agent && s.model === m.model));
   const readers = seats.filter((s) => s.readsCode).length;
   return (
     <div className="seat-editor">
@@ -732,26 +732,28 @@ function SeatEditor({
         return (
           <div key={s.key ?? `new-${i}`} className="seat-row">
             <span className={`seat-dot c-${i % 6}`} />
-            <select
-              value={preset}
-              title={s.key ? "Changing the model starts it on a fresh conversation" : undefined}
-              onChange={(e) => {
-                const m = catalog.presets.find((x) => x.key === e.target.value);
-                if (m) set(i, { label: m.label, agent: m.agent, model: m.model, effort: null, key: undefined });
-                else set(i, { label: "", model: "", key: undefined });
-              }}
-            >
-              {catalog.presets.map((m) => (
-                <option key={m.key} value={m.key}>{m.label}</option>
-              ))}
-              <option value={CUSTOM}>Other model…</option>
-            </select>
+            <span className="seat-pick">
+              <Select
+                value={preset}
+                placeholder={s.label || "Choose a model"}
+                title={s.key ? "Changing the model starts it on a fresh conversation" : undefined}
+                options={presetOptions(catalog, CUSTOM)}
+                onChange={(v) => {
+                  const m = catalog.presets.find((x) => x.key === v);
+                  if (m) set(i, { label: m.label, agent: m.agent, model: m.model, effort: null, key: undefined });
+                  else set(i, { label: "", model: "", key: undefined });
+                }}
+              />
+            </span>
             {preset === CUSTOM && (
               <>
-                <select value={s.agent} onChange={(e) => set(i, { agent: e.target.value as AgentKind, effort: null, key: undefined })}>
-                  <option value="claude">Claude Code</option>
-                  <option value="codex">Codex</option>
-                </select>
+                <span className="seat-pick narrow">
+                  <Select
+                    value={s.agent}
+                    options={[{ value: "claude", label: "Claude Code" }, { value: "codex", label: "Codex" }]}
+                    onChange={(v) => set(i, { agent: v as AgentKind, effort: null, key: undefined })}
+                  />
+                </span>
                 <input
                   type="text"
                   placeholder={s.agent === "codex" ? "gpt-6-astra-mini" : "claude-sonnet-5"}
@@ -760,12 +762,14 @@ function SeatEditor({
                 />
               </>
             )}
-            <select value={s.effort ?? ""} onChange={(e) => set(i, { effort: e.target.value || null })} title="Effort / reasoning level">
-              <option value="">default effort</option>
-              {catalog.efforts[s.agent].map((e) => (
-                <option key={e} value={e}>{e}</option>
-              ))}
-            </select>
+            <span className="seat-pick narrow">
+              <Select
+                value={s.effort ?? ""}
+                title="Effort / reasoning level"
+                options={[{ value: "", label: "default effort" }, ...catalog.efforts[s.agent].map((e) => ({ value: e, label: e }))]}
+                onChange={(v) => set(i, { effort: v || null })}
+              />
+            </span>
             {hasRepo ? (
               <>
                 <label className="seat-code" title="May read the room's repository; models that can't, ask the first one that can">
@@ -833,13 +837,13 @@ function RepoPicker({ value, onChange }: { value: string; onChange: (v: string) 
     window.mb.listRepos().then((r: Result<RepoEntry[]>) => (isErr(r) ? setError(`Couldn't list repos: ${r.error}`) : setRepos(r)));
   }, []);
   const select = (
-    <select value={value} onChange={(e) => onChange(e.target.value)}>
+    <Pick value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">No repository — ideas only</option>
       {value && !repos.some((r) => r.path === value) && <option value={value}>{value.split("/").pop()}</option>}
       {repos.map((r) => (
         <option key={r.path} value={r.path}>{r.name}</option>
       ))}
-    </select>
+    </Pick>
   );
   return (
     <>

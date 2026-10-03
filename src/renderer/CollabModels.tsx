@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import type { AgentKind, CollabParticipant, CollabParticipantSpec, CollabRoom, RepoEntry } from "../shared/types";
 import { ChevronIcon } from "./Icons";
-import { ACCESS_LEVELS, CUSTOM_MODEL as CUSTOM, accessFlags, accessOf, isErr, moveSeat, specsOf, type Access, type Catalog } from "./collabView";
+import { Pick, Select } from "./Menu";
+import { ACCESS_LEVELS, CUSTOM_MODEL as CUSTOM, accessFlags, accessOf, isErr, moveSeat, presetOptions, specsOf, type Access, type Catalog } from "./collabView";
 import { beginDrag, cue, dragging, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 
 type Call = (what: string, fn: () => Promise<unknown>) => Promise<unknown>;
@@ -39,7 +40,8 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
   };
 
   const add = async () => {
-    const m = catalog.presets.find((x) => !seated.some((p) => p.agent === x.agent && p.model === x.model)) ?? catalog.presets[0];
+    const choices = [...(catalog.defaults ?? []), ...catalog.presets];
+    const m = choices.find((x) => !seated.some((p) => p.agent === x.agent && p.model === x.model)) ?? choices[0];
     if (!m) return;
     const r = await apply([...specs, { label: m.label, agent: m.agent, model: m.model, effort: null, ...accessFlags(room.repoPath ? "read" : "none") }]);
     const joined = r?.participants.find((x) => !x.removed && !specs.some((s) => s.key === x.key));
@@ -114,12 +116,11 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
                 </label>
                 <label className="ins-field">
                   <span>Effort</span>
-                  <select value={p.effort ?? ""} onChange={(e) => update(p.key, { effort: e.target.value || null })}>
-                    <option value="">default</option>
-                    {catalog.efforts[p.agent].map((e) => (
-                      <option key={e} value={e}>{e}</option>
-                    ))}
-                  </select>
+                  <Select
+                    value={p.effort ?? ""}
+                    options={[{ value: "", label: "default" }, ...catalog.efforts[p.agent].map((e) => ({ value: e, label: e }))]}
+                    onChange={(v) => update(p.key, { effort: v || null })}
+                  />
                 </label>
                 <div className="ins-field">
                   <span>Access</span>
@@ -165,27 +166,26 @@ function ModelSelect({ p, catalog, onPick }: { p: CollabParticipant; catalog: Ca
   const [custom, setCustom] = useState<{ agent: AgentKind; model: string } | null>(preset ? null : { agent: p.agent, model: p.model });
   return (
     <span className="ins-model-pick">
-      <select
+      <Select
         value={custom ? CUSTOM : preset?.key ?? CUSTOM}
-        onChange={(e) => {
-          const m = catalog.presets.find((x) => x.key === e.target.value);
+        placeholder={p.label}
+        options={presetOptions(catalog, CUSTOM)}
+        onChange={(v) => {
+          const m = catalog.presets.find((x) => x.key === v);
           if (m) {
             setCustom(null);
             onPick(m);
           } else setCustom({ agent: p.agent, model: "" });
         }}
-      >
-        {catalog.presets.map((m) => (
-          <option key={m.key} value={m.key}>{m.label}</option>
-        ))}
-        <option value={CUSTOM}>Other model…</option>
-      </select>
+      />
       {custom && (
         <span className="ins-custom">
-          <select value={custom.agent} onChange={(e) => setCustom({ ...custom, agent: e.target.value as AgentKind })}>
-            <option value="claude">Claude</option>
-            <option value="codex">Codex</option>
-          </select>
+          <Select
+            className="ins-agent"
+            value={custom.agent}
+            options={[{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }]}
+            onChange={(v) => setCustom({ ...custom, agent: v as AgentKind })}
+          />
           <input
             type="text"
             placeholder={custom.agent === "codex" ? "gpt-6-astra-mini" : "claude-sonnet-5"}
@@ -214,12 +214,12 @@ function RepoSelect({ value, onChange }: { value: string; onChange: (v: string) 
     window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => (isErr(r) ? setError(r.error) : setRepos(r)));
   }, []);
   return (
-    <select className="ins-repo" value={value} title={error ? `Couldn't list repos: ${error}` : value || "No repository — models discuss without code"} onChange={(e) => onChange(e.target.value)}>
+    <Pick className="ins-repo" value={value} title={error ? `Couldn't list repos: ${error}` : value || "No repository — models discuss without code"} onChange={(e) => onChange(e.target.value)}>
       <option value="">No repository</option>
       {value && !repos.some((r) => r.path === value) && <option value={value}>{value.split("/").pop()}</option>}
       {repos.map((r) => (
         <option key={r.path} value={r.path}>{r.name}</option>
       ))}
-    </select>
+    </Pick>
   );
 }

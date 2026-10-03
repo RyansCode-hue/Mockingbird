@@ -20,6 +20,8 @@ import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn } from "./ado";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits } from "./transcripts";
+import { buildCatalog, collabModels } from "./models";
+import type { ModelCatalog } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 
 const store = new Store();
@@ -411,7 +413,12 @@ const collab = new CollabRooms(
     });
     n.on("click", () => focusRoom(room.id));
     n.show();
-  }
+  },
+  // levels the CLIs accept: what they told us, plus the built-in list until they have
+  () => ({
+    claude: [...new Set([...COLLAB_EFFORTS.claude, ...(lastCatalog?.claude.efforts ?? [])])],
+    codex: [...new Set([...COLLAB_EFFORTS.codex, ...(lastCatalog?.codex.efforts ?? [])])],
+  })
 );
 
 function focusRoom(roomId: string): void {
@@ -421,7 +428,16 @@ function focusRoom(roomId: string): void {
   w.focus();
   w.webContents.send("collab:focus", roomId);
 }
-ipcMain.handle("collab:models", () => ({ presets: COLLAB_MODELS, efforts: COLLAB_EFFORTS }));
+ipcMain.handle("collab:models", async () => {
+  try {
+    const c = await modelCatalog();
+    const { presets, defaults } = collabModels(c);
+    return { presets: presets.length ? presets : COLLAB_MODELS, defaults: defaults.length ? defaults : COLLAB_MODELS, efforts: { claude: c.claude.efforts, codex: c.codex.efforts } };
+  } catch (err) {
+    logError("collab:models", err); // the built-in trio still lets a room start
+    return { presets: COLLAB_MODELS, defaults: COLLAB_MODELS, efforts: COLLAB_EFFORTS };
+  }
+});
 ipcMain.handle("collab:repo", (_e, id, repo) => safe("collab:repo", () => collab.setRepo(id, repo))());
 ipcMain.handle("collab:permission", (_e, id, reqId, decision) => safe("collab:permission", () => collab.answerPermission(id, reqId, decision))());
 ipcMain.handle("collab:askTimeout", (_e, id, minutes) => safe("collab:askTimeout", () => collab.setAskTimeout(id, Number(minutes)))());
@@ -588,6 +604,24 @@ function startTranscriptIndex(): void {
   }
   setInterval(sync, 5 * 60_000);
 }
+
+// the models each CLI offers, read from the CLIs; `claude --help` is read once per run
+let claudeHelp: Promise<string | null> | null = null;
+let lastCatalog: ModelCatalog | null = null;
+async function modelCatalog(): Promise<ModelCatalog> {
+  claudeHelp ??= (async () => {
+    const bin = sessions.binFor("claude");
+    if (!bin.includes("/")) return null; // not installed: no Claude models to offer
+    const r = await userShell(`${quote(bin)} --help`);
+    return r.code === 0 ? r.out : null;
+  })();
+  lastCatalog = buildCatalog({
+    claudeHelp: await claudeHelp,
+    recent: { claude: transcripts?.recentModels("claude") ?? [], codex: transcripts?.recentModels("codex") ?? [] },
+  });
+  return lastCatalog;
+}
+ipcMain.handle("models:catalog", () => safeAsync("models:catalog", modelCatalog)());
 
 ipcMain.handle("transcripts:search", (_e, q) =>
   safe("transcripts:search", () => {

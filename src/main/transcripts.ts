@@ -352,6 +352,14 @@ export class TranscriptIndex {
     return hits;
   }
 
+  /** The models this agent's conversations used lately, most recent first. */
+  recentModels(agent: AgentKind, since = Date.now() - 30 * 86_400_000): string[] {
+    const rows = this.db
+      .prepare("SELECT model, MAX(updated) AS last FROM conversations WHERE agent = ? AND model IS NOT NULL AND updated >= ? GROUP BY model ORDER BY last DESC")
+      .all(agent, since) as { model: string }[];
+    return rows.map((r) => r.model);
+  }
+
   stats(): { conversations: number; files: number } {
     const conversations = (this.db.prepare("SELECT count(*) AS n FROM conversations").get() as { n: number }).n;
     const files = (this.db.prepare("SELECT count(*) AS n FROM files").get() as { n: number }).n;

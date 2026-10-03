@@ -211,7 +211,9 @@ export class CollabRooms {
     private startSession: (req: NewSessionRequest) => Promise<SessionInfo> | SessionInfo,
     private defaultBase: (repoPath: string) => Promise<string | null> | string | null,
     // reminder: the request is still waiting PERMISSION_REMIND_MS later
-    private onPermissionRequest: (room: CollabRoom, req: CollabPermissionRequest, reminder: boolean) => void = () => {}
+    private onPermissionRequest: (room: CollabRoom, req: CollabPermissionRequest, reminder: boolean) => void = () => {},
+    // the effort levels each CLI accepts — read from the CLIs, so new levels work without a release
+    private efforts: () => Record<AgentKind, string[]> = () => COLLAB_EFFORTS
   ) {
     fs.mkdirSync(dir, { recursive: true });
     for (const f of fs.readdirSync(dir)) {
@@ -281,7 +283,7 @@ export class CollabRooms {
     if (s.agent !== "claude" && s.agent !== "codex") throw new Error(`Unknown agent "${s.agent}"`);
     const model = s.model.trim();
     if (!MODEL_ID_RE.test(model)) throw new Error(`"${s.model}" isn't a valid model id`);
-    if (s.effort && !COLLAB_EFFORTS[s.agent].includes(s.effort)) {
+    if (s.effort && !this.efforts()[s.agent].includes(s.effort)) {
       throw new Error(`${s.effort} isn't an effort level ${s.agent === "codex" ? "Codex" : "Claude"} accepts`);
     }
     const used = new Set(room.participants.filter((p) => !p.removed).map((p) => p.color));
@@ -331,7 +333,7 @@ export class CollabRooms {
         );
         continue;
       }
-      if (s.effort && !COLLAB_EFFORTS[p.agent].includes(s.effort)) throw new Error(`${s.effort} isn't an effort level for ${p.label}`);
+      if (s.effort && !this.efforts()[p.agent].includes(s.effort)) throw new Error(`${s.effort} isn't an effort level for ${p.label}`);
       const docker = !!s.usesDocker;
       const runs = !!s.runsCommands || docker;
       const reads = !!s.readsCode || runs;
