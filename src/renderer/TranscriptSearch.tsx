@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { TranscriptHit } from "../shared/types";
 
-type Status = { conversations: number; files: number; indexing: { done: number; total: number } | null; lastSync: number; problem: string | null };
+export type SearchStatus = { conversations: number; files: number; indexing: { done: number; total: number } | null; lastSync: number; problem: string | null };
 
-const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
+export const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
   pane: "go to pane",
   previous: "restore session",
   room: "open room",
@@ -31,17 +31,14 @@ export function Snippet({ text }: { text: string }) {
 
 /**
  * Search every Claude and Codex conversation on this Mac — open, closed, or
- * never opened in Mockingbird — and open the hit wherever it lives.
+ * never opened in Mockingbird. Debounced; a stale answer never replaces a newer
+ * one; while the first index builds, the search re-runs so results fill in.
  */
-export function TranscriptSearch({ onClose, onOpen }: { onClose: () => void; onOpen: (hit: TranscriptHit) => Promise<string | null> }) {
-  const [q, setQ] = useState("");
+export function useTranscriptSearch(q: string) {
   const [hits, setHits] = useState<TranscriptHit[]>([]);
-  const [status, setStatus] = useState<Status | null>(null);
-  const [sel, setSel] = useState(0);
+  const [status, setStatus] = useState<SearchStatus | null>(null);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [tick, setTick] = useState(0); // re-runs the search while the first index builds
-  const listRef = useRef<HTMLDivElement>(null);
+  const [tick, setTick] = useState(0);
   const seq = useRef(0);
 
   useEffect(() => {
@@ -57,92 +54,35 @@ export function TranscriptSearch({ onClose, onOpen }: { onClose: () => void; onO
       setError(r.problem ?? "");
       setStatus(r);
       setHits(r.hits);
-      setSel(0);
     }, q ? 140 : 0);
     return () => clearTimeout(t);
   }, [q, tick]);
 
-  // while the first index builds, keep the count (and the results) fresh
   useEffect(() => {
     if (!status?.indexing) return;
     const t = setTimeout(() => setTick((n) => n + 1), 1500);
     return () => clearTimeout(t);
   }, [status]);
 
-  useEffect(() => {
-    listRef.current?.querySelector(".row.sel")?.scrollIntoView({ block: "nearest" });
-  }, [sel]);
+  return { hits, status, error, setError };
+}
 
-  const open = async (h: TranscriptHit | undefined) => {
-    if (!h || busy) return;
-    setBusy(true);
-    setError("");
-    const err = await onOpen(h);
-    setBusy(false);
-    if (err) setError(err);
-    else onClose();
-  };
-
+/** One conversation hit: where it ran, when, how it opens, and the matched words in context. */
+export function ConversationRow({ hit: h, selected, onOpen, onHover }: { hit: TranscriptHit; selected: boolean; onOpen: () => void; onHover: () => void }) {
   return (
-    <>
-      <div className="scrim" onMouseDown={onClose} />
-      <div className="palette ts-search">
-        <div className="inrow">
-          <span className="prompt">⌕</span>
-          <input
-            autoFocus
-            placeholder="Search every conversation — words, files, commands"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setSel((s) => Math.min(hits.length - 1, s + 1));
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setSel((s) => Math.max(0, s - 1));
-              }
-              if (e.key === "Enter") open(hits[sel]);
-            }}
-          />
-        </div>
-        <div className="results" ref={listRef}>
-          {error && <div className="err" style={{ margin: "6px 14px" }}>{error}</div>}
-          {!q.trim() && !error && (
-            <div className="ts-hint">
-              Finds any Claude or Codex conversation on this Mac — open, closed, or never opened in Mockingbird — by what was said, the files it
-              touched, or the commands it ran.
-            </div>
-          )}
-          {q.trim() && !hits.length && !error && <div className="ts-hint">No conversation mentions that{status?.indexing ? " yet — still indexing" : ""}.</div>}
-          {hits.map((h, i) => (
-            <div key={h.id} className={`row ts-row ${i === sel ? "sel" : ""}`} onMouseEnter={() => setSel(i)} onClick={() => open(h)}>
-              <div className="ts-top">
-                <span className="lab">{h.open.how === "room" ? `${h.open.roomTitle}` : h.title}</span>
-                <span className={`ts-agent ${h.agent}`}>{h.agent}</span>
-                <span className="state">{h.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
-                <span className="ts-when">{ago(h.updated)}</span>
-                <span className={`ts-open ${h.open.how}`}>{OPEN_LABEL[h.open.how]}</span>
-              </div>
-              <div className={`ts-snip ${h.kind}`}>
-                <Snippet text={h.snippet} />
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="pfoot">
-          <span>
-            {status
-              ? status.indexing
-                ? `indexing ${status.indexing.done}/${status.indexing.total} transcripts…`
-                : `${status.conversations} conversations indexed`
-              : "opening the index…"}
-          </span>
-          <span className="right">↑↓ choose · ↵ open · esc close</span>
-        </div>
+    <div className={`sv-hit sv-conv ${selected ? "sel" : ""}`} onMouseEnter={onHover} onClick={onOpen}>
+      <div className="sv-conv-top">
+        <span className="sv-conv-title">{h.open.how === "room" ? h.open.roomTitle : h.title}</span>
+        <span className={`ts-agent ${h.agent}`}>{h.agent}</span>
       </div>
-    </>
+      <div className="sv-conv-meta">
+        <span className="sv-conv-cwd">{h.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
+        <span>{ago(h.updated)}</span>
+        <span className={`ts-open ${h.open.how}`}>{OPEN_LABEL[h.open.how]}</span>
+      </div>
+      <div className={`sv-snip ts-snip ${h.kind}`}>
+        <Snippet text={h.snippet} />
+      </div>
+    </div>
   );
 }

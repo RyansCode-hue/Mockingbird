@@ -90,3 +90,29 @@ export const DockerIcon = () => (
     <path d="M1.75 12.5h12.5" />
   </Icon>
 );
+
+/** Two stacked terminal windows: the Sessions view. */
+export const SessionsIcon = () => (
+  <Icon>
+    <rect x="1.75" y="2.25" width="10" height="8" rx="1.5" />
+    <path d="M4.25 7.75v4a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5v-5a1.5 1.5 0 0 0-1.5-1.5h-1M4 5l1.5 1.25L4 7.5M7 7.5h2" />
+  </Icon>
+);
+
+/** A branch leaving a line and merging back: Source Control. */
+export const SourceControlIcon = () => (
+  <Icon>
+    <circle cx="4.5" cy="3.25" r="1.5" />
+    <circle cx="4.5" cy="12.75" r="1.5" />
+    <circle cx="11.5" cy="5.25" r="1.5" />
+    <path d="M4.5 4.75v6.5M11.5 6.75c0 3-7 2-7 4.5" />
+  </Icon>
+);
+
+/** A magnifying glass: Search. */
+export const SearchIcon = () => (
+  <Icon>
+    <circle cx="7" cy="7" r="4.25" />
+    <path d="M10.25 10.25l3.5 3.5" />
+  </Icon>
+);

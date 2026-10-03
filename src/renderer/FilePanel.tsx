@@ -1,21 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges } from "../shared/types";
-import { SourceControl, type DiffSource } from "./SourceControl";
 import { highlightLines, languageFor } from "./highlight";
+import { tabKey, type EditorState, type OpenFile, type Tab } from "./editorTabs";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
-
-/** A file pinned in the viewer. It keeps its own session so it stays put while focus moves between panes. */
-interface OpenFile {
-  sessionId: string;
-  root: string;
-  path: string;
-  mode: "file" | "diff";
-  /** Set when the file has changes: its status letter, and which diff to show. */
-  status?: string;
-  source?: DiffSource;
-}
 
 function loadLS<T>(key: string, fallback: T): T {
   try {
@@ -38,92 +27,29 @@ const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
 const SLIDE_MS = 200;
-const MAX_TABS = 12;
-/** One tab per file per view: a staged diff and the working-tree diff of a file are different tabs, as in VS Code. */
-const tabKey = (f: OpenFile) =>
-  `${f.root}:${f.path}:${f.source?.kind ?? "file"}:${f.source && "staged" in f.source && f.source.staged ? "staged" : ""}`;
 
 /**
- * Slides the explorer in and out. The panel is only mounted while visible or
- * mid-slide, so a closed explorer polls nothing. The wrapper animates its width
- * around a fixed-width panel, which makes the panel travel instead of squash.
+ * The Explorer view's tree for the focused session's folder. Changed files and
+ * the folders holding them are marked; a click opens a file in a preview tab,
+ * a double-click keeps it open. Only mounted while the view shows, so a hidden
+ * explorer polls nothing.
  */
-export function FileDock({ open, ...panel }: { open: boolean } & Omit<React.ComponentProps<typeof FilePanel>, "onWidth">) {
-  const [mounted, setMounted] = useState(open);
-  const [entered, setEntered] = useState(false);
-  const [width, setWidth] = useState(0);
-  useEffect(() => {
-    if (open) {
-      setMounted(true);
-      // two frames: the zero-width state has to paint before the transition can run
-      let r = requestAnimationFrame(() => (r = requestAnimationFrame(() => setEntered(true))));
-      return () => cancelAnimationFrame(r);
-    }
-    setEntered(false);
-    // a timer rather than transitionend — reduced-motion users get no transition event
-    const t = setTimeout(() => setMounted(false), SLIDE_MS);
-    return () => clearTimeout(t);
-  }, [open]);
-  if (!mounted) return null;
-  return (
-    <div className="fp-slide" style={{ width: entered ? width : 0 }}>
-      <FilePanel {...panel} onWidth={setWidth} />
-    </div>
-  );
-}
-
-function FilePanel({
+export function ExplorerTree({
   session,
-  onClose,
-  onInsert,
-  onWidth,
+  activePath,
+  onOpen,
 }: {
-  /** Reports the panel's full width so the slide wrapper can size to it. */
-  onWidth: (w: number) => void;
   session: SessionInfo | null;
-  onClose: () => void;
-  /** Type text into the focused session's prompt. */
-  onInsert: (text: string) => void;
+  /** The active editor tab's file, if it's in this folder: highlighted in the tree. */
+  activePath: string | null;
+  onOpen: (path: string, status: GitChange["status"] | undefined, preview: boolean) => void;
 }) {
-  const [view, setView] = useState<"files" | "changes">(() => loadLS("mb.files.view", "files"));
-  const [treeW, setTreeW] = useState<number>(() => loadLS("mb.files.treeW", 270));
-  const [viewerW, setViewerW] = useState<number>(() => loadLS("mb.files.viewerW", 560));
-  useEffect(() => localStorage.setItem("mb.files.view", JSON.stringify(view)), [view]);
-  useEffect(() => localStorage.setItem("mb.files.treeW", JSON.stringify(treeW)), [treeW]);
-  useEffect(() => localStorage.setItem("mb.files.viewerW", JSON.stringify(viewerW)), [viewerW]);
-
   // expanded folders are remembered per folder-on-disk, so flipping between
   // sessions restores each tree the way it was left
-  const [expandedByRoot, setExpandedByRoot] = useState<Record<string, string[]>>({});
+  const [expandedByRoot, setExpandedByRoot] = useState<Record<string, string[]>>(() => loadLS("mb.files.expanded", {}));
+  useEffect(() => localStorage.setItem("mb.files.expanded", JSON.stringify(expandedByRoot)), [expandedByRoot]);
   const [dirs, setDirs] = useState<Record<string, Result<FileEntry[]>>>({});
   const [changes, setChanges] = useState<Result<GitChanges> | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
-  // open files and diffs, VS Code-style: each keeps its own session, so tabs from
-  // several sessions sit side by side while focus moves between panes
-  const [tabs, setTabs] = useState<OpenFile[]>([]);
-  const [activeTab, setActiveTab] = useState<string | null>(null);
-  const open = tabs.find((t) => tabKey(t) === activeTab) ?? null;
-  const setOpen = (f: OpenFile | null) => {
-    if (!f) return setTabs([]);
-    const key = tabKey(f);
-    setTabs((ts) => {
-      const i = ts.findIndex((t) => tabKey(t) === key);
-      if (i >= 0) return ts.map((t, j) => (j === i ? f : t));
-      const next = [...ts, f];
-      return next.slice(-MAX_TABS); // past the limit, the oldest tab closes
-    });
-    setActiveTab(key);
-  };
-  const closeTab = (key: string) =>
-    setTabs((ts) => {
-      const i = ts.findIndex((t) => tabKey(t) === key);
-      const next = ts.filter((t) => tabKey(t) !== key);
-      if (key === activeTab) setActiveTab(next.length ? tabKey(next[Math.min(i, next.length - 1)]) : null);
-      return next;
-    });
-
-  const total = treeW + (open ? viewerW : 0) + 1; // +1: the dock's left border
-  useEffect(() => onWidth(total), [total, onWidth]);
 
   const sid = session?.id ?? null;
   const root = session?.cwd ?? null;
@@ -134,7 +60,7 @@ function FilePanel({
     setDirs((d) => (JSON.stringify(d[rel]) === JSON.stringify(r) ? d : { ...d, [rel]: r }));
   }, []);
 
-  // the Files tree marks what changed since the last commit
+  // the tree marks what changed since the last commit
   const loadChanges = useCallback(async (id: string) => {
     const r: Result<GitChanges> = await window.mb.filesChanges(id, "working");
     setChanges((c) => (JSON.stringify(c) === JSON.stringify(r) ? c : r));
@@ -145,7 +71,6 @@ function FilePanel({
   useEffect(() => {
     setDirs({});
     setChanges(null);
-    setSelected(null);
   }, [root]);
 
   const refresh = useCallback(() => {
@@ -173,13 +98,14 @@ function FilePanel({
 
   const toggleDir = (rel: string) => {
     if (!root || !sid) return;
-    const next = new Set(expanded);
-    if (next.has(rel)) next.delete(rel);
-    else {
-      next.add(rel);
-      loadDir(sid, rel);
-    }
-    setExpandedByRoot((m) => ({ ...m, [root]: [...next] }));
+    const opening = !expanded.has(rel);
+    if (opening) loadDir(sid, rel);
+    setExpandedByRoot((m) => {
+      const next = new Set(m[root] ?? []);
+      if (opening) next.add(rel);
+      else next.delete(rel);
+      return { ...m, [root]: [...next] };
+    });
   };
 
   const changeList = changes && !isErr(changes) ? changes.changes : [];
@@ -193,12 +119,6 @@ function FilePanel({
     return s;
   }, [changeList]);
 
-  const openFile = (path: string, mode: "file" | "diff", change?: GitChange, source?: DiffSource) => {
-    if (!sid || !root) return;
-    setSelected(path);
-    setOpen({ sessionId: sid, root, path, mode, status: change?.status, source });
-  };
-
   const renderTree = (rel: string, depth: number): React.ReactNode => {
     const list = dirs[rel];
     if (!list) return <div className="fp-note" style={{ paddingLeft: 12 + depth * 12 }}>loading…</div>;
@@ -210,11 +130,11 @@ function FilePanel({
       return (
         <React.Fragment key={e.path}>
           <div
-            className={`fp-row ${cls} ${selected === e.path ? "sel" : ""}`}
+            className={`fp-row ${cls} ${activePath === e.path ? "sel" : ""}`}
             style={{ paddingLeft: 8 + depth * 12 }}
             title={e.path}
-            onClick={() => (e.dir ? toggleDir(e.path) : setSelected(e.path))}
-            onDoubleClick={() => !e.dir && openFile(e.path, "file", ch)}
+            onClick={() => (e.dir ? toggleDir(e.path) : onOpen(e.path, ch?.status, true))}
+            onDoubleClick={() => !e.dir && onOpen(e.path, ch?.status, false)}
           >
             <span className="fp-tw">{e.dir ? (expanded.has(e.path) ? "▾" : "▸") : ""}</span>
             <span className="fp-name">{e.name}</span>
@@ -227,17 +147,83 @@ function FilePanel({
     });
   };
 
-  // one handle on the dock's left edge: it sizes the viewer when a file is open,
-  // the tree otherwise
+  if (!session) return <div className="fp-note">Click into a session to browse its folder.</div>;
+  return (
+    <>
+      <div className="fp-head">
+        <span className="fp-title" title={root ?? undefined}>
+          {baseName(root!)}
+          {session.branch && <span className="fp-branch"> · {session.branch}</span>}
+        </span>
+        <button
+          className="icon"
+          title="Collapse all folders"
+          onClick={() => root && setExpandedByRoot((m) => ({ ...m, [root]: [] }))}
+        >
+          ⊟
+        </button>
+        <button className="icon" title="Refresh" onClick={() => refresh()}>⟳</button>
+      </div>
+      <div className="fp-scroll">{renderTree("", 0)}</div>
+    </>
+  );
+}
+
+/**
+ * The editor column beside the side bar: a tab per open file or diff over the
+ * viewer. It slides open with the first tab and closed with the last; the
+ * wrapper animates its width around a fixed-width editor, so the editor travels
+ * instead of squashing. The handle on its right edge sizes it.
+ */
+export function EditorDock({
+  editor,
+  onActivate,
+  onClose,
+  onPin,
+  onMode,
+  onInsert,
+}: {
+  editor: EditorState;
+  onActivate: (key: string) => void;
+  onClose: (key: string) => void;
+  onPin: (key: string) => void;
+  onMode: (key: string, mode: "file" | "diff") => void;
+  onInsert: (text: string) => void;
+}) {
+  const [width, setWidth] = useState<number>(() => loadLS("mb.files.viewerW", 560));
+  useEffect(() => localStorage.setItem("mb.files.viewerW", JSON.stringify(width)), [width]);
+  const [, setWindowW] = useState(window.innerWidth); // re-fit the editor when the window narrows
+  useEffect(() => {
+    const h = () => setWindowW(window.innerWidth);
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
+  }, []);
+  const open = editor.tabs.find((t) => tabKey(t) === editor.active) ?? null;
+  // the last tab shown stays rendered while the dock slides closed
+  const [shown, setShown] = useState<Tab | null>(open);
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    if (open) {
+      setShown(open);
+      let r = requestAnimationFrame(() => (r = requestAnimationFrame(() => setEntered(true))));
+      return () => cancelAnimationFrame(r);
+    }
+    setEntered(false);
+    // a timer rather than transitionend — reduced-motion users get no transition event
+    const t = setTimeout(() => setShown(null), SLIDE_MS);
+    return () => clearTimeout(t);
+  }, [open]);
+  const tab = open ?? shown;
+  if (!tab) return null;
+  // the remembered width, but never so wide the terminals can't keep a usable column
+  const w = Math.max(320, Math.min(width, window.innerWidth - 700));
+
   const startResize = (e: React.PointerEvent) => {
     e.preventDefault();
     const startX = e.clientX;
-    const start = open ? viewerW : treeW;
-    const max = Math.max(240, window.innerWidth - 560 - (open ? treeW : 0));
-    const move = (ev: PointerEvent) => {
-      const w = Math.min(max, Math.max(open ? 280 : 180, start + (startX - ev.clientX)));
-      (open ? setViewerW : setTreeW)(w);
-    };
+    const start = w;
+    const max = Math.max(320, window.innerWidth - 700);
+    const move = (ev: PointerEvent) => setWidth(Math.min(max, Math.max(320, start + (ev.clientX - startX))));
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
@@ -249,96 +235,60 @@ function FilePanel({
   };
 
   return (
-    <div className="fp-dock" style={{ width: total }}>
-      <div className="fp-handle" onPointerDown={startResize} />
-      {open && (
-        <div className="fp-editor" style={{ width: viewerW }}>
-          <div className="fp-tabbar" role="tablist">
-            {tabs.map((t) => {
-              const key = tabKey(t);
-              return (
-                <div
-                  key={key}
-                  role="tab"
-                  aria-selected={key === activeTab}
-                  className={`fp-tab ${key === activeTab ? "on" : ""} ${t.status ? `st-${t.status}` : ""}`}
-                  title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : ""}`}
-                  onClick={() => {
-                    setActiveTab(key);
-                    setSelected(t.path);
+    <div className="fp-slide" style={{ width: entered && open ? w + 1 : 0 }}>
+      <div className="fp-editor" style={{ width: w }}>
+        <div className="fp-tabbar" role="tablist">
+          {(open ? editor.tabs : [tab]).map((t) => {
+            const key = tabKey(t);
+            return (
+              <div
+                key={key}
+                role="tab"
+                aria-selected={key === editor.active}
+                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.preview ? "preview" : ""} ${t.status ? `st-${t.status}` : ""}`}
+                title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : ""}${t.preview ? " — preview: double-click to keep it open" : ""}`}
+                onClick={() => onActivate(key)}
+                onDoubleClick={() => onPin(key)}
+                onAuxClick={(e) => e.button === 1 && onClose(key)}
+              >
+                <span className="fp-tab-name">
+                  {baseName(t.path)}
+                  {t.mode === "diff" && <span className="fp-tab-kind">{t.source?.kind === "scm" && t.source.staged ? " · staged" : " · diff"}</span>}
+                </span>
+                <button
+                  className="fp-tab-x"
+                  title="Close (middle-click works too)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClose(key);
                   }}
-                  onAuxClick={(e) => e.button === 1 && closeTab(key)}
                 >
-                  <span className="fp-tab-name">
-                    {baseName(t.path)}
-                    {t.mode === "diff" && <span className="fp-tab-kind">{t.source?.kind === "scm" && t.source.staged ? " · staged" : " · diff"}</span>}
-                  </span>
-                  <button
-                    className="fp-tab-x"
-                    title="Close (middle-click works too)"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      closeTab(key);
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-          <FileViewer
-            key={tabKey(open)}
-            open={open}
-            width={viewerW}
-            onMode={(mode) => setOpen({ ...open, mode })}
-            onClose={() => closeTab(tabKey(open))}
-            onInsert={onInsert}
-          />
+                  ×
+                </button>
+              </div>
+            );
+          })}
         </div>
-      )}
-      <div className="fp-tree" style={{ width: treeW }}>
-        <div className="fp-head">
-          <span className="fp-title" title={root ?? undefined}>
-            {root ? baseName(root) : "Explorer"}
-            {session?.branch && <span className="fp-branch"> · {session.branch}</span>}
-          </span>
-          <button className="icon" title="Refresh" onClick={() => refresh()}>⟳</button>
-          <button className="icon" title="Hide explorer (⌘B)" onClick={onClose}>✕</button>
-        </div>
-        <div className="fp-tabs">
-          <button className={view === "files" ? "on" : ""} onClick={() => setView("files")}>Files</button>
-          <button className={view === "changes" ? "on" : ""} onClick={() => setView("changes")}>
-            Source Control{changeList.length > 0 && <span className="fp-count">{changeList.length}</span>}
-          </button>
-        </div>
-        {!session ? (
-          <div className="fp-note">Click into a session to browse its folder.</div>
-        ) : view === "files" ? (
-          <div className="fp-scroll">{renderTree("", 0)}</div>
-        ) : (
-          <SourceControl
-            key={sid}
-            sessionId={sid!}
-            selected={selected}
-            onOpenDiff={(path, source, status) => openFile(path, "diff", { path, status: status === "C" ? "M" : (status as GitChange["status"]) }, source)}
-            onOpenFile={(path) => openFile(path, "file")}
-          />
-        )}
+        <FileViewer
+          key={tabKey(tab)}
+          open={tab}
+          onMode={(mode) => onMode(tabKey(tab), mode)}
+          onClose={() => onClose(tabKey(tab))}
+          onInsert={onInsert}
+        />
       </div>
+      <div className="fp-handle" onPointerDown={startResize} />
     </div>
   );
 }
 
 function FileViewer({
   open,
-  width,
   onMode,
   onClose,
   onInsert,
 }: {
   open: OpenFile;
-  width: number;
   onMode: (m: "file" | "diff") => void;
   onClose: () => void;
   onInsert: (text: string) => void;
@@ -375,7 +325,7 @@ function FileViewer({
   }, [open.sessionId, open.path, open.mode, open.status, open.source?.kind, open.source && "staged" in open.source ? open.source.staged : false]);
 
   return (
-    <div className="fp-viewer" style={{ width, flex: 1, minHeight: 0 }}>
+    <div className="fp-viewer">
       <div className="fp-head">
         <span className="fp-title" title={`${open.root}/${open.path}`}>
           {baseName(open.path)}
@@ -411,13 +361,13 @@ function FileViewer({
         ) : file === null ? <div className="fp-note">loading…</div>
           : isErr(file) ? <div className="fp-note err">{file.error}</div>
           : file.binary ? <div className="fp-note">Binary file · {file.size.toLocaleString()} bytes — not shown</div>
-          : <CodeView file={file} path={open.path} />}
+          : <CodeView file={file} path={open.path} reveal={open.reveal} />}
       </div>
     </div>
   );
 }
 
-function CodeView({ file, path }: { file: FileContent; path: string }) {
+function CodeView({ file, path, reveal }: { file: FileContent; path: string; reveal?: { line: number; at: number } }) {
   const text = file.content.endsWith("\n") ? file.content.slice(0, -1) : file.content;
   const gutter = useMemo(() => {
     const n = text.split("\n").length;
@@ -426,6 +376,21 @@ function CodeView({ file, path }: { file: FileContent; path: string }) {
     return s;
   }, [text]);
   const html = useMemo(() => highlightLines(text, languageFor(path)).join("\n"), [text, path]);
+  const textRef = useRef<HTMLPreElement>(null);
+  const [mark, setMark] = useState<{ top: number; height: number; at: number } | null>(null);
+
+  // a search hit or ⌘P "file:line" scrolls its line a third of the way down and marks it
+  useEffect(() => {
+    const pre = textRef.current;
+    if (!reveal || !pre) return;
+    const cs = getComputedStyle(pre);
+    const lh = parseFloat(cs.lineHeight);
+    const top = parseFloat(cs.paddingTop) + (reveal.line - 1) * lh;
+    const body = pre.closest(".fp-body");
+    if (body) body.scrollTop = Math.max(0, top - body.clientHeight / 3);
+    setMark({ top, height: lh, at: reveal.at });
+  }, [reveal?.at]);
+
   return (
     <>
       {file.truncated && (
@@ -434,7 +399,8 @@ function CodeView({ file, path }: { file: FileContent; path: string }) {
       <div className="fp-code">
         <pre className="fp-gutter">{gutter}</pre>
         {/* highlight.js escapes the file's text; the only markup is its own spans */}
-        <pre className="fp-text hl" dangerouslySetInnerHTML={{ __html: html }} />
+        <pre ref={textRef} className="fp-text hl" dangerouslySetInnerHTML={{ __html: html }} />
+        {mark && <div key={mark.at} className="fp-reveal" style={{ top: mark.top, height: mark.height }} />}
       </div>
     </>
   );

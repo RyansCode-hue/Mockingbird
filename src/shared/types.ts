@@ -310,6 +310,32 @@ export interface GitChange {
 /** "working" = uncommitted vs HEAD · "branch" = everything since the fork from the base branch */
 export type ChangeScope = "working" | "branch";
 
+/** Every file in a session's folder (⌘P). `unreadable`: folders a non-git walk couldn't open. */
+export interface FileList {
+  files: string[];
+  truncated: boolean;
+  unreadable?: number;
+}
+
+export interface FileSearchOptions {
+  regex: boolean;
+  matchCase: boolean;
+}
+
+export interface FileHit {
+  path: string;
+  line: number;
+  text: string;
+}
+
+/** A text search over a session's folder; `stopped` says it ended early (too many matches, or too slow). */
+export interface FileSearch {
+  hits: FileHit[];
+  files: number;
+  stopped: "limit" | "time" | null;
+  warning: string | null;
+}
+
 export interface GitChanges {
   changes: GitChange[];
   base: string; // what the changes are measured against

@@ -2,16 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
-import { FileDock } from "./FilePanel";
+import { EditorDock, ExplorerTree } from "./FilePanel";
+import { SourceControl, type DiffSource } from "./SourceControl";
+import { SearchView, type SearchState } from "./SearchView";
+import { QuickOpen } from "./QuickOpen";
+import { EMPTY_EDITOR, closeTab, openTab, pinTab, tabKey, updateTab } from "./editorTabs";
 import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
-import { TranscriptSearch, Snippet } from "./TranscriptSearch";
+import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { resetText, pctNow } from "./usageFormat";
-import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon } from "./Icons";
 import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
 
@@ -21,7 +25,15 @@ declare global {
   }
 }
 
-type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "search" | null;
+type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
+/** What the side bar shows, picked from the activity bar as in VS Code. */
+type SideView = "sessions" | "explorer" | "scm" | "search";
+const SIDE_VIEWS: { id: SideView; label: string; keys?: string; Icon: () => React.JSX.Element }[] = [
+  { id: "sessions", label: "Sessions", Icon: SessionsIcon },
+  { id: "explorer", label: "Explorer", keys: "⇧⌘E", Icon: FilesIcon },
+  { id: "scm", label: "Source Control", keys: "⌃⇧G", Icon: SourceControlIcon },
+  { id: "search", label: "Search", keys: "⇧⌘F", Icon: SearchIcon },
+];
 type Tab = "sessions" | "dashboard" | "worktracker" | "collaborate" | "settings";
 const TAB_LABELS: Record<Tab, string> = {
   sessions: "Sessions",
@@ -225,8 +237,21 @@ function App() {
   useEffect(() => {
     window.mb.appVersion().then((v: string) => setAppVersion(v));
   }, []);
-  const [filesOpen, setFilesOpen] = useState<boolean>(() => loadLS("mb.filesOpen", false));
-  useEffect(() => localStorage.setItem("mb.filesOpen", JSON.stringify(filesOpen)), [filesOpen]);
+  const [sideView, setSideView] = useState<SideView>(() => loadLS<SideView>("mb.sideView", "sessions"));
+  useEffect(() => localStorage.setItem("mb.sideView", JSON.stringify(sideView)), [sideView]);
+  const [sideW, setSideW] = useState<number>(() => loadLS("mb.sideW", 264));
+  useEffect(() => localStorage.setItem("mb.sideW", JSON.stringify(sideW)), [sideW]);
+  const [editor, setEditor] = useState(EMPTY_EDITOR);
+  const [search, setSearch] = useState<SearchState>(() => ({ q: "", ...loadLS("mb.search", { scope: "conversations", regex: false, matchCase: false }) }));
+  useEffect(() => localStorage.setItem("mb.search", JSON.stringify({ scope: search.scope, regex: search.regex, matchCase: search.matchCase })), [search.scope, search.regex, search.matchCase]);
+  const [searchFocus, setSearchFocus] = useState(0);
+  /** Show a side bar view, from anywhere: the side bar lives on the Sessions tab. */
+  const showView = (v: SideView) => {
+    setTab("sessions");
+    setSideView(v);
+    setSideCollapsed(false);
+    if (v === "search") setSearchFocus((n) => n + 1);
+  };
 
   // persist grid arrangement across restarts (design: Interactions & Behavior)
   useEffect(() => localStorage.setItem("mb.shown", JSON.stringify(shown)), [shown]);
@@ -763,12 +788,31 @@ function App() {
     }
     if (cmd && !e.shiftKey && !e.ctrlKey && e.key === "b" && tab === "sessions") {
       handled();
-      setFilesOpen((o) => !o);
+      setSideCollapsed((c) => !c);
+      return;
+    }
+    if (cmd && !e.ctrlKey && e.key.toLowerCase() === "p" && !modal) {
+      handled();
+      if (e.shiftKey) setPaletteOpen(true);
+      else {
+        setTab("sessions");
+        setModal("quickopen");
+      }
       return;
     }
     if (cmd && e.shiftKey && e.key.toLowerCase() === "f") {
-      e.preventDefault();
-      setModal("search");
+      handled();
+      showView("search");
+      return;
+    }
+    if (cmd && e.shiftKey && e.key.toLowerCase() === "e") {
+      handled();
+      showView("explorer");
+      return;
+    }
+    if (e.ctrlKey && e.shiftKey && !cmd && e.key.toLowerCase() === "g") {
+      handled();
+      showView("scm");
       return;
     }
     if (cmd && e.shiftKey && e.key.toLowerCase() === "b") {
@@ -874,6 +918,49 @@ function App() {
 
   const focusedSession = sessions.find((s) => s.id === focused) ?? null;
 
+  /** Open a file of the focused session's folder in the editor; a preview tab is replaced by the next preview. */
+  const openInEditor = (path: string, o: { preview: boolean; mode?: "file" | "diff"; status?: string; source?: DiffSource; line?: number | null }) => {
+    const s = focusedSession;
+    if (!s) return;
+    const reveal = o.line ? { line: o.line, at: Date.now() } : undefined;
+    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path, mode: o.mode ?? "file", status: o.status, source: o.source, reveal }, o.preview));
+  };
+  const activeTab = editor.tabs.find((t) => tabKey(t) === editor.active) ?? null;
+  const activePath = activeTab && focusedSession && activeTab.root === focusedSession.cwd ? activeTab.path : null;
+
+  // the Source Control badge: the focused folder's uncommitted files (the same
+  // cached state the pane rails read, so this costs no extra git work)
+  const [scmCount, setScmCount] = useState(0);
+  const focusedCwd = tab === "sessions" ? focusedSession?.cwd ?? null : null;
+  useEffect(() => {
+    setScmCount(0);
+    if (!focusedCwd) return;
+    let live = true;
+    const load = () =>
+      window.mb.worktreeState(focusedCwd).then((r: WorktreeStateInfo | { error: string }) => live && setScmCount("error" in r ? 0 : r.dirtyFiles));
+    load();
+    const t = setInterval(() => !document.hidden && load(), 5000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [focusedCwd]);
+
+  const startSideResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const start = sideW;
+    const move = (ev: PointerEvent) => setSideW(Math.min(640, Math.max(200, start + (ev.clientX - startX))));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("fp-resizing");
+    };
+    document.body.classList.add("fp-resizing");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   return (
     <div className="app">
       <div className="topbar">
@@ -947,14 +1034,6 @@ function App() {
                 </>
               )}
             </span>
-            <button
-              className={`outline ${filesOpen ? "on" : ""}`}
-              onClick={() => setFilesOpen((o) => !o)}
-              title="File explorer for the focused session — browse, view files, see diffs (⌘B)"
-            >
-              <FilesIcon /> Files
-            </button>
-            <span className="vdiv" />
             <button className="outline" onClick={() => setModal("import")}>Import</button>
           </>
         )}
@@ -1049,19 +1128,64 @@ function App() {
         )}
         {tab === "sessions" && (
         <>
-        <div className={`sidebar ${sideCollapsed ? "collapsed" : ""}`}>
+        <nav className="activitybar" aria-label="Side bar views">
+          {SIDE_VIEWS.map(({ id, label, keys, Icon }) => {
+            const on = sideView === id && !sideCollapsed;
+            const badge = id === "sessions" ? counts.waiting : id === "scm" ? scmCount : 0;
+            return (
+              <button
+                key={id}
+                className={`ab-btn ${on ? "on" : ""}`}
+                title={`${label}${keys ? ` (${keys})` : ""}${on ? " — click to hide the side bar (⌘B)" : ""}`}
+                aria-label={label}
+                aria-pressed={on}
+                onClick={() => (on ? setSideCollapsed(true) : showView(id))}
+              >
+                <Icon />
+                {badge > 0 && (
+                  <span className={`ab-badge ${id === "sessions" ? "waiting" : ""}`} title={id === "sessions" ? `${badge} waiting on you` : `${badge} uncommitted file${badge === 1 ? "" : "s"}`}>
+                    {badge > 99 ? "99+" : badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+        <div className={`sidebar ${sideCollapsed ? "collapsed" : ""}`} style={{ width: sideCollapsed ? 0 : sideW }}>
+          <div className="side-inner" style={{ width: sideW }}>
           <div className="side-head">
-            <button
-              className={`burger ${sideCollapsed ? "" : "open"}`}
-              onClick={() => setSideCollapsed(!sideCollapsed)}
-              title={sideCollapsed ? "Show sidebar" : "Hide sidebar"}
-              aria-label={sideCollapsed ? "Show sidebar" : "Hide sidebar"}
-              aria-expanded={!sideCollapsed}
-            >
-              <span /><span /><span />
-            </button>
-            <span className="side-title">Sessions</span>
+            <span className="side-title">{SIDE_VIEWS.find((v) => v.id === sideView)?.label}</span>
           </div>
+          {sideView === "explorer" && (
+            <ExplorerTree
+              session={focusedSession}
+              activePath={activePath}
+              onOpen={(path, status, preview) => openInEditor(path, { preview, status })}
+            />
+          )}
+          {sideView === "scm" &&
+            (focusedSession ? (
+              <SourceControl
+                key={focusedSession.id}
+                sessionId={focusedSession.id}
+                selected={activePath}
+                onOpenDiff={(path, source, status) => openInEditor(path, { preview: true, mode: "diff", source, status: status === "C" ? "M" : status })}
+                onOpenFile={(path) => openInEditor(path, { preview: false })}
+              />
+            ) : (
+              <div className="fp-note">Click into a session to see its changes.</div>
+            ))}
+          {sideView === "search" && (
+            <SearchView
+              session={focusedSession}
+              state={search}
+              onState={setSearch}
+              focusKey={searchFocus}
+              onOpenConversation={openTranscript}
+              onOpenFile={(path, line, preview) => openInEditor(path, { preview, line })}
+            />
+          )}
+          {sideView === "sessions" && (
           <div className="scroll">
             <div className="filter-row">
               <input
@@ -1070,9 +1194,6 @@ function App() {
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
-              <button className="icon" title="Search every conversation — open, closed, or never opened (⌘⇧F)" onClick={() => setModal("search")}>
-                ⌕
-              </button>
             </div>
             {groups.map(([key, list]) => (
               <div key={key}>
@@ -1307,7 +1428,22 @@ function App() {
               </>
             )}
           </div>
+          )}
+          </div>
+          <div className="side-grip" onPointerDown={startSideResize} />
         </div>
+        <EditorDock
+          editor={editor}
+          onActivate={(key) => setEditor((e) => ({ ...e, active: key }))}
+          onClose={(key) => setEditor((e) => closeTab(e, key))}
+          onPin={(key) => setEditor((e) => pinTab(e, key))}
+          onMode={(key, mode) => setEditor((e) => pinTab(updateTab(e, key, { mode }), key))}
+          onInsert={(text) => {
+            if (!focusedSession) return;
+            window.mb.sessionWrite(focusedSession.id, text);
+            focusTerm(focusedSession.id);
+          }}
+        />
 
         <div className="main">
           {activeGroup && (() => {
@@ -1369,7 +1505,7 @@ function App() {
                     onFocus={() => setFocused(s.id)}
                     onOpenFiles={() => {
                       setFocused(s.id);
-                      setFilesOpen(true);
+                      showView("explorer");
                     }}
                     onClose={onCloseOverride ?? (() => hide(s.id))}
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
@@ -1475,16 +1611,6 @@ function App() {
             </div>
           )}
         </div>
-        <FileDock
-          open={filesOpen}
-          session={focusedSession}
-          onClose={() => setFilesOpen(false)}
-          onInsert={(text) => {
-            if (!focusedSession) return;
-            window.mb.sessionWrite(focusedSession.id, text);
-            focusTerm(focusedSession.id);
-          }}
-        />
         </>
         )}
         </ViewErrorBoundary>
@@ -1598,7 +1724,10 @@ function App() {
             { label: "Sessions grid", run: () => setTab("sessions") },
             { label: "Dashboard — ticket board", run: () => setTab("dashboard") },
             { label: "Broadcast / CLAUDE.md (control room)", kbd: "⌘⇧B", run: openControlRoom },
-            { label: "Search every conversation — open, closed, or never opened", kbd: "⌘⇧F", run: () => setModal("search") },
+            { label: "Go to file…", kbd: "⌘P", run: () => { setTab("sessions"); setModal("quickopen"); } },
+            { label: "Search — conversations, or the focused session's files", kbd: "⌘⇧F", run: () => showView("search") },
+            { label: "Explorer — the focused session's folder", kbd: "⌘⇧E", run: () => showView("explorer") },
+            { label: "Source Control — stage, commit, push", kbd: "⌃⇧G", run: () => showView("scm") },
             { label: "Settings", run: () => setTab("settings") },
             { label: "Import sessions", run: () => setModal("import") },
             { label: "WorkTracker — debriefs", run: () => setTab("worktracker") },
@@ -1710,7 +1839,9 @@ function App() {
       )}
       <DragLabel />
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
-      {modal === "search" && <TranscriptSearch onClose={() => setModal(null)} onOpen={openTranscript} />}
+      {modal === "quickopen" && (
+        <QuickOpen session={focusedSession} onClose={() => setModal(null)} onOpen={(path, line, preview) => openInEditor(path, { preview, line })} />
+      )}
       {modal === "update" && (
         <UpdatePanel
           progress={upd}
@@ -2024,9 +2155,12 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌥⇥", "next waiting session (oldest first)"],
     ["⌘E", "fullscreen the focused pane (esc restores)"],
     ["⌘⌃1–4", "grid columns (also switches pane detail level)"],
-    ["⌘B", "file explorer for the focused session — files, viewer, diffs"],
+    ["⌘P", "go to a file in the focused session's folder (name:42 jumps to a line)"],
+    ["⌘B", "show or hide the side bar"],
+    ["⌘⇧E", "Explorer — the focused session's folder"],
+    ["⌃⇧G", "Source Control — stage, commit, push"],
     ["⌘⇧B", "control room — broadcast + CLAUDE.md"],
-    ["⌘⇧F", "search every Claude and Codex conversation on this Mac, and open the one you find"],
+    ["⌘⇧F", "search every conversation on this Mac, or the focused session's files"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],
     ["⇧click", "select more than a screen: click where it starts, scroll, shift-click where it ends — it's copied"],
     ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a pane"],

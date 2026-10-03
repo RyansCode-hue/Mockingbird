@@ -11,6 +11,7 @@ import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./h
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
 import { listDir, readFile, gitChanges, fileDiff } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmDiff } from "./scm";
+import { listAllFiles, searchFiles } from "./find";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
 import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
@@ -355,6 +356,12 @@ ipcMain.handle("files:changes", (_e, id, scope) =>
 );
 ipcMain.handle("files:diff", (_e, id, rel, scope, untracked) =>
   safeAsync("files:diff", () => fileDiff(sessionRoot(id), rel, scope, untracked))()
+);
+ipcMain.handle("files:all", (_e, id) => safeAsync("files:all", () => listAllFiles(sessionRoot(id)))());
+ipcMain.handle("files:search", (_e, id, query, opts) =>
+  safeAsync("files:search", () =>
+    searchFiles(sessionRoot(id), String(query ?? ""), { regex: !!opts?.regex, matchCase: !!opts?.matchCase })
+  )()
 );
 // Source control for a session's folder (addressed by session id, like the explorer)
 ipcMain.handle("scm:status", (_e, id) => safeAsync("scm:status", () => scmStatus(sessionRoot(id)))());
