@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { beginDrag } from "./drag";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -240,6 +241,7 @@ export function TerminalPane({
   onZoom,
   onAddTab,
   onReorder,
+  drop,
   onResume,
   onCleanup,
   closeTitle,
@@ -258,6 +260,8 @@ export function TerminalPane({
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
   onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
   onReorder?: (srcId: string, targetId: string) => void;
+  /** Drag-and-drop onto this pane (the grid decides what a drop means); without it, a drop reorders. */
+  drop?: { over: (e: React.DragEvent) => void; drop: (e: React.DragEvent) => void; cue?: string };
   onResume: () => void;
   onCleanup: () => void;
   closeTitle?: string;
@@ -612,9 +616,11 @@ export function TerminalPane({
         assistant ? "kind-assistant" : "",
       ].join(" ")}
       onMouseDown={onFocus}
-      onDragOver={(e) => e.preventDefault()}
+      data-drop={drop?.cue}
+      onDragOver={(e) => (drop ? drop.over(e) : e.preventDefault())}
       onDrop={(e) => {
         e.preventDefault();
+        if (drop) return drop.drop(e);
         const src = e.dataTransfer.getData("text/mb-session");
         if (src && src !== session.id) onReorder?.(src, session.id);
       }}
@@ -622,10 +628,7 @@ export function TerminalPane({
       <div
         className="pane-header"
         draggable={editTitle === null}
-        onDragStart={(e) => {
-          e.dataTransfer.setData("text/mb-session", session.id);
-          e.dataTransfer.effectAllowed = "move";
-        }}
+        onDragStart={(e) => beginDrag(e, "text/mb-session", session.id, `Moving ${session.ticketTitle ?? session.title}`)}
         title="drag to rearrange · double-click the name to rename"
       >
         <span className={`dot ${density === "max" ? "lg" : ""} ${session.status}`} />

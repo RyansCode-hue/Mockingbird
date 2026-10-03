@@ -1301,3 +1301,11 @@ button.link.danger { color: var(--red); }
 .mb-menu button { text-align: left; border: none; padding: 6px 8px; border-radius: 4px; font: 400 12px var(--ui); color: var(--text-2); background: transparent; }
 .mb-menu button:hover { background: var(--fill-selected); color: var(--text-1); }
 .collab-inspector section > button.outline, .collab-inspector section > button.primary { align-self: flex-start; }
+/* drag-and-drop cues (drag.tsx): where a drop lands, and what it will do */
+[data-drop="into"] { outline: 2px solid var(--amber); outline-offset: -2px; background-color: var(--fill-waiting) !important; border-radius: 6px; }
+.pane[data-drop="before"], .bcol[data-drop="before"] { box-shadow: inset 3px 0 0 var(--amber); }
+.pane[data-drop="after"], .bcol[data-drop="after"] { box-shadow: inset -3px 0 0 var(--amber); }
+.ins-card[data-drop="before"], .sess-item[data-drop="before"] { box-shadow: inset 0 2px 0 var(--amber); }
+.ins-card[data-drop="after"], .sess-item[data-drop="after"] { box-shadow: inset 0 -2px 0 var(--amber); }
+.drag-label { position: fixed; z-index: 200; pointer-events: none; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 3px 8px; border-radius: 6px; background: var(--bg-pane-header); border: 1px solid var(--line-strong2); box-shadow: 0 6px 18px rgba(0,0,0,.35); font: 500 11px var(--ui); color: var(--text-3); }
+.drag-label.ok { border-color: var(--amber); color: var(--text-1); }

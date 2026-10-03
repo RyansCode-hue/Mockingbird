@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import type { AgentKind, CollabParticipant, CollabParticipantSpec, CollabRoom, RepoEntry } from "../shared/types";
 import { ChevronIcon } from "./Icons";
 import { ACCESS_LEVELS, CUSTOM_MODEL as CUSTOM, accessFlags, accessOf, isErr, moveSeat, specsOf, type Access, type Catalog } from "./collabView";
+import { beginDrag, cue, dragging, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 
 type Call = (what: string, fn: () => Promise<unknown>) => Promise<unknown>;
 
@@ -15,7 +16,13 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
   const seated = room.participants.filter((p) => !p.removed);
   const specs = specsOf(room.participants);
   const [openKey, setOpenKey] = useState<string | null>(null);
-  const [dragKey, setDragKey] = useState<string | null>(null);
+  const drag = useDrag();
+  const keys = seated.map((p) => p.key);
+  /** Speaking order with `src` moved beside `target`. */
+  const reordered = (src: string, target: string, side: Side) => {
+    const order = placeBeside(keys, src, target, side);
+    return order.map((k) => specs.find((s) => s.key === k)!);
+  };
 
   const apply = async (next: CollabParticipantSpec[]) => {
     const r = await call("models", () => window.mb.collabParticipants(room.id, next));
@@ -59,12 +66,18 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
         return (
           <div
             key={p.key}
-            className={`ins-card c-${p.color} ${open ? "open" : ""} ${room.speaking === p.key ? "speaking" : ""} ${dragKey === p.key ? "dragging" : ""}`}
-            onDragOver={(e) => dragKey && dragKey !== p.key && e.preventDefault()}
+            className={`ins-card c-${p.color} ${open ? "open" : ""} ${room.speaking === p.key ? "speaking" : ""} ${dragging("text/mb-seat") === p.key ? "dragging" : ""}`}
+            data-drop={cue(drag, `seat:${p.key}`)}
+            onDragOver={(e) => {
+              const src = dragging("text/mb-seat");
+              const side = sideOf(e, e.currentTarget, "y");
+              const from = seated.find((x) => x.key === src);
+              overTarget(e, !from || src === p.key || samePlace(keys, from.key, p.key, side) ? null : { key: `seat:${p.key}`, side, outcome: `${from.label} speaks ${side} ${p.label}` });
+            }}
             onDrop={(e) => {
               e.preventDefault();
-              if (dragKey && dragKey !== p.key) apply(moveSeat(specs, dragKey, p.key));
-              setDragKey(null);
+              const src = e.dataTransfer.getData("text/mb-seat");
+              if (src && src !== p.key) apply(reordered(src, p.key, sideOf(e, e.currentTarget, "y")));
             }}
           >
             <div className="ins-card-row" onClick={() => setOpenKey(open ? null : p.key)} title={open ? "Close" : "Model, effort and access"}>
@@ -73,11 +86,7 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
                 draggable
                 title="Drag to change the speaking order"
                 onClick={(e) => e.stopPropagation()}
-                onDragStart={(e) => {
-                  setDragKey(p.key);
-                  e.dataTransfer.effectAllowed = "move";
-                }}
-                onDragEnd={() => setDragKey(null)}
+                onDragStart={(e) => beginDrag(e, "text/mb-seat", p.key, `Moving ${p.label}`)}
               >
                 ⋮⋮
               </span>

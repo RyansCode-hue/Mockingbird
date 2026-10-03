@@ -7,6 +7,7 @@ import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
 import { TranscriptSearch } from "./TranscriptSearch";
+import { DragLabel, beginDrag, cue, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon } from "./Icons";
 import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit } from "../shared/types";
@@ -183,6 +184,8 @@ function App() {
   const [statusPop, setStatusPop] = useState<SessionStatus | null>(null);
   const [update, setUpdate] = useState<{ latest: string; url: string; newer: boolean; source: "release" | "branch" } | null>(null);
   const [upd, setUpd] = useState<UpdateProgress>({ state: "idle", done: [], log: [] });
+  const drag = useDrag();
+  useEffect(() => installDragListeners(), []);
   // Collaborate models waiting on an approval, per room — badged on the tab wherever you are
   const [roomAsks, setRoomAsks] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -229,14 +232,9 @@ function App() {
   useEffect(() => localStorage.setItem("mb.layout", JSON.stringify(layouts)), [layouts]);
   useEffect(() => localStorage.setItem("mb.side", JSON.stringify(sideCollapsed)), [sideCollapsed]);
 
-  const reorder = (srcId: string, targetId: string) =>
-    setShown((p) => {
-      const arr = p.filter((x) => x !== srcId);
-      const i = arr.indexOf(targetId);
-      if (i < 0) return p;
-      arr.splice(i, 0, srcId);
-      return arr;
-    });
+  /** Put a session (dragged from the grid or the sidebar) beside a pane in the grid. */
+  const reorder = (srcId: string, targetId: string, side: Side = "before") =>
+    setShown((p) => placeBeside(p.includes(srcId) ? p : [...p, srcId], srcId, targetId, side));
 
   // inline editing is session titles only — group and workspace names are
   // renamed through RenameDialog (a second mounted input stole its focus)
@@ -668,6 +666,14 @@ function App() {
   };
 
   /** Drop handler shared by group headers and rows — moves the dragged session. */
+  const titleOf = (s: SessionInfo) => s.ticketTitle ?? s.title;
+  /** The drop cue for moving a dragged sidebar/pane session into `group` (null = out of any group). */
+  const intoGroupTarget = (targetKey: string, group: string | null, name: string) => {
+    const src = sessions.find((x) => x.id === dragging("text/mb-session"));
+    if (!src || (src.taskGroup ?? null) === group) return null; // already there
+    return { key: targetKey, outcome: group === null ? `Move ${titleOf(src)} out of its group` : `Move ${titleOf(src)} into ${name}` };
+  };
+
   const dropToGroup = (e: React.DragEvent, group: string | null) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1077,7 +1083,8 @@ function App() {
                       cancelClick();
                       setRenameDlg({ kind: "group", key, initial: key === "ungrouped" ? "" : key });
                     }}
-                    onDragOver={(e) => e.preventDefault()}
+                    data-drop={cue(drag, `g:${key}`)}
+                    onDragOver={(e) => overTarget(e, intoGroupTarget(`g:${key}`, key === "ungrouped" ? null : key, groupTitle(key, list)))}
                     onDrop={(e) => dropToGroup(e, key === "ungrouped" ? null : key)}
                   >
                     <button
@@ -1130,7 +1137,8 @@ function App() {
                           cancelClick();
                           setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
                         }}
-                        onDragOver={(e) => e.preventDefault()}
+                        data-drop={cue(drag, `w:${wsKey}`)}
+                        onDragOver={(e) => overTarget(e, intoGroupTarget(`w:${wsKey}`, wsKey, `${groupTitle(key, list)} / ${sub}`))}
                         onDrop={(e) => dropToGroup(e, wsKey)}
                       >
                         <span
@@ -1177,11 +1185,17 @@ function App() {
                       onClick={() => (idx >= 0 ? hide(s.id) : showSession(s))}
                       title={`${s.cwd} — double-click name to rename · drag onto a group to move`}
                       draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData("text/mb-session", s.id);
-                        e.dataTransfer.effectAllowed = "move";
+                      onDragStart={(e) => beginDrag(e, "text/mb-session", s.id, `Moving ${titleOf(s)}`)}
+                      data-drop={cue(drag, `s:${s.id}`)}
+                      onDragOver={(e) => {
+                        const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
+                        if (!srcS || srcS.id === s.id) return overTarget(e, null);
+                        if (topOf(srcS) === topOf(s) && !subOf(s) && !subOf(srcS)) {
+                          return overTarget(e, { key: `s:${s.id}`, outcome: `Put ${titleOf(srcS)} and ${titleOf(s)} in a new workspace` });
+                        }
+                        const where = subOf(s) ? `${groupTitle(topOf(s), [s])} / ${subOf(s)}` : groupTitle(topOf(s), [s]);
+                        overTarget(e, (srcS.taskGroup ?? null) === (s.taskGroup ?? null) ? null : { key: `s:${s.id}`, outcome: `Move ${titleOf(srcS)} into ${where}` });
                       }}
-                      onDragOver={(e) => e.preventDefault()}
                       onDrop={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
@@ -1359,6 +1373,22 @@ function App() {
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
                     onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
                     onReorder={reorder}
+                    drop={{
+                      cue: cue(drag, `p:${s.id}`),
+                      over: (e) => {
+                        const src = dragging("text/mb-session");
+                        if (!src) return e.preventDefault(); // files from Finder: the pane handles those itself
+                        const srcS = sessions.find((x) => x.id === src);
+                        const side = sideOf(e, e.currentTarget, "x");
+                        const inGrid = shown.includes(src);
+                        if (!srcS || src === s.id || (inGrid && samePlace(shown, src, s.id, side))) return overTarget(e, null);
+                        overTarget(e, { key: `p:${s.id}`, side, outcome: `${inGrid ? "Move" : "Show"} ${titleOf(srcS)} ${side} ${titleOf(s)}` });
+                      },
+                      drop: (e) => {
+                        const src = e.dataTransfer.getData("text/mb-session");
+                        if (src && src !== s.id) reorder(src, s.id, sideOf(e, e.currentTarget, "x"));
+                      },
+                    }}
                     onResume={() => resumeDead(s)}
                     onCleanup={() => requestClose(s)}
                     resize={resize}
@@ -1676,6 +1706,7 @@ function App() {
           }}
         />
       )}
+      <DragLabel />
       {modal === "help" && <HelpModal onClose={() => setModal(null)} />}
       {modal === "search" && <TranscriptSearch onClose={() => setModal(null)} onOpen={openTranscript} />}
       {modal === "update" && (
@@ -2182,13 +2213,17 @@ function DashboardBoard({
     return [...custom, ...stateCols.filter((c) => !custom.includes(c))];
   }, [stateCols, colOrder]);
 
-  const reorderCols = (src: string, target: string) => {
-    if (src === target) return;
-    const arr = orderedCols.filter((c) => c !== src);
-    const i = arr.indexOf(target);
-    if (i < 0) return;
-    arr.splice(i, 0, src);
-    setColOrder(arr);
+  const drag = useDrag();
+  const reorderCols = (src: string, target: string, side: Side) => setColOrder(placeBeside(orderedCols, src, target, side));
+  /** What dropping the current drag on a column would do: move a column beside it, or move a ticket into it. */
+  const columnTarget = (e: React.DragEvent, col: string) => {
+    const srcCol = dragging("text/mb-col");
+    if (srcCol) {
+      const side = sideOf(e, e.currentTarget, "x");
+      return srcCol === col || samePlace(orderedCols, srcCol, col, side) ? null : { key: `c:${col}`, side, outcome: `Put ${srcCol} ${side} ${col}` };
+    }
+    const it = items?.find((i) => String(i.id) === dragging("text/mb-wi"));
+    return it && it.state !== col ? { key: `c:${col}`, outcome: `#${it.id}: ${it.state} → ${col}` } : null;
   };
   // detail edit state
   const [title, setTitle] = useState("");
@@ -2476,11 +2511,12 @@ function DashboardBoard({
             <div
               key={col}
               className="bcol"
-              onDragOver={(e) => e.preventDefault()}
+              data-drop={cue(drag, `c:${col}`)}
+              onDragOver={(e) => overTarget(e, columnTarget(e, col))}
               onDrop={(e) => {
                 e.preventDefault();
                 const movedCol = e.dataTransfer.getData("text/mb-col");
-                if (movedCol) return reorderCols(movedCol, col);
+                if (movedCol) return movedCol !== col && reorderCols(movedCol, col, sideOf(e, e.currentTarget, "x"));
                 const id = parseInt(e.dataTransfer.getData("text/mb-wi"), 10);
                 if (id) changeState(id, col);
               }}
@@ -2489,10 +2525,7 @@ function DashboardBoard({
                 className="bcol-hd"
                 draggable
                 title="drag to reorder columns"
-                onDragStart={(e) => {
-                  e.dataTransfer.setData("text/mb-col", col);
-                  e.dataTransfer.effectAllowed = "move";
-                }}
+                onDragStart={(e) => beginDrag(e, "text/mb-col", col, `Moving column ${col}`)}
               >
                 {col}
                 <span className="cnt">{colItems.length}</span>
@@ -2505,10 +2538,7 @@ function DashboardBoard({
                       key={it.id}
                       className="bcard"
                       draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.setData("text/mb-wi", String(it.id));
-                        e.dataTransfer.effectAllowed = "move";
-                      }}
+                      onDragStart={(e) => beginDrag(e, "text/mb-wi", String(it.id), `Moving #${it.id}`)}
                       onClick={() => openDetail(it)}
                       title="drag to another column to change state"
                     >
