@@ -1336,3 +1336,10 @@ button.link.danger { color: var(--red); }
 .sc-sec .sc-acts button, .sc-row .sc-acts button { padding: 0 5px; font-size: 12px; }
 .sc-row { padding-left: 22px !important; }
 .fp-row.st-C .fp-badge { color: var(--red); }
+/* Import: search over every conversation */
+.modal.import-dlg { width: 620px; max-width: calc(100vw - 40px); }
+.import-search { width: 100%; margin: 2px 0 8px; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 6px; padding: 6px 9px; font: 400 12px var(--ui); }
+.import-search:focus { outline: none; border-color: var(--line-focus); }
+.pick-list .item.blocked { opacity: .5; cursor: default; }
+.pick-list .item .t .ts-agent { margin-left: 6px; }
+.pick-list .item .ts-snip { margin-top: 3px; }

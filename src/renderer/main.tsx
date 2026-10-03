@@ -6,7 +6,7 @@ import { FileDock } from "./FilePanel";
 import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
-import { TranscriptSearch } from "./TranscriptSearch";
+import { TranscriptSearch, Snippet } from "./TranscriptSearch";
 import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { resetText, pctNow } from "./usageFormat";
@@ -4380,6 +4380,20 @@ function NewSessionModal({
   );
 }
 
+/** A conversation the Import list can open: a recent one, or a search hit. */
+interface ImportRow {
+  id: string;
+  agent: AgentKind;
+  cwd: string;
+  title: string;
+  at: number;
+  snippet?: string;
+  /** Search hits that are already open, or belong to a Collaborate room, aren't imported again. */
+  blocked?: string;
+  /** A closed Mockingbird session that resumes this conversation — restored rather than duplicated. */
+  restore?: string;
+}
+
 function ImportModal({
   onClose,
   onOpened,
@@ -4389,8 +4403,10 @@ function ImportModal({
   onOpened: (opened: SessionInfo[]) => void;
   onDone: () => void;
 }) {
-  const [convos, setConvos] = useState<ImportableConversation[]>([]);
-  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [convos, setConvos] = useState<ImportableConversation[] | null>(null);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<ImportRow[] | null>(null);
+  const [sel, setSel] = useState<Map<string, ImportRow>>(new Map());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -4401,10 +4417,40 @@ function ImportModal({
     });
   }, []);
 
-  const toggle = (id: string) =>
+  // typing searches every Claude and Codex conversation on this Mac (the transcript index), any age
+  useEffect(() => {
+    if (!q.trim()) return setHits(null);
+    let live = true;
+    const t = setTimeout(async () => {
+      const r = await window.mb.searchTranscripts(q);
+      if (!live) return;
+      if (r?.error) return setError(r.error);
+      setError("");
+      setHits(
+        (r.hits as TranscriptHit[]).map((h) => ({
+          id: h.id,
+          agent: h.agent,
+          cwd: h.cwd,
+          title: h.open.how === "room" ? `${h.open.roomTitle} (Collaborate)` : h.title,
+          at: h.updated,
+          snippet: h.snippet,
+          ...(h.open.how === "pane" ? { blocked: "already open" } : h.open.how === "room" ? { blocked: "in a Collaborate room" } : {}),
+          ...(h.open.how === "previous" ? { restore: h.open.sessionId } : {}),
+        }))
+      );
+    }, 150);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [q]);
+
+  const rows: ImportRow[] | null = hits ?? (convos ? convos.map((c) => ({ id: c.sessionId, agent: "claude" as AgentKind, cwd: c.cwd, title: c.title, at: c.mtimeMs })) : null);
+
+  const toggle = (r: ImportRow) =>
     setSel((p) => {
-      const n = new Set(p);
-      n.has(id) ? n.delete(id) : n.add(id);
+      const n = new Map(p);
+      n.has(r.id) ? n.delete(r.id) : n.set(r.id, r);
       return n;
     });
 
@@ -4412,20 +4458,17 @@ function ImportModal({
     setBusy(true);
     const opened: SessionInfo[] = [];
     const failures: string[] = [];
-    for (const c of convos.filter((c) => sel.has(c.sessionId))) {
-      const info = await window.mb.createSession({
-        repoPath: c.cwd,
-        useWorktree: false,
-        resumeSessionId: c.sessionId,
-        title: c.title,
-      });
-      if (info?.error) failures.push(`✕ ${c.title.slice(0, 40)}: ${info.error}`);
+    for (const c of sel.values()) {
+      const info = c.restore
+        ? await window.mb.relaunchSession(c.restore)
+        : await window.mb.createSession({ repoPath: c.cwd, useWorktree: false, resumeSessionId: c.id, agent: c.agent, title: c.title.slice(0, 80) });
+      if (!info || info.error) failures.push(`✕ ${c.title.slice(0, 40)}: ${info?.error ?? "that session is no longer saved"}`);
       else opened.push(info);
     }
     if (opened.length) onOpened(opened);
     if (failures.length) {
       setError(`Opened ${opened.length}, failed ${failures.length}:\n\n${failures.join("\n")}`);
-      setSel(new Set());
+      setSel(new Map());
       setBusy(false);
     } else {
       onDone();
@@ -4434,26 +4477,53 @@ function ImportModal({
 
   return (
     <div className="modal-back" onMouseDown={onClose}>
-      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
+      <div className="modal import-dlg" onMouseDown={(e) => e.stopPropagation()}>
         <h3>Import conversations</h3>
         <div className="sub-h">
-          Recent Claude CLI conversations from this machine — including ones started in cmux or a terminal.
-          Each reopens with its full history in its original directory. Every import is a live claude
-          process, so start with the handful you're actively working on — the rest stay here for later.
+          Recent Claude conversations from this Mac — including ones started in cmux or a terminal — or search every Claude and Codex
+          conversation, any age. Each reopens with its full history in its original folder. Every import is a live agent process, so start
+          with the handful you're actively working on.
         </div>
+        <input
+          className="import-search"
+          type="text"
+          autoFocus
+          placeholder="Search every conversation — words, files, commands"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
         <div className="pick-list">
-          {convos.map((c) => (
-            <div key={c.sessionId} className={`item ${sel.has(c.sessionId) ? "sel" : ""}`} onClick={() => toggle(c.sessionId)}>
-              <input type="checkbox" checked={sel.has(c.sessionId)} readOnly />
+          {rows?.map((c) => (
+            <div
+              key={c.id}
+              className={`item ${sel.has(c.id) ? "sel" : ""} ${c.blocked ? "blocked" : ""}`}
+              title={c.blocked ? `Not imported: ${c.blocked}` : c.restore ? "Restores the closed Mockingbird session that ran this" : undefined}
+              onClick={() => !c.blocked && toggle(c)}
+            >
+              <input type="checkbox" checked={sel.has(c.id)} disabled={!!c.blocked} readOnly />
               <div className="meta">
-                <div className="t">{c.title}</div>
-                <div className="s">{c.cwd.replace(/^\/Users\/[^/]+/, "~")}</div>
+                <div className="t">
+                  {c.title}
+                  {c.agent === "codex" && <span className="ts-agent codex">codex</span>}
+                </div>
+                <div className="s">
+                  {c.cwd.replace(/^\/Users\/[^/]+/, "~")}
+                  {c.blocked ? ` · ${c.blocked}` : c.restore ? " · restores your closed session" : ""}
+                </div>
+                {c.snippet && (
+                  <div className="ts-snip">
+                    <Snippet text={c.snippet} />
+                  </div>
+                )}
               </div>
-              <span className="age">{ago(c.mtimeMs)}</span>
+              <span className="age">{ago(c.at)}</span>
             </div>
           ))}
-          {convos.length === 0 && !error && (
-            <div className="item"><div className="meta"><div className="s">scanning ~/.claude/projects…</div></div></div>
+          {rows === null && !error && (
+            <div className="item"><div className="meta"><div className="s">{q.trim() ? "searching…" : "scanning ~/.claude/projects…"}</div></div></div>
+          )}
+          {rows?.length === 0 && (
+            <div className="item"><div className="meta"><div className="s">{q.trim() ? "No conversation mentions that." : "No recent conversations."}</div></div></div>
           )}
         </div>
         {error && <div className="err">{error}</div>}

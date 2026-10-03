@@ -20,7 +20,7 @@ export function ago(ms: number, now = Date.now()): string {
 }
 
 /** The matched words of a snippet (between \u0001 and \u0002) as <mark>s. */
-function Snippet({ text }: { text: string }) {
+export function Snippet({ text }: { text: string }) {
   const parts = text.replace(/\s+/g, " ").split(/(\u0001[^\u0002]*\u0002)/);
   return (
     <>
