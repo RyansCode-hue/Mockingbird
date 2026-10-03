@@ -54,3 +54,12 @@ export const ChevronIcon = ({ open }: { open: boolean }) => (
     <path d={open ? "M4.5 6.5 8 10l3.5-3.5" : "M6.5 4.5 10 8l-3.5 3.5"} />
   </Icon>
 );
+
+/** A window with a panel on its right — shows/hides a side panel. */
+export const PanelRightIcon = ({ open }: { open?: boolean }) => (
+  <Icon>
+    <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+    <path d="M10 2.75v10.5" />
+    {open && <path d="M11.6 5.5h1.1M11.6 7.5h1.1M11.6 9.5h1.1" />}
+  </Icon>
+);

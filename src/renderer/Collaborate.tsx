@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentKind, CollabMessage, CollabMode, CollabParticipantSpec, CollabPermissionRequest, CollabRoom, RepoEntry } from "../shared/types";
 import { CUSTOM_MODEL as CUSTOM, agreement, initials, isErr, isLong, roundsGrid, summaryOf, threadItems, waited, type Catalog } from "./collabView";
 import { ModelsSection } from "./CollabModels";
+import { MenuButton } from "./Menu";
+import { PanelRightIcon } from "./Icons";
 
 const MODES: { id: CollabMode; label: string; note: string }[] = [
   { id: "step", label: "Step", note: "one round, then waits for you" },
@@ -13,7 +15,7 @@ const nextMode = (m: CollabMode): CollabMode => MODES[(MODES.findIndex((x) => x.
 type Result<T> = T | { error: string };
 
 /** A remembered UI preference; storage can be unavailable, and then the default applies. */
-function usePref<T extends string | boolean>(key: string, initial: T): [T, (v: T) => void] {
+function usePref<T extends string | boolean | number>(key: string, initial: T): [T, (v: T) => void] {
   const [v, setV] = useState<T>(() => {
     try {
       const s = localStorage.getItem(key);
@@ -254,8 +256,8 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
             <button className={view === "thread" ? "on" : ""} onClick={() => setView("thread")}>Thread</button>
             <button className={view === "rounds" ? "on" : ""} onClick={() => setView("rounds")}>Rounds</button>
           </span>
-          <button className={`icon ${inspector ? "on" : ""}`} title={inspector ? "Hide room details" : "Show room details"} onClick={() => setInspector(!inspector)}>
-            ▥
+          <button className={`icon collab-panel-toggle ${inspector ? "on" : ""}`} title={inspector ? "Hide room details" : "Show room details"} onClick={() => setInspector(!inspector)}>
+            <PanelRightIcon open={inspector} />
           </button>
         </header>
 
@@ -519,6 +521,9 @@ function AskCard({ room, req, label, color, call }: { room: CollabRoom; req: Col
   );
 }
 
+const INSPECTOR_WIDTH = 256;
+const INSPECTOR_MIN = 220;
+
 /** Everything about the room that isn't the conversation: who's in it, what they may do, the test copy, the plan. */
 function Inspector({
   room,
@@ -541,8 +546,40 @@ function Inspector({
 }) {
   const seated = room.participants.filter((p) => !p.removed);
   const runsCommands = !!room.repoPath && seated.some((p) => p.runsCommands);
+  const [savedWidth, saveWidth] = usePref<number>("mb.collab.inspectorWidth", INSPECTOR_WIDTH);
+  const [width, setWidth] = useState(savedWidth);
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const x0 = e.clientX;
+    const w0 = width;
+    let w = w0;
+    const move = (ev: PointerEvent) => {
+      // the panel's left edge: dragging left widens it
+      w = Math.round(Math.min(Math.max(INSPECTOR_MIN, w0 + x0 - ev.clientX), Math.max(INSPECTOR_MIN, window.innerWidth * 0.6)));
+      setWidth(w);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("col-resizing");
+      saveWidth(w);
+    };
+    document.body.classList.add("col-resizing");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const planMsg = [...room.messages].reverse().find((m) => m.kind === "plan" || (room.plan && m.text === room.plan.text && m.speaker === room.plan.by));
   return (
+    <div className="collab-inspector-wrap" style={{ width }}>
+    <div
+      className="collab-inspector-grip"
+      title="Drag to resize · double-click to reset"
+      onPointerDown={startResize}
+      onDoubleClick={() => {
+        setWidth(INSPECTOR_WIDTH);
+        saveWidth(INSPECTOR_WIDTH);
+      }}
+    />
     <aside className="collab-inspector">
       <ModelsSection room={room} catalog={catalog} call={call} />
 
@@ -629,54 +666,39 @@ function Inspector({
         </button>
       </section>
     </aside>
+    </div>
   );
 }
 
 function SynthMenu({ room, busy, onPick }: { room: CollabRoom; busy: boolean; onPick: (key: string) => void }) {
-  const [open, setOpen] = useState(false);
   return (
-    <span className="collab-menu">
-      <button className="outline" disabled={busy || room.round === 0} onClick={() => setOpen((o) => !o)} title="Have one model turn the discussion into a written plan for you to approve">
-        {busy ? "Writing plan…" : "Write up plan ▾"}
-      </button>
-      {open && (
-        <div className="collab-pop">
-          {room.participants.filter((p) => !p.removed).map((p) => (
-            <button key={p.key} onClick={() => { setOpen(false); onPick(p.key); }}>{p.label}</button>
-          ))}
-        </div>
-      )}
-    </span>
+    <MenuButton
+      label={busy ? "Writing plan…" : "Write up plan ▾"}
+      disabled={busy || room.round === 0}
+      title="Have one model turn the discussion into a written plan for you to approve"
+      items={room.participants.filter((p) => !p.removed).map((p) => ({ key: p.key, label: p.label, onPick: () => onPick(p.key) }))}
+    />
   );
 }
 
 function ImplementMenu({ room, onDone, setError }: { room: CollabRoom; onDone: (sessionId: string) => void; setError: (e: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const models = room.participants.filter((p) => !p.removed);
   return (
-    <span className="collab-menu">
-      <button className="primary" onClick={() => setOpen((o) => !o)} title="Start a session that makes the changes, on a new branch in its own worktree">
-        Implement with ▾
-      </button>
-      {open && (
-        <div className="collab-pop">
-          {models.map((m) => (
-            <button
-              key={m.key}
-              onClick={async () => {
-                setOpen(false);
-                const r = await window.mb.collabImplement(room.id, m.key);
-                if (isErr(r)) setError(r.error);
-                else onDone(r.id);
-              }}
-            >
-              {m.label}
-              {m.effort ? ` · ${m.effort}` : ""}
-            </button>
-          ))}
-        </div>
-      )}
-    </span>
+    <MenuButton
+      label="Implement with ▾"
+      className="primary"
+      title="Start a session that makes the changes, on a new branch in its own worktree"
+      items={room.participants
+        .filter((p) => !p.removed)
+        .map((m) => ({
+          key: m.key,
+          label: `${m.label}${m.effort ? ` · ${m.effort}` : ""}`,
+          onPick: async () => {
+            const r = await window.mb.collabImplement(room.id, m.key);
+            if (isErr(r)) setError(r.error);
+            else onDone(r.id);
+          },
+        }))}
+    />
   );
 }
 

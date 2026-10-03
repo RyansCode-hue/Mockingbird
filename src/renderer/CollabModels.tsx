@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { AgentKind, CollabParticipant, CollabParticipantSpec, CollabRoom, RepoEntry } from "../shared/types";
+import { ChevronIcon } from "./Icons";
 import { ACCESS_LEVELS, CUSTOM_MODEL as CUSTOM, accessFlags, accessOf, isErr, moveSeat, specsOf, type Access, type Catalog } from "./collabView";
 
 type Call = (what: string, fn: () => Promise<unknown>) => Promise<unknown>;
@@ -92,7 +93,9 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
                   )}
                 </span>
               )}
-              <span className="ins-chev">{open ? "▴" : "▾"}</span>
+              <span className="ins-chev">
+                <ChevronIcon open={open} />
+              </span>
             </div>
             {open && (
               <div className="ins-card-body">
