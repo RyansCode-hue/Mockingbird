@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { git } from "./git";
 import { MB_DIR } from "./store";
-import type { RunPort, RunProfile, RunService } from "../shared/types";
+import type { RunDebug, RunPort, RunProfile, RunService } from "../shared/types";
 
 /**
  * How a repository's services run: kept by Mockingbird per main checkout (not
@@ -70,6 +70,7 @@ export function validateProfile(x: unknown, repo: string): RunProfile {
       }
     }
     if (kind === "compose" && (!isObj(s.compose) || typeof s.compose.file !== "string")) fail(`${at}.compose.file`, "is required for a compose service");
+    const debug = s.debug === undefined ? undefined : validateDebug(s.debug, `${at}.debug`, fail);
     return {
       name: s.name,
       kind,
@@ -81,6 +82,7 @@ export function validateProfile(x: unknown, repo: string): RunProfile {
       ...(s.dependsOn ? { dependsOn: s.dependsOn } : {}),
       ...(s.ready ? { ready: { ...(s.ready.port ? { port: s.ready.port } : {}), ...(s.ready.log ? { log: s.ready.log } : {}) } } : {}),
       ...(kind === "compose" ? { compose: { file: s.compose.file, ...(strList(s.compose.services) ? { services: s.compose.services } : {}) } } : {}),
+      ...(debug ? { debug } : {}),
     };
   });
   for (const s of services) for (const d of s.dependsOn ?? []) if (!names.has(d)) fail(`${s.name}.dependsOn`, `names "${d}", which isn't a service`);
@@ -112,6 +114,36 @@ export function validateProfile(x: unknown, repo: string): RunProfile {
     ...(Array.isArray(p.blockers) ? { blockers: p.blockers.filter((b: any) => isObj(b) && typeof b.what === "string" && typeof b.fix === "string") } : {}),
     ...(strList(p.notes) ? { notes: p.notes } : {}),
   };
+}
+
+/** A service's debug setup, checked for its type's required fields; unknown fields are dropped. */
+function validateDebug(d: any, at: string, fail: (where: string, what: string) => never): RunDebug {
+  if (!isObj(d)) fail(at, "must be an object");
+  const optStr = (k: string) => (typeof d[k] === "string" ? { [k]: d[k] } : {});
+  const optList = (k: string) => (strList(d[k]) ? { [k]: d[k] } : {});
+  switch (d.type) {
+    case "python":
+      if (!d.module && !d.program) fail(at, "needs a module or a program");
+      return { type: "python", ...optStr("module"), ...optStr("program"), ...optStr("python"), ...optList("args"), ...(typeof d.justMyCode === "boolean" ? { justMyCode: d.justMyCode } : {}) } as RunDebug;
+    case "node":
+      if (!d.program && !d.runtimeExecutable) fail(at, "needs a program or a runtimeExecutable");
+      return { type: "node", ...optStr("program"), ...optStr("runtimeExecutable"), ...optList("runtimeArgs"), ...optList("args") } as RunDebug;
+    case "chrome":
+      if (typeof d.url !== "string") fail(`${at}.url`, "is required");
+      return { type: "chrome", url: d.url, ...optStr("webRoot") } as RunDebug;
+    case "dotnet":
+      if (typeof d.program !== "string") fail(`${at}.program`, "is required (the built .dll, or a project to build)");
+      return { type: "dotnet", program: d.program, ...optList("args"), ...optStr("build") } as RunDebug;
+    case "python-attach":
+      if (typeof d.port !== "string") fail(`${at}.port`, "must name one of the service's ports");
+      return {
+        type: "python-attach",
+        port: d.port,
+        ...(Array.isArray(d.pathMappings) ? { pathMappings: d.pathMappings.filter((m: any) => isObj(m) && typeof m.localRoot === "string" && typeof m.remoteRoot === "string") } : {}),
+      } as RunDebug;
+    default:
+      return fail(`${at}.type`, 'must be "python", "node", "chrome", "dotnet" or "python-attach"');
+  }
 }
 
 /** Services in an order where each comes after what it depends on. */

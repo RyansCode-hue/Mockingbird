@@ -127,3 +127,94 @@ describe("debugging a real Python program", () => {
     expect(runs.buffer(r.ids[0])).toContain("result 5"); // the program's own output is in its log, like any service
   }, 120_000);
 });
+
+describe("reading a Node service's command for the debugger", () => {
+  it("debugs a dev server's page in the browser, and other Node programs under Node", async () => {
+    const { inferNode } = await import("../src/main/dap/targets");
+    const vite = tempDir("vite-app");
+    fs.writeFileSync(path.join(vite, "vite.config.ts"), "export default {}");
+    expect(inferNode("npm run dev -- --port 5183 --strictPort", vite, "http://localhost:5183")).toEqual({ type: "chrome", url: "http://localhost:5183" });
+    expect(inferNode("npx vite --port 5173", tempDir("x"), "http://localhost:5173")).toEqual({ type: "chrome", url: "http://localhost:5173" });
+    expect(inferNode("node src/app.js --flag", tempDir("y"), undefined)).toEqual({ type: "node", program: "src/app.js", args: ["--flag"] });
+    expect(inferNode("PORT=3000 npm run dev", tempDir("z"), undefined)).toEqual({ type: "node", runtimeExecutable: "npm", runtimeArgs: ["run", "dev"] });
+    expect(inferNode("dotnet run", tempDir("w"), undefined)).toBeNull();
+    expect(inferNode('node -e "console.log(1)"', tempDir("v"), undefined)).toEqual({ type: "node", runtimeExecutable: "node", runtimeArgs: ["-e", "console.log(1)"] });
+  });
+});
+
+describe("debugging real JavaScript", () => {
+  const debugRun = (dir: string, profile: any, events: any[], extra: object = {}) => {
+    const dbg = new DebugManager({ emit: (ch, ...a) => events.push([ch, ...a]), breakpointsDir: path.join(dir, ".bp") });
+    const spawn: Spawn = (command, o) => pty.spawn("/bin/sh", ["-c", command], { name: "xterm-256color", cols: 120, rows: 30, cwd: o.cwd, env: o.env });
+    const runs = new RunManager({
+      spawn,
+      emit: (ch, ...a) => events.push([ch, ...a]),
+      baseEnv: () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir }),
+      docker: async () => "docker",
+      runShell: async () => ({ code: 0, out: "" }),
+      profileFor: () => validateProfile(profile, dir),
+      mainOf: async () => dir,
+      debugger: dbg,
+      debugTarget: (s, ctx) => debugTargetFor(s, { ...ctx, debugRoot: cache, ...extra }),
+    });
+    return { dbg, runs };
+  };
+  const stopped = async (events: any[]) => {
+    for (let i = 0; i < 300; i++) {
+      const e = events.find((x) => x[0] === "debug:stopped" && !x.seen);
+      if (e) {
+        e.seen = true;
+        return e;
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`never stopped: ${JSON.stringify(events.filter((x) => x[0] === "debug:output").map((x) => x[3])).slice(0, 600)}`);
+  };
+
+  it("stops a Node program at a breakpoint and reads its variables", async () => {
+    const dir = fs.realpathSync(tempDir("dbg-node"));
+    fs.writeFileSync(path.join(dir, "app.js"), ["function add(a, b) {", "  const total = a + b;", "  return total;", "}", 'console.log("sum", add(4, 5));', ""].join("\n"));
+    const events: any[] = [];
+    const { dbg, runs } = debugRun(dir, { services: [{ name: "app", command: "node app.js" }] }, events);
+    await dbg.setBreakpoints(dir, "app.js", [2]);
+    const r = (await runs.start(dir, { mode: "side", debug: ["app"] })) as { ids: string[] };
+    const e = await stopped(events);
+    expect(e[2].frame).toMatchObject({ path: path.join(dir, "app.js"), line: 2, name: expect.stringMatching(/add$/) });
+    const locals = await dbg.variables(e[1], (await dbg.scopes(e[1], e[2].frame.id))[0].ref);
+    expect(locals.filter((v) => ["a", "b"].includes(v.name)).map((v) => `${v.name}=${v.value}`).sort()).toEqual(["a=4", "b=5"]);
+    await dbg.control(e[1], "continue", e[2].threadId);
+    const plain = () => runs.buffer(r.ids[0]).replace(/\x1b\[[0-9;]*m/g, ""); // node colours the 9
+    for (let i = 0; i < 100 && !plain().includes("sum 9"); i++) await new Promise((res) => setTimeout(res, 100));
+    expect(plain()).toContain("sum 9");
+    await runs.stopAll();
+    await dbg.stopAll();
+  }, 120_000);
+
+  const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  it.skipIf(!fs.existsSync(chrome))("opens a dev server's page in Chrome and stops at a breakpoint in its script", async () => {
+    const dir = fs.realpathSync(tempDir("dbg-web"));
+    fs.writeFileSync(path.join(dir, "index.html"), '<!doctype html><html><body><script src="main.js"></script></body></html>');
+    fs.writeFileSync(path.join(dir, "main.js"), ["function greet(name) {", "  const message = 'hello ' + name;", "  document.title = message;", "}", "setTimeout(() => greet('mockingbird'), 500);", ""].join("\n"));
+    const server = `node -e "const fs=require('fs'),p=require('path');require('http').createServer((q,s)=>{const f=p.join(process.cwd(),q.url==='/'?'index.html':q.url);fs.readFile(f,(e,d)=>{s.writeHead(e?404:200,{'Content-Type':f.endsWith('.js')?'text/javascript':'text/html'});s.end(d)})}).listen(\${port:web})"`;
+    const events: any[] = [];
+    const { dbg, runs } = debugRun(
+      dir,
+      { services: [{ name: "web", command: server, ports: [{ name: "web", base: 47410, url: "http://localhost:${port}/" }], ready: { port: "web" }, debug: { type: "chrome", url: "http://localhost:${port:web}/" } }] },
+      events,
+      { browserArgs: ["--headless=new", "--use-mock-keychain", "--password-store=basic"] }
+    );
+    await dbg.setBreakpoints(dir, "main.js", [2]);
+    try {
+      await runs.start(dir, { mode: "side", debug: ["web"] });
+      const e = await stopped(events);
+      expect(e[2].frame).toMatchObject({ line: 2, name: expect.stringMatching(/greet$/) });
+      expect(e[2].frame.path).toBe(path.join(dir, "main.js")); // mapped back to the file on disk
+      const r = await dbg.evaluate(e[1], "name.toUpperCase()", e[2].frame.id, "repl");
+      expect(r.result).toContain("MOCKINGBIRD");
+    } finally {
+      // a failed run must not leave a headless Chrome behind
+      await runs.stopAll();
+      await dbg.stopAll();
+    }
+  }, 120_000);
+});

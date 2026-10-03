@@ -47,6 +47,12 @@ describe("run profiles", () => {
     expect(() => validateProfile({ services: [{ name: "a", command: "x", dependsOn: ["ghost"] }] }, "/r")).toThrow(/"ghost"/);
     expect(() => validateProfile({ services: [{ name: "a", kind: "compose" }] }, "/r")).toThrow(/compose\.file/);
     expect(() => validateProfile({ services: [{ name: "a", command: "x" }], prepare: { copy: ["/etc/passwd"] } }, "/r")).toThrow(/inside the repository/);
+    expect(() => validateProfile({ services: [{ name: "a", command: "x", debug: { type: "chrome" } }] }, "/r")).toThrow(/debug\.url/);
+    expect(() => validateProfile({ services: [{ name: "a", command: "x", debug: { type: "ruby" } }] }, "/r")).toThrow(/debug\.type/);
+    expect(validateProfile({ services: [{ name: "a", command: "x", debug: { type: "chrome", url: "http://localhost:${port:a}", junk: 1 } }] }, "/r").services[0].debug).toEqual({
+      type: "chrome",
+      url: "http://localhost:${port:a}",
+    });
   });
 
   it("are saved per main checkout and shared by its worktrees", async () => {

@@ -220,7 +220,7 @@ export class RunManager {
     const started: string[] = [];
     const ids: string[] = [];
     for (const s of todo) {
-      const l = opts.debug?.includes(s.name) ? await this.launchDebug(worktree, repo, s, slot, ports) : await this.launch(worktree, repo, profile, s, slot, ports);
+      const l = opts.debug?.includes(s.name) ? await this.launchDebug(worktree, repo, profile, s, slot, ports) : await this.launch(worktree, repo, profile, s, slot, ports);
       started.push(s.name);
       ids.push(l.state.id);
       if (!(await this.whenReady(l, s, ports))) break; // it died: what depends on it isn't started
@@ -284,11 +284,22 @@ export class RunManager {
    * started in a terminal (runInTerminal), so it runs on its own terminal like
    * any service — same log tab, same stop — with the debugger attached.
    */
-  private async launchDebug(worktree: string, repo: string, s: RunService, slot: number, ports: Map<string, number>): Promise<Live> {
+  private async launchDebug(worktree: string, repo: string, profile: RunProfile, s: RunService, slot: number, ports: Map<string, number>): Promise<Live> {
     if (!this.deps.debugger || !this.deps.debugTarget) throw new Error("Debugging isn't available");
     if (s.kind === "compose") throw new Error(`${s.name} is a Docker Compose service — debugging inside containers comes in a later stage`);
     const { ctx, cwd, env, command } = this.serviceSetup(worktree, repo, s, slot, ports);
-    const target = await this.deps.debugTarget(s, { cwd, env, command, expand: (x) => expand(x, ctx), onProgress: (m) => this.deps.emit("run:progress", worktree, m) });
+    const first = (s.ports ?? []).find((p) => p.url) ?? s.ports?.[0];
+    const url = first ? expand((first.url ?? "http://localhost:${port}").replace(/\$\{port\}/g, String(ports.get(first.name))), ctx) : undefined;
+    const target = await this.deps.debugTarget(s, { cwd, env, command, url, expand: (x) => expand(x, ctx), onProgress: (m) => this.deps.emit("run:progress", worktree, m) });
+    if (target.kind === "alongside") {
+      // the service runs as usual; once it's up, the debugger opens beside it
+      const l = await this.launch(worktree, repo, profile, s, slot, ports);
+      if (!(await this.whenReady(l, s, ports))) return l;
+      const sessionId = await this.deps.debugger.launch({ worktree, repo, service: s.name, name: String(target.config.name ?? s.name), adapterID: target.adapterID, connect: target.connect, config: target.config });
+      l.state.debug = sessionId;
+      this.changed();
+      return l;
+    }
     let resolveLive!: (l: Live) => void;
     const started = new Promise<Live>((r) => (resolveLive = r));
     const runInTerminal = async (req: { cwd: string; args: string[]; env?: Record<string, string | null> }) => {
