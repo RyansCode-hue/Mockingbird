@@ -33,6 +33,13 @@ const SCHEMA = `interface RunProfile {
     dependsOn?: string[];
     ready?: { port?: string; log?: string }; // a port name to wait for, or a regex for a log line
     compose?: { file: string; services?: string[] }; // for kind "compose": the compose file (relative to cwd)
+    // only when the debugger can't be worked out from the command (see below):
+    debug?:
+      | { type: "python"; module?: string; program?: string; args?: string[]; python?: string }
+      | { type: "node"; program?: string; runtimeExecutable?: string; runtimeArgs?: string[]; args?: string[] }
+      | { type: "chrome"; url: string; webRoot?: string }
+      | { type: "dotnet"; program: string; args?: string[]; browser?: { url: string; blazor?: boolean } } // program: the .csproj (or a built .dll)
+      | { type: "python-attach"; port: string; pathMappings?: { localRoot: string; remoteRoot: string }[]; container?: string };
   }[];
   prepare?: {
     copy?: string[];              // gitignored files/globs to copy from the main checkout into a new worktree
@@ -62,6 +69,7 @@ export function draftPrompt(repo: string, candidates: string[]): string {
     "- blockers: list anything that still stops two copies running at once even with shifted ports — e.g. a dev-server proxy hardcoded to localhost:8000, a strictPort, a fixed cookie domain — each with the exact one-line code change that would fix it (file and new code).",
     "- notes: list the browser origins sign-in must allow (MSAL/OIDC redirect URIs, CORS origins) for slots 0–3 if the app signs in through Entra or B2C.",
     "",
+    "- Debugging: Mockingbird reads `.venv/bin/uvicorn …`, `python -m …`, `node …`, npm scripts, Vite/Next dev servers (debugged in the browser) and `dotnet run --project …` (a Blazor WebAssembly host also opens the browser) by itself — add `debug` only for anything else. For Python inside a Docker container, give the service a port named `debug` (base 5678, or the next free number) and `debug: { type: \"python-attach\", port: \"debug\", container: <compose service>, pathMappings: [{ localRoot, remoteRoot }] }`; Mockingbird mounts debugpy into that container at $MOCKINGBIRD_DEBUGPY and publishes the port, and add a blocker saying the container's start command must run `PYTHONPATH=$MOCKINGBIRD_DEBUGPY python -m debugpy --listen 0.0.0.0:5678 …` when MOCKINGBIRD_DEBUGPY is set (with the exact change to the start script).",
     "- Never open env files, keys or certificates (.env*, *.env, *.pem, *.key, local.settings.json, user secrets) — refer to env files through envFiles and prepare.copy, and never put a secret value in the JSON.",
     "Read files with your tools; don't run anything. Reply with only the JSON object, no prose and no code fences.",
   ].join("\n");

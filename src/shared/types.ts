@@ -457,8 +457,14 @@ export type RunDebug =
   | { type: "python"; module?: string; program?: string; args?: string[]; python?: string; justMyCode?: boolean }
   | { type: "node"; program?: string; runtimeExecutable?: string; runtimeArgs?: string[]; args?: string[] }
   | { type: "chrome"; url: string; webRoot?: string }
-  | { type: "dotnet"; program: string; args?: string[]; build?: string }
-  | { type: "python-attach"; port: string; pathMappings?: { localRoot: string; remoteRoot: string }[] };
+  /** `browser`: also open the app's page in a debug browser — with `blazor`, through the Blazor WebAssembly debug proxy. */
+  | { type: "dotnet"; program: string; args?: string[]; build?: string; browser?: { url: string; blazor?: boolean; webRoot?: string } }
+  /**
+   * Attach to a Python process already listening with debugpy (e.g. in a container, started with
+   * `python -m debugpy --listen 0.0.0.0:5678 …`). `port` names the service port it's published on;
+   * for a compose service, `container` is the compose service to mount debugpy into and publish from.
+   */
+  | { type: "python-attach"; port: string; pathMappings?: { localRoot: string; remoteRoot: string }[]; container?: string };
 
 export interface DebugSessionInfo {
   id: string;

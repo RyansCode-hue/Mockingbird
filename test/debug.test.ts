@@ -297,3 +297,79 @@ describe("debugging a real .NET program", () => {
     }
   }, 240_000);
 });
+
+describe("Blazor WebAssembly and containers", () => {
+  it("recognises a server that hosts a Blazor WebAssembly client", async () => {
+    const { hostsBlazorWasm } = await import("../src/main/dap/targets");
+    const dir = tempDir("blazor");
+    fs.writeFileSync(path.join(dir, "Server.csproj"), '<Project Sdk="Microsoft.NET.Sdk.Web"><ItemGroup><PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="10.0.0" /></ItemGroup></Project>');
+    fs.writeFileSync(path.join(dir, "Api.csproj"), '<Project Sdk="Microsoft.NET.Sdk.Web" />');
+    expect(hostsBlazorWasm(path.join(dir, "Server.csproj"))).toBe(true);
+    expect(hostsBlazorWasm(path.join(dir, "Api.csproj"))).toBe(false);
+    expect(hostsBlazorWasm(path.join(dir, "Missing.csproj"))).toBe(false);
+  });
+
+  it("mounts debugpy into the debugged compose service and publishes its port on loopback", async () => {
+    const { buildOverride } = await import("../src/main/composeOverride");
+    const config = { services: { app: { ports: [{ target: 8080, published: "58080" }], volumes: [{ type: "bind", source: "/m/src", target: "/app" }] }, red: {} } };
+    const y = buildOverride(config, { main: "/m", worktree: "/m", slot: 0, step: 10, project: "p", debugpy: { service: "app", dir: "/dbg/debugpy", port: 5678 } });
+    expect(y).toContain('"volumes": [{"type":"bind","source":"/dbg/debugpy","target":"/opt/mockingbird/debugpy","read_only":true}]');
+    expect(y).toContain('"ports": [{"target":5678,"published":"5678","host_ip":"127.0.0.1","protocol":"tcp"}]');
+    expect(y).toContain('"MOCKINGBIRD_DEBUGPY": "/opt/mockingbird/debugpy"');
+    expect(y).not.toContain('"red"');
+    // side by side, the debug port joins the shifted ports
+    const y1 = buildOverride(config, { main: "/m", worktree: "/m", slot: 1, step: 10, project: "p", debugpy: { service: "app", dir: "/dbg", port: 5688 } });
+    expect(y1).toContain('"ports": !override [{"target":8080,"published":"58090"},{"target":5678,"published":"5688","host_ip":"127.0.0.1","protocol":"tcp"}]');
+  });
+
+  it("attaches to a Python process that's already listening, and maps its paths", async () => {
+    const dir = fs.realpathSync(tempDir("dbg-attach"));
+    fs.writeFileSync(path.join(dir, "worker.py"), ["import time", "def tick(n):", "    value = n * 3", "    return value", "for i in range(1000):", "    tick(i)", "    time.sleep(0.05)", ""].join("\n"));
+    const { ensureAdapter, DEBUGPY } = await import("../src/main/dap/adapters");
+    const debugpyDir = await ensureAdapter(DEBUGPY, undefined, cache);
+    const events: any[] = [];
+    const dbg = new DebugManager({ emit: (ch, ...a) => events.push([ch, ...a]), breakpointsDir: path.join(dir, ".bp") });
+    await dbg.setBreakpoints(dir, "worker.py", [3]);
+    const runs = new RunManager({
+      spawn: (command, o) => pty.spawn("/bin/sh", ["-c", command], { name: "xterm-256color", cols: 120, rows: 30, cwd: o.cwd, env: o.env }),
+      emit: (ch, ...a) => events.push([ch, ...a]),
+      baseEnv: () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir }),
+      docker: async () => "docker",
+      runShell: async () => ({ code: 0, out: "" }),
+      // like a container: the program listens with debugpy on its own, Mockingbird only attaches
+      profileFor: () =>
+        validateProfile(
+          {
+            services: [
+              {
+                name: "worker",
+                command: `PYTHONPATH=${debugpyDir} python3 -m debugpy --listen 127.0.0.1:\${port:debug} worker.py`,
+                ports: [{ name: "debug", base: 47630 }],
+                ready: { port: "debug" },
+                debug: { type: "python-attach", port: "debug", pathMappings: [{ localRoot: ".", remoteRoot: dir }] },
+              },
+            ],
+          },
+          dir
+        ),
+      mainOf: async () => dir,
+      debugger: dbg,
+      debugTarget: (s, ctx) => debugTargetFor(s, { ...ctx, debugRoot: cache }),
+    });
+    try {
+      await runs.start(dir, { mode: "side", debug: ["worker"] });
+      let e: any;
+      for (let i = 0; i < 200 && !e; i++) {
+        e = events.find((x) => x[0] === "debug:stopped");
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(e, JSON.stringify(events.filter((x) => x[0] === "debug:output").map((x) => x[3])).slice(0, 500)).toBeTruthy();
+      expect(e[2].frame).toMatchObject({ path: path.join(dir, "worker.py"), line: 3, name: "tick" });
+      const locals = await dbg.variables(e[1], (await dbg.scopes(e[1], e[2].frame.id))[0].ref);
+      expect(locals.find((v) => v.name === "n")).toBeTruthy();
+    } finally {
+      await runs.stopAll();
+      await dbg.stopAll();
+    }
+  }, 120_000);
+});

@@ -263,7 +263,15 @@ export class RunManager {
     return { ctx, cwd, env, command: expand(s.command, ctx) };
   }
 
-  private async launch(worktree: string, repo: string, profile: RunProfile, s: RunService, slot: number, ports: Map<string, number>): Promise<Live> {
+  private async launch(
+    worktree: string,
+    repo: string,
+    profile: RunProfile,
+    s: RunService,
+    slot: number,
+    ports: Map<string, number>,
+    debugpy?: { service: string; dir: string; port: number }
+  ): Promise<Live> {
     const { ctx, cwd, env, command: plain } = this.serviceSetup(worktree, repo, s, slot, ports);
     let command = plain;
     let down: string | undefined;
@@ -273,7 +281,7 @@ export class RunManager {
       const file = s.compose!.file;
       const cfg = await composeConfig(docker, { cwd, file, project, env });
       const mains = [...new Set([repo, fs.realpathSync(repo)])];
-      const override = writeOverride(project, buildOverride(cfg, { main: mains, worktree, slot, step: (profile.sideBySide ?? DEFAULT_SIDE_BY_SIDE).step, project }));
+      const override = writeOverride(project, buildOverride(cfg, { main: mains, worktree, slot, step: (profile.sideBySide ?? DEFAULT_SIDE_BY_SIDE).step, project, debugpy }));
       const base = `${quote(docker)} compose -p ${quote(project)} -f ${quote(file)} -f ${quote(override)}`;
       command = `${base} up --remove-orphans ${(s.compose!.services ?? []).map(quote).join(" ")}`.trim();
       down = `${base} down --remove-orphans`;
@@ -288,11 +296,13 @@ export class RunManager {
    */
   private async launchDebug(worktree: string, repo: string, profile: RunProfile, s: RunService, slot: number, ports: Map<string, number>): Promise<Live> {
     if (!this.deps.debugger || !this.deps.debugTarget) throw new Error("Debugging isn't available");
-    if (s.kind === "compose") throw new Error(`${s.name} is a Docker Compose service — debugging inside containers comes in a later stage`);
     const { ctx, cwd, env, command } = this.serviceSetup(worktree, repo, s, slot, ports);
     const first = (s.ports ?? []).find((p) => p.url) ?? s.ports?.[0];
     const url = first ? expand((first.url ?? "http://localhost:${port}").replace(/\$\{port\}/g, String(ports.get(first.name))), ctx) : undefined;
     const target = await this.deps.debugTarget(s, { cwd, env, command, url, expand: (x) => expand(x, ctx), onProgress: (m) => this.deps.emit("run:progress", worktree, m) });
+    if (s.kind === "compose" && target.kind !== "alongside") {
+      throw new Error(`${s.name} is a Docker Compose service: debug it by attaching ("python-attach" in its run setup) to a process listening with debugpy`);
+    }
     if (target.kind === "internal") {
       // the build runs on the service's terminal, visibly; then the debugger runs the program
       // itself, and its output is forwarded into the same log
@@ -321,11 +331,18 @@ export class RunManager {
       });
       l.state.debug = sessionId;
       this.changed();
+      if (target.then && (await this.whenReady(l, s, ports))) {
+        // the browser side (a Blazor client, a server-rendered page), under the server's session
+        const then = target.then;
+        await this.deps.debugger
+          .launch({ worktree, repo, service: s.name, name: String(then.config.name ?? s.name), adapterID: then.adapterID, connect: then.connect, config: then.config, parentId: sessionId })
+          .catch((err) => this.append(l, `\r\n\x1b[33mThe debug browser didn't open: ${err.message}\x1b[0m\r\n`));
+      }
       return l;
     }
     if (target.kind === "alongside") {
       // the service runs as usual; once it's up, the debugger opens beside it
-      const l = await this.launch(worktree, repo, profile, s, slot, ports);
+      const l = await this.launch(worktree, repo, profile, s, slot, ports, target.composeDebugpy);
       if (!(await this.whenReady(l, s, ports))) return l;
       const sessionId = await this.deps.debugger.launch({ worktree, repo, service: s.name, name: String(target.config.name ?? s.name), adapterID: target.adapterID, connect: target.connect, config: target.config });
       l.state.debug = sessionId;
@@ -451,7 +468,9 @@ export class RunManager {
       return ok;
     };
     if (l.state.status === "failed") return false;
-    const readyPort = s.ready?.port ? ports.get(s.ready.port) : undefined;
+    // never probe a debugpy listener: it takes the probe as its one client, and the real attach then hangs
+    const probeable = s.ready?.port && !(s.debug?.type === "python-attach" && s.debug.port === s.ready.port);
+    const readyPort = probeable ? ports.get(s.ready!.port!) : undefined;
     const readyLog = s.ready?.log ? new RegExp(s.ready.log) : null;
     if (readyPort === undefined && !readyLog) return finish(true); // nothing to wait for
     const deadline = Date.now() + (this.deps.readyTimeoutMs ?? READY_TIMEOUT_MS);

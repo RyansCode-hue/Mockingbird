@@ -23,6 +23,10 @@ export interface DebugTarget {
    * program's path, which becomes the configuration's `program`.
    */
   internal?: { build: string; locate: string };
+  /** A second session to open once the service is up, under the first (a browser on a server's page). */
+  then?: DebugTarget;
+  /** For a compose service: mount debugpy into this compose service and publish its debug port. */
+  composeDebugpy?: { service: string; dir: string; port: number };
   adapterID: string;
   connect: () => Promise<Connection>;
   config: Record<string, unknown> & { request: "launch" | "attach" };
@@ -129,9 +133,12 @@ export async function debugTargetFor(
       if (py.droppedReload) notes.push("--reload is off while debugging: a reloader restarts the process the debugger is attached to. Restart to pick up changes.");
       if (pre.length) notes.push(`These run first, in the same terminal: ${pre.join(" && ")}`);
     } else {
-      const js = inferNode(ctx.command, ctx.cwd, ctx.url) ?? inferDotnet(ctx.command, ctx.cwd);
+      const dn = inferDotnet(ctx.command, ctx.cwd);
+      const js = inferNode(ctx.command, ctx.cwd, ctx.url) ?? dn;
       if (!js) throw new Error(`Mockingbird can't tell how to debug ${service.name} from its command — add a "debug" section to its run setup`);
       debug = js;
+      // a hosted Blazor WebAssembly app debugs on both sides: the server, and the client in the browser
+      if (dn && js === dn && ctx.url && hostsBlazorWasm(path.resolve(ctx.cwd, dn.program))) debug = { ...dn, browser: { url: ctx.url, blazor: true } };
       // a node program runs only the last && step under the debugger; earlier steps run first
       const steps = ctx.command.split(/\s*&&\s*/);
       if (js.type === "node" && steps.length > 1) pre = steps.slice(0, -1);
@@ -167,6 +174,32 @@ export async function debugTargetFor(
       notes,
     };
   }
+  if (debug.type === "python-attach") {
+    const port = Number(ctx.expand(`\${port:${debug.port}}`));
+    const dir = await ensureAdapter(DEBUGPY, ctx.onProgress, ctx.debugRoot);
+    return {
+      kind: "alongside",
+      adapterID: "debugpy",
+      // `debugpy --listen` runs its adapter in the process's own environment: connect to it directly
+      connect: async () => {
+        const conn = await connectTcp(port, "127.0.0.1", 30_000);
+        return { conn, dispose: () => conn.close() };
+      },
+      config: {
+        request: "attach",
+        type: "debugpy",
+        name: `${service.name} (attach)`,
+        pathMappings: (debug.pathMappings ?? []).map((m) => ({ localRoot: path.resolve(ctx.cwd, ctx.expand(m.localRoot)), remoteRoot: m.remoteRoot })),
+        justMyCode: true,
+      },
+      ...(debug.container ? { composeDebugpy: { service: debug.container, dir, port } } : {}),
+      pre,
+      notes: [
+        ...notes,
+        `Attaches to debugpy on port ${port}. The process must be listening: \`python -m debugpy --listen 0.0.0.0:5678 …\`${debug.container ? " — debugpy is mounted in the container at /opt/mockingbird/debugpy and MOCKINGBIRD_DEBUGPY points at it" : ""}.`,
+      ],
+    };
+  }
   if (debug.type === "dotnet") {
     const dir = await ensureAdapter(NETCOREDBG, ctx.onProgress, ctx.debugRoot);
     const target = path.resolve(ctx.cwd, ctx.expand(debug.program));
@@ -192,37 +225,30 @@ export async function debugTargetFor(
         console: "internalConsole",
       },
       internal: { build, locate },
+      ...(debug.browser
+        ? {
+            then: await chromeTarget(service.name, ctx.expand(debug.browser.url), debug.browser.webRoot ? path.resolve(ctx.cwd, ctx.expand(debug.browser.webRoot)) : projectDir, ctx, {
+              // Blazor WebAssembly: breakpoints in .razor/.cs reach the browser's runtime through the server's debug proxy
+              ...(debug.browser.blazor ? { inspectUri: "{wsProtocol}://{url.hostname}:{url.port}/_framework/debug/ws-proxy?browser={browserInspectUri}" } : {}),
+            }),
+          }
+        : {}),
       pre: [],
-      notes: [...notes, "Hot reload is off while debugging (netcoredbg can't do it on macOS). Restart to pick up changes."],
+      notes: [
+        ...notes,
+        "Hot reload is off while debugging (netcoredbg can't do it on macOS). Restart to pick up changes.",
+        ...(debug.browser?.blazor ? ["The app opens in a debug Chrome window, where breakpoints in the WebAssembly client work too (Development environment, UseWebAssemblyDebugging)."] : []),
+      ],
     };
   }
-  if (debug.type === "node" || debug.type === "chrome") {
+  if (debug.type === "chrome") {
+    const t = await chromeTarget(service.name, ctx.expand(debug.url), debug.webRoot ? path.resolve(ctx.cwd, ctx.expand(debug.webRoot)) : ctx.cwd, ctx, {});
+    return { ...t, pre, notes: [...notes, ...t.notes] };
+  }
+  if (debug.type === "node") {
     const dir = await ensureAdapter(JS_DEBUG, ctx.onProgress, ctx.debugRoot);
     const connect = jsDebugConnector(dir);
     const resolveSourceMapLocations = ["**", "!**/node_modules/**"];
-    if (debug.type === "chrome") {
-      const url = ctx.expand(debug.url);
-      const profile = path.join(ctx.debugRoot ?? DEBUG_DIR, "chrome-profiles", crypto.createHash("sha1").update(ctx.cwd).digest("hex").slice(0, 10));
-      return {
-        kind: "alongside",
-        adapterID: "pwa-chrome",
-        connect,
-        config: {
-          request: "launch",
-          type: "pwa-chrome",
-          name: `${service.name} (browser)`,
-          url,
-          webRoot: debug.webRoot ? path.resolve(ctx.cwd, ctx.expand(debug.webRoot)) : ctx.cwd,
-          // each worktree gets its own Chrome profile: separate sign-ins, no clash with your everyday browser
-          userDataDir: profile,
-          sourceMaps: true,
-          resolveSourceMapLocations,
-          ...(ctx.browserArgs ? { runtimeArgs: ctx.browserArgs } : {}),
-        },
-        pre,
-        notes: [...notes, `Opens ${url} in a separate Chrome window for this worktree.`],
-      };
-    }
     return {
       kind: "terminal",
       adapterID: "pwa-node",
@@ -246,7 +272,39 @@ export async function debugTargetFor(
       notes,
     };
   }
-  throw new Error(`Debugging "${debug.type}" services is coming in the next stage of Run and Debug`);
+  throw new Error(`Mockingbird can't debug "${(debug as { type: string }).type}" services`);
+}
+
+/** A debug Chrome window on a page, with its own profile per worktree, through js-debug. */
+async function chromeTarget(
+  name: string,
+  url: string,
+  webRoot: string,
+  ctx: { cwd: string; onProgress?: (msg: string) => void; debugRoot?: string; browserArgs?: string[] },
+  extra: Record<string, unknown>
+): Promise<DebugTarget> {
+  const dir = await ensureAdapter(JS_DEBUG, ctx.onProgress, ctx.debugRoot);
+  const profile = path.join(ctx.debugRoot ?? DEBUG_DIR, "chrome-profiles", crypto.createHash("sha1").update(ctx.cwd).digest("hex").slice(0, 10));
+  return {
+    kind: "alongside",
+    adapterID: "pwa-chrome",
+    connect: jsDebugConnector(dir),
+    config: {
+      request: "launch",
+      type: "pwa-chrome",
+      name: `${name} (browser)`,
+      url,
+      webRoot,
+      // each worktree gets its own Chrome profile: separate sign-ins, no clash with your everyday browser
+      userDataDir: profile,
+      sourceMaps: true,
+      resolveSourceMapLocations: ["**", "!**/node_modules/**"],
+      ...(ctx.browserArgs ? { runtimeArgs: ctx.browserArgs } : {}),
+      ...extra,
+    },
+    pre: [],
+    notes: [`Opens ${url} in a separate Chrome window for this worktree.`],
+  };
 }
 
 /** A free TCP port on loopback. */
@@ -332,6 +390,15 @@ export function inferDotnet(command: string, cwd: string): Extract<RunDebug, { t
     if (proj) program = path.join(project, proj);
   }
   return { type: "dotnet", program, args };
+}
+
+/** A server project hosting a Blazor WebAssembly client (it references the WebAssembly server package or a client project). */
+export function hostsBlazorWasm(projectFile: string): boolean {
+  try {
+    return /Microsoft\.AspNetCore\.Components\.WebAssembly\.Server|Microsoft\.AspNetCore\.Components\.WebAssembly\.DevServer/.test(fs.readFileSync(projectFile, "utf8"));
+  } catch {
+    return false; // no project file to read: treated as a plain server
+  }
 }
 
 const FRONTEND = /(^|\/)(vite|next|react-scripts|ng|nuxt|astro|svelte-kit|webpack-dev-server)$/;

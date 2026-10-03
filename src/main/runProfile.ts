@@ -133,13 +133,22 @@ function validateDebug(d: any, at: string, fail: (where: string, what: string) =
       return { type: "chrome", url: d.url, ...optStr("webRoot") } as RunDebug;
     case "dotnet":
       if (typeof d.program !== "string") fail(`${at}.program`, "is required (the built .dll, or a project to build)");
-      return { type: "dotnet", program: d.program, ...optList("args"), ...optStr("build") } as RunDebug;
+      return {
+        type: "dotnet",
+        program: d.program,
+        ...optList("args"),
+        ...optStr("build"),
+        ...(isObj(d.browser) && typeof d.browser.url === "string"
+          ? { browser: { url: d.browser.url, ...(d.browser.blazor === true ? { blazor: true } : {}), ...(typeof d.browser.webRoot === "string" ? { webRoot: d.browser.webRoot } : {}) } }
+          : {}),
+      } as RunDebug;
     case "python-attach":
       if (typeof d.port !== "string") fail(`${at}.port`, "must name one of the service's ports");
       return {
         type: "python-attach",
         port: d.port,
         ...(Array.isArray(d.pathMappings) ? { pathMappings: d.pathMappings.filter((m: any) => isObj(m) && typeof m.localRoot === "string" && typeof m.remoteRoot === "string") } : {}),
+        ...optStr("container"),
       } as RunDebug;
     default:
       return fail(`${at}.type`, 'must be "python", "node", "chrome", "dotnet" or "python-attach"');

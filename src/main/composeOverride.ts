@@ -25,6 +25,9 @@ interface ComposeService {
   volumes?: { type: string; source?: string; target: string; read_only?: boolean; [k: string]: unknown }[];
 }
 
+/** Where debugpy is mounted inside a container being debugged; the app finds it through MOCKINGBIRD_DEBUGPY. */
+export const DEBUGPY_IN_CONTAINER = "/opt/mockingbird/debugpy";
+
 /** The compose project for a repo's slot: its own containers, network and default volumes. */
 export function composeProject(repo: string, slot: number): string {
   return `mb-${path.basename(repo).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-s${slot}`;
@@ -52,7 +55,15 @@ function moveInto(p: string, mains: string[], worktree: string): string {
  */
 export function buildOverride(
   config: ComposeConfig,
-  opts: { main: string | string[]; worktree: string; slot: number; step: number; project: string }
+  opts: {
+    main: string | string[];
+    worktree: string;
+    slot: number;
+    step: number;
+    project: string;
+    /** Debugging Python in this compose service: mount debugpy and publish its port on loopback. */
+    debugpy?: { service: string; dir: string; port: number };
+  }
 ): string {
   const { worktree, slot, step, project } = opts;
   const main = Array.isArray(opts.main) ? opts.main : [opts.main];
@@ -61,19 +72,24 @@ export function buildOverride(
     const out: Record<string, unknown> = {};
     if (slot > 0 && svc.container_name) out.container_name = `${svc.container_name}-s${slot}`;
     const vols = svc.volumes ?? [];
+    const dbg = opts.debugpy?.service === name ? opts.debugpy : undefined;
+    const extraVol = dbg ? [{ type: "bind", source: dbg.dir, target: DEBUGPY_IN_CONTAINER, read_only: true }] : [];
     if (vols.some((v) => v.type === "bind" && v.source && moveInto(v.source, main, worktree) !== v.source)) {
-      out.volumes = tag(vols.map((v) => (v.type === "bind" && v.source ? { ...v, source: moveInto(v.source, main, worktree) } : v)));
-    }
+      out.volumes = tag([...vols.map((v) => (v.type === "bind" && v.source ? { ...v, source: moveInto(v.source, main, worktree) } : v)), ...extraVol]);
+    } else if (extraVol.length) out.volumes = extraVol; // lists merge: this adds to the service's own
     const envs = svc.env_file ?? [];
     if (envs.some((e) => moveInto(e.path, main, worktree) !== e.path)) {
       out.env_file = tag(envs.map((e) => ({ ...e, path: moveInto(e.path, main, worktree) })));
     }
     const ports = svc.ports ?? [];
+    const extraPort = dbg ? [{ target: 5678, published: String(dbg.port), host_ip: "127.0.0.1", protocol: "tcp" }] : [];
     if (slot > 0 && ports.some((p) => p.published !== undefined && p.published !== "")) {
-      out.ports = tag(
-        ports.map((p) => (p.published === undefined || p.published === "" ? p : { ...p, published: String(Number(p.published) + slot * step) }))
-      );
-    }
+      out.ports = tag([
+        ...ports.map((p) => (p.published === undefined || p.published === "" ? p : { ...p, published: String(Number(p.published) + slot * step) })),
+        ...extraPort,
+      ]);
+    } else if (extraPort.length) out.ports = extraPort;
+    if (dbg) out.environment = { MOCKINGBIRD_DEBUGPY: DEBUGPY_IN_CONTAINER };
     if (Object.keys(out).length) services[name] = out;
   }
   const volumes: Record<string, { name: string }> = {};

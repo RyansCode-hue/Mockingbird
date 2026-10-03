@@ -1437,3 +1437,8 @@ Not yet run against Ryan's real apps (they touch shared DBs) — first real runs
 - Review: real debugpy test (break, locals, eval, step, continue); real uvicorn+FastAPI request stopped in the endpoint.
   Harness caught an effect returning scrollIntoView's promise (crash in newer Chromium) — fixed.
 ## Stage 3 — Per-stack debugging
+- [x] Node + browser (js-debug): real Node and headless-Chrome tests (Chrome test local-only; CI has no desktop)
+- [x] .NET (netcoredbg): real console + ASP.NET request verified; fixed "initialized" handshake race
+- [x] Blazor WASM: server + browser via the debug proxy — verified on the template app (breakpoint in Counter.razor hit)
+- [x] Python attach (containers): mount + port via the compose override; attach verified against a real listener;
+      readiness never probes a debugpy listener (it takes the probe as its one client)
