@@ -47,6 +47,10 @@ export function useDrag(): DragState | null {
 export function beginDrag(e: React.DragEvent, type: string, payload: string, label: string): void {
   e.dataTransfer.setData(type, payload);
   e.dataTransfer.effectAllowed = "move";
+  // dragend goes to the dragged element; when the drop moved that element (a
+  // session into another group re-renders its row elsewhere) it's no longer in
+  // the page, so the event never bubbles to the document — listen on the element
+  e.currentTarget.addEventListener("dragend", endDrag, { once: true });
   state = { type, payload, label, target: null, x: e.clientX, y: e.clientY };
   emit();
 }
@@ -142,13 +146,20 @@ export function installDragListeners(): () => void {
     }
   };
   const done = () => endDrag();
+  // after the target's own drop handler: targets stop the drop from bubbling, so
+  // this listens in the capture phase and clears once the handler has run
+  const dropped = () => setTimeout(endDrag, 0);
+  // the mouse reports no movement during a drag, so movement means it's over
+  const moved = () => state && endDrag();
   document.addEventListener("dragover", over);
   document.addEventListener("dragend", done);
-  document.addEventListener("drop", done);
+  document.addEventListener("drop", dropped, true);
+  document.addEventListener("mousemove", moved);
   return () => {
     document.removeEventListener("dragover", over);
     document.removeEventListener("dragend", done);
-    document.removeEventListener("drop", done);
+    document.removeEventListener("drop", dropped, true);
+    document.removeEventListener("mousemove", moved);
   };
 }
 
