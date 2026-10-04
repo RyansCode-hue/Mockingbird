@@ -1488,7 +1488,10 @@ Each item ships on its own: tests + build + harness check → ff main → README
 - [x] Agent messaging: message log, per-group auto-send, Team broadcast
   Review: log persistence/cap/corrupt (2), relay logs delivered + refused sends and asks delivery per recipient; harness:
   group bar mode + status check, rail Msgs cell, log dialog (fixed a squeezed group name and wrapping times).
-- [ ] Codex parity: PermissionRequest → amber test
+- [x] Codex parity: PermissionRequest → amber test
+  Watched run: real Codex 0.156.1 (-a on-request -s read-only) asked to write ~/mb-permprobe…; approval prompt shown;
+  events.jsonl got UserPromptSubmit (with prompt), PreToolUse, PermissionRequest (tool_name Bash) tagged pane=perm-probe;
+  nothing approved, file not created. Payload shapes captured as a hooks test.
 - [ ] Notification controls (per-session mute, quiet hours)
 - [ ] Scrollback that survives restarts
 ## Later

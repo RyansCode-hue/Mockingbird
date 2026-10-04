@@ -105,4 +105,46 @@ describe("watchEvents", () => {
     // a submitted prompt starts a turn: its files are recorded first (undo a turn)
     expect(prompts).toEqual(["s1: Add the dropdown"]);
   });
+
+  it("reads Codex's own hook payloads: a permission request turns the pane amber", async () => {
+    // the shapes Codex 0.156 sent in a watched run (values shortened): a read-only
+    // sandbox asked before writing a file
+    const codexEvent = (event: string, extra: object) =>
+      JSON.stringify({
+        event,
+        ts: 1,
+        pane: "p2",
+        payload: {
+          cwd: "/w2",
+          hook_event_name: event,
+          model: "gpt-6",
+          permission_mode: "default",
+          session_id: "01a108dc",
+          turn_id: "01a108dc-2661",
+          transcript_path: "/Users/u/.codex/sessions/2026/10/04/rollout-2026-10-04T17-40-07-01a108dc.jsonl",
+          ...extra,
+        },
+      }) + "\n";
+    const seen: any[] = [];
+    const prompts: string[] = [];
+    watchEvents(
+      { statusFromHook: (ev: any) => (seen.push([ev.status, ev.reason, ev.agent]), { id: "p2", title: "t" } as any) } as any,
+      () => {},
+      (_i, prompt) => prompts.push(prompt)
+    );
+    fs.appendFileSync(
+      events,
+      codexEvent("UserPromptSubmit", { prompt: "Create the file" }) +
+        codexEvent("PreToolUse", { tool_name: "Bash", tool_input: { command: "printf hello > f" } }) +
+        codexEvent("PermissionRequest", { tool_name: "Bash", tool_input: { command: "printf hello > f" } })
+    );
+    await new Promise((r) => setTimeout(r, 1500));
+    fs.unwatchFile(events);
+    expect(seen).toEqual([
+      ["working", undefined, "codex"],
+      ["working", undefined, "codex"],
+      ["waiting", "Codex needs your permission to use Bash", "codex"],
+    ]);
+    expect(prompts).toEqual(["Create the file"]);
+  });
 });

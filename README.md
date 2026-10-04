@@ -135,6 +135,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Codex parity, checked** — a watched run of Codex 0.156 in a read-only
+  sandbox asking to write a file: its UserPromptSubmit, PreToolUse and
+  PermissionRequest hooks reach Mockingbird tagged with the pane, which turns
+  amber ("Codex needs your permission to use Bash"); those payload shapes are
+  now a test.
 - **Agent messaging, filled out** — a message log (who told whom what,
   delivered or refused; "Msgs 2↓ 1↑" on each pane's rail, or ⌘K for all),
   a per-group choice in the group bar between auto-send and leave-in-prompt
@@ -213,14 +218,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Codex parity.** Plan usage and model choices shipped (read from Codex's
-  own logs and model cache). Still to do: a watched test of the
-  PermissionRequest → amber path.
+- **Notification controls**: per-session mute and app-wide quiet hours — today
+  every waiting flip notifies, which trains you to ignore them.
 
 ### Next
 
-- **Notification controls**: per-session mute and app-wide quiet hours — today
-  every waiting flip notifies, which trains you to ignore them.
 - **Scrollback that survives restarts**: resumed sessions get their
   conversation back via `--continue`, but the pane's visual history starts
   empty; persist per-session scrollback to disk and replay on relaunch.
