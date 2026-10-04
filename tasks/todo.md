@@ -1494,7 +1494,9 @@ Each item ships on its own: tests + build + harness check → ff main → README
   nothing approved, file not created. Payload shapes captured as a hooks test.
 - [x] Notification controls (per-session mute, quiet hours)
   Review: quiet-hours/mute/finished rules (2 tests); harness: sidebar mute + pane chip, Settings rows.
-- [ ] Scrollback that survives restarts
+- [x] Scrollback that survives restarts
+  Review: save/replay/forget + only-changed saves (2 tests); harness found the divider's ?1049l restoring the cursor to
+  the top and overwriting history — now only sent when the old output is still in the alternate screen.
 ## Later
 - [ ] Weekly rollup
 - [-] Signed + notarized builds — skipped (no Apple Developer ID)

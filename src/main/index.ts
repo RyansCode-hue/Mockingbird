@@ -369,6 +369,10 @@ app.on("before-quit", (e) => {
     .finally(done);
 });
 
+// each pane's scrollback, so relaunched panes show their earlier output
+setInterval(() => sessions.saveScrollback(), 60_000);
+app.on("will-quit", () => sessions.saveScrollback(true));
+
 app.on("window-all-closed", () => {
   app.quit();
 });

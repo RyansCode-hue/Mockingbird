@@ -5,7 +5,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
 import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, AgentKind, type AgentUpdateNotice } from "../shared/types";
-import { Store, expandHome } from "./store";
+import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
 import { agentFor, AgentAdapter } from "./agents";
@@ -13,6 +13,20 @@ import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
+
+/**
+ * Where a relaunched pane's earlier output ends: cursor shown and attributes
+ * reset (whatever the old program left on), then a dim divider line. Leaving
+ * the alternate screen also restores the cursor saved on entering it, so it's
+ * only sent when the earlier output is still in there — otherwise the cursor
+ * would jump to the top and the divider overwrite the history.
+ */
+export function restartDivider(at: Date, earlier: string): string {
+  const entered = Math.max(earlier.lastIndexOf("\x1b[?1049h"), earlier.lastIndexOf("\x1b[?1047h"), earlier.lastIndexOf("\x1b[?47h"));
+  const left = Math.max(earlier.lastIndexOf("\x1b[?1049l"), earlier.lastIndexOf("\x1b[?1047l"), earlier.lastIndexOf("\x1b[?47l"));
+  const when = at.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return `${entered > left ? "\x1b[?1049l" : ""}\r\n\x1b[?25h\x1b[0m\x1b[2m── restarted ${when} · earlier output above ──\x1b[0m\r\n\r\n`;
+}
 
 /**
  * The app's environment minus any Claude Code session markers. When Mockingbird
@@ -41,10 +55,14 @@ interface LiveSession {
   flushTimer: NodeJS.Timeout | null; // retry while the user is typing
   claudeId: string | null; // Claude Code's own session_id, claimed from the first hook event
   lastOutput: number; // ms of the pty's last output — a working pane that goes quiet may be stuck
+  outputs: number; // chunks of output so far
+  saved: number; // `outputs` when its scrollback was last written to disk
 }
 
 export class SessionManager {
   private live = new Map<string, LiveSession>();
+  /** Each pane's scrollback is kept here, so a relaunched pane shows its earlier output. */
+  scrollbackDir = path.join(MB_DIR, "scrollback");
   private wc: WebContents | null = null;
   /** Each agent CLI's installed version, as last read; new panes record it (see AgentUpdateNotice). */
   agentVersions: Partial<Record<AgentKind, string>> = {};
@@ -236,7 +254,21 @@ export class SessionManager {
       }
     }
     if (!req.shell) info.agentVersion = this.agentVersions[req.agent ?? "claude"];
-    const sess: LiveSession = { info, proc, buffer: "", queued: [], claudeId: null, lastInput: 0, draft: false, flushTimer: null, lastOutput: Date.now() };
+    // a relaunch (same id) starts with what the pane showed before
+    const earlier = req.reuseId ? this.readScrollback(req.reuseId) : "";
+    const sess: LiveSession = {
+      info,
+      proc,
+      buffer: earlier ? (earlier + restartDivider(new Date(), earlier)).slice(-BUFFER_MAX) : "",
+      queued: [],
+      claudeId: null,
+      lastInput: 0,
+      draft: false,
+      flushTimer: null,
+      lastOutput: Date.now(),
+      outputs: 0,
+      saved: 0,
+    };
     this.live.set(info.id, sess);
     this.store.upsertSession(info);
 
@@ -246,6 +278,7 @@ export class SessionManager {
       if (this.live.get(info.id) !== sess) return;
       sess.buffer = (sess.buffer + data).slice(-BUFFER_MAX);
       sess.lastOutput = Date.now();
+      sess.outputs++;
       if (info.stalledSince) {
         info.stalledSince = null;
         this.emitChanged();
@@ -306,6 +339,42 @@ export class SessionManager {
     }
     this.emitChanged();
     return { restarted, skipped, failed };
+  }
+
+  private scrollbackFile = (id: string) => path.join(this.scrollbackDir, `${id.replace(/[^\w-]/g, "_")}.log`);
+
+  private readScrollback(id: string): string {
+    try {
+      return fs.readFileSync(this.scrollbackFile(id), "utf8").slice(-BUFFER_MAX);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") console.error(`[sessions] couldn't read scrollback for ${id}:`, err);
+      return "";
+    }
+  }
+
+  private writeScrollback(s: LiveSession): void {
+    if (!s.buffer) return;
+    fs.mkdirSync(this.scrollbackDir, { recursive: true });
+    const f = this.scrollbackFile(s.info.id);
+    fs.writeFileSync(`${f}.tmp`, s.buffer);
+    fs.renameSync(`${f}.tmp`, f);
+    s.saved = s.outputs;
+  }
+
+  private dropScrollback(id: string): void {
+    fs.rmSync(this.scrollbackFile(id), { force: true });
+  }
+
+  /** Write every pane's scrollback that changed since it was last written (and all of them when quitting). */
+  saveScrollback(all = false): void {
+    for (const s of this.live.values()) {
+      if (!all && s.saved === s.outputs) continue;
+      try {
+        this.writeScrollback(s);
+      } catch (err) {
+        console.error(`[sessions] couldn't save scrollback for ${s.info.id}:`, err);
+      }
+    }
   }
 
   /** Mute or unmute a session's notifications; kept across restarts. */
@@ -520,6 +589,8 @@ export class SessionManager {
 
   kill(id: string, forget = false): void {
     const s = this.live.get(id);
+    if (s && !forget) this.writeScrollback(s); // kept to resume: so is what it showed
+    if (forget) this.dropScrollback(id);
     if (s) {
       try {
         s.proc.kill();

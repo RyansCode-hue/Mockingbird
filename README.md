@@ -135,6 +135,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Scrollback that survives restarts** — each pane's terminal history is
+  saved (every minute it changes, when it closes for resuming, and at quit)
+  and replayed when the pane comes back, after an app restart, Update or a
+  session restart, above a dim "restarted · earlier output above" line.
 - **Notification controls** — mute a session from its sidebar row (or ⌘K;
   its pane shows "muted", and it stays muted through restarts), quiet hours
   in Settings → General (spans past midnight work), and an option to be
@@ -222,17 +226,15 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Scrollback that survives restarts**: resumed sessions get their
-  conversation back via `--continue`, but the pane's visual history starts
-  empty; persist per-session scrollback to disk and replay on relaunch.
+- **Weekly rollup** (sits on the indexer): compose the daily debrief digests
+  and transcript stats into a weekly log with per-ticket time and outcomes.
 
 ### Next
 
+Nothing queued — the agreed roadmap is built.
 
 ### Later
 
 - **Signed + notarized builds.** Updating is covered by the in-app Update
   (pull, build, restart). What's left needs an Apple Developer ID: no
   right-click→Open for new users, and updates that install in the background.
-- **Weekly rollup** (sits on the indexer): compose the daily debrief digests
-  and transcript stats into a weekly log with per-ticket time and outcomes.
