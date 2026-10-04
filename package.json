@@ -10,6 +10,7 @@
     "postinstall": "electron-builder install-app-deps && chmod +x node_modules/node-pty/prebuilds/*/spawn-helper node_modules/node-pty/build/Release/spawn-helper 2>/dev/null || true",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron .",
+    "ui-preview": "node scripts/ui-preview.mjs",
     "icon": "electron scripts/make-icon.js && bash scripts/make-icns.sh",
     "package": "npm run build && electron-builder --mac",
     "package:app": "npm run build && electron-builder --mac --dir",

@@ -2250,7 +2250,7 @@ function App() {
             title={`${u.agent === "codex" ? "Codex" : "Claude Code"} ${u.installed} is installed; these sessions still run the version they started with:\n${u.sessions.map((x) => `  ${x.title} (${x.version})`).join("\n")}\nRestarting resumes each conversation.`}
             onClick={() => setModal("restart")}
           >
-            {u.agent === "codex" ? "Codex" : "Claude Code"} updated to {u.installed} · {u.sessions.length} session{u.sessions.length === 1 ? "" : "s"} on the old version — Restart
+            {u.agent === "codex" ? "Codex" : "Claude Code"} {u.installed} · restart {u.sessions.length} session{u.sessions.length === 1 ? "" : "s"}
           </button>
         ))}
         {(["working", "waiting", "idle", "dead"] as const).map((st) => {
@@ -4492,6 +4492,22 @@ function SettingsView({
   const [updating, setUpdating] = useState<"claude" | "codex" | null>(null);
   const [agentNote, setAgentNote] = useState("");
   const [updNote, setUpdNote] = useState("");
+  // a newer version found by the check (About checks as soon as it opens)
+  const [newerVersion, setNewerVersion] = useState<string | null>(null);
+  const checkForUpdate = async () => {
+    setUpdNote("Checking…");
+    const r = await window.mb.updateCheck();
+    const where = (u: { source: string }) => (u.source === "release" ? "the latest release" : "the newest version on GitHub");
+    setNewerVersion(r && !r.error && r.newer ? r.latest : null);
+    if (r === null) setUpdNote("This build doesn't say where its updates come from, so it can't check.");
+    else if (r?.error) setUpdNote(`Couldn't check: ${r.error}`);
+    else if (r.newer) setUpdNote(`Version ${r.latest} is available (you're on ${r.current}).`);
+    else if (r.latest === r.current) setUpdNote(`Up to date — ${r.current} is ${where(r)}.`);
+    else setUpdNote(`Up to date — you're on ${r.current}, ahead of ${where(r)} (${r.latest}).`);
+  };
+  useEffect(() => {
+    if (section === "about") checkForUpdate();
+  }, [section]);
   const [adoCfg, setAdoCfg] = useState<{ orgUrl: string; project: string; patFile: string } | null>(null);
   const [adoNote, setAdoNote] = useState<{ ok: boolean; msg: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -4901,24 +4917,15 @@ function SettingsView({
           <>
             <h2>About</h2>
             <SetRow title="Mockingbird" note={version ? `Version ${version}` : ""}>
-              <button
-                className="outline"
-                onClick={async () => {
-                  setUpdNote("Checking…");
-                  const r = await window.mb.updateCheck();
-                  const where = (u: { source: string }) => (u.source === "release" ? "the latest release" : "the newest version on GitHub");
-                  if (r === null) setUpdNote("This build doesn't say where its updates come from, so it can't check.");
-                  else if (r?.error) setUpdNote(`Couldn't check: ${r.error}`);
-                  else if (r.newer) {
-                    setUpdNote(`Version ${r.latest} is available.`);
-                    onUpdate();
-                  }
-                  else if (r.latest === r.current) setUpdNote(`Up to date — ${r.current} is ${where(r)}.`);
-                  else setUpdNote(`Up to date — you're on ${r.current}, ahead of ${where(r)} (${r.latest}).`);
-                }}
-              >
-                Check for updates
-              </button>
+              {newerVersion ? (
+                <button className="primary" title={`Pull and build ${newerVersion}, then restart into it — your sessions come back`} onClick={onUpdate}>
+                  Update to {newerVersion}
+                </button>
+              ) : (
+                <button className="outline" disabled={updNote === "Checking…"} onClick={checkForUpdate}>
+                  {updNote === "Checking…" ? "Checking…" : "Check for updates"}
+                </button>
+              )}
             </SetRow>
             {updNote && <div className="set-note">{updNote}</div>}
             <UpdateSourceRow onUpdate={onUpdate} />

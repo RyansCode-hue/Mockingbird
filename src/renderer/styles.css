@@ -327,6 +327,7 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .pane-header .title {
   font: 500 11.5px var(--ui); color: var(--text-1);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 5em; /* the chips give way first */
 }
 .rename-input {
   flex: 1; min-width: 0; background: var(--fill-subtle); color: var(--text-1);
@@ -359,7 +360,9 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
   font: 400 8.5px var(--ui); letter-spacing: .6px; text-transform: uppercase;
   color: var(--text-4); display: block; margin-bottom: 2px;
 }
-.rail .cell .v { font: 400 10.5px var(--mono); color: var(--text-2); white-space: nowrap; }
+.rail .cell .v { display: block; font: 400 10.5px var(--mono); color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* a narrow pane squeezes its cells: they clip with an ellipsis rather than run into each other */
+.rail .cell .k { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rail .cell .v.teal { color: var(--teal-text); }
 .rail .cell .v.red { color: var(--red); }
 
@@ -1779,7 +1782,7 @@ button.chip { border: none; cursor: pointer; }
 }
 .stall-banner .reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stall-banner button { padding: 2px 9px; font-size: 11px; flex-shrink: 0; }
-.sb-update { border: none; background: rgba(79, 179, 165, .14); color: var(--teal-text); font: 500 10.5px var(--ui); padding: 2px 8px; border-radius: 4px; margin-right: 10px; cursor: pointer; }
+.sb-update { border: none; background: rgba(79, 179, 165, .14); color: var(--teal-text); font: 500 10.5px var(--ui); padding: 2px 8px; border-radius: 4px; margin-right: 10px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; flex-shrink: 1; }
 /* agent messaging: the group bar's delivery switch, and the message log */
 .gb-msg { background: var(--bg-pane); color: var(--text-2); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 10.5px var(--ui); margin-right: 6px; }
 .msg-log { width: 680px; }
@@ -1807,3 +1810,11 @@ button.chip { border: none; cursor: pointer; }
 /* weekly rollup */
 .rollup-dlg { width: 760px; }
 .rollup-md { margin: 10px 0 6px; max-height: 56vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--bg-pane); font: 400 11px/1.55 var(--mono); color: var(--text-2); white-space: pre-wrap; }
+/* a narrow window cuts the status bar off at its end rather than wrapping each item onto two lines */
+.statusbar { overflow: hidden; }
+.statusbar > * { white-space: nowrap; flex-shrink: 0; }
+.statusbar > .sb-update { flex-shrink: 1; }
+/* the folder cell clips its name, never its Files button (after the cell's own inline-flex rule) */
+.rail .cell.folder .v { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rail .cell.folder .v .fn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.rail .cell.folder .v .mini { flex-shrink: 0; }

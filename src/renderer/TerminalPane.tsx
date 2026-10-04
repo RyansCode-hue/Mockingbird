@@ -1003,7 +1003,7 @@ export function TerminalPane({
           <div className="cell folder" title={session.cwd}>
             <span className="k">Folder</span>
             <span className="v">
-              {session.cwd.split("/").pop()}
+              <span className="fn">{session.cwd.split("/").pop()}</span>
               {onOpenFiles && (
                 <button
                   className="mini"

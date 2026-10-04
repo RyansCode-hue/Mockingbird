@@ -66,6 +66,26 @@ logic, plan usage parsing, hook install and status routing, agent messaging (the
 socket relay and the MCP server itself), message delivery timing, the shell
 helpers, the setup checks, and the renderer's diff and usage formatting.
 
+## UI preview
+
+```bash
+npm run ui-preview   # http://localhost:5190 — rebuilds on every change; reload the page
+```
+
+The real interface in a browser, over a stand-in for the main process
+(`src/preview/stub.ts`) that answers from fixture data: two ticket groups with a
+workspace, sessions in every state, a small repository for the explorer, editor
+and Source Control, a board, a ticket pipeline, usage and token meters. Nothing
+real is touched — no sessions run, no files, git, ADO or agents. Typing in a pane
+is echoed; calls the stand-in doesn't simulate answer like a real failure and are
+logged in the console and in `window.__mbCalls`. `?reset` starts again from the
+fixtures.
+
+A Claude Code session can drive it in Chrome: type `/chrome` in the pane (it
+needs the Claude in Chrome extension), then ask it to open
+http://localhost:5190 and check the change. When a feature adds a main-process
+call, add it to the stand-in so the preview shows it.
+
 ## Design system
 
 The UI follows `design_handoff_mockingbird` (see the zip in this folder): warm dark
