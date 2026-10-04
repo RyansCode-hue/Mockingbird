@@ -1747,3 +1747,16 @@ button.chip { border: none; cursor: pointer; }
 .cm-lsp-rename input { flex: 0 1 260px; background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-btn-hover); border-radius: 4px; padding: 3px 6px; font: 400 11px var(--mono); }
 .cm-lsp-rename .cm-lsp-note { color: var(--amber-text); }
 .sc-review { margin: 6px 10px 0; width: calc(100% - 20px); font-size: 11px; }
+/* undo a turn */
+.undo-dlg { width: 640px; }
+.undo-list { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; max-height: 220px; overflow-y: auto; }
+.undo-row { display: flex; gap: 10px; align-items: baseline; text-align: left; border: 1px solid transparent; background: transparent; padding: 6px 8px; border-radius: 5px; color: var(--text-2); font: 400 11.5px var(--ui); }
+.undo-row:hover { background: var(--fill-subtle); }
+.undo-row.on { border-color: var(--line-btn-hover); background: var(--fill-selected); color: var(--text-1); }
+.undo-when { flex-shrink: 0; width: 64px; font: 400 10px var(--mono); color: var(--text-4); }
+.undo-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.undo-preview { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.undo-files { max-height: 160px; overflow-y: auto; font: 400 10.5px/1.6 var(--mono); color: var(--text-2); border: 1px solid var(--line-soft); border-radius: 5px; padding: 6px 8px; }
+.undo-files .remove { color: var(--red); }
+.undo-done { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: rgba(79, 179, 165, .1); color: var(--text-1); font: 400 11.5px/1.5 var(--ui); }
+.undo-done button { flex-shrink: 0; }

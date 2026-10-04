@@ -78,11 +78,12 @@ describe("watchEvents", () => {
         return { id: "s1", title: "t" } as any;
       },
     };
-    watchEvents(fakeSessions as any, () => {});
+    const prompts: string[] = [];
+    watchEvents(fakeSessions as any, () => {}, (info, prompt) => prompts.push(`${info.id}: ${prompt}`));
     const line = (event: string, payload: object, pane = "p1") => JSON.stringify({ event, ts: 1, pane, payload: { cwd: "/w", session_id: "c1", ...payload } }) + "\n";
     fs.appendFileSync(
       events,
-      line("UserPromptSubmit", { transcript_path: "/h/.claude/projects/x/c1.jsonl" }) +
+      line("UserPromptSubmit", { transcript_path: "/h/.claude/projects/x/c1.jsonl", prompt: "Add the dropdown" }) +
         line("Notification", { message: "Claude needs your permission to use Bash" }) +
         line("PreToolUse", {}) +
         line("Notification", { message: "Claude is waiting for your input" }) +
@@ -101,5 +102,7 @@ describe("watchEvents", () => {
       ["waiting", "Codex needs your permission to use Bash", "p1", "c1", "codex"],
       ["idle", undefined, undefined, "c1", "claude"], // no pane (agent run outside Mockingbird): cwd + conversation decide
     ]);
+    // a submitted prompt starts a turn: its files are recorded first (undo a turn)
+    expect(prompts).toEqual(["s1: Add the dropdown"]);
   });
 });

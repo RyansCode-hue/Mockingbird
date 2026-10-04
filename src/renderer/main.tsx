@@ -21,6 +21,7 @@ import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceCon
 import { RunView } from "./RunView";
 import { PipelineDialog, PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { HandoffDialog, otherAgent } from "./Handoff";
+import { UndoTurnDialog } from "./UndoTurn";
 import { PresetEditor, PresetsSection, newPresetId } from "./Presets";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
@@ -201,6 +202,8 @@ function App() {
   const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string } | null>(null);
   // "continue in the other agent" for this session
   const [handoffFor, setHandoffFor] = useState<SessionInfo | null>(null);
+  // "undo a turn" for this session
+  const [undoFor, setUndoFor] = useState<SessionInfo | null>(null);
   const [pendingZone, setPendingZone] = useState<{ group: string; zone: number } | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
@@ -2001,6 +2004,7 @@ function App() {
                     onResume={() => resumeDead(s)}
                     onCleanup={() => requestClose(s)}
                     onHandoff={s.shell ? undefined : () => setHandoffFor(s)}
+                    onUndoTurn={s.shell || !s.repoPath ? undefined : () => setUndoFor(s)}
                     resize={resize}
                   />
                 );
@@ -2298,6 +2302,9 @@ function App() {
                     },
                   },
                   { label: `Change group of ${focusedSession.ticketTitle ?? focusedSession.title}…`, run: () => setGroupDlg(focusedSession) },
+                  ...(!focusedSession.shell && focusedSession.repoPath
+                    ? [{ label: `Undo a turn of ${focusedSession.ticketTitle ?? focusedSession.title} — put its files back`, run: () => setUndoFor(focusedSession) }]
+                    : []),
                   ...(!focusedSession.shell
                     ? [{ label: `Continue in ${otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude Code"} — hand ${focusedSession.ticketTitle ?? focusedSession.title} over with a summary`, run: () => setHandoffFor(focusedSession) }]
                     : []),
@@ -2342,6 +2349,18 @@ function App() {
           onSave={async (p) => {
             await savePresets([...presets.filter((x) => x.id !== p.id), p]);
             setPresetDraft(null);
+          }}
+        />
+      )}
+
+      {undoFor && (
+        <UndoTurnDialog
+          session={undoFor}
+          onClose={() => setUndoFor(null)}
+          onTellAgent={(text) => {
+            const s = undoFor;
+            setUndoFor(null);
+            askSession(s.id, text);
           }}
         />
       )}

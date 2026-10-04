@@ -35,6 +35,7 @@ import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
+import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
 import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
 import { LSP_DIR } from "./lsp/servers";
@@ -321,6 +322,13 @@ app.whenReady().then(() => {
         ? `${info.title} · ${info.waitingReason ?? "waiting on you"}`
         : `${info.title} is done responding`
     );
+  }, (info, prompt) => {
+    // the files before this turn, so it can be undone (agent panes in a repository only)
+    if (info.shell || !info.repoPath) return;
+    takeSnapshot(info.cwd, info.id, prompt).then(
+      () => snapshotErrors.delete(info.id),
+      (err) => snapshotErrors.set(info.id, logError(`snapshot ${info.id}`, err))
+    );
   });
   startScheduler(sessions, store);
   app.on("activate", () => {
@@ -358,7 +366,13 @@ ipcMain.handle("sessions:create", (_e, req) =>
   })()
 );
 ipcMain.handle("sessions:relaunch", (_e, id) => safeAsync("sessions:relaunch", () => sessions.relaunch(id))());
-ipcMain.handle("sessions:kill", (_e, id, forget) => sessions.kill(id, forget));
+ipcMain.handle("sessions:kill", (_e, id, forget) => {
+  const s = sessions.list().find((x) => x.id === id);
+  const r = sessions.kill(id, forget);
+  // a forgotten session's snapshots go with it; a resumable one keeps them
+  if (forget && s?.repoPath) dropSnapshots(s.cwd, s.id).catch((err) => logError(`drop snapshots ${id}`, err));
+  return r;
+});
 ipcMain.handle("sessions:restartAll", (_e, includeBusy) =>
   safeAsync("sessions:restartAll", () => sessions.restartAll(!!includeBusy))()
 );
@@ -974,6 +988,17 @@ ipcMain.handle("presets:start", (_e, id) =>
     return sessions.create(presetRequest({ ...p, repoPath: repo }, branches, new Date()));
   })()
 );
+
+// ---- undo an agent's turn: snapshots taken when each prompt is submitted ----
+const snapshotErrors = new Map<string, string>();
+ipcMain.handle("turns:list", (_e, id) =>
+  safeAsync("turns:list", async () => {
+    const s = sessionOf(String(id));
+    return { snapshots: await listSnapshots(s.cwd, s.id), lastError: snapshotErrors.get(s.id) ?? null };
+  })()
+);
+ipcMain.handle("turns:changes", (_e, id, n) => safeAsync("turns:changes", async () => { const s = sessionOf(String(id)); return changesSince(s.cwd, s.id, Number(n)); })());
+ipcMain.handle("turns:restore", (_e, id, n) => safeAsync("turns:restore", async () => { const s = sessionOf(String(id)); return restoreSnapshot(s.cwd, s.id, Number(n)); })());
 
 // ---- cross-agent review: the other agent reviews this session's branch and reports back ----
 ipcMain.handle("review:start", (_e, id) =>

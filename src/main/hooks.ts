@@ -117,7 +117,9 @@ export function hooksInstalled(codexBin: string | null): boolean {
 /** Tail events.jsonl and route status changes to the session manager. */
 export function watchEvents(
   sessions: SessionManager,
-  onStatus: (session: SessionInfo, status: string) => void
+  onStatus: (session: SessionInfo, status: string) => void,
+  /** A prompt was submitted in a pane: its turn is starting. */
+  onPrompt?: (session: SessionInfo, prompt: string) => void
 ): void {
   let offset = 0;
   try {
@@ -175,6 +177,7 @@ export function watchEvents(
           if (info && (status === "idle" || status === "waiting")) {
             onStatus(info, status);
           }
+          if (info && evt.event === "UserPromptSubmit") onPrompt?.(info, typeof evt.payload?.prompt === "string" ? evt.payload.prompt : "");
         } catch {
           /* malformed line */
         }

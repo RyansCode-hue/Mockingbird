@@ -286,6 +286,7 @@ export function TerminalPane({
   pinNote,
   tabDrop,
   onHandoff,
+  onUndoTurn,
 }: {
   session: SessionInfo;
   focused: boolean;
@@ -322,6 +323,8 @@ export function TerminalPane({
   tabDrop?: { over: (e: React.DragEvent) => void; drop: (e: React.DragEvent) => void; cue?: string };
   /** Continue this session's task in the other agent. */
   onHandoff?: () => void;
+  /** Put the files back as they were before one of the agent's turns. */
+  onUndoTurn?: () => void;
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const dead = session.status === "dead";
@@ -825,6 +828,18 @@ export function TerminalPane({
               }}
             >
               +
+            </button>
+          )}
+          {onUndoTurn && (
+            <button
+              className="icon"
+              title="Undo a turn — put the files back as they were before one of the agent's recent turns"
+              onClick={(e) => {
+                e.stopPropagation();
+                onUndoTurn();
+              }}
+            >
+              ↶
             </button>
           )}
           {onHandoff && (

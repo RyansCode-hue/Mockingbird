@@ -901,3 +901,24 @@ export interface LspFileEdits {
   path: string;
   edits: { range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }[];
 }
+
+// ---- undo an agent's turn ---------------------------------------------------------
+
+/** The worktree's files as they were before one of a session's turns. */
+export interface TurnSnapshot {
+  n: number;
+  sha: string;
+  at: number;
+  /** The prompt that started the turn. */
+  prompt: string;
+  /** Files over 5 MB that weren't recorded. */
+  skipped: string[];
+  /** Taken just before a restore, so the restore can be undone. */
+  beforeUndo: boolean;
+}
+
+/** What restoring a snapshot does to a file: put its old content back, or remove it (it's new since). */
+export interface TurnChange {
+  path: string;
+  action: "restore" | "remove";
+}

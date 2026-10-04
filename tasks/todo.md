@@ -1476,7 +1476,9 @@ Each item ships on its own: tests + build + harness check → ff main → README
   files (open buffer + disk), ⌘-click definition, ⇧⌥F format.
 - [x] Cross-agent review
   Review: prompt tests (4); harness: Source Control button hidden for terminals, starts the review beside the author's pane.
-- [ ] Undo an agent's turn (snapshot refs)
+- [x] Undo an agent's turn (snapshot refs)
+  Review: real-repo tests (6: branch/index/log untouched, restore + remove + undo-the-undo, ignored and >5 MB files,
+  keep 10, no HEAD / subfolder / not a repo, serialized); hook test covers the prompt callback; dialog in the harness.
 - [ ] Conflict early warning
 - [ ] Session health watchdog (CLI self-update, hung sessions)
 - [ ] Agent messaging: message log, per-group auto-send, Team broadcast

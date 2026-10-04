@@ -135,6 +135,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Undo an agent's turn** — every prompt you send first records the
+  worktree's files in a private ref (`refs/mockingbird/snapshots/<session>/…`;
+  the branch, staged changes and history are untouched). ↶ on a pane (or ⌘K)
+  lists the last 10 turns by their prompt, shows which files would come back
+  or go, and restores them — including changes made by shell commands and by
+  either agent. The restore is itself recorded, so it can be undone; ignored
+  files and anything over 5 MB are left alone (and named). The conversation
+  isn't rewound; "Tell the agent" types a note into the session.
 - **Cross-agent review** — "Second opinion: review with Codex" (or Claude)
   in Source Control starts the other agent in the same folder to review the
   branch, committed and not, for bugs, security, silent failures and missing
@@ -189,21 +197,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Undo an agent's turn.** Snapshot the worktree when each prompt is submitted
-  (from the hook Mockingbird already gets) into a private ref like
-  `refs/mockingbird/snapshots/<session>/…` — no tokens, and the branch, index
-  and history are untouched. Undo restores the files to before that turn,
-  including changes made by shell commands and by either agent (Claude's own
-  `/rewind` only covers its edit tools). Keep the last 10 turns per session;
-  git stores only files that changed, so a typical turn costs a few KB.
-  Gitignored files are skipped, and any single file over ~5 MB is skipped and
-  reported. The conversation isn't rewound, only the files.
-
-### Next
-
 - **Conflict early warning.** When two sessions in the same repo change the same
   file in different worktrees, flag both panes before it becomes a merge
   conflict.
+
+### Next
+
 - **Session health watchdog**: the manual half shipped (Settings → Agents →
   Update, then Restart all sessions). Still to do:
   notice the CLI's self-update ("Restart to update" in any pane, or a model the

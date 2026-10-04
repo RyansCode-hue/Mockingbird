@@ -9,15 +9,16 @@ const NETWORK = new Set(["fetch", "push", "pull"]);
  * so a slow repo or remote must never block it. No terminal prompts: a remote
  * that wants a password fails instead of hanging. `okCodes` are exit codes that
  * aren't failures (`diff --no-index` exits 1 when it found differences).
+ * `env` adds variables (a temporary GIT_INDEX_FILE, a committer identity).
  */
-export function git(cwd: string, args: string[], opts: { okCodes?: number[]; trim?: boolean } = {}): Promise<string> {
+export function git(cwd: string, args: string[], opts: { okCodes?: number[]; trim?: boolean; env?: Record<string, string> } = {}): Promise<string> {
   const timeout = NETWORK.has(args[0]) ? NETWORK_TIMEOUT_MS : LOCAL_TIMEOUT_MS;
   const ok = opts.okCodes ?? [0];
   return new Promise((resolve, reject) =>
     execFile(
       "git",
       ["-C", cwd, ...args],
-      { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+      { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...(opts.env ?? {}) } },
       (err, stdout, stderr) => {
         const code = err ? (err as any).code : 0;
         if (!err || (typeof code === "number" && ok.includes(code))) return resolve(opts.trim === false ? stdout : stdout.trim());
