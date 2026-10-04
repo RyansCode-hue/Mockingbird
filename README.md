@@ -135,6 +135,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Conflict early warning** — when two sessions' worktrees of the same
+  repository change the same file (on their branches since the base, or not
+  yet committed), both panes show "⚠ N overlap"; hover lists the files and
+  the other branch, click goes to the other session. Checked when either
+  folder changes and every 2 minutes.
 - **Undo an agent's turn** — every prompt you send first records the
   worktree's files in a private ref (`refs/mockingbird/snapshots/<session>/…`;
   the branch, staged changes and history are untouched). ↶ on a pane (or ⌘K)
@@ -197,17 +202,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Conflict early warning.** When two sessions in the same repo change the same
-  file in different worktrees, flag both panes before it becomes a merge
-  conflict.
-
-### Next
-
 - **Session health watchdog**: the manual half shipped (Settings → Agents →
   Update, then Restart all sessions). Still to do:
   notice the CLI's self-update ("Restart to update" in any pane, or a model the
   CLI doesn't know yet) and surface that as one prompt; detect hung sessions
   (working with no output for N minutes) and offer a repaint/resume.
+
+### Next
+
 - **Agent messaging, next steps.** Sessions can already message each other
   (`list_sessions` / `send_message`, with a per-pair rate limit). Still to do: a
   visible message log (who told whom what, from the pane rail), a per-group

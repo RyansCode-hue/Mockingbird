@@ -4,7 +4,7 @@ import { PinIcon } from "./Icons";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { formatShare, formatTokens, totalTokens, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
+import { formatShare, formatTokens, totalTokens, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
 import { stripMouseEnables } from "./mouseModes";
 import { useFolderRefresh } from "./folderWatch";
 
@@ -256,6 +256,9 @@ export function shortReason(reason: string | null): string {
   return reason;
 }
 
+/** Distinct files across a pane's overlaps. */
+const overlapCount = (list: FileOverlap[]) => new Set(list.flatMap((o) => o.files)).size;
+
 const PR_LABEL: Record<PrState["state"], string> = { draft: "draft", open: "open", approved: "approved", changes: "changes requested", merged: "merged", closed: "closed" };
 
 /** One xterm attached to a PTY session. Terminals are cached so re-layout keeps scrollback. */
@@ -287,6 +290,8 @@ export function TerminalPane({
   tabDrop,
   onHandoff,
   onUndoTurn,
+  overlaps,
+  onJump,
 }: {
   session: SessionInfo;
   focused: boolean;
@@ -325,6 +330,9 @@ export function TerminalPane({
   onHandoff?: () => void;
   /** Put the files back as they were before one of the agent's turns. */
   onUndoTurn?: () => void;
+  /** Files another worktree of this repository has also changed. */
+  overlaps?: FileOverlap[];
+  onJump?: (sessionId: string) => void;
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const dead = session.status === "dead";
@@ -776,6 +784,22 @@ export function TerminalPane({
                 <span className="add">+{git.insertions}</span> <span className="del">−{git.deletions}</span>
               </>
             )}
+          </button>
+        )}
+        {overlaps && overlaps.length > 0 && density !== "min" && (
+          <button
+            className="chip overlap"
+            title={[
+              "Changed here and in another worktree of this repository — a merge conflict waiting to happen:",
+              ...overlaps.map((o) => `\n${o.otherTitle}${o.otherBranch ? ` (${o.otherBranch})` : ""}:\n${o.files.map((f) => `  ${f}`).join("\n")}`),
+              "\nClick to go to that session.",
+            ].join("\n")}
+            onClick={(e) => {
+              e.stopPropagation();
+              onJump?.(overlaps[0].other);
+            }}
+          >
+            ⚠ {overlapCount(overlaps)} overlap
           </button>
         )}
         {density === "max" && (session.model || session.effort) && (

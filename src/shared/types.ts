@@ -922,3 +922,11 @@ export interface TurnChange {
   path: string;
   action: "restore" | "remove";
 }
+
+/** Files this session's worktree and another's (same repository) have both changed: a merge conflict waiting to happen. */
+export interface FileOverlap {
+  other: string;
+  otherTitle: string;
+  otherBranch: string | null;
+  files: string[];
+}

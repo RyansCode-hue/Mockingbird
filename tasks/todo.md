@@ -1479,7 +1479,9 @@ Each item ships on its own: tests + build + harness check → ff main → README
 - [x] Undo an agent's turn (snapshot refs)
   Review: real-repo tests (6: branch/index/log untouched, restore + remove + undo-the-undo, ignored and >5 MB files,
   keep 10, no HEAD / subfolder / not a repo, serialized); hook test covers the prompt callback; dialog in the harness.
-- [ ] Conflict early warning
+- [x] Conflict early warning
+  Review: overlap rules + two real worktrees (committed vs uncommitted change to one file) (3 tests). Harness found the
+  pane controls (now 3 more) squeezing titles to nothing in narrow panes: controls now overlay the header on hover.
 - [ ] Session health watchdog (CLI self-update, hung sessions)
 - [ ] Agent messaging: message log, per-group auto-send, Team broadcast
 - [ ] Codex parity: PermissionRequest → amber test

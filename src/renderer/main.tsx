@@ -27,7 +27,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys, getFormatOnSave, setFormatOnSave } from "./CodeEditor";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, formatTokens, totalTokens, type OptionalTab } from "../shared/types";
 import { tokenBreakdown } from "./TerminalPane";
 
@@ -204,6 +204,12 @@ function App() {
   const [handoffFor, setHandoffFor] = useState<SessionInfo | null>(null);
   // "undo a turn" for this session
   const [undoFor, setUndoFor] = useState<SessionInfo | null>(null);
+  // files two worktrees of one repository have both changed, per session
+  const [overlaps, setOverlaps] = useState<Record<string, FileOverlap[]>>({});
+  useEffect(() => {
+    window.mb.overlapsGet().then((o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {}));
+    return window.mb.onOverlapsChanged((o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {}));
+  }, []);
   const [pendingZone, setPendingZone] = useState<{ group: string; zone: number } | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
@@ -2005,6 +2011,8 @@ function App() {
                     onCleanup={() => requestClose(s)}
                     onHandoff={s.shell ? undefined : () => setHandoffFor(s)}
                     onUndoTurn={s.shell || !s.repoPath ? undefined : () => setUndoFor(s)}
+                    overlaps={overlaps[s.id]}
+                    onJump={jumpTo}
                     resize={resize}
                   />
                 );

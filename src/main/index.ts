@@ -35,6 +35,7 @@ import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
+import { changedFiles, overlaps, type WorktreeChanges } from "./conflicts";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
 import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
@@ -42,7 +43,7 @@ import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, Meters, ModelCatalog, PrStatus } from "../shared/types";
+import type { AgentKind, FileOverlap, Meters, ModelCatalog, PrStatus } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 
 const store = new Store();
@@ -360,6 +361,7 @@ ipcMain.handle("sessions:resumable", () => sessions.resumable());
 ipcMain.handle("sessions:create", (_e, req) =>
   safeAsync("sessions:create", async () => {
     const info = await sessions.create(req);
+    if (info.repoPath) overlapsSoon(info.cwd);
     // a session opened on a ticket means its coding has started
     if (req?.ticketId && pipeline.startCoding(String(req.ticketId), req.ticketTitle ?? undefined)) pipelineChanged();
     return info;
@@ -456,6 +458,7 @@ const folderWatcher = new FolderWatcher(
   (root) => {
     forgetState(root);
     BrowserWindow.getAllWindows()[0]?.webContents.send("folder:changed", root);
+    overlapsSoon(root);
   },
   (root, err) => logError(`folder watch ${root}`, err)
 );
@@ -988,6 +991,53 @@ ipcMain.handle("presets:start", (_e, id) =>
     return sessions.create(presetRequest({ ...p, repoPath: repo }, branches, new Date()));
   })()
 );
+
+// ---- conflict early warning: worktrees of one repository changing the same files ----
+let overlapState: Record<string, FileOverlap[]> = {};
+const worktreeChanges = new Map<string, { repo: string; branch: string | null; files: string[] }>();
+const staleRoots = new Set<string>();
+let overlapTimer: NodeJS.Timeout | null = null;
+let overlapRun: Promise<void> | null = null;
+/** Re-read the changed folders' files (debounced), then compare every live worktree's. */
+function overlapsSoon(root?: string): void {
+  if (root) staleRoots.add(root);
+  if (overlapTimer) clearTimeout(overlapTimer);
+  overlapTimer = setTimeout(() => {
+    overlapTimer = null;
+    if (overlapRun) return overlapsSoon(); // one pass at a time; this one follows
+    overlapRun = refreshOverlaps().finally(() => (overlapRun = null));
+  }, 2000);
+}
+async function refreshOverlaps(): Promise<void> {
+  const live = sessions.list().filter((s) => s.repoPath && s.status !== "dead" && !s.debrief);
+  const cwds = [...new Set(live.map((s) => s.cwd))];
+  for (const cwd of [...worktreeChanges.keys()]) if (!cwds.includes(cwd)) worktreeChanges.delete(cwd);
+  for (const cwd of cwds) {
+    if (worktreeChanges.has(cwd) && !staleRoots.has(cwd)) continue;
+    staleRoots.delete(cwd);
+    try {
+      worktreeChanges.set(cwd, await changedFiles(cwd));
+    } catch (err) {
+      worktreeChanges.delete(cwd);
+      logError(`overlaps ${cwd}`, err);
+    }
+  }
+  const list: WorktreeChanges[] = live.flatMap((s) => {
+    const c = worktreeChanges.get(s.cwd);
+    return c ? [{ sessionId: s.id, title: s.ticketTitle ?? s.title, branch: c.branch, repo: c.repo, cwd: s.cwd, files: c.files }] : [];
+  });
+  const next = overlaps(list);
+  if (JSON.stringify(next) === JSON.stringify(overlapState)) return;
+  overlapState = next;
+  toWindow("overlaps:changed", overlapState);
+}
+ipcMain.handle("overlaps:get", () => overlapState);
+// branches move and sessions come and go without a file changing: look again every 2 minutes
+setInterval(() => {
+  for (const cwd of worktreeChanges.keys()) staleRoots.add(cwd);
+  overlapsSoon();
+}, 120_000);
+app.whenReady().then(() => overlapsSoon());
 
 // ---- undo an agent's turn: snapshots taken when each prompt is submitted ----
 const snapshotErrors = new Map<string, string>();
