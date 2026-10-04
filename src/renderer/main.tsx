@@ -2922,6 +2922,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌘⇧F", "search every conversation on this Mac, or the focused session's files"],
     ["⇧⏎", "newline in a Claude prompt (won't submit)"],
     ["⇧click", "select more than a screen: click where it starts, scroll, shift-click where it ends — it's copied"],
+    ["⌥drag", "Option-drag for a plain terminal selection — in a full-screen Claude pane a plain drag is Claude's own selection, which Claude copies"],
     ["⌘V", "paste — images land in the prompt as [Image #1]; files can also be dropped onto a pane"],
     ["⌘/", "this popup"],
   ];

@@ -858,6 +858,7 @@ input[type=checkbox] { accent-color: var(--teal); }
   pointer-events: none;
   animation: copytoast 1.6s ease forwards;
 }
+.copy-toast.failed { color: var(--red); }
 @keyframes copytoast {
   0% { opacity: 0; transform: translateY(4px); }
   10%, 75% { opacity: 1; transform: none; }

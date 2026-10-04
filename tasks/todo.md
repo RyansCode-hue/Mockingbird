@@ -1502,3 +1502,52 @@ Each item ships on its own: tests + build + harness check → ff main → README
   Review: active time, Monday weeks, ticket mapping, composition (4 tests). Real data (scratch index of this Mac's
   transcripts): 67 conversations, 24h 25m, 6 tickets mapped by folder; tokens now split fresh vs cache reads (1.0B).
 - [-] Signed + notarized builds — skipped (no Apple Developer ID)
+
+## Claude sessions: their own selection and copy; Option-drag fallback; paste priority
+
+Plan from a Collaborate room (Opus, GPT-6 Astra, Fable), approved by Ryan. Claude Code 2.1.289's fullscreen TUI
+(`"tui": "fullscreen"`) asks for the alt screen + mouse modes 1000/1002/1003/1006; Mockingbird stripped them all, so xterm
+selected over a frame Claude kept redrawing.
+
+- [x] Mouse policy per pane (`mouseModes.ts`): shell passes everything; Claude withholds only any-motion 1003; other agents
+      (Codex) withhold all mouse modes as before. Combined sets (`?1049;1000h`) keep their other params now (Codex lost
+      the alt-screen switch when one arrived combined).
+- [x] Input guard (`inputGuard.ts`): a complete SGR report passes after the 400 ms window while xterm is tracking —
+      drags and releases were dropped as unattributed. Malformed, multi-report or text-carrying data still drops.
+- [x] Gesture ownership latched at pointerdown (tracking off, or Option on macOS / Shift elsewhere = native). Only native
+      gestures park output and copy-on-select; pointercancel releases parked output without copying.
+- [x] Claude panes: `macOptionClickForcesSelection`, `altClickMovesCursor: false`.
+- [x] Wheel forwarding and panel ×-click synthesis skip while xterm reports the mouse (live `mouseTrackingMode`).
+- [x] Paste: any `text/plain` goes to xterm (bracketed); only an image-only clipboard becomes Ctrl+V.
+- [x] Copy toast only after `clipboard.writeText` resolves; a failure logs and shows "Couldn't copy selection".
+- [x] Found while verifying: Claude re-sends 1000h/1002h/1003h/1006h while a button is held. In xterm.js 5.5, 1000h
+      while DRAG is on detaches the drag listener (onProtocolChange → VT200) and 1002h doesn't reattach it until the next
+      press, so the rest of the drag sent nothing. While a Claude-owned press is held, the filter drops a tracking mode
+      lower than the one xterm has; otherwise the last mode set wins, as in xterm. Mode resets and RIS clear the level.
+- [x] Codex (GPT-6 Astra) review: confirmed the diagnosis. Acted on: drop downgrades only mid-gesture (was always —
+      broke last-wins), Repaint resets in-band (`ESC c` via write; `term.reset()` ran ahead of queued output), RIS clears
+      wantsMouse, mode 9 + leading-zero params (`?01003h`) filtered, wheel swallowed during a native drag while tracking
+      (the CLI scrolled behind a frozen frame), input-guard comment no longer overclaims. Left: C1 CSI (`\x9b`) isn't
+      parsed by the filter (no CLI here emits it).
+- [x] Help popup (⌥drag) and README.
+- [-] OSC 52 deferred: local Claude copies through pbcopy (verified). A Claude in a container/remote host can only ask the
+      terminal (OSC 52), which xterm.js ignores — use Option-drag there. No toast for OSC 52 (a request, not a copy).
+
+Review: 29 terminal tests (policy, combined/split sets, downgrade + reset, ownership, input guard incl. after-window and
+malformed reports, paste routing). Running app — isolated dev instance (scratch HOME + userData, driven over CDP; real
+Claude 2.1.289 signed in, fullscreen):
+- 4 s Claude-owned drag during generation: 23 reports, 20 after 400 ms, no audit drops; Claude's highlight live, output
+  never held; clipboard (pbpaste) = Claude's selection. Before the downgrade fix the same drag sent press + release only.
+- Option-drag, Option released mid-drag, during generation: no reports to Claude, output parked (61 chunks) then flushed,
+  "Copied ✓", clipboard = frozen frame's text.
+- Wheel: one xterm report per event (64 plain, 72 with Option), custom forwarder idle. Option-click in prompt: nothing sent.
+- /diff panel ×: Option-click → nothing sent, panel stays; plain click → one press/release from xterm, panel closes;
+  header ⊟ still detected.
+- Paste: multiline text bracketed; text+image → text; image-only → [Image #1].
+- Shell pane: native selection + toast unchanged; a mouse app (1002+1006) got all 22 reports of a 3 s drag incl. release.
+- Codex pane (pre-login screen only — scratch HOME isn't signed in): native selection + toast, text+image paste → text.
+- After the review fixes: same drag → 22 reports, re-send at startup (no button) passed whole, mid-drag `1000h` dropped;
+  wheel during Option-drag → nothing sent; releases outside the window end both kinds of gesture (Claude gets the
+  clamped release); Repaint → Claude re-sends its modes, drag works after.
+- Claude's own hint on macOS reads "option+click to native select", matching this setup.
+- Not exercised: signed-in Codex TUI; remote/container Claude (OSC 52 path).

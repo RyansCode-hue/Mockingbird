@@ -5,7 +5,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { formatShare, formatTokens, totalTokens, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
-import { stripMouseEnables } from "./mouseModes";
+import { mousePolicyFor, selectsNatively, stripMouseEnables, type MousePolicy } from "./mouseModes";
+import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
 
 declare global {
@@ -33,31 +34,22 @@ interface TermEntry {
   lastReply: string; // loop detector: the same answer repeating means the
   lastReplyCount: number; // answer itself is provoking the next question
   lastReplyStart: number;
-  stripMouse: boolean; // claude panes: the CLI never gets the mouse (see below)
+  mousePolicy: MousePolicy; // which of the CLI's mouse requests reach xterm (mouseModes.ts)
   carry: string; // trailing partial escape sequence held until the next chunk
-  dragging: boolean; // selection drag in progress
-  hold: string[] | null; // output parked while a selection stands
+  dragging: boolean; // native (xterm) selection drag in progress
+  hold: string[] | null; // output parked during a native selection drag
   holdStart: number;
-  wantsMouse: boolean; // the CLI asked for mouse tracking (we stripped it)
+  wantsMouse: boolean; // the CLI has mouse reporting on (xterm may not have been given it)
+  tracking: number; // tracking mode xterm was last given (mouseModes.ts)
+  buttonHeld: boolean; // a gesture the CLI owns is in progress
   wheelAcc: number; // accumulated wheel pixels not yet emitted as scroll lines
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
 
-// Sequences a terminal legitimately sends on its own: answers to queries the
-// program asked for (cursor position, device attributes, colours) and focus
-// reporting. Everything else that xterm emits without the user touching the
-// pane is suspect — that is how a session ends up running a command nobody
-// typed — so it is dropped and written to ~/.mockingbird/pty-audit.log.
-const TERM_REPLY = new RegExp(
-  "^(?:" +
-    "\\x1b\\[[0-9;?]*[Rcn]" + // cursor position / device attributes / device status
-    "|\\x1b\\[[IO]" + // focus in / focus out reporting
-    "|\\x1b\\][0-9]+;[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)" + // OSC colour answers
-    "|\\x1bP[^\\x1b]*\\x1b\\\\" + // DCS answers (XTGETTCAP, DECRQSS)
-    ")$"
-);
-const USER_INPUT_WINDOW_MS = 400;
+// the platform test xterm uses to pick its force-selection modifier (Option, else Shift)
+const IS_MAC = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].includes(navigator.platform);
+
 // Loop detector for automatic query answers. A program starting up asks a
 // varied handful of questions (device attributes, cursor position, colours —
 // including the background-colour probe the claude TUI uses to pick light or
@@ -68,11 +60,12 @@ const REPLY_LOOP_COUNT = 8;
 const REPLY_LOOP_WINDOW_MS = 5000;
 
 // xterm clears a selection the moment a write touches the selected rows, and
-// the claude TUI redraws its whole frame continuously while generating — so a
-// selection inside it died within a second. While a drag is in progress or a
-// highlight stands, output is parked and the pane freezes at the moment of
-// selection; everything parked is written the instant the selection is
-// dropped, with a time/size cap so a pane can never stall.
+// an agent TUI redraws its frame continuously while generating — so a native
+// selection inside it died within a second. While a native selection drag is
+// in progress, output is parked and the pane freezes at the moment of
+// selection; everything parked is written on release, once the text has been
+// captured, with a time/size cap so a pane can never stall. Selections the
+// CLI draws itself (Claude with mouse reporting on) never park output.
 const HOLD_MAX_MS = 15_000;
 const HOLD_MAX_BYTES = 400_000;
 
@@ -166,7 +159,11 @@ export async function resyncTerm(id: string): Promise<void> {
   const entry = terms.get(id);
   if (!entry) return;
   const { term } = entry;
-  term.reset();
+  // RIS rather than term.reset(): it applies after output already queued, so a
+  // queued mode change can't land after the reset. The CLI still believes its
+  // mouse modes are on (wantsMouse stays), so the wheel is forwarded for it.
+  term.write("\x1bc");
+  entry.tracking = 0;
   const { cols, rows } = term;
   window.mb.sessionResize(id, Math.max(2, cols - 1), rows);
   setTimeout(() => window.mb.sessionResize(id, cols, rows), 80);
@@ -346,7 +343,7 @@ export function TerminalPane({
   const dead = session.status === "dead";
   const waiting = session.status === "waiting";
   const [editTitle, setEditTitle] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copyNote, setCopyNote] = useState<"copied" | "failed" | null>(null);
   const [panelClose, setPanelClose] = useState<{ col: number; row: number } | null>(null);
   const [exitTail, setExitTail] = useState<string | null>(null);
   useEffect(() => {
@@ -417,6 +414,9 @@ export function TerminalPane({
     ensureDataPump();
     let entry = terms.get(session.id);
     if (!entry) {
+      // a session id keeps its agent and shell flag through restarts, and a
+      // resumed pane gets a fresh entry, so the policy is fixed per entry
+      const mousePolicy = mousePolicyFor(session);
       const term = new Terminal({
         fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
         fontSize: density === "max" ? 11.5 : 11,
@@ -424,6 +424,10 @@ export function TerminalPane({
         theme: currentTermTheme(),
         scrollback: 8000,
         allowProposedApi: true,
+        // Option-drag selects natively while Claude has the mouse. Option-click
+        // must not also move the prompt cursor: a short native gesture would
+        // otherwise type arrow keys into the prompt.
+        ...(mousePolicy === "claude" ? { macOptionClickForcesSelection: true, altClickMovesCursor: false } : {}),
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -435,17 +439,19 @@ export function TerminalPane({
         lastReply: "",
         lastReplyCount: 0,
         lastReplyStart: 0,
-        stripMouse: !session.shell,
+        mousePolicy,
         carry: "",
         dragging: false,
         hold: null,
         holdStart: 0,
-        // Only the CLI's own mode sequences turn this on. Claude Code and Codex
-        // both draw inline, with their history in the terminal's scrollback, so
-        // the wheel must scroll that and selection can span it (click, scroll,
-        // shift-click). Assuming mouse mode sent wheel reports to a CLI that
-        // never asked, leaving the pane unscrollable.
+        // Only the CLI's own mode sequences turn this on. An inline CLI keeps its
+        // history in the terminal's scrollback, so the wheel must scroll that
+        // and selection can span it (click, scroll, shift-click). Assuming mouse
+        // mode sent wheel reports to a CLI that never asked, leaving the pane
+        // unscrollable.
         wantsMouse: false,
+        tracking: 0,
+        buttonHeld: false,
         wheelAcc: 0,
       };
       // the side panel appears and disappears with output; recheck at most
@@ -463,10 +469,11 @@ export function TerminalPane({
       });
       term.onData((d) => {
         const now = Date.now();
-        if (now - e.lastInput <= USER_INPUT_WINDOW_MS) return writeSession(session.id, d);
+        const source = classifyTermInput(d, now - e.lastInput, term.modes.mouseTrackingMode);
+        if (source === "user" || source === "mouse") return writeSession(session.id, d);
         // no user input behind this: it is either an answer to a query the
         // program asked for, or something that has no business being typed
-        if (!TERM_REPLY.test(d)) {
+        if (source === "unattributed") {
           window.mb.auditWrite(session.id, "dropped-unattributed", d);
           return;
         }
@@ -553,23 +560,33 @@ export function TerminalPane({
     const ro = new ResizeObserver(doFit);
     if (holder.current) ro.observe(holder.current);
 
-    // ⌘V with an image on the clipboard: forward Ctrl+V (\x16) to the CLI —
-    // Claude Code reads the image from the macOS pasteboard itself and shows
-    // "[Image #1]". Text pastes fall through to xterm's normal handling.
     const stamp = () => {
       const t = terms.get(session.id);
       if (t) t.lastInput = Date.now(); // mouse/paste count as user input too
     };
+    const showCopyNote = (note: "copied" | "failed") => {
+      setCopyNote(note);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopyNote(null), 1600);
+    };
+    // Who owns a left-button gesture is settled at the press, exactly as xterm
+    // settles it on the mousedown that follows, and holds until release even
+    // if the modifier is let go first. A gesture the CLI owns is reported to
+    // it live, so output keeps flowing; only a native one parks output.
     const onDown = (ev: PointerEvent) => {
       stamp();
-      if (ev.button === 0) {
-        const t = terms.get(session.id);
-        if (t) t.dragging = true;
-      }
+      if (ev.button !== 0) return;
+      const t = terms.get(session.id);
+      if (!t) return;
+      const native = selectsNatively(t.term.modes.mouseTrackingMode, ev, IS_MAC, !!t.term.options.macOptionClickForcesSelection);
+      t.dragging = native;
+      t.buttonHeld = !native;
     };
     const endDrag = () => {
       const t = terms.get(session.id);
-      if (!t?.dragging) return;
+      if (!t) return;
+      t.buttonHeld = false;
+      if (!t.dragging) return;
       t.dragging = false;
       if (!t.term.hasSelection()) return flushHold(t); // just a click — resume instantly
       // copy-on-select, cmux-style: release puts the text on the clipboard and
@@ -578,32 +595,42 @@ export function TerminalPane({
       const text = t.term.getSelection();
       if (text) {
         navigator.clipboard.writeText(text).then(
-          () => {
-            setCopied(true);
-            if (copiedTimer.current) clearTimeout(copiedTimer.current);
-            copiedTimer.current = setTimeout(() => setCopied(false), 1600);
-          },
-          () => {
-            /* clipboard permission denied — the selection still stands for ⌘C */
+          () => showCopyNote("copied"),
+          (err: unknown) => {
+            console.error("[mockingbird] copy-on-select failed", session.id, err);
+            showCopyNote("failed"); // the selection still stands for ⌘C
           }
         );
       }
       flushHold(t);
     };
+    const cancelDrag = () => {
+      const t = terms.get(session.id);
+      if (!t) return;
+      t.buttonHeld = false;
+      if (!t.dragging) return;
+      t.dragging = false;
+      flushHold(t);
+    };
+    // ⌘V with only an image on the clipboard: forward Ctrl+V (\x16) to the CLI —
+    // Claude Code reads the image from the macOS pasteboard itself and shows
+    // "[Image #1]". Anything with text falls through to xterm's normal paste.
     const onPaste = (e: ClipboardEvent) => {
       stamp();
-      const items = [...(e.clipboardData?.items ?? [])];
-      if (items.some((it) => it.type.startsWith("image/"))) {
-        e.preventDefault();
-        e.stopPropagation();
-        writeSession(session.id, "\x16");
-      }
+      const data = e.clipboardData;
+      if (!data) return;
+      if (pasteRoute([...data.types, ...[...data.items].map((it) => it.type)]) !== "image") return;
+      e.preventDefault();
+      e.stopPropagation();
+      writeSession(session.id, "\x16");
     };
     const el = holder.current;
     el?.addEventListener("paste", onPaste, true);
     const onClick = (ev: MouseEvent) => {
       const t = terms.get(session.id);
-      if (!t?.wantsMouse || !t.ready || t.term.hasSelection()) return;
+      // xterm reporting the mouse delivers the click itself; Option (a native
+      // selection then) must not bring the synthesized one back either
+      if (!t?.wantsMouse || !t.ready || t.term.hasSelection() || t.term.modes.mouseTrackingMode !== "none") return;
       const target = findPanelClose(t.term);
       if (!target) return;
       const screen = t.term.element?.querySelector(".xterm-screen");
@@ -620,10 +647,20 @@ export function TerminalPane({
     const onWheel = (ev: WheelEvent) => {
       stamp();
       const t = terms.get(session.id);
-      // the CLI asked for the mouse (we withheld it): deliver wheel as the SGR
-      // reports it expects, so scrolling scrolls the transcript — xterm's
-      // fallback would send arrow keys, which the CLI reads as history
-      if (!t?.stripMouse || !t.wantsMouse || !t.ready) return;
+      if (!t?.ready) return;
+      // While xterm is tracking, it reports the wheel itself — except during a
+      // native selection, whose frame is frozen: the CLI would scroll unseen.
+      if (t.term.modes.mouseTrackingMode !== "none") {
+        if (t.dragging) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+        return;
+      }
+      // the CLI asked for the mouse but xterm wasn't given it: deliver wheel as
+      // the SGR reports it expects, so scrolling scrolls the transcript —
+      // xterm's fallback would send arrow keys, which the CLI reads as history
+      if (!t.wantsMouse) return;
       if (t.hold || t.dragging) return; // mid-drag the frame is frozen
       const screen = t.term.element?.querySelector(".xterm-screen");
       if (!screen) return;
@@ -651,7 +688,7 @@ export function TerminalPane({
     el?.addEventListener("wheel", onWheel, { capture: true, passive: false });
     el?.addEventListener("click", onClick, true);
     window.addEventListener("pointerup", endDrag, true);
-    window.addEventListener("pointercancel", endDrag, true);
+    window.addEventListener("pointercancel", cancelDrag, true);
     return () => {
       ro.disconnect();
       el?.removeEventListener("paste", onPaste, true);
@@ -659,10 +696,11 @@ export function TerminalPane({
       el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
       el?.removeEventListener("click", onClick, true);
       window.removeEventListener("pointerup", endDrag, true);
-      window.removeEventListener("pointercancel", endDrag, true);
+      window.removeEventListener("pointercancel", cancelDrag, true);
       const t = terms.get(session.id);
       if (t) {
         t.dragging = false;
+        t.buttonHeld = false;
         flushHold(t); // never leave a hidden pane frozen
       }
     };
@@ -1035,7 +1073,8 @@ export function TerminalPane({
               }
             }}
           />
-          {copied && <span className="copy-toast">Copied ✓</span>}
+          {copyNote === "copied" && <span className="copy-toast">Copied ✓</span>}
+          {copyNote === "failed" && <span className="copy-toast failed">Couldn't copy selection</span>}
           {session.stalledSince && session.status === "working" && (
             <div className="stall-banner" title="An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process.">
               <span className="reason">No output for {fmtElapsed(session.stalledSince, true)} while working — it may be stuck</span>
