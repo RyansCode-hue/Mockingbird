@@ -41,6 +41,7 @@ import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
 import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
+import { cliVersion } from "./agents";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, FileOverlap, Meters, ModelCatalog, PrStatus } from "../shared/types";
@@ -991,6 +992,41 @@ ipcMain.handle("presets:start", (_e, id) =>
     return sessions.create(presetRequest({ ...p, repoPath: repo }, branches, new Date()));
   })()
 );
+
+// ---- session health: CLIs updated under running panes, and panes that went quiet mid-turn ----
+const STALL_MS = 5 * 60_000;
+let lastNotices = "";
+async function refreshAgentVersions(): Promise<void> {
+  const found: Partial<Record<AgentKind, string>> = {};
+  for (const agent of ["claude", "codex"] as AgentKind[]) {
+    const bin = sessions.binFor(agent);
+    if (!bin.includes("/")) continue;
+    const r = await userShell(`${quote(bin)} --version`, 20_000);
+    const v = r.code === 0 ? cliVersion(r.out) : null;
+    if (v) found[agent] = v;
+    else logError(`version ${agent}`, new Error(r.out.trim().slice(0, 200) || `exited with code ${r.code}`));
+  }
+  sessions.setAgentVersions(found);
+  healthChanged();
+}
+function healthChanged(): void {
+  const notices = sessions.updateNotices();
+  const key = JSON.stringify(notices);
+  if (key === lastNotices) return;
+  lastNotices = key;
+  toWindow("health:updates", notices);
+}
+ipcMain.handle("health:updates", () => sessions.updateNotices());
+ipcMain.handle("sessions:restart", (_e, id) => safeAsync("sessions:restart", () => sessions.restart(String(id)))());
+app.whenReady().then(() => {
+  refreshAgentVersions();
+  // the CLIs update themselves in the background
+  setInterval(refreshAgentVersions, 10 * 60_000);
+  setInterval(() => {
+    sessions.checkStalls(Date.now(), STALL_MS);
+    healthChanged();
+  }, 30_000);
+});
 
 // ---- conflict early warning: worktrees of one repository changing the same files ----
 let overlapState: Record<string, FileOverlap[]> = {};

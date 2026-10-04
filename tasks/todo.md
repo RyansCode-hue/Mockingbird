@@ -1482,7 +1482,9 @@ Each item ships on its own: tests + build + harness check → ff main → README
 - [x] Conflict early warning
   Review: overlap rules + two real worktrees (committed vs uncommitted change to one file) (3 tests). Harness found the
   pane controls (now 3 more) squeezing titles to nothing in narrow panes: controls now overlay the header on hover.
-- [ ] Session health watchdog (CLI self-update, hung sessions)
+- [x] Session health watchdog (CLI self-update, hung sessions)
+  Version per pane vs installed (checked every 10 min; real `--version` outputs parse), quiet-while-working after 5 min;
+  tests (3).
 - [ ] Agent messaging: message log, per-group auto-send, Team broadcast
 - [ ] Codex parity: PermissionRequest → amber test
 - [ ] Notification controls (per-session mute, quiet hours)

@@ -27,7 +27,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys, getFormatOnSave, setFormatOnSave } from "./CodeEditor";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, formatTokens, totalTokens, type OptionalTab } from "../shared/types";
 import { tokenBreakdown } from "./TerminalPane";
 
@@ -204,6 +204,12 @@ function App() {
   const [handoffFor, setHandoffFor] = useState<SessionInfo | null>(null);
   // "undo a turn" for this session
   const [undoFor, setUndoFor] = useState<SessionInfo | null>(null);
+  // agent CLIs updated under running panes (they run the old version until restarted)
+  const [agentUpdates, setAgentUpdates] = useState<AgentUpdateNotice[]>([]);
+  useEffect(() => {
+    window.mb.healthUpdates().then((n: AgentUpdateNotice[]) => setAgentUpdates(Array.isArray(n) ? n : []));
+    return window.mb.onHealthUpdates((n: AgentUpdateNotice[]) => setAgentUpdates(Array.isArray(n) ? n : []));
+  }, []);
   // files two worktrees of one repository have both changed, per session
   const [overlaps, setOverlaps] = useState<Record<string, FileOverlap[]>>({});
   useEffect(() => {
@@ -2013,6 +2019,11 @@ function App() {
                     onUndoTurn={s.shell || !s.repoPath ? undefined : () => setUndoFor(s)}
                     overlaps={overlaps[s.id]}
                     onJump={jumpTo}
+                    onRestart={async () => {
+                      const r = await window.mb.sessionRestart(s.id);
+                      if (r?.error) alert(`Couldn't restart ${s.ticketTitle ?? s.title}: ${r.error}`);
+                      refresh();
+                    }}
                     resize={resize}
                   />
                 );
@@ -2171,6 +2182,16 @@ function App() {
       </div>
 
       <div className="statusbar">
+        {agentUpdates.map((u) => (
+          <button
+            key={u.agent}
+            className="sb-update"
+            title={`${u.agent === "codex" ? "Codex" : "Claude Code"} ${u.installed} is installed; these sessions still run the version they started with:\n${u.sessions.map((x) => `  ${x.title} (${x.version})`).join("\n")}\nRestarting resumes each conversation.`}
+            onClick={() => setModal("restart")}
+          >
+            {u.agent === "codex" ? "Codex" : "Claude Code"} updated to {u.installed} · {u.sessions.length} session{u.sessions.length === 1 ? "" : "s"} on the old version — Restart
+          </button>
+        ))}
         {(["working", "waiting", "idle", "dead"] as const).map((st) => {
           const c = counts[st];
           if (st === "dead" && c === 0) return null;

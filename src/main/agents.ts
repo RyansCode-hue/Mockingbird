@@ -193,3 +193,8 @@ const ADAPTERS: Record<AgentKind, AgentAdapter> = { claude, codex };
 export function agentFor(kind: AgentKind | null | undefined): AgentAdapter {
   return ADAPTERS[kind ?? "claude"];
 }
+
+/** An agent CLI's version, e.g. "2.1.5" from "2.1.5 (Claude Code)" or "codex-cli 0.46.0". */
+export function cliVersion(out: string): string | null {
+  return /(\d+\.\d+\.\d+[\w.+-]*)/.exec(out)?.[1] ?? null;
+}

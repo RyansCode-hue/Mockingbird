@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, AgentKind } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, AgentKind, type AgentUpdateNotice } from "../shared/types";
 import { Store, expandHome } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
@@ -40,11 +40,14 @@ interface LiveSession {
   draft: boolean; // the user has typed since their last Enter — the prompt holds unsent text
   flushTimer: NodeJS.Timeout | null; // retry while the user is typing
   claudeId: string | null; // Claude Code's own session_id, claimed from the first hook event
+  lastOutput: number; // ms of the pty's last output — a working pane that goes quiet may be stuck
 }
 
 export class SessionManager {
   private live = new Map<string, LiveSession>();
   private wc: WebContents | null = null;
+  /** Each agent CLI's installed version, as last read; new panes record it (see AgentUpdateNotice). */
+  agentVersions: Partial<Record<AgentKind, string>> = {};
 
   private resolvedBins = new Map<string, string>();
 
@@ -232,7 +235,8 @@ export class SessionManager {
         /* already dead */
       }
     }
-    const sess: LiveSession = { info, proc, buffer: "", queued: [], claudeId: null, lastInput: 0, draft: false, flushTimer: null };
+    if (!req.shell) info.agentVersion = this.agentVersions[req.agent ?? "claude"];
+    const sess: LiveSession = { info, proc, buffer: "", queued: [], claudeId: null, lastInput: 0, draft: false, flushTimer: null, lastOutput: Date.now() };
     this.live.set(info.id, sess);
     this.store.upsertSession(info);
 
@@ -241,6 +245,11 @@ export class SessionManager {
     proc.onData((data) => {
       if (this.live.get(info.id) !== sess) return;
       sess.buffer = (sess.buffer + data).slice(-BUFFER_MAX);
+      sess.lastOutput = Date.now();
+      if (info.stalledSince) {
+        info.stalledSince = null;
+        this.emitChanged();
+      }
       this.wc?.send("session:data", info.id, data);
     });
     proc.onExit(({ exitCode }) => {
@@ -288,16 +297,68 @@ export class SessionManager {
         skipped.push(id); // mid-turn: killing it would drop the answer in flight
         continue;
       }
-      this.kill(id, false); // keep the store entry so relaunch can resume it
       try {
-        if (await this.relaunch(id)) restarted.push(id);
-        else failed.push({ id, error: "no persisted session to resume" });
+        await this.restart(id);
+        restarted.push(id);
       } catch (err) {
         failed.push({ id, error: err instanceof Error ? err.message : String(err) });
       }
     }
     this.emitChanged();
     return { restarted, skipped, failed };
+  }
+
+  /** Restart one pane in place: same id, its conversation resumed. */
+  async restart(id: string): Promise<SessionInfo> {
+    this.kill(id, false); // keep the store entry so relaunch can resume it
+    const info = await this.relaunch(id);
+    if (!info) throw new Error("no persisted session to resume");
+    return info;
+  }
+
+  /**
+   * Flag working panes whose terminal has been quiet for `quietMs` (an agent's
+   * screen redraws constantly while it works, so silence means it may be
+   * stuck). Output clears the flag. Returns whether anything changed.
+   */
+  checkStalls(now: number, quietMs: number): boolean {
+    let changed = false;
+    for (const s of this.live.values()) {
+      const stalled = s.info.status === "working" && !s.info.shell && now - s.lastOutput >= quietMs;
+      if (stalled && !s.info.stalledSince) {
+        s.info.stalledSince = s.lastOutput;
+        changed = true;
+      } else if (!stalled && s.info.stalledSince) {
+        s.info.stalledSince = null;
+        changed = true;
+      }
+    }
+    if (changed) this.emitChanged();
+    return changed;
+  }
+
+  /** Read the installed versions; panes started before a version was known take the first one read. */
+  setAgentVersions(v: Partial<Record<AgentKind, string>>): void {
+    this.agentVersions = { ...this.agentVersions, ...v };
+    for (const s of this.live.values()) {
+      const kind = s.info.agent ?? "claude";
+      if (!s.info.shell && !s.info.agentVersion && v[kind]) s.info.agentVersion = v[kind];
+    }
+  }
+
+  /** Agents installed at a newer version than some running panes started with. */
+  updateNotices(): AgentUpdateNotice[] {
+    const out: AgentUpdateNotice[] = [];
+    for (const kind of ["claude", "codex"] as AgentKind[]) {
+      const installed = this.agentVersions[kind];
+      if (!installed) continue;
+      const behind = [...this.live.values()]
+        .map((s) => s.info)
+        .filter((i) => !i.shell && i.status !== "dead" && (i.agent ?? "claude") === kind && i.agentVersion && i.agentVersion !== installed)
+        .map((i) => ({ id: i.id, title: i.ticketTitle ?? i.title, version: i.agentVersion! }));
+      if (behind.length) out.push({ agent: kind, installed, sessions: behind });
+    }
+    return out;
   }
 
   /** Relaunch a persisted session in its old cwd, resuming the conversation. */
@@ -610,6 +671,7 @@ export class SessionManager {
     if (!s) return;
     if (s.info.status === status && (status !== "waiting" || !reason)) return;
     s.info.status = status;
+    if (status !== "working") s.info.stalledSince = null;
     if (status === "waiting") {
       s.info.waitingReason = reason ?? s.info.waitingReason ?? null;
       s.info.waitingSince = s.info.waitingSince ?? Date.now();

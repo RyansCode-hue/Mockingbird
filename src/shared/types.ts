@@ -29,6 +29,17 @@ export interface SessionInfo {
   conversation?: { agent: AgentKind; id: string };
   /** Every conversation this pane has run (a /clear starts a new one), oldest first — what its token meter adds up. */
   conversations?: string[];
+  /** The agent CLI's version when this pane started it; a newer install means it needs a restart. */
+  agentVersion?: string;
+  /** Working, but no output since this time: it may be stuck. */
+  stalledSince?: number | null;
+}
+
+/** An agent CLI updated under running sessions: they still run the old version until restarted. */
+export interface AgentUpdateNotice {
+  agent: AgentKind;
+  installed: string;
+  sessions: { id: string; title: string; version: string }[];
 }
 
 export interface WorktreeStateInfo {

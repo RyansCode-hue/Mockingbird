@@ -183,6 +183,13 @@ const api = {
   adoComments: (id: number) => ipcRenderer.invoke("ado:comments", id),
   adoAddComment: (id: number, text: string) => ipcRenderer.invoke("ado:comment:add", id, text),
   reviewStart: (sessionId: string) => ipcRenderer.invoke("review:start", sessionId),
+  healthUpdates: () => ipcRenderer.invoke("health:updates"),
+  onHealthUpdates: (cb: (n: unknown) => void) => {
+    const h = (_e: unknown, n: unknown) => cb(n);
+    ipcRenderer.on("health:updates", h);
+    return () => ipcRenderer.removeListener("health:updates", h);
+  },
+  sessionRestart: (id: string) => ipcRenderer.invoke("sessions:restart", id),
   overlapsGet: () => ipcRenderer.invoke("overlaps:get"),
   onOverlapsChanged: (cb: (o: unknown) => void) => {
     const h = (_e: unknown, o: unknown) => cb(o);

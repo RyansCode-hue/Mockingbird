@@ -135,6 +135,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Session health watchdog** — panes record the CLI version they started
+  with; when Claude Code or Codex updates itself under them, the status bar
+  says "Claude Code updated to 2.1.x · N sessions on the old version —
+  Restart" (one prompt, to Restart all). A pane that's working but has shown
+  no output for 5 minutes says it may be stuck and offers Repaint or Restart
+  (resuming its conversation).
 - **Conflict early warning** — when two sessions' worktrees of the same
   repository change the same file (on their branches since the base, or not
   yet committed), both panes show "⚠ N overlap"; hover lists the files and
@@ -202,20 +208,15 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Session health watchdog**: the manual half shipped (Settings → Agents →
-  Update, then Restart all sessions). Still to do:
-  notice the CLI's self-update ("Restart to update" in any pane, or a model the
-  CLI doesn't know yet) and surface that as one prompt; detect hung sessions
-  (working with no output for N minutes) and offer a repaint/resume.
-
-### Next
-
 - **Agent messaging, next steps.** Sessions can already message each other
   (`list_sessions` / `send_message`, with a per-pair rate limit). Still to do: a
   visible message log (who told whom what, from the pane rail), a per-group
   switch between auto-send and leave-in-prompt (today it's one global
   setting), and a "Team" broadcast from the group bar that asks every session in
   a group for a status report.
+
+### Next
+
 - **Codex parity.** Plan usage and model choices shipped (read from Codex's
   own logs and model cache). Still to do: a watched test of the
   PermissionRequest → amber path.

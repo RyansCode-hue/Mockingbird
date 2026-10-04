@@ -292,6 +292,7 @@ export function TerminalPane({
   onUndoTurn,
   overlaps,
   onJump,
+  onRestart,
 }: {
   session: SessionInfo;
   focused: boolean;
@@ -333,6 +334,8 @@ export function TerminalPane({
   /** Files another worktree of this repository has also changed. */
   overlaps?: FileOverlap[];
   onJump?: (sessionId: string) => void;
+  /** Restart this pane, resuming its conversation (for a stuck one). */
+  onRestart?: () => void;
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const dead = session.status === "dead";
@@ -1019,6 +1022,31 @@ export function TerminalPane({
             }}
           />
           {copied && <span className="copy-toast">Copied ✓</span>}
+          {session.stalledSince && session.status === "working" && (
+            <div className="stall-banner" title="An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process.">
+              <span className="reason">No output for {fmtElapsed(session.stalledSince, true)} while working — it may be stuck</span>
+              <button
+                className="outline"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  resyncTerm(session.id);
+                }}
+              >
+                Repaint
+              </button>
+              {onRestart && (
+                <button
+                  className="outline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRestart();
+                  }}
+                >
+                  Restart
+                </button>
+              )}
+            </div>
+          )}
           {waiting && (
             <div className="wait-banner">
               <span className="dot sm waiting" />
