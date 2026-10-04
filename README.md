@@ -135,6 +135,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Session presets** — one-click setups in Settings → Presets (or "Save as
+  preset…" in New session): Claude, Codex or a terminal; a repo; the branch
+  as checked out, an existing branch, or a fresh one from a pattern like
+  `review-{date}` off dev, optionally in its own worktree; a group; and a
+  kickoff prompt (a terminal runs it as a command). Start them from New
+  session or ⌘K.
 - **Continue in the other agent** — ⇄ on a pane (or ⌘K) hands its task to
   Codex or Claude: the agent taking over reads the conversation and the
   worktree and writes a handoff (goal, done, in progress, next steps, watch
@@ -166,14 +172,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Session presets**: one-click recurring setups (repo + branch scheme +
-  kickoff prompt), e.g. "review session on dev", "test-runner shell".
-
-### Next
-
 - **PR status in the pane rail.** Each pane shows its branch's pull request —
   open, approved, changes requested, merged — using the pull request lookups
   the ticket pipeline added.
+
+### Next
+
 - **Editor intelligence.** Now that files are editable: go to definition,
   hover info, completions and rename from the languages' own servers
   (pyright, tsserver, a C# server), problems underlined as you type, and

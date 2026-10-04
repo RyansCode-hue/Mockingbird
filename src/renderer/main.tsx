@@ -21,11 +21,12 @@ import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceCon
 import { RunView } from "./RunView";
 import { PipelineDialog, PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { HandoffDialog, otherAgent } from "./Handoff";
+import { PresetEditor, PresetsSection, newPresetId } from "./Presets";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, formatTokens, totalTokens, type OptionalTab } from "../shared/types";
 import { tokenBreakdown } from "./TerminalPane";
 
@@ -223,6 +224,9 @@ function App() {
   // tabs turned off in Settings leave the top bar (and the palette); one opened
   // anyway — by a notification or a search hit — shows while it's the active tab
   const [hiddenTabs, setHiddenTabs] = useState<OptionalTab[]>([]);
+  // one-click session setups (Settings → Presets), and one being saved from New session
+  const [presets, setPresets] = useState<SessionPreset[]>([]);
+  const [presetDraft, setPresetDraft] = useState<SessionPreset | null>(null);
   const shownTab = (t: Tab) => !(hiddenTabs as Tab[]).includes(t);
   const [theme, setTheme] = useState<"dark" | "light">(() => loadLS<"dark" | "light">("mb.theme", "dark"));
   useEffect(() => {
@@ -421,6 +425,7 @@ function App() {
     window.mb.getSettings().then(async (s: Settings) => {
       const hidden = s.hiddenTabs ?? [];
       setHiddenTabs(hidden);
+      setPresets(s.presets ?? []);
       setTab((t) => ((hidden as Tab[]).includes(t) ? "sessions" : t));
       if (s.setupDone) return;
       if (loadLS("mb.helpSeen", false)) await window.mb.setSettings({ ...s, setupDone: true });
@@ -1151,6 +1156,21 @@ function App() {
 
   const focusedSession = sessions.find((s) => s.id === focused) ?? null;
 
+  /** Start a preset's session and show it. */
+  const startPreset = async (p: SessionPreset) => {
+    const info = await window.mb.presetStart(p.id);
+    if (info?.error) return alert(`Couldn't start “${p.name}”: ${info.error}`);
+    await refresh();
+    jumpToSession(info);
+  };
+  /** Save the preset list (Settings is the source of truth, read fresh so nothing else is overwritten). */
+  const savePresets = async (next: SessionPreset[]) => {
+    const cur: Settings = await window.mb.getSettings();
+    const r = await window.mb.setSettings({ ...cur, presets: next });
+    if (r?.error) return alert(`Couldn't save the preset: ${r.error}`);
+    setPresets(next);
+  };
+
   /** Type a request into a session's pane and bring it up; the user reads it there and presses Return. */
   const askSession = (id: string, text: string) => {
     window.mb.sessionWrite(id, text);
@@ -1350,6 +1370,8 @@ function App() {
             onUpdate={() => setModal("update")}
             jump={settingsJump}
             onHiddenTabs={setHiddenTabs}
+            onPresets={setPresets}
+            onStartPreset={startPreset}
           />
         )}
         {tab === "collaborate" && (
@@ -2209,6 +2231,7 @@ function App() {
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },
             { label: "New Codex session", run: () => { setNewLaunch("codex"); setModal("new"); } },
             { label: "New terminal (no Claude)", run: () => { setNewLaunch("shell"); setModal("new"); } },
+            ...presets.map((p) => ({ label: `Start preset: ${p.name}`, run: () => startPreset(p) })),
             { label: "Restart all agent sessions", run: () => setModal("restart") },
             { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
             { label: "Sessions grid", run: () => setTab("sessions") },
@@ -2282,6 +2305,17 @@ function App() {
         />
       )}
 
+      {presetDraft && (
+        <PresetEditor
+          initial={presetDraft}
+          onClose={() => setPresetDraft(null)}
+          onSave={async (p) => {
+            await savePresets([...presets.filter((x) => x.id !== p.id), p]);
+            setPresetDraft(null);
+          }}
+        />
+      )}
+
       {handoffFor && (
         <HandoffDialog
           session={handoffFor}
@@ -2344,6 +2378,19 @@ function App() {
           existingGroups={groupKeys}
           initialLaunch={newLaunch}
           initialGroup={newGroup}
+          presets={presets}
+          onStartPreset={(p) => {
+            setModal(null);
+            setPendingWs(null);
+            setPendingZone(null);
+            startPreset(p);
+          }}
+          onSavePreset={(draft) => {
+            setModal(null);
+            setPendingWs(null);
+            setPendingZone(null);
+            setPresetDraft(draft);
+          }}
           onClose={() => {
             setModal(null);
             setNewLaunch("claude");
@@ -4233,6 +4280,7 @@ const SETTINGS_SECTIONS = [
   { id: "general", label: "General" },
   { id: "agents", label: "Agents" },
   { id: "repos", label: "Repos" },
+  { id: "presets", label: "Presets" },
   { id: "ado", label: "Azure DevOps" },
   { id: "debriefs", label: "Debriefs" },
   { id: "control", label: "Control room" },
@@ -4270,6 +4318,8 @@ function SettingsView({
   onUpdate,
   jump,
   onHiddenTabs,
+  onPresets,
+  onStartPreset,
 }: {
   sessions: SessionInfo[];
   theme: "dark" | "light";
@@ -4280,6 +4330,8 @@ function SettingsView({
   /** Open a specific section, e.g. the control room from ⌘⇧B. */
   jump: { section: SettingsSection; n: number } | null;
   onHiddenTabs: (tabs: OptionalTab[]) => void;
+  onPresets: (presets: SessionPreset[]) => void;
+  onStartPreset: (p: SessionPreset) => void;
 }) {
   const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? loadLS("mb.setSection", "general"));
   useEffect(() => {
@@ -4511,6 +4563,17 @@ function SettingsView({
           </>
         )}
 
+        {section === "presets" && (
+          <PresetsSection
+            presets={s.presets ?? []}
+            onStart={onStartPreset}
+            onChange={(next) => {
+              upd({ presets: next });
+              onPresets(next);
+            }}
+          />
+        )}
+
         {section === "ado" && (
           <>
             <h2>Azure DevOps</h2>
@@ -4715,12 +4778,19 @@ function NewSessionModal({
   existingGroups,
   initialLaunch,
   initialGroup,
+  presets,
+  onStartPreset,
+  onSavePreset,
   onClose,
   onCreated,
 }: {
   existingGroups: string[];
   initialLaunch?: LaunchKind;
   initialGroup?: string; // "5038" or "5038/backend" — a workspace path adds a tab there
+  presets: SessionPreset[];
+  onStartPreset: (p: SessionPreset) => void;
+  /** Save what's filled in as a preset (opens the preset editor). */
+  onSavePreset: (draft: SessionPreset) => void;
   onClose: () => void;
   onCreated: (s: SessionInfo) => void;
 }) {
@@ -4897,6 +4967,16 @@ function NewSessionModal({
       <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
         <h3>New session</h3>
         <div className="sub-h">Pick a repo, optionally attach a ticket — worktree and branch are handled for you.</div>
+        {presets.length > 0 && (
+          <div className="preset-chips">
+            <span className="pl-dim">Presets</span>
+            {presets.map((p) => (
+              <button key={p.id} className="outline" data-tip={`Start “${p.name}” now`} onClick={() => onStartPreset(p)}>
+                {p.name}
+              </button>
+            ))}
+          </div>
+        )}
         <label>Launch</label>
         <span className="seg" style={{ display: "inline-flex" }}>
           <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>Claude</button>
@@ -5136,6 +5216,27 @@ function NewSessionModal({
         )}
         {error && <div className="err">{error}</div>}
         <div className="row">
+          <button
+            className="outline"
+            style={{ marginRight: "auto" }}
+            data-tip="Keep this setup as a one-click preset (no ticket: presets are for recurring sessions)"
+            onClick={() =>
+              onSavePreset({
+                id: newPresetId(),
+                name: "",
+                launch,
+                repoPath: sel?.path ?? null,
+                // a new branch per run, cut from the same base; otherwise the checkout as it is
+                branch: sel && useWorktree && baseBranch ? { mode: "new", pattern: "session-{date}-{time}", base: baseBranch } : { mode: "checkout" },
+                useWorktree: !!sel && useWorktree,
+                ...(group ? { group } : {}),
+                ...(isAgent && effModel ? { model: effModel } : {}),
+                ...(isAgent && effEffort ? { effort: effEffort } : {}),
+              })
+            }
+          >
+            Save as preset…
+          </button>
           <button className="outline" onClick={onClose}>Cancel</button>
           {isAgent && !sel && (
             <span className="wi-note" style={{ marginRight: "auto" }}>

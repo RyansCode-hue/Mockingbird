@@ -1726,3 +1726,6 @@ button.chip.stage[data-tip] { cursor: pointer; }
 .groupbar .chip { margin-left: 8px; }
 button.chip { border: none; cursor: pointer; }
 .bc-foot .chip.stage { margin-left: auto; }
+/* New session: presets start in one click */
+.preset-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; }
+.preset-chips button { padding: 3px 10px; font-size: 11px; }

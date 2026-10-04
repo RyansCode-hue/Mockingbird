@@ -203,6 +203,30 @@ export interface Settings {
   updateSource?: string | null; // the clone in-app updates pull and build; found under repoRoots when unset
   /** Top-bar tabs turned off in Settings; they can still open from a notification or a search result. */
   hiddenTabs?: OptionalTab[];
+  /** One-click session setups. */
+  presets?: SessionPreset[];
+}
+
+/**
+ * A recurring session setup started in one click: what to launch, where, on
+ * which branch, and what to tell it first (a shell runs its kickoff as a command).
+ */
+export interface SessionPreset {
+  id: string;
+  name: string;
+  launch: "claude" | "codex" | "shell";
+  repoPath: string | null;
+  /**
+   * checkout: the repo's checkout as it is. existing: switch to (or open a
+   * worktree of) that branch. new: a fresh branch named from `pattern`
+   * ({date} = YYYYMMDD, {time} = HHMM), cut from origin/`base`.
+   */
+  branch: { mode: "checkout" } | { mode: "existing"; name: string } | { mode: "new"; pattern: string; base?: string };
+  useWorktree: boolean;
+  group?: string;
+  kickoff?: string;
+  model?: string;
+  effort?: string;
 }
 
 /** The top-bar tabs that can be turned off. Sessions and Settings always show. */

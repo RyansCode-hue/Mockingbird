@@ -1463,7 +1463,9 @@ Each item ships on its own: tests + build + harness check → ff main → README
 - [x] Continue in the other agent (summary handoff)
   Review: digest/windows/repo-state/create-in-folder tests (9; found `git` trimming status's first column). Real run:
   a small real transcript → Claude wrote a sectioned handoff in 11 s; prompt now tells it its scratch cwd isn't the task.
-- [ ] Session presets
+- [x] Session presets
+  Review: request builder tests (8: checkout/existing/new unique branch, kickoff, terminal command typed after start).
+  Harness: Settings → Presets edit + save, New session chips start a preset.
 - [ ] PR status in the pane rail
 - [ ] Editor intelligence (language servers)
 - [ ] Cross-agent review

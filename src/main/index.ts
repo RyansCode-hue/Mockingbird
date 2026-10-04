@@ -33,6 +33,7 @@ import { openPr, parseRemote, prDescriptionPrompt, prError, prPreflight, remoteN
 import { askAgent, cleanReply } from "./headless";
 import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
+import { presetRequest } from "./presets";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
@@ -887,6 +888,17 @@ ipcMain.handle("handoff:start", (_e, id, handoff) =>
       taskGroup: s.taskGroup ?? undefined,
       initialPrompt: handoffKickoff(from, text),
     });
+  })()
+);
+
+// ---- session presets: one-click recurring setups ----
+ipcMain.handle("presets:start", (_e, id) =>
+  safeAsync("presets:start", async () => {
+    const p = (store.settings.presets ?? []).find((x) => x.id === id);
+    if (!p) throw new Error("That preset no longer exists");
+    const repo = p.repoPath ? expandHome(p.repoPath) : null;
+    const branches = repo && p.branch.mode === "new" ? (await listBranches(repo)).branches : [];
+    return sessions.create(presetRequest({ ...p, repoPath: repo }, branches, new Date()));
   })()
 );
 

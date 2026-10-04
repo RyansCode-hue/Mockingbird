@@ -254,6 +254,14 @@ export class SessionManager {
       const prompt = req.initialPrompt;
       setTimeout(() => this.sendMessage(info.id, prompt), 6000);
     }
+    // a terminal's kickoff is a command (a preset's "npm test -- --watch"): typed
+    // once the login shell has had time to start, and run
+    if (req.initialPrompt && req.shell && !req.shellResume) {
+      const command = req.initialPrompt.replace(/\r?\n/g, " ; ");
+      setTimeout(() => {
+        if (this.live.get(info.id) === sess) proc.write(`${command}\r`);
+      }, 1500);
+    }
 
     this.emitChanged();
     return info;
