@@ -16,7 +16,7 @@ import { debugTargetFor } from "./dap/targets";
 import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
-import { listDir, readFile, gitChanges, fileDiff } from "./files";
+import { listDir, readFile, writeFile, gitChanges, fileDiff } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
@@ -190,6 +190,18 @@ function createWindow(): void {
     },
   });
   win.loadFile(path.join(__dirname, "index.html"));
+  // the editor holds unsaved changes: the window says so (beforeunload), and quitting asks first
+  win.webContents.on("will-prevent-unload", (event) => {
+    const choice = dialog.showMessageBoxSync(win, {
+      type: "warning",
+      buttons: ["Quit without saving", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      message: "Some files have unsaved changes",
+      detail: "Edits in the editor that haven't been saved (⌘S) will be lost.",
+    });
+    if (choice === 0) event.preventDefault(); // go ahead and unload
+  });
   sessions.attach(win.webContents);
 }
 
@@ -391,6 +403,12 @@ function sessionRoot(sessionId: string): string {
 }
 ipcMain.handle("files:list", (_e, id, rel) => safeAsync("files:list", () => listDir(sessionRoot(id), rel))());
 ipcMain.handle("files:read", (_e, id, rel) => safeAsync("files:read", () => readFile(sessionRoot(id), rel))());
+ipcMain.handle("files:write", (_e, id, rel, content, expected) =>
+  safeAsync("files:write", () => {
+    if (typeof content !== "string") throw new Error("Nothing to save");
+    return writeFile(sessionRoot(id), String(rel), content, typeof expected === "number" ? expected : null);
+  })()
+);
 ipcMain.handle("files:changes", (_e, id, scope) =>
   safeAsync("files:changes", () => gitChanges(sessionRoot(id), scope))()
 );

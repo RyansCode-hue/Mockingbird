@@ -20,6 +20,8 @@ import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceCon
 import { RunView } from "./RunView";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
+import { installTooltips } from "./tooltips";
+import { dirtyKeys } from "./CodeEditor";
 import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, type OptionalTab } from "../shared/types";
 
@@ -209,6 +211,17 @@ function App() {
   const [upd, setUpd] = useState<UpdateProgress>({ state: "idle", done: [], log: [] });
   const drag = useDrag();
   useEffect(() => installDragListeners(), []);
+  useEffect(() => installTooltips(), []);
+  // unsaved edits hold the window open; the main process asks whether to quit anyway
+  useEffect(() => {
+    const h = (e: BeforeUnloadEvent) => {
+      if (!dirtyKeys().length) return;
+      e.preventDefault();
+      e.returnValue = false;
+    };
+    window.addEventListener("beforeunload", h);
+    return () => window.removeEventListener("beforeunload", h);
+  }, []);
   // Collaborate models waiting on an approval, per room — badged on the tab wherever you are
   const [roomAsks, setRoomAsks] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -1243,6 +1256,7 @@ function App() {
               onOpen={(path, status) => openInEditor(path, { status })}
               onActivate={(key) => setEditor((e) => ({ ...e, active: key }))}
               onCloseTab={(key) => setEditor((e) => closeTab(e, key))}
+              onCloseAll={() => setEditor(EMPTY_EDITOR)}
               onQuickOpen={() => setModal("quickopen")}
             />
           )}
@@ -1255,6 +1269,10 @@ function App() {
                 selected={activePath}
                 onOpenDiff={(path, source, status) => openInEditor(path, { mode: "diff", source, status: status === "C" ? "M" : status })}
                 onOpenFile={(path) => openInEditor(path)}
+                onAskSession={(text) => {
+                  window.mb.sessionWrite(focusedSession.id, text);
+                  focusTerm(focusedSession.id);
+                }}
               />
             ) : (
               <div className="fp-note">Click into a session to see its changes.</div>
@@ -1533,6 +1551,7 @@ function App() {
           editor={editor}
           onActivate={(key) => setEditor((e) => ({ ...e, active: key }))}
           onClose={(key) => setEditor((e) => closeTab(e, key))}
+          onCloseAll={() => setEditor(EMPTY_EDITOR)}
           onMode={(key, mode) => setEditor((e) => updateTab(e, key, { mode }))}
           onInsert={(text) => {
             if (!focusedSession) return;

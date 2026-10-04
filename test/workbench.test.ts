@@ -140,3 +140,34 @@ describe("commit graph lanes", () => {
     expect(r.map((x) => x.lane)).toEqual([0, 1, 0]);
   });
 });
+
+describe("saving edited text the way the file was", () => {
+  it("keeps a byte-order mark and Windows line endings", async () => {
+    const { splitBom, lineBreakOf, toFileText } = await import("../src/renderer/editorText");
+    const original = "﻿using System;\r\nclass A {}\r\n";
+    const { bom, text } = splitBom(original);
+    expect(bom).toBe(true);
+    expect(lineBreakOf(text)).toBe("\r\n");
+    const edited = text.replace(/\r\n/g, "\n").replace("class A {}", "class B {}");
+    expect(toFileText(edited, "\r\n", true)).toBe("﻿using System;\r\nclass B {}\r\n");
+    expect(lineBreakOf("a\nb\nc\r\n")).toBe("\n");
+    expect(toFileText("a\nb\n", "\n", false)).toBe("a\nb\n");
+  });
+
+  it("indents the way the file already does", async () => {
+    const { guessIndent } = await import("../src/renderer/editorText");
+    expect(guessIndent("def a():\n    return 1\n")).toBe("    ");
+    expect(guessIndent("{\n  a: 1,\n  b: {\n    c: 2\n  }\n}\n")).toBe("  ");
+    expect(guessIndent("func a() {\n\treturn\n}\n")).toBe("\t");
+  });
+});
+
+describe("the editor's languages", () => {
+  it("has a language for the repos' file types and none for plain text", async () => {
+    const { languageExtension } = await import("../src/renderer/CodeEditor");
+    for (const f of ["a.ts", "b.tsx", "c.py", "d.cs", "e.razor", "f.json", "g.yml", "h.sql", "Dockerfile", ".env.local", "i.go", "j.csproj", "k.md"]) {
+      expect(languageExtension(f), f).not.toBeNull();
+    }
+    expect(languageExtension("notes.txt")).toBeNull();
+  });
+});

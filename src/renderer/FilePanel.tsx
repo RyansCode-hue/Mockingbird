@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, WorktreeStateInfo } from "../shared/types";
 import { highlightLines, languageFor } from "./highlight";
 import { tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { fileBadge } from "./fileIcons";
 import { useBreakpoints, useDebug } from "./debugStore";
+import { CodeEditor, confirmClose, useDirtyKeys } from "./CodeEditor";
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
 
 type Result<T> = T | { error: string };
@@ -57,6 +58,7 @@ export function ExplorerTree({
   onOpen,
   onActivate,
   onCloseTab,
+  onCloseAll,
   onQuickOpen,
 }: {
   session: SessionInfo | null;
@@ -66,6 +68,7 @@ export function ExplorerTree({
   onOpen: (path: string, status: GitChange["status"] | undefined) => void;
   onActivate: (key: string) => void;
   onCloseTab: (key: string) => void;
+  onCloseAll: () => void;
   onQuickOpen: () => void;
 }) {
   // expanded folders are remembered per folder-on-disk, so flipping between
@@ -231,6 +234,16 @@ export function ExplorerTree({
             <div className="ex-sec" onClick={() => toggleSection("open")}>
               <ChevronIcon open={!shut.includes("open")} />
               Open editors <span className="fp-count">{editor.tabs.length}</span>
+              <button
+                className="icon ex-closeall"
+                data-tip="Close all files (asks about unsaved ones)"
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  if (confirmClose(editor.tabs.map((t) => ({ key: tabKey(t), name: baseName(t.path) })))) onCloseAll();
+                }}
+              >
+                ✕ All
+              </button>
             </div>
             {!shut.includes("open") &&
               editor.tabs.map((t) => {
@@ -251,10 +264,10 @@ export function ExplorerTree({
                     </span>
                     <button
                       className="icon ex-x"
-                      title="Close"
+                      data-tip="Close"
                       onClick={(ev) => {
                         ev.stopPropagation();
-                        onCloseTab(key);
+                        if (confirmClose([{ key, name: baseName(t.path) }])) onCloseTab(key);
                       }}
                     >
                       ×
@@ -284,16 +297,26 @@ export function ExplorerTree({
 export function EditorDock({
   editor,
   onActivate,
-  onClose,
+  onClose: closeTab,
+  onCloseAll,
   onMode,
   onInsert,
 }: {
   editor: EditorState;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
+  onCloseAll: () => void;
   onMode: (key: string, mode: "file" | "diff") => void;
   onInsert: (text: string) => void;
 }) {
+  const dirty = useDirtyKeys();
+  const onClose = (key: string) => {
+    const t = editor.tabs.find((x) => tabKey(x) === key);
+    if (confirmClose([{ key, name: t ? baseName(t.path) : key }])) closeTab(key);
+  };
+  const closeAll = () => {
+    if (confirmClose(editor.tabs.map((t) => ({ key: tabKey(t), name: baseName(t.path) })))) onCloseAll();
+  };
   const [width, setWidth] = useState<number>(() => loadLS("mb.files.viewerW", 560));
   useEffect(() => localStorage.setItem("mb.files.viewerW", JSON.stringify(width)), [width]);
   const [, setWindowW] = useState(window.innerWidth); // re-fit the editor when the window narrows
@@ -349,7 +372,7 @@ export function EditorDock({
                 key={key}
                 role="tab"
                 aria-selected={key === editor.active}
-                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""}`}
+                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""} ${dirty.has(key) ? "dirty" : ""}`}
                 title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : t.source?.kind === "commit" ? ` (commit ${t.source.sha.slice(0, 8)})` : ""}`}
                 onClick={() => onActivate(key)}
                 onAuxClick={(e) => e.button === 1 && onClose(key)}
@@ -364,17 +387,24 @@ export function EditorDock({
                 </span>
                 <button
                   className="fp-tab-x"
-                  title="Close (middle-click works too)"
+                  data-tip={dirty.has(key) ? "Unsaved changes — close (asks first)" : "Close (middle-click works too)"}
                   onClick={(e) => {
                     e.stopPropagation();
                     onClose(key);
                   }}
                 >
-                  ×
+                  <span className="fp-tab-dot">●</span>
+                  <span className="fp-tab-cross">×</span>
                 </button>
               </div>
             );
           })}
+          <span className="fp-tabbar-fill" />
+          {editor.tabs.length > 1 && (
+            <button className="icon fp-closeall" data-tip="Close all files (asks about unsaved ones)" onClick={closeAll}>
+              ✕ All
+            </button>
+          )}
         </div>
         <FileViewer
           key={tabKey(tab)}
@@ -402,6 +432,14 @@ function FileViewer({
 }) {
   const [file, setFile] = useState<Result<FileContent> | null>(null);
   const [diff, setDiff] = useState<Result<string> | null>(null);
+  const bp = useBreakpoints(open.sessionId);
+  const debug = useDebug();
+  const dirty = useDirtyKeys().has(tabKey(open));
+  const abs = `${open.root}/${open.path}`;
+  const pausedLines = Object.entries(debug.selected)
+    .map(([sid, f]) => (f && f.path === abs && debug.sessions.find((x) => x.id === sid)?.state === "stopped" ? f.line : null))
+    .filter((l): l is number => l !== null);
+  const saveRef = useRef<(() => void) | null>(null);
   const [layout, setLayout] = useState<"inline" | "split">(() => loadLS("mb.files.diffLayout", "inline"));
   useEffect(() => localStorage.setItem("mb.files.diffLayout", JSON.stringify(layout)), [layout]);
   const deleted = open.status === "D";
@@ -443,26 +481,31 @@ function FileViewer({
           <span className="fp-dir">{dirName(open.path)}</span>
         </span>
         {open.mode === "diff" && (
-          <span className="fp-seg" title="Show the diff in one column, or old and new side by side">
+          <span className="fp-seg" data-tip="Show the diff in one column, or old and new side by side">
             <button className={layout === "inline" ? "on" : ""} onClick={() => setLayout("inline")}>Inline</button>
             <button className={layout === "split" ? "on" : ""} onClick={() => setLayout("split")}>Split</button>
           </span>
         )}
         {(open.source || open.status) && (
-          <span className="fp-seg">
+          <span className="fp-seg" data-tip="What changed, or the whole file (editable)">
             <button className={open.mode === "diff" ? "on" : ""} onClick={() => onMode("diff")}>Diff</button>
             <button className={open.mode === "file" ? "on" : ""} disabled={deleted} onClick={() => onMode("file")}>File</button>
           </span>
         )}
-        <button
-          className="icon"
-          title="Reference this file in the focused session (types @path into its prompt)"
-          onClick={() => onInsert(`@${open.path} `)}
-        >
+        {dirty && open.mode === "file" && (
+          <button className="outline fp-save" data-tip="Save (⌘S)" onClick={() => saveRef.current?.()}>
+            Save
+          </button>
+        )}
+        <button className="icon" data-tip={`Mention in chat — types @${open.path} into the focused session's prompt, so the agent reads this file`} onClick={() => onInsert(`@${open.path} `)}>
           @
         </button>
-        <button className="icon" title="Copy path" onClick={() => navigator.clipboard.writeText(open.path)}>⧉</button>
-        <button className="icon" title="Close file" onClick={onClose}>✕</button>
+        <button className="icon" data-tip={`Copy this file's path (${open.path})`} onClick={() => navigator.clipboard.writeText(open.path)}>
+          ⧉
+        </button>
+        <button className="icon" data-tip="Close this file" onClick={onClose}>
+          ✕
+        </button>
       </div>
       <div className="fp-body">
         {open.mode === "diff" ? (
@@ -472,83 +515,22 @@ function FileViewer({
         ) : file === null ? <div className="fp-note">loading…</div>
           : isErr(file) ? <div className="fp-note err">{file.error}</div>
           : file.binary ? <div className="fp-note">Binary file · {file.size.toLocaleString()} bytes — not shown</div>
-          : <CodeView file={file} path={open.path} reveal={open.reveal} sessionId={open.sessionId} root={open.root} />}
+          : (
+            <CodeEditor
+              bufferKey={tabKey(open)}
+              file={file}
+              path={open.path}
+              onSave={(text, expected) => window.mb.filesWrite(open.sessionId, open.path, text, expected)}
+              onRefresh={load}
+              saveRef={saveRef}
+              breakpoints={bp.map[open.path] ?? []}
+              onToggleBreakpoint={(line) => bp.toggle(open.path, line)}
+              pausedLines={pausedLines}
+              reveal={open.reveal}
+            />
+          )}
       </div>
     </div>
-  );
-}
-
-function CodeView({ file, path, reveal, sessionId, root }: { file: FileContent; path: string; reveal?: { line: number; at: number }; sessionId: string; root: string }) {
-  const text = file.content.endsWith("\n") ? file.content.slice(0, -1) : file.content;
-  const gutter = useMemo(() => {
-    const n = text.split("\n").length;
-    let s = "";
-    for (let i = 1; i <= n; i++) s += i + "\n";
-    return s;
-  }, [text]);
-  const html = useMemo(() => highlightLines(text, languageFor(path)).join("\n"), [text, path]);
-  const textRef = useRef<HTMLPreElement>(null);
-  const [mark, setMark] = useState<{ top: number; height: number; at: number } | null>(null);
-
-  // a search hit or ⌘P "file:line" scrolls its line a third of the way down and marks it
-  useEffect(() => {
-    const pre = textRef.current;
-    if (!reveal || !pre) return;
-    const cs = getComputedStyle(pre);
-    const lh = parseFloat(cs.lineHeight);
-    const top = parseFloat(cs.paddingTop) + (reveal.line - 1) * lh;
-    const body = pre.closest(".fp-body");
-    if (body) body.scrollTop = Math.max(0, top - body.clientHeight / 3);
-    setMark({ top, height: lh, at: reveal.at });
-  }, [reveal?.at]);
-
-  // breakpoints: click a line number; the paused line (or the frame picked in the call stack) is marked
-  const bp = useBreakpoints(sessionId);
-  const lines = bp.map[path] ?? [];
-  const debug = useDebug();
-  const abs = `${root}/${path}`;
-  const here = Object.entries(debug.selected)
-    .map(([sid, f]) => (f && f.path === abs && debug.sessions.find((x) => x.id === sid)?.state === "stopped" ? f.line : null))
-    .filter((l): l is number => l !== null);
-  const gutterRef = useRef<HTMLPreElement>(null);
-  const [metrics, setMetrics] = useState<{ top: number; lh: number } | null>(null);
-  useLayoutEffect(() => {
-    const g = gutterRef.current;
-    if (!g) return;
-    const cs = getComputedStyle(g);
-    setMetrics({ top: parseFloat(cs.paddingTop), lh: parseFloat(cs.lineHeight) });
-  }, []);
-  const lineCount = gutter.length ? gutter.split("\n").length - 1 : 0;
-  const onGutter = (e: React.MouseEvent) => {
-    if (!metrics) return;
-    const y = e.clientY - (e.currentTarget as HTMLElement).getBoundingClientRect().top - metrics.top;
-    const line = Math.floor(y / metrics.lh) + 1;
-    if (line >= 1 && line <= lineCount) bp.toggle(path, line);
-  };
-
-  return (
-    <>
-      {file.truncated && (
-        <div className="fp-note">Large file — showing the first part of {file.size.toLocaleString()} bytes</div>
-      )}
-      <div className="fp-code">
-        <pre ref={gutterRef} className="fp-gutter bp-gutter" title="Click a line number to set or clear a breakpoint" onClick={onGutter}>
-          {gutter}
-        </pre>
-        {metrics &&
-          lines.map((l) => <span key={`bp${l}`} className="fp-bp" style={{ top: metrics.top + (l - 1) * metrics.lh + (metrics.lh - 9) / 2 }} />)}
-        {metrics &&
-          here.map((l) => (
-            <React.Fragment key={`at${l}`}>
-              <div className="fp-paused" style={{ top: metrics.top + (l - 1) * metrics.lh, height: metrics.lh }} />
-              <span className="fp-paused-arrow" style={{ top: metrics.top + (l - 1) * metrics.lh }}>▶</span>
-            </React.Fragment>
-          ))}
-        {/* highlight.js escapes the file's text; the only markup is its own spans */}
-        <pre ref={textRef} className="fp-text hl" dangerouslySetInnerHTML={{ __html: html }} />
-        {mark && <div key={mark.at} className="fp-reveal" style={{ top: mark.top, height: mark.height }} />}
-      </div>
-    </>
   );
 }
 

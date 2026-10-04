@@ -337,7 +337,12 @@ export interface FileContent {
   size: number;
   content: string;
   truncated: boolean; // only the head of a very large file was read
+  /** When it was last written — a save checks it, so a change made since (by an agent) isn't overwritten unseen. */
+  mtimeMs: number;
 }
+
+/** A save: written, or refused because the file changed on disk after it was opened. */
+export type FileSave = { saved: true; mtimeMs: number } | { saved: false; conflict: true; mtimeMs: number };
 
 /** M modified · A added · D deleted · R renamed · U untracked */
 export type GitChangeStatus = "M" | "A" | "D" | "R" | "U";

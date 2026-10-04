@@ -1,7 +1,7 @@
 import { git } from "./git";
 import * as fs from "fs";
 import * as path from "path";
-import type { FileEntry, FileContent, GitChange, GitChanges, ChangeScope } from "../shared/types";
+import type { FileEntry, FileContent, FileSave, GitChange, GitChanges, ChangeScope } from "../shared/types";
 import { pickDefaultBase } from "./worktrees";
 
 const MAX_FILE_BYTES = 1_500_000;
@@ -58,11 +58,26 @@ export async function readFile(root: string, rel: string): Promise<FileContent> 
     const len = Math.min(stat.size, MAX_FILE_BYTES);
     const buf = Buffer.alloc(len);
     await fh.read(buf, 0, len, 0);
-    if (buf.subarray(0, 8000).includes(0)) return { binary: true, size: stat.size, content: "", truncated: false };
-    return { binary: false, size: stat.size, content: buf.toString("utf8"), truncated: stat.size > len };
+    if (buf.subarray(0, 8000).includes(0)) return { binary: true, size: stat.size, content: "", truncated: false, mtimeMs: stat.mtimeMs };
+    return { binary: false, size: stat.size, content: buf.toString("utf8"), truncated: stat.size > len, mtimeMs: stat.mtimeMs };
   } finally {
     await fh.close();
   }
+}
+
+/**
+ * Save a file edited in the editor. `expectedMtimeMs` is when it was last
+ * read: if it has changed since (an agent edited it), nothing is written and
+ * the conflict is reported, unless the save is forced. Only existing files
+ * inside the folder are written; the write keeps the file's own permissions.
+ */
+export async function writeFile(root: string, rel: string, content: string, expectedMtimeMs: number | null): Promise<FileSave> {
+  const full = await resolveIn(root, rel);
+  const stat = await fs.promises.stat(full);
+  if (stat.isDirectory()) throw new Error(`${rel} is a folder`);
+  if (expectedMtimeMs !== null && Math.abs(stat.mtimeMs - expectedMtimeMs) > 1) return { saved: false, conflict: true, mtimeMs: stat.mtimeMs };
+  await fs.promises.writeFile(full, content, "utf8");
+  return { saved: true, mtimeMs: (await fs.promises.stat(full)).mtimeMs };
 }
 
 // The base branch changes rarely; resolving it per poll would re-list every ref

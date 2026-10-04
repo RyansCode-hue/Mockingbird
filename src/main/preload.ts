@@ -77,6 +77,7 @@ const api = {
   },
   filesList: (id: string, rel: string) => ipcRenderer.invoke("files:list", id, rel),
   filesRead: (id: string, rel: string) => ipcRenderer.invoke("files:read", id, rel),
+  filesWrite: (id: string, rel: string, content: string, expectedMtimeMs: number | null) => ipcRenderer.invoke("files:write", id, rel, content, expectedMtimeMs),
   filesChanges: (id: string, scope: string) => ipcRenderer.invoke("files:changes", id, scope),
   filesAll: (id: string) => ipcRenderer.invoke("files:all", id),
   watchFolders: (ids: string[]) => ipcRenderer.invoke("folders:watch", ids),

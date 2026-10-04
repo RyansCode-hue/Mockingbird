@@ -1607,3 +1607,44 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .dc-in { display: flex; align-items: center; gap: 6px; padding: 4px 8px 6px 12px; border-top: 1px solid var(--line-soft); }
 .dc-prompt { color: var(--amber); font: 600 12px var(--mono); }
 .dc-in input { flex: 1; background: none; border: 0; outline: none; color: var(--text-1); font: 400 11.5px var(--mono); }
+
+/* quick tooltips (data-tip) */
+.mb-tip {
+  position: fixed; z-index: 10000; max-width: 280px; padding: 5px 8px; border-radius: 5px; pointer-events: none;
+  background: var(--bg-pane-header); color: var(--text-1); border: 1px solid var(--line-strong2);
+  font: 400 11px/1.4 var(--ui); box-shadow: 0 4px 14px rgba(0, 0, 0, .3); opacity: 0; transition: opacity .1s; left: -9999px;
+}
+.mb-tip.on { opacity: 1; }
+.sc-err { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.sc-err button { padding: 2px 8px; font: 400 10.5px var(--ui); color: var(--text-1); }
+
+/* ---- the editor (CodeMirror) ---- */
+.ce { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.ce-host { flex: 1; min-height: 0; overflow: hidden; }
+.ce-host .cm-editor { height: 100%; }
+.ce-host .cm-editor.cm-focused { outline: none; }
+.ce-conflict { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 12px; background: var(--fill-waiting); border-bottom: 1px solid color-mix(in srgb, var(--amber) 40%, transparent); font-size: 11.5px; color: var(--text-1); }
+.ce-conflict button { padding: 2px 8px; font-size: 11px; }
+.ce-status { flex-shrink: 0; padding: 2px 12px; font: 400 10px var(--mono); color: var(--text-4); border-top: 1px solid var(--line-soft); }
+.cm-bp-gutter { width: 14px; cursor: pointer; }
+.cm-bp-gutter .cm-gutterElement { display: flex; align-items: center; justify-content: center; }
+.cm-bp { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--red); }
+/* a faint dot where a breakpoint would go */
+.cm-bp-gutter .cm-gutterElement:not(:has(.cm-bp)):hover::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: color-mix(in srgb, var(--red) 35%, transparent); }
+.cm-lineNumbers .cm-gutterElement { cursor: pointer; }
+.cm-paused { background: color-mix(in srgb, var(--amber) 20%, transparent) !important; }
+.cm-flash { animation: cm-flash 2.4s ease-out forwards; }
+@keyframes cm-flash { 0%, 40% { background: var(--fill-waiting); } 100% { background: transparent; } }
+.fp-save { padding: 1px 8px; font-size: 10.5px; margin-right: 2px; }
+/* tabs: a dot for unsaved edits, which turns into the close cross on hover */
+.fp-tab-x .fp-tab-dot { display: none; }
+.fp-tab.dirty .fp-tab-x { visibility: visible; color: var(--text-1); }
+.fp-tab.dirty .fp-tab-x .fp-tab-dot { display: inline; font-size: 9px; }
+.fp-tab.dirty .fp-tab-x .fp-tab-cross { display: none; }
+.fp-tab.dirty:hover .fp-tab-x .fp-tab-dot { display: none; }
+.fp-tab.dirty:hover .fp-tab-x .fp-tab-cross { display: inline; }
+.fp-tabbar-fill { flex: 1; }
+.fp-closeall { flex-shrink: 0; padding: 0 8px; font-size: 10.5px; color: var(--text-4); white-space: nowrap; }
+.fp-closeall:hover { color: var(--text-1); }
+.ex-closeall { margin-left: auto; padding: 0 4px; font: 400 10px var(--ui); color: var(--text-4); text-transform: none; letter-spacing: 0; visibility: hidden; }
+.ex-sec:hover .ex-closeall { visibility: visible; }

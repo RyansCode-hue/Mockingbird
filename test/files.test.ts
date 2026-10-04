@@ -110,3 +110,29 @@ describe("gitChanges and fileDiff", () => {
     expect(await fileDiff(repo, "new.txt", "working", true)).toMatch(/\+fresh/);
   });
 });
+
+describe("saving an edited file", () => {
+  it("writes it, and refuses when it changed on disk since it was read", async () => {
+    const { writeFile } = await import("../src/main/files");
+    const repo = makeRepo({ "a.txt": "one\n" });
+    const first = await readFile(repo, "a.txt");
+    expect(await writeFile(repo, "a.txt", "two\n", first.mtimeMs)).toMatchObject({ saved: true });
+    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("two\n");
+    // an agent edits it meanwhile
+    await new Promise((r) => setTimeout(r, 20));
+    fs.writeFileSync(path.join(repo, "a.txt"), "agent\n");
+    const r = await writeFile(repo, "a.txt", "mine\n", first.mtimeMs);
+    expect(r).toMatchObject({ saved: false, conflict: true });
+    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("agent\n");
+    // saving anyway is a choice
+    expect(await writeFile(repo, "a.txt", "mine\n", null)).toMatchObject({ saved: true });
+    expect(fs.readFileSync(path.join(repo, "a.txt"), "utf8")).toBe("mine\n");
+  });
+
+  it("only writes existing files inside the folder", async () => {
+    const { writeFile } = await import("../src/main/files");
+    const repo = makeRepo();
+    await expect(writeFile(repo, "../escape.txt", "x", null)).rejects.toThrow(/outside the session folder/);
+    await expect(writeFile(repo, "new.txt", "x", null)).rejects.toThrow(/ENOENT/);
+  });
+});

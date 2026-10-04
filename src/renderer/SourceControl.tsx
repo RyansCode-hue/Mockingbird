@@ -29,6 +29,7 @@ export function SourceControl({
   selected,
   onOpenDiff,
   onOpenFile,
+  onAskSession,
 }: {
   sessionId: string;
   /** The session's folder: its changes refresh the view. */
@@ -36,11 +37,15 @@ export function SourceControl({
   selected: string | null;
   onOpenDiff: (path: string, source: DiffSource, status: ScmEntry["status"]) => void;
   onOpenFile: (path: string) => void;
+  /** Type a request into the session's prompt — to hand a git failure to the agent. */
+  onAskSession?: (text: string) => void;
 }) {
   const [status, setStatus] = useState<Result<ScmStatus> | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  // what was being done when the error happened, to tell the agent
+  const [failed, setFailed] = useState("");
   const [closed, setClosed] = useState<Set<string>>(() => new Set(["branch"]));
   // refetch the graph only when what it draws can have moved
   const graphKey = status && !isErr(status) ? `${status.branch}|${status.upstream}|${status.ahead}|${status.behind}` : "";
@@ -80,6 +85,7 @@ export function SourceControl({
   const generate = async () => {
     setBusy("generate");
     setError("");
+    setFailed(""); // not a git failure: nothing to hand the agent
     const r: Result<{ message: string; scope: "staged" | "all"; agent: string }> = await window.mb.scmCommitMessage(sessionId);
     setBusy("");
     if (isErr(r)) setError(r.error);
@@ -91,7 +97,10 @@ export function SourceControl({
     setError("");
     const r = await fn();
     setBusy("");
-    if (isErr(r)) setError(r.error);
+    if (isErr(r)) {
+      setError(r.error);
+      setFailed(what);
+    }
     await load();
     return r;
   };
@@ -206,7 +215,7 @@ export function SourceControl({
               title={`Bring the ${status.behind} new commit${s(status.behind)} on ${status.upstream} into this branch — fast-forward only, so nothing is merged or rewritten; if both sides have moved it says so and changes nothing`}
               onClick={() => act("pull", () => window.mb.scmPull(sessionId))}
             >
-              {busy === "pull" ? "Pulling…" : `Pull ↓${status.behind}`}
+              {busy === "pull" ? "Pulling…" : "Pull"}
             </button>
           )}
           <button
@@ -248,7 +257,24 @@ export function SourceControl({
       <button className="primary sc-commit" disabled={!!busy || (!staged.length && !unstaged.length)} onClick={commit}>
         {busy === "commit" ? "Committing…" : staged.length ? `Commit ${staged.length}` : "Commit"}
       </button>
-      {error && <div className="fp-note err">{error}</div>}
+      {error && (
+        <div className="fp-note err sc-err">
+          {error}
+          {onAskSession && failed && (
+            <button
+              className="outline"
+              data-tip="Types this error into the session's prompt so the agent can fix it — you press Enter"
+              onClick={() =>
+                onAskSession(
+                  `In this worktree, git ${failed} failed: ${error.replace(/^git [\w-]+:\s*/, "").replace(/\s+/g, " ").trim()} — please fix it, then tell me what you did.`
+                )
+              }
+            >
+              Ask the session to fix
+            </button>
+          )}
+        </div>
+      )}
       <div className="fp-scroll sc-list">
         {!staged.length && !unstaged.length && !conflicted.length && <div className="fp-note">No changes — the working tree matches the last commit.</div>}
         {section("conflicted", "Merge conflicts", conflicted, "conflicted", undefined, "Files git couldn't merge — fix them, then stage")}
