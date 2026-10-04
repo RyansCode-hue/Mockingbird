@@ -398,7 +398,7 @@ export class TranscriptIndex {
    * agent): for the given conversations, or every conversation; from `since`.
    * A Codex reply has no model of its own, so its conversation's model is used.
    */
-  usage(opts: { convs?: string[]; since?: number } = {}): UsageRow[] {
+  usage(opts: { convs?: string[]; since?: number; until?: number } = {}): UsageRow[] {
     const where: string[] = [];
     const args: (string | number)[] = [];
     if (opts.convs) {
@@ -409,6 +409,10 @@ export class TranscriptIndex {
     if (opts.since !== undefined) {
       where.push("u.at >= ?");
       args.push(opts.since);
+    }
+    if (opts.until !== undefined) {
+      where.push("u.at < ?");
+      args.push(opts.until);
     }
     return (
       this.db
@@ -421,6 +425,27 @@ export class TranscriptIndex {
         )
         .all(...args) as unknown as UsageRow[]
     ).map((r) => ({ ...r, model: r.model ?? null }));
+  }
+
+  /**
+   * When each conversation was active in [since, until): the times of its
+   * messages and tool calls, with the conversation's agent, folder and title.
+   */
+  activity(since: number, until: number): { conv: string; agent: AgentKind; cwd: string; title: string; times: number[] }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT ch.conv AS conv, c.agent AS agent, c.cwd AS cwd, COALESCE(NULLIF(c.title, ''), c.first_prompt) AS title, ch.at AS at
+         FROM chunks ch JOIN conversations c ON c.id = ch.conv
+         WHERE ch.at >= ? AND ch.at < ? ORDER BY ch.conv, ch.at`
+      )
+      .all(since, until) as { conv: string; agent: AgentKind; cwd: string; title: string; at: number }[];
+    const out = new Map<string, { conv: string; agent: AgentKind; cwd: string; title: string; times: number[] }>();
+    for (const r of rows) {
+      const cur = out.get(r.conv) ?? { conv: r.conv, agent: r.agent, cwd: r.cwd, title: r.title, times: [] };
+      cur.times.push(Number(r.at));
+      out.set(r.conv, cur);
+    }
+    return [...out.values()];
   }
 
   /** The transcript files of a conversation (a Codex conversation can span several). */

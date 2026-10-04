@@ -251,6 +251,8 @@ const api = {
     return () => ipcRenderer.removeListener("pipeline:changed", h);
   },
   openExternal: (url: string) => ipcRenderer.invoke("shell:open", url),
+  revealFile: (file: string) => ipcRenderer.invoke("shell:reveal", file),
+  rollupWrite: (weeksAgo: number) => ipcRenderer.invoke("rollup:write", weeksAgo),
   pickPath: (opts?: { file?: boolean; defaultPath?: string }) => ipcRenderer.invoke("dialog:pick", opts),
   // real filesystem path for a dropped File (File.path is gone in modern Electron)
   getFilePath: (file: File) => {

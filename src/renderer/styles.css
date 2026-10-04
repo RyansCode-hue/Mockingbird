@@ -1803,3 +1803,6 @@ button.chip { border: none; cursor: pointer; }
 .quiet-hours { display: inline-flex; align-items: center; gap: 6px; font: 400 11px var(--ui); color: var(--text-3); }
 .quiet-hours input[type=time] { background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 11px var(--mono); }
 .quiet-hours input[type=time]:disabled { opacity: .5; }
+/* weekly rollup */
+.rollup-dlg { width: 760px; }
+.rollup-md { margin: 10px 0 6px; max-height: 56vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--bg-pane); font: 400 11px/1.55 var(--mono); color: var(--text-2); white-space: pre-wrap; }

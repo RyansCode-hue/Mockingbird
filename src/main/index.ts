@@ -36,6 +36,7 @@ import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptL
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify } from "./notifications";
+import { composeRollup, weekBounds } from "./rollup";
 import { MessageLog } from "./messageLog";
 import { changedFiles, overlaps, type WorktreeChanges } from "./conflicts";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
@@ -1041,6 +1042,48 @@ ipcMain.handle("group:statusCheck", (_e, group) =>
     // each gets it when its current turn ends, so nobody is interrupted mid-answer
     sessions.broadcast(STATUS_CHECK, ids, true);
     return { asked: ids.length };
+  })()
+);
+
+// ---- weekly rollup: the week's time, tickets and outcomes, written into WorkTracker ----
+ipcMain.handle("rollup:write", (_e, weeksAgo) =>
+  safeAsync("rollup:write", async () => {
+    if (!transcripts) throw new Error(`The conversation index isn't available${transcriptsProblem ? `: ${transcriptsProblem}` : ""}`);
+    await transcripts.sync();
+    const { start, end } = weekBounds(new Date(), Math.max(0, Number(weeksAgo) || 0));
+    const dir = path.join(expandHome(store.settings.workTrackerPath), "session-digests");
+    // the daily digests of that week, by name only — the files aren't read
+    const digests = fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter((n) => {
+          if (!/^\d{4}-\d{2}-\d{2}\.md$/.test(n)) return false;
+          const t = new Date(`${n.slice(0, 10)}T12:00:00`).getTime();
+          return t >= start.getTime() && t < end.getTime();
+        })
+      : [];
+    const markdown = composeRollup({
+      start,
+      end,
+      activity: transcripts.activity(start.getTime(), end.getTime()),
+      usage: transcripts.usage({ since: start.getTime(), until: end.getTime() }),
+      sessions: store.state.sessions,
+      pipelines: pipeline.all(),
+      digests,
+      generated: new Date(),
+    });
+    fs.mkdirSync(dir, { recursive: true });
+    const ymd = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
+    const file = path.join(dir, `rollup-week-of-${ymd}.md`);
+    fs.writeFileSync(file, markdown);
+    return { file, markdown };
+  })()
+);
+ipcMain.handle("shell:reveal", (_e, file) =>
+  safe("shell:reveal", () => {
+    // only what Mockingbird wrote into the WorkTracker folder
+    const wt = expandHome(store.settings.workTrackerPath);
+    const f = path.resolve(String(file));
+    if (!f.startsWith(wt + path.sep)) throw new Error("Only files in the WorkTracker folder can be shown");
+    shell.showItemInFolder(f);
   })()
 );
 

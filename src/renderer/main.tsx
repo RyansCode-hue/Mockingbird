@@ -23,6 +23,7 @@ import { PipelineDialog, PipelinePanel, StageChip, usePipelines } from "./Ticket
 import { HandoffDialog, otherAgent } from "./Handoff";
 import { UndoTurnDialog } from "./UndoTurn";
 import { MessageLogDialog, useAgentMessages } from "./AgentMessages";
+import { RollupDialog } from "./Rollup";
 import { PresetEditor, PresetsSection, newPresetId } from "./Presets";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
@@ -208,6 +209,7 @@ function App() {
   // agent messaging: the log, how messages arrive per group, and a group's status check
   const agentMessages = useAgentMessages();
   const [msgLogFor, setMsgLogFor] = useState<{ id?: string; title?: string } | null>(null);
+  const [rollupOpen, setRollupOpen] = useState(false);
   const [msgModes, setMsgModes] = useState<Record<string, MessageMode>>({});
   const [msgDefaultSend, setMsgDefaultSend] = useState(true);
   const [statusNote, setStatusNote] = useState("");
@@ -1446,6 +1448,9 @@ function App() {
                 debriefs run here · wrap-up reads a passive digest of the day's sessions (nothing is interrupted)
               </span>
               <span style={{ marginLeft: "auto" }} />
+              <button className="outline" data-tip="Time per ticket and outcomes for the week, written into WorkTracker" onClick={() => setRollupOpen(true)}>
+                Weekly rollup
+              </button>
               <button
                 className="outline"
                 onClick={() => window.mb.runDebrief("morning").then(refresh)}
@@ -2353,6 +2358,7 @@ function App() {
             ...presets.map((p) => ({ label: `Start preset: ${p.name}`, run: () => startPreset(p) })),
             { label: "Restart all agent sessions", run: () => setModal("restart") },
             { label: "Agent message log — what sessions told each other", run: () => setMsgLogFor({}) },
+            { label: "Weekly rollup — time per ticket and outcomes", run: () => setRollupOpen(true) },
             { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
             { label: "Sessions grid", run: () => setTab("sessions") },
             ...(shownTab("dashboard") ? [{ label: "Dashboard — ticket board", run: () => setTab("dashboard") }] : []),
@@ -2439,6 +2445,8 @@ function App() {
           }}
         />
       )}
+
+      {rollupOpen && <RollupDialog onClose={() => setRollupOpen(false)} />}
 
       {msgLogFor && <MessageLogDialog sessionId={msgLogFor.id} title={msgLogFor.title} onJump={(id) => (setMsgLogFor(null), jumpTo(id))} onClose={() => setMsgLogFor(null)} />}
 

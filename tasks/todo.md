@@ -1498,5 +1498,7 @@ Each item ships on its own: tests + build + harness check → ff main → README
   Review: save/replay/forget + only-changed saves (2 tests); harness found the divider's ?1049l restoring the cursor to
   the top and overwriting history — now only sent when the old output is still in the alternate screen.
 ## Later
-- [ ] Weekly rollup
+- [x] Weekly rollup
+  Review: active time, Monday weeks, ticket mapping, composition (4 tests). Real data (scratch index of this Mac's
+  transcripts): 67 conversations, 24h 25m, 6 tickets mapped by folder; tokens now split fresh vs cache reads (1.0B).
 - [-] Signed + notarized builds — skipped (no Apple Developer ID)

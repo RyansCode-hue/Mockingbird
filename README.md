@@ -135,6 +135,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Weekly rollup** — WorkTracker → Weekly rollup (or ⌘K) writes this or
+  last week into `session-digests/rollup-week-of-<Monday>.md`: active time
+  (messages under 10 minutes apart) per ticket and per day, stage moves, pull
+  requests and stakeholder feedback from the ticket pipeline, the top
+  conversations, work outside tickets by repository, tokens per agent (cache
+  reads apart), and links to that week's daily digests. Nothing is sent to a
+  session or model.
 - **Scrollback that survives restarts** — each pane's terminal history is
   saved (every minute it changes, when it closes for resuming, and at quit)
   and replayed when the pane comes back, after an app restart, Update or a
@@ -226,12 +233,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Weekly rollup** (sits on the indexer): compose the daily debrief digests
-  and transcript stats into a weekly log with per-ticket time and outcomes.
+Nothing in progress — the agreed roadmap is built.
 
 ### Next
 
-Nothing queued — the agreed roadmap is built.
+Nothing queued.
 
 ### Later
 
