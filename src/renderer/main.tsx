@@ -25,8 +25,8 @@ import { PresetEditor, PresetsSection, newPresetId } from "./Presets";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
-import { dirtyKeys } from "./CodeEditor";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters } from "../shared/types";
+import { dirtyKeys, getFormatOnSave, setFormatOnSave } from "./CodeEditor";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, formatTokens, totalTokens, type OptionalTab } from "../shared/types";
 import { tokenBreakdown } from "./TerminalPane";
 
@@ -1156,6 +1156,19 @@ function App() {
 
   const focusedSession = sessions.find((s) => s.id === focused) ?? null;
 
+  /**
+   * Open a definition: in the editor tab's own session when the file is in its
+   * folder, else any session whose folder holds it. Returns why it can't open.
+   */
+  const openLocation = (loc: LspLocation, fromSession: string): string | null => {
+    const inside = (s: SessionInfo) => loc.path.startsWith(s.cwd + "/");
+    const own = sessions.find((s) => s.id === fromSession);
+    const s = own && inside(own) ? own : sessions.find(inside);
+    if (!s) return `The definition is outside the session's folder: ${loc.path}:${loc.line}`;
+    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path: loc.path.slice(s.cwd.length + 1), mode: "file", reveal: { line: loc.line, at: Date.now() } }));
+    return null;
+  };
+
   /** Start a preset's session and show it. */
   const startPreset = async (p: SessionPreset) => {
     const info = await window.mb.presetStart(p.id);
@@ -1784,6 +1797,7 @@ function App() {
           onActivate={(key) => setEditor((e) => ({ ...e, active: key }))}
           onClose={(key) => setEditor((e) => closeTab(e, key))}
           onCloseAll={() => setEditor(EMPTY_EDITOR)}
+          onOpenLocation={openLocation}
           onMode={(key, mode) => setEditor((e) => updateTab(e, key, { mode }))}
           onInsert={(text) => {
             if (!focusedSession) return;
@@ -4349,6 +4363,7 @@ function SettingsView({
   const [adoNote, setAdoNote] = useState<{ ok: boolean; msg: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [mcpName, setMcpName] = useState("");
+  const [fmtOnSave, setFmtOnSave] = useState(getFormatOnSave);
   const [mcpCmd, setMcpCmd] = useState("");
   const [mcpErr, setMcpErr] = useState("");
   const [version, setVersion] = useState("");
@@ -4445,6 +4460,19 @@ function SettingsView({
                   );
                 })}
               </span>
+            </SetRow>
+            <SetRow
+              title="Format on save"
+              note="Files are formatted by their language server when you save them in the editor (TypeScript, JavaScript, C#; Python's server doesn't format). ⇧⌥F formats any time."
+            >
+              <Toggle
+                label="Format on save"
+                on={fmtOnSave}
+                onChange={(v) => {
+                  setFormatOnSave(v);
+                  setFmtOnSave(v);
+                }}
+              />
             </SetRow>
             <SetRow title="Notifications" note="When a session finishes or needs you">
               <Toggle label="Notifications" on={s.notifications} onChange={(v) => upd({ notifications: v })} />

@@ -856,3 +856,48 @@ export interface PrStatus {
   error?: string;
   at: number;
 }
+
+// ---- editor intelligence (language servers) -------------------------------------
+
+export type LspServerId = "typescript" | "python" | "csharp";
+
+/** What the editor knows about a file's language server. */
+export interface LspFileState {
+  /** No server covers this kind of file. */
+  server: { id: LspServerId; label: string } | null;
+  /** ready: running; install: not downloaded yet (the user is asked); missing: a prerequisite isn't on the Mac; failed: it didn't start. */
+  state: "ready" | "install" | "missing" | "failed" | "none";
+  /** Why it's missing or failed; for install, what would be downloaded ("pyright 1.1.414"). */
+  message?: string;
+}
+
+/** A problem in a file, from its language server. */
+export interface LspDiagnostic {
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  severity: "error" | "warning" | "info" | "hint";
+  message: string;
+  source?: string;
+}
+
+export interface LspCompletion {
+  label: string;
+  kind?: string;
+  detail?: string;
+  insertText: string;
+  /** The range the completion replaces, when the server says (else the word before the cursor). */
+  range?: { start: { line: number; character: number }; end: { line: number; character: number } };
+  sortText?: string;
+}
+
+/** A place in a file, absolute. */
+export interface LspLocation {
+  path: string;
+  line: number; // 1-based
+  character: number; // 0-based UTF-16
+}
+
+/** Edits a rename makes, per absolute path. */
+export interface LspFileEdits {
+  path: string;
+  edits: { range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }[];
+}

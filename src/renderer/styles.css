@@ -1733,3 +1733,16 @@ button.chip { border: none; cursor: pointer; }
 .rail .cell .v.pr-approved, .rail .cell .v.pr-merged { color: var(--teal-text); }
 .rail .cell .v.pr-changes { color: var(--red); }
 .rail .cell .v.pr-closed, .rail .cell .v.dim { color: var(--text-4); }
+/* editor intelligence: the language server banner, hover, rename */
+.ce-lsp { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line-soft); font: 400 11px var(--ui); color: var(--text-2); background: var(--bg-pane-header); }
+.ce-lsp > span { flex: 1; min-width: 0; line-height: 1.45; }
+.ce-lsp.warn > span { color: var(--amber-text); }
+.ce-lsp button { padding: 2px 10px; font-size: 11px; flex-shrink: 0; }
+.cm-tooltip.cm-tooltip-hover { max-width: 560px; max-height: 320px; overflow: auto; }
+.cm-lsp-hover { padding: 6px 9px; font: 400 11.5px/1.5 var(--ui); color: var(--text-1); }
+.cm-lsp-hover pre { margin: 0 0 6px; font: 400 11px/1.5 var(--mono); white-space: pre-wrap; color: var(--text-1); }
+.cm-lsp-hover p { margin: 0 0 6px; white-space: pre-wrap; color: var(--text-2); }
+.cm-lsp-hover code { font: 400 10.5px var(--mono); background: var(--fill-subtle); padding: 0 3px; border-radius: 3px; }
+.cm-lsp-rename { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font: 400 11px var(--ui); color: var(--text-2); }
+.cm-lsp-rename input { flex: 0 1 260px; background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-btn-hover); border-radius: 4px; padding: 3px 6px; font: 400 11px var(--mono); }
+.cm-lsp-rename .cm-lsp-note { color: var(--amber-text); }

@@ -17,7 +17,7 @@ import { debugTargetFor } from "./dap/targets";
 import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
-import { listDir, readFile, writeFile, gitChanges, fileDiff } from "./files";
+import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
@@ -35,6 +35,8 @@ import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { prStatusFor } from "./prStatus";
+import { LspManager } from "./lsp/manager";
+import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
@@ -890,6 +892,50 @@ ipcMain.handle("handoff:start", (_e, id, handoff) =>
       initialPrompt: handoffKickoff(from, text),
     });
   })()
+);
+
+// ---- editor intelligence: language servers per session folder ----
+const lsp = new LspManager({
+  dir: LSP_DIR,
+  env: () => paneEnv(),
+  which,
+  node: process.execPath,
+  onDiagnostics: (file, d) => toWindow("lsp:diagnostics", file, d),
+  onStatus: (st) => toWindow("lsp:status", st),
+});
+app.on("will-quit", () => lsp.stopAll());
+/** A file of a session's folder, as the root and an absolute path inside it. */
+const lspFile = async (sessionId: string, rel: string) => {
+  const root = sessionRoot(String(sessionId));
+  return { root, abs: await resolveIn(root, String(rel)) };
+};
+const pos = (line: unknown, character: unknown) => ({ line: Number(line) || 0, character: Number(character) || 0 });
+ipcMain.handle("lsp:open", (_e, id, rel, text) => safeAsync("lsp:open", async () => { const f = await lspFile(id, rel); return lsp.open(f.root, f.abs, String(text ?? "")); })());
+ipcMain.handle("lsp:install", (_e, server) =>
+  safeAsync("lsp:install", () => lsp.install(server, (message) => toWindow("lsp:status", { server, root: "", state: "installing", message })))()
+);
+ipcMain.handle("lsp:change", (_e, id, rel, text) => safeAsync("lsp:change", async () => { const f = await lspFile(id, rel); lsp.change(f.root, f.abs, String(text ?? "")); })());
+ipcMain.handle("lsp:saved", (_e, id, rel) => safeAsync("lsp:saved", async () => { const f = await lspFile(id, rel); lsp.saved(f.root, f.abs); })());
+ipcMain.handle("lsp:close", (_e, id, rel) => safeAsync("lsp:close", async () => { const f = await lspFile(id, rel); lsp.close(f.root, f.abs); })());
+ipcMain.handle("lsp:hover", (_e, id, rel, line, ch) => safeAsync("lsp:hover", async () => { const f = await lspFile(id, rel); return lsp.hover(f.root, f.abs, pos(line, ch)); })());
+ipcMain.handle("lsp:complete", (_e, id, rel, line, ch, prefix, trigger) =>
+  safeAsync("lsp:complete", async () => { const f = await lspFile(id, rel); return lsp.completion(f.root, f.abs, pos(line, ch), String(prefix ?? ""), trigger ? String(trigger) : undefined); })()
+);
+ipcMain.handle("lsp:definition", (_e, id, rel, line, ch) => safeAsync("lsp:definition", async () => { const f = await lspFile(id, rel); return lsp.definition(f.root, f.abs, pos(line, ch)); })());
+ipcMain.handle("lsp:rename", (_e, id, rel, line, ch, name) =>
+  safeAsync("lsp:rename", async () => {
+    const newName = String(name ?? "").trim();
+    if (!newName) throw new Error("Type the new name");
+    const f = await lspFile(id, rel);
+    return lsp.rename(f.root, f.abs, pos(line, ch), newName);
+  })()
+);
+ipcMain.handle("lsp:format", (_e, id, rel, tabSize, insertSpaces) =>
+  safeAsync("lsp:format", async () => { const f = await lspFile(id, rel); return lsp.format(f.root, f.abs, { tabSize: Number(tabSize) || 4, insertSpaces: !!insertSpaces }); })()
+);
+// a rename's edits to a file that isn't open in the editor: written straight to it
+ipcMain.handle("lsp:applyEdits", (_e, id, rel, edits) =>
+  safeAsync("lsp:applyEdits", () => applyFileEdits(sessionRoot(String(id)), String(rel), Array.isArray(edits) ? edits : []))()
 );
 
 // ---- PR status in the pane rail: the branch's pull request, looked up at most every 2 minutes per folder ----

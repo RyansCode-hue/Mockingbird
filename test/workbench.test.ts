@@ -143,7 +143,7 @@ describe("commit graph lanes", () => {
 
 describe("saving edited text the way the file was", () => {
   it("keeps a byte-order mark and Windows line endings", async () => {
-    const { splitBom, lineBreakOf, toFileText } = await import("../src/renderer/editorText");
+    const { splitBom, lineBreakOf, toFileText } = await import("../src/shared/editorText");
     const original = "﻿using System;\r\nclass A {}\r\n";
     const { bom, text } = splitBom(original);
     expect(bom).toBe(true);
@@ -155,7 +155,7 @@ describe("saving edited text the way the file was", () => {
   });
 
   it("indents the way the file already does", async () => {
-    const { guessIndent } = await import("../src/renderer/editorText");
+    const { guessIndent } = await import("../src/shared/editorText");
     expect(guessIndent("def a():\n    return 1\n")).toBe("    ");
     expect(guessIndent("{\n  a: 1,\n  b: {\n    c: 2\n  }\n}\n")).toBe("  ");
     expect(guessIndent("func a() {\n\treturn\n}\n")).toBe("\t");

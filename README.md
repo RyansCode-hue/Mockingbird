@@ -135,6 +135,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Editor intelligence** — files open with their language's own server:
+  problems underlined as you type (and in the gutter), hover, completions,
+  go to definition (F12 or ⌘-click; Alt-click adds a cursor), rename across
+  files (F2 — open files change for review, the rest are saved) and format
+  (⇧⌥F, or on save in Settings → General). TypeScript/JavaScript use
+  TypeScript 7's native language server, Python uses pyright, C# uses
+  csharp-ls on the Mac's .NET; each downloads once, when you first open such
+  a file and click Install, pinned and checked against its registry's hash.
 - **PR status in the pane rail** — each pane's branch shows its pull
   request (Azure DevOps or GitHub): open, draft, approved, changes requested,
   merged or closed, with conflicts flagged and who reviewed it on hover;
@@ -176,17 +184,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Editor intelligence.** Now that files are editable: go to definition,
-  hover info, completions and rename from the languages' own servers
-  (pyright, tsserver, a C# server), problems underlined as you type, and
-  format on save.
-
-### Next
-
 - **Cross-agent review.** A button in Source Control starts a session with
   the *other* agent (Codex for a Claude branch, Claude for a Codex one) to review
   the branch's diff, and the findings come back to the original session over
   agent messaging — a second model's opinion before every PR.
+
+### Next
+
 - **Undo an agent's turn.** Snapshot the worktree when each prompt is submitted
   (from the hook Mockingbird already gets) into a private ref like
   `refs/mockingbird/snapshots/<session>/…` — no tokens, and the branch, index

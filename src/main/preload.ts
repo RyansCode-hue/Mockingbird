@@ -186,6 +186,27 @@ const api = {
   handoffStart: (sessionId: string, handoff: string) => ipcRenderer.invoke("handoff:start", sessionId, handoff),
   presetStart: (id: string) => ipcRenderer.invoke("presets:start", id),
   prStatus: (cwd: string, fresh?: boolean) => ipcRenderer.invoke("pr:status", cwd, fresh),
+  lspOpen: (id: string, rel: string, text: string) => ipcRenderer.invoke("lsp:open", id, rel, text),
+  lspInstall: (server: string) => ipcRenderer.invoke("lsp:install", server),
+  lspChange: (id: string, rel: string, text: string) => ipcRenderer.invoke("lsp:change", id, rel, text),
+  lspSaved: (id: string, rel: string) => ipcRenderer.invoke("lsp:saved", id, rel),
+  lspClose: (id: string, rel: string) => ipcRenderer.invoke("lsp:close", id, rel),
+  lspHover: (id: string, rel: string, line: number, ch: number) => ipcRenderer.invoke("lsp:hover", id, rel, line, ch),
+  lspComplete: (id: string, rel: string, line: number, ch: number, prefix: string, trigger?: string) => ipcRenderer.invoke("lsp:complete", id, rel, line, ch, prefix, trigger),
+  lspDefinition: (id: string, rel: string, line: number, ch: number) => ipcRenderer.invoke("lsp:definition", id, rel, line, ch),
+  lspRename: (id: string, rel: string, line: number, ch: number, name: string) => ipcRenderer.invoke("lsp:rename", id, rel, line, ch, name),
+  lspFormat: (id: string, rel: string, tabSize: number, insertSpaces: boolean) => ipcRenderer.invoke("lsp:format", id, rel, tabSize, insertSpaces),
+  lspApplyEdits: (id: string, rel: string, edits: unknown) => ipcRenderer.invoke("lsp:applyEdits", id, rel, edits),
+  onLspDiagnostics: (cb: (file: string, d: unknown) => void) => {
+    const h = (_e: unknown, file: string, d: unknown) => cb(file, d);
+    ipcRenderer.on("lsp:diagnostics", h);
+    return () => ipcRenderer.removeListener("lsp:diagnostics", h);
+  },
+  onLspStatus: (cb: (s: unknown) => void) => {
+    const h = (_e: unknown, s: unknown) => cb(s);
+    ipcRenderer.on("lsp:status", h);
+    return () => ipcRenderer.removeListener("lsp:status", h);
+  },
   pipelineAll: () => ipcRenderer.invoke("pipeline:all"),
   pipelineStage: (id: string, stage: string, title?: string) => ipcRenderer.invoke("pipeline:stage", id, stage, title),
   pipelineFeedback: (id: string, text: string) => ipcRenderer.invoke("pipeline:feedback", id, text),

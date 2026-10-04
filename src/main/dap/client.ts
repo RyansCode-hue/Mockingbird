@@ -22,7 +22,7 @@ export interface DapMessage {
   message?: string;
 }
 
-/** Splits a byte stream into DAP messages. */
+/** Splits a byte stream into Content-Length framed messages (DAP, and LSP — same base protocol). */
 export class FrameParser {
   private buf = Buffer.alloc(0);
 
@@ -34,7 +34,7 @@ export class FrameParser {
       if (headerEnd < 0) break;
       const header = this.buf.subarray(0, headerEnd).toString("ascii");
       const m = /Content-Length:\s*(\d+)/i.exec(header);
-      if (!m) throw new Error(`DAP: a message header without Content-Length: ${header.slice(0, 100)}`);
+      if (!m) throw new Error(`A message header without Content-Length: ${header.slice(0, 100)}`);
       const len = parseInt(m[1], 10);
       const start = headerEnd + 4;
       if (this.buf.length < start + len) break;

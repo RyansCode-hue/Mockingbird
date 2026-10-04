@@ -1,5 +1,7 @@
 import { git } from "./git";
 import * as fs from "fs";
+import { applyTextEdits, type LspTextEdit } from "../shared/textEdits";
+import { lineBreakOf, splitBom } from "../shared/editorText";
 import * as path from "path";
 import type { FileEntry, FileContent, FileSave, GitChange, GitChanges, ChangeScope } from "../shared/types";
 import { pickDefaultBase } from "./worktrees";
@@ -78,6 +80,19 @@ export async function writeFile(root: string, rel: string, content: string, expe
   if (expectedMtimeMs !== null && Math.abs(stat.mtimeMs - expectedMtimeMs) > 1) return { saved: false, conflict: true, mtimeMs: stat.mtimeMs };
   await fs.promises.writeFile(full, content, "utf8");
   return { saved: true, mtimeMs: (await fs.promises.stat(full)).mtimeMs };
+}
+
+/**
+ * Apply a language server's edits (a rename) to a file that isn't open in the
+ * editor, keeping its line breaks and byte-order mark.
+ */
+export async function applyFileEdits(root: string, rel: string, edits: LspTextEdit[]): Promise<FileSave> {
+  const full = await resolveIn(root, rel);
+  const stat = await fs.promises.stat(full);
+  const { bom, text } = splitBom(await fs.promises.readFile(full, "utf8"));
+  const br = lineBreakOf(text);
+  const next = applyTextEdits(text, br === "\n" ? edits : edits.map((e) => ({ ...e, newText: e.newText.replace(/\r?\n/g, br) })));
+  return writeFile(root, rel, (bom ? "\ufeff" : "") + next, stat.mtimeMs);
 }
 
 // The base branch changes rarely; resolving it per poll would re-list every ref

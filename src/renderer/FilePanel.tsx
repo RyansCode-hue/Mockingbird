@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, WorktreeStateInfo } from "../shared/types";
+import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, LspLocation, WorktreeStateInfo } from "../shared/types";
 import { highlightLines, languageFor } from "./highlight";
 import { tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
@@ -301,6 +301,7 @@ export function EditorDock({
   onCloseAll,
   onMode,
   onInsert,
+  onOpenLocation,
 }: {
   editor: EditorState;
   onActivate: (key: string) => void;
@@ -308,6 +309,8 @@ export function EditorDock({
   onCloseAll: () => void;
   onMode: (key: string, mode: "file" | "diff") => void;
   onInsert: (text: string) => void;
+  /** Open a definition (an absolute path) in the editor; returns why it couldn't. */
+  onOpenLocation: (loc: LspLocation, fromSession: string) => string | null;
 }) {
   const dirty = useDirtyKeys();
   const onClose = (key: string) => {
@@ -412,6 +415,7 @@ export function EditorDock({
           onMode={(mode) => onMode(tabKey(tab), mode)}
           onClose={() => onClose(tabKey(tab))}
           onInsert={onInsert}
+          onOpenLocation={onOpenLocation}
         />
       </div>
       <div className="fp-handle" onPointerDown={startResize} />
@@ -424,11 +428,13 @@ function FileViewer({
   onMode,
   onClose,
   onInsert,
+  onOpenLocation,
 }: {
   open: OpenFile;
   onMode: (m: "file" | "diff") => void;
   onClose: () => void;
   onInsert: (text: string) => void;
+  onOpenLocation: (loc: LspLocation, fromSession: string) => string | null;
 }) {
   const [file, setFile] = useState<Result<FileContent> | null>(null);
   const [diff, setDiff] = useState<Result<string> | null>(null);
@@ -527,6 +533,8 @@ function FileViewer({
               onToggleBreakpoint={(line) => bp.toggle(open.path, line)}
               pausedLines={pausedLines}
               reveal={open.reveal}
+              lsp={{ sessionId: open.sessionId, root: open.root }}
+              onOpenLocation={(loc) => onOpenLocation(loc, open.sessionId)}
             />
           )}
       </div>

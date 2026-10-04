@@ -1468,7 +1468,12 @@ Each item ships on its own: tests + build + harness check → ff main → README
   Harness: Settings → Presets edit + save, New session chips start a preset.
 - [x] PR status in the pane rail
   Review: state mapping + lookup tests (5); real gh lookup on this repo's main → none (gh's "no pull requests" isn't an error).
-- [ ] Editor intelligence (language servers)
+- [x] Editor intelligence (language servers)
+  TS 7 native `tsc --lsp` (Apache-2.0), pyright (MIT), csharp-ls 0.28 (MIT, .NET 10); pinned SHA-512, ~/.mockingbird/lsp.
+  Review: real-server tests (11: TS problems/hover/completion/definition/rename/format, pyright, csharp-ls). Found: servers
+  send unfiltered completions (now narrowed by the typed word before capping); TS renames via an alias by default (turned
+  off). Editor checked through a bridge to the real TS server: underline + gutter, hover, completion, F2 rename across
+  files (open buffer + disk), ⌘-click definition, ⇧⌥F format.
 - [ ] Cross-agent review
 - [ ] Undo an agent's turn (snapshot refs)
 - [ ] Conflict early warning

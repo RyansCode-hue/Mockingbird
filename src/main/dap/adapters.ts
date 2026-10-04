@@ -18,7 +18,9 @@ export interface Pinned {
   name: string;
   version: string;
   url: string;
-  sha256: string;
+  /** The publisher's checksum: a SHA-256 hex digest, or an npm/NuGet-style "sha512-<base64>" integrity. */
+  sha256?: string;
+  integrity?: string;
   /** Unpacked size check: the folder that must exist once installed. */
   marker: string;
 }
@@ -95,12 +97,18 @@ export async function ensureAdapter(p: Pinned, onProgress: (msg: string) => void
     const file = path.join(tmp, path.basename(new URL(p.url).pathname));
     onProgress(`Downloading ${p.name} ${p.version}…`);
     await download(p.url, file);
-    const hash = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-    if (hash !== p.sha256) throw new Error(`${p.name} ${p.version} didn't match its published checksum (got ${hash.slice(0, 12)}…) — not installed`);
+    const bytes = fs.readFileSync(file);
+    const [want, got] = p.sha256
+      ? [p.sha256, crypto.createHash("sha256").update(bytes).digest("hex")]
+      : p.integrity?.startsWith("sha512-")
+        ? [p.integrity, `sha512-${crypto.createHash("sha512").update(bytes).digest("base64")}`]
+        : [null, ""];
+    if (!want) throw new Error(`${p.name} ${p.version} has no checksum to check against — not installed`);
+    if (got !== want) throw new Error(`${p.name} ${p.version} didn't match its published checksum (got ${got.slice(0, 19)}…) — not installed`);
     onProgress(`Unpacking ${p.name}…`);
     const into = path.join(tmp, "x");
     fs.mkdirSync(into);
-    if (file.endsWith(".tar.gz")) await run("/usr/bin/tar", ["-xzf", file, "-C", into], tmp);
+    if (file.endsWith(".tar.gz") || file.endsWith(".tgz")) await run("/usr/bin/tar", ["-xzf", file, "-C", into], tmp);
     else await run("/usr/bin/unzip", ["-q", file, "-d", into], tmp);
     if (!fs.existsSync(path.join(into, p.marker))) throw new Error(`${p.name} unpacked without ${p.marker}`);
     // a downloaded binary carries the quarantine flag, which stops it running
