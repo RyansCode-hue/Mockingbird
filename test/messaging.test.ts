@@ -18,6 +18,8 @@ const live = [
 ];
 const delivered: { to: string; text: string; submit: boolean }[] = [];
 const loops: string[] = [];
+const logged: any[] = [];
+const askedFor: string[] = [];
 let submit = true;
 let relay: Messaging;
 const launch = mcpLaunch("front");
@@ -43,7 +45,12 @@ beforeAll(async () => {
       return sub ? "delivered" : "placed in its prompt for the user to send";
     },
   };
-  relay = new Messaging(fakeSessions as any, () => submit, (a, b) => loops.push(`${a.id}->${b.id}`));
+  relay = new Messaging(
+    fakeSessions as any,
+    (target) => (askedFor.push(target.id), submit),
+    (a, b) => loops.push(`${a.id}->${b.id}`),
+    (m) => logged.push(m)
+  );
   relay.start();
   for (let i = 0; i < 50 && !fs.existsSync(sock); i++) await new Promise((r) => setTimeout(r, 20));
 });
@@ -71,6 +78,9 @@ describe("relay", () => {
     expect(d.text).toMatch(/^\[Message from Mockingbird session "Filter orgs" \(id front, claude · front · front-branch\)/);
     expect(d.text).toMatch(/not by the user/);
     expect(d.text.endsWith("orgId is now organizationId")).toBe(true);
+    // the delivery choice is asked per recipient (a group can override it), and the send is logged
+    expect(askedFor.at(-1)).toBe("back");
+    expect(logged.at(-1)).toMatchObject({ from: "front", fromTitle: "Filter orgs", to: "back", toTitle: "back", text: "orgId is now organizationId", outcome: "delivered" });
   });
   it("leaves the message in the prompt when auto-send is off", async () => {
     submit = false;
@@ -104,6 +114,7 @@ describe("relay", () => {
     const ninth = await send("other", "back");
     expect(ninth.error).toMatch(/Paused: 8 messages/);
     expect(loops).toContain("other->back");
+    expect(logged.at(-1)).toMatchObject({ from: "other", to: "back", refused: true, outcome: expect.stringMatching(/message limit/) });
   });
 });
 

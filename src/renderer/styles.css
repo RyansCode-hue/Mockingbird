@@ -1779,3 +1779,21 @@ button.chip { border: none; cursor: pointer; }
 .stall-banner .reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stall-banner button { padding: 2px 9px; font-size: 11px; flex-shrink: 0; }
 .sb-update { border: none; background: rgba(79, 179, 165, .14); color: var(--teal-text); font: 500 10.5px var(--ui); padding: 2px 8px; border-radius: 4px; margin-right: 10px; cursor: pointer; }
+/* agent messaging: the group bar's delivery switch, and the message log */
+.gb-msg { background: var(--bg-pane); color: var(--text-2); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 10.5px var(--ui); margin-right: 6px; }
+.msg-log { width: 680px; }
+.msg-list { display: flex; flex-direction: column; gap: 4px; max-height: 60vh; overflow-y: auto; margin-top: 8px; }
+.msg-row { border: 1px solid var(--line-soft); border-radius: 6px; padding: 6px 9px; cursor: pointer; }
+.msg-row.refused { border-color: rgba(207, 106, 90, .35); }
+.msg-hd { display: flex; align-items: baseline; gap: 6px; font: 400 11px var(--ui); color: var(--text-2); }
+.msg-hd a { color: var(--text-1); cursor: pointer; font-weight: 500; }
+.msg-hd a:hover { text-decoration: underline; }
+.msg-when { font: 400 10px var(--mono); color: var(--text-4); min-width: 58px; flex-shrink: 0; white-space: nowrap; }
+.msg-arrow { color: var(--text-4); }
+.msg-how { margin-left: auto; font: 400 10px var(--mono); color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.msg-row.refused .msg-how { color: var(--red); }
+.msg-text { margin-top: 4px; font: 400 11px/1.5 var(--mono); color: var(--text-2); white-space: pre-wrap; overflow: hidden; max-height: 3em; }
+.msg-text.open { max-height: none; }
+/* the group's name keeps its room; the bar's controls give way first */
+.groupbar .gb-name { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.groupbar .flbl-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

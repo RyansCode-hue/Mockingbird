@@ -293,6 +293,8 @@ export function TerminalPane({
   overlaps,
   onJump,
   onRestart,
+  messages,
+  onShowMessages,
 }: {
   session: SessionInfo;
   focused: boolean;
@@ -336,6 +338,9 @@ export function TerminalPane({
   onJump?: (sessionId: string) => void;
   /** Restart this pane, resuming its conversation (for a stuck one). */
   onRestart?: () => void;
+  /** Agent messages this pane received and sent, and opening their log. */
+  messages?: { in: number; out: number };
+  onShowMessages?: () => void;
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const dead = session.status === "dead";
@@ -940,6 +945,14 @@ export function TerminalPane({
               ) : (
                 <span className="v dim">couldn't check</span>
               )}
+            </div>
+          )}
+          {messages && (
+            <div className="cell click" title="Messages from and to other agent sessions — click for the log" onClick={onShowMessages}>
+              <span className="k">Msgs</span>
+              <span className="v">
+                {messages.in}↓ {messages.out}↑
+              </span>
             </div>
           )}
           {session.repoPath && (

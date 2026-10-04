@@ -22,12 +22,13 @@ import { RunView } from "./RunView";
 import { PipelineDialog, PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { HandoffDialog, otherAgent } from "./Handoff";
 import { UndoTurnDialog } from "./UndoTurn";
+import { MessageLogDialog, useAgentMessages } from "./AgentMessages";
 import { PresetEditor, PresetsSection, newPresetId } from "./Presets";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys, getFormatOnSave, setFormatOnSave } from "./CodeEditor";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice, MessageMode } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, formatTokens, totalTokens, type OptionalTab } from "../shared/types";
 import { tokenBreakdown } from "./TerminalPane";
 
@@ -204,6 +205,23 @@ function App() {
   const [handoffFor, setHandoffFor] = useState<SessionInfo | null>(null);
   // "undo a turn" for this session
   const [undoFor, setUndoFor] = useState<SessionInfo | null>(null);
+  // agent messaging: the log, how messages arrive per group, and a group's status check
+  const agentMessages = useAgentMessages();
+  const [msgLogFor, setMsgLogFor] = useState<{ id?: string; title?: string } | null>(null);
+  const [msgModes, setMsgModes] = useState<Record<string, MessageMode>>({});
+  const [msgDefaultSend, setMsgDefaultSend] = useState(true);
+  const [statusNote, setStatusNote] = useState("");
+  const setMsgMode = async (group: string, mode: MessageMode | "") => {
+    const r = await window.mb.messagesGroupMode(group, mode || null);
+    if (r?.error) return alert(`Couldn't change it: ${r.error}`);
+    setMsgModes(r);
+  };
+  const askGroupStatus = async (group: string) => {
+    const r = await window.mb.groupStatusCheck(group);
+    if (r?.error) return alert(r.error);
+    setStatusNote(`Asked ${r.asked} session${r.asked === 1 ? "" : "s"}`);
+    setTimeout(() => setStatusNote(""), 6000);
+  };
   // agent CLIs updated under running panes (they run the old version until restarted)
   const [agentUpdates, setAgentUpdates] = useState<AgentUpdateNotice[]>([]);
   useEffect(() => {
@@ -441,6 +459,8 @@ function App() {
       const hidden = s.hiddenTabs ?? [];
       setHiddenTabs(hidden);
       setPresets(s.presets ?? []);
+      setMsgModes(s.agentMessagesByGroup ?? {});
+      setMsgDefaultSend(s.agentMessagesSubmit !== false);
       setTab((t) => ((hidden as Tab[]).includes(t) ? "sessions" : t));
       if (s.setupDone) return;
       if (loadLS("mb.helpSeen", false)) await window.mb.setSettings({ ...s, setupDone: true });
@@ -1852,6 +1872,20 @@ function App() {
                     </button>
                   ))}
                 <span style={{ marginLeft: "auto" }} />
+                {statusNote && <span className="flbl-info">{statusNote}</span>}
+                <select
+                  className="gb-msg"
+                  value={msgModes[activeGroup] ?? ""}
+                  title="How messages from other agents arrive in this group's sessions: sent as a prompt, or typed in and left for you to send"
+                  onChange={(e) => setMsgMode(activeGroup, e.target.value as MessageMode | "")}
+                >
+                  <option value="">Agent messages: {msgDefaultSend ? "auto-send" : "leave in prompt"} (default)</option>
+                  <option value="send">Agent messages: auto-send</option>
+                  <option value="prompt">Agent messages: leave in prompt</option>
+                </select>
+                <button className="chip" data-tip="Ask every agent session in this group for a three-line status report — each answers when its current turn ends" onClick={() => askGroupStatus(activeGroup)}>
+                  Ask for status
+                </button>
                 <span className="flbl-info">
                   {gridSessions.filter((s) => topOf(s) === activeGroup).length} of {topSessions.length} shown
                   {(() => {
@@ -2019,6 +2053,11 @@ function App() {
                     onUndoTurn={s.shell || !s.repoPath ? undefined : () => setUndoFor(s)}
                     overlaps={overlaps[s.id]}
                     onJump={jumpTo}
+                    messages={(() => {
+                      const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
+                      return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
+                    })()}
+                    onShowMessages={() => setMsgLogFor({ id: s.id, title: s.ticketTitle ?? s.title })}
                     onRestart={async () => {
                       const r = await window.mb.sessionRestart(s.id);
                       if (r?.error) alert(`Couldn't restart ${s.ticketTitle ?? s.title}: ${r.error}`);
@@ -2296,6 +2335,7 @@ function App() {
             { label: "New terminal (no Claude)", run: () => { setNewLaunch("shell"); setModal("new"); } },
             ...presets.map((p) => ({ label: `Start preset: ${p.name}`, run: () => startPreset(p) })),
             { label: "Restart all agent sessions", run: () => setModal("restart") },
+            { label: "Agent message log — what sessions told each other", run: () => setMsgLogFor({}) },
             { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
             { label: "Sessions grid", run: () => setTab("sessions") },
             ...(shownTab("dashboard") ? [{ label: "Dashboard — ticket board", run: () => setTab("dashboard") }] : []),
@@ -2381,6 +2421,8 @@ function App() {
           }}
         />
       )}
+
+      {msgLogFor && <MessageLogDialog sessionId={msgLogFor.id} title={msgLogFor.title} onJump={(id) => (setMsgLogFor(null), jumpTo(id))} onClose={() => setMsgLogFor(null)} />}
 
       {undoFor && (
         <UndoTurnDialog

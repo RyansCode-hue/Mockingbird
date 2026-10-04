@@ -1485,7 +1485,9 @@ Each item ships on its own: tests + build + harness check → ff main → README
 - [x] Session health watchdog (CLI self-update, hung sessions)
   Version per pane vs installed (checked every 10 min; real `--version` outputs parse), quiet-while-working after 5 min;
   tests (3).
-- [ ] Agent messaging: message log, per-group auto-send, Team broadcast
+- [x] Agent messaging: message log, per-group auto-send, Team broadcast
+  Review: log persistence/cap/corrupt (2), relay logs delivered + refused sends and asks delivery per recipient; harness:
+  group bar mode + status check, rail Msgs cell, log dialog (fixed a squeezed group name and wrapping times).
 - [ ] Codex parity: PermissionRequest → amber test
 - [ ] Notification controls (per-session mute, quiet hours)
 - [ ] Scrollback that survives restarts

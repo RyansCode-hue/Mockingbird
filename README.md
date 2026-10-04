@@ -135,6 +135,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Agent messaging, filled out** — a message log (who told whom what,
+  delivered or refused; "Msgs 2↓ 1↑" on each pane's rail, or ⌘K for all),
+  a per-group choice in the group bar between auto-send and leave-in-prompt
+  (overriding the app-wide setting), and "Ask for status", which asks every
+  agent session in the group for a three-line report as its turn ends.
 - **Session health watchdog** — panes record the CLI version they started
   with; when Claude Code or Codex updates itself under them, the status bar
   says "Claude Code updated to 2.1.x · N sessions on the old version —
@@ -208,18 +213,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Agent messaging, next steps.** Sessions can already message each other
-  (`list_sessions` / `send_message`, with a per-pair rate limit). Still to do: a
-  visible message log (who told whom what, from the pane rail), a per-group
-  switch between auto-send and leave-in-prompt (today it's one global
-  setting), and a "Team" broadcast from the group bar that asks every session in
-  a group for a status report.
-
-### Next
-
 - **Codex parity.** Plan usage and model choices shipped (read from Codex's
   own logs and model cache). Still to do: a watched test of the
   PermissionRequest → amber path.
+
+### Next
+
 - **Notification controls**: per-session mute and app-wide quiet hours — today
   every waiting flip notifies, which trains you to ignore them.
 - **Scrollback that survives restarts**: resumed sessions get their

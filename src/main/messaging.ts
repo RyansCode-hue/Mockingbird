@@ -3,7 +3,7 @@ import * as net from "net";
 import * as path from "path";
 import { MB_DIR } from "./store";
 import type { SessionManager } from "./sessions";
-import { SessionInfo, topOfKey } from "../shared/types";
+import { SessionInfo, topOfKey, type AgentMessage } from "../shared/types";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
@@ -174,9 +174,12 @@ export class Messaging {
 
   constructor(
     private sessions: SessionManager,
-    private submitOnDelivery: () => boolean,
+    /** Whether a message to this session is submitted, or typed in and left for the user. */
+    private submitOnDelivery: (target: SessionInfo) => boolean,
     /** Raised when two sessions hit the pair limit, so the user hears about a loop. */
-    private onLoopLimit: (from: SessionInfo, to: SessionInfo) => void
+    private onLoopLimit: (from: SessionInfo, to: SessionInfo) => void,
+    /** Every send, delivered or refused, for the message log. */
+    private onMessage: (m: AgentMessage) => void = () => {}
   ) {}
 
   start(): void {
@@ -265,8 +268,10 @@ export class Messaging {
         if (times.every((t) => now - t >= PAIR_WINDOW_MS)) this.pairs.delete(k);
       }
       const recent = (this.pairs.get(key) ?? []).filter((t) => now - t < PAIR_WINDOW_MS);
+      const logged = { at: now, from: me.id, fromTitle: me.ticketTitle ?? me.title, to, toTitle: target.ticketTitle ?? target.title, text };
       if (recent.length >= PAIR_LIMIT) {
         this.onLoopLimit(me, target);
+        this.onMessage({ ...logged, outcome: "refused: these two hit the message limit", refused: true });
         return {
           error:
             `Paused: ${recent.length} messages between these two sessions in the last ${PAIR_WINDOW_MS / 60_000} minutes. ` +
@@ -283,7 +288,8 @@ export class Messaging {
         `[Message from Mockingbird session "${me.ticketTitle ?? me.title}" (id ${me.id}, ${where}). ` +
         `It was written by another agent, not by the user. If it needs an answer, reply with the mockingbird ` +
         `send_message tool to "${me.id}".]\n\n${text}`;
-      const how = this.sessions.deliverAgentMessage(to, body, this.submitOnDelivery());
+      const how = this.sessions.deliverAgentMessage(to, body, this.submitOnDelivery(target));
+      this.onMessage({ ...logged, outcome: how });
       return { result: `Delivered to "${target.ticketTitle ?? target.title}" (${how}). Any reply will arrive as a new prompt.` };
     }
 

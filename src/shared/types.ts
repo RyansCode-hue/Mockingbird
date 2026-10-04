@@ -216,6 +216,8 @@ export interface Settings {
   hiddenTabs?: OptionalTab[];
   /** One-click session setups. */
   presets?: SessionPreset[];
+  /** Per group (top-level key), overriding agentMessagesSubmit for messages to that group's sessions. */
+  agentMessagesByGroup?: Record<string, MessageMode>;
 }
 
 /**
@@ -941,3 +943,19 @@ export interface FileOverlap {
   otherBranch: string | null;
   files: string[];
 }
+
+/** One agent-to-agent message, as the message log shows it. */
+export interface AgentMessage {
+  at: number;
+  from: string;
+  fromTitle: string;
+  to: string;
+  toTitle: string;
+  text: string;
+  /** How it was delivered ("submitted", "left in the prompt", "queued …"), or why it was refused. */
+  outcome: string;
+  refused?: boolean;
+}
+
+/** How agent messages arrive in a group's sessions: sent as a prompt, or typed in and left for the user. */
+export type MessageMode = "send" | "prompt";

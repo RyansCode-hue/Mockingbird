@@ -183,6 +183,14 @@ const api = {
   adoComments: (id: number) => ipcRenderer.invoke("ado:comments", id),
   adoAddComment: (id: number, text: string) => ipcRenderer.invoke("ado:comment:add", id, text),
   reviewStart: (sessionId: string) => ipcRenderer.invoke("review:start", sessionId),
+  messagesList: () => ipcRenderer.invoke("messages:list"),
+  messagesGroupMode: (group: string, mode: string | null) => ipcRenderer.invoke("messages:groupMode", group, mode),
+  groupStatusCheck: (group: string) => ipcRenderer.invoke("group:statusCheck", group),
+  onMessagesChanged: (cb: (m: unknown) => void) => {
+    const h = (_e: unknown, m: unknown) => cb(m);
+    ipcRenderer.on("messages:changed", h);
+    return () => ipcRenderer.removeListener("messages:changed", h);
+  },
   healthUpdates: () => ipcRenderer.invoke("health:updates"),
   onHealthUpdates: (cb: (n: unknown) => void) => {
     const h = (_e: unknown, n: unknown) => cb(n);

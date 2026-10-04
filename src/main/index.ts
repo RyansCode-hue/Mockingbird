@@ -35,6 +35,7 @@ import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
+import { MessageLog } from "./messageLog";
 import { changedFiles, overlaps, type WorktreeChanges } from "./conflicts";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
 import { prStatusFor } from "./prStatus";
@@ -45,6 +46,7 @@ import { cliVersion } from "./agents";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, FileOverlap, Meters, ModelCatalog, PrStatus } from "../shared/types";
+import { topOfKey } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 
 const store = new Store();
@@ -289,13 +291,25 @@ app.whenReady().then(() => {
   setInterval(updateTray, 60_000); // keep wait durations in the dropdown fresh
   const messaging = new Messaging(
     sessions,
-    () => store.settings.agentMessagesSubmit !== false,
+    // a group can override the app-wide choice
+    (target) => {
+      const mode = store.settings.agentMessagesByGroup?.[topOfKey(target.taskGroup ?? "ungrouped")];
+      return mode ? mode === "send" : store.settings.agentMessagesSubmit !== false;
+    },
     (from, to) =>
       notifySession(
         from.id,
         "Agents paused messaging",
         `${from.ticketTitle ?? from.title} ↔ ${to.ticketTitle ?? to.title} hit the message limit — check on them`
-      )
+      ),
+    (m) => {
+      try {
+        messageLog.add(m);
+      } catch (err) {
+        logError("message log", err);
+      }
+      toWindow("messages:changed", m);
+    }
   );
   messaging.start();
   messaging.setRoomHandler((roomId, seat, op, args) => collab.handleRoomRequest(roomId, seat, op, args));
@@ -990,6 +1004,35 @@ ipcMain.handle("presets:start", (_e, id) =>
     const repo = p.repoPath ? expandHome(p.repoPath) : null;
     const branches = repo && p.branch.mode === "new" ? (await listBranches(repo)).branches : [];
     return sessions.create(presetRequest({ ...p, repoPath: repo }, branches, new Date()));
+  })()
+);
+
+// ---- agent messaging: the log, per-group delivery, and asking a group for status ----
+const messageLog = new MessageLog(path.join(MB_DIR, "messages.json"));
+ipcMain.handle("messages:list", () => messageLog.list());
+ipcMain.handle("messages:groupMode", (_e, group, mode) =>
+  safe("messages:groupMode", () => {
+    const g = topOfKey(String(group));
+    const next = { ...(store.settings.agentMessagesByGroup ?? {}) };
+    if (mode === "send" || mode === "prompt") next[g] = mode;
+    else delete next[g];
+    store.setSettings({ agentMessagesByGroup: next });
+    return next;
+  })()
+);
+const STATUS_CHECK =
+  "Status check from the user: reply in three short lines — what you've done, what you're doing now, and anything blocking you or needing a decision. Don't start new work for this.";
+ipcMain.handle("group:statusCheck", (_e, group) =>
+  safe("group:statusCheck", () => {
+    const g = topOfKey(String(group));
+    const ids = sessions
+      .list()
+      .filter((s) => topOfKey(s.taskGroup ?? "ungrouped") === g && !s.shell && !s.debrief && s.status !== "dead")
+      .map((s) => s.id);
+    if (!ids.length) throw new Error("No agent sessions in this group");
+    // each gets it when its current turn ends, so nobody is interrupted mid-answer
+    sessions.broadcast(STATUS_CHECK, ids, true);
+    return { asked: ids.length };
   })()
 );
 
