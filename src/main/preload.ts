@@ -182,6 +182,23 @@ const api = {
   adoMoveToColumn: (id: number, type: string, board: string, column: string) => ipcRenderer.invoke("ado:moveToColumn", id, type, board, column),
   adoComments: (id: number) => ipcRenderer.invoke("ado:comments", id),
   adoAddComment: (id: number, text: string) => ipcRenderer.invoke("ado:comment:add", id, text),
+  pipelineAll: () => ipcRenderer.invoke("pipeline:all"),
+  pipelineStage: (id: string, stage: string, title?: string) => ipcRenderer.invoke("pipeline:stage", id, stage, title),
+  pipelineFeedback: (id: string, text: string) => ipcRenderer.invoke("pipeline:feedback", id, text),
+  pipelineCheck: (id: string, key: string, value: boolean) => ipcRenderer.invoke("pipeline:check", id, key, value),
+  pipelineDraftAdd: (id: string, stage: string, text: string) => ipcRenderer.invoke("pipeline:draft:add", id, stage, text),
+  pipelineDraftEdit: (id: string, draftId: string, text: string) => ipcRenderer.invoke("pipeline:draft:edit", id, draftId, text),
+  pipelineDraftDrop: (id: string, draftId: string) => ipcRenderer.invoke("pipeline:draft:drop", id, draftId),
+  pipelineDraftPost: (id: string, draftId: string) => ipcRenderer.invoke("pipeline:draft:post", id, draftId),
+  pipelinePrPreflight: (sessionId: string, ticketId: string, target: string) => ipcRenderer.invoke("pipeline:pr:preflight", sessionId, ticketId, target),
+  pipelinePrDescribe: (sessionId: string, ticketId: string, title: string, base: string) => ipcRenderer.invoke("pipeline:pr:describe", sessionId, ticketId, title, base),
+  pipelinePrCreate: (sessionId: string, ticketId: string, req: unknown) => ipcRenderer.invoke("pipeline:pr:create", sessionId, ticketId, req),
+  pipelineComms: (ticketId: string, title: string, details: string) => ipcRenderer.invoke("pipeline:comms", ticketId, title, details),
+  onPipelineChanged: (cb: (all: unknown) => void) => {
+    const h = (_e: unknown, all: unknown) => cb(all);
+    ipcRenderer.on("pipeline:changed", h);
+    return () => ipcRenderer.removeListener("pipeline:changed", h);
+  },
   openExternal: (url: string) => ipcRenderer.invoke("shell:open", url),
   pickPath: (opts?: { file?: boolean; defaultPath?: string }) => ipcRenderer.invoke("dialog:pick", opts),
   // real filesystem path for a dropped File (File.path is gone in modern Electron)

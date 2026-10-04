@@ -1456,7 +1456,10 @@ Each item ships on its own: tests + build + harness check → ff main → README
   move away leaves the rest; header→header makes a workspace; sidebar row→pane joins its workspace; zones: pane into
   empty zone, other-group row into a zone (moves group), swap, overflow row; picker skips tabs of on-screen workspaces.
 ## Next
-- [ ] Ticket pipeline (local stage state, stage rail, per-stage actions, approve-before-post ADO comments)
+- [x] Ticket pipeline (local stage state, stage rail, per-stage actions, approve-before-post ADO comments)
+  Review: PipelineStore + PR module tests (17: remotes, base pick, ADO POST body with workItemRefs, gh create,
+  preflight on a real clone with docs/dirty/commits, description prompt). Harness: rail, gate, PR form (blocked by
+  uncommitted files; created once clean), feedback loop typed into the session, draft post. Not run against real ADO.
 - [ ] Continue in the other agent (summary handoff)
 - [ ] Session presets
 - [ ] PR status in the pane rail

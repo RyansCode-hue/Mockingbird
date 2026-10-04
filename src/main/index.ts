@@ -27,7 +27,11 @@ import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner }
 import { userShell, userShellWithInput, which, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
-import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn } from "./ado";
+import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, adoRequest } from "./ado";
+import { PipelineStore } from "./pipeline";
+import { openPr, parseRemote, prDescriptionPrompt, prError, prPreflight, remoteName, summaryOf } from "./pullRequests";
+import { askAgent, cleanReply } from "./headless";
+import { git } from "./git";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
@@ -339,7 +343,14 @@ app.on("window-all-closed", () => {
 // ---- IPC ----
 ipcMain.handle("sessions:list", () => sessions.list());
 ipcMain.handle("sessions:resumable", () => sessions.resumable());
-ipcMain.handle("sessions:create", (_e, req) => safeAsync("sessions:create", () => sessions.create(req))());
+ipcMain.handle("sessions:create", (_e, req) =>
+  safeAsync("sessions:create", async () => {
+    const info = await sessions.create(req);
+    // a session opened on a ticket means its coding has started
+    if (req?.ticketId && pipeline.startCoding(String(req.ticketId), req.ticketTitle ?? undefined)) pipelineChanged();
+    return info;
+  })()
+);
 ipcMain.handle("sessions:relaunch", (_e, id) => safeAsync("sessions:relaunch", () => sessions.relaunch(id))());
 ipcMain.handle("sessions:kill", (_e, id, forget) => sessions.kill(id, forget));
 ipcMain.handle("sessions:restartAll", (_e, includeBusy) =>
@@ -743,6 +754,108 @@ ipcMain.handle("mcp:remove", (_e, name) =>
 ipcMain.handle("ado:comments", (_e, id) => safeAsync("ado:comments", () => listComments(store, id))());
 ipcMain.handle("ado:comment:add", (_e, id, text) =>
   safeAsync("ado:comment:add", () => addComment(store, id, text))()
+);
+
+// ---- ticket pipeline: each ticket's stage, PRs, feedback and drafted comments ----
+const pipeline = new PipelineStore(path.join(MB_DIR, "pipeline.json"));
+const pipelineChanged = () => toWindow("pipeline:changed", pipeline.all());
+const pipelineDo = <T,>(name: string, fn: () => T | Promise<T>) =>
+  safeAsync(name, async () => {
+    const r = await fn();
+    pipelineChanged();
+    return r;
+  })();
+/** The session's own agent for a one-off question, or the other one when it isn't installed. */
+const askingAgent = (want: AgentKind = "claude"): AgentKind => (sessions.binFor(want).includes("/") ? want : want === "claude" ? "codex" : "claude");
+const prDeps = (root: string) => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
+const sessionOf = (id: string) => {
+  const s = sessions.list().find((x) => x.id === id);
+  if (!s) throw new Error("Session is no longer running");
+  return s;
+};
+
+ipcMain.handle("pipeline:all", () => pipeline.all());
+ipcMain.handle("pipeline:stage", (_e, id, stage, title) => pipelineDo("pipeline:stage", () => pipeline.setStage(String(id), stage, { title: title ? String(title) : undefined })));
+ipcMain.handle("pipeline:feedback", (_e, id, text) => pipelineDo("pipeline:feedback", () => pipeline.addFeedback(String(id), String(text ?? ""))));
+ipcMain.handle("pipeline:check", (_e, id, key, value) => pipelineDo("pipeline:check", () => pipeline.setCheck(String(id), String(key), !!value)));
+ipcMain.handle("pipeline:draft:add", (_e, id, stage, text) => pipelineDo("pipeline:draft:add", () => pipeline.addDraft(String(id), stage, String(text ?? ""))));
+ipcMain.handle("pipeline:draft:edit", (_e, id, draftId, text) => pipelineDo("pipeline:draft:edit", () => pipeline.editDraft(String(id), String(draftId), String(text ?? ""))));
+ipcMain.handle("pipeline:draft:drop", (_e, id, draftId) => pipelineDo("pipeline:draft:drop", () => pipeline.dropDraft(String(id), String(draftId))));
+// posting is the one step that writes to ADO, and only for the draft the user picked
+ipcMain.handle("pipeline:draft:post", (_e, id, draftId) =>
+  pipelineDo("pipeline:draft:post", async () => {
+    const tid = String(id);
+    if (!/^\d+$/.test(tid)) throw new Error(`#${tid} isn't an Azure DevOps work item, so it has no discussion to post to`);
+    const d = pipeline.findDraft(tid, String(draftId));
+    if (!d.text.trim()) throw new Error("The comment is empty");
+    await addComment(store, Number(tid), d.text);
+    return pipeline.dropDraft(tid, d.id);
+  })
+);
+ipcMain.handle("pipeline:pr:preflight", (_e, sessionId, ticketId, target) =>
+  safeAsync("pipeline:pr:preflight", () => {
+    const root = sessionOf(String(sessionId)).cwd;
+    return prPreflight(root, String(ticketId), target === "main" ? "main" : "dev", prDeps(root));
+  })()
+);
+ipcMain.handle("pipeline:pr:describe", (_e, sessionId, ticketId, title, base) =>
+  safeAsync("pipeline:pr:describe", async () => {
+    const s = sessionOf(String(sessionId));
+    const agent = askingAgent(s.agent ?? "claude");
+    const prompt = await prDescriptionPrompt(s.cwd, String(base), { id: String(ticketId), title: String(title ?? "") });
+    const text = cleanReply(await askAgent(prompt, { agent, bin: sessions.binFor(agent), run: userShellWithInput, env: paneEnv(), tag: "pr-description", model: "sonnet", timeoutMs: 180_000 }), /^(description)\s*:\s*/i);
+    if (!text) throw new Error("The model returned an empty description");
+    return { description: text, agent };
+  })()
+);
+// pushes the branch and opens the pull request — run only from the PR form's button
+ipcMain.handle("pipeline:pr:create", (_e, sessionId, ticketId, req) =>
+  pipelineDo("pipeline:pr:create", async () => {
+    const s = sessionOf(String(sessionId));
+    const target = req?.target === "main" ? "main" : "dev";
+    const base = String(req?.base ?? "");
+    const title = String(req?.title ?? "").trim();
+    if (!base) throw new Error("Pick the branch to merge into");
+    if (!title) throw new Error("The pull request needs a title");
+    const pre = await prPreflight(s.cwd, String(ticketId), target, prDeps(s.cwd));
+    if (!pre.branch) throw new Error("The worktree isn't on a branch");
+    if (pre.dirtyFiles) throw new Error(`Commit or stash the ${pre.dirtyFiles} uncommitted file${pre.dirtyFiles === 1 ? "" : "s"} first — they wouldn't be in the pull request`);
+    if (pre.existing && pre.base === base) throw new Error(`A pull request is already open from ${pre.branch}: ${pre.existing.url}`);
+    const url = await git(s.cwd, ["remote", "get-url", "origin"]);
+    const remote = parseRemote(url);
+    if (!remote) throw new Error(`origin (${url}) isn't on Azure DevOps or GitHub`);
+    await scmPush(s.cwd);
+    let made: { id: number; url: string };
+    try {
+      made = await openPr(remote, { branch: pre.branch, base, title, description: String(req?.description ?? ""), workItemId: String(ticketId) }, prDeps(s.cwd));
+    } catch (err) {
+      throw new Error(`The branch was pushed, but the pull request wasn't opened: ${prError(err)}`);
+    }
+    const description = String(req?.description ?? "");
+    return pipeline.addPr(
+      String(ticketId),
+      { target, provider: remote.provider, id: made.id, url: made.url, repo: remoteName(remote), branch: pre.branch, base, at: Date.now(), summary: description ? summaryOf(description) : undefined },
+      req?.ticketTitle ? String(req.ticketTitle) : undefined
+    );
+  })
+);
+// a short announcement for the people who use the system, from the ticket and its PRs
+ipcMain.handle("pipeline:comms", (_e, ticketId, title, details) =>
+  safeAsync("pipeline:comms", async () => {
+    const p = pipeline.get(String(ticketId));
+    const agent = askingAgent();
+    const prompt = [
+      `Write a short announcement for the people who use this system about a change that just shipped: ticket #${ticketId} "${String(title ?? "")}".`,
+      "Plain language, no internal jargon, branch names or ticket numbers; 3 to 6 sentences: what changed, who it affects, and anything they need to do.",
+      "Reply with the announcement only.",
+      "",
+      details ? `The ticket:\n${String(details).slice(0, 6000)}` : "",
+      ...(p?.prs ?? []).filter((x) => x.summary).map((x) => `What the pull request to ${x.base} did:\n${x.summary}`),
+    ].join("\n");
+    const text = cleanReply(await askAgent(prompt, { agent, bin: sessions.binFor(agent), run: userShellWithInput, env: paneEnv(), tag: "comms", model: "sonnet", timeoutMs: 180_000 }), /^(announcement)\s*:\s*/i);
+    if (!text) throw new Error("The model returned an empty announcement");
+    return { text, agent };
+  })()
 );
 // native folder/file picker for the Settings tab — no more typing paths
 // ---- transcript index: search every Claude/Codex conversation on this Mac ----

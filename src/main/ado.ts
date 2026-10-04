@@ -56,6 +56,19 @@ async function adoFetch(cfg: AdoConfig, url: string, init?: RequestInit): Promis
   return res.json();
 }
 
+/** An authenticated request to any Azure DevOps URL with the configured PAT (pull requests live per repository, not per project). */
+export async function adoRequest(store: Store, url: string, init?: RequestInit): Promise<any> {
+  return adoFetch(loadAdoConfig(store), url, init);
+}
+
+/** Plain text as ADO's HTML fields and comments expect it: escaped, one <div> per line so line breaks survive. */
+export function textToHtml(text: string): string {
+  return text
+    .split("\n")
+    .map((l) => `<div>${l.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") || "<br>"}</div>`)
+    .join("");
+}
+
 /** ADO descriptions are HTML; flatten to editable plain text. */
 function htmlToText(html: string): string {
   return html
@@ -267,7 +280,7 @@ export async function addComment(store: Store, id: number, text: string): Promis
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text: textToHtml(text) }),
     }
   );
   return {
@@ -289,12 +302,7 @@ export async function updateWorkItem(
   if (patch.title != null) ops.push({ op: "add", path: "/fields/System.Title", value: patch.title });
   if (patch.state != null) ops.push({ op: "add", path: "/fields/System.State", value: patch.state });
   if (patch.description != null) {
-    // plain text goes back as simple HTML paragraphs
-    const html = patch.description
-      .split("\n")
-      .map((l) => `<div>${l.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") || "<br>"}</div>`)
-      .join("");
-    ops.push({ op: "add", path: "/fields/System.Description", value: html });
+    ops.push({ op: "add", path: "/fields/System.Description", value: textToHtml(patch.description) });
   }
   if (!ops.length) throw new Error("Nothing to update");
   const r = await adoFetch(

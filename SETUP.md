@@ -99,7 +99,7 @@ Each person needs **their own** personal access token (PAT). The Dashboard's
 keyed to whoever owns the token — someone else's PAT would show you their work.
 
 1. In Azure DevOps: your avatar → **User settings** → **Personal access
-   tokens** → **New Token**. Scope: **Work Items → Read & Write**. Copy it.
+   tokens** → **New Token**. Scope: **Work Items → Read & Write**, plus **Code → Read & Write** if Mockingbird should open pull requests (the ticket pipeline). Copy it.
 2. Save it to a file **outside any git repo**, in your WorkTracker folder (any
    folder works — it just holds `config.json` and debrief notes):
 

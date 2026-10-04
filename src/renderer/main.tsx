@@ -19,6 +19,7 @@ import { activeGroupOf, dropInZone, layoutToRemember, overflowArea, parseZone, p
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon } from "./Icons";
 import { RunView } from "./RunView";
+import { PipelineDialog, PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
@@ -193,6 +194,9 @@ function App() {
   const [zoneSeats, setZoneSeats] = useState<Record<string, (string | null)[]>>(() => loadLS("mb.zones", {}));
   // an empty zone's "open a session here" picker, and a new session headed for a zone
   const [slotPick, setSlotPick] = useState<number | null>(null);
+  // the ticket pipeline opened from the grid (group bar, palette)
+  const pipelines = usePipelines();
+  const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string } | null>(null);
   const [pendingZone, setPendingZone] = useState<{ group: string; zone: number } | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
@@ -1144,6 +1148,22 @@ function App() {
 
   const focusedSession = sessions.find((s) => s.id === focused) ?? null;
 
+  /** Type a request into a session's pane and bring it up; the user reads it there and presses Return. */
+  const askSession = (id: string, text: string) => {
+    window.mb.sessionWrite(id, text);
+    jumpTo(id);
+  };
+  const openScmFor = (id: string) => {
+    setFocused(id);
+    showView("scm");
+  };
+  /** A ticket group's id and title, when the group is an ADO work item. */
+  const ticketOfGroup = (g: string | null): { id: string; title: string } | null => {
+    if (!g || !/^\d+$/.test(g)) return null;
+    const t = workSessions.find((s) => topOf(s) === g && s.ticketTitle)?.ticketTitle ?? "";
+    return { id: g, title: t };
+  };
+
   /** Open a file of the focused session's folder in its own editor tab. */
   const openInEditor = (path: string, o: { mode?: "file" | "diff"; status?: string; source?: DiffSource; line?: number | null } = {}) => {
     const s = focusedSession;
@@ -1309,6 +1329,8 @@ function App() {
           <DashboardBoard
             sessions={sessions}
             onJump={jumpTo}
+            onAskSession={askSession}
+            onOpenScm={openScmFor}
             onCreated={(s) => {
               refresh();
               jumpToSession(s);
@@ -1751,6 +1773,14 @@ function App() {
             return (
               <div className="groupbar">
                 <span className="gb-name">{groupTitle(activeGroup, topSessions)}</span>
+                {ticketOfGroup(activeGroup) &&
+                  (pipelines[activeGroup] ? (
+                    <StageChip p={pipelines[activeGroup]} onClick={() => setPipelineFor(ticketOfGroup(activeGroup))} />
+                  ) : (
+                    <button className="chip" data-tip="Ticket pipeline — track this ticket from coding to done" onClick={() => setPipelineFor(ticketOfGroup(activeGroup))}>
+                      Pipeline
+                    </button>
+                  ))}
                 <span style={{ marginLeft: "auto" }} />
                 <span className="flbl-info">
                   {gridSessions.filter((s) => topOf(s) === activeGroup).length} of {topSessions.length} shown
@@ -2211,6 +2241,9 @@ function App() {
                     },
                   },
                   { label: `Change group of ${focusedSession.ticketTitle ?? focusedSession.title}…`, run: () => setGroupDlg(focusedSession) },
+                  ...(ticketOfGroup(topOf(focusedSession))
+                    ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]
+                    : []),
                   {
                     label: `${pinnedSet.has(focusedSession.id) ? "Unpin" : "Pin"} ${focusedSession.ticketTitle ?? focusedSession.title}${pinnedSet.has(focusedSession.id) ? "" : " — keep it on screen across groups"}`,
                     run: () => togglePin([focusedSession.id]),
@@ -2239,6 +2272,23 @@ function App() {
             refresh();
           }}
           forceClose={forceClose}
+        />
+      )}
+
+      {pipelineFor && (
+        <PipelineDialog
+          ticketId={pipelineFor.id}
+          title={pipelineFor.title}
+          sessions={workSessions.filter((s) => topOf(s) === pipelineFor.id)}
+          onAskSession={(id, text) => {
+            setPipelineFor(null);
+            askSession(id, text);
+          }}
+          onOpenScm={(id) => {
+            setPipelineFor(null);
+            openScmFor(id);
+          }}
+          onClose={() => setPipelineFor(null)}
         />
       )}
 
@@ -2806,12 +2856,17 @@ function ticketsByColumn(
 function DashboardBoard({
   sessions,
   onJump,
+  onAskSession,
+  onOpenScm,
   onCreated,
 }: {
   sessions: SessionInfo[];
   onJump: (id: string) => void;
+  onAskSession: (sessionId: string, text: string) => void;
+  onOpenScm: (sessionId: string) => void;
   onCreated: (s: SessionInfo) => void;
 }) {
+  const pipelines = usePipelines();
   const [items, setItems] = useState<AdoWorkItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [stateCols, setStateCols] = useState<string[]>([]);
@@ -3017,14 +3072,16 @@ function DashboardBoard({
     setComments(null);
     setDraft("");
     window.mb.adoStates(it.type).then((r: string[] | { error: string }) => Array.isArray(r) && setTypeStates(r));
-    window.mb.adoComments(it.id).then((r: AdoComment[] | { error: string }) => {
+    loadComments(it.id);
+  };
+  const loadComments = (id: number) =>
+    window.mb.adoComments(id).then((r: AdoComment[] | { error: string }) => {
       if (Array.isArray(r)) setComments(r);
       else {
         setComments([]);
         setError(r.error);
       }
     });
-  };
 
   /** Optimistic state change (drag between columns or the detail dropdown). */
   const changeState = async (id: number, newState: string) => {
@@ -3266,6 +3323,7 @@ function DashboardBoard({
                           <span key={s.id} className={`dot sm ${s.status}`} />
                         ))}
                         <span>{live.length ? `${live.length} session${live.length === 1 ? "" : "s"}` : "no session"}</span>
+                        <StageChip p={pipelines[String(it.id)]} />
                         {it.assignedTo !== me && (
                           <span className="bc-who">{it.assignedTo || "Unassigned"}</span>
                         )}
@@ -3296,6 +3354,21 @@ function DashboardBoard({
             </div>
             <div className="bd-body">
               <div className="wi-form bd-main">
+                <PipelinePanel
+                  ticketId={String(detail.id)}
+                  title={detail.title}
+                  details={desc}
+                  sessions={linked}
+                  onAskSession={(id, text) => {
+                    setDetailId(null);
+                    onAskSession(id, text);
+                  }}
+                  onOpenScm={(id) => {
+                    setDetailId(null);
+                    onOpenScm(id);
+                  }}
+                  onPosted={() => loadComments(detail.id)}
+                />
                 <label>Title</label>
                 <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
                 <label>

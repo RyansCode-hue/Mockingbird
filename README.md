@@ -135,6 +135,18 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Ticket pipeline** — each ticket's stage (BA → coding → local testing →
+  PR to dev → stakeholder testing → approved → PR to main → staging/prod →
+  comms → done), kept locally, on a stage rail in the ticket dialog and as a
+  chip on board cards and the group bar. Each stage has its next step:
+  "Create PR to dev/main" checks the branch (commits, uncommitted files, the
+  ticket's Description/Security docs, a PR already open), writes the
+  description from the branch, then pushes and opens the PR — on Azure DevOps
+  linked to the work item, on GitHub through `gh`. Stakeholder feedback loops
+  back to local testing (and can go straight to the session); comms to users
+  are drafted from the ticket and its PRs. Every stage drafts a ticket comment
+  that posts only when you click Post. The promotion gates' checklists ride
+  along at the stages they guard.
 - **Grouping and snap layouts, finished** — moving a session into a group
   keeps your panes and opens just the moved one; a group header always
   restores the panes you last had; **pinned** panes (pane header, sidebar row
@@ -149,32 +161,17 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Ticket pipeline — "finish ticket" grown up.** Track where each ticket
-  actually is, not just its ADO column. The real lifecycle: creation → BA →
-  coding (sessions usually start here, sometimes at BA) → local testing →
-  PR into dev/UAT → stakeholder testing → feedback loops back to local
-  testing → approved → PR into prod/main → staging/prod testing → comms to
-  users → moved to Done at next standup. The ticket dialog gets a stage rail
-  showing that journey with per-stage actions: "create PR to dev" (commit,
-  push, open the ADO PR, link the work item, scaffold the ticket-doc folder —
-  Description + Security_Considerations per the team workflow), "record
-  stakeholder feedback" (loops the stage back), "create PR to main", "post
-  comms", "done". Reaching a stage drafts an ADO comment on the ticket (e.g.
-  "PR to dev opened" with the link and a summary of the change) that you
-  approve before it posts. Code review stages carry the security +
-  clean-code checklist. Stage state lives locally in Mockingbird; only the
-  comments and PRs you approve reach ADO.
-
-### Next
-
 - **Continue in the other agent.** Hand a session to Codex or Claude with a
   generated summary of what's done and what's next — for when one hits its usage
   limit or gets stuck.
+
+### Next
+
 - **Session presets**: one-click recurring setups (repo + branch scheme +
   kickoff prompt), e.g. "review session on dev", "test-runner shell".
 - **PR status in the pane rail.** Each pane shows its branch's pull request —
-  open, approved, changes requested, merged — once the ADO PR surface is wired
-  (with the ticket pipeline).
+  open, approved, changes requested, merged — using the pull request lookups
+  the ticket pipeline added.
 - **Editor intelligence.** Now that files are editable: go to definition,
   hover info, completions and rename from the languages' own servers
   (pyright, tsserver, a C# server), problems underlined as you type, and

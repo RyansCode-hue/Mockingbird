@@ -1677,3 +1677,52 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .zone-pick-row:hover { background: var(--fill-selected); }
 .zone-pick-row .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zone-pick .row { display: flex; justify-content: flex-end; gap: 6px; }
+/* ---- ticket pipeline (TicketPipeline.tsx) ---- */
+.pl { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.pl-rail { display: flex; gap: 2px; overflow-x: auto; padding-bottom: 2px; }
+.pl-step {
+  flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 58px;
+  border: none; background: transparent; padding: 4px 2px; border-radius: 5px; cursor: pointer;
+}
+.pl-step:hover { background: var(--fill-subtle); }
+.pl-dot {
+  width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--line-strong2);
+  font: 600 8px/11px var(--ui); color: var(--bg-app); text-align: center;
+}
+.pl-step.done .pl-dot { background: var(--teal); border-color: var(--teal); }
+.pl-step.on .pl-dot { border-color: var(--teal); box-shadow: inset 0 0 0 3px var(--bg-pane-header); background: var(--teal); }
+.pl-lbl { font: 500 9.5px var(--ui); color: var(--text-4); white-space: nowrap; }
+.pl-step.done .pl-lbl { color: var(--text-3); }
+.pl-step.on .pl-lbl { color: var(--text-1); font-weight: 600; }
+.pl-now { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font: 400 11.5px var(--ui); color: var(--text-1); }
+.pl-now > span:first-child { margin-right: auto; }
+.pl-dim { color: var(--text-4); font: 400 10.5px var(--ui); }
+.pl-h { display: flex; align-items: center; gap: 6px; font: 600 10.5px var(--ui); color: var(--text-2); margin-bottom: 4px; }
+.pl-count { font: 400 9.5px var(--mono); color: var(--text-4); }
+.pl-gate, .pl-form, .pl-drafts, .pl-list { border: 1px solid var(--line-soft); border-radius: 7px; padding: 9px 10px; display: flex; flex-direction: column; gap: 5px; }
+.pl label.pl-check, .modal .pl label.pl-check, .pl label.check-line, .modal .pl label.check-line {
+  display: flex; align-items: center; gap: 7px; margin: 0; text-transform: none; letter-spacing: 0;
+  font: 400 11px var(--ui); color: var(--text-2);
+}
+.pl label.pl-field, .modal .pl label.pl-field { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 0; }
+.pl label.pl-field > span { display: flex; align-items: center; gap: 8px; }
+.pl select { background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 10.5px var(--mono); }
+.pl textarea, .pl input[type=text] { width: 100%; background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 5px; padding: 6px 8px; font: 400 11px/1.55 var(--mono); resize: vertical; }
+.pl-facts { display: flex; flex-direction: column; gap: 4px; font: 400 10.5px var(--mono); color: var(--text-2); }
+.pl-facts > div { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pl-facts .ok { color: var(--teal-text); }
+.pl-facts .warn { color: var(--amber-text); }
+.pl-facts a, .pl-item a { color: var(--teal-text); cursor: pointer; text-decoration: underline; }
+.pl .mini { padding: 1px 6px; border: 1px solid var(--line-btn); border-radius: 4px; background: none; color: var(--text-3); font: 400 9.5px var(--mono); cursor: pointer; align-self: flex-start; }
+.pl .mini:hover:not(:disabled) { color: var(--text-1); border-color: var(--line-btn-hover); }
+.pl .row { display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-top: 4px; }
+.pl .row .pl-dim { margin-right: auto; }
+.pl-draft { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
+.pl-draft:first-of-type { border-top: none; }
+.pl-item { font: 400 11px var(--ui); color: var(--text-2); display: flex; gap: 8px; align-items: baseline; }
+.pl-modal { width: 720px; }
+.chip.stage { border: none; cursor: default; color: var(--teal-text); background: rgba(79, 179, 165, .12); }
+button.chip.stage[data-tip] { cursor: pointer; }
+.groupbar .chip { margin-left: 8px; }
+button.chip { border: none; cursor: pointer; }
+.bc-foot .chip.stage { margin-left: auto; }

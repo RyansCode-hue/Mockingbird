@@ -697,3 +697,115 @@ export function slugBranch(ticketId: string, ticketTitle: string): string {
     .replace(/^-+|-+$/g, "");
   return `${ticketId.replace(/^#/, "")}-${slug}`;
 }
+
+// ---- ticket pipeline ----------------------------------------------------------
+// Where each ticket actually is, kept locally (~/.mockingbird/pipeline.json):
+// nothing reaches Azure DevOps except comments and pull requests the user
+// approves one by one.
+
+export const TICKET_STAGES = [
+  { id: "ba", label: "BA" },
+  { id: "coding", label: "Coding" },
+  { id: "local-test", label: "Local testing" },
+  { id: "pr-dev", label: "PR to dev" },
+  { id: "stakeholder", label: "Stakeholder testing" },
+  { id: "approved", label: "Approved" },
+  { id: "pr-main", label: "PR to main" },
+  { id: "prod-test", label: "Staging / prod" },
+  { id: "comms", label: "Comms" },
+  { id: "done", label: "Done" },
+] as const;
+export type TicketStage = (typeof TICKET_STAGES)[number]["id"];
+export const stageLabel = (s: TicketStage): string => TICKET_STAGES.find((x) => x.id === s)?.label ?? s;
+
+export type PrTarget = "dev" | "main";
+
+export interface PipelinePr {
+  target: PrTarget;
+  provider: "ado" | "github";
+  id: number;
+  url: string;
+  repo: string;
+  branch: string;
+  base: string;
+  at: number;
+  /** The Summary section of its description, for the ticket comment and the comms draft. */
+  summary?: string;
+}
+
+/** A comment drafted when a ticket reaches a stage; it posts to ADO only when the user clicks Post. */
+export interface CommentDraft {
+  id: string;
+  stage: TicketStage;
+  text: string;
+  at: number;
+}
+
+export interface TicketPipeline {
+  ticketId: string;
+  title?: string;
+  stage: TicketStage;
+  history: { at: number; stage: TicketStage; note?: string }[];
+  prs: PipelinePr[];
+  feedback: { at: number; text: string }[];
+  drafts: CommentDraft[];
+  /** Promotion-gate checklist ticks, keyed "<gate>:<item>". */
+  checks: Record<string, boolean>;
+}
+
+/**
+ * The promotion gates (local → dev/UAT → staging → production) and what each
+ * should have before a ticket moves on, plus the clean-code review.
+ */
+export const GATES: { id: "dev" | "staging" | "prod"; title: string; at: TicketStage; items: { key: string; label: string }[] }[] = [
+  {
+    id: "dev",
+    title: "Before the PR to dev/UAT",
+    at: "local-test",
+    items: [
+      { key: "tests", label: "Tests pass" },
+      { key: "smoke", label: "Smoke-tested the feature locally" },
+      { key: "security-doc", label: "Security considerations doc drafted" },
+      { key: "silent-failures", label: "No silent failures: every catch logs, rethrows or surfaces" },
+      { key: "dry", label: "No duplicated logic; existing helpers reused" },
+      { key: "comments", label: "Comments explain the code, not the conversation" },
+    ],
+  },
+  {
+    id: "staging",
+    title: "Before the PR to main",
+    at: "approved",
+    items: [
+      { key: "peer-review", label: "Peer review completed" },
+      { key: "security-reviewed", label: "Security considerations doc reviewed, not just drafted" },
+      { key: "endpoints", label: "New endpoints verified for the right auth state" },
+      { key: "secrets", label: "No hardcoded secrets, credentials or environment-specific values" },
+    ],
+  },
+  {
+    id: "prod",
+    title: "Before production",
+    at: "prod-test",
+    items: [
+      { key: "inventory", label: "Endpoint inventory updated for new routes" },
+      { key: "sign-off", label: "Approver sign-off obtained" },
+      { key: "rollback", label: "Rollback plan noted, if the change is high risk" },
+    ],
+  },
+];
+
+/** What creating a pull request needs to know about a session's worktree. */
+export interface PrPreflight {
+  branch: string | null;
+  /** The branch the PR merges into, as it exists on origin (null when none of the usual names do). */
+  base: string | null;
+  bases: string[];
+  dirtyFiles: number;
+  /** Commits on the branch that aren't on the base. */
+  commits: number;
+  remote: { provider: "ado" | "github"; repo: string } | null;
+  /** The ticket's Description.md, when one exists in the worktree. */
+  docs: string | null;
+  /** A pull request already open from this branch to the base. */
+  existing: { id: number; url: string } | null;
+}

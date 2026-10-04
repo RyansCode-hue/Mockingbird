@@ -1,13 +1,13 @@
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { git } from "./git";
-import { quote, type ShellResult } from "./shell";
+import { askAgent, cleanReply, type ShellRunner } from "./headless";
 import type { AgentKind } from "../shared/types";
+
+export type { ShellRunner } from "./headless";
 
 const MAX_DIFF_CHARS = 60_000;
 const MAX_NEW_FILE_CHARS = 8_000;
-const TIMEOUT_MS = 120_000;
 
 export interface CommitContext {
   /** "staged" when something is staged; otherwise "all" — what Commit would stage and commit. */
@@ -96,74 +96,14 @@ export function commitPrompt(c: CommitContext): string {
 
 /** The message alone: models sometimes wrap it in fences or quotes, or label it. */
 export function cleanMessage(raw: string): string {
-  let s = raw.trim();
-  const fence = /^```[a-z]*\n([\s\S]*?)\n```$/.exec(s);
-  if (fence) s = fence[1].trim();
-  s = s.replace(/^(commit message|message)\s*:\s*/i, "");
-  if (/^["'`].*["'`]$/s.test(s) && !s.slice(1, -1).includes(s[0])) s = s.slice(1, -1).trim();
-  return s;
+  return cleanReply(raw);
 }
 
-/**
- * One headless turn with no tools, no MCP servers and nothing saved: the diff
- * is in the prompt, so the model only writes. Claude runs a fast model; Codex
- * runs the user's default model at low effort, read-only.
- */
-export function claudeCommitCommand(bin: string): string {
-  return [quote(bin), "-p", "--model", "haiku", "--output-format", "json", "--tools", quote(""), "--strict-mcp-config", "--no-session-persistence"].join(" ");
-}
-
-export function codexCommitCommand(bin: string, lastFile: string): string {
-  return [
-    quote(bin),
-    "exec",
-    "--ephemeral",
-    "--skip-git-repo-check",
-    "-s read-only",
-    "--disable apps --disable plugins",
-    `-c ${quote("mcp_servers={}")}`,
-    `-c ${quote('approval_policy="never"')}`,
-    `-c ${quote('model_reasoning_effort="low"')}`,
-    `-o ${quote(lastFile)}`,
-    "-",
-  ].join(" ");
-}
-
-export type ShellRunner = (cmd: string, input: string, opts: { cwd: string; env: Record<string, string>; timeoutMs: number }) => Promise<ShellResult>;
-
-/**
- * Ask an agent's CLI for a commit message. It runs in a scratch folder, so no
- * project instructions or settings load, tagged so its hook events are never
- * mistaken for a pane's.
- */
+/** Ask an agent's CLI for a commit message (see askAgent). */
 export async function generateCommitMessage(root: string, agent: AgentKind, bin: string, run: ShellRunner, env: Record<string, string>): Promise<{ message: string; scope: CommitContext["scope"] }> {
   if (!bin.includes("/")) throw new Error(`${agent === "codex" ? "Codex" : "Claude Code"} isn't installed`);
   const ctx = await commitContext(root);
-  const prompt = commitPrompt(ctx);
-  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mb-commit-"));
-  const opts = { cwd: tmp, env: { ...env, MOCKINGBIRD_SESSION: `commit-message-${path.basename(tmp)}` }, timeoutMs: TIMEOUT_MS };
-  try {
-    let text: string;
-    if (agent === "claude") {
-      const r = await run(claudeCommitCommand(bin), prompt, opts);
-      let out: any;
-      try {
-        out = JSON.parse(r.out);
-      } catch {
-        throw new Error(r.out.trim().slice(0, 300) || `claude exited with code ${r.code}`);
-      }
-      if (r.code !== 0 || out.is_error) throw new Error(String(out.result ?? `claude exited with code ${r.code}`).slice(0, 300));
-      text = String(out.result ?? "");
-    } else {
-      const last = path.join(tmp, "message.txt");
-      const r = await run(codexCommitCommand(bin, last), prompt, opts);
-      text = await fs.promises.readFile(last, "utf8").catch(() => "");
-      if (r.code !== 0 || !text.trim()) throw new Error((r.out.split("\n").filter((l) => /error/i.test(l)).pop() ?? r.out).trim().slice(0, 300) || `codex exited with code ${r.code}`);
-    }
-    const message = cleanMessage(text);
-    if (!message) throw new Error("The model returned an empty message");
-    return { message, scope: ctx.scope };
-  } finally {
-    await fs.promises.rm(tmp, { recursive: true, force: true });
-  }
+  const message = cleanMessage(await askAgent(commitPrompt(ctx), { agent, bin, run, env, tag: "commit-message" }));
+  if (!message) throw new Error("The model returned an empty message");
+  return { message, scope: ctx.scope };
 }
