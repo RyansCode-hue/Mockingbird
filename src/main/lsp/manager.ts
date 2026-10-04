@@ -269,7 +269,13 @@ export class LspManager {
     return {};
   }
 
-  private schedulePull(s: Server, file: string): void {
+  /**
+   * Ask a pull-diagnostics server for a file's problems once typing settles.
+   * An answer for text that has changed since is dropped (a newer request is
+   * coming, and answers can arrive out of order); a failed request is tried
+   * once more before the failure is reported.
+   */
+  private schedulePull(s: Server, file: string, retry = true): void {
     if (!s.caps.diagnosticProvider) return; // this server pushes its problems instead
     clearTimeout(s.pulls.get(file));
     s.pulls.set(
@@ -278,13 +284,17 @@ export class LspManager {
         s.pulls.delete(file);
         const doc = s.docs.get(file);
         if (!doc) return;
+        const version = doc.version;
         try {
           const r = await s.conn.request("textDocument/diagnostic", { textDocument: { uri: doc.uri } });
+          if (s.docs.get(file) !== doc || doc.version !== version) return;
           if (r?.kind === "full") this.deps.onDiagnostics(file, diagnostics(r.items));
         } catch (err) {
+          if (s.conn.isClosed) return; // the close already says why
+          if (retry) return this.schedulePull(s, file, false);
           this.deps.onStatus({ server: s.spec.id, root: s.root, state: "ready", message: `Couldn't read problems: ${(err as Error).message}` });
         }
-      }, PULL_DELAY_MS)
+      }, retry ? PULL_DELAY_MS : 1000)
     );
   }
 
