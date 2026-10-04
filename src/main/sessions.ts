@@ -121,7 +121,11 @@ export class SessionManager {
     const wanted =
       req.branchName?.trim() ||
       (req.ticketId && req.ticketTitle ? slugBranch(req.ticketId, req.ticketTitle) : null);
-    if (repoPath && req.useWorktree) {
+    if (req.cwd) {
+      cwd = expandHome(req.cwd);
+      if (!fs.existsSync(cwd)) throw new Error(`${cwd} doesn't exist any more`);
+      branch = req.branchName?.trim() || null;
+    } else if (repoPath && req.useWorktree) {
       branch = wanted || `mb-${Date.now().toString(36)}`;
       cwd = await createWorktree(repoPath, branch, req.baseBranch);
     } else if (repoPath && wanted) {

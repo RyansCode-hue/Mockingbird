@@ -32,6 +32,7 @@ import { PipelineStore } from "./pipeline";
 import { openPr, parseRemote, prDescriptionPrompt, prError, prPreflight, remoteName, summaryOf } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { git } from "./git";
+import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
@@ -839,6 +840,56 @@ ipcMain.handle("pipeline:pr:create", (_e, sessionId, ticketId, req) =>
     );
   })
 );
+// ---- continue in the other agent: a handoff written from the session's conversation ----
+const otherAgent = (a: AgentKind): AgentKind => (a === "claude" ? "codex" : "claude");
+const agentName = (a: AgentKind) => (a === "codex" ? "Codex" : "Claude Code");
+// the agent taking over writes the handoff: the one handing over may be out of usage
+ipcMain.handle("handoff:draft", (_e, id) =>
+  safeAsync("handoff:draft", async () => {
+    const s = sessionOf(String(id));
+    if (s.shell) throw new Error("A terminal has no agent conversation to hand over");
+    const from: AgentKind = s.agent ?? "claude";
+    const to = otherAgent(from);
+    if (!sessions.binFor(to).includes("/")) throw new Error(`${agentName(to)} isn't installed — set it up in Settings → Agents`);
+    const conv = s.conversation?.id ?? s.conversations?.at(-1);
+    let digest = "";
+    if (conv && transcripts) {
+      await transcripts.sync();
+      const files = transcripts.filesOf(conv);
+      const lines = (await Promise.all(files.map((f) => transcriptLines(f.path)))).flat();
+      digest = transcriptDigest(lines, files[0]?.agent ?? from, conv);
+    }
+    if (!digest) {
+      const why = !conv ? "Mockingbird hasn't seen this session's conversation yet" : transcriptsProblem ? `the conversation index isn't available (${transcriptsProblem})` : "its conversation isn't in the index yet";
+      throw new Error(`Couldn't read the conversation: ${why}. Write the handoff yourself below.`);
+    }
+    const prompt = handoffPrompt({ from, to, cwd: s.cwd, title: s.ticketTitle ?? s.title, digest, repo: await repoState(s.cwd) });
+    const handoff = cleanReply(await askAgent(prompt, { agent: to, bin: sessions.binFor(to), run: userShellWithInput, env: paneEnv(), tag: "handoff", model: "sonnet", timeoutMs: 240_000 }), /^(handoff)\s*:\s*/i);
+    if (!handoff) throw new Error("The model returned an empty handoff");
+    return { handoff, from, to };
+  })()
+);
+// a session of the other agent in the same folder and group, started with the handoff
+ipcMain.handle("handoff:start", (_e, id, handoff) =>
+  safeAsync("handoff:start", async () => {
+    const s = sessionOf(String(id));
+    const text = String(handoff ?? "").trim();
+    if (!text) throw new Error("The handoff is empty");
+    const from: AgentKind = s.agent ?? "claude";
+    const to = otherAgent(from);
+    return sessions.create({
+      repoPath: s.repoPath,
+      cwd: s.cwd,
+      branchName: s.branch ?? undefined,
+      useWorktree: false,
+      agent: to,
+      title: `${s.ticketTitle ?? s.title} · ${to}`,
+      taskGroup: s.taskGroup ?? undefined,
+      initialPrompt: handoffKickoff(from, text),
+    });
+  })()
+);
+
 // a short announcement for the people who use the system, from the ticket and its PRs
 ipcMain.handle("pipeline:comms", (_e, ticketId, title, details) =>
   safeAsync("pipeline:comms", async () => {

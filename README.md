@@ -135,6 +135,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Continue in the other agent** — ⇄ on a pane (or ⌘K) hands its task to
+  Codex or Claude: the agent taking over reads the conversation and the
+  worktree and writes a handoff (goal, done, in progress, next steps, watch
+  out for), which you can edit before a new session starts from it in the
+  same folder, branch and group — optionally closing the old one.
 - **Ticket pipeline** — each ticket's stage (BA → coding → local testing →
   PR to dev → stakeholder testing → approved → PR to main → staging/prod →
   comms → done), kept locally, on a stage rail in the ticket dialog and as a
@@ -161,14 +166,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Continue in the other agent.** Hand a session to Codex or Claude with a
-  generated summary of what's done and what's next — for when one hits its usage
-  limit or gets stuck.
+- **Session presets**: one-click recurring setups (repo + branch scheme +
+  kickoff prompt), e.g. "review session on dev", "test-runner shell".
 
 ### Next
 
-- **Session presets**: one-click recurring setups (repo + branch scheme +
-  kickoff prompt), e.g. "review session on dev", "test-runner shell".
 - **PR status in the pane rail.** Each pane shows its branch's pull request —
   open, approved, changes requested, merged — using the pull request lookups
   the ticket pipeline added.

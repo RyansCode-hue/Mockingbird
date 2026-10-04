@@ -166,6 +166,8 @@ export interface NewSessionRequest {
   resumeSessionId?: string; // claude --resume <id> (imports)
   title?: string; // explicit title override
   reuseId?: string; // keep a relaunched session's id so grid layout/groups survive restarts
+  /** Open in this existing folder as it is — continuing another session's worktree: no new worktree, no branch switch. */
+  cwd?: string;
   debrief?: boolean; // marks WorkTracker debrief sessions
   baseBranch?: string; // new branch: fetch origin/<base> first and branch off it (dev/uat flow)
   initialPrompt?: string; // sent to the claude session once it's up (e.g. the ADO ticket)

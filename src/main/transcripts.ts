@@ -38,7 +38,8 @@ export interface SearchHit extends ConversationRow {
 /** What one transcript line contributes. */
 export interface Parsed {
   conv?: Partial<ConversationRow> & { id: string; firstPrompt?: string };
-  chunks: { text: string; at: number; kind: "message" | "tool" }[];
+  /** `role` says who wrote a message (the index doesn't store it; a handoff digest uses it). */
+  chunks: { text: string; at: number; kind: "message" | "tool"; role?: "user" | "assistant" }[];
   usage?: { id: string; at: number; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
@@ -81,7 +82,7 @@ export function parseClaudeLine(line: string, fileConv: string): Parsed {
     const content = typeof m.content === "string" ? [{ type: "text", text: m.content }] : Array.isArray(m.content) ? m.content : [];
     for (const c of content) {
       if (c?.type === "text" && typeof c.text === "string" && c.text.trim() && !isNoise(c.text)) {
-        out.chunks.push({ text: clip(c.text, MAX_TEXT), at, kind: "message" });
+        out.chunks.push({ text: clip(c.text, MAX_TEXT), at, kind: "message", role: d.type });
         if (d.type === "user" && !d.isSidechain) conv.firstPrompt = clip(firstLine(c.text), TITLE_CHARS);
       } else if (c?.type === "tool_use") {
         const text = toolInputText(String(c.name ?? "tool"), c.input);
@@ -153,7 +154,7 @@ export function parseCodexLine(line: string, fileConv: string): Parsed {
     for (const c of Array.isArray(p.content) ? p.content : []) {
       const text = typeof c?.text === "string" ? c.text : "";
       if (!text.trim() || isNoise(text) || /^<(environment_context|user_instructions|permissions)/.test(text.trim())) continue;
-      out.chunks.push({ text: clip(text, MAX_TEXT), at, kind: "message" });
+      out.chunks.push({ text: clip(text, MAX_TEXT), at, kind: "message", role: p.role });
       if (p.role === "user") out.conv!.firstPrompt = clip(firstLine(text), TITLE_CHARS);
     }
   } else if (p.type === "function_call" || p.type === "local_shell_call") {
@@ -420,6 +421,11 @@ export class TranscriptIndex {
         )
         .all(...args) as unknown as UsageRow[]
     ).map((r) => ({ ...r, model: r.model ?? null }));
+  }
+
+  /** The transcript files of a conversation (a Codex conversation can span several). */
+  filesOf(conv: string): { path: string; agent: AgentKind }[] {
+    return this.db.prepare("SELECT path, agent FROM files WHERE conv = ? ORDER BY path").all(conv) as { path: string; agent: AgentKind }[];
   }
 
   stats(): { conversations: number; files: number } {

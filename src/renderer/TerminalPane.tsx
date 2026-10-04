@@ -283,6 +283,7 @@ export function TerminalPane({
   onPin,
   pinNote,
   tabDrop,
+  onHandoff,
 }: {
   session: SessionInfo;
   focused: boolean;
@@ -317,6 +318,8 @@ export function TerminalPane({
   pinNote?: string;
   /** A session dropped on the header joins this pane as a tab (a drop on the body moves panes). */
   tabDrop?: { over: (e: React.DragEvent) => void; drop: (e: React.DragEvent) => void; cue?: string };
+  /** Continue this session's task in the other agent. */
+  onHandoff?: () => void;
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const dead = session.status === "dead";
@@ -806,6 +809,18 @@ export function TerminalPane({
               }}
             >
               +
+            </button>
+          )}
+          {onHandoff && (
+            <button
+              className="icon"
+              title={`Continue in ${session.agent === "codex" ? "Claude Code" : "Codex"} — hand this task over with a summary of what's done and what's next`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onHandoff();
+              }}
+            >
+              ⇄
             </button>
           )}
           {onPin && (

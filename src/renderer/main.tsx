@@ -20,6 +20,7 @@ import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon } from "./Icons";
 import { RunView } from "./RunView";
 import { PipelineDialog, PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
+import { HandoffDialog, otherAgent } from "./Handoff";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
@@ -197,6 +198,8 @@ function App() {
   // the ticket pipeline opened from the grid (group bar, palette)
   const pipelines = usePipelines();
   const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string } | null>(null);
+  // "continue in the other agent" for this session
+  const [handoffFor, setHandoffFor] = useState<SessionInfo | null>(null);
   const [pendingZone, setPendingZone] = useState<{ group: string; zone: number } | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
@@ -1945,6 +1948,7 @@ function App() {
                     pinNote={visitor(s)}
                     onResume={() => resumeDead(s)}
                     onCleanup={() => requestClose(s)}
+                    onHandoff={s.shell ? undefined : () => setHandoffFor(s)}
                     resize={resize}
                   />
                 );
@@ -2241,6 +2245,9 @@ function App() {
                     },
                   },
                   { label: `Change group of ${focusedSession.ticketTitle ?? focusedSession.title}…`, run: () => setGroupDlg(focusedSession) },
+                  ...(!focusedSession.shell
+                    ? [{ label: `Continue in ${otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude Code"} — hand ${focusedSession.ticketTitle ?? focusedSession.title} over with a summary`, run: () => setHandoffFor(focusedSession) }]
+                    : []),
                   ...(ticketOfGroup(topOf(focusedSession))
                     ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]
                     : []),
@@ -2272,6 +2279,28 @@ function App() {
             refresh();
           }}
           forceClose={forceClose}
+        />
+      )}
+
+      {handoffFor && (
+        <HandoffDialog
+          session={handoffFor}
+          onClose={() => setHandoffFor(null)}
+          onStarted={async (next, closeOld) => {
+            const old = handoffFor;
+            setHandoffFor(null);
+            await refresh();
+            if (closeOld) {
+              await window.mb.killSession(old.id, false); // kept under Previous; its worktree is the new session's
+              disposeTerm(old.id);
+              setShown((p) => (p.includes(old.id) ? p.map((x) => (x === old.id ? next.id : x)) : [...p, next.id]));
+              refresh();
+            } else {
+              setShown((p) => placeBeside(p.includes(next.id) ? p : [...p, next.id], next.id, old.id, "after"));
+            }
+            setFocused(next.id);
+            setTimeout(() => focusTerm(next.id), 50);
+          }}
         />
       )}
 
