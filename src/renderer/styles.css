@@ -1654,4 +1654,4 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 /* token meters */
 .rail .cell .v .share { color: var(--amber-text); }
 .usage-today .usage-label { color: var(--text-2); }
-.rail .cell.meter { margin-left: auto; border-right: none; border-left: 1px solid var(--line-soft); text-align: right; }
+.rail .cell.meter { margin-left: auto; border-right: none; border-left: 1px solid var(--line-soft); }
