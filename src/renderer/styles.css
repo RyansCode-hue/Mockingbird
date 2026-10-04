@@ -1729,3 +1729,7 @@ button.chip { border: none; cursor: pointer; }
 /* New session: presets start in one click */
 .preset-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; }
 .preset-chips button { padding: 3px 10px; font-size: 11px; }
+/* pane rail: the branch's pull request */
+.rail .cell .v.pr-approved, .rail .cell .v.pr-merged { color: var(--teal-text); }
+.rail .cell .v.pr-changes { color: var(--red); }
+.rail .cell .v.pr-closed, .rail .cell .v.dim { color: var(--text-4); }

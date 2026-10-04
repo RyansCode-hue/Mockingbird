@@ -4,7 +4,7 @@ import { PinIcon } from "./Icons";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { formatShare, formatTokens, totalTokens, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
+import { formatShare, formatTokens, totalTokens, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
 import { stripMouseEnables } from "./mouseModes";
 import { useFolderRefresh } from "./folderWatch";
 
@@ -256,6 +256,8 @@ export function shortReason(reason: string | null): string {
   return reason;
 }
 
+const PR_LABEL: Record<PrState["state"], string> = { draft: "draft", open: "open", approved: "approved", changes: "changes requested", merged: "merged", closed: "closed" };
+
 /** One xterm attached to a PTY session. Terminals are cached so re-layout keeps scrollback. */
 export function TerminalPane({
   session,
@@ -376,6 +378,20 @@ export function TerminalPane({
   };
   useEffect(readGit, [gitRoot]);
   useFolderRefresh(gitRoot, readGit, 30_000);
+
+  // the branch's pull request, for the rail (the main process caches lookups for 2 minutes)
+  const [pr, setPr] = useState<PrStatus | null>(null);
+  const prRoot = density === "max" && gitRoot ? gitRoot : null;
+  const readPr = (fresh = false) => {
+    if (!prRoot) return setPr(null);
+    window.mb.prStatus(prRoot, fresh).then((r: PrStatus | { error: string }) => setPr("error" in r && !("at" in r) ? { branch: null, pr: null, error: r.error, at: Date.now() } : (r as PrStatus)));
+  };
+  useEffect(() => {
+    readPr();
+    if (!prRoot) return;
+    const t = setInterval(() => !document.hidden && readPr(), 180_000);
+    return () => clearInterval(t);
+  }, [prRoot, git?.branch]);
 
   useEffect(() => {
     if (dead) return; // dead panes show the resume body instead of the terminal
@@ -861,6 +877,27 @@ export function TerminalPane({
             <div className={`cell ${onOpenChanges ? "click" : ""}`} title={gitTitle} onClick={onOpenChanges}>
               <span className="k">Git</span>
               <span className={`v ${git!.dirty ? "red" : "teal"}`}>{gitStr}</span>
+            </div>
+          )}
+          {pr && (pr.pr || pr.error) && (
+            <div
+              className="cell click"
+              title={
+                pr.pr
+                  ? [`${pr.pr.title}`, `${pr.branch} → ${pr.pr.base}`, ...pr.pr.reviews, pr.pr.conflicts ? "It has merge conflicts with its base." : "", "Click to open it."].filter(Boolean).join("\n")
+                  : `Couldn't check for a pull request: ${pr.error}\nClick to check again.`
+              }
+              onClick={() => (pr.pr ? window.mb.openExternal(pr.pr.url) : readPr(true))}
+            >
+              <span className="k">PR</span>
+              {pr.pr ? (
+                <span className={`v pr-${pr.pr.conflicts ? "changes" : pr.pr.state}`}>
+                  #{pr.pr.id} · {PR_LABEL[pr.pr.state]}
+                  {pr.pr.conflicts ? " · conflicts" : ""}
+                </span>
+              ) : (
+                <span className="v dim">couldn't check</span>
+              )}
             </div>
           )}
           {session.repoPath && (

@@ -1466,7 +1466,8 @@ Each item ships on its own: tests + build + harness check → ff main → README
 - [x] Session presets
   Review: request builder tests (8: checkout/existing/new unique branch, kickoff, terminal command typed after start).
   Harness: Settings → Presets edit + save, New session chips start a preset.
-- [ ] PR status in the pane rail
+- [x] PR status in the pane rail
+  Review: state mapping + lookup tests (5); real gh lookup on this repo's main → none (gh's "no pull requests" isn't an error).
 - [ ] Editor intelligence (language servers)
 - [ ] Cross-agent review
 - [ ] Undo an agent's turn (snapshot refs)

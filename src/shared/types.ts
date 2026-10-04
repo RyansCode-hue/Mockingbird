@@ -835,3 +835,24 @@ export interface PrPreflight {
   /** A pull request already open from this branch to the base. */
   existing: { id: number; url: string } | null;
 }
+
+/** A branch's pull request as the pane rail shows it. */
+export interface PrState {
+  id: number;
+  url: string;
+  title: string;
+  base: string;
+  state: "draft" | "open" | "approved" | "changes" | "merged" | "closed";
+  /** It can't merge cleanly into its base. */
+  conflicts: boolean;
+  /** Reviewers and where each stands, e.g. "Sam: approved". */
+  reviews: string[];
+}
+
+/** The lookup for a pane: its PR, none (`pr: null`), or why it couldn't be checked. */
+export interface PrStatus {
+  branch: string | null;
+  pr: PrState | null;
+  error?: string;
+  at: number;
+}

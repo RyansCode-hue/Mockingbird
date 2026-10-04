@@ -135,6 +135,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **PR status in the pane rail** — each pane's branch shows its pull
+  request (Azure DevOps or GitHub): open, draft, approved, changes requested,
+  merged or closed, with conflicts flagged and who reviewed it on hover;
+  click to open it.
 - **Session presets** — one-click setups in Settings → Presets (or "Save as
   preset…" in New session): Claude, Codex or a terminal; a repo; the branch
   as checked out, an existing branch, or a fresh one from a pattern like
@@ -172,16 +176,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **PR status in the pane rail.** Each pane shows its branch's pull request —
-  open, approved, changes requested, merged — using the pull request lookups
-  the ticket pipeline added.
-
-### Next
-
 - **Editor intelligence.** Now that files are editable: go to definition,
   hover info, completions and rename from the languages' own servers
   (pyright, tsserver, a C# server), problems underlined as you type, and
   format on save.
+
+### Next
+
 - **Cross-agent review.** A button in Source Control starts a session with
   the *other* agent (Codex for a Claude branch, Claude for a Codex one) to review
   the branch's diff, and the findings come back to the original session over

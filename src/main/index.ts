@@ -34,10 +34,11 @@ import { askAgent, cleanReply } from "./headless";
 import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
+import { prStatusFor } from "./prStatus";
 import { checkForUpdate, updateRepo } from "./updates";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, Meters, ModelCatalog } from "../shared/types";
+import type { AgentKind, Meters, ModelCatalog, PrStatus } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 
 const store = new Store();
@@ -888,6 +889,31 @@ ipcMain.handle("handoff:start", (_e, id, handoff) =>
       taskGroup: s.taskGroup ?? undefined,
       initialPrompt: handoffKickoff(from, text),
     });
+  })()
+);
+
+// ---- PR status in the pane rail: the branch's pull request, looked up at most every 2 minutes per folder ----
+const PR_TTL_MS = 120_000;
+const prCache = new Map<string, PrStatus>();
+const prInFlight = new Map<string, Promise<PrStatus>>();
+ipcMain.handle("pr:status", (_e, cwd, fresh) =>
+  safeAsync("pr:status", async () => {
+    const root = String(cwd);
+    if (!sessions.list().some((s) => s.cwd === root)) throw new Error("No session runs in that folder");
+    const hit = prCache.get(root);
+    if (hit && !fresh && Date.now() - hit.at < PR_TTL_MS) {
+      // a branch switch makes the cached answer someone else's
+      const branch = (await git(root, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] })) || null;
+      if (branch === hit.branch) return hit;
+    }
+    let p = prInFlight.get(root);
+    if (!p) {
+      p = prStatusFor(root, prDeps(root)).finally(() => prInFlight.delete(root));
+      prInFlight.set(root, p);
+    }
+    const st = await p;
+    prCache.set(root, st);
+    return st;
   })()
 );
 

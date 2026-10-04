@@ -185,6 +185,7 @@ const api = {
   handoffDraft: (sessionId: string) => ipcRenderer.invoke("handoff:draft", sessionId),
   handoffStart: (sessionId: string, handoff: string) => ipcRenderer.invoke("handoff:start", sessionId, handoff),
   presetStart: (id: string) => ipcRenderer.invoke("presets:start", id),
+  prStatus: (cwd: string, fresh?: boolean) => ipcRenderer.invoke("pr:status", cwd, fresh),
   pipelineAll: () => ipcRenderer.invoke("pipeline:all"),
   pipelineStage: (id: string, stage: string, title?: string) => ipcRenderer.invoke("pipeline:stage", id, stage, title),
   pipelineFeedback: (id: string, text: string) => ipcRenderer.invoke("pipeline:feedback", id, text),
