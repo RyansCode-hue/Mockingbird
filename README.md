@@ -168,9 +168,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
   push, open the ADO PR, link the work item, scaffold the ticket-doc folder —
   Description + Security_Considerations per the team workflow), "record
   stakeholder feedback" (loops the stage back), "create PR to main", "post
-  comms", "done". Code review stages carry the security + clean-code
-  checklist. Open design question: where stage state lives — ADO custom
-  field, ticket comment convention, or the WorkTracker folder.
+  comms", "done". Reaching a stage drafts an ADO comment on the ticket (e.g.
+  "PR to dev opened" with the link and a summary of the change) that you
+  approve before it posts. Code review stages carry the security +
+  clean-code checklist. Open design question: where stage state lives — ADO
+  custom field, ticket comment convention, or the WorkTracker folder.
+- **Continue in the other agent.** Hand a session to Codex or Claude with a
+  generated summary of what's done and what's next — for when one hits its usage
+  limit or gets stuck.
+- **Session presets**: one-click recurring setups (repo + branch scheme +
+  kickoff prompt), e.g. "review session on dev", "test-runner shell".
+- **PR status in the pane rail.** Each pane shows its branch's pull request —
+  open, approved, changes requested, merged — once the ADO PR surface is wired
+  (with the ticket pipeline).
 - **Editor intelligence.** Now that files are editable: go to definition,
   hover info, completions and rename from the languages' own servers
   (pyright, tsserver, a C# server), problems underlined as you type, and
@@ -202,38 +212,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
   switch between auto-send and leave-in-prompt (today it's one global
   setting), and a "Team" broadcast from the group bar that asks every session in
   a group for a status report.
-- **Codex parity.** Plan usage shipped (read from Codex's session logs, since
-  it has no official source). Still to do: a watched test of the
-  PermissionRequest → amber path, and model suggestions in New Session instead
-  of a free-text field.
+- **Codex parity.** Plan usage and model choices shipped (read from Codex's
+  own logs and model cache). Still to do: a watched test of the
+  PermissionRequest → amber path.
 - **Notification controls**: per-session mute and app-wide quiet hours — today
   every waiting flip notifies, which trains you to ignore them.
 - **Scrollback that survives restarts**: resumed sessions get their
   conversation back via `--continue`, but the pane's visual history starts
   empty; persist per-session scrollback to disk and replay on relaunch.
-- **Draft comment queue** (design 1d): compose ADO comments in the ticket
-  dialog offline-style, review the queue, then post in one batch — instead of
-  posting immediately.
 
 ### Later
 
 - **Signed + notarized builds.** Updating is covered by the in-app Update
   (pull, build, restart). What's left needs an Apple Developer ID: no
   right-click→Open for new users, and updates that install in the background.
-- **Inbox mode.** A queue of everything blocked on you — waiting sessions and
-  Collaborate requests — each with its question and an inline reply box,
-  answered one after another. Notifications, the menu-bar list, ⌥⇥ and the
-  Collaborate badge cover most of this today; worth it once many things wait
-  at once.
-- **Continue in the other agent.** Hand a session to Codex or Claude with a
-  generated summary of what's done and what's next — for when one hits its usage
-  limit or gets stuck.
-- **Run the app per worktree.** A Run button that starts the repo's dev server
-  on a free port, so two branches of the same app don't fight over
-  `localhost:3000`, with the URL shown in the pane rail.
-- **Session presets**: one-click recurring setups (repo + branch scheme +
-  kickoff prompt), e.g. "review session on dev", "test-runner shell".
 - **Weekly rollup** (sits on the indexer): compose the daily debrief digests
   and transcript stats into a weekly log with per-ticket time and outcomes.
-- **Richer pane rail** (design handoff, sits on the indexer): token/cost per
-  session and PR status once the ADO PR surface is wired.
