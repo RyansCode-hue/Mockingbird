@@ -14,9 +14,10 @@ import { UpdatePanel } from "./UpdatePanel";
 import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
-import { DragLabel, beginDrag, cue, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
+import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
+import { activeGroupOf, dropInZone, layoutToRemember, overflowArea, parseZone, placeInZones, pruneToGroup, seating, switchTo } from "./gridModel";
 import { resetText, pctNow } from "./usageFormat";
-import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon } from "./Icons";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon } from "./Icons";
 import { RunView } from "./RunView";
 import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
@@ -55,10 +56,9 @@ type ColsPref = number | "auto";
 /**
  * Snap-layout templates, in the spirit of Windows' snap layouts: pick an
  * arrangement rather than a column count. `zones` are CSS grid areas
- * (row-start / col-start / row-end / col-end) assigned to panes in order.
- * A template only governs when the pane count matches its zone count —
- * with fewer panes the zones collapse so nothing empty holds space, with more
- * the extras flow into equal cells below.
+ * (row-start / col-start / row-end / col-end). Panes fill the zones in order
+ * unless dragged into one (gridModel.placeInZones); a zone with no pane offers
+ * to open a session there, and panes beyond the zones flow into rows below.
  */
 interface GridLayout {
   id: string;
@@ -90,6 +90,59 @@ function LayoutThumb({ layout }: { layout: GridLayout }) {
         <i key={i} style={{ gridArea: z }} />
       ))}
     </span>
+  );
+}
+
+/**
+ * An empty snap-layout zone, like Windows' Snap Assist: open one of the group's
+ * minimized sessions here, start a new one, or drop a pane or session in.
+ */
+function ZoneSlot({
+  area,
+  cue: dropCue,
+  picking,
+  onPick,
+  minimized,
+  onOpen,
+  onNew,
+  over,
+  drop,
+}: {
+  area: string;
+  cue?: string;
+  picking: boolean;
+  onPick: (open: boolean) => void;
+  minimized: SessionInfo[];
+  onOpen: (s: SessionInfo) => void;
+  onNew: () => void;
+  over: (e: React.DragEvent) => void;
+  drop: (e: React.DragEvent) => void;
+}) {
+  return (
+    <div className="zone-slot" style={{ gridArea: area }} data-drop={dropCue} onDragOver={over} onDrop={drop}>
+      {picking ? (
+        <div className="zone-pick" onKeyDown={(e) => e.key === "Escape" && onPick(false)}>
+          <div className="zone-pick-h">Open in this zone</div>
+          <div className="zone-pick-list">
+            {minimized.length === 0 && <div className="fp-note">Every session in this group is already open.</div>}
+            {minimized.map((s) => (
+              <button key={s.id} className="zone-pick-row" onClick={() => onOpen(s)}>
+                <span className={`dot sm ${s.status}`} />
+                <span className="t">{s.ticketTitle ?? s.title}</span>
+              </button>
+            ))}
+          </div>
+          <div className="row">
+            <button className="outline" onClick={() => onPick(false)}>Cancel</button>
+            <button className="primary" autoFocus onClick={onNew}>New session…</button>
+          </div>
+        </div>
+      ) : (
+        <button className="zone-open" onClick={() => onPick(true)} title="Open one of this group's minimized sessions here, or start a new one">
+          + Open a session here
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -131,6 +184,16 @@ function App() {
   const [shown, setShown] = useState<string[]>(() => loadLS("mb.shown", []));
   const [focused, setFocused] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState<string | null>(null);
+  // pinned panes stay on screen when the grid switches groups
+  const [pinned, setPinned] = useState<string[]>(() => loadLS("mb.pinned", []));
+  const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
+  // the group the grid was last switched to (see activeGroupOf)
+  const [lastGroup, setLastGroup] = useState<string | null>(() => loadLS("mb.activeGroup", null));
+  // which pane sits in which snap-layout zone, per group (cell key per zone)
+  const [zoneSeats, setZoneSeats] = useState<Record<string, (string | null)[]>>(() => loadLS("mb.zones", {}));
+  // an empty zone's "open a session here" picker, and a new session headed for a zone
+  const [slotPick, setSlotPick] = useState<number | null>(null);
+  const [pendingZone, setPendingZone] = useState<{ group: string; zone: number } | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
   // seeds New Session's Group field — set to "top/sub" by a workspace's + button
@@ -303,6 +366,9 @@ function App() {
   useEffect(() => localStorage.setItem("mb.cols", JSON.stringify(colsPref)), [colsPref]);
   useEffect(() => localStorage.setItem("mb.layout", JSON.stringify(layouts)), [layouts]);
   useEffect(() => localStorage.setItem("mb.side", JSON.stringify(sideCollapsed)), [sideCollapsed]);
+  useEffect(() => localStorage.setItem("mb.pinned", JSON.stringify(pinned)), [pinned]);
+  useEffect(() => localStorage.setItem("mb.activeGroup", JSON.stringify(lastGroup)), [lastGroup]);
+  useEffect(() => localStorage.setItem("mb.zones", JSON.stringify(zoneSeats)), [zoneSeats]);
 
   /** Put a session (dragged from the grid or the sidebar) beside a pane in the grid. */
   const reorder = (srcId: string, targetId: string, side: Side = "before") =>
@@ -384,12 +450,17 @@ function App() {
   const topOf = (s: SessionInfo) => splitGroupKey(groupKeyOf(s)).top;
   const subOf = (s: SessionInfo) => splitGroupKey(groupKeyOf(s)).sub;
 
+  /** A live session's top-level group; undefined for an id awaiting a relaunch. */
+  const groupOfId = (id: string): string | undefined => {
+    const s = sessions.find((x) => x.id === id);
+    return s ? topOf(s) : undefined;
+  };
   // the grid is group-exclusive at the TOP level: every shown session belongs
-  // to the active group; sub-groups act as tabs within it
-  const activeGroup = useMemo(() => {
-    const first = shown.map((id) => sessions.find((s) => s.id === id)).find(Boolean);
-    return first ? topOf(first) : null;
-  }, [shown, sessions]);
+  // to the active group (pinned panes excepted); sub-groups act as tabs within it
+  const activeGroup = useMemo(() => activeGroupOf(shown, groupOfId, pinnedSet, lastGroup), [shown, sessions, pinnedSet, lastGroup]);
+  useEffect(() => {
+    if (activeGroup && activeGroup !== lastGroup) setLastGroup(activeGroup);
+  }, [activeGroup]);
 
   /** Carry a group's remembered UI state across a rename — these registries are
    *  keyed by group path, so without this a rename silently loses the group's
@@ -404,6 +475,16 @@ function App() {
     };
     setGroupLayouts(remap);
     setWsTabs(remap);
+    setLayouts(remap);
+    setZoneSeats((prev) => {
+      const out = remap(prev);
+      const wsOld = `ws:${oldKey}`;
+      for (const k of Object.keys(out)) {
+        out[k] = out[k].map((v) => (v && (v === wsOld || v.startsWith(wsOld + "/")) ? `ws:${newKey}${v.slice(wsOld.length)}` : v));
+      }
+      return out;
+    });
+    setLastGroup((g) => (g === oldKey ? topOfKey(newKey) : g));
     setCollapsed((prev) => {
       if (!prev.has(oldKey)) return prev;
       const next = new Set(prev);
@@ -429,13 +510,16 @@ function App() {
     }
   }, [activeGroup]);
 
-  // record the active group's visible subset whenever it changes
+  // record the active group's visible subset whenever it changes (its own
+  // panes only — pinned visitors from other groups aren't part of its layout)
   useEffect(() => {
-    if (!activeGroup || shown.length === 0) return;
+    if (!activeGroup) return;
+    const own = layoutToRemember(shown, groupOfId, activeGroup);
+    if (own.length === 0) return;
     setGroupLayouts((prev) => {
       const cur = prev[activeGroup];
-      if (cur && cur.length === shown.length && cur.every((id, i) => id === shown[i])) return prev;
-      return { ...prev, [activeGroup]: shown };
+      if (cur && cur.length === own.length && cur.every((id, i) => id === own[i])) return prev;
+      return { ...prev, [activeGroup]: own };
     });
   }, [shown, activeGroup]);
 
@@ -445,17 +529,58 @@ function App() {
     return (groupLayouts[g] ?? []).filter((id) => ids.includes(id));
   };
 
+  /** Swap the grid to another group's panes; pinned panes stay where they are. */
+  const switchGrid = (g: string, ids: string[]) => {
+    setZoomed(null);
+    setLastGroup(g);
+    setShown((p) => switchTo(p, pinnedSet, ids));
+    collapseOthers(g);
+  };
+
   /** Show a session — same group appends; a different group swaps the grid to
    *  that group's remembered layout (plus the clicked session). */
   const showSession = (s: SessionInfo) => {
     const g = topOf(s);
-    if (activeGroup && g !== activeGroup) {
-      setZoomed(null);
+    if (activeGroup && g !== activeGroup && !pinnedSet.has(s.id)) {
       const remembered = rememberedLayout(g);
-      setShown(remembered.length ? [...new Set([...remembered, s.id])] : [s.id]);
-      collapseOthers(g);
+      switchGrid(g, remembered.length ? [...new Set([...remembered, s.id])] : [s.id]);
     } else {
       setShown((p) => (p.includes(s.id) ? p : [...p, s.id]));
+    }
+  };
+
+  /** Pin or unpin panes. Pinning puts a minimized session back on screen;
+   *  unpinning a visitor from another group sends it back to its group. */
+  const togglePin = (ids: string[]) => {
+    const pin = !ids.every((id) => pinnedSet.has(id));
+    setPinned((p) => (pin ? [...new Set([...p, ...ids])] : p.filter((id) => !ids.includes(id))));
+    if (pin) setShown((p) => [...p, ...ids.filter((id) => !p.includes(id))]);
+  };
+
+  /**
+   * Move a session into a group (null = out of any). The grid keeps its panes:
+   * a session moved into the group on screen opens there (as the front tab of
+   * its workspace); one moved to another group leaves the grid and is open
+   * when that group is next shown — unless it's pinned, which keeps it here.
+   */
+  const moveToGroup = async (id: string, group: string | null) => {
+    const top = topOfKey(group ?? "ungrouped");
+    const stays = !activeGroup || top === activeGroup || pinnedSet.has(id);
+    if (!stays) {
+      setShown((p) => p.filter((x) => x !== id));
+      setGroupLayouts((p) => ({ ...p, [top]: [...(p[top] ?? []).filter((x) => x !== id), id] }));
+    }
+    const before = shown;
+    try {
+      await window.mb.setGroup(id, group);
+    } catch (e) {
+      setShown(before);
+      alert(`Couldn't move the session: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    if (stays) {
+      setShown((p) => (p.includes(id) ? p : [...p, id]));
+      if (group && splitGroupKey(group).sub) setWsTabs((p) => ({ ...p, [group]: id }));
     }
   };
 
@@ -505,19 +630,11 @@ function App() {
   const jumpToRef = useRef(jumpTo);
   jumpToRef.current = jumpTo;
 
-  // safety net: if a stale persisted layout mixes groups, keep only the first group's panes
+  // one group on screen: a pane whose session moved to another group (or a stale
+  // persisted layout) leaves the grid, unless it's pinned
   useEffect(() => {
-    setShown((prev) => {
-      const first = prev.map((id) => sessions.find((s) => s.id === id)).find(Boolean);
-      if (!first) return prev;
-      const g = topOf(first);
-      const pruned = prev.filter((id) => {
-        const s = sessions.find((x) => x.id === id);
-        return !s || topOf(s) === g; // unknown ids stay resumable into their slot
-      });
-      return pruned.length === prev.length ? prev : pruned;
-    });
-  }, [sessions]);
+    setShown((prev) => pruneToGroup(prev, groupOfId, pinnedSet, activeGroup));
+  }, [sessions, pinnedSet, activeGroup]);
 
   // debrief sessions live on the WorkTracker tab, everything else on the grid
   const workSessions = useMemo(() => sessions.filter((s) => !s.debrief), [sessions]);
@@ -542,20 +659,23 @@ function App() {
 
   // grid cells: plain sessions render individually; a sub-group renders as ONE
   // workspace pane with tabs (cmux-style)
-  type GridCell = { kind: "session"; s: SessionInfo } | { kind: "workspace"; sub: string; list: SessionInfo[] };
+  // `key` is the workspace's group path ("5038/backend")
+  type GridCell = { kind: "session"; s: SessionInfo } | { kind: "workspace"; key: string; sub: string; list: SessionInfo[] };
   const cells: GridCell[] = useMemo(() => {
     if (zoomed) return gridSessions.map((s) => ({ kind: "session" as const, s }));
     const out: GridCell[] = [];
     const seen = new Set<string>();
     for (const s of gridSessions) {
       const sub = subOf(s);
+      const key = `${topOf(s)}/${sub}`;
       if (!sub) out.push({ kind: "session", s });
-      else if (!seen.has(sub)) {
-        seen.add(sub);
+      else if (!seen.has(key)) {
+        seen.add(key);
         // tabs are the workspace's members that are in the grid, so closing a
         // tab hides just that session; the pane goes when its last tab does
         out.push({
           kind: "workspace",
+          key,
           sub,
           list: workSessions.filter((x) => topOf(x) === topOf(s) && subOf(x) === sub && shown.includes(x.id)),
         });
@@ -563,16 +683,24 @@ function App() {
     }
     return out;
   }, [gridSessions, workSessions, zoomed, shown]);
+  /** How zones and drops name a cell: its session, or "ws:<workspace key>". */
+  const cellKey = (c: GridCell) => (c.kind === "session" ? c.s.id : `ws:${c.key}`);
+  const cellKeyOfSession = (s: SessionInfo) => (subOf(s) ? `ws:${topOf(s)}/${subOf(s)}` : s.id);
 
-  // the grid grows with the cell count — equal cells, no filler tiles
-  // the active group's chosen template, applied only when it fits the panes
-  const layout = useMemo(() => {
-    const id = activeGroup ? layouts[activeGroup] : layouts[""];
-    const l = LAYOUTS.find((x) => x.id === id);
-    return !zoomed && l && l.zones.length === cells.length ? l : null;
-  }, [layouts, activeGroup, cells.length, zoomed]);
-
-  const curLayoutId = (activeGroup ? layouts[activeGroup] : layouts[""]) ?? "";
+  // without a template the grid grows with the cell count — equal cells, no filler tiles
+  const seatKey = activeGroup ?? "";
+  const curLayoutId = layouts[seatKey] ?? "";
+  const layout = useMemo(() => (zoomed ? null : LAYOUTS.find((x) => x.id === curLayoutId) ?? null), [curLayoutId, zoomed]);
+  const cellKeys = useMemo(() => cells.map(cellKey), [cells]);
+  const zoning = useMemo(
+    () => (layout ? placeInZones(cellKeys, layout.zones.length, zoneSeats[seatKey] ?? []) : null),
+    [layout, cellKeys, zoneSeats, seatKey]
+  );
+  /** Seat a cell in a zone (a swap when it comes from another zone). */
+  const seatInZone = (key: string, zone: number) => {
+    if (!layout || !zoning) return;
+    setZoneSeats((p) => ({ ...p, [seatKey]: dropInZone(seating(cellKeys, zoning, layout.zones.length), key, zone) }));
+  };
   const cols = zoomed
     ? 1
     : layout
@@ -580,7 +708,9 @@ function App() {
       : colsPref === "auto"
         ? gridCols(Math.max(1, cells.length))
         : colsPref;
-  const rows = layout ? layout.rows : Math.max(1, Math.ceil(Math.max(1, cells.length) / cols));
+  const rows = layout
+    ? layout.rows + Math.ceil((zoning?.overflow.length ?? 0) / layout.cols)
+    : Math.max(1, Math.ceil(Math.max(1, cells.length) / cols));
   // pane density follows column count (design 1b); a fullscreened pane is instrumented
   const density: PaneDensity = zoomed ? "max" : cols >= 4 ? "min" : cols === 3 ? "std" : "max";
 
@@ -680,8 +810,7 @@ function App() {
     setZoomed(null);
     folderFollowsGrid(list);
     if (activeGroup && top !== activeGroup) {
-      setShown(list.map((s) => s.id));
-      collapseOthers(top);
+      switchGrid(top, list.map((s) => s.id));
     } else {
       setShown((p) => [...p, ...list.map((s) => s.id).filter((id) => !p.includes(id))]);
     }
@@ -726,16 +855,14 @@ function App() {
     }
   };
 
-  /** Click a group header: switching groups restores that group's remembered
-   *  layout; clicking the already-active group's header re-shows all of it.
+  /** Click a group header: the grid shows the panes that group last had open
+   *  (all of its sessions the first time), whether or not it's already active.
    *  NOTE: no focusTerm here — stealing keyboard focus right after a header
    *  click kills the double-click rename input (it blurs and closes). */
   const focusGroup = (key: string, list: SessionInfo[]) => {
-    setZoomed(null);
-    const remembered = key === activeGroup ? [] : rememberedLayout(key);
+    const remembered = rememberedLayout(key);
     const ids = remembered.length ? remembered : list.map((s) => s.id);
-    setShown(ids);
-    collapseOthers(key);
+    switchGrid(key, ids);
     const first = ids[0] ?? list[0]?.id;
     if (first) setFocused(first);
   };
@@ -753,7 +880,44 @@ function App() {
     e.preventDefault();
     e.stopPropagation();
     const src = e.dataTransfer.getData("text/mb-session");
-    if (src) window.mb.setGroup(src, group);
+    if (src) moveToGroup(src, group);
+  };
+
+  /**
+   * Make a session a tab in the pane showing `target`: it joins the target's
+   * workspace, or a new workspace holding both when the target is a lone pane.
+   */
+  const addAsTab = async (srcId: string, target: SessionInfo) => {
+    const src = sessions.find((x) => x.id === srcId);
+    if (!src || srcId === target.id) return;
+    let key = subOf(target) ? `${topOf(target)}/${subOf(target)}` : null;
+    if (!key) {
+      const top = topOf(target);
+      key = `${top}/${nextSubName(top)}`;
+      const wsKey = key;
+      await window.mb.setGroup(target.id, wsKey);
+      // the lone pane's zone becomes the workspace's
+      setZoneSeats((p) => {
+        const g = activeGroup ?? "";
+        return p[g] ? { ...p, [g]: p[g].map((v) => (v === target.id ? `ws:${wsKey}` : v)) } : p;
+      });
+      setRenameDlg({ kind: "sub", key: wsKey, initial: splitGroupKey(wsKey).sub ?? "" });
+    }
+    const wsKey = key;
+    if (src.taskGroup !== wsKey) await window.mb.setGroup(srcId, wsKey);
+    if (pinnedSet.has(target.id)) setPinned((p) => (p.includes(srcId) ? p : [...p, srcId]));
+    setShown((p) => placeBeside(p.includes(srcId) ? p : [...p, srcId], srcId, target.id, "after"));
+    setWsTabs((p) => ({ ...p, [wsKey]: srcId }));
+    setFocused(srcId);
+  };
+
+  /** The drop cue for making the dragged session a tab in `target`'s pane, if that would change anything. */
+  const tabTarget = (key: string, target: SessionInfo) => {
+    const src = sessions.find((x) => x.id === dragging("text/mb-session"));
+    if (!src || src.id === target.id) return null;
+    const ws = subOf(target) ? `${topOf(target)}/${subOf(target)}` : null;
+    if (ws && src.taskGroup === ws && shown.includes(src.id)) return null; // already a tab here
+    return { key, outcome: ws ? `Open ${titleOf(src)} as a tab in ${subOf(target)}` : `Open ${titleOf(src)} as a tab with ${titleOf(target)}` };
   };
 
   const restoreAll = async () => {
@@ -897,7 +1061,7 @@ function App() {
       // by CELL, not by session: a workspace pane holding 3 sessions is one
       // number, which is what the pane's own ⌘n badge shows
       const cell = cells[parseInt(e.key, 10) - 1];
-      const target = cell && (cell.kind === "session" ? cell.s : (wsTabs[`${topOf(cell.list[0])}/${cell.sub}`] ? cell.list.find((x) => x.id === wsTabs[`${topOf(cell.list[0])}/${cell.sub}`]) : null) ?? cell.list[0]);
+      const target = cell && (cell.kind === "session" ? cell.s : cell.list.find((x) => x.id === wsTabs[cell.key]) ?? cell.list[0]);
       if (target) {
         handled();
         jumpTo(target.id);
@@ -958,6 +1122,10 @@ function App() {
     if (pendingWs) {
       await window.mb.setGroup(pendingWs.id, pendingWs.key); // the lone pane joins its new workspace
       setPendingWs(null);
+    }
+    if (pendingZone) {
+      if (pendingZone.group === seatKey) seatInZone(s.id, pendingZone.zone); // "New session" from an empty zone
+      setPendingZone(null);
     }
     refresh();
     jumpToSession(s);
@@ -1098,9 +1266,10 @@ function App() {
                         <button
                           key={l.id}
                           className={`lay-opt ${curLayoutId === l.id ? "on" : ""}`}
-                          title={`${l.label} — fits ${l.zones.length} panes`}
+                          title={`${l.label} — ${l.zones.length} zones`}
                           onClick={() => {
-                            setLayouts((p) => ({ ...p, [activeGroup ?? ""]: l.id }));
+                            setLayouts((p) => ({ ...p, [seatKey]: l.id }));
+                            setZoneSeats((p) => ({ ...p, [seatKey]: [] }));
                             setLayoutOpen(false);
                           }}
                         >
@@ -1111,18 +1280,16 @@ function App() {
                     <button
                       className={`lay-auto ${!curLayoutId ? "on" : ""}`}
                       onClick={() => {
-                        setLayouts((p) => ({ ...p, [activeGroup ?? ""]: "" }));
+                        setLayouts((p) => ({ ...p, [seatKey]: "" }));
                         setLayoutOpen(false);
                       }}
                     >
                       Auto — fit panes to the window
                     </button>
                     <div className="lay-note">
-                      {layout
-                        ? "Drag any pane edge to fine-tune."
-                        : curLayoutId
-                          ? `Applies with ${LAYOUTS.find((l) => l.id === curLayoutId)?.zones.length} panes open — ${cells.length} open now.`
-                          : "Panes fill the window automatically."}
+                      {curLayoutId
+                        ? "Drag a pane onto another to swap places, or into an empty zone. Drag any pane edge to fine-tune."
+                        : "Panes fill the window automatically."}
                     </div>
                   </div>
                 </>
@@ -1426,11 +1593,11 @@ function App() {
                   return (
                     <div
                       key={s.id}
-                      className={`sess-item ${idx >= 0 ? "shown" : ""}`}
+                      className={`sess-item ${idx >= 0 ? "shown" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""}`}
                       onClick={() => (idx >= 0 ? hide(s.id) : showSession(s))}
-                      title={`${s.cwd} — double-click name to rename · drag onto a group to move`}
+                      title={`${s.cwd} — double-click name to rename · drag onto a group to move, or onto a pane to open it as a tab there`}
                       draggable
-                      onDragStart={(e) => beginDrag(e, "text/mb-session", s.id, `Moving ${titleOf(s)}`)}
+                      onDragStart={(e) => beginDrag(e, "text/mb-session", s.id, `Moving ${titleOf(s)}`, "sidebar")}
                       data-drop={cue(drag, `s:${s.id}`)}
                       onDragOver={(e) => {
                         const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
@@ -1453,10 +1620,10 @@ function App() {
                           const top = topOf(s);
                           const name = nextSubName(top);
                           window.mb.setGroup(s.id, `${top}/${name}`);
-                          window.mb.setGroup(src, `${top}/${name}`);
+                          moveToGroup(src, `${top}/${name}`);
                           setRenameDlg({ kind: "sub", key: `${top}/${name}`, initial: name });
                         } else {
-                          window.mb.setGroup(src, s.taskGroup); // join this row's group/workspace
+                          moveToGroup(src, s.taskGroup); // join this row's group/workspace
                         }
                       }}
                     >
@@ -1488,6 +1655,17 @@ function App() {
                         }}
                       >
                         ✎
+                      </button>
+                      <button
+                        className={`pin ${pinnedSet.has(s.id) ? "on" : ""}`}
+                        title={pinnedSet.has(s.id) ? "Unpin — the pane goes back to following its group" : "Pin — keep this pane on screen when you switch groups"}
+                        aria-pressed={pinnedSet.has(s.id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          togglePin([s.id]);
+                        }}
+                      >
+                        <PinIcon />
                       </button>
                       <button
                         title="Move to group…"
@@ -1574,12 +1752,30 @@ function App() {
               <div className="groupbar">
                 <span className="gb-name">{groupTitle(activeGroup, topSessions)}</span>
                 <span style={{ marginLeft: "auto" }} />
-                <span className="flbl-info">{gridSessions.length} of {topSessions.length} shown</span>
+                <span className="flbl-info">
+                  {gridSessions.filter((s) => topOf(s) === activeGroup).length} of {topSessions.length} shown
+                  {(() => {
+                    const visitors = gridSessions.filter((s) => topOf(s) !== activeGroup).length;
+                    return visitors ? ` · ${visitors} pinned from other groups` : "";
+                  })()}
+                </span>
               </div>
             );
           })()}
           {gridSessions.length === 0 ? (
-            <div className="empty">
+            <div
+              className="empty"
+              data-drop={cue(drag, "grid")}
+              onDragOver={(e) => {
+                const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
+                overTarget(e, srcS ? { key: "grid", outcome: `Open ${titleOf(srcS)} here` } : null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const srcS = sessions.find((x) => x.id === e.dataTransfer.getData("text/mb-session"));
+                if (srcS) jumpToSession(srcS);
+              }}
+            >
               <div>no sessions in the grid</div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="primary" onClick={() => setModal("new")}>New session</button>
@@ -1598,24 +1794,93 @@ function App() {
               }}
             >
               {cells.map((cell, i) => {
-                const col = i % cols;
-                const row = Math.floor(i / cols);
-                // the last pane of an incomplete row spans the leftover columns —
-                // no dead cells (3 sessions in 2 cols → bottom pane full width)
-                const zone = layout?.zones[i];
+                // with a template, a cell sits in its zone (or a row below it);
+                // without one, cells flow in order and the last of an incomplete
+                // row spans the leftover columns — no dead cells
+                const zi = zoning ? zoning.zoneOf[i] : -1;
+                const below = zoning ? zoning.overflow.indexOf(i) : -1;
+                const area =
+                  layout && zoning
+                    ? zi >= 0
+                      ? layout.zones[zi]
+                      : overflowArea(below, cols, layout.rows, below === zoning.overflow.length - 1)
+                    : undefined;
+                const box = area ? parseZone(area) : null;
+                const col = box ? box.ce - 2 : i % cols;
+                const row = box ? box.re - 2 : Math.floor(i / cols);
                 const remainder = cells.length % cols;
-                const span = !zoomed && !layout && remainder !== 0 && i === cells.length - 1 ? cols - col : 1;
-                const canX = !zoomed && col + span - 1 < cols - 1;
-                const canY = !zoomed && row < rows - 1;
+                const span = !zoomed && !layout && remainder !== 0 && i === cells.length - 1 ? cols - (i % cols) : 1;
+                const canX = !zoomed && (box ? box.ce <= cols : col + span - 1 < cols - 1);
+                const canY = !zoomed && (box ? box.re <= rows : row < rows - 1);
                 const resize =
                   canX || canY
                     ? {
-                        x: canX ? (e: React.PointerEvent) => startTrackDrag("col", col, e) : undefined,
+                        x: canX ? (e: React.PointerEvent) => startTrackDrag("col", box ? col : col + span - 1, e) : undefined,
                         y: canY ? (e: React.PointerEvent) => startTrackDrag("row", row, e) : undefined,
                         reset: equalizeTracks,
                       }
                     : undefined;
-                const paneFor = (s: SessionInfo, embedded: boolean, onCloseOverride?: () => void) => (
+                const myKey = cellKey(cell);
+                /** A drop on a pane's body: from the sidebar it opens as a tab; a pane
+                 *  swaps zones (with a template) or moves beside this one. */
+                const bodyDrop = (s: SessionInfo) => ({
+                  cue: cue(drag, `p:${s.id}`),
+                  over: (e: React.DragEvent) => {
+                    const src = dragging("text/mb-session");
+                    if (!src) return e.preventDefault(); // files from Finder: the pane handles those itself
+                    const srcS = sessions.find((x) => x.id === src);
+                    if (!srcS || src === s.id) return overTarget(e, null);
+                    if (dragFrom() === "sidebar" && !shown.includes(src)) return overTarget(e, tabTarget(`p:${s.id}`, s));
+                    const srcKey = cellKeyOfSession(srcS);
+                    if (srcKey === myKey) return overTarget(e, null);
+                    if (layout && zoning) {
+                      const from = cellKeys.indexOf(srcKey);
+                      if (zi < 0 || from < 0) return overTarget(e, null);
+                      const seated = zoning.zoneOf[from] >= 0;
+                      return overTarget(e, { key: `p:${s.id}`, outcome: seated ? `Swap ${titleOf(srcS)} and ${titleOf(s)}` : `Put ${titleOf(srcS)} here` });
+                    }
+                    const side = sideOf(e, e.currentTarget, "x");
+                    const inGrid = shown.includes(src);
+                    if (inGrid && samePlace(shown, src, s.id, side)) return overTarget(e, null);
+                    overTarget(e, { key: `p:${s.id}`, side, outcome: `${inGrid ? "Move" : "Show"} ${titleOf(srcS)} ${side} ${titleOf(s)}` });
+                  },
+                  drop: (e: React.DragEvent) => {
+                    const src = e.dataTransfer.getData("text/mb-session");
+                    const srcS = sessions.find((x) => x.id === src);
+                    if (!srcS || src === s.id) return;
+                    if (dragFrom() === "sidebar" && !shown.includes(src)) return void addAsTab(src, s);
+                    const srcKey = cellKeyOfSession(srcS);
+                    if (srcKey === myKey) return;
+                    if (layout && zoning) {
+                      if (zi >= 0 && cellKeys.includes(srcKey)) seatInZone(srcKey, zi);
+                      return;
+                    }
+                    // a workspace moves as a whole: all of its tabs go beside the target
+                    const moving = shown.filter((id) => {
+                      const x = sessions.find((y) => y.id === id);
+                      return x ? cellKeyOfSession(x) === cellKeyOfSession(srcS) : false;
+                    });
+                    const side = sideOf(e, e.currentTarget, "x");
+                    setShown((p) => {
+                      let next = p.includes(src) ? p : [...p, src];
+                      for (const id of side === "after" ? [...(moving.length ? moving : [src])].reverse() : moving.length ? moving : [src]) {
+                        next = placeBeside(next, id, s.id, side);
+                      }
+                      return next;
+                    });
+                  },
+                });
+                const tabDrop = (s: SessionInfo, key: string) => ({
+                  cue: cue(drag, key),
+                  over: (e: React.DragEvent) => overTarget(e, tabTarget(key, s)),
+                  drop: () => {
+                    const src = dragging("text/mb-session");
+                    if (src && tabTarget(key, s)) addAsTab(src, s);
+                  },
+                });
+                const isPinned = (ids: string[]) => ids.length > 0 && ids.every((id) => pinnedSet.has(id));
+                const visitor = (s: SessionInfo) => (isPinned([s.id]) && activeGroup && topOf(s) !== activeGroup ? `from ${groupTitle(topOf(s), [s])}` : undefined);
+                const paneFor = (s: SessionInfo, embedded: boolean, onCloseOverride?: () => void, pinIds: string[] = [s.id]) => (
                   <TerminalPane
                     key={s.id}
                     session={s}
@@ -1643,22 +1908,11 @@ function App() {
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
                     onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
                     onReorder={reorder}
-                    drop={{
-                      cue: cue(drag, `p:${s.id}`),
-                      over: (e) => {
-                        const src = dragging("text/mb-session");
-                        if (!src) return e.preventDefault(); // files from Finder: the pane handles those itself
-                        const srcS = sessions.find((x) => x.id === src);
-                        const side = sideOf(e, e.currentTarget, "x");
-                        const inGrid = shown.includes(src);
-                        if (!srcS || src === s.id || (inGrid && samePlace(shown, src, s.id, side))) return overTarget(e, null);
-                        overTarget(e, { key: `p:${s.id}`, side, outcome: `${inGrid ? "Move" : "Show"} ${titleOf(srcS)} ${side} ${titleOf(s)}` });
-                      },
-                      drop: (e) => {
-                        const src = e.dataTransfer.getData("text/mb-session");
-                        if (src && src !== s.id) reorder(src, s.id, sideOf(e, e.currentTarget, "x"));
-                      },
-                    }}
+                    drop={bodyDrop(s)}
+                    tabDrop={embedded ? undefined : tabDrop(s, `h:${s.id}`)}
+                    pinned={isPinned(pinIds)}
+                    onPin={zoomed ? undefined : () => togglePin(pinIds)}
+                    pinNote={visitor(s)}
                     onResume={() => resumeDead(s)}
                     onCleanup={() => requestClose(s)}
                     resize={resize}
@@ -1666,9 +1920,9 @@ function App() {
                 );
                 if (cell.kind === "session") {
                   const pane = paneFor(cell.s, false);
-                  if (zone)
+                  if (area)
                     return (
-                      <div key={`zone-${cell.s.id}`} className="spanwrap" style={{ gridArea: zone }}>
+                      <div key={`zone-${cell.s.id}`} className="spanwrap" style={{ gridArea: area }}>
                         {pane}
                       </div>
                     );
@@ -1681,16 +1935,31 @@ function App() {
                   );
                 }
                 // workspace pane: one cell, session tabs across the top (cmux-style)
-                const key = `${activeGroup}/${cell.sub}`;
+                const key = cell.key;
                 const active = cell.list.find((s) => s.id === wsTabs[key]) ?? cell.list[0];
                 const anyWaiting = cell.list.some((s) => s.status === "waiting");
+                const strip = tabDrop(active, `h:ws:${key}`);
                 return (
                   <div
-                    key={`ws-${cell.sub}`}
+                    key={`ws-${key}`}
                     className={`ws-pane ${anyWaiting ? "st-waiting" : ""}`}
-                    style={zone ? { gridArea: zone } : span > 1 ? { gridColumn: `span ${span}` } : undefined}
+                    style={area ? { gridArea: area } : span > 1 ? { gridColumn: `span ${span}` } : undefined}
                   >
-                    <div className="ws-tabs">
+                    <div
+                      className="ws-tabs"
+                      data-drop={strip.cue}
+                      onDragOver={(e) => {
+                        if (!dragging("text/mb-session")) return;
+                        e.stopPropagation();
+                        strip.over(e);
+                      }}
+                      onDrop={(e) => {
+                        if (!dragging("text/mb-session")) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        strip.drop();
+                      }}
+                    >
                       <span
                         className="ws-name"
                         title="double-click to rename this workspace"
@@ -1736,10 +2005,55 @@ function App() {
                         +
                       </button>
                     </div>
-                    {paneFor(active, true, () => hideSessions(cell.list))}
+                    {paneFor(active, true, () => hideSessions(cell.list), cell.list.map((s) => s.id))}
                   </div>
                 );
               })}
+              {layout &&
+                zoning?.empty.map((z) => (
+                  <ZoneSlot
+                    key={`slot-${z}`}
+                    area={layout.zones[z]}
+                    cue={cue(drag, `z:${z}`)}
+                    picking={slotPick === z}
+                    onPick={(open) => setSlotPick(open ? z : null)}
+                    // a tab of a workspace already on screen opens in that pane, not a zone
+                    minimized={workSessions.filter((s) => topOf(s) === activeGroup && !cellKeys.includes(cellKeyOfSession(s)))}
+                    onOpen={(s) => {
+                      setSlotPick(null);
+                      setShown((p) => (p.includes(s.id) ? p : [...p, s.id]));
+                      seatInZone(cellKeyOfSession(s), z);
+                      setFocused(s.id);
+                    }}
+                    onNew={() => {
+                      setSlotPick(null);
+                      setPendingZone({ group: seatKey, zone: z });
+                      setNewGroup(activeGroup && activeGroup !== "ungrouped" ? activeGroup : "");
+                      setNewLaunch("claude");
+                      setModal("new");
+                    }}
+                    over={(e) => {
+                      const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
+                      if (!srcS) return overTarget(e, null);
+                      const inGrid = cellKeys.includes(cellKeyOfSession(srcS));
+                      // from the sidebar, a tab of a workspace on screen belongs in that pane
+                      if (inGrid && !shown.includes(srcS.id)) return overTarget(e, null);
+                      overTarget(e, { key: `z:${z}`, outcome: `${inGrid ? "Put" : "Open"} ${titleOf(srcS)} here` });
+                    }}
+                    drop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const srcS = sessions.find((x) => x.id === e.dataTransfer.getData("text/mb-session"));
+                      if (!srcS) return;
+                      if (cellKeys.includes(cellKeyOfSession(srcS)) && !shown.includes(srcS.id)) return;
+                      if (topOf(srcS) !== activeGroup && !pinnedSet.has(srcS.id)) {
+                        // a session from another group joins this one to take the zone
+                        moveToGroup(srcS.id, activeGroup === "ungrouped" ? null : activeGroup);
+                      } else setShown((p) => (p.includes(srcS.id) ? p : [...p, srcS.id]));
+                      seatInZone(cellKeyOfSession(srcS), z);
+                    }}
+                  />
+                ))}
             </div>
           )}
           {panelOpen && (
@@ -1897,6 +2211,10 @@ function App() {
                     },
                   },
                   { label: `Change group of ${focusedSession.ticketTitle ?? focusedSession.title}…`, run: () => setGroupDlg(focusedSession) },
+                  {
+                    label: `${pinnedSet.has(focusedSession.id) ? "Unpin" : "Pin"} ${focusedSession.ticketTitle ?? focusedSession.title}${pinnedSet.has(focusedSession.id) ? "" : " — keep it on screen across groups"}`,
+                    run: () => togglePin([focusedSession.id]),
+                  },
                 ]
               : []),
             { label: "Columns: 1", kbd: "⌘⌃1", run: () => setColsPref(1) },
@@ -1928,6 +2246,7 @@ function App() {
         <GroupDialog
           session={groupDlg}
           groups={groupKeys}
+          onMove={(g) => moveToGroup(groupDlg.id, g)}
           onClose={() => setGroupDlg(null)}
         />
       )}
@@ -1951,6 +2270,7 @@ function App() {
             setNewLaunch("claude");
             setNewGroup("");
             setPendingWs(null); // cancelled — the pane stays a plain pane
+            setPendingZone(null);
           }}
           onCreated={(s) => {
             setNewLaunch("claude");
@@ -3183,10 +3503,12 @@ function RenameDialog({
 function GroupDialog({
   session,
   groups,
+  onMove,
   onClose,
 }: {
   session: SessionInfo;
   groups: string[];
+  onMove: (group: string | null) => Promise<void>;
   onClose: () => void;
 }) {
   const cur = session.taskGroup ?? "";
@@ -3200,7 +3522,7 @@ function GroupDialog({
   const effTop = (isNew ? newTop : top).trim().replace(/\//g, "-");
 
   const move = async (g: string | null) => {
-    await window.mb.setGroup(session.id, g);
+    await onMove(g);
     onClose();
   };
   const apply = () => {

@@ -1442,3 +1442,33 @@ Not yet run against Ryan's real apps (they touch shared DBs) — first real runs
 - [x] Blazor WASM: server + browser via the debug proxy — verified on the template app (breakpoint in Counter.razor hit)
 - [x] Python attach (containers): mount + port via the compose override; attach verified against a real listener;
       readiness never probes a debugpy listener (it takes the probe as its one client)
+
+# Roadmap run — 2026-10-04
+Order: roadmap order (Ryan). Ticket stage state stays local. Signed builds skipped (no Apple Developer ID).
+Each item ships on its own: tests + build + harness check → ff main → README roadmap updated. No version bump unless asked.
+
+## Now
+- [x] Grouping rework, second half: move-into-group keeps panes; group header restores last layout; pinned panes;
+      tab-strip drop = add as tab, body drop = reorder; sidebar row onto a pane = add as tab
+- [x] Snap layouts: drag a pane → zone highlight → drop into that slot; per-zone "open a session here"
+  Review: rules in gridModel.ts (18 tests). Harness (stubbed sessions, two groups): pin survives a switch and keeps
+  its slot; header click restores remembered panes (no expand-all); move into the active group opens the session,
+  move away leaves the rest; header→header makes a workspace; sidebar row→pane joins its workspace; zones: pane into
+  empty zone, other-group row into a zone (moves group), swap, overflow row; picker skips tabs of on-screen workspaces.
+## Next
+- [ ] Ticket pipeline (local stage state, stage rail, per-stage actions, approve-before-post ADO comments)
+- [ ] Continue in the other agent (summary handoff)
+- [ ] Session presets
+- [ ] PR status in the pane rail
+- [ ] Editor intelligence (language servers)
+- [ ] Cross-agent review
+- [ ] Undo an agent's turn (snapshot refs)
+- [ ] Conflict early warning
+- [ ] Session health watchdog (CLI self-update, hung sessions)
+- [ ] Agent messaging: message log, per-group auto-send, Team broadcast
+- [ ] Codex parity: PermissionRequest → amber test
+- [ ] Notification controls (per-session mute, quiet hours)
+- [ ] Scrollback that survives restarts
+## Later
+- [ ] Weekly rollup
+- [-] Signed + notarized builds — skipped (no Apple Developer ID)

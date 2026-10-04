@@ -135,27 +135,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Grouping and snap layouts, finished** — moving a session into a group
+  keeps your panes and opens just the moved one; a group header always
+  restores the panes you last had; **pinned** panes (pane header, sidebar row
+  or ⌘K) stay on screen across group switches; dropping a session on a pane's
+  header or tab strip makes it a tab there, on the body moves it (a sidebar
+  row dropped on a pane opens as a tab). Layout templates now always apply:
+  drag a pane into a zone (swapping with the one there), empty zones offer
+  "Open a session here", and extra panes flow into rows below.
 - **Token meters** — each pane's tokens across all its conversations, and
   its estimated share of the current 5-hour limit ("1.2M · ≈18% of 5h");
   today's total in the status bar and, per agent, in the usage popover.
 
 ### Now
-
-- **Grouping & workspaces rework — second half.** Shipped: the outline-tree
-  sidebar (groups → workspace folders → sessions, with status summaries),
-  workspace tabs, × on any session closes it, naming the "ungrouped" bucket
-  makes it a group, and minimizing a workspace folds its folder. Still to do
-  from the design review: moving a session into a group keeps your current
-  panes and opens just the moved one; clicking a group header always restores
-  the layout you last had; individual panes can be **pinned** to survive group
-  switches; drop on a pane's tab strip = add as tab, drop on its body =
-  reorder; dragging a sidebar row onto a pane adds it as a tab there.
-- **Finish snap layouts.** The Layout flyout shipped; still missing the
-  FancyZones half — dragging a pane highlights the zone under the cursor and
-  drops it into that slot, and templates should offer per-zone "open a session
-  here" affordances instead of only applying when the pane count matches.
-
-### Next
 
 - **Ticket pipeline — "finish ticket" grown up.** Track where each ticket
   actually is, not just its ADO column. The real lifecycle: creation → BA →
@@ -170,8 +162,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
   comms", "done". Reaching a stage drafts an ADO comment on the ticket (e.g.
   "PR to dev opened" with the link and a summary of the change) that you
   approve before it posts. Code review stages carry the security +
-  clean-code checklist. Open design question: where stage state lives — ADO
-  custom field, ticket comment convention, or the WorkTracker folder.
+  clean-code checklist. Stage state lives locally in Mockingbird; only the
+  comments and PRs you approve reach ADO.
+
+### Next
+
 - **Continue in the other agent.** Hand a session to Codex or Claude with a
   generated summary of what's done and what's next — for when one hits its usage
   limit or gets stuck.

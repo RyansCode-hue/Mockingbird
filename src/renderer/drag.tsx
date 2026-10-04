@@ -16,6 +16,8 @@ export interface DragState {
   type: string; // the dataTransfer type, e.g. "text/mb-session"
   payload: string;
   label: string; // what's moving, shown until the cursor is over a target
+  /** Where the drag started, when one payload type can come from places that drop differently. */
+  from?: string;
   /** The target under the cursor, if the drop would do something there. */
   target: { key: string; outcome: string; side?: Side } | null;
   x: number;
@@ -44,20 +46,25 @@ export function useDrag(): DragState | null {
 }
 
 /** Start dragging: sets the drag data and tells every target what's coming. */
-export function beginDrag(e: React.DragEvent, type: string, payload: string, label: string): void {
+export function beginDrag(e: React.DragEvent, type: string, payload: string, label: string, from?: string): void {
   e.dataTransfer.setData(type, payload);
   e.dataTransfer.effectAllowed = "move";
   // dragend goes to the dragged element; when the drop moved that element (a
   // session into another group re-renders its row elsewhere) it's no longer in
   // the page, so the event never bubbles to the document — listen on the element
   e.currentTarget.addEventListener("dragend", endDrag, { once: true });
-  state = { type, payload, label, target: null, x: e.clientX, y: e.clientY };
+  state = { type, payload, label, from, target: null, x: e.clientX, y: e.clientY };
   emit();
 }
 
 /** The dragged item, if it's of this type. */
 export function dragging(type: string): string | null {
   return state && state.type === type ? state.payload : null;
+}
+
+/** Where the current drag started (see beginDrag). */
+export function dragFrom(): string | undefined {
+  return state?.from;
 }
 
 /**

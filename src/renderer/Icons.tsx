@@ -150,3 +150,10 @@ export const BugIcon = () => (
     <path d="M6 5.75a2 2 0 0 1 4 0M8 5.25v8M4.75 8H2.5M13.5 8h-2.25M4.9 11.25 3 12.5M11.1 11.25 13 12.5M5 6.5 3.25 5.25M11 6.5l1.75-1.25" />
   </Icon>
 );
+
+/** A push pin, angled: the pane stays on screen when the grid switches groups. */
+export const PinIcon = () => (
+  <Icon>
+    <path d="M9.5 2.25l4.25 4.25-1.75.5-2.5 2.5.25 2.75-1 1-2.5-2.5-3.5 3.5M5.25 8.25l-2.5-2.5 1-1 2.75.25 2.5-2.5.5-1.75" />
+  </Icon>
+);

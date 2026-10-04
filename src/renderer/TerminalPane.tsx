@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { beginDrag } from "./drag";
+import { beginDrag, dragging } from "./drag";
+import { PinIcon } from "./Icons";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -278,6 +279,10 @@ export function TerminalPane({
   closeTitle,
   resize,
   embedded,
+  pinned,
+  onPin,
+  pinNote,
+  tabDrop,
 }: {
   session: SessionInfo;
   focused: boolean;
@@ -305,6 +310,13 @@ export function TerminalPane({
   closeTitle?: string;
   resize?: PaneResize;
   embedded?: boolean; // inside a workspace pane — the wrapper owns border/radius
+  /** Pinned panes stay on screen when the grid switches groups. */
+  pinned?: boolean;
+  onPin?: () => void;
+  /** Shown on a pinned pane visiting from another group: which group it belongs to. */
+  pinNote?: string;
+  /** A session dropped on the header joins this pane as a tab (a drop on the body moves panes). */
+  tabDrop?: { over: (e: React.DragEvent) => void; drop: (e: React.DragEvent) => void; cue?: string };
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const dead = session.status === "dead";
@@ -672,8 +684,20 @@ export function TerminalPane({
       <div
         className="pane-header"
         draggable={editTitle === null}
-        onDragStart={(e) => beginDrag(e, "text/mb-session", session.id, `Moving ${session.ticketTitle ?? session.title}`)}
-        title="drag to rearrange · double-click the name to rename"
+        onDragStart={(e) => beginDrag(e, "text/mb-session", session.id, `Moving ${session.ticketTitle ?? session.title}`, "pane")}
+        title="drag onto another pane's header to make it a tab there, or onto its body to move it · double-click the name to rename"
+        data-drop={tabDrop?.cue}
+        onDragOver={(e) => {
+          if (!tabDrop || !dragging("text/mb-session")) return;
+          e.stopPropagation();
+          tabDrop.over(e);
+        }}
+        onDrop={(e) => {
+          if (!tabDrop || !dragging("text/mb-session")) return;
+          e.preventDefault();
+          e.stopPropagation();
+          tabDrop.drop(e);
+        }}
       >
         <span className={`dot ${density === "max" ? "lg" : ""} ${session.status}`} />
         {editTitle !== null ? (
@@ -745,6 +769,7 @@ export function TerminalPane({
         {assistant && density !== "min" && <span className="chip teal">assistant</span>}
         {session.shell && density !== "min" && <span className="chip">shell</span>}
         {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
+        {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <span className="controls">
           {!dead && (
@@ -781,6 +806,19 @@ export function TerminalPane({
               }}
             >
               +
+            </button>
+          )}
+          {onPin && (
+            <button
+              className={`icon pin ${pinned ? "on" : ""}`}
+              title={pinned ? "Unpin — this pane goes back to following its group" : "Pin — keep this pane on screen when you switch groups"}
+              aria-pressed={!!pinned}
+              onClick={(e) => {
+                e.stopPropagation();
+                onPin();
+              }}
+            >
+              <PinIcon />
             </button>
           )}
           {onZoom && (

@@ -1655,3 +1655,25 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .rail .cell .v .share { color: var(--amber-text); }
 .usage-today .usage-label { color: var(--text-2); }
 .rail .cell.meter { margin-left: auto; border-right: none; border-left: 1px solid var(--line-soft); }
+/* pinned panes: the pin stays visible while pinned, in the pane header and the sidebar row */
+.pane-header .controls .pin.on { color: var(--teal); }
+.pane:not(:hover) .pane-header .controls:has(.pin.on) { opacity: 1; }
+.pane:not(:hover) .pane-header .controls:has(.pin.on) > :not(.pin) { visibility: hidden; }
+.sess-item .pin .ico { vertical-align: -2px; }
+.sess-item.pinned .pin { display: inline-block; opacity: 1; color: var(--teal); }
+/* a session dropped on a pane's header or a workspace's tab strip becomes a tab there */
+.pane-header[data-drop="into"], .ws-tabs[data-drop="into"] { border-radius: 6px 6px 0 0; }
+/* empty snap-layout zones: open a session here (Snap Assist) */
+.zone-slot {
+  display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0;
+  border: 1px dashed var(--line-strong); border-radius: 8px; background: transparent;
+}
+.zone-open { border: none; background: transparent; color: var(--text-3); font: 500 11px var(--ui); padding: 8px 12px; border-radius: 6px; }
+.zone-open:hover { color: var(--text-1); background: var(--fill-subtle); }
+.zone-pick { display: flex; flex-direction: column; gap: 6px; width: min(280px, 90%); max-height: 90%; padding: 10px; background: var(--bg-pane); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+.zone-pick-h { font: 600 11px var(--ui); color: var(--text-2); }
+.zone-pick-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; min-height: 0; }
+.zone-pick-row { display: flex; align-items: center; gap: 6px; text-align: left; border: none; background: transparent; padding: 5px 6px; border-radius: 4px; font: 400 11.5px var(--ui); color: var(--text-1); }
+.zone-pick-row:hover { background: var(--fill-selected); }
+.zone-pick-row .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zone-pick .row { display: flex; justify-content: flex-end; gap: 6px; }
