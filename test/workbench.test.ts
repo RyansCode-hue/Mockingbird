@@ -186,3 +186,10 @@ describe("git errors in Source Control", () => {
     expect(failureResolved("fetch", st({}))).toBe(false); // nothing to tell from status: dismiss it by hand
   });
 });
+
+describe("a pane's share of the limit", () => {
+  it("keeps a decimal when small, instead of rounding to 0%", async () => {
+    const { formatShare } = await import("../src/shared/types");
+    expect([23.6, 7.78, 0.22, 0.04, 0].map(formatShare)).toEqual(["24%", "7.8%", "0.2%", "<0.1%", "0%"]);
+  });
+});

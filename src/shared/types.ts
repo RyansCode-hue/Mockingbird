@@ -666,6 +666,13 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** A share of the limit: whole numbers from 10%, one decimal below, and "<0.1%" for a sliver. */
+export function formatShare(pct: number): string {
+  if (pct >= 10) return `${Math.round(pct)}%`;
+  if (pct >= 0.1) return `${(Math.round(pct * 10) / 10).toFixed(1)}%`;
+  return pct > 0 ? "<0.1%" : "0%";
+}
+
 export interface Meters {
   /** By pane (session id). */
   sessions: Record<string, SessionMeter>;

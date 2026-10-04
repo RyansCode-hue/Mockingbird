@@ -1801,7 +1801,7 @@ function App() {
             </span>
           );
         })}
-        <UsageMeter usage={usage} meters={meters} sessions={sessions} />
+        <UsageMeter usage={usage} meters={meters} />
         <span className="right">
           {updOutcome && (
             <span
@@ -2072,7 +2072,7 @@ const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
  * Plan usage in the status bar — Claude, Codex, or both — with a popover of
  * every limit. Both agents report account-wide numbers from their sessions.
  */
-function UsageMeter({ usage, meters, sessions }: { usage: UsageReport | null; meters: Meters | null; sessions: SessionInfo[] }) {
+function UsageMeter({ usage, meters }: { usage: UsageReport | null; meters: Meters | null }) {
   const [show, setShow] = useState<UsageShow>(() => loadLS("mb.usageShow", "both"));
   useEffect(() => localStorage.setItem("mb.usageShow", JSON.stringify(show)), [show]);
   const [open, setOpen] = useState(false);
@@ -2087,13 +2087,6 @@ function UsageMeter({ usage, meters, sessions }: { usage: UsageReport | null; me
   const compact = shown.filter((x) => x.u);
   const short = (l: UsageLimit) => (l.label.startsWith("5-hour") ? "5h" : l.label.startsWith("Weekly") ? "wk" : l.label);
   const todayTotal = Object.values(meters?.today ?? {}).reduce((n, t) => n + totalTokens(t!), 0);
-  // the panes that used the most of each agent's current 5-hour window
-  const byShare = (a: "claude" | "codex") =>
-    sessions
-      .map((s) => ({ s, m: meters?.sessions[s.id] }))
-      .filter((x) => x.m?.agent === a && x.m.window && x.m.window.tokens > 0)
-      .sort((x, y) => (y.m!.window!.sharePct ?? 0) - (x.m!.window!.sharePct ?? 0))
-      .slice(0, 6);
 
   return (
     <span className="usage-wrap">
@@ -2165,20 +2158,6 @@ function UsageMeter({ usage, meters, sessions }: { usage: UsageReport | null; me
                           <span className="usage-reset">{meters.today[a]!.replies.toLocaleString()} replies</span>
                           <span className="usage-pct">{formatTokens(totalTokens(meters.today[a]!))}</span>
                         </div>
-                      </div>
-                    )}
-                    {byShare(a).length > 0 && (
-                      <div className="usage-panes">
-                        <div className="usage-sub" title="Estimated: each pane's share of what this Mac's sessions used in the window, weighted by model, applied to the window's reported %">
-                          This 5-hour window, by pane (≈)
-                        </div>
-                        {byShare(a).map(({ s, m }) => (
-                          <div key={s.id} className="usage-pane">
-                            <span className="usage-pane-name">{s.ticketTitle ?? s.title}</span>
-                            <span className="usage-reset">{formatTokens(m!.window!.tokens)}</span>
-                            <span className="usage-pct">{m!.window!.sharePct === null ? "—" : `≈${Math.round(m!.window!.sharePct)}%`}</span>
-                          </div>
-                        ))}
                       </div>
                     )}
                     <div className="usage-foot">

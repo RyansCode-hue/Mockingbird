@@ -3,7 +3,7 @@ import { beginDrag } from "./drag";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { formatTokens, totalTokens, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
+import { formatShare, formatTokens, totalTokens, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
 import { stripMouseEnables } from "./mouseModes";
 import { useFolderRefresh } from "./folderWatch";
 
@@ -216,7 +216,7 @@ function meterTitle(m: SessionMeter): string {
   if (m.window) {
     lines.push(
       "",
-      `This 5-hour window: ${formatTokens(m.window.tokens)} tokens${m.window.sharePct != null ? ` ≈ ${Math.round(m.window.sharePct)}% of the limit` : ""} (the window is at ${Math.round(m.window.usedPct)}%)`,
+      `This 5-hour window: ${formatTokens(m.window.tokens)} tokens${m.window.sharePct != null ? ` ≈ ${formatShare(m.window.sharePct)} of the limit` : ""} (the window is at ${Math.round(m.window.usedPct)}%)`,
       "An estimate: this pane's share of what this Mac's sessions used in the window, weighted by model. Use elsewhere (claude.ai, another computer) isn't counted, so it can read high."
     );
   }
@@ -804,15 +804,6 @@ export function TerminalPane({
             <span className="k">Elapsed</span>
             <span className="v">{fmtElapsed(session.createdAt, true)}</span>
           </div>
-          {meter && totalTokens(meter.tokens) > 0 && (
-            <div className="cell" title={meterTitle(meter)}>
-              <span className="k">Tokens</span>
-              <span className="v">
-                {formatTokens(totalTokens(meter.tokens))}
-                {meter.window?.sharePct != null && <span className="share"> · ≈{Math.round(meter.window.sharePct)}% of 5h</span>}
-              </span>
-            </div>
-          )}
           {gitStr && (
             <div className={`cell ${onOpenChanges ? "click" : ""}`} title={gitTitle} onClick={onOpenChanges}>
               <span className="k">Git</span>
@@ -846,6 +837,16 @@ export function TerminalPane({
               <span className="v">{session.queuedCount} msg</span>
             </div>
           ) : null}
+          {/* the session's own usage, apart from where it runs: at the far right */}
+          {meter && totalTokens(meter.tokens) > 0 && (
+            <div className="cell meter" title={meterTitle(meter)}>
+              <span className="k">Tokens</span>
+              <span className="v">
+                {formatTokens(totalTokens(meter.tokens))}
+                {meter.window?.sharePct != null && <span className="share"> · ≈{formatShare(meter.window.sharePct)} of 5h</span>}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
