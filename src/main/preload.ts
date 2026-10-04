@@ -198,6 +198,7 @@ const api = {
     return () => ipcRenderer.removeListener("health:updates", h);
   },
   sessionRestart: (id: string) => ipcRenderer.invoke("sessions:restart", id),
+  sessionMute: (id: string, muted: boolean) => ipcRenderer.invoke("sessions:mute", id, muted),
   overlapsGet: () => ipcRenderer.invoke("overlaps:get"),
   onOverlapsChanged: (cb: (o: unknown) => void) => {
     const h = (_e: unknown, o: unknown) => cb(o);

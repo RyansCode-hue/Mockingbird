@@ -1492,7 +1492,8 @@ Each item ships on its own: tests + build + harness check → ff main → README
   Watched run: real Codex 0.156.1 (-a on-request -s read-only) asked to write ~/mb-permprobe…; approval prompt shown;
   events.jsonl got UserPromptSubmit (with prompt), PreToolUse, PermissionRequest (tool_name Bash) tagged pane=perm-probe;
   nothing approved, file not created. Payload shapes captured as a hooks test.
-- [ ] Notification controls (per-session mute, quiet hours)
+- [x] Notification controls (per-session mute, quiet hours)
+  Review: quiet-hours/mute/finished rules (2 tests); harness: sidebar mute + pane chip, Settings rows.
 - [ ] Scrollback that survives restarts
 ## Later
 - [ ] Weekly rollup

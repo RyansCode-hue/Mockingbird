@@ -135,6 +135,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Notification controls** — mute a session from its sidebar row (or ⌘K;
+  its pane shows "muted", and it stays muted through restarts), quiet hours
+  in Settings → General (spans past midnight work), and an option to be
+  notified only when a session needs you, not when it finishes.
 - **Codex parity, checked** — a watched run of Codex 0.156 in a read-only
   sandbox asking to write a file: its UserPromptSubmit, PreToolUse and
   PermissionRequest hooks reach Mockingbird tagged with the pane, which turns
@@ -218,14 +222,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Notification controls**: per-session mute and app-wide quiet hours — today
-  every waiting flip notifies, which trains you to ignore them.
-
-### Next
-
 - **Scrollback that survives restarts**: resumed sessions get their
   conversation back via `--continue`, but the pane's visual history starts
   empty; persist per-session scrollback to disk and replay on relaunch.
+
+### Next
+
 
 ### Later
 

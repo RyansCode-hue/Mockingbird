@@ -17,7 +17,7 @@ import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { activeGroupOf, dropInZone, layoutToRemember, overflowArea, parseZone, placeInZones, pruneToGroup, seating, switchTo } from "./gridModel";
 import { resetText, pctNow } from "./usageFormat";
-import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon } from "./Icons";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon } from "./Icons";
 import { RunView } from "./RunView";
 import { PipelineDialog, PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { HandoffDialog, otherAgent } from "./Handoff";
@@ -1204,6 +1204,12 @@ function App() {
     return null;
   };
 
+  /** Mute or unmute a session's notifications. */
+  const toggleMute = async (s: SessionInfo) => {
+    const r = await window.mb.sessionMute(s.id, !s.muted);
+    if (r?.error) alert(`Couldn't change it: ${r.error}`);
+  };
+
   /** Start a preset's session and show it. */
   const startPreset = async (p: SessionPreset) => {
     const info = await window.mb.presetStart(p.id);
@@ -1766,6 +1772,17 @@ function App() {
                         }}
                       >
                         ✎
+                      </button>
+                      <button
+                        className={`mute ${s.muted ? "on" : ""}`}
+                        title={s.muted ? "Notifications muted — click to hear from this session again" : "Mute this session's notifications"}
+                        aria-pressed={!!s.muted}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleMute(s);
+                        }}
+                      >
+                        {s.muted ? <BellOffIcon /> : <BellIcon />}
                       </button>
                       <button
                         className={`pin ${pinnedSet.has(s.id) ? "on" : ""}`}
@@ -2371,6 +2388,7 @@ function App() {
                     },
                   },
                   { label: `Change group of ${focusedSession.ticketTitle ?? focusedSession.title}…`, run: () => setGroupDlg(focusedSession) },
+                  { label: `${focusedSession.muted ? "Unmute" : "Mute"} notifications from ${focusedSession.ticketTitle ?? focusedSession.title}`, run: () => toggleMute(focusedSession) },
                   ...(!focusedSession.shell && focusedSession.repoPath
                     ? [{ label: `Undo a turn of ${focusedSession.ticketTitle ?? focusedSession.title} — put its files back`, run: () => setUndoFor(focusedSession) }]
                     : []),
@@ -4580,9 +4598,38 @@ function SettingsView({
                 }}
               />
             </SetRow>
-            <SetRow title="Notifications" note="When a session finishes or needs you">
+            <SetRow title="Notifications" note="When a session needs you, or finishes its turn. A session can be muted from its row in the sidebar (or ⌘K).">
               <Toggle label="Notifications" on={s.notifications} onChange={(v) => upd({ notifications: v })} />
             </SetRow>
+            {s.notifications && (
+              <>
+                <SetRow title="When a session finishes" note="Off: only sessions that need you notify">
+                  <Toggle label="Notify when a session finishes" on={s.notifyFinished !== false} onChange={(v) => upd({ notifyFinished: v })} />
+                </SetRow>
+                <SetRow title="Quiet hours" note="No session notifications between these times (the Dock badge and menu bar still count)">
+                  <span className="quiet-hours">
+                    <input
+                      type="time"
+                      value={s.quietHours?.from ?? "18:00"}
+                      disabled={!s.quietHours?.enabled}
+                      onChange={(e) => upd({ quietHours: { enabled: true, from: e.target.value, to: s.quietHours?.to ?? "08:00" } })}
+                    />
+                    <span>to</span>
+                    <input
+                      type="time"
+                      value={s.quietHours?.to ?? "08:00"}
+                      disabled={!s.quietHours?.enabled}
+                      onChange={(e) => upd({ quietHours: { enabled: true, from: s.quietHours?.from ?? "18:00", to: e.target.value } })}
+                    />
+                    <Toggle
+                      label="Quiet hours"
+                      on={!!s.quietHours?.enabled}
+                      onChange={(v) => upd({ quietHours: { enabled: v, from: s.quietHours?.from ?? "18:00", to: s.quietHours?.to ?? "08:00" } })}
+                    />
+                  </span>
+                </SetRow>
+              </>
+            )}
             <SetRow title="Setup wizard" note="Agents, status hooks, repo folders, Azure DevOps">
               <button className="outline" onClick={onSetup}>Run setup</button>
             </SetRow>

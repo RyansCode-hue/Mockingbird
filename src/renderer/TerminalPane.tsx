@@ -824,6 +824,7 @@ export function TerminalPane({
         {session.shell && density !== "min" && <span className="chip">shell</span>}
         {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
         {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
+        {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row or ⌘K)">muted</span>}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <span className="controls">
           {!dead && (

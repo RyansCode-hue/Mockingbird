@@ -1797,3 +1797,9 @@ button.chip { border: none; cursor: pointer; }
 /* the group's name keeps its room; the bar's controls give way first */
 .groupbar .gb-name { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .groupbar .flbl-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* notification controls */
+.sess-item .mute .ico { vertical-align: -2px; }
+.sess-item .mute.on { display: inline-block; opacity: 1; color: var(--text-3); }
+.quiet-hours { display: inline-flex; align-items: center; gap: 6px; font: 400 11px var(--ui); color: var(--text-3); }
+.quiet-hours input[type=time] { background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 11px var(--mono); }
+.quiet-hours input[type=time]:disabled { opacity: .5; }

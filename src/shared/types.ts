@@ -33,6 +33,8 @@ export interface SessionInfo {
   agentVersion?: string;
   /** Working, but no output since this time: it may be stuck. */
   stalledSince?: number | null;
+  /** No notifications from this session. */
+  muted?: boolean;
 }
 
 /** An agent CLI updated under running sessions: they still run the old version until restarted. */
@@ -218,6 +220,16 @@ export interface Settings {
   presets?: SessionPreset[];
   /** Per group (top-level key), overriding agentMessagesSubmit for messages to that group's sessions. */
   agentMessagesByGroup?: Record<string, MessageMode>;
+  /** No session notifications between these times (they can span midnight). */
+  quietHours?: QuietHours;
+  /** Notify when a session finishes its turn, not only when it needs you (default on). */
+  notifyFinished?: boolean;
+}
+
+export interface QuietHours {
+  enabled: boolean;
+  from: string; // "HH:MM"
+  to: string; // "HH:MM"
 }
 
 /**

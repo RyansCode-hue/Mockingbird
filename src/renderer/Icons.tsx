@@ -157,3 +157,19 @@ export const PinIcon = () => (
     <path d="M9.5 2.25l4.25 4.25-1.75.5-2.5 2.5.25 2.75-1 1-2.5-2.5-3.5 3.5M5.25 8.25l-2.5-2.5 1-1 2.75.25 2.5-2.5.5-1.75" />
   </Icon>
 );
+
+/** A bell: this session notifies. */
+export const BellIcon = () => (
+  <Icon>
+    <path d="M4.25 11V7.25a3.75 3.75 0 0 1 7.5 0V11l1 1.25H3.25z" />
+    <path d="M6.75 13.75a1.25 1.25 0 0 0 2.5 0" />
+  </Icon>
+);
+
+/** A struck-through bell: this session's notifications are muted. */
+export const BellOffIcon = () => (
+  <Icon>
+    <path d="M4.25 11V7.25a3.75 3.75 0 0 1 6.1-2.9M11.75 7.5V11l1 1.25H5.5" />
+    <path d="M6.75 13.75a1.25 1.25 0 0 0 2.5 0M2.5 2.5l11 11" />
+  </Icon>
+);

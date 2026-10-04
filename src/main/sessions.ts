@@ -308,6 +308,15 @@ export class SessionManager {
     return { restarted, skipped, failed };
   }
 
+  /** Mute or unmute a session's notifications; kept across restarts. */
+  setMuted(id: string, muted: boolean): void {
+    const s = this.live.get(id);
+    if (!s) throw new Error("Session is no longer running");
+    s.info.muted = muted || undefined;
+    this.store.upsertSession(s.info);
+    this.emitChanged();
+  }
+
   /** Restart one pane in place: same id, its conversation resumed. */
   async restart(id: string): Promise<SessionInfo> {
     this.kill(id, false); // keep the store entry so relaunch can resume it
@@ -396,6 +405,11 @@ export class SessionManager {
       effort: old.effort ?? undefined,
       agent: old.agent,
     });
+    // a muted pane stays muted through restarts
+    if (old.muted) {
+      info.muted = true;
+      this.store.upsertSession(info);
+    }
     return info;
   }
 

@@ -35,6 +35,7 @@ import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
+import { shouldNotify } from "./notifications";
 import { MessageLog } from "./messageLog";
 import { changedFiles, overlaps, type WorktreeChanges } from "./conflicts";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
@@ -110,8 +111,9 @@ function safeAsync<T extends unknown[], R>(context: string, fn: (...args: T) => 
 
 // Coalesced notifications: at most one per session per 30s (design 1a).
 const lastNotified = new Map<string, number>();
-function notifySession(sessionId: string, title: string, body: string): void {
-  if (!store.settings.notifications) return;
+function notifySession(sessionId: string, title: string, body: string, kind: "waiting" | "finished" | "other" = "other"): void {
+  const session = sessions.list().find((s) => s.id === sessionId);
+  if (!shouldNotify({ settings: store.settings, session, kind, now: new Date() })) return;
   const last = lastNotified.get(sessionId) ?? 0;
   if (Date.now() - last < 30_000) return;
   lastNotified.set(sessionId, Date.now());
@@ -336,7 +338,8 @@ app.whenReady().then(() => {
       status === "waiting" ? "Needs input" : "Finished",
       status === "waiting"
         ? `${info.title} · ${info.waitingReason ?? "waiting on you"}`
-        : `${info.title} is done responding`
+        : `${info.title} is done responding`,
+      status === "waiting" ? "waiting" : "finished"
     );
   }, (info, prompt) => {
     // the files before this turn, so it can be undone (agent panes in a repository only)
@@ -383,6 +386,7 @@ ipcMain.handle("sessions:create", (_e, req) =>
   })()
 );
 ipcMain.handle("sessions:relaunch", (_e, id) => safeAsync("sessions:relaunch", () => sessions.relaunch(id))());
+ipcMain.handle("sessions:mute", (_e, id, muted) => safe("sessions:mute", () => sessions.setMuted(String(id), !!muted))());
 ipcMain.handle("sessions:kill", (_e, id, forget) => {
   const s = sessions.list().find((x) => x.id === id);
   const r = sessions.kill(id, forget);
