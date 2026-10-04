@@ -171,3 +171,18 @@ describe("the editor's languages", () => {
     expect(languageExtension("notes.txt")).toBeNull();
   });
 });
+
+describe("git errors in Source Control", () => {
+  it("count as fixed once there's nothing left to pull, push or commit", async () => {
+    const { failureResolved } = await import("../src/renderer/SourceControl");
+    const st = (o: object) => ({ behind: 0, ahead: 0, published: true, staged: [], conflicted: [], ...o });
+    expect(failureResolved("pull", st({ behind: 3 }))).toBe(false);
+    expect(failureResolved("pull", st({}))).toBe(true);
+    expect(failureResolved("pull", st({ conflicted: [{ path: "a", status: "C" }] }))).toBe(false); // a merge left conflicts
+    expect(failureResolved("push", st({ ahead: 1 }))).toBe(false);
+    expect(failureResolved("push", st({ published: false }))).toBe(false);
+    expect(failureResolved("push", st({}))).toBe(true);
+    expect(failureResolved("commit", st({ staged: [{ path: "a", status: "M" }] }))).toBe(false);
+    expect(failureResolved("fetch", st({}))).toBe(false); // nothing to tell from status: dismiss it by hand
+  });
+});

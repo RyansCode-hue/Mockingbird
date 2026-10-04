@@ -11,6 +11,20 @@ const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/"))
 
 const TITLE: Record<ScmEntry["status"], string> = { M: "Modified", A: "Added", D: "Deleted", R: "Renamed", U: "Untracked", C: "Conflict" };
 
+/**
+ * Whether what a git failure was about has since been sorted out — by the
+ * agent, a terminal, or another try — so its error can go: a failed pull once
+ * nothing is left to pull, a push once nothing is left to push, a commit once
+ * nothing is left staged.
+ */
+export function failureResolved(failed: string, st: Pick<ScmStatus, "behind" | "ahead" | "published" | "staged" | "conflicted">): boolean {
+  if (st.conflicted.length) return false;
+  if (failed === "pull") return st.behind === 0;
+  if (failed === "push") return st.published && st.ahead === 0;
+  if (failed === "commit") return st.staged.length === 0;
+  return false;
+}
+
 /** Which diff a row opens: staged/unstaged from Source Control, the whole branch against its base, or one commit from the graph. */
 export type DiffSource =
   | { kind: "scm"; staged: boolean; untracked: boolean }
@@ -104,6 +118,14 @@ export function SourceControl({
     await load();
     return r;
   };
+
+  // an error whose cause is fixed (the agent pulled, pushed or committed) clears by itself
+  useEffect(() => {
+    if (error && failed && status && !isErr(status) && failureResolved(failed, status)) {
+      setError("");
+      setFailed("");
+    }
+  }, [status, error, failed]);
 
   if (status === null) return <div className="fp-note">loading…</div>;
   if (isErr(status)) return <div className="fp-note err">{status.error}</div>;
@@ -259,6 +281,17 @@ export function SourceControl({
       </button>
       {error && (
         <div className="fp-note err sc-err">
+          <button
+            className="icon sc-err-x"
+            aria-label="Dismiss"
+            data-tip="Dismiss"
+            onClick={() => {
+              setError("");
+              setFailed("");
+            }}
+          >
+            ✕
+          </button>
           {error}
           {onAskSession && failed && (
             <button
