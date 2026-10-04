@@ -1507,6 +1507,22 @@ function App() {
                   window.mb.sessionWrite(focusedSession.id, text);
                   focusTerm(focusedSession.id);
                 }}
+                review={
+                  focusedSession.shell
+                    ? undefined
+                    : {
+                        agent: otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude",
+                        start: async () => {
+                          const author = focusedSession;
+                          const info = await window.mb.reviewStart(author.id);
+                          if (info?.error) return `Couldn't start the review: ${info.error}`;
+                          await refresh();
+                          // the reviewer opens beside the session it's reviewing
+                          setShown((p) => placeBeside(p.includes(info.id) ? p : [...p, info.id], info.id, author.id, "after"));
+                          return null;
+                        },
+                      }
+                }
               />
             ) : (
               <div className="fp-note">Click into a session to see its changes.</div>

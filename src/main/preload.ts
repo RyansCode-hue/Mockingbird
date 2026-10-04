@@ -182,6 +182,7 @@ const api = {
   adoMoveToColumn: (id: number, type: string, board: string, column: string) => ipcRenderer.invoke("ado:moveToColumn", id, type, board, column),
   adoComments: (id: number) => ipcRenderer.invoke("ado:comments", id),
   adoAddComment: (id: number, text: string) => ipcRenderer.invoke("ado:comment:add", id, text),
+  reviewStart: (sessionId: string) => ipcRenderer.invoke("review:start", sessionId),
   handoffDraft: (sessionId: string) => ipcRenderer.invoke("handoff:draft", sessionId),
   handoffStart: (sessionId: string, handoff: string) => ipcRenderer.invoke("handoff:start", sessionId, handoff),
   presetStart: (id: string) => ipcRenderer.invoke("presets:start", id),

@@ -135,6 +135,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
   debugger sessions (debugpy, js-debug, netcoredbg) and real Docker Compose.
 - **Usage panel** — Claude and Codex plan limits like claude.ai's, including
   the 5-hour window between reports.
+- **Cross-agent review** — "Second opinion: review with Codex" (or Claude)
+  in Source Control starts the other agent in the same folder to review the
+  branch, committed and not, for bugs, security, silent failures and missing
+  tests; it changes nothing and sends its findings back to the session over
+  agent messaging.
 - **Editor intelligence** — files open with their language's own server:
   problems underlined as you type (and in the gutter), hover, completions,
   go to definition (F12 or ⌘-click; Alt-click adds a cursor), rename across
@@ -184,13 +189,6 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Cross-agent review.** A button in Source Control starts a session with
-  the *other* agent (Codex for a Claude branch, Claude for a Codex one) to review
-  the branch's diff, and the findings come back to the original session over
-  agent messaging — a second model's opinion before every PR.
-
-### Next
-
 - **Undo an agent's turn.** Snapshot the worktree when each prompt is submitted
   (from the hook Mockingbird already gets) into a private ref like
   `refs/mockingbird/snapshots/<session>/…` — no tokens, and the branch, index
@@ -200,6 +198,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
   git stores only files that changed, so a typical turn costs a few KB.
   Gitignored files are skipped, and any single file over ~5 MB is skipped and
   reported. The conversation isn't rewound, only the files.
+
+### Next
+
 - **Conflict early warning.** When two sessions in the same repo change the same
   file in different worktrees, flag both panes before it becomes a merge
   conflict.

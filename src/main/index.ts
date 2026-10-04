@@ -17,7 +17,7 @@ import { debugTargetFor } from "./dap/targets";
 import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan } from "./usage";
-import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn } from "./files";
+import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
 import { generateCommitMessage } from "./commitMessage";
@@ -34,6 +34,7 @@ import { askAgent, cleanReply } from "./headless";
 import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
+import { reviewPrompt } from "./review";
 import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
 import { LSP_DIR } from "./lsp/servers";
@@ -971,6 +972,29 @@ ipcMain.handle("presets:start", (_e, id) =>
     const repo = p.repoPath ? expandHome(p.repoPath) : null;
     const branches = repo && p.branch.mode === "new" ? (await listBranches(repo)).branches : [];
     return sessions.create(presetRequest({ ...p, repoPath: repo }, branches, new Date()));
+  })()
+);
+
+// ---- cross-agent review: the other agent reviews this session's branch and reports back ----
+ipcMain.handle("review:start", (_e, id) =>
+  safeAsync("review:start", async () => {
+    const s = sessionOf(String(id));
+    if (s.shell) throw new Error("A terminal has no agent's work to review");
+    if (!s.repoPath) throw new Error("This session isn't in a repository");
+    const author: AgentKind = s.agent ?? "claude";
+    const reviewer = otherAgent(author);
+    if (!sessions.binFor(reviewer).includes("/")) throw new Error(`${agentName(reviewer)} isn't installed — set it up in Settings → Agents`);
+    const base = await baseRef(s.cwd);
+    return sessions.create({
+      repoPath: s.repoPath,
+      cwd: s.cwd,
+      branchName: s.branch ?? undefined,
+      useWorktree: false,
+      agent: reviewer,
+      title: `Review · ${s.ticketTitle ?? s.title}`,
+      taskGroup: s.taskGroup ?? undefined,
+      initialPrompt: reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base }),
+    });
   })()
 );
 

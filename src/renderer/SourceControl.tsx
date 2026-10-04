@@ -44,6 +44,7 @@ export function SourceControl({
   onOpenDiff,
   onOpenFile,
   onAskSession,
+  review,
 }: {
   sessionId: string;
   /** The session's folder: its changes refresh the view. */
@@ -53,6 +54,8 @@ export function SourceControl({
   onOpenFile: (path: string) => void;
   /** Type a request into the session's prompt — to hand a git failure to the agent. */
   onAskSession?: (text: string) => void;
+  /** A second opinion: the other agent reviews this branch and messages its findings back. */
+  review?: { agent: string; start: () => Promise<string | null> };
 }) {
   const [status, setStatus] = useState<Result<ScmStatus> | null>(null);
   const [message, setMessage] = useState("");
@@ -279,6 +282,24 @@ export function SourceControl({
       <button className="primary sc-commit" disabled={!!busy || (!staged.length && !unstaged.length)} onClick={commit}>
         {busy === "commit" ? "Committing…" : staged.length ? `Commit ${staged.length}` : "Commit"}
       </button>
+      {review && (
+        <button
+          className="outline sc-review"
+          disabled={!!busy}
+          data-tip={`Starts a ${review.agent} session in this folder that reviews the branch (committed and uncommitted) for bugs, security, silent failures and missing tests, then sends its findings back to this session. It changes nothing.`}
+          onClick={async () => {
+            setBusy("review");
+            const why = await review.start();
+            setBusy("");
+            if (why) {
+              setError(why);
+              setFailed("");
+            }
+          }}
+        >
+          {busy === "review" ? "Starting the review…" : `Second opinion: review with ${review.agent}`}
+        </button>
+      )}
       {error && (
         <div className="fp-note err sc-err">
           <button

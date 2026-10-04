@@ -1474,7 +1474,8 @@ Each item ships on its own: tests + build + harness check → ff main → README
   send unfiltered completions (now narrowed by the typed word before capping); TS renames via an alias by default (turned
   off). Editor checked through a bridge to the real TS server: underline + gutter, hover, completion, F2 rename across
   files (open buffer + disk), ⌘-click definition, ⇧⌥F format.
-- [ ] Cross-agent review
+- [x] Cross-agent review
+  Review: prompt tests (4); harness: Source Control button hidden for terminals, starts the review beside the author's pane.
 - [ ] Undo an agent's turn (snapshot refs)
 - [ ] Conflict early warning
 - [ ] Session health watchdog (CLI self-update, hung sessions)

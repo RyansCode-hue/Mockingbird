@@ -1746,3 +1746,4 @@ button.chip { border: none; cursor: pointer; }
 .cm-lsp-rename { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font: 400 11px var(--ui); color: var(--text-2); }
 .cm-lsp-rename input { flex: 0 1 260px; background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-btn-hover); border-radius: 4px; padding: 3px 6px; font: 400 11px var(--mono); }
 .cm-lsp-rename .cm-lsp-note { color: var(--amber-text); }
+.sc-review { margin: 6px 10px 0; width: calc(100% - 20px); font-size: 11px; }
