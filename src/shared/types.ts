@@ -27,6 +27,8 @@ export interface SessionInfo {
   agent?: AgentKind; // absent on sessions persisted before Codex support — those are Claude
   /** The agent conversation last seen running in this pane (from its hook events) — what a relaunch resumes. */
   conversation?: { agent: AgentKind; id: string };
+  /** Every conversation this pane has run (a /clear starts a new one), oldest first — what its token meter adds up. */
+  conversations?: string[];
 }
 
 export interface WorktreeStateInfo {
@@ -629,6 +631,47 @@ export interface AgentUsage {
 export interface UsageReport {
   claude: AgentUsage | null;
   codex: AgentUsage | null;
+}
+
+/** Tokens summed over replies. */
+export interface TokenCounts {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  replies: number;
+}
+
+/** A pane's token meter: all its conversations, and its estimated share of the plan's current 5-hour window. */
+export interface SessionMeter {
+  agent: AgentKind | null;
+  tokens: TokenCounts;
+  window: {
+    tokens: number;
+    /** Estimated % of the 5-hour limit this pane used in the current window; null when nothing on this Mac used it. */
+    sharePct: number | null;
+    /** The whole window's reported use, % of the limit. */
+    usedPct: number;
+    resetsAt: number;
+  } | null;
+}
+
+export const totalTokens = (t: TokenCounts) => t.input + t.output + t.cacheRead + t.cacheWrite;
+
+/** 1.2M, 340k, 980. */
+export function formatTokens(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(n);
+}
+
+export interface Meters {
+  /** By pane (session id). */
+  sessions: Record<string, SessionMeter>;
+  /** Since local midnight, per agent. */
+  today: Partial<Record<AgentKind, TokenCounts>>;
+  at: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {

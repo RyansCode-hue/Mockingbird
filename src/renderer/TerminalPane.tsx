@@ -3,7 +3,7 @@ import { beginDrag } from "./drag";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import type { SessionInfo, WorktreeStateInfo } from "../shared/types";
+import { formatTokens, totalTokens, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
 import { stripMouseEnables } from "./mouseModes";
 import { useFolderRefresh } from "./folderWatch";
 
@@ -200,6 +200,29 @@ export function currentTermTheme() {
 /** Other terminals (run logs) that follow the app theme. */
 export const termThemeListeners = new Set<(theme: ReturnType<typeof currentTermTheme>) => void>();
 
+/** "52k new input · 12k output · 1.1M read from cache · 30k written to cache · 41 replies". */
+export function tokenBreakdown(t: TokenCounts): string {
+  return [
+    `${formatTokens(t.input)} new input`,
+    `${formatTokens(t.output)} output`,
+    `${formatTokens(t.cacheRead)} read from cache`,
+    ...(t.cacheWrite ? [`${formatTokens(t.cacheWrite)} written to cache`] : []),
+    `${t.replies.toLocaleString()} replies`,
+  ].join(" · ");
+}
+
+function meterTitle(m: SessionMeter): string {
+  const lines = [`All of this pane's conversations: ${formatTokens(totalTokens(m.tokens))} tokens`, tokenBreakdown(m.tokens)];
+  if (m.window) {
+    lines.push(
+      "",
+      `This 5-hour window: ${formatTokens(m.window.tokens)} tokens${m.window.sharePct != null ? ` ≈ ${Math.round(m.window.sharePct)}% of the limit` : ""} (the window is at ${Math.round(m.window.usedPct)}%)`,
+      "An estimate: this pane's share of what this Mac's sessions used in the window, weighted by model. Use elsewhere (claude.ai, another computer) isn't counted, so it can read high."
+    );
+  }
+  return lines.join("\n");
+}
+
 export function applyTermTheme(light: boolean): void {
   const theme = light ? TERM_THEMES.light : TERM_THEMES.dark;
   for (const { term } of terms.values()) term.options.theme = theme;
@@ -245,6 +268,7 @@ export function TerminalPane({
   onOpenChanges,
   runCount,
   onOpenRun,
+  meter,
   onZoom,
   onAddTab,
   onReorder,
@@ -268,6 +292,8 @@ export function TerminalPane({
   onOpenChanges?: () => void;
   /** How many of this worktree's services are running (Run and Debug), and opening that view. */
   runCount?: number;
+  /** Tokens this pane's conversations used, and its estimated share of the 5-hour limit. */
+  meter?: SessionMeter;
   onOpenRun?: () => void;
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
   onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
@@ -778,6 +804,15 @@ export function TerminalPane({
             <span className="k">Elapsed</span>
             <span className="v">{fmtElapsed(session.createdAt, true)}</span>
           </div>
+          {meter && totalTokens(meter.tokens) > 0 && (
+            <div className="cell" title={meterTitle(meter)}>
+              <span className="k">Tokens</span>
+              <span className="v">
+                {formatTokens(totalTokens(meter.tokens))}
+                {meter.window?.sharePct != null && <span className="share"> · ≈{Math.round(meter.window.sharePct)}% of 5h</span>}
+              </span>
+            </div>
+          )}
           {gitStr && (
             <div className={`cell ${onOpenChanges ? "click" : ""}`} title={gitTitle} onClick={onOpenChanges}>
               <span className="k">Git</span>

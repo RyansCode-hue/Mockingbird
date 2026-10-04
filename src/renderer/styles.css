@@ -1648,3 +1648,11 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .fp-closeall:hover { color: var(--text-1); }
 .ex-closeall { margin-left: auto; padding: 0 4px; font: 400 10px var(--ui); color: var(--text-4); text-transform: none; letter-spacing: 0; visibility: hidden; }
 .ex-sec:hover .ex-closeall { visibility: visible; }
+
+/* token meters */
+.rail .cell .v .share { color: var(--amber-text); }
+.usage-today .usage-label { color: var(--text-2); }
+.usage-panes { margin: 6px 0 2px; }
+.usage-sub { font: 500 10px var(--ui); color: var(--text-4); margin-bottom: 3px; cursor: help; }
+.usage-pane { display: flex; align-items: baseline; gap: 8px; font-size: 11px; padding: 1px 0; }
+.usage-pane-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }

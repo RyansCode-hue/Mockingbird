@@ -22,8 +22,9 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame } from "../shared/types";
-import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, type OptionalTab } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters } from "../shared/types";
+import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, formatTokens, totalTokens, type OptionalTab } from "../shared/types";
+import { tokenBreakdown } from "./TerminalPane";
 
 declare global {
   interface Window {
@@ -282,6 +283,12 @@ function App() {
     setPanelTab(id);
     setPanelOpen(true);
   };
+  // token meters per pane and for today, pushed when the transcript index catches up
+  const [meters, setMeters] = useState<Meters | null>(null);
+  useEffect(() => {
+    window.mb.metersGet().then((m: Meters | { error: string }) => !("error" in m) && setMeters(m));
+    return window.mb.onMetersChanged((m: Meters) => setMeters(m));
+  }, []);
   const runningIn = (cwd: string) => runStates.filter((s) => s.worktree === cwd && (s.status === "running" || s.status === "starting")).length;
   /** Show a side bar view, from anywhere: the side bar lives on the Sessions tab. */
   const showView = (v: SideView) => {
@@ -1627,6 +1634,7 @@ function App() {
                       showView("scm");
                     }}
                     runCount={runningIn(s.cwd)}
+                    meter={meters?.sessions[s.id]}
                     onOpenRun={() => {
                       setFocused(s.id);
                       showView("run");
@@ -1793,7 +1801,7 @@ function App() {
             </span>
           );
         })}
-        <UsageMeter usage={usage} />
+        <UsageMeter usage={usage} meters={meters} sessions={sessions} />
         <span className="right">
           {updOutcome && (
             <span
@@ -2064,7 +2072,7 @@ const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
  * Plan usage in the status bar — Claude, Codex, or both — with a popover of
  * every limit. Both agents report account-wide numbers from their sessions.
  */
-function UsageMeter({ usage }: { usage: UsageReport | null }) {
+function UsageMeter({ usage, meters, sessions }: { usage: UsageReport | null; meters: Meters | null; sessions: SessionInfo[] }) {
   const [show, setShow] = useState<UsageShow>(() => loadLS("mb.usageShow", "both"));
   useEffect(() => localStorage.setItem("mb.usageShow", JSON.stringify(show)), [show]);
   const [open, setOpen] = useState(false);
@@ -2078,6 +2086,14 @@ function UsageMeter({ usage }: { usage: UsageReport | null }) {
   const shown = agents.map((a) => ({ a, u: usage?.[a] ?? null }));
   const compact = shown.filter((x) => x.u);
   const short = (l: UsageLimit) => (l.label.startsWith("5-hour") ? "5h" : l.label.startsWith("Weekly") ? "wk" : l.label);
+  const todayTotal = Object.values(meters?.today ?? {}).reduce((n, t) => n + totalTokens(t!), 0);
+  // the panes that used the most of each agent's current 5-hour window
+  const byShare = (a: "claude" | "codex") =>
+    sessions
+      .map((s) => ({ s, m: meters?.sessions[s.id] }))
+      .filter((x) => x.m?.agent === a && x.m.window && x.m.window.tokens > 0)
+      .sort((x, y) => (y.m!.window!.sharePct ?? 0) - (x.m!.window!.sharePct ?? 0))
+      .slice(0, 6);
 
   return (
     <span className="usage-wrap">
@@ -2097,6 +2113,12 @@ function UsageMeter({ usage }: { usage: UsageReport | null }) {
                 ))}
             </span>
           ))
+        )}
+        {todayTotal > 0 && (
+          <span className="usage-agent">
+            <span className="dim">today</span>
+            <span>{formatTokens(todayTotal)}</span>
+          </span>
         )}
       </span>
       {open && (
@@ -2136,6 +2158,29 @@ function UsageMeter({ usage }: { usage: UsageReport | null }) {
                         </div>
                       );
                     })}
+                    {meters?.today[a] && (
+                      <div className="usage-row usage-today" title={tokenBreakdown(meters.today[a]!)}>
+                        <div className="usage-line">
+                          <span className="usage-label">Today on this Mac</span>
+                          <span className="usage-reset">{meters.today[a]!.replies.toLocaleString()} replies</span>
+                          <span className="usage-pct">{formatTokens(totalTokens(meters.today[a]!))}</span>
+                        </div>
+                      </div>
+                    )}
+                    {byShare(a).length > 0 && (
+                      <div className="usage-panes">
+                        <div className="usage-sub" title="Estimated: each pane's share of what this Mac's sessions used in the window, weighted by model, applied to the window's reported %">
+                          This 5-hour window, by pane (≈)
+                        </div>
+                        {byShare(a).map(({ s, m }) => (
+                          <div key={s.id} className="usage-pane">
+                            <span className="usage-pane-name">{s.ticketTitle ?? s.title}</span>
+                            <span className="usage-reset">{formatTokens(m!.window!.tokens)}</span>
+                            <span className="usage-pct">{m!.window!.sharePct === null ? "—" : `≈${Math.round(m!.window!.sharePct)}%`}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     <div className="usage-foot">
                       reported {fmtElapsed(u.at)} ago{a === "codex" ? " · read from Codex's session logs" : ""}
                     </div>

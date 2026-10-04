@@ -30,6 +30,9 @@ const codexLines = (id: string) => [
   L({ timestamp: "2026-09-02T09:00:04Z", type: "response_item", payload: { type: "function_call", name: "exec_command", arguments: JSON.stringify({ cmd: ["rg", "nightlyJob", "src"] }) } }),
   L({ timestamp: "2026-09-02T09:00:05Z", type: "response_item", payload: { type: "custom_tool_call", name: "apply_patch", input: "*** Begin Patch\n*** Update File: src/jobs/nightly.py\n@@\n-x\n+y\n*** End Patch" } }),
   L({ timestamp: "2026-09-02T09:00:06Z", type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Added exponential backoff." }] } }),
+  L({ timestamp: "2026-09-02T09:00:07Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { total_tokens: 15240 }, last_token_usage: { input_tokens: 15126, cached_input_tokens: 14720, output_tokens: 114 } } } }),
+  // the same total again: no new usage
+  L({ timestamp: "2026-09-02T09:00:08Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { total_tokens: 15240 }, last_token_usage: { input_tokens: 15126, cached_input_tokens: 14720, output_tokens: 114 } } } }),
 ];
 
 function fixture() {
@@ -135,5 +138,21 @@ describe("opening a hit", () => {
       { how: "room", roomId: "r1", roomTitle: "Perf room" },
       { how: "resume" },
     ]);
+  });
+});
+
+
+describe("token usage", () => {
+  it("records Claude replies once and Codex turns once, with cached input split out", async () => {
+    const { idx, xId } = fixture();
+    await idx.sync();
+    const rows = idx.usage();
+    const claude = rows.find((r) => r.conv === "c1")!;
+    expect(claude).toMatchObject({ agent: "claude", model: "claude-opus-5-5", input: 10, output: 20, cacheRead: 300, cacheWrite: 40, replies: 1 });
+    const codex = rows.find((r) => r.conv === xId)!;
+    expect(codex).toMatchObject({ agent: "codex", model: "gpt-6-astra", input: 406, output: 114, cacheRead: 14720, replies: 1 });
+    expect(idx.usage({ convs: ["c1"] }).map((r) => r.conv)).toEqual(["c1"]);
+    expect(idx.usage({ since: Date.parse("2026-09-02T00:00:00Z") }).map((r) => r.conv)).toEqual([xId]);
+    expect(idx.usage({ convs: [] })).toEqual([]);
   });
 });

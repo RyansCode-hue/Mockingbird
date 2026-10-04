@@ -8,6 +8,7 @@ import { SessionManager, paneEnv } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
 import { FolderWatcher } from "./watch";
+import { computeMeters, conversationsOf, fiveHourWindows } from "./meters";
 import { RunManager } from "./run";
 import { loadProfile, mainCheckout, profilePath, saveProfile } from "./runProfile";
 import { draftProfile } from "./runDraft";
@@ -28,9 +29,9 @@ import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn } from "./ado";
 import { checkForUpdate, updateRepo } from "./updates";
-import { TranscriptIndex, linkHits } from "./transcripts";
+import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, ModelCatalog } from "../shared/types";
+import type { AgentKind, Meters, ModelCatalog } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 
 const store = new Store();
@@ -297,7 +298,10 @@ app.whenReady().then(() => {
     }
     BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", readUsage());
   })();
-  watchUsage((u) => BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", u));
+  watchUsage((u) => {
+    BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", u);
+    metersChanged();
+  });
   ensureHookScript();
   watchEvents(sessions, (info, status) => {
     notifySession(
@@ -754,7 +758,11 @@ function startTranscriptIndex(): void {
     transcriptsProblem = logError("transcripts:open", err);
     return;
   }
-  const sync = () => transcripts!.sync().catch((err) => (transcriptsProblem = logError("transcripts:sync", err)));
+  const sync = () =>
+    transcripts!
+      .sync()
+      .then(metersChanged)
+      .catch((err) => (transcriptsProblem = logError("transcripts:sync", err)));
   void sync();
   let timer: NodeJS.Timeout | null = null;
   for (const root of Object.values(transcriptRoots)) {
@@ -769,6 +777,41 @@ function startTranscriptIndex(): void {
   }
   setInterval(sync, 5 * 60_000);
 }
+
+// token meters: recomputed after the index catches up, when plan usage moves, and as panes change conversation
+let metersTimer: NodeJS.Timeout | null = null;
+function metersNow(): Meters {
+  const now = Date.now();
+  const list = sessions.list();
+  if (!transcripts) return { sessions: {}, today: {}, at: now };
+  const convs = [...new Set(list.flatMap(conversationsOf))];
+  const windows = fiveHourWindows(readUsage(), now);
+  const windowRows: Partial<Record<AgentKind, UsageRow[]>> = {};
+  for (const [agent, w] of Object.entries(windows) as [AgentKind, { start: number }][]) {
+    windowRows[agent] = transcripts.usage({ since: w.start }).filter((r) => r.agent === agent);
+  }
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  return computeMeters({
+    sessions: list,
+    rows: transcripts.usage({ convs }),
+    windowRows,
+    todayRows: transcripts.usage({ since: midnight.getTime() }),
+    report: readUsage(),
+    now,
+  });
+}
+function metersChanged(): void {
+  if (metersTimer) clearTimeout(metersTimer);
+  metersTimer = setTimeout(() => {
+    try {
+      toWindow("meters:changed", metersNow());
+    } catch (err) {
+      logError("meters", err);
+    }
+  }, 1500);
+}
+ipcMain.handle("meters:get", () => safe("meters:get", metersNow)());
 
 // the models each CLI offers, read from the CLIs; `claude --help` is read once per run
 let claudeHelp: Promise<string | null> | null = null;

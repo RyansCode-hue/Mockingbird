@@ -89,6 +89,12 @@ const api = {
   runStop: (id: string, services?: string[]) => ipcRenderer.invoke("run:stop", id, services),
   runPrepare: (id: string) => ipcRenderer.invoke("run:prepare", id),
   runStates: () => ipcRenderer.invoke("run:states"),
+  metersGet: () => ipcRenderer.invoke("meters:get"),
+  onMetersChanged: (cb: (m: unknown) => void) => {
+    const h = (_e: unknown, m: unknown) => cb(m);
+    ipcRenderer.on("meters:changed", h);
+    return () => ipcRenderer.removeListener("meters:changed", h);
+  },
   runBuffer: (runId: string) => ipcRenderer.invoke("run:buffer", runId),
   runClear: (runId: string) => ipcRenderer.invoke("run:clear", runId),
   runStopById: (runId: string) => ipcRenderer.invoke("run:stopById", runId),

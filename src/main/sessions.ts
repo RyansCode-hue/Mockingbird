@@ -213,6 +213,10 @@ export class SessionManager {
       agent: req.shell ? undefined : req.agent ?? "claude",
       conversation: req.shellResume ?? (req.resumeSessionId ? { agent: req.agent ?? "claude", id: req.resumeSessionId } : undefined),
     };
+    // a relaunched pane keeps its history of conversations (its token meter adds them up)
+    const before = req.reuseId ? this.store.state.sessions.find((x) => x.id === req.reuseId) : undefined;
+    const history = [...(before?.conversations ?? (before?.conversation ? [before.conversation.id] : [])), ...(info.conversation ? [info.conversation.id] : [])];
+    if (history.length) info.conversations = [...new Set(history)].slice(-50);
 
     // reuseId re-creates an existing id (relaunch): kill the old pty first or it
     // keeps running, unreachable, still pumping data under the same id
@@ -527,8 +531,10 @@ export class SessionManager {
   private noteConversation(s: LiveSession, agent: AgentKind, id: string): void {
     s.claudeId = id;
     const cur = s.info.conversation;
-    if (cur?.id === id && cur.agent === agent) return;
+    const seen = s.info.conversations ?? (cur ? [cur.id] : []);
+    if (cur?.id === id && cur.agent === agent && seen.includes(id)) return;
     s.info.conversation = { agent, id };
+    s.info.conversations = [...seen.filter((c) => c !== id), id].slice(-50);
     this.store.upsertSession(s.info);
   }
 

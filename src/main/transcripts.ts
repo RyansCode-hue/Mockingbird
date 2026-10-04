@@ -12,7 +12,7 @@ import { ROLLOUT_NAME_RE } from "./agents";
  * the process with every pane's keystrokes.
  */
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3; // 3: Codex replies' token usage
 const SLICE_MS = 8;
 const READ_BYTES = 512 * 1024;
 const MAX_TEXT = 4000; // per message: enough to find it, without indexing whole pastes
@@ -129,6 +129,25 @@ export function parseCodexLine(line: string, fileConv: string): Parsed {
     return out;
   }
   if (d.type === "turn_context" && p.model) out.conv!.model = String(p.model);
+  if (d.type === "event_msg" && p.type === "token_count") {
+    // one turn's usage; the same event repeats without new tokens, so the running total names it
+    const last = p.info?.last_token_usage;
+    const total = p.info?.total_token_usage?.total_tokens;
+    if (last && typeof total === "number" && total > 0) {
+      const cached = last.cached_input_tokens ?? 0;
+      out.usage = {
+        id: `${fileConv}:${total}`,
+        at,
+        model: null,
+        // Codex counts cached input inside input_tokens
+        input: Math.max(0, (last.input_tokens ?? 0) - cached),
+        output: last.output_tokens ?? 0,
+        cacheRead: cached,
+        cacheWrite: last.cache_write_input_tokens ?? 0,
+      };
+    }
+    return out;
+  }
   if (d.type !== "response_item") return out;
   if (p.type === "message" && (p.role === "user" || p.role === "assistant")) {
     for (const c of Array.isArray(p.content) ? p.content : []) {
@@ -165,6 +184,17 @@ export function ftsQuery(q: string): string | null {
 
 const yieldNow = () => new Promise<void>((r) => setImmediate(r));
 
+export interface UsageRow {
+  conv: string;
+  agent: AgentKind;
+  model: string | null;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  replies: number;
+}
+
 export class TranscriptIndex {
   private db: DatabaseSync;
   private running: Promise<void> | null = null;
@@ -190,6 +220,8 @@ export class TranscriptIndex {
       CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, agent TEXT NOT NULL, cwd TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '', first_prompt TEXT NOT NULL DEFAULT '', started INTEGER NOT NULL DEFAULT 0, updated INTEGER NOT NULL DEFAULT 0, model TEXT);
       CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(text, conv UNINDEXED, file UNINDEXED, at UNINDEXED, kind UNINDEXED, tokenize = 'porter unicode61');
       CREATE TABLE IF NOT EXISTS usage (id TEXT PRIMARY KEY, conv TEXT NOT NULL, file TEXT NOT NULL, at INTEGER NOT NULL, model TEXT, input INTEGER, output INTEGER, cache_read INTEGER, cache_write INTEGER);
+      CREATE INDEX IF NOT EXISTS usage_conv ON usage (conv);
+      CREATE INDEX IF NOT EXISTS usage_at ON usage (at);
       PRAGMA user_version = ${SCHEMA_VERSION};
     `);
     this.stmt = {
@@ -358,6 +390,36 @@ export class TranscriptIndex {
       .prepare("SELECT model, MAX(updated) AS last FROM conversations WHERE agent = ? AND model IS NOT NULL AND updated >= ? GROUP BY model ORDER BY last DESC")
       .all(agent, since) as { model: string }[];
     return rows.map((r) => r.model);
+  }
+
+  /**
+   * Token usage summed per conversation and model (with the conversation's
+   * agent): for the given conversations, or every conversation; from `since`.
+   * A Codex reply has no model of its own, so its conversation's model is used.
+   */
+  usage(opts: { convs?: string[]; since?: number } = {}): UsageRow[] {
+    const where: string[] = [];
+    const args: (string | number)[] = [];
+    if (opts.convs) {
+      if (!opts.convs.length) return [];
+      where.push(`u.conv IN (${opts.convs.map(() => "?").join(",")})`);
+      args.push(...opts.convs);
+    }
+    if (opts.since !== undefined) {
+      where.push("u.at >= ?");
+      args.push(opts.since);
+    }
+    return (
+      this.db
+        .prepare(
+          `SELECT u.conv AS conv, c.agent AS agent, COALESCE(u.model, c.model) AS model,
+                  SUM(u.input) AS input, SUM(u.output) AS output, SUM(u.cache_read) AS cacheRead, SUM(u.cache_write) AS cacheWrite, COUNT(*) AS replies
+           FROM usage u JOIN conversations c ON c.id = u.conv
+           ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+           GROUP BY u.conv, COALESCE(u.model, c.model)`
+        )
+        .all(...args) as unknown as UsageRow[]
+    ).map((r) => ({ ...r, model: r.model ?? null }));
   }
 
   stats(): { conversations: number; files: number } {

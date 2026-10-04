@@ -151,6 +151,13 @@ describe("routing hook events", () => {
     expect(info("t").conversation).toEqual({ agent: "claude", id: "two" });
     expect(store.upserts.at(-1).conversation).toEqual({ agent: "claude", id: "two" });
   });
+
+  it("keeps every conversation the pane has run, for its token meter", () => {
+    const { m, add, info } = manager();
+    add("t", "idle", "/home");
+    for (const c of ["one", "two", "one"]) m.statusFromHook({ paneId: "t", conversationId: c, agent: "claude", status: "working" });
+    expect(info("t").conversations).toEqual(["two", "one"]);
+  });
 });
 
 describe("relaunch after an app restart", () => {
