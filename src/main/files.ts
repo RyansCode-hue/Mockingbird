@@ -1,10 +1,9 @@
-import { branchesOf, git, MAX_DIFF_BYTES } from "./git";
+import { branchesOf, git, MAX_DIFF_BYTES, pickDefaultBase } from "./git";
 import * as fs from "fs";
 import { applyTextEdits, type LspTextEdit } from "../shared/textEdits";
 import { lineBreakOf, splitBom } from "../shared/editorText";
 import * as path from "path";
 import type { FileEntry, FileContent, FileSave, GitChange, GitChanges, ChangeScope } from "../shared/types";
-import { pickDefaultBase } from "./worktrees";
 
 const MAX_FILE_BYTES = 1_500_000;
 

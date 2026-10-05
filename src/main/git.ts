@@ -1,4 +1,5 @@
 import { execFile } from "child_process";
+import type { PrTarget } from "../shared/types";
 
 const LOCAL_TIMEOUT_MS = 30_000;
 const NETWORK_TIMEOUT_MS = 120_000; // fetch / push / pull over a slow VPN
@@ -72,9 +73,14 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   return (await git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] })) || null; // 1: detached
 }
 
-/** How many files have uncommitted changes: staged, unstaged or untracked. */
-export async function dirtyFileCount(cwd: string): Promise<number> {
-  return (await git(cwd, ["status", "--porcelain"])).split("\n").filter(Boolean).length;
+/** Whether `cwd` is inside a git work tree. Only "not a repository" means no; other failures are real errors. */
+export async function isRepo(cwd: string): Promise<boolean> {
+  try {
+    return (await git(cwd, ["rev-parse", "--is-inside-work-tree"])) === "true";
+  } catch (err) {
+    if (/not a git repository/i.test((err as Error).message)) return false;
+    throw err;
+  }
 }
 
 /** A repository's branch names: its local ones, and origin's as of the last fetch (without the origin/ prefix). */
@@ -82,6 +88,14 @@ export async function branchesOf(repo: string): Promise<{ local: string[]; origi
   const refs = (await git(repo, ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin"])).split("\n").filter(Boolean);
   const under = (prefix: string) => refs.filter((r) => r.startsWith(prefix)).map((r) => r.slice(prefix.length));
   return { local: under("refs/heads/"), origin: under("refs/remotes/origin/").filter((b) => b !== "HEAD") };
+}
+
+/** The usual names of the branches work merges into, by team convention, each in the order it's preferred. */
+export const BASE_NAMES: Record<PrTarget, string[]> = { dev: ["dev", "develop", "development", "uat"], main: ["main", "master"] };
+
+/** The integration branch new work usually starts from: a dev-like one before main. */
+export function pickDefaultBase(branches: string[]): string | null {
+  return [...BASE_NAMES.dev, ...BASE_NAMES.main].find((b) => branches.includes(b)) ?? null;
 }
 
 /** origin's URL, or null when the repository has no remote called origin. */

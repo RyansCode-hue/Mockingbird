@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { UPDATE_STEPS, type UpdateOutcome, type UpdateProgress, type UpdateStepId } from "../shared/types";
 import { isNewer } from "./updates";
-import { git } from "./git";
+import { isRepo, originUrl } from "./git";
 import { indexRepos } from "./repos";
 import { loginShell, quote } from "./shell";
 
@@ -23,12 +23,12 @@ export function remoteMatches(url: string, owner: string, repo: string): boolean
 }
 
 /**
- * The folder's origin URL, or null when it isn't a repository (git exits 128)
- * or has no origin (2). Anything else — git missing, a timeout — is an error,
- * not an answer about the folder.
+ * The folder's origin URL, or null when it isn't a repository or has no
+ * origin. Anything else — git missing, a timeout — is an error, not an answer
+ * about the folder.
  */
 async function originOf(dir: string): Promise<string | null> {
-  return (await git(dir, ["remote", "get-url", "origin"], { okCodes: [0, 2, 128] })) || null;
+  return (await isRepo(dir)) ? originUrl(dir) : null;
 }
 
 /**

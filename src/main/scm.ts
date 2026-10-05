@@ -46,6 +46,18 @@ export async function scmStatus(root: string): Promise<ScmStatus> {
   return parseStatus(await git(root, ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"], { trim: false }));
 }
 
+/**
+ * The files Source Control lists, each once: conflicted, staged and unstaged,
+ * untracked files one by one as the list shows them. A file staged with
+ * further edits since is in two groups but is one file.
+ */
+export const changedPaths = (st: ScmStatus): string[] => [...new Set([...st.conflicted, ...st.staged, ...st.unstaged].map((e) => e.path))];
+
+/** How many files have uncommitted changes: what Source Control lists, counted as changedPaths does. */
+export async function dirtyFileCount(root: string): Promise<number> {
+  return changedPaths(await scmStatus(root)).length;
+}
+
 /** Paths checked to be inside the folder, as git wants them (relative). */
 async function inside(root: string, paths: string[]): Promise<string[]> {
   if (!paths.length) throw new Error("No files given");

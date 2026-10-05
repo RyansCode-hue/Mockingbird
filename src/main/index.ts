@@ -31,7 +31,7 @@ import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment
 import { PipelineStore } from "./pipeline";
 import { openPr, parseRemote, prBaseProblem, prDescriptionPrompt, prError, prPreflight, remoteName, summaryOf } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
-import { currentBranch, git } from "./git";
+import { currentBranch, originUrl } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS } from "./agentFiles";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
@@ -831,9 +831,9 @@ handle("pipeline:pr:create", (sessionId, ticketId, req) =>
     if (wrongBase) throw new Error(`Can't open this pull request: ${wrongBase}`);
     if (pre.dirtyFiles) throw new Error(`Commit or stash the ${pre.dirtyFiles} uncommitted file${pre.dirtyFiles === 1 ? "" : "s"} first — they wouldn't be in the pull request`);
     if (pre.existing && pre.base === base) throw new Error(`A pull request is already open from ${pre.branch}: ${pre.existing.url}`);
-    const url = await git(s.cwd, ["remote", "get-url", "origin"]);
-    const remote = parseRemote(url);
-    if (!remote) throw new Error(`origin (${url}) isn't on Azure DevOps or GitHub`);
+    const url = await originUrl(s.cwd);
+    const remote = url ? parseRemote(url) : null;
+    if (!remote) throw new Error(url ? `origin (${url}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
     await scmPush(s.cwd);
     let made: { id: number; url: string };
     try {

@@ -1,6 +1,6 @@
 import { ADO_API } from "./ado";
-import { branchesOf, currentBranch, dirtyFileCount, git, originUrl } from "./git";
-import { BASE_NAMES } from "./worktrees";
+import { BASE_NAMES, branchesOf, currentBranch, git, originUrl } from "./git";
+import { dirtyFileCount } from "./scm";
 import { listAllFiles } from "./find";
 import { quote } from "./shell";
 import type { ShellRunner } from "./headless";
