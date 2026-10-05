@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { shortReason } from "./TerminalPane";
 import { titleOf } from "./appModel";
 import type { SessionInfo } from "../shared/types";
 import { fmtElapsed } from "../shared/format";
 import { Modal } from "./Modal";
 import { useEscape } from "./useEscape";
+import { rankMatches } from "./fuzzy";
+import { useListNav } from "./listNav";
 
 /** The command palette (⌘K) and the how-to-use popup (⌘/). */
 
@@ -13,15 +15,6 @@ interface PaletteAction {
   label: string;
   kbd?: string;
   run: () => void;
-}
-
-/** Case-insensitive subsequence match for the palette. */
-function fuzzy(q: string, s: string): boolean {
-  const qq = q.toLowerCase();
-  const ss = s.toLowerCase();
-  let i = 0;
-  for (const ch of ss) if (i < qq.length && ch === qq[i]) i++;
-  return i === qq.length;
 }
 
 export function CommandPalette({
@@ -39,7 +32,6 @@ export function CommandPalette({
   onClose: () => void;
 }) {
   const [q, setQ] = useState("");
-  const [sel, setSel] = useState(0);
   useEscape(onClose);
 
   const statusPhrase = (s: SessionInfo): string => {
@@ -49,27 +41,22 @@ export function CommandPalette({
   };
 
   const rows = useMemo(() => {
-    const acts = actions
-      .filter((a) => !q || fuzzy(q, a.label))
-      .map((a) => ({ kind: "action" as const, label: a.label, kbd: a.kbd, run: a.run }));
-    const sess = sessions
-      .filter((s) => !q || fuzzy(q, titleOf(s)) || fuzzy(q, s.branch ?? ""))
-      .map((s) => {
-        const n = shortcuts.get(s.id);
-        return {
-          kind: "session" as const,
-          label: titleOf(s),
-          kbd: n ? `⌘${n}` : undefined,
-          status: s.status,
-          state: statusPhrase(s),
-          run: () => onJump(s.id),
-        };
-      });
+    const acts = rankMatches(q, actions, (a) => [a.label]).map((a) => ({ kind: "action" as const, label: a.label, kbd: a.kbd, run: a.run }));
+    const sess = rankMatches(q, sessions, (s) => [titleOf(s), s.branch]).map((s) => {
+      const n = shortcuts.get(s.id);
+      return {
+        kind: "session" as const,
+        label: titleOf(s),
+        kbd: n ? `⌘${n}` : undefined,
+        status: s.status,
+        state: statusPhrase(s),
+        run: () => onJump(s.id),
+      };
+    });
     return { acts, sess, flat: [...acts, ...sess] };
   }, [q, sessions, shortcuts, actions]);
 
-  useEffect(() => setSel(0), [q]);
-  const clamp = Math.min(sel, Math.max(0, rows.flat.length - 1));
+  const { sel, onArrow } = useListNav(rows.flat.length, [q]);
 
   const runRow = (i: number) => {
     const r = rows.flat[i];
@@ -92,17 +79,10 @@ export function CommandPalette({
             placeholder="Type a command or session"
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setSel((s) => Math.min(s + 1, rows.flat.length - 1));
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setSel((s) => Math.max(s - 1, 0));
-              }
+              if (onArrow(e)) return;
               if (e.key === "Enter") {
                 e.preventDefault();
-                runRow(clamp);
+                runRow(sel);
               }
             }}
           />
@@ -114,7 +94,7 @@ export function CommandPalette({
             flatIndex++;
             const i = flatIndex;
             return (
-              <div key={`a${r.label}`} className={`row ${i === clamp ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
+              <div key={`a${r.label}`} className={`row ${i === sel ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
                 <span className="lab">{r.label}</span>
                 {r.kbd && <span className="kbd">{r.kbd}</span>}
               </div>
@@ -126,7 +106,7 @@ export function CommandPalette({
             flatIndex++;
             const i = flatIndex;
             return (
-              <div key={`s${j}`} className={`row ${i === clamp ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
+              <div key={`s${j}`} className={`row ${i === sel ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
                 <span className={`dot ${r.status}`} />
                 <span className="lab">{r.label}</span>
                 <span className={`state ${r.status === "waiting" ? "amber" : ""}`}>{r.state}</span>

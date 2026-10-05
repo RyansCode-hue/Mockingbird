@@ -1,8 +1,9 @@
 /**
- * ⌘P's fuzzy file matching: the query's characters, in order, anywhere in the
- * path. A match in the file's name beats one spread over its folders; letters
- * that follow each other, and letters that start a word (after / . _ - or at a
- * camelCase hump), score higher; shorter paths break ties.
+ * Fuzzy matching for ⌘P's files and the command palette: the query's
+ * characters, in order, anywhere in the path or label. A match in the file's
+ * name beats one spread over its folders; letters that follow each other, and
+ * letters that start a word (after / . _ - or at a camelCase hump), score
+ * higher; shorter paths break ties.
  */
 export interface FuzzyMatch {
   score: number;
@@ -66,4 +67,23 @@ export function fuzzyFilter(query: string, paths: string[], limit = 60): { path:
   }
   out.sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path));
   return out.slice(0, limit).map(({ path, positions }) => ({ path, positions }));
+}
+
+/**
+ * The items any of whose texts match `query`, best match first (ties keep
+ * their order) — the command palette's actions and sessions. An empty query
+ * keeps every item, in order.
+ */
+export function rankMatches<T>(query: string, items: T[], texts: (item: T) => (string | null | undefined)[]): T[] {
+  if (!query.trim()) return items;
+  const scored: { item: T; score: number; at: number }[] = [];
+  items.forEach((item, at) => {
+    let best: number | null = null;
+    for (const text of texts(item)) {
+      const m = text ? fuzzyMatch(query, text) : null;
+      if (m && (best === null || m.score > best)) best = m.score;
+    }
+    if (best !== null) scored.push({ item, score: best, at });
+  });
+  return scored.sort((a, b) => b.score - a.score || a.at - b.at).map((s) => s.item);
 }

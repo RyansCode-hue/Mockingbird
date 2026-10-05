@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fuzzyFilter, fuzzyMatch } from "../src/renderer/fuzzy";
+import { fuzzyFilter, fuzzyMatch, rankMatches } from "../src/renderer/fuzzy";
 import { EMPTY_EDITOR, closeTab, openTab, tabKey, MAX_TABS, type OpenFile } from "../src/renderer/editorTabs";
 
 const file = (path: string, extra: Partial<OpenFile> = {}): OpenFile => ({ sessionId: "s", root: "/r", path, mode: "file", ...extra });
@@ -24,6 +24,24 @@ describe("quick open matching", () => {
 
   it("ignores spaces and case", () => {
     expect(fuzzyMatch("File Panel", "src/FilePanel.tsx")).not.toBeNull();
+  });
+});
+
+describe("command palette matching", () => {
+  const actions = ["Open control room", "New session", "Undo a turn of api — put its files back", "Settings"];
+  it("keeps every row, in order, until something is typed", () => {
+    expect(rankMatches("", actions, (a) => [a])).toEqual(actions);
+  });
+  it("ranks a match at word starts above one spread through the label", () => {
+    expect(rankMatches("ns", actions, (a) => [a])[0]).toBe("New session");
+    expect(rankMatches("zzz", actions, (a) => [a])).toEqual([]);
+  });
+  it("matches a session by any of its texts, its branch included", () => {
+    const sessions = [
+      { title: "API tests", branch: "5101-orgDropdowns" },
+      { title: "Crashed session", branch: null },
+    ];
+    expect(rankMatches("dropdown", sessions, (s) => [s.title, s.branch]).map((s) => s.title)).toEqual(["API tests"]);
   });
 });
 
