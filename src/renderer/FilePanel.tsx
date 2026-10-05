@@ -1,15 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, LspLocation, WorktreeStateInfo } from "../shared/types";
-import { highlightLines, languageFor } from "./highlight";
-import { tabKey, type EditorState, type OpenFile } from "./editorTabs";
+import { escapeHtml, highlightLines, languageFor } from "./highlight";
+import { fileKey, filesClosing, tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { fileBadge } from "./fileIcons";
 import { useBreakpoints, useDebug } from "./debugStore";
-import { CodeEditor, confirmClose, useDirtyKeys } from "./CodeEditor";
+import { CodeEditor, confirmClose, releaseBuffers, useDirtyKeys } from "./CodeEditor";
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
+import { CopyToast, useCopyNote } from "./copyNote";
+import { ChangeCount, plural } from "./changeCount";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
+/** A request's answer, with a failed request (a rejected promise) as its error, so it shows instead of "loading…" forever. */
+const answerOf = <T,>(p: Promise<Result<T>>): Promise<Result<T>> => p.catch((err: unknown) => ({ error: `Couldn't read it: ${String(err)}` }));
 
 function loadLS<T>(key: string, fallback: T): T {
   try {
@@ -30,6 +34,8 @@ const STATUS_TITLE: Record<GitChange["status"], string> = {
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+/** A path with the home folder shown as ~. */
+const tildePath = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
 
 const SLIDE_MS = 200;
 
@@ -51,16 +57,12 @@ function FileGlyph({ path }: { path: string }) {
  * opens a file in its own tab. Only mounted while the view shows, so a hidden
  * explorer reads nothing.
  */
-export function ExplorerTree({
-  session,
-  activePath,
-  editor,
-  onOpen,
-  onActivate,
-  onCloseTab,
-  onCloseAll,
-  onQuickOpen,
-}: {
+export function ExplorerTree(props: ExplorerProps) {
+  // a different folder is a different tree: nothing the last one asked for may land in it
+  return <FolderTree key={props.session?.cwd ?? ""} {...props} />;
+}
+
+interface ExplorerProps {
   session: SessionInfo | null;
   /** The active editor tab's file, if it's in this folder: highlighted in the tree. */
   activePath: string | null;
@@ -70,7 +72,9 @@ export function ExplorerTree({
   onCloseTab: (key: string) => void;
   onCloseAll: () => void;
   onQuickOpen: () => void;
-}) {
+}
+
+function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTab, onCloseAll, onQuickOpen }: ExplorerProps) {
   // expanded folders are remembered per folder-on-disk, so flipping between
   // sessions restores each tree the way it was left
   const [expandedByRoot, setExpandedByRoot] = useState<Record<string, string[]>>(() => loadLS("mb.files.expanded", {}));
@@ -80,30 +84,23 @@ export function ExplorerTree({
   const toggleSection = (k: string) => setShut((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
   const [dirs, setDirs] = useState<Record<string, Result<FileEntry[]>>>({});
   const [changes, setChanges] = useState<Result<GitChanges> | null>(null);
-  const [git, setGit] = useState<WorktreeStateInfo | null>(null);
+  const [gitState, setGit] = useState<Result<WorktreeStateInfo> | null>(null);
 
   const sid = session?.id ?? null;
   const root = session?.cwd ?? null;
   const expanded = useMemo(() => new Set(root ? expandedByRoot[root] ?? [] : []), [expandedByRoot, root]);
 
   const loadDir = useCallback(async (id: string, rel: string) => {
-    const r: Result<FileEntry[]> = await window.mb.filesList(id, rel);
+    const r = await answerOf<FileEntry[]>(window.mb.filesList(id, rel));
     setDirs((d) => (JSON.stringify(d[rel]) === JSON.stringify(r) ? d : { ...d, [rel]: r }));
   }, []);
 
   // the tree marks what changed since the last commit
   const loadChanges = useCallback(async (id: string) => {
-    const r: Result<GitChanges> = await window.mb.filesChanges(id, "working");
+    const r = await answerOf<GitChanges>(window.mb.filesChanges(id, "working"));
     setChanges((c) => (JSON.stringify(c) === JSON.stringify(r) ? c : r));
     return r;
   }, []);
-
-  // a different session folder is a different tree
-  useEffect(() => {
-    setDirs({});
-    setChanges(null);
-    setGit(null);
-  }, [root]);
 
   // A failing change list (not a git repo) isn't asked again on every change —
   // the tree still refreshes; the refresh button retries the change list.
@@ -115,7 +112,10 @@ export function ExplorerTree({
       for (const rel of expanded) loadDir(sid, rel);
       if (gitBroken.current && !retryGit) return;
       loadChanges(sid).then((r) => (gitBroken.current = isErr(r)));
-      window.mb.worktreeState(root).then((r: WorktreeStateInfo | { error: string }) => setGit(r && !("error" in r) ? r : null));
+      window.mb.worktreeState(root).then(
+        (r: Result<WorktreeStateInfo>) => setGit(r ?? { error: "no answer" }),
+        (err: unknown) => setGit({ error: String(err) })
+      );
     },
     [sid, root, expanded, loadDir, loadChanges]
   );
@@ -183,6 +183,11 @@ export function ExplorerTree({
   };
 
   if (!session) return <div className="fp-note">Click into a session to browse its folder.</div>;
+  // outside a repository both git reads fail, and there's nothing to say about git
+  const inRepo = !!session.repoPath || (!!changes && !isErr(changes));
+  const changesErr = inRepo && isErr(changes) ? changes.error : null;
+  const gitErr = inRepo && isErr(gitState) ? gitState.error : null;
+  const git = gitState && !isErr(gitState) ? gitState : null;
   const total = git ? git.insertions + git.deletions : 0;
   return (
     <>
@@ -199,8 +204,18 @@ export function ExplorerTree({
             <button className="icon" title="Refresh" onClick={() => refresh(true)}>⟳</button>
           </span>
         </div>
+        {gitErr && (
+          <div className="ex-branch err" title={gitErr}>
+            git: couldn't read ({gitErr})
+          </div>
+        )}
+        {changesErr && (
+          <div className="ex-branch err" title={`${changesErr}\nRefresh (⟳) asks again.`}>
+            changed files: couldn't list ({changesErr})
+          </div>
+        )}
         {git && (
-          <div className="ex-branch" title={`${git.ahead} commit${git.ahead === 1 ? "" : "s"} to push, ${git.behind} to pull`}>
+          <div className="ex-branch" title={`${plural(git.ahead, "commit")} to push, ${git.behind} to pull`}>
             {git.branch} · ↑{git.ahead} ↓{git.behind}
           </div>
         )}
@@ -214,14 +229,7 @@ export function ExplorerTree({
                 </div>
               )}
               <div className="ex-sum">
-                {git.dirtyFiles} file{git.dirtyFiles === 1 ? "" : "s"}
-                {total > 0 && (
-                  <>
-                    {" · "}
-                    <span className="add">+{git.insertions}</span> <span className="del">−{git.deletions}</span>
-                  </>
-                )}{" "}
-                since the last commit
+                <ChangeCount files={git.dirtyFiles} insertions={git.insertions} deletions={git.deletions} /> since the last commit
               </div>
             </>
           ) : (
@@ -239,7 +247,7 @@ export function ExplorerTree({
                 data-tip="Close all files (asks about unsaved ones)"
                 onClick={(ev) => {
                   ev.stopPropagation();
-                  if (confirmClose(editor.tabs.map((t) => ({ key: tabKey(t), name: baseName(t.path) })))) onCloseAll();
+                  if (askToClose(editor.tabs, editor.tabs.map(tabKey))) onCloseAll();
                 }}
               >
                 ✕ All
@@ -253,7 +261,7 @@ export function ExplorerTree({
                   <div
                     key={key}
                     className={`fp-row ex-open ${t.status ? `st-${t.status}` : ""} ${key === editor.active ? "active" : ""}`}
-                    title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}`}
+                    title={`${tildePath(t.root)}/${t.path}`}
                     onClick={() => onActivate(key)}
                   >
                     <FileGlyph path={t.path} />
@@ -267,7 +275,7 @@ export function ExplorerTree({
                       data-tip="Close"
                       onClick={(ev) => {
                         ev.stopPropagation();
-                        if (confirmClose([{ key, name: baseName(t.path) }])) onCloseTab(key);
+                        if (askToClose(editor.tabs, [key])) onCloseTab(key);
                       }}
                     >
                       ×
@@ -286,6 +294,15 @@ export function ExplorerTree({
       </div>
     </>
   );
+}
+
+/**
+ * Before closing tabs (keys of `tabs`), ask about unsaved edits in the files
+ * they're the last tabs of, then let go of those files' buffers. True when the
+ * tabs may close.
+ */
+export function askToClose(tabs: OpenFile[], closing: readonly string[]): boolean {
+  return confirmClose(filesClosing(tabs, closing).map((f) => ({ key: fileKey(f), name: baseName(f.path) })));
 }
 
 /**
@@ -314,12 +331,13 @@ export function EditorDock({
 }) {
   const dirty = useDirtyKeys();
   const onClose = (key: string) => {
-    const t = editor.tabs.find((x) => tabKey(x) === key);
-    if (confirmClose([{ key, name: t ? baseName(t.path) : key }])) closeTab(key);
+    if (askToClose(editor.tabs, [key])) closeTab(key);
   };
   const closeAll = () => {
-    if (confirmClose(editor.tabs.map((t) => ({ key: tabKey(t), name: baseName(t.path) })))) onCloseAll();
+    if (askToClose(editor.tabs, editor.tabs.map(tabKey))) onCloseAll();
   };
+  // a file no tab shows any more (its tab closed to make room for a new one) lets go of its buffer
+  useEffect(() => releaseBuffers(new Set(editor.tabs.map(fileKey))), [editor.tabs]);
   const [width, setWidth] = useState<number>(() => loadLS("mb.files.viewerW", 560));
   useEffect(() => localStorage.setItem("mb.files.viewerW", JSON.stringify(width)), [width]);
   const [, setWindowW] = useState(window.innerWidth); // re-fit the editor when the window narrows
@@ -375,8 +393,8 @@ export function EditorDock({
                 key={key}
                 role="tab"
                 aria-selected={key === editor.active}
-                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""} ${dirty.has(key) ? "dirty" : ""}`}
-                title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : t.source?.kind === "commit" ? ` (commit ${t.source.sha.slice(0, 8)})` : ""}`}
+                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""} ${dirty.has(fileKey(t)) ? "dirty" : ""}`}
+                title={`${tildePath(t.root)}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : t.source?.kind === "commit" ? ` (commit ${t.source.sha.slice(0, 8)})` : ""}`}
                 onClick={() => onActivate(key)}
                 onAuxClick={(e) => e.button === 1 && onClose(key)}
               >
@@ -390,7 +408,7 @@ export function EditorDock({
                 </span>
                 <button
                   className="fp-tab-x"
-                  data-tip={dirty.has(key) ? "Unsaved changes — close (asks first)" : "Close (middle-click works too)"}
+                  data-tip={dirty.has(fileKey(t)) ? "Unsaved changes — close (asks first)" : "Close (middle-click works too)"}
                   onClick={(e) => {
                     e.stopPropagation();
                     onClose(key);
@@ -440,12 +458,13 @@ function FileViewer({
   const [diff, setDiff] = useState<Result<string> | null>(null);
   const bp = useBreakpoints(open.sessionId);
   const debug = useDebug();
-  const dirty = useDirtyKeys().has(tabKey(open));
+  const dirty = useDirtyKeys().has(fileKey(open));
   const abs = `${open.root}/${open.path}`;
   const pausedLines = Object.entries(debug.selected)
     .map(([sid, f]) => (f && f.path === abs && debug.sessions.find((x) => x.id === sid)?.state === "stopped" ? f.line : null))
     .filter((l): l is number => l !== null);
   const saveRef = useRef<(() => void) | null>(null);
+  const [copyNote, copy] = useCopyNote();
   const [layout, setLayout] = useState<"inline" | "split">(() => loadLS("mb.files.diffLayout", "inline"));
   useEffect(() => localStorage.setItem("mb.files.diffLayout", JSON.stringify(layout)), [layout]);
   const deleted = open.status === "D";
@@ -457,19 +476,24 @@ function FileViewer({
     },
     []
   );
+  // folder changes can start reads faster than they finish: only the latest one's answer is shown
+  const loads = useRef(0);
   const load = async () => {
+    const n = ++loads.current;
+    const latest = () => live.current && n === loads.current;
     if (open.mode === "diff") {
       const src = open.source;
-      const r: Result<string> =
+      const r = await answerOf<string>(
         src?.kind === "scm"
-          ? await window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
+          ? window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
           : src?.kind === "commit"
-            ? await window.mb.scmCommitDiff(open.sessionId, src.sha, open.path)
-            : await window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U");
-      if (live.current) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
+            ? window.mb.scmCommitDiff(open.sessionId, src.sha, open.path)
+            : window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U")
+      );
+      if (latest()) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
     } else {
-      const r: Result<FileContent> = await window.mb.filesRead(open.sessionId, open.path);
-      if (live.current) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
+      const r = await answerOf<FileContent>(window.mb.filesRead(open.sessionId, open.path));
+      if (latest()) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
     }
   };
   useEffect(() => {
@@ -506,7 +530,7 @@ function FileViewer({
         <button className="icon" data-tip={`Mention in chat — types @${open.path} into the focused session's prompt, so the agent reads this file`} onClick={() => onInsert(`@${open.path} `)}>
           @
         </button>
-        <button className="icon" data-tip={`Copy this file's path (${open.path})`} onClick={() => navigator.clipboard.writeText(open.path)}>
+        <button className="icon" data-tip={`Copy this file's path (${open.path})`} onClick={() => copy(open.path, "a file path")}>
           ⧉
         </button>
         <button className="icon" data-tip="Close this file" onClick={onClose}>
@@ -523,7 +547,7 @@ function FileViewer({
           : file.binary ? <div className="fp-note">Binary file · {file.size.toLocaleString()} bytes — not shown</div>
           : (
             <CodeEditor
-              bufferKey={tabKey(open)}
+              bufferKey={fileKey(open)}
               file={file}
               path={open.path}
               onSave={(text, expected) => window.mb.filesWrite(open.sessionId, open.path, text, expected)}
@@ -538,6 +562,7 @@ function FileViewer({
             />
           )}
       </div>
+      <CopyToast note={copyNote} failed="Couldn't copy the path" />
     </div>
   );
 }
@@ -551,30 +576,48 @@ interface DiffLine {
 
 const MAX_DIFF_LINES = 20000;
 
-export function parseDiff(text: string): { lines: DiffLine[]; binary: boolean; clipped: boolean } {
+/**
+ * A unified diff as lines. A merge conflict's working-tree diff is a combined
+ * one (`@@@ -a -b +c @@@`, a prefix column per parent); it's shown against the
+ * first parent — the branch being merged into — like `git diff HEAD`, so lines
+ * only the other side had are left out. `unmerged`: a staged diff of a file
+ * with conflicts, which git doesn't produce.
+ */
+export function parseDiff(text: string): { lines: DiffLine[]; binary: boolean; clipped: boolean; unmerged: boolean } {
   const lines: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
-  let inHunk = false;
+  let parents = 0; // prefix columns; 0 outside a hunk
   let binary = false;
+  let unmerged = false;
   const raw = text.split("\n");
   if (raw[raw.length - 1] === "") raw.pop();
   for (const l of raw) {
-    if (lines.length >= MAX_DIFF_LINES) return { lines, binary, clipped: true };
-    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+    if (lines.length >= MAX_DIFF_LINES) return { lines, binary, clipped: true, unmerged };
+    const m = /^(@@+) -(\d+)(?:,\d+)? (?:-\d+(?:,\d+)? )*\+(\d+)(?:,\d+)? \1/.exec(l);
     if (m) {
-      oldNo = parseInt(m[1], 10);
-      newNo = parseInt(m[2], 10);
-      inHunk = true;
+      parents = m[1].length - 1;
+      oldNo = parseInt(m[2], 10);
+      newNo = parseInt(m[3], 10);
       lines.push({ kind: "hunk", text: l });
-    } else if (!inHunk) {
+      continue;
+    }
+    if (!parents) {
       if (l.startsWith("Binary files")) binary = true;
-    } else if (l.startsWith("+")) lines.push({ kind: "add", text: l.slice(1), newNo: newNo++ });
-    else if (l.startsWith("-")) lines.push({ kind: "del", text: l.slice(1), oldNo: oldNo++ });
-    else if (l.startsWith("\\")) lines.push({ kind: "note", text: l.slice(2) });
-    else lines.push({ kind: "ctx", text: l.slice(1), oldNo: oldNo++, newNo: newNo++ });
+      if (l.startsWith("* Unmerged path")) unmerged = true;
+      continue;
+    }
+    if (l.startsWith("\\")) {
+      lines.push({ kind: "note", text: l.slice(2) });
+      continue;
+    }
+    const mark = l.slice(0, parents);
+    const body = l.slice(parents);
+    if (mark[0] === "+") lines.push({ kind: "add", text: body, newNo: newNo++ });
+    else if (mark[0] === "-") lines.push({ kind: "del", text: body, oldNo: oldNo++ });
+    else if (!mark.includes("-")) lines.push({ kind: "ctx", text: body, oldNo: oldNo++, newNo: newNo++ });
   }
-  return { lines, binary, clipped: false };
+  return { lines, binary, clipped: false, unmerged };
 }
 
 /**
@@ -587,11 +630,10 @@ export function parseDiff(text: string): { lines: DiffLine[]; binary: boolean; c
 export function highlightDiff(lines: DiffLine[], path: string): string[] {
   const lang = languageFor(path);
   const out: string[] = new Array(lines.length);
-  const escape = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   let i = 0;
   while (i < lines.length) {
     if (lines[i].kind === "hunk" || lines[i].kind === "note") {
-      out[i] = escape(lines[i].text);
+      out[i] = escapeHtml(lines[i].text);
       i++;
       continue;
     }
@@ -608,7 +650,7 @@ export function highlightDiff(lines: DiffLine[], path: string): string[] {
       else (o++, (out[j] = newHtml[n++]));
     }
   }
-  for (let j = 0; j < lines.length; j++) if (lines[j].kind === "note") out[j] = escape(lines[j].text);
+  for (let j = 0; j < lines.length; j++) if (lines[j].kind === "note") out[j] = escapeHtml(lines[j].text);
   return out;
 }
 
@@ -635,9 +677,10 @@ export function splitRows(lines: DiffLine[]): ({ hunk: number } | { left: number
 }
 
 function DiffView({ text, path, layout }: { text: string; path: string; layout: "inline" | "split" }) {
-  const { lines, binary, clipped } = useMemo(() => parseDiff(text), [text]);
+  const { lines, binary, clipped, unmerged } = useMemo(() => parseDiff(text), [text]);
   const html = useMemo(() => highlightDiff(lines, path), [lines, path]);
   if (binary) return <div className="fp-note">Binary file changed — no text diff</div>;
+  if (unmerged && lines.length === 0) return <div className="fp-note warn">This file has merge conflicts, so nothing of it is staged yet — open its working-tree changes or the file to resolve them</div>;
   if (lines.length === 0) return <div className="fp-note">No content differences</div>;
   const adds = lines.filter((l) => l.kind === "add").length;
   const dels = lines.filter((l) => l.kind === "del").length;

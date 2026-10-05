@@ -8,12 +8,23 @@ export function splitBom(text: string): { bom: boolean; text: string } {
   return text.charCodeAt(0) === 0xfeff ? { bom: true, text: text.slice(1) } : { bom: false, text };
 }
 
-/** "\r\n" when most line breaks are, else "\n". */
-export function lineBreakOf(text: string): "\r\n" | "\n" {
+export type LineBreak = "\r\n" | "\n" | "\r";
+
+/** The file's most common line break ("\n" when there are none, or a tie with it). */
+export function lineBreakOf(text: string): LineBreak {
   const crlf = (text.match(/\r\n/g) ?? []).length;
   const lf = (text.match(/\n/g) ?? []).length - crlf;
+  const cr = (text.match(/\r/g) ?? []).length - crlf;
+  if (cr > lf && cr > crlf) return "\r";
   return crlf > lf ? "\r\n" : "\n";
 }
+
+/**
+ * The text in the editor's "\n" form. Every break CodeMirror splits lines at
+ * ("\r\n", a lone "\r", "\n") becomes "\n", so the buffer's text and the text
+ * it's compared with for unsaved changes are the same.
+ */
+export const toEditorText = (text: string) => text.replace(/\r\n?/g, "\n");
 
 /** The indentation the file already uses: a tab, or the most common step of leading spaces (2 or 4). */
 export function guessIndent(text: string): string {
@@ -37,7 +48,7 @@ export function guessIndent(text: string): string {
 }
 
 /** The file's text as saved: the editor's lines joined with the file's own line break, its BOM restored. */
-export function toFileText(lines: string, lineBreak: "\r\n" | "\n", bom: boolean): string {
-  const body = lineBreak === "\n" ? lines : lines.replace(/\n/g, "\r\n");
+export function toFileText(lines: string, lineBreak: LineBreak, bom: boolean): string {
+  const body = lineBreak === "\n" ? lines : lines.replace(/\n/g, lineBreak);
   return bom ? `﻿${body}` : body;
 }

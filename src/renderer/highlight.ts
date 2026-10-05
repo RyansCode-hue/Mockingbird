@@ -20,33 +20,29 @@ import swift from "highlight.js/lib/languages/swift";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
+import { fileLanguage, type FileLanguage } from "../shared/fileTypes";
 
 const LANGS = { bash, csharp, css, dockerfile, go, ini, java, javascript, json, kotlin, markdown, php, python, ruby, rust, scss, sql, swift, typescript, xml, yaml };
 for (const [name, lang] of Object.entries(LANGS)) hljs.registerLanguage(name, lang);
 
-const BY_EXT: Record<string, string> = {
-  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
-  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
-  json: "json", jsonc: "json", py: "python", go: "go", rs: "rust", rb: "ruby", php: "php",
-  java: "java", kt: "kotlin", kts: "kotlin", swift: "swift", cs: "csharp",
-  css: "css", scss: "scss", html: "xml", htm: "xml", xml: "xml", svg: "xml", vue: "xml",
-  md: "markdown", markdown: "markdown", yml: "yaml", yaml: "yaml", toml: "ini", ini: "ini", env: "ini",
-  sh: "bash", zsh: "bash", bash: "bash", sql: "sql",
+const HLJS: Partial<Record<FileLanguage, keyof typeof LANGS>> = {
+  typescript: "typescript", tsx: "typescript", javascript: "javascript", jsx: "javascript",
+  python: "python", json: "json", css: "css", scss: "scss", html: "xml", xml: "xml",
+  markdown: "markdown", yaml: "yaml", sql: "sql", csharp: "csharp", java: "java", kotlin: "kotlin",
+  go: "go", shell: "bash", toml: "ini", rust: "rust", ruby: "ruby", swift: "swift", php: "php",
+  properties: "ini", dockerfile: "dockerfile", makefile: "bash",
 };
 
 /** The highlight.js language for a file, by its name; null for plain text. */
 export function languageFor(path: string): string | null {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
-  if (name === "dockerfile" || name.startsWith("dockerfile.")) return "dockerfile";
-  if (name === "makefile") return "bash";
-  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
-  return BY_EXT[ext] ?? null;
+  const lang = fileLanguage(path);
+  return (lang && HLJS[lang]) ?? null;
 }
 
 /** Past this, highlighting costs more than it's worth: the text is shown plain. */
-export const MAX_HIGHLIGHT_CHARS = 400_000;
+const MAX_HIGHLIGHT_CHARS = 400_000;
 
-const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+export const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 /**
  * Highlighted HTML, one string per line. The whole text is highlighted at once

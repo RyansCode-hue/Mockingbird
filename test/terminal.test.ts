@@ -177,6 +177,25 @@ describe("terminal input guard", () => {
     expect(classifyTermInput("\x1b[I", LONG_AGO, "none")).toBe("reply");
     expect(classifyTermInput("/clear\r", LONG_AGO, "drag")).toBe("unattributed");
   });
+  it("recognises every answer xterm gives to a program's queries", async () => {
+    const { Terminal } = await import("@xterm/xterm");
+    const term = new Terminal({ allowProposedApi: true });
+    const answers: string[] = [];
+    term.onData((d) => answers.push(d));
+    const queries = {
+      "primary device attributes": "\x1b[c",
+      "secondary device attributes": "\x1b[>c",
+      "cursor position": "\x1b[6n",
+      "extended cursor position": "\x1b[?6n",
+      "device status": "\x1b[5n",
+      "DEC mode": "\x1b[?2004$p",
+      "ANSI mode": "\x1b[4$p",
+    };
+    await new Promise<void>((r) => term.write(Object.values(queries).join(""), r));
+    expect(answers).toHaveLength(Object.keys(queries).length);
+    for (const a of answers) expect(classifyTermInput(a, LONG_AGO, "none"), JSON.stringify(a)).toBe("reply");
+    term.dispose();
+  });
 });
 
 describe("paste routing", () => {

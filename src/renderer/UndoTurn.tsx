@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { SessionInfo, TurnChange, TurnSnapshot } from "../shared/types";
+import { plural } from "./changeCount";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -23,19 +24,28 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ restored: number; removed: number; snap: TurnSnapshot } | null>(null);
   const [error, setError] = useState("");
-  const load = () => window.mb.turnsList(session.id).then(setList);
+  const load = () => window.mb.turnsList(session.id).then(setList, (err: unknown) => setList({ error: `Couldn't list the turns: ${String(err)}` }));
   useEffect(() => {
     load();
   }, [session.id]);
+  // the list shown is always the picked turn's: a slower answer for an earlier pick is dropped
   useEffect(() => {
     setChanges(null);
-    if (pick) window.mb.turnsChanges(session.id, pick.n).then(setChanges);
-  }, [pick?.n]);
+    if (!pick) return;
+    let live = true;
+    window.mb.turnsChanges(session.id, pick.n).then(
+      (r: Result<TurnChange[]>) => live && setChanges(r),
+      (err: unknown) => live && setChanges({ error: `Couldn't compare with the files now: ${String(err)}` })
+    );
+    return () => {
+      live = false;
+    };
+  }, [session.id, pick?.n]);
   const restore = async () => {
     if (!pick) return;
     setBusy(true);
     setError("");
-    const r = await window.mb.turnsRestore(session.id, pick.n);
+    const r = await window.mb.turnsRestore(session.id, pick.n).catch((err: unknown) => ({ error: String(err) }));
     setBusy(false);
     if (isErr(r)) return setError(r.error);
     setDone({ restored: r.restored, removed: r.removed, snap: pick });
@@ -57,7 +67,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
         {list && !isErr(list) && list.lastError && <div className="fp-note warn">The last turn wasn't recorded: {list.lastError}</div>}
         {done && (
           <div className="undo-done">
-            Restored {done.restored} file{done.restored === 1 ? "" : "s"}
+            Restored {plural(done.restored, "file")}
             {done.removed ? ` and removed ${done.removed}` : ""}. The conversation isn't rewound, so the agent still thinks its changes are there.
             <button
               className="outline"
@@ -90,7 +100,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
             {c && c.length > 0 && (
               <>
                 <div className="pl-dim">
-                  Restoring puts back {c.filter((x) => x.action === "restore").length} file(s) and removes {c.filter((x) => x.action === "remove").length} created since:
+                  Restoring puts back {plural(c.filter((x) => x.action === "restore").length, "file")} and removes {c.filter((x) => x.action === "remove").length} created since:
                 </div>
                 <div className="undo-files">
                   {c.map((x) => (

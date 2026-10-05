@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { beginDrag, dragging } from "./drag";
 import { PinIcon } from "./Icons";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import type { Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { formatShare, formatTokens, totalTokens, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
-import { mousePolicyFor, selectsNatively, stripMouseEnables, type MousePolicy } from "./mouseModes";
+import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
+import { dataPump, fitTerm, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
+import { CopyToast, useCopyNote } from "./copyNote";
+import { ChangeCount, plural } from "./changeCount";
+
+export { applyTermTheme } from "./cachedTerm";
 
 declare global {
   interface Window {
@@ -15,37 +20,31 @@ declare global {
   }
 }
 
-// ready=false until the scrollback replay has been written. Two things must
-// not happen before then:
-//  - xterm auto-answers query sequences it finds in the replayed history
-//    (cursor position, DA, OSC colour). Forwarding those answers to the pty
-//    types garbage into the live prompt — that is how a reload could end up
-//    submitting a stray slash command like /clear.
-//  - live output must not be written ahead of the history it belongs after.
-//    Main appends to its buffer and sends session:data in the same handler, so
-//    every chunk that arrives before the buffer reply is already inside that
-//    reply: drop it rather than writing it twice, out of order.
-interface TermEntry {
-  term: Terminal;
+// Replay (cachedTerm.ts) gates both directions. Live output waits until the
+// history is queued, and input until xterm has parsed it: xterm auto-answers
+// the query sequences it finds in the replayed history (cursor position, DA,
+// OSC colour), and forwarding those answers to the pty types garbage into the
+// live prompt — that is how a reload could end up submitting a stray slash
+// command like /clear.
+interface TermEntry extends CachedTerm, MouseModeState {
   fit: FitAddon;
-  ready: boolean;
+  /** Told when the CLI's side-panel close glyph appears or goes, while a pane shows this terminal. */
+  onPanel: ((cell: { col: number; row: number } | null) => void) | null;
   lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
   inputWired?: boolean; // DOM input listeners attached to xterm's textarea
   lastReply: string; // loop detector: the same answer repeating means the
   lastReplyCount: number; // answer itself is provoking the next question
   lastReplyStart: number;
-  mousePolicy: MousePolicy; // which of the CLI's mouse requests reach xterm (mouseModes.ts)
-  carry: string; // trailing partial escape sequence held until the next chunk
   dragging: boolean; // native (xterm) selection drag in progress
   hold: string[] | null; // output parked during a native selection drag
   holdStart: number;
-  wantsMouse: boolean; // the CLI has mouse reporting on (xterm may not have been given it)
-  tracking: number; // tracking mode xterm was last given (mouseModes.ts)
-  buttonHeld: boolean; // a gesture the CLI owns is in progress
   wheelAcc: number; // accumulated wheel pixels not yet emitted as scroll lines
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
+termThemeListeners.add((theme) => {
+  for (const { term } of terms.values()) term.options.theme = theme;
+});
 
 // the platform test xterm uses to pick its force-selection modifier (Option, else Shift)
 const IS_MAC = ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].includes(navigator.platform);
@@ -135,19 +134,9 @@ function writeSession(id: string, data: string): void {
   if (terms.get(id)?.ready) window.mb.sessionWrite(id, data);
 }
 
-// ONE global data pump: session output reaches every cached terminal even
-// while its pane is unmounted (hidden group / inactive workspace tab).
-// Without this, hidden terminals miss output and look frozen on return.
-let pumpWired = false;
-function ensureDataPump(): void {
-  if (pumpWired) return;
-  pumpWired = true;
-  window.mb.onSessionData((id: string, data: string) => {
-    const e = terms.get(id);
-    if (!e?.ready) return;
-    pumpWrite(e, data);
-  });
-}
+// session output reaches every cached terminal, even while its pane is
+// unmounted (hidden group / inactive workspace tab)
+const ensureDataPump = dataPump((cb) => window.mb.onSessionData(cb), terms, pumpWrite);
 
 /**
  * Repaint a glitched terminal. Replaying the byte history can't fix TUI
@@ -168,35 +157,6 @@ export async function resyncTerm(id: string): Promise<void> {
   window.mb.sessionResize(id, Math.max(2, cols - 1), rows);
   setTimeout(() => window.mb.sessionResize(id, cols, rows), 80);
 }
-
-const TERM_THEMES = {
-  dark: {
-    background: "#201f1c",
-    foreground: "#c9c3b8",
-    cursor: "#e0a34a",
-    cursorAccent: "#201f1c",
-    // translucent white, like stock xterm — the old #3a372f was near-invisible
-    // against the pane background, so selections looked broken even when live
-    selectionBackground: "rgba(255, 255, 255, 0.35)",
-    selectionInactiveBackground: "rgba(255, 255, 255, 0.22)",
-  },
-  light: {
-    background: "#fbf9f5",
-    foreground: "#4f4a3f",
-    cursor: "#a06a12",
-    cursorAccent: "#fbf9f5",
-    selectionBackground: "rgba(30, 60, 110, 0.25)",
-    selectionInactiveBackground: "rgba(30, 60, 110, 0.15)",
-  },
-};
-
-export function currentTermTheme() {
-  return document.documentElement.dataset.theme === "light" ? TERM_THEMES.light : TERM_THEMES.dark;
-}
-
-/** Restyle every live terminal when the app theme flips. */
-/** Other terminals (run logs) that follow the app theme. */
-export const termThemeListeners = new Set<(theme: ReturnType<typeof currentTermTheme>) => void>();
 
 /** "52k new input · 12k output · 1.1M read from cache · 30k written to cache · 41 replies". */
 export function tokenBreakdown(t: TokenCounts): string {
@@ -221,13 +181,9 @@ function meterTitle(m: SessionMeter): string {
   return lines.join("\n");
 }
 
-export function applyTermTheme(light: boolean): void {
-  const theme = light ? TERM_THEMES.light : TERM_THEMES.dark;
-  for (const { term } of terms.values()) term.options.theme = theme;
-  for (const l of termThemeListeners) l(theme);
-}
-
 export type PaneDensity = "min" | "std" | "max";
+
+const fontSizeFor = (density: PaneDensity) => (density === "max" ? 11.5 : 11);
 
 /** Window-style resize handlers on a pane's own edges; absent axes hide their handle. */
 export interface PaneResize {
@@ -343,7 +299,7 @@ export function TerminalPane({
   const dead = session.status === "dead";
   const waiting = session.status === "waiting";
   const [editTitle, setEditTitle] = useState<string | null>(null);
-  const [copyNote, setCopyNote] = useState<"copied" | "failed" | null>(null);
+  const [copyNote, copy] = useCopyNote();
   const [panelClose, setPanelClose] = useState<{ col: number; row: number } | null>(null);
   const [exitTail, setExitTail] = useState<string | null>(null);
   useEffect(() => {
@@ -365,7 +321,6 @@ export function TerminalPane({
       alive = false;
     };
   }, [dead, session.id]);
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const commitTitle = async () => {
     const v = editTitle?.trim();
@@ -382,25 +337,34 @@ export function TerminalPane({
 
   // git state for the header's change count and the rail, read when the folder
   // changes (panes in one folder share one read in the main process)
-  const [git, setGit] = useState<WorktreeStateInfo | null>(null);
+  const [gitState, setGit] = useState<WorktreeStateInfo | { error: string } | null>(null);
   const gitRoot = density !== "min" && session.repoPath && !dead ? session.cwd : null;
   const gitSeq = useRef(0);
   const readGit = () => {
     const n = ++gitSeq.current;
     if (!gitRoot) return setGit(null);
-    window.mb.worktreeState(gitRoot).then((r: WorktreeStateInfo | { error: string }) => {
-      if (n === gitSeq.current) setGit(r && !("error" in r) ? r : null);
-    });
+    window.mb.worktreeState(gitRoot).then(
+      (r: WorktreeStateInfo | { error: string }) => n === gitSeq.current && setGit(r ?? { error: "no answer" }),
+      (err: unknown) => n === gitSeq.current && setGit({ error: String(err) })
+    );
   };
   useEffect(readGit, [gitRoot]);
   useFolderRefresh(gitRoot, readGit, 30_000);
+  const git = gitState && !("error" in gitState) ? gitState : null;
+  const gitErr = gitState && "error" in gitState ? gitState.error : null;
 
   // the branch's pull request, for the rail (the main process caches lookups for 2 minutes)
   const [pr, setPr] = useState<PrStatus | null>(null);
   const prRoot = density === "max" && gitRoot ? gitRoot : null;
+  const prSeq = useRef(0);
   const readPr = (fresh = false) => {
+    const n = ++prSeq.current;
     if (!prRoot) return setPr(null);
-    window.mb.prStatus(prRoot, fresh).then((r: PrStatus | { error: string }) => setPr("error" in r && !("at" in r) ? { branch: null, pr: null, error: r.error, at: Date.now() } : (r as PrStatus)));
+    const failed = (error: string): PrStatus => ({ branch: null, pr: null, error, at: Date.now() });
+    window.mb.prStatus(prRoot, fresh).then(
+      (r: PrStatus | { error: string }) => n === prSeq.current && setPr("error" in r && !("at" in r) ? failed(r.error) : (r as PrStatus)),
+      (err: unknown) => n === prSeq.current && setPr(failed(String(err)))
+    );
   };
   useEffect(() => {
     readPr();
@@ -417,11 +381,9 @@ export function TerminalPane({
       // a session id keeps its agent and shell flag through restarts, and a
       // resumed pane gets a fresh entry, so the policy is fixed per entry
       const mousePolicy = mousePolicyFor(session);
-      const term = new Terminal({
-        fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
-        fontSize: density === "max" ? 11.5 : 11,
+      const { term, fit } = makeTerm({
+        fontSize: fontSizeFor(density),
         lineHeight: 1.4,
-        theme: currentTermTheme(),
         scrollback: 8000,
         allowProposedApi: true,
         // Option-drag selects natively while Claude has the mouse. Option-click
@@ -429,12 +391,12 @@ export function TerminalPane({
         // otherwise type arrow keys into the prompt.
         ...(mousePolicy === "claude" ? { macOptionClickForcesSelection: true, altClickMovesCursor: false } : {}),
       });
-      const fit = new FitAddon();
-      term.loadAddon(fit);
       const e: TermEntry = {
         term,
         fit,
+        replayed: false,
         ready: false,
+        onPanel: null,
         lastInput: 0,
         lastReply: "",
         lastReplyCount: 0,
@@ -461,10 +423,7 @@ export function TerminalPane({
         if (panelCheck) return;
         panelCheck = setTimeout(() => {
           panelCheck = null;
-          const found = e.wantsMouse ? findPanelClose(term) : null;
-          setPanelClose((prev) =>
-            (prev?.col === found?.col && prev?.row === found?.row) ? prev : found
-          );
+          e.onPanel?.(e.wantsMouse ? findPanelClose(term) : null);
         }, 500);
       });
       term.onData((d) => {
@@ -512,62 +471,22 @@ export function TerminalPane({
       });
       entry = e;
       terms.set(session.id, entry);
-      window.mb
-        .sessionBuffer(session.id)
-        .then((buf: string) => {
-          if (terms.get(session.id) !== e) return; // disposed while in flight
-          if (buf) term.write(stripMouseEnables(e, buf), () => (e.ready = true));
-          else e.ready = true;
-        })
-        .catch((err: unknown) => {
-          console.error("[mockingbird] scrollback replay failed", session.id, err);
-          e.ready = true; // never leave the pane unable to type
-        });
+      void replay(e, window.mb.sessionBuffer(session.id), () => terms.get(session.id) === e, (buf) => stripMouseEnables(e, buf));
     }
-    const { term, fit } = entry;
+    const { term } = entry;
+    // the header's "hide diff" button follows the panel for whichever pane shows this terminal now
+    const onPanel = (found: { col: number; row: number } | null) =>
+      setPanelClose((prev) => (prev?.col === found?.col && prev?.row === found?.row ? prev : found));
+    entry.onPanel = onPanel;
+    onPanel(entry.wantsMouse ? findPanelClose(term) : null);
     if (holder.current && !term.element) term.open(holder.current);
-    if (!entry.inputWired && term.textarea) {
-      entry.inputWired = true;
-      const mark = () => {
-        const t = terms.get(session.id);
-        if (t) t.lastInput = Date.now();
-      };
-      // every path a human's input can take into xterm: physical keys, IME
-      // composition, dictation/autofill (input events), and paste
-      for (const ev of ["keydown", "beforeinput", "input", "compositionstart", "compositionupdate", "compositionend", "paste"]) {
-        term.textarea.addEventListener(ev, mark, true);
-      }
-    }
-    else if (holder.current && term.element && term.element.parentElement !== holder.current) {
-      holder.current.appendChild(term.element);
-    }
-
-    const doFit = () => {
-      try {
-        // only resize when the geometry actually changed — every needless pty
-        // resize makes the CLI redraw its frame, which is what leaves stale
-        // duplicated lines behind when xterm has reflowed the old frame
-        const dims = fit.proposeDimensions();
-        if (!dims || !dims.cols || !dims.rows) return;
-        if (dims.cols === term.cols && dims.rows === term.rows) return;
-        fit.fit();
-        window.mb.sessionResize(session.id, term.cols, term.rows);
-      } catch {
-        /* not visible yet */
-      }
-    };
-    doFit();
-    const ro = new ResizeObserver(doFit);
-    if (holder.current) ro.observe(holder.current);
+    else if (holder.current && term.element && term.element.parentElement !== holder.current) holder.current.appendChild(term.element);
+    trackUserInput(entry);
+    const stopFollowing = followSize(entry, holder.current, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
 
     const stamp = () => {
       const t = terms.get(session.id);
       if (t) t.lastInput = Date.now(); // mouse/paste count as user input too
-    };
-    const showCopyNote = (note: "copied" | "failed") => {
-      setCopyNote(note);
-      if (copiedTimer.current) clearTimeout(copiedTimer.current);
-      copiedTimer.current = setTimeout(() => setCopyNote(null), 1600);
     };
     // Who owns a left-button gesture is settled at the press, exactly as xterm
     // settles it on the mousedown that follows, and holds until release even
@@ -592,16 +511,9 @@ export function TerminalPane({
       // copy-on-select, cmux-style: release puts the text on the clipboard and
       // the pane resumes immediately. The highlight is never cleared by us —
       // it stays until a click elsewhere or the CLI redraws over it.
+      // A failed copy leaves the selection standing for ⌘C.
       const text = t.term.getSelection();
-      if (text) {
-        navigator.clipboard.writeText(text).then(
-          () => showCopyNote("copied"),
-          (err: unknown) => {
-            console.error("[mockingbird] copy-on-select failed", session.id, err);
-            showCopyNote("failed"); // the selection still stands for ⌘C
-          }
-        );
-      }
+      if (text) copy(text, `pane ${session.id}'s selection`);
       flushHold(t);
     };
     const cancelDrag = () => {
@@ -690,7 +602,7 @@ export function TerminalPane({
     window.addEventListener("pointerup", endDrag, true);
     window.addEventListener("pointercancel", cancelDrag, true);
     return () => {
-      ro.disconnect();
+      stopFollowing();
       el?.removeEventListener("paste", onPaste, true);
       el?.removeEventListener("pointerdown", onDown, true);
       el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
@@ -702,6 +614,7 @@ export function TerminalPane({
         t.dragging = false;
         t.buttonHeld = false;
         flushHold(t); // never leave a hidden pane frozen
+        if (t.onPanel === onPanel) t.onPanel = null;
       }
     };
   }, [session.id, dead]);
@@ -709,14 +622,9 @@ export function TerminalPane({
   // terminal body steps up in the instrumented tier (design 1b)
   useEffect(() => {
     const entry = terms.get(session.id);
-    if (!entry || entry.term.options.fontSize === (density === "max" ? 11.5 : 11)) return;
-    entry.term.options.fontSize = density === "max" ? 11.5 : 11;
-    try {
-      entry.fit.fit();
-      window.mb.sessionResize(session.id, entry.term.cols, entry.term.rows);
-    } catch {
-      /* not visible */
-    }
+    if (!entry || entry.term.options.fontSize === fontSizeFor(density)) return;
+    entry.term.options.fontSize = fontSizeFor(density);
+    fitTerm(entry, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
   }, [density, session.id]);
 
   const assistant = session.kind === "assistant" && !session.shell; // repo-less shells aren't assistants
@@ -724,7 +632,6 @@ export function TerminalPane({
   const gitStr = git
     ? `${git.upstream ? `↑${git.ahead} ↓${git.behind}` : "not on origin"} · ${git.dirty ? `${git.dirtyFiles} uncommitted` : "clean"}`
     : null;
-  const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
   const gitTitle = git
     ? [
         git.upstream
@@ -805,7 +712,7 @@ export function TerminalPane({
         {!!runCount && density !== "min" && (
           <button
             className="chip running"
-            title={`${runCount} service${runCount === 1 ? "" : "s"} of this worktree running — open Run and Debug`}
+            title={`${plural(runCount, "service")} of this worktree running — open Run and Debug`}
             onClick={(e) => {
               e.stopPropagation();
               onOpenRun?.();
@@ -817,20 +724,19 @@ export function TerminalPane({
         {git?.dirty && (
           <button
             className="chip changes"
-            title={`${git.dirtyFiles} uncommitted file${git.dirtyFiles === 1 ? "" : "s"}: +${git.insertions} −${git.deletions} lines in tracked files — open Source Control`}
+            title={`${plural(git.dirtyFiles, "uncommitted file")}: +${git.insertions} −${git.deletions} lines in tracked files — open Source Control`}
             onClick={(e) => {
               e.stopPropagation();
               onOpenChanges?.();
             }}
           >
-            {git.dirtyFiles} file{git.dirtyFiles === 1 ? "" : "s"}
-            {(git.insertions > 0 || git.deletions > 0) && (
-              <>
-                {" · "}
-                <span className="add">+{git.insertions}</span> <span className="del">−{git.deletions}</span>
-              </>
-            )}
+            <ChangeCount files={git.dirtyFiles} insertions={git.insertions} deletions={git.deletions} />
           </button>
+        )}
+        {gitErr && density === "std" && (
+          <span className="chip" title={`Couldn't read this folder's git state: ${gitErr}`}>
+            git: couldn't read
+          </span>
         )}
         {overlaps && overlaps.length > 0 && density !== "min" && (
           <button
@@ -965,6 +871,12 @@ export function TerminalPane({
               <span className={`v ${git!.dirty ? "red" : "teal"}`}>{gitStr}</span>
             </div>
           )}
+          {gitErr && (
+            <div className="cell" title={`Couldn't read this folder's git state: ${gitErr}`}>
+              <span className="k">Git</span>
+              <span className="v red">couldn't read</span>
+            </div>
+          )}
           {pr && (pr.pr || pr.error) && (
             <div
               className="cell click"
@@ -1073,8 +985,7 @@ export function TerminalPane({
               }
             }}
           />
-          {copyNote === "copied" && <span className="copy-toast">Copied ✓</span>}
-          {copyNote === "failed" && <span className="copy-toast failed">Couldn't copy selection</span>}
+          <CopyToast note={copyNote} failed="Couldn't copy selection" />
           {session.stalledSince && session.status === "working" && (
             <div className="stall-banner" title="An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process.">
               <span className="reason">No output for {fmtElapsed(session.stalledSince, true)} while working — it may be stuck</span>

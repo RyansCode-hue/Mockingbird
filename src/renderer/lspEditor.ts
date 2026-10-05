@@ -2,7 +2,7 @@ import { EditorView, hoverTooltip, keymap, showPanel, type Panel, type Tooltip }
 import { EditorState, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { lintGutter, type Diagnostic } from "@codemirror/lint";
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
-import type { LspCompletion, LspDiagnostic, LspFileEdits, LspLocation } from "../shared/types";
+import type { LspCompletion, LspDiagnostic, LspLocation } from "../shared/types";
 import type { LspPosition } from "../shared/textEdits";
 
 /** What the editor's language features need from the buffer they're attached to. */
@@ -10,21 +10,25 @@ export interface LspDocContext {
   sessionId: string;
   rel: string;
   abs: string;
+  /** The file is open with a running server. Until it is, nothing is asked of one. */
+  ready: () => boolean;
   /** Send edits still waiting to go to the server, so it answers about the text on screen. */
   flush: () => Promise<void>;
   openLocation: (loc: LspLocation) => void;
-  /** Apply a rename's edits across files; resolves to what happened, for the user. */
-  applyRename: (edits: LspFileEdits[]) => Promise<string>;
+  /** Rename the symbol at a position across files; resolves to what happened, for the user. */
+  rename: (at: LspPosition, name: string) => Promise<Result<string>>;
   format: () => Promise<void>;
   /** A request failed: say so where the user can see it. */
   report: (message: string) => void;
 }
 
+export const NO_SERVER = "No language server is running for this file";
+
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** A document offset as an LSP position (line, UTF-16 column — CodeMirror's own units). */
-export function toLspPos(doc: Text, offset: number): LspPosition {
+function toLspPos(doc: Text, offset: number): LspPosition {
   const line = doc.lineAt(offset);
   return { line: line.number - 1, character: offset - line.from };
 }
@@ -68,8 +72,9 @@ const CM_TYPE: Record<string, string> = {
 /** Characters after which a server offers completions without a word typed. */
 const TRIGGERS = new Set([".", ":", ">", "/", "@", "<", "#", '"', "'"]);
 
-function completionSource(ctx: LspDocContext) {
+export function completionSource(ctx: LspDocContext) {
   return async (c: CompletionContext): Promise<CompletionResult | null> => {
+    if (!ctx.ready()) return null;
     const word = c.matchBefore(/[\w$]+/);
     const before = c.state.sliceDoc(Math.max(0, (word?.from ?? c.pos) - 1), word?.from ?? c.pos);
     const trigger = !word && TRIGGERS.has(before) ? before : undefined;
@@ -102,7 +107,7 @@ function completionSource(ctx: LspDocContext) {
 }
 
 /** Hover text as safe DOM: fenced code as blocks, `code` inline, the rest as text. */
-export function renderHover(md: string): HTMLElement {
+function renderHover(md: string): HTMLElement {
   const dom = document.createElement("div");
   dom.className = "cm-lsp-hover";
   const parts = md.split(/```[\w-]*\n?/);
@@ -130,8 +135,9 @@ export function renderHover(md: string): HTMLElement {
   return dom;
 }
 
-function hoverSource(ctx: LspDocContext) {
+export function hoverSource(ctx: LspDocContext) {
   return async (view: EditorView, pos: number): Promise<Tooltip | null> => {
+    if (!ctx.ready()) return null;
     await ctx.flush();
     const p = toLspPos(view.state.doc, pos);
     const r: Result<string> = await window.mb.lspHover(ctx.sessionId, ctx.rel, p.line, p.character);
@@ -145,6 +151,7 @@ function hoverSource(ctx: LspDocContext) {
 }
 
 async function goToDefinition(view: EditorView, pos: number, ctx: LspDocContext): Promise<void> {
+  if (!ctx.ready()) return ctx.report(NO_SERVER);
   await ctx.flush();
   const p = toLspPos(view.state.doc, pos);
   const r: Result<LspLocation[]> = await window.mb.lspDefinition(ctx.sessionId, ctx.rel, p.line, p.character);
@@ -190,15 +197,13 @@ function renamePanel(ctx: LspDocContext): Extension {
       if (!name || name === at.name) return close();
       input.disabled = true;
       note.textContent = "Renaming…";
-      await ctx.flush();
-      const p = toLspPos(view.state.doc, at.pos);
-      const r: Result<LspFileEdits[]> = await window.mb.lspRename(ctx.sessionId, ctx.rel, p.line, p.character, name);
+      const r = await ctx.rename(toLspPos(view.state.doc, at.pos), name);
       if (isErr(r)) {
         input.disabled = false;
         note.textContent = r.error;
         return;
       }
-      ctx.report(await ctx.applyRename(r));
+      ctx.report(r);
       close();
     });
     dom.append(label, input, note);
@@ -213,6 +218,7 @@ function renamePanel(ctx: LspDocContext): Extension {
           const pos = view.state.selection.main.head;
           const w = view.state.wordAt(pos);
           if (!w) return false;
+          if (!ctx.ready()) return (ctx.report(NO_SERVER), true);
           view.dispatch({ effects: toggle.of({ pos: w.from, name: view.state.sliceDoc(w.from, w.to) }) });
           return true;
         },
@@ -239,7 +245,7 @@ export function lspExtensions(ctx: LspDocContext): Extension[] {
     ]),
     EditorView.domEventHandlers({
       mousedown(e, view) {
-        if (!e.metaKey || e.button !== 0) return false;
+        if (!e.metaKey || e.button !== 0 || !ctx.ready()) return false;
         const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
         if (pos == null) return false;
         e.preventDefault();

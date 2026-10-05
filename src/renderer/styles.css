@@ -900,7 +900,7 @@ body.fp-resizing .fp-slide { transition: none; }
 .fp-handle { position: absolute; right: 0; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
 .fp-handle:hover { background: var(--line-strong); }
 body.fp-resizing { cursor: col-resize; user-select: none; }
-.fp-viewer { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; background: var(--bg-app); }
+.fp-viewer { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; background: var(--bg-app); }
 .fp-head {
   display: flex; align-items: center; gap: 4px; height: 34px; padding: 0 6px 0 12px; flex-shrink: 0;
   background: var(--bg-chrome); border-bottom: 1px solid var(--line-soft);
@@ -944,6 +944,7 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .ex-title { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .ex-name { font: 500 13px var(--ui); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .ex-branch { font: 400 10px var(--mono); color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.ex-branch.err { color: var(--red); }
 .ex-acts { margin-left: auto; display: flex; flex-shrink: 0; }
 .ex-acts button { padding: 2px 4px; color: var(--text-4); }
 .ex-acts button:hover { color: var(--text-1); }

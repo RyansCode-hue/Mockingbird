@@ -5,13 +5,14 @@
 // typed — so it is dropped and written to ~/.mockingbird/pty-audit.log.
 const TERM_REPLY = new RegExp(
   "^(?:" +
-    "\\x1b\\[[0-9;?]*[Rcn]" + // cursor position / device attributes / device status
+    "\\x1b\\[[?>]?[0-9;]*[Rcn]" + // cursor position / primary and secondary device attributes / device status
+    "|\\x1b\\[\\??[0-9;]*\\$y" + // mode report (DECRQM)
     "|\\x1b\\[[IO]" + // focus in / focus out reporting
     "|\\x1b\\][0-9]+;[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)" + // OSC colour answers
     "|\\x1bP[^\\x1b]*\\x1b\\\\" + // DCS answers (XTGETTCAP, DECRQSS)
     ")$"
 );
-export const USER_INPUT_WINDOW_MS = 400;
+const USER_INPUT_WINDOW_MS = 400;
 
 // One complete SGR mouse report. Program output can't make xterm emit one:
 // reports come from DOM mouse and wheel events while tracking is on (bindMouse →
