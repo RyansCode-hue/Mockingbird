@@ -41,19 +41,28 @@ function loadAdoConfig(store: Store): AdoConfig {
   return { orgUrl: String(ado.orgUrl).replace(/\/+$/, ""), project: String(ado.project), pat, ...(ado.team ? { team: String(ado.team) } : {}) };
 }
 
+const ADO_TIMEOUT_MS = 30_000;
+
+/** A request with the PAT, cut off after 30s — a dead VPN would otherwise hold it for minutes. */
 async function adoFetch(cfg: AdoConfig, url: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      Authorization: "Basic " + Buffer.from(":" + cfg.pat).toString("base64"),
-      ...((init?.headers as Record<string, string>) ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const body = (await res.text()).slice(0, 300);
-    throw new Error(`Azure DevOps ${res.status} ${res.statusText}: ${body}`);
+  try {
+    const res = await fetch(url, {
+      ...init,
+      headers: {
+        Authorization: "Basic " + Buffer.from(":" + cfg.pat).toString("base64"),
+        ...((init?.headers as Record<string, string>) ?? {}),
+      },
+      signal: AbortSignal.timeout(ADO_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const body = (await res.text()).slice(0, 300);
+      throw new Error(`Azure DevOps ${res.status} ${res.statusText}: ${body}`);
+    }
+    return await res.json();
+  } catch (err) {
+    if ((err as Error).name === "TimeoutError") throw new Error(`Azure DevOps didn't answer within ${ADO_TIMEOUT_MS / 1000}s — check the org URL, or your VPN`);
+    throw err;
   }
-  return res.json();
 }
 
 /** An authenticated request to any Azure DevOps URL with the configured PAT (pull requests live per repository, not per project). */
@@ -77,10 +86,11 @@ function htmlToText(html: string): string {
     .replace(/<li[^>]*>/gi, "• ")
     .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
+    // last, or the "&lt;" in an escaped "&amp;lt;" would be decoded a second time
+    .replace(/&amp;/g, "&")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -254,13 +264,16 @@ export async function writeAdoSnapshot(store: Store): Promise<{ file: string; co
  * Env vars for Mockingbird-spawned debrief sessions: the az DevOps CLI
  * extension authenticates via AZURE_DEVOPS_EXT_PAT, so `az boards`/`az repos`
  * work in the debrief without `az login` or an MCP server. Returns {} when
- * ADO isn't configured — the session just runs without it.
+ * ADO isn't configured or its config can't be read (logged) — the session
+ * just runs without it.
  */
 export function adoEnv(store: Store): Record<string, string> {
   try {
     const cfg = loadAdoConfig(store);
     return { AZURE_DEVOPS_EXT_PAT: cfg.pat };
-  } catch {
+  } catch (err) {
+    // loadAdoConfig's errors name files, never the PAT itself
+    console.error("[mockingbird] debrief starts without Azure DevOps access:", (err as Error).message);
     return {};
   }
 }

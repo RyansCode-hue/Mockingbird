@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { PipelineStore, stageComment } from "../src/main/pipeline";
-import { findOpenPr, openPr, parseRemote, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
+import { baseMatchesTarget, findOpenPr, openPr, parseRemote, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
 import type { ShellRunner } from "../src/main/headless";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
@@ -84,6 +84,13 @@ describe("pull request remotes", () => {
     expect(pickBase("dev", ["main", "dev", "uat"])).toBe("dev");
     expect(pickBase("main", ["master", "dev"])).toBe("master");
     expect(pickBase("dev", ["main"])).toBeNull();
+  });
+  it("won't take the other target's branch as the base", () => {
+    expect(baseMatchesTarget("main", "develop")).toBe(false);
+    expect(baseMatchesTarget("main", "uat")).toBe(false);
+    expect(baseMatchesTarget("dev", "master")).toBe(false);
+    expect(baseMatchesTarget("main", "main")).toBe(true);
+    expect(baseMatchesTarget("dev", "release/2.1")).toBe(true);
   });
 });
 

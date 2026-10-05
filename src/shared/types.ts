@@ -58,6 +58,12 @@ export interface WorktreeStateInfo {
 
 export type WorktreeCleanupMode = "keep" | "push" | "discard";
 
+/** What a close-session cleanup did. `branchKept` says why a discard left the branch in place. */
+export interface WorktreeCleanupResult {
+  removed: boolean;
+  branchKept?: string;
+}
+
 /** One entry of the worktree janitor: a `<repo>-worktrees/<name>` checkout. */
 export interface WorktreeEntry {
   repoPath: string;

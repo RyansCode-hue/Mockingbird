@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
-import { checkoutBranch, createWorktree, forgetState, listWorktrees, migrateWorktree, parseShortstat, pickDefaultBase, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
+import { describe, expect, it, vi } from "vitest";
+import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listWorktrees, migrateWorktree, parseShortstat, pickDefaultBase, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
 import { git, makeRepo } from "./helpers";
 
 describe("pickDefaultBase", () => {
@@ -80,10 +80,76 @@ describe("git without blocking", () => {
     expect(await worktreeState(clone)).toMatchObject({ ahead: 1, behind: 1 });
   });
 
+  it("fails rather than report nothing unpushed when the counts can't be read", async () => {
+    const origin = makeRepo({ "a.txt": "1" }, "origin");
+    const clone = path.join(path.dirname(origin), "clone");
+    git(path.dirname(origin), "clone", "-q", origin, clone);
+    git(clone, "pack-refs", "--all");
+    // the upstream names an object the clone doesn't have
+    fs.writeFileSync(path.join(clone, ".git/refs/remotes/origin/main"), "0123456789012345678901234567890123456789\n");
+    await expect(worktreeState(clone)).rejects.toThrow(/git rev-list/);
+  });
+
   it("refuses to switch a checkout that has uncommitted changes, with the reason", async () => {
     const repo = makeRepo();
     fs.writeFileSync(path.join(repo, "README.md"), "changed\n");
     await expect(checkoutBranch(repo, "feat/x")).rejects.toThrow(/1 uncommitted change on main/);
+  });
+});
+
+describe("branches on origin", () => {
+  /** A bare origin with main, a clone that has fetched it, and a branch someone pushed to origin since. */
+  function pushedSinceFetch() {
+    const seed = makeRepo({ "a.txt": "a\n" }, "seed");
+    const origin = path.join(path.dirname(seed), "origin.git");
+    git(path.dirname(seed), "clone", "-q", "--bare", seed, origin);
+    const mine = path.join(path.dirname(seed), "mine");
+    const theirs = path.join(path.dirname(seed), "theirs");
+    git(path.dirname(seed), "clone", "-q", origin, mine);
+    git(path.dirname(seed), "clone", "-q", origin, theirs);
+    git(theirs, "checkout", "-q", "-b", "feat/shared");
+    git(theirs, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "their work");
+    git(theirs, "push", "-q", "origin", "feat/shared");
+    return { mine, pushed: git(theirs, "rev-parse", "HEAD") };
+  }
+
+  it("a new worktree checks out a branch pushed since the last fetch instead of making it anew off the base", async () => {
+    const { mine, pushed } = pushedSinceFetch();
+    const wt = await createWorktree(mine, "feat/shared", "main");
+    expect(git(wt, "rev-parse", "HEAD")).toBe(pushed);
+    expect(git(wt, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/feat/shared");
+  });
+
+  it("so does switching the checkout itself", async () => {
+    const { mine, pushed } = pushedSinceFetch();
+    await checkoutBranch(mine, "feat/shared", "main");
+    expect(git(mine, "rev-parse", "HEAD")).toBe(pushed);
+  });
+});
+
+describe("closing a worktree", () => {
+  it("discarding deletes the worktree and its branch", async () => {
+    const repo = makeRepo();
+    const wt = await createWorktree(repo, "feat/gone");
+    expect(await cleanupWorktree(repo, wt, "discard")).toEqual({ removed: true });
+    expect(git(repo, "branch", "--list", "feat/gone")).toBe("");
+  });
+
+  it("says so when the branch stays: checked out elsewhere, or no branch at all", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const repo = makeRepo();
+    git(repo, "checkout", "-q", "-b", "feat/both");
+    const wt = path.join(worktreeRoot(repo), "feat/both");
+    git(repo, "worktree", "add", "-q", "--force", wt, "feat/both");
+    const r = await cleanupWorktree(repo, wt, "discard");
+    expect(r).toMatchObject({ removed: true, branchKept: expect.stringMatching(/^feat\/both wasn't deleted/) });
+    expect(git(repo, "branch", "--list", "feat/both")).not.toBe("");
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+
+    const detached = path.join(worktreeRoot(repo), "detached");
+    git(repo, "worktree", "add", "-q", "--detach", detached);
+    expect(await cleanupWorktree(repo, detached, "discard")).toMatchObject({ removed: true, branchKept: expect.stringMatching(/detached HEAD/) });
   });
 });
 

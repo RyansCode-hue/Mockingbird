@@ -1,5 +1,5 @@
-import type { WorktreeCleanupMode, WorktreeEntry } from "../shared/types";
-import { git, upstreamOf } from "./git";
+import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry } from "../shared/types";
+import { git, originUrl, upstreamOf } from "./git";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -12,14 +12,54 @@ export function legacyWorktreeRoot(repoPath: string): string {
   return path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`);
 }
 
+const PROBE_TIMEOUT_MS = 15_000;
+
 /**
- * Create a worktree for a session. Returns the worktree path.
- *  - branch exists locally → check it out in the worktree
- *  - branch exists on origin only → fetch it and track it
- *  - new branch + baseBranch → fetch origin/<base> first and branch off it
- *    (falls back to the local base if the fetch fails, e.g. offline)
- *  - new branch, no base → branch off the repo's current HEAD (legacy behavior)
+ * Whether origin has `branch`, asked of origin itself: remote-tracking refs are
+ * only as fresh as the last fetch, and a branch pushed since must be checked
+ * out, not made anew. When origin can't be reached the last fetch has to do (logged).
  */
+async function onOrigin(repo: string, branch: string): Promise<boolean> {
+  if (!(await originUrl(repo))) return false;
+  try {
+    // exit 2: origin has no such branch
+    return !!(await git(repo, ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`], { okCodes: [0, 2], timeoutMs: PROBE_TIMEOUT_MS }));
+  } catch (err) {
+    console.error(`[worktrees] couldn't ask origin about ${branch}, going by the last fetch:`, err);
+    return !!(await git(repo, ["branch", "-r", "--list", `origin/${branch}`]));
+  }
+}
+
+/** A branch that exists already, or one to create from `from` (HEAD when unset), tracking it when `track`. */
+type StartPoint = { existing: true } | { existing: false; track: boolean; from?: string };
+
+/**
+ * Where a session's branch comes from, for a worktree or a checkout:
+ *  - branch exists locally → itself
+ *  - branch exists on origin only → fetch it and track it
+ *  - new branch + base → fetch origin/<base> first and branch off it
+ *    (falls back to the local base if the fetch fails, e.g. offline)
+ *  - new branch, no base → branch off the repo's current HEAD
+ */
+async function startPoint(repo: string, branch: string, base?: string): Promise<StartPoint> {
+  if (await git(repo, ["branch", "--list", branch])) return { existing: true };
+  if (await onOrigin(repo, branch)) {
+    await git(repo, ["fetch", "origin", branch]);
+    return { existing: false, track: true, from: `origin/${branch}` };
+  }
+  if (!base) return { existing: false, track: false };
+  try {
+    await git(repo, ["fetch", "origin", base]); // freshest dev/uat
+    return { existing: false, track: false, from: `origin/${base}` };
+  } catch (err) {
+    // offline or no origin — fall back to the local base branch, loudly
+    if (!(await git(repo, ["branch", "--list", base]))) throw err;
+    console.error(`[worktrees] fetch origin/${base} failed, branching off local ${base}:`, err);
+    return { existing: false, track: false, from: base };
+  }
+}
+
+/** Create a worktree for a session on `branch`, made as startPoint says. Returns the worktree path. */
 export async function createWorktree(repoPath: string, branch: string, baseBranch?: string): Promise<string> {
   // a branch can only be checked out once: if the old layout already holds it,
   // keep using that checkout rather than failing on `worktree add`
@@ -30,28 +70,13 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
   const wtPath = path.join(wtRoot, branch);
   if (fs.existsSync(wtPath)) return wtPath; // reuse (multiple sessions per task)
 
-  const hasLocal = (await git(repoPath, ["branch", "--list", branch])).length > 0;
-  const hasRemote = (await git(repoPath, ["branch", "-r", "--list", `origin/${branch}`])).length > 0;
-
-  if (hasLocal) {
-    await git(repoPath, ["worktree", "add", wtPath, branch]);
-  } else if (hasRemote) {
-    await git(repoPath, ["fetch", "origin", branch]);
-    await git(repoPath, ["worktree", "add", "--track", "-b", branch, wtPath, `origin/${branch}`]);
-  } else if (baseBranch) {
-    let base = `origin/${baseBranch}`;
-    try {
-      await git(repoPath, ["fetch", "origin", baseBranch]); // freshest dev/uat
-    } catch (err) {
-      // offline or no origin — fall back to the local base branch, loudly
-      if ((await git(repoPath, ["branch", "--list", baseBranch])).length === 0) throw err;
-      console.error(`[worktrees] fetch origin/${baseBranch} failed, branching off local ${baseBranch}:`, err);
-      base = baseBranch;
-    }
-    await git(repoPath, ["worktree", "add", "-b", branch, wtPath, base]);
-  } else {
-    await git(repoPath, ["worktree", "add", "-b", branch, wtPath]);
-  }
+  const sp = await startPoint(repoPath, branch, baseBranch);
+  await git(
+    repoPath,
+    sp.existing
+      ? ["worktree", "add", wtPath, branch]
+      : ["worktree", "add", ...(sp.track ? ["--track"] : []), "-b", branch, wtPath, ...(sp.from ? [sp.from] : [])]
+  );
   return wtPath;
 }
 
@@ -96,14 +121,16 @@ export function parseShortstat(out: string): { insertions: number; deletions: nu
 }
 
 async function readState(wtPath: string): Promise<WorktreeState> {
-  const [porcelain, branch, upstream, counts, stat] = await Promise.all([
+  const [porcelain, branch, { upstream, counts }, stat] = await Promise.all([
     git(wtPath, ["status", "--porcelain"]),
     // the branch name, even before its first commit; "HEAD" when detached
     git(wtPath, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] }).then((b) => b || "HEAD"),
-    // what the counts are against; a branch made from origin/dev tracks it until published
-    upstreamOf(wtPath),
-    // "<behind> <ahead>" in one call; fails when the branch has no upstream
-    git(wtPath, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]).catch(() => "0 0"),
+    // what the counts are against (a branch made from origin/dev tracks it until
+    // published), then "<behind> <ahead>" in one call — nothing to count without one
+    upstreamOf(wtPath).then(async (upstream) => ({
+      upstream,
+      counts: upstream ? await git(wtPath, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]) : "0 0",
+    })),
     // before the first commit there's no HEAD to diff against: nothing to count yet
     git(wtPath, ["diff", "--shortstat", "HEAD"]).catch((err: Error) => {
       if (/bad revision|unknown revision|ambiguous argument 'HEAD'/i.test(err.message)) return "";
@@ -112,7 +139,7 @@ async function readState(wtPath: string): Promise<WorktreeState> {
   ]);
   const dirtyFiles = porcelain ? porcelain.split("\n").length : 0;
   const [behind, ahead] = counts.split(/\s+/).map((n) => parseInt(n, 10) || 0);
-  return { dirty: dirtyFiles > 0, dirtyFiles, branch, upstream: upstream || null, ahead: ahead ?? 0, behind: behind ?? 0, ...parseShortstat(stat) };
+  return { dirty: dirtyFiles > 0, dirtyFiles, branch, upstream, ahead: ahead ?? 0, behind: behind ?? 0, ...parseShortstat(stat) };
 }
 
 export const STATE_TTL_MS = 3_000;
@@ -145,7 +172,7 @@ export function worktreeState(wtPath: string): Promise<WorktreeState> {
  *  - push:    commit WIP if dirty, push the branch, then remove the worktree
  *  - discard: remove the worktree and delete its branch — not recoverable
  */
-export async function cleanupWorktree(repoPath: string, wtPath: string, mode: WorktreeCleanupMode): Promise<{ removed: boolean }> {
+export async function cleanupWorktree(repoPath: string, wtPath: string, mode: WorktreeCleanupMode): Promise<WorktreeCleanupResult> {
   if (mode === "keep") return { removed: false };
 
   const st = await readState(wtPath); // fresh: this decides what gets committed or deleted
@@ -162,10 +189,13 @@ export async function cleanupWorktree(repoPath: string, wtPath: string, mode: Wo
 
   // discard
   await git(repoPath, ["worktree", "remove", "--force", wtPath]);
+  if (st.branch === "HEAD") return { removed: true, branchKept: "The worktree wasn't on a branch (detached HEAD), so no branch was deleted" };
   try {
     await git(repoPath, ["branch", "-D", st.branch]);
-  } catch {
-    /* branch may be checked out elsewhere or already gone */
+  } catch (err) {
+    // e.g. the branch is checked out in another folder too
+    console.error(`[worktrees] removed ${wtPath} but kept branch ${st.branch}:`, err);
+    return { removed: true, branchKept: `${st.branch} wasn't deleted: ${(err as Error).message}` };
   }
   return { removed: true };
 }
@@ -241,11 +271,7 @@ export async function removeWorktree(repoPath: string, wtPath: string): Promise<
  * debug/launch configs on the repo just work. Refuses loudly when the checkout
  * cannot safely switch: uncommitted changes, or another live session already
  * on a different branch there (a checkout has one branch at a time — that is
- * the one thing worktrees exist to solve).
- *  - branch exists locally → switch to it
- *  - branch exists on origin only → fetch and track it
- *  - new branch → fetch origin/<base> (dev/uat) and branch off it; falls back
- *    to the local base if the fetch fails
+ * the one thing worktrees exist to solve). The branch is made as startPoint says.
  */
 export async function checkoutBranch(repoPath: string, branch: string, baseBranch?: string, occupiedBy?: string): Promise<void> {
   if (occupiedBy) {
@@ -264,26 +290,8 @@ export async function checkoutBranch(repoPath: string, branch: string, baseBranc
         `Commit or stash before switching to ${branch}, or tick "isolated worktree".`
     );
   }
-  const hasLocal = (await git(repoPath, ["branch", "--list", branch])).length > 0;
-  const hasRemote = (await git(repoPath, ["branch", "-r", "--list", `origin/${branch}`])).length > 0;
-  if (hasLocal) {
-    await git(repoPath, ["switch", branch]);
-  } else if (hasRemote) {
-    await git(repoPath, ["fetch", "origin", branch]);
-    await git(repoPath, ["switch", "--track", "-c", branch, `origin/${branch}`]);
-  } else if (baseBranch) {
-    let base = `origin/${baseBranch}`;
-    try {
-      await git(repoPath, ["fetch", "origin", baseBranch]);
-    } catch (err) {
-      if ((await git(repoPath, ["branch", "--list", baseBranch])).length === 0) throw err;
-      console.error(`[worktrees] fetch origin/${baseBranch} failed, branching off local ${baseBranch}:`, err);
-      base = baseBranch;
-    }
-    await git(repoPath, ["switch", "-c", branch, base]);
-  } else {
-    await git(repoPath, ["switch", "-c", branch]);
-  }
+  const sp = await startPoint(repoPath, branch, baseBranch);
+  await git(repoPath, sp.existing ? ["switch", branch] : ["switch", ...(sp.track ? ["--track"] : []), "-c", branch, ...(sp.from ? [sp.from] : [])]);
 }
 
 /** Move an old-layout worktree into `worktrees/<repo>/`; returns its new path. */

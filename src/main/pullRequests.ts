@@ -41,6 +41,15 @@ export function pickBase(target: PrTarget, remoteBranches: string[]): string | n
   return BASES[target].find((b) => remoteBranches.includes(b)) ?? null;
 }
 
+/**
+ * Whether a pull request for `target` may merge into `base`: any branch but
+ * one of the other target's usual names — a base picked for dev and left in
+ * place after switching to main would open the "to main" PR into develop.
+ */
+export function baseMatchesTarget(target: PrTarget, base: string): boolean {
+  return !BASES[target === "dev" ? "main" : "dev"].includes(base);
+}
+
 /** An ADO API call with the configured PAT (ado.adoRequest), injected so tests can stub it. */
 export type AdoCall = (url: string, init?: RequestInit) => Promise<any>;
 

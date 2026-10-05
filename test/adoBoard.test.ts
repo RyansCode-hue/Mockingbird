@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adoIdentity, listWorkItems, moveToBoardColumn, resetAdoCache, teamBoards, writeAdoSnapshot } from "../src/main/ado";
+import { adoEnv, adoIdentity, adoRequest, listComments, listWorkItems, moveToBoardColumn, resetAdoCache, teamBoards, writeAdoSnapshot } from "../src/main/ado";
 
 /** A WorkTracker folder with ADO settings, and a fake Azure DevOps that records requests. */
 function setup(routes: Record<string, unknown>) {
@@ -70,6 +70,35 @@ describe("the team's board in Azure DevOps", () => {
     const { store, calls } = setup(routes);
     await expect(moveToBoardColumn(store, 42, "Feature", "Backlog items", "Idea")).rejects.toThrow(/A Feature can't go in Idea/);
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+  });
+});
+
+describe("talking to Azure DevOps", () => {
+  it("decodes comment HTML once, so escaped markup stays escaped", async () => {
+    const { store } = setup({ "/workItems/7/comments?": { comments: [{ id: 1, createdBy: { displayName: "A" }, createdDate: "2026-01-01", text: "<div>&amp;lt;b&amp;gt; &amp;amp; &lt;i&gt; &quot;q&quot;</div>" }] } });
+    expect((await listComments(store, 7))[0].text).toBe('&lt;b&gt; &amp; <i> "q"');
+  });
+
+  it("gives up on a request after 30s, saying where to look", async () => {
+    const { store } = setup({});
+    let signal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      signal = init?.signal ?? undefined;
+      throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    });
+    await expect(adoRequest(store, "https://dev.azure.com/acme/_apis/x")).rejects.toThrow(/didn't answer within 30s/);
+    expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("debriefs run without the PAT when the config can't be read, and say why — never printing the PAT", () => {
+    const { store } = setup({});
+    expect(adoEnv(store)).toEqual({ AZURE_DEVOPS_EXT_PAT: "secret" });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    fs.writeFileSync(path.join(store.settings.workTrackerPath, "config.json"), "{ not json");
+    expect(adoEnv(store)).toEqual({});
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/without Azure DevOps/), expect.stringMatching(/config\.json/));
+    expect(JSON.stringify(log.mock.calls)).not.toContain("secret");
+    log.mockRestore();
   });
 });
 

@@ -28,7 +28,7 @@ export async function changedFiles(cwd: string): Promise<{ repo: string; branch:
   }
   const base = await baseRef(cwd);
   if (base) {
-    const onBranch = await git(cwd, ["diff", "--name-only", "-z", `${base}...HEAD`], { trim: false, okCodes: [0, 128] });
+    const onBranch = await git(cwd, ["diff", "--name-only", "-z", `${base}...HEAD`], { trim: false });
     for (const f of onBranch.split("\0")) if (f) files.add(f);
   }
   return { repo, branch, files: [...files].sort() };

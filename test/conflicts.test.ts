@@ -42,4 +42,12 @@ describe("a worktree's changed files", () => {
     expect(o.A[0].files).toEqual(["src/x.ts"]);
     expect(o.B[0]).toMatchObject({ other: "A", otherBranch: "5101-a", files: ["src/x.ts"] });
   });
+
+  it("fails when the branch can't be compared with its base, rather than claim it changed nothing", async () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    git(repo, "branch", "dev");
+    git(repo, "checkout", "-q", "--orphan", "lonely");
+    git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "unrelated");
+    await expect(changedFiles(repo)).rejects.toThrow(/no merge base/);
+  });
 });

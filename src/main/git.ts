@@ -67,6 +67,11 @@ export async function headCommit(cwd: string): Promise<string | null> {
   return (await git(cwd, ["rev-parse", "--verify", "-q", "HEAD"], { okCodes: [0, 1] })) || null;
 }
 
+/** origin's URL, or null when the repository has no remote called origin. */
+export async function originUrl(cwd: string): Promise<string | null> {
+  return (await git(cwd, ["remote", "get-url", "origin"], { okCodes: [0, 2] })) || null; // 2: no such remote
+}
+
 /** The remote branch `cwd`'s branch tracks (e.g. origin/dev), or null when it tracks none or HEAD is detached. */
 export async function upstreamOf(cwd: string): Promise<string | null> {
   try {
