@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { parseNameStatus } from "./files";
-import { git, headCommit } from "./git";
+import { git, headCommit, repoTop } from "./git";
 import { SNAPSHOT_MAX_FILE_BYTES, type TurnChange, type TurnSnapshot } from "../shared/types";
 
 /**
@@ -29,12 +29,6 @@ const safeId = (id: string) => {
   if (!/^[\w-]+$/.test(id)) throw new Error(`"${id}" isn't a session id`);
   return id;
 };
-
-/** The repository's top folder, or null when `cwd` isn't in one. */
-async function topOf(cwd: string): Promise<string | null> {
-  const top = await git(cwd, ["rev-parse", "--show-toplevel"], { okCodes: [0, 128] });
-  return top || null;
-}
 
 /** A throwaway index, removed once `fn` is done with it. */
 async function withIndex<T>(fn: (env: Record<string, string>) => Promise<T>): Promise<T> {
@@ -87,7 +81,7 @@ function parseMessage(body: string): { prompt: string; skipped: string[] } {
 
 /** A session's snapshots, newest first. */
 export async function listSnapshots(cwd: string, sessionId: string): Promise<TurnSnapshot[]> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) return [];
   const out = await git(top, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(creatordate:unix)%00%(contents)%01", `${REF_ROOT}/${safeId(sessionId)}/`], { trim: false });
   return out
@@ -121,7 +115,7 @@ export function takeSnapshot(cwd: string, sessionId: string, prompt: string): Pr
 }
 
 async function snapshotNow(cwd: string, sessionId: string, prompt: string): Promise<TurnSnapshot | null> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) return null;
   const id = safeId(sessionId);
   const prior = await listSnapshots(top, id);
@@ -140,7 +134,7 @@ async function snapshotNow(cwd: string, sessionId: string, prompt: string): Prom
 
 /** What restoring a snapshot would do to the worktree as it is now. */
 export async function changesSince(cwd: string, sessionId: string, n: number): Promise<TurnChange[]> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) throw new Error("Not a git repository");
   const snap = (await listSnapshots(top, sessionId)).find((s) => s.n === n);
   if (!snap) throw new Error("That snapshot is gone");
@@ -161,7 +155,7 @@ async function diffTrees(top: string, from: string, to: string): Promise<TurnCha
  * changed.
  */
 export async function restoreSnapshot(cwd: string, sessionId: string, n: number): Promise<{ restored: number; removed: number; undo: TurnSnapshot | null }> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) throw new Error("Not a git repository");
   const snap = (await listSnapshots(top, sessionId)).find((s) => s.n === n);
   if (!snap) throw new Error("That snapshot is gone");
@@ -206,7 +200,7 @@ async function pruneEmptyDirs(top: string, dir: string): Promise<void> {
 
 /** Drop a closed session's snapshots. */
 export async function dropSnapshots(cwd: string, sessionId: string): Promise<void> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) return;
   for (const s of await listSnapshots(top, sessionId)) await git(top, ["update-ref", "-d", `${REF_ROOT}/${safeId(sessionId)}/${s.n}`]);
 }

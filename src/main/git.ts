@@ -73,12 +73,25 @@ export async function currentBranch(cwd: string): Promise<string | null> {
   return (await git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] })) || null; // 1: detached
 }
 
-/** Whether `cwd` is inside a git work tree. Only "not a repository" means no; other failures are real errors. */
+/** git's answer outside a repository; any other failure is a real error, not a "no". */
+const notARepo = (err: unknown) => /not a git repository/i.test((err as Error).message);
+
+/** Whether `cwd` is inside a git work tree. */
 export async function isRepo(cwd: string): Promise<boolean> {
   try {
     return (await git(cwd, ["rev-parse", "--is-inside-work-tree"])) === "true";
   } catch (err) {
-    if (/not a git repository/i.test((err as Error).message)) return false;
+    if (notARepo(err)) return false;
+    throw err;
+  }
+}
+
+/** The top folder of the work tree `cwd` is in, or null when it isn't in a repository. */
+export async function repoTop(cwd: string): Promise<string | null> {
+  try {
+    return await git(cwd, ["rev-parse", "--show-toplevel"]);
+  } catch (err) {
+    if (notARepo(err)) return null;
     throw err;
   }
 }
