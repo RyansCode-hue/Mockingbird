@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Pick } from "./Menu";
 import { enterConfirms } from "./keys";
 import { titleOf } from "./appModel";
-import { isErr, splitGroupKey, topOfKey, type SessionInfo, type WorktreeStateInfo } from "../shared/types";
+import { isErr, splitGroupKey, topOfKey, groupKey, sanitizeSegment, type SessionInfo, type WorktreeStateInfo } from "../shared/types";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";
@@ -63,16 +63,14 @@ export function GroupDialog({
   const [newTop, setNewTop] = useState("");
   const [sub, setSub] = useState(curSub);
   const isNew = top === "__new__";
-  const effTop = (isNew ? newTop : top).trim().replace(/\//g, "-");
+  const effTop = sanitizeSegment(isNew ? newTop : top);
 
   const move = async (g: string | null) => {
     await onMove(g);
     onClose();
   };
   const apply = () => {
-    if (!effTop) return;
-    const cleanSub = sub.trim().replace(/\//g, "-");
-    move(cleanSub ? `${effTop}/${cleanSub}` : effTop);
+    if (effTop) move(groupKey(effTop, sub));
   };
 
   return (

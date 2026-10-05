@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_KINDS, AGENT_NAME, isErr, otherAgent, slugBranch, sanitizeSegment, splitGroupKey, normalizeGroupPath, topOfKey, groupUngrouped } from "../src/shared/types";
+import { AGENT_KINDS, AGENT_NAME, groupKey, isErr, isWorkItemId, otherAgent, slugBranch, ticketIdOf, sanitizeSegment, splitGroupKey, normalizeGroupPath, topOfKey, groupUngrouped } from "../src/shared/types";
 
 describe("slugBranch", () => {
   it("joins the ticket number and a dashed title", () => {
@@ -58,6 +58,23 @@ describe("a failed main-process answer", () => {
     expect(isErr({ sessions: [] })).toBe(false);
     expect(isErr({ error: null })).toBe(false);
     expect(isErr({ state: "preparing", error: undefined })).toBe(false);
+  });
+});
+
+describe("group keys and ticket ids", () => {
+  it("joins a group and an optional workspace, each name one segment", () => {
+    expect(groupKey("5038", "backend")).toBe("5038/backend");
+    expect(groupKey(" 5038 ", "")).toBe("5038");
+    expect(groupKey("perf/q3", "api/v2")).toBe("perf-q3/api-v2");
+    expect(normalizeGroupPath("5038/backend")).toBe(groupKey("5038", "backend"));
+  });
+  it("drops a ticket id's leading #, and knows a work item id by its digits", () => {
+    expect(ticketIdOf("#5038")).toBe("5038");
+    expect(ticketIdOf("5038")).toBe("5038");
+    expect(isWorkItemId("5038")).toBe(true);
+    expect(isWorkItemId("#5038")).toBe(false);
+    expect(isWorkItemId(ticketIdOf("#5038"))).toBe(true);
+    expect(isWorkItemId("perf")).toBe(false);
   });
 });
 

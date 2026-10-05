@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import { GATES, TICKET_STAGES, stageLabel, isErr, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
+import { GATES, TICKET_STAGES, stageLabel, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
 import { ago, plural } from "../shared/format";
 import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";
@@ -251,7 +251,7 @@ function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
   const [text, setText] = useState<Record<string, string>>({});
   const { doing, run, error } = useAction();
   if (!p.drafts.length) return null;
-  const canPost = /^\d+$/.test(p.ticketId);
+  const canPost = isWorkItemId(p.ticketId);
   return (
     <div className="pl-drafts">
       <div className="pl-h">Drafted comments <span className="pl-count">{p.drafts.length}</span></div>

@@ -3,7 +3,7 @@ import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { newPresetId } from "./Presets";
-import { isErr, AGENT_NAME, slugBranch, sanitizeSegment, splitGroupKey, topOfKey, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
+import { isErr, AGENT_NAME, slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupKey, ticketIdOf, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
 import { agoShort } from "../shared/format";
 import { tildePath } from "../shared/paths";
 import { Modal } from "./Modal";
@@ -90,7 +90,7 @@ export function NewSessionModal({
   );
   const effTop = grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
   const effSub = wsSel === "__new" ? sanitizeSegment(wsNew) : wsSel;
-  const group = effTop ? (effSub ? `${effTop}/${effSub}` : effTop) : "";
+  const group = effTop ? groupKey(effTop, effSub) : "";
   // Picking a ticket defaults to an isolated worktree under
   // <parent>/worktrees/<repo>/<branch>; unticked, the branch is checked out in
   // the repo itself. An explicit choice is remembered and wins.
@@ -355,7 +355,7 @@ export function NewSessionModal({
             }}
           >
             <option value="">
-              {ticketId ? `auto — ticket ${ticketId.replace(/^#/, "")}` : "none"}
+              {ticketId ? `auto — ticket ${ticketIdOf(ticketId)}` : "none"}
             </option>
             {allTops.map((t) => (
               <option key={t} value={t}>

@@ -107,11 +107,18 @@ export function isErr(r: unknown): r is { error: string } {
 // ---- group paths -----------------------------------------------------------
 // A session's taskGroup is a path: "5038" is a group, "5038/backend" is the
 // "backend" workspace inside group 5038. Every producer and consumer of that
-// string goes through these three helpers so the format has one definition.
+// string goes through these helpers so the format has one definition.
 
 /** A name typed by a user becomes one path segment — "/" is the separator. */
 export function sanitizeSegment(name: string): string {
   return name.trim().replace(/\//g, "-");
+}
+
+/** The key of group `top`, or of workspace `sub` inside it: ("5038", "backend") → "5038/backend". */
+export function groupKey(top: string, sub?: string | null): string {
+  const t = sanitizeSegment(top);
+  const s = sub ? sanitizeSegment(sub) : "";
+  return s ? `${t}/${s}` : t;
 }
 
 /** Top-level group of a group key ("5038/backend" → "5038"). */
@@ -128,9 +135,7 @@ export function normalizeGroupPath(value: string): string {
   const v = value.trim();
   if (!v) return "";
   const { top, sub } = splitGroupKey(v);
-  const t = sanitizeSegment(top);
-  const s = sub ? sanitizeSegment(sub) : null;
-  return s ? `${t}/${s}` : t;
+  return groupKey(top, sub);
 }
 
 /**
@@ -818,12 +823,18 @@ export const DEFAULT_SETTINGS: Settings = {
   notifications: true,
 };
 
+/** A ticket id without the "#" it may be typed or kept with: "#5038" → "5038". */
+export const ticketIdOf = (id: string): string => id.replace(/^#/, "");
+
+/** An Azure DevOps work item id: digits only, as a group named after a ticket is. */
+export const isWorkItemId = (id: string): boolean => /^\d+$/.test(id);
+
 export function slugBranch(ticketId: string, ticketTitle: string): string {
   const slug = ticketTitle
     .trim()
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return `${ticketId.replace(/^#/, "")}-${slug}`;
+  return `${ticketIdOf(ticketId)}-${slug}`;
 }
 
 // ---- ticket pipeline ----------------------------------------------------------

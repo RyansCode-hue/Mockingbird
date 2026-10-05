@@ -28,7 +28,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -297,7 +297,7 @@ function App() {
     const next =
       renameDlg.kind === "group"
         ? sanitizeSegment(v)
-        : `${topOfKey(renameDlg.key)}/${sanitizeSegment(v)}`;
+        : groupKey(topOfKey(renameDlg.key), v);
     if (!next) return;
     if (renameDlg.key === "ungrouped") {
       // "ungrouped" is the absence of a group, not a stored one: naming it groups its sessions
@@ -861,9 +861,9 @@ function App() {
 
   const groupTitle = (key: string, list: SessionInfo[]): string => {
     if (key === "ungrouped" || key === "assistant") return key;
-    if (!/^\d+$/.test(key.replace(/^#/, ""))) return key; // custom-renamed group
+    if (!isWorkItemId(ticketIdOf(key))) return key; // custom-renamed group
     const t = list.find((s) => s.ticketTitle)?.ticketTitle;
-    return `#${key.replace(/^#/, "")}${t ? ` ${t}` : ""}`;
+    return `#${ticketIdOf(key)}${t ? ` ${t}` : ""}`;
   };
 
   // existing group keys, for move targets and the New-Session picker
@@ -1261,7 +1261,7 @@ function App() {
   };
   /** A ticket group's id and title, when the group is an ADO work item. */
   const ticketOfGroup = (g: string | null): { id: string; title: string } | null => {
-    if (!g || !/^\d+$/.test(g)) return null;
+    if (!g || !isWorkItemId(g)) return null;
     const t = workSessions.find((s) => topOf(s) === g && s.ticketTitle)?.ticketTitle ?? "";
     return { id: g, title: t };
   };
