@@ -1,9 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, shell } from "electron";
-import { execFile } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Store, expandHome, MB_DIR } from "./store";
+import { Store, appendLogLine, expandHome, writeFileAtomic, MB_DIR } from "./store";
 import { SessionManager, paneEnv } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
@@ -47,16 +46,16 @@ import { checkForUpdate, updateRepo } from "./updates";
 import { cliVersion } from "./agents";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, FileOverlap, Meters, ModelCatalog, PrStatus, UpdateOutcome } from "../shared/types";
+import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { topOfKey } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, prBaseProblem, rememberAnswer, samePath } from "./handlers";
 
-const LOG = path.join(require("os").homedir(), ".mockingbird", "main.log");
+const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
   const msg = err instanceof Error ? err.stack ?? err.message : String(err);
   try {
-    fs.appendFileSync(LOG, `[${new Date().toISOString()}] ${context}: ${msg}\n`);
+    appendLogLine(LOG, `[${new Date().toISOString()}] ${context}: ${msg}`);
   } catch {
     /* logging must never crash the app */
   }
@@ -141,6 +140,14 @@ async function askingAgent(want: AgentKind = "claude"): Promise<{ agent: AgentKi
   }
   return { agent: want, bin: sessions.binFor(want) }; // neither: askAgent says it isn't installed
 }
+const agentName = (a: AgentKind) => (a === "codex" ? "Codex" : "Claude Code");
+/** One question for an agent's CLI (Sonnet, for Claude), answered with the reply alone; an empty reply is an error naming `what`. */
+async function askFor(prompt: string, who: { agent: AgentKind; bin: string }, o: { tag: string; label: RegExp; timeoutMs: number; what: string }): Promise<string> {
+  const reply = await askAgent(prompt, { ...who, run: userShellWithInput, env: paneEnv(), tag: o.tag, model: "sonnet", timeoutMs: o.timeoutMs });
+  const text = cleanReply(reply, o.label);
+  if (!text) throw new Error(`The model returned an empty ${o.what}`);
+  return text;
+}
 
 // Coalesced notifications: at most one per session per 30s (design 1a).
 const lastNotified = new Map<string, number>();
@@ -171,6 +178,11 @@ function focusPane(sessionId?: string): void {
   win.show();
   app.focus({ steal: true });
   if (sessionId) win.webContents.send("ui:command", "focus-session", sessionId);
+}
+
+function focusRoom(roomId: string): void {
+  focusPane();
+  toWindow("collab:focus", roomId);
 }
 
 function updateTray(): void {
@@ -219,7 +231,7 @@ function updateTray(): void {
     label: "New session ⌘N",
     click: () => {
       focusPane();
-      BrowserWindow.getAllWindows()[0]?.webContents.send("ui:command", "new-session");
+      toWindow("ui:command", "new-session");
     },
   });
   template.push({ label: "Run 4pm wrap-up", click: () => runDebrief("wrapUp", sessions, store).catch((err) => logError("debrief:wrapUp", err)) });
@@ -277,9 +289,8 @@ app.whenReady().then(() => {
   for (const c of candidates) {
     try {
       fs.chmodSync(c, 0o755);
-      logError("spawn-helper chmod ok", c);
-    } catch {
-      /* candidate doesn't exist */
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") logError(`spawn-helper chmod ${c}`, err);
     }
   }
   createWindow();
@@ -293,7 +304,7 @@ app.whenReady().then(() => {
     try {
       const u = await checkForUpdate();
       if (u?.newer) {
-        BrowserWindow.getAllWindows()[0]?.webContents.send("update:available", u);
+        toWindow("update:available", u);
         if (notifiedVersion !== u.latest && store.settings.notifications) {
           notifiedVersion = u.latest;
           const n = new Notification({
@@ -357,10 +368,10 @@ app.whenReady().then(() => {
     } catch {
       console.warn(`usage: couldn't read the Claude plan from auth status: ${r.out.slice(0, 200)}`);
     }
-    BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", readUsage());
+    toWindow("usage:changed", readUsage());
   })();
   watchUsage((u) => {
-    BrowserWindow.getAllWindows()[0]?.webContents.send("usage:changed", u);
+    toWindow("usage:changed", u);
     metersChanged();
   });
   ensureHookScript();
@@ -434,7 +445,10 @@ handle("sessions:kill", (id, forget) => {
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
 handle("session:buffer", (id) => sessions.buffer(id));
-handle("sessions:broadcast", (req) => sessions.broadcast(req.message, req.sessionIds ?? [], req.whenIdle ?? true));
+handle("sessions:broadcast", (req: Partial<BroadcastRequest>) => {
+  if (typeof req?.message !== "string" || !req.message) throw new Error("Nothing to broadcast");
+  sessions.broadcast(req.message, req.sessionIds ?? [], req.whenIdle ?? true);
+});
 ipcMain.on("session:write", (_e, id, data) => sessions.write(id, data));
 // Audit trail for the "something typed /clear into my session" class of bug:
 // the renderer reports any pty write it did not attribute to a keystroke.
@@ -480,13 +494,14 @@ handle("worktrees:migrate", async (repo, wtPath) => {
   if (touched) store.save();
   return dest;
 });
+function sessionOf(id: string): SessionInfo {
+  const s = sessions.list().find((x) => x.id === id);
+  if (!s) throw new Error("Session is no longer running");
+  return s;
+}
 // The explorer addresses files by session id + relative path, so the renderer
 // can only reach into folders a live session actually runs in.
-function sessionRoot(sessionId: string): string {
-  const s = sessions.list().find((x) => x.id === sessionId);
-  if (!s) throw new Error("Session is no longer running");
-  return s.cwd;
-}
+const sessionRoot = (sessionId: string) => sessionOf(sessionId).cwd;
 handle("files:list", (id, rel) => listDir(sessionRoot(id), rel));
 handle("files:read", (id, rel) => readFile(sessionRoot(id), rel));
 handle("files:write", (id, rel, content, expected) => {
@@ -500,7 +515,7 @@ handle("files:diff", (id, rel, scope, untracked) => fileDiff(sessionRoot(id), re
 const folderWatcher = new FolderWatcher(
   (root) => {
     forgetState(root);
-    BrowserWindow.getAllWindows()[0]?.webContents.send("folder:changed", root);
+    toWindow("folder:changed", root);
     overlapsSoon(root);
   },
   (root, err) => logError(`folder watch ${root}`, err)
@@ -556,7 +571,6 @@ handle("debug:evaluate", (sid, expr, frameId, context) =>
   debug.evaluate(String(sid), String(expr), typeof frameId === "number" ? frameId : undefined, context === "watch" || context === "hover" ? context : "repl")
 );
 handle("debug:stop", (sid) => debug.stop(String(sid)));
-handle("debug:prune", () => debug.prune());
 handle("run:stopById", (runId) => runs.stopById(String(runId)));
 ipcMain.on("run:write", (_e, runId, data) => runs.write(String(runId), String(data)));
 ipcMain.on("run:resize", (_e, runId, cols, rows) => runs.resize(String(runId), Number(cols), Number(rows)));
@@ -577,8 +591,7 @@ handle("scm:commitDiff", (id, sha, rel) => scmCommitDiff(sessionRoot(id), String
 // a commit message from the folder's staged change (or all of it), written by the
 // session's own agent — or the other one when that isn't installed
 handle("scm:commitMessage", async (id) => {
-  const s = sessions.list().find((x) => x.id === id);
-  if (!s) throw new Error("Session is no longer running");
+  const s = sessionOf(id);
   const { agent, bin } = await askingAgent(s.agent ?? "claude");
   return { ...(await generateCommitMessage(s.cwd, agent, bin, userShellWithInput, paneEnv())), agent };
 });
@@ -610,7 +623,7 @@ const collab = new CollabRooms(
   COLLAB_DIR,
   cliTurnRunner((agent) => sessions.binFor(agent)),
   (room) => {
-    BrowserWindow.getAllWindows()[0]?.webContents.send("collab:changed", room);
+    toWindow("collab:changed", room);
     updateTray(); // a model waiting on the user counts as blocked
   },
   (req) => sessions.create(req),
@@ -632,13 +645,6 @@ const collab = new CollabRooms(
   })
 );
 
-function focusRoom(roomId: string): void {
-  const w = BrowserWindow.getAllWindows()[0];
-  if (!w) return;
-  w.show();
-  w.focus();
-  w.webContents.send("collab:focus", roomId);
-}
 handle("collab:models", async () => {
   try {
     const c = await modelCatalog();
@@ -706,7 +712,8 @@ handle("agents:update", async (agent) => {
 });
 // ---- connectors (Settings → Connectors card) ----
 const wtFile = (name: string) => path.join(expandHome(store.settings.workTrackerPath), name);
-const readJson = (file: string): any => {
+/** A JSON config file: {} when it doesn't exist yet, an error when it can't be parsed. */
+const readJsonConfig = (file: string): any => {
   if (!fs.existsSync(file)) return {};
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -719,13 +726,13 @@ const readJson = (file: string): any => {
 
 handle("connectors:status", async () => {
   const az = (await which("az")) !== null;
-  const globalMcp = Object.keys(readJson(path.join(os.homedir(), ".claude.json")).mcpServers ?? {});
-  const projectMcp = Object.keys(readJson(wtFile(".mcp.json")).mcpServers ?? {});
+  const globalMcp = Object.keys(readJsonConfig(path.join(os.homedir(), ".claude.json")).mcpServers ?? {});
+  const projectMcp = Object.keys(readJsonConfig(wtFile(".mcp.json")).mcpServers ?? {});
   return { az, global: globalMcp, project: projectMcp };
 });
 
 handle("ado:config:get", () => {
-  const a = readJson(wtFile("config.json")).azureDevOps ?? {};
+  const a = readJsonConfig(wtFile("config.json")).azureDevOps ?? {};
   return { orgUrl: a.orgUrl ?? "", project: a.project ?? "", patFile: a.patFile ?? "" };
 });
 
@@ -734,14 +741,14 @@ handle("ado:config:set", (patch) => {
   const wt = expandHome(store.settings.workTrackerPath);
   fs.mkdirSync(wt, { recursive: true });
   const file = path.join(wt, "config.json");
-  const cfg = readJson(file);
+  const cfg = readJsonConfig(file);
   cfg.azureDevOps = {
     ...(cfg.azureDevOps ?? {}),
     orgUrl: String(patch?.orgUrl ?? "").trim(),
     project: String(patch?.project ?? "").trim(),
     patFile: String(patch?.patFile ?? "").trim(),
   };
-  fs.writeFileSync(file, JSON.stringify(cfg, null, 2));
+  writeFileAtomic(file, JSON.stringify(cfg, null, 2));
   resetAdoCache();
   return { ok: true };
 });
@@ -754,17 +761,17 @@ handle("mcp:add", (name, command) => {
   const parts = String(command ?? "").trim().split(/\s+/);
   if (!n || !parts[0]) throw new Error("Name and command are required");
   const file = wtFile(".mcp.json");
-  const j = readJson(file);
+  const j = readJsonConfig(file);
   j.mcpServers = { ...(j.mcpServers ?? {}), [n]: { command: parts[0], args: parts.slice(1) } };
-  fs.writeFileSync(file, JSON.stringify(j, null, 2));
+  writeFileAtomic(file, JSON.stringify(j, null, 2));
   return { ok: true };
 });
 
 handle("mcp:remove", (name) => {
   const file = wtFile(".mcp.json");
-  const j = readJson(file);
+  const j = readJsonConfig(file);
   if (j.mcpServers) delete j.mcpServers[String(name)];
-  fs.writeFileSync(file, JSON.stringify(j, null, 2));
+  writeFileAtomic(file, JSON.stringify(j, null, 2));
   return { ok: true };
 });
 handle("ado:comments", (id) => listComments(store, id));
@@ -779,11 +786,6 @@ const pipelineDo = async <T,>(fn: () => T | Promise<T>): Promise<T> => {
   return r;
 };
 const prDeps = (root: string) => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
-const sessionOf = (id: string) => {
-  const s = sessions.list().find((x) => x.id === id);
-  if (!s) throw new Error("Session is no longer running");
-  return s;
-};
 
 handle("pipeline:all", () => pipeline.all());
 handle("pipeline:stage", (id, stage, title) => pipelineDo(() => pipeline.setStage(String(id), stage, { title: title ? String(title) : undefined })));
@@ -811,9 +813,8 @@ handle("pipeline:pr:describe", async (sessionId, ticketId, title, base) => {
   const s = sessionOf(String(sessionId));
   const { agent, bin } = await askingAgent(s.agent ?? "claude");
   const prompt = await prDescriptionPrompt(s.cwd, String(base), { id: String(ticketId), title: String(title ?? "") });
-  const text = cleanReply(await askAgent(prompt, { agent, bin, run: userShellWithInput, env: paneEnv(), tag: "pr-description", model: "sonnet", timeoutMs: 180_000 }), /^(description)\s*:\s*/i);
-  if (!text) throw new Error("The model returned an empty description");
-  return { description: text, agent };
+  const description = await askFor(prompt, { agent, bin }, { tag: "pr-description", label: /^(description)\s*:\s*/i, timeoutMs: 180_000, what: "description" });
+  return { description, agent };
 });
 // pushes the branch and opens the pull request — run only from the PR form's button
 handle("pipeline:pr:create", (sessionId, ticketId, req) =>
@@ -850,7 +851,19 @@ handle("pipeline:pr:create", (sessionId, ticketId, req) =>
   })
 );
 // ---- continue in the other agent: a handoff written from the session's conversation ----
-const agentName = (a: AgentKind) => (a === "codex" ? "Codex" : "Claude Code");
+/** A session of `agent` in `s`'s folder and group, on its branch as it stands (no worktree of its own), started with `initialPrompt`. */
+function companionSession(s: SessionInfo, agent: AgentKind, title: string, initialPrompt: string): Promise<SessionInfo> {
+  return sessions.create({
+    repoPath: s.repoPath,
+    cwd: s.cwd,
+    branchName: s.branch ?? undefined,
+    useWorktree: false,
+    agent,
+    title,
+    taskGroup: s.taskGroup ?? undefined,
+    initialPrompt,
+  });
+}
 // the agent taking over writes the handoff: the one handing over may be out of usage
 handle("handoff:draft", async (id) => {
   const s = sessionOf(String(id));
@@ -872,8 +885,7 @@ handle("handoff:draft", async (id) => {
     throw new Error(`Couldn't read the conversation: ${why}. Write the handoff yourself below.`);
   }
   const prompt = handoffPrompt({ from, to, cwd: s.cwd, title: s.ticketTitle ?? s.title, digest, repo: await repoState(s.cwd) });
-  const handoff = cleanReply(await askAgent(prompt, { agent: to, bin, run: userShellWithInput, env: paneEnv(), tag: "handoff", model: "sonnet", timeoutMs: 240_000 }), /^(handoff)\s*:\s*/i);
-  if (!handoff) throw new Error("The model returned an empty handoff");
+  const handoff = await askFor(prompt, { agent: to, bin }, { tag: "handoff", label: /^(handoff)\s*:\s*/i, timeoutMs: 240_000, what: "handoff" });
   return { handoff, from, to };
 });
 // a session of the other agent in the same folder and group, started with the handoff
@@ -883,16 +895,7 @@ handle("handoff:start", (id, handoff) => {
   if (!text) throw new Error("The handoff is empty");
   const from: AgentKind = s.agent ?? "claude";
   const to = otherAgent(from);
-  return sessions.create({
-    repoPath: s.repoPath,
-    cwd: s.cwd,
-    branchName: s.branch ?? undefined,
-    useWorktree: false,
-    agent: to,
-    title: `${s.ticketTitle ?? s.title} · ${to}`,
-    taskGroup: s.taskGroup ?? undefined,
-    initialPrompt: handoffKickoff(from, text),
-  });
+  return companionSession(s, to, `${s.ticketTitle ?? s.title} · ${to}`, handoffKickoff(from, text));
 });
 
 // ---- editor intelligence: language servers per session folder ----
@@ -1157,16 +1160,8 @@ handle("review:start", async (id) => {
   const reviewer = otherAgent(author);
   if (!(await installedBin(reviewer))) throw new Error(`${agentName(reviewer)} isn't installed — set it up in Settings → Agents`);
   const base = await baseRef(s.cwd);
-  return sessions.create({
-    repoPath: s.repoPath,
-    cwd: s.cwd,
-    branchName: s.branch ?? undefined,
-    useWorktree: false,
-    agent: reviewer,
-    title: `Review · ${s.ticketTitle ?? s.title}`,
-    taskGroup: s.taskGroup ?? undefined,
-    initialPrompt: reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base }),
-  });
+  const prompt = reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base });
+  return companionSession(s, reviewer, `Review · ${s.ticketTitle ?? s.title}`, prompt);
 });
 
 // a short announcement for the people who use the system, from the ticket and its PRs
@@ -1181,8 +1176,7 @@ handle("pipeline:comms", async (ticketId, title, details) => {
     details ? `The ticket:\n${String(details).slice(0, 6000)}` : "",
     ...(p?.prs ?? []).filter((x) => x.summary).map((x) => `What the pull request to ${x.base} did:\n${x.summary}`),
   ].join("\n");
-  const text = cleanReply(await askAgent(prompt, { agent, bin, run: userShellWithInput, env: paneEnv(), tag: "comms", model: "sonnet", timeoutMs: 180_000 }), /^(announcement)\s*:\s*/i);
-  if (!text) throw new Error("The model returned an empty announcement");
+  const text = await askFor(prompt, { agent, bin }, { tag: "comms", label: /^(announcement)\s*:\s*/i, timeoutMs: 180_000, what: "announcement" });
   return { text, agent };
 });
 // native folder/file picker for the Settings tab — no more typing paths
@@ -1316,7 +1310,7 @@ const updater = new UpdateRunner({
   exec: loginShellExec(paneEnv()),
   currentVersion: app.getVersion(),
   findClone,
-  onProgress: (p) => BrowserWindow.getAllWindows()[0]?.webContents.send("update:progress", p),
+  onProgress: (p) => toWindow("update:progress", p),
 });
 // "Restart to update" starts a quit; the installer starts only once nothing can
 // cancel it anymore (unsaved editor changes ask first, and may keep the app open)

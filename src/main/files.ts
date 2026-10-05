@@ -127,16 +127,13 @@ export async function baseRef(root: string): Promise<string | null> {
 
 /** The commit a "branch" scope compares against: where HEAD forked from the repo's base branch. */
 async function branchBase(root: string): Promise<{ sha: string; name: string }> {
-  const defaultBase = await defaultBaseOf(root);
-  if (!defaultBase) throw new Error("No dev/main-style base branch found to compare against");
-  for (const ref of [`origin/${defaultBase}`, defaultBase]) {
-    try {
-      return { sha: (await git(root, ["merge-base", "HEAD", ref])).trim(), name: ref };
-    } catch {
-      /* ref missing (no remote / no local copy) — try the next spelling */
-    }
+  const ref = await baseRef(root);
+  if (!ref) throw new Error("No dev/main-style base branch found to compare against");
+  try {
+    return { sha: await git(root, ["merge-base", "HEAD", ref]), name: ref };
+  } catch (err) {
+    throw new Error(`Cannot find a common ancestor with ${ref}: ${(err as Error).message}`);
   }
-  throw new Error(`Cannot find a common ancestor with ${defaultBase}`);
 }
 
 export function parseNameStatus(z: string): GitChange[] {

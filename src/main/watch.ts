@@ -49,10 +49,6 @@ export class FolderWatcher {
     return { watching: [...this.watches.keys()] };
   }
 
-  closeAll(): void {
-    for (const [root, w] of this.watches) this.stop(root, w);
-  }
-
   private start(root: string): void {
     let watcher: fs.FSWatcher;
     // FSEvents also reports the watched folder itself, by its own name, whenever

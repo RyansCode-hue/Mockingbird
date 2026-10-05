@@ -41,7 +41,7 @@ describe("FolderWatcher", () => {
     await new Promise((r) => setTimeout(r, 300));
     expect(seen.length).toBeLessThanOrEqual(2); // one burst, coalesced
     expect(seen.every((r) => r === root)).toBe(true);
-    w.closeAll();
+    w.set([]);
   });
 
   it("stays quiet for ignored paths, and stops watching folders no longer listed", async () => {
@@ -67,6 +67,6 @@ describe("FolderWatcher", () => {
     const { watching } = w.set(["/no/such/folder", good]);
     expect(errors).toEqual(["/no/such/folder"]);
     expect(watching).toEqual([good]);
-    w.closeAll();
+    w.set([]);
   });
 });

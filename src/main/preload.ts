@@ -112,7 +112,6 @@ const api = {
   debugVariables: (sid: string, ref: number) => ipcRenderer.invoke("debug:variables", sid, ref),
   debugEvaluate: (sid: string, expr: string, frameId: number | undefined, context: string) => ipcRenderer.invoke("debug:evaluate", sid, expr, frameId, context),
   debugStop: (sid: string) => ipcRenderer.invoke("debug:stop", sid),
-  debugPrune: () => ipcRenderer.invoke("debug:prune"),
   onDebugChanged: (cb: (sessions: unknown) => void) => {
     const h = (_e: unknown, s: unknown) => cb(s);
     ipcRenderer.on("debug:changed", h);

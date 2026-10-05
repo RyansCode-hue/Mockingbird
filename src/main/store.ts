@@ -1,4 +1,3 @@
-import { app } from "electron";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -8,6 +7,19 @@ export const MB_DIR = path.join(os.homedir(), ".mockingbird");
 
 export function expandHome(p: string): string {
   return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
+}
+
+/** Write-then-rename: a crash mid-write leaves the previous file whole, never a truncated one. */
+export function writeFileAtomic(file: string, data: string): void {
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, file);
+}
+
+/** Append one line to a log that's kept to about `maxBytes`: past that, it becomes `<file>.1` and a new one starts. */
+export function appendLogLine(file: string, line: string, maxBytes = 2_000_000): void {
+  if ((fs.statSync(file, { throwIfNoEntry: false })?.size ?? 0) > maxBytes) fs.renameSync(file, `${file}.1`);
+  fs.appendFileSync(file, `${line}\n`);
 }
 
 interface State {
@@ -60,20 +72,15 @@ export class Store {
    */
   static audit(line: string): void {
     try {
-      const f = path.join(MB_DIR, "pty-audit.log");
-      if (fs.existsSync(f) && fs.statSync(f).size > 2_000_000) fs.renameSync(f, f + ".1");
-      fs.appendFileSync(f, `${new Date().toISOString()} ${line}\n`);
+      appendLogLine(path.join(MB_DIR, "pty-audit.log"), `${new Date().toISOString()} ${line}`);
     } catch {
       /* diagnostics must never break a session */
     }
   }
 
   save(): void {
-    // write-then-rename: save() runs on every status flip, so a crash mid-write
-    // would otherwise leave a truncated state.json and lose every session
-    const tmp = `${stateFile}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2));
-    fs.renameSync(tmp, stateFile);
+    // save() runs on every status flip; a crash mid-write must not lose every session
+    writeFileAtomic(stateFile, JSON.stringify(this.state, null, 2));
   }
 
   get settings(): Settings {

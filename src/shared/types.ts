@@ -339,6 +339,16 @@ export interface TranscriptHit {
   open: { how: "pane" | "previous"; sessionId: string } | { how: "room"; roomId: string; roomTitle: string } | { how: "resume" };
 }
 
+/** The newest version on GitHub, against the one running. */
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  url: string;
+  newer: boolean;
+  /** Where "latest" came from: a published GitHub release, or the version on the default branch. */
+  source: "release" | "branch";
+}
+
 export type UpdateStepId = "check" | "node" | "pull" | "install" | "build" | "verify";
 
 export const UPDATE_STEPS: { id: UpdateStepId; label: string }[] = [
