@@ -21,6 +21,12 @@ describe("the active group", () => {
     expect(activeGroupOf(["c1", "a1"], groupOf, new Set(["c1"]), null)).toBe("A");
     expect(activeGroupOf(["c1"], groupOf, new Set(["c1"]), null)).toBe("C");
   });
+  it("stays the last group when every pane on screen is pinned and one of them is its own", () => {
+    const all = new Set(["c1", "a1"]);
+    expect(activeGroupOf(["c1", "a1"], groupOf, all, "A")).toBe("A");
+    expect(activeGroupOf(["c1", "a1"], groupOf, all, "B")).toBe("C");
+    expect(activeGroupOf(["c1", "a1"], groupOf, all, null)).toBe("C");
+  });
   it("ignores ids that aren't live, and is null for an empty grid", () => {
     expect(activeGroupOf(["gone", "b2"], groupOf, none, null)).toBe("B");
     expect(activeGroupOf([], groupOf, none, "A")).toBeNull();

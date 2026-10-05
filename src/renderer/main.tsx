@@ -16,6 +16,8 @@ import { Pick, Select } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { activeGroupOf, dropInZone, layoutToRemember, overflowArea, parseZone, placeInZones, pruneToGroup, seating, switchTo } from "./gridModel";
+import { OVERLAYS, enterConfirms, escapeLeavesFullscreen, inEditor } from "./keys";
+import { broadcastFate, cellKeyFor, frontOf, paneShortcuts, remapGroupKeys, remapSeats, worktreeGone, type GridCell } from "./appModel";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon } from "./Icons";
 import { RunView } from "./RunView";
@@ -213,10 +215,14 @@ function App() {
   const [msgModes, setMsgModes] = useState<Record<string, MessageMode>>({});
   const [msgDefaultSend, setMsgDefaultSend] = useState(true);
   const [statusNote, setStatusNote] = useState("");
-  const setMsgMode = async (group: string, mode: MessageMode | "") => {
+  const setMsgMode = async (group: string, mode: MessageMode | ""): Promise<boolean> => {
     const r = await window.mb.messagesGroupMode(group, mode || null);
-    if (r?.error) return alert(`Couldn't change it: ${r.error}`);
+    if (r?.error) {
+      alert(`Couldn't change how agent messages arrive in ${group}: ${r.error}`);
+      return false;
+    }
     setMsgModes(r);
+    return true;
   };
   const askGroupStatus = async (group: string) => {
     const r = await window.mb.groupStatusCheck(group);
@@ -289,15 +295,22 @@ function App() {
   // active tab per workspace (sub-group) pane, keyed "top/sub" — persisted
   const [wsTabs, setWsTabs] = useState<Record<string, string>>(() => loadLS("mb.wsTabs", {}));
   useEffect(() => localStorage.setItem("mb.wsTabs", JSON.stringify(wsTabs)), [wsTabs]);
-  const [closeDlg, setCloseDlg] = useState<{ session: SessionInfo; wt: WorktreeStateInfo } | null>(null);
+  const [closeDlg, setCloseDlg] = useState<{ session: SessionInfo; wt: WorktreeStateInfo | { error: string } } | null>(null);
   const [groupDlg, setGroupDlg] = useState<SessionInfo | null>(null);
   // group/workspace renames use a dialog: inline editing broke because the same
   // edit field rendered in two places (sidebar + workspace tab strip) and the
-  // second mount stole focus from the first, instantly closing it
-  const [renameDlg, setRenameDlg] = useState<{ kind: "group" | "sub"; key: string; initial: string } | null>(null);
+  // second mount stole focus from the first, instantly closing it. Sessions use
+  // it too when renamed from somewhere their sidebar row may not be showing.
+  const [renameDlg, setRenameDlg] = useState<{ kind: "group" | "sub" | "session"; key: string; initial: string } | null>(null);
 
   const applyRename = async (v: string) => {
     if (!renameDlg) return;
+    if (renameDlg.kind === "session") {
+      await window.mb.renameSession(renameDlg.key, v);
+      setRenameDlg(null);
+      refresh();
+      return;
+    }
     // "top/sub" is one key in the store, so both kinds are the same rename:
     // renameGroup is prefix-aware and remaps every member in a single pass
     const next =
@@ -308,10 +321,10 @@ function App() {
     if (renameDlg.key === "ungrouped") {
       // "ungrouped" is the absence of a group, not a stored one: naming it groups its sessions
       for (const m of groupUngrouped(workSessions, next)) await window.mb.setGroup(m.id, m.group);
-      migrateGroupKeys(renameDlg.key, next);
+      await migrateGroupKeys(renameDlg.key, next);
     } else if (next !== renameDlg.key) {
       await window.mb.renameGroup(renameDlg.key, next);
-      migrateGroupKeys(renameDlg.key, next);
+      await migrateGroupKeys(renameDlg.key, next);
     }
     setRenameDlg(null);
     refresh();
@@ -465,7 +478,7 @@ function App() {
       setMsgDefaultSend(s.agentMessagesSubmit !== false);
       setTab((t) => ((hidden as Tab[]).includes(t) ? "sessions" : t));
       if (s.setupDone) return;
-      if (loadLS("mb.helpSeen", false)) await window.mb.setSettings({ ...s, setupDone: true });
+      if (loadLS("mb.helpSeen", false)) await window.mb.setSettings({ setupDone: true });
       else {
         localStorage.setItem("mb.helpSeen", "true");
         setModal("setup");
@@ -513,26 +526,15 @@ function App() {
 
   /** Carry a group's remembered UI state across a rename — these registries are
    *  keyed by group path, so without this a rename silently loses the group's
-   *  layout, its workspaces' active tabs, and its collapsed state. */
-  const migrateGroupKeys = (oldKey: string, newKey: string) => {
-    const remap = <T,>(rec: Record<string, T>): Record<string, T> => {
-      const out: Record<string, T> = {};
-      for (const [k, v] of Object.entries(rec)) {
-        out[k === oldKey || k.startsWith(oldKey + "/") ? newKey + k.slice(oldKey.length) : k] = v;
-      }
-      return out;
-    };
+   *  layout, its workspaces' active tabs and folders, its collapsed state, and
+   *  how agent messages arrive in it. */
+  const migrateGroupKeys = async (oldKey: string, newKey: string) => {
+    const remap = <T,>(rec: Record<string, T>) => remapGroupKeys(rec, oldKey, newKey);
     setGroupLayouts(remap);
     setWsTabs(remap);
+    setWsOpen(remap);
     setLayouts(remap);
-    setZoneSeats((prev) => {
-      const out = remap(prev);
-      const wsOld = `ws:${oldKey}`;
-      for (const k of Object.keys(out)) {
-        out[k] = out[k].map((v) => (v && (v === wsOld || v.startsWith(wsOld + "/")) ? `ws:${newKey}${v.slice(wsOld.length)}` : v));
-      }
-      return out;
-    });
+    setZoneSeats((prev) => remapSeats(prev, oldKey, newKey));
     setLastGroup((g) => (g === oldKey ? topOfKey(newKey) : g));
     setCollapsed((prev) => {
       if (!prev.has(oldKey)) return prev;
@@ -541,6 +543,10 @@ function App() {
       next.add(topOfKey(newKey));
       return next;
     });
+    // the per-group message mode lives in settings, keyed by top-level group
+    const [oldTop, newTop] = [topOfKey(oldKey), topOfKey(newKey)];
+    const mode = msgModes[oldTop];
+    if (mode && oldTop !== newTop && (await setMsgMode(newTop, mode))) await setMsgMode(oldTop, "");
   };
 
   const collapseOthers = (g: string) =>
@@ -702,14 +708,16 @@ function App() {
       : workSessions;
   }, [workSessions, filter]);
 
-  const gridSessions = zoomed
-    ? sessions.filter((s) => s.id === zoomed)
-    : shown.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s);
+  const gridSessions = useMemo(
+    () =>
+      zoomed
+        ? sessions.filter((s) => s.id === zoomed)
+        : shown.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
+    [zoomed, sessions, shown]
+  );
 
   // grid cells: plain sessions render individually; a sub-group renders as ONE
   // workspace pane with tabs (cmux-style)
-  // `key` is the workspace's group path ("5038/backend")
-  type GridCell = { kind: "session"; s: SessionInfo } | { kind: "workspace"; key: string; sub: string; list: SessionInfo[] };
   const cells: GridCell[] = useMemo(() => {
     if (zoomed) return gridSessions.map((s) => ({ kind: "session" as const, s }));
     const out: GridCell[] = [];
@@ -734,13 +742,14 @@ function App() {
   }, [gridSessions, workSessions, zoomed, shown]);
   /** How zones and drops name a cell: its session, or "ws:<workspace key>". */
   const cellKey = (c: GridCell) => (c.kind === "session" ? c.s.id : `ws:${c.key}`);
-  const cellKeyOfSession = (s: SessionInfo) => (subOf(s) ? `ws:${topOf(s)}/${subOf(s)}` : s.id);
+  const cellKeyOfSession = (s: SessionInfo) => cellKeyFor(s.id, s.taskGroup);
 
   // without a template the grid grows with the cell count — equal cells, no filler tiles
   const seatKey = activeGroup ?? "";
   const curLayoutId = layouts[seatKey] ?? "";
   const layout = useMemo(() => (zoomed ? null : LAYOUTS.find((x) => x.id === curLayoutId) ?? null), [curLayoutId, zoomed]);
   const cellKeys = useMemo(() => cells.map(cellKey), [cells]);
+  const shortcuts = useMemo(() => paneShortcuts(cells, wsTabs), [cells, wsTabs]);
   const zoning = useMemo(
     () => (layout ? placeInZones(cellKeys, layout.zones.length, zoneSeats[seatKey] ?? []) : null),
     [layout, cellKeys, zoneSeats, seatKey]
@@ -934,15 +943,17 @@ function App() {
 
   /**
    * Make a session a tab in the pane showing `target`: it joins the target's
-   * workspace, or a new workspace holding both when the target is a lone pane.
+   * workspace, or a new workspace holding both when the target is a lone pane —
+   * `newKey` when the caller already chose it, else auto-named and offered for
+   * renaming. Every way of making a workspace comes through here, so the lone
+   * pane's zone and pin always carry over to the workspace.
    */
-  const addAsTab = async (srcId: string, target: SessionInfo) => {
-    const src = sessions.find((x) => x.id === srcId);
-    if (!src || srcId === target.id) return;
+  const addAsTab = async (src: SessionInfo, target: SessionInfo, newKey?: string) => {
+    if (src.id === target.id) return;
     let key = subOf(target) ? `${topOf(target)}/${subOf(target)}` : null;
     if (!key) {
       const top = topOf(target);
-      key = `${top}/${nextSubName(top)}`;
+      key = newKey ?? `${top}/${nextSubName(top)}`;
       const wsKey = key;
       await window.mb.setGroup(target.id, wsKey);
       // the lone pane's zone becomes the workspace's
@@ -950,14 +961,14 @@ function App() {
         const g = activeGroup ?? "";
         return p[g] ? { ...p, [g]: p[g].map((v) => (v === target.id ? `ws:${wsKey}` : v)) } : p;
       });
-      setRenameDlg({ kind: "sub", key: wsKey, initial: splitGroupKey(wsKey).sub ?? "" });
+      if (!newKey) setRenameDlg({ kind: "sub", key: wsKey, initial: splitGroupKey(wsKey).sub ?? "" });
     }
     const wsKey = key;
-    if (src.taskGroup !== wsKey) await window.mb.setGroup(srcId, wsKey);
-    if (pinnedSet.has(target.id)) setPinned((p) => (p.includes(srcId) ? p : [...p, srcId]));
-    setShown((p) => placeBeside(p.includes(srcId) ? p : [...p, srcId], srcId, target.id, "after"));
-    setWsTabs((p) => ({ ...p, [wsKey]: srcId }));
-    setFocused(srcId);
+    if (src.taskGroup !== wsKey) await window.mb.setGroup(src.id, wsKey);
+    if (pinnedSet.has(target.id)) setPinned((p) => (p.includes(src.id) ? p : [...p, src.id]));
+    setShown((p) => placeBeside(p.includes(src.id) ? p : [...p, src.id], src.id, target.id, "after"));
+    setWsTabs((p) => ({ ...p, [wsKey]: src.id }));
+    setFocused(src.id);
   };
 
   /** The drop cue for making the dragged session a tab in `target`'s pane, if that would change anything. */
@@ -979,6 +990,17 @@ function App() {
     if (failures.length) alert(`Some sessions couldn't be restored:\n\n${failures.join("\n")}`);
   };
 
+  // A restarted pane needs a new terminal: the cached one holds the old CLI's
+  // screen and modes. Bumping its key remounts the pane, whichever order the
+  // restart's remove/re-add and this call arrive in, and it replays the new
+  // pty's buffer from the start.
+  const [termGen, setTermGen] = useState<Record<string, number>>({});
+  const freshTerms = (ids: string[]) => {
+    ids.forEach(disposeTerm);
+    setTermGen((g) => ({ ...g, ...Object.fromEntries(ids.map((id) => [id, (g[id] ?? 0) + 1])) }));
+  };
+  const termKey = (id: string) => `${id}:${termGen[id] ?? 0}`;
+
   // ---- session close flow (design 1e) ----
   const forceClose = async (s: SessionInfo, forget: boolean) => {
     await window.mb.killSession(s.id, forget);
@@ -992,7 +1014,10 @@ function App() {
     const hasWorktree = s.repoPath && s.branch && s.cwd !== s.repoPath;
     if (!hasWorktree) return forceClose(s, true);
     const st: WorktreeStateInfo | { error: string } = await window.mb.worktreeState(s.cwd);
-    if (!st || "error" in st) return forceClose(s, true); // worktree already gone
+    if ("error" in st) {
+      if (worktreeGone(st.error)) return forceClose(s, true);
+      return setCloseDlg({ session: s, wt: st }); // unknown state: the dialog says why and only keeps
+    }
     if (!st.dirty && st.ahead === 0) return forceClose(s, true);
     setCloseDlg({ session: s, wt: st });
   };
@@ -1037,7 +1062,7 @@ function App() {
       setPaletteOpen(true);
       return;
     }
-    if (cmd && e.key === "/") {
+    if (cmd && e.key === "/" && !inEditor(e.target as Element)) {
       handled();
       setModal((m) => (m === "help" ? null : "help"));
       return;
@@ -1096,7 +1121,7 @@ function App() {
       setZoomed(zoomed ? null : focused);
       return;
     }
-    if (e.key === "Escape" && zoomed && !modal && !closeDlg && !groupDlg) {
+    if (e.key === "Escape" && zoomed && escapeLeavesFullscreen(e.target as Element, !!document.querySelector(OVERLAYS))) {
       handled();
       setZoomed(null);
       return;
@@ -1110,7 +1135,7 @@ function App() {
       // by CELL, not by session: a workspace pane holding 3 sessions is one
       // number, which is what the pane's own ⌘n badge shows
       const cell = cells[parseInt(e.key, 10) - 1];
-      const target = cell && (cell.kind === "session" ? cell.s : cell.list.find((x) => x.id === wsTabs[cell.key]) ?? cell.list[0]);
+      const target = cell && frontOf(cell, wsTabs);
       if (target) {
         handled();
         jumpTo(target.id);
@@ -1167,15 +1192,22 @@ function App() {
     return null;
   };
 
+  // what New session was opened for (a pane's "+", an empty zone, a workspace's
+  // tab strip, a launch kind) lasts only while it's open, however it closes
+  useEffect(() => {
+    if (modal === "new") return;
+    setPendingWs(null);
+    setPendingZone(null);
+    setNewGroup("");
+    setNewLaunch("claude");
+  }, [modal]);
+
   const onCreated = async (s: SessionInfo) => {
-    if (pendingWs) {
-      await window.mb.setGroup(pendingWs.id, pendingWs.key); // the lone pane joins its new workspace
-      setPendingWs(null);
-    }
-    if (pendingZone) {
-      if (pendingZone.group === seatKey) seatInZone(s.id, pendingZone.zone); // "New session" from an empty zone
-      setPendingZone(null);
-    }
+    // the lone pane joins its new workspace — unless the dialog put the session elsewhere
+    const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
+    if (lone && pendingWs) await addAsTab(s, lone, pendingWs.key);
+    // "New session" from an empty zone: the zone holds the session's cell, its workspace if it joined one
+    if (pendingZone && pendingZone.group === seatKey) seatInZone(cellKeyFor(s.id, s.taskGroup), pendingZone.zone);
     refresh();
     jumpToSession(s);
     setModal(null);
@@ -1219,10 +1251,9 @@ function App() {
     await refresh();
     jumpToSession(info);
   };
-  /** Save the preset list (Settings is the source of truth, read fresh so nothing else is overwritten). */
+  /** Save the preset list. Settings writes merge, so only the changed key is sent. */
   const savePresets = async (next: SessionPreset[]) => {
-    const cur: Settings = await window.mb.getSettings();
-    const r = await window.mb.setSettings({ ...cur, presets: next });
+    const r = await window.mb.setSettings({ presets: next });
     if (r?.error) return alert(`Couldn't save the preset: ${r.error}`);
     setPresets(next);
   };
@@ -1426,6 +1457,7 @@ function App() {
             onUpdate={() => setModal("update")}
             jump={settingsJump}
             onHiddenTabs={setHiddenTabs}
+            presets={presets}
             onPresets={setPresets}
             onStartPreset={startPreset}
           />
@@ -1477,7 +1509,7 @@ function App() {
               <div className="wt-panes">
                 {debriefSessions.map((s) => (
                   <TerminalPane
-                    key={s.id}
+                    key={termKey(s.id)}
                     session={s}
                     focused={focused === s.id}
                     zoomed={false}
@@ -1585,6 +1617,7 @@ function App() {
           )}
           {sideView === "run" && (
             <RunView
+              key={focusedSession?.id ?? ""}
               session={focusedSession}
               states={runStates}
               onShowLog={showLog}
@@ -1739,11 +1772,7 @@ function App() {
                         // dropping one loose session onto another in the same group
                         // creates a workspace holding both (rename it right away)
                         if (srcS && topOf(srcS) === topOf(s) && !subOf(s) && !subOf(srcS)) {
-                          const top = topOf(s);
-                          const name = nextSubName(top);
-                          window.mb.setGroup(s.id, `${top}/${name}`);
-                          moveToGroup(src, `${top}/${name}`);
-                          setRenameDlg({ kind: "sub", key: `${top}/${name}`, initial: name });
+                          addAsTab(srcS, s);
                         } else {
                           moveToGroup(src, s.taskGroup); // join this row's group/workspace
                         }
@@ -2004,7 +2033,7 @@ function App() {
                     const src = e.dataTransfer.getData("text/mb-session");
                     const srcS = sessions.find((x) => x.id === src);
                     if (!srcS || src === s.id) return;
-                    if (dragFrom() === "sidebar" && !shown.includes(src)) return void addAsTab(src, s);
+                    if (dragFrom() === "sidebar" && !shown.includes(src)) return void addAsTab(srcS, s);
                     const srcKey = cellKeyOfSession(srcS);
                     if (srcKey === myKey) return;
                     if (layout && zoning) {
@@ -2030,7 +2059,7 @@ function App() {
                   cue: cue(drag, key),
                   over: (e: React.DragEvent) => overTarget(e, tabTarget(key, s)),
                   drop: () => {
-                    const src = dragging("text/mb-session");
+                    const src = sessions.find((x) => x.id === dragging("text/mb-session"));
                     if (src && tabTarget(key, s)) addAsTab(src, s);
                   },
                 });
@@ -2038,7 +2067,7 @@ function App() {
                 const visitor = (s: SessionInfo) => (isPinned([s.id]) && activeGroup && topOf(s) !== activeGroup ? `from ${groupTitle(topOf(s), [s])}` : undefined);
                 const paneFor = (s: SessionInfo, embedded: boolean, onCloseOverride?: () => void, pinIds: string[] = [s.id]) => (
                   <TerminalPane
-                    key={s.id}
+                    key={termKey(s.id)}
                     session={s}
                     focused={focused === s.id}
                     zoomed={zoomed === s.id}
@@ -2083,6 +2112,7 @@ function App() {
                     onRestart={async () => {
                       const r = await window.mb.sessionRestart(s.id);
                       if (r?.error) alert(`Couldn't restart ${s.ticketTitle ?? s.title}: ${r.error}`);
+                      else freshTerms([s.id]);
                       refresh();
                     }}
                     resize={resize}
@@ -2106,7 +2136,7 @@ function App() {
                 }
                 // workspace pane: one cell, session tabs across the top (cmux-style)
                 const key = cell.key;
-                const active = cell.list.find((s) => s.id === wsTabs[key]) ?? cell.list[0];
+                const active = frontOf(cell, wsTabs);
                 const anyWaiting = cell.list.some((s) => s.status === "waiting");
                 const strip = tabDrop(active, `h:ws:${key}`);
                 return (
@@ -2217,10 +2247,14 @@ function App() {
                       if (!srcS) return;
                       if (cellKeys.includes(cellKeyOfSession(srcS)) && !shown.includes(srcS.id)) return;
                       if (topOf(srcS) !== activeGroup && !pinnedSet.has(srcS.id)) {
-                        // a session from another group joins this one to take the zone
-                        moveToGroup(srcS.id, activeGroup === "ungrouped" ? null : activeGroup);
-                      } else setShown((p) => (p.includes(srcS.id) ? p : [...p, srcS.id]));
-                      seatInZone(cellKeyOfSession(srcS), z);
+                        // a session from another group joins this one (as a lone pane) to take the zone
+                        const dest = activeGroup === "ungrouped" ? null : activeGroup;
+                        moveToGroup(srcS.id, dest);
+                        seatInZone(cellKeyFor(srcS.id, dest), z);
+                      } else {
+                        setShown((p) => (p.includes(srcS.id) ? p : [...p, srcS.id]));
+                        seatInZone(cellKeyOfSession(srcS), z);
+                      }
                     }}
                   />
                 ))}
@@ -2349,7 +2383,7 @@ function App() {
       {paletteOpen && (
         <CommandPalette
           sessions={sessions}
-          gridSessions={gridSessions}
+          shortcuts={shortcuts}
           onClose={() => setPaletteOpen(false)}
           actions={[
             { label: "New session", kbd: "⌘N", run: () => { setNewLaunch("claude"); setModal("new"); } },
@@ -2388,10 +2422,7 @@ function App() {
                   },
                   {
                     label: `Rename ${focusedSession.ticketTitle ?? focusedSession.title}…`,
-                    run: () => {
-                      setSideCollapsed(false);
-                      setEditing({ kind: "session", key: focusedSession.id, value: focusedSession.ticketTitle ?? focusedSession.title });
-                    },
+                    run: () => setRenameDlg({ kind: "session", key: focusedSession.id, initial: titleOf(focusedSession) }),
                   },
                   { label: `Change group of ${focusedSession.ticketTitle ?? focusedSession.title}…`, run: () => setGroupDlg(focusedSession) },
                   { label: `${focusedSession.muted ? "Unmute" : "Mute"} notifications from ${focusedSession.ticketTitle ?? focusedSession.title}`, run: () => toggleMute(focusedSession) },
@@ -2512,7 +2543,7 @@ function App() {
 
       {renameDlg && (
         <RenameDialog
-          title={renameDlg.kind === "sub" ? "Rename workspace" : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}
+          title={renameDlg.kind === "session" ? "Rename session" : renameDlg.kind === "sub" ? "Rename workspace" : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}
           initial={renameDlg.initial}
           onSave={applyRename}
           onClose={() => setRenameDlg(null)}
@@ -2527,28 +2558,14 @@ function App() {
           presets={presets}
           onStartPreset={(p) => {
             setModal(null);
-            setPendingWs(null);
-            setPendingZone(null);
             startPreset(p);
           }}
           onSavePreset={(draft) => {
             setModal(null);
-            setPendingWs(null);
-            setPendingZone(null);
             setPresetDraft(draft);
           }}
-          onClose={() => {
-            setModal(null);
-            setNewLaunch("claude");
-            setNewGroup("");
-            setPendingWs(null); // cancelled — the pane stays a plain pane
-            setPendingZone(null);
-          }}
-          onCreated={(s) => {
-            setNewLaunch("claude");
-            setNewGroup("");
-            onCreated(s);
-          }}
+          onClose={() => setModal(null)}
+          onCreated={onCreated}
         />
       )}
       {modal === "import" && (
@@ -2558,8 +2575,9 @@ function App() {
             refresh();
             const batch = opened.slice(0, 6); // rest stay in the sidebar to avoid a 26-pane grid
             if (batch.length) {
-              setShown(batch.map((s) => s.id)); // imports become the active (ungrouped) group
-              collapseOthers(groupKeyOf(batch[0]));
+              // the grid shows the first import's group (restored sessions keep theirs); pinned panes stay
+              const g = topOf(batch[0]);
+              switchGrid(g, batch.filter((s) => topOf(s) === g).map((s) => s.id));
               setTab("sessions");
             }
           }}
@@ -2571,9 +2589,7 @@ function App() {
           sessions={sessions}
           onClose={() => setModal(null)}
           onDone={(ids) => {
-            // the ptys are new: drop the cached terminals so each pane re-attaches
-            // and replays the fresh buffer instead of showing the dead one
-            ids.forEach(disposeTerm);
+            freshTerms(ids);
             refresh();
           }}
         />
@@ -2777,13 +2793,14 @@ function UsageMeter({ usage, meters }: { usage: UsageReport | null; meters: Mete
 
 function CommandPalette({
   sessions,
-  gridSessions,
+  shortcuts,
   actions,
   onJump,
   onClose,
 }: {
   sessions: SessionInfo[];
-  gridSessions: SessionInfo[];
+  /** ⌘1–9 per session id, as the panes are numbered. */
+  shortcuts: Map<string, number>;
   actions: PaletteAction[];
   onJump: (id: string) => void;
   onClose: () => void;
@@ -2804,18 +2821,18 @@ function CommandPalette({
     const sess = sessions
       .filter((s) => !q || fuzzy(q, s.ticketTitle ?? s.title) || fuzzy(q, s.branch ?? ""))
       .map((s) => {
-        const idx = gridSessions.findIndex((g) => g.id === s.id);
+        const n = shortcuts.get(s.id);
         return {
           kind: "session" as const,
           label: s.ticketTitle ?? s.title,
-          kbd: idx >= 0 && idx < 9 ? `⌘${idx + 1}` : undefined,
+          kbd: n ? `⌘${n}` : undefined,
           status: s.status,
           state: statusPhrase(s),
           run: () => onJump(s.id),
         };
       });
     return { acts, sess, flat: [...acts, ...sess] };
-  }, [q, sessions, gridSessions, actions]);
+  }, [q, sessions, shortcuts, actions]);
 
   useEffect(() => setSel(0), [q]);
   const clamp = Math.min(sel, Math.max(0, rows.flat.length - 1));
@@ -2910,7 +2927,7 @@ function HelpModal({ onClose }: { onClose: () => void }) {
     ["⌘N", "new session"],
     ["⌘1–9", "jump to pane 1–9"],
     ["⌥⇥", "next waiting session (oldest first)"],
-    ["⌘E", "fullscreen the focused pane (esc restores)"],
+    ["⌘E", "fullscreen the focused pane; ⌘E again restores (so does esc, outside the terminal and editor)"],
     ["⌘⌃1–4", "grid columns (also switches pane detail level)"],
     ["⌘P", "go to a file in the focused session's folder (name:42 jumps to a line)"],
     ["⌘B", "show or hide the side bar"],
@@ -3284,7 +3301,10 @@ function DashboardBoard({
 
   const detail = items?.find((i) => i.id === detailId) ?? null;
 
+  // the work item last opened: a slower answer for one opened before it is dropped
+  const detailReq = useRef<number | null>(null);
   const openDetail = (it: AdoWorkItem) => {
+    detailReq.current = it.id;
     setDetailId(it.id);
     setTitle(it.title);
     setState(it.state);
@@ -3294,11 +3314,16 @@ function DashboardBoard({
     setAttachId("");
     setComments(null);
     setDraft("");
-    window.mb.adoStates(it.type).then((r: string[] | { error: string }) => Array.isArray(r) && setTypeStates(r));
+    window.mb.adoStates(it.type).then((r: string[] | { error: string }) => {
+      if (detailReq.current !== it.id) return;
+      if (Array.isArray(r)) setTypeStates(r);
+      else setError(`Couldn't read the states a ${it.type} can be in: ${r.error}`);
+    });
     loadComments(it.id);
   };
   const loadComments = (id: number) =>
     window.mb.adoComments(id).then((r: AdoComment[] | { error: string }) => {
+      if (detailReq.current !== id) return;
       if (Array.isArray(r)) setComments(r);
       else {
         setComments([]);
@@ -3973,7 +3998,8 @@ function CloseSessionDialog({
   forceClose,
 }: {
   session: SessionInfo;
-  wt: WorktreeStateInfo;
+  /** The worktree's state, or why it couldn't be read — then the only choice is to keep it. */
+  wt: WorktreeStateInfo | { error: string };
   onCancel: () => void;
   onDone: () => void;
   forceClose: (s: SessionInfo, forget: boolean) => Promise<void>;
@@ -3983,24 +4009,28 @@ function CloseSessionDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const wtName = session.cwd.split("/").pop();
-  const stateStr = [wt.dirty ? `${wt.dirtyFiles} uncommitted file${wt.dirtyFiles === 1 ? "" : "s"}` : null, wt.ahead ? `${wt.ahead} unpushed commit${wt.ahead === 1 ? "" : "s"}` : null]
-    .filter(Boolean)
-    .join(" and ");
+  const st = "error" in wt ? null : wt;
+  const stateStr = st
+    ? [st.dirty ? `${st.dirtyFiles} uncommitted file${st.dirtyFiles === 1 ? "" : "s"}` : null, st.ahead ? `${st.ahead} unpushed commit${st.ahead === 1 ? "" : "s"}` : null]
+        .filter(Boolean)
+        .join(" and ")
+    : "";
 
   const confirm = async () => {
     setBusy(true);
     setError("");
     try {
-      if (mode === "keep") {
-        await forceClose(session, false); // keep the store entry → resumable under Previous
-      } else {
-        await forceClose(session, true);
+      // the session closes but stays resumable under Previous (scrollback and
+      // undo snapshots included) until its worktree has been pushed or removed
+      await forceClose(session, false);
+      if (mode !== "keep") {
         const r = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode);
         if (r?.error) {
           setError(r.error);
           setBusy(false);
           return;
         }
+        await window.mb.killSession(session.id, true);
       }
       onDone();
     } catch (err) {
@@ -4015,22 +4045,27 @@ function CloseSessionDialog({
       label: "Keep worktree, close pane",
       consequence: "nothing is lost · resumable under Previous",
     },
-    {
-      mode: "push",
-      label: "Push branch, then remove worktree",
-      consequence: wt.dirty ? `commits WIP on ${wt.branch}, pushes, removes the worktree` : `pushes ${wt.branch}, removes the worktree`,
-    },
-    {
-      mode: "discard",
-      label: "Discard everything and delete",
-      consequence: "removes the worktree and deletes the branch · not recoverable",
-      destructive: true,
-    },
+    ...(st
+      ? [
+          {
+            mode: "push" as const,
+            label: "Push branch, then remove worktree",
+            consequence: st.dirty ? `commits WIP on ${st.branch}, pushes, removes the worktree` : `pushes ${st.branch}, removes the worktree`,
+          },
+          {
+            mode: "discard" as const,
+            label: "Discard everything and delete",
+            consequence: "removes the worktree and deletes the branch · not recoverable",
+            destructive: true,
+          },
+        ]
+      : []),
   ];
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === "Enter" && !busy) {
+      // with focus on Cancel (or the confirm button) Enter clicks that button instead
+      if (e.key === "Enter" && !busy && enterConfirms(e.target as Element)) {
         e.preventDefault();
         confirm();
       }
@@ -4045,7 +4080,16 @@ function CloseSessionDialog({
       <div className="modal close-dlg" onMouseDown={(e) => e.stopPropagation()}>
         <h3>Close {session.ticketTitle ?? session.title}?</h3>
         <div className="sub-h">
-          Worktree <span className="wt-name">{wtName}</span> has {stateStr || "local work"}.
+          {st ? (
+            <>
+              Worktree <span className="wt-name">{wtName}</span> has {stateStr || "local work"}.
+            </>
+          ) : (
+            <>
+              Couldn't read worktree <span className="wt-name">{wtName}</span> ({"error" in wt ? wt.error : ""}). It may hold
+              work, so it stays on disk.
+            </>
+          )}
         </div>
         {opts.map((o) => (
           <button
@@ -4127,8 +4171,9 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
     return n;
   }, [content, original, dirty]);
 
-  // shells are excluded — a broadcast typed into a plain terminal would run as commands
-  const live = sessions.filter((s) => s.status !== "dead" && !s.shell);
+  // who a broadcast can reach (main skips shells, where it would run as
+  // commands, debriefs, which are mid-interview, and dead panes)
+  const live = sessions.filter((s) => broadcastFate(s) !== "skipped");
   // sessions that will be told to re-read: rooted in the repo, or all live for global
   const repoOf = target.replace(/\/CLAUDE\.md$/, "");
   const rereadTargets = target.startsWith("~")
@@ -4148,9 +4193,9 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
           continue;
         }
         d[s.id] =
-          s.status === "working"
-            ? { state: "queued", note: "queued · busy" }
-            : { state: "delivered", at: now(), note: `delivered ${now()}` };
+          broadcastFate(s) === "delivered"
+            ? { state: "delivered", at: now(), note: `delivered ${now()}` }
+            : { state: "queued", note: s.status === "waiting" ? "queued · waiting on you" : "queued · busy" };
       }
       return d;
     });
@@ -4247,7 +4292,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
           </div>
           <div className="delivery">
             <div className="grp">Delivery</div>
-            {sessions.filter((s) => !s.shell).map((s) => {
+            {sessions.filter((s) => !s.shell && !s.debrief).map((s) => {
               const d = delivery[s.id];
               const note =
                 d?.note ??
@@ -4465,6 +4510,7 @@ function SettingsView({
   onUpdate,
   jump,
   onHiddenTabs,
+  presets,
   onPresets,
   onStartPreset,
 }: {
@@ -4477,6 +4523,8 @@ function SettingsView({
   /** Open a specific section, e.g. the control room from ⌘⇧B. */
   jump: { section: SettingsSection; n: number } | null;
   onHiddenTabs: (tabs: OptionalTab[]) => void;
+  /** The App's preset list, which ⌘N's "Save as preset" also changes while this view is open. */
+  presets: SessionPreset[];
   onPresets: (presets: SessionPreset[]) => void;
   onStartPreset: (p: SessionPreset) => void;
 }) {
@@ -4534,11 +4582,12 @@ function SettingsView({
   }, []);
   if (!s) return <div className="settings-page" />;
 
-  // every change saves immediately — there is no Save button to forget
+  // every change saves immediately — there is no Save button to forget. Only the
+  // patch is sent: the store merges it, so settings written elsewhere since this
+  // view loaded (update folder, presets, per-group message modes) are kept
   const upd = async (patch: Partial<Settings>) => {
-    const next = { ...s, ...patch };
-    setS(next);
-    const r = await window.mb.setSettings(next);
+    setS((cur) => cur && { ...cur, ...patch });
+    const r = await window.mb.setSettings(patch);
     setSaveState(r?.error ? { ok: false, msg: `Couldn't save: ${r.error}` } : { ok: true, msg: "Saved" });
     if (patch.repoRoots || patch.claudeBin || patch.codexBin) loadStatus();
   };
@@ -4771,7 +4820,7 @@ function SettingsView({
 
         {section === "presets" && (
           <PresetsSection
-            presets={s.presets ?? []}
+            presets={presets}
             onStart={onStartPreset}
             onChange={(next) => {
               upd({ presets: next });
@@ -4947,8 +4996,7 @@ function UpdateSourceRow({ onUpdate }: { onUpdate: () => void }) {
     load();
   }, []);
   const choose = async (dir: string | null) => {
-    const s: Settings = await window.mb.getSettings();
-    await window.mb.setSettings({ ...s, updateSource: dir });
+    await window.mb.setSettings({ updateSource: dir });
     load();
   };
   const note = !src
@@ -5137,7 +5185,12 @@ function NewSessionModal({
   const filtered = repos.filter((r) => r.name.toLowerCase().includes(q.toLowerCase())).slice(0, 30);
   const branch = ticketId && ticketTitle ? slugBranch(ticketId, ticketTitle) : "";
 
+  // one session per click: a second click while this one is being made would
+  // create another session (and worktree)
+  const [busy, setBusy] = useState(false);
   const create = async () => {
+    if (busy) return;
+    setBusy(true);
     const t = allTickets.find((x) => String(x.id) === ticketSel);
     const info = await window.mb.createSession({
       repoPath: sel?.path ?? null,
@@ -5155,7 +5208,10 @@ function NewSessionModal({
           ? ticketKickoffPrompt(t.id, t.title, t.description)
           : undefined,
     });
-    if (info?.error) return setError(info.error);
+    if (info?.error) {
+      setBusy(false);
+      return setError(info.error);
+    }
     onCreated(info);
   };
 
@@ -5440,8 +5496,8 @@ function NewSessionModal({
               no repo — starts a plain {agentLabel} chat (fully tracked: resumable, restartable)
             </span>
           )}
-          <button className="primary cta" onClick={create}>
-            {launch === "shell" ? "Open terminal" : sel ? `Start ${agentLabel.toLowerCase()}` : "Start chat"}
+          <button className="primary cta" disabled={busy} onClick={create}>
+            {busy ? "Starting…" : launch === "shell" ? "Open terminal" : sel ? `Start ${agentLabel.toLowerCase()}` : "Start chat"}
           </button>
         </div>
       </div>

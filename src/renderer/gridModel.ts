@@ -13,13 +13,16 @@ type GroupOf = (id: string) => string | undefined;
 /**
  * The group the grid shows: the one it was last switched to while any of its
  * sessions are still on screen, else the first unpinned pane's group (a pinned
- * pane from another group never decides it), else the first pane's.
+ * pane from another group never decides it). With only pinned panes left it
+ * stays the last group if one of them belongs to it, else the first pane's.
  */
 export function activeGroupOf(shown: string[], groupOf: GroupOf, pinned: ReadonlySet<string>, last: string | null): string | null {
   if (last && shown.some((id) => groupOf(id) === last && !pinned.has(id))) return last;
   const live = shown.filter((id) => groupOf(id) !== undefined);
-  const first = live.find((id) => !pinned.has(id)) ?? live[0];
-  return first ? groupOf(first)! : null;
+  const unpinned = live.find((id) => !pinned.has(id));
+  if (unpinned) return groupOf(unpinned)!;
+  if (last && live.some((id) => groupOf(id) === last)) return last;
+  return live.length ? groupOf(live[0])! : null;
 }
 
 /** The grid holds one group: panes from elsewhere leave unless pinned. */
