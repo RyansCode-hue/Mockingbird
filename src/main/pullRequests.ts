@@ -1,4 +1,6 @@
-import { git } from "./git";
+import { ADO_API } from "./ado";
+import { branchesOf, currentBranch, dirtyFileCount, git, originUrl } from "./git";
+import { BASE_NAMES } from "./worktrees";
 import { listAllFiles } from "./find";
 import { quote } from "./shell";
 import type { ShellRunner } from "./headless";
@@ -33,12 +35,15 @@ export function parseRemote(url: string): RemoteRepo | null {
 
 export const remoteName = (r: RemoteRepo) => (r.provider === "ado" ? `${r.project}/${r.repo}` : `${r.owner}/${r.repo}`);
 
-/** The usual names of each target branch, in the order they're preferred. */
-const BASES: Record<PrTarget, string[]> = { dev: ["dev", "develop", "development", "uat"], main: ["main", "master"] };
+/** Where `cwd`'s origin lives, or null when there's no origin or it's neither Azure DevOps nor GitHub. */
+export async function originRemote(cwd: string): Promise<RemoteRepo | null> {
+  const url = await originUrl(cwd);
+  return url ? parseRemote(url) : null;
+}
 
 /** The PR's base: the first usual name for the target that exists on origin. */
 export function pickBase(target: PrTarget, remoteBranches: string[]): string | null {
-  return BASES[target].find((b) => remoteBranches.includes(b)) ?? null;
+  return BASE_NAMES[target].find((b) => remoteBranches.includes(b)) ?? null;
 }
 
 /**
@@ -47,19 +52,18 @@ export function pickBase(target: PrTarget, remoteBranches: string[]): string | n
  * place after switching to main would open the "to main" PR into develop.
  */
 export function baseMatchesTarget(target: PrTarget, base: string): boolean {
-  return !BASES[target === "dev" ? "main" : "dev"].includes(base);
+  return !BASE_NAMES[target === "dev" ? "main" : "dev"].includes(base);
 }
 
 /** An ADO API call with the configured PAT (ado.adoRequest), injected so tests can stub it. */
 export type AdoCall = (url: string, init?: RequestInit) => Promise<any>;
 
-const API = "api-version=7.0";
-const adoRepoUrl = (r: Extract<RemoteRepo, { provider: "ado" }>) => `${r.base}/${encodeURIComponent(r.project)}/_apis/git/repositories/${encodeURIComponent(r.repo)}`;
-
-async function adoRepo(call: AdoCall, r: Extract<RemoteRepo, { provider: "ado" }>): Promise<{ id: string; webUrl: string }> {
-  const repo = await call(`${adoRepoUrl(r)}?${API}`);
+/** An Azure DevOps repository: its id, its API root (`<apiUrl>/pullrequests`…) and its page. */
+export async function adoRepo(call: AdoCall, r: Extract<RemoteRepo, { provider: "ado" }>): Promise<{ id: string; apiUrl: string; webUrl: string }> {
+  const project = `${r.base}/${encodeURIComponent(r.project)}`;
+  const repo = await call(`${project}/_apis/git/repositories/${encodeURIComponent(r.repo)}?${ADO_API}`);
   if (!repo?.id) throw new Error(`Azure DevOps has no repository ${remoteName(r)}`);
-  return { id: repo.id, webUrl: repo.webUrl ?? `${r.base}/${encodeURIComponent(r.project)}/_git/${encodeURIComponent(r.repo)}` };
+  return { id: repo.id, apiUrl: `${project}/_apis/git/repositories/${repo.id}`, webUrl: repo.webUrl ?? `${project}/_git/${encodeURIComponent(r.repo)}` };
 }
 
 /** An open pull request from `branch` into `base`, if there is one. */
@@ -72,7 +76,7 @@ export async function findOpenPr(
   if (remote.provider === "ado") {
     const repo = await adoRepo(deps.ado, remote);
     const q = `searchCriteria.sourceRefName=${encodeURIComponent(`refs/heads/${branch}`)}&searchCriteria.targetRefName=${encodeURIComponent(`refs/heads/${base}`)}&searchCriteria.status=active`;
-    const r = await deps.ado(`${remote.base}/${encodeURIComponent(remote.project)}/_apis/git/repositories/${repo.id}/pullrequests?${q}&${API}`);
+    const r = await deps.ado(`${repo.apiUrl}/pullrequests?${q}&${ADO_API}`);
     const pr = (r?.value ?? [])[0];
     return pr ? { id: pr.pullRequestId, url: `${repo.webUrl}/pullrequest/${pr.pullRequestId}` } : null;
   }
@@ -97,7 +101,7 @@ export async function openPr(
   if (remote.provider === "ado") {
     const repo = await adoRepo(deps.ado, remote);
     const desc = pr.description.length > ADO_DESC_MAX ? `${pr.description.slice(0, ADO_DESC_MAX - 20)}\n\n(shortened)` : pr.description;
-    const r = await deps.ado(`${remote.base}/${encodeURIComponent(remote.project)}/_apis/git/repositories/${repo.id}/pullrequests?${API}`, {
+    const r = await deps.ado(`${repo.apiUrl}/pullrequests?${ADO_API}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -142,18 +146,12 @@ export async function prPreflight(
   target: PrTarget,
   deps: { ado: AdoCall; run: ShellRunner; env: Record<string, string> }
 ): Promise<PrPreflight & { lookupError: string | null }> {
-  const branch = (await git(root, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] })) || null;
-  const remoteBranches = (await git(root, ["branch", "-r", "--format=%(refname:short)"]))
-    .split("\n")
-    .map((b) => b.trim())
-    .filter((b) => b.startsWith("origin/") && b !== "origin/HEAD" && b !== "origin")
-    .map((b) => b.slice("origin/".length));
+  const branch = await currentBranch(root);
+  const remoteBranches = (await branchesOf(root)).origin;
   const base = pickBase(target, remoteBranches);
-  const dirtyFiles = (await git(root, ["status", "--porcelain"])).split("\n").filter(Boolean).length;
+  const dirtyFiles = await dirtyFileCount(root);
   const commits = base ? Number(await git(root, ["rev-list", "--count", `origin/${base}..HEAD`])) : 0;
-  let remote: RemoteRepo | null = null;
-  const url = await git(root, ["remote", "get-url", "origin"], { okCodes: [0, 2] }); // 2: no origin
-  if (url) remote = parseRemote(url);
+  const remote = await originRemote(root);
   const { files } = await listAllFiles(root);
   const docs = files.find((f) => f.split("/").pop()?.toLowerCase() === `${ticketId}-description.md`.toLowerCase()) ?? null;
   let existing: { id: number; url: string } | null = null;
@@ -168,7 +166,7 @@ export async function prPreflight(
   return {
     branch,
     base,
-    bases: [...new Set([...BASES[target].filter((b) => remoteBranches.includes(b)), ...remoteBranches])],
+    bases: [...new Set([...BASE_NAMES[target].filter((b) => remoteBranches.includes(b)), ...remoteBranches])],
     dirtyFiles,
     commits,
     remote: remote ? { provider: remote.provider, repo: remoteName(remote) } : null,

@@ -67,6 +67,23 @@ export async function headCommit(cwd: string): Promise<string | null> {
   return (await git(cwd, ["rev-parse", "--verify", "-q", "HEAD"], { okCodes: [0, 1] })) || null;
 }
 
+/** The checked-out branch, even before its first commit; null when HEAD is detached. */
+export async function currentBranch(cwd: string): Promise<string | null> {
+  return (await git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] })) || null; // 1: detached
+}
+
+/** How many files have uncommitted changes: staged, unstaged or untracked. */
+export async function dirtyFileCount(cwd: string): Promise<number> {
+  return (await git(cwd, ["status", "--porcelain"])).split("\n").filter(Boolean).length;
+}
+
+/** A repository's branch names: its local ones, and origin's as of the last fetch (without the origin/ prefix). */
+export async function branchesOf(repo: string): Promise<{ local: string[]; origin: string[] }> {
+  const refs = (await git(repo, ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin"])).split("\n").filter(Boolean);
+  const under = (prefix: string) => refs.filter((r) => r.startsWith(prefix)).map((r) => r.slice(prefix.length));
+  return { local: under("refs/heads/"), origin: under("refs/remotes/origin/").filter((b) => b !== "HEAD") };
+}
+
 /** origin's URL, or null when the repository has no remote called origin. */
 export async function originUrl(cwd: string): Promise<string | null> {
   return (await git(cwd, ["remote", "get-url", "origin"], { okCodes: [0, 2] })) || null; // 2: no such remote

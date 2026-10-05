@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listWorktrees, migrateWorktree, parseShortstat, pickDefaultBase, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
+import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranches, listWorktrees, migrateWorktree, parseShortstat, pickDefaultBase, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
 import { git, makeRepo } from "./helpers";
 
 describe("pickDefaultBase", () => {
@@ -9,6 +9,14 @@ describe("pickDefaultBase", () => {
     expect(pickDefaultBase(["main", "dev", "feature/x"])).toBe("dev");
     expect(pickDefaultBase(["master", "uat"])).toBe("uat");
     expect(pickDefaultBase(["feature/x"])).toBeNull();
+  });
+  it("lists local and origin branches once each, without origin/HEAD", async () => {
+    const origin = makeRepo({ "a.txt": "1" }, "origin");
+    git(origin, "branch", "dev");
+    const clone = path.join(path.dirname(origin), "clone");
+    git(path.dirname(origin), "clone", "-q", origin, clone);
+    git(clone, "branch", "feat/local");
+    expect(await listBranches(clone)).toEqual({ branches: ["dev", "feat/local", "main"], defaultBase: "dev" });
   });
 });
 

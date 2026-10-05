@@ -657,6 +657,14 @@ export interface CollabRoom {
   createdAt: number;
 }
 
+/**
+ * How long a room's requests may wait for the user, in minutes: the choices,
+ * and the default. A turn that runs commands is cut off at 30 minutes, so a
+ * wait can't be allowed to take most of it.
+ */
+export const ASK_TIMEOUTS_MIN = [5, 10, 15, 20];
+export const DEFAULT_ASK_TIMEOUT_MIN = 10;
+
 /** A Claude model asking, mid-turn, to use a tool its permissions don't already cover. */
 export interface CollabPermissionRequest {
   id: string;

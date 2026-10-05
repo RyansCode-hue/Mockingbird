@@ -14,6 +14,7 @@ import type {
   NewSessionRequest,
   SessionInfo,
 } from "../shared/types";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN } from "../shared/types";
 import { MB_DIR } from "./store";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
@@ -146,13 +147,6 @@ const SYNTH_INSTRUCTION =
   "Where the models disagreed and it wasn't settled, say so and give your recommendation. " +
   "This is a document, not a turn — don't add a STANCE line.";
 
-/**
- * How long a request may wait for the user, in minutes: the choices, and the
- * default. A turn that runs commands is cut off at 30 minutes, so a wait can't
- * be allowed to take most of it.
- */
-export const ASK_TIMEOUTS_MIN = [5, 10, 15, 20];
-export const DEFAULT_ASK_TIMEOUT_MIN = 10;
 export const PERMISSION_REMIND_MS = 3 * 60_000;
 
 // CLIs whose first word says little on its own: "always allow" covers the subcommand

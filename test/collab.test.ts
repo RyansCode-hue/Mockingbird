@@ -4,9 +4,9 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "child_process";
 import { makeTestCopy } from "../src/main/testCopy";
-import { CollabRooms, COLLAB_MODELS, dockerSockets, permissionKind, DEFAULT_ASK_TIMEOUT_MIN, PERMISSION_REMIND_MS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
+import { CollabRooms, COLLAB_MODELS, dockerSockets, permissionKind, PERMISSION_REMIND_MS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
 import type { CollabParticipantSpec } from "../src/shared/types";
-import type { CollabRoom } from "../src/shared/types";
+import { DEFAULT_ASK_TIMEOUT_MIN, type CollabRoom } from "../src/shared/types";
 
 /** A runner whose replies come from a script: reply(modelKey, turnNumberForThatModel, prompt). */
 function rooms(reply: (key: string, n: number, prompt: string) => string | Error = (k) => `${k} thoughts\nSTANCE: CONTINUE — more to do`) {

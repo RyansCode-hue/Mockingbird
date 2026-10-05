@@ -1,5 +1,5 @@
-import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry } from "../shared/types";
-import { git, originUrl, upstreamOf } from "./git";
+import type { PrTarget, WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
+import { branchesOf, currentBranch, dirtyFileCount, git, originUrl, upstreamOf } from "./git";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -80,36 +80,19 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
   return wtPath;
 }
 
-/** The integration branch new work usually starts from, by team convention. */
+/** The usual names of the branches work merges into, by team convention, each in the order it's preferred. */
+export const BASE_NAMES: Record<PrTarget, string[]> = { dev: ["dev", "develop", "development", "uat"], main: ["main", "master"] };
+
+/** The integration branch new work usually starts from: a dev-like one before main. */
 export function pickDefaultBase(branches: string[]): string | null {
-  const preferred = ["dev", "develop", "development", "uat", "main", "master"];
-  return preferred.find((b) => branches.includes(b)) ?? null;
+  return [...BASE_NAMES.dev, ...BASE_NAMES.main].find((b) => branches.includes(b)) ?? null;
 }
 
 /** Local + origin branches for a repo, with a best-guess dev/uat base branch. */
 export async function listBranches(repoPath: string): Promise<{ branches: string[]; defaultBase: string | null }> {
-  const locals = (await git(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
-    .split("\n")
-    .filter(Boolean);
-  const remotes = (await git(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/remotes/origin"]))
-    .split("\n")
-    .filter(Boolean)
-    .map((b) => b.replace(/^origin\//, ""))
-    .filter((b) => b !== "HEAD");
-  const branches = [...new Set([...remotes, ...locals])].sort();
+  const { local, origin } = await branchesOf(repoPath);
+  const branches = [...new Set([...origin, ...local])].sort();
   return { branches, defaultBase: pickDefaultBase(branches) };
-}
-
-export interface WorktreeState {
-  dirty: boolean;
-  dirtyFiles: number;
-  branch: string;
-  upstream: string | null;
-  ahead: number;
-  behind: number;
-  /** Lines added and removed in tracked files since the last commit (new files aren't counted). */
-  insertions: number;
-  deletions: number;
 }
 
 /** `git diff --shortstat`'s " 3 files changed, 120 insertions(+), 8 deletions(-)". */
@@ -120,11 +103,10 @@ export function parseShortstat(out: string): { insertions: number; deletions: nu
   };
 }
 
-async function readState(wtPath: string): Promise<WorktreeState> {
-  const [porcelain, branch, { upstream, counts }, stat] = await Promise.all([
-    git(wtPath, ["status", "--porcelain"]),
-    // the branch name, even before its first commit; "HEAD" when detached
-    git(wtPath, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] }).then((b) => b || "HEAD"),
+async function readState(wtPath: string): Promise<WorktreeStateInfo> {
+  const [dirtyFiles, branch, { upstream, counts }, stat] = await Promise.all([
+    dirtyFileCount(wtPath),
+    currentBranch(wtPath).then((b) => b ?? "HEAD"),
     // what the counts are against (a branch made from origin/dev tracks it until
     // published), then "<behind> <ahead>" in one call — nothing to count without one
     upstreamOf(wtPath).then(async (upstream) => ({
@@ -137,25 +119,24 @@ async function readState(wtPath: string): Promise<WorktreeState> {
       throw err;
     }),
   ]);
-  const dirtyFiles = porcelain ? porcelain.split("\n").length : 0;
   const [behind, ahead] = counts.split(/\s+/).map((n) => parseInt(n, 10) || 0);
   return { dirty: dirtyFiles > 0, dirtyFiles, branch, upstream, ahead: ahead ?? 0, behind: behind ?? 0, ...parseShortstat(stat) };
 }
 
-export const STATE_TTL_MS = 3_000;
+const STATE_TTL_MS = 3_000;
 
 /** Drop a folder's cached state — its files just changed, so the next read must be fresh. */
 export function forgetState(wtPath: string): void {
   stateCache.delete(wtPath);
 }
-const stateCache = new Map<string, { at: number; state: Promise<WorktreeState> }>();
+const stateCache = new Map<string, { at: number; state: Promise<WorktreeStateInfo> }>();
 
 /**
  * A worktree's git state, shared: every pane in a folder polls it, so calls
  * while a read is running — or within a few seconds of one — get that read
  * instead of starting another round of git processes. A failed read isn't kept.
  */
-export function worktreeState(wtPath: string): Promise<WorktreeState> {
+export function worktreeState(wtPath: string): Promise<WorktreeStateInfo> {
   const hit = stateCache.get(wtPath);
   if (hit && Date.now() - hit.at < STATE_TTL_MS) return hit.state;
   const state = readState(wtPath);
@@ -201,12 +182,6 @@ export async function cleanupWorktree(repoPath: string, wtPath: string, mode: Wo
 }
 
 /**
- * Every `<repo>-worktrees/<name>` checkout beside the given repos, with enough
- * state to decide whether it is a stray: branch, dirt, ahead/behind, age, and
- * whether a live session currently runs in it. A folder that is not a readable
- * git worktree is reported with `error` rather than skipped.
- */
-/**
  * Checkouts under a worktree root, as paths relative to it. A branch like
  * `fix/login` nests a folder, so a directory without a `.git` entry is
  * descended into rather than reported. An unreadable root means that layout has
@@ -226,6 +201,12 @@ function findCheckouts(wtRoot: string, rel = "", depth = 0): string[] {
     .flatMap((e) => findCheckouts(wtRoot, rel ? path.join(rel, e.name) : e.name, depth + 1));
 }
 
+/**
+ * Every checkout under the given repos' worktree roots, in both layouts, with
+ * enough state to decide whether it is a stray: branch, dirt, ahead/behind,
+ * age, and whether a live session currently runs in it. A folder that is not
+ * a readable git worktree is reported with `error` rather than skipped.
+ */
 export async function listWorktrees(repos: { name: string; path: string }[], liveCwds: string[]): Promise<WorktreeEntry[]> {
   const live = new Set(liveCwds);
   const found: { repo: { name: string; path: string }; wtPath: string; name: string; legacy: boolean }[] = [];
@@ -282,9 +263,8 @@ export async function checkoutBranch(repoPath: string, branch: string, baseBranc
   }
   const current = await git(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (current === branch) return;
-  const dirty = await git(repoPath, ["status", "--porcelain"]);
-  if (dirty) {
-    const n = dirty.split("\n").length;
+  const n = await dirtyFileCount(repoPath);
+  if (n) {
     throw new Error(
       `${path.basename(repoPath)} has ${n} uncommitted change${n === 1 ? "" : "s"} on ${current}. ` +
         `Commit or stash before switching to ${branch}, or tick "isolated worktree".`

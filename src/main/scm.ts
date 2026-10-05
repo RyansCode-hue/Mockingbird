@@ -101,7 +101,7 @@ export async function scmPush(root: string): Promise<{ upstream: string }> {
  * conflicts. When both sides have moved, or local edits are in the way, git's
  * refusal is passed on and nothing changes.
  */
-export async function scmPull(root: string): Promise<{ pulled: number }> {
+export async function scmPull(root: string): Promise<void> {
   const st = await scmStatus(root);
   if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to pull into");
   if (!st.upstream) throw new Error("This branch doesn't track a remote branch yet, so there's nothing to pull");
@@ -116,8 +116,6 @@ export async function scmPull(root: string): Promise<{ pulled: number }> {
     }
     throw err;
   }
-  const after = await scmStatus(root);
-  return { pulled: st.behind - after.behind };
 }
 
 /** Update the remote branches (what ↑/↓ and the graph compare against), dropping deleted ones. */
@@ -174,13 +172,19 @@ export async function scmGraph(root: string, limit = 150): Promise<ScmGraph> {
 
 const SHA = /^[0-9a-f]{7,40}$/;
 
-/** The files a commit changed (a merge: against its first parent, as VS Code shows it). */
-export async function scmCommitFiles(root: string, sha: string): Promise<GitChange[]> {
+/** What a commit's changes are shown against: its first parent (a merge's too, as VS Code shows it), or null for a root commit. */
+async function firstParent(root: string, sha: string): Promise<string | null> {
   if (!SHA.test(sha)) throw new Error(`Not a commit: ${sha}`);
   const isRoot = (await git(root, ["rev-list", "--parents", "-n1", sha])).split(" ").length === 1;
-  const out = isRoot
-    ? await git(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", sha], { trim: false })
-    : await git(root, ["diff", "--name-status", "-z", "-M", `${sha}^1`, sha], { trim: false });
+  return isRoot ? null : `${sha}^1`;
+}
+
+/** The files a commit changed. */
+export async function scmCommitFiles(root: string, sha: string): Promise<GitChange[]> {
+  const parent = await firstParent(root, sha);
+  const out = parent
+    ? await git(root, ["diff", "--name-status", "-z", "-M", parent, sha], { trim: false })
+    : await git(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", sha], { trim: false });
   return parseNameStatus(out);
 }
 
@@ -201,11 +205,10 @@ function capped(diff: string): string {
 
 /** One file's change in a commit. */
 export async function scmCommitDiff(root: string, sha: string, rel: string): Promise<string> {
-  if (!SHA.test(sha)) throw new Error(`Not a commit: ${sha}`);
+  const parent = await firstParent(root, sha);
   await resolveIn(root, rel);
-  const isRoot = (await git(root, ["rev-list", "--parents", "-n1", sha])).split(" ").length === 1;
-  if (isRoot) return capped(await git(root, ["show", "--format=", sha, "--", rel], { trim: false }));
-  const range = [`${sha}^1`, sha];
+  if (!parent) return capped(await git(root, ["show", "--format=", sha, "--", rel], { trim: false }));
+  const range = [parent, sha];
   return capped(await git(root, ["diff", "-M", ...range, "--", ...(await withRenameSource(root, range, rel))], { trim: false }));
 }
 

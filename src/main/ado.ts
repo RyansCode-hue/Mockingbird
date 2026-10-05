@@ -70,8 +70,22 @@ export async function adoRequest(store: Store, url: string, init?: RequestInit):
   return adoFetch(loadAdoConfig(store), url, init);
 }
 
+/** The REST API version every call uses, except the comments API, which is only in preview. */
+export const ADO_API = "api-version=7.0";
+const COMMENTS_API = "api-version=7.1-preview.3";
+
+/** A call to the project's work-item API; `rest` follows `_apis/wit/` and carries its api-version. */
+function wit(cfg: AdoConfig, rest: string, init?: RequestInit): Promise<any> {
+  return adoFetch(cfg, `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_apis/wit/${rest}`, init);
+}
+
+/** Change a work item's fields with JSON-Patch operations. */
+function patchWorkItem(cfg: AdoConfig, id: number, ops: { op: string; path: string; value: string }[]): Promise<any> {
+  return wit(cfg, `workitems/${id}?${ADO_API}`, { method: "PATCH", headers: { "Content-Type": "application/json-patch+json" }, body: JSON.stringify(ops) });
+}
+
 /** Plain text as ADO's HTML fields and comments expect it: escaped, one <div> per line so line breaks survive. */
-export function textToHtml(text: string): string {
+function textToHtml(text: string): string {
   return text
     .split("\n")
     .map((l) => `<div>${l.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") || "<br>"}</div>`)
@@ -94,8 +108,6 @@ function htmlToText(html: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
-
-const API = "api-version=7.0";
 
 /**
  * Who the configured PAT belongs to — shown in Settings so users can verify
@@ -141,18 +153,15 @@ async function whoAmI(cfg: AdoConfig): Promise<{ display: string; email: string 
 }
 
 /**
- * Board work items. scope "me" = assigned to the PAT's owner; "all" = the whole
- * project. Always: non-Removed states, plus the last two weeks of closed items
- * so the board's terminal columns aren't empty and cards can be dragged back out.
+ * The project's work items for the board, with `me`, the PAT owner's name as
+ * the items spell it (empty when unresolved), for its "Assigned to: Me"
+ * filter. Non-Removed states, plus the last two weeks of closed items so the
+ * board's terminal columns aren't empty and cards can be dragged back out.
  * The batch API caps at 200 ids — `total` reports the real match count so the
  * UI can say "200 of N" instead of silently truncating.
  */
-export async function listWorkItems(
-  store: Store,
-  _scope?: string // kept for IPC compatibility; the board always loads the project
-): Promise<{ items: AdoWorkItem[]; total: number; me: string }> {
+export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[]; total: number; me: string }> {
   const cfg = loadAdoConfig(store);
-  const base = `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}`;
   const wiql = {
     query:
       "SELECT [System.Id] FROM WorkItems " +
@@ -161,7 +170,7 @@ export async function listWorkItems(
       "AND ([System.State] NOT IN ('Closed', 'Done') OR [System.ChangedDate] >= @Today - 14) " +
       "ORDER BY [System.ChangedDate] DESC",
   };
-  const q = await adoFetch(cfg, `${base}/_apis/wit/wiql?${API}`, {
+  const q = await wit(cfg, `wiql?${ADO_API}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(wiql),
@@ -179,7 +188,7 @@ export async function listWorkItems(
     "System.Description",
     "System.BoardColumn",
   ].join(",");
-  const r = await adoFetch(cfg, `${base}/_apis/wit/workitems?ids=${ids.join(",")}&fields=${fields}&${API}`);
+  const r = await wit(cfg, `workitems?ids=${ids.join(",")}&fields=${fields}&${ADO_API}`);
   const items = (r.value ?? []).map((v: any): AdoWorkItem => ({
     id: v.id,
     title: v.fields["System.Title"] ?? "",
@@ -189,7 +198,7 @@ export async function listWorkItems(
     changed: v.fields["System.ChangedDate"] ?? "",
     description: htmlToText(v.fields["System.Description"] ?? ""),
     ...(v.fields["System.BoardColumn"] ? { boardColumn: String(v.fields["System.BoardColumn"]) } : {}),
-    url: `${base}/_workitems/edit/${v.id}`,
+    url: `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_workitems/edit/${v.id}`,
   }));
   // resolve "me" to the exact spelling the work items use (match by email first,
   // then case-insensitive name) so the filter actually matches the cards
@@ -210,10 +219,7 @@ export async function listWorkItems(
 /** Valid states for a work item type (drives the state dropdown). */
 export async function workItemStates(store: Store, type: string): Promise<string[]> {
   const cfg = loadAdoConfig(store);
-  const r = await adoFetch(
-    cfg,
-    `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_apis/wit/workitemtypes/${encodeURIComponent(type)}/states?${API}`
-  );
+  const r = await wit(cfg, `workitemtypes/${encodeURIComponent(type)}/states?${ADO_API}`);
   return (r.value ?? []).map((s: any) => s.name);
 }
 
@@ -281,10 +287,7 @@ export function adoEnv(store: Store): Record<string, string> {
 /** Discussion thread for a work item, oldest first. */
 export async function listComments(store: Store, id: number): Promise<AdoComment[]> {
   const cfg = loadAdoConfig(store);
-  const r = await adoFetch(
-    cfg,
-    `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_apis/wit/workItems/${id}/comments?api-version=7.1-preview.3`
-  );
+  const r = await wit(cfg, `workItems/${id}/comments?${COMMENTS_API}`);
   return (r.comments ?? [])
     .map((c: any): AdoComment => ({
       id: c.id,
@@ -298,15 +301,11 @@ export async function listComments(store: Store, id: number): Promise<AdoComment
 /** Post a user-authored comment to the work item's discussion. */
 export async function addComment(store: Store, id: number, text: string): Promise<AdoComment> {
   const cfg = loadAdoConfig(store);
-  const r = await adoFetch(
-    cfg,
-    `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_apis/wit/workItems/${id}/comments?api-version=7.1-preview.3`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: textToHtml(text) }),
-    }
-  );
+  const r = await wit(cfg, `workItems/${id}/comments?${COMMENTS_API}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: textToHtml(text) }),
+  });
   return {
     id: r.id,
     author: r.createdBy?.displayName ?? "me",
@@ -329,15 +328,7 @@ export async function updateWorkItem(
     ops.push({ op: "add", path: "/fields/System.Description", value: textToHtml(patch.description) });
   }
   if (!ops.length) throw new Error("Nothing to update");
-  const r = await adoFetch(
-    cfg,
-    `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_apis/wit/workitems/${id}?${API}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json-patch+json" },
-      body: JSON.stringify(ops),
-    }
-  );
+  const r = await patchWorkItem(cfg, id, ops);
   return { id: r.id };
 }
 
@@ -355,15 +346,15 @@ export async function teamBoards(store: Store, fresh = false): Promise<{ team: s
   const project = encodeURIComponent(cfg.project);
   let team = cfg.team;
   if (!team) {
-    const p = await adoFetch(cfg, `${cfg.orgUrl}/_apis/projects/${project}?${API}`);
+    const p = await adoFetch(cfg, `${cfg.orgUrl}/_apis/projects/${project}?${ADO_API}`);
     team = p.defaultTeam?.name;
     if (!team) throw new Error(`Project ${cfg.project} has no default team — set azureDevOps.team in the WorkTracker config.json`);
   }
   const tbase = `${cfg.orgUrl}/${project}/${encodeURIComponent(team!)}`;
-  const list = await adoFetch(cfg, `${tbase}/_apis/work/boards?${API}`);
+  const list = await adoFetch(cfg, `${tbase}/_apis/work/boards?${ADO_API}`);
   const boards: AdoBoard[] = await Promise.all(
     (list.value ?? []).map(async (b: any) => {
-      const d = await adoFetch(cfg, `${tbase}/_apis/work/boards/${b.id}?${API}`);
+      const d = await adoFetch(cfg, `${tbase}/_apis/work/boards/${b.id}?${ADO_API}`);
       return {
         id: String(b.id),
         name: String(b.name),
@@ -392,10 +383,6 @@ export async function moveToBoardColumn(store: Store, id: number, type: string, 
   const cfg = loadAdoConfig(store);
   const ops = [{ op: "add", path: "/fields/System.State", value: state }];
   if (board.columnField) ops.push({ op: "add", path: `/fields/${board.columnField}`, value: column });
-  const r = await adoFetch(cfg, `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_apis/wit/workitems/${id}?${API}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json-patch+json" },
-    body: JSON.stringify(ops),
-  });
+  const r = await patchWorkItem(cfg, id, ops);
   return { id: r.id, state };
 }

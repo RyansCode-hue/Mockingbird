@@ -161,8 +161,9 @@ describe("a branch made from origin/dev", () => {
     const { repo } = featureFromDev();
     await scmFetch(repo);
     expect((await scmStatus(repo)).behind).toBe(2);
-    expect(await scmPull(repo)).toEqual({ pulled: 2 });
+    await scmPull(repo);
     expect(git(repo, "log", "-1", "--format=%s")).toBe("dev two");
+    expect((await scmStatus(repo)).behind).toBe(0);
   });
 
   it("refuses to pull when both sides moved, explaining why, and changes nothing", async () => {
