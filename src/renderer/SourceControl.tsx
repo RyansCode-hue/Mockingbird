@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { isErr, type GitChange, type GitChanges, type ScmEntry, type ScmStatus, type IpcResult } from "../shared/types";
+import { isErr, AGENT_NAME, type GitChange, type GitChanges, type ScmEntry, type ScmStatus, type IpcResult, type AgentKind } from "../shared/types";
 import { useFolderRefresh } from "./folderWatch";
 import { SparkleIcon } from "./Icons";
 import { CommitGraph } from "./CommitGraph";
@@ -60,7 +60,7 @@ export function SourceControl({
   /** Type a request into the session's prompt — to hand a git failure to the agent. */
   onAskSession?: (text: string) => void;
   /** A second opinion: the other agent reviews this branch and messages its findings back. */
-  review?: { agent: string; start: () => Promise<string | null> };
+  review?: { agent: AgentKind; start: () => Promise<string | null> };
 }) {
   const [status, setStatus] = useState<IpcResult<ScmStatus> | null>(null);
   const [message, setMessage] = useState("");
@@ -307,7 +307,7 @@ export function SourceControl({
         <button
           className="outline sc-review"
           disabled={!!busy}
-          data-tip={`Starts a ${review.agent} session in this folder that reviews the branch (committed and uncommitted) for bugs, security, silent failures and missing tests, then sends its findings back to this session. It changes nothing.`}
+          data-tip={`Starts a ${AGENT_NAME[review.agent]} session in this folder that reviews the branch (committed and uncommitted) for bugs, security, silent failures and missing tests, then sends its findings back to this session. It changes nothing.`}
           onClick={() => {
             setFailed(""); // not a git failure: nothing to hand the agent
             run("review", async () => {
@@ -316,7 +316,7 @@ export function SourceControl({
             });
           }}
         >
-          {busy === "review" ? "Starting the review…" : `Second opinion: review with ${review.agent}`}
+          {busy === "review" ? "Starting the review…" : `Second opinion: review with ${AGENT_NAME[review.agent]}`}
         </button>
       )}
       {error && (

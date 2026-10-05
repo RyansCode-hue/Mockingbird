@@ -19,7 +19,7 @@ import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceCon
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
 import { PipelineDialog, StageChip, usePipelines } from "./TicketPipeline";
-import { HandoffDialog, otherAgent } from "./Handoff";
+import { HandoffDialog } from "./Handoff";
 import { UndoTurnDialog } from "./UndoTurn";
 import { MessageLogDialog, useAgentMessages } from "./AgentMessages";
 import { RollupDialog } from "./Rollup";
@@ -28,8 +28,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import type { SessionInfo, SessionPreset, SessionStatus, Settings, WorktreeStateInfo, UsageReport, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice, MessageMode, OptionalTab } from "../shared/types";
-import { isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
 import { loadLS, openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -1603,7 +1602,7 @@ function App() {
                   focusedSession.shell
                     ? undefined
                     : {
-                        agent: otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude",
+                        agent: otherAgent(focusedSession.agent),
                         start: async () => {
                           const author = focusedSession;
                           const info = await window.mb.reviewStart(author.id);
@@ -2293,10 +2292,10 @@ function App() {
           <button
             key={u.agent}
             className="sb-update"
-            title={`${u.agent === "codex" ? "Codex" : "Claude Code"} ${u.installed} is installed; these sessions still run the version they started with:\n${u.sessions.map((x) => `  ${x.title} (${x.version})`).join("\n")}\nRestarting resumes each conversation.`}
+            title={`${AGENT_NAME[u.agent]} ${u.installed} is installed; these sessions still run the version they started with:\n${u.sessions.map((x) => `  ${x.title} (${x.version})`).join("\n")}\nRestarting resumes each conversation.`}
             onClick={() => setModal("restart")}
           >
-            {u.agent === "codex" ? "Codex" : "Claude Code"} {u.installed} · restart {plural(u.sessions.length, "session")}
+            {AGENT_NAME[u.agent]} {u.installed} · restart {plural(u.sessions.length, "session")}
           </button>
         ))}
         {(["working", "waiting", "idle", "dead"] as const).map((st) => {
@@ -2445,7 +2444,7 @@ function App() {
                     ? [{ label: `Undo a turn of ${titleOf(focusedSession)} — put its files back`, run: () => setUndoFor(focusedSession) }]
                     : []),
                   ...(!focusedSession.shell
-                    ? [{ label: `Continue in ${otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude Code"} — hand ${titleOf(focusedSession)} over with a summary`, run: () => setHandoffFor(focusedSession) }]
+                    ? [{ label: `Continue in ${AGENT_NAME[otherAgent(focusedSession.agent)]} — hand ${titleOf(focusedSession)} over with a summary`, run: () => setHandoffFor(focusedSession) }]
                     : []),
                   ...(ticketOfGroup(topOf(focusedSession))
                     ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]

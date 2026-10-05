@@ -3,8 +3,7 @@ import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { newPresetId } from "./Presets";
-import { isErr, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
-import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
+import { isErr, AGENT_NAME, slugBranch, sanitizeSegment, splitGroupKey, topOfKey, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
 import { loadLS } from "./uiUtil";
 import { agoShort } from "../shared/format";
 import { tildePath } from "../shared/paths";
@@ -35,7 +34,7 @@ export function NewSessionModal({
 }) {
   const [launch, setLaunch] = useState<LaunchKind>(initialLaunch ?? "claude");
   const isAgent = launch !== "shell";
-  const agentLabel = launch === "codex" ? "Codex" : "Claude";
+  const agentLabel = AGENT_NAME[launch === "codex" ? "codex" : "claude"];
   // model/effort ride the agent's command line; the last choice is remembered
   // per agent because people tend to have a working default for each
   const [model, setModel] = useState(() => loadLS("mb.newModel", ""));
@@ -204,8 +203,8 @@ export function NewSessionModal({
         )}
         <label>Launch</label>
         <span className="seg" style={{ display: "inline-flex" }}>
-          <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>Claude</button>
-          <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">Codex</button>
+          <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>{AGENT_NAME.claude}</button>
+          <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">{AGENT_NAME.codex}</button>
           <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
         </span>
         {launch === "codex" && (

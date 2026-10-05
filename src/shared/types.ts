@@ -1,6 +1,15 @@
 /** Which coding-agent CLI a session runs. */
 export type AgentKind = "claude" | "codex";
 
+/** Every agent, in the order the app lists them. */
+export const AGENT_KINDS: AgentKind[] = ["claude", "codex"];
+
+/** What the app calls each agent. */
+export const AGENT_NAME: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
+
+/** The agent a session hands over to, or asks for a second opinion; a session without one runs Claude. */
+export const otherAgent = (a: AgentKind | null | undefined): AgentKind => (a === "codex" ? "claude" : "codex");
+
 export type SessionStatus = "working" | "waiting" | "idle" | "dead";
 
 export interface SessionInfo {

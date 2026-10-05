@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, isErr, type IpcResult } from "../shared/types";
+import { GATES, TICKET_STAGES, stageLabel, isErr, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
 import { ago, plural } from "../shared/format";
 import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";

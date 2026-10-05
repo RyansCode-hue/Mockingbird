@@ -2,15 +2,13 @@ import { useEffect, useState } from "react";
 import { tokenBreakdown } from "./TerminalPane";
 import { resetText, pctNow } from "./usageFormat";
 import { Popover } from "./Popover";
-import type { UsageReport, UsageLimit, Meters } from "../shared/types";
-import { formatTokens, totalTokens } from "../shared/types";
+import { AGENT_NAME, formatTokens, totalTokens, type UsageReport, type UsageLimit, type Meters } from "../shared/types";
 import { loadLS } from "./uiUtil";
 import { fmtElapsed } from "../shared/format";
 
 /** The status bar's plan-usage meter and its popover. */
 
 type UsageShow = "claude" | "codex" | "both";
-const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
 
 /**
  * Plan usage in the status bar — Claude, Codex, or both — with a popover of

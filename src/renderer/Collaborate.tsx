@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabPermissionRequest, type CollabRoom, isErr, type IpcResult } from "../shared/types";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, isErr, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabPermissionRequest, type CollabRoom, type IpcResult } from "../shared/types";
 import {
   accessFlags,
   accessOf,

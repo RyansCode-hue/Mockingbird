@@ -5,7 +5,7 @@ import { PinIcon } from "./Icons";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { formatShare, formatTokens, isErr, totalTokens, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
+import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
@@ -811,7 +811,7 @@ export function TerminalPane({
           {onHandoff && (
             <button
               className="icon"
-              title={`Continue in ${session.agent === "codex" ? "Claude Code" : "Codex"} — hand this task over with a summary of what's done and what's next`}
+              title={`Continue in ${AGENT_NAME[otherAgent(session.agent)]} — hand this task over with a summary of what's done and what's next`}
               onClick={(e) => {
                 e.stopPropagation();
                 onHandoff();

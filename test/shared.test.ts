@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isErr, slugBranch, sanitizeSegment, splitGroupKey, normalizeGroupPath, topOfKey, groupUngrouped } from "../src/shared/types";
+import { AGENT_KINDS, AGENT_NAME, isErr, otherAgent, slugBranch, sanitizeSegment, splitGroupKey, normalizeGroupPath, topOfKey, groupUngrouped } from "../src/shared/types";
 
 describe("slugBranch", () => {
   it("joins the ticket number and a dashed title", () => {
@@ -58,5 +58,16 @@ describe("a failed main-process answer", () => {
     expect(isErr({ sessions: [] })).toBe(false);
     expect(isErr({ error: null })).toBe(false);
     expect(isErr({ state: "preparing", error: undefined })).toBe(false);
+  });
+});
+
+describe("agents", () => {
+  it("each have one name the app shows", () => {
+    expect(AGENT_KINDS.map((a) => AGENT_NAME[a])).toEqual(["Claude", "Codex"]);
+  });
+  it("hand over to the other one; a session from before Codex counts as Claude", () => {
+    expect(otherAgent("claude")).toBe("codex");
+    expect(otherAgent("codex")).toBe("claude");
+    expect(otherAgent(undefined)).toBe("codex");
   });
 });

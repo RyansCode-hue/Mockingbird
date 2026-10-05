@@ -1,9 +1,9 @@
 import React, { useState } from "react";
-import type { SessionPreset } from "../shared/types";
+import { AGENT_NAME, type SessionPreset } from "../shared/types";
 import { RepoPick } from "./RepoPick";
 import { baseName } from "../shared/paths";
 
-const LAUNCH_LABEL: Record<SessionPreset["launch"], string> = { claude: "Claude", codex: "Codex", shell: "Terminal" };
+const LAUNCH_LABEL: Record<SessionPreset["launch"], string> = { ...AGENT_NAME, shell: "Terminal" };
 
 export const newPresetId = () => `p-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 

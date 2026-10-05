@@ -1,4 +1,4 @@
-import type { AgentKind, CollabMessage, CollabModel, CollabParticipant, CollabParticipantSpec, CollabRoom } from "../shared/types";
+import { AGENT_KINDS, AGENT_NAME, type AgentKind, type CollabMessage, type CollabModel, type CollabParticipant, type CollabParticipantSpec, type CollabRoom } from "../shared/types";
 
 /** The models a room can seat (read from the CLIs), the seats a new room starts with, and each CLI's effort levels. */
 export type Catalog = { presets: CollabModel[]; defaults?: CollabModel[]; efforts: Record<AgentKind, string[]> };
@@ -6,7 +6,7 @@ export type Catalog = { presets: CollabModel[]; defaults?: CollabModel[]; effort
 /** The catalog as dropdown choices, grouped by CLI, plus "Other model id…". */
 export function presetOptions(catalog: Catalog, custom: string): { value: string; label: string; group?: string }[] {
   return [
-    ...catalog.presets.map((m) => ({ value: m.key, label: m.label, group: m.agent === "codex" ? "Codex" : "Claude" })),
+    ...catalog.presets.map((m) => ({ value: m.key, label: m.label, group: AGENT_NAME[m.agent] })),
     { value: custom, label: "Other model id…", group: "Other" },
   ];
 }
@@ -14,10 +14,7 @@ export function presetOptions(catalog: Catalog, custom: string): { value: string
 export const CUSTOM_MODEL = "__custom";
 
 /** The CLIs a typed-in model id can run on. */
-export const AGENT_OPTIONS: { value: AgentKind; label: string }[] = [
-  { value: "claude", label: "Claude" },
-  { value: "codex", label: "Codex" },
-];
+export const AGENT_OPTIONS: { value: AgentKind; label: string }[] = AGENT_KINDS.map((a) => ({ value: a, label: AGENT_NAME[a] }));
 
 /** An example model id for the CLI, as a typed-in model's placeholder. */
 export const modelPlaceholder = (agent: AgentKind) => (agent === "codex" ? "gpt-6-astra-mini" : "claude-sonnet-5");

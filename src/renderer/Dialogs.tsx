@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { Pick } from "./Menu";
 import { enterConfirms } from "./keys";
 import { titleOf } from "./appModel";
-import { isErr, type SessionInfo, type WorktreeStateInfo } from "../shared/types";
-import { splitGroupKey, topOfKey } from "../shared/types";
+import { isErr, splitGroupKey, topOfKey, type SessionInfo, type WorktreeStateInfo } from "../shared/types";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 
