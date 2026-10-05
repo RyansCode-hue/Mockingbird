@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { isErr, type AgentKind, type SessionInfo } from "../shared/types";
+import { baseName } from "../shared/paths";
 
 const NAME: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex" };
 export const otherAgent = (a: AgentKind | undefined): AgentKind => (a === "codex" ? "claude" : "codex");
@@ -50,7 +51,7 @@ export function HandoffDialog({
         <h3>Continue in {NAME[to]}</h3>
         <div className="sub-h">
           {NAME[to]} reads this session's conversation and writes a handoff: what's done, what's in progress and what's next.
-          Edit it if you like; a new {NAME[to]} session then starts from it in the same folder ({session.cwd.split("/").pop()}
+          Edit it if you like; a new {NAME[to]} session then starts from it in the same folder ({baseName(session.cwd)}
           {session.branch ? ` · ${session.branch}` : ""}) and group.
         </div>
         <label>Handoff</label>

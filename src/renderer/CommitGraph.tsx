@@ -3,9 +3,8 @@ import { isErr, type GitChange, type GraphCommit, type ScmGraph, type IpcResult 
 import { layoutGraph, laneCount, type GraphRow } from "./graphLayout";
 import { ago } from "../shared/format";
 import { settled } from "./settled";
+import { baseName, dirName } from "../shared/paths";
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
 const H = 24;
 const W = 12;

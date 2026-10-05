@@ -39,6 +39,7 @@ import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from 
 import { SettingsView, type SettingsSection } from "./Settings";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { fmtElapsed, plural } from "../shared/format";
+import { baseName } from "../shared/paths";
 
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
 /** What the side bar shows, picked from the activity bar as in VS Code. */
@@ -1802,7 +1803,7 @@ function App() {
                           {(s.branch || s.agent === "codex") && (
                             <span className="br">
                               {s.agent === "codex" ? "codex · " : ""}
-                              {s.branch && s.branch !== titleOf(s) ? s.branch : s.repoPath?.split("/").pop() ?? ""}
+                              {s.branch && s.branch !== titleOf(s) ? s.branch : (s.repoPath ? baseName(s.repoPath) : "")}
                             </span>
                           )}
                         </span>

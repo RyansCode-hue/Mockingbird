@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { isErr, type TranscriptHit, type IpcResult, type TranscriptSearchResult } from "../shared/types";
 import { ago } from "../shared/format";
 import { settled } from "./settled";
+import { tildePath } from "../shared/paths";
 
 const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
   pane: "go to pane",
@@ -78,7 +79,7 @@ export function ConversationRow({ hit: h, selected, onOpen, onHover }: { hit: Tr
         <span className={`ts-agent ${h.agent}`}>{h.agent}</span>
       </div>
       <div className="sv-conv-meta">
-        <span className="sv-conv-cwd">{h.cwd.replace(/^\/Users\/[^/]+/, "~")}</span>
+        <span className="sv-conv-cwd">{tildePath(h.cwd)}</span>
         <span>{ago(h.updated)}</span>
         <span className={`ts-open ${h.open.how}`}>{OPEN_LABEL[h.open.how]}</span>
       </div>

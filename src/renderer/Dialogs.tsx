@@ -5,6 +5,7 @@ import { titleOf } from "./appModel";
 import { isErr, type SessionInfo, type WorktreeStateInfo } from "../shared/types";
 import { splitGroupKey, topOfKey } from "../shared/types";
 import { plural } from "../shared/format";
+import { baseName } from "../shared/paths";
 
 /** The grid's small dialogs: rename, move to a group, restart all, close a session. */
 
@@ -234,7 +235,7 @@ export function CloseSessionDialog({
   const [mode, setMode] = useState<CleanupMode>("keep");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const wtName = session.cwd.split("/").pop();
+  const wtName = baseName(session.cwd);
   const st = isErr(wt) ? null : wt;
   const stateStr = st
     ? [st.dirty ? plural(st.dirtyFiles, "uncommitted file") : null, st.ahead ? plural(st.ahead, "unpushed commit") : null]

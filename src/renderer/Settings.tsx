@@ -8,6 +8,7 @@ import { OPTIONAL_TABS } from "../shared/types";
 import { loadLS } from "./uiUtil";
 import { TAB_LABELS } from "./tabs";
 import { plural } from "../shared/format";
+import { baseName } from "../shared/paths";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
 
@@ -152,7 +153,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
           <Pick value={target} onChange={(e) => setTarget(e.target.value)}>
             <option value="~/.claude/CLAUDE.md">global — ~/.claude/CLAUDE.md</option>
             {repoPaths.map((p) => (
-              <option key={p} value={`${p}/CLAUDE.md`}>{p.split("/").pop()} — {p}/CLAUDE.md</option>
+              <option key={p} value={`${p}/CLAUDE.md`}>{baseName(p)} — {p}/CLAUDE.md</option>
             ))}
           </Pick>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />

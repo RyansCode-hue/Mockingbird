@@ -13,6 +13,7 @@ import { dataPump, fitTerm, followSize, makeTerm, replay, termThemeListeners, tr
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
 import { fmtElapsed, plural } from "../shared/format";
+import { baseName } from "../shared/paths";
 
 export { applyTermTheme } from "./cachedTerm";
 
@@ -897,13 +898,13 @@ export function TerminalPane({
           {session.repoPath && (
             <div className="cell">
               <span className="k">Repo</span>
-              <span className="v">{session.repoPath.split("/").pop()}</span>
+              <span className="v">{baseName(session.repoPath)}</span>
             </div>
           )}
           <div className="cell folder" title={session.cwd}>
             <span className="k">Folder</span>
             <span className="v">
-              <span className="fn">{session.cwd.split("/").pop()}</span>
+              <span className="fn">{baseName(session.cwd)}</span>
               {onOpenFiles && (
                 <button
                   className="mini"

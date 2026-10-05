@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import type { SessionPreset } from "../shared/types";
 import { RepoPick } from "./RepoPick";
+import { baseName } from "../shared/paths";
 
 const LAUNCH_LABEL: Record<SessionPreset["launch"], string> = { claude: "Claude", codex: "Codex", shell: "Terminal" };
 
@@ -8,7 +9,7 @@ export const newPresetId = () => `p-${Date.now().toString(36)}${Math.random().to
 
 /** One line saying what a preset starts, e.g. "Claude · backoffice · new branch review-{date} off dev · worktree". */
 function presetSummary(p: SessionPreset): string {
-  const repo = p.repoPath ? p.repoPath.split("/").pop() : "home folder";
+  const repo = p.repoPath ? baseName(p.repoPath) : "home folder";
   const branch =
     p.branch.mode === "checkout"
       ? "as checked out"

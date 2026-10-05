@@ -1,3 +1,5 @@
+import { baseName } from "./paths";
+
 /**
  * What a file is written in, judged by its name: one table for everything that
  * treats files by type (the editor's language, the diff highlighter), so they
@@ -48,7 +50,7 @@ const BY_EXT: Record<string, FileLanguage> = {
 
 /** The file's language by its name; null for plain text. */
 export function fileLanguage(path: string): FileLanguage | null {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const name = baseName(path).toLowerCase();
   if (name === "dockerfile" || name.startsWith("dockerfile.")) return "dockerfile";
   if (name === "makefile") return "makefile";
   if (name === ".env" || name.startsWith(".env.")) return "properties";

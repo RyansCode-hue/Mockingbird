@@ -5,6 +5,7 @@ import { addOutput, clearOutput, currentSession, useDebug } from "./debugStore";
 import { RUN_DOT } from "./runDisplay";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
+import { baseName } from "../shared/paths";
 
 const DEBUG_CONSOLE = "__debug-console";
 
@@ -72,7 +73,6 @@ function DebugConsole() {
   );
 }
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /**
  * The panel under the grid (⌘J), as in VS Code: a tab per service log. Logs

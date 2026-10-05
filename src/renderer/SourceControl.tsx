@@ -6,9 +6,8 @@ import { CommitGraph } from "./CommitGraph";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
 import { plural } from "../shared/format";
+import { baseName, dirName } from "../shared/paths";
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
 const TITLE: Record<ScmEntry["status"], string> = { M: "Modified", A: "Added", D: "Deleted", R: "Renamed", U: "Untracked", C: "Conflict" };
 

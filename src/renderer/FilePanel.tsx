@@ -11,6 +11,7 @@ import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
 import { settled } from "./settled";
 import { plural } from "../shared/format";
+import { baseName, dirName, tildePath } from "../shared/paths";
 
 /** A request's answer, with a failed request (a rejected promise) as its error, so it shows instead of "loading…" forever. */
 
@@ -31,10 +32,7 @@ const STATUS_TITLE: Record<GitChange["status"], string> = {
   U: "Untracked",
 };
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 /** A path with the home folder shown as ~. */
-const tildePath = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
 
 const SLIDE_MS = 200;
 

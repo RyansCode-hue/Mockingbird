@@ -5,6 +5,7 @@ import { ago, plural } from "../shared/format";
 import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";
 import { useEscape } from "./useEscape";
+import { baseName } from "../shared/paths";
 
 
 const pipelines = createIpcStore<Record<string, TicketPipeline>>({}, ({ set }) => {
@@ -170,7 +171,7 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
           <select value={sid} onChange={(e) => setSid(e.target.value)}>
             {live.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.ticketTitle ?? s.title} · {s.branch ?? s.cwd.split("/").pop()}
+                {s.ticketTitle ?? s.title} · {s.branch ?? baseName(s.cwd)}
               </option>
             ))}
           </select>

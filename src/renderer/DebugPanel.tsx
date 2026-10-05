@@ -3,8 +3,8 @@ import { isErr, type DebugFrame, type DebugScope, type DebugSessionInfo, type De
 import { currentSession, selectFrame, useBreakpoints, useDebug } from "./debugStore";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
+import { baseName } from "../shared/paths";
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /** One variable, expandable when it has children (fetched on first open). */
 function VarRow({ sid, v, depth }: { sid: string; v: DebugVariable; depth: number }) {

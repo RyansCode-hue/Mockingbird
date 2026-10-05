@@ -7,6 +7,7 @@ import { isErr, type AgentKind, type SessionInfo, type SessionPreset, type RepoE
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 import { loadLS } from "./uiUtil";
 import { agoShort } from "../shared/format";
+import { tildePath } from "../shared/paths";
 
 /** Starting sessions: New session (⌘N) and Import. */
 
@@ -285,7 +286,7 @@ export function NewSessionModal({
             <div key={r.path} className={`item ${sel?.path === r.path ? "sel" : ""}`} onClick={() => setSel(r)}>
               <div className="meta">
                 <div className="t">{r.name}</div>
-                <div className="s">{r.path.replace(/^\/Users\/[^/]+/, "~")}</div>
+                <div className="s">{tildePath(r.path)}</div>
               </div>
             </div>
           ))}
@@ -610,7 +611,7 @@ export function ImportModal({
                   {c.agent === "codex" && <span className="ts-agent codex">codex</span>}
                 </div>
                 <div className="s">
-                  {c.cwd.replace(/^\/Users\/[^/]+/, "~")}
+                  {tildePath(c.cwd)}
                   {c.blocked ? ` · ${c.blocked}` : c.restore ? " · restores your closed session" : ""}
                 </div>
                 {c.snippet && (

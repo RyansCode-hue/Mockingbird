@@ -3,6 +3,7 @@ import { isErr, type FileList, type SessionInfo, type IpcResult } from "../share
 import { fuzzyFilter } from "./fuzzy";
 import { useListNav } from "./listNav";
 import { plural } from "../shared/format";
+import { baseName } from "../shared/paths";
 
 
 /** "src/app.ts:42" → the path and the line; a bare path has no line. */
@@ -71,7 +72,7 @@ export function QuickOpen({
           <span className="prompt">⌘P</span>
           <input
             autoFocus
-            placeholder={session ? `Go to a file in ${session.cwd.slice(session.cwd.lastIndexOf("/") + 1)} — name:line jumps to a line` : "Focus a session first"}
+            placeholder={session ? `Go to a file in ${baseName(session.cwd)} — name:line jumps to a line` : "Focus a session first"}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {

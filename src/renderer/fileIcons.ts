@@ -1,3 +1,4 @@
+import { baseName } from "../shared/paths";
 /**
  * The explorer's file-type badges: a short label in the color of the language
  * family, from the theme's palette. Unknown types get no badge (a plain file icon).
@@ -46,7 +47,7 @@ const BY_NAME: Record<string, FileBadge> = {
 };
 
 export function fileBadge(path: string): FileBadge | null {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const name = baseName(path).toLowerCase();
   if (BY_NAME[name]) return BY_NAME[name];
   if (name.startsWith("dockerfile.")) return BY_NAME.dockerfile;
   if (name.startsWith(".env.")) return BY_NAME[".env"];

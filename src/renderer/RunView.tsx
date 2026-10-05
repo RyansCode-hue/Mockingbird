@@ -7,8 +7,8 @@ import { useDebug } from "./debugStore";
 import { RUN_DOT, draftForEditing, stripRepo } from "./runDisplay";
 import { useAction } from "./useAction";
 import type { PortConflict } from "../main/run";
+import { baseName } from "../shared/paths";
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 
 const ACTIVE = new Set(["starting", "running", "stopping"]);

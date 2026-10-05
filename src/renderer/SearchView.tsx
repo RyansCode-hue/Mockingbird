@@ -3,14 +3,13 @@ import { isErr, type FileHit, type FileSearch, type FileSearchOptions, type Sess
 import { ConversationRow, useTranscriptSearch } from "./TranscriptSearch";
 import { useListNav } from "./listNav";
 import { plural } from "../shared/format";
+import { baseName, dirName } from "../shared/paths";
 
 export interface SearchState extends FileSearchOptions {
   scope: "conversations" | "files";
   q: string;
 }
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
 /** Where the query matches in a line, as [start, end) ranges — what the result list marks. */
 export function matchRanges(text: string, q: string, opts: FileSearchOptions): [number, number][] {

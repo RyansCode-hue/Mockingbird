@@ -31,6 +31,7 @@ import { guessIndent, lineBreakOf, splitBom, toEditorText, toFileText, type Line
 import { fileLanguage, type FileLanguage } from "../shared/fileTypes";
 import { settled } from "./settled";
 import { plural } from "../shared/format";
+import { baseName } from "../shared/paths";
 
 const CM_LANGUAGE: Record<FileLanguage, (() => Extension) | null> = {
   typescript: () => javascript({ typescript: true }),
@@ -368,7 +369,7 @@ async function applyRename(edits: LspFileEdits[], sessionId: string, root: strin
   let saved = 0;
   const problems: string[] = [];
   for (const fe of edits) {
-    const name = fe.path.split("/").pop();
+    const name = baseName(fe.path);
     const hit = [...buffers].find(([, b]) => b.lsp?.ctx.abs === fe.path);
     if (hit) {
       const [key, b] = hit;
