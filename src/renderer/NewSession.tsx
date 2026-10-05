@@ -9,6 +9,7 @@ import { tildePath } from "../shared/paths";
 import { Modal } from "./Modal";
 import { usePersisted, writePref, readPref } from "./prefs";
 import { COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
+import { useAction } from "./useAction";
 
 /** Starting sessions: New session (⌘N) and Import. */
 
@@ -99,7 +100,7 @@ export function NewSessionModal({
     setUseWorktreeRaw(v);
     writePref("mb.newWorktree", v);
   };
-  const [error, setError] = useState("");
+  const { isBusy, busy, run, error, setError } = useAction();
   // ADO ticket picker — same flow as the dashboard's Start session. It keeps
   // everyone's tickets: it defaults to yours (identity comes from the PAT) but
   // you can pick up someone else's. Manual entry works without the board.
@@ -155,31 +156,28 @@ export function NewSessionModal({
 
   // one session per click: a second click while this one is being made would
   // create another session (and worktree)
-  const [busy, setBusy] = useState(false);
   const create = async () => {
-    if (busy) return;
-    setBusy(true);
+    if (isBusy()) return;
     const t = allTickets.find((x) => String(x.id) === ticketSel);
-    const info = await window.mb.createSession({
-      repoPath: sel?.path ?? null,
-      ticketId: ticketId || undefined,
-      ticketTitle: ticketTitle || undefined,
-      taskGroup: group || undefined,
-      useWorktree: useWorktree && !!sel,
-      ...(sel && baseBranch ? { baseBranch } : {}),
-      shell: launch === "shell",
-      ...(isAgent ? { agent: launch } : {}),
-      ...(isAgent && effModel ? { model: effModel } : {}),
-      ...(isAgent && effEffort ? { effort: effEffort } : {}),
-      initialPrompt:
-        isAgent && t && sendTicket
-          ? ticketKickoffPrompt(t.id, t.title, t.description)
-          : undefined,
-    });
-    if (isErr(info)) {
-      setBusy(false);
-      return setError(info.error);
-    }
+    const info = await run("create", () =>
+      window.mb.createSession({
+        repoPath: sel?.path ?? null,
+        ticketId: ticketId || undefined,
+        ticketTitle: ticketTitle || undefined,
+        taskGroup: group || undefined,
+        useWorktree: useWorktree && !!sel,
+        ...(sel && baseBranch ? { baseBranch } : {}),
+        shell: launch === "shell",
+        ...(isAgent ? { agent: launch } : {}),
+        ...(isAgent && effModel ? { model: effModel } : {}),
+        ...(isAgent && effEffort ? { effort: effEffort } : {}),
+        initialPrompt:
+          isAgent && t && sendTicket
+            ? ticketKickoffPrompt(t.id, t.title, t.description)
+            : undefined,
+      })
+    );
+    if (isErr(info)) return;
     onCreated(info);
   };
 
@@ -470,7 +468,7 @@ export function NewSessionModal({
             no repo — starts a plain {agentLabel} chat (fully tracked: resumable, restartable)
           </span>
         )}
-        <button className="primary cta" disabled={busy} onClick={create}>
+        <button className="primary cta" disabled={!!busy} onClick={create}>
           {busy ? "Starting…" : launch === "shell" ? "Open terminal" : sel ? `Start ${agentLabel.toLowerCase()}` : "Start chat"}
         </button>
       </div>
@@ -505,8 +503,7 @@ export function ImportModal({
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<ImportRow[] | null>(null);
   const [sel, setSel] = useState<Map<string, ImportRow>>(new Map());
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const { busy, run, error, setError } = useAction();
 
   useEffect(() => {
     window.mb.listImportable().then((r: ImportableConversation[] | { error: string }) => {
@@ -553,21 +550,22 @@ export function ImportModal({
     });
 
   const importSelected = async () => {
-    setBusy(true);
     const opened: SessionInfo[] = [];
     const failures: string[] = [];
-    for (const c of sel.values()) {
-      const info = c.restore
-        ? await window.mb.relaunchSession(c.restore)
-        : await window.mb.createSession({ repoPath: c.cwd, useWorktree: false, resumeSessionId: c.id, agent: c.agent, title: c.title.slice(0, 80) });
-      if (!info || isErr(info)) failures.push(`✕ ${c.title.slice(0, 40)}: ${info?.error ?? "that session is no longer saved"}`);
-      else opened.push(info);
-    }
+    const r = await run("import", async () => {
+      for (const c of sel.values()) {
+        const info = c.restore
+          ? await window.mb.relaunchSession(c.restore)
+          : await window.mb.createSession({ repoPath: c.cwd, useWorktree: false, resumeSessionId: c.id, agent: c.agent, title: c.title.slice(0, 80) });
+        if (!info || isErr(info)) failures.push(`✕ ${c.title.slice(0, 40)}: ${info?.error ?? "that session is no longer saved"}`);
+        else opened.push(info);
+      }
+    });
+    if (isErr(r)) failures.push(`✕ ${r.error}`);
     if (opened.length) onOpened(opened);
     if (failures.length) {
       setError(`Opened ${opened.length}, failed ${failures.length}:\n\n${failures.join("\n")}`);
       setSel(new Map());
-      setBusy(false);
     } else {
       onDone();
     }
@@ -626,7 +624,7 @@ export function ImportModal({
       {error && <div className="err">{error}</div>}
       <div className="row">
         <button className="outline" onClick={onClose}>Cancel</button>
-        <button className="primary" disabled={sel.size === 0 || busy} onClick={importSelected}>
+        <button className="primary" disabled={sel.size === 0 || !!busy} onClick={importSelected}>
           {busy ? "Opening…" : `Open ${sel.size || ""} session${sel.size === 1 ? "" : "s"}`}
         </button>
       </div>

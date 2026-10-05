@@ -6,6 +6,7 @@ import { isErr, splitGroupKey, topOfKey, type SessionInfo, type WorktreeStateInf
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";
+import { useAction } from "./useAction";
 
 /** The grid's small dialogs: rename, move to a group, restart all, close a session. */
 
@@ -147,25 +148,17 @@ export function RestartAllDialog({
   onDone: (restarted: string[]) => void;
 }) {
   const [includeBusy, setIncludeBusy] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const { busy, run, error, setError } = useAction();
 
   const live = sessions.filter((s) => s.status !== "dead" && !s.shell);
   const active = live.filter((s) => s.status === "working" || s.status === "waiting");
   const count = includeBusy ? live.length : live.length - active.length;
 
-  const run = async () => {
-    setBusy(true);
-    setError("");
-    const r = await window.mb.restartAllSessions(includeBusy);
-    if (isErr(r)) {
-      setError(r.error);
-      setBusy(false);
-      return;
-    }
+  const restart = async () => {
+    const r = await run("restart", () => window.mb.restartAllSessions(includeBusy));
+    if (isErr(r)) return;
     if (r.failed?.length) {
       setError(`${r.failed.length} couldn't restart: ${r.failed.map((f: any) => f.error).join("; ")}`);
-      setBusy(false);
       onDone(r.restarted ?? []);
       return;
     }
@@ -195,10 +188,10 @@ export function RestartAllDialog({
       )}
       {error && <div className="err">{error}</div>}
       <div className="row" style={{ marginTop: 14 }}>
-        <button className="outline" onClick={onClose} disabled={busy}>
+        <button className="outline" onClick={onClose} disabled={!!busy}>
           Cancel
         </button>
-        <button className="primary" onClick={run} disabled={busy || count === 0}>
+        <button className="primary" onClick={restart} disabled={!!busy || count === 0}>
           {busy ? "restarting…" : count === 0 ? "nothing to restart" : `Restart ${plural(count, "session")}`}
         </button>
       </div>

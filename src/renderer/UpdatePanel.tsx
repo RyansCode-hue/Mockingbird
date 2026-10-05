@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import { UPDATE_STEPS, isErr, type UpdateProgress } from "../shared/types";
+import { UPDATE_STEPS, type UpdateProgress } from "../shared/types";
 import { Modal } from "./Modal";
+import { useAction } from "./useAction";
 
 /**
  * Updating from the user's clone: the build runs while Mockingbird keeps
@@ -20,7 +21,7 @@ export function UpdatePanel({
   onOpenGitHub?: () => void;
 }) {
   const [showLog, setShowLog] = useState(progress.state === "failed");
-  const [error, setError] = useState("");
+  const { busy, run, error } = useAction();
   const logRef = useRef<HTMLPreElement>(null);
   const { state } = progress;
   const target = progress.version ?? latest;
@@ -32,12 +33,6 @@ export function UpdatePanel({
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [progress.log.length, showLog]);
-
-  const act = async (fn: () => Promise<unknown>) => {
-    setError("");
-    const r: any = await fn();
-    if (isErr(r)) setError(r.error);
-  };
 
   const mark = (id: string) => {
     if (progress.done.includes(id as never)) return <span className="upd-mark ok">✓</span>;
@@ -93,25 +88,25 @@ export function UpdatePanel({
           <>
             <button className="outline" onClick={onClose}>Close</button>
             {onOpenGitHub && <button className="outline" onClick={onOpenGitHub}>Open on GitHub</button>}
-            <button className="primary" onClick={() => act(() => window.mb.updatePrepare())}>Update</button>
+            <button className="primary" disabled={!!busy} onClick={() => run("prepare", () => window.mb.updatePrepare())}>Update</button>
           </>
         )}
         {state === "preparing" && (
           <>
             <button className="outline" onClick={onClose} title="The build carries on; the status bar says when it's ready">Hide</button>
-            <button className="outline" onClick={() => act(() => window.mb.updateCancel())}>Cancel</button>
+            <button className="outline" disabled={!!busy} onClick={() => run("cancel", () => window.mb.updateCancel())}>Cancel</button>
           </>
         )}
         {state === "ready" && (
           <>
             <button className="outline" onClick={onClose}>Later</button>
-            <button className="primary" onClick={() => act(() => window.mb.updateInstall())}>Restart to update</button>
+            <button className="primary" disabled={!!busy} onClick={() => run("install", () => window.mb.updateInstall())}>Restart to update</button>
           </>
         )}
         {state === "failed" && (
           <>
             <button className="outline" onClick={onClose}>Close</button>
-            <button className="primary" onClick={() => act(() => window.mb.updatePrepare())}>Try again</button>
+            <button className="primary" disabled={!!busy} onClick={() => run("prepare", () => window.mb.updatePrepare())}>Try again</button>
           </>
         )}
       </div>

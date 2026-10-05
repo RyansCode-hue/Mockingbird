@@ -8,6 +8,8 @@ import { TAB_LABELS } from "./tabs";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { readPref, writePref } from "./prefs";
+import { settled } from "./settled";
+import { useAction } from "./useAction";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
 
@@ -228,8 +230,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
 /** Settings card: every <repo>-worktrees checkout, with strays removable. */
 function WorktreeJanitor() {
   const [list, setList] = useState<WorktreeEntry[] | null>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+  const { doing, run, error, setError } = useAction();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const load = async () => {
     const r = await window.mb.listWorktrees();
@@ -257,13 +258,14 @@ function WorktreeJanitor() {
     const what = ws.length === 1 ? `the worktree folder ${ws[0].path}` : `${ws.length} worktree folders`;
     const msg = (risks.length ? `${risks.join("\n")}\n\n` : "") + `Remove ${what}?`;
     if (!window.confirm(msg)) return;
-    setBusy("remove");
     const failures: string[] = [];
-    for (const w of ws) {
-      const r = await window.mb.removeWorktree(w.repoPath, w.path);
-      if (isErr(r)) failures.push(`${w.name}: ${r.error}`);
-    }
-    setBusy(null);
+    const r = await run("remove", async () => {
+      for (const w of ws) {
+        const one = await window.mb.removeWorktree(w.repoPath, w.path);
+        if (isErr(one)) failures.push(`${w.name}: ${one.error}`);
+      }
+    });
+    if (isErr(r)) failures.push(r.error);
     await load(); // reload first: it clears the error, and these failures must stay visible
     setError(failures.join(" · "));
   };
@@ -278,13 +280,14 @@ function WorktreeJanitor() {
   const allChosen = strays.length > 0 && chosen.length === strays.length;
   const movable = list?.filter((w) => w.legacy && !w.inUse && !w.error) ?? [];
   const migrate = async (ws: WorktreeEntry[]) => {
-    setBusy("migrate");
     const failures: string[] = [];
-    for (const w of ws) {
-      const r = await window.mb.migrateWorktree(w.repoPath, w.path);
-      if (isErr(r)) failures.push(`${w.name}: ${r.error}`);
-    }
-    setBusy(null);
+    const r = await run("migrate", async () => {
+      for (const w of ws) {
+        const one = await window.mb.migrateWorktree(w.repoPath, w.path);
+        if (isErr(one)) failures.push(`${w.name}: ${one.error}`);
+      }
+    });
+    if (isErr(r)) failures.push(r.error);
     await load(); // reload first: it clears the error, and these failures must stay visible
     setError(failures.join(" · "));
   };
@@ -299,8 +302,8 @@ function WorktreeJanitor() {
       </label>
       {movable.length > 0 && (
         <div className="row" style={{ justifyContent: "flex-start", gap: 8, marginTop: 4 }}>
-          <button className="outline" disabled={busy === "migrate"} onClick={() => migrate(movable)}>
-            {busy === "migrate" ? "moving…" : `Move ${plural(movable.length, "old-layout worktree")} into worktrees/`}
+          <button className="outline" disabled={doing("migrate")} onClick={() => migrate(movable)}>
+            {doing("migrate") ? "moving…" : `Move ${plural(movable.length, "old-layout worktree")} into worktrees/`}
           </button>
           <span className="wi-note">from <code>&lt;repo&gt;-worktrees/</code> · in-use ones are skipped</span>
         </div>
@@ -315,8 +318,8 @@ function WorktreeJanitor() {
             />
             <span>all {strays.length} not in use</span>
           </label>
-          <button className="outline" disabled={chosen.length === 0 || busy === "remove"} onClick={() => remove(chosen)}>
-            {busy === "remove" ? "removing…" : `Remove ${chosen.length || ""} selected`}
+          <button className="outline" disabled={chosen.length === 0 || doing("remove")} onClick={() => remove(chosen)}>
+            {doing("remove") ? "removing…" : `Remove ${chosen.length || ""} selected`}
           </button>
         </div>
       )}
@@ -355,7 +358,7 @@ function WorktreeJanitor() {
               {w.inUse ? (
                 <span className="wt-live">in use</span>
               ) : (
-                <button className="outline" disabled={busy === "remove"} onClick={() => remove([w])}>
+                <button className="outline" disabled={doing("remove")} onClick={() => remove([w])}>
                   Remove
                 </button>
               )}
@@ -514,15 +517,15 @@ export function SettingsView({
   const connectAdo = async () => {
     if (!adoCfg) return;
     setConnecting(true);
-    const r = await window.mb.adoConfigSet(adoCfg);
-    if (isErr(r)) {
+    try {
+      const r = await settled(window.mb.adoConfigSet(adoCfg));
+      if (isErr(r)) return setAdoNote({ ok: false, msg: `Couldn't save: ${r.error}` });
+      const me = await settled(window.mb.adoMe());
+      setAdoNote(isErr(me) ? { ok: false, msg: me.error } : { ok: true, msg: `Connected as ${me.display}` });
+      loadStatus();
+    } finally {
       setConnecting(false);
-      return setAdoNote({ ok: false, msg: `Couldn't save: ${r.error}` });
     }
-    const me = await window.mb.adoMe();
-    setConnecting(false);
-    setAdoNote(isErr(me) ? { ok: false, msg: me.error } : { ok: true, msg: `Connected as ${me.display}` });
-    loadStatus();
   };
   const st = status && !isErr(status) ? status : null;
   const agentLine = (a?: AgentCheck) =>

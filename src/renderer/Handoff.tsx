@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { isErr, AGENT_NAME, otherAgent, type AgentKind, type SessionInfo } from "../shared/types";
 import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";
+import { useAction } from "./useAction";
 
 /**
  * Hand a session's task to the other agent: it reads the conversation and
@@ -20,28 +21,20 @@ export function HandoffDialog({
   const from: AgentKind = session.agent ?? "claude";
   const to = otherAgent(from);
   const [text, setText] = useState("");
-  const [drafting, setDrafting] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [error, setError] = useState("");
+  const { doing, run, error } = useAction();
+  const drafting = doing("draft");
+  const starting = doing("start");
   const [closeOld, setCloseOld] = useState(false);
   const draft = async () => {
-    setDrafting(true);
-    setError("");
-    const r = await window.mb.handoffDraft(session.id);
-    setDrafting(false);
-    if (isErr(r)) return setError(r.error);
-    setText(r.handoff);
+    const r = await run("draft", () => window.mb.handoffDraft(session.id));
+    if (!isErr(r)) setText(r.handoff);
   };
   useEffect(() => {
     draft();
   }, [session.id]);
   const start = async () => {
-    setStarting(true);
-    setError("");
-    const r = await window.mb.handoffStart(session.id, text);
-    setStarting(false);
-    if (isErr(r)) return setError(r.error);
-    onStarted(r, closeOld);
+    const r = await run("start", () => window.mb.handoffStart(session.id, text));
+    if (!isErr(r)) onStarted(r, closeOld);
   };
   return (
     <Modal className="modal" onClose={onClose}>

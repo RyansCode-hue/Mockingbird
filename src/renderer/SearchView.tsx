@@ -4,6 +4,7 @@ import { ConversationRow, useTranscriptSearch } from "./TranscriptSearch";
 import { useListNav } from "./listNav";
 import { plural } from "../shared/format";
 import { baseName, dirName } from "../shared/paths";
+import { settled } from "./settled";
 
 export interface SearchState extends FileSearchOptions {
   scope: "conversations" | "files";
@@ -137,9 +138,10 @@ export function SearchView({
     if (busy) return;
     setBusy(true);
     conv.setError("");
-    const err = await onOpenConversation(h);
+    const err = await settled(onOpenConversation(h), "Couldn't open it");
     setBusy(false);
-    if (err) conv.setError(err);
+    if (isErr(err)) conv.setError(err.error);
+    else if (err) conv.setError(err);
   };
   const openAt = (i: number) => {
     const h = flat[i];

@@ -11,6 +11,7 @@ import { openLink } from "./uiUtil";
 import { ago, agoShort, fmtElapsed, plural } from "../shared/format";
 import { Modal } from "./Modal";
 import { usePersisted } from "./prefs";
+import { useAction } from "./useAction";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -43,7 +44,7 @@ export function DashboardBoard({
   const [items, setItems] = useState<AdoWorkItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [stateCols, setStateCols] = useState<string[]>([]);
-  const [error, setError] = useState("");
+  const { doing, run, error, setError } = useAction();
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   // filters: multi-select "Assigned to" (empty = everyone) and hidden columns
@@ -107,16 +108,13 @@ export function DashboardBoard({
   const [state, setState] = useState("");
   const [desc, setDesc] = useState("");
   const [typeStates, setTypeStates] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
   // discussion
   const [comments, setComments] = useState<AdoComment[] | null>(null);
   const [draft, setDraft] = useState("");
-  const [posting, setPosting] = useState(false);
   // start/attach session
   const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [repoPath, setRepoPath] = useState("");
   const [ticketName, setTicketName] = useState("");
-  const [busy, setBusy] = useState(false);
   const [attachId, setAttachId] = useState("");
   const [branchMode, setBranchMode] = useState<"new" | "existing">("new");
   const [dashWorktree, setDashWorktree] = useState(true);
@@ -248,25 +246,19 @@ export function DashboardBoard({
 
   const save = async () => {
     if (!detail || !dirty) return;
-    setSaving(true);
-    setError("");
     const patch: Record<string, string> = {};
     if (title !== detail.title) patch.title = title;
     if (state !== detail.state) patch.state = state;
     if (desc !== detail.description) patch.description = desc;
-    const r = await window.mb.adoUpdate(detail.id, patch);
-    setSaving(false);
-    if (isErr(r)) return setError(r.error);
+    const r = await run("save", () => window.mb.adoUpdate(detail.id, patch));
+    if (isErr(r)) return;
     setItems((p) => (p ? p.map((i) => (i.id === detail.id ? { ...i, title, state, description: desc } : i)) : p));
   };
 
   const postComment = async () => {
     if (!detail || !draft.trim()) return;
-    setPosting(true);
-    setError("");
-    const r = await window.mb.adoAddComment(detail.id, draft.trim());
-    setPosting(false);
-    if (isErr(r)) return setError(r.error);
+    const r = await run("comment", () => window.mb.adoAddComment(detail.id, draft.trim()));
+    if (isErr(r)) return;
     setComments((p) => [...(p ?? []), r]);
     setDraft("");
   };
@@ -281,23 +273,22 @@ export function DashboardBoard({
   const startSession = async () => {
     if (!detail || !repoPath) return;
     if (branchMode === "existing" && !existingBranch) return;
-    setBusy(true);
-    setError("");
     const prompt = sendTicket ? ticketKickoffPrompt(detail.id, title, desc) : undefined;
-    const info = await window.mb.createSession({
-      repoPath,
-      ticketId: String(detail.id),
-      ticketTitle: ticketName || suggestTicketName(detail.title),
-      useWorktree: dashWorktree,
-      ...(branchMode === "existing"
-        ? { branchName: existingBranch }
-        : baseBranch
-          ? { baseBranch }
-          : {}),
-      initialPrompt: prompt,
-    });
-    setBusy(false);
-    if (isErr(info)) return setError(info.error);
+    const info = await run("start", () =>
+      window.mb.createSession({
+        repoPath,
+        ticketId: String(detail.id),
+        ticketTitle: ticketName || suggestTicketName(detail.title),
+        useWorktree: dashWorktree,
+        ...(branchMode === "existing"
+          ? { branchName: existingBranch }
+          : baseBranch
+            ? { baseBranch }
+            : {}),
+        initialPrompt: prompt,
+      })
+    );
+    if (isErr(info)) return;
     onCreated(info);
   };
 
@@ -485,8 +476,8 @@ export function DashboardBoard({
             <span className="path">{detail.type}{detail.assignedTo ? ` · ${detail.assignedTo}` : " · Unassigned"}</span>
             <span style={{ marginLeft: "auto" }} />
             {dirty && <span className="kbd" style={{ color: "var(--amber)" }}>unsaved</span>}
-            <button className="primary" disabled={!dirty || saving} onClick={save}>
-              {saving ? "Saving…" : "Save"}
+            <button className="primary" disabled={!dirty || doing("save")} onClick={save}>
+              {doing("save") ? "Saving…" : "Save"}
             </button>
             <button className="outline" onClick={() => openLink(detail.url)}>Open in ADO</button>
             <button className="icon" title="Close (esc)" onClick={() => setDetailId(null)}>✕</button>
@@ -534,8 +525,8 @@ export function DashboardBoard({
                   style={{ minHeight: 64 }}
                 />
                 <div className="row">
-                  <button className="primary" disabled={!draft.trim() || posting} onClick={postComment}>
-                    {posting ? "Posting…" : "Comment"}
+                  <button className="primary" disabled={!draft.trim() || doing("comment")} onClick={postComment}>
+                    {doing("comment") ? "Posting…" : "Comment"}
                   </button>
                 </div>
               </div>
@@ -630,10 +621,10 @@ export function DashboardBoard({
               <button
                 className="primary"
                 style={{ marginTop: 7 }}
-                disabled={!repoPath || busy || (branchMode === "existing" && !existingBranch)}
+                disabled={!repoPath || doing("start") || (branchMode === "existing" && !existingBranch)}
                 onClick={startSession}
               >
-                {busy ? "Starting…" : "Start session"}
+                {doing("start") ? "Starting…" : "Start session"}
               </button>
               {branchMode === "new" && repoPath && ticketName && (
                 <div className="wi-note">
