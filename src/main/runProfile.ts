@@ -18,9 +18,11 @@ export async function mainCheckout(cwd: string): Promise<string> {
   return path.basename(common) === ".git" ? path.dirname(common) : common;
 }
 
+/** A short id of a main checkout's path: repos that share a folder name get different ones. */
+export const repoHash = (repo: string) => crypto.createHash("sha1").update(repo).digest("hex").slice(0, 8);
+
 export function profilePath(repo: string): string {
-  const hash = crypto.createHash("sha1").update(repo).digest("hex").slice(0, 8);
-  return path.join(RUN_DIR, `${path.basename(repo).replace(/[^\w.-]/g, "_")}-${hash}.json`);
+  return path.join(RUN_DIR, `${path.basename(repo).replace(/[^\w.-]/g, "_")}-${repoHash(repo)}.json`);
 }
 
 const isObj = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);

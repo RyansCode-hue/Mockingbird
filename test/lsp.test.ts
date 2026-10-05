@@ -52,14 +52,31 @@ describe("reading server replies", () => {
   });
   it("collects a rename's edits per file, and refuses file operations", () => {
     const e = { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, newText: "y" };
-    expect(workspaceEdits({ changes: { "file:///a.ts": [e] }, documentChanges: [{ textDocument: { uri: "file:///a.ts", version: 1 }, edits: [e] }] })).toEqual([{ path: "/a.ts", edits: [e, e] }]);
+    const f = { ...e, newText: "z" };
+    expect(workspaceEdits({ changes: { "file:///a.ts": [e, f] } })).toEqual([{ path: "/a.ts", edits: [e, f] }]);
     expect(() => workspaceEdits({ documentChanges: [{ kind: "rename", oldUri: "file:///a", newUri: "file:///b" }] })).toThrow(/rename a file/);
+  });
+  it("applies a rename sent in both forms once, from documentChanges", () => {
+    const e = { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, newText: "y" };
+    expect(workspaceEdits({ changes: { "file:///a.ts": [e] }, documentChanges: [{ textDocument: { uri: "file:///a.ts", version: 1 }, edits: [e] }] })).toEqual([{ path: "/a.ts", edits: [e] }]);
   });
   it("picks the server by extension", () => {
     expect(serverFor("/x/a.tsx")).toMatchObject({ languageId: "typescriptreact", spec: { id: "typescript" } });
     expect(serverFor("/x/a.py")?.spec.id).toBe("python");
     expect(serverFor("/x/a.cs")?.spec.id).toBe("csharp");
     expect(serverFor("/x/a.md")).toBeNull();
+  });
+});
+
+describe("asking about a file that has no ready server", () => {
+  it("answers hover and completions with nothing, and other requests with why", async () => {
+    const m = new LspManager({ dir: tempDir("lsp-none"), env: () => ({}), which: async () => null, node: process.execPath, onDiagnostics: () => {}, onStatus: () => {} });
+    const at = { line: 0, character: 0 };
+    expect(await m.hover("/r", "/r/readme.md", at)).toBe("");
+    expect(await m.hover("/r", "/r/a.ts", at)).toBe("");
+    expect(await m.completion("/r", "/r/a.py", at, "pr")).toEqual([]);
+    await expect(m.definition("/r", "/r/a.ts", at)).rejects.toThrow(/isn't open with a language server/);
+    expect(() => m.close("/r", "/r/a.ts")).not.toThrow();
   });
 });
 
@@ -129,6 +146,51 @@ describe("real language servers", () => {
     const fmt = await m.format(root, main, { tabSize: 2, insertSpaces: true });
     expect(applyTextEdits("const  x=1;\n", fmt ?? [])).toBe("const x = 1;\n");
     m.close(root, main);
+  });
+
+  it("keeps a file open until its last editor closes it, including one closed while the server starts", { timeout: 180_000 }, async () => {
+    await m.install("typescript", () => {});
+    const root = tempDir("tsrefs");
+    write(root, { "a.ts": "export const answer = 42;\n" });
+    const file = path.join(root, "a.ts");
+    const text = fs.readFileSync(file, "utf8");
+    const isOpen = () => {
+      try {
+        m.change(root, file, text);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const opening = m.open(root, file, text);
+    m.close(root, file);
+    expect(await opening).toMatchObject({ state: "ready" });
+    expect(isOpen()).toBe(false);
+    // a file tab and a diff tab of the same file
+    await m.open(root, file, text);
+    await m.open(root, file, text);
+    m.close(root, file);
+    expect(isOpen()).toBe(true);
+    m.close(root, file);
+    expect(isOpen()).toBe(false);
+  });
+
+  it("starts a fresh server for a file opened while the last one stops for idleness", { timeout: 180_000 }, async () => {
+    await m.install("typescript", () => {});
+    const root = tempDir("tsidle");
+    write(root, { "a.ts": "export const answer = 42;\n" });
+    const file = path.join(root, "a.ts");
+    const text = fs.readFileSync(file, "utf8");
+    await m.open(root, file, text);
+    m.close(root, file);
+    const stopping = (m as any).servers.get(`typescript:${root}`);
+    void (m as any).stop(stopping);
+    expect(await m.open(root, file, text)).toMatchObject({ state: "ready" });
+    // past the old server's shutdown and exit
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(stopping.conn.isClosed).toBe(true);
+    expect(await m.hover(root, file, { line: 0, character: 14 })).toContain("answer");
+    m.close(root, file);
   });
 
   it("Python: problems from pyright", { timeout: 180_000 }, async () => {

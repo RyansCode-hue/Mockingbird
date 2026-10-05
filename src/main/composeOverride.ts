@@ -1,7 +1,7 @@
 import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { RUN_DIR } from "./runProfile";
+import { RUN_DIR, repoHash } from "./runProfile";
 
 /**
  * Lets a worktree run a repository's Docker Compose stack without editing the
@@ -28,9 +28,28 @@ interface ComposeService {
 /** Where debugpy is mounted inside a container being debugged; the app finds it through MOCKINGBIRD_DEBUGPY. */
 export const DEBUGPY_IN_CONTAINER = "/opt/mockingbird/debugpy";
 
-/** The compose project for a repo's slot: its own containers, network and default volumes. */
+/**
+ * The compose project for a repo's slot: its own containers, network and
+ * default volumes. Projects are named after the repo's folder; the first repo
+ * to run under a folder name keeps that plain name (and the volumes it has
+ * always had), and another repo with the same folder name adds a hash of its
+ * path. Which repo holds a name is recorded in RUN_DIR.
+ */
 export function composeProject(repo: string, slot: number): string {
-  return `mb-${path.basename(repo).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-s${slot}`;
+  const name = path.basename(repo).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const file = path.join(RUN_DIR, "compose-projects.json");
+  let holders: Record<string, string> = {};
+  try {
+    holders = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Couldn't read ${file}: ${(err as Error).message}`);
+  }
+  if (!holders[name]) {
+    holders[name] = repo;
+    fs.mkdirSync(RUN_DIR, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(holders, null, 2));
+  }
+  return `mb-${holders[name] === repo ? name : `${name}-${repoHash(repo).slice(0, 6)}`}-s${slot}`;
 }
 
 /**

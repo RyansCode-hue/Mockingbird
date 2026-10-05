@@ -4,8 +4,9 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { DEBUG_DIR, DEBUGPY, JS_DEBUG, NETCOREDBG, ensureAdapter, spawnStdioAdapter } from "./adapters";
+import { killIfAlive, stderrTail } from "../rpc";
 import { quote } from "../shell";
-import { connectTcp } from "./client";
+import { connectTcp, type DapConnection } from "./client";
 import type { Connection } from "./session";
 import type { RunDebug } from "../../shared/types";
 
@@ -63,21 +64,44 @@ export function shellWords(cmd: string): string[] {
 }
 
 /**
- * Read a Python service's command as something debugpy can launch: the last
- * `&&` step is the program (earlier steps run first, unchanged), leading
- * VAR=value words become environment, `<venv>/bin/<tool>` means that venv's
- * Python running the tool as a module, and `--reload` is dropped — a reloader
- * restarts the process the debugger is attached to.
+ * A command's program, the way the debugger runs it: its last `&&` step as
+ * words, that step's leading VAR=value words as environment, and the steps
+ * before it (`pre`), which run first unchanged. `&&` inside quotes doesn't split.
  */
-export function inferPython(command: string): { debug: Extract<RunDebug, { type: "python" }>; env: Record<string, string>; pre: string[]; droppedReload: boolean } | null {
-  const steps = command.split(/\s*&&\s*/);
-  const last = steps.pop()!;
-  const words = shellWords(last);
+export function lastStep(command: string): { pre: string[]; env: Record<string, string>; words: string[] } {
+  const steps: string[] = [];
+  let quote: string | null = null;
+  let from = 0;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      if (c === quote) quote = null;
+      else if (c === "\\" && quote === '"') i++;
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "\\") i++;
+    else if (c === "&" && command[i + 1] === "&") {
+      steps.push(command.slice(from, i).trim());
+      from = ++i + 1;
+    }
+  }
+  steps.push(command.slice(from).trim());
+  const words = shellWords(steps.pop()!);
   const env: Record<string, string> = {};
   while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) {
     const w = words.shift()!;
     env[w.slice(0, w.indexOf("="))] = w.slice(w.indexOf("=") + 1);
   }
+  return { pre: steps, env, words };
+}
+
+/**
+ * Read a Python service's command as something debugpy can launch (see
+ * lastStep): `<venv>/bin/<tool>` means that venv's Python running the tool as
+ * a module, and `--reload` is dropped — a reloader restarts the process the
+ * debugger is attached to.
+ */
+export function inferPython(command: string): { debug: Extract<RunDebug, { type: "python" }>; env: Record<string, string>; pre: string[]; droppedReload: boolean } | null {
+  const { pre, env, words } = lastStep(command);
   const exe = words.shift();
   if (!exe) return null;
   const base = path.basename(exe);
@@ -97,7 +121,7 @@ export function inferPython(command: string): { debug: Extract<RunDebug, { type:
   } else return null;
   const droppedReload = words.includes("--reload");
   const args = words.filter((w) => w !== "--reload");
-  return { debug: { type: "python", python, ...(module ? { module } : {}), ...(program ? { program } : {}), args }, env, pre: steps, droppedReload };
+  return { debug: { type: "python", python, ...(module ? { module } : {}), ...(program ? { program } : {}), args }, env, pre, droppedReload };
 }
 
 /**
@@ -126,22 +150,19 @@ export async function debugTargetFor(
   const env = { ...ctx.env };
   if (!debug) {
     const py = inferPython(ctx.command);
-    if (py) {
-      debug = py.debug;
-      pre = py.pre;
-      Object.assign(env, py.env);
-      if (py.droppedReload) notes.push("--reload is off while debugging: a reloader restarts the process the debugger is attached to. Restart to pick up changes.");
+    const dn = py ? null : inferDotnet(ctx.command, ctx.cwd);
+    const inferred = py?.debug ?? inferNode(ctx.command, ctx.cwd, ctx.url) ?? dn;
+    if (!inferred) throw new Error(`Mockingbird can't tell how to debug ${service.name} from its command — add a "debug" section to its run setup`);
+    debug = inferred;
+    // a hosted Blazor WebAssembly app debugs on both sides: the server, and the client in the browser
+    if (dn && inferred === dn && ctx.url && hostsBlazorWasm(path.resolve(ctx.cwd, dn.program))) debug = { ...dn, browser: { url: ctx.url, blazor: true } };
+    if (py?.droppedReload) notes.push("--reload is off while debugging: a reloader restarts the process the debugger is attached to. Restart to pick up changes.");
+    // a browser opens beside the service, which runs its whole command as usual
+    if (debug.type !== "chrome") {
+      const step = lastStep(ctx.command);
+      pre = step.pre;
+      Object.assign(env, step.env);
       if (pre.length) notes.push(`These run first, in the same terminal: ${pre.join(" && ")}`);
-    } else {
-      const dn = inferDotnet(ctx.command, ctx.cwd);
-      const js = inferNode(ctx.command, ctx.cwd, ctx.url) ?? dn;
-      if (!js) throw new Error(`Mockingbird can't tell how to debug ${service.name} from its command — add a "debug" section to its run setup`);
-      debug = js;
-      // a hosted Blazor WebAssembly app debugs on both sides: the server, and the client in the browser
-      if (dn && js === dn && ctx.url && hostsBlazorWasm(path.resolve(ctx.cwd, dn.program))) debug = { ...dn, browser: { url: ctx.url, blazor: true } };
-      // a node program runs only the last && step under the debugger; earlier steps run first
-      const steps = ctx.command.split(/\s*&&\s*/);
-      if (js.type === "node" && steps.length > 1) pre = steps.slice(0, -1);
     }
   }
   if (debug.type === "python") {
@@ -224,7 +245,8 @@ export async function debugTargetFor(
         justMyCode: true,
         console: "internalConsole",
       },
-      internal: { build, locate },
+      // what the command ran before `dotnet run` (a migration) runs before the build
+      internal: { build: [...pre, build].join(" && "), locate },
       ...(debug.browser
         ? {
             then: await chromeTarget(service.name, ctx.expand(debug.browser.url), debug.browser.webRoot ? path.resolve(ctx.cwd, ctx.expand(debug.browser.webRoot)) : projectDir, ctx, {
@@ -323,7 +345,7 @@ function freePort(): Promise<number> {
  * js-debug runs as a DAP server; every session — the first, and each child
  * target it announces with startDebugging — is its own connection to it. The
  * server is started on the first connect (with Electron's own Node) and
- * stopped when that first session ends.
+ * stopped when that first session ends, or when the first connect fails.
  */
 function jsDebugConnector(dir: string): () => Promise<Connection> {
   let server: Promise<{ port: number; kill: () => void; stderr: () => string }> | null = null;
@@ -334,16 +356,29 @@ function jsDebugConnector(dir: string): () => Promise<Connection> {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["ignore", "ignore", "pipe"],
     });
-    let err = "";
-    proc.stderr.on("data", (d) => (err = (err + d).slice(-4000)));
-    return { port, kill: () => proc.exitCode === null && proc.kill(), stderr: () => err };
+    const tail = stderrTail(proc, 4000);
+    let failed = "";
+    proc.on("error", (e) => (failed = `js-debug didn't start: ${e.message}\n`));
+    return { port, kill: () => killIfAlive(proc), stderr: () => failed + tail() };
   };
   return async () => {
     server ??= start();
     const { port, kill, stderr } = await server;
-    const conn = await connectTcp(port);
     const owner = first;
     first = false;
+    let conn: DapConnection;
+    try {
+      conn = await connectTcp(port);
+    } catch (err) {
+      if (owner) {
+        // no session will own the server to stop it: stop it now, and start afresh next time
+        kill();
+        server = null;
+        first = true;
+      }
+      const why = stderr().trim().split("\n").pop();
+      throw new Error(`${(err as Error).message}${why ? `: ${why}` : ""}`);
+    }
     return {
       conn,
       stderr,
@@ -362,9 +397,7 @@ function jsDebugConnector(dir: string): () => Promise<Connection> {
  * so URLs belong in --urls or ASPNETCORE_URLS.
  */
 export function inferDotnet(command: string, cwd: string): Extract<RunDebug, { type: "dotnet" }> | null {
-  const steps = command.split(/\s*&&\s*/);
-  const words = shellWords(steps[steps.length - 1]);
-  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+  const { words } = lastStep(command);
   if (path.basename(words[0] ?? "") !== "dotnet") return null;
   let i = 1;
   if (words[i] === "watch") i++;
@@ -409,9 +442,7 @@ const FRONTEND = /(^|\/)(vite|next|react-scripts|ng|nuxt|astro|svelte-kit|webpac
  * under Node — `node file`, or a package-manager script with its children followed.
  */
 export function inferNode(command: string, cwd: string, url: string | undefined): RunDebug | null {
-  const steps = command.split(/\s*&&\s*/);
-  const words = shellWords(steps[steps.length - 1]);
-  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+  const { words } = lastStep(command);
   const exe = words[0];
   if (!exe) return null;
   const base = path.basename(exe);

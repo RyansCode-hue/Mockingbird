@@ -270,7 +270,7 @@ export class DebugManager {
           break;
       }
     });
-    conn.on("closed", (why: string) => {
+    conn.on("close", (why: string) => {
       if (info.state !== "ended") {
         if (info.state === "starting") info.error ??= why;
         this.end(l);

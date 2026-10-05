@@ -3,8 +3,10 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as pty from "node-pty";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildOverride, composeConfig, composeProject } from "../src/main/composeOverride";
+import type { DebugManager } from "../src/main/dap/session";
+import type { DebugTarget } from "../src/main/dap/targets";
 import { RunManager, type RunProc, type Spawn } from "../src/main/run";
 import { expand, loadProfile, mainCheckout, parseEnvFile, saveProfile, slotPorts, startOrder, validateProfile } from "../src/main/runProfile";
 import type { RunProfile } from "../src/shared/types";
@@ -118,6 +120,14 @@ describe("compose overrides", () => {
     expect(composeProject("/Users/me/Code/Atticus Snipper", 2)).toBe("mb-atticus-snipper-s2");
   });
 
+  it("give two repos with the same folder name their own projects, the first keeping the plain name", () => {
+    expect(composeProject("/Users/me/Code/api", 0)).toBe("mb-api-s0");
+    const other = composeProject("/Users/me/Work/api", 0);
+    expect(other).toMatch(/^mb-api-[0-9a-f]{6}-s0$/);
+    expect(composeProject("/Users/me/Work/api", 1)).toBe(other.replace(/-s0$/, "-s1"));
+    expect(composeProject("/Users/me/Code/api", 1)).toBe("mb-api-s1");
+  });
+
   // Docker Desktop keeps the compose plugin under the real home's ~/.docker; tests run with a throwaway HOME
   const dockerEnv = { ...process.env, DOCKER_CONFIG: path.join(os.userInfo().homedir, ".docker") };
   const hasDocker = (() => {
@@ -157,13 +167,24 @@ describe("compose overrides", () => {
 
 /** A fake terminal process: records how it was started, exits when signalled. */
 function fakeSpawner() {
-  const procs: { command: string; cwd: string; env: Record<string, string>; proc: RunProc; exit: (code: number) => void; data: (d: string) => void }[] = [];
+  const procs: { command: string; cwd: string; env: Record<string, string>; proc: RunProc; exited: boolean; exit: (code: number) => void; data: (d: string) => void }[] = [];
   let pid = 1000;
   const spawn: Spawn = (command, opts) => {
     let onExit: (e: { exitCode: number }) => void = () => {};
     let onData: (d: string) => void = () => {};
     const proc: RunProc = { pid: ++pid, onData: (cb) => (onData = cb), onExit: (cb) => (onExit = cb), write: () => {}, resize: () => {} };
-    procs.push({ command, ...opts, proc, exit: (code) => onExit({ exitCode: code }), data: (d) => onData(d) });
+    const p = {
+      command,
+      ...opts,
+      proc,
+      exited: false,
+      exit: (code: number) => {
+        p.exited = true;
+        onExit({ exitCode: code });
+      },
+      data: (d: string) => onData(d),
+    };
+    procs.push(p);
     return proc;
   };
   return { procs, spawn };
@@ -182,10 +203,15 @@ function manager(profile: RunProfile, extra: Partial<ConstructorParameters<typeo
     inUse: async (port) => busy.has(port),
     listeners: async (port) => (busy.has(port) ? [{ pid: 4242, command: "python" }] : []),
     kill: (pid, sig) => {
-      killed.push([pid, sig]);
       const p = f.procs.find((x) => x.proc.pid === -pid);
-      if (p) p.exit(143);
+      if (sig === 0) {
+        if (!p || p.exited) throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+        return;
+      }
+      killed.push([pid, sig]);
+      if (p && !p.exited) p.exit(143);
     },
+    processGroups: async (pid) => [pid],
     profileFor: () => profile,
     mainOf: async () => "/repo",
     readyTimeoutMs: 2000,
@@ -267,6 +293,157 @@ describe("running a worktree's services", () => {
     const t = manager(validateProfile({ services: [{ name: "api", command: "x", envFiles: ["backend/.env"] }] }, "/repo"));
     await expect(t.m.start("/nope", { mode: "swap" })).rejects.toThrow(/env file backend\/\.env is missing.*Prepare/);
   });
+
+  it("reads the ready line from this run's output only — not the command, not the last run's log", async () => {
+    const p = validateProfile(
+      {
+        services: [
+          { name: "api", command: "serve --banner 'Application started'", ready: { log: "Application started" } },
+          { name: "web", command: "web", dependsOn: ["api"] },
+        ],
+      },
+      "/repo"
+    );
+    const t = manager(p);
+    const first = t.m.start("/wt/a", { mode: "swap" });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(t.procs).toHaveLength(1); // the command's own echo isn't the service saying so
+    t.procs[0].data("Application started\r\n");
+    await first;
+    expect(t.procs).toHaveLength(2);
+    await t.m.stop("/wt/a");
+    const again = t.m.start("/wt/a", { mode: "swap" });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(t.procs).toHaveLength(3); // web waits: the line above is the last run's
+    t.procs[2].data("\x1b[32mApplication started\x1b[0m\r\n");
+    await again;
+    expect(t.procs).toHaveLength(4);
+  });
+
+  it("starts a repo's worktrees one at a time, so each gets its own slot and services start once", async () => {
+    const p = validateProfile({ services: [{ name: "api", command: "serve ${port:api}", ports: [{ name: "api", base: 8000 }] }] }, "/repo");
+    const t = manager(p);
+    const [a, b] = await Promise.all([t.m.start("/wt/a", { mode: "side" }), t.m.start("/wt/b", { mode: "side" })]);
+    expect([a.slot, b.slot].sort()).toEqual([0, 1]);
+    expect(t.procs.map((x) => x.command).sort()).toEqual(["serve 8000", "serve 8010"]);
+    // two panes on one worktree
+    await Promise.all([t.m.start("/wt/c", { mode: "side" }), t.m.start("/wt/c", { mode: "side" })]);
+    expect(t.procs.filter((x) => x.cwd === "/wt/c")).toHaveLength(1);
+    // a failed start doesn't hold up the next
+    await expect(t.m.start("/wt/d", { mode: "side", services: ["ghost"] })).rejects.toThrow(/No service named/);
+    expect(await t.m.start("/wt/d", { mode: "side" })).toMatchObject({ slot: 3 });
+  });
+
+  it("takes a compose stack down from the service's folder, with the environment it came up in", async () => {
+    const wt = tempDir("compose-down");
+    fs.mkdirSync(path.join(wt, "infra"));
+    fs.writeFileSync(path.join(wt, "infra/.env"), "DB_PASSWORD=pw\n");
+    const docker = path.join(wt, "fake-docker");
+    fs.writeFileSync(docker, `#!/bin/sh\necho '{"services":{}}'\n`, { mode: 0o755 });
+    const shells: { command: string; cwd: string; env: Record<string, string> }[] = [];
+    const p = validateProfile({ services: [{ name: "db", kind: "compose", cwd: "infra", envFiles: ["infra/.env"], compose: { file: "compose.yaml" } }] }, wt);
+    const t = manager(p, {
+      docker: async () => docker,
+      mainOf: async () => wt,
+      runShell: async (command, cwd, env) => {
+        shells.push({ command, cwd, env });
+        return { code: 0, out: "" };
+      },
+    });
+    await t.m.start(wt, { mode: "swap" });
+    expect(t.procs[0].command).toMatch(/compose -p .* up --remove-orphans$/);
+    await t.m.stop(wt);
+    expect(shells).toHaveLength(1);
+    expect(shells[0].command).toMatch(/compose -p .*compose\.yaml.* down --remove-orphans$/);
+    expect(shells[0].cwd).toBe(path.join(wt, "infra"));
+    expect(shells[0].env.DB_PASSWORD).toBe("pw");
+    expect(t.m.states()[0]).toMatchObject({ status: "stopped" });
+  });
+});
+
+/** A debugger that records what it's asked; `launch` runs `onLaunch` with the launch options. */
+function fakeDebugger(onLaunch: (o: any) => unknown = () => {}) {
+  const stopped: string[] = [];
+  let n = 0;
+  const dbg = {
+    launch: async (o: any) => {
+      await onLaunch(o);
+      return `dbg-${++n}`;
+    },
+    stop: async (id: string) => {
+      stopped.push(id);
+    },
+  };
+  return { dbg: dbg as unknown as DebugManager, stopped };
+}
+
+const fakeTarget = (kind: DebugTarget["kind"]): DebugTarget => ({
+  kind,
+  adapterID: "fake",
+  connect: async () => {
+    throw new Error("not used");
+  },
+  config: { request: "launch" },
+  pre: [],
+  notes: [],
+});
+
+describe("running a service under the debugger", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("closes the debugger beside a service when the service exits on its own", async () => {
+    const { dbg, stopped } = fakeDebugger();
+    const t = manager(validateProfile({ services: [{ name: "web", command: "vite" }] }, "/repo"), { debugger: dbg, debugTarget: async () => fakeTarget("alongside") });
+    await t.m.start("/wt/a", { mode: "swap", debug: ["web"] });
+    expect(t.m.states()[0].debug).toBe("dbg-1");
+    t.procs[0].exit(1);
+    await new Promise((r) => setImmediate(r));
+    expect(stopped).toEqual(["dbg-1"]);
+  });
+
+  it("waits for a debugged service to be ready once before starting what depends on it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { dbg } = fakeDebugger();
+    const p = validateProfile(
+      {
+        services: [
+          { name: "api", command: "serve", ready: { log: "never printed" } },
+          { name: "web", command: "web", dependsOn: ["api"] },
+        ],
+      },
+      "/repo"
+    );
+    const t = manager(p, { debugger: dbg, debugTarget: async () => fakeTarget("alongside"), readyTimeoutMs: 1000 });
+    const run = t.m.start("/wt/a", { mode: "swap", debug: ["api"] });
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(t.procs.map((x) => x.command)).toEqual(["serve", "web"]);
+    expect(await run).toMatchObject({ started: ["api", "web"] });
+    expect(t.m.states()[0].error).toMatch(/Not ready after 1s/);
+  });
+
+  it("gives up on a debugger that never runs the program, stopping it, and runs nothing later", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    let runInTerminal: any;
+    const { dbg, stopped } = fakeDebugger((o) => (runInTerminal = o.runInTerminal));
+    const t = manager(validateProfile({ services: [{ name: "app", command: "python3 app.py" }] }, "/repo"), { debugger: dbg, debugTarget: async () => fakeTarget("terminal") });
+    const run = t.m.start("/wt/a", { mode: "swap", debug: ["app"] }).catch((e: Error) => e);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(((await run) as Error).message).toMatch(/never ran app/);
+    expect(stopped).toEqual(["dbg-1"]);
+    await expect(runInTerminal({ cwd: "/wt/a", args: ["python3", "app.py"] })).rejects.toThrow(/given up/);
+    expect(t.procs).toHaveLength(0);
+  });
+
+  it("leaves no timer behind once the debugger runs the program", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { dbg } = fakeDebugger((o) => o.runInTerminal({ cwd: "/wt/a", args: ["python3", "app.py"] }));
+    const t = manager(validateProfile({ services: [{ name: "app", command: "python3 app.py" }] }, "/repo"), { debugger: dbg, debugTarget: async () => fakeTarget("terminal") });
+    expect(await t.m.start("/wt/a", { mode: "swap", debug: ["app"] })).toMatchObject({ started: ["app"] });
+    expect(t.procs[0].command).toBe("exec 'python3' 'app.py'");
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe("running real processes", () => {
@@ -312,6 +489,42 @@ describe("running real processes", () => {
       /* pgrep exits 1 when nothing matches: all gone */
     }
     expect(left.trim()).toBe("");
+  }, 20_000);
+
+  it("stops jobs an interactive zsh put in process groups of their own, promptly", async () => {
+    const dir = tempDir("run-zsh");
+    // the app's own spawn: an interactive login zsh, which gives every job its own process group
+    const zshSpawn: Spawn = (command, opts) => pty.spawn("/bin/zsh", ["-ilc", command], { name: "xterm-256color", cols: 120, rows: 30, cwd: opts.cwd, env: opts.env });
+    const p = validateProfile({ services: [{ name: "jobs", command: "sleep 47311 & sh -c 'sleep 47312'; wait" }] }, dir);
+    const m = new RunManager({
+      spawn: zshSpawn,
+      emit: () => {},
+      baseEnv: () => ({ PATH: "/usr/bin:/bin", HOME: dir }),
+      docker: async () => "docker",
+      runShell: async () => ({ code: 0, out: "" }),
+      profileFor: () => p,
+      mainOf: async () => dir,
+    });
+    const sleeps = () => {
+      try {
+        return execFileSync("pgrep", ["-f", "sleep 4731[12]"], { encoding: "utf8" }).trim();
+      } catch {
+        return ""; // pgrep exits 1 when nothing matches
+      }
+    };
+    try {
+      await m.start(dir, { mode: "side" });
+      // the shell's command line, sh's, and the two sleeps
+      for (let i = 0; i < 50 && sleeps().split("\n").length < 3; i++) await new Promise((r) => setTimeout(r, 100));
+      expect(sleeps().split("\n").length).toBeGreaterThanOrEqual(3);
+      const t0 = Date.now();
+      await m.stop(dir);
+      expect(Date.now() - t0).toBeLessThan(4000); // signalled directly, not left to the SIGKILL fallback
+      expect(m.states()[0].status).toBe("stopped");
+      expect(sleeps()).toBe("");
+    } finally {
+      for (const pid of sleeps().split("\n").filter(Boolean)) process.kill(Number(pid), "SIGKILL");
+    }
   }, 20_000);
 });
 
