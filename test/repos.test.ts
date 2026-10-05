@@ -17,6 +17,16 @@ describe("indexRepos", () => {
     expect(skipped).toEqual([path.join(root, "broken")]);
   });
 
+  it("finds a repository named like a build folder, and skips dependency and worktree folders", () => {
+    const root = tempDir("roots");
+    for (const name of ["bin", "out"]) fs.renameSync(makeRepo({ "a.txt": "a\n" }, name), path.join(root, name));
+    fs.mkdirSync(path.join(root, "proj", "node_modules"), { recursive: true });
+    fs.renameSync(makeRepo({ "a.txt": "a\n" }, "pkg"), path.join(root, "proj", "node_modules", "pkg"));
+    fs.mkdirSync(path.join(root, "worktrees"));
+    fs.renameSync(makeRepo({ "a.txt": "a\n" }, "copy"), path.join(root, "worktrees", "copy"));
+    expect(indexRepos([root], () => {}).map((r) => r.name)).toEqual(["bin", "out"]);
+  });
+
   it("skips worktree checkouts, whose .git is a file", () => {
     const root = tempDir("roots");
     fs.mkdirSync(path.join(root, "wt"));

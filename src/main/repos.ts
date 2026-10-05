@@ -3,7 +3,12 @@ import * as path from "path";
 import { RepoEntry } from "../shared/types";
 import { expandHome } from "./store";
 
-const SKIP = new Set(["node_modules", ".git", "dist", "build", "Library", ".Trash", "worktrees"]);
+// Not find.ts's SKIP_DIRS: a repository can be named bin, out or vendor, and
+// the scan must still find it. It skips only what never holds one to work in —
+// dependencies, build output, macOS's Library and the worktree folders (each
+// checkout there is a branch of a repository already found). Hidden folders,
+// .git and .Trash among them, are skipped anyway.
+const SKIP = new Set(["node_modules", "dist", "build", "Library", "worktrees"]);
 
 /** A folder the scan couldn't read is skipped, and said so here; the rest of the scan carries on. */
 export type SkipReport = (dir: string, err: unknown) => void;
