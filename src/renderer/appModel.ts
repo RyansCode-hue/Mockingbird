@@ -6,6 +6,15 @@
 import type { SessionInfo } from "../shared/types";
 import { splitGroupKey } from "../shared/types";
 
+/** A session's display name: its ticket title when it has one. */
+export const titleOf = (s: Pick<SessionInfo, "title" | "ticketTitle">): string => s.ticketTitle ?? s.title;
+
+/** The session whose folder holds `path`: `prefer` when it does, else the first one that does. */
+export function sessionHolding(sessions: SessionInfo[], path: string, prefer?: SessionInfo | null): SessionInfo | null {
+  const inside = (s: SessionInfo) => path.startsWith(s.cwd + "/");
+  return prefer && inside(prefer) ? prefer : sessions.find(inside) ?? null;
+}
+
 /**
  * A grid cell: a plain session renders alone; a workspace (sub-group) renders
  * as one pane with a tab per member. `key` is the workspace's group path

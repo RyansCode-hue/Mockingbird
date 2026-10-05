@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity, PaneResize } from "./TerminalPane";
+import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, shortReason, PaneDensity } from "./TerminalPane";
 import { EditorDock, ExplorerTree } from "./FilePanel";
 import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
@@ -17,11 +17,12 @@ import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { activeGroupOf, dropInZone, layoutToRemember, overflowArea, parseZone, placeInZones, pruneToGroup, seating, switchTo } from "./gridModel";
 import { OVERLAYS, enterConfirms, escapeLeavesFullscreen, inEditor } from "./keys";
-import { useAdoTickets, useRepoBranches, workflowStates } from "./tickets";
-import { broadcastFate, cellKeyFor, frontOf, paneShortcuts, remapGroupKeys, remapSeats, worktreeGone, type GridCell } from "./appModel";
+import { stateRank, suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches, workflowStates } from "./tickets";
+import { broadcastFate, cellKeyFor, frontOf, sessionHolding, titleOf, paneShortcuts, remapGroupKeys, remapSeats, worktreeGone, type GridCell } from "./appModel";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon } from "./Icons";
 import { RunView } from "./RunView";
+import { Popover } from "./Popover";
 import { PipelineDialog, PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { HandoffDialog, otherAgent } from "./Handoff";
 import { UndoTurnDialog } from "./UndoTurn";
@@ -32,7 +33,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys, getFormatOnSave, setFormatOnSave } from "./CodeEditor";
-import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, RepoBranches, WorktreeEntry, UsageReport, AgentUsage, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice, MessageMode } from "../shared/types";
+import type { AgentKind, AgentCheck, SetupStatus, SessionInfo, SessionPreset, SessionStatus, RepoEntry, Settings, ImportableConversation, WorktreeStateInfo, AdoWorkItem, AdoComment, WorktreeEntry, UsageReport, UsageLimit, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, AdoBoard, ModelCatalog, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice, MessageMode } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, OPTIONAL_TABS, formatTokens, totalTokens, type OptionalTab } from "../shared/types";
 import { tokenBreakdown } from "./TerminalPane";
 
@@ -137,7 +138,7 @@ function ZoneSlot({
             {minimized.map((s) => (
               <button key={s.id} className="zone-pick-row" onClick={() => onOpen(s)}>
                 <span className={`dot sm ${s.status}`} />
-                <span className="t">{s.ticketTitle ?? s.title}</span>
+                <span className="t">{titleOf(s)}</span>
               </button>
             ))}
           </div>
@@ -278,7 +279,8 @@ function App() {
   }, [theme]);
   const [hooksOk, setHooksOk] = useState(true);
   const [filter, setFilter] = useState("");
-  const [editing, setEditing] = useState<{ kind: "session" | "group" | "sub"; key: string; value: string } | null>(null);
+  // a session title being edited inline in its sidebar row
+  const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [sideCollapsed, setSideCollapsed] = useState<boolean>(() => loadLS("mb.side", false));
   const [colsPref, setColsPref] = useState<ColsPref>(() => loadLS<ColsPref>("mb.cols", "auto"));
   // chosen snap layout per group ("" = auto). Kept per group because a ticket
@@ -927,8 +929,6 @@ function App() {
     if (first) setFocused(first);
   };
 
-  /** Drop handler shared by group headers and rows — moves the dragged session. */
-  const titleOf = (s: SessionInfo) => s.ticketTitle ?? s.title;
   /** The drop cue for moving a dragged sidebar/pane session into `group` (null = out of any group). */
   const intoGroupTarget = (targetKey: string, group: string | null, name: string) => {
     const src = sessions.find((x) => x.id === dragging("text/mb-session"));
@@ -936,6 +936,7 @@ function App() {
     return { key: targetKey, outcome: group === null ? `Move ${titleOf(src)} out of its group` : `Move ${titleOf(src)} into ${name}` };
   };
 
+  /** Drop handler shared by group headers and rows — moves the dragged session. */
   const dropToGroup = (e: React.DragEvent, group: string | null) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1232,9 +1233,7 @@ function App() {
    * folder, else any session whose folder holds it. Returns why it can't open.
    */
   const openLocation = (loc: LspLocation, fromSession: string): string | null => {
-    const inside = (s: SessionInfo) => loc.path.startsWith(s.cwd + "/");
-    const own = sessions.find((s) => s.id === fromSession);
-    const s = own && inside(own) ? own : sessions.find(inside);
+    const s = sessionHolding(sessions, loc.path, sessions.find((x) => x.id === fromSession));
     if (!s) return `The definition is outside the session's folder: ${loc.path}:${loc.line}`;
     setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path: loc.path.slice(s.cwd.length + 1), mode: "file", reveal: { line: loc.line, at: Date.now() } }));
     return null;
@@ -1268,8 +1267,8 @@ function App() {
     setPresets(next);
   };
 
-  /** Type a request into a session's pane and bring it up; the user reads it there and presses Return. */
-  const askSession = (id: string, text: string) => {
+  /** Type text into a session's prompt and bring its pane up; the user reads it there and presses Return. */
+  const typeInto = (id: string, text: string) => {
     window.mb.sessionWrite(id, text);
     jumpTo(id);
   };
@@ -1298,8 +1297,7 @@ function App() {
    */
   const openFrame = (frame: DebugFrame) => {
     if (!frame.path) return;
-    const inside = (s: SessionInfo) => frame.path!.startsWith(s.cwd + "/");
-    const s = focusedSession && inside(focusedSession) ? focusedSession : sessions.find(inside);
+    const s = sessionHolding(sessions, frame.path, focusedSession);
     if (!s) {
       addOutput({ sid: "", category: "important", text: `${frame.path}:${frame.line} isn't inside an open session's folder, so it isn't shown.\n` });
       return;
@@ -1398,41 +1396,38 @@ function App() {
                 <LayoutIcon /> Layout
               </button>
               {layoutOpen && (
-                <>
-                  <div className="who-back" onMouseDown={() => setLayoutOpen(false)} />
-                  <div className="lay-pop">
-                    <div className="lay-grid">
-                      {LAYOUTS.map((l) => (
-                        <button
-                          key={l.id}
-                          className={`lay-opt ${curLayoutId === l.id ? "on" : ""}`}
-                          title={`${l.label} — ${l.zones.length} zones`}
-                          onClick={() => {
-                            setLayouts((p) => ({ ...p, [seatKey]: l.id }));
-                            setZoneSeats((p) => ({ ...p, [seatKey]: [] }));
-                            setLayoutOpen(false);
-                          }}
-                        >
-                          <LayoutThumb layout={l} />
-                        </button>
-                      ))}
-                    </div>
-                    <button
-                      className={`lay-auto ${!curLayoutId ? "on" : ""}`}
-                      onClick={() => {
-                        setLayouts((p) => ({ ...p, [seatKey]: "" }));
-                        setLayoutOpen(false);
-                      }}
-                    >
-                      Auto — fit panes to the window
-                    </button>
-                    <div className="lay-note">
-                      {curLayoutId
-                        ? "Drag a pane onto another to swap places, or into an empty zone. Drag any pane edge to fine-tune."
-                        : "Panes fill the window automatically."}
-                    </div>
+                <Popover className="lay-pop" onClose={() => setLayoutOpen(false)}>
+                  <div className="lay-grid">
+                    {LAYOUTS.map((l) => (
+                      <button
+                        key={l.id}
+                        className={`lay-opt ${curLayoutId === l.id ? "on" : ""}`}
+                        title={`${l.label} — ${l.zones.length} zones`}
+                        onClick={() => {
+                          setLayouts((p) => ({ ...p, [seatKey]: l.id }));
+                          setZoneSeats((p) => ({ ...p, [seatKey]: [] }));
+                          setLayoutOpen(false);
+                        }}
+                      >
+                        <LayoutThumb layout={l} />
+                      </button>
+                    ))}
                   </div>
-                </>
+                  <button
+                    className={`lay-auto ${!curLayoutId ? "on" : ""}`}
+                    onClick={() => {
+                      setLayouts((p) => ({ ...p, [seatKey]: "" }));
+                      setLayoutOpen(false);
+                    }}
+                  >
+                    Auto — fit panes to the window
+                  </button>
+                  <div className="lay-note">
+                    {curLayoutId
+                      ? "Drag a pane onto another to swap places, or into an empty zone. Drag any pane edge to fine-tune."
+                      : "Panes fill the window automatically."}
+                  </div>
+                </Popover>
               )}
             </span>
             <button className="outline" onClick={() => setModal("import")}>Import</button>
@@ -1449,7 +1444,7 @@ function App() {
           <DashboardBoard
             sessions={sessions}
             onJump={jumpTo}
-            onAskSession={askSession}
+            onAskSession={typeInto}
             onOpenScm={openScmFor}
             onCreated={(s) => {
               refresh();
@@ -1593,10 +1588,7 @@ function App() {
                 selected={activePath}
                 onOpenDiff={(path, source, status) => openInEditor(path, { mode: "diff", source, status: status === "C" ? "M" : status })}
                 onOpenFile={(path) => openInEditor(path)}
-                onAskSession={(text) => {
-                  window.mb.sessionWrite(focusedSession.id, text);
-                  focusTerm(focusedSession.id);
-                }}
+                onAskSession={(text) => typeInto(focusedSession.id, text)}
                 review={
                   focusedSession.shell
                     ? undefined
@@ -1633,11 +1625,7 @@ function App() {
               session={focusedSession}
               states={runStates}
               onShowLog={showLog}
-              onAskSession={(text) => {
-                if (!focusedSession) return;
-                window.mb.sessionWrite(focusedSession.id, text);
-                focusTerm(focusedSession.id);
-              }}
+              onAskSession={(text) => focusedSession && typeInto(focusedSession.id, text)}
               onOpenFrame={openFrame}
             />
           )}
@@ -1791,21 +1779,21 @@ function App() {
                       }}
                     >
                       <span className={`dot ${s.status}`} />
-                      {editing?.kind === "session" && editing.key === s.id ? (
+                      {editing?.key === s.id ? (
                         editInput
                       ) : (
                         <span
                           className="name"
                           onDoubleClick={(e) => {
                             e.stopPropagation();
-                            setEditing({ kind: "session", key: s.id, value: s.ticketTitle ?? s.title });
+                            setEditing({ key: s.id, value: titleOf(s) });
                           }}
                         >
-                          <span className="nm">{s.ticketTitle ?? s.title}</span>
+                          <span className="nm">{titleOf(s)}</span>
                           {(s.branch || s.agent === "codex") && (
                             <span className="br">
                               {s.agent === "codex" ? "codex · " : ""}
-                              {s.branch && s.branch !== (s.ticketTitle ?? s.title) ? s.branch : s.repoPath?.split("/").pop() ?? ""}
+                              {s.branch && s.branch !== titleOf(s) ? s.branch : s.repoPath?.split("/").pop() ?? ""}
                             </span>
                           )}
                         </span>
@@ -1814,7 +1802,7 @@ function App() {
                         title="Rename"
                         onClick={(e) => {
                           e.stopPropagation();
-                          setEditing({ kind: "session", key: s.id, value: s.ticketTitle ?? s.title });
+                          setEditing({ key: s.id, value: titleOf(s) });
                         }}
                       >
                         ✎
@@ -1913,11 +1901,7 @@ function App() {
           onCloseAll={() => setEditor(EMPTY_EDITOR)}
           onOpenLocation={openLocation}
           onMode={(key, mode) => setEditor((e) => updateTab(e, key, { mode }))}
-          onInsert={(text) => {
-            if (!focusedSession) return;
-            window.mb.sessionWrite(focusedSession.id, text);
-            focusTerm(focusedSession.id);
-          }}
+          onInsert={(text) => focusedSession && typeInto(focusedSession.id, text)}
         />
 
         <div className="main">
@@ -2120,10 +2104,10 @@ function App() {
                       const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
                       return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
                     })()}
-                    onShowMessages={() => setMsgLogFor({ id: s.id, title: s.ticketTitle ?? s.title })}
+                    onShowMessages={() => setMsgLogFor({ id: s.id, title: titleOf(s) })}
                     onRestart={async () => {
                       const r = await window.mb.sessionRestart(s.id);
-                      if (r?.error) alert(`Couldn't restart ${s.ticketTitle ?? s.title}: ${r.error}`);
+                      if (r?.error) alert(`Couldn't restart ${titleOf(s)}: ${r.error}`);
                       else freshTerms([s.id]);
                       refresh();
                     }}
@@ -2190,11 +2174,11 @@ function App() {
                           }}
                         >
                           <span className={`dot sm ${s.status}`} />
-                          <span className="t">{s.ticketTitle ?? s.title}</span>
+                          <span className="t">{titleOf(s)}</span>
                           <span
                             className="ws-x"
                             role="button"
-                            aria-label={`Close ${s.ticketTitle ?? s.title}`}
+                            aria-label={`Close ${titleOf(s)}`}
                             title="Close session"
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2313,30 +2297,27 @@ function App() {
                 <span className={`dot sm ${st}`} /> {c} {st}
               </span>
               {statusPop === st && (
-                <>
-                  <div className="who-back" onMouseDown={() => setStatusPop(null)} />
-                  <div className="who-pop stat-pop">
-                    {list.map((s) => (
-                      <div
-                        key={s.id}
-                        className="who-row"
-                        onClick={() => {
-                          setStatusPop(null);
-                          jumpTo(s.id); // swaps to its group and un-hides the pane
-                        }}
-                      >
-                        <span className={`dot sm ${s.status}`} />
-                        {s.ticketTitle ?? s.title}
-                        <span className="cnt">
-                          {st === "waiting" && s.waitingSince
-                            ? fmtElapsed(s.waitingSince)
-                            : groupKeyOf(s)}
-                        </span>
-                      </div>
-                    ))}
-                    {list.length === 0 && <div className="who-row">none</div>}
-                  </div>
-                </>
+                <Popover className="who-pop stat-pop" onClose={() => setStatusPop(null)}>
+                  {list.map((s) => (
+                    <div
+                      key={s.id}
+                      className="who-row"
+                      onClick={() => {
+                        setStatusPop(null);
+                        jumpTo(s.id); // swaps to its group and un-hides the pane
+                      }}
+                    >
+                      <span className={`dot sm ${s.status}`} />
+                      {titleOf(s)}
+                      <span className="cnt">
+                        {st === "waiting" && s.waitingSince
+                          ? fmtElapsed(s.waitingSince)
+                          : groupKeyOf(s)}
+                      </span>
+                    </div>
+                  ))}
+                  {list.length === 0 && <div className="who-row">none</div>}
+                </Popover>
               )}
             </span>
           );
@@ -2428,27 +2409,27 @@ function App() {
             ...(focusedSession
               ? [
                   {
-                    label: `${zoomed === focusedSession.id ? "Exit fullscreen" : "Fullscreen"} ${focusedSession.ticketTitle ?? focusedSession.title}`,
+                    label: `${zoomed === focusedSession.id ? "Exit fullscreen" : "Fullscreen"} ${titleOf(focusedSession)}`,
                     kbd: "⌘E",
                     run: () => setZoomed(zoomed === focusedSession.id ? null : focusedSession.id),
                   },
                   {
-                    label: `Rename ${focusedSession.ticketTitle ?? focusedSession.title}…`,
+                    label: `Rename ${titleOf(focusedSession)}…`,
                     run: () => setRenameDlg({ kind: "session", key: focusedSession.id, initial: titleOf(focusedSession) }),
                   },
-                  { label: `Change group of ${focusedSession.ticketTitle ?? focusedSession.title}…`, run: () => setGroupDlg(focusedSession) },
-                  { label: `${focusedSession.muted ? "Unmute" : "Mute"} notifications from ${focusedSession.ticketTitle ?? focusedSession.title}`, run: () => toggleMute(focusedSession) },
+                  { label: `Change group of ${titleOf(focusedSession)}…`, run: () => setGroupDlg(focusedSession) },
+                  { label: `${focusedSession.muted ? "Unmute" : "Mute"} notifications from ${titleOf(focusedSession)}`, run: () => toggleMute(focusedSession) },
                   ...(!focusedSession.shell && focusedSession.repoPath
-                    ? [{ label: `Undo a turn of ${focusedSession.ticketTitle ?? focusedSession.title} — put its files back`, run: () => setUndoFor(focusedSession) }]
+                    ? [{ label: `Undo a turn of ${titleOf(focusedSession)} — put its files back`, run: () => setUndoFor(focusedSession) }]
                     : []),
                   ...(!focusedSession.shell
-                    ? [{ label: `Continue in ${otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude Code"} — hand ${focusedSession.ticketTitle ?? focusedSession.title} over with a summary`, run: () => setHandoffFor(focusedSession) }]
+                    ? [{ label: `Continue in ${otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude Code"} — hand ${titleOf(focusedSession)} over with a summary`, run: () => setHandoffFor(focusedSession) }]
                     : []),
                   ...(ticketOfGroup(topOf(focusedSession))
                     ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]
                     : []),
                   {
-                    label: `${pinnedSet.has(focusedSession.id) ? "Unpin" : "Pin"} ${focusedSession.ticketTitle ?? focusedSession.title}${pinnedSet.has(focusedSession.id) ? "" : " — keep it on screen across groups"}`,
+                    label: `${pinnedSet.has(focusedSession.id) ? "Unpin" : "Pin"} ${titleOf(focusedSession)}${pinnedSet.has(focusedSession.id) ? "" : " — keep it on screen across groups"}`,
                     run: () => togglePin([focusedSession.id]),
                   },
                 ]
@@ -2500,7 +2481,7 @@ function App() {
           onTellAgent={(text) => {
             const s = undoFor;
             setUndoFor(null);
-            askSession(s.id, text);
+            typeInto(s.id, text);
           }}
         />
       )}
@@ -2534,7 +2515,7 @@ function App() {
           sessions={workSessions.filter((s) => topOf(s) === pipelineFor.id)}
           onAskSession={(id, text) => {
             setPipelineFor(null);
-            askSession(id, text);
+            typeInto(id, text);
           }}
           onOpenScm={(id) => {
             setPipelineFor(null);
@@ -2702,7 +2683,7 @@ function UsageMeter({ usage, meters }: { usage: UsageReport | null; meters: Mete
     const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
   }, []);
-  const agents = (show === "both" ? (["claude", "codex"] as const) : ([show] as const)).filter(Boolean) as ("claude" | "codex")[];
+  const agents: ("claude" | "codex")[] = show === "both" ? ["claude", "codex"] : [show];
   const shown = agents.map((a) => ({ a, u: usage?.[a] ?? null }));
   const compact = shown.filter((x) => x.u);
   const short = (l: UsageLimit) => (l.label.startsWith("5-hour") ? "5h" : l.label.startsWith("Weekly") ? "wk" : l.label);
@@ -2735,69 +2716,66 @@ function UsageMeter({ usage, meters }: { usage: UsageReport | null; meters: Mete
         )}
       </span>
       {open && (
-        <>
-          <div className="who-back" onMouseDown={() => setOpen(false)} />
-          <div className="usage-pop">
-            {shown.map(({ a, u }) => (
-              <div key={a} className="usage-sec">
-                <div className="usage-head">
-                  {AGENT_NAME[a]} plan usage limits{u?.plan ? ` · ${u.plan}` : ""}
+        <Popover className="usage-pop" onClose={() => setOpen(false)}>
+          {shown.map(({ a, u }) => (
+            <div key={a} className="usage-sec">
+              <div className="usage-head">
+                {AGENT_NAME[a]} plan usage limits{u?.plan ? ` · ${u.plan}` : ""}
+              </div>
+              {!u ? (
+                <div className="usage-empty">
+                  {a === "claude"
+                    ? "No report yet — appears after a Claude session's first response."
+                    : "No report yet — appears after a Codex session's first turn."}
                 </div>
-                {!u ? (
-                  <div className="usage-empty">
-                    {a === "claude"
-                      ? "No report yet — appears after a Claude session's first response."
-                      : "No report yet — appears after a Codex session's first turn."}
-                  </div>
-                ) : (
-                  <>
-                    {u.limits.map((l) => {
-                      const pct = pctNow(l, now);
-                      return (
-                        <div key={l.label} className="usage-row">
-                          <div className="usage-line">
-                            <span className="usage-label">{l.label}</span>
-                            <span
-                              className="usage-reset"
-                              title={l.note ? "Claude Code reports this window with a reply in a Claude pane; Collaborate turns don't report it" : undefined}
-                            >
-                              {l.note ?? resetText(l.resetsAt, now)}
-                            </span>
-                            <span className="usage-pct">{l.note ? "—" : `${Math.round(pct)}%`}</span>
-                          </div>
-                          <div className="usage-bar">
-                            <span className={pct >= 90 ? "hot" : ""} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {meters?.today[a] && (
-                      <div className="usage-row usage-today" title={tokenBreakdown(meters.today[a]!)}>
+              ) : (
+                <>
+                  {u.limits.map((l) => {
+                    const pct = pctNow(l, now);
+                    return (
+                      <div key={l.label} className="usage-row">
                         <div className="usage-line">
-                          <span className="usage-label">Today on this Mac</span>
-                          <span className="usage-reset">{meters.today[a]!.replies.toLocaleString()} replies</span>
-                          <span className="usage-pct">{formatTokens(totalTokens(meters.today[a]!))}</span>
+                          <span className="usage-label">{l.label}</span>
+                          <span
+                            className="usage-reset"
+                            title={l.note ? "Claude Code reports this window with a reply in a Claude pane; Collaborate turns don't report it" : undefined}
+                          >
+                            {l.note ?? resetText(l.resetsAt, now)}
+                          </span>
+                          <span className="usage-pct">{l.note ? "—" : `${Math.round(pct)}%`}</span>
+                        </div>
+                        <div className="usage-bar">
+                          <span className={pct >= 90 ? "hot" : ""} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
                         </div>
                       </div>
-                    )}
-                    <div className="usage-foot">
-                      reported {fmtElapsed(u.at)} ago{a === "codex" ? " · read from Codex's session logs" : ""}
+                    );
+                  })}
+                  {meters?.today[a] && (
+                    <div className="usage-row usage-today" title={tokenBreakdown(meters.today[a]!)}>
+                      <div className="usage-line">
+                        <span className="usage-label">Today on this Mac</span>
+                        <span className="usage-reset">{meters.today[a]!.replies.toLocaleString()} replies</span>
+                        <span className="usage-pct">{formatTokens(totalTokens(meters.today[a]!))}</span>
+                      </div>
                     </div>
-                  </>
-                )}
-              </div>
-            ))}
-            <div className="usage-show">
-              <span className="seg" title="Whose usage to list">
-                {(["claude", "codex", "both"] as const).map((v) => (
-                  <button key={v} className={show === v ? "on" : ""} onClick={() => setShow(v)}>
-                    {v === "both" ? "Both" : AGENT_NAME[v]}
-                  </button>
-                ))}
-              </span>
+                  )}
+                  <div className="usage-foot">
+                    reported {fmtElapsed(u.at)} ago{a === "codex" ? " · read from Codex's session logs" : ""}
+                  </div>
+                </>
+              )}
             </div>
+          ))}
+          <div className="usage-show">
+            <span className="seg" title="Whose usage to list">
+              {(["claude", "codex", "both"] as const).map((v) => (
+                <button key={v} className={show === v ? "on" : ""} onClick={() => setShow(v)}>
+                  {v === "both" ? "Both" : AGENT_NAME[v]}
+                </button>
+              ))}
+            </span>
           </div>
-        </>
+        </Popover>
       )}
     </span>
   );
@@ -2831,12 +2809,12 @@ function CommandPalette({
       .filter((a) => !q || fuzzy(q, a.label))
       .map((a) => ({ kind: "action" as const, label: a.label, kbd: a.kbd, run: a.run }));
     const sess = sessions
-      .filter((s) => !q || fuzzy(q, s.ticketTitle ?? s.title) || fuzzy(q, s.branch ?? ""))
+      .filter((s) => !q || fuzzy(q, titleOf(s)) || fuzzy(q, s.branch ?? ""))
       .map((s) => {
         const n = shortcuts.get(s.id);
         return {
           kind: "session" as const,
-          label: s.ticketTitle ?? s.title,
+          label: titleOf(s),
           kbd: n ? `⌘${n}` : undefined,
           status: s.status,
           state: statusPhrase(s),
@@ -3033,21 +3011,6 @@ function HelpModal({ onClose }: { onClose: () => void }) {
 }
 
 // ---- ADO board: near-ADO kanban — drag cards between state columns, comment, link sessions ----
-/** "Filter orgs by foundation" → "filterOrgsByFoundation" (branch-friendly). */
-/** Kickoff prompt for a session started from an Azure DevOps ticket. */
-function ticketKickoffPrompt(id: number | string, title: string, description: string): string {
-  return (
-    `You're picking up Azure DevOps ticket #${id}: ${title}.\n\n` +
-    (description.trim() ? `Ticket description:\n${description.trim()}\n\n` : "") +
-    `Get familiar with the relevant code first and propose an approach before making changes.`
-  );
-}
-
-function suggestTicketName(title: string): string {
-  const words = title.replace(/[^a-zA-Z0-9 ]+/g, " ").trim().split(/\s+/).slice(0, 5);
-  return words.map((w, i) => (i === 0 ? w.toLowerCase() : w[0].toUpperCase() + w.slice(1).toLowerCase())).join("");
-}
-
 // ADO's own work-item type colors, used as card accents
 const TYPE_COLORS: Record<string, string> = {
   Task: "#f2cb1d",
@@ -3058,52 +3021,6 @@ const TYPE_COLORS: Record<string, string> = {
   Epic: "#ff7b00",
 };
 const typeColor = (t: string) => TYPE_COLORS[t] ?? "#8d877c";
-
-const STATE_ORDER = [
-  "New", "Approved", "Committed", "To Do", "Open", "Active", "In Progress", "Doing",
-  "Resolved", "In Review", "Review", "Done", "Closed",
-];
-const stateRank = (s: string) => {
-  const i = STATE_ORDER.indexOf(s);
-  return i < 0 ? STATE_ORDER.length : i;
-};
-
-// Terminal columns. A ticket you'd start work on never sits in one, so the
-// New Session picker leaves them out — you pick from the working columns of
-// the board (Approved/Planning/Parked/In Progress/QA and the like).
-const DONE_STATES = ["done", "closed", "removed", "completed", "resolved", "cut", "abandoned"];
-const isWorkingState = (state: string) => {
-  const s = state.toLowerCase();
-  return !DONE_STATES.some((d) => s === d || s.startsWith(d + " ") || s.endsWith(" " + d));
-};
-
-/**
- * Group tickets into board columns. Order of preference: the column order you
- * dragged into place on the Dashboard, then Azure DevOps' own workflow order
- * for the work item type, then a generic fallback. Terminal columns are dropped
- * entirely — you don't start work from Done.
- */
-function ticketsByColumn(
-  items: AdoWorkItem[],
-  workflowOrder: string[] = []
-): { state: string; items: AdoWorkItem[] }[] {
-  const custom = loadLS<Record<string, { order: string[] }> | null>("mb.board.prefs", null)?.states?.order ?? loadLS<string[]>("mb.board.colOrder", []);
-  const order = custom.length ? custom : workflowOrder;
-  const byState = new Map<string, AdoWorkItem[]>();
-  for (const t of items) {
-    if (!isWorkingState(t.state)) continue;
-    const list = byState.get(t.state);
-    if (list) list.push(t);
-    else byState.set(t.state, [t]);
-  }
-  const rank = (c: string) => {
-    const i = order.indexOf(c);
-    return i < 0 ? order.length + stateRank(c) : i;
-  };
-  return [...byState.entries()]
-    .map(([state, list]) => ({ state, items: list.sort((a, b) => a.id - b.id) }))
-    .sort((a, b) => rank(a.state) - rank(b.state) || a.state.localeCompare(b.state));
-}
 
 function DashboardBoard({
   sessions,
@@ -3408,28 +3325,25 @@ function DashboardBoard({
             {whoLabel} <span className="kbd">▾</span>
           </button>
           {whoOpen && (
-            <>
-              <div className="who-back" onMouseDown={() => setWhoOpen(false)} />
-              <div className="who-pop">
-                <div
-                  className={`who-row ${whoSet.size === 0 ? "on" : ""}`}
-                  onClick={() => setWho([])}
-                >
-                  <span className={`ck ${whoSet.size === 0 ? "on" : ""}`}>{whoSet.size === 0 ? "✓" : ""}</span>
-                  Everyone
-                  <span className="cnt">{items?.length ?? 0}</span>
-                </div>
-                <div className="who-div" />
-                {people.map(([p, n]) => (
-                  <div key={p} className={`who-row ${whoSet.has(p) ? "on" : ""}`} onClick={() => toggleWho(p)}>
-                    <span className={`ck ${whoSet.has(p) ? "on" : ""}`}>{whoSet.has(p) ? "✓" : ""}</span>
-                    {p === me ? `${p} (me)` : p}
-                    <span className="cnt">{n}</span>
-                  </div>
-                ))}
-                <div className="who-hint">check any number of people · stays open while you pick</div>
+            <Popover className="who-pop" onClose={() => setWhoOpen(false)}>
+              <div
+                className={`who-row ${whoSet.size === 0 ? "on" : ""}`}
+                onClick={() => setWho([])}
+              >
+                <span className={`ck ${whoSet.size === 0 ? "on" : ""}`}>{whoSet.size === 0 ? "✓" : ""}</span>
+                Everyone
+                <span className="cnt">{items?.length ?? 0}</span>
               </div>
-            </>
+              <div className="who-div" />
+              {people.map(([p, n]) => (
+                <div key={p} className={`who-row ${whoSet.has(p) ? "on" : ""}`} onClick={() => toggleWho(p)}>
+                  <span className={`ck ${whoSet.has(p) ? "on" : ""}`}>{whoSet.has(p) ? "✓" : ""}</span>
+                  {p === me ? `${p} (me)` : p}
+                  <span className="cnt">{n}</span>
+                </div>
+              ))}
+              <div className="who-hint">check any number of people · stays open while you pick</div>
+            </Popover>
           )}
         </span>
         <span className="vdiv" />
@@ -3454,51 +3368,48 @@ function DashboardBoard({
             <span className="kbd">▾</span>
           </button>
           {colsOpen && (
-            <>
-              <div className="who-back" onMouseDown={() => setColsOpen(false)} />
-              <div className="who-pop cols-pop">
-                <div className="who-hint cols-src">
-                  {board
-                    ? `${board.name} board · ${boardsInfo && !("error" in boardsInfo) ? boardsInfo.team : ""} — as set up in Azure DevOps`
-                    : boardsInfo && "error" in boardsInfo
-                      ? `Showing work item states — couldn't read your team's board: ${boardsInfo.error}`
-                      : "Showing work item states"}
-                </div>
-                {orderedCols.map((c) => {
-                  const n = visibleItems.filter((i) => colOfItem(i) === c).length;
-                  return (
-                    <div
-                      key={c}
-                      className={`who-row col-row ${hiddenCols.has(c) ? "" : "on"}`}
-                      data-drop={cue(drag, `cl:${c}`)}
-                      onDragOver={(e) => {
-                        const src = dragging("text/mb-col");
-                        const side = sideOf(e, e.currentTarget, "y");
-                        overTarget(e, !src || src === c || samePlace(orderedCols, src, c, side) ? null : { key: `cl:${c}`, side, outcome: `Put ${src} ${side} ${c}` });
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        const src = e.dataTransfer.getData("text/mb-col");
-                        if (src && src !== c) reorderCols(src, c, sideOf(e, e.currentTarget, "y"));
-                      }}
-                    >
-                      <span className="col-grip" draggable title="Drag to reorder" onDragStart={(e) => beginDrag(e, "text/mb-col", c, `Moving column ${c}`)}>
-                        ⋮⋮
-                      </span>
-                      <span className={`ck ${hiddenCols.has(c) ? "" : "on"}`} title={hiddenCols.has(c) ? "Show column" : "Hide column"} onClick={() => toggleHidden(c)}>
-                        {hiddenCols.has(c) ? "" : "✓"}
-                      </span>
-                      <span onClick={() => toggleHidden(c)}>{c}</span>
-                      <span className="cnt">{n}</span>
-                    </div>
-                  );
-                })}
-                <div className="who-div" />
-                <div className="who-row" onClick={() => setPrefs({ order: [], hidden: defaultHidden })}>
-                  {board ? "Reset to the board's order" : "Reset order"}
-                </div>
+            <Popover className="who-pop cols-pop" onClose={() => setColsOpen(false)}>
+              <div className="who-hint cols-src">
+                {board
+                  ? `${board.name} board · ${boardsInfo && !("error" in boardsInfo) ? boardsInfo.team : ""} — as set up in Azure DevOps`
+                  : boardsInfo && "error" in boardsInfo
+                    ? `Showing work item states — couldn't read your team's board: ${boardsInfo.error}`
+                    : "Showing work item states"}
               </div>
-            </>
+              {orderedCols.map((c) => {
+                const n = visibleItems.filter((i) => colOfItem(i) === c).length;
+                return (
+                  <div
+                    key={c}
+                    className={`who-row col-row ${hiddenCols.has(c) ? "" : "on"}`}
+                    data-drop={cue(drag, `cl:${c}`)}
+                    onDragOver={(e) => {
+                      const src = dragging("text/mb-col");
+                      const side = sideOf(e, e.currentTarget, "y");
+                      overTarget(e, !src || src === c || samePlace(orderedCols, src, c, side) ? null : { key: `cl:${c}`, side, outcome: `Put ${src} ${side} ${c}` });
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const src = e.dataTransfer.getData("text/mb-col");
+                      if (src && src !== c) reorderCols(src, c, sideOf(e, e.currentTarget, "y"));
+                    }}
+                  >
+                    <span className="col-grip" draggable title="Drag to reorder" onDragStart={(e) => beginDrag(e, "text/mb-col", c, `Moving column ${c}`)}>
+                      ⋮⋮
+                    </span>
+                    <span className={`ck ${hiddenCols.has(c) ? "" : "on"}`} title={hiddenCols.has(c) ? "Show column" : "Hide column"} onClick={() => toggleHidden(c)}>
+                      {hiddenCols.has(c) ? "" : "✓"}
+                    </span>
+                    <span onClick={() => toggleHidden(c)}>{c}</span>
+                    <span className="cnt">{n}</span>
+                  </div>
+                );
+              })}
+              <div className="who-div" />
+              <div className="who-row" onClick={() => setPrefs({ order: [], hidden: defaultHidden })}>
+                {board ? "Reset to the board's order" : "Reset order"}
+              </div>
+            </Popover>
           )}
         </span>
         <span style={{ marginLeft: "auto" }} />
@@ -3657,7 +3568,7 @@ function DashboardBoard({
                 {linked.map((s) => (
                   <div key={s.id} className="drow" style={{ cursor: "pointer" }} onClick={() => onJump(s.id)}>
                     <span className={`dot sm ${s.status}`} />
-                    <span className="nm">{s.ticketTitle ?? s.title}</span>
+                    <span className="nm">{titleOf(s)}</span>
                     <span className="st">open ⏎</span>
                   </div>
                 ))}
@@ -3756,7 +3667,7 @@ function DashboardBoard({
                     <Pick value={attachId} onChange={(e) => setAttachId(e.target.value)}>
                       <option value="">choose session…</option>
                       {attachable.map((s) => (
-                        <option key={s.id} value={s.id}>{s.ticketTitle ?? s.title}</option>
+                        <option key={s.id} value={s.id}>{titleOf(s)}</option>
                       ))}
                     </Pick>
                     <button
@@ -3852,7 +3763,7 @@ function GroupDialog({
   return (
     <div className="modal-back" onMouseDown={onClose}>
       <div className="modal close-dlg" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>Move {session.ticketTitle ?? session.title}</h3>
+        <h3>Move {titleOf(session)}</h3>
         <div className="sub-h">
           Pick the group — and optionally a workspace inside it — then Move. Nothing changes until
           you click Move.
@@ -3908,9 +3819,7 @@ function GroupDialog({
   );
 }
 
-// ---- close-session dialog (design 1e) ----
-type CleanupMode = "keep" | "push" | "discard";
-
+// ---- restart-all dialog ----
 /**
  * Restart every Claude pane in place. The CLI prints "Update installed ·
  * Restart to update" when it upgrades itself, and each running claude keeps the
@@ -3986,6 +3895,9 @@ function RestartAllDialog({
     </div>
   );
 }
+
+// ---- close-session dialog (design 1e) ----
+type CleanupMode = "keep" | "push" | "discard";
 
 function CloseSessionDialog({
   session,
@@ -4075,7 +3987,7 @@ function CloseSessionDialog({
   return (
     <div className="modal-back" onMouseDown={onCancel}>
       <div className="modal close-dlg" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>Close {session.ticketTitle ?? session.title}?</h3>
+        <h3>Close {titleOf(session)}?</h3>
         <div className="sub-h">
           {st ? (
             <>
@@ -4310,7 +4222,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
                   }
                 >
                   <span className={`dot sm ${s.status}`} />
-                  <span className="nm">{s.ticketTitle ?? s.title}</span>
+                  <span className="nm">{titleOf(s)}</span>
                   <span className={`st ${cls}`}>{note}</span>
                 </div>
               );
@@ -5150,7 +5062,11 @@ function NewSessionModal({
     () => (who && who !== "*" ? allTickets.filter((t) => t.assignedTo === who) : allTickets),
     [allTickets, who]
   );
-  const columns = useMemo(() => ticketsByColumn(tickets, stateOrder), [tickets, stateOrder]);
+  // the Dashboard's column order (when there's no board) leads the picker too
+  const columns = useMemo(
+    () => ticketsByColumn(tickets, stateOrder, loadLS<Record<string, { order: string[] }> | null>("mb.board.prefs", null)?.states?.order ?? loadLS<string[]>("mb.board.colOrder", [])),
+    [tickets, stateOrder]
+  );
   const pickable = useMemo(() => columns.flatMap((c) => c.items), [columns]);
 
   const pickTicket = (val: string) => {

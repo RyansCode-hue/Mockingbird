@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { broadcastFate, cellKeyFor, frontOf, paneShortcuts, remapGroupKeys, remapSeats, worktreeGone, type GridCell } from "../src/renderer/appModel";
+import { broadcastFate, cellKeyFor, frontOf, paneShortcuts, remapGroupKeys, remapSeats, sessionHolding, worktreeGone, type GridCell } from "../src/renderer/appModel";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
 import type { SessionInfo } from "../src/shared/types";
@@ -28,6 +28,22 @@ describe("pane numbers", () => {
     const keys = paneShortcuts(many, {});
     expect(keys.size).toBe(9);
     expect(keys.has("s9")).toBe(false);
+  });
+});
+
+describe("the session a file belongs to", () => {
+  const api = session("api", { cwd: "/w/api" });
+  const apiV2 = session("api2", { cwd: "/w/api-v2" });
+  const web = session("web", { cwd: "/w/web" });
+  it("prefers the given session when its folder holds the file, else the first that does", () => {
+    expect(sessionHolding([api, apiV2, web], "/w/web/src/a.ts", api)?.id).toBe("web");
+    expect(sessionHolding([api, web], "/w/api/x.ts", null)?.id).toBe("api");
+    const twin = session("twin", { cwd: "/w/api" });
+    expect(sessionHolding([api, twin], "/w/api/x.ts", twin)?.id).toBe("twin");
+  });
+  it("matches whole folders only, and is null when none holds the file", () => {
+    expect(sessionHolding([api, apiV2], "/w/api-v2/x.ts")?.id).toBe("api2");
+    expect(sessionHolding([api], "/elsewhere/x.ts")).toBeNull();
   });
 });
 

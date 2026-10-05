@@ -5,6 +5,58 @@
  */
 import { useEffect, useState } from "react";
 import type { AdoWorkItem, RepoBranches } from "../shared/types";
+import { orderColumns } from "./boardView";
+
+/** Kickoff prompt for a session started from an Azure DevOps ticket. */
+export function ticketKickoffPrompt(id: number | string, title: string, description: string): string {
+  return (
+    `You're picking up Azure DevOps ticket #${id}: ${title}.\n\n` +
+    (description.trim() ? `Ticket description:\n${description.trim()}\n\n` : "") +
+    `Get familiar with the relevant code first and propose an approach before making changes.`
+  );
+}
+
+/** "Filter orgs by foundation" → "filterOrgsByFoundation" (branch-friendly). */
+export function suggestTicketName(title: string): string {
+  const words = title.replace(/[^a-zA-Z0-9 ]+/g, " ").trim().split(/\s+/).slice(0, 5);
+  return words.map((w, i) => (i === 0 ? w.toLowerCase() : w[0].toUpperCase() + w.slice(1).toLowerCase())).join("");
+}
+
+const STATE_ORDER = [
+  "New", "Approved", "Committed", "To Do", "Open", "Active", "In Progress", "Doing",
+  "Resolved", "In Review", "Review", "Done", "Closed",
+];
+/** A generic workflow position for a state, for when Azure DevOps' own order isn't known. */
+export const stateRank = (s: string) => {
+  const i = STATE_ORDER.indexOf(s);
+  return i < 0 ? STATE_ORDER.length : i;
+};
+
+// Terminal columns. A ticket you'd start work on never sits in one, so the
+// New Session picker leaves them out — you pick from the working columns of
+// the board (Approved/Planning/Parked/In Progress/QA and the like).
+const DONE_STATES = ["done", "closed", "removed", "completed", "resolved", "cut", "abandoned"];
+const isWorkingState = (state: string) => {
+  const s = state.toLowerCase();
+  return !DONE_STATES.some((d) => s === d || s.startsWith(d + " ") || s.endsWith(" " + d));
+};
+
+/**
+ * Group tickets into board columns. Order of preference: the column order you
+ * dragged into place on the Dashboard (`custom`), then Azure DevOps' own
+ * workflow order for the work item type, then a generic fallback. Terminal
+ * columns are dropped entirely — you don't start work from Done.
+ */
+export function ticketsByColumn(items: AdoWorkItem[], workflowOrder: string[], custom: string[] = []): { state: string; items: AdoWorkItem[] }[] {
+  const byState = new Map<string, AdoWorkItem[]>();
+  for (const t of items) if (isWorkingState(t.state)) byState.set(t.state, [...(byState.get(t.state) ?? []), t]);
+  const rank = (c: string) => {
+    const i = workflowOrder.indexOf(c);
+    return i < 0 ? workflowOrder.length + stateRank(c) : i;
+  };
+  const states = [...byState.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  return orderColumns(states, custom).map((state) => ({ state, items: byState.get(state)!.sort((a, b) => a.id - b.id) }));
+}
 
 /**
  * The repo's branches, and the base a new branch is cut from — its dev/uat-style
