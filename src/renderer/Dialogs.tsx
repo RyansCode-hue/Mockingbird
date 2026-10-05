@@ -254,6 +254,7 @@ export function CloseSessionDialog({
       const closeErr = await forceClose(session, false);
       if (closeErr) return stop(`Couldn't close the session: ${closeErr}`);
       if (mode !== "keep") {
+        if (!session.repoPath) return stop("The session closed, but it has no repository to clean its worktree up in.");
         const r = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode);
         if (isErr(r)) return stop(r.error);
         const forgot = await window.mb.killSession(session.id, true);

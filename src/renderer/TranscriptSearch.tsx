@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import { isErr, type TranscriptHit } from "../shared/types";
+import { isErr, type TranscriptHit, type IpcResult, type TranscriptSearchResult } from "../shared/types";
 import { ago } from "./format";
-
-type SearchStatus = { conversations: number; files: number; indexing: { done: number; total: number } | null; lastSync: number; problem: string | null };
+import { settled } from "./settled";
 
 const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
   pane: "go to pane",
@@ -38,7 +37,7 @@ export function freshHits(shown: TranscriptHit[], fresh: TranscriptHit[]): Trans
  */
 export function useTranscriptSearch(q: string, enabled = true) {
   const [hits, setHits] = useState<TranscriptHit[]>([]);
-  const [status, setStatus] = useState<SearchStatus | null>(null);
+  const [status, setStatus] = useState<TranscriptSearchResult | null>(null);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
   const seq = useRef(0);
@@ -47,7 +46,7 @@ export function useTranscriptSearch(q: string, enabled = true) {
     const n = ++seq.current;
     if (!enabled) return;
     const t = setTimeout(async () => {
-      const r = await window.mb.searchTranscripts(q).catch((err: unknown) => ({ error: `Search failed: ${err instanceof Error ? err.message : err}` }));
+      const r = await settled<IpcResult<TranscriptSearchResult>>(window.mb.searchTranscripts(q), "Search failed");
       if (n !== seq.current) return; // a newer query is on its way
       if (isErr(r)) {
         setError(r.error);

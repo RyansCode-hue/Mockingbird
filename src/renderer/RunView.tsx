@@ -1,21 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import { isErr, type DebugFrame, type RunProfile, type RunServiceState, type SessionInfo, type IpcResult } from "../shared/types";
+import { isErr, type DebugFrame, type RunProfile, type RunServiceState, type SessionInfo, type IpcResult, type RunProfileInfo } from "../shared/types";
 import { BugIcon, SparkleIcon } from "./Icons";
 import { DebugPanel } from "./DebugPanel";
 import { useDebug } from "./debugStore";
 import { RUN_DOT, draftForEditing, stripRepo } from "./runDisplay";
 import { useAction } from "./useAction";
+import type { PortConflict } from "../main/run";
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
-interface ProfileInfo {
-  worktree: string;
-  repo: string;
-  file: string;
-  profile: RunProfile | null;
-}
-type Conflict = { port: number; service: string; pid: number | null; command: string };
 
 const ACTIVE = new Set(["starting", "running", "stopping"]);
 
@@ -51,9 +45,9 @@ export function RunView({
   const dbg = useDebug();
   const [progress, setProgress] = useState("");
   useEffect(() => window.mb.onRunProgress((w: string, m: string) => w === session?.cwd && setProgress(m)), [session?.cwd]);
-  const [info, setInfo] = useState<IpcResult<ProfileInfo> | null>(null);
+  const [info, setInfo] = useState<IpcResult<RunProfileInfo> | null>(null);
   const { busy, run, error, setError } = useAction();
-  const [conflicts, setConflicts] = useState<{ list: Conflict[]; services?: string[] } | null>(null);
+  const [conflicts, setConflicts] = useState<{ list: PortConflict[]; services?: string[] } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState("");
   const [mode, setMode] = useState<"swap" | "side">("swap");
@@ -66,7 +60,7 @@ export function RunView({
     const id = sid;
     if (!id) return;
     window.mb.runProfile(id).then(
-      (r: IpcResult<ProfileInfo>) => shown.current === id && setInfo(r),
+      (r: IpcResult<RunProfileInfo>) => shown.current === id && setInfo(r),
       (err: unknown) => shown.current === id && setInfo({ error: `Couldn't read the run setup: ${err instanceof Error ? err.message : err}` })
     );
   };

@@ -361,6 +361,18 @@ export interface TranscriptHit {
   open: { how: "pane" | "previous"; sessionId: string } | { how: "room"; roomId: string; roomTitle: string } | { how: "resume" };
 }
 
+/** A transcript search's hits, and how far the index behind them has got. */
+export interface TranscriptSearchResult {
+  hits: TranscriptHit[];
+  conversations: number;
+  files: number;
+  /** Set while the index is still reading transcripts. */
+  indexing: { done: number; total: number } | null;
+  lastSync: number;
+  /** Why the index can't be trusted right now, if it can't. */
+  problem: string | null;
+}
+
 /** The newest version on GitHub, against the one running. */
 export interface UpdateInfo {
   current: string;
@@ -518,6 +530,14 @@ export interface RunProfile {
   blockers?: { what: string; fix: string }[];
   /** Origins sign-in must allow for each slot (Entra/B2C redirect URIs), listed for the user to register. */
   notes?: string[];
+}
+
+/** A session's run setup: its worktree, the main checkout whose profile it shares, and the profile's file. */
+export interface RunProfileInfo {
+  worktree: string;
+  repo: string;
+  file: string;
+  profile: RunProfile | null;
 }
 
 export type RunStatus = "starting" | "running" | "stopping" | "stopped" | "failed";

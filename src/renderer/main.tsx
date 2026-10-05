@@ -39,12 +39,6 @@ import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from 
 import { SettingsView, type SettingsSection } from "./Settings";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 
-declare global {
-  interface Window {
-    mb: any;
-  }
-}
-
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
 /** What the side bar shows, picked from the activity bar as in VS Code. */
 type SideView = "sessions" | "explorer" | "scm" | "search" | "run";

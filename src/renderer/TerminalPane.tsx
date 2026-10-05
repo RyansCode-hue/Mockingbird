@@ -15,12 +15,6 @@ import { ChangeCount, plural } from "./changeCount";
 
 export { applyTermTheme } from "./cachedTerm";
 
-declare global {
-  interface Window {
-    mb: any;
-  }
-}
-
 // Replay (cachedTerm.ts) gates both directions. Live output waits until the
 // history is queued, and input until xterm has parsed it: xterm auto-answers
 // the query sequences it finds in the replayed history (cursor position, DA,
