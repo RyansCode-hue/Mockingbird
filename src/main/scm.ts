@@ -1,5 +1,5 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
-import { baseRef, parseNameStatus, resolveIn } from "./files";
+import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
 import type { GitChange, GraphCommit, GraphRef, ScmEntry, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
 
 /**
@@ -186,16 +186,6 @@ export async function scmCommitFiles(root: string, sha: string): Promise<GitChan
     ? await git(root, ["diff", "--name-status", "-z", "-M", parent, sha], { trim: false })
     : await git(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", sha], { trim: false });
   return parseNameStatus(out);
-}
-
-/**
- * `rel`, and the path it was renamed from when `range` renamed it. A diff
- * limited to the new path alone can't pair it with the old one, and shows the
- * rename as a whole new file.
- */
-async function withRenameSource(root: string, range: string[], rel: string): Promise<string[]> {
-  const from = parseNameStatus(await git(root, ["diff", "--name-status", "-z", "-M", ...range], { trim: false })).find((c) => c.path === rel)?.from;
-  return from ? [from, rel] : [rel];
 }
 
 function capped(diff: string): string {

@@ -31,7 +31,8 @@ import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment
 import { PipelineStore } from "./pipeline";
 import { openPr, parseRemote, prBaseProblem, prDescriptionPrompt, prError, prPreflight, remoteName, summaryOf } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
-import { git } from "./git";
+import { currentBranch, git } from "./git";
+import { CLAUDE_PROJECTS, CODEX_SESSIONS } from "./agentFiles";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
@@ -48,7 +49,7 @@ import { cliVersion } from "./agents";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
-import { topOfKey } from "../shared/types";
+import { localDay, topOfKey } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 
@@ -448,7 +449,7 @@ handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy
 handle("session:buffer", (id) => sessions.buffer(id));
 handle("sessions:broadcast", (req: Partial<BroadcastRequest>) => {
   if (typeof req?.message !== "string" || !req.message) throw new Error("Nothing to broadcast");
-  sessions.broadcast(req.message, req.sessionIds ?? [], req.whenIdle ?? true);
+  return sessions.broadcast(req.message, req.sessionIds ?? [], req.whenIdle ?? true);
 });
 ipcMain.on("session:write", (_e, id, data) => sessions.write(id, data));
 // Audit trail for the "something typed /clear into my session" class of bug:
@@ -686,7 +687,9 @@ handle("settings:set", (s) => {
   return store.settings;
 });
 handle("debrief:run", (kind) => runDebrief(kind, sessions, store));
-handle("import:list", () => listClaudeConversations());
+// recent conversations of both agents come from the transcript index; without
+// it (it couldn't open), Claude's are still read from its own folder
+handle("import:list", () => transcripts?.recentConversations() ?? listClaudeConversations());
 handle("sessions:rename", (id, title) => sessions.rename(id, title));
 handle("sessions:renameGroup", (oldKey, newKey) => sessions.renameGroup(oldKey, newKey));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
@@ -967,8 +970,7 @@ handle("pr:status", async (cwd, fresh) => {
   const hit = prCache.get(root);
   if (hit && !fresh && Date.now() - hit.at < PR_TTL_MS) {
     // a branch switch makes the cached answer someone else's
-    const branch = (await git(root, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] })) || null;
-    if (branch === hit.branch) return hit;
+    if ((await currentBranch(root)) === hit.branch) return hit;
   }
   let p = prInFlight.get(root);
   if (!p) {
@@ -1039,8 +1041,7 @@ handle("rollup:write", async (weeksAgo) => {
     generated: new Date(),
   });
   fs.mkdirSync(dir, { recursive: true });
-  const ymd = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
-  const file = path.join(dir, `rollup-week-of-${ymd}.md`);
+  const file = path.join(dir, `rollup-week-of-${localDay(start)}.md`);
   fs.writeFileSync(file, markdown);
   return { file, markdown };
 });
@@ -1182,7 +1183,7 @@ handle("pipeline:comms", async (ticketId, title, details) => {
 });
 // native folder/file picker for the Settings tab — no more typing paths
 // ---- transcript index: search every Claude/Codex conversation on this Mac ----
-const transcriptRoots = { claude: path.join(os.homedir(), ".claude", "projects"), codex: path.join(os.homedir(), ".codex", "sessions") };
+const transcriptRoots = { claude: CLAUDE_PROJECTS, codex: CODEX_SESSIONS };
 let transcripts: TranscriptIndex | null = null;
 let transcriptsProblem: string | null = null;
 

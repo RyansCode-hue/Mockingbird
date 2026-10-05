@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Store, expandHome } from "./store";
-import { AdoWorkItem, AdoComment, AdoBoard } from "../shared/types";
+import { AdoWorkItem, AdoComment, AdoBoard, localDay } from "../shared/types";
 
 interface AdoConfig {
   orgUrl: string;
@@ -239,7 +239,7 @@ export async function writeAdoSnapshot(store: Store): Promise<{ file: string; co
     .slice(0, 15);
   const dir = path.join(expandHome(store.settings.workTrackerPath), "session-digests");
   fs.mkdirSync(dir, { recursive: true });
-  const date = new Date().toISOString().slice(0, 10);
+  const date = localDay();
   const file = path.join(dir, `ado-snapshot-${date}.md`);
   const parts = [
     `# Azure DevOps snapshot — ${date}`,

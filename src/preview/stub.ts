@@ -177,6 +177,10 @@ const api: Record<string, (...a: any[]) => any> = {
   // sessions and the grid
   listSessions: async () => sessions.map((s) => ({ ...s })),
   resumableSessions: async () => previous,
+  listImportable: async () => [
+    { sessionId: "c-import-1", agent: "claude", cwd: REPO, title: "Why does the org picker reset on save?", mtimeMs: now - 50 * min },
+    { sessionId: "x-import-2", agent: "codex", cwd: REPO, title: "Speed up the pathways query", mtimeMs: now - 3 * 60 * min },
+  ],
   sessionBuffer: async (id: string) => buffers[id] ?? "",
   sessionWrite: async (id: string, text: string) => {
     // typing is echoed; nothing runs
@@ -230,12 +234,18 @@ const api: Record<string, (...a: any[]) => any> = {
   },
   sessionRestart: async (id: string) => byId(id) ?? err("Session is no longer running"),
   restartAllSessions: async () => ({ restarted: sessions.filter((s) => !s.shell).map((s) => s.id), skipped: [], failed: [] }),
-  broadcast: async () => undefined,
+  // main's rule: idle panes are given it, busy ones queue it, terminals and debriefs never get it
+  broadcast: async (req: { message: string; sessionIds: string[] }) =>
+    (req.sessionIds.length ? req.sessionIds : sessions.filter((s) => s.kind === "work" && !s.shell).map((s) => s.id)).map((id) => {
+      const s = byId(id);
+      const outcome = !s || s.status === "dead" || s.shell || s.debrief ? "skipped" : s.status === "idle" ? "delivered" : "queued";
+      return { id, outcome };
+    }),
   hooksInstalled: async () => true,
   appVersion: async () => "1.3.0",
   getSettings: async () => settings,
-  setSettings: async (s: Settings) => {
-    settings = s;
+  setSettings: async (patch: Partial<Settings>) => {
+    settings = { ...settings, ...patch }; // main merges what it's sent
   },
   usageGet: async () => usage,
   metersGet: async () => meters,

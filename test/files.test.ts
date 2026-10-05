@@ -116,6 +116,13 @@ describe("gitChanges and fileDiff", () => {
     expect(await fileDiff(repo, "a.txt", "working", false)).toMatch(/-one\n\+two/);
     expect(await fileDiff(repo, "new.txt", "working", true)).toMatch(/\+fresh/);
   });
+  it("diffs a renamed file as a rename, not a whole new file", async () => {
+    const repo = makeRepo({ "old.txt": "one\ntwo\nthree\nfour\n" });
+    git(repo, "mv", "old.txt", "new.txt");
+    const d = await fileDiff(repo, "new.txt", "working", false);
+    expect(d).toMatch(/rename from old\.txt\nrename to new\.txt/);
+    expect(d).not.toMatch(/new file mode/);
+  });
 });
 
 describe("saving an edited file", () => {

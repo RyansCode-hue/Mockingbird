@@ -1,4 +1,4 @@
-import { git } from "./git";
+import { branchesOf, git, MAX_DIFF_BYTES } from "./git";
 import * as fs from "fs";
 import { applyTextEdits, type LspTextEdit } from "../shared/textEdits";
 import { lineBreakOf, splitBom } from "../shared/editorText";
@@ -7,7 +7,6 @@ import type { FileEntry, FileContent, FileSave, GitChange, GitChanges, ChangeSco
 import { pickDefaultBase } from "./worktrees";
 
 const MAX_FILE_BYTES = 1_500_000;
-const MAX_DIFF_BYTES = 3_000_000;
 
 /** Is `p` the folder `root` or inside it? Both are compared as resolved paths, so a trailing slash doesn't matter. */
 export function inside(root: string, p: string): boolean {
@@ -108,9 +107,8 @@ const baseCache = new Map<string, { name: string | null; at: number }>();
 async function defaultBaseOf(root: string): Promise<string | null> {
   const hit = baseCache.get(root);
   if (hit && Date.now() - hit.at < BASE_TTL_MS) return hit.name;
-  const refs = await git(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes/origin"]);
-  const branches = refs.split("\n").filter(Boolean).map((b) => b.replace(/^origin\//, ""));
-  const name = pickDefaultBase(branches);
+  const { local, origin } = await branchesOf(root);
+  const name = pickDefaultBase([...local, ...origin]);
   baseCache.set(root, { name, at: Date.now() });
   return name;
 }
@@ -120,7 +118,7 @@ export async function baseRef(root: string): Promise<string | null> {
   const name = await defaultBaseOf(root);
   if (!name) return null;
   for (const ref of [`origin/${name}`, name]) {
-    if (await git(root, ["rev-parse", "--verify", "-q", ref]).then(() => true, () => false)) return ref;
+    if (await git(root, ["rev-parse", "--verify", "-q", ref], { okCodes: [0, 1] })) return ref; // 1: no such ref
   }
   return null;
 }
@@ -134,6 +132,16 @@ async function branchBase(root: string): Promise<{ sha: string; name: string }> 
   } catch (err) {
     throw new Error(`Cannot find a common ancestor with ${ref}: ${(err as Error).message}`);
   }
+}
+
+/**
+ * The paths a one-file diff over `range` needs: a file renamed within it is
+ * diffed together with its old path, so -M shows the rename rather than a
+ * whole new file.
+ */
+export async function withRenameSource(root: string, range: string[], rel: string): Promise<string[]> {
+  const from = parseNameStatus(await git(root, ["diff", "--name-status", "-z", "-M", ...range], { trim: false })).find((c) => c.path === rel)?.from;
+  return from ? [from, rel] : [rel];
 }
 
 export function parseNameStatus(z: string): GitChange[] {
@@ -169,9 +177,12 @@ export async function gitChanges(root: string, scope: ChangeScope): Promise<GitC
 
 export async function fileDiff(root: string, rel: string, scope: ChangeScope, untracked: boolean): Promise<string> {
   await resolveIn(root, rel);
-  const out = untracked
-    ? await git(root, ["diff", "--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false })
-    : await git(root, ["diff", "-M", scope === "branch" ? (await branchBase(root)).sha : "HEAD", "--", rel], { trim: false });
+  let out: string;
+  if (untracked) out = await git(root, ["diff", "--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false });
+  else {
+    const range = [scope === "branch" ? (await branchBase(root)).sha : "HEAD"];
+    out = await git(root, ["diff", "-M", ...range, "--", ...(await withRenameSource(root, range, rel))], { trim: false });
+  }
   if (out.length > MAX_DIFF_BYTES) throw new Error("Diff is too large to display");
   return out;
 }

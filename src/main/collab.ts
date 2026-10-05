@@ -21,6 +21,8 @@ import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
 import { mcpLaunch, type McpLaunch } from "./messaging";
 import { makeTestCopy } from "./testCopy";
+import { codexError, parseClaudeJson, readCodexReply } from "./headless";
+import { agentLabel } from "./agents";
 
 /** The models a room can seat; each runs through the CLI and plan the user already has. */
 export const COLLAB_MODELS: CollabModel[] = [
@@ -881,33 +883,24 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
     const bin = binFor(p.agent);
     // installs and test suites can take a while; a reading turn that runs this long is stuck
     const timeoutMs = p.runsCommands ? 30 * 60_000 : 10 * 60_000;
-    if (!bin.includes("/")) throw new Error(`${p.agent} isn't installed`);
+    if (!bin.includes("/")) throw new Error(`${agentLabel(p.agent)} isn't installed`);
     if (p.agent === "claude") {
       const r = await userShellWithInput(claudeTurnCommand(bin, p, { mcp, ask: askTool, permit: true, sockets }), prompt, { cwd, env, signal, timeoutMs });
-      let out: any;
-      try {
-        out = JSON.parse(r.out);
-      } catch {
-        throw new Error(r.out.slice(0, 400) || `claude exited with code ${r.code}`);
-      }
-      if (r.code !== 0 || out.is_error) throw new Error(String(out.result ?? `claude exited with code ${r.code}`).slice(0, 400));
-      return { text: String(out.result ?? ""), conversationId: String(out.session_id) };
+      const { text, sessionId } = parseClaudeJson(r, 400);
+      const conversationId = sessionId ?? p.conversationId;
+      if (!conversationId) throw new Error("Claude replied without naming its conversation, so the next turn couldn't continue it");
+      return { text, conversationId };
     }
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mb-collab-"));
+    const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mb-collab-"));
     const last = path.join(tmp, "reply.txt");
     try {
       const r = await userShellWithInput(codexTurnCommand(bin, p, last, askTool ? mcp : undefined, sockets), prompt, { cwd, env, signal, timeoutMs });
+      const text = await readCodexReply(last, r, 400);
       const thread = /"thread_id":"([^"]+)"/.exec(r.out)?.[1] ?? p.conversationId;
-      let text = "";
-      try {
-        text = fs.readFileSync(last, "utf8");
-      } catch {
-        /* no reply written — reported just below with the CLI's output */
-      }
-      if (r.code !== 0 || !text.trim() || !thread) throw new Error((r.out.split("\n").filter((l) => /error/i.test(l)).pop() ?? r.out).slice(0, 400) || `codex exited with code ${r.code}`);
+      if (!thread) throw codexError(r, 400);
       return { text, conversationId: thread };
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      await fs.promises.rm(tmp, { recursive: true, force: true });
     }
   };
 }

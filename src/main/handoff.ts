@@ -1,5 +1,5 @@
 import * as fs from "fs";
-import { git } from "./git";
+import { currentBranch, git } from "./git";
 import { parseClaudeLine, parseCodexLine } from "./transcripts";
 import type { AgentKind } from "../shared/types";
 import { readSlice } from "./fileOps";
@@ -56,7 +56,7 @@ export async function repoState(cwd: string): Promise<string> {
   const isRepo = (await git(cwd, ["rev-parse", "--is-inside-work-tree"], { okCodes: [0, 128] })) === "true";
   if (!isRepo) return "(not a git repository)";
   const [branch, status, log, stat] = await Promise.all([
-    git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] }),
+    currentBranch(cwd),
     // untrimmed: the first line's leading space is its "unstaged" column
     git(cwd, ["status", "--short"], { trim: false }).then((o) => o.trimEnd()),
     git(cwd, ["log", "--oneline", "-10"], { okCodes: [0, 128] }),
