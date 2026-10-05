@@ -3,6 +3,7 @@ import type { RunServiceState } from "../shared/types";
 import { LogTerm, disposeLog } from "./LogTerm";
 import { addOutput, clearOutput, currentSession, useDebug } from "./debugStore";
 import { RUN_DOT } from "./runDisplay";
+import { settled } from "./settled";
 import { useAction } from "./useAction";
 
 const DEBUG_CONSOLE = "__debug-console";
@@ -29,7 +30,7 @@ function DebugConsole() {
     addOutput({ sid: target?.id ?? "", category: "input", text: `› ${expr}\n` });
     if (!target) return addOutput({ sid: "", category: "stderr", text: "Nothing is being debugged.\n" });
     const frame = debug.selected[target.id] ?? debug.paused[target.id]?.frame ?? null;
-    const r = await window.mb.debugEvaluate(target.id, expr, frame?.id, "repl");
+    const r = await settled(window.mb.debugEvaluate(target.id, expr, frame?.id, "repl"), "Couldn't evaluate");
     addOutput({ sid: target.id, category: "error" in r ? "stderr" : "result", text: `${"error" in r ? r.error : r.result}\n` });
   };
   return (

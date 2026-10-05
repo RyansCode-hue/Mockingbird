@@ -3,6 +3,7 @@ import type { GitChange, GitChanges, ScmEntry, ScmStatus } from "../shared/types
 import { useFolderRefresh } from "./folderWatch";
 import { SparkleIcon } from "./Icons";
 import { CommitGraph } from "./CommitGraph";
+import { settled } from "./settled";
 import { useAction } from "./useAction";
 
 type Result<T> = T | { error: string };
@@ -84,7 +85,7 @@ export function SourceControl({
   }, [message, status]);
 
   const load = useCallback(async () => {
-    const r: Result<ScmStatus> = await window.mb.scmStatus(sessionId).catch((err: unknown) => ({ error: `Couldn't read git status: ${err instanceof Error ? err.message : err}` }));
+    const r: Result<ScmStatus> = await settled(window.mb.scmStatus(sessionId), "Couldn't read git status");
     broken.current = isErr(r) && notARepository(r.error);
     setStatus((s) => (JSON.stringify(s) === JSON.stringify(r) ? s : r));
   }, [sessionId]);
@@ -102,7 +103,7 @@ export function SourceControl({
   const branchOpen = !closed.has("branch");
   useEffect(() => {
     if (!branchOpen && branch !== null) return;
-    window.mb.filesChanges(sessionId, "branch").then((r: Result<GitChanges>) => setBranch(r));
+    settled<Result<GitChanges>>(window.mb.filesChanges(sessionId, "branch"), "Couldn't read the branch's changes").then(setBranch);
   }, [branchOpen, sessionId, status]);
 
   const generate = async () => {

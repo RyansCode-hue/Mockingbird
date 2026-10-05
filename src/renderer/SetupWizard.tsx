@@ -31,15 +31,33 @@ function Check({ ok, warn }: { ok: boolean | null; warn?: boolean }) {
   return <span className={`sw-check ${ok ? "ok" : warn ? "warn" : "bad"}`}>{ok ? "✓" : warn ? "–" : "✕"}</span>;
 }
 
-function Cmd({ children }: { children: string }) {
+function Cmd({ children, onCopyError }: { children: string; onCopyError: (message: string) => void }) {
   return (
-    <code className="sw-cmd" title="Click to copy" onClick={() => navigator.clipboard.writeText(children)}>
+    <code
+      className="sw-cmd"
+      title="Click to copy"
+      onClick={() => navigator.clipboard.writeText(children).catch((err: unknown) => onCopyError(`Couldn't copy the command: ${messageOf(err)}`))}
+    >
       {children}
     </code>
   );
 }
 
-function AgentRow({ name, a, install, login, optional }: { name: string; a: AgentCheck; install: string; login: string; optional?: boolean }) {
+function AgentRow({
+  name,
+  a,
+  install,
+  login,
+  optional,
+  onCopyError,
+}: {
+  name: string;
+  a: AgentCheck;
+  install: string;
+  login: string;
+  optional?: boolean;
+  onCopyError: (message: string) => void;
+}) {
   return (
     <div className="sw-item">
       <Check ok={a.found && a.signedIn === true} warn={optional && !a.found} />
@@ -49,11 +67,11 @@ function AgentRow({ name, a, install, login, optional }: { name: string; a: Agen
         </div>
         {!a.found ? (
           <div className="sw-sub">
-            Not installed. In Terminal: <Cmd>{install}</Cmd>
+            Not installed. In Terminal: <Cmd onCopyError={onCopyError}>{install}</Cmd>
           </div>
         ) : a.signedIn === false ? (
           <div className="sw-sub">
-            {a.version} — not signed in. In Terminal: <Cmd>{login}</Cmd>
+            {a.version} — not signed in. In Terminal: <Cmd onCopyError={onCopyError}>{login}</Cmd>
           </div>
         ) : a.signedIn === null ? (
           <div className="sw-sub">{a.version} — couldn't check sign-in: {a.detail}</div>
@@ -198,8 +216,8 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
               <div className="wi-note">checking this Mac…</div>
             ) : (
               <>
-                <AgentRow name="Claude Code" a={st.claude} install="npm install -g @anthropic-ai/claude-code" login="claude auth login" />
-                <AgentRow name="Codex" a={st.codex} install="npm install -g @openai/codex" login="codex login" optional />
+                <AgentRow name="Claude Code" a={st.claude} install="npm install -g @anthropic-ai/claude-code" login="claude auth login" onCopyError={setError} />
+                <AgentRow name="Codex" a={st.codex} install="npm install -g @openai/codex" login="codex login" optional onCopyError={setError} />
               </>
             )}
           </>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import type { DebugFrame, DebugScope, DebugSessionInfo, DebugVariable } from "../shared/types";
 import { currentSession, selectFrame, useBreakpoints, useDebug } from "./debugStore";
+import { settled } from "./settled";
 import { useAction } from "./useAction";
 
 type Result<T> = T | { error: string };
@@ -14,7 +15,7 @@ function VarRow({ sid, v, depth }: { sid: string; v: DebugVariable; depth: numbe
   const toggle = () => {
     if (!v.ref) return;
     setOpen((o) => !o);
-    if (!kids) window.mb.debugVariables(sid, v.ref).then(setKids);
+    if (!kids) settled(window.mb.debugVariables(sid, v.ref), "Couldn't read the variables").then(setKids);
   };
   return (
     <>
@@ -40,7 +41,7 @@ function Scope({ sid, scope }: { sid: string; scope: DebugScope }) {
   const [open, setOpen] = useState(!scope.expensive);
   const [vars, setVars] = useState<Result<DebugVariable[]> | null>(null);
   useEffect(() => {
-    if (open && !vars) window.mb.debugVariables(sid, scope.ref).then(setVars);
+    if (open && !vars) settled(window.mb.debugVariables(sid, scope.ref), "Couldn't read the variables").then(setVars);
   }, [open]);
   return (
     <>
@@ -100,16 +101,18 @@ export function DebugPanel({
   useEffect(() => {
     setFrames(null);
     if (!cur || cur.state !== "stopped" || !paused) return;
-    window.mb.debugStack(cur.id, paused.threadId).then(setFrames);
+    settled(window.mb.debugStack(cur.id, paused.threadId), "Couldn't read the call stack").then(setFrames);
   }, [cur?.id, cur?.state, paused]);
 
   // scopes and watches of the selected frame
   useEffect(() => {
     setScopes(null);
     if (!cur || cur.state !== "stopped" || !selected) return;
-    window.mb.debugScopes(cur.id, selected.id).then(setScopes);
+    settled(window.mb.debugScopes(cur.id, selected.id), "Couldn't read the scopes").then(setScopes);
     for (const w of watches) {
-      window.mb.debugEvaluate(cur.id, w, selected.id, "watch").then((r: Result<{ result: string }>) => setWatchVals((v) => ({ ...v, [w]: isErr(r) ? `⚠ ${r.error}` : r.result })));
+      settled<Result<{ result: string }>>(window.mb.debugEvaluate(cur.id, w, selected.id, "watch"), "Couldn't evaluate").then((r) =>
+        setWatchVals((v) => ({ ...v, [w]: isErr(r) ? `⚠ ${r.error}` : r.result }))
+      );
     }
   }, [cur?.id, cur?.state, selected?.id, watches]);
 
