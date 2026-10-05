@@ -35,14 +35,16 @@ const emit = () => {
   });
 };
 
+// module-level, so React keeps one subscription per component instead of
+// resubscribing on every render
+const subscribe = (l: () => void) => {
+  listeners.add(l);
+  return () => void listeners.delete(l);
+};
+const snapshot = () => state;
+
 export function useDrag(): DragState | null {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => state
-  );
+  return useSyncExternalStore(subscribe, snapshot);
 }
 
 /** Start dragging: sets the drag data and tells every target what's coming. */
