@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Pick } from "./Menu";
 import { enterConfirms } from "./keys";
 import { titleOf } from "./appModel";
+import { isError } from "./uiUtil";
 import type { SessionInfo, WorktreeStateInfo } from "../shared/types";
 import { splitGroupKey, topOfKey } from "../shared/types";
 
@@ -226,7 +227,8 @@ export function CloseSessionDialog({
   wt: WorktreeStateInfo | { error: string };
   onCancel: () => void;
   onDone: () => void;
-  forceClose: (s: SessionInfo, forget: boolean) => Promise<void>;
+  /** Closes the session's pane and process; answers why it couldn't. */
+  forceClose: (s: SessionInfo, forget: boolean) => Promise<string | null>;
 }) {
   // the safe option is always preselected; the destructive one is never the default
   const [mode, setMode] = useState<CleanupMode>("keep");
@@ -243,23 +245,24 @@ export function CloseSessionDialog({
   const confirm = async () => {
     setBusy(true);
     setError("");
+    const stop = (why: string) => {
+      setError(why);
+      setBusy(false);
+    };
     try {
       // the session closes but stays resumable under Previous (scrollback and
       // undo snapshots included) until its worktree has been pushed or removed
-      await forceClose(session, false);
+      const closeErr = await forceClose(session, false);
+      if (closeErr) return stop(`Couldn't close the session: ${closeErr}`);
       if (mode !== "keep") {
         const r = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode);
-        if (r?.error) {
-          setError(r.error);
-          setBusy(false);
-          return;
-        }
-        await window.mb.killSession(session.id, true);
+        if (isError(r)) return stop(r.error);
+        const forgot = await window.mb.killSession(session.id, true);
+        if (isError(forgot)) return stop(`The worktree is done with, but the session couldn't be removed from Previous: ${forgot.error}`);
       }
       onDone();
     } catch (err) {
-      setError(String(err));
-      setBusy(false);
+      stop(String(err));
     }
   };
 

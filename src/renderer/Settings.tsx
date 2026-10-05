@@ -5,7 +5,7 @@ import { PresetsSection } from "./Presets";
 import { getFormatOnSave, setFormatOnSave } from "./CodeEditor";
 import type { AgentCheck, SetupStatus, SessionInfo, SessionPreset, Settings, WorktreeEntry, OptionalTab } from "../shared/types";
 import { OPTIONAL_TABS } from "../shared/types";
-import { loadLS } from "./uiUtil";
+import { isError, loadLS } from "./uiUtil";
 import { TAB_LABELS } from "./tabs";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
@@ -23,6 +23,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
   const [original, setOriginal] = useState("");
   const [loadedPath, setLoadedPath] = useState("");
   const [message, setMessage] = useState("");
+  const [bError, setBError] = useState<string | null>(null);
   const [scope, setScope] = useState<"all" | "selected">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [delivery, setDelivery] = useState<Record<string, DeliveryState>>({});
@@ -119,18 +120,22 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
     setIoError(null);
     setOriginal(content);
     if (broadcastToo && rereadTargets.length) {
-      await window.mb.broadcast({
+      const b = await window.mb.broadcast({
         message: `Heads up: ${loadedPath} was just updated. Please re-read it now and apply it to all work going forward in this session.`,
         sessionIds: rereadTargets.map((s) => s.id),
         whenIdle: true,
       });
+      if (isError(b)) return setBError(`Saved, but couldn't ask the sessions to re-read it: ${b.error}`);
+      setBError(null);
       markDelivery(rereadTargets);
     }
   };
 
   const queueBroadcast = async () => {
     if (!message.trim() || !bTargets.length) return;
-    await window.mb.broadcast({ message, sessionIds: bTargets.map((s) => s.id), whenIdle: true });
+    const r = await window.mb.broadcast({ message, sessionIds: bTargets.map((s) => s.id), whenIdle: true });
+    if (isError(r)) return setBError(`Couldn't queue the broadcast: ${r.error}`);
+    setBError(null);
     markDelivery(bTargets);
     setMessage("");
   };
@@ -182,6 +187,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
             <button className="primary" disabled={!message.trim() || !bTargets.length} onClick={queueBroadcast}>
               Queue for {bTargets.length} session{bTargets.length === 1 ? "" : "s"}
             </button>
+            {bError && <div className="err">{bError}</div>}
           </div>
           <div className="delivery">
             <div className="grp">Delivery</div>
@@ -459,6 +465,7 @@ export function SettingsView({
   const [mcpCmd, setMcpCmd] = useState("");
   const [mcpErr, setMcpErr] = useState("");
   const [version, setVersion] = useState("");
+  const [loadError, setLoadError] = useState("");
 
   const loadStatus = () => {
     setStatus(null);
@@ -466,8 +473,10 @@ export function SettingsView({
   };
   const loadConnectors = () => window.mb.connectorsStatus().then(setConn);
   useEffect(() => {
-    window.mb.getSettings().then(setS);
-    window.mb.appVersion().then(setVersion);
+    window.mb.getSettings().then((r: Settings | { error: string }) => (isError(r) ? setLoadError(r.error) : setS(r)));
+    window.mb.appVersion().then((v: string | { error: string }) =>
+      isError(v) ? console.error("[mockingbird] couldn't read the app version:", v.error) : setVersion(v)
+    );
     window.mb.adoConfigGet().then((r: any) => {
       if (r?.error) setAdoNote({ ok: false, msg: `Couldn't read your Azure DevOps config: ${r.error}` });
       else setAdoCfg(r);
@@ -475,7 +484,7 @@ export function SettingsView({
     loadStatus();
     loadConnectors();
   }, []);
-  if (!s) return <div className="settings-page" />;
+  if (!s) return <div className="settings-page">{loadError && <div className="err">Couldn't read settings: {loadError}</div>}</div>;
 
   // every change saves immediately — there is no Save button to forget. Only the
   // patch is sent: the store merges it, so settings written elsewhere since this
@@ -486,12 +495,18 @@ export function SettingsView({
     setSaveState(r?.error ? { ok: false, msg: `Couldn't save: ${r.error}` } : { ok: true, msg: "Saved" });
     if (patch.repoRoots || patch.claudeBin || patch.codexBin) loadStatus();
   };
+  /** A path from the system picker; null when it was cancelled, or failed (said beside the section list). */
+  const pick = async (opts: { file?: boolean; defaultPath?: string }): Promise<string | null> => {
+    const p: string | null | { error: string } = await window.mb.pickPath(opts);
+    if (isError(p)) setSaveState({ ok: false, msg: `Couldn't open the picker: ${p.error}` });
+    return typeof p === "string" && p ? p : null;
+  };
   const pickBin = async (key: "claudeBin" | "codexBin") => {
-    const p = await window.mb.pickPath({ file: true, defaultPath: "/usr/local/bin" });
+    const p = await pick({ file: true, defaultPath: "/usr/local/bin" });
     if (p) upd({ [key]: p });
   };
   const addRoot = async () => {
-    const p = await window.mb.pickPath({ defaultPath: s.repoRoots[0] ?? "~" });
+    const p = await pick({ defaultPath: s.repoRoots[0] ?? "~" });
     if (p) upd({ repoRoots: [...new Set([...s.repoRoots, p])] });
   };
   const connectAdo = async () => {
@@ -748,7 +763,7 @@ export function SettingsView({
               <button
                 className="outline"
                 onClick={async () => {
-                  const p = await window.mb.pickPath({ defaultPath: s.workTrackerPath });
+                  const p = await pick({ defaultPath: s.workTrackerPath });
                   if (p) upd({ workTrackerPath: p });
                 }}
               >
@@ -767,7 +782,7 @@ export function SettingsView({
                   <button
                     className="outline"
                     onClick={async () => {
-                      const p = await window.mb.pickPath({ file: true, defaultPath: s.workTrackerPath });
+                      const p = await pick({ file: true, defaultPath: s.workTrackerPath });
                       if (p) setAdoCfg({ ...adoCfg, patFile: p });
                     }}
                   >
@@ -897,11 +912,21 @@ function UpdateSourceRow({ onUpdate }: { onUpdate: () => void }) {
   useEffect(() => {
     load();
   }, []);
+  const [error, setError] = useState("");
   const choose = async (dir: string | null) => {
-    await window.mb.setSettings({ updateSource: dir });
+    const r = await window.mb.setSettings({ updateSource: dir });
+    if (isError(r)) return setError(`Couldn't save the folder: ${r.error}`);
+    setError("");
     load();
   };
-  const note = !src
+  const browse = async () => {
+    const d: string | null | { error: string } = await window.mb.pickPath({ defaultPath: src?.found ?? undefined });
+    if (isError(d)) setError(`Couldn't open the picker: ${d.error}`);
+    else if (typeof d === "string" && d) choose(d);
+  };
+  const note = error
+    ? error
+    : !src
     ? "Looking for your clone…"
     : src.problem
       ? src.problem
@@ -910,7 +935,7 @@ function UpdateSourceRow({ onUpdate }: { onUpdate: () => void }) {
         : "No clone of Mockingbird under your repo folders — updates can't build until you clone it or choose its folder.";
   return (
     <SetRow title="Updates build from" note={note}>
-      <button className="outline" onClick={async () => { const d = await window.mb.pickPath({ defaultPath: src?.found ?? undefined }); if (d) choose(d); }}>
+      <button className="outline" onClick={browse}>
         Choose…
       </button>
       {src?.configured && <button className="outline" onClick={() => choose(null)}>Find automatically</button>}

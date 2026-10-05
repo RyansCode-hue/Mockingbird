@@ -30,7 +30,7 @@ import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
 import type { SessionInfo, SessionPreset, SessionStatus, Settings, WorktreeStateInfo, UsageReport, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice, MessageMode, OptionalTab } from "../shared/types";
 import { sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
-import { loadLS } from "./uiUtil";
+import { isError, loadLS } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
 import { UsageMeter } from "./UsageMeter";
@@ -186,6 +186,23 @@ function App() {
   const [msgModes, setMsgModes] = useState<Record<string, MessageMode>>({});
   const [msgDefaultSend, setMsgDefaultSend] = useState(true);
   const [statusNote, setStatusNote] = useState("");
+  // Main-process handlers answer { error } instead of rejecting. A failed read
+  // never lands in state: the previous value stays and the status bar says why.
+  const [readError, setReadError] = useState<string | null>(null);
+  const readFailed = (what: string, r: { error: string }) => {
+    console.error(`[mockingbird] couldn't read ${what}:`, r.error);
+    setReadError(`Couldn't read ${what}: ${r.error}`);
+  };
+  const unlessError =
+    <T,>(what: string, apply: (v: T) => void) =>
+    (r: T | { error: string }) =>
+      isError(r) ? readFailed(what, r) : apply(r as T);
+  /** A change the main process refused: said right away. Returns whether it failed. */
+  const failed = (what: string, r: unknown): boolean => {
+    if (!isError(r)) return false;
+    alert(`${what}: ${r.error}`);
+    return true;
+  };
   const setMsgMode = async (group: string, mode: MessageMode | ""): Promise<boolean> => {
     const r = await window.mb.messagesGroupMode(group, mode || null);
     if (r?.error) {
@@ -204,13 +221,13 @@ function App() {
   // agent CLIs updated under running panes (they run the old version until restarted)
   const [agentUpdates, setAgentUpdates] = useState<AgentUpdateNotice[]>([]);
   useEffect(() => {
-    window.mb.healthUpdates().then((n: AgentUpdateNotice[]) => setAgentUpdates(Array.isArray(n) ? n : []));
+    window.mb.healthUpdates().then(unlessError("which agent CLIs were updated", (n: AgentUpdateNotice[]) => setAgentUpdates(Array.isArray(n) ? n : [])));
     return window.mb.onHealthUpdates((n: AgentUpdateNotice[]) => setAgentUpdates(Array.isArray(n) ? n : []));
   }, []);
   // files two worktrees of one repository have both changed, per session
   const [overlaps, setOverlaps] = useState<Record<string, FileOverlap[]>>({});
   useEffect(() => {
-    window.mb.overlapsGet().then((o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {}));
+    window.mb.overlapsGet().then(unlessError("files changed in two worktrees", (o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {})));
     return window.mb.onOverlapsChanged((o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {}));
   }, []);
   const [pendingZone, setPendingZone] = useState<{ group: string; zone: number } | null>(null);
@@ -278,7 +295,7 @@ function App() {
   const applyRename = async (v: string) => {
     if (!renameDlg) return;
     if (renameDlg.kind === "session") {
-      await window.mb.renameSession(renameDlg.key, v);
+      if (failed("Couldn't rename the session", await window.mb.renameSession(renameDlg.key, v))) return;
       setRenameDlg(null);
       refresh();
       return;
@@ -292,10 +309,12 @@ function App() {
     if (!next) return;
     if (renameDlg.key === "ungrouped") {
       // "ungrouped" is the absence of a group, not a stored one: naming it groups its sessions
-      for (const m of groupUngrouped(workSessions, next)) await window.mb.setGroup(m.id, m.group);
+      for (const m of groupUngrouped(workSessions, next)) {
+        if (failed("Couldn't name the group", await window.mb.setGroup(m.id, m.group))) return refresh();
+      }
       await migrateGroupKeys(renameDlg.key, next);
     } else if (next !== renameDlg.key) {
-      await window.mb.renameGroup(renameDlg.key, next);
+      if (failed("Couldn't rename the group", await window.mb.renameGroup(renameDlg.key, next))) return;
       await migrateGroupKeys(renameDlg.key, next);
     }
     setRenameDlg(null);
@@ -320,20 +339,21 @@ function App() {
   // Collaborate models waiting on an approval, per room — badged on the tab wherever you are
   const [roomAsks, setRoomAsks] = useState<Record<string, number>>({});
   useEffect(() => {
-    window.mb.collabList().then((rooms: CollabRoom[] | { error: string }) => {
-      if (Array.isArray(rooms)) setRoomAsks(Object.fromEntries(rooms.map((r) => [r.id, r.pending?.length ?? 0])));
-    });
+    window.mb.collabList().then(
+      unlessError("the Collaborate rooms", (rooms: CollabRoom[]) => setRoomAsks(Object.fromEntries(rooms.map((r) => [r.id, r.pending?.length ?? 0]))))
+    );
     return window.mb.onCollabChanged((r: CollabRoom) => setRoomAsks((p) => ({ ...p, [r.id]: r.pending?.length ?? 0 })));
   }, []);
   const asksWaiting = Object.values(roomAsks).reduce((a, b) => a + b, 0);
   const [updOutcome, setUpdOutcome] = useState<(UpdateOutcome & { restoreErrors?: string[] }) | null>(null);
   useEffect(() => {
-    window.mb.updateStatus().then((p: UpdateProgress) => setUpd(p));
+    window.mb.updateStatus().then(unlessError("the update's progress", setUpd));
     return window.mb.onUpdateProgress((p: UpdateProgress) => setUpd(p));
   }, []);
   // After an update restart: say how it went, and bring back the sessions that were open
   useEffect(() => {
-    window.mb.updateOutcome().then(async (o: UpdateOutcome | null) => {
+    window.mb.updateOutcome().then(async (o: UpdateOutcome | null | { error: string }) => {
+      if (isError(o)) return readFailed("how the last update went", o);
       if (!o) return;
       const restoreErrors: string[] = [];
       for (const id of o.sessions) {
@@ -352,7 +372,7 @@ function App() {
   };
   const [appVersion, setAppVersion] = useState("");
   useEffect(() => {
-    window.mb.appVersion().then((v: string) => setAppVersion(v));
+    window.mb.appVersion().then(unlessError("the app version", (v: string) => setAppVersion(String(v))));
   }, []);
   const [sideView, setSideView] = useState<SideView>(() => loadLS<SideView>("mb.sideView", "sessions"));
   useEffect(() => localStorage.setItem("mb.sideView", JSON.stringify(sideView)), [sideView]);
@@ -365,7 +385,7 @@ function App() {
   // Run and Debug: every service's state, and the log panel under the grid (⌘J)
   const [runStates, setRunStates] = useState<RunServiceState[]>([]);
   useEffect(() => {
-    window.mb.runStates().then(setRunStates);
+    window.mb.runStates().then(unlessError("the services' run states", setRunStates));
     return window.mb.onRunChanged(setRunStates);
   }, []);
   const [panelOpen, setPanelOpen] = useState<boolean>(() => loadLS("mb.panel.open", false));
@@ -380,7 +400,7 @@ function App() {
   // token meters per pane and for today, pushed when the transcript index catches up
   const [meters, setMeters] = useState<Meters | null>(null);
   useEffect(() => {
-    window.mb.metersGet().then((m: Meters | { error: string }) => !("error" in m) && setMeters(m));
+    window.mb.metersGet().then(unlessError("the token meters", setMeters));
     return window.mb.onMetersChanged((m: Meters) => setMeters(m));
   }, []);
   const runningIn = (cwd: string) => runStates.filter((s) => s.worktree === cwd && (s.status === "running" || s.status === "starting")).length;
@@ -410,14 +430,16 @@ function App() {
   const commitEdit = async () => {
     if (!editing) return;
     const v = editing.value.trim();
-    if (v) await window.mb.renameSession(editing.key, v);
+    if (v) failed("Couldn't rename the session", await window.mb.renameSession(editing.key, v));
     setEditing(null);
     refresh();
   };
 
   /** Remove a sub-group without touching its sessions — they move up into the group. */
   const dissolveSub = async (top: string, list: SessionInfo[]) => {
-    await Promise.all(list.map((s) => window.mb.setGroup(s.id, top)));
+    const results = await Promise.all(list.map((s) => window.mb.setGroup(s.id, top)));
+    const errors = results.filter(isError);
+    if (errors.length) alert(`Couldn't move ${errors.length} of the workspace's sessions into the group: ${errors.map((e) => e.error).join("; ")}`);
     refresh();
   };
 
@@ -432,18 +454,23 @@ function App() {
     return `tabs-${i}`;
   };
 
+  /** Re-read the session lists; the live list comes back (the one on screen when the read fails). */
   const refresh = async (): Promise<SessionInfo[]> => {
-    const live: SessionInfo[] = await window.mb.listSessions();
-    setSessions(live);
+    const live: SessionInfo[] | { error: string } = await window.mb.listSessions();
+    if (isError(live)) readFailed("the session list", live);
+    else setSessions(live);
+    const previous: SessionInfo[] | { error: string } = await window.mb.resumableSessions();
+    if (isError(previous)) readFailed("the previous sessions", previous);
     // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
-    setResumable((await window.mb.resumableSessions()).filter((s: SessionInfo) => !s.debrief));
-    return live;
+    else setResumable(previous.filter((s) => !s.debrief));
+    return isError(live) ? sessions : live;
   };
 
   // First launch opens the setup wizard. Installs that predate it (the help
   // popup was already seen) are marked set up without being interrupted.
   useEffect(() => {
-    window.mb.getSettings().then(async (s: Settings) => {
+    window.mb.getSettings().then(async (s: Settings | { error: string }) => {
+      if (isError(s)) return readFailed("settings", s);
       const hidden = s.hiddenTabs ?? [];
       setHiddenTabs(hidden);
       setPresets(s.presets ?? []);
@@ -451,7 +478,7 @@ function App() {
       setMsgDefaultSend(s.agentMessagesSubmit !== false);
       setTab((t) => ((hidden as Tab[]).includes(t) ? "sessions" : t));
       if (s.setupDone) return;
-      if (loadLS("mb.helpSeen", false)) await window.mb.setSettings({ setupDone: true });
+      if (loadLS("mb.helpSeen", false)) failed("Couldn't mark setup as done", await window.mb.setSettings({ setupDone: true }));
       else {
         localStorage.setItem("mb.helpSeen", "true");
         setModal("setup");
@@ -461,16 +488,17 @@ function App() {
 
   useEffect(() => {
     refresh();
-    window.mb.hooksInstalled().then((ok: boolean) => setHooksOk(ok));
+    window.mb.hooksInstalled().then(unlessError("whether the status hooks are installed", (ok: unknown) => setHooksOk(ok === true)));
     // note: `shown` is deliberately NOT pruned against the live list — relaunch
     // reuses session ids, so a restored session lands back in its old grid slot
     const off = window.mb.onSessionsChanged((s: SessionInfo[]) => setSessions(s));
     const offUi = window.mb.onUiCommand((cmd: string, arg?: string) => {
       if (cmd === "new-session") setModal("new");
+      if (cmd === "update") setModal("update"); // the update notification was clicked
       if (cmd === "focus-session" && arg) jumpToRef.current(arg);
     });
     const offUpd = window.mb.onUpdateAvailable((u: any) => u?.newer && setUpdate(u));
-    window.mb.usageGet().then((u: UsageReport | { error: string }) => !("error" in u) && setUsage(u));
+    window.mb.usageGet().then(unlessError("plan usage", setUsage));
     const offUsage = window.mb.onUsageChanged((u: UsageReport) => setUsage(u));
     return () => {
       offUsage();
@@ -599,11 +627,8 @@ function App() {
       setGroupLayouts((p) => ({ ...p, [top]: [...(p[top] ?? []).filter((x) => x !== id), id] }));
     }
     const before = shown;
-    try {
-      await window.mb.setGroup(id, group);
-    } catch (e) {
+    if (failed("Couldn't move the session", await window.mb.setGroup(id, group))) {
       setShown(before);
-      alert(`Couldn't move the session: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
     if (stays) {
@@ -927,7 +952,7 @@ function App() {
       const top = topOf(target);
       key = newKey ?? `${top}/${nextSubName(top)}`;
       const wsKey = key;
-      await window.mb.setGroup(target.id, wsKey);
+      if (failed("Couldn't make the workspace", await window.mb.setGroup(target.id, wsKey))) return;
       // the lone pane's zone becomes the workspace's
       setZoneSeats((p) => {
         const g = activeGroup ?? "";
@@ -936,7 +961,7 @@ function App() {
       if (!newKey) setRenameDlg({ kind: "sub", key: wsKey, initial: splitGroupKey(wsKey).sub ?? "" });
     }
     const wsKey = key;
-    if (src.taskGroup !== wsKey) await window.mb.setGroup(src.id, wsKey);
+    if (src.taskGroup !== wsKey && failed("Couldn't add the tab", await window.mb.setGroup(src.id, wsKey))) return;
     if (pinnedSet.has(target.id)) setPinned((p) => (p.includes(src.id) ? p : [...p, src.id]));
     setShown((p) => placeBeside(p.includes(src.id) ? p : [...p, src.id], src.id, target.id, "after"));
     setWsTabs((p) => ({ ...p, [wsKey]: src.id }));
@@ -974,28 +999,37 @@ function App() {
   const termKey = (id: string) => `${id}:${termGen[id] ?? 0}`;
 
   // ---- session close flow (design 1e) ----
-  const forceClose = async (s: SessionInfo, forget: boolean) => {
-    await window.mb.killSession(s.id, forget);
+  /** Close a session's pane and process; returns why it couldn't, leaving the pane as it was. */
+  const forceClose = async (s: SessionInfo, forget: boolean): Promise<string | null> => {
+    const r = await window.mb.killSession(s.id, forget);
+    if (isError(r)) return r.error;
     disposeTerm(s.id);
     hide(s.id);
     refresh();
+    return null;
+  };
+  /** forceClose where no dialog is open to show the failure. */
+  const closeNow = async (s: SessionInfo, forget: boolean) => {
+    const err = await forceClose(s, forget);
+    if (err) alert(`Couldn't close ${titleOf(s)}: ${err}`);
   };
 
   /** Close a session; dirty or unpushed worktrees get the dialog, clean ones close silently. */
   const requestClose = async (s: SessionInfo) => {
     const hasWorktree = s.repoPath && s.branch && s.cwd !== s.repoPath;
-    if (!hasWorktree) return forceClose(s, true);
+    if (!hasWorktree) return closeNow(s, true);
     const st: WorktreeStateInfo | { error: string } = await window.mb.worktreeState(s.cwd);
     if ("error" in st) {
-      if (worktreeGone(st.error)) return forceClose(s, true);
+      if (worktreeGone(st.error)) return closeNow(s, true);
       return setCloseDlg({ session: s, wt: st }); // unknown state: the dialog says why and only keeps
     }
-    if (!st.dirty && st.ahead === 0) return forceClose(s, true);
+    if (!st.dirty && st.ahead === 0) return closeNow(s, true);
     setCloseDlg({ session: s, wt: st });
   };
 
   const resumeDead = async (s: SessionInfo) => {
-    await window.mb.killSession(s.id, false); // drop the dead pty, keep the store entry
+    // drop the dead pty, keep the store entry
+    if (failed(`Couldn't resume ${titleOf(s)}`, await window.mb.killSession(s.id, false))) return;
     disposeTerm(s.id);
     const info = await window.mb.relaunchSession(s.id);
     if (info?.error) return alert(`Couldn't resume: ${info.error}`);
@@ -1312,7 +1346,7 @@ function App() {
     .sort()
     .join(",");
   useEffect(() => {
-    window.mb.watchFolders(watchKey ? watchKey.split(",") : []);
+    window.mb.watchFolders(watchKey ? watchKey.split(",") : []).then((r: unknown) => isError(r) && console.error("[mockingbird] couldn't watch the sessions' folders:", r.error));
   }, [watchKey]);
 
   const startSideResize = (e: React.PointerEvent) => {
@@ -1492,9 +1526,9 @@ function App() {
                     density="max"
                     paneIndex={99}
                     onFocus={() => setFocused(s.id)}
-                    onClose={() => forceClose(s, true)}
+                    onClose={() => closeNow(s, true)}
                     onResume={() => resumeDead(s)}
-                    onCleanup={() => forceClose(s, true)}
+                    onCleanup={() => closeNow(s, true)}
                     closeTitle="Close debrief"
                   />
                 ))}
@@ -1851,7 +1885,13 @@ function App() {
                     >
                       ↺
                     </button>
-                    <button className="danger" onClick={() => window.mb.killSession(s.id, true).then(refresh)}>
+                    <button
+                      className="danger"
+                      onClick={async () => {
+                        failed(`Couldn't forget ${s.title}`, await window.mb.killSession(s.id, true));
+                        refresh();
+                      }}
+                    >
                       ✕
                     </button>
                   </div>
@@ -2293,6 +2333,12 @@ function App() {
         })}
         <UsageMeter usage={usage} meters={meters} />
         <span className="right">
+          {readError && (
+            <span className="update-note bad" title={readError}>
+              ✕ {readError}
+              <button className="icon" title="Dismiss" onClick={() => setReadError(null)}>✕</button>
+            </span>
+          )}
           {updOutcome && (
             <span
               className={`update-note ${updOutcome.ok ? "" : "bad"}`}
@@ -2463,8 +2509,8 @@ function App() {
             const old = handoffFor;
             setHandoffFor(null);
             await refresh();
-            if (closeOld) {
-              await window.mb.killSession(old.id, false); // kept under Previous; its worktree is the new session's
+            // the old one is kept under Previous; its worktree is the new session's
+            if (closeOld && !failed(`Couldn't close ${titleOf(old)}`, await window.mb.killSession(old.id, false))) {
               disposeTerm(old.id);
               setShown((p) => (p.includes(old.id) ? p.map((x) => (x === old.id ? next.id : x)) : [...p, next.id]));
               refresh();

@@ -9,7 +9,7 @@ import { Popover } from "./Popover";
 import { PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import type { SessionInfo, RepoEntry, AdoWorkItem, AdoComment, AdoBoard } from "../shared/types";
 import { slugBranch, topOfKey } from "../shared/types";
-import { loadLS, ago } from "./uiUtil";
+import { ago, isError, loadLS } from "./uiUtil";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -678,7 +678,8 @@ export function DashboardBoard({
                       style={{ marginTop: 7 }}
                       disabled={!attachId}
                       onClick={async () => {
-                        await window.mb.setGroup(attachId, groupOf(detail));
+                        const r = await window.mb.setGroup(attachId, groupOf(detail));
+                        if (isError(r)) return setError(`Couldn't attach the session: ${r.error}`);
                         setAttachId("");
                       }}
                     >

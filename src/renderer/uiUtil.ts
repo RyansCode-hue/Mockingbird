@@ -1,5 +1,10 @@
 /** Small helpers the App's views share. */
 
+/** A main-process answer that failed: every IPC handler answers { error } instead of rejecting. */
+export function isError(r: unknown): r is { error: string } {
+  return !!r && typeof r === "object" && typeof (r as { error?: unknown }).error === "string";
+}
+
 /** How long ago `ms` was, shortest unit: "5m", "3h", "2d". */
 export function ago(ms: number): string {
   const m = Math.round((Date.now() - ms) / 60000);
