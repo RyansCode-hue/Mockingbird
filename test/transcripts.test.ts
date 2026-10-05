@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TranscriptIndex, ftsQuery, linkHits, parseClaudeLine, parseCodexLine } from "../src/main/transcripts";
+import { TranscriptIndex, ftsQuery, importable, linkHits, parseClaudeLine, parseCodexLine } from "../src/main/transcripts";
 import type { CollabRoom, SessionInfo } from "../src/shared/types";
 
 const L = (o: unknown) => JSON.stringify(o);
@@ -158,6 +158,12 @@ describe("opening a hit", () => {
       { how: "room", roomId: "r1", roomTitle: "Perf room" },
       { how: "resume" },
     ]);
+  });
+  it("offers for import only conversations no pane or Collaborate room is running", () => {
+    const room = { id: "r1", title: "Perf room", participants: [{ key: "opus", conversationId: "c-room", lookupConversationId: "c-lookup" }] } as unknown as CollabRoom;
+    const conv = (sessionId: string, agent: "claude" | "codex" = "claude") => ({ sessionId, agent, cwd: "/c", title: sessionId, mtimeMs: 0 });
+    const offered = importable([conv("c-live"), conv("c-room"), conv("c-lookup"), conv("c-free"), conv("x-free", "codex")], [session("s1", "c-live")], [room]);
+    expect(offered.map((c) => c.sessionId)).toEqual(["c-free", "x-free"]);
   });
 });
 

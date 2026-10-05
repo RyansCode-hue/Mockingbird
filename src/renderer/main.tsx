@@ -30,7 +30,7 @@ import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
 import type { SessionInfo, SessionPreset, SessionStatus, Settings, WorktreeStateInfo, UsageReport, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice, MessageMode, OptionalTab } from "../shared/types";
 import { sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
-import { isError, loadLS } from "./uiUtil";
+import { isError, loadLS, openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
 import { UsageMeter } from "./UsageMeter";
@@ -1238,7 +1238,7 @@ function App() {
   const openLocation = (loc: LspLocation, fromSession: string): string | null => {
     const s = sessionHolding(sessions, loc.path, sessions.find((x) => x.id === fromSession));
     if (!s) return `The definition is outside the session's folder: ${loc.path}:${loc.line}`;
-    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path: loc.path.slice(s.cwd.length + 1), mode: "file", reveal: { line: loc.line, at: Date.now() } }));
+    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path: loc.path.slice(s.cwd.length + 1), mode: "file", reveal: { line: loc.line, at: Date.now() } }, new Set(dirtyKeys())));
     return null;
   };
 
@@ -1291,7 +1291,7 @@ function App() {
     const s = focusedSession;
     if (!s) return;
     const reveal = o.line ? { line: o.line, at: Date.now() } : undefined;
-    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path, mode: o.mode ?? "file", status: o.status, source: o.source, reveal }));
+    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path, mode: o.mode ?? "file", status: o.status, source: o.source, reveal }, new Set(dirtyKeys())));
   };
   /**
    * Show a debugger location in the editor. Files are read through a pane
@@ -1306,7 +1306,7 @@ function App() {
       return;
     }
     const reveal = { line: frame.line, at: Date.now() };
-    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path: frame.path!.slice(s.cwd.length + 1), mode: "file", reveal }));
+    setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path: frame.path!.slice(s.cwd.length + 1), mode: "file", reveal }, new Set(dirtyKeys())));
   };
   const openFrameRef = useRef(openFrame);
   openFrameRef.current = openFrame;
@@ -1327,12 +1327,21 @@ function App() {
   // the Source Control badge: the focused folder's uncommitted files (the same
   // cached state the pane rails read, so this costs no extra git work)
   const [scmCount, setScmCount] = useState(0);
+  const [scmCountError, setScmCountError] = useState<string | null>(null);
   const focusedCwd = tab === "sessions" ? focusedSession?.cwd ?? null : null;
   const scmSeq = useRef(0);
   const loadScmCount = () => {
     const n = ++scmSeq.current;
-    if (!focusedCwd) return setScmCount(0);
-    window.mb.worktreeState(focusedCwd).then((r: WorktreeStateInfo | { error: string }) => n === scmSeq.current && setScmCount("error" in r ? 0 : r.dirtyFiles));
+    if (!focusedCwd) {
+      setScmCountError(null);
+      return setScmCount(0);
+    }
+    window.mb.worktreeState(focusedCwd).then((r: WorktreeStateInfo | { error: string }) => {
+      if (n !== scmSeq.current) return;
+      // a folder outside any repository has nothing to count; anything else is a failure to show
+      setScmCountError("error" in r && !/not a git repository/i.test(r.error) ? r.error : null);
+      setScmCount("error" in r ? 0 : r.dirtyFiles);
+    });
   };
   useEffect(loadScmCount, [focusedCwd]);
   useFolderRefresh(focusedCwd, loadScmCount);
@@ -1553,7 +1562,9 @@ function App() {
                 onClick={() => (on ? setSideCollapsed(true) : showView(id))}
               >
                 <Icon />
-                {badge > 0 && (
+                {id === "scm" && scmCountError ? (
+                  <span className="ab-badge waiting" title={`Couldn't count uncommitted files: ${scmCountError}`}>!</span>
+                ) : badge > 0 && (
                   <span
                     className={`ab-badge ${id === "sessions" ? "waiting" : ""}`}
                     title={id === "sessions" ? `${badge} waiting on you` : id === "run" ? `${badge} service${badge === 1 ? "" : "s"} running` : `${badge} uncommitted file${badge === 1 ? "" : "s"}`}
@@ -2613,7 +2624,7 @@ function App() {
           current={appVersion}
           latest={update?.newer ? update.latest : undefined}
           onClose={() => setModal(null)}
-          onOpenGitHub={update ? () => window.mb.openExternal(update.url) : undefined}
+          onOpenGitHub={update ? () => openLink(update.url) : undefined}
         />
       )}
       {modal === "setup" && (

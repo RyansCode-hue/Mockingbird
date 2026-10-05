@@ -526,15 +526,28 @@ export class TranscriptIndex {
   }
 }
 
-/** How each hit opens: its live pane, the closed session that resumes it, its Collaborate room, or a new session. */
-export function linkHits(hits: SearchHit[], live: SessionInfo[], previous: SessionInfo[], rooms: CollabRoom[]): TranscriptHit[] {
-  const byConv = (list: SessionInfo[]) => new Map(list.flatMap((s) => (s.conversation ? [[s.conversation.id, s.id] as const] : [])));
-  const pane = byConv(live);
-  const before = byConv(previous);
+const paneByConv = (list: SessionInfo[]) => new Map(list.flatMap((s) => (s.conversation ? [[s.conversation.id, s.id] as const] : [])));
+
+function roomByConv(rooms: CollabRoom[]): Map<string, { roomId: string; roomTitle: string }> {
   const room = new Map<string, { roomId: string; roomTitle: string }>();
   for (const r of rooms) {
     for (const p of r.participants) for (const id of [p.conversationId, p.lookupConversationId]) if (id) room.set(id, { roomId: r.id, roomTitle: r.title });
   }
+  return room;
+}
+
+/** Conversations to offer for import: not running in a live pane or a Collaborate room, where a second copy would fork them. */
+export function importable(convs: ImportableConversation[], live: SessionInfo[], rooms: CollabRoom[]): ImportableConversation[] {
+  const pane = paneByConv(live);
+  const room = roomByConv(rooms);
+  return convs.filter((c) => !pane.has(c.sessionId) && !room.has(c.sessionId));
+}
+
+/** How each hit opens: its live pane, the closed session that resumes it, its Collaborate room, or a new session. */
+export function linkHits(hits: SearchHit[], live: SessionInfo[], previous: SessionInfo[], rooms: CollabRoom[]): TranscriptHit[] {
+  const pane = paneByConv(live);
+  const before = paneByConv(previous);
+  const room = roomByConv(rooms);
   return hits.map((h): TranscriptHit => {
     const p = pane.get(h.id);
     if (p) return { ...h, open: { how: "pane", sessionId: p } };

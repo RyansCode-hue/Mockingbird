@@ -259,6 +259,7 @@ export function CloseSessionDialog({
         if (isError(r)) return stop(r.error);
         const forgot = await window.mb.killSession(session.id, true);
         if (isError(forgot)) return stop(`The worktree is done with, but the session couldn't be removed from Previous: ${forgot.error}`);
+        if (r?.branchKept) alert(`The worktree is removed, but its branch is still there: ${r.branchKept}`);
       }
       onDone();
     } catch (err) {

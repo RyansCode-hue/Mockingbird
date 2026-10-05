@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { broadcastFate, cellKeyFor, frontOf, paneShortcuts, remapGroupKeys, remapSeats, sessionHolding, worktreeGone, type GridCell } from "../src/renderer/appModel";
+import { reachesBroadcast, cellKeyFor, frontOf, paneShortcuts, remapGroupKeys, remapSeats, sessionHolding, worktreeGone, type GridCell } from "../src/renderer/appModel";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
 import type { SessionInfo } from "../src/shared/types";
@@ -95,7 +95,7 @@ describe("closing a session whose worktree state can't be read", () => {
 });
 
 describe("the control room's delivery list", () => {
-  it("says what the main process's broadcast does with each session", () => {
+  it("offers a broadcast to exactly the sessions the main process gives it to", () => {
     const store = { settings: {}, state: { sessions: [] }, upsertSession() {}, removeSession() {}, save() {} };
     const m = new SessionManager(store as any);
     const written: Record<string, string[]> = {};
@@ -111,12 +111,16 @@ describe("the control room's delivery list", () => {
       written[s.id] = [];
       (m as any).live.set(s.id, { info: s, proc: { write: (d: string) => written[s.id].push(d) }, buffer: "", queued: [], claudeId: null, lastInput: 0, draft: false, flushTimer: null });
     }
-    m.broadcast("hello", all.map((s) => s.id), true);
-    for (const s of all) {
-      const queued = (m as any).live.get(s.id).queued.length > 0;
-      const sent = written[s.id].length > 0;
-      const fate = sent ? "delivered" : queued ? "queued" : "skipped";
-      expect([s.id, broadcastFate(s)]).toEqual([s.id, fate]);
-    }
+    const offered = all.filter(reachesBroadcast).map((s) => s.id); // before: delivery changes a pane's status
+    const outcomes = m.broadcast("hello", all.map((s) => s.id), true);
+    expect(outcomes.filter((o) => o.outcome !== "skipped").map((o) => o.id)).toEqual(offered);
+    expect(Object.fromEntries(outcomes.map((o) => [o.id, o.outcome]))).toEqual({
+      idle: "delivered",
+      working: "queued",
+      waiting: "queued",
+      dead: "skipped",
+      shell: "skipped",
+      debrief: "skipped",
+    });
   });
 });

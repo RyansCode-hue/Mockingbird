@@ -80,6 +80,18 @@ describe("undoing an agent's turn", () => {
     expect(await listSnapshots(repo, "s2")).toHaveLength(1);
   });
 
+  it("forgets a worktree session's turns from the main checkout once the worktree is gone", async () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const wt = path.join(tempDir("wts"), "feature");
+    git(repo, "worktree", "add", "-q", "-b", "feature", wt);
+    write(wt, { "a.txt": "agent\n" });
+    await takeSnapshot(wt, "s1", "turn");
+    git(repo, "worktree", "remove", "--force", wt);
+    expect(await listSnapshots(repo, "s1")).toHaveLength(1); // the refs are the repository's, not the worktree's
+    await dropSnapshots(repo, "s1");
+    expect(await listSnapshots(repo, "s1")).toEqual([]);
+  });
+
   it("works before the first commit, from a subfolder, and does nothing outside a repository", async () => {
     const repo = path.join(tempDir("fresh"), "r");
     fs.mkdirSync(repo, { recursive: true });

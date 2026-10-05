@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { openLink } from "./uiUtil";
 import type { DebugFrame, RunProfile, RunServiceState, SessionInfo } from "../shared/types";
 import { BugIcon, SparkleIcon } from "./Icons";
 import { DebugPanel } from "./DebugPanel";
@@ -261,7 +262,7 @@ export function RunView({
               <span className="rv-ports">
                 {(st?.ports ?? (s.ports ?? []).map((p) => ({ name: p.name, port: p.base, url: undefined as string | undefined }))).map((p) =>
                   p.url && active ? (
-                    <a key={p.name} className="rv-port live" title={`Open ${p.url}`} onClick={(e) => (e.stopPropagation(), window.mb.openExternal(p.url))}>
+                    <a key={p.name} className="rv-port live" title={`Open ${p.url}`} onClick={(e) => (e.stopPropagation(), openLink(p.url!))}>
                       :{p.port}
                     </a>
                   ) : (

@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Pick } from "./Menu";
-import { broadcastFate, titleOf } from "./appModel";
+import { reachesBroadcast, titleOf } from "./appModel";
 import { PresetsSection } from "./Presets";
 import { getFormatOnSave, setFormatOnSave } from "./CodeEditor";
-import type { AgentCheck, SetupStatus, SessionInfo, SessionPreset, Settings, WorktreeEntry, OptionalTab } from "../shared/types";
+import type { AgentCheck, BroadcastOutcome, SetupStatus, SessionInfo, SessionPreset, Settings, WorktreeEntry, OptionalTab } from "../shared/types";
 import { OPTIONAL_TABS } from "../shared/types";
 import { isError, loadLS } from "./uiUtil";
 import { TAB_LABELS } from "./tabs";
@@ -67,7 +67,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
 
   // who a broadcast can reach (main skips shells, where it would run as
   // commands, debriefs, which are mid-interview, and dead panes)
-  const live = sessions.filter((s) => broadcastFate(s) !== "skipped");
+  const live = sessions.filter(reachesBroadcast);
   // sessions that will be told to re-read: rooted in the repo, or all live for global
   const repoOf = target.replace(/\/CLAUDE\.md$/, "");
   const rereadTargets = target.startsWith("~")
@@ -78,18 +78,17 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
 
   const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-  const markDelivery = (targets: SessionInfo[]) => {
+  // what main did with each pane: given it now, queued until its turn ends (or
+  // its unsent prompt text is sent), or skipped
+  const markDelivery = (outcomes: BroadcastOutcome[]) => {
     setDelivery((prev) => {
       const d: Record<string, DeliveryState> = { ...prev };
-      for (const s of sessions) {
-        if (!targets.some((t) => t.id === s.id)) {
-          if (s.status === "dead") d[s.id] = { state: "skipped", note: "skipped · dead" };
-          continue;
-        }
-        d[s.id] =
-          broadcastFate(s) === "delivered"
-            ? { state: "delivered", at: now(), note: `delivered ${now()}` }
-            : { state: "queued", note: s.status === "waiting" ? "queued · waiting on you" : "queued · busy" };
+      for (const o of outcomes) {
+        const s = sessions.find((x) => x.id === o.id);
+        d[o.id] =
+          o.outcome === "delivered" ? { state: "delivered", at: now(), note: `delivered ${now()}` }
+          : o.outcome === "skipped" ? { state: "skipped", note: s?.status === "dead" ? "skipped · dead" : "skipped" }
+          : { state: "queued", note: s?.status === "waiting" ? "queued · waiting on you" : s?.status === "idle" ? "queued · unsent text in its prompt" : "queued · busy" };
       }
       return d;
     });
@@ -127,7 +126,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
       });
       if (isError(b)) return setBError(`Saved, but couldn't ask the sessions to re-read it: ${b.error}`);
       setBError(null);
-      markDelivery(rereadTargets);
+      markDelivery(b);
     }
   };
 
@@ -136,7 +135,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
     const r = await window.mb.broadcast({ message, sessionIds: bTargets.map((s) => s.id), whenIdle: true });
     if (isError(r)) return setBError(`Couldn't queue the broadcast: ${r.error}`);
     setBError(null);
-    markDelivery(bTargets);
+    markDelivery(r);
     setMessage("");
   };
 

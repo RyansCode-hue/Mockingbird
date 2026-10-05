@@ -9,7 +9,7 @@ import { Popover } from "./Popover";
 import { PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import type { SessionInfo, RepoEntry, AdoWorkItem, AdoComment, AdoBoard } from "../shared/types";
 import { slugBranch, topOfKey } from "../shared/types";
-import { ago, isError, loadLS } from "./uiUtil";
+import { ago, isError, loadLS, openLink } from "./uiUtil";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -507,7 +507,7 @@ export function DashboardBoard({
               <button className="primary" disabled={!dirty || saving} onClick={save}>
                 {saving ? "Saving…" : "Save"}
               </button>
-              <button className="outline" onClick={() => window.mb.openExternal(detail.url)}>Open in ADO</button>
+              <button className="outline" onClick={() => openLink(detail.url)}>Open in ADO</button>
               <button className="icon" title="Close (esc)" onClick={() => setDetailId(null)}>✕</button>
             </div>
             <div className="bd-body">

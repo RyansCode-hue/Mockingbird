@@ -177,6 +177,7 @@ const api: Record<string, (...a: any[]) => any> = {
   // sessions and the grid
   listSessions: async () => sessions.map((s) => ({ ...s })),
   resumableSessions: async () => previous,
+  openExternal: async (url: string) => console.info(`[preview] would open ${url} in the browser`),
   listImportable: async () => [
     { sessionId: "c-import-1", agent: "claude", cwd: REPO, title: "Why does the org picker reset on save?", mtimeMs: now - 50 * min },
     { sessionId: "x-import-2", agent: "codex", cwd: REPO, title: "Speed up the pathways query", mtimeMs: now - 3 * 60 * min },

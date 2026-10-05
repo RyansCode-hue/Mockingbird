@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { openLink } from "./uiUtil";
 import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage } from "../shared/types";
 import { ago } from "./format";
 import { createIpcStore, loadInto } from "./ipcStore";
@@ -210,7 +211,7 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
             )}
             {p.existing && base === p.base && (
               <div className="warn">
-                Already open: <a onClick={() => window.mb.openExternal(p.existing!.url)}>{p.existing.url}</a>
+                Already open: <a onClick={() => openLink(p.existing!.url)}>{p.existing.url}</a>
               </div>
             )}
             {p.lookupError && <div className="warn">Couldn't check for an open pull request: {p.lookupError}</div>}
@@ -425,7 +426,7 @@ export function PipelinePanel(props: PipelineProps) {
           <div className="pl-h">Pull requests</div>
           {prs.map((r) => (
             <div key={r.url} className="pl-item">
-              <a onClick={() => window.mb.openExternal(r.url)}>{r.provider === "ado" ? `PR ${r.id}` : `#${r.id}`}</a>
+              <a onClick={() => openLink(r.url)}>{r.provider === "ado" ? `PR ${r.id}` : `#${r.id}`}</a>
               <span className="pl-dim">
                 {r.branch} → {r.base} · {ago(r.at)}
               </span>

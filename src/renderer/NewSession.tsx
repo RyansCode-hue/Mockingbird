@@ -547,7 +547,7 @@ export function ImportModal({
     };
   }, [q]);
 
-  const rows: ImportRow[] | null = hits ?? (convos ? convos.map((c) => ({ id: c.sessionId, agent: "claude" as AgentKind, cwd: c.cwd, title: c.title, at: c.mtimeMs })) : null);
+  const rows: ImportRow[] | null = hits ?? (convos ? convos.map((c) => ({ id: c.sessionId, agent: c.agent ?? ("claude" as AgentKind), cwd: c.cwd, title: c.title, at: c.mtimeMs })) : null);
 
   const toggle = (r: ImportRow) =>
     setSel((p) => {
@@ -582,8 +582,8 @@ export function ImportModal({
       <div className="modal import-dlg" onMouseDown={(e) => e.stopPropagation()}>
         <h3>Import conversations</h3>
         <div className="sub-h">
-          Recent Claude conversations from this Mac — including ones started in cmux or a terminal — or search every Claude and Codex
-          conversation, any age. Each reopens with its full history in its original folder. Every import is a live agent process, so start
+          Recent Claude and Codex conversations from this Mac — including ones started in cmux or a terminal — or search every one,
+          any age. Each reopens with its full history in its original folder. Every import is a live agent process, so start
           with the handful you're actively working on.
         </div>
         <input

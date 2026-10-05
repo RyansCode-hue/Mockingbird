@@ -13,13 +13,14 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
 export async function applySettings(
   cur: Settings | null,
   patch: Partial<Settings>,
-  mb: { getSettings: () => Promise<Settings | { error: string }>; setSettings: (s: Settings) => Promise<unknown> }
+  mb: { getSettings: () => Promise<Settings | { error: string }>; setSettings: (patch: Partial<Settings>) => Promise<unknown> }
 ): Promise<{ settings: Settings } | { error: string }> {
   try {
     const base = cur ?? (await mb.getSettings());
     if ("error" in base) return { error: `Couldn't read settings: ${base.error}` };
+    // only the change is sent: main merges it, so settings written elsewhere since aren't reverted
+    const r = await mb.setSettings(patch);
     const next = { ...base, ...patch };
-    const r = await mb.setSettings(next);
     if (r && typeof r === "object" && "error" in r) return { error: `Couldn't save settings: ${(r as { error: string }).error}` };
     return { settings: next };
   } catch (err) {

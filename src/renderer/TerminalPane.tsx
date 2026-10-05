@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { openLink } from "./uiUtil";
 import { beginDrag, dragging } from "./drag";
 import { PinIcon } from "./Icons";
 import type { Terminal } from "@xterm/xterm";
@@ -885,7 +886,7 @@ export function TerminalPane({
                   ? [`${pr.pr.title}`, `${pr.branch} → ${pr.pr.base}`, ...pr.pr.reviews, pr.pr.conflicts ? "It has merge conflicts with its base." : "", "Click to open it."].filter(Boolean).join("\n")
                   : `Couldn't check for a pull request: ${pr.error}\nClick to check again.`
               }
-              onClick={() => (pr.pr ? window.mb.openExternal(pr.pr.url) : readPr(true))}
+              onClick={() => (pr.pr ? openLink(pr.pr.url) : readPr(true))}
             >
               <span className="k">PR</span>
               {pr.pr ? (

@@ -46,7 +46,7 @@ import { LspManager } from "./lsp/manager";
 import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
 import { cliVersion } from "./agents";
-import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
+import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { localDay, topOfKey } from "../shared/types";
@@ -439,10 +439,16 @@ handle("sessions:create", async (req) => {
 handle("sessions:relaunch", (id) => sessions.relaunch(id));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {
-  const s = sessions.list().find((x) => x.id === id);
+  // a pane closed to resume isn't live any more, but forgetting it later must still find it
+  const s = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id);
   const r = sessions.kill(id, forget);
-  // a forgotten session's snapshots go with it; a resumable one keeps them
-  if (forget && s?.repoPath) dropSnapshots(s.cwd, s.id).catch((err) => logError(`drop snapshots ${id}`, err));
+  // a forgotten session's snapshots go with it; a resumable one keeps them. They
+  // are the repository's refs, so the main checkout reaches them once a
+  // worktree has been removed
+  if (forget && s?.repoPath) {
+    const at = fs.existsSync(s.cwd) ? s.cwd : s.repoPath;
+    dropSnapshots(at, s.id).catch((err) => logError(`drop snapshots ${id}`, err));
+  }
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
@@ -689,7 +695,7 @@ handle("settings:set", (s) => {
 handle("debrief:run", (kind) => runDebrief(kind, sessions, store));
 // recent conversations of both agents come from the transcript index; without
 // it (it couldn't open), Claude's are still read from its own folder
-handle("import:list", () => transcripts?.recentConversations() ?? listClaudeConversations());
+handle("import:list", () => importable(transcripts?.recentConversations() ?? listClaudeConversations(), sessions.list(), collab.list()));
 handle("sessions:rename", (id, title) => sessions.rename(id, title));
 handle("sessions:renameGroup", (oldKey, newKey) => sessions.renameGroup(oldKey, newKey));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
@@ -1379,7 +1385,8 @@ handle("dialog:pick", async (opts) => {
   return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
 });
 
-handle("shell:open", (url) => {
+handle("shell:open", async (url) => {
   // external links only — the dashboard's "open in browser"
-  if (typeof url === "string" && /^https:\/\//.test(url)) shell.openExternal(url);
+  if (typeof url !== "string" || !/^https:\/\//.test(url)) throw new Error(`Only https links open in the browser (got ${String(url).slice(0, 80)})`);
+  await shell.openExternal(url);
 });

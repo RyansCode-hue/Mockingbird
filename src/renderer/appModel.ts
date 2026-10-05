@@ -72,11 +72,11 @@ export function worktreeGone(error: string): boolean {
 }
 
 /**
- * What a broadcast does with a session, as SessionManager.broadcast decides it:
- * an idle one gets it now; a working one, or one waiting on a prompt (Enter would
- * answer it), gets it when its turn ends; shells, debriefs and dead panes never do.
+ * Whether a broadcast can reach a session, as SessionManager.broadcast decides
+ * it: shells (it would run as commands), debriefs (mid-interview) and dead panes
+ * never get one. When the rest get it is main's to say: its reply names each
+ * session's outcome.
  */
-export function broadcastFate(s: Pick<SessionInfo, "status" | "shell" | "debrief">): "delivered" | "queued" | "skipped" {
-  if (s.status === "dead" || s.shell || s.debrief) return "skipped";
-  return s.status === "idle" ? "delivered" : "queued";
+export function reachesBroadcast(s: Pick<SessionInfo, "status" | "shell" | "debrief">): boolean {
+  return !(s.status === "dead" || s.shell || s.debrief);
 }

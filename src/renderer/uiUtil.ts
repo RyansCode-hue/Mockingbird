@@ -5,6 +5,12 @@ export function isError(r: unknown): r is { error: string } {
   return !!r && typeof r === "object" && typeof (r as { error?: unknown }).error === "string";
 }
 
+/** Open a link in the browser; a refused or failed open is shown, never dropped. */
+export async function openLink(url: string): Promise<void> {
+  const r = await (window as unknown as { mb: { openExternal: (url: string) => Promise<unknown> } }).mb.openExternal(url);
+  if (isError(r)) alert(`Couldn't open ${url}: ${r.error}`);
+}
+
 /** How long ago `ms` was, shortest unit: "5m", "3h", "2d". */
 export function ago(ms: number): string {
   const m = Math.round((Date.now() - ms) / 60000);
