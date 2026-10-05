@@ -21,6 +21,10 @@ describe("which changes matter", () => {
     expect(ignoredChange("my_node_modules_notes.md")).toBe(false);
     expect(ignoredChange(".git/objects/ab/cdef")).toBe(true);
     expect(ignoredChange(".git/index.lock")).toBe(true);
+    expect(ignoredChange(".git/refs/heads/main.lock")).toBe(true);
+    expect(ignoredChange("yarn.lock")).toBe(false); // a project's lockfiles are tracked files
+    expect(ignoredChange("Cargo.lock")).toBe(false);
+    expect(ignoredChange("api/poetry.lock")).toBe(false);
     expect(ignoredChange("sub/.DS_Store")).toBe(true);
   });
 });

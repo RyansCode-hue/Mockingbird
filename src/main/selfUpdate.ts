@@ -1,8 +1,9 @@
-import { execFile, spawn } from "child_process";
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { UPDATE_STEPS, type UpdateOutcome, type UpdateProgress, type UpdateStepId } from "../shared/types";
 import { isNewer } from "./updates";
+import { git } from "./git";
 import { indexRepos } from "./repos";
 import { loginShell, quote } from "./shell";
 
@@ -21,11 +22,13 @@ export function remoteMatches(url: string, owner: string, repo: string): boolean
   return !!m && m[1].toLowerCase() === owner.toLowerCase() && m[2].toLowerCase() === repo.toLowerCase();
 }
 
-function originOf(dir: string): Promise<string | null> {
-  return new Promise((resolve) =>
-    // not a repository, or no origin: not the clone
-    execFile("git", ["-C", dir, "remote", "get-url", "origin"], { timeout: 10_000 }, (err, out) => resolve(err ? null : out.trim()))
-  );
+/**
+ * The folder's origin URL, or null when it isn't a repository (git exits 128)
+ * or has no origin (2). Anything else — git missing, a timeout — is an error,
+ * not an answer about the folder.
+ */
+async function originOf(dir: string): Promise<string | null> {
+  return (await git(dir, ["remote", "get-url", "origin"], { okCodes: [0, 2, 128] })) || null;
 }
 
 /**
@@ -281,11 +284,19 @@ export function startInstaller(opts: { mbDir: string; pid: number; builtApp: str
  */
 export function takeUpdateOutcome(mbDir: string, currentVersion: string, now = Date.now()): UpdateOutcome | null {
   const pendingFile = path.join(mbDir, PENDING);
+  const logPath = path.join(mbDir, LOG);
+  const forget = () => {
+    fs.rmSync(pendingFile, { force: true });
+    fs.rmSync(path.join(mbDir, RESULT), { force: true });
+  };
   let pending: { from: string; to: string; sessions: string[]; at: number };
   try {
     pending = JSON.parse(fs.readFileSync(pendingFile, "utf8"));
-  } catch {
-    return null; // no update in flight
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null; // no update in flight
+    // said once, then cleared — not re-read at every launch
+    forget();
+    return { ok: false, from: "", to: "", sessions: [], logPath, message: `An update was under way, but its record (${PENDING}) couldn't be read: ${(err as Error).message}. See ${logPath}.` };
   }
   let result = "";
   try {
@@ -293,10 +304,8 @@ export function takeUpdateOutcome(mbDir: string, currentVersion: string, now = D
   } catch {
     /* the installer never finished — reported below */
   }
-  fs.rmSync(pendingFile, { force: true });
-  fs.rmSync(path.join(mbDir, RESULT), { force: true });
+  forget();
   if (now - pending.at > 24 * 3_600_000) return null; // a stale marker from an update long gone
-  const logPath = path.join(mbDir, LOG);
   const base = { from: pending.from, to: pending.to, sessions: pending.sessions ?? [], logPath };
   if (result === "ok" && currentVersion === pending.to) return { ...base, ok: true, message: `Updated to ${pending.to}.` };
   if (result === "ok") return { ...base, ok: false, message: `The installer finished, but this is still ${currentVersion} (expected ${pending.to}).` };

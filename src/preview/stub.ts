@@ -181,6 +181,10 @@ const api: Record<string, (...a: any[]) => any> = {
     emit("onSessionData", id, out);
   },
   sessionResize: async () => undefined,
+  // synchronous in the preload too: an async stand-in would hand back a Promise.
+  // A browser gives a dropped file no path, so a drop types nothing.
+  getFilePath: () => null,
+  auditWrite: () => undefined,
   setGroup: async (id: string, group: string | null) => {
     sessions = sessions.map((s) => (s.id === id ? { ...s, taskGroup: group } : s));
     sessionsChanged();

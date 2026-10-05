@@ -38,6 +38,24 @@ describe("finding the clone", () => {
     expect(await findSourceClone({ configured: clone, roots: [], owner: "me", repo: "app" })).toBe(clone);
     await expect(findSourceClone({ configured: path.join(root, "other"), roots: [root], owner: "me", repo: "app" })).rejects.toThrow(/isn't a clone of me\/app/);
   });
+
+  it("says a folder isn't the clone only when git says so — not when git itself can't run", async () => {
+    const plain = tmp("plain-"); // not a repository
+    const noOrigin = gitRepo(tmp("no-origin-"));
+    await expect(findSourceClone({ configured: plain, roots: [], owner: "me", repo: "app" })).rejects.toThrow(/isn't a clone of me\/app/);
+    await expect(findSourceClone({ configured: noOrigin, roots: [], owner: "me", repo: "app" })).rejects.toThrow(/isn't a clone of me\/app/);
+    const clone = gitRepo(tmp("clone-"), "git@github.com:me/app.git");
+    const PATH = process.env.PATH;
+    process.env.PATH = "/nonexistent"; // no git to run
+    try {
+      const err = await findSourceClone({ configured: clone, roots: [], owner: "me", repo: "app" }).catch((e: Error) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).not.toMatch(/isn't a clone/);
+      expect((err as Error).message).toMatch(/git/);
+    } finally {
+      process.env.PATH = PATH;
+    }
+  });
 });
 
 /** A fake shell: the first matching pattern answers; everything else succeeds silently. */
@@ -238,6 +256,15 @@ describe("after the restart", () => {
   it("ignores a marker left from long ago", () => {
     const mbDir = tmp("out-");
     pending(mbDir, Date.now() - 2 * 24 * 3_600_000);
+    expect(takeUpdateOutcome(mbDir, "1.2.0")).toBeNull();
+  });
+  it("says so once when its record is unreadable, then clears it", () => {
+    const mbDir = tmp("out-");
+    fs.writeFileSync(path.join(mbDir, "update-pending.json"), '{"from": "1.1.5", "to":');
+    fs.writeFileSync(path.join(mbDir, "update-result.txt"), "ok\n");
+    expect(takeUpdateOutcome(mbDir, "1.2.0")).toMatchObject({ ok: false, sessions: [], message: expect.stringMatching(/update-pending\.json\) couldn't be read/) });
+    expect(fs.existsSync(path.join(mbDir, "update-pending.json"))).toBe(false);
+    expect(fs.existsSync(path.join(mbDir, "update-result.txt"))).toBe(false);
     expect(takeUpdateOutcome(mbDir, "1.2.0")).toBeNull();
   });
 });

@@ -47,10 +47,10 @@ import { checkForUpdate, updateRepo } from "./updates";
 import { cliVersion } from "./agents";
 import { TranscriptIndex, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, FileOverlap, Meters, ModelCatalog, PrStatus } from "../shared/types";
+import type { AgentKind, FileOverlap, Meters, ModelCatalog, PrStatus, UpdateOutcome } from "../shared/types";
 import { topOfKey } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
-import { binSettingsChanged, guarded, instructionFile, liveSessionIn, prBaseProblem, samePath } from "./handlers";
+import { binSettingsChanged, guarded, instructionFile, liveSessionIn, prBaseProblem, rememberAnswer, samePath } from "./handlers";
 
 const LOG = path.join(require("os").homedir(), ".mockingbird", "main.log");
 function logError(context: string, err: unknown): string {
@@ -115,7 +115,10 @@ let binsReady: Promise<void> = Promise.resolve();
 function lookUpBins(reset = false): Promise<void> {
   binsReady = binsReady
     .then(() => {
-      if (reset) sessions.resetBinCache();
+      if (reset) {
+        sessions.resetBinCache();
+        claudeHelp.forget(); // another claude may offer other models
+      }
       return sessions.warmBins();
     })
     .catch((err) => {
@@ -295,14 +298,18 @@ app.whenReady().then(() => {
           notifiedVersion = u.latest;
           const n = new Notification({
             title: "Mockingbird update available",
-            body: `v${u.latest} is out (you're on v${u.current}). ${u.source === "release" ? "Click to open the release." : "Update with git pull, then npm run package."}`,
+            body: `v${u.latest} is out (you're on v${u.current}). Click to update — Mockingbird builds it in your clone.`,
           });
-          n.on("click", () => shell.openExternal(u.url));
+          // the window's update panel (ui:command "update") pulls, builds and restarts in-app
+          n.on("click", () => {
+            focusPane();
+            toWindow("ui:command", "update");
+          });
           n.show();
         }
       }
     } catch (err) {
-      console.error("[updates] check failed:", err);
+      logError("update check", err);
     }
   };
   setTimeout(pollUpdates, 10_000);
@@ -855,7 +862,7 @@ handle("handoff:draft", async (id) => {
   const conv = s.conversation?.id ?? s.conversations?.at(-1);
   let digest = "";
   if (conv && transcripts) {
-    await transcripts.sync();
+    await syncTranscripts(transcripts);
     const files = transcripts.filesOf(conv);
     const lines = (await Promise.all(files.map((f) => transcriptLines(f.path)))).flat();
     digest = transcriptDigest(lines, files[0]?.agent ?? from, conv);
@@ -1006,7 +1013,7 @@ handle("group:statusCheck", (group) => {
 // ---- weekly rollup: the week's time, tickets and outcomes, written into WorkTracker ----
 handle("rollup:write", async (weeksAgo) => {
   if (!transcripts) throw new Error(`The conversation index isn't available${transcriptsProblem ? `: ${transcriptsProblem}` : ""}`);
-  await transcripts.sync();
+  await syncTranscripts(transcripts);
   const { start, end } = weekBounds(new Date(), Math.max(0, Number(weeksAgo) || 0));
   const dir = path.join(expandHome(store.settings.workTrackerPath), "session-digests");
   // the daily digests of that week, by name only — the files aren't read
@@ -1192,11 +1199,8 @@ function startTranscriptIndex(): void {
     transcriptsProblem = logError("transcripts:open", err);
     return;
   }
-  const sync = () =>
-    transcripts!
-      .sync()
-      .then(metersChanged)
-      .catch((err) => (transcriptsProblem = logError("transcripts:sync", err)));
+  // a failed sync is logged and kept as the index's problem by syncTranscripts
+  const sync = () => syncTranscripts(transcripts!).then(metersChanged, () => {});
   void sync();
   let timer: NodeJS.Timeout | null = null;
   for (const root of Object.values(transcriptRoots)) {
@@ -1212,6 +1216,17 @@ function startTranscriptIndex(): void {
   setInterval(sync, 5 * 60_000);
 }
 
+/** Bring the index up to date. A failure is the index's problem until a sync succeeds. */
+async function syncTranscripts(index: TranscriptIndex): Promise<void> {
+  try {
+    await index.sync();
+    transcriptsProblem = null;
+  } catch (err) {
+    transcriptsProblem = logError("transcripts:sync", err);
+    throw err;
+  }
+}
+
 // token meters: recomputed after the index catches up, when plan usage moves, and as panes change conversation
 let metersTimer: NodeJS.Timeout | null = null;
 function metersNow(): Meters {
@@ -1219,7 +1234,8 @@ function metersNow(): Meters {
   const list = sessions.list();
   if (!transcripts) return { sessions: {}, today: {}, at: now };
   const convs = [...new Set(list.flatMap(conversationsOf))];
-  const windows = fiveHourWindows(readUsage(), now);
+  const report = readUsage(); // reads Codex's session files: once per recompute
+  const windows = fiveHourWindows(report, now);
   const windowRows: Partial<Record<AgentKind, UsageRow[]>> = {};
   for (const [agent, w] of Object.entries(windows) as [AgentKind, { start: number }][]) {
     windowRows[agent] = transcripts.usage({ since: w.start }).filter((r) => r.agent === agent);
@@ -1231,7 +1247,7 @@ function metersNow(): Meters {
     rows: transcripts.usage({ convs }),
     windowRows,
     todayRows: transcripts.usage({ since: midnight.getTime() }),
-    report: readUsage(),
+    report,
     now,
   });
 }
@@ -1247,18 +1263,22 @@ function metersChanged(): void {
 }
 handle("meters:get", () => metersNow());
 
-// the models each CLI offers, read from the CLIs; `claude --help` is read once per run
-let claudeHelp: Promise<string | null> | null = null;
-let lastCatalog: ModelCatalog | null = null;
-async function modelCatalog(): Promise<ModelCatalog> {
-  claudeHelp ??= (async () => {
+// the models each CLI offers, read from the CLIs; `claude --help` is read once it
+// answers — not while claude is missing or failing, which the next look retries
+const claudeHelp = rememberAnswer(
+  async () => {
     const bin = await installedBin("claude");
     if (!bin) return null; // not installed: no Claude models to offer
     const r = await userShell(`${quote(bin)} --help`);
-    return r.code === 0 ? r.out : null;
-  })();
+    if (r.code !== 0) throw new Error(r.out.slice(0, 300) || `exited with code ${r.code}`);
+    return r.out;
+  },
+  (err) => logError("models: claude --help", err)
+);
+let lastCatalog: ModelCatalog | null = null;
+async function modelCatalog(): Promise<ModelCatalog> {
   lastCatalog = buildCatalog({
-    claudeHelp: await claudeHelp,
+    claudeHelp: await claudeHelp.get(),
     recent: { claude: transcripts?.recentModels("claude") ?? [], codex: transcripts?.recentModels("codex") ?? [] },
   });
   return lastCatalog;
@@ -1278,7 +1298,15 @@ handle("transcripts:search", (q) => {
 
 // ---- in-app update: build in the user's clone, then restart into it ----
 // read once: the update (if any) this launch is the end of
-let updateOutcome = isPrimary ? takeUpdateOutcome(MB_DIR, app.getVersion()) : null;
+let updateOutcome = isPrimary ? readUpdateOutcome() : null;
+function readUpdateOutcome(): UpdateOutcome | null {
+  try {
+    return takeUpdateOutcome(MB_DIR, app.getVersion());
+  } catch (err) {
+    logError("update outcome", err); // startup carries on; the update's own log is still there
+    return null;
+  }
+}
 const findClone = async () => {
   const repo = updateRepo();
   if (!repo) throw new Error("This build doesn't name its GitHub repository, so it can't update itself.");

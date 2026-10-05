@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { binSettingsChanged, guarded, instructionFile, liveSessionIn, prBaseProblem, samePath } from "../src/main/handlers";
+import { binSettingsChanged, guarded, instructionFile, liveSessionIn, prBaseProblem, rememberAnswer, samePath } from "../src/main/handlers";
 import type { SessionInfo } from "../src/shared/types";
 import { tempDir } from "./helpers";
 
@@ -75,6 +75,30 @@ describe("the CLAUDE.md editor", () => {
     expect(() => instructionFile("/Users/you/Code/app/CLAUDE.md/../.env")).toThrow(/Only CLAUDE.md files/);
     expect(() => instructionFile("CLAUDE.md")).toThrow(/Only CLAUDE.md files/); // relative: to wherever the app runs from
     expect(() => instructionFile(undefined)).toThrow(/Only CLAUDE.md files/);
+  });
+});
+
+describe("a remembered answer", () => {
+  it("is asked for once, shared by callers while in flight, then remembered", async () => {
+    let asked = 0;
+    const help = rememberAnswer(async () => (asked++, "--model <alias>"), () => {});
+    expect(await Promise.all([help.get(), help.get()])).toEqual(["--model <alias>", "--model <alias>"]);
+    expect(await help.get()).toBe("--model <alias>");
+    expect(asked).toBe(1);
+    help.forget();
+    await help.get();
+    expect(asked).toBe(2);
+  });
+
+  it("isn't remembered while there's none, or when asking failed — and a failure is reported", async () => {
+    const answers: (() => Promise<string | null>)[] = [async () => null, async () => { throw new Error("timed out"); }, async () => "help"];
+    const errors: unknown[] = [];
+    const help = rememberAnswer(() => answers.shift()!(), (err) => errors.push(err));
+    expect(await help.get()).toBeNull(); // not installed yet
+    expect(await help.get()).toBeNull(); // failed
+    expect(errors).toEqual([new Error("timed out")]);
+    expect(await help.get()).toBe("help");
+    expect(await help.get()).toBe("help");
   });
 });
 

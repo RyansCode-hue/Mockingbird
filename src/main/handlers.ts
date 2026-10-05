@@ -62,6 +62,37 @@ export function instructionFile(p: unknown): string {
   return path.resolve(full);
 }
 
+/**
+ * `load`'s answer, asked for once and then remembered. No answer (null) and a
+ * failure aren't remembered — a failure goes to `onError` — so the next call
+ * asks again. `forget()` drops what was remembered.
+ */
+export function rememberAnswer<T>(load: () => Promise<T | null>, onError: (err: unknown) => void): { get(): Promise<T | null>; forget(): void } {
+  let answer: Promise<T | null> | null = null;
+  return {
+    get() {
+      if (!answer) {
+        const asked: Promise<T | null> = load().then(
+          (v) => {
+            if (v === null && answer === asked) answer = null;
+            return v;
+          },
+          (err) => {
+            if (answer === asked) answer = null;
+            onError(err);
+            return null;
+          }
+        );
+        answer = asked;
+      }
+      return answer;
+    },
+    forget() {
+      answer = null;
+    },
+  };
+}
+
 /** Did this settings change name a different claude or codex binary? */
 export function binSettingsChanged(before: Pick<Settings, "claudeBin" | "codexBin">, after: Pick<Settings, "claudeBin" | "codexBin">): boolean {
   return before.claudeBin !== after.claudeBin || before.codexBin !== after.codexBin;

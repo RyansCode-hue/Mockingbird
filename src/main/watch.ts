@@ -3,8 +3,9 @@ import * as path from "path";
 
 /**
  * Paths whose churn never changes what the explorer, Source Control or a pane's
- * change count show: dependency installs, git's object store and reflogs.
- * Changes to .git/index, HEAD and refs do count — staging and commits show.
+ * change count show: dependency installs, git's object store and reflogs, and
+ * git's own lock files. Changes to .git/index, HEAD and refs do count — staging
+ * and commits show — and so do a project's lockfiles (yarn.lock, Cargo.lock).
  */
 export function ignoredChange(rel: string | null): boolean {
   if (!rel) return false;
@@ -15,7 +16,7 @@ export function ignoredChange(rel: string | null): boolean {
     /(^|\/)node_modules(\/|$)/.test(p) ||
     p.startsWith(".git/objects/") ||
     p.startsWith(".git/logs/") ||
-    p.endsWith(".lock")
+    (p.startsWith(".git/") && p.endsWith(".lock"))
   );
 }
 
