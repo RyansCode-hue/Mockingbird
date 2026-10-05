@@ -1,4 +1,5 @@
 import { AGENT_NAME, type AgentKind } from "../shared/types";
+import { MCP_TOOL } from "./messaging";
 
 /**
  * What the reviewing agent is told: what changed and how to see it, what to
@@ -24,6 +25,6 @@ export function reviewPrompt(o: { author: AgentKind; authorId: string; authorTit
     "",
     "This is a review only: don't change, stage or commit anything.",
     "",
-    `When you're done, send your findings to that session with Mockingbird's send_message tool (to: "${o.authorId}"), as one message: the problems that matter, most severe first, each with file:line, what's wrong, and a concrete fix. Leave out style nits. If there's nothing worth changing, send one line saying so.`,
+    `When you're done, send your findings to that session with Mockingbird's ${MCP_TOOL.sendMessage} tool (to: "${o.authorId}"), as one message: the problems that matter, most severe first, each with file:line, what's wrong, and a concrete fix. Leave out style nits. If there's nothing worth changing, send one line saying so.`,
   ].join("\n");
 }

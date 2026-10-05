@@ -57,6 +57,7 @@ describe("Codex launch", () => {
     expect(args).toContain(`mcp_servers.mockingbird.args=["/h/.mockingbird/mcp.js"]`);
     expect(args).toContain(`mcp_servers.mockingbird.env={MOCKINGBIRD_SESSION="abc12345", ELECTRON_RUN_AS_NODE="1"}`);
     expect(args).toContain(`mcp_servers.mockingbird.default_tools_approval_mode="approve"`);
+    expect(args.join(" ")).not.toContain("tool_timeout_sec"); // only Collaborate's code reader needs minutes
     expect(args.slice(-2)).toEqual(["--", "Ticket #1\nline two"]);
   });
   it("passes a kickoff that starts with a dash as the prompt, not as options", () => {

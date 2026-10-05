@@ -3,7 +3,7 @@ import * as path from "path";
 import { AGENT_NAME, type AgentKind, type NewSessionRequest, type Settings } from "../shared/types";
 import { expandHome } from "./store";
 import { usageReporterArgs } from "./usage";
-import type { McpLaunch } from "./messaging";
+import { MCP_SERVER, MCP_TOOL, claudeToolName, type McpLaunch } from "./messaging";
 import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
 import { readSlice } from "./fileOps";
 
@@ -42,12 +42,7 @@ const claude: AgentAdapter = {
     // --mcp-config adds to the user's own servers; the allow rule spares a
     // permission prompt on every message
     if (ctx.mcp) {
-      args.push(
-        "--mcp-config",
-        JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...ctx.mcp } } }),
-        "--allowedTools",
-        "mcp__mockingbird__list_sessions,mcp__mockingbird__send_message"
-      );
+      args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", [MCP_TOOL.listSessions, MCP_TOOL.sendMessage].map(claudeToolName).join(","));
     }
     return args;
   },
@@ -119,16 +114,7 @@ const codex: AgentAdapter = {
     // -c values are parsed as TOML, so the string needs its quotes
     if (req.effort) args.push("-c", `model_reasoning_effort="${req.effort}"`);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    if (ctx.mcp) {
-      // -c values are TOML; JSON strings, arrays and this flat table are valid TOML too
-      const env = Object.entries(ctx.mcp.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
-      args.push(
-        "-c", `mcp_servers.mockingbird.command=${JSON.stringify(ctx.mcp.command)}`,
-        "-c", `mcp_servers.mockingbird.args=${JSON.stringify(ctx.mcp.args)}`,
-        "-c", `mcp_servers.mockingbird.env={${env}}`,
-        "-c", `mcp_servers.mockingbird.default_tools_approval_mode="approve"`
-      );
-    }
+    if (ctx.mcp) args.push(...codexMcpSettings(ctx.mcp).flatMap((c) => ["-c", c]));
     // positional, last, after "--": a prompt starting with "-" is not an option
     if (req.initialPrompt) args.push("--", req.initialPrompt);
     return args;
@@ -147,6 +133,28 @@ const codex: AgentAdapter = {
 };
 
 const ADAPTERS: Record<AgentKind, AgentAdapter> = { claude, codex };
+
+/** Claude's --mcp-config value for the Mockingbird MCP server. */
+export function claudeMcpConfig(mcp: McpLaunch): string {
+  return JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: "stdio", ...mcp } } });
+}
+
+/**
+ * Codex's -c settings for the Mockingbird MCP server, its tools pre-approved.
+ * -c values are TOML; JSON strings, arrays and this flat table are valid TOML
+ * too. `toolTimeoutSec` raises Codex's limit for a tool that can take minutes.
+ */
+export function codexMcpSettings(mcp: McpLaunch, opts: { toolTimeoutSec?: number } = {}): string[] {
+  const key = `mcp_servers.${MCP_SERVER}`;
+  const env = Object.entries(mcp.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+  return [
+    `${key}.command=${JSON.stringify(mcp.command)}`,
+    `${key}.args=${JSON.stringify(mcp.args)}`,
+    `${key}.env={${env}}`,
+    `${key}.default_tools_approval_mode="approve"`,
+    ...(opts.toolTimeoutSec ? [`${key}.tool_timeout_sec=${opts.toolTimeoutSec}`] : []),
+  ];
+}
 
 /** Sessions persisted before agents existed carry no agent field — they were all Claude. */
 export function agentFor(kind: AgentKind | null | undefined): AgentAdapter {

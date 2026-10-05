@@ -19,10 +19,10 @@ import { MB_DIR } from "./store";
 import { writeFileAtomic } from "./fileOps";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
-import { mcpLaunch, type McpLaunch } from "./messaging";
+import { MCP_TOOL, claudeToolName, mcpLaunch, type McpLaunch } from "./messaging";
 import { makeTestCopy } from "./testCopy";
 import { codexError, parseClaudeJson, readCodexReply } from "./headless";
-import { agentLabel, isInstalledBin } from "./agents";
+import { agentLabel, claudeMcpConfig, codexMcpSettings, isInstalledBin } from "./agents";
 
 /** The models a room can seat; each runs through the CLI and plan the user already has. */
 export const COLLAB_MODELS: CollabModel[] = [
@@ -64,7 +64,7 @@ function rosterLine(room: CollabRoom, p: CollabParticipant): string {
           p.agent === "codex" ? "read and search it with shell commands like cat, ls, rg and git log" : "read and search it with your file tools"
         }. Don't change anything: nothing is edited until the user approves a plan. MCP and app tools are switched off in this discussion.`
       : codeReaderFor(room, p.key)
-      ? `There's a repository, but you can't read it yourself. When something depends on the code, call the ask_code_reader tool: ${codeReaderFor(room, p.key)!.label} looks it up and the answer comes back within your turn.`
+      ? `There's a repository, but you can't read it yourself. When something depends on the code, call the ${MCP_TOOL.askCodeReader} tool: ${codeReaderFor(room, p.key)!.label} looks it up and the answer comes back within your turn.`
       : "There's a repository, but nobody in the room can read it right now.";
   const role = (o: CollabParticipant) =>
     !room.repoPath ? "" : o.runsCommands ? ` (reads the code, runs commands${o.usesDocker ? ", uses Docker" : ""})` : o.readsCode ? " (reads the code)" : "";
@@ -581,9 +581,9 @@ export class CollabRooms {
 
   /** A request from a room model's MCP tool (tagged collab-<room>.<seat>). */
   async handleRoomRequest(roomId: string, seatKey: string, op: string, args: Record<string, unknown>): Promise<{ result: unknown } | { error: string }> {
-    if (op !== "ask_code_reader" && op !== "approve_permission") return { error: `Unknown tool: ${op}` };
+    if (op !== MCP_TOOL.askCodeReader && op !== MCP_TOOL.approvePermission) return { error: `Unknown tool: ${op}` };
     try {
-      if (op === "approve_permission") return { result: JSON.stringify(await this.requestPermission(roomId, seatKey, args)) };
+      if (op === MCP_TOOL.approvePermission) return { result: JSON.stringify(await this.requestPermission(roomId, seatKey, args)) };
       return { result: await this.askCodeReader(roomId, seatKey, String(args.question ?? "")) };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
@@ -800,7 +800,7 @@ export function claudeTurnCommand(
   // the code reader (ask), and routing permission questions to the user (permit)
   opts: { mcp?: McpLaunch; ask?: boolean; permit?: boolean; sockets?: string[] } = {}
 ): string {
-  const allowed = [...(opts.mcp && opts.ask ? ["mcp__mockingbird__ask_code_reader"] : []), ...(p.usesDocker ? [quote("Bash(docker:*)")] : [])];
+  const allowed = [...(opts.mcp && opts.ask ? [claudeToolName(MCP_TOOL.askCodeReader)] : []), ...(p.usesDocker ? [quote("Bash(docker:*)")] : [])];
   const permit = !!(opts.mcp && opts.permit);
   return [
     quote(bin),
@@ -808,11 +808,11 @@ export function claudeTurnCommand(
     "--model", quote(p.model),
     "--output-format", "json",
     "--strict-mcp-config",
-    ...(opts.mcp ? ["--mcp-config", quote(JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...opts.mcp } } }))] : []),
+    ...(opts.mcp ? ["--mcp-config", quote(claudeMcpConfig(opts.mcp))] : []),
     // a Docker seat's docker commands are pre-approved: Claude holds some for
     // approval even inside the sandbox (nested quotes, -e), and the seat is trusted with Docker anyway
     ...(allowed.length ? ["--allowedTools", ...allowed] : []),
-    ...(permit ? ["--permission-prompt-tool", "mcp__mockingbird__approve_permission"] : []),
+    ...(permit ? ["--permission-prompt-tool", claudeToolName(MCP_TOOL.approvePermission)] : []),
     ...(p.conversationId ? ["--resume", quote(p.conversationId)] : []),
     ...(p.effort ? ["--effort", quote(p.effort)] : []),
     ...(p.runsCommands ? ["--settings", quote(claudeCommandSandbox(p.usesDocker ? opts.sockets ?? [] : [])), "--permission-mode", "acceptEdits"] : []),
@@ -820,7 +820,7 @@ export function claudeTurnCommand(
     ...(p.runsCommands ? ["NotebookEdit"] : ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]),
     ...(p.readsCode || p.runsCommands ? [] : ["Read", "Grep", "Glob", "LS"]),
     // the permission tool answers Claude Code, never the model
-    ...(permit ? ["mcp__mockingbird__approve_permission"] : []),
+    ...(permit ? [claudeToolName(MCP_TOOL.approvePermission)] : []),
   ].join(" ");
 }
 
@@ -836,15 +836,7 @@ export function claudeTurnCommand(
  */
 export function codexTurnCommand(bin: string, p: CollabParticipant, lastFile: string, ask?: McpLaunch, sockets: string[] = []): string {
   // the one MCP tool a room allows: asking the code reader (pre-approved; a lookup can take minutes)
-  const askFlags = ask
-    ? [
-        `mcp_servers.mockingbird.command=${JSON.stringify(ask.command)}`,
-        `mcp_servers.mockingbird.args=${JSON.stringify(ask.args)}`,
-        `mcp_servers.mockingbird.env={${Object.entries(ask.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ")}}`,
-        'mcp_servers.mockingbird.default_tools_approval_mode="approve"',
-        "mcp_servers.mockingbird.tool_timeout_sec=600",
-      ].map((c) => `-c ${quote(c)} `).join("")
-    : "";
+  const askFlags = ask ? codexMcpSettings(ask, { toolTimeoutSec: 600 }).map((c) => `-c ${quote(c)} `).join("") : "";
   // a Docker seat needs a permission profile (the legacy sandbox settings can't
   // open a unix socket); profiles don't combine with sandbox_mode, so it's one or the other
   const sandbox = p.usesDocker
@@ -878,7 +870,7 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
     const env = { ...paneEnv(), MOCKINGBIRD_SESSION: tag };
     const sockets = p.usesDocker ? dockerSockets() : [];
     // Claude asks the user (in the room) about calls its permissions don't cover; Codex has no such hook
-    const tools = [...(askTool ? ["ask_code_reader"] : []), ...(p.agent === "claude" ? ["approve_permission"] : [])];
+    const tools = [...(askTool ? [MCP_TOOL.askCodeReader] : []), ...(p.agent === "claude" ? [MCP_TOOL.approvePermission] : [])];
     const mcp = tools.length ? mcpLaunch(tag, tools) : undefined;
     const bin = binFor(p.agent);
     // installs and test suites can take a while; a reading turn that runs this long is stuck

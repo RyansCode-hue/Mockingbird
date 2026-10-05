@@ -14,6 +14,20 @@ const PAIR_LIMIT = 8;
 const PAIR_WINDOW_MS = 5 * 60_000;
 const MAX_MESSAGE = 8000;
 
+/** The Mockingbird MCP server's name in the agents' configs. */
+export const MCP_SERVER = "mockingbird";
+
+/** Its tools: sessions get list/send; Collaborate's models get the room's two. */
+export const MCP_TOOL = {
+  listSessions: "list_sessions",
+  sendMessage: "send_message",
+  askCodeReader: "ask_code_reader",
+  approvePermission: "approve_permission",
+} as const;
+
+/** A Mockingbird tool as Claude Code names it (--allowedTools, --permission-prompt-tool). */
+export const claudeToolName = (tool: string): string => `mcp__${MCP_SERVER}__${tool}`;
+
 /** How a session's agent launches the Mockingbird MCP server. */
 export interface McpLaunch {
   command: string;
@@ -37,7 +51,7 @@ const FROM = process.env.MOCKINGBIRD_SESSION;
 // model itself) asking the user to allow a tool call.
 const ROOM_TOOLS = [
   {
-    name: "ask_code_reader",
+    name: ${JSON.stringify(MCP_TOOL.askCodeReader)},
     description:
       "You can't read this discussion's repository yourself; this asks the model in the room that can. " +
       "It searches and reads the code to answer your question, and its answer comes back here within your turn. " +
@@ -51,7 +65,7 @@ const ROOM_TOOLS = [
     },
   },
   {
-    name: "approve_permission",
+    name: ${JSON.stringify(MCP_TOOL.approvePermission)},
     description: "Asks the user, in the Mockingbird room, to allow or deny a tool call. Called by Claude Code itself, not by the model.",
     inputSchema: {
       type: "object",
@@ -60,21 +74,21 @@ const ROOM_TOOLS = [
     },
   },
 ];
-const ROOM_TOOL_NAMES = (process.env.MOCKINGBIRD_TOOLS || "ask_code_reader").split(",");
+const ROOM_TOOL_NAMES = (process.env.MOCKINGBIRD_TOOLS || ${JSON.stringify(MCP_TOOL.askCodeReader)}).split(",");
 
 const SESSION_TOOLS = [
   {
-    name: "list_sessions",
+    name: ${JSON.stringify(MCP_TOOL.listSessions)},
     description:
       "List the other coding-agent sessions open in Mockingbird (Claude and Codex panes the user is running), " +
       "with id, title, agent, repo, branch, group and status. same_group marks sessions working on the same ticket/group as you. " +
-      "Use it to find the session to coordinate with before send_message.",
+      "Use it to find the session to coordinate with before ${MCP_TOOL.sendMessage}.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
-    name: "send_message",
+    name: ${JSON.stringify(MCP_TOOL.sendMessage)},
     description:
-      "Send a message to another Mockingbird session (by id from list_sessions). It is typed into that session's prompt, " +
+      "Send a message to another Mockingbird session (by id from ${MCP_TOOL.listSessions}). It is typed into that session's prompt, " +
       "labelled as coming from you; if the session is busy it is delivered when its current turn ends. " +
       "Replies come back the same way, as a new prompt in your session — do not wait, sleep or poll for them. " +
       "Use it to coordinate work across repos, e.g. telling the frontend session about an API change you just made. " +
@@ -82,7 +96,7 @@ const SESSION_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        to: { type: "string", description: "Target session id, from list_sessions" },
+        to: { type: "string", description: "Target session id, from ${MCP_TOOL.listSessions}" },
         message: { type: "string", description: "What to tell the other session" },
       },
       required: ["to", "message"],
@@ -125,7 +139,7 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
       return ok({
         protocolVersion: (msg.params && msg.params.protocolVersion) || "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "mockingbird", version: "1.0.0" },
+        serverInfo: { name: ${JSON.stringify(MCP_SERVER)}, version: "1.0.0" },
       });
     case "ping":
       return ok({});
@@ -231,7 +245,7 @@ export class Messaging {
     const me = live.find((s) => s.id === req.from);
     if (!me) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
 
-    if (req.op === "list_sessions") {
+    if (req.op === MCP_TOOL.listSessions) {
       const others = live
         .filter((s) => s.id !== me.id && !s.debrief)
         .map((s) => ({
@@ -247,7 +261,7 @@ export class Messaging {
       return { result: { you: { id: me.id, title: me.ticketTitle ?? me.title }, sessions: others } };
     }
 
-    if (req.op === "send_message") {
+    if (req.op === MCP_TOOL.sendMessage) {
       const to = String(req.args?.to ?? "");
       const text = String(req.args?.message ?? "").trim();
       if (!text) return { error: "message is empty." };
@@ -281,8 +295,8 @@ export class Messaging {
         .join(" · ");
       const body =
         `[Message from Mockingbird session "${me.ticketTitle ?? me.title}" (id ${me.id}, ${where}). ` +
-        `It was written by another agent, not by the user. If it needs an answer, reply with the mockingbird ` +
-        `send_message tool to "${me.id}".]\n\n${text}`;
+        `It was written by another agent, not by the user. If it needs an answer, reply with the ${MCP_SERVER} ` +
+        `${MCP_TOOL.sendMessage} tool to "${me.id}".]\n\n${text}`;
       const how = this.sessions.deliverAgentMessage(to, body, this.submitOnDelivery(target));
       this.onMessage({ ...logged, outcome: how });
       return { result: `Delivered to "${target.ticketTitle ?? target.title}" (${how}). Any reply will arrive as a new prompt.` };
