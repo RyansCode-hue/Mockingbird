@@ -4,7 +4,7 @@ import * as path from "path";
 import { UPDATE_STEPS, type UpdateOutcome, type UpdateProgress, type UpdateStepId } from "../shared/types";
 import { isNewer } from "./updates";
 import { indexRepos } from "./repos";
-import { quote } from "./shell";
+import { loginShell, quote } from "./shell";
 
 /**
  * Updating a build-it-yourself install from inside the app: pull the user's
@@ -49,22 +49,18 @@ export async function findSourceClone(opts: { configured?: string | null; roots:
 /** Runs one shell command for a step, streaming its output; never rejects. */
 export type Exec = (cmd: string, cwd: string, onOut: (chunk: string) => void, signal: AbortSignal) => Promise<{ code: number; out: string }>;
 
-/** The user's interactive login shell, so nvm's Node and Homebrew's tools are on PATH as in their terminal. */
+/**
+ * The user's interactive login shell, so nvm's Node and Homebrew's tools are on
+ * PATH as in their terminal. Everything it prints streams to the log; the
+ * output a step parses is the command's own, without the rc files' banners.
+ */
 export function loginShellExec(env: NodeJS.ProcessEnv): Exec {
-  return (cmd, cwd, onOut, signal) =>
-    new Promise((resolve) => {
-      let out = "";
-      const child = spawn("/bin/zsh", ["-ilc", cmd], { cwd, env, signal });
-      const take = (d: Buffer) => {
-        const s = d.toString("utf8");
-        out = (out + s).slice(-20_000);
-        onOut(s);
-      };
-      child.stdout.on("data", take);
-      child.stderr.on("data", take);
-      child.on("error", (err) => resolve({ code: 1, out: err.name === "AbortError" ? "cancelled" : err.message }));
-      child.on("close", (code) => resolve({ code: code ?? 1, out }));
-    });
+  return async (cmd, cwd, onOut, signal) => {
+    const r = await loginShell(cmd, { cwd, env, onOut, signal });
+    // a failed step is explained by its last lines, which are often on stderr
+    const errs = r.stderr.trim();
+    return { code: r.code, out: r.code === 0 || !errs || r.out.startsWith(errs) ? r.out : `${r.out}\n${errs}` };
+  };
 }
 
 class StepFailed extends Error {}
@@ -144,7 +140,9 @@ export class UpdateRunner {
       done("pull");
 
       this.step("install");
-      await this.run("npm install", clone);
+      // exactly what package-lock.json pins, leaving it untouched: an `npm install`
+      // that rewrote it would make the next update find uncommitted changes
+      await this.run("npm ci", clone);
       done("install");
 
       this.step("build");
@@ -177,9 +175,14 @@ export class UpdateRunner {
     this.ac?.abort();
   }
 
-  /** The installer has taken over; the app is about to quit. */
+  /** Restarting into the build: the app is quitting, and the installer takes over once it has. */
   markInstalling(): void {
     this.set({ state: "installing" });
+  }
+
+  /** The quit was cancelled before the installer started: the build is still ready to install. */
+  installAborted(): void {
+    if (this.progress.state === "installing") this.set({ state: "ready" });
   }
 }
 

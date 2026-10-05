@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { UpdateRunner, findSourceClone, remoteMatches, startInstaller, takeUpdateOutcome, newestBuild, type Exec } from "../src/main/selfUpdate";
+import { UpdateRunner, findSourceClone, loginShellExec, remoteMatches, startInstaller, takeUpdateOutcome, newestBuild, type Exec } from "../src/main/selfUpdate";
 import type { UpdateProgress } from "../src/shared/types";
 
 const tmp = (p: string) => fs.mkdtempSync(path.join(os.homedir(), p));
@@ -86,7 +86,7 @@ describe("preparing an update", () => {
       "node -v",
       "git fetch origin 'main'",
       "git merge --ff-only origin/'main'",
-      "npm install",
+      "npm ci", // installs what package-lock.json pins without rewriting it
       "npm run package:app",
       `plutil -extract CFBundleShortVersionString raw '${path.join(clone, "release", "mac-arm64", "Mockingbird.app", "Contents", "Info.plist")}'`,
     ]);
@@ -118,11 +118,41 @@ describe("preparing an update", () => {
   it("can be cancelled mid-step, leaving nothing installed", async () => {
     const clone = cloneWithBuild();
     const npm = (signal: AbortSignal) => new Promise<{ code: number; out: string }>((res) => signal.addEventListener("abort", () => res({ code: 1, out: "cancelled" })));
-    const { r } = runner(fakeExec([[/^npm install/, npm], ...happy(clone)]).exec, clone);
+    const { r } = runner(fakeExec([[/^npm ci/, npm], ...happy(clone)]).exec, clone);
     const done = r.prepare();
     await until(() => r.progress.step === "install");
     r.cancel();
     expect(await done).toMatchObject({ state: "failed", step: "install", error: "Cancelled — nothing was installed." });
+  });
+
+  it("stays ready to install when the restart is called off", async () => {
+    const clone = cloneWithBuild();
+    const { r } = runner(fakeExec(happy(clone)).exec, clone);
+    await r.prepare();
+    r.markInstalling();
+    expect(r.progress.state).toBe("installing");
+    r.installAborted();
+    expect(r.progress).toMatchObject({ state: "ready", version: "1.2.0" });
+    r.installAborted(); // only an install in progress goes back
+    expect(r.progress.state).toBe("ready");
+  });
+
+  it("parses each step's own output, not the banners the user's shell prints", async () => {
+    fs.writeFileSync(path.join(os.homedir(), ".zshrc"), `echo "Welcome back"\necho "nvm: using node v22" >&2\n`);
+    try {
+      const clean = gitRepo(tmp("clean-"));
+      const exec = loginShellExec(process.env);
+      const logged: string[] = [];
+      const ac = new AbortController();
+      expect(await exec("git status --porcelain --untracked-files=no", clean, (s) => logged.push(s), ac.signal)).toEqual({ code: 0, out: "" });
+      expect(await exec("printf 'v22.3.0'", clean, (s) => logged.push(s), ac.signal)).toEqual({ code: 0, out: "v22.3.0" });
+      expect(logged.join("")).toContain("Welcome back"); // the log shows everything
+      const failed = await exec("echo building; echo 'npm ERR! missing script' >&2; exit 1", clean, () => {}, ac.signal);
+      expect(failed.code).toBe(1);
+      expect(failed.out).toMatch(/building[\s\S]*npm ERR! missing script/); // a failure explains itself from stderr too
+    } finally {
+      fs.rmSync(path.join(os.homedir(), ".zshrc"), { force: true });
+    }
   });
 
   it("picks the newest app under release/", () => {

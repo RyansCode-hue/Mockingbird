@@ -1,13 +1,21 @@
 import * as fs from "fs";
 import type { AgentCheck, AgentKind, SetupStatus } from "../shared/types";
 import { Store, expandHome } from "./store";
-import { SessionManager } from "./sessions";
 import { indexRepos } from "./repos";
 import { hookStatus } from "./hooks";
 import { userShell, quote } from "./shell";
 import { adoIdentity } from "./ado";
 
-async function checkAgent(sessions: Pick<SessionManager, "binFor" | "resetBinCache">, kind: AgentKind): Promise<AgentCheck> {
+/**
+ * The agents' binaries. `refresh` looks them up afresh in the user's shell
+ * without blocking; binFor() then answers from what it found.
+ */
+export interface AgentBins {
+  binFor(kind: AgentKind): string;
+  refresh(): Promise<void>;
+}
+
+async function checkAgent(sessions: AgentBins, kind: AgentKind): Promise<AgentCheck> {
   const bin = sessions.binFor(kind); // an absolute path once the user's shell found it
   if (!bin.includes("/")) return { found: false, path: null, version: null, signedIn: null };
   const path = bin;
@@ -46,10 +54,10 @@ async function checkAdo(store: Store): Promise<SetupStatus["ado"]> {
 }
 
 /** Everything the setup wizard shows, read from the machine rather than from saved flags. */
-export async function setupStatus(store: Store, sessions: Pick<SessionManager, "binFor" | "resetBinCache">): Promise<SetupStatus> {
-  sessions.resetBinCache(); // a CLI installed since the last check must show up on "Check again"
+export async function setupStatus(store: Store, bins: AgentBins): Promise<SetupStatus> {
   const adoCheck = checkAdo(store); // network — runs alongside the local checks, bounded
-  const [claude, codex] = await Promise.all([checkAgent(sessions, "claude"), checkAgent(sessions, "codex")]);
+  await bins.refresh(); // a CLI installed since the last check must show up on "Check again"
+  const [claude, codex] = await Promise.all([checkAgent(bins, "claude"), checkAgent(bins, "codex")]);
   const repoRoots = store.settings.repoRoots.map((root) => {
     const repos = indexRepos([root]);
     let exists = true;
