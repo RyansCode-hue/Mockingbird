@@ -8,7 +8,7 @@ import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, AgentKind, t
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
-import { agentFor, AgentAdapter } from "./agents";
+import { agentFor, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 
@@ -52,8 +52,8 @@ interface LiveSession {
   proc: pty.IPty;
   buffer: string;
   queued: Queued[]; // messages to deliver when idle
-  lastInput: number; // ms of the user's last write into this pane
-  draft: boolean; // the user has typed since their last Enter — the prompt holds unsent text
+  lastInput: number; // ms of the user's last write into this pane, or of a message placed there for them to send
+  draft: boolean; // the prompt holds unsent text: typed since the user's last Enter, or a message placed for them
   flushTimer: NodeJS.Timeout | null; // retry while the user is typing
   claudeId: string | null; // Claude Code's own session_id, claimed from the first hook event
   lastOutput: number; // ms of the pty's last output — a working pane that goes quiet may be stuck
@@ -72,6 +72,8 @@ export class SessionManager {
   agentVersions: Partial<Record<AgentKind, string>> = {};
 
   private resolvedBins = new Map<string, string>();
+  /** Bumped by resetBinCache, so a lookup started before a Settings change can't cache the old binary. */
+  private binGeneration = 0;
 
   /** Called whenever the session list changes — drives the tray + Dock badge. */
   onChanged: (() => void) | null = null;
@@ -83,10 +85,10 @@ export class SessionManager {
     this.onChanged?.();
   }
 
-  /** Resolve the claude binary via a login shell so packaged .app launches find it too. */
-  /** Drop the cached claude path so a Settings change takes effect immediately. */
+  /** Drop the cached binary paths so a Settings change takes effect immediately. */
   resetBinCache(): void {
     this.resolvedBins.clear();
+    this.binGeneration++;
   }
 
   /** The binary a fresh session of this agent would launch. */
@@ -102,7 +104,9 @@ export class SessionManager {
     for (const agent of [agentFor("claude"), agentFor("codex")]) {
       const bin = this.store.settings[agent.binSetting];
       if (this.resolvedBins.has(agent.binSetting) || bin.includes("/")) continue;
+      const generation = this.binGeneration;
       const found = await which(bin);
+      if (generation !== this.binGeneration) continue; // looked up for settings since replaced
       // a bare name means "not found", as in resolveBin — cached too, so nothing looks it up again
       if (!this.resolvedBins.has(agent.binSetting)) this.resolvedBins.set(agent.binSetting, found ?? bin);
     }
@@ -180,15 +184,16 @@ export class SessionManager {
     const shellArgs = ["-il"];
     let claudeArgs: string[] = shellArgs;
     const id = req.reuseId ?? randomUUID().slice(0, 8);
-    const commandFor = (a: AgentAdapter, r: NewSessionRequest) =>
-      [this.resolveBin(a), ...a.launchArgs(r, { mcp: mcpLaunch(id) })].map(quote).join(" ");
+    const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext) => [this.resolveBin(a), ...a.launchArgs(r, ctx)].map(quote).join(" ");
     if (!req.shell) {
-      claudeArgs = ["-ilc", `exec ${commandFor(agent, req)}`];
+      claudeArgs = ["-ilc", `exec ${commandFor(agent, req, { mcp: mcpLaunch(id) })}`];
     } else if (req.shellResume) {
       // a terminal that had an agent running in it: bring the conversation
-      // back, and leave the user at the shell prompt when they quit it
+      // back, and leave the user at the shell prompt when they quit it. It
+      // gets no messaging tools: terminals are outside agent messaging, since
+      // a message typed in once the agent has quit would run as a command.
       const a = agentFor(req.shellResume.agent);
-      claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id })}; exec /bin/zsh -il`];
+      claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id }, {})}; exec /bin/zsh -il`];
     }
     let proc: pty.IPty;
     try {
@@ -350,7 +355,19 @@ export class SessionManager {
 
   private scrollbackFile = (id: string) => path.join(this.scrollbackDir, `${id.replace(/[^\w-]/g, "_")}.log`);
 
+  /**
+   * Debriefs don't outlive the app (their records are dropped at startup), so
+   * their scrollback never goes to disk: it is held here from closing one to
+   * resume until its relaunch.
+   */
+  private debriefScrollback = new Map<string, string>();
+
   private readScrollback(id: string): string {
+    const held = this.debriefScrollback.get(id);
+    if (held !== undefined) {
+      this.debriefScrollback.delete(id);
+      return held;
+    }
     try {
       return fs.readFileSync(this.scrollbackFile(id), "utf8").slice(-BUFFER_MAX);
     } catch (err) {
@@ -361,6 +378,10 @@ export class SessionManager {
 
   private writeScrollback(s: LiveSession): void {
     if (!s.buffer) return;
+    if (s.info.debrief) {
+      this.debriefScrollback.set(s.info.id, s.buffer);
+      return;
+    }
     fs.mkdirSync(this.scrollbackDir, { recursive: true });
     const f = this.scrollbackFile(s.info.id);
     fs.writeFileSync(`${f}.tmp`, s.buffer);
@@ -369,13 +390,14 @@ export class SessionManager {
   }
 
   private dropScrollback(id: string): void {
+    this.debriefScrollback.delete(id);
     fs.rmSync(this.scrollbackFile(id), { force: true });
   }
 
   /** Write every pane's scrollback that changed since it was last written (and all of them when quitting). */
   saveScrollback(all = false): void {
     for (const s of this.live.values()) {
-      if (!all && s.saved === s.outputs) continue;
+      if (s.info.debrief || (!all && s.saved === s.outputs)) continue;
       try {
         this.writeScrollback(s);
       } catch (err) {
@@ -703,7 +725,9 @@ export class SessionManager {
     // a tagged event that names no live pane comes from something else Mockingbird
     // runs (a Collaborate room) or a closed pane — never guess a pane for it
     const s = ev.paneId ? this.live.get(ev.paneId) ?? null : this.matchSession(ev.cwd, ev.conversationId);
-    if (!s) return null;
+    // events arrive up to a poll late: one written just before the agent exited
+    // must not bring its dead pane back to life
+    if (!s || s.info.status === "dead") return null;
     if (ev.conversationId) this.noteConversation(s, ev.agent ?? s.info.agent ?? "claude", ev.conversationId);
     this.setStatus(s.info.id, ev.status, ev.reason);
     // deliver queued broadcasts whenever the session frees up (a session can
@@ -754,22 +778,25 @@ export class SessionManager {
   }
 
   /**
-   * Deliver messages queued while a session was busy, then mark it working
-   * again. Pasting next to an unsent draft would send the user's half-written
-   * prompt with it, so a pending draft holds the queue until the user sends it
-   * (their turn then ends in idle, which flushes). A draft left untouched for
-   * DRAFT_GIVE_UP_MS gets the messages placed after it without Enter, for the
-   * user to see and send themselves.
+   * Deliver messages queued while a session was busy. Pasting next to an
+   * unsent draft would send the user's half-written prompt with it, so a
+   * pending draft holds the queue until the user sends it (their turn then
+   * ends in idle, which flushes). A draft left untouched for DRAFT_GIVE_UP_MS
+   * gets the messages placed after it without Enter, for the user to see and
+   * send themselves.
+   *
+   * Enter submits everything in the prompt, so one message is submitted per
+   * turn — the pane is then working, and the rest wait for it to end.
+   * Messages meant to be left for the user go once none are left to submit,
+   * and the text they leave in the prompt then counts as a draft.
    */
   private flushQueued(s: LiveSession): void {
     if (!s.queued.length || s.info.status === "dead") return;
     const DRAFT_GIVE_UP_MS = 120_000;
     const RECHECK_MS = 5_000;
     const idleFor = Date.now() - s.lastInput;
-    let msgs = s.queued.splice(0);
     if (s.draft) {
       if (idleFor < DRAFT_GIVE_UP_MS) {
-        s.queued.unshift(...msgs);
         if (s.flushTimer) clearTimeout(s.flushTimer);
         s.flushTimer = setTimeout(() => {
           s.flushTimer = null;
@@ -777,16 +804,26 @@ export class SessionManager {
         }, Math.min(RECHECK_MS, DRAFT_GIVE_UP_MS - idleFor));
         return;
       }
-      msgs = msgs.map((m) => ({ ...m, submit: false }));
+      for (const m of s.queued.splice(0)) this.sendMessage(s.info.id, m.text, false);
+      this.emitChanged();
+      return;
     }
-    for (const m of msgs) this.sendMessage(s.info.id, m.text, m.submit);
-    if (msgs.some((m) => m.submit)) this.setStatus(s.info.id, "working");
-    else this.emitChanged();
+    const next = s.queued.findIndex((m) => m.submit);
+    if (next >= 0) {
+      const [m] = s.queued.splice(next, 1);
+      this.sendMessage(s.info.id, m.text, true);
+      this.setStatus(s.info.id, "working");
+      return;
+    }
+    for (const m of s.queued.splice(0)) this.sendMessage(s.info.id, m.text, false);
+    s.draft = true;
+    s.lastInput = Date.now();
+    this.emitChanged();
   }
 
   private setStatus(id: string, status: SessionStatus, reason?: string): void {
     const s = this.live.get(id);
-    if (!s) return;
+    if (!s || s.info.status === "dead") return; // its pty has exited; only a relaunch (a new pty) revives it
     if (s.info.status === status && (status !== "waiting" || !reason)) return;
     s.info.status = status;
     if (status !== "working") s.info.stalledSince = null;

@@ -32,6 +32,10 @@ describe("Claude launch", () => {
   it("resumes a specific conversation by id", () => {
     expect(agentFor("claude").launchArgs({ ...base, resumeSessionId: "uuid-1" }, { mcp }).slice(0, 2)).toEqual(["--resume", "uuid-1"]);
   });
+  it("leaves the messaging server out when the pane has none", () => {
+    expect(agentFor("claude").launchArgs({ ...base }, {})).not.toContain("--mcp-config");
+    expect(agentFor("codex").launchArgs({ ...base }, {}).join(" ")).not.toContain("mcp_servers.mockingbird");
+  });
   it("is the agent for sessions saved before agents existed", () => {
     expect(agentFor(undefined).label).toBe("Claude");
   });
@@ -45,7 +49,11 @@ describe("Codex launch", () => {
     expect(args).toContain(`mcp_servers.mockingbird.args=["/h/.mockingbird/mcp.js"]`);
     expect(args).toContain(`mcp_servers.mockingbird.env={MOCKINGBIRD_SESSION="abc12345", ELECTRON_RUN_AS_NODE="1"}`);
     expect(args).toContain(`mcp_servers.mockingbird.default_tools_approval_mode="approve"`);
-    expect(args[args.length - 1]).toBe("Ticket #1\nline two");
+    expect(args.slice(-2)).toEqual(["--", "Ticket #1\nline two"]);
+  });
+  it("passes a kickoff that starts with a dash as the prompt, not as options", () => {
+    expect(agentFor("codex").launchArgs({ ...base, initialPrompt: "- run the tests" }, { mcp }).slice(-2)).toEqual(["--", "- run the tests"]);
+    expect(agentFor("codex").launchArgs({ ...base }, { mcp })).not.toContain("--");
   });
   it("resumes the most recent conversation in the folder", () => {
     expect(agentFor("codex").launchArgs({ ...base, resume: true }, { mcp }).slice(0, 2)).toEqual(["resume", "--last"]);

@@ -88,6 +88,26 @@ describe("delivering agent messages", () => {
     expect(out.f.at(-1)).toBe("\r");
     expect(out.g.at(-1)).toBe("\r");
   });
+  it("submits one queued message per turn — Enter would send everything in the prompt at once", () => {
+    const { m, out, add, status } = manager();
+    add("q", "working");
+    m.deliverAgentMessage("q", "first", true);
+    m.deliverAgentMessage("q", "for you to send", false);
+    m.deliverAgentMessage("q", "second", true);
+    m.statusFromHook({ paneId: "q", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.q).toEqual(["|first|", "\r"]);
+    expect(status("q")).toBe("working");
+    m.statusFromHook({ paneId: "q", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.q).toEqual(["|first|", "\r", "|second|", "\r"]);
+    m.statusFromHook({ paneId: "q", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.q.at(-1)).toBe("|for you to send|"); // last, and never followed by Enter
+    expect(status("q")).toBe("idle");
+    // what was left in the prompt now holds the next submitted message back, like the user's own draft
+    expect(m.deliverAgentMessage("q", "third", true)).toMatch(/unsent draft/);
+  });
   it("in manual mode, places the message without pressing Enter", () => {
     const { m, out, add, status } = manager();
     add("d", "idle");
@@ -161,6 +181,15 @@ describe("routing hook events", () => {
     add("b", "idle", "/home");
     m.statusFromHook({ paneId: "b", cwd: "/home", status: "working" });
     expect([status("a"), status("b")]).toEqual(["idle", "working"]);
+  });
+  it("leaves a dead pane dead: a late event from its exited agent changes nothing and delivers nothing", () => {
+    const { m, out, add, status } = manager();
+    add("d", "dead");
+    (m as any).live.get("d").queued.push({ text: "hello", submit: true });
+    expect(m.statusFromHook({ paneId: "d", status: "idle" })).toBeNull();
+    vi.advanceTimersByTime(200);
+    expect(status("d")).toBe("dead");
+    expect(out.d).toEqual([]);
   });
   it("ignores events tagged with an id that isn't a pane (a Collaborate room's runs)", () => {
     const { m, add, status } = manager();

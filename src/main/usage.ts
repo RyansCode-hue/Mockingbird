@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { MB_DIR } from "./store";
 import type { AgentUsage, UsageLimit, UsageReport } from "../shared/types";
+import { writeGenerated } from "./fileOps";
 
 const USAGE_FILE = path.join(MB_DIR, "usage.json");
 // the last payload that carried the 5-hour window — the CLI leaves it out of some
@@ -45,12 +46,9 @@ export function usageReporterArgs(): string[] {
       return [];
     }
   }
-  fs.mkdirSync(MB_DIR, { recursive: true });
-  fs.writeFileSync(STATUSLINE_SCRIPT, SCRIPT, { mode: 0o755 });
-  fs.writeFileSync(
-    STATUSLINE_SETTINGS,
-    JSON.stringify({ statusLine: { type: "command", command: `"${STATUSLINE_SCRIPT}"` } })
-  );
+  // running panes run the script every few hundred ms: it is only replaced when it changed, and in one step
+  writeGenerated(STATUSLINE_SCRIPT, SCRIPT, 0o755);
+  writeGenerated(STATUSLINE_SETTINGS, JSON.stringify({ statusLine: { type: "command", command: `"${STATUSLINE_SCRIPT}"` } }));
   return ["--settings", STATUSLINE_SETTINGS];
 }
 

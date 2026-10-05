@@ -106,6 +106,22 @@ describe("usageReporterArgs", () => {
     expect(args[0]).toBe("--settings");
     expect(JSON.parse(fs.readFileSync(args[1], "utf8")).statusLine.command).toContain("statusline.sh");
   });
+  it("leaves the reporter script alone while it's current, and replaces it in one step when it isn't", () => {
+    fs.rmSync(settings, { force: true });
+    const script = path.join(mb, "statusline.sh");
+    usageReporterArgs();
+    const first = fs.statSync(script).ino;
+    usageReporterArgs(); // every Claude launch: running panes may be executing it right now
+    expect(fs.statSync(script).ino).toBe(first);
+    fs.writeFileSync(script, "#!/bin/bash\n# an older build's\n");
+    const running = fs.openSync(script, "r");
+    usageReporterArgs();
+    const buf = Buffer.alloc(64);
+    expect(buf.toString("utf8", 0, fs.readSync(running, buf, 0, 64, 0))).toContain("an older build's"); // undisturbed
+    fs.closeSync(running);
+    expect(fs.readFileSync(script, "utf8")).toContain("Mockingbird usage reporter");
+    expect(fs.statSync(script).mode & 0o777).toBe(0o755);
+  });
   it("stays out of the way of the user's own statusLine", () => {
     fs.writeFileSync(settings, JSON.stringify({ statusLine: { type: "command", command: "mine.sh" } }));
     expect(usageReporterArgs()).toEqual([]);

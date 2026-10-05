@@ -1,6 +1,6 @@
 import * as fs from "fs";
-import * as path from "path";
 import type { AgentMessage } from "../shared/types";
+import { writeFileAtomic } from "./fileOps";
 
 const KEEP = 300;
 
@@ -21,20 +21,23 @@ export class MessageLog {
       const v = JSON.parse(fs.readFileSync(this.file, "utf8"));
       return Array.isArray(v) ? v : [];
     } catch (err) {
-      // keep an unreadable log aside rather than overwrite it
+      // keep an unreadable log aside rather than overwrite it; the log is
+      // built at startup, so failing to move it must not stop the app
       const backup = `${this.file}.corrupt-${Date.now()}`;
-      fs.renameSync(this.file, backup);
-      console.error(`[mockingbird] ${this.file} was unreadable (${(err as Error).message}); moved to ${backup}.`);
+      try {
+        fs.renameSync(this.file, backup);
+        console.error(`[mockingbird] ${this.file} was unreadable (${(err as Error).message}); moved to ${backup}.`);
+      } catch (moveErr) {
+        console.error(`[mockingbird] ${this.file} was unreadable (${(err as Error).message}) and couldn't be moved aside; starting an empty log:`, moveErr);
+      }
       return [];
     }
   }
 
+  /** Record a message. It is listed even when the file can't be written; that failure is thrown for the caller to report. */
   add(m: AgentMessage): void {
     this.items = [...this.items, m].slice(-KEEP);
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.items));
-    fs.renameSync(tmp, this.file);
+    writeFileAtomic(this.file, JSON.stringify(this.items));
   }
 
   list(): AgentMessage[] {

@@ -69,10 +69,13 @@ function parseHead(fp: string): { sessionId: string | null; cwd: string; title: 
   let head: string;
   try {
     const fd = fs.openSync(fp, "r");
-    const buf = Buffer.alloc(HEAD_BYTES);
-    const n = fs.readSync(fd, buf, 0, HEAD_BYTES, 0);
-    fs.closeSync(fd);
-    head = buf.toString("utf8", 0, n);
+    try {
+      const buf = Buffer.alloc(HEAD_BYTES);
+      const n = fs.readSync(fd, buf, 0, HEAD_BYTES, 0);
+      head = buf.toString("utf8", 0, n);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return null;
   }

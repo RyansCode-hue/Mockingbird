@@ -7,8 +7,8 @@ import { usageReporterArgs } from "./usage";
 import type { McpLaunch } from "./messaging";
 
 export interface LaunchContext {
-  /** The per-session Mockingbird MCP server that lets agents message each other. */
-  mcp: McpLaunch;
+  /** The per-session Mockingbird MCP server that lets agents message each other; absent for an agent outside messaging. */
+  mcp?: McpLaunch;
 }
 
 /** Everything that differs between the coding-agent CLIs a session can run. */
@@ -42,12 +42,14 @@ const claude: AgentAdapter = {
     args.push(...usageReporterArgs());
     // --mcp-config adds to the user's own servers; the allow rule spares a
     // permission prompt on every message
-    args.push(
-      "--mcp-config",
-      JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...ctx.mcp } } }),
-      "--allowedTools",
-      "mcp__mockingbird__list_sessions,mcp__mockingbird__send_message"
-    );
+    if (ctx.mcp) {
+      args.push(
+        "--mcp-config",
+        JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...ctx.mcp } } }),
+        "--allowedTools",
+        "mcp__mockingbird__list_sessions,mcp__mockingbird__send_message"
+      );
+    }
     return args;
   },
   conversationExists(id) {
@@ -164,15 +166,18 @@ const codex: AgentAdapter = {
     // -c values are parsed as TOML, so the string needs its quotes
     if (req.effort) args.push("-c", `model_reasoning_effort="${req.effort}"`);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    // -c values are TOML; JSON strings, arrays and this flat table are valid TOML too
-    const env = Object.entries(ctx.mcp.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
-    args.push(
-      "-c", `mcp_servers.mockingbird.command=${JSON.stringify(ctx.mcp.command)}`,
-      "-c", `mcp_servers.mockingbird.args=${JSON.stringify(ctx.mcp.args)}`,
-      "-c", `mcp_servers.mockingbird.env={${env}}`,
-      "-c", `mcp_servers.mockingbird.default_tools_approval_mode="approve"`
-    );
-    if (req.initialPrompt) args.push(req.initialPrompt); // positional — must stay last
+    if (ctx.mcp) {
+      // -c values are TOML; JSON strings, arrays and this flat table are valid TOML too
+      const env = Object.entries(ctx.mcp.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+      args.push(
+        "-c", `mcp_servers.mockingbird.command=${JSON.stringify(ctx.mcp.command)}`,
+        "-c", `mcp_servers.mockingbird.args=${JSON.stringify(ctx.mcp.args)}`,
+        "-c", `mcp_servers.mockingbird.env={${env}}`,
+        "-c", `mcp_servers.mockingbird.default_tools_approval_mode="approve"`
+      );
+    }
+    // positional, last, after "--": a prompt starting with "-" is not an option
+    if (req.initialPrompt) args.push("--", req.initialPrompt);
     return args;
   },
   // Codex files rollouts by date (~/.codex/sessions/YYYY/MM/DD/), not by folder,

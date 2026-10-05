@@ -724,6 +724,11 @@ export function formatShare(pct: number): string {
   return pct > 0 ? "<0.1%" : "0%";
 }
 
+/** The local calendar day as yyyy-mm-dd — what dated files are named by (toISOString would give the UTC day). */
+export function localDay(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export interface Meters {
   /** By pane (session id). */
   sessions: Record<string, SessionMeter>;

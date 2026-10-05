@@ -114,6 +114,26 @@ describe("searching", () => {
     expect(idx.search("fresh start")).toHaveLength(1);
   });
 
+  it("finds every conversation that mentions a word, not just the few that mention it most", async () => {
+    const home = fs.mkdtempSync(path.join(os.homedir(), "tx-"));
+    const claude = path.join(home, "claude");
+    fs.mkdirSync(path.join(claude, "-p"), { recursive: true });
+    const say = (conv: string, text: string) => L({ type: "user", sessionId: conv, timestamp: "2026-09-01T12:00:00Z", message: { role: "user", content: text } });
+    for (const conv of ["heavy1", "heavy2", "heavy3"]) {
+      fs.writeFileSync(path.join(claude, "-p", `${conv}.jsonl`), Array.from({ length: 250 }, () => say(conv, "widget widget")).join("\n") + "\n");
+    }
+    for (let i = 0; i < 10; i++) {
+      fs.writeFileSync(path.join(claude, "-p", `light${i}.jsonl`), say(`light${i}`, `one widget, in a longer note about the build, the release, the tests and the review ${i}`) + "\n");
+    }
+    const idx = new TranscriptIndex(path.join(home, "index.db"), { claude, codex: path.join(home, "codex") });
+    await idx.sync();
+    const hits = idx.search("widget");
+    expect(hits).toHaveLength(13);
+    expect(hits.slice(0, 3).map((h) => h.id).sort()).toEqual(["heavy1", "heavy2", "heavy3"]); // best first
+    expect(hits.every((h) => h.snippet.includes("\u0001widget\u0002"))).toBe(true);
+    expect(idx.search("widget", 5)).toHaveLength(5);
+  });
+
   it("folds a sync requested mid-pass into one more pass", async () => {
     const { idx } = fixture();
     const a = idx.sync();

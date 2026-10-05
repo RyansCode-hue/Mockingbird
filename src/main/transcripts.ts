@@ -383,18 +383,31 @@ export class TranscriptIndex {
   search(q: string, limit = 40): SearchHit[] {
     const match = ftsQuery(q);
     if (!match) return [];
-    const rows = this.db
+    // each conversation's best chunk, best conversations first: `rank` is
+    // bm25, and MIN's bare rowid comes from the row holding the minimum
+    const best = this.db
       .prepare(
-        `SELECT conv, at, kind, snippet(chunks, 0, char(1), char(2), '…', 14) AS snip, bm25(chunks) AS rank
-         FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT 600`
+        `SELECT rowid AS rid, MIN(rank) AS best FROM chunks
+         WHERE chunks MATCH ? AND conv IN (SELECT id FROM conversations)
+         GROUP BY conv ORDER BY best LIMIT ?`
       )
-      .all(match) as { conv: string; at: number; kind: "message" | "tool"; snip: string; rank: number }[];
-    const best = new Map<string, (typeof rows)[number]>();
-    for (const r of rows) if (!best.has(r.conv)) best.set(r.conv, r);
+      .all(match, limit) as { rid: number }[];
+    if (!best.length) return [];
+    const passages = new Map(
+      (
+        this.db
+          .prepare(
+            `SELECT rowid AS rid, conv, at, kind, snippet(chunks, 0, char(1), char(2), '…', 14) AS snip
+             FROM chunks WHERE chunks MATCH ? AND rowid IN (${best.map(() => "?").join(",")})`
+          )
+          .all(match, ...best.map((b) => b.rid)) as { rid: number; conv: string; at: number; kind: "message" | "tool"; snip: string }[]
+      ).map((p) => [p.rid, p])
+    );
     const getConv = this.db.prepare("SELECT id, agent, cwd, title, first_prompt, started, updated, model FROM conversations WHERE id = ?");
     const hits: SearchHit[] = [];
-    for (const r of best.values()) {
-      const c = getConv.get(r.conv) as any;
+    for (const { rid } of best) {
+      const p = passages.get(rid);
+      const c = p && (getConv.get(p.conv) as any);
       if (!c) continue;
       hits.push({
         id: c.id,
@@ -404,11 +417,10 @@ export class TranscriptIndex {
         started: c.started,
         updated: c.updated,
         model: c.model ?? null,
-        snippet: r.snip,
-        at: r.at,
-        kind: r.kind,
+        snippet: p.snip,
+        at: p.at,
+        kind: p.kind,
       });
-      if (hits.length >= limit) break;
     }
     return hits;
   }

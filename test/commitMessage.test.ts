@@ -28,6 +28,19 @@ describe("what a commit message describes", () => {
     expect(c.diff).toContain("export const x = 1;");
   });
 
+  it("reads only the start of new files, so a huge one is no problem", async () => {
+    const repo = makeRepo({ "a.txt": "one\n" });
+    const huge = path.join(repo, "dump.bin");
+    fs.writeFileSync(huge, "");
+    fs.truncateSync(huge, 2.5 * 1024 ** 3); // sparse: past what a whole-file read allows
+    fs.writeFileSync(path.join(repo, "big.txt"), "line\n".repeat(100_000));
+    const c = await commitContext(repo);
+    expect(c.newFiles.sort()).toEqual(["big.txt", "dump.bin"]);
+    expect(c.diff).not.toContain("--- new file: dump.bin"); // binary: named, not shown
+    expect(c.diff).toContain("--- new file: big.txt\nline\n");
+    expect(c.diff.length).toBeLessThan(10_000);
+  });
+
   it("works before the first commit, and says when there's nothing to describe", async () => {
     const dir = path.join(tempDir("fresh"), "r");
     fs.mkdirSync(dir);

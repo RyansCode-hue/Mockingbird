@@ -23,11 +23,19 @@ vi.mock("node-pty", () => ({
   },
 }));
 
+// looking binaries up on PATH, under the test's control
+const lookups = vi.hoisted(() => ({ which: (bin: string): Promise<string | null> => Promise.resolve(`/found/${bin}`), whichSync: (bin: string): string | null => `/found/${bin}` }));
+vi.mock("../src/main/shell", async (original) => ({
+  ...(await original<typeof import("../src/main/shell")>()),
+  which: (bin: string) => lookups.which(bin),
+  whichSync: (bin: string) => lookups.whichSync(bin),
+}));
+
 async function manager() {
   const { SessionManager } = await import("../src/main/sessions");
   const saved: any[] = [];
   const store = {
-    settings: { claudeBin: "/bin/echo", codexBin: "/bin/echo" },
+    settings: { claudeBin: "/bin/echo", codexBin: "/bin/echo", workTrackerPath: tempDir("worktracker") },
     state: { sessions: saved },
     upsertSession(i: any) {
       const k = saved.findIndex((x) => x.id === i.id);
@@ -107,5 +115,45 @@ describe("scrollback files", () => {
     ptys.at(-1)!.emit("hello\r\n");
     m.kill(s.id, false);
     expect(fs.readFileSync(path.join(m.scrollbackDir, `${s.id}.log`), "utf8")).toBe("hello\r\n");
+  });
+
+  it("are never written for debriefs, which don't outlive the app — a restart still shows what they said", async () => {
+    const { m } = await manager();
+    const s = await m.create({ ...agentPane, debrief: true });
+    ptys.at(-1)!.emit("Morning! What's first today?\r\n");
+    m.saveScrollback(true); // quitting
+    expect(fs.existsSync(path.join(m.scrollbackDir, `${s.id}.log`))).toBe(false);
+    await m.restart(s.id);
+    expect(fs.existsSync(path.join(m.scrollbackDir, `${s.id}.log`))).toBe(false);
+    expect(m.buffer(s.id).startsWith("Morning! What's first today?\r\n")).toBe(true);
+  });
+});
+
+describe("a terminal that brings back the agent it was running", () => {
+  it("resumes the conversation without the messaging tools — terminals are outside agent messaging", async () => {
+    const { m } = await manager();
+    await m.create({ repoPath: null, useWorktree: false, shell: true, shellResume: { agent: "claude", id: "conv-1" }, title: "t" });
+    const command = ptys.at(-1)!.args.join(" ");
+    expect(command).toContain("--resume");
+    expect(command).toContain("conv-1");
+    expect(command).not.toContain("--mcp-config");
+    await m.create(agentPane);
+    expect(ptys.at(-1)!.args.join(" ")).toContain("--mcp-config"); // an agent pane has them
+  });
+});
+
+describe("finding each agent's binary", () => {
+  it("never caches a lookup that started before the setting changed", async () => {
+    const { m, store } = await manager();
+    (store.settings as any).claudeBin = "claude-old";
+    (store.settings as any).codexBin = "/bin/codex";
+    let finish: (v: string) => void = () => {};
+    lookups.which = (bin) => new Promise((r) => (finish = () => r(`/found/${bin}`)));
+    const warming = m.warmBins();
+    (store.settings as any).claudeBin = "claude-new"; // Settings → claude binary
+    m.resetBinCache();
+    finish("");
+    await warming;
+    expect(m.binFor("claude")).toBe("/found/claude-new");
   });
 });
