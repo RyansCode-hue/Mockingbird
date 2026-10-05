@@ -199,6 +199,8 @@ export interface RepoBranches {
 
 export interface ImportableConversation {
   sessionId: string;
+  /** Which CLI resumes it; absent means Claude. */
+  agent?: AgentKind;
   cwd: string;
   title: string;
   mtimeMs: number;
@@ -724,6 +726,14 @@ export function formatShare(pct: number): string {
   return pct > 0 ? "<0.1%" : "0%";
 }
 
+/** "max" → "Max". */
+export const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The local calendar day as yyyy-mm-dd — what dated files are named by (toISOString would give the UTC day). */
+export function localDay(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export interface Meters {
   /** By pane (session id). */
   sessions: Record<string, SessionMeter>;
@@ -971,3 +981,13 @@ export interface AgentMessage {
 
 /** How agent messages arrive in a group's sessions: sent as a prompt, or typed in and left for the user. */
 export type MessageMode = "send" | "prompt";
+
+/**
+ * What a broadcast did in one pane: submitted now, queued (the pane is busy,
+ * or the user has unsent text in its prompt) until its turn ends, or skipped
+ * (gone, a terminal, or a debrief).
+ */
+export interface BroadcastOutcome {
+  id: string;
+  outcome: "delivered" | "queued" | "skipped";
+}

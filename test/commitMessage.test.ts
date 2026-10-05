@@ -1,7 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { cleanMessage, commitContext, commitPrompt, generateCommitMessage, type ShellRunner } from "../src/main/commitMessage";
+import { commitContext, commitPrompt, generateCommitMessage } from "../src/main/commitMessage";
+import { cleanReply, type ShellRunner } from "../src/main/headless";
 import { git, makeRepo, tempDir } from "./helpers";
 
 describe("what a commit message describes", () => {
@@ -28,6 +29,19 @@ describe("what a commit message describes", () => {
     expect(c.diff).toContain("export const x = 1;");
   });
 
+  it("reads only the start of new files, so a huge one is no problem", async () => {
+    const repo = makeRepo({ "a.txt": "one\n" });
+    const huge = path.join(repo, "dump.bin");
+    fs.writeFileSync(huge, "");
+    fs.truncateSync(huge, 2.5 * 1024 ** 3); // sparse: past what a whole-file read allows
+    fs.writeFileSync(path.join(repo, "big.txt"), "line\n".repeat(100_000));
+    const c = await commitContext(repo);
+    expect(c.newFiles.sort()).toEqual(["big.txt", "dump.bin"]);
+    expect(c.diff).not.toContain("--- new file: dump.bin"); // binary: named, not shown
+    expect(c.diff).toContain("--- new file: big.txt\nline\n");
+    expect(c.diff.length).toBeLessThan(10_000);
+  });
+
   it("works before the first commit, and says when there's nothing to describe", async () => {
     const dir = path.join(tempDir("fresh"), "r");
     fs.mkdirSync(dir);
@@ -49,10 +63,10 @@ describe("what a commit message describes", () => {
 
 describe("the model's reply", () => {
   it("is cleaned of fences, labels and quotes", () => {
-    expect(cleanMessage("```\nFix the thing\n\nBody\n```")).toBe("Fix the thing\n\nBody");
-    expect(cleanMessage("Commit message: Add tabs")).toBe("Add tabs");
-    expect(cleanMessage('"Add tabs"')).toBe("Add tabs");
-    expect(cleanMessage("Keep \"quotes\" inside")).toBe('Keep "quotes" inside');
+    expect(cleanReply("```\nFix the thing\n\nBody\n```")).toBe("Fix the thing\n\nBody");
+    expect(cleanReply("Commit message: Add tabs")).toBe("Add tabs");
+    expect(cleanReply('"Add tabs"')).toBe("Add tabs");
+    expect(cleanReply("Keep \"quotes\" inside")).toBe('Keep "quotes" inside');
   });
 });
 

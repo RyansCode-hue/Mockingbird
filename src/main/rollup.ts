@@ -1,5 +1,6 @@
 import * as path from "path";
-import { stageLabel, type AgentKind, type TicketPipeline } from "../shared/types";
+import { formatTokens, stageLabel, type AgentKind, type TicketPipeline } from "../shared/types";
+import { agentLabel } from "./agents";
 
 /** Messages closer together than this count as one stretch of work. */
 export const GAP_MS = 10 * 60_000;
@@ -68,7 +69,6 @@ const hm = (ms: number) => {
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`;
 };
 const day = (ms: number) => new Date(ms).toLocaleDateString([], { weekday: "short" });
-const tokens = (n: number) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 /** Tokens a reply processed fresh (cache reads are counted apart: they dwarf everything else and cost a tenth). */
 const fresh = (u: UsageTotal) => u.input + u.output + u.cacheWrite;
 
@@ -92,7 +92,7 @@ export function composeRollup(i: RollupInput): string {
   const tickets = new Map<string, Bucket>();
   const other = new Map<string, Bucket>(); // by repository or folder name
   let allMs = 0;
-  const byAgent: Record<string, number> = {};
+  const byAgent: Partial<Record<AgentKind, number>> = {};
   for (const a of i.activity) {
     const times = a.times.filter(inWeek);
     if (!times.length) continue;
@@ -114,17 +114,16 @@ export function composeRollup(i: RollupInput): string {
     if (p.history.some((h) => inWeek(h.at)) && !tickets.has(p.ticketId)) tickets.set(p.ticketId, { title: p.title ?? null, ms: 0, byDay: new Map(), convs: [] });
   }
 
-  const tokensByAgent: Record<string, number> = {};
+  const tokensByAgent: Partial<Record<AgentKind, number>> = {};
   for (const u of i.usage) tokensByAgent[u.agent] = (tokensByAgent[u.agent] ?? 0) + fresh(u);
   const allTokens = Object.values(tokensByAgent).reduce((a, b) => a + b, 0);
   const cacheReads = i.usage.reduce((a, u) => a + u.cacheRead, 0);
   const prs = Object.values(i.pipelines).flatMap((p) => p.prs.filter((r) => inWeek(r.at)).map((r) => ({ p, r })));
   const moved = Object.values(i.pipelines).filter((p) => p.history.some((h) => inWeek(h.at)));
-  const agentName = (a: string) => (a === "codex" ? "Codex" : "Claude");
-  const split = (rec: Record<string, number>, fmt: (n: number) => string) =>
-    Object.entries(rec)
+  const split = (rec: Partial<Record<AgentKind, number>>, fmt: (n: number) => string) =>
+    (Object.entries(rec) as [AgentKind, number][])
       .sort((a, b) => b[1] - a[1])
-      .map(([a, n]) => `${agentName(a)} ${fmt(n)}`)
+      .map(([a, n]) => `${agentLabel(a)} ${fmt(n)}`)
       .join(", ");
 
   const lastDay = new Date(i.end.getTime() - 1);
@@ -135,7 +134,7 @@ export function composeRollup(i: RollupInput): string {
     "",
     "## Summary",
     `- Active time: ${hm(allMs)} across ${i.activity.filter((a) => a.times.some(inWeek)).length} conversations${allMs ? ` (${split(byAgent, hm)})` : ""}`,
-    `- Tokens: ${tokens(allTokens)}${allTokens ? ` (${split(tokensByAgent, tokens)})` : ""}${cacheReads ? `, plus ${tokens(cacheReads)} read from cache` : ""}`,
+    `- Tokens: ${formatTokens(allTokens)}${allTokens ? ` (${split(tokensByAgent, formatTokens)})` : ""}${cacheReads ? `, plus ${formatTokens(cacheReads)} read from cache` : ""}`,
     `- Tickets: ${tickets.size} worked on, ${moved.length} moved stage, ${prs.length} pull request${prs.length === 1 ? "" : "s"} opened`,
   ];
 
@@ -149,14 +148,14 @@ export function composeRollup(i: RollupInput): string {
       if (steps.length) out.push(`- Stages: ${steps.map((h) => `${stageLabel(h.stage)} (${day(h.at)})`).join(" → ")}`);
       for (const { r } of prs.filter((x) => x.p.ticketId === id)) out.push(`- Pull request: ${r.url} (${r.branch} → ${r.base})`);
       for (const f of p?.feedback.filter((f) => inWeek(f.at)) ?? []) out.push(`- Feedback (${day(f.at)}): ${f.text.replace(/\s+/g, " ").slice(0, 160)}`);
-      for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentName(c.agent)}: "${c.title}" — ${hm(c.ms)}`);
+      for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentLabel(c.agent)}: "${c.title}" — ${hm(c.ms)}`);
     }
   }
   if (other.size) {
     out.push("", "## Other work");
     for (const [name, b] of [...other].sort((x, y) => y[1].ms - x[1].ms)) {
       out.push("", `### ${name} — ${hm(b.ms)}`);
-      for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentName(c.agent)}: "${c.title}" — ${hm(c.ms)}`);
+      for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentLabel(c.agent)}: "${c.title}" — ${hm(c.ms)}`);
     }
   }
   const digests = i.digests.filter((d) => /^\d{4}-\d{2}-\d{2}\.md$/.test(d)).sort();

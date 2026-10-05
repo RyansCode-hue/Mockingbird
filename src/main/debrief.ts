@@ -3,6 +3,7 @@ import * as path from "path";
 import { SessionManager } from "./sessions";
 import { Store, expandHome } from "./store";
 import { writeAdoSnapshot } from "./ado";
+import { localDay } from "../shared/types";
 
 /**
  * Writes a passive digest of every live coding session to
@@ -10,15 +11,15 @@ import { writeAdoSnapshot } from "./ado";
  * terminal tail, read straight from the in-memory buffers. No session is
  * messaged or interrupted. Returns the file path.
  */
-export function writeSessionDigest(sessions: SessionManager, store: Store): string {
+export function writeSessionDigest(sessions: SessionManager, store: Store, now = new Date()): string {
   const dir = path.join(expandHome(store.settings.workTrackerPath), "session-digests");
   fs.mkdirSync(dir, { recursive: true });
-  const date = new Date().toISOString().slice(0, 10);
+  const date = localDay(now);
   const file = path.join(dir, `${date}.md`);
   const entries = sessions.digest();
   const parts = [
     `# Mockingbird session digest — ${date}`,
-    `Generated ${new Date().toLocaleTimeString()} · ${entries.length} live session${entries.length === 1 ? "" : "s"}. ` +
+    `Generated ${now.toLocaleTimeString()} · ${entries.length} live session${entries.length === 1 ? "" : "s"}. ` +
       `Passive snapshot of each session's terminal tail — nothing was sent to any session.`,
   ];
   for (const { info, tail } of entries) {
@@ -107,7 +108,7 @@ export function startScheduler(sessions: SessionManager, store: Store): void {
     const day = now.getDay();
     if (day === 0 || day === 6) return;
     const hhmm = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-    const today = now.toISOString().slice(0, 10);
+    const today = localDay(now);
     for (const [kind, time] of [["morning", s.morning], ["wrapUp", s.wrapUp]] as const) {
       if (hhmm === time && lastFired[kind] !== today) {
         lastFired[kind] = today;

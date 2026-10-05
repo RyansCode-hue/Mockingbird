@@ -4,8 +4,6 @@ import { git } from "./git";
 import { askAgent, cleanReply, type ShellRunner } from "./headless";
 import type { AgentKind } from "../shared/types";
 
-export type { ShellRunner } from "./headless";
-
 const MAX_DIFF_CHARS = 60_000;
 const MAX_NEW_FILE_CHARS = 8_000;
 
@@ -17,6 +15,17 @@ export interface CommitContext {
   newFiles: string[];
   recent: string[];
   truncated: boolean;
+}
+
+async function readStart(file: string, bytes: number): Promise<Buffer> {
+  const fh = await fs.promises.open(file, "r");
+  try {
+    const buf = Buffer.alloc(bytes);
+    const { bytesRead } = await fh.read(buf, 0, bytes, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
 }
 
 const noHead = (err: unknown) => /bad revision|unknown revision|ambiguous argument 'HEAD'|does not have any commits/i.test((err as Error).message);
@@ -55,9 +64,10 @@ export async function commitContext(root: string): Promise<CommitContext> {
     }
     let text: string;
     try {
-      const buf = await fs.promises.readFile(path.join(root, f));
-      if (buf.subarray(0, 8000).includes(0)) continue; // binary: its name is enough
-      text = buf.toString("utf8").slice(0, Math.min(MAX_NEW_FILE_CHARS, budget));
+      // only the start is read: enough to tell binary from text, and all a new file can show
+      const head = await readStart(path.join(root, f), MAX_NEW_FILE_CHARS);
+      if (head.includes(0)) continue; // binary: its name is enough
+      text = head.toString("utf8").replace(/�$/, "").slice(0, Math.min(MAX_NEW_FILE_CHARS, budget));
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EISDIR" || (err as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw err;
@@ -94,16 +104,10 @@ export function commitPrompt(c: CommitContext): string {
     .join("\n");
 }
 
-/** The message alone: models sometimes wrap it in fences or quotes, or label it. */
-export function cleanMessage(raw: string): string {
-  return cleanReply(raw);
-}
-
 /** Ask an agent's CLI for a commit message (see askAgent). */
 export async function generateCommitMessage(root: string, agent: AgentKind, bin: string, run: ShellRunner, env: Record<string, string>): Promise<{ message: string; scope: CommitContext["scope"] }> {
-  if (!bin.includes("/")) throw new Error(`${agent === "codex" ? "Codex" : "Claude Code"} isn't installed`);
   const ctx = await commitContext(root);
-  const message = cleanMessage(await askAgent(commitPrompt(ctx), { agent, bin, run, env, tag: "commit-message" }));
+  const message = cleanReply(await askAgent(commitPrompt(ctx), { agent, bin, run, env, tag: "commit-message" }));
   if (!message) throw new Error("The model returned an empty message");
   return { message, scope: ctx.scope };
 }

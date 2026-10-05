@@ -52,9 +52,13 @@ export function fiveHourWindows(report: UsageReport, now: number): Partial<Recor
   return out;
 }
 
-/** A pane's conversations: every one it has run, or at least its current one. */
+/** A pane's conversations: every one it has run, or at least its current one. Oldest first; the latest is last. */
 export const conversationsOf = (s: Pick<SessionInfo, "conversations" | "conversation">): string[] =>
   s.conversations?.length ? s.conversations : s.conversation ? [s.conversation.id] : [];
+
+/** A pane's conversations once `id` is its latest: moved to the end, keeping the newest 50. */
+export const withConversation = (s: Pick<SessionInfo, "conversations" | "conversation">, id: string): string[] =>
+  [...conversationsOf(s).filter((c) => c !== id), id].slice(-50);
 
 export function computeMeters(o: {
   sessions: Pick<SessionInfo, "id" | "agent" | "conversations" | "conversation">[];

@@ -16,7 +16,6 @@ function manager(saved: any[] = []) {
       proc: { write: (d: string) => out[id].push(d.replace(/\x1b\[20[01]~/g, "|")) },
       buffer: "",
       queued: [],
-      claudeId: null,
       lastInput: 0,
       draft: false,
       flushTimer: null,
@@ -43,7 +42,7 @@ describe("delivering agent messages", () => {
     expect(m.deliverAgentMessage("b", "hello", true)).toMatch(/queued until its current turn ends/);
     vi.advanceTimersByTime(60_000);
     expect(out.b).toEqual([]);
-    m.statusByCwd("/w/b", "idle");
+    m.statusFromHook({ cwd: "/w/b", status: "idle" });
     vi.advanceTimersByTime(200);
     expect(out.b).toEqual(["|hello|", "\r"]);
   });
@@ -55,8 +54,8 @@ describe("delivering agent messages", () => {
     vi.advanceTimersByTime(60_000);
     expect(out.c).toEqual(["half a thought"]); // never appended to the draft or submitted with it
     m.write("c", "\r"); // the user sends their prompt; the turn runs and ends
-    m.statusByCwd("/w/c", "working");
-    m.statusByCwd("/w/c", "idle");
+    m.statusFromHook({ cwd: "/w/c", status: "working" });
+    m.statusFromHook({ cwd: "/w/c", status: "idle" });
     vi.advanceTimersByTime(200);
     expect(out.c).toEqual(["half a thought", "\r", "|hello|", "\r"]);
   });
@@ -88,6 +87,26 @@ describe("delivering agent messages", () => {
     expect(out.f.at(-1)).toBe("\r");
     expect(out.g.at(-1)).toBe("\r");
   });
+  it("submits one queued message per turn — Enter would send everything in the prompt at once", () => {
+    const { m, out, add, status } = manager();
+    add("q", "working");
+    m.deliverAgentMessage("q", "first", true);
+    m.deliverAgentMessage("q", "for you to send", false);
+    m.deliverAgentMessage("q", "second", true);
+    m.statusFromHook({ paneId: "q", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.q).toEqual(["|first|", "\r"]);
+    expect(status("q")).toBe("working");
+    m.statusFromHook({ paneId: "q", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.q).toEqual(["|first|", "\r", "|second|", "\r"]);
+    m.statusFromHook({ paneId: "q", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.q.at(-1)).toBe("|for you to send|"); // last, and never followed by Enter
+    expect(status("q")).toBe("idle");
+    // what was left in the prompt now holds the next submitted message back, like the user's own draft
+    expect(m.deliverAgentMessage("q", "third", true)).toMatch(/unsent draft/);
+  });
   it("in manual mode, places the message without pressing Enter", () => {
     const { m, out, add, status } = manager();
     add("d", "idle");
@@ -95,6 +114,41 @@ describe("delivering agent messages", () => {
     vi.advanceTimersByTime(500);
     expect(out.d).toEqual(["|hello|"]);
     expect(status("d")).toBe("idle");
+  });
+});
+
+describe("broadcasting", () => {
+  it("submits into idle panes, queues for busy ones, skips the rest — and says which", () => {
+    const { m, out, add, status, info } = manager();
+    for (const [id, st] of [["idle", "idle"], ["busy", "working"], ["asking", "waiting"], ["gone", "dead"], ["term", "idle"], ["brief", "idle"]]) add(id, st);
+    info("term").shell = true;
+    info("brief").debrief = true;
+    expect(m.broadcast("status?", ["idle", "busy", "asking", "gone", "term", "brief", "closed"], true)).toEqual([
+      { id: "idle", outcome: "delivered" },
+      { id: "busy", outcome: "queued" },
+      { id: "asking", outcome: "queued" },
+      { id: "gone", outcome: "skipped" },
+      { id: "term", outcome: "skipped" },
+      { id: "brief", outcome: "skipped" },
+      { id: "closed", outcome: "skipped" },
+    ]);
+    vi.advanceTimersByTime(200);
+    expect(out.idle).toEqual(["|status?|", "\r"]);
+    expect(status("idle")).toBe("working"); // its turn has started: the next broadcast waits for it
+    expect([out.busy, out.asking, out.term, out.brief]).toEqual([[], [], [], []]);
+  });
+  it("never sends a user's half-typed prompt along with it: an idle pane with a draft gets it once that's sent", () => {
+    const { m, out, add } = manager();
+    add("a", "idle");
+    m.write("a", "half a thought");
+    expect(m.broadcast("status?", ["a"], true)).toEqual([{ id: "a", outcome: "queued" }]);
+    vi.advanceTimersByTime(60_000);
+    expect(out.a).toEqual(["half a thought"]);
+    m.write("a", "\r");
+    m.statusFromHook({ paneId: "a", status: "working" });
+    m.statusFromHook({ paneId: "a", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.a).toEqual(["half a thought", "\r", "|status?|", "\r"]);
   });
 });
 
@@ -127,6 +181,15 @@ describe("routing hook events", () => {
     m.statusFromHook({ paneId: "b", cwd: "/home", status: "working" });
     expect([status("a"), status("b")]).toEqual(["idle", "working"]);
   });
+  it("leaves a dead pane dead: a late event from its exited agent changes nothing and delivers nothing", () => {
+    const { m, out, add, status } = manager();
+    add("d", "dead");
+    (m as any).live.get("d").queued.push({ text: "hello", submit: true });
+    expect(m.statusFromHook({ paneId: "d", status: "idle" })).toBeNull();
+    vi.advanceTimersByTime(200);
+    expect(status("d")).toBe("dead");
+    expect(out.d).toEqual([]);
+  });
   it("ignores events tagged with an id that isn't a pane (a Collaborate room's runs)", () => {
     const { m, add, status } = manager();
     add("a", "idle", "/code/app");
@@ -152,6 +215,14 @@ describe("routing hook events", () => {
     expect(store.upserts.at(-1).conversation).toEqual({ agent: "claude", id: "two" });
   });
 
+  it("knows a resumed pane's conversation before its first event, so a folder shared with a fresh pane doesn't confuse it", () => {
+    const { m, add, info, status } = manager();
+    add("fresh", "idle", "/home");
+    add("resumed", "idle", "/home");
+    info("resumed").conversation = { agent: "claude", id: "conv-r" };
+    m.statusFromHook({ cwd: "/home", conversationId: "conv-r", status: "working" });
+    expect([status("fresh"), status("resumed")]).toEqual(["idle", "working"]);
+  });
   it("keeps every conversation the pane has run, for its token meter", () => {
     const { m, add, info } = manager();
     add("t", "idle", "/home");

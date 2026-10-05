@@ -92,7 +92,7 @@ describe("the handoff", () => {
     for (const s of ["## Goal", "## Done", "## In progress", "## Next steps", "## Watch out for"]) expect(p).toContain(s);
     expect(p).toContain("handing its task to Codex");
     const k = handoffKickoff("claude", "## Goal\nShip it");
-    expect(k).toMatch(/^You're taking over a task from a Claude Code session/);
+    expect(k).toMatch(/^You're taking over a task from a Claude session/);
     expect(k).toContain("## Goal\nShip it");
   });
 });

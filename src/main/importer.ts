@@ -1,7 +1,9 @@
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { ImportableConversation } from "../shared/types";
+import { CLAUDE_PROJECTS } from "./agentFiles";
+import { readSlice } from "./fileOps";
+import { isRealPrompt } from "./transcripts";
 
 const MAX_AGE_DAYS = 30;
 const HEAD_BYTES = 128 * 1024;
@@ -12,18 +14,17 @@ const HEAD_BYTES = 128 * 1024;
  * with `claude --resume <sessionId>` in its original cwd.
  */
 export function listClaudeConversations(): ImportableConversation[] {
-  const root = path.join(os.homedir(), ".claude", "projects");
   const out: ImportableConversation[] = [];
   let projectDirs: string[];
   try {
-    projectDirs = fs.readdirSync(root);
+    projectDirs = fs.readdirSync(CLAUDE_PROJECTS);
   } catch {
     return [];
   }
   const cutoff = Date.now() - MAX_AGE_DAYS * 86400_000;
 
   for (const dir of projectDirs) {
-    const full = path.join(root, dir);
+    const full = path.join(CLAUDE_PROJECTS, dir);
     let files: string[];
     try {
       files = fs.readdirSync(full).filter((f) => f.endsWith(".jsonl"));
@@ -54,25 +55,10 @@ export function listClaudeConversations(): ImportableConversation[] {
   return out.slice(0, 80);
 }
 
-/** Skip synthetic/meta messages (caveats, command wrappers) when picking a display title. */
-function isRealPrompt(text: string): boolean {
-  const t = text.trimStart();
-  return !(
-    t.startsWith("<") ||
-    t.startsWith("Caveat:") ||
-    t.startsWith("[Request interrupted") ||
-    t.startsWith("This session is being continued")
-  );
-}
-
 function parseHead(fp: string): { sessionId: string | null; cwd: string; title: string } | null {
   let head: string;
   try {
-    const fd = fs.openSync(fp, "r");
-    const buf = Buffer.alloc(HEAD_BYTES);
-    const n = fs.readSync(fd, buf, 0, HEAD_BYTES, 0);
-    fs.closeSync(fd);
-    head = buf.toString("utf8", 0, n);
+    head = readSlice(fp, "start", HEAD_BYTES);
   } catch {
     return null;
   }

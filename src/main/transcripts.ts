@@ -1,8 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { DatabaseSync } from "node:sqlite";
-import type { AgentKind, CollabRoom, SessionInfo, TranscriptHit } from "../shared/types";
-import { ROLLOUT_NAME_RE } from "./agents";
+import type { AgentKind, CollabRoom, ImportableConversation, SessionInfo, TranscriptHit } from "../shared/types";
+import { ROLLOUT_NAME_RE, epochMs } from "./agentFiles";
 
 /**
  * One searchable index over every Claude Code and Codex conversation on this
@@ -43,14 +43,13 @@ export interface Parsed {
   usage?: { id: string; at: number; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
-const ts = (v: unknown): number => {
-  const n = typeof v === "number" ? (v < 1e12 ? v * 1000 : v) : Date.parse(String(v ?? ""));
-  return Number.isFinite(n) ? n : 0;
-};
+const ts = (v: unknown): number => epochMs(v) ?? 0;
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 const firstLine = (s: string) => s.trim().split("\n").find((l) => l.trim())?.trim() ?? "";
-// command wrappers and system notes, not something the user typed
-const isNoise = (s: string) => /^\s*<(command-|local-command-|system-reminder|bash-|user-memory)/.test(s) || /^Caveat: /.test(s);
+/** Command wrappers and system notes, not something the user typed: left out of the index. */
+export const isNoise = (s: string) => /^\s*<(command-|local-command-|system-reminder|bash-|user-memory)/.test(s) || /^Caveat: /.test(s);
+/** What can title a conversation: a request the user typed — not noise, an interruption marker or a compacted conversation's summary. */
+export const isRealPrompt = (s: string) => !isNoise(s) && !/^\s*(\[Request interrupted|This session is being continued)/.test(s);
 
 /** The searchable part of a tool call's input: the command, the file, the pattern, the URL. */
 function toolInputText(name: string, input: any): string {
@@ -83,7 +82,7 @@ export function parseClaudeLine(line: string, fileConv: string): Parsed {
     for (const c of content) {
       if (c?.type === "text" && typeof c.text === "string" && c.text.trim() && !isNoise(c.text)) {
         out.chunks.push({ text: clip(c.text, MAX_TEXT), at, kind: "message", role: d.type });
-        if (d.type === "user" && !d.isSidechain) conv.firstPrompt = clip(firstLine(c.text), TITLE_CHARS);
+        if (d.type === "user" && !d.isSidechain && isRealPrompt(c.text)) conv.firstPrompt = clip(firstLine(c.text), TITLE_CHARS);
       } else if (c?.type === "tool_use") {
         const text = toolInputText(String(c.name ?? "tool"), c.input);
         if (text) out.chunks.push({ text, at, kind: "tool" });
@@ -155,7 +154,7 @@ export function parseCodexLine(line: string, fileConv: string): Parsed {
       const text = typeof c?.text === "string" ? c.text : "";
       if (!text.trim() || isNoise(text) || /^<(environment_context|user_instructions|permissions)/.test(text.trim())) continue;
       out.chunks.push({ text: clip(text, MAX_TEXT), at, kind: "message", role: p.role });
-      if (p.role === "user") out.conv!.firstPrompt = clip(firstLine(text), TITLE_CHARS);
+      if (p.role === "user" && isRealPrompt(text)) out.conv!.firstPrompt = clip(firstLine(text), TITLE_CHARS);
     }
   } else if (p.type === "function_call" || p.type === "local_shell_call") {
     let args: any = p.arguments ?? p.action;
@@ -282,10 +281,26 @@ export class TranscriptIndex {
       const k = known.get(f.path);
       // smaller than what was read means the file was replaced, not appended: read it again
       const from = k && f.size >= k.offset ? k.offset : 0;
-      if (k && from === 0) this.forgetFile(f.path);
-      await this.ingest(f, from);
+      try {
+        if (k && from === 0) this.forgetFile(f.path);
+        await this.ingest(f, from);
+      } catch (err) {
+        // one transcript never stops the rest: Claude deletes old ones on its
+        // own schedule, so a file can vanish between listing and reading
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") this.forgetFile(f.path);
+        else this.reportSkipped(f.path, err);
+      }
       this.progress = { done: this.progress.done + 1, total: todo.length };
     }
+  }
+
+  private skipped = new Map<string, string>();
+  /** A transcript that couldn't be read is retried every pass; each new reason is logged once. */
+  private reportSkipped(file: string, err: unknown): void {
+    const why = err instanceof Error ? err.message : String(err);
+    if (this.skipped.get(file) === why) return;
+    this.skipped.set(file, why);
+    console.error(`[transcripts] couldn't index ${file}; skipped:`, err);
   }
 
   private forgetFile(file: string): void {
@@ -294,37 +309,52 @@ export class TranscriptIndex {
     this.db.prepare("DELETE FROM files WHERE path = ?").run(file);
   }
 
+  /**
+   * Index a transcript from byte `from` on. Lines are cut at newline bytes
+   * (never inside a multibyte character), and the file's offset is saved in
+   * the same transaction as the rows it covers, so stopping anywhere — a quit,
+   * an error — resumes without reading a line twice or skipping one.
+   */
   private async ingest(f: { path: string; agent: AgentKind; conv: string; size: number; mtime: number }, from: number): Promise<void> {
     const parse = f.agent === "claude" ? parseClaudeLine : parseCodexLine;
+    const saveOffset = this.db.prepare(
+      "INSERT INTO files (path, agent, conv, size, mtime, offset) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET conv = excluded.conv, size = excluded.size, mtime = excluded.mtime, offset = excluded.offset"
+    );
     const fh = await fs.promises.open(f.path, "r");
-    let offset = from;
-    let carry = "";
+    let readTo = from;
+    let done = from;
+    let carry = Buffer.alloc(0);
     let convId = f.conv;
     try {
       for (;;) {
         const buf = Buffer.alloc(READ_BYTES);
-        const { bytesRead } = await fh.read(buf, 0, READ_BYTES, offset);
+        const { bytesRead } = await fh.read(buf, 0, READ_BYTES, readTo);
         if (!bytesRead) break;
-        const text = carry + buf.toString("utf8", 0, bytesRead);
-        const cut = text.lastIndexOf("\n");
+        readTo += bytesRead;
+        const text = carry.length ? Buffer.concat([carry, buf.subarray(0, bytesRead)]) : buf.subarray(0, bytesRead);
+        const start = readTo - text.length; // the file offset of text[0]
         // a line still being written waits for the next pass
-        const complete = cut >= 0 ? text.slice(0, cut) : "";
-        carry = cut >= 0 ? text.slice(cut + 1) : text;
-        offset += bytesRead;
-        const lines = complete.split("\n");
-        let i = 0;
-        while (i < lines.length) {
+        const end = text.lastIndexOf(0x0a) + 1;
+        carry = Buffer.from(text.subarray(end));
+        let pos = 0;
+        while (pos < end) {
           const until = Date.now() + this.sliceMs;
           this.db.exec("BEGIN");
           try {
-            for (; i < lines.length && Date.now() < until; i++) {
-              if (lines[i].trim()) convId = this.apply(parse(lines[i], convId), f.agent, f.path) ?? convId;
-            }
+            do {
+              const nl = text.indexOf(0x0a, pos);
+              const line = text.toString("utf8", pos, nl);
+              pos = nl + 1;
+              if (line.trim()) convId = this.apply(parse(line, convId), f.agent, f.path) ?? convId;
+            } while (pos < end && Date.now() < until);
+            // size -1 marks the file part-read: the next pass resumes it even if it hasn't changed
+            saveOffset.run(f.path, f.agent, convId, -1, f.mtime, start + pos);
             this.db.exec("COMMIT");
           } catch (err) {
             this.db.exec("ROLLBACK");
             throw err;
           }
+          done = start + pos;
           await yieldNow();
         }
         if (bytesRead < READ_BYTES) break;
@@ -332,10 +362,7 @@ export class TranscriptIndex {
     } finally {
       await fh.close();
     }
-    const read = offset - Buffer.byteLength(carry, "utf8");
-    this.db
-      .prepare("INSERT INTO files (path, agent, conv, size, mtime, offset) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET conv = excluded.conv, size = excluded.size, mtime = excluded.mtime, offset = excluded.offset")
-      .run(f.path, f.agent, convId, f.size, f.mtime, read);
+    saveOffset.run(f.path, f.agent, convId, f.size, f.mtime, done);
   }
 
   /** Write one line's contribution; returns the conversation it belongs to. */
@@ -355,18 +382,31 @@ export class TranscriptIndex {
   search(q: string, limit = 40): SearchHit[] {
     const match = ftsQuery(q);
     if (!match) return [];
-    const rows = this.db
+    // each conversation's best chunk, best conversations first: `rank` is
+    // bm25, and MIN's bare rowid comes from the row holding the minimum
+    const best = this.db
       .prepare(
-        `SELECT conv, at, kind, snippet(chunks, 0, char(1), char(2), '…', 14) AS snip, bm25(chunks) AS rank
-         FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT 600`
+        `SELECT rowid AS rid, MIN(rank) AS best FROM chunks
+         WHERE chunks MATCH ? AND conv IN (SELECT id FROM conversations)
+         GROUP BY conv ORDER BY best LIMIT ?`
       )
-      .all(match) as { conv: string; at: number; kind: "message" | "tool"; snip: string; rank: number }[];
-    const best = new Map<string, (typeof rows)[number]>();
-    for (const r of rows) if (!best.has(r.conv)) best.set(r.conv, r);
+      .all(match, limit) as { rid: number }[];
+    if (!best.length) return [];
+    const passages = new Map(
+      (
+        this.db
+          .prepare(
+            `SELECT rowid AS rid, conv, at, kind, snippet(chunks, 0, char(1), char(2), '…', 14) AS snip
+             FROM chunks WHERE chunks MATCH ? AND rowid IN (${best.map(() => "?").join(",")})`
+          )
+          .all(match, ...best.map((b) => b.rid)) as { rid: number; conv: string; at: number; kind: "message" | "tool"; snip: string }[]
+      ).map((p) => [p.rid, p])
+    );
     const getConv = this.db.prepare("SELECT id, agent, cwd, title, first_prompt, started, updated, model FROM conversations WHERE id = ?");
     const hits: SearchHit[] = [];
-    for (const r of best.values()) {
-      const c = getConv.get(r.conv) as any;
+    for (const { rid } of best) {
+      const p = passages.get(rid);
+      const c = p && (getConv.get(p.conv) as any);
       if (!c) continue;
       hits.push({
         id: c.id,
@@ -376,13 +416,35 @@ export class TranscriptIndex {
         started: c.started,
         updated: c.updated,
         model: c.model ?? null,
-        snippet: r.snip,
-        at: r.at,
-        kind: r.kind,
+        snippet: p.snip,
+        at: p.at,
+        kind: p.kind,
       });
-      if (hits.length >= limit) break;
     }
     return hits;
+  }
+
+  /**
+   * Both agents' conversations active since `since`, newest first, whose
+   * folder still exists — what Import offers to reopen (`claude --resume` /
+   * `codex resume` with the id, in that folder).
+   */
+  recentConversations(since = Date.now() - 30 * 86_400_000, limit = 80): ImportableConversation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, agent, cwd, title, first_prompt, updated FROM conversations c
+         WHERE updated >= ? AND cwd <> '' AND EXISTS (SELECT 1 FROM files f WHERE f.conv = c.id)
+         ORDER BY updated DESC`
+      )
+      .all(since) as { id: string; agent: AgentKind; cwd: string; title: string; first_prompt: string; updated: number }[];
+    const out: ImportableConversation[] = [];
+    for (const r of rows) {
+      if (out.length >= limit) break;
+      if (!fs.existsSync(r.cwd)) continue; // worktree or repo deleted since
+      const title = (r.title || r.first_prompt || path.basename(r.cwd)).replace(/\s+/g, " ").trim().slice(0, 70);
+      out.push({ sessionId: r.id, agent: r.agent, cwd: r.cwd, title, mtimeMs: r.updated });
+    }
+    return out;
   }
 
   /** The models this agent's conversations used lately, most recent first. */

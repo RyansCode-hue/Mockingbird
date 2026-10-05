@@ -2,6 +2,8 @@ import * as fs from "fs";
 import { git } from "./git";
 import { parseClaudeLine, parseCodexLine } from "./transcripts";
 import type { AgentKind } from "../shared/types";
+import { readSlice } from "./fileOps";
+import { agentLabel } from "./agents";
 
 const HEAD_BYTES = 256 * 1024;
 const TAIL_BYTES = 6 * 1024 * 1024;
@@ -13,20 +15,11 @@ const ENTRY_CHARS = 2000;
  * dropped.
  */
 export async function transcriptLines(file: string): Promise<string[]> {
-  const fh = await fs.promises.open(file, "r");
-  try {
-    const { size } = await fh.stat();
-    if (size <= HEAD_BYTES + TAIL_BYTES) return (await fh.readFile("utf8")).split("\n").filter(Boolean);
-    const head = Buffer.alloc(HEAD_BYTES);
-    const tail = Buffer.alloc(TAIL_BYTES);
-    await fh.read(head, 0, HEAD_BYTES, 0);
-    await fh.read(tail, 0, TAIL_BYTES, size - TAIL_BYTES);
-    const h = head.toString("utf8").split("\n").slice(0, -1);
-    const t = tail.toString("utf8").split("\n").slice(1);
-    return [...h, ...t].filter(Boolean);
-  } finally {
-    await fh.close();
-  }
+  const { size } = await fs.promises.stat(file);
+  if (size <= HEAD_BYTES + TAIL_BYTES) return (await fs.promises.readFile(file, "utf8")).split("\n").filter(Boolean);
+  const h = readSlice(file, "start", HEAD_BYTES).split("\n").slice(0, -1);
+  const t = readSlice(file, "end", TAIL_BYTES).split("\n").slice(1);
+  return [...h, ...t].filter(Boolean);
 }
 
 /**
@@ -79,13 +72,11 @@ export async function repoState(cwd: string): Promise<string> {
     .join("\n\n");
 }
 
-const AGENT_NAME: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex" };
-
 /** The prompt that turns a conversation and the repository's state into a handoff. */
 export function handoffPrompt(o: { from: AgentKind; to: AgentKind; cwd: string; title: string; digest: string; repo: string }): string {
   return [
-    `A ${AGENT_NAME[o.from]} session working in ${o.cwd} ("${o.title}") is handing its task to ${AGENT_NAME[o.to]}, usually because it ran out of usage or got stuck.`,
-    `Write the handoff ${AGENT_NAME[o.to]} will start from, addressed to it, with these sections:`,
+    `A ${agentLabel(o.from)} session working in ${o.cwd} ("${o.title}") is handing its task to ${agentLabel(o.to)}, usually because it ran out of usage or got stuck.`,
+    `Write the handoff ${agentLabel(o.to)} will start from, addressed to it, with these sections:`,
     "## Goal — what the user asked for, in their terms.",
     "## Done — what's finished, naming files and commands.",
     "## In progress — what was underway when it stopped, and the state it's in.",
@@ -106,7 +97,7 @@ export function handoffPrompt(o: { from: AgentKind; to: AgentKind; cwd: string; 
 /** What the new session is told first: it's taking over, and from what. */
 export function handoffKickoff(from: AgentKind, handoff: string): string {
   return [
-    `You're taking over a task from a ${AGENT_NAME[from]} session that was working in this folder. Its handoff:`,
+    `You're taking over a task from a ${agentLabel(from)} session that was working in this folder. Its handoff:`,
     "",
     handoff.trim(),
     "",
