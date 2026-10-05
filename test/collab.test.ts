@@ -760,9 +760,14 @@ describe("a room's file and its lifecycle", () => {
     const { c, room, dir } = heldRooms();
     const file = path.join(dir, `${room.id}.json`);
     expect(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
-    fs.mkdirSync(`${file}.tmp`); // the temporary file can't be written
-    expect(() => c.setMode(room.id, "auto", 7)).toThrow();
+    fs.chmodSync(dir, 0o500); // no file can be written beside it
+    try {
+      expect(() => c.setMode(room.id, "auto", 7)).toThrow();
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({ id: room.id, mode: "step" });
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
   });
 
   it("a room that fails to save while starting is logged and left idle, not an unhandled rejection", async () => {

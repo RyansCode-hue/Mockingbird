@@ -1,8 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { PipelineStore, stageComment } from "../src/main/pipeline";
-import { baseMatchesTarget, findOpenPr, openPr, parseRemote, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
+import { findOpenPr, prBaseProblem, openPr, parseRemote, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
 import type { ShellRunner } from "../src/main/headless";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
@@ -64,6 +64,19 @@ describe("the ticket pipeline store", () => {
     expect(new PipelineStore(f).all()).toEqual({});
     expect(fs.readdirSync(path.dirname(f)).some((n) => n.startsWith("pipeline.json.corrupt-"))).toBe(true);
   });
+  it("opens empty, and says so, when an unreadable file can't be moved aside", () => {
+    const f = storeFile();
+    fs.writeFileSync(f, "{ not json");
+    fs.chmodSync(path.dirname(f), 0o500); // nothing can be renamed in here
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(new PipelineStore(f).all()).toEqual({});
+      expect(errors.mock.calls.some((c) => /couldn't be moved aside/.test(String(c[0])))).toBe(true);
+    } finally {
+      fs.chmodSync(path.dirname(f), 0o700);
+      errors.mockRestore();
+    }
+  });
   it("drafts nothing for stages that need no comment", () => {
     expect(stageComment("ba", {})).toBeNull();
     expect(stageComment("comms", {})).toBeNull();
@@ -86,11 +99,12 @@ describe("pull request remotes", () => {
     expect(pickBase("dev", ["main"])).toBeNull();
   });
   it("won't take the other target's branch as the base", () => {
-    expect(baseMatchesTarget("main", "develop")).toBe(false);
-    expect(baseMatchesTarget("main", "uat")).toBe(false);
-    expect(baseMatchesTarget("dev", "master")).toBe(false);
-    expect(baseMatchesTarget("main", "main")).toBe(true);
-    expect(baseMatchesTarget("dev", "release/2.1")).toBe(true);
+    const bases = ["develop", "uat", "master", "main", "release/2.1"];
+    expect(prBaseProblem("main", "develop", bases)).toMatch(/develop is a dev\/UAT branch/);
+    expect(prBaseProblem("main", "uat", bases)).toMatch(/uat is a dev\/UAT branch/);
+    expect(prBaseProblem("dev", "master", bases)).toMatch(/master is a main branch/);
+    expect(prBaseProblem("main", "main", bases)).toBeNull();
+    expect(prBaseProblem("dev", "release/2.1", bases)).toBeNull();
   });
 });
 
@@ -184,5 +198,22 @@ describe("pull request preflight", () => {
   it("takes the Summary section for the ticket comment", () => {
     expect(summaryOf("## Summary\nAdds x.\n\n## Changes\n- y")).toBe("Adds x.");
     expect(summaryOf("No sections here")).toBe("No sections here");
+  });
+});
+
+describe("a pull request's base", () => {
+  const bases = ["dev", "main", "release/2.0"];
+  it("is the target's own branch, or another branch on origin", () => {
+    expect(prBaseProblem("dev", "dev", bases)).toBeNull();
+    expect(prBaseProblem("main", "main", bases)).toBeNull();
+    expect(prBaseProblem("dev", "release/2.0", bases)).toBeNull();
+  });
+  it("is never the other target's branch", () => {
+    expect(prBaseProblem("main", "dev", bases)).toMatch(/dev is a dev\/UAT branch, and this pull request is to main/);
+    expect(prBaseProblem("dev", "main", bases)).toMatch(/main is a main branch/);
+    expect(prBaseProblem("main", "develop", ["develop", "main"])).toMatch(/develop is a dev\/UAT branch/);
+  });
+  it("must be on origin", () => {
+    expect(prBaseProblem("dev", "gone", bases)).toMatch(/origin has no branch gone/);
   });
 });

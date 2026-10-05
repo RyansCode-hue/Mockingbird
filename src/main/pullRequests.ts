@@ -47,12 +47,18 @@ export function pickBase(target: PrTarget, remoteBranches: string[]): string | n
 }
 
 /**
- * Whether a pull request for `target` may merge into `base`: any branch but
+ * Why a pull request to `target` can't merge into `base`, or null when it can:
+ * the base must be a branch on origin (`bases`, from the preflight), and never
  * one of the other target's usual names — a base picked for dev and left in
  * place after switching to main would open the "to main" PR into develop.
  */
-export function baseMatchesTarget(target: PrTarget, base: string): boolean {
-  return !BASE_NAMES[target === "dev" ? "main" : "dev"].includes(base);
+export function prBaseProblem(target: PrTarget, base: string, bases: string[]): string | null {
+  if (!bases.includes(base)) return `origin has no branch ${base} — check the branch again`;
+  const other: PrTarget = target === "main" ? "dev" : "main";
+  if (BASE_NAMES[other].includes(base)) {
+    return `${base} is ${other === "main" ? "a main" : "a dev/UAT"} branch, and this pull request is to ${target === "main" ? "main" : "dev/UAT"}`;
+  }
+  return null;
 }
 
 /** An ADO API call with the configured PAT (ado.adoRequest), injected so tests can stub it. */

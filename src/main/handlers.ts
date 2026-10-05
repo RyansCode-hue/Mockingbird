@@ -1,8 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import type { PrTarget, SessionInfo, Settings } from "../shared/types";
+import type { SessionInfo, Settings } from "../shared/types";
 import { expandHome } from "./store";
-import { pickBase } from "./pullRequests";
 
 /**
  * The rules index.ts's IPC handlers apply, kept apart from Electron so they can
@@ -38,21 +37,6 @@ export const samePath = (a: string, b: string) => canonical(a) === canonical(b);
 export function liveSessionIn(sessions: SessionInfo[], folder: string): SessionInfo | undefined {
   const want = canonical(folder);
   return sessions.find((s) => s.status !== "dead" && canonical(s.cwd) === want);
-}
-
-/**
- * Why a pull request to `target` can't merge into `base`, or null when it can:
- * the base must be a branch on origin (`bases`, from the preflight), and never
- * the other target's branch — a PR to main must not open into dev, nor one to
- * dev/UAT into main.
- */
-export function prBaseProblem(target: PrTarget, base: string, bases: string[]): string | null {
-  if (!bases.includes(base)) return `origin has no branch ${base} — check the branch again`;
-  const other: PrTarget = target === "main" ? "dev" : "main";
-  if (pickBase(other, [base])) {
-    return `${base} is ${other === "main" ? "a main" : "a dev/UAT"} branch, and this pull request is to ${target === "main" ? "main" : "dev/UAT"}`;
-  }
-  return null;
 }
 
 /** The instruction file the CLAUDE.md editor may read and write: an absolute path to a file named CLAUDE.md. */

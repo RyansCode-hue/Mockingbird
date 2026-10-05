@@ -32,6 +32,35 @@ export function writeFileAtomic(file: string, content: string, mode?: number): v
 }
 
 /**
+ * A JSON file's contents, or `fallback` when there is no file. An unreadable
+ * file isn't a missing one: it is moved aside (`<file>.corrupt-<time>`) so
+ * what it held stays recoverable instead of being overwritten by the next
+ * save, and the reason is logged. Stores are opened at startup, so a file that
+ * can't be moved aside is logged too, never thrown.
+ */
+export function readJsonOrSetAside(file: string, fallback: unknown, what = file): unknown {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    if (isMissing(err)) return fallback;
+    throw err;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    const backup = `${file}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(file, backup);
+      console.error(`[mockingbird] ${what} was unreadable (${(err as Error).message}); moved to ${backup}.`);
+    } catch (moveErr) {
+      console.error(`[mockingbird] ${what} was unreadable (${(err as Error).message}) and couldn't be moved aside:`, moveErr);
+    }
+    return fallback;
+  }
+}
+
+/**
  * Keep a file Mockingbird generates (a hook script, the MCP server) current:
  * rewritten, atomically, only when its content or mode differs — other
  * processes may be running it at that moment. Returns whether it was written.

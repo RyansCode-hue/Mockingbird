@@ -1,7 +1,6 @@
 import * as crypto from "crypto";
-import * as fs from "fs";
-import * as path from "path";
 import { type CommentDraft, type PipelinePr, type TicketPipeline, type TicketStage, TICKET_STAGES } from "../shared/types";
+import { readJsonOrSetAside, writeFileAtomic } from "./fileOps";
 
 /**
  * The comment a stage drafts for the ticket's discussion, or null for a stage
@@ -47,24 +46,12 @@ export class PipelineStore {
   }
 
   private load(): Record<string, TicketPipeline> {
-    if (!fs.existsSync(this.file)) return {};
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.file, "utf8"));
-      return raw && typeof raw === "object" ? raw : {};
-    } catch (err) {
-      // keep an unreadable file aside rather than overwrite it with the next save
-      const backup = `${this.file}.corrupt-${Date.now()}`;
-      fs.renameSync(this.file, backup);
-      console.error(`[mockingbird] ${this.file} was unreadable (${(err as Error).message}); moved to ${backup}.`);
-      return {};
-    }
+    const raw = readJsonOrSetAside(this.file, {});
+    return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, TicketPipeline>) : {};
   }
 
   private save(): void {
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
-    fs.renameSync(tmp, this.file);
+    writeFileAtomic(this.file, JSON.stringify(this.data, null, 2));
   }
 
   all(): Record<string, TicketPipeline> {

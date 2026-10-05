@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { Store, appendLogLine, writeFileAtomic } from "../src/main/store";
+import { Store, appendLogLine } from "../src/main/store";
 import { tempDir } from "./helpers";
 import { OPTIONAL_TABS } from "../src/shared/types";
 
@@ -26,15 +26,5 @@ describe("the app's logs", () => {
     appendLogLine(file, "third", 10); // the file is past 10 bytes now
     expect(fs.readFileSync(`${file}.1`, "utf8")).toBe("first\nsecond line\n");
     expect(fs.readFileSync(file, "utf8")).toBe("third\n");
-  });
-});
-
-describe("writeFileAtomic", () => {
-  it("replaces the file whole and leaves no temporary file behind", () => {
-    const file = path.join(tempDir("atomic"), "config.json");
-    fs.writeFileSync(file, '{"old": true}');
-    writeFileAtomic(file, '{"new": true}');
-    expect(fs.readFileSync(file, "utf8")).toBe('{"new": true}');
-    expect(fs.readdirSync(path.dirname(file))).toEqual(["config.json"]);
   });
 });

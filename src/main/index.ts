@@ -2,7 +2,8 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeIm
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { Store, appendLogLine, expandHome, writeFileAtomic, MB_DIR } from "./store";
+import { Store, appendLogLine, expandHome, MB_DIR } from "./store";
+import { writeFileAtomic } from "./fileOps";
 import { SessionManager, paneEnv } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
@@ -28,7 +29,7 @@ import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, adoRequest } from "./ado";
 import { PipelineStore } from "./pipeline";
-import { openPr, parseRemote, prDescriptionPrompt, prError, prPreflight, remoteName, summaryOf } from "./pullRequests";
+import { openPr, parseRemote, prBaseProblem, prDescriptionPrompt, prError, prPreflight, remoteName, summaryOf } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { git } from "./git";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
@@ -49,7 +50,7 @@ import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { topOfKey } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
-import { binSettingsChanged, guarded, instructionFile, liveSessionIn, prBaseProblem, rememberAnswer, samePath } from "./handlers";
+import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {

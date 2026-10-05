@@ -12,6 +12,7 @@ import { agentFor, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 import { conversationsOf, withConversation } from "./meters";
+import { writeFileAtomic } from "./fileOps";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
 
@@ -381,10 +382,7 @@ export class SessionManager {
       this.debriefScrollback.set(s.info.id, s.buffer);
       return;
     }
-    fs.mkdirSync(this.scrollbackDir, { recursive: true });
-    const f = this.scrollbackFile(s.info.id);
-    fs.writeFileSync(`${f}.tmp`, s.buffer);
-    fs.renameSync(`${f}.tmp`, f);
+    writeFileAtomic(this.scrollbackFile(s.info.id), s.buffer);
     s.saved = s.outputs;
   }
 

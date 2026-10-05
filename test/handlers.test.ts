@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { binSettingsChanged, guarded, instructionFile, liveSessionIn, prBaseProblem, rememberAnswer, samePath } from "../src/main/handlers";
+import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "../src/main/handlers";
 import type { SessionInfo } from "../src/shared/types";
 import { tempDir } from "./helpers";
 
@@ -47,23 +47,6 @@ describe("a worktree in use", () => {
   it("compares folders that are gone by their spelling", () => {
     expect(samePath("/no/such/folder/", "/no/such/folder")).toBe(true);
     expect(samePath("/no/such/a", "/no/such/b")).toBe(false);
-  });
-});
-
-describe("a pull request's base", () => {
-  const bases = ["dev", "main", "release/2.0"];
-  it("is the target's own branch, or another branch on origin", () => {
-    expect(prBaseProblem("dev", "dev", bases)).toBeNull();
-    expect(prBaseProblem("main", "main", bases)).toBeNull();
-    expect(prBaseProblem("dev", "release/2.0", bases)).toBeNull();
-  });
-  it("is never the other target's branch", () => {
-    expect(prBaseProblem("main", "dev", bases)).toMatch(/dev is a dev\/UAT branch, and this pull request is to main/);
-    expect(prBaseProblem("dev", "main", bases)).toMatch(/main is a main branch/);
-    expect(prBaseProblem("main", "develop", ["develop", "main"])).toMatch(/develop is a dev\/UAT branch/);
-  });
-  it("must be on origin", () => {
-    expect(prBaseProblem("dev", "gone", bases)).toMatch(/origin has no branch gone/);
   });
 });
 

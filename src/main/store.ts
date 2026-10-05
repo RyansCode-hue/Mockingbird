@@ -2,18 +2,12 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { SessionInfo, Settings, DEFAULT_SETTINGS } from "../shared/types";
+import { readJsonOrSetAside, writeFileAtomic } from "./fileOps";
 
 export const MB_DIR = path.join(os.homedir(), ".mockingbird");
 
 export function expandHome(p: string): string {
   return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
-}
-
-/** Write-then-rename: a crash mid-write leaves the previous file whole, never a truncated one. */
-export function writeFileAtomic(file: string, data: string): void {
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, data);
-  fs.renameSync(tmp, file);
 }
 
 /** Append one line to a log that's kept to about `maxBytes`: past that, it becomes `<file>.1` and a new one starts. */
@@ -40,29 +34,13 @@ export class Store {
   }
 
   private load(): State {
-    if (!fs.existsSync(stateFile)) return { settings: { ...DEFAULT_SETTINGS }, sessions: [] };
-    try {
-      const raw = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-      return {
-        settings: { ...DEFAULT_SETTINGS, ...(raw.settings ?? {}) },
-        sessions: raw.sessions ?? [],
-      };
-    } catch (err) {
-      // a corrupt state file is NOT a fresh install: keep it aside so the
-      // sessions and settings in it are recoverable instead of silently
-      // overwritten by the first save()
-      const backup = `${stateFile}.corrupt-${Date.now()}`;
-      try {
-        fs.renameSync(stateFile, backup);
-      } catch {
-        /* best effort — the message below still names the problem */
-      }
-      console.error(
-        `[mockingbird] ${stateFile} was unreadable (${(err as Error).message}); ` +
-          `moved to ${backup} and starting from defaults.`
-      );
-      return { settings: { ...DEFAULT_SETTINGS }, sessions: [] };
-    }
+    // a corrupt state file is not a fresh install: it is kept aside, so its
+    // sessions and settings stay recoverable, and the app starts from defaults
+    const raw = readJsonOrSetAside(stateFile, {}) as Partial<State> | null;
+    return {
+      settings: { ...DEFAULT_SETTINGS, ...(raw?.settings ?? {}) },
+      sessions: Array.isArray(raw?.sessions) ? raw!.sessions : [],
+    };
   }
 
   /**

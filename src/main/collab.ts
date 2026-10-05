@@ -16,6 +16,7 @@ import type {
 } from "../shared/types";
 import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN } from "../shared/types";
 import { MB_DIR } from "./store";
+import { writeFileAtomic } from "./fileOps";
 import { quote, userShellWithInput } from "./shell";
 import { paneEnv } from "./sessions";
 import { mcpLaunch, type McpLaunch } from "./messaging";
@@ -745,9 +746,7 @@ export class CollabRooms {
    */
   private save(room: CollabRoom): void {
     if (this.rooms.get(room.id) !== room) return;
-    const file = this.file(room.id);
-    fs.writeFileSync(`${file}.tmp`, JSON.stringify(room, null, 2));
-    fs.renameSync(`${file}.tmp`, file);
+    writeFileAtomic(this.file(room.id), JSON.stringify(room, null, 2));
     this.onChange(room);
   }
 }
