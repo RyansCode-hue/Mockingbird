@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useSyncExternalStore } from "react";
-import { EditorState, RangeSet, StateEffect, StateField, Transaction, type Extension, type TransactionSpec } from "@codemirror/state";
+import { EditorState, RangeSet, StateEffect, StateField, Transaction, type Extension, type Text, type TransactionSpec } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, gutter, keymap, lineNumbers, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { getIndentUnit, indentUnit, StreamLanguage, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
@@ -25,9 +25,9 @@ import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { swift } from "@codemirror/legacy-modes/mode/swift";
 import { properties } from "@codemirror/legacy-modes/mode/properties";
 import type { FileContent, FileSave, LspDiagnostic, LspFileEdits, LspFileState, LspLocation } from "../shared/types";
-import type { LspTextEdit } from "../shared/textEdits";
-import { fromLspPos, lspExtensions, toCmDiagnostics, type LspDocContext } from "./lspEditor";
-import { guessIndent, lineBreakOf, splitBom, toFileText } from "../shared/editorText";
+import type { LspPosition, LspTextEdit } from "../shared/textEdits";
+import { NO_SERVER, fromLspPos, lspExtensions, toCmDiagnostics, type LspDocContext } from "./lspEditor";
+import { guessIndent, lineBreakOf, splitBom, toEditorText, toFileText, type LineBreak } from "../shared/editorText";
 
 /** The editor's language for a file, by its name. */
 export function languageExtension(path: string): Extension | null {
@@ -102,7 +102,7 @@ const theme = EditorView.theme({
 
 // ---- breakpoints, the paused line and the revealed line ----
 
-const setBreakpoints = StateEffect.define<number[]>();
+export const setBreakpoints = StateEffect.define<number[]>();
 const setPaused = StateEffect.define<number[]>();
 const setFlash = StateEffect.define<number | null>();
 
@@ -114,17 +114,19 @@ const bpMarker = new (class extends GutterMarker {
   }
 })();
 
-const bpField = StateField.define<RangeSet<GutterMarker>>({
-  create: () => RangeSet.empty,
-  update(set, tr) {
-    set = set.map(tr.changes);
-    for (const e of tr.effects) {
-      if (e.is(setBreakpoints)) {
-        const lines = [...new Set(e.value)].filter((l) => l >= 1 && l <= tr.state.doc.lines).sort((a, b) => a - b);
-        set = RangeSet.of(lines.map((l) => bpMarker.range(tr.state.doc.line(l).from)));
-      }
-    }
-    return set;
+/**
+ * Breakpoint dots on the debugger's own line numbers. They don't move with
+ * edits: the debugger still stops at the line it was given, and a click on a
+ * dot must remove that breakpoint rather than add one beside it.
+ */
+export const bpField = StateField.define<{ lines: number[]; markers: RangeSet<GutterMarker> }>({
+  create: () => ({ lines: [], markers: RangeSet.empty }),
+  update(v, tr) {
+    let lines = v.lines;
+    for (const e of tr.effects) if (e.is(setBreakpoints)) lines = [...new Set(e.value)].sort((a, b) => a - b);
+    if (lines === v.lines && !tr.docChanged) return v;
+    const doc = tr.state.doc;
+    return { lines, markers: RangeSet.of(lines.filter((l) => l >= 1 && l <= doc.lines).map((l) => bpMarker.range(doc.line(l).from))) };
   },
 });
 
@@ -161,14 +163,15 @@ const flashField = StateField.define<DecorationSet>({
 });
 
 // ---- buffers: each open file's editor state, kept across tab switches ----
+// One per file (editorTabs' fileKey), shared by every tab that shows the file.
 
-interface Buffer {
+export interface Buffer {
   state: EditorState;
   /** The text last read or saved, in the editor's "\n" form — what "unsaved" is measured against. */
   saved: string;
   mtimeMs: number;
   bom: boolean;
-  lineBreak: "\r\n" | "\n";
+  lineBreak: LineBreak;
   readOnly: boolean;
   /** The file changed on disk while this buffer had unsaved edits. */
   conflict: { text: string; mtimeMs: number } | null;
@@ -180,6 +183,10 @@ interface LspBuffer {
   ctx: LspDocContext;
   root: string;
   state: LspFileState | null;
+  /** The open request, once made: the file is closed with its server only after it's answered, and only if it opened. */
+  opening: Promise<Result<LspFileState>> | null;
+  /** The text the server has, as last sent. Its answers are about this text, so its edits apply only while the buffer still holds it. */
+  sentDoc: Text | null;
   /** Edits waiting to go to the server (sent 300 ms after typing stops, or before any question). */
   timer: ReturnType<typeof setTimeout> | null;
   sent: Promise<unknown>;
@@ -210,12 +217,18 @@ type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** Change a buffer whether or not it's on screen: through its view when mounted, else its saved state. */
-function updateBuffer(key: string, spec: (s: EditorState) => TransactionSpec): void {
+export function updateBuffer(key: string, spec: (s: EditorState) => TransactionSpec): void {
   const b = buffers.get(key);
   if (!b) return;
   const v = views.get(key);
-  if (v) v.dispatch(spec(v.state));
-  else b.state = b.state.update(spec(b.state)).state;
+  if (v) return v.dispatch(spec(v.state));
+  const tr = b.state.update(spec(b.state));
+  b.state = tr.state;
+  // a mounted view tells the server through its update listener
+  if (tr.docChanged) {
+    notify();
+    lspChanged(key);
+  }
 }
 
 // ---- language servers (lspEditor.ts has the editor features) ----
@@ -279,9 +292,18 @@ async function openLsp(key: string): Promise<void> {
   const b = buffers.get(key);
   if (!b?.lsp) return;
   listenLsp();
-  const r: Result<LspFileState> = await window.mb.lspOpen(b.lsp.ctx.sessionId, b.lsp.ctx.rel, b.state.doc.toString());
-  if (!buffers.has(key)) return;
-  b.lsp.state = isErr(r) ? { server: b.lsp.state?.server ?? null, state: "failed", message: r.error } : r;
+  const lsp = b.lsp;
+  const doc = b.state.doc;
+  const opening: Promise<Result<LspFileState>> = window.mb
+    .lspOpen(lsp.ctx.sessionId, lsp.ctx.rel, doc.toString())
+    .catch((err: unknown) => ({ error: String(err) }));
+  lsp.opening = opening;
+  lsp.sentDoc = doc;
+  const r = await opening;
+  if (buffers.get(key) !== b || lsp.opening !== opening) return; // closed, or opened again since
+  lsp.state = isErr(r) ? { server: lsp.state?.server ?? null, state: "failed", message: r.error } : r;
+  // edits made while the server was starting weren't sent (lspChanged waits for ready)
+  if (lsp.state.state === "ready" && b.state.doc !== doc) void sendLspChange(key);
   notify();
 }
 
@@ -289,9 +311,13 @@ function sendLspChange(key: string): Promise<unknown> {
   const b = buffers.get(key);
   if (!b?.lsp) return Promise.resolve();
   b.lsp.timer = null;
-  b.lsp.sent = window.mb.lspChange(b.lsp.ctx.sessionId, b.lsp.ctx.rel, b.state.doc.toString()).then((r: unknown) => {
-    if (isErr(r)) lspNote(key, `The language server didn't get your edits: ${r.error}`);
-  });
+  b.lsp.sentDoc = b.state.doc;
+  b.lsp.sent = window.mb
+    .lspChange(b.lsp.ctx.sessionId, b.lsp.ctx.rel, b.state.doc.toString())
+    .catch((err: unknown) => ({ error: String(err) }))
+    .then((r: unknown) => {
+      if (isErr(r)) lspNote(key, `The language server didn't get your edits: ${r.error}`);
+    });
   return b.lsp.sent;
 }
 
@@ -319,32 +345,53 @@ const toChanges = (s: EditorState, edits: LspTextEdit[]) => ({
 /** Format a buffer with its server. Asked for explicitly, a server that can't format says so. */
 async function formatBuffer(key: string, explicit: boolean): Promise<void> {
   const b = buffers.get(key);
-  if (!b?.lsp || b.lsp.state?.state !== "ready") return explicit ? lspNote(key, "No language server is running for this file") : undefined;
+  if (!b?.lsp || b.lsp.state?.state !== "ready") return explicit ? lspNote(key, NO_SERVER) : undefined;
   await flushLsp(key);
+  const asked = b.lsp.sentDoc;
   const unit = getIndentUnit(b.state);
   const tabs = b.state.facet(indentUnit).includes("\t");
   const r: Result<LspTextEdit[] | null> = await window.mb.lspFormat(b.lsp.ctx.sessionId, b.lsp.ctx.rel, tabs ? b.state.tabSize : unit, !tabs);
   if (isErr(r)) return lspNote(key, `Formatting failed: ${r.error}`);
-  if (r === null) return explicit ? lspNote(key, `${b.lsp.state.server?.label ?? "This"} language server doesn't format files`) : undefined;
-  if (r.length) updateBuffer(key, (s) => toChanges(s, r));
+  if (r === null) return explicit ? lspNote(key, `${b.lsp.state?.server?.label ?? "This"} language server doesn't format files`) : undefined;
+  if (!r.length) return;
+  if (buffers.get(key) !== b || b.state.doc !== asked) return lspNote(key, "The file changed while it was being formatted, so it wasn't — format it again");
+  updateBuffer(key, (s) => toChanges(s, r));
+}
+
+/** Rename the symbol at a position, across files, with the buffer's server. */
+async function renameSymbol(key: string, at: LspPosition, name: string): Promise<Result<string>> {
+  const b = buffers.get(key);
+  if (!b?.lsp || b.lsp.state?.state !== "ready") return { error: NO_SERVER };
+  await flushLsp(key);
+  // each open file as its server has it now, which is what the edits for it will be about
+  const asked = new Map([...buffers.values()].flatMap((o) => (o.lsp ? [[o.lsp.ctx.abs, o.lsp.sentDoc] as const] : [])));
+  const { sessionId, rel } = b.lsp.ctx;
+  const r: Result<LspFileEdits[]> = await window.mb.lspRename(sessionId, rel, at.line, at.character, name);
+  if (isErr(r)) return r;
+  return applyRename(r, sessionId, b.lsp.root, asked);
 }
 
 /**
  * Apply a rename across files: open ones change in their buffers (unsaved, for
  * review); the rest are written straight to disk, inside the session's folder.
+ * An open file edited since the rename was asked for is left alone.
  */
-async function applyRename(edits: LspFileEdits[], sessionId: string, root: string): Promise<string> {
+async function applyRename(edits: LspFileEdits[], sessionId: string, root: string, asked: ReadonlyMap<string, Text | null>): Promise<string> {
   let open = 0;
   let saved = 0;
   const problems: string[] = [];
   for (const fe of edits) {
+    const name = fe.path.split("/").pop();
     const hit = [...buffers].find(([, b]) => b.lsp?.ctx.abs === fe.path);
     if (hit) {
-      updateBuffer(hit[0], (s) => toChanges(s, fe.edits));
-      open++;
+      const [key, b] = hit;
+      if (b.state.doc !== asked.get(fe.path)) problems.push(`${name} changed while renaming — not changed`);
+      else {
+        updateBuffer(key, (s) => toChanges(s, fe.edits));
+        open++;
+      }
       continue;
     }
-    const name = fe.path.split("/").pop();
     if (!fe.path.startsWith(root + "/")) {
       problems.push(`${fe.path} is outside this session's folder — not changed`);
       continue;
@@ -382,20 +429,29 @@ export function dirtyKeys(): string[] {
   return [...buffers].filter(([, b]) => isDirty(b)).map(([k]) => k);
 }
 
-/** Forget a closed tab's buffer (its unsaved edits go with it — the caller has asked). */
+/** Forget a closed file's buffer (its unsaved edits go with it — the caller has asked). */
 export function dropBuffer(key: string): void {
   const b = buffers.get(key);
   if (b?.lsp) {
-    if (b.lsp.timer) clearTimeout(b.lsp.timer);
-    if (b.lsp.state?.state === "ready") void window.mb.lspClose(b.lsp.ctx.sessionId, b.lsp.ctx.rel);
+    const { ctx, timer, opening } = b.lsp;
+    if (timer) clearTimeout(timer);
+    // a close sent while the server is still starting would find nothing to close, and the file would stay open with it
+    void opening?.then((r) => {
+      if (!isErr(r) && r.state === "ready") void window.mb.lspClose(ctx.sessionId, ctx.rel);
+    });
   }
   buffers.delete(key);
   handlers.delete(key);
   notify();
 }
 
+/** Forget the buffers of files no tab shows any more (a tab closed to make room), except ones with unsaved edits. */
+export function releaseBuffers(shown: ReadonlySet<string>): void {
+  for (const [key, b] of [...buffers]) if (!shown.has(key) && !isDirty(b)) dropBuffer(key);
+}
+
 /**
- * Ask before closing tabs with unsaved edits, then forget their buffers.
+ * Ask before closing files with unsaved edits, then forget their buffers.
  * True when they may close.
  */
 export function confirmClose(items: { key: string; name: string }[]): boolean {
@@ -422,7 +478,7 @@ function newState(key: string, text: string, path: string, readOnly: boolean, ls
   return EditorState.create({
     doc: text,
     extensions: [
-      gutter({ class: "cm-bp-gutter", markers: (v) => v.state.field(bpField), initialSpacer: () => bpMarker, domEventHandlers: gutterClick }),
+      gutter({ class: "cm-bp-gutter", markers: (v) => v.state.field(bpField).markers, initialSpacer: () => bpMarker, domEventHandlers: gutterClick }),
       lineNumbers({ domEventHandlers: gutterClick }),
       basicSetup,
       keymap.of([
@@ -453,6 +509,68 @@ function newState(key: string, text: string, path: string, readOnly: boolean, ls
       }),
     ],
   });
+}
+
+/** A file's buffer, made from its first read (and opened with its language server) unless it's open already. */
+export function openBuffer(key: string, file: FileContent, path: string, lsp?: { sessionId: string; root: string }): Buffer {
+  const open = buffers.get(key);
+  if (open) return open;
+  const { bom, text } = splitBom(file.content);
+  const lf = toEditorText(text);
+  const ctx: LspDocContext | null =
+    lsp && !file.truncated
+      ? {
+          sessionId: lsp.sessionId,
+          rel: path,
+          abs: `${lsp.root}/${path}`,
+          ready: () => buffers.get(key)?.lsp?.state?.state === "ready",
+          flush: () => flushLsp(key),
+          openLocation: (loc) => handlers.get(key)?.openLocation(loc),
+          rename: (at, name) => renameSymbol(key, at, name),
+          format: () => formatBuffer(key, true),
+          report: (m) => lspNote(key, m),
+        }
+      : null;
+  const b: Buffer = {
+    state: newState(key, lf, path, file.truncated, ctx),
+    saved: lf,
+    mtimeMs: file.mtimeMs,
+    bom,
+    lineBreak: lineBreakOf(text),
+    readOnly: file.truncated,
+    conflict: null,
+    lsp: ctx && lsp ? { ctx, root: lsp.root, state: null, opening: null, sentDoc: null, timer: null, sent: Promise.resolve(), note: "" } : null,
+  };
+  buffers.set(key, b);
+  if (b.lsp) void openLsp(key);
+  return b;
+}
+
+/**
+ * The file as just read from disk (an agent edited it): reload the buffer if
+ * nothing's unsaved, else keep the disk version for the user to choose. A read
+ * older than what the buffer has — it started before a save or a newer read
+ * finished — changes nothing.
+ */
+export function diskRead(key: string, file: FileContent): void {
+  const b = buffers.get(key);
+  if (!b || file.mtimeMs < b.mtimeMs || (file.mtimeMs === b.mtimeMs && !b.conflict)) return;
+  const { bom, text } = splitBom(file.content);
+  const lf = toEditorText(text);
+  if (lf === b.saved) b.mtimeMs = file.mtimeMs;
+  else if (isDirty(b)) {
+    b.conflict = { text: lf, mtimeMs: file.mtimeMs };
+    return notify();
+  } else {
+    updateBuffer(key, (s) => ({ changes: { from: 0, to: s.doc.length, insert: lf }, annotations: Transaction.addToHistory.of(false) }));
+    b.saved = lf;
+    b.mtimeMs = file.mtimeMs;
+    b.bom = bom;
+    b.lineBreak = lineBreakOf(text);
+  }
+  // the disk now holds what the buffer was measured against: nothing left to choose between
+  b.conflict = null;
+  notify();
 }
 
 /**
@@ -506,42 +624,6 @@ export function CodeEditor({
     () => version
   );
 
-  const buffer = (): Buffer => {
-    let b = buffers.get(bufferKey);
-    if (!b) {
-      const { bom, text } = splitBom(file.content);
-      const lineBreak = lineBreakOf(text);
-      const lf = text.replace(/\r\n/g, "\n");
-      const key = bufferKey;
-      const ctx: LspDocContext | null =
-        lsp && !file.truncated
-          ? {
-              sessionId: lsp.sessionId,
-              rel: path,
-              abs: `${lsp.root}/${path}`,
-              flush: () => flushLsp(key),
-              openLocation: (loc) => handlers.get(key)?.openLocation(loc),
-              applyRename: (edits) => applyRename(edits, lsp.sessionId, lsp.root),
-              format: () => formatBuffer(key, true),
-              report: (m) => lspNote(key, m),
-            }
-          : null;
-      b = {
-        state: newState(bufferKey, lf, path, file.truncated, ctx),
-        saved: lf,
-        mtimeMs: file.mtimeMs,
-        bom,
-        lineBreak,
-        readOnly: file.truncated,
-        conflict: null,
-        lsp: ctx && lsp ? { ctx, root: lsp.root, state: null, timer: null, sent: Promise.resolve(), note: "" } : null,
-      };
-      buffers.set(bufferKey, b);
-      if (b.lsp) void openLsp(bufferKey);
-    }
-    return b;
-  };
-
   const save = async (force = false) => {
     const b = buffers.get(bufferKey);
     const v = view.current;
@@ -580,7 +662,7 @@ export function CodeEditor({
 
   // the editor view, made from (and saved back to) the buffer, so a tab switch keeps edits and undo
   useEffect(() => {
-    const b = buffer();
+    const b = openBuffer(bufferKey, file, path, lsp);
     const v = new EditorView({
       state: b.state,
       parent: host.current!,
@@ -600,29 +682,7 @@ export function CodeEditor({
     };
   }, [bufferKey]);
 
-  // the file on disk changed (an agent edited it): reload if nothing's unsaved, else let the user choose
-  useEffect(() => {
-    const b = buffers.get(bufferKey);
-    const v = view.current;
-    if (!b || !v || (file.mtimeMs === b.mtimeMs && !b.conflict)) return;
-    const { bom, text } = splitBom(file.content);
-    const lf = text.replace(/\r\n/g, "\n");
-    if (lf === b.saved) {
-      b.mtimeMs = file.mtimeMs;
-      return;
-    }
-    if (!isDirty(b)) {
-      v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: lf }, annotations: Transaction.addToHistory.of(false) });
-      b.saved = lf;
-      b.mtimeMs = file.mtimeMs;
-      b.bom = bom;
-      b.lineBreak = lineBreakOf(text);
-      notify();
-    } else {
-      b.conflict = { text: lf, mtimeMs: file.mtimeMs };
-      rerender();
-    }
-  }, [file.mtimeMs, file.content]);
+  useEffect(() => diskRead(bufferKey, file), [file.mtimeMs, file.content]);
 
   useEffect(() => {
     view.current?.dispatch({ effects: setBreakpoints.of(breakpoints) });
@@ -686,8 +746,18 @@ export function CodeEditor({
 function LspBanner({ bufferKey, lsp }: { bufferKey: string; lsp: LspBuffer }) {
   const [busy, setBusy] = React.useState(false);
   const st = lsp.state;
-  if (!st?.server || st.state === "ready" || st.state === "none" || lspDismissed.has(st.server.id)) return null;
+  if (!st || st.state === "ready" || st.state === "none" || (st.server && lspDismissed.has(st.server.id))) return null;
   const server = st.server;
+  // an open that failed before any server was known (the request itself) still says why
+  if (!server)
+    return (
+      <div className="ce-lsp warn">
+        <span>Language features are off: {st.message}</span>
+        <button className="outline" onClick={() => void openLsp(bufferKey)}>
+          Try again
+        </button>
+      </div>
+    );
   const reopenAll = () => {
     for (const [key, b] of buffers) if (b.lsp?.state?.server?.id === server.id) void openLsp(key);
   };

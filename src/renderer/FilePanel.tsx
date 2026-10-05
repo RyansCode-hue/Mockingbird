@@ -1,11 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, LspLocation, WorktreeStateInfo } from "../shared/types";
 import { highlightLines, languageFor } from "./highlight";
-import { tabKey, type EditorState, type OpenFile } from "./editorTabs";
+import { fileKey, filesClosing, tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { fileBadge } from "./fileIcons";
 import { useBreakpoints, useDebug } from "./debugStore";
-import { CodeEditor, confirmClose, useDirtyKeys } from "./CodeEditor";
+import { CodeEditor, confirmClose, releaseBuffers, useDirtyKeys } from "./CodeEditor";
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
 
 type Result<T> = T | { error: string };
@@ -239,7 +239,7 @@ export function ExplorerTree({
                 data-tip="Close all files (asks about unsaved ones)"
                 onClick={(ev) => {
                   ev.stopPropagation();
-                  if (confirmClose(editor.tabs.map((t) => ({ key: tabKey(t), name: baseName(t.path) })))) onCloseAll();
+                  if (askToClose(editor.tabs, editor.tabs.map(tabKey))) onCloseAll();
                 }}
               >
                 ✕ All
@@ -267,7 +267,7 @@ export function ExplorerTree({
                       data-tip="Close"
                       onClick={(ev) => {
                         ev.stopPropagation();
-                        if (confirmClose([{ key, name: baseName(t.path) }])) onCloseTab(key);
+                        if (askToClose(editor.tabs, [key])) onCloseTab(key);
                       }}
                     >
                       ×
@@ -286,6 +286,15 @@ export function ExplorerTree({
       </div>
     </>
   );
+}
+
+/**
+ * Before closing tabs (keys of `tabs`), ask about unsaved edits in the files
+ * they're the last tabs of, then let go of those files' buffers. True when the
+ * tabs may close.
+ */
+export function askToClose(tabs: OpenFile[], closing: readonly string[]): boolean {
+  return confirmClose(filesClosing(tabs, closing).map((f) => ({ key: fileKey(f), name: baseName(f.path) })));
 }
 
 /**
@@ -314,12 +323,13 @@ export function EditorDock({
 }) {
   const dirty = useDirtyKeys();
   const onClose = (key: string) => {
-    const t = editor.tabs.find((x) => tabKey(x) === key);
-    if (confirmClose([{ key, name: t ? baseName(t.path) : key }])) closeTab(key);
+    if (askToClose(editor.tabs, [key])) closeTab(key);
   };
   const closeAll = () => {
-    if (confirmClose(editor.tabs.map((t) => ({ key: tabKey(t), name: baseName(t.path) })))) onCloseAll();
+    if (askToClose(editor.tabs, editor.tabs.map(tabKey))) onCloseAll();
   };
+  // a file no tab shows any more (its tab closed to make room for a new one) lets go of its buffer
+  useEffect(() => releaseBuffers(new Set(editor.tabs.map(fileKey))), [editor.tabs]);
   const [width, setWidth] = useState<number>(() => loadLS("mb.files.viewerW", 560));
   useEffect(() => localStorage.setItem("mb.files.viewerW", JSON.stringify(width)), [width]);
   const [, setWindowW] = useState(window.innerWidth); // re-fit the editor when the window narrows
@@ -375,7 +385,7 @@ export function EditorDock({
                 key={key}
                 role="tab"
                 aria-selected={key === editor.active}
-                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""} ${dirty.has(key) ? "dirty" : ""}`}
+                className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""} ${dirty.has(fileKey(t)) ? "dirty" : ""}`}
                 title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : t.source?.kind === "commit" ? ` (commit ${t.source.sha.slice(0, 8)})` : ""}`}
                 onClick={() => onActivate(key)}
                 onAuxClick={(e) => e.button === 1 && onClose(key)}
@@ -390,7 +400,7 @@ export function EditorDock({
                 </span>
                 <button
                   className="fp-tab-x"
-                  data-tip={dirty.has(key) ? "Unsaved changes — close (asks first)" : "Close (middle-click works too)"}
+                  data-tip={dirty.has(fileKey(t)) ? "Unsaved changes — close (asks first)" : "Close (middle-click works too)"}
                   onClick={(e) => {
                     e.stopPropagation();
                     onClose(key);
@@ -440,7 +450,7 @@ function FileViewer({
   const [diff, setDiff] = useState<Result<string> | null>(null);
   const bp = useBreakpoints(open.sessionId);
   const debug = useDebug();
-  const dirty = useDirtyKeys().has(tabKey(open));
+  const dirty = useDirtyKeys().has(fileKey(open));
   const abs = `${open.root}/${open.path}`;
   const pausedLines = Object.entries(debug.selected)
     .map(([sid, f]) => (f && f.path === abs && debug.sessions.find((x) => x.id === sid)?.state === "stopped" ? f.line : null))
@@ -457,7 +467,11 @@ function FileViewer({
     },
     []
   );
+  // folder changes can start reads faster than they finish: only the latest one's answer is shown
+  const loads = useRef(0);
   const load = async () => {
+    const n = ++loads.current;
+    const latest = () => live.current && n === loads.current;
     if (open.mode === "diff") {
       const src = open.source;
       const r: Result<string> =
@@ -466,10 +480,10 @@ function FileViewer({
           : src?.kind === "commit"
             ? await window.mb.scmCommitDiff(open.sessionId, src.sha, open.path)
             : await window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U");
-      if (live.current) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
+      if (latest()) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
     } else {
       const r: Result<FileContent> = await window.mb.filesRead(open.sessionId, open.path);
-      if (live.current) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
+      if (latest()) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
     }
   };
   useEffect(() => {
@@ -523,7 +537,7 @@ function FileViewer({
           : file.binary ? <div className="fp-note">Binary file · {file.size.toLocaleString()} bytes — not shown</div>
           : (
             <CodeEditor
-              bufferKey={tabKey(open)}
+              bufferKey={fileKey(open)}
               file={file}
               path={open.path}
               onSave={(text, expected) => window.mb.filesWrite(open.sessionId, open.path, text, expected)}
@@ -551,30 +565,48 @@ interface DiffLine {
 
 const MAX_DIFF_LINES = 20000;
 
-export function parseDiff(text: string): { lines: DiffLine[]; binary: boolean; clipped: boolean } {
+/**
+ * A unified diff as lines. A merge conflict's working-tree diff is a combined
+ * one (`@@@ -a -b +c @@@`, a prefix column per parent); it's shown against the
+ * first parent — the branch being merged into — like `git diff HEAD`, so lines
+ * only the other side had are left out. `unmerged`: a staged diff of a file
+ * with conflicts, which git doesn't produce.
+ */
+export function parseDiff(text: string): { lines: DiffLine[]; binary: boolean; clipped: boolean; unmerged: boolean } {
   const lines: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
-  let inHunk = false;
+  let parents = 0; // prefix columns; 0 outside a hunk
   let binary = false;
+  let unmerged = false;
   const raw = text.split("\n");
   if (raw[raw.length - 1] === "") raw.pop();
   for (const l of raw) {
-    if (lines.length >= MAX_DIFF_LINES) return { lines, binary, clipped: true };
-    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+    if (lines.length >= MAX_DIFF_LINES) return { lines, binary, clipped: true, unmerged };
+    const m = /^(@@+) -(\d+)(?:,\d+)? (?:-\d+(?:,\d+)? )*\+(\d+)(?:,\d+)? \1/.exec(l);
     if (m) {
-      oldNo = parseInt(m[1], 10);
-      newNo = parseInt(m[2], 10);
-      inHunk = true;
+      parents = m[1].length - 1;
+      oldNo = parseInt(m[2], 10);
+      newNo = parseInt(m[3], 10);
       lines.push({ kind: "hunk", text: l });
-    } else if (!inHunk) {
+      continue;
+    }
+    if (!parents) {
       if (l.startsWith("Binary files")) binary = true;
-    } else if (l.startsWith("+")) lines.push({ kind: "add", text: l.slice(1), newNo: newNo++ });
-    else if (l.startsWith("-")) lines.push({ kind: "del", text: l.slice(1), oldNo: oldNo++ });
-    else if (l.startsWith("\\")) lines.push({ kind: "note", text: l.slice(2) });
-    else lines.push({ kind: "ctx", text: l.slice(1), oldNo: oldNo++, newNo: newNo++ });
+      if (l.startsWith("* Unmerged path")) unmerged = true;
+      continue;
+    }
+    if (l.startsWith("\\")) {
+      lines.push({ kind: "note", text: l.slice(2) });
+      continue;
+    }
+    const mark = l.slice(0, parents);
+    const body = l.slice(parents);
+    if (mark[0] === "+") lines.push({ kind: "add", text: body, newNo: newNo++ });
+    else if (mark[0] === "-") lines.push({ kind: "del", text: body, oldNo: oldNo++ });
+    else if (!mark.includes("-")) lines.push({ kind: "ctx", text: body, oldNo: oldNo++, newNo: newNo++ });
   }
-  return { lines, binary, clipped: false };
+  return { lines, binary, clipped: false, unmerged };
 }
 
 /**
@@ -635,9 +667,10 @@ export function splitRows(lines: DiffLine[]): ({ hunk: number } | { left: number
 }
 
 function DiffView({ text, path, layout }: { text: string; path: string; layout: "inline" | "split" }) {
-  const { lines, binary, clipped } = useMemo(() => parseDiff(text), [text]);
+  const { lines, binary, clipped, unmerged } = useMemo(() => parseDiff(text), [text]);
   const html = useMemo(() => highlightDiff(lines, path), [lines, path]);
   if (binary) return <div className="fp-note">Binary file changed — no text diff</div>;
+  if (unmerged && lines.length === 0) return <div className="fp-note warn">This file has merge conflicts, so nothing of it is staged yet — open its working-tree changes or the file to resolve them</div>;
   if (lines.length === 0) return <div className="fp-note">No content differences</div>;
   const adds = lines.filter((l) => l.kind === "add").length;
   const dels = lines.filter((l) => l.kind === "del").length;

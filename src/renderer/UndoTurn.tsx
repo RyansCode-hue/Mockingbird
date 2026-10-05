@@ -23,19 +23,28 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ restored: number; removed: number; snap: TurnSnapshot } | null>(null);
   const [error, setError] = useState("");
-  const load = () => window.mb.turnsList(session.id).then(setList);
+  const load = () => window.mb.turnsList(session.id).then(setList, (err: unknown) => setList({ error: `Couldn't list the turns: ${String(err)}` }));
   useEffect(() => {
     load();
   }, [session.id]);
+  // the list shown is always the picked turn's: a slower answer for an earlier pick is dropped
   useEffect(() => {
     setChanges(null);
-    if (pick) window.mb.turnsChanges(session.id, pick.n).then(setChanges);
-  }, [pick?.n]);
+    if (!pick) return;
+    let live = true;
+    window.mb.turnsChanges(session.id, pick.n).then(
+      (r: Result<TurnChange[]>) => live && setChanges(r),
+      (err: unknown) => live && setChanges({ error: `Couldn't compare with the files now: ${String(err)}` })
+    );
+    return () => {
+      live = false;
+    };
+  }, [session.id, pick?.n]);
   const restore = async () => {
     if (!pick) return;
     setBusy(true);
     setError("");
-    const r = await window.mb.turnsRestore(session.id, pick.n);
+    const r = await window.mb.turnsRestore(session.id, pick.n).catch((err: unknown) => ({ error: String(err) }));
     setBusy(false);
     if (isErr(r)) return setError(r.error);
     setDone({ restored: r.restored, removed: r.removed, snap: pick });

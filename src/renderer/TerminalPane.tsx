@@ -8,6 +8,7 @@ import { formatShare, formatTokens, totalTokens, type FileOverlap, type PrState,
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MousePolicy } from "./mouseModes";
 import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
+import { dataPump, replay, type CachedTerm } from "./cachedTerm";
 
 declare global {
   interface Window {
@@ -15,20 +16,16 @@ declare global {
   }
 }
 
-// ready=false until the scrollback replay has been written. Two things must
-// not happen before then:
-//  - xterm auto-answers query sequences it finds in the replayed history
-//    (cursor position, DA, OSC colour). Forwarding those answers to the pty
-//    types garbage into the live prompt — that is how a reload could end up
-//    submitting a stray slash command like /clear.
-//  - live output must not be written ahead of the history it belongs after.
-//    Main appends to its buffer and sends session:data in the same handler, so
-//    every chunk that arrives before the buffer reply is already inside that
-//    reply: drop it rather than writing it twice, out of order.
-interface TermEntry {
-  term: Terminal;
+// Replay (cachedTerm.ts) gates both directions. Live output waits until the
+// history is queued, and input until xterm has parsed it: xterm auto-answers
+// the query sequences it finds in the replayed history (cursor position, DA,
+// OSC colour), and forwarding those answers to the pty types garbage into the
+// live prompt — that is how a reload could end up submitting a stray slash
+// command like /clear.
+interface TermEntry extends CachedTerm {
   fit: FitAddon;
-  ready: boolean;
+  /** Told when the CLI's side-panel close glyph appears or goes, while a pane shows this terminal. */
+  onPanel: ((cell: { col: number; row: number } | null) => void) | null;
   lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
   inputWired?: boolean; // DOM input listeners attached to xterm's textarea
   lastReply: string; // loop detector: the same answer repeating means the
@@ -135,19 +132,9 @@ function writeSession(id: string, data: string): void {
   if (terms.get(id)?.ready) window.mb.sessionWrite(id, data);
 }
 
-// ONE global data pump: session output reaches every cached terminal even
-// while its pane is unmounted (hidden group / inactive workspace tab).
-// Without this, hidden terminals miss output and look frozen on return.
-let pumpWired = false;
-function ensureDataPump(): void {
-  if (pumpWired) return;
-  pumpWired = true;
-  window.mb.onSessionData((id: string, data: string) => {
-    const e = terms.get(id);
-    if (!e?.ready) return;
-    pumpWrite(e, data);
-  });
-}
+// session output reaches every cached terminal, even while its pane is
+// unmounted (hidden group / inactive workspace tab)
+const ensureDataPump = dataPump((cb) => window.mb.onSessionData(cb), terms, pumpWrite);
 
 /**
  * Repaint a glitched terminal. Replaying the byte history can't fix TUI
@@ -434,7 +421,9 @@ export function TerminalPane({
       const e: TermEntry = {
         term,
         fit,
+        replayed: false,
         ready: false,
+        onPanel: null,
         lastInput: 0,
         lastReply: "",
         lastReplyCount: 0,
@@ -461,10 +450,7 @@ export function TerminalPane({
         if (panelCheck) return;
         panelCheck = setTimeout(() => {
           panelCheck = null;
-          const found = e.wantsMouse ? findPanelClose(term) : null;
-          setPanelClose((prev) =>
-            (prev?.col === found?.col && prev?.row === found?.row) ? prev : found
-          );
+          e.onPanel?.(e.wantsMouse ? findPanelClose(term) : null);
         }, 500);
       });
       term.onData((d) => {
@@ -512,19 +498,14 @@ export function TerminalPane({
       });
       entry = e;
       terms.set(session.id, entry);
-      window.mb
-        .sessionBuffer(session.id)
-        .then((buf: string) => {
-          if (terms.get(session.id) !== e) return; // disposed while in flight
-          if (buf) term.write(stripMouseEnables(e, buf), () => (e.ready = true));
-          else e.ready = true;
-        })
-        .catch((err: unknown) => {
-          console.error("[mockingbird] scrollback replay failed", session.id, err);
-          e.ready = true; // never leave the pane unable to type
-        });
+      void replay(e, window.mb.sessionBuffer(session.id), () => terms.get(session.id) === e, (buf) => stripMouseEnables(e, buf));
     }
     const { term, fit } = entry;
+    // the header's "hide diff" button follows the panel for whichever pane shows this terminal now
+    const onPanel = (found: { col: number; row: number } | null) =>
+      setPanelClose((prev) => (prev?.col === found?.col && prev?.row === found?.row ? prev : found));
+    entry.onPanel = onPanel;
+    onPanel(entry.wantsMouse ? findPanelClose(term) : null);
     if (holder.current && !term.element) term.open(holder.current);
     if (!entry.inputWired && term.textarea) {
       entry.inputWired = true;
@@ -702,6 +683,7 @@ export function TerminalPane({
         t.dragging = false;
         t.buttonHeld = false;
         flushHold(t); // never leave a hidden pane frozen
+        if (t.onPanel === onPanel) t.onPanel = null;
       }
     };
   }, [session.id, dead]);

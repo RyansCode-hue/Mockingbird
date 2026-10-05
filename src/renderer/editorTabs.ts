@@ -27,16 +27,35 @@ export const tabKey = (f: OpenFile) =>
     f.source?.kind === "commit" ? f.source.sha : f.source && "staged" in f.source && f.source.staged ? "staged" : ""
   }`;
 
+/** The file a tab shows. Its tabs share one editor buffer: the file's own tab and its diff flipped to File edit the same text. */
+export const fileKey = (f: { root: string; path: string }) => `${f.root}:${f.path}`;
+
 /**
  * Open a file in its own tab: one already open is activated (and updated);
- * past MAX_TABS the oldest tab closes.
+ * past MAX_TABS the oldest tabs close — but never a tab of a file with
+ * unsaved edits (`unsaved`: file keys), which would leave them with no tab to
+ * save or discard them from.
  */
-export function openTab(s: EditorState, f: OpenFile): EditorState {
+export function openTab(s: EditorState, f: OpenFile, unsaved: ReadonlySet<string> = new Set()): EditorState {
   const key = tabKey(f);
   const i = s.tabs.findIndex((t) => tabKey(t) === key);
   if (i >= 0) return { tabs: s.tabs.map((t, j) => (j === i ? { ...t, ...f } : t)), active: key };
-  const tabs = [...s.tabs, f];
-  return { tabs: tabs.length > MAX_TABS ? tabs.slice(-MAX_TABS) : tabs, active: key };
+  let excess = s.tabs.length + 1 - MAX_TABS;
+  const kept = s.tabs.filter((t) => {
+    if (excess <= 0 || unsaved.has(fileKey(t))) return true;
+    excess--;
+    return false;
+  });
+  return { tabs: [...kept, f], active: key };
+}
+
+/** The files whose last tab is among `closing` (tab keys): closing those tabs closes the files. */
+export function filesClosing(tabs: OpenFile[], closing: readonly string[]): OpenFile[] {
+  const shut = new Set(closing);
+  const staying = new Set(tabs.filter((t) => !shut.has(tabKey(t))).map(fileKey));
+  const files = new Map<string, OpenFile>();
+  for (const t of tabs) if (shut.has(tabKey(t)) && !staying.has(fileKey(t))) files.set(fileKey(t), t);
+  return [...files.values()];
 }
 
 /** Close a tab; closing the active one activates its neighbor, as VS Code does. */
