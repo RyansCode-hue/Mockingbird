@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type SpawnSyncOptionsWithStringEncoding } from "child_process";
+import { execFile, execFileSync, spawn, spawnSync, type SpawnSyncOptionsWithStringEncoding } from "child_process";
 
 // Commands that need the user's CLIs run in the same shell setup as the panes.
 // Panes start `zsh -il`, which reads ~/.zshrc — where nvm and ~/.local/bin are
@@ -35,18 +35,48 @@ export interface ShellResult {
 /** How long a stopped command gets to exit on SIGTERM before its process group is killed. */
 const STOP_GRACE_MS = 2000;
 
-/**
- * Signal every process in the group `pid` leads. An interactive zsh ignores
- * SIGTERM, and killing the shell alone would leave the command it started
- * running, so a stop always goes to the whole group.
- */
-function signalGroup(pid: number | undefined, sig: NodeJS.Signals): void {
-  if (!pid) return;
+// A stopped command's shell leads its own process group, and everything the
+// command started is in it. The whole group is signalled: an interactive zsh
+// ignores SIGTERM, and stopping the shell alone would leave its command
+// running. kill(-pgid) by itself can miss members on macOS, so each member
+// `ps` lists is signalled as well.
+const PS = ["/bin/ps", ["-axo", "pid=,pgid="]] as const;
+
+const send = (target: number, sig: NodeJS.Signals) => {
   try {
-    process.kill(-pid, sig);
+    process.kill(target, sig);
   } catch {
-    /* the group has already exited */
+    /* already exited */
   }
+};
+
+/** Signal group `pgid` and each of its members in `ps` output (`pid pgid` lines). */
+function signalMembers(pgid: number, sig: NodeJS.Signals, ps: string): void {
+  send(-pgid, sig);
+  for (const line of ps.split("\n")) {
+    const [pid, group] = line.trim().split(/\s+/).map(Number);
+    if (group === pgid && pid > 0) send(pid, sig);
+  }
+}
+
+function signalGroup(pgid: number | undefined, sig: NodeJS.Signals): void {
+  if (!pgid) return;
+  send(-pgid, sig); // most of it at once, before the command can start anything new
+  execFile(PS[0], PS[1], { encoding: "utf8" }, (err, out) => {
+    if (err) console.warn(`[shell] couldn't list process group ${pgid} to ${sig} it: ${err.message}`);
+    signalMembers(pgid, sig, err ? "" : out);
+  });
+}
+
+function signalGroupSync(pgid: number | undefined, sig: NodeJS.Signals): void {
+  if (!pgid) return;
+  let out = "";
+  try {
+    out = execFileSync(PS[0], PS[1], { encoding: "utf8" });
+  } catch (err) {
+    console.warn(`[shell] couldn't list process group ${pgid} to ${sig} it: ${(err as Error).message}`);
+  }
+  signalMembers(pgid, sig, out);
 }
 
 export interface LoginShellOptions {
@@ -141,7 +171,7 @@ export function whichSync(bin: string, timeoutMs = 15_000): string | null {
     detached: true,
   };
   const r = spawnSync("/bin/zsh", ["-ilc", fenced(`command -v ${quote(bin)}`)], opts);
-  if (r.signal) signalGroup(r.pid, "SIGKILL");
+  if (r.signal) signalGroupSync(r.pid, "SIGKILL");
   return r.status === 0 ? pathFrom(unfence(r.stdout ?? "")) : null; // command -v exits 1 when the name isn't found
 }
 
