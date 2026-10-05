@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { isErr, type FileHit, type FileSearch, type FileSearchOptions, type SessionInfo, type TranscriptHit, type IpcResult } from "../shared/types";
 import { ConversationRow, useTranscriptSearch } from "./TranscriptSearch";
 import { useListNav } from "./listNav";
+import { plural } from "../shared/format";
 
 export interface SearchState extends FileSearchOptions {
   scope: "conversations" | "files";
@@ -197,7 +198,7 @@ export function SearchView({
               <div className="sv-summary">
                 {fileRes.hits.length === 0
                   ? "No results"
-                  : `${fileRes.hits.length.toLocaleString()} result${fileRes.hits.length === 1 ? "" : "s"} in ${fileRes.files} file${fileRes.files === 1 ? "" : "s"}`}
+                  : `${fileRes.hits.length.toLocaleString()} result${fileRes.hits.length === 1 ? "" : "s"} in ${plural(fileRes.files, "file")}`}
                 {searching && " · searching…"}
               </div>
               {fileRes.stopped && (

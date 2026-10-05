@@ -7,6 +7,7 @@ import { isErr, type AgentCheck, type BroadcastOutcome, type SetupStatus, type S
 import { OPTIONAL_TABS } from "../shared/types";
 import { loadLS } from "./uiUtil";
 import { TAB_LABELS } from "./tabs";
+import { plural } from "../shared/format";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
 
@@ -156,7 +157,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
           </Pick>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />
           <div className="ft">
-            <span className="diff">{dirty ? `${changedLines} line${changedLines === 1 ? "" : "s"} changed` : "no changes"}</span>
+            <span className="diff">{dirty ? `${plural(changedLines, "line")} changed` : "no changes"}</span>
             <button className="outline" disabled={!dirty} onClick={() => saveAndReread(false)}>Save</button>
             <button className="primary" disabled={!dirty || !rereadTargets.length} onClick={() => saveAndReread(true)}>
               Save &amp; re-read in {rereadTargets.length}
@@ -184,7 +185,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
               </button>
             </div>
             <button className="primary" disabled={!message.trim() || !bTargets.length} onClick={queueBroadcast}>
-              Queue for {bTargets.length} session{bTargets.length === 1 ? "" : "s"}
+              Queue for {plural(bTargets.length, "session")}
             </button>
             {bError && <div className="err">{bError}</div>}
           </div>
@@ -244,9 +245,9 @@ function WorktreeJanitor() {
   }, []);
   const riskOf = (w: WorktreeEntry) =>
     w.dirty
-      ? `${w.name}: ${w.dirtyFiles} uncommitted file${w.dirtyFiles === 1 ? "" : "s"} will be lost`
+      ? `${w.name}: ${plural(w.dirtyFiles, "uncommitted file")} will be lost`
       : w.ahead
-        ? `${w.name}: ${w.ahead} unpushed commit${w.ahead === 1 ? "" : "s"} on ${w.branch} (the branch is kept)`
+        ? `${w.name}: ${plural(w.ahead, "unpushed commit")} on ${w.branch} (the branch is kept)`
         : null;
   // one confirmation for the whole batch, listing every worktree that would lose work;
   // removals run one at a time and every failure is reported, not just the first
@@ -299,7 +300,7 @@ function WorktreeJanitor() {
       {movable.length > 0 && (
         <div className="row" style={{ justifyContent: "flex-start", gap: 8, marginTop: 4 }}>
           <button className="outline" disabled={busy === "migrate"} onClick={() => migrate(movable)}>
-            {busy === "migrate" ? "moving…" : `Move ${movable.length} old-layout worktree${movable.length === 1 ? "" : "s"} into worktrees/`}
+            {busy === "migrate" ? "moving…" : `Move ${plural(movable.length, "old-layout worktree")} into worktrees/`}
           </button>
           <span className="wi-note">from <code>&lt;repo&gt;-worktrees/</code> · in-use ones are skipped</span>
         </div>
@@ -719,7 +720,7 @@ export function SettingsView({
                 <SetRow
                   key={r}
                   title={r}
-                  note={!found ? "" : !found.exists ? "folder not found" : `${found.repos} repo${found.repos === 1 ? "" : "s"}`}
+                  note={!found ? "" : !found.exists ? "folder not found" : plural(found.repos, "repo")}
                 >
                   <button className="danger" title="Remove" onClick={() => upd({ repoRoots: s.repoRoots.filter((x) => x !== r) })}>
                     ✕

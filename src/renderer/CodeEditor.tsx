@@ -29,8 +29,8 @@ import type { LspPosition, LspTextEdit } from "../shared/textEdits";
 import { NO_SERVER, fromLspPos, lspExtensions, toCmDiagnostics, type LspDocContext } from "./lspEditor";
 import { guessIndent, lineBreakOf, splitBom, toEditorText, toFileText, type LineBreak } from "../shared/editorText";
 import { fileLanguage, type FileLanguage } from "../shared/fileTypes";
-import { plural } from "./changeCount";
 import { settled } from "./settled";
+import { plural } from "../shared/format";
 
 const CM_LANGUAGE: Record<FileLanguage, (() => Extension) | null> = {
   typescript: () => javascript({ typescript: true }),

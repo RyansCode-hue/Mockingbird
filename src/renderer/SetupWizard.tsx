@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { isErr, type AgentCheck, type SetupStatus, type Settings } from "../shared/types";
+import { plural } from "../shared/format";
 
 const STEPS = ["Agents", "Status hooks", "Repos", "Azure DevOps", "Done"] as const;
 
@@ -269,7 +270,7 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
                 <Check ok={r.exists && r.repos > 0} warn={r.exists && r.repos === 0} />
                 <div className="sw-body">
                   <div className="sw-title">{r.path}</div>
-                  <div className="sw-sub">{r.exists ? `${r.repos} repo${r.repos === 1 ? "" : "s"}` : "folder not found"}</div>
+                  <div className="sw-sub">{r.exists ? plural(r.repos, "repo") : "folder not found"}</div>
                 </div>
                 <button
                   className="icon"

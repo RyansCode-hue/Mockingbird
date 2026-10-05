@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { fmtElapsed, shortReason } from "./TerminalPane";
+import { shortReason } from "./TerminalPane";
 import { titleOf } from "./appModel";
 import type { SessionInfo } from "../shared/types";
+import { fmtElapsed } from "../shared/format";
 
 /** The command palette (⌘K) and the how-to-use popup (⌘/). */
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, type PaneDensity } from "./TerminalPane";
+import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, type PaneDensity } from "./TerminalPane";
 import { EditorDock, ExplorerTree } from "./FilePanel";
 import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
@@ -38,6 +38,7 @@ import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
+import { fmtElapsed, plural } from "../shared/format";
 
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
 /** What the side bar shows, picked from the activity bar as in VS Code. */
@@ -209,7 +210,7 @@ function App() {
   const askGroupStatus = async (group: string) => {
     const r = await window.mb.groupStatusCheck(group);
     if (isErr(r)) return alert(r.error);
-    setStatusNote(`Asked ${r.asked} session${r.asked === 1 ? "" : "s"}`);
+    setStatusNote(`Asked ${plural(r.asked, "session")}`);
     setTimeout(() => setStatusNote(""), 6000);
   };
   // agent CLIs updated under running panes (they run the old version until restarted)
@@ -1383,7 +1384,7 @@ function App() {
                 <span className="dot sm waiting" style={{ marginLeft: 6 }} />
               )}
               {t === "collaborate" && asksWaiting > 0 && (
-                <span className="tab-badge" title={`${asksWaiting} request${asksWaiting === 1 ? "" : "s"} from models waiting on you`}>
+                <span className="tab-badge" title={`${plural(asksWaiting, "request")} from models waiting on you`}>
                   {asksWaiting}
                 </span>
               )}
@@ -1561,7 +1562,7 @@ function App() {
                 ) : badge > 0 && (
                   <span
                     className={`ab-badge ${id === "sessions" ? "waiting" : ""}`}
-                    title={id === "sessions" ? `${badge} waiting on you` : id === "run" ? `${badge} service${badge === 1 ? "" : "s"} running` : `${badge} uncommitted file${badge === 1 ? "" : "s"}`}
+                    title={id === "sessions" ? `${badge} waiting on you` : id === "run" ? `${plural(badge, "service")} running` : plural(badge, "uncommitted file")}
                   >
                     {badge > 99 ? "99+" : badge}
                   </span>
@@ -2294,7 +2295,7 @@ function App() {
             title={`${u.agent === "codex" ? "Codex" : "Claude Code"} ${u.installed} is installed; these sessions still run the version they started with:\n${u.sessions.map((x) => `  ${x.title} (${x.version})`).join("\n")}\nRestarting resumes each conversation.`}
             onClick={() => setModal("restart")}
           >
-            {u.agent === "codex" ? "Codex" : "Claude Code"} {u.installed} · restart {u.sessions.length} session{u.sessions.length === 1 ? "" : "s"}
+            {u.agent === "codex" ? "Codex" : "Claude Code"} {u.installed} · restart {plural(u.sessions.length, "session")}
           </button>
         ))}
         {(["working", "waiting", "idle", "dead"] as const).map((st) => {
@@ -2670,7 +2671,7 @@ function StatusDots({ list }: { list: SessionInfo[] }) {
   const MAX = 3;
   const extra = sorted.length - MAX;
   return (
-    <span className="sdots" title={`${list.length} session${list.length === 1 ? "" : "s"}`}>
+    <span className="sdots" title={plural(list.length, "session")}>
       {sorted.slice(0, MAX).map((s) => (
         <span key={s.id} className={`dot xs ${s.status}`} />
       ))}

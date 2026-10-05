@@ -5,7 +5,8 @@ import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets,
 import { newPresetId } from "./Presets";
 import { isErr, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
-import { loadLS, ago } from "./uiUtil";
+import { loadLS } from "./uiUtil";
+import { agoShort } from "../shared/format";
 
 /** Starting sessions: New session (⌘N) and Import. */
 
@@ -618,7 +619,7 @@ export function ImportModal({
                   </div>
                 )}
               </div>
-              <span className="age">{ago(c.at)}</span>
+              <span className="age">{agoShort(c.at)}</span>
             </div>
           ))}
           {rows === null && !error && (

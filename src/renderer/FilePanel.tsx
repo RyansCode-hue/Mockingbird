@@ -8,8 +8,9 @@ import { useBreakpoints, useDebug } from "./debugStore";
 import { CodeEditor, confirmClose, releaseBuffers, useDirtyKeys } from "./CodeEditor";
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
 import { CopyToast, useCopyNote } from "./copyNote";
-import { ChangeCount, plural } from "./changeCount";
+import { ChangeCount } from "./changeCount";
 import { settled } from "./settled";
+import { plural } from "../shared/format";
 
 /** A request's answer, with a failed request (a rejected promise) as its error, so it shows instead of "loading…" forever. */
 

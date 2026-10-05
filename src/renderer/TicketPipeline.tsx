@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
 import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, isErr, type IpcResult } from "../shared/types";
-import { ago } from "./format";
+import { ago, plural } from "../shared/format";
 import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";
 import { useEscape } from "./useEscape";
@@ -144,7 +144,7 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
         !p.branch && "The worktree isn't on a branch.",
         !p.remote && "origin isn't on Azure DevOps or GitHub.",
         !base && `origin has no ${target === "dev" ? "dev, develop or uat" : "main or master"} branch to merge into.`,
-        p.dirtyFiles > 0 && `${p.dirtyFiles} uncommitted file${p.dirtyFiles === 1 ? "" : "s"} wouldn't be in the pull request.`,
+        p.dirtyFiles > 0 && `${plural(p.dirtyFiles, "uncommitted file")} wouldn't be in the pull request.`,
         p.commits === 0 && base === p.base && `The branch has no commits that ${base} doesn't.`,
         p.existing && base === p.base && "A pull request is already open from this branch.",
       ].filter((x): x is string => !!x)
@@ -191,10 +191,10 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
               </select>
               {p.remote && <span className="pl-dim"> on {p.remote.provider === "ado" ? "Azure DevOps" : "GitHub"} · {p.remote.repo}</span>}
             </div>
-            {base === p.base && <div className={p.commits ? "ok" : "warn"}>{p.commits} commit{p.commits === 1 ? "" : "s"} to merge</div>}
+            {base === p.base && <div className={p.commits ? "ok" : "warn"}>{plural(p.commits, "commit")} to merge</div>}
             {p.dirtyFiles > 0 && (
               <div className="warn">
-                {p.dirtyFiles} uncommitted file{p.dirtyFiles === 1 ? "" : "s"}
+                {plural(p.dirtyFiles, "uncommitted file")}
                 <button className="mini" onClick={() => onOpenScm(sid)}>Source Control</button>
                 {canAsk && <button className="mini" onClick={() => ask(`Commit the work for #${ticketId} with a clear message.`, "Asked to commit")}>Ask the session to commit</button>}
               </div>

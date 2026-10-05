@@ -1,14 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { isErr, type SessionInfo, type TurnChange, type TurnSnapshot, type IpcResult } from "../shared/types";
-import { plural } from "./changeCount";
+import { ago, plural } from "../shared/format";
 
-const ago = (ms: number) => {
-  const m = Math.round((Date.now() - ms) / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  if (m < 1440) return `${Math.round(m / 60)}h ago`;
-  return `${Math.round(m / 1440)}d ago`;
-};
 
 /**
  * Put a session's files back as they were before one of its recent turns.

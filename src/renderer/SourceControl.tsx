@@ -5,6 +5,7 @@ import { SparkleIcon } from "./Icons";
 import { CommitGraph } from "./CommitGraph";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
+import { plural } from "../shared/format";
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
@@ -149,7 +150,7 @@ export function SourceControl({
     if (!message.trim()) return setError("Write a commit message first");
     if (!staged.length) {
       if (!unstaged.length) return setError("There's nothing to commit");
-      if (!window.confirm(`Nothing is staged. Stage all ${unstaged.length} change${unstaged.length === 1 ? "" : "s"} and commit?`)) return;
+      if (!window.confirm(`Nothing is staged. Stage all ${plural(unstaged.length, "change")} and commit?`)) return;
     }
     // staging and committing are one action, so nothing can start in between
     let step = "commit";
@@ -234,7 +235,6 @@ export function SourceControl({
     );
 
   const pushLabel = !status.published ? "Publish branch" : status.ahead ? `Push ↑${status.ahead}` : "Push";
-  const s = (n: number) => (n === 1 ? "" : "s");
   return (
     <div className="sc">
       <div className="sc-branch">
@@ -244,7 +244,7 @@ export function SourceControl({
             className="sc-ab"
             title={
               status.upstream
-                ? `Compared with ${status.upstream} (as of the last fetch): ↑${status.ahead} commit${s(status.ahead)} here that it doesn't have, ↓${status.behind} commit${s(status.behind)} there that this branch doesn't have`
+                ? `Compared with ${status.upstream} (as of the last fetch): ↑${plural(status.ahead, "commit")} here that it doesn't have, ↓${plural(status.behind, "commit")} there that this branch doesn't have`
                 : "This branch doesn't track a remote branch yet"
             }
           >
@@ -259,7 +259,7 @@ export function SourceControl({
             <button
               className="outline"
               disabled={!!busy}
-              title={`Bring the ${status.behind} new commit${s(status.behind)} on ${status.upstream} into this branch — fast-forward only, so nothing is merged or rewritten; if both sides have moved it says so and changes nothing`}
+              title={`Bring the ${plural(status.behind, "new commit")} on ${status.upstream} into this branch — fast-forward only, so nothing is merged or rewritten; if both sides have moved it says so and changes nothing`}
               onClick={() => act("pull", () => window.mb.scmPull(sessionId))}
             >
               {busy === "pull" ? "Pulling…" : "Pull"}

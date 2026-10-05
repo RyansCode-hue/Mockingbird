@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { fmtElapsed, tokenBreakdown } from "./TerminalPane";
+import { tokenBreakdown } from "./TerminalPane";
 import { resetText, pctNow } from "./usageFormat";
 import { Popover } from "./Popover";
 import type { UsageReport, UsageLimit, Meters } from "../shared/types";
 import { formatTokens, totalTokens } from "../shared/types";
 import { loadLS } from "./uiUtil";
+import { fmtElapsed } from "../shared/format";
 
 /** The status bar's plan-usage meter and its popover. */
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { isErr, type GitChange, type GraphCommit, type ScmGraph, type IpcResult } from "../shared/types";
 import { layoutGraph, laneCount, type GraphRow } from "./graphLayout";
-import { ago } from "./format";
+import { ago } from "../shared/format";
 import { settled } from "./settled";
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);

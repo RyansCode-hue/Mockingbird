@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { isErr, type TranscriptHit, type IpcResult, type TranscriptSearchResult } from "../shared/types";
-import { ago } from "./format";
+import { ago } from "../shared/format";
 import { settled } from "./settled";
 
 const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {

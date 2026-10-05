@@ -4,6 +4,7 @@ import { enterConfirms } from "./keys";
 import { titleOf } from "./appModel";
 import { isErr, type SessionInfo, type WorktreeStateInfo } from "../shared/types";
 import { splitGroupKey, topOfKey } from "../shared/types";
+import { plural } from "../shared/format";
 
 /** The grid's small dialogs: rename, move to a group, restart all, close a session. */
 
@@ -192,7 +193,7 @@ export function RestartAllDialog({
               onChange={(e) => setIncludeBusy(e.target.checked)}
             />
             <span style={{ marginLeft: 6 }}>
-              also restart the {active.length} session{active.length === 1 ? "" : "s"} that{" "}
+              also restart the {plural(active.length, "session")} that{" "}
               {active.length === 1 ? "is" : "are"} working or waiting — their in-flight turn is lost
             </span>
           </label>
@@ -203,7 +204,7 @@ export function RestartAllDialog({
             Cancel
           </button>
           <button className="primary" onClick={run} disabled={busy || count === 0}>
-            {busy ? "restarting…" : count === 0 ? "nothing to restart" : `Restart ${count} session${count === 1 ? "" : "s"}`}
+            {busy ? "restarting…" : count === 0 ? "nothing to restart" : `Restart ${plural(count, "session")}`}
           </button>
         </div>
       </div>
@@ -236,7 +237,7 @@ export function CloseSessionDialog({
   const wtName = session.cwd.split("/").pop();
   const st = isErr(wt) ? null : wt;
   const stateStr = st
-    ? [st.dirty ? `${st.dirtyFiles} uncommitted file${st.dirtyFiles === 1 ? "" : "s"}` : null, st.ahead ? `${st.ahead} unpushed commit${st.ahead === 1 ? "" : "s"}` : null]
+    ? [st.dirty ? plural(st.dirtyFiles, "uncommitted file") : null, st.ahead ? plural(st.ahead, "unpushed commit") : null]
         .filter(Boolean)
         .join(" and ")
     : "";

@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { fmtElapsed } from "./TerminalPane";
 import { Pick } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { beginDrag, cue, dragging, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
@@ -8,7 +7,8 @@ import { titleOf } from "./appModel";
 import { Popover } from "./Popover";
 import { PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { isErr, slugBranch, topOfKey, type SessionInfo, type RepoEntry, type AdoWorkItem, type AdoComment, type AdoBoard } from "../shared/types";
-import { ago, loadLS, openLink } from "./uiUtil";
+import { loadLS, openLink } from "./uiUtil";
+import { ago, agoShort, fmtElapsed, plural } from "../shared/format";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -472,14 +472,14 @@ export function DashboardBoard({
                       <div className="bc-top">
                         <span className="wi-id">{it.id}</span>
                         <span className="bc-type">{it.type}</span>
-                        <span className="bc-age">{it.changed ? ago(Date.parse(it.changed)) : ""}</span>
+                        <span className="bc-age">{it.changed ? agoShort(Date.parse(it.changed)) : ""}</span>
                       </div>
                       <div className="bc-title">{it.title}</div>
                       <div className="bc-foot">
                         {live.map((s) => (
                           <span key={s.id} className={`dot sm ${s.status}`} />
                         ))}
-                        <span>{live.length ? `${live.length} session${live.length === 1 ? "" : "s"}` : "no session"}</span>
+                        <span>{live.length ? plural(live.length, "session") : "no session"}</span>
                         <StageChip p={pipelines[String(it.id)]} />
                         {it.assignedTo !== me && (
                           <span className="bc-who">{it.assignedTo || "Unassigned"}</span>
@@ -539,7 +539,7 @@ export function DashboardBoard({
                   <div key={c.id} className="cmt">
                     <div className="cmt-hd">
                       <b>{c.author}</b>
-                      <span>{c.date ? `${ago(Date.parse(c.date))} ago` : ""}</span>
+                      <span>{c.date ? ago(Date.parse(c.date)) : ""}</span>
                     </div>
                     <div className="cmt-tx">{c.text}</div>
                   </div>

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { isErr, type FileList, type SessionInfo, type IpcResult } from "../shared/types";
 import { fuzzyFilter } from "./fuzzy";
 import { useListNav } from "./listNav";
+import { plural } from "../shared/format";
 
 
 /** "src/app.ts:42" → the path and the line; a bare path has no line. */
@@ -108,7 +109,7 @@ export function QuickOpen({
         <div className="pfoot">
           <span>
             {list && !isErr(list)
-              ? `${list.files.length.toLocaleString()} files${list.truncated ? " (first 50,000)" : ""}${list.unreadable ? ` · ${list.unreadable} folder${list.unreadable === 1 ? "" : "s"} unreadable` : ""}`
+              ? `${list.files.length.toLocaleString()} files${list.truncated ? " (first 50,000)" : ""}${list.unreadable ? ` · ${plural(list.unreadable, "folder")} unreadable` : ""}`
               : ""}
           </span>
           <span className="right">↑↓ choose · ↵ open · esc close</span>

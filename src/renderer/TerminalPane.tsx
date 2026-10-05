@@ -11,7 +11,8 @@ import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
 import { dataPump, fitTerm, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { CopyToast, useCopyNote } from "./copyNote";
-import { ChangeCount, plural } from "./changeCount";
+import { ChangeCount } from "./changeCount";
+import { fmtElapsed, plural } from "../shared/format";
 
 export { applyTermTheme } from "./cachedTerm";
 
@@ -185,14 +186,6 @@ export interface PaneResize {
   x?: (e: React.PointerEvent) => void; // right edge
   y?: (e: React.PointerEvent) => void; // bottom edge
   reset?: () => void; // double-click a handle → even the grid back out
-}
-
-export function fmtElapsed(fromMs: number, seconds = false): string {
-  const s = Math.max(0, Math.floor((Date.now() - fromMs) / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return seconds ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${m}m`;
-  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
 /** Shorten hook Notification messages to banner-sized reasons. */
