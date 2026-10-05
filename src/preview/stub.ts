@@ -142,11 +142,15 @@ const byId = (id: string) => sessions.find((s) => s.id === id);
 const later = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(v), ms));
 const err = (message: string) => ({ error: message });
 
+/** The ticket's pipeline, started at the first stage when it has none yet. */
+const pipelineOf = (id: string) => (pipelines[id] ??= { ticketId: id, stage: "ba", history: [], prs: [], feedback: [], drafts: [], checks: {} });
+/** Tell the window, with a copy as the IPC boundary would hand it over. */
+const pipelinesChanged = () => emit("onPipelineChanged", JSON.parse(JSON.stringify(pipelines)));
 const setStage = (id: string, stage: TicketStage) => {
-  const p = (pipelines[id] ??= { ticketId: id, stage: "ba", history: [], prs: [], feedback: [], drafts: [], checks: {} });
+  const p = pipelineOf(id);
   p.stage = stage;
   p.history.push({ at: Date.now(), stage });
-  emit("onPipelineChanged", JSON.parse(JSON.stringify(pipelines)));
+  pipelinesChanged();
   return p;
 };
 
@@ -181,6 +185,10 @@ const api: Record<string, (...a: any[]) => any> = {
     emit("onSessionData", id, out);
   },
   sessionResize: async () => undefined,
+  // synchronous in the preload too: an async stand-in would hand back a Promise.
+  // A browser gives a dropped file no path, so a drop types nothing.
+  getFilePath: () => null,
+  auditWrite: () => undefined,
   setGroup: async (id: string, group: string | null) => {
     sessions = sessions.map((s) => (s.id === id ? { ...s, taskGroup: group } : s));
     sessionsChanged();
@@ -309,20 +317,21 @@ const api: Record<string, (...a: any[]) => any> = {
   pipelineAll: async () => JSON.parse(JSON.stringify(pipelines)),
   pipelineStage: async (id: string, stage: TicketStage) => setStage(id, stage),
   pipelineFeedback: async (id: string, text: string) => {
-    (pipelines[id] ??= { ticketId: id, stage: "ba", history: [], prs: [], feedback: [], drafts: [], checks: {} }).feedback.push({ at: Date.now(), text });
+    pipelineOf(id).feedback.push({ at: Date.now(), text });
     return setStage(id, "local-test");
   },
   pipelineCheck: async (id: string, key: string, value: boolean) => {
-    const p = pipelines[id];
+    const p = pipelineOf(id);
     if (value) p.checks[key] = true;
     else delete p.checks[key];
-    emit("onPipelineChanged", JSON.parse(JSON.stringify(pipelines)));
+    pipelinesChanged();
     return p;
   },
   pipelineDraftDrop: async (id: string, draftId: string) => {
-    pipelines[id].drafts = pipelines[id].drafts.filter((d) => d.id !== draftId);
-    emit("onPipelineChanged", JSON.parse(JSON.stringify(pipelines)));
-    return pipelines[id];
+    const p = pipelineOf(id);
+    p.drafts = p.drafts.filter((d) => d.id !== draftId);
+    pipelinesChanged();
+    return p;
   },
   pipelineDraftPost: async (id: string, draftId: string) => api.pipelineDraftDrop(id, draftId),
   pipelinePrPreflight: async () => ({ branch: "5101-orgDropdowns", base: "dev", bases: ["dev", "main"], dirtyFiles: 2, commits: 1, remote: { provider: "ado", repo: "Backoffice/backoffice" }, docs: null, existing: null, lookupError: null }),

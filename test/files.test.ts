@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { listDir, readFile, gitChanges, fileDiff } from "../src/main/files";
+import { listDir, readFile, gitChanges, fileDiff, inside } from "../src/main/files";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 describe("listDir", () => {
@@ -60,6 +60,13 @@ describe("the session-folder boundary", () => {
     const link = path.join(tempDir("links"), "repo-link");
     fs.symlinkSync(repo, link);
     expect((await readFile(link, "a.txt")).content).toBe("ok");
+  });
+  it("is the same folder with or without a trailing slash", () => {
+    expect(inside("/Users/you/WorkTracker/", "/Users/you/WorkTracker/session-digests/rollup.md")).toBe(true);
+    expect(inside("/Users/you/WorkTracker", "/Users/you/WorkTracker/rollup.md")).toBe(true);
+    expect(inside("/Users/you/WorkTracker/", "/Users/you/WorkTracker")).toBe(true);
+    expect(inside("/Users/you/WorkTracker", "/Users/you/WorkTracker-old/x.md")).toBe(false);
+    expect(inside("/Users/you/WorkTracker", "/Users/you/WorkTracker/../.ssh/id_rsa")).toBe(false);
   });
 });
 

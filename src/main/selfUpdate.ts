@@ -1,10 +1,11 @@
-import { execFile, spawn } from "child_process";
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { UPDATE_STEPS, type UpdateOutcome, type UpdateProgress, type UpdateStepId } from "../shared/types";
 import { isNewer } from "./updates";
+import { git } from "./git";
 import { indexRepos } from "./repos";
-import { quote } from "./shell";
+import { loginShell, quote } from "./shell";
 
 /**
  * Updating a build-it-yourself install from inside the app: pull the user's
@@ -21,11 +22,13 @@ export function remoteMatches(url: string, owner: string, repo: string): boolean
   return !!m && m[1].toLowerCase() === owner.toLowerCase() && m[2].toLowerCase() === repo.toLowerCase();
 }
 
-function originOf(dir: string): Promise<string | null> {
-  return new Promise((resolve) =>
-    // not a repository, or no origin: not the clone
-    execFile("git", ["-C", dir, "remote", "get-url", "origin"], { timeout: 10_000 }, (err, out) => resolve(err ? null : out.trim()))
-  );
+/**
+ * The folder's origin URL, or null when it isn't a repository (git exits 128)
+ * or has no origin (2). Anything else — git missing, a timeout — is an error,
+ * not an answer about the folder.
+ */
+async function originOf(dir: string): Promise<string | null> {
+  return (await git(dir, ["remote", "get-url", "origin"], { okCodes: [0, 2, 128] })) || null;
 }
 
 /**
@@ -49,22 +52,18 @@ export async function findSourceClone(opts: { configured?: string | null; roots:
 /** Runs one shell command for a step, streaming its output; never rejects. */
 export type Exec = (cmd: string, cwd: string, onOut: (chunk: string) => void, signal: AbortSignal) => Promise<{ code: number; out: string }>;
 
-/** The user's interactive login shell, so nvm's Node and Homebrew's tools are on PATH as in their terminal. */
+/**
+ * The user's interactive login shell, so nvm's Node and Homebrew's tools are on
+ * PATH as in their terminal. Everything it prints streams to the log; the
+ * output a step parses is the command's own, without the rc files' banners.
+ */
 export function loginShellExec(env: NodeJS.ProcessEnv): Exec {
-  return (cmd, cwd, onOut, signal) =>
-    new Promise((resolve) => {
-      let out = "";
-      const child = spawn("/bin/zsh", ["-ilc", cmd], { cwd, env, signal });
-      const take = (d: Buffer) => {
-        const s = d.toString("utf8");
-        out = (out + s).slice(-20_000);
-        onOut(s);
-      };
-      child.stdout.on("data", take);
-      child.stderr.on("data", take);
-      child.on("error", (err) => resolve({ code: 1, out: err.name === "AbortError" ? "cancelled" : err.message }));
-      child.on("close", (code) => resolve({ code: code ?? 1, out }));
-    });
+  return async (cmd, cwd, onOut, signal) => {
+    const r = await loginShell(cmd, { cwd, env, onOut, signal });
+    // a failed step is explained by its last lines, which are often on stderr
+    const errs = r.stderr.trim();
+    return { code: r.code, out: r.code === 0 || !errs || r.out.startsWith(errs) ? r.out : `${r.out}\n${errs}` };
+  };
 }
 
 class StepFailed extends Error {}
@@ -144,7 +143,9 @@ export class UpdateRunner {
       done("pull");
 
       this.step("install");
-      await this.run("npm install", clone);
+      // exactly what package-lock.json pins, leaving it untouched: an `npm install`
+      // that rewrote it would make the next update find uncommitted changes
+      await this.run("npm ci", clone);
       done("install");
 
       this.step("build");
@@ -177,9 +178,14 @@ export class UpdateRunner {
     this.ac?.abort();
   }
 
-  /** The installer has taken over; the app is about to quit. */
+  /** Restarting into the build: the app is quitting, and the installer takes over once it has. */
   markInstalling(): void {
     this.set({ state: "installing" });
+  }
+
+  /** The quit was cancelled before the installer started: the build is still ready to install. */
+  installAborted(): void {
+    if (this.progress.state === "installing") this.set({ state: "ready" });
   }
 }
 
@@ -278,11 +284,19 @@ export function startInstaller(opts: { mbDir: string; pid: number; builtApp: str
  */
 export function takeUpdateOutcome(mbDir: string, currentVersion: string, now = Date.now()): UpdateOutcome | null {
   const pendingFile = path.join(mbDir, PENDING);
+  const logPath = path.join(mbDir, LOG);
+  const forget = () => {
+    fs.rmSync(pendingFile, { force: true });
+    fs.rmSync(path.join(mbDir, RESULT), { force: true });
+  };
   let pending: { from: string; to: string; sessions: string[]; at: number };
   try {
     pending = JSON.parse(fs.readFileSync(pendingFile, "utf8"));
-  } catch {
-    return null; // no update in flight
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null; // no update in flight
+    // said once, then cleared — not re-read at every launch
+    forget();
+    return { ok: false, from: "", to: "", sessions: [], logPath, message: `An update was under way, but its record (${PENDING}) couldn't be read: ${(err as Error).message}. See ${logPath}.` };
   }
   let result = "";
   try {
@@ -290,10 +304,8 @@ export function takeUpdateOutcome(mbDir: string, currentVersion: string, now = D
   } catch {
     /* the installer never finished — reported below */
   }
-  fs.rmSync(pendingFile, { force: true });
-  fs.rmSync(path.join(mbDir, RESULT), { force: true });
+  forget();
   if (now - pending.at > 24 * 3_600_000) return null; // a stale marker from an update long gone
-  const logPath = path.join(mbDir, LOG);
   const base = { from: pending.from, to: pending.to, sessions: pending.sessions ?? [], logPath };
   if (result === "ok" && currentVersion === pending.to) return { ...base, ok: true, message: `Updated to ${pending.to}.` };
   if (result === "ok") return { ...base, ok: false, message: `The installer finished, but this is still ${currentVersion} (expected ${pending.to}).` };

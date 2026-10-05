@@ -9,7 +9,12 @@ import { pickDefaultBase } from "./worktrees";
 const MAX_FILE_BYTES = 1_500_000;
 const MAX_DIFF_BYTES = 3_000_000;
 
-const inside = (root: string, p: string) => p === root || p.startsWith(root + path.sep);
+/** Is `p` the folder `root` or inside it? Both are compared as resolved paths, so a trailing slash doesn't matter. */
+export function inside(root: string, p: string): boolean {
+  const r = path.resolve(root);
+  const f = path.resolve(p);
+  return f === r || f.startsWith(r.endsWith(path.sep) ? r : r + path.sep);
+}
 
 /**
  * Resolve a worktree-relative path, refusing anything outside the root — both
@@ -122,16 +127,13 @@ export async function baseRef(root: string): Promise<string | null> {
 
 /** The commit a "branch" scope compares against: where HEAD forked from the repo's base branch. */
 async function branchBase(root: string): Promise<{ sha: string; name: string }> {
-  const defaultBase = await defaultBaseOf(root);
-  if (!defaultBase) throw new Error("No dev/main-style base branch found to compare against");
-  for (const ref of [`origin/${defaultBase}`, defaultBase]) {
-    try {
-      return { sha: (await git(root, ["merge-base", "HEAD", ref])).trim(), name: ref };
-    } catch {
-      /* ref missing (no remote / no local copy) — try the next spelling */
-    }
+  const ref = await baseRef(root);
+  if (!ref) throw new Error("No dev/main-style base branch found to compare against");
+  try {
+    return { sha: await git(root, ["merge-base", "HEAD", ref]), name: ref };
+  } catch (err) {
+    throw new Error(`Cannot find a common ancestor with ${ref}: ${(err as Error).message}`);
   }
-  throw new Error(`Cannot find a common ancestor with ${defaultBase}`);
 }
 
 export function parseNameStatus(z: string): GitChange[] {

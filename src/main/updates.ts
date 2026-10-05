@@ -3,15 +3,7 @@ import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { which } from "./shell";
-
-export interface UpdateInfo {
-  current: string;
-  latest: string;
-  url: string;
-  newer: boolean;
-  /** Where "latest" came from: a published GitHub release, or the version on the default branch. */
-  source: "release" | "branch";
-}
+import type { UpdateInfo } from "../shared/types";
 
 /** owner/repo from a package.json "repository" field ("github:owner/repo", a URL, or { url }). */
 export function repoFromPackage(pkg: { repository?: string | { url?: string } }): { owner: string; repo: string } | null {
@@ -57,8 +49,8 @@ export interface UpdateDeps {
  * The newest version on GitHub: the latest published release, or — when the
  * repository has none — the version in package.json on its default branch, so
  * people who build from the repo hear about a bump too. Returns null when the
- * app has no repository to check. Unsigned macOS apps can't replace
- * themselves, so callers show a link and the user updates when they choose.
+ * app has no repository to check. Callers offer the update; the user starts
+ * it (selfUpdate builds it in their clone) when they choose.
  */
 export async function checkUpdateWith(deps: UpdateDeps): Promise<UpdateInfo | null> {
   const repo = repoFromPackage(deps.pkg);
