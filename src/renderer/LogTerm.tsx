@@ -2,36 +2,23 @@ import React, { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { currentTermTheme, termThemeListeners } from "./TerminalPane";
+import { dataPump, replay, trackUserInput, type CachedTerm } from "./cachedTerm";
+import { classifyTermInput } from "./inputGuard";
 
-interface Entry {
-  term: Terminal;
+interface Entry extends CachedTerm {
   fit: FitAddon;
-  /** Live output is written only after the saved log has been replayed, so nothing shows twice or out of order. */
-  ready: boolean;
-  pending: string[];
+  lastInput: number;
+  inputWired?: boolean;
 }
 
 // one terminal per service log, kept while the app runs so switching tabs keeps scrollback
 const logs = new Map<string, Entry>();
-let pumping = false;
-
-function pump() {
-  if (pumping) return;
-  pumping = true;
-  window.mb.onRunData((id: string, data: string) => {
-    const e = logs.get(id);
-    if (!e) return; // not opened yet: the replay will include it
-    if (e.ready) e.term.write(data);
-    else e.pending.push(data);
-  });
-  termThemeListeners.add((theme) => {
-    for (const e of logs.values()) e.term.options.theme = theme;
-  });
-}
+const ensurePump = dataPump((cb) => window.mb.onRunData(cb), logs, (e, data) => e.term.write(data));
+let themed = false;
 
 function entryFor(id: string): Entry {
-  let e = logs.get(id);
-  if (e) return e;
+  const open = logs.get(id);
+  if (open) return open;
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
     fontSize: 11,
@@ -42,17 +29,19 @@ function entryFor(id: string): Entry {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  e = { term, fit, ready: false, pending: [] };
+  const e: Entry = { term, fit, replayed: false, ready: false, lastInput: 0 };
   logs.set(id, e);
-  const entry = e;
-  window.mb.runBuffer(id).then((buf: string) => {
-    entry.term.write(buf);
-    // anything that arrived while the replay was in flight is already in it, except what came after
-    entry.pending = [];
-    entry.ready = true;
+  void replay(e, window.mb.runBuffer(id), () => logs.get(id) === e);
+  // keys go to the process: Vite's shortcuts, a prompt, Ctrl-C. What xterm
+  // sends on its own answers queries; those in the replayed log are history.
+  term.onData((d) => {
+    if (!e.ready) return;
+    if (classifyTermInput(d, Date.now() - e.lastInput, term.modes.mouseTrackingMode) === "unattributed") {
+      window.mb.auditWrite(`run:${id}`, "dropped-unattributed", d);
+      return;
+    }
+    window.mb.runWrite(id, d);
   });
-  // keys go to the process: Vite's shortcuts, a prompt, Ctrl-C
-  term.onData((d) => window.mb.runWrite(id, d));
   return e;
 }
 
@@ -66,11 +55,18 @@ export function disposeLog(id: string): void {
 export function LogTerm({ id }: { id: string }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    pump();
+    ensurePump();
+    if (!themed) {
+      themed = true;
+      termThemeListeners.add((theme) => {
+        for (const e of logs.values()) e.term.options.theme = theme;
+      });
+    }
     const e = entryFor(id);
     const el = host.current!;
     if (e.term.element) el.appendChild(e.term.element);
     else e.term.open(el);
+    trackUserInput(e);
     const fit = () => {
       try {
         e.fit.fit();

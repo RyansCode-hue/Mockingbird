@@ -7,6 +7,7 @@ import { fileBadge } from "./fileIcons";
 import { useBreakpoints, useDebug } from "./debugStore";
 import { CodeEditor, confirmClose, releaseBuffers, useDirtyKeys } from "./CodeEditor";
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
+import { CopyToast, useCopyNote } from "./copyNote";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -51,16 +52,12 @@ function FileGlyph({ path }: { path: string }) {
  * opens a file in its own tab. Only mounted while the view shows, so a hidden
  * explorer reads nothing.
  */
-export function ExplorerTree({
-  session,
-  activePath,
-  editor,
-  onOpen,
-  onActivate,
-  onCloseTab,
-  onCloseAll,
-  onQuickOpen,
-}: {
+export function ExplorerTree(props: ExplorerProps) {
+  // a different folder is a different tree: nothing the last one asked for may land in it
+  return <FolderTree key={props.session?.cwd ?? ""} {...props} />;
+}
+
+interface ExplorerProps {
   session: SessionInfo | null;
   /** The active editor tab's file, if it's in this folder: highlighted in the tree. */
   activePath: string | null;
@@ -70,7 +67,9 @@ export function ExplorerTree({
   onCloseTab: (key: string) => void;
   onCloseAll: () => void;
   onQuickOpen: () => void;
-}) {
+}
+
+function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTab, onCloseAll, onQuickOpen }: ExplorerProps) {
   // expanded folders are remembered per folder-on-disk, so flipping between
   // sessions restores each tree the way it was left
   const [expandedByRoot, setExpandedByRoot] = useState<Record<string, string[]>>(() => loadLS("mb.files.expanded", {}));
@@ -80,7 +79,7 @@ export function ExplorerTree({
   const toggleSection = (k: string) => setShut((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
   const [dirs, setDirs] = useState<Record<string, Result<FileEntry[]>>>({});
   const [changes, setChanges] = useState<Result<GitChanges> | null>(null);
-  const [git, setGit] = useState<WorktreeStateInfo | null>(null);
+  const [gitState, setGit] = useState<Result<WorktreeStateInfo> | null>(null);
 
   const sid = session?.id ?? null;
   const root = session?.cwd ?? null;
@@ -98,13 +97,6 @@ export function ExplorerTree({
     return r;
   }, []);
 
-  // a different session folder is a different tree
-  useEffect(() => {
-    setDirs({});
-    setChanges(null);
-    setGit(null);
-  }, [root]);
-
   // A failing change list (not a git repo) isn't asked again on every change —
   // the tree still refreshes; the refresh button retries the change list.
   const gitBroken = useRef(false);
@@ -115,7 +107,10 @@ export function ExplorerTree({
       for (const rel of expanded) loadDir(sid, rel);
       if (gitBroken.current && !retryGit) return;
       loadChanges(sid).then((r) => (gitBroken.current = isErr(r)));
-      window.mb.worktreeState(root).then((r: WorktreeStateInfo | { error: string }) => setGit(r && !("error" in r) ? r : null));
+      window.mb.worktreeState(root).then(
+        (r: Result<WorktreeStateInfo>) => setGit(r ?? { error: "no answer" }),
+        (err: unknown) => setGit({ error: String(err) })
+      );
     },
     [sid, root, expanded, loadDir, loadChanges]
   );
@@ -183,6 +178,9 @@ export function ExplorerTree({
   };
 
   if (!session) return <div className="fp-note">Click into a session to browse its folder.</div>;
+  // outside a repository the change list fails too, and there's nothing to say about git
+  const gitErr = isErr(gitState) && changes && !isErr(changes) ? gitState.error : null;
+  const git = gitState && !isErr(gitState) ? gitState : null;
   const total = git ? git.insertions + git.deletions : 0;
   return (
     <>
@@ -199,6 +197,11 @@ export function ExplorerTree({
             <button className="icon" title="Refresh" onClick={() => refresh(true)}>⟳</button>
           </span>
         </div>
+        {gitErr && (
+          <div className="ex-branch err" title={gitErr}>
+            git: couldn't read ({gitErr})
+          </div>
+        )}
         {git && (
           <div className="ex-branch" title={`${git.ahead} commit${git.ahead === 1 ? "" : "s"} to push, ${git.behind} to pull`}>
             {git.branch} · ↑{git.ahead} ↓{git.behind}
@@ -456,6 +459,7 @@ function FileViewer({
     .map(([sid, f]) => (f && f.path === abs && debug.sessions.find((x) => x.id === sid)?.state === "stopped" ? f.line : null))
     .filter((l): l is number => l !== null);
   const saveRef = useRef<(() => void) | null>(null);
+  const [copyNote, copy] = useCopyNote();
   const [layout, setLayout] = useState<"inline" | "split">(() => loadLS("mb.files.diffLayout", "inline"));
   useEffect(() => localStorage.setItem("mb.files.diffLayout", JSON.stringify(layout)), [layout]);
   const deleted = open.status === "D";
@@ -520,7 +524,7 @@ function FileViewer({
         <button className="icon" data-tip={`Mention in chat — types @${open.path} into the focused session's prompt, so the agent reads this file`} onClick={() => onInsert(`@${open.path} `)}>
           @
         </button>
-        <button className="icon" data-tip={`Copy this file's path (${open.path})`} onClick={() => navigator.clipboard.writeText(open.path)}>
+        <button className="icon" data-tip={`Copy this file's path (${open.path})`} onClick={() => copy(open.path, "a file path")}>
           ⧉
         </button>
         <button className="icon" data-tip="Close this file" onClick={onClose}>
@@ -552,6 +556,7 @@ function FileViewer({
             />
           )}
       </div>
+      <CopyToast note={copyNote} failed="Couldn't copy the path" />
     </div>
   );
 }

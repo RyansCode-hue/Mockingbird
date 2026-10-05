@@ -39,6 +39,21 @@ export function replay(e: CachedTerm, saved: Promise<string>, current: () => boo
   );
 }
 
+// every path a human's input takes into xterm: physical keys, IME composition,
+// dictation/autofill (input events), and paste
+const INPUT_EVENTS = ["keydown", "beforeinput", "input", "compositionstart", "compositionupdate", "compositionend", "paste"];
+
+/**
+ * Note when the user last typed into a terminal, so what xterm sends right
+ * after counts as theirs (inputGuard.ts). Needs the terminal opened; once.
+ */
+export function trackUserInput(e: { term: Terminal; lastInput: number; inputWired?: boolean }): void {
+  const area = e.term.textarea;
+  if (e.inputWired || !area) return;
+  e.inputWired = true;
+  for (const ev of INPUT_EVENTS) area.addEventListener(ev, () => (e.lastInput = Date.now()), true);
+}
+
 /**
  * One subscription for a kind of terminal output, feeding every cached
  * terminal whether or not it's on screen (a hidden one would otherwise miss

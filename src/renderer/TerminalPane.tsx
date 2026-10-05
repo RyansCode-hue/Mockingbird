@@ -9,6 +9,7 @@ import { mousePolicyFor, selectsNatively, stripMouseEnables, type MousePolicy } 
 import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
 import { dataPump, replay, type CachedTerm } from "./cachedTerm";
+import { CopyToast, useCopyNote } from "./copyNote";
 
 declare global {
   interface Window {
@@ -330,7 +331,7 @@ export function TerminalPane({
   const dead = session.status === "dead";
   const waiting = session.status === "waiting";
   const [editTitle, setEditTitle] = useState<string | null>(null);
-  const [copyNote, setCopyNote] = useState<"copied" | "failed" | null>(null);
+  const [copyNote, copy] = useCopyNote();
   const [panelClose, setPanelClose] = useState<{ col: number; row: number } | null>(null);
   const [exitTail, setExitTail] = useState<string | null>(null);
   useEffect(() => {
@@ -352,7 +353,6 @@ export function TerminalPane({
       alive = false;
     };
   }, [dead, session.id]);
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const commitTitle = async () => {
     const v = editTitle?.trim();
@@ -369,25 +369,34 @@ export function TerminalPane({
 
   // git state for the header's change count and the rail, read when the folder
   // changes (panes in one folder share one read in the main process)
-  const [git, setGit] = useState<WorktreeStateInfo | null>(null);
+  const [gitState, setGit] = useState<WorktreeStateInfo | { error: string } | null>(null);
   const gitRoot = density !== "min" && session.repoPath && !dead ? session.cwd : null;
   const gitSeq = useRef(0);
   const readGit = () => {
     const n = ++gitSeq.current;
     if (!gitRoot) return setGit(null);
-    window.mb.worktreeState(gitRoot).then((r: WorktreeStateInfo | { error: string }) => {
-      if (n === gitSeq.current) setGit(r && !("error" in r) ? r : null);
-    });
+    window.mb.worktreeState(gitRoot).then(
+      (r: WorktreeStateInfo | { error: string }) => n === gitSeq.current && setGit(r ?? { error: "no answer" }),
+      (err: unknown) => n === gitSeq.current && setGit({ error: String(err) })
+    );
   };
   useEffect(readGit, [gitRoot]);
   useFolderRefresh(gitRoot, readGit, 30_000);
+  const git = gitState && !("error" in gitState) ? gitState : null;
+  const gitErr = gitState && "error" in gitState ? gitState.error : null;
 
   // the branch's pull request, for the rail (the main process caches lookups for 2 minutes)
   const [pr, setPr] = useState<PrStatus | null>(null);
   const prRoot = density === "max" && gitRoot ? gitRoot : null;
+  const prSeq = useRef(0);
   const readPr = (fresh = false) => {
+    const n = ++prSeq.current;
     if (!prRoot) return setPr(null);
-    window.mb.prStatus(prRoot, fresh).then((r: PrStatus | { error: string }) => setPr("error" in r && !("at" in r) ? { branch: null, pr: null, error: r.error, at: Date.now() } : (r as PrStatus)));
+    const failed = (error: string): PrStatus => ({ branch: null, pr: null, error, at: Date.now() });
+    window.mb.prStatus(prRoot, fresh).then(
+      (r: PrStatus | { error: string }) => n === prSeq.current && setPr("error" in r && !("at" in r) ? failed(r.error) : (r as PrStatus)),
+      (err: unknown) => n === prSeq.current && setPr(failed(String(err)))
+    );
   };
   useEffect(() => {
     readPr();
@@ -545,11 +554,6 @@ export function TerminalPane({
       const t = terms.get(session.id);
       if (t) t.lastInput = Date.now(); // mouse/paste count as user input too
     };
-    const showCopyNote = (note: "copied" | "failed") => {
-      setCopyNote(note);
-      if (copiedTimer.current) clearTimeout(copiedTimer.current);
-      copiedTimer.current = setTimeout(() => setCopyNote(null), 1600);
-    };
     // Who owns a left-button gesture is settled at the press, exactly as xterm
     // settles it on the mousedown that follows, and holds until release even
     // if the modifier is let go first. A gesture the CLI owns is reported to
@@ -573,16 +577,9 @@ export function TerminalPane({
       // copy-on-select, cmux-style: release puts the text on the clipboard and
       // the pane resumes immediately. The highlight is never cleared by us —
       // it stays until a click elsewhere or the CLI redraws over it.
+      // A failed copy leaves the selection standing for ⌘C.
       const text = t.term.getSelection();
-      if (text) {
-        navigator.clipboard.writeText(text).then(
-          () => showCopyNote("copied"),
-          (err: unknown) => {
-            console.error("[mockingbird] copy-on-select failed", session.id, err);
-            showCopyNote("failed"); // the selection still stands for ⌘C
-          }
-        );
-      }
+      if (text) copy(text, `pane ${session.id}'s selection`);
       flushHold(t);
     };
     const cancelDrag = () => {
@@ -814,6 +811,11 @@ export function TerminalPane({
             )}
           </button>
         )}
+        {gitErr && density === "std" && (
+          <span className="chip" title={`Couldn't read this folder's git state: ${gitErr}`}>
+            git: couldn't read
+          </span>
+        )}
         {overlaps && overlaps.length > 0 && density !== "min" && (
           <button
             className="chip overlap"
@@ -947,6 +949,12 @@ export function TerminalPane({
               <span className={`v ${git!.dirty ? "red" : "teal"}`}>{gitStr}</span>
             </div>
           )}
+          {gitErr && (
+            <div className="cell" title={`Couldn't read this folder's git state: ${gitErr}`}>
+              <span className="k">Git</span>
+              <span className="v red">couldn't read</span>
+            </div>
+          )}
           {pr && (pr.pr || pr.error) && (
             <div
               className="cell click"
@@ -1055,8 +1063,7 @@ export function TerminalPane({
               }
             }}
           />
-          {copyNote === "copied" && <span className="copy-toast">Copied ✓</span>}
-          {copyNote === "failed" && <span className="copy-toast failed">Couldn't copy selection</span>}
+          <CopyToast note={copyNote} failed="Couldn't copy selection" />
           {session.stalledSince && session.status === "working" && (
             <div className="stall-banner" title="An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process.">
               <span className="reason">No output for {fmtElapsed(session.stalledSince, true)} while working — it may be stuck</span>
