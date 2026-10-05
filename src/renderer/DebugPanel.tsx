@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { DebugFrame, DebugScope, DebugSessionInfo, DebugVariable } from "../shared/types";
-import { selectFrame, useBreakpoints, useDebug } from "./debugStore";
+import { currentSession, selectFrame, useBreakpoints, useDebug } from "./debugStore";
 import { useAction } from "./useAction";
 
 type Result<T> = T | { error: string };
@@ -69,9 +69,8 @@ export function DebugPanel({
 }) {
   const debug = useDebug();
   const bp = useBreakpoints(paneSessionId);
-  // the session to show: a stopped one first, else the newest
-  const live = sessions.filter((s) => s.state !== "ended");
-  const cur = live.find((s) => s.state === "stopped") ?? live[live.length - 1] ?? sessions[sessions.length - 1];
+  // the session to show: the one the debugger acts on, else the last to end (with how it ended)
+  const cur = currentSession(sessions) ?? sessions[sessions.length - 1];
   const [frames, setFrames] = useState<Result<DebugFrame[]> | null>(null);
   const [scopes, setScopes] = useState<Result<DebugScope[]> | null>(null);
   const [watches, setWatches] = useState<string[]>(() => {

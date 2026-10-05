@@ -1,4 +1,7 @@
-import type { RunProfile } from "../shared/types";
+import type { RunProfile, RunServiceState } from "../shared/types";
+
+/** A service's status as its dot's colour, in Run and Debug and on the panel's log tabs. */
+export const RUN_DOT: Record<RunServiceState["status"], string> = { starting: "amber", running: "teal", stopping: "amber", stopped: "grey", failed: "red" };
 
 /** The profile without its repo path, which is implied by where it's saved. */
 export function stripRepo(p: RunProfile) {

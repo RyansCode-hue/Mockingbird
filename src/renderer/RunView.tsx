@@ -3,7 +3,7 @@ import type { DebugFrame, RunProfile, RunServiceState, SessionInfo } from "../sh
 import { BugIcon, SparkleIcon } from "./Icons";
 import { DebugPanel } from "./DebugPanel";
 import { useDebug } from "./debugStore";
-import { draftForEditing, stripRepo } from "./runSetup";
+import { RUN_DOT, draftForEditing, stripRepo } from "./runDisplay";
 import { useAction } from "./useAction";
 
 type Result<T> = T | { error: string };
@@ -19,7 +19,6 @@ interface ProfileInfo {
 type Conflict = { port: number; service: string; pid: number | null; command: string };
 
 const ACTIVE = new Set(["starting", "running", "stopping"]);
-const DOT: Record<RunServiceState["status"], string> = { starting: "amber", running: "teal", stopping: "amber", stopped: "grey", failed: "red" };
 
 const TEMPLATE = {
   services: [
@@ -257,7 +256,7 @@ export function RunView({
           const active = st && ACTIVE.has(st.status);
           return (
             <div key={s.name} className="rv-svc" onClick={() => st && onShowLog(st.id)} title={st?.error ?? (st ? "Show its log" : s.command)}>
-              <span className={`rv-dot ${st ? DOT[st.status] : "grey"}`} />
+              <span className={`rv-dot ${st ? RUN_DOT[st.status] : "grey"}`} />
               <span className="rv-name">{s.name}</span>
               <span className="rv-ports">
                 {(st?.ports ?? (s.ports ?? []).map((p) => ({ name: p.name, port: p.base, url: undefined as string | undefined }))).map((p) =>

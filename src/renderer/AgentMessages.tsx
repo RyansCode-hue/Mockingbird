@@ -1,34 +1,16 @@
-import React, { useState, useSyncExternalStore } from "react";
+import React, { useState } from "react";
 import type { AgentMessage } from "../shared/types";
+import { createIpcStore, loadInto } from "./ipcStore";
 import { useEscape } from "./useEscape";
 
-// ---- one subscription to the message log, many readers ----
-let log: AgentMessage[] = [];
-const subs = new Set<() => void>();
-let installed = false;
-function install() {
-  if (installed) return;
-  installed = true;
-  window.mb.messagesList().then((r: AgentMessage[]) => {
-    log = Array.isArray(r) ? r : [];
-    subs.forEach((s) => s());
-  });
-  window.mb.onMessagesChanged((m: AgentMessage) => {
-    log = [...log, m].slice(-300);
-    subs.forEach((s) => s());
-  });
-}
+const messages = createIpcStore<AgentMessage[]>([], ({ get, set }) => {
+  loadInto("the agent message log", window.mb.messagesList(), (r: AgentMessage[]) => set(Array.isArray(r) ? r : []));
+  window.mb.onMessagesChanged((m: AgentMessage) => set([...get(), m].slice(-300)));
+});
 
 /** Every agent-to-agent message (the last 300), oldest first. */
 export function useAgentMessages(): AgentMessage[] {
-  return useSyncExternalStore(
-    (cb) => {
-      install();
-      subs.add(cb);
-      return () => subs.delete(cb);
-    },
-    () => log
-  );
+  return messages.use();
 }
 
 const when = (ms: number) => {

@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { RunServiceState } from "../shared/types";
 import { LogTerm, disposeLog } from "./LogTerm";
-import { addOutput, clearOutput, useDebug } from "./debugStore";
+import { addOutput, clearOutput, currentSession, useDebug } from "./debugStore";
+import { RUN_DOT } from "./runDisplay";
 import { useAction } from "./useAction";
 
-export const DEBUG_CONSOLE = "__debug-console";
+const DEBUG_CONSOLE = "__debug-console";
 
 /** What debuggers print, and a prompt that evaluates in the paused frame. */
 function DebugConsole() {
@@ -17,7 +18,7 @@ function DebugConsole() {
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
   }, [debug.output.length]);
-  const target = debug.sessions.find((s) => s.state === "stopped") ?? debug.sessions.filter((s) => s.state !== "ended").pop();
+  const target = currentSession(debug.sessions);
   const names = new Map(debug.sessions.map((s) => [s.id, s.name]));
   const run = async () => {
     const expr = input.trim();
@@ -129,7 +130,7 @@ export function BottomPanel({
             title={`${s.service} in ${s.worktree}${s.slot ? ` · slot ${s.slot}` : ""} — ${s.status}${s.error ? `: ${s.error}` : ""}`}
             onClick={() => onActive(s.id)}
           >
-            <span className={`rv-dot ${{ starting: "amber", running: "teal", stopping: "amber", stopped: "grey", failed: "red" }[s.status]}`} />
+            <span className={`rv-dot ${RUN_DOT[s.status]}`} />
             {s.service}
             {worktrees.size > 1 && <span className="bp-wt">{baseName(s.worktree)}</span>}
             {(s.status === "stopped" || s.status === "failed") && (

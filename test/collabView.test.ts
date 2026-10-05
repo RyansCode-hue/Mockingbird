@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { accessFlags, accessOf, agreement, initials, isLong, moveSeat, roundsGrid, seedSeats, specsOf, summaryOf, threadItems, unusedModel, waited } from "../src/renderer/collabView";
+import {
+  accessFlags,
+  accessOf,
+  agreement,
+  effortOptions,
+  initials,
+  isLong,
+  kindLabel,
+  moveAt,
+  moveSeat,
+  roundsGrid,
+  seedSeats,
+  specsOf,
+  summaryOf,
+  threadItems,
+  unusedModel,
+  waited,
+} from "../src/renderer/collabView";
 import type { CollabMessage, CollabParticipant, CollabRoom } from "../src/shared/types";
 
 let n = 0;
@@ -133,5 +150,22 @@ describe("a new room's seats", () => {
     const c = catalog([{ key: "a", model: "m-a" }, { key: "b", model: "m-b" }]);
     expect(unusedModel(c, [{ agent: "claude", model: "m-a" }])?.key).toBe("b");
     expect(unusedModel(c, [{ agent: "claude", model: "m-a" }, { agent: "claude", model: "m-b" }])).toBeNull();
+  });
+  it("moves a seat, new ones included, one place earlier or later", () => {
+    const seats = [{ label: "a" }, { label: "b" }, { label: "c" }];
+    expect(moveAt(seats, 2, 1).map((s) => s.label)).toEqual(["a", "c", "b"]);
+    expect(moveAt(seats, 0, -1)).toBe(seats);
+    expect(moveAt(seats, 2, 3)).toBe(seats);
+  });
+  it("offers each CLI's own effort levels after its default", () => {
+    const c = { presets: [], efforts: { claude: ["low", "high"], codex: ["minimal"] } };
+    expect(effortOptions(c, "codex", "default").map((o) => o.value)).toEqual(["", "minimal"]);
+  });
+});
+
+describe("always-allowed kinds", () => {
+  it("read as the command, or the tool and where", () => {
+    expect(kindLabel("Bash: docker exec")).toBe("docker exec");
+    expect(kindLabel("WebFetch: docs.python.org")).toBe("WebFetch in docs.python.org");
   });
 });

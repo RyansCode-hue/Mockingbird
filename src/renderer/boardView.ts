@@ -1,7 +1,7 @@
 import type { AdoBoard, AdoWorkItem } from "../shared/types";
 
 /** The work item types a board has columns for (PBIs and Bugs on "Backlog items", Features on "Features"…). */
-export function boardTypes(board: AdoBoard): Set<string> {
+function boardTypes(board: AdoBoard): Set<string> {
   return new Set(board.columns.flatMap((c) => Object.keys(c.stateMappings)));
 }
 

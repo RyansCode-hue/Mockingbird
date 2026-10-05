@@ -1,9 +1,30 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { AgentKind, CollabMessage, CollabMode, CollabParticipantSpec, CollabPermissionRequest, CollabRoom, RepoEntry } from "../shared/types";
-import { CUSTOM_MODEL as CUSTOM, agreement, initials, isErr, isLong, presetOptions, roundsGrid, seedSeats, summaryOf, threadItems, unusedModel, waited, type Catalog } from "./collabView";
-import { ModelsSection } from "./CollabModels";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabPermissionRequest, type CollabRoom } from "../shared/types";
+import {
+  accessFlags,
+  accessOf,
+  agreement,
+  effortOptions,
+  hasAccess,
+  initials,
+  isErr,
+  isLong,
+  kindLabel,
+  moveAt,
+  roundsGrid,
+  seedSeats,
+  summaryOf,
+  threadItems,
+  toggleAccess,
+  unusedModel,
+  waited,
+  type Access,
+  type Catalog,
+} from "./collabView";
+import { ModelSelect, ModelsSection } from "./CollabModels";
 import { MenuButton, Pick, Select } from "./Menu";
 import { PanelRightIcon } from "./Icons";
+import { RepoPick } from "./RepoPick";
 import { useAction, type RunAction } from "./useAction";
 
 const MODES: { id: CollabMode; label: string; note: string }[] = [
@@ -156,7 +177,7 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
         changed until you approve a plan — then one model implements it in a normal session on a new branch.
       </p>
       <label>Repository <span className="wi-note">optional — pick one to let models read the code</span></label>
-      <RepoPicker value={repo} onChange={setRepo} />
+      <RepoPick none="No repository — ideas only" value={repo} onChange={setRepo} />
       <label>Models <span className="wi-note">they speak in this order</span></label>
       <SeatEditor seats={seats} onChange={setSeats} catalog={catalog} hasRepo={!!repo} />
       <label>Title</label>
@@ -204,7 +225,6 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
   const asksRef = useRef<HTMLDivElement>(null);
   const label = useMemo(() => Object.fromEntries(room.participants.map((p) => [p.key, p.label])), [room.participants]);
   const color = useMemo(() => Object.fromEntries(room.participants.map((p) => [p.key, p.color])), [room.participants]);
-  const seated = room.participants.filter((p) => !p.removed);
   const agree = agreement(room);
   const pending = room.pending ?? [];
   const toggle = (id: string) =>
@@ -499,8 +519,8 @@ function AskCard({ room, req, label, color, call }: { room: CollabRoom; req: Col
         <span className={`seat-dot c-${color[req.seat] ?? 0}`} />
         <span className="who">{label[req.seat] ?? req.seat}</span>
         <span className="collab-meta">asks to {req.tool === "Bash" ? "run" : `use ${req.tool}`}</span>
-        <span className="collab-ask-timer" title={`Denied automatically after ${room.askTimeoutMin ?? 10} minutes`}>
-          waiting {waited(req.at, now)} of {room.askTimeoutMin ?? 10}m
+        <span className="collab-ask-timer" title={`Denied automatically after ${room.askTimeoutMin ?? DEFAULT_ASK_TIMEOUT_MIN} minutes`}>
+          waiting {waited(req.at, now)} of {room.askTimeoutMin ?? DEFAULT_ASK_TIMEOUT_MIN}m
         </span>
       </div>
       {req.description && <div className="collab-ask-why">{req.description}</div>}
@@ -510,7 +530,7 @@ function AskCard({ room, req, label, color, call }: { room: CollabRoom; req: Col
         <button className="primary" onClick={() => answer("allow")}>Allow</button>
         {req.kind && (
           <button className="outline" onClick={() => answer("always")}>
-            Always allow <code>{req.kind.replace(/^Bash: /, "").replace(/^(\w+): /, "$1 in ")}</code>
+            Always allow <code>{kindLabel(req.kind)}</code>
           </button>
         )}
         <button className="outline" onClick={() => answer("deny")}>Deny</button>
@@ -608,8 +628,8 @@ function Inspector({
           <div className="ins-head">Approvals</div>
           <label className="ins-row" title="How long a model's request waits for you before it counts as no; the model's turn waits with it">
             Wait for my answer
-            <Pick value={room.askTimeoutMin ?? 10} onChange={(e) => call("timeout", () => window.mb.collabAskTimeout(room.id, Number(e.target.value)))}>
-              {[5, 10, 15, 20].map((m) => (
+            <Pick value={room.askTimeoutMin ?? DEFAULT_ASK_TIMEOUT_MIN} onChange={(e) => call("timeout", () => window.mb.collabAskTimeout(room.id, Number(e.target.value)))}>
+              {ASK_TIMEOUTS_MIN.map((m) => (
                 <option key={m} value={m}>{m} min</option>
               ))}
             </Pick>
@@ -619,7 +639,7 @@ function Inspector({
             <div className="collab-kinds">
               {room.allowKinds.map((k) => (
                 <span key={k} className="collab-kind">
-                  <code>{k.replace(/^Bash: /, "").replace(/^(\w+): /, "$1 in ")}</code>
+                  <code>{kindLabel(k)}</code>
                   <button className="icon" title="Ask me again" onClick={() => call("revoke", () => window.mb.collabRevokeKind(room.id, k))}>✕</button>
                 </span>
               ))}
@@ -718,88 +738,44 @@ function SeatEditor({
   hasRepo: boolean;
 }) {
   const set = (i: number, patch: Partial<CollabParticipantSpec>) => onChange(seats.map((s, j) => (j === i ? { ...s, ...patch } : s)));
-  const move = (i: number, d: -1 | 1) => {
-    const j = i + d;
-    if (j < 0 || j >= seats.length) return;
-    const next = [...seats];
-    [next[i], next[j]] = [next[j], next[i]];
-    onChange(next);
-  };
-  const presetOf = (s: CollabParticipantSpec) => catalog.presets.find((m) => m.agent === s.agent && m.model === s.model)?.key ?? CUSTOM;
   const unused = unusedModel(catalog, seats);
   const readers = seats.filter((s) => s.readsCode).length;
   return (
     <div className="seat-editor">
       {seats.map((s, i) => {
-        const preset = presetOf(s);
+        const access = accessOf(s);
+        const flip = (level: Exclude<Access, "none">) => set(i, accessFlags(toggleAccess(access, level)));
         return (
           <div key={s.key ?? `new-${i}`} className="seat-row">
             <span className={`seat-dot c-${i % 6}`} />
             <span className="seat-pick">
-              <Select
-                value={preset}
-                placeholder={s.label || "Choose a model"}
+              <ModelSelect
+                live
+                value={s}
+                catalog={catalog}
                 title={s.key ? "Changing the model starts it on a fresh conversation" : undefined}
-                options={presetOptions(catalog, CUSTOM)}
-                onChange={(v) => {
-                  const m = catalog.presets.find((x) => x.key === v);
-                  if (m) set(i, { label: m.label, agent: m.agent, model: m.model, effort: null, key: undefined });
-                  else set(i, { label: "", model: "", key: undefined });
-                }}
+                // effort levels are the CLI's own: another CLI starts at its default
+                onPick={(m) => set(i, { ...m, key: undefined, ...(m.agent === s.agent ? {} : { effort: null }) })}
               />
             </span>
-            {preset === CUSTOM && (
-              <>
-                <span className="seat-pick narrow">
-                  <Select
-                    value={s.agent}
-                    options={[{ value: "claude", label: "Claude Code" }, { value: "codex", label: "Codex" }]}
-                    onChange={(v) => set(i, { agent: v as AgentKind, effort: null, key: undefined })}
-                  />
-                </span>
-                <input
-                  type="text"
-                  placeholder={s.agent === "codex" ? "gpt-6-astra-mini" : "claude-sonnet-5"}
-                  value={s.model}
-                  onChange={(e) => set(i, { model: e.target.value, label: e.target.value, key: undefined })}
-                />
-              </>
-            )}
             <span className="seat-pick narrow">
-              <Select
-                value={s.effort ?? ""}
-                title="Effort / reasoning level"
-                options={[{ value: "", label: "default effort" }, ...catalog.efforts[s.agent].map((e) => ({ value: e, label: e }))]}
-                onChange={(v) => set(i, { effort: v || null })}
-              />
+              <Select value={s.effort ?? ""} title="Effort / reasoning level" options={effortOptions(catalog, s.agent, "default effort")} onChange={(v) => set(i, { effort: v || null })} />
             </span>
             {hasRepo ? (
               <>
                 <label className="seat-code" title="May read the room's repository; models that can't, ask the first one that can">
-                  <input
-                    type="checkbox"
-                    checked={s.readsCode}
-                    onChange={(e) => set(i, e.target.checked ? { readsCode: true } : { readsCode: false, runsCommands: false, usesDocker: false })}
-                  />
+                  <input type="checkbox" checked={hasAccess(access, "read")} onChange={() => flip("read")} />
                   reads code
                 </label>
                 <label className="seat-code" title="May run tests, builds and scripts in a disposable copy of the repository — never your checkout. Implies reading the code.">
-                  <input
-                    type="checkbox"
-                    checked={!!s.runsCommands}
-                    onChange={(e) => set(i, e.target.checked ? { runsCommands: true, readsCode: true } : { runsCommands: false, usesDocker: false })}
-                  />
+                  <input type="checkbox" checked={hasAccess(access, "run")} onChange={() => flip("run")} />
                   runs commands
                 </label>
                 <label
                   className="seat-code"
                   title="May use Docker: start, stop and run containers. Docker works outside the sandbox — a container can mount any folder — so this model is no longer limited to the test copy. Implies running commands."
                 >
-                  <input
-                    type="checkbox"
-                    checked={!!s.usesDocker}
-                    onChange={(e) => set(i, e.target.checked ? { usesDocker: true, runsCommands: true, readsCode: true } : { usesDocker: false })}
-                  />
+                  <input type="checkbox" checked={hasAccess(access, "docker")} onChange={() => flip("docker")} />
                   uses Docker
                 </label>
               </>
@@ -807,8 +783,8 @@ function SeatEditor({
               <span className="seat-code off" title="Pick a repository to choose which models read the code">no repository</span>
             )}
             <span className="seat-move">
-              <button className="icon" disabled={i === 0} onClick={() => move(i, -1)} title="Speak earlier">↑</button>
-              <button className="icon" disabled={i === seats.length - 1} onClick={() => move(i, 1)} title="Speak later">↓</button>
+              <button className="icon" disabled={i === 0} onClick={() => onChange(moveAt(seats, i, i - 1))} title="Speak earlier">↑</button>
+              <button className="icon" disabled={i === seats.length - 1} onClick={() => onChange(moveAt(seats, i, i + 1))} title="Speak later">↓</button>
             </span>
             <button className="icon danger" title="Remove from the room" onClick={() => onChange(seats.filter((_, j) => j !== i))}>✕</button>
           </div>
@@ -833,29 +809,5 @@ function SeatEditor({
         )}
       </div>
     </div>
-  );
-}
-
-/** The room's repository: what code readers read and where an approved plan is implemented. */
-function RepoPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [repos, setRepos] = useState<RepoEntry[]>([]);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    window.mb.listRepos().then((r: Result<RepoEntry[]>) => (isErr(r) ? setError(`Couldn't list repos: ${r.error}`) : setRepos(r)));
-  }, []);
-  const select = (
-    <Pick value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">No repository — ideas only</option>
-      {value && !repos.some((r) => r.path === value) && <option value={value}>{value.split("/").pop()}</option>}
-      {repos.map((r) => (
-        <option key={r.path} value={r.path}>{r.name}</option>
-      ))}
-    </Pick>
-  );
-  return (
-    <>
-      {select}
-      {error && <div className="err">{error}</div>}
-    </>
   );
 }

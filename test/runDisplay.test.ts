@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { draftForEditing } from "../src/renderer/runSetup";
+import { draftForEditing } from "../src/renderer/runDisplay";
 import type { RunProfile } from "../src/shared/types";
 
 describe("a drafted run setup, for the editor", () => {

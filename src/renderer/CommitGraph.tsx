@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { GitChange, GraphCommit, ScmGraph } from "../shared/types";
 import { layoutGraph, laneCount, type GraphRow } from "./graphLayout";
-import { ago } from "./TranscriptSearch";
+import { ago } from "./format";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);

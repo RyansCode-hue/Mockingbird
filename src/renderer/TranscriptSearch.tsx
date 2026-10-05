@@ -1,23 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { TranscriptHit } from "../shared/types";
+import { ago } from "./format";
 
-export type SearchStatus = { conversations: number; files: number; indexing: { done: number; total: number } | null; lastSync: number; problem: string | null };
+type SearchStatus = { conversations: number; files: number; indexing: { done: number; total: number } | null; lastSync: number; problem: string | null };
 
-export const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
+const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
   pane: "go to pane",
   previous: "restore session",
   room: "open room",
   resume: "open as session",
 };
-
-/** "4m", "3h", "5d", or a date for anything older than a month. */
-export function ago(ms: number, now = Date.now()): string {
-  const m = Math.max(0, Math.round((now - ms) / 60_000));
-  if (m < 60) return `${m}m ago`;
-  if (m < 24 * 60) return `${Math.round(m / 60)}h ago`;
-  if (m < 30 * 24 * 60) return `${Math.round(m / (24 * 60))}d ago`;
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: new Date(ms).getFullYear() === new Date(now).getFullYear() ? undefined : "numeric" });
-}
 
 /** The matched words of a snippet (between \u0001 and \u0002) as <mark>s. */
 export function Snippet({ text }: { text: string }) {

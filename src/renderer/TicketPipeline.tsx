@@ -1,46 +1,22 @@
-import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage } from "../shared/types";
+import { ago } from "./format";
+import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";
 import { useEscape } from "./useEscape";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
-// ---- one subscription to the pipeline file, many readers ----------------------
-let all: Record<string, TicketPipeline> = {};
-const subs = new Set<() => void>();
-let installed = false;
-function install() {
-  if (installed) return;
-  installed = true;
-  window.mb.pipelineAll().then((r: Record<string, TicketPipeline>) => {
-    all = r ?? {};
-    subs.forEach((s) => s());
-  });
-  window.mb.onPipelineChanged((r: Record<string, TicketPipeline>) => {
-    all = r ?? {};
-    subs.forEach((s) => s());
-  });
-}
+const pipelines = createIpcStore<Record<string, TicketPipeline>>({}, ({ set }) => {
+  loadInto("the ticket pipelines", window.mb.pipelineAll(), (r: Record<string, TicketPipeline>) => set(r ?? {}));
+  window.mb.onPipelineChanged((r: Record<string, TicketPipeline>) => set(r ?? {}));
+});
 
 /** Every ticket's pipeline, kept current. */
 export function usePipelines(): Record<string, TicketPipeline> {
-  return useSyncExternalStore(
-    (cb) => {
-      install();
-      subs.add(cb);
-      return () => subs.delete(cb);
-    },
-    () => all
-  );
+  return pipelines.use();
 }
-
-const ago = (ms: number) => {
-  const m = Math.round((Date.now() - ms) / 60000);
-  if (m < 60) return `${m}m`;
-  if (m < 1440) return `${Math.round(m / 60)}h`;
-  return `${Math.round(m / 1440)}d`;
-};
 
 /** A ticket's stage as a small chip (board cards, the group bar). */
 export function StageChip({ p, onClick }: { p: TicketPipeline | undefined; onClick?: () => void }) {
@@ -135,9 +111,7 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
   const [base, setBase] = useState("");
   const [prTitle, setPrTitle] = useState(`#${ticketId} ${title}`.trim());
   const [desc, setDesc] = useState("");
-  const [writing, setWriting] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const { doing, run, error } = useAction();
   const [asked, setAsked] = useState("");
   const seq = useRef(0);
   const load = () => {
@@ -177,20 +151,12 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
       ].filter((x): x is string => !!x)
     : [];
   const write = async () => {
-    setWriting(true);
-    setError("");
-    const r = await window.mb.pipelinePrDescribe(sid, ticketId, title, base);
-    setWriting(false);
-    if (isErr(r)) return setError(r.error);
-    setDesc(r.description);
+    const r = await run("write", () => window.mb.pipelinePrDescribe(sid, ticketId, title, base));
+    if (!isErr(r)) setDesc(r.description);
   };
   const create = async () => {
-    setBusy(true);
-    setError("");
-    const r = await window.mb.pipelinePrCreate(sid, ticketId, { target, base, title: prTitle, description: desc, ticketTitle: title });
-    setBusy(false);
-    if (isErr(r)) return setError(r.error);
-    onClose();
+    const r = await run("create", () => window.mb.pipelinePrCreate(sid, ticketId, { target, base, title: prTitle, description: desc, ticketTitle: title }));
+    if (!isErr(r)) onClose();
   };
   const docsPrompt = `Write the ticket documentation for #${ticketId} "${title}" following the team's PR workflow: a folder named ${ticketId}-<branch name> in this repo's documentation home (doc/features/ or wherever the repo keeps feature docs — ask me if it's unclear), holding ${ticketId}-Description.md and ${ticketId}-Security_Considerations.md. Don't commit yet.`;
   return (
@@ -258,8 +224,8 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
           <label className="pl-field">
             <span>
               Description
-              <button className="mini" disabled={writing || !base || !p.commits} onClick={write}>
-                {writing ? "Writing…" : "Write it from the branch"}
+              <button className="mini" disabled={doing("write") || !base || !p.commits} onClick={write}>
+                {doing("write") ? "Writing…" : "Write it from the branch"}
               </button>
             </span>
             <textarea value={desc} onChange={(e) => setDesc(e.target.value)} spellCheck={false} style={{ minHeight: 120 }} placeholder="## Summary…" />
@@ -270,8 +236,8 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
           {error && <div className="fp-note err">{error}</div>}
           <div className="row">
             <span className="pl-dim">Pushes {p.branch ?? "the branch"} to origin, then opens the pull request{p.remote?.provider === "ado" ? ", linked to the work item" : ""}.</span>
-            <button className="primary" disabled={busy || blockers.length > 0 || !prTitle.trim()} onClick={create}>
-              {busy ? "Opening…" : "Push and open PR"}
+            <button className="primary" disabled={doing("create") || blockers.length > 0 || !prTitle.trim()} onClick={create}>
+              {doing("create") ? "Opening…" : "Push and open PR"}
             </button>
           </div>
         </>
@@ -303,7 +269,7 @@ function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
         };
         return (
           <div key={d.id} className="pl-draft">
-            <div className="pl-dim">{stageLabel(d.stage)} · {ago(d.at)} ago</div>
+            <div className="pl-dim">{stageLabel(d.stage)} · {ago(d.at)}</div>
             <textarea
               value={cur}
               onChange={(e) => setText((t) => ({ ...t, [d.id]: e.target.value }))}
@@ -381,13 +347,8 @@ export function PipelinePanel(props: PipelineProps) {
   const [prFor, setPrFor] = useState<PrTarget | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [sendFeedback, setSendFeedback] = useState(true);
-  const [error, setError] = useState("");
-  const run = async (r: Promise<unknown>) => {
-    setError("");
-    const out = await r;
-    if (isErr(out)) setError(out.error);
-  };
-  const go = (stage: TicketStage) => run(window.mb.pipelineStage(ticketId, stage, title));
+  const { run, error } = useAction();
+  const go = (stage: TicketStage) => run("stage", () => window.mb.pipelineStage(ticketId, stage, title));
   const live = sessions.filter((s) => s.status !== "dead");
   const step = (label: string, stage: TicketStage, primary = true) => (
     <button className={primary ? "primary" : "outline"} onClick={() => go(stage)}>{label}</button>
@@ -445,8 +406,8 @@ export function PipelinePanel(props: PipelineProps) {
               disabled={!feedback.trim()}
               onClick={async () => {
                 const text = feedback.trim();
-                const r = await window.mb.pipelineFeedback(ticketId, text);
-                if (isErr(r)) return setError(r.error);
+                const r = await run("feedback", () => window.mb.pipelineFeedback(ticketId, text));
+                if (isErr(r)) return;
                 if (sendFeedback && live[0]) onAskSession(live[0].id, `Stakeholder feedback on #${ticketId}: ${text}`);
                 setFeedback(null);
               }}
@@ -466,7 +427,7 @@ export function PipelinePanel(props: PipelineProps) {
             <div key={r.url} className="pl-item">
               <a onClick={() => window.mb.openExternal(r.url)}>{r.provider === "ado" ? `PR ${r.id}` : `#${r.id}`}</a>
               <span className="pl-dim">
-                {r.branch} → {r.base} · {ago(r.at)} ago
+                {r.branch} → {r.base} · {ago(r.at)}
               </span>
             </div>
           ))}
@@ -477,7 +438,7 @@ export function PipelinePanel(props: PipelineProps) {
           <div className="pl-h">Feedback</div>
           {p.feedback.map((f) => (
             <div key={f.at} className="pl-item">
-              <span className="pl-dim">{ago(f.at)} ago</span> {f.text}
+              <span className="pl-dim">{ago(f.at)}</span> {f.text}
             </div>
           ))}
         </div>
