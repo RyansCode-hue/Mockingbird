@@ -177,6 +177,37 @@ describe("token usage", () => {
   });
 });
 
+describe("conversations to import", () => {
+  it("lists both agents' recent conversations whose folder still exists, newest first", async () => {
+    const home = fs.mkdtempSync(path.join(os.homedir(), "tx-"));
+    const claude = path.join(home, "claude");
+    const codex = path.join(home, "codex");
+    const app = fs.mkdtempSync(path.join(os.homedir(), "app-"));
+    fs.mkdirSync(path.join(claude, "-p"), { recursive: true });
+    fs.mkdirSync(path.join(codex, "2026", "09", "02"), { recursive: true });
+    const now = Date.now();
+    const iso = (agoMin: number) => new Date(now - agoMin * 60_000).toISOString();
+    const user = (id: string, cwd: string, text: string, at: string) => L({ type: "user", sessionId: id, cwd, timestamp: at, message: { role: "user", content: text } });
+    fs.writeFileSync(path.join(claude, "-p", "cl.jsonl"), [user("cl", app, "[Request interrupted by user]", iso(30)), user("cl", app, "Fix the   export\nplease", iso(29))].join("\n") + "\n");
+    fs.writeFileSync(path.join(claude, "-p", "gone.jsonl"), user("gone", "/no/such/folder", "Old work", iso(5)) + "\n");
+    fs.writeFileSync(path.join(claude, "-p", "old.jsonl"), user("old", app, "Ancient", new Date(now - 40 * 86_400_000).toISOString()) + "\n");
+    const xId = "019f8f72-e895-7130-844d-ec86750ff999";
+    fs.writeFileSync(
+      path.join(codex, "2026", "09", "02", `rollout-2026-09-02T09-00-00-${xId}.jsonl`),
+      [
+        L({ timestamp: iso(10), type: "session_meta", payload: { id: xId, cwd: app, source: "cli" } }),
+        L({ timestamp: iso(9), type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Add a retry" }] } }),
+      ].join("\n") + "\n"
+    );
+    const idx = new TranscriptIndex(path.join(home, "index.db"), { claude, codex });
+    await idx.sync();
+    expect(idx.recentConversations()).toEqual([
+      { sessionId: xId, agent: "codex", cwd: app, title: "Add a retry", mtimeMs: now - 9 * 60_000 },
+      { sessionId: "cl", agent: "claude", cwd: app, title: "Fix the export", mtimeMs: now - 29 * 60_000 },
+    ]);
+  });
+});
+
 describe("reading transcripts that change underneath", () => {
   const userLine = (text: string) => L({ type: "user", sessionId: "big", timestamp: "2026-09-01T12:00:00Z", message: { role: "user", content: text } });
   const chunks = (idx: TranscriptIndex, file: string) => ((idx as any).db.prepare("SELECT count(*) AS n FROM chunks WHERE file = ?").get(file) as { n: number }).n;

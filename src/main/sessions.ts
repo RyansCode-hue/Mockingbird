@@ -11,6 +11,7 @@ import { adoEnv } from "./ado";
 import { agentFor, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
+import { conversationsOf, withConversation } from "./meters";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
 
@@ -55,7 +56,6 @@ interface LiveSession {
   lastInput: number; // ms of the user's last write into this pane, or of a message placed there for them to send
   draft: boolean; // the prompt holds unsent text: typed since the user's last Enter, or a message placed for them
   flushTimer: NodeJS.Timeout | null; // retry while the user is typing
-  claudeId: string | null; // Claude Code's own session_id, claimed from the first hook event
   lastOutput: number; // ms of the pty's last output — a working pane that goes quiet may be stuck
   outputs: number; // chunks of output so far
   saved: number; // `outputs` when its scrollback was last written to disk
@@ -248,9 +248,9 @@ export class SessionManager {
       conversation: req.shellResume ?? (req.resumeSessionId ? { agent: req.agent ?? "claude", id: req.resumeSessionId } : undefined),
     };
     // a relaunched pane keeps its history of conversations (its token meter adds them up)
-    const before = req.reuseId ? this.store.state.sessions.find((x) => x.id === req.reuseId) : undefined;
-    const history = [...(before?.conversations ?? (before?.conversation ? [before.conversation.id] : [])), ...(info.conversation ? [info.conversation.id] : [])];
-    if (history.length) info.conversations = [...new Set(history)].slice(-50);
+    const before = (req.reuseId ? this.store.state.sessions.find((x) => x.id === req.reuseId) : undefined) ?? {};
+    const history = info.conversation ? withConversation(before, info.conversation.id) : conversationsOf(before);
+    if (history.length) info.conversations = history;
 
     // reuseId re-creates an existing id (relaunch): kill the old pty first or it
     // keeps running, unreachable, still pumping data under the same id
@@ -273,7 +273,6 @@ export class SessionManager {
       proc,
       buffer: earlier ? (earlier + restartDivider(new Date(), earlier)).slice(-BUFFER_MAX) : "",
       queued: owed,
-      claudeId: null,
       lastInput: 0,
       draft: false,
       flushTimer: null,
@@ -737,42 +736,33 @@ export class SessionManager {
     return s.info;
   }
 
-  /** Folder-only form, for callers that have nothing else to route by. */
-  statusByCwd(cwd: string, status: SessionStatus, reason?: string, conversationId?: string): SessionInfo | null {
-    return this.statusFromHook({ cwd, status, reason, conversationId });
-  }
-
   /** The pane's current conversation is what a relaunch resumes; /clear starts a new one. */
   private noteConversation(s: LiveSession, agent: AgentKind, id: string): void {
-    s.claudeId = id;
     const cur = s.info.conversation;
-    const seen = s.info.conversations ?? (cur ? [cur.id] : []);
-    if (cur?.id === id && cur.agent === agent && seen.includes(id)) return;
+    if (cur?.id === id && cur.agent === agent && conversationsOf(s.info).includes(id)) return;
+    s.info.conversations = withConversation(s.info, id);
     s.info.conversation = { agent, id };
-    s.info.conversations = [...seen.filter((c) => c !== id), id].slice(-50);
     this.store.upsertSession(s.info);
   }
 
+  /**
+   * The pane an untagged event belongs to: the one running its conversation,
+   * wherever that has cd'd to since; else one in its folder. statusFromHook
+   * then records the conversation as that pane's.
+   */
   private matchSession(cwd: string | undefined, conversationId?: string): LiveSession | null {
     const all = [...this.live.values()];
     if (conversationId) {
-      const bound = all.find((s) => s.claudeId === conversationId);
-      if (bound) return bound; // wherever it has cd'd to since
+      const bound = all.find((s) => s.info.conversation?.id === conversationId);
+      if (bound) return bound;
     }
     if (!cwd) return null;
     const inCwd = all.filter((s) => s.info.cwd === cwd);
     if (!inCwd.length) return null;
     if (conversationId) {
-      const free = inCwd.find((s) => s.claudeId === null);
-      if (free) {
-        free.claudeId = conversationId;
-        return free;
-      }
-      // every session in this cwd is bound to some other run (the CLI was
-      // restarted inside a pane): rebind the newest one rather than misroute
-      const newest = inCwd[inCwd.length - 1];
-      newest.claudeId = conversationId;
-      return newest;
+      // a pane with no conversation yet takes it; when every pane here runs
+      // another one (the CLI was restarted inside a pane), the newest does
+      return inCwd.find((s) => !s.info.conversation) ?? inCwd[inCwd.length - 1];
     }
     return inCwd[0];
   }

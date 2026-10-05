@@ -4,8 +4,6 @@ import { git } from "./git";
 import { askAgent, cleanReply, type ShellRunner } from "./headless";
 import type { AgentKind } from "../shared/types";
 
-export type { ShellRunner } from "./headless";
-
 const MAX_DIFF_CHARS = 60_000;
 const MAX_NEW_FILE_CHARS = 8_000;
 
@@ -106,16 +104,10 @@ export function commitPrompt(c: CommitContext): string {
     .join("\n");
 }
 
-/** The message alone: models sometimes wrap it in fences or quotes, or label it. */
-export function cleanMessage(raw: string): string {
-  return cleanReply(raw);
-}
-
 /** Ask an agent's CLI for a commit message (see askAgent). */
 export async function generateCommitMessage(root: string, agent: AgentKind, bin: string, run: ShellRunner, env: Record<string, string>): Promise<{ message: string; scope: CommitContext["scope"] }> {
-  if (!bin.includes("/")) throw new Error(`${agent === "codex" ? "Codex" : "Claude Code"} isn't installed`);
   const ctx = await commitContext(root);
-  const message = cleanMessage(await askAgent(commitPrompt(ctx), { agent, bin, run, env, tag: "commit-message" }));
+  const message = cleanReply(await askAgent(commitPrompt(ctx), { agent, bin, run, env, tag: "commit-message" }));
   if (!message) throw new Error("The model returned an empty message");
   return { message, scope: ctx.scope };
 }

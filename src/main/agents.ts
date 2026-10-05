@@ -1,10 +1,11 @@
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import type { AgentKind, NewSessionRequest, Settings } from "../shared/types";
 import { expandHome } from "./store";
 import { usageReporterArgs } from "./usage";
 import type { McpLaunch } from "./messaging";
+import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
+import { readSlice } from "./fileOps";
 
 export interface LaunchContext {
   /** The per-session Mockingbird MCP server that lets agents message each other; absent for an agent outside messaging. */
@@ -53,22 +54,20 @@ const claude: AgentAdapter = {
     return args;
   },
   conversationExists(id) {
-    const projects = path.join(os.homedir(), ".claude", "projects");
     let dirs: string[];
     try {
-      dirs = fs.readdirSync(projects);
+      dirs = fs.readdirSync(CLAUDE_PROJECTS);
     } catch {
       return false; // no Claude history on this machine
     }
-    return dirs.some((d) => fs.existsSync(path.join(projects, d, `${id}.jsonl`)));
+    return dirs.some((d) => fs.existsSync(path.join(CLAUDE_PROJECTS, d, `${id}.jsonl`)));
   },
   // Claude keeps transcripts under ~/.claude/projects/<cwd with separators dashed>/
   hasConversation(cwd) {
-    const projects = path.join(os.homedir(), ".claude", "projects");
     const candidates = [cwd.replace(/\//g, "-"), cwd.replace(/[^A-Za-z0-9]/g, "-")];
     return candidates.some((enc) => {
       try {
-        return fs.readdirSync(path.join(projects, enc)).some((f) => f.endsWith(".jsonl"));
+        return fs.readdirSync(path.join(CLAUDE_PROJECTS, enc)).some((f) => f.endsWith(".jsonl"));
       } catch {
         return false; // no directory → no conversation
       }
@@ -83,21 +82,15 @@ const claude: AgentAdapter = {
  * CLI conversations.
  */
 function rolloutCwd(file: string): string | null {
-  let fd: number | null = null;
   try {
-    fd = fs.openSync(file, "r");
-    const buf = Buffer.alloc(2048);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
     // the meta line runs to tens of KB (it embeds the system prompt), so the
     // field is matched in the head rather than parsing the whole line
-    const head = buf.toString("utf8", 0, n);
+    const head = readSlice(file, "start", 2048);
     if (!/"source":"cli"/.test(head)) return null;
     const m = /"cwd":("(?:[^"\\]|\\.)*")/.exec(head);
     return m ? (JSON.parse(m[1]) as string) : null;
   } catch {
     return null; // unreadable rollout — it cannot be resumed either
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
   }
 }
 
@@ -105,51 +98,14 @@ const ROLLOUT_SCAN_LIMIT = 2000; // newest files read per index; older conversat
 const INDEX_TTL_MS = 30_000;
 let cwdIndex: { cwds: Set<string>; at: number } | null = null;
 
-export const ROLLOUT_NAME_RE = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/;
-
-/** Rollout file names, newest first, bounded like the cwd index. */
-function codexRolloutNames(): string[] {
-  const root = path.join(os.homedir(), ".codex", "sessions");
-  const ls = (dir: string): string[] => {
-    try {
-      return fs.readdirSync(dir).sort().reverse();
-    } catch {
-      return [];
-    }
-  };
-  const out: string[] = [];
-  for (const y of ls(root))
-    for (const m of ls(path.join(root, y)))
-      for (const d of ls(path.join(root, y, m)))
-        for (const f of ls(path.join(root, y, m, d))) {
-          if (f.endsWith(".jsonl")) out.push(f);
-          if (out.length >= ROLLOUT_SCAN_LIMIT) return out;
-        }
-  return out;
-}
-
 /** Folders that have an interactive Codex conversation to resume. */
 function codexCwds(): Set<string> {
   if (cwdIndex && Date.now() - cwdIndex.at < INDEX_TTL_MS) return cwdIndex.cwds;
-  const root = path.join(os.homedir(), ".codex", "sessions");
-  const ls = (dir: string): string[] => {
-    try {
-      return fs.readdirSync(dir).sort().reverse();
-    } catch {
-      return []; // no Codex history (yet) at this level
-    }
-  };
   const cwds = new Set<string>();
-  let read = 0;
-  scan: for (const y of ls(root))
-    for (const m of ls(path.join(root, y)))
-      for (const d of ls(path.join(root, y, m)))
-        for (const f of ls(path.join(root, y, m, d))) {
-          if (!f.endsWith(".jsonl")) continue;
-          if (++read > ROLLOUT_SCAN_LIMIT) break scan;
-          const cwd = rolloutCwd(path.join(root, y, m, d, f));
-          if (cwd) cwds.add(cwd);
-        }
+  for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) {
+    const cwd = rolloutCwd(file);
+    if (cwd) cwds.add(cwd);
+  }
   cwdIndex = { cwds, at: Date.now() };
   return cwds;
 }
@@ -186,9 +142,10 @@ const codex: AgentAdapter = {
   hasConversation(cwd) {
     return codexCwds().has(cwd);
   },
-  // rollouts are named rollout-<YYYY-MM-DDTHH-MM-SS>-<conversation id>.jsonl
+  // the conversation id ends the rollout's file name; bounded like the cwd index
   conversationExists(id) {
-    return codexRolloutNames().some((f) => ROLLOUT_NAME_RE.exec(f)?.[1] === id);
+    for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) if (ROLLOUT_NAME_RE.exec(path.basename(file))?.[1] === id) return true;
+    return false;
   },
 };
 
@@ -198,6 +155,9 @@ const ADAPTERS: Record<AgentKind, AgentAdapter> = { claude, codex };
 export function agentFor(kind: AgentKind | null | undefined): AgentAdapter {
   return ADAPTERS[kind ?? "claude"];
 }
+
+/** An agent's name as people see it: "Claude", "Codex". */
+export const agentLabel = (kind: AgentKind | null | undefined): string => agentFor(kind).label;
 
 /** An agent CLI's version, e.g. "2.1.5" from "2.1.5 (Claude Code)" or "codex-cli 0.46.0". */
 export function cliVersion(out: string): string | null {

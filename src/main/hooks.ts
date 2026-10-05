@@ -1,17 +1,16 @@
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { StringDecoder } from "string_decoder";
 import { MB_DIR } from "./store";
 import { SessionManager } from "./sessions";
 import { SessionInfo } from "../shared/types";
 import { writeFileAtomic, writeGenerated } from "./fileOps";
+import { CLAUDE_SETTINGS, CODEX_DIR } from "./agentFiles";
 
 const EVENTS_DIR = path.join(MB_DIR, "events");
 /** Where hook scripts from older builds append; still read, for one that runs on after an upgrade. */
 const LEGACY_EVENTS_FILE = path.join(MB_DIR, "events.jsonl");
 const HOOK_SCRIPT = path.join(MB_DIR, "hook.sh");
-const CLAUDE_SETTINGS = path.join(os.homedir(), ".claude", "settings.json");
 const POLL_MS = 500;
 
 // PreToolUse clears "waiting" the moment an approved tool starts running —
@@ -21,7 +20,6 @@ const HOOK_EVENTS = ["Stop", "Notification", "UserPromptSubmit", "PreToolUse"] a
 // Codex uses the same hook format in its own file. It has no Notification event:
 // PermissionRequest is its "blocked on you", and because that fires after
 // PreToolUse, PostToolUse is what flips an approved tool back to working.
-const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_HOOKS = path.join(CODEX_DIR, "hooks.json");
 const CODEX_EVENTS = ["Stop", "PermissionRequest", "UserPromptSubmit", "PreToolUse", "PostToolUse"] as const;
 
@@ -125,7 +123,8 @@ export function hookStatus(codexBin: string | null): { claude: boolean; codex: b
 export function hooksInstalled(codexBin: string | null): boolean {
   // every event must be wired — an older install missing one counts as not
   // installed so the UI offers the one-click upgrade
-  return wired(CLAUDE_SETTINGS, HOOK_EVENTS) && (!codexPresent(codexBin) || wired(CODEX_HOOKS, CODEX_EVENTS));
+  const s = hookStatus(codexBin);
+  return s.claude && s.codex !== false;
 }
 
 type StatusHandler = (session: SessionInfo, status: string) => void;

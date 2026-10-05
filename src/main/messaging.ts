@@ -4,6 +4,7 @@ import * as path from "path";
 import { MB_DIR } from "./store";
 import type { SessionManager } from "./sessions";
 import { SessionInfo, topOfKey, type AgentMessage } from "../shared/types";
+import { writeGenerated } from "./fileOps";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
@@ -142,15 +143,9 @@ readline.createInterface({ input: process.stdin }).on("line", async (line) => {
 });
 `;
 
-let scriptWritten = false;
-
 /** How an agent starts the Mockingbird MCP server; `tools` picks a room model's tools (sessions get theirs). */
 export function mcpLaunch(sessionId: string, tools?: string[]): McpLaunch {
-  if (!scriptWritten) {
-    fs.mkdirSync(MB_DIR, { recursive: true });
-    fs.writeFileSync(MCP_SCRIPT, SCRIPT);
-    scriptWritten = true;
-  }
+  writeGenerated(MCP_SCRIPT, SCRIPT); // other agents' servers may be starting from it right now
   return {
     command: process.execPath,
     args: [MCP_SCRIPT],

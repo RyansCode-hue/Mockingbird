@@ -1,8 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { DatabaseSync } from "node:sqlite";
-import type { AgentKind, CollabRoom, SessionInfo, TranscriptHit } from "../shared/types";
-import { ROLLOUT_NAME_RE } from "./agents";
+import type { AgentKind, CollabRoom, ImportableConversation, SessionInfo, TranscriptHit } from "../shared/types";
+import { ROLLOUT_NAME_RE, epochMs } from "./agentFiles";
 
 /**
  * One searchable index over every Claude Code and Codex conversation on this
@@ -43,14 +43,13 @@ export interface Parsed {
   usage?: { id: string; at: number; model: string | null; input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
-const ts = (v: unknown): number => {
-  const n = typeof v === "number" ? (v < 1e12 ? v * 1000 : v) : Date.parse(String(v ?? ""));
-  return Number.isFinite(n) ? n : 0;
-};
+const ts = (v: unknown): number => epochMs(v) ?? 0;
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 const firstLine = (s: string) => s.trim().split("\n").find((l) => l.trim())?.trim() ?? "";
-// command wrappers and system notes, not something the user typed
-const isNoise = (s: string) => /^\s*<(command-|local-command-|system-reminder|bash-|user-memory)/.test(s) || /^Caveat: /.test(s);
+/** Command wrappers and system notes, not something the user typed: left out of the index. */
+export const isNoise = (s: string) => /^\s*<(command-|local-command-|system-reminder|bash-|user-memory)/.test(s) || /^Caveat: /.test(s);
+/** What can title a conversation: a request the user typed — not noise, an interruption marker or a compacted conversation's summary. */
+export const isRealPrompt = (s: string) => !isNoise(s) && !/^\s*(\[Request interrupted|This session is being continued)/.test(s);
 
 /** The searchable part of a tool call's input: the command, the file, the pattern, the URL. */
 function toolInputText(name: string, input: any): string {
@@ -83,7 +82,7 @@ export function parseClaudeLine(line: string, fileConv: string): Parsed {
     for (const c of content) {
       if (c?.type === "text" && typeof c.text === "string" && c.text.trim() && !isNoise(c.text)) {
         out.chunks.push({ text: clip(c.text, MAX_TEXT), at, kind: "message", role: d.type });
-        if (d.type === "user" && !d.isSidechain) conv.firstPrompt = clip(firstLine(c.text), TITLE_CHARS);
+        if (d.type === "user" && !d.isSidechain && isRealPrompt(c.text)) conv.firstPrompt = clip(firstLine(c.text), TITLE_CHARS);
       } else if (c?.type === "tool_use") {
         const text = toolInputText(String(c.name ?? "tool"), c.input);
         if (text) out.chunks.push({ text, at, kind: "tool" });
@@ -155,7 +154,7 @@ export function parseCodexLine(line: string, fileConv: string): Parsed {
       const text = typeof c?.text === "string" ? c.text : "";
       if (!text.trim() || isNoise(text) || /^<(environment_context|user_instructions|permissions)/.test(text.trim())) continue;
       out.chunks.push({ text: clip(text, MAX_TEXT), at, kind: "message", role: p.role });
-      if (p.role === "user") out.conv!.firstPrompt = clip(firstLine(text), TITLE_CHARS);
+      if (p.role === "user" && isRealPrompt(text)) out.conv!.firstPrompt = clip(firstLine(text), TITLE_CHARS);
     }
   } else if (p.type === "function_call" || p.type === "local_shell_call") {
     let args: any = p.arguments ?? p.action;
@@ -423,6 +422,29 @@ export class TranscriptIndex {
       });
     }
     return hits;
+  }
+
+  /**
+   * Both agents' conversations active since `since`, newest first, whose
+   * folder still exists — what Import offers to reopen (`claude --resume` /
+   * `codex resume` with the id, in that folder).
+   */
+  recentConversations(since = Date.now() - 30 * 86_400_000, limit = 80): ImportableConversation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, agent, cwd, title, first_prompt, updated FROM conversations c
+         WHERE updated >= ? AND cwd <> '' AND EXISTS (SELECT 1 FROM files f WHERE f.conv = c.id)
+         ORDER BY updated DESC`
+      )
+      .all(since) as { id: string; agent: AgentKind; cwd: string; title: string; first_prompt: string; updated: number }[];
+    const out: ImportableConversation[] = [];
+    for (const r of rows) {
+      if (out.length >= limit) break;
+      if (!fs.existsSync(r.cwd)) continue; // worktree or repo deleted since
+      const title = (r.title || r.first_prompt || path.basename(r.cwd)).replace(/\s+/g, " ").trim().slice(0, 70);
+      out.push({ sessionId: r.id, agent: r.agent, cwd: r.cwd, title, mtimeMs: r.updated });
+    }
+    return out;
   }
 
   /** The models this agent's conversations used lately, most recent first. */

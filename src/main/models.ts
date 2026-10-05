@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { AgentKind, CollabModel, ModelCatalog, ModelChoice } from "../shared/types";
+import { capitalize, type AgentKind, type CollabModel, type ModelCatalog, type ModelChoice } from "../shared/types";
 
 /**
  * The models each CLI can run, read from what the CLIs themselves know, so a
@@ -18,8 +18,6 @@ import type { AgentKind, CollabModel, ModelCatalog, ModelChoice } from "../share
 // Lines Claude Code's --help doesn't spell out but accepts the same way
 const CLAUDE_ALIASES_ALWAYS = ["haiku"];
 const CLAUDE_EFFORTS_FALLBACK = ["low", "medium", "high", "xhigh", "max"];
-
-const title = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Aliases ('fable', 'opus', …) and effort levels from `claude --help`. */
 export function parseClaudeHelp(help: string): { aliases: string[]; efforts: string[] } {
@@ -78,7 +76,7 @@ export function buildCatalog(opts: { claudeHelp: string | null; recent: Record<A
   const help = opts.claudeHelp ? parseClaudeHelp(opts.claudeHelp) : { aliases: [], efforts: [] };
   const aliases = [...new Set([...help.aliases, ...(help.aliases.length ? CLAUDE_ALIASES_ALWAYS : [])])];
   const claude: ModelChoice[] = [
-    ...aliases.map((a) => ({ id: a, label: `${title(a)} (latest)`, group: "Latest" })),
+    ...aliases.map((a) => ({ id: a, label: `${capitalize(a)} (latest)`, group: "Latest" })),
     ...claudeAccountModels(readJson(path.join(home, ".claude.json"))),
   ];
   const codex = codexModelsFromCache(readJson(path.join(home, ".codex", "models_cache.json")));
@@ -96,7 +94,7 @@ export function buildCatalog(opts: { claudeHelp: string | null; recent: Record<A
 
 /** A model as a Collaborate seat: its speaker name says which family it is. */
 function seatOf(agent: AgentKind, m: ModelChoice): CollabModel {
-  const name = m.group === "Latest" ? title(m.id) : m.label;
+  const name = m.group === "Latest" ? capitalize(m.id) : m.label;
   const label = agent === "claude" && !/^claude/i.test(name) && m.group !== "Recently used" ? `Claude ${name}` : name;
   return { key: `${agent}:${m.id}`, label, agent, model: m.id };
 }

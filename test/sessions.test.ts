@@ -16,7 +16,6 @@ function manager(saved: any[] = []) {
       proc: { write: (d: string) => out[id].push(d.replace(/\x1b\[20[01]~/g, "|")) },
       buffer: "",
       queued: [],
-      claudeId: null,
       lastInput: 0,
       draft: false,
       flushTimer: null,
@@ -43,7 +42,7 @@ describe("delivering agent messages", () => {
     expect(m.deliverAgentMessage("b", "hello", true)).toMatch(/queued until its current turn ends/);
     vi.advanceTimersByTime(60_000);
     expect(out.b).toEqual([]);
-    m.statusByCwd("/w/b", "idle");
+    m.statusFromHook({ cwd: "/w/b", status: "idle" });
     vi.advanceTimersByTime(200);
     expect(out.b).toEqual(["|hello|", "\r"]);
   });
@@ -55,8 +54,8 @@ describe("delivering agent messages", () => {
     vi.advanceTimersByTime(60_000);
     expect(out.c).toEqual(["half a thought"]); // never appended to the draft or submitted with it
     m.write("c", "\r"); // the user sends their prompt; the turn runs and ends
-    m.statusByCwd("/w/c", "working");
-    m.statusByCwd("/w/c", "idle");
+    m.statusFromHook({ cwd: "/w/c", status: "working" });
+    m.statusFromHook({ cwd: "/w/c", status: "idle" });
     vi.advanceTimersByTime(200);
     expect(out.c).toEqual(["half a thought", "\r", "|hello|", "\r"]);
   });
@@ -216,6 +215,14 @@ describe("routing hook events", () => {
     expect(store.upserts.at(-1).conversation).toEqual({ agent: "claude", id: "two" });
   });
 
+  it("knows a resumed pane's conversation before its first event, so a folder shared with a fresh pane doesn't confuse it", () => {
+    const { m, add, info, status } = manager();
+    add("fresh", "idle", "/home");
+    add("resumed", "idle", "/home");
+    info("resumed").conversation = { agent: "claude", id: "conv-r" };
+    m.statusFromHook({ cwd: "/home", conversationId: "conv-r", status: "working" });
+    expect([status("fresh"), status("resumed")]).toEqual(["idle", "working"]);
+  });
   it("keeps every conversation the pane has run, for its token meter", () => {
     const { m, add, info } = manager();
     add("t", "idle", "/home");

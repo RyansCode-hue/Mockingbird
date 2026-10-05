@@ -142,6 +142,18 @@ describe("a terminal that brings back the agent it was running", () => {
   });
 });
 
+describe("a pane's conversations", () => {
+  it("keep the one it resumes last — the latest — after a relaunch", async () => {
+    const { m, store } = await manager();
+    const s = await m.create(agentPane);
+    m.statusFromHook({ paneId: s.id, conversationId: "one", agent: "claude", status: "working" });
+    m.statusFromHook({ paneId: s.id, conversationId: "two", agent: "claude", status: "working" });
+    m.kill(s.id, false);
+    await m.create({ ...agentPane, reuseId: s.id, resumeSessionId: "one" });
+    expect(store.state.sessions.find((x: any) => x.id === s.id).conversations).toEqual(["two", "one"]);
+  });
+});
+
 describe("finding each agent's binary", () => {
   it("never caches a lookup that started before the setting changed", async () => {
     const { m, store } = await manager();

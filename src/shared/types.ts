@@ -199,6 +199,8 @@ export interface RepoBranches {
 
 export interface ImportableConversation {
   sessionId: string;
+  /** Which CLI resumes it; absent means Claude. */
+  agent?: AgentKind;
   cwd: string;
   title: string;
   mtimeMs: number;
@@ -723,6 +725,9 @@ export function formatShare(pct: number): string {
   if (pct >= 0.1) return `${(Math.round(pct * 10) / 10).toFixed(1)}%`;
   return pct > 0 ? "<0.1%" : "0%";
 }
+
+/** "max" → "Max". */
+export const capitalize = (s: string): string => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** The local calendar day as yyyy-mm-dd — what dated files are named by (toISOString would give the UTC day). */
 export function localDay(d: Date = new Date()): string {

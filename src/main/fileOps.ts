@@ -46,3 +46,20 @@ export function writeGenerated(file: string, content: string, mode?: number): bo
   writeFileAtomic(file, content, mode);
   return true;
 }
+
+/**
+ * Up to `bytes` of a file's text, from its start or from its end — all of it
+ * when the file is smaller. The line the window cuts is the caller's to drop.
+ */
+export function readSlice(file: string, from: "start" | "end", bytes: number): string {
+  const fd = fs.openSync(file, "r");
+  try {
+    const size = fs.fstatSync(fd).size;
+    const len = Math.min(size, bytes);
+    const buf = Buffer.alloc(len);
+    const n = fs.readSync(fd, buf, 0, len, from === "start" ? 0 : size - len);
+    return buf.toString("utf8", 0, n);
+  } finally {
+    fs.closeSync(fd);
+  }
+}

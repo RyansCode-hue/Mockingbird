@@ -1,16 +1,15 @@
 import * as fs from "fs";
-import * as os from "os";
 import * as path from "path";
 import { MB_DIR } from "./store";
-import type { AgentUsage, UsageLimit, UsageReport } from "../shared/types";
-import { writeGenerated } from "./fileOps";
+import { capitalize, type AgentUsage, type UsageLimit, type UsageReport } from "../shared/types";
+import { readSlice, writeGenerated } from "./fileOps";
+import { CLAUDE_SETTINGS, codexRollouts, epochMs } from "./agentFiles";
 
 const USAGE_FILE = path.join(MB_DIR, "usage.json");
 // the last payload that carried the 5-hour window — the CLI leaves it out of some
 const FIVE_HOUR_FILE = path.join(MB_DIR, "usage-5h.json");
 const STATUSLINE_SCRIPT = path.join(MB_DIR, "statusline.sh");
 const STATUSLINE_SETTINGS = path.join(MB_DIR, "statusline-settings.json");
-const CLAUDE_SETTINGS = path.join(os.homedir(), ".claude", "settings.json");
 
 // Claude Code only exposes plan rate limits through the statusline payload.
 // The script prints nothing (so no status line is drawn) and swaps the file in
@@ -52,20 +51,13 @@ export function usageReporterArgs(): string[] {
   return ["--settings", STATUSLINE_SETTINGS];
 }
 
-const CODEX_SESSIONS = path.join(os.homedir(), ".codex", "sessions");
 const CODEX_FILES_CHECKED = 12; // newest rollouts; limits ride on every turn, so the latest file has them
 const CODEX_TAIL_BYTES = 256 * 1024;
-
-const toMs = (r: unknown): number | null => {
-  // resets_at arrives as epoch seconds or an ISO string depending on its source
-  const ms = typeof r === "number" ? r * 1000 : typeof r === "string" ? Date.parse(r) : NaN;
-  return Number.isFinite(ms) ? ms : null;
-};
 
 let claudePlan: string | null = null;
 /** From `claude auth status` (subscriptionType) — the statusline payload doesn't carry it. */
 export function setClaudePlan(plan: string | null): void {
-  claudePlan = plan ? plan.charAt(0).toUpperCase() + plan.slice(1) : null;
+  claudePlan = plan ? capitalize(plan) : null;
 }
 
 // Model-scoped weekly windows the Claude CLI reports when the plan has them.
@@ -75,7 +67,7 @@ const CLAUDE_MODEL_WEEKLY: Record<string, string> = { seven_day_opus: "Opus", se
 function openFiveHourWindow(): { used_percentage: number; resets_at: unknown } | null {
   try {
     const w = JSON.parse(fs.readFileSync(FIVE_HOUR_FILE, "utf8")).rate_limits?.five_hour;
-    const resets = toMs(w?.resets_at);
+    const resets = epochMs(w?.resets_at);
     return typeof w?.used_percentage === "number" && resets !== null && resets > Date.now() ? w : null;
   } catch {
     return null; // never seen one, or unreadable — the panel says there's no reading
@@ -99,7 +91,7 @@ function readClaude(): AgentUsage | null {
   }
   const limits: UsageLimit[] = [];
   const add = (label: string, w: any) => {
-    if (typeof w?.used_percentage === "number") limits.push({ label, usedPct: w.used_percentage, resetsAt: toMs(w.resets_at) });
+    if (typeof w?.used_percentage === "number") limits.push({ label, usedPct: w.used_percentage, resetsAt: epochMs(w.resets_at) });
   };
   const fiveHour = rl?.five_hour ?? openFiveHourWindow();
   add("5-hour limit", fiveHour);
@@ -114,31 +106,24 @@ function readClaude(): AgentUsage | null {
 
 /** The newest `rate_limits` event in a rollout, read from its tail. Null when it has none. */
 function lastRateLimits(file: string): { rl: any; at: number } | null {
-  let fd: number | null = null;
+  let lines: string[];
   try {
-    fd = fs.openSync(file, "r");
-    const size = fs.fstatSync(fd).size;
-    const len = Math.min(size, CODEX_TAIL_BYTES);
-    const buf = Buffer.alloc(len);
-    fs.readSync(fd, buf, 0, len, size - len);
-    const lines = buf.toString("utf8").split("\n");
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"rate_limits"')) continue;
-      try {
-        const e = JSON.parse(lines[i]);
-        const rl = e.payload?.rate_limits ?? e.payload?.info?.rate_limits;
-        if (rl?.primary || rl?.secondary) return { rl, at: toMs(e.timestamp) ?? fs.statSync(file).mtimeMs };
-      } catch {
-        /* the tail's first line is usually cut mid-way — keep looking */
-      }
-    }
-    return null;
+    lines = readSlice(file, "end", CODEX_TAIL_BYTES).split("\n");
   } catch (err) {
     console.warn(`usage: cannot read Codex session ${file}: ${(err as Error).message}`);
     return null;
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
   }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"rate_limits"')) continue;
+    try {
+      const e = JSON.parse(lines[i]);
+      const rl = e.payload?.rate_limits ?? e.payload?.info?.rate_limits;
+      if (rl?.primary || rl?.secondary) return { rl, at: epochMs(e.timestamp) ?? fs.statSync(file).mtimeMs };
+    } catch {
+      /* the tail's first line is usually cut mid-way — keep looking */
+    }
+  }
+  return null;
 }
 
 const windowLabel = (minutes: unknown) =>
@@ -151,36 +136,23 @@ const windowLabel = (minutes: unknown) =>
  */
 function readCodex(): AgentUsage | null {
   const newest: { file: string; mtime: number }[] = [];
-  const ls = (dir: string) => {
+  for (const file of codexRollouts(CODEX_FILES_CHECKED * 3)) {
     try {
-      return fs.readdirSync(dir).sort().reverse();
+      newest.push({ file, mtime: fs.statSync(file).mtimeMs });
     } catch {
-      return [];
+      continue; // removed since it was listed
     }
-  };
-  outer: for (const y of ls(CODEX_SESSIONS))
-    for (const m of ls(path.join(CODEX_SESSIONS, y)))
-      for (const d of ls(path.join(CODEX_SESSIONS, y, m)))
-        for (const f of ls(path.join(CODEX_SESSIONS, y, m, d))) {
-          if (!f.endsWith(".jsonl")) continue;
-          const file = path.join(CODEX_SESSIONS, y, m, d, f);
-          try {
-            newest.push({ file, mtime: fs.statSync(file).mtimeMs });
-          } catch {
-            continue;
-          }
-          if (newest.length >= CODEX_FILES_CHECKED * 3) break outer;
-        }
+  }
   newest.sort((a, b) => b.mtime - a.mtime);
   for (const { file } of newest.slice(0, CODEX_FILES_CHECKED)) {
     const hit = lastRateLimits(file);
     if (!hit) continue;
     const limits: UsageLimit[] = [];
     for (const w of [hit.rl.primary, hit.rl.secondary]) {
-      if (typeof w?.used_percent === "number") limits.push({ label: windowLabel(w.window_minutes), usedPct: w.used_percent, resetsAt: toMs(w.resets_at ?? w.reset_at) });
+      if (typeof w?.used_percent === "number") limits.push({ label: windowLabel(w.window_minutes), usedPct: w.used_percent, resetsAt: epochMs(w.resets_at ?? w.reset_at) });
     }
     if (!limits.length) return null;
-    const plan = typeof hit.rl.plan_type === "string" ? hit.rl.plan_type.charAt(0).toUpperCase() + hit.rl.plan_type.slice(1) : null;
+    const plan = typeof hit.rl.plan_type === "string" ? capitalize(hit.rl.plan_type) : null;
     return { agent: "codex", plan, limits, at: hit.at };
   }
   return null;
