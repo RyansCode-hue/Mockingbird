@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { SessionInfo, TurnChange, TurnSnapshot } from "../shared/types";
+import { plural } from "./changeCount";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -66,7 +67,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
         {list && !isErr(list) && list.lastError && <div className="fp-note warn">The last turn wasn't recorded: {list.lastError}</div>}
         {done && (
           <div className="undo-done">
-            Restored {done.restored} file{done.restored === 1 ? "" : "s"}
+            Restored {plural(done.restored, "file")}
             {done.removed ? ` and removed ${done.removed}` : ""}. The conversation isn't rewound, so the agent still thinks its changes are there.
             <button
               className="outline"
@@ -99,7 +100,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
             {c && c.length > 0 && (
               <>
                 <div className="pl-dim">
-                  Restoring puts back {c.filter((x) => x.action === "restore").length} file(s) and removes {c.filter((x) => x.action === "remove").length} created since:
+                  Restoring puts back {plural(c.filter((x) => x.action === "restore").length, "file")} and removes {c.filter((x) => x.action === "remove").length} created since:
                 </div>
                 <div className="undo-files">
                   {c.map((x) => (

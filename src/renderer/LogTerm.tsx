@@ -1,8 +1,6 @@
 import React, { useEffect, useRef } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { currentTermTheme, termThemeListeners } from "./TerminalPane";
-import { dataPump, replay, trackUserInput, type CachedTerm } from "./cachedTerm";
+import type { FitAddon } from "@xterm/addon-fit";
+import { dataPump, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { classifyTermInput } from "./inputGuard";
 
 interface Entry extends CachedTerm {
@@ -14,21 +12,14 @@ interface Entry extends CachedTerm {
 // one terminal per service log, kept while the app runs so switching tabs keeps scrollback
 const logs = new Map<string, Entry>();
 const ensurePump = dataPump((cb) => window.mb.onRunData(cb), logs, (e, data) => e.term.write(data));
-let themed = false;
+termThemeListeners.add((theme) => {
+  for (const e of logs.values()) e.term.options.theme = theme;
+});
 
 function entryFor(id: string): Entry {
   const open = logs.get(id);
   if (open) return open;
-  const term = new Terminal({
-    fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace',
-    fontSize: 11,
-    lineHeight: 1.35,
-    theme: currentTermTheme(),
-    scrollback: 10000,
-    convertEol: false,
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
+  const { term, fit } = makeTerm({ fontSize: 11, lineHeight: 1.35, scrollback: 10000, convertEol: false });
   const e: Entry = { term, fit, replayed: false, ready: false, lastInput: 0 };
   logs.set(id, e);
   void replay(e, window.mb.runBuffer(id), () => logs.get(id) === e);
@@ -56,29 +47,12 @@ export function LogTerm({ id }: { id: string }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ensurePump();
-    if (!themed) {
-      themed = true;
-      termThemeListeners.add((theme) => {
-        for (const e of logs.values()) e.term.options.theme = theme;
-      });
-    }
     const e = entryFor(id);
     const el = host.current!;
     if (e.term.element) el.appendChild(e.term.element);
     else e.term.open(el);
     trackUserInput(e);
-    const fit = () => {
-      try {
-        e.fit.fit();
-        window.mb.runResize(id, e.term.cols, e.term.rows);
-      } catch {
-        /* hidden: nothing to measure */
-      }
-    };
-    fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(el);
-    return () => ro.disconnect();
+    return followSize(e, el, (cols, rows) => window.mb.runResize(id, cols, rows));
   }, [id]);
   return <div className="log-term" ref={host} />;
 }

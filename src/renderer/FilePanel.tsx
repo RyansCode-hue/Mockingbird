@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, LspLocation, WorktreeStateInfo } from "../shared/types";
-import { highlightLines, languageFor } from "./highlight";
+import { escapeHtml, highlightLines, languageFor } from "./highlight";
 import { fileKey, filesClosing, tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { fileBadge } from "./fileIcons";
@@ -8,6 +8,7 @@ import { useBreakpoints, useDebug } from "./debugStore";
 import { CodeEditor, confirmClose, releaseBuffers, useDirtyKeys } from "./CodeEditor";
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
 import { CopyToast, useCopyNote } from "./copyNote";
+import { ChangeCount, plural } from "./changeCount";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -31,6 +32,8 @@ const STATUS_TITLE: Record<GitChange["status"], string> = {
 
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
+/** A path with the home folder shown as ~. */
+const tildePath = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
 
 const SLIDE_MS = 200;
 
@@ -203,7 +206,7 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
           </div>
         )}
         {git && (
-          <div className="ex-branch" title={`${git.ahead} commit${git.ahead === 1 ? "" : "s"} to push, ${git.behind} to pull`}>
+          <div className="ex-branch" title={`${plural(git.ahead, "commit")} to push, ${git.behind} to pull`}>
             {git.branch} · ↑{git.ahead} ↓{git.behind}
           </div>
         )}
@@ -217,14 +220,7 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
                 </div>
               )}
               <div className="ex-sum">
-                {git.dirtyFiles} file{git.dirtyFiles === 1 ? "" : "s"}
-                {total > 0 && (
-                  <>
-                    {" · "}
-                    <span className="add">+{git.insertions}</span> <span className="del">−{git.deletions}</span>
-                  </>
-                )}{" "}
-                since the last commit
+                <ChangeCount files={git.dirtyFiles} insertions={git.insertions} deletions={git.deletions} /> since the last commit
               </div>
             </>
           ) : (
@@ -256,7 +252,7 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
                   <div
                     key={key}
                     className={`fp-row ex-open ${t.status ? `st-${t.status}` : ""} ${key === editor.active ? "active" : ""}`}
-                    title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}`}
+                    title={`${tildePath(t.root)}/${t.path}`}
                     onClick={() => onActivate(key)}
                   >
                     <FileGlyph path={t.path} />
@@ -389,7 +385,7 @@ export function EditorDock({
                 role="tab"
                 aria-selected={key === editor.active}
                 className={`fp-tab ${key === editor.active ? "on" : ""} ${t.status ? `st-${t.status}` : ""} ${dirty.has(fileKey(t)) ? "dirty" : ""}`}
-                title={`${t.root.replace(/^\/Users\/[^/]+/, "~")}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : t.source?.kind === "commit" ? ` (commit ${t.source.sha.slice(0, 8)})` : ""}`}
+                title={`${tildePath(t.root)}/${t.path}${t.source?.kind === "scm" ? (t.source.staged ? " (staged)" : " (working tree)") : t.source?.kind === "commit" ? ` (commit ${t.source.sha.slice(0, 8)})` : ""}`}
                 onClick={() => onActivate(key)}
                 onAuxClick={(e) => e.button === 1 && onClose(key)}
               >
@@ -624,11 +620,10 @@ export function parseDiff(text: string): { lines: DiffLine[]; binary: boolean; c
 export function highlightDiff(lines: DiffLine[], path: string): string[] {
   const lang = languageFor(path);
   const out: string[] = new Array(lines.length);
-  const escape = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   let i = 0;
   while (i < lines.length) {
     if (lines[i].kind === "hunk" || lines[i].kind === "note") {
-      out[i] = escape(lines[i].text);
+      out[i] = escapeHtml(lines[i].text);
       i++;
       continue;
     }
@@ -645,7 +640,7 @@ export function highlightDiff(lines: DiffLine[], path: string): string[] {
       else (o++, (out[j] = newHtml[n++]));
     }
   }
-  for (let j = 0; j < lines.length; j++) if (lines[j].kind === "note") out[j] = escape(lines[j].text);
+  for (let j = 0; j < lines.length; j++) if (lines[j].kind === "note") out[j] = escapeHtml(lines[j].text);
   return out;
 }
 

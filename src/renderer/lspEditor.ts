@@ -28,7 +28,7 @@ type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** A document offset as an LSP position (line, UTF-16 column — CodeMirror's own units). */
-export function toLspPos(doc: Text, offset: number): LspPosition {
+function toLspPos(doc: Text, offset: number): LspPosition {
   const line = doc.lineAt(offset);
   return { line: line.number - 1, character: offset - line.from };
 }
@@ -107,7 +107,7 @@ export function completionSource(ctx: LspDocContext) {
 }
 
 /** Hover text as safe DOM: fenced code as blocks, `code` inline, the rest as text. */
-export function renderHover(md: string): HTMLElement {
+function renderHover(md: string): HTMLElement {
   const dom = document.createElement("div");
   dom.className = "cm-lsp-hover";
   const parts = md.split(/```[\w-]*\n?/);

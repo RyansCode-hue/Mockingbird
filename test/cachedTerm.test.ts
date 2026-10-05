@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// xterm's fit addon looks for a browser global as it loads
+vi.hoisted(() => {
+  (globalThis as { self?: unknown }).self ??= globalThis;
+});
+
 import { Terminal } from "@xterm/xterm";
 import { dataPump, replay, type CachedTerm } from "../src/renderer/cachedTerm";
 

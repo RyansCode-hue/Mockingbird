@@ -12,7 +12,7 @@ const TERM_REPLY = new RegExp(
     "|\\x1bP[^\\x1b]*\\x1b\\\\" + // DCS answers (XTGETTCAP, DECRQSS)
     ")$"
 );
-export const USER_INPUT_WINDOW_MS = 400;
+const USER_INPUT_WINDOW_MS = 400;
 
 // One complete SGR mouse report. Program output can't make xterm emit one:
 // reports come from DOM mouse and wheel events while tracking is on (bindMouse →

@@ -28,39 +28,44 @@ import type { FileContent, FileSave, LspDiagnostic, LspFileEdits, LspFileState, 
 import type { LspPosition, LspTextEdit } from "../shared/textEdits";
 import { NO_SERVER, fromLspPos, lspExtensions, toCmDiagnostics, type LspDocContext } from "./lspEditor";
 import { guessIndent, lineBreakOf, splitBom, toEditorText, toFileText, type LineBreak } from "../shared/editorText";
+import { fileLanguage, type FileLanguage } from "../shared/fileTypes";
+import { plural } from "./changeCount";
+
+const CM_LANGUAGE: Record<FileLanguage, (() => Extension) | null> = {
+  typescript: () => javascript({ typescript: true }),
+  tsx: () => javascript({ typescript: true, jsx: true }),
+  javascript: () => javascript(),
+  jsx: () => javascript({ jsx: true }),
+  python: () => python(),
+  json: () => json(),
+  css: () => css(),
+  scss: () => css(),
+  less: () => css(),
+  html: () => html(),
+  xml: () => xml(),
+  markdown: () => markdown(),
+  yaml: () => yaml(),
+  sql: () => sql(),
+  csharp: () => StreamLanguage.define(csharp),
+  java: () => StreamLanguage.define(java),
+  kotlin: () => StreamLanguage.define(kotlin),
+  scala: () => StreamLanguage.define(scala),
+  go: () => StreamLanguage.define(go),
+  shell: () => StreamLanguage.define(shell),
+  toml: () => StreamLanguage.define(toml),
+  rust: () => StreamLanguage.define(rust),
+  ruby: () => StreamLanguage.define(ruby),
+  swift: () => StreamLanguage.define(swift),
+  php: null,
+  properties: () => StreamLanguage.define(properties),
+  dockerfile: () => StreamLanguage.define(dockerFile),
+  makefile: () => StreamLanguage.define(shell),
+};
 
 /** The editor's language for a file, by its name. */
 export function languageExtension(path: string): Extension | null {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
-  if (name === "dockerfile" || name.startsWith("dockerfile.")) return StreamLanguage.define(dockerFile);
-  if (name === ".env" || name.startsWith(".env.")) return StreamLanguage.define(properties);
-  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
-  switch (ext) {
-    case "ts": case "mts": case "cts": return javascript({ typescript: true });
-    case "tsx": return javascript({ typescript: true, jsx: true });
-    case "js": case "mjs": case "cjs": return javascript();
-    case "jsx": return javascript({ jsx: true });
-    case "py": return python();
-    case "json": case "jsonc": return json();
-    case "css": case "scss": case "less": return css();
-    case "html": case "htm": case "vue": case "razor": case "cshtml": return html();
-    case "xml": case "svg": case "csproj": case "props": case "targets": case "config": case "xaml": return xml();
-    case "md": case "markdown": case "mdx": return markdown();
-    case "yml": case "yaml": return yaml();
-    case "sql": return sql();
-    case "cs": return StreamLanguage.define(csharp);
-    case "java": return StreamLanguage.define(java);
-    case "kt": case "kts": return StreamLanguage.define(kotlin);
-    case "scala": return StreamLanguage.define(scala);
-    case "go": return StreamLanguage.define(go);
-    case "sh": case "bash": case "zsh": return StreamLanguage.define(shell);
-    case "toml": return StreamLanguage.define(toml);
-    case "rs": return StreamLanguage.define(rust);
-    case "rb": return StreamLanguage.define(ruby);
-    case "swift": return StreamLanguage.define(swift);
-    case "ini": case "env": case "properties": case "cfg": return StreamLanguage.define(properties);
-    default: return null;
-  }
+  const lang = fileLanguage(path);
+  return (lang && CM_LANGUAGE[lang]?.()) ?? null;
 }
 
 // colors from the theme's own palette, matching the diff view's highlighting
@@ -402,27 +407,22 @@ async function applyRename(edits: LspFileEdits[], sessionId: string, root: strin
     else saved++;
   }
   notify();
-  const files = open + saved;
-  return [
-    `Renamed in ${files} file${files === 1 ? "" : "s"}`,
-    open ? `${open} open with unsaved changes` : "",
-    saved ? `${saved} saved` : "",
-    ...problems,
-  ]
+  return [`Renamed in ${plural(open + saved, "file")}`, open ? `${open} open with unsaved changes` : "", saved ? `${saved} saved` : "", ...problems]
     .filter(Boolean)
     .join(" · ");
 }
 
+const subscribe = (cb: () => void) => {
+  subs.add(cb);
+  return () => subs.delete(cb);
+};
+/** Redraw when any buffer changes: edits, saves, language-server state and notes. */
+const useBufferChanges = () => useSyncExternalStore(subscribe, () => version);
+
 /** Which open files have unsaved edits — the tab bar's dots, and the close prompts. */
 export function useDirtyKeys(): Set<string> {
-  useSyncExternalStore(
-    (cb) => {
-      subs.add(cb);
-      return () => subs.delete(cb);
-    },
-    () => version
-  );
-  return new Set([...buffers].filter(([, b]) => isDirty(b)).map(([k]) => k));
+  useBufferChanges();
+  return new Set(dirtyKeys());
 }
 
 export function dirtyKeys(): string[] {
@@ -615,14 +615,8 @@ export function CodeEditor({
   const view = useRef<EditorView | null>(null);
   const [, rerender] = React.useReducer((n: number) => n + 1, 0);
   const [status, setStatus] = React.useState("");
-  // language-server state and notes live on the buffer; redraw when they change
-  useSyncExternalStore(
-    (cb) => {
-      subs.add(cb);
-      return () => subs.delete(cb);
-    },
-    () => version
-  );
+  // language-server state and notes live on the buffer
+  useBufferChanges();
 
   const save = async (force = false) => {
     const b = buffers.get(bufferKey);

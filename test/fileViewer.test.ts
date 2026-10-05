@@ -41,3 +41,18 @@ describe("diffs of files with merge conflicts", () => {
     expect(r.lines).toEqual([]);
   });
 });
+
+describe("file types", () => {
+  it("gives the editor and the diff highlighter the same answer for every name", async () => {
+    const { languageFor } = await import("../src/renderer/highlight");
+    const { languageExtension } = await import("../src/renderer/CodeEditor");
+    for (const f of [".env.local", "Makefile", "a.razor", "b.csproj", "c.toml", "d.mdx", "e.tsx"]) {
+      expect(languageFor(f), f).not.toBeNull();
+      expect(languageExtension(f), f).not.toBeNull();
+    }
+    for (const f of ["notes.txt", "LICENSE"]) {
+      expect(languageFor(f), f).toBeNull();
+      expect(languageExtension(f), f).toBeNull();
+    }
+  });
+});
