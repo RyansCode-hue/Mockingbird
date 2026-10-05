@@ -1,5 +1,6 @@
 /** Which coding-agent CLI a session runs. */
 export type AgentKind = "claude" | "codex";
+export const AGENT_NAME: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
 
 export type SessionStatus = "working" | "waiting" | "idle" | "dead";
 

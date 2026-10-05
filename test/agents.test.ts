@@ -9,9 +9,10 @@ const base = { repoPath: null, useWorktree: false };
 
 // agents.ts caches its Codex index for 30s, so each test loads a fresh copy
 let agentFor: typeof import("../src/main/agents").agentFor;
+let agentLabel: typeof import("../src/main/agents").agentLabel;
 beforeEach(async () => {
   vi.resetModules();
-  ({ agentFor } = await import("../src/main/agents"));
+  ({ agentFor, agentLabel } = await import("../src/main/agents"));
 });
 
 function rollout(cwd: string, source: string, day = "01"): void {
@@ -37,7 +38,14 @@ describe("Claude launch", () => {
     expect(agentFor("codex").launchArgs({ ...base }, {}).join(" ")).not.toContain("mcp_servers.mockingbird");
   });
   it("is the agent for sessions saved before agents existed", () => {
-    expect(agentFor(undefined).label).toBe("Claude");
+    expect(agentFor(undefined)).toBe(agentFor("claude"));
+    expect(agentLabel(undefined)).toBe("Claude");
+    expect(agentLabel("codex")).toBe("Codex");
+  });
+  it("counts a binary as installed once the shell has found it (a path), not as a bare name", async () => {
+    const { isInstalledBin } = await import("../src/main/agents");
+    expect(isInstalledBin("/opt/homebrew/bin/claude")).toBe(true);
+    expect(isInstalledBin("claude")).toBe(false);
   });
 });
 

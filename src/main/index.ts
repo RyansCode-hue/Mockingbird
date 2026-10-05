@@ -45,7 +45,7 @@ import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
 import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
-import { cliVersion } from "./agents";
+import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
@@ -131,7 +131,7 @@ function lookUpBins(reset = false): Promise<void> {
 async function installedBin(kind: AgentKind): Promise<string | null> {
   await lookUpBins();
   const bin = sessions.binFor(kind);
-  return bin.includes("/") ? bin : null;
+  return isInstalledBin(bin) ? bin : null;
 }
 const otherAgent = (a: AgentKind): AgentKind => (a === "claude" ? "codex" : "claude");
 /** The agent to ask a one-off question: the one wanted, or the other one when it isn't installed. */
@@ -142,7 +142,6 @@ async function askingAgent(want: AgentKind = "claude"): Promise<{ agent: AgentKi
   }
   return { agent: want, bin: sessions.binFor(want) }; // neither: askAgent says it isn't installed
 }
-const agentName = (a: AgentKind) => (a === "codex" ? "Codex" : "Claude Code");
 /** One question for an agent's CLI (Sonnet, for Claude), answered with the reply alone; an empty reply is an error naming `what`. */
 async function askFor(prompt: string, who: { agent: AgentKind; bin: string }, o: { tag: string; label: RegExp; timeoutMs: number; what: string }): Promise<string> {
   const reply = await askAgent(prompt, { ...who, run: userShellWithInput, env: paneEnv(), tag: o.tag, model: "sonnet", timeoutMs: o.timeoutMs });
@@ -714,9 +713,9 @@ handle("update:check", () => checkForUpdate());
 handle("agents:update", async (agent) => {
   const kind = agent === "codex" ? "codex" : "claude";
   const bin = await installedBin(kind);
-  if (!bin) throw new Error(`${kind} isn't installed (not found on your shell's PATH)`);
+  if (!bin) throw new Error(`${agentLabel(kind)} isn't installed (not found on your shell's PATH)`);
   const r = await userShell(`${quote(bin)} update 2>&1`, 180_000);
-  if (r.code !== 0) throw new Error(r.out || `${kind} update exited with code ${r.code}`);
+  if (r.code !== 0) throw new Error(r.out || `${agentLabel(kind)}'s update exited with code ${r.code}`);
   void lookUpBins(true); // a self-updater may have moved the binary
   return r.out.split("\n").slice(-2).join(" · ");
 });
@@ -870,7 +869,7 @@ handle("handoff:draft", async (id) => {
   const from: AgentKind = s.agent ?? "claude";
   const to = otherAgent(from);
   const bin = await installedBin(to);
-  if (!bin) throw new Error(`${agentName(to)} isn't installed — set it up in Settings → Agents`);
+  if (!bin) throw new Error(`${agentLabel(to)} isn't installed — set it up in Settings → Agents`);
   const conv = s.conversation?.id ?? s.conversations?.at(-1);
   let digest = "";
   if (conv && transcripts) {
@@ -1155,7 +1154,7 @@ handle("review:start", async (id) => {
   if (!s.repoPath) throw new Error("This session isn't in a repository");
   const author: AgentKind = s.agent ?? "claude";
   const reviewer = otherAgent(author);
-  if (!(await installedBin(reviewer))) throw new Error(`${agentName(reviewer)} isn't installed — set it up in Settings → Agents`);
+  if (!(await installedBin(reviewer))) throw new Error(`${agentLabel(reviewer)} isn't installed — set it up in Settings → Agents`);
   const base = await baseRef(s.cwd);
   const prompt = reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base });
   return companionSession(s, reviewer, `Review · ${s.ticketTitle ?? s.title}`, prompt);

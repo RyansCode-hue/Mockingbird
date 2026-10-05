@@ -22,7 +22,7 @@ import { paneEnv } from "./sessions";
 import { mcpLaunch, type McpLaunch } from "./messaging";
 import { makeTestCopy } from "./testCopy";
 import { codexError, parseClaudeJson, readCodexReply } from "./headless";
-import { agentLabel } from "./agents";
+import { agentLabel, isInstalledBin } from "./agents";
 
 /** The models a room can seat; each runs through the CLI and plan the user already has. */
 export const COLLAB_MODELS: CollabModel[] = [
@@ -282,7 +282,7 @@ export class CollabRooms {
     const model = s.model.trim();
     if (!MODEL_ID_RE.test(model)) throw new Error(`"${s.model}" isn't a valid model id`);
     if (s.effort && !this.efforts()[s.agent].includes(s.effort)) {
-      throw new Error(`${s.effort} isn't an effort level ${s.agent === "codex" ? "Codex" : "Claude"} accepts`);
+      throw new Error(`${s.effort} isn't an effort level ${agentLabel(s.agent)} accepts`);
     }
     const used = new Set(room.participants.filter((p) => !p.removed).map((p) => p.color));
     const color = [...Array(PALETTE_SIZE).keys()].find((c) => !used.has(c)) ?? room.participants.length % PALETTE_SIZE;
@@ -883,7 +883,7 @@ export function cliTurnRunner(binFor: (agent: "claude" | "codex") => string): Tu
     const bin = binFor(p.agent);
     // installs and test suites can take a while; a reading turn that runs this long is stuck
     const timeoutMs = p.runsCommands ? 30 * 60_000 : 10 * 60_000;
-    if (!bin.includes("/")) throw new Error(`${agentLabel(p.agent)} isn't installed`);
+    if (!isInstalledBin(bin)) throw new Error(`${agentLabel(p.agent)} isn't installed`);
     if (p.agent === "claude") {
       const r = await userShellWithInput(claudeTurnCommand(bin, p, { mcp, ask: askTool, permit: true, sockets }), prompt, { cwd, env, signal, timeoutMs });
       const { text, sessionId } = parseClaudeJson(r, 400);

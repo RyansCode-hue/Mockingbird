@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import type { AgentKind, NewSessionRequest, Settings } from "../shared/types";
+import { AGENT_NAME, type AgentKind, type NewSessionRequest, type Settings } from "../shared/types";
 import { expandHome } from "./store";
 import { usageReporterArgs } from "./usage";
 import type { McpLaunch } from "./messaging";
@@ -14,7 +14,6 @@ export interface LaunchContext {
 
 /** Everything that differs between the coding-agent CLIs a session can run. */
 export interface AgentAdapter {
-  label: string;
   /** The Settings field holding this agent's binary name or path. */
   binSetting: keyof Pick<Settings, "claudeBin" | "codexBin">;
   launchArgs(req: NewSessionRequest, ctx: LaunchContext): string[];
@@ -30,7 +29,6 @@ export interface AgentAdapter {
 }
 
 const claude: AgentAdapter = {
-  label: "Claude",
   binSetting: "claudeBin",
   promptInArgs: false,
   launchArgs(req, ctx) {
@@ -111,7 +109,6 @@ function codexCwds(): Set<string> {
 }
 
 const codex: AgentAdapter = {
-  label: "Codex",
   binSetting: "codexBin",
   promptInArgs: true,
   launchArgs(req, ctx) {
@@ -156,8 +153,14 @@ export function agentFor(kind: AgentKind | null | undefined): AgentAdapter {
   return ADAPTERS[kind ?? "claude"];
 }
 
-/** An agent's name as people see it: "Claude", "Codex". */
-export const agentLabel = (kind: AgentKind | null | undefined): string => agentFor(kind).label;
+/** An agent's name as people see it: "Claude", "Codex" (sessions saved before agents existed are Claude's). */
+export const agentLabel = (kind: AgentKind | null | undefined): string => AGENT_NAME[kind ?? "claude"];
+
+/**
+ * Whether a binary from SessionManager.binFor is an installed CLI: once the
+ * user's shell has found it, it is a path; a bare name means it wasn't found.
+ */
+export const isInstalledBin = (bin: string): boolean => bin.includes("/");
 
 /** An agent CLI's version, e.g. "2.1.5" from "2.1.5 (Claude Code)" or "codex-cli 0.46.0". */
 export function cliVersion(out: string): string | null {

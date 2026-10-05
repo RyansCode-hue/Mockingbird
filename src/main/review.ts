@@ -1,6 +1,4 @@
-import type { AgentKind } from "../shared/types";
-
-const NAME: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex" };
+import { AGENT_NAME, type AgentKind } from "../shared/types";
 
 /**
  * What the reviewing agent is told: what changed and how to see it, what to
@@ -10,7 +8,7 @@ const NAME: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex" 
 export function reviewPrompt(o: { author: AgentKind; authorId: string; authorTitle: string; branch: string | null; base: string | null }): string {
   const committed = o.base ? `git diff ${o.base}...HEAD (committed on this branch since ${o.base})` : "git log -5 -p (the recent commits; no base branch was found)";
   return [
-    `You're giving a second opinion on another agent's work before it goes to a pull request. It was done by a ${NAME[o.author]} session called "${o.authorTitle}", in this folder${o.branch ? ` on branch ${o.branch}` : ""}.`,
+    `You're giving a second opinion on another agent's work before it goes to a pull request. It was done by a ${AGENT_NAME[o.author]} session called "${o.authorTitle}", in this folder${o.branch ? ` on branch ${o.branch}` : ""}.`,
     "",
     "See what changed:",
     `- ${committed}`,
