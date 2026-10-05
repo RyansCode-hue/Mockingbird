@@ -14,7 +14,7 @@ import { loginShell, quote } from "./shell";
  */
 
 const LOG_LINES = 400;
-export const MIN_NODE = 22;
+const MIN_NODE = 22;
 
 /** Is this git remote URL (https or ssh) the GitHub repository owner/repo? */
 export function remoteMatches(url: string, owner: string, repo: string): boolean {
@@ -216,7 +216,7 @@ export function newestBuild(clone: string): string | null {
 }
 
 /** The detached installer. $MB_OPEN stands in for `open` in tests. */
-export const INSTALLER = `#!/bin/bash
+const INSTALLER = `#!/bin/bash
 # Mockingbird's installer, started by the app just before it quits for an update.
 # Waits for the old app to exit, swaps the new bundle in (putting the old one back
 # if anything fails), records the result for the next launch, and reopens the app.

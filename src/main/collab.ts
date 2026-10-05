@@ -185,7 +185,7 @@ export function permissionKind(tool: string, input: Record<string, unknown>): st
   return tool;
 }
 
-function permissionDetail(tool: string, input: Record<string, unknown>): string {
+function permissionDetail(input: Record<string, unknown>): string {
   if (typeof input.command === "string") return input.command;
   if (typeof input.file_path === "string") return input.file_path;
   if (typeof input.url === "string") return input.url;
@@ -439,7 +439,7 @@ export class CollabRooms {
       id: randomUUID().slice(0, 8),
       seat: seatKey,
       tool,
-      detail: permissionDetail(tool, input),
+      detail: permissionDetail(input),
       ...(typeof input.description === "string" ? { description: input.description } : {}),
       kind,
       at: Date.now(),

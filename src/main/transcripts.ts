@@ -47,7 +47,7 @@ const ts = (v: unknown): number => epochMs(v) ?? 0;
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 const firstLine = (s: string) => s.trim().split("\n").find((l) => l.trim())?.trim() ?? "";
 /** Command wrappers and system notes, not something the user typed: left out of the index. */
-export const isNoise = (s: string) => /^\s*<(command-|local-command-|system-reminder|bash-|user-memory)/.test(s) || /^Caveat: /.test(s);
+const isNoise = (s: string) => /^\s*<(command-|local-command-|system-reminder|bash-|user-memory)/.test(s) || /^Caveat: /.test(s);
 /** What can title a conversation: a request the user typed — not noise, an interruption marker or a compacted conversation's summary. */
 export const isRealPrompt = (s: string) => !isNoise(s) && !/^\s*(\[Request interrupted|This session is being continued)/.test(s);
 

@@ -65,7 +65,7 @@ describe("rooms", () => {
     expect(room.round).toBe(2);
   });
   it("until-agreed stops once every model agrees in the same round", async () => {
-    const { c, make } = rooms((k, n) => (n >= 2 ? `ok\nSTANCE: AGREE` : `hmm\nSTANCE: CONTINUE — x`));
+    const { c, make } = rooms((_k, n) => (n >= 2 ? `ok\nSTANCE: AGREE` : `hmm\nSTANCE: CONTINUE — x`));
     const room = make({ mode: "consensus" });
     await c.run(room.id);
     expect(room.round).toBe(2);
@@ -154,7 +154,7 @@ describe("plans and implementation", () => {
     expect(room.plan).toMatchObject({ text: "fable thoughts", by: "fable", approved: true });
   });
   it("a write-up is a plan awaiting approval, with no stance stripped from it", async () => {
-    const { c, make, prompts } = rooms((k, n, prompt) => (/write up the plan/.test(prompt) ? "# Plan\n1. Do it" : `${k}\nSTANCE: CONTINUE — x`));
+    const { c, make, prompts } = rooms((k, _n, prompt) => (/write up the plan/.test(prompt) ? "# Plan\n1. Do it" : `${k}\nSTANCE: CONTINUE — x`));
     const room = make({ mode: "step" });
     await c.run(room.id);
     await c.synthesize(room.id, "opus");

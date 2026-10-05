@@ -1,6 +1,6 @@
 import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn, withRenameSource } from "./files";
-import type { GitChange, GraphCommit, GraphRef, ScmEntry, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
+import type { GitChange, GraphCommit, GraphRef, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
 
 /**
  * Source control for a session's folder, like VS Code's view: what's staged,
@@ -11,7 +11,7 @@ import type { GitChange, GraphCommit, GraphRef, ScmEntry, ScmGraph, ScmStatus, S
 const code = (c: string): ScmStatusCode => (c === "A" ? "A" : c === "D" ? "D" : c === "R" || c === "C" ? "R" : "M");
 
 /** `git status --porcelain=v2 --branch -z` → the view's groups. */
-export function parseStatus(out: string): ScmStatus {
+function parseStatus(out: string): ScmStatus {
   const st: ScmStatus = { branch: null, upstream: null, published: false, ahead: 0, behind: 0, staged: [], unstaged: [], conflicted: [] };
   const parts = out.split("\0");
   for (let i = 0; i < parts.length; i++) {
@@ -152,7 +152,7 @@ export function parseRefs(decoration: string, remotes: string[]): GraphRef[] {
   return out;
 }
 
-export function parseLog(out: string, remotes: string[]): GraphCommit[] {
+function parseLog(out: string, remotes: string[]): GraphCommit[] {
   return out
     .split(END)
     .map((r) => r.replace(/^\n/, ""))

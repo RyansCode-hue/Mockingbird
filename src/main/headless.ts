@@ -12,11 +12,11 @@ const TIMEOUT_MS = 120_000;
  * model needs is in the prompt, so it only writes. Claude runs a fast model;
  * Codex runs the user's default model at low effort, read-only.
  */
-export function claudeAskCommand(bin: string, model = "haiku"): string {
+function claudeAskCommand(bin: string, model = "haiku"): string {
   return [quote(bin), "-p", "--model", model, "--output-format", "json", "--tools", quote(""), "--strict-mcp-config", "--no-session-persistence"].join(" ");
 }
 
-export function codexAskCommand(bin: string, lastFile: string): string {
+function codexAskCommand(bin: string, lastFile: string): string {
   return [
     quote(bin),
     "exec",

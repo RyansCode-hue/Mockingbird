@@ -19,7 +19,7 @@ const CLAUDE_SONNET = [3, 15, 0.3, 3.75];
 const CLAUDE_HAIKU = [1, 5, 0.1, 1.25];
 const CODEX = [1.25, 10, 0.125, 1.25];
 
-export function weightsFor(agent: AgentKind, model: string | null): number[] {
+function weightsFor(agent: AgentKind, model: string | null): number[] {
   if (agent === "codex") return CODEX;
   const m = (model ?? "").toLowerCase();
   if (/haiku/.test(m)) return CLAUDE_HAIKU;
