@@ -1,6 +1,6 @@
 import { ADO_API } from "./ado";
-import { currentBranch } from "./git";
-import { adoRepo, originRemote, prError, type AdoCall, type RemoteRepo } from "./pullRequests";
+import { currentBranch, originRemote, type RemoteRepo } from "./git";
+import { adoRepo, prError, type AdoCall } from "./pullRequests";
 import { quote } from "./shell";
 import type { ShellRunner } from "./headless";
 import type { PrState, PrStatus } from "../shared/types";

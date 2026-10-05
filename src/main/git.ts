@@ -103,6 +103,43 @@ export async function originUrl(cwd: string): Promise<string | null> {
   return (await git(cwd, ["remote", "get-url", "origin"], { okCodes: [0, 2] })) || null; // 2: no such remote
 }
 
+/** Where a repository's origin lives, read from its remote URL. */
+export type RemoteRepo =
+  | { provider: "ado"; base: string; project: string; repo: string }
+  | { provider: "github"; owner: string; repo: string };
+
+const dec = (s: string) => decodeURIComponent(s);
+
+/**
+ * Recognise Azure DevOps and GitHub remotes (HTTPS and SSH):
+ * https://[user@]dev.azure.com/org/project/_git/repo,
+ * https://org.visualstudio.com/[DefaultCollection/]project/_git/repo,
+ * git@ssh.dev.azure.com:v3/org/project/repo, org@vs-ssh.visualstudio.com:v3/org/project/repo,
+ * https://github.com/owner/repo(.git), git@github.com:owner/repo(.git), and the
+ * same with ssh://, git://, git+https:// (package.json's form) or no scheme.
+ * A repository's name may hold dots (socket.io); only a final .git is dropped.
+ */
+export function parseRemote(url: string): RemoteRepo | null {
+  const u = url.trim();
+  let m = /^https?:\/\/(?:[^@/]+@)?dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/?#]+)/i.exec(u);
+  if (m) return { provider: "ado", base: `https://dev.azure.com/${m[1]}`, project: dec(m[2]), repo: dec(m[3]) };
+  m = /^https?:\/\/(?:[^@/]+@)?([^./]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/]+)\/_git\/([^/?#]+)/i.exec(u);
+  if (m) return { provider: "ado", base: `https://${m[1]}.visualstudio.com`, project: dec(m[2]), repo: dec(m[3]) };
+  m = /^(?:ssh:\/\/)?[^@]+@(?:ssh\.dev\.azure\.com|vs-ssh\.visualstudio\.com):(?:\d+\/)?v3\/([^/]+)\/([^/]+)\/([^/]+?)\/?$/i.exec(u);
+  if (m) return { provider: "ado", base: `https://dev.azure.com/${m[1]}`, project: dec(m[2]), repo: dec(m[3]) };
+  m = /^(?:(?:git\+)?(?:https?|ssh|git):\/\/)?(?:[^@/]+@)?(?:www\.)?github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(u);
+  if (m) return { provider: "github", owner: m[1], repo: m[2] };
+  return null;
+}
+
+export const remoteName = (r: RemoteRepo) => (r.provider === "ado" ? `${r.project}/${r.repo}` : `${r.owner}/${r.repo}`);
+
+/** Where `cwd`'s origin lives, or null when there's no origin or it's neither Azure DevOps nor GitHub. */
+export async function originRemote(cwd: string): Promise<RemoteRepo | null> {
+  const url = await originUrl(cwd);
+  return url ? parseRemote(url) : null;
+}
+
 /** The remote branch `cwd`'s branch tracks (e.g. origin/dev), or null when it tracks none or HEAD is detached. */
 export async function upstreamOf(cwd: string): Promise<string | null> {
   try {

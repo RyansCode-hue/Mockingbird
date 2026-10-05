@@ -27,6 +27,8 @@ describe("finding the clone", () => {
     expect(remoteMatches("git@github.com:ryanscode-hue/mockingbird.git", "RyansCode-hue", "Mockingbird")).toBe(true);
     expect(remoteMatches("https://github.com/RyansCode-hue/Mockingbird-fork", "RyansCode-hue", "Mockingbird")).toBe(false);
     expect(remoteMatches("https://gitlab.com/RyansCode-hue/Mockingbird", "RyansCode-hue", "Mockingbird")).toBe(false);
+    expect(remoteMatches("ssh://git@github.com/me/my.app.git", "me", "my.app")).toBe(true);
+    expect(remoteMatches("https://github.com/me/my.app", "me", "my")).toBe(false);
   });
 
   it("finds it under the repo folders, or uses the folder chosen in Settings (which must be it)", async () => {

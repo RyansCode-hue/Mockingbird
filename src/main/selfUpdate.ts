@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { UPDATE_STEPS, type UpdateOutcome, type UpdateProgress, type UpdateStepId } from "../shared/types";
 import { isNewer } from "./updates";
-import { isRepo, originUrl } from "./git";
+import { isRepo, originUrl, parseRemote } from "./git";
 import { indexRepos } from "./repos";
 import { loginShell, quote } from "./shell";
 
@@ -18,8 +18,8 @@ export const MIN_NODE = 22;
 
 /** Is this git remote URL (https or ssh) the GitHub repository owner/repo? */
 export function remoteMatches(url: string, owner: string, repo: string): boolean {
-  const m = url.trim().match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/i);
-  return !!m && m[1].toLowerCase() === owner.toLowerCase() && m[2].toLowerCase() === repo.toLowerCase();
+  const r = parseRemote(url);
+  return r?.provider === "github" && r.owner.toLowerCase() === owner.toLowerCase() && r.repo.toLowerCase() === repo.toLowerCase();
 }
 
 /**
