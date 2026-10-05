@@ -1,11 +1,29 @@
-import React, { useEffect, useState } from "react";
-import type { AgentKind, CollabParticipant, CollabParticipantSpec, CollabRoom, RepoEntry } from "../shared/types";
+import React, { useState } from "react";
+import type { AgentKind, CollabParticipant, CollabParticipantSpec, CollabRoom } from "../shared/types";
 import { ChevronIcon, DockerIcon, ReadIcon, RunIcon } from "./Icons";
-import { Pick, Select } from "./Menu";
-import { ACCESS_LEVELS, CUSTOM_MODEL as CUSTOM, accessFlags, accessOf, hasAccess, isErr, moveSeat, presetOptions, specsOf, toggleAccess, type Access, type Catalog } from "./collabView";
+import { Select } from "./Menu";
+import { RepoPick } from "./RepoPick";
+import {
+  ACCESS_LEVELS,
+  AGENT_OPTIONS,
+  CUSTOM_MODEL as CUSTOM,
+  accessFlags,
+  accessOf,
+  effortOptions,
+  hasAccess,
+  isErr,
+  modelPlaceholder,
+  moveSeat,
+  presetOptions,
+  specsOf,
+  toggleAccess,
+  unusedModel,
+  type Catalog,
+} from "./collabView";
 import { beginDrag, cue, dragging, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
+import type { RunAction } from "./useAction";
 
-type Call = (what: string, fn: () => Promise<unknown>) => Promise<unknown>;
+const ACCESS_ICON = { read: ReadIcon, run: RunIcon, docker: DockerIcon } as const;
 
 /**
  * The room's models, edited in place: each card opens to its model, effort and
@@ -13,7 +31,7 @@ type Call = (what: string, fn: () => Promise<unknown>) => Promise<unknown>;
  * Effort and access keep a model's conversation; switching to another model
  * seats a new one, which reads the whole discussion first.
  */
-export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catalog: Catalog; call: Call }) {
+export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catalog: Catalog; call: RunAction }) {
   const seated = room.participants.filter((p) => !p.removed);
   const specs = specsOf(room.participants);
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -40,8 +58,8 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
   };
 
   const add = async () => {
-    const choices = [...(catalog.defaults ?? []), ...catalog.presets];
-    const m = choices.find((x) => !seated.some((p) => p.agent === x.agent && p.model === x.model)) ?? choices[0];
+    // every model seated already: a second seat of the first one
+    const m = unusedModel(catalog, seated) ?? catalog.defaults?.[0] ?? catalog.presets[0];
     if (!m) return;
     const r = await apply([...specs, { label: m.label, agent: m.agent, model: m.model, effort: null, ...accessFlags(room.repoPath ? "read" : "none") }]);
     const joined = r?.participants.find((x) => !x.removed && !specs.some((s) => s.key === x.key));
@@ -57,7 +75,10 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
     <section className="ins-models">
       <div className="ins-head">
         Models
-        <RepoSelect
+        <RepoPick
+          className="ins-repo"
+          none="No repository"
+          title={room.repoPath || "No repository — models discuss without code"}
           value={room.repoPath ?? ""}
           onChange={(v) => call("repo", () => window.mb.collabRepo(room.id, v || null))}
         />
@@ -112,44 +133,39 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
               <div className="ins-card-body">
                 <label className="ins-field">
                   <span>Model</span>
-                  <ModelSelect p={p} catalog={catalog} onPick={(m) => switchModel(p, m)} />
+                  <ModelSelect value={p} catalog={catalog} onPick={(m) => switchModel(p, m)} />
                 </label>
                 <label className="ins-field">
                   <span>Effort</span>
-                  <Select
-                    value={p.effort ?? ""}
-                    options={[{ value: "", label: "default" }, ...catalog.efforts[p.agent].map((e) => ({ value: e, label: e }))]}
-                    onChange={(v) => update(p.key, { effort: v || null })}
-                  />
+                  <Select value={p.effort ?? ""} options={effortOptions(catalog, p.agent, "default")} onChange={(v) => update(p.key, { effort: v || null })} />
                 </label>
                 <div className="ins-field">
                   <span>Access</span>
                   <span className={`ins-chips ${room.repoPath ? "" : "off"}`}>
-                    <button
-                      className={`ins-chip ${access === "none" ? "on" : ""}`}
-                      title="No code — asks a model that reads it"
-                      disabled={!room.repoPath}
-                      onClick={() => update(p.key, accessFlags("none"))}
-                    >
-                      none
-                    </button>
-                    {([
-                      ["read", ReadIcon, "Reads the repository"],
-                      ["run", RunIcon, "Runs tests and builds in a disposable test copy — turns on read"],
-                      ["docker", DockerIcon, "Uses Docker, which reaches past the sandbox — turns on read and run"],
-                    ] as const).map(([level, Ico, tip]) => (
-                      <button
-                        key={level}
-                        className={`ins-chip ${hasAccess(access, level) ? "on" : ""}`}
-                        title={tip}
-                        disabled={!room.repoPath}
-                        aria-pressed={hasAccess(access, level)}
-                        onClick={() => update(p.key, accessFlags(toggleAccess(access, level)))}
-                      >
-                        <Ico />
-                        {level}
-                      </button>
-                    ))}
+                    {ACCESS_LEVELS.map((a) => {
+                      if (a.id === "none") {
+                        return (
+                          <button key={a.id} className={`ins-chip ${access === "none" ? "on" : ""}`} title={a.note} disabled={!room.repoPath} onClick={() => update(p.key, accessFlags("none"))}>
+                            {a.label}
+                          </button>
+                        );
+                      }
+                      const level = a.id;
+                      const Ico = ACCESS_ICON[level];
+                      return (
+                        <button
+                          key={level}
+                          className={`ins-chip ${hasAccess(access, level) ? "on" : ""}`}
+                          title={a.note}
+                          disabled={!room.repoPath}
+                          aria-pressed={hasAccess(access, level)}
+                          onClick={() => update(p.key, accessFlags(toggleAccess(access, level)))}
+                        >
+                          <Ico />
+                          {a.label}
+                        </button>
+                      );
+                    })}
                   </span>
                 </div>
                 <div className="ins-note">
@@ -174,66 +190,51 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
   );
 }
 
-/** A preset, or any Claude/Codex model id typed in. */
-function ModelSelect({ p, catalog, onPick }: { p: CollabParticipant; catalog: Catalog; onPick: (m: { agent: AgentKind; model: string; label: string }) => void }) {
-  const preset = catalog.presets.find((m) => m.agent === p.agent && m.model === p.model);
-  const [custom, setCustom] = useState<{ agent: AgentKind; model: string } | null>(preset ? null : { agent: p.agent, model: p.model });
+type PickedModel = { agent: AgentKind; model: string; label: string };
+
+/**
+ * A preset, or any Claude/Codex model id typed in. `live` applies a typed id
+ * as it's typed (a seat in a room not started yet); otherwise it applies on
+ * Use or ↵, since switching a seated model starts it on a fresh conversation.
+ */
+export function ModelSelect({ value, catalog, onPick, live, title }: { value: PickedModel; catalog: Catalog; onPick: (m: PickedModel) => void; live?: boolean; title?: string }) {
+  const preset = catalog.presets.find((m) => m.agent === value.agent && m.model === value.model);
+  const [draft, setDraft] = useState<{ agent: AgentKind; model: string } | null>(preset ? null : { agent: value.agent, model: value.model });
+  const custom = live ? (preset ? null : { agent: value.agent, model: value.model }) : draft;
+  const edit = (next: { agent: AgentKind; model: string }) => (live ? onPick({ ...next, label: next.model }) : setDraft(next));
+  const use = () => custom?.model.trim() && onPick({ agent: custom.agent, model: custom.model.trim(), label: custom.model.trim() });
   return (
     <span className="ins-model-pick">
       <Select
         value={custom ? CUSTOM : preset?.key ?? CUSTOM}
-        placeholder={p.label}
+        placeholder={value.label || "Choose a model"}
+        title={title}
         options={presetOptions(catalog, CUSTOM)}
         onChange={(v) => {
           const m = catalog.presets.find((x) => x.key === v);
           if (m) {
-            setCustom(null);
-            onPick(m);
-          } else setCustom({ agent: p.agent, model: "" });
+            setDraft(null);
+            onPick({ agent: m.agent, model: m.model, label: m.label });
+          } else edit({ agent: value.agent, model: "" });
         }}
       />
       {custom && (
         <span className="ins-custom">
-          <Select
-            className="ins-agent"
-            value={custom.agent}
-            options={[{ value: "claude", label: "Claude" }, { value: "codex", label: "Codex" }]}
-            onChange={(v) => setCustom({ ...custom, agent: v as AgentKind })}
-          />
+          <Select className="ins-agent" value={custom.agent} options={AGENT_OPTIONS} onChange={(v) => edit({ ...custom, agent: v as AgentKind })} />
           <input
             type="text"
-            placeholder={custom.agent === "codex" ? "gpt-6-astra-mini" : "claude-sonnet-5"}
+            placeholder={modelPlaceholder(custom.agent)}
             value={custom.model}
-            onChange={(e) => setCustom({ ...custom, model: e.target.value })}
-            onKeyDown={(e) => e.key === "Enter" && custom.model.trim() && onPick({ agent: custom.agent, model: custom.model.trim(), label: custom.model.trim() })}
+            onChange={(e) => edit({ ...custom, model: e.target.value })}
+            onKeyDown={(e) => !live && e.key === "Enter" && use()}
           />
-          <button
-            className="outline"
-            disabled={!custom.model.trim()}
-            onClick={() => onPick({ agent: custom.agent, model: custom.model.trim(), label: custom.model.trim() })}
-          >
-            Use
-          </button>
+          {!live && (
+            <button className="outline" disabled={!custom.model.trim()} onClick={use}>
+              Use
+            </button>
+          )}
         </span>
       )}
     </span>
-  );
-}
-
-/** The room's repository, or none — readers read it, runners copy it, an approved plan is implemented in it. */
-function RepoSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const [repos, setRepos] = useState<RepoEntry[]>([]);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => (isErr(r) ? setError(r.error) : setRepos(r)));
-  }, []);
-  return (
-    <Pick className="ins-repo" value={value} title={error ? `Couldn't list repos: ${error}` : value || "No repository — models discuss without code"} onChange={(e) => onChange(e.target.value)}>
-      <option value="">No repository</option>
-      {value && !repos.some((r) => r.path === value) && <option value={value}>{value.split("/").pop()}</option>}
-      {repos.map((r) => (
-        <option key={r.path} value={r.path}>{r.name}</option>
-      ))}
-    </Pick>
   );
 }

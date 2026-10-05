@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { FileHit, FileSearch, FileSearchOptions, SessionInfo, TranscriptHit } from "../shared/types";
 import { ConversationRow, useTranscriptSearch } from "./TranscriptSearch";
+import { useListNav } from "./listNav";
 
 export interface SearchState extends FileSearchOptions {
   scope: "conversations" | "files";
@@ -82,7 +83,6 @@ export function SearchView({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const [sel, setSel] = useState(0);
   const [busy, setBusy] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const set = (patch: Partial<SearchState>) => onState({ ...state, ...patch });
@@ -93,8 +93,8 @@ export function SearchView({
     inputRef.current?.select();
   }, [focusKey]);
 
-  // conversations: the transcript index (it searches nothing while the scope is files)
-  const conv = useTranscriptSearch(files ? "" : state.q);
+  // conversations: the transcript index (idle while the scope is files)
+  const conv = useTranscriptSearch(state.q, !files);
 
   // files: the focused session's folder
   const [fileRes, setFileRes] = useState<Result<FileSearch> | null>(null);
@@ -129,7 +129,8 @@ export function SearchView({
   const flat: (TranscriptHit | FileHit)[] = files ? groups.flatMap(([p, hs]) => (collapsed.has(p) ? [] : hs)) : conv.hits;
   const indexOf = useMemo(() => new Map(flat.map((h, i) => [h, i])), [flat]);
 
-  useEffect(() => setSel(0), [state.q, state.scope, fileRes, conv.hits]);
+  // back to the top for a new search, not when the index re-reads the same one
+  const { sel, setSel, onArrow } = useListNav(flat.length, [state.q, state.scope, fileRes]);
   useEffect(() => {
     listRef.current?.querySelector(".sv-hit.sel")?.scrollIntoView({ block: "nearest" });
   }, [sel]);
@@ -166,14 +167,7 @@ export function SearchView({
           value={state.q}
           onChange={(e) => set({ q: e.target.value })}
           onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setSel((s) => Math.min(flat.length - 1, s + 1));
-            }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setSel((s) => Math.max(0, s - 1));
-            }
+            if (onArrow(e)) return;
             if (e.key === "Enter") openAt(sel);
             if (e.key === "Escape" && state.q) set({ q: "" });
           }}

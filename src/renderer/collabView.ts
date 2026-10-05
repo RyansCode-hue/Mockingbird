@@ -12,6 +12,33 @@ export function presetOptions(catalog: Catalog, custom: string): { value: string
 }
 /** The value the model picker uses for "Other model…". */
 export const CUSTOM_MODEL = "__custom";
+
+/** The CLIs a typed-in model id can run on. */
+export const AGENT_OPTIONS: { value: AgentKind; label: string }[] = [
+  { value: "claude", label: "Claude" },
+  { value: "codex", label: "Codex" },
+];
+
+/** An example model id for the CLI, as a typed-in model's placeholder. */
+export const modelPlaceholder = (agent: AgentKind) => (agent === "codex" ? "gpt-6-astra-mini" : "claude-sonnet-5");
+
+/** A CLI's effort levels as dropdown choices, after its default (""). */
+export function effortOptions(catalog: Catalog, agent: AgentKind, defaultLabel: string): { value: string; label: string }[] {
+  return [{ value: "", label: defaultLabel }, ...catalog.efforts[agent].map((e) => ({ value: e, label: e }))];
+}
+
+/** An "always allow" kind as the user reads it: "Bash: npm test" → "npm test", "Read: src" → "Read in src". */
+export const kindLabel = (kind: string) => kind.replace(/^Bash: /, "").replace(/^(\w+): /, "$1 in ");
+
+/** The seats a new room starts with: the catalog's defaults, else every preset; none until the catalog has loaded. */
+export function seedSeats(catalog: Catalog): CollabParticipantSpec[] {
+  return (catalog.defaults ?? catalog.presets).map((m) => ({ label: m.label, agent: m.agent, model: m.model, effort: null, readsCode: true }));
+}
+
+/** The first catalog model (new-room defaults first) that isn't seated yet; null when all are, or the catalog is empty. */
+export function unusedModel(catalog: Catalog, seated: { agent: AgentKind; model: string }[]): CollabModel | null {
+  return [...(catalog.defaults ?? []), ...catalog.presets].find((m) => !seated.some((s) => s.agent === m.agent && s.model === m.model)) ?? null;
+}
 /** IPC replies carry failures as { error }. */
 export const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
@@ -141,13 +168,20 @@ export function specsOf(participants: CollabParticipant[]): CollabParticipantSpe
     .map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: p.effort, ...accessFlags(accessOf(p)) }));
 }
 
-/** Move one seat to another's place in the speaking order. */
-export function moveSeat<T extends { key?: string }>(specs: T[], fromKey: string, toKey: string): T[] {
-  const from = specs.findIndex((s) => s.key === fromKey);
-  const to = specs.findIndex((s) => s.key === toKey);
-  if (from < 0 || to < 0 || from === to) return specs;
-  const next = [...specs];
+/** The list with the item at `from` moved to index `to` (unchanged when either is out of range). */
+export function moveAt<T>(list: T[], from: number, to: number): T[] {
+  if (from < 0 || to < 0 || from >= list.length || to >= list.length || from === to) return list;
+  const next = [...list];
   const [moved] = next.splice(from, 1);
   next.splice(to, 0, moved);
   return next;
+}
+
+/** Move one seat to another's place in the speaking order. */
+export function moveSeat<T extends { key?: string }>(specs: T[], fromKey: string, toKey: string): T[] {
+  return moveAt(
+    specs,
+    specs.findIndex((s) => s.key === fromKey),
+    specs.findIndex((s) => s.key === toKey)
+  );
 }

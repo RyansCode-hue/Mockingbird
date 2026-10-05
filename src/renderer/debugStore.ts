@@ -1,5 +1,6 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import type { DebugFrame, DebugSessionInfo } from "../shared/types";
+import { createIpcStore, loadInto } from "./ipcStore";
 
 /**
  * The renderer's view of the debugger, shared by the editor (breakpoints, the
@@ -22,24 +23,15 @@ interface State {
 }
 
 const MAX_OUTPUT = 3000;
-let state: State = { sessions: [], output: [], paused: {}, selected: {} };
-const subs = new Set<() => void>();
-const set = (patch: Partial<State>) => {
-  state = { ...state, ...patch };
-  subs.forEach((s) => s());
-};
-let installed = false;
 type Stopped = (sid: string, at: { threadId: number; frame: DebugFrame | null }) => void;
 const stopListeners = new Set<Stopped>();
 
-function install() {
-  if (installed) return;
-  installed = true;
-  window.mb.debugSessions().then((s: DebugSessionInfo[]) => set({ sessions: s }));
+const store = createIpcStore<State>({ sessions: [], output: [], paused: {}, selected: {} }, ({ get }) => {
+  loadInto("the debug sessions", window.mb.debugSessions(), (s: DebugSessionInfo[]) => set({ sessions: s }));
   window.mb.onDebugChanged((s: DebugSessionInfo[]) => {
     // a session that's running again isn't paused anywhere
-    const paused = { ...state.paused };
-    const selected = { ...state.selected };
+    const paused = { ...get().paused };
+    const selected = { ...get().selected };
     for (const id of Object.keys(paused)) {
       if (s.find((x) => x.id === id)?.state !== "stopped") {
         delete paused[id];
@@ -49,28 +41,29 @@ function install() {
     set({ sessions: s, paused, selected });
   });
   window.mb.onDebugOutput((sid: string, category: string, text: string) => {
-    const output = state.output.length >= MAX_OUTPUT ? state.output.slice(-MAX_OUTPUT + 1) : state.output.slice();
+    const { output: was } = get();
+    const output = was.length >= MAX_OUTPUT ? was.slice(-MAX_OUTPUT + 1) : was.slice();
     output.push({ sid, category, text });
     set({ output });
   });
   window.mb.onDebugStopped((sid: string, at: { threadId: number; frame: DebugFrame | null }) => {
-    set({ paused: { ...state.paused, [sid]: at }, selected: { ...state.selected, [sid]: at.frame } });
+    set({ paused: { ...get().paused, [sid]: at }, selected: { ...get().selected, [sid]: at.frame } });
     stopListeners.forEach((l) => l(sid, at));
   });
-}
-
-function subscribe(cb: () => void) {
-  install();
-  subs.add(cb);
-  return () => subs.delete(cb);
-}
+});
+const set = (patch: Partial<State>) => store.set({ ...store.get(), ...patch });
 
 export function useDebug(): State {
-  return useSyncExternalStore(subscribe, () => state);
+  return store.use();
+}
+
+/** The session the debugger acts on: a paused one first, else the newest that hasn't ended. */
+export function currentSession(sessions: DebugSessionInfo[]): DebugSessionInfo | undefined {
+  return sessions.find((s) => s.state === "stopped") ?? sessions.filter((s) => s.state !== "ended").pop();
 }
 
 export function selectFrame(sid: string, frame: DebugFrame | null): void {
-  set({ selected: { ...state.selected, [sid]: frame } });
+  set({ selected: { ...store.get().selected, [sid]: frame } });
 }
 
 export function clearOutput(): void {
@@ -78,29 +71,43 @@ export function clearOutput(): void {
 }
 
 export function addOutput(line: OutputLine): void {
-  set({ output: [...state.output, line] });
+  set({ output: [...store.get().output, line] });
 }
 
 /** Be told when a session stops (to open its file). */
 export function onStopped(l: Stopped): () => void {
-  install();
+  store.connect();
   stopListeners.add(l);
   return () => stopListeners.delete(l);
 }
 
 /**
  * A pane session's repository breakpoints (relative path → lines), kept in
- * step with changes made from any view.
+ * step with changes made from any view; `error` says why they couldn't be read
+ * (a folder that isn't a repository has none to read).
  */
-export function useBreakpoints(paneSessionId: string | null): { map: Record<string, number[]>; toggle: (rel: string, line: number) => void; clear: (rel: string, line: number) => void } {
+export function useBreakpoints(paneSessionId: string | null): {
+  map: Record<string, number[]>;
+  error: string;
+  toggle: (rel: string, line: number) => void;
+  clear: (rel: string, line: number) => void;
+} {
   const [map, setMap] = useState<Record<string, number[]>>({});
+  const [error, setError] = useState("");
   useEffect(() => {
+    setError("");
     if (!paneSessionId) return setMap({});
     let live = true;
     const load = () =>
-      window.mb.debugBreakpoints(paneSessionId).then((r: { breakpoints: Record<string, number[]> } | { error: string }) => {
-        if (live && !("error" in r)) setMap(r.breakpoints);
-      });
+      window.mb.debugBreakpoints(paneSessionId).then(
+        (r: { breakpoints: Record<string, number[]> } | { error: string }) => {
+          if (!live) return;
+          if ("error" in r) return setError(r.error);
+          setError("");
+          setMap(r.breakpoints);
+        },
+        (err: unknown) => live && setError(err instanceof Error ? err.message : String(err))
+      );
     load();
     const off = window.mb.onBreakpointsChanged(() => load());
     return () => {
@@ -117,6 +124,7 @@ export function useBreakpoints(paneSessionId: string | null): { map: Record<stri
   };
   return {
     map,
+    error,
     toggle: (rel, line) => {
       const cur = map[rel] ?? [];
       write(rel, cur.includes(line) ? cur.filter((l) => l !== line) : [...cur, line]);

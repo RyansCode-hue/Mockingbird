@@ -3,6 +3,8 @@ import type { GitChange, GitChanges, ScmEntry, ScmStatus } from "../shared/types
 import { useFolderRefresh } from "./folderWatch";
 import { SparkleIcon } from "./Icons";
 import { CommitGraph } from "./CommitGraph";
+import { settled } from "./settled";
+import { useAction } from "./useAction";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -23,6 +25,11 @@ export function failureResolved(failed: string, st: Pick<ScmStatus, "behind" | "
   if (failed === "push") return st.published && st.ahead === 0;
   if (failed === "commit") return st.staged.length === 0;
   return false;
+}
+
+/** git's answer for a folder that isn't a repository: the one status failure that asking again won't fix. */
+export function notARepository(error: string): boolean {
+  return /not a git repository/i.test(error);
 }
 
 /** Which diff a row opens: staged/unstaged from Source Control, the whole branch against its base, or one commit from the graph. */
@@ -59,8 +66,8 @@ export function SourceControl({
 }) {
   const [status, setStatus] = useState<Result<ScmStatus> | null>(null);
   const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
+  // git calls aren't queued in the main process, so nothing starts while one is in flight
+  const { busy, isBusy, run, error, setError } = useAction();
   // what was being done when the error happened, to tell the agent
   const [failed, setFailed] = useState("");
   const [closed, setClosed] = useState<Set<string>>(() => new Set(["branch"]));
@@ -78,13 +85,13 @@ export function SourceControl({
   }, [message, status]);
 
   const load = useCallback(async () => {
-    const r: Result<ScmStatus> = await window.mb.scmStatus(sessionId);
-    broken.current = isErr(r);
+    const r: Result<ScmStatus> = await settled(window.mb.scmStatus(sessionId), "Couldn't read git status");
+    broken.current = isErr(r) && notARepository(r.error);
     setStatus((s) => (JSON.stringify(s) === JSON.stringify(r) ? s : r));
   }, [sessionId]);
 
   // the session edits files underneath the view, so it re-reads when the folder
-  // changes; a folder that isn't a repository isn't asked again
+  // changes; a folder that isn't a repository isn't asked again until Retry
   useEffect(() => {
     setStatus(null);
     setBranch(null);
@@ -96,28 +103,18 @@ export function SourceControl({
   const branchOpen = !closed.has("branch");
   useEffect(() => {
     if (!branchOpen && branch !== null) return;
-    window.mb.filesChanges(sessionId, "branch").then((r: Result<GitChanges>) => setBranch(r));
+    settled<Result<GitChanges>>(window.mb.filesChanges(sessionId, "branch"), "Couldn't read the branch's changes").then(setBranch);
   }, [branchOpen, sessionId, status]);
 
   const generate = async () => {
-    setBusy("generate");
-    setError("");
     setFailed(""); // not a git failure: nothing to hand the agent
-    const r: Result<{ message: string; scope: "staged" | "all"; agent: string }> = await window.mb.scmCommitMessage(sessionId);
-    setBusy("");
-    if (isErr(r)) setError(r.error);
-    else setMessage(r.message);
+    const r = await run("generate", (): Promise<Result<{ message: string; scope: "staged" | "all"; agent: string }>> => window.mb.scmCommitMessage(sessionId));
+    if (!isErr(r)) setMessage(r.message);
   };
 
   const act = async (what: string, fn: () => Promise<unknown>) => {
-    setBusy(what);
-    setError("");
-    const r = await fn();
-    setBusy("");
-    if (isErr(r)) {
-      setError(r.error);
-      setFailed(what);
-    }
+    const r = await run(what, fn);
+    if (isErr(r)) setFailed(what);
     await load();
     return r;
   };
@@ -131,21 +128,48 @@ export function SourceControl({
   }, [status, error, failed]);
 
   if (status === null) return <div className="fp-note">loading…</div>;
-  if (isErr(status)) return <div className="fp-note err">{status.error}</div>;
+  if (isErr(status)) {
+    return (
+      <div className="fp-note err sc-err">
+        {status.error}
+        <button
+          className="outline"
+          onClick={() => {
+            setStatus(null);
+            load();
+          }}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   const { staged, unstaged, conflicted } = status;
   const commit = async () => {
+    if (isBusy()) return;
     if (!message.trim()) return setError("Write a commit message first");
     if (!staged.length) {
       if (!unstaged.length) return setError("There's nothing to commit");
       if (!window.confirm(`Nothing is staged. Stage all ${unstaged.length} change${unstaged.length === 1 ? "" : "s"} and commit?`)) return;
-      const r = await act("stage", () => window.mb.scmStage(sessionId, unstaged.map((e) => e.path)));
-      if (isErr(r)) return;
     }
-    const r = await act("commit", () => window.mb.scmCommit(sessionId, message));
-    if (!isErr(r)) setMessage("");
+    // staging and committing are one action, so nothing can start in between
+    let step = "commit";
+    const r = await run("commit", async () => {
+      if (!staged.length) {
+        step = "stage";
+        const s = await window.mb.scmStage(sessionId, unstaged.map((e) => e.path));
+        if (isErr(s)) return s;
+        step = "commit";
+      }
+      return window.mb.scmCommit(sessionId, message);
+    });
+    if (isErr(r)) setFailed(step);
+    else setMessage("");
+    await load();
   };
   const discard = (entries: ScmEntry[]) => {
+    if (isBusy()) return;
     const untracked = entries.filter((e) => e.status === "U").length;
     const tracked = entries.length - untracked;
     const what = entries.length === 1 ? baseName(entries[0].path) : `${entries.length} files`;
@@ -178,16 +202,16 @@ export function SourceControl({
           </button>
         )}
         {group === "unstaged" && (
-          <button className="icon" title="Discard changes" onClick={(ev) => (ev.stopPropagation(), discard([e]))}>
+          <button className="icon" title="Discard changes" disabled={!!busy} onClick={(ev) => (ev.stopPropagation(), discard([e]))}>
             ↺
           </button>
         )}
         {group === "staged" ? (
-          <button className="icon" title="Unstage" onClick={(ev) => (ev.stopPropagation(), act("unstage", () => window.mb.scmUnstage(sessionId, [e.path])))}>
+          <button className="icon" title="Unstage" disabled={!!busy} onClick={(ev) => (ev.stopPropagation(), act("unstage", () => window.mb.scmUnstage(sessionId, [e.path])))}>
             −
           </button>
         ) : (
-          <button className="icon" title="Stage" onClick={(ev) => (ev.stopPropagation(), act("stage", () => window.mb.scmStage(sessionId, [e.path])))}>
+          <button className="icon" title="Stage" disabled={!!busy} onClick={(ev) => (ev.stopPropagation(), act("stage", () => window.mb.scmStage(sessionId, [e.path])))}>
             +
           </button>
         )}
@@ -287,14 +311,12 @@ export function SourceControl({
           className="outline sc-review"
           disabled={!!busy}
           data-tip={`Starts a ${review.agent} session in this folder that reviews the branch (committed and uncommitted) for bugs, security, silent failures and missing tests, then sends its findings back to this session. It changes nothing.`}
-          onClick={async () => {
-            setBusy("review");
-            const why = await review.start();
-            setBusy("");
-            if (why) {
-              setError(why);
-              setFailed("");
-            }
+          onClick={() => {
+            setFailed(""); // not a git failure: nothing to hand the agent
+            run("review", async () => {
+              const why = await review.start();
+              return why ? { error: why } : null;
+            });
           }}
         >
           {busy === "review" ? "Starting the review…" : `Second opinion: review with ${review.agent}`}
@@ -337,7 +359,7 @@ export function SourceControl({
           "Staged changes",
           staged,
           "staged",
-          <button className="icon" title="Unstage all" onClick={() => act("unstage", () => window.mb.scmUnstage(sessionId, staged.map((e) => e.path)))}>
+          <button className="icon" title="Unstage all" disabled={!!busy} onClick={() => act("unstage", () => window.mb.scmUnstage(sessionId, staged.map((e) => e.path)))}>
             −
           </button>,
           "What the next commit will contain"
@@ -348,10 +370,10 @@ export function SourceControl({
           unstaged,
           "unstaged",
           <>
-            <button className="icon" title="Discard all changes" onClick={() => discard(unstaged)}>
+            <button className="icon" title="Discard all changes" disabled={!!busy} onClick={() => discard(unstaged)}>
               ↺
             </button>
-            <button className="icon" title="Stage all changes" onClick={() => act("stage", () => window.mb.scmStage(sessionId, unstaged.map((e) => e.path)))}>
+            <button className="icon" title="Stage all changes" disabled={!!busy} onClick={() => act("stage", () => window.mb.scmStage(sessionId, unstaged.map((e) => e.path)))}>
               +
             </button>
           </>,

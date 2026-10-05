@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import type { GitChange, GraphCommit, ScmGraph } from "../shared/types";
 import { layoutGraph, laneCount, type GraphRow } from "./graphLayout";
-import { ago } from "./TranscriptSearch";
+import { ago } from "./format";
+import { settled } from "./settled";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -97,7 +98,9 @@ export function CommitGraph({
 
   useEffect(() => {
     let live = true;
-    window.mb.scmGraph(sessionId, limit).then((r: Result<ScmGraph>) => live && setGraph((g) => (JSON.stringify(g) === JSON.stringify(r) ? g : r)));
+    settled<Result<ScmGraph>>(window.mb.scmGraph(sessionId, limit), "Couldn't read the commit graph").then(
+      (r) => live && setGraph((g) => (JSON.stringify(g) === JSON.stringify(r) ? g : r))
+    );
     return () => {
       live = false;
     };
@@ -109,7 +112,7 @@ export function CommitGraph({
 
   const toggle = (sha: string) => {
     setOpen((o) => (o === sha ? null : sha));
-    if (!files[sha]) window.mb.scmCommitFiles(sessionId, sha).then((r: Result<GitChange[]>) => setFiles((f) => ({ ...f, [sha]: r })));
+    if (!files[sha]) settled<Result<GitChange[]>>(window.mb.scmCommitFiles(sessionId, sha), "Couldn't read the commit's files").then((r) => setFiles((f) => ({ ...f, [sha]: r })));
   };
 
   if (graph === null) return <div className="fp-note">loading…</div>;

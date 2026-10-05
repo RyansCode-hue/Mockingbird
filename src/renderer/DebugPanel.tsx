@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import type { DebugFrame, DebugScope, DebugSessionInfo, DebugVariable } from "../shared/types";
-import { selectFrame, useBreakpoints, useDebug } from "./debugStore";
+import { currentSession, selectFrame, useBreakpoints, useDebug } from "./debugStore";
+import { settled } from "./settled";
+import { useAction } from "./useAction";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -13,7 +15,7 @@ function VarRow({ sid, v, depth }: { sid: string; v: DebugVariable; depth: numbe
   const toggle = () => {
     if (!v.ref) return;
     setOpen((o) => !o);
-    if (!kids) window.mb.debugVariables(sid, v.ref).then(setKids);
+    if (!kids) settled(window.mb.debugVariables(sid, v.ref), "Couldn't read the variables").then(setKids);
   };
   return (
     <>
@@ -39,7 +41,7 @@ function Scope({ sid, scope }: { sid: string; scope: DebugScope }) {
   const [open, setOpen] = useState(!scope.expensive);
   const [vars, setVars] = useState<Result<DebugVariable[]> | null>(null);
   useEffect(() => {
-    if (open && !vars) window.mb.debugVariables(sid, scope.ref).then(setVars);
+    if (open && !vars) settled(window.mb.debugVariables(sid, scope.ref), "Couldn't read the variables").then(setVars);
   }, [open]);
   return (
     <>
@@ -68,9 +70,8 @@ export function DebugPanel({
 }) {
   const debug = useDebug();
   const bp = useBreakpoints(paneSessionId);
-  // the session to show: a stopped one first, else the newest
-  const live = sessions.filter((s) => s.state !== "ended");
-  const cur = live.find((s) => s.state === "stopped") ?? live[live.length - 1] ?? sessions[sessions.length - 1];
+  // the session to show: the one the debugger acts on, else the last to end (with how it ended)
+  const cur = currentSession(sessions) ?? sessions[sessions.length - 1];
   const [frames, setFrames] = useState<Result<DebugFrame[]> | null>(null);
   const [scopes, setScopes] = useState<Result<DebugScope[]> | null>(null);
   const [watches, setWatches] = useState<string[]>(() => {
@@ -82,6 +83,9 @@ export function DebugPanel({
   });
   const [watchVals, setWatchVals] = useState<Record<string, string>>({});
   const [newWatch, setNewWatch] = useState("");
+  // Continue, the steps and Stop: what the debugger refused
+  const { run, error, setError } = useAction();
+  useEffect(() => setError(""), [cur?.id]);
   useEffect(() => {
     try {
       localStorage.setItem("mb.debug.watch", JSON.stringify(watches));
@@ -97,22 +101,24 @@ export function DebugPanel({
   useEffect(() => {
     setFrames(null);
     if (!cur || cur.state !== "stopped" || !paused) return;
-    window.mb.debugStack(cur.id, paused.threadId).then(setFrames);
+    settled(window.mb.debugStack(cur.id, paused.threadId), "Couldn't read the call stack").then(setFrames);
   }, [cur?.id, cur?.state, paused]);
 
   // scopes and watches of the selected frame
   useEffect(() => {
     setScopes(null);
     if (!cur || cur.state !== "stopped" || !selected) return;
-    window.mb.debugScopes(cur.id, selected.id).then(setScopes);
+    settled(window.mb.debugScopes(cur.id, selected.id), "Couldn't read the scopes").then(setScopes);
     for (const w of watches) {
-      window.mb.debugEvaluate(cur.id, w, selected.id, "watch").then((r: Result<{ result: string }>) => setWatchVals((v) => ({ ...v, [w]: isErr(r) ? `⚠ ${r.error}` : r.result })));
+      settled<Result<{ result: string }>>(window.mb.debugEvaluate(cur.id, w, selected.id, "watch"), "Couldn't evaluate").then((r) =>
+        setWatchVals((v) => ({ ...v, [w]: isErr(r) ? `⚠ ${r.error}` : r.result }))
+      );
     }
   }, [cur?.id, cur?.state, selected?.id, watches]);
 
   if (!cur) return null;
   const stopped = cur.state === "stopped";
-  const control = (op: string) => window.mb.debugControl(cur.id, op, paused?.threadId);
+  const control = (op: string) => run(op, () => window.mb.debugControl(cur.id, op, paused?.threadId));
   const bpList = Object.entries(bp.map).flatMap(([rel, lines]) => lines.map((line) => ({ rel, line })));
 
   return (
@@ -133,11 +139,12 @@ export function DebugPanel({
             <button className="icon" title="Step over (F10)" disabled={!stopped} onClick={() => control("next")}>⤼</button>
             <button className="icon" title="Step into (F11)" disabled={!stopped} onClick={() => control("stepIn")}>↓</button>
             <button className="icon" title="Step out (⇧F11)" disabled={!stopped} onClick={() => control("stepOut")}>↑</button>
-            <button className="icon dv-stop" title="Stop debugging (and the service)" onClick={() => window.mb.debugStop(cur.id)}>■</button>
+            <button className="icon dv-stop" title="Stop debugging (and the service)" onClick={() => run("stop", () => window.mb.debugStop(cur.id))}>■</button>
           </span>
         )}
       </div>
       {cur.error && <div className="fp-note err">{cur.error}</div>}
+      {error && <div className="fp-note err">{error}</div>}
       {stopped && cur.stopped?.text && <div className="fp-note warn">{cur.stopped.text}</div>}
 
       {stopped && (
@@ -191,7 +198,9 @@ export function DebugPanel({
       />
 
       <div className="ex-sec">Breakpoints</div>
-      {bpList.length === 0 ? (
+      {bp.error ? (
+        <div className="fp-note err">Couldn't read the breakpoints: {bp.error}</div>
+      ) : bpList.length === 0 ? (
         <div className="fp-note">Click a line number in the editor to add one.</div>
       ) : (
         bpList.map(({ rel, line }) => (

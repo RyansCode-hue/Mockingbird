@@ -1,23 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { TranscriptHit } from "../shared/types";
+import { ago } from "./format";
 
-export type SearchStatus = { conversations: number; files: number; indexing: { done: number; total: number } | null; lastSync: number; problem: string | null };
+type SearchStatus = { conversations: number; files: number; indexing: { done: number; total: number } | null; lastSync: number; problem: string | null };
 
-export const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
+const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
   pane: "go to pane",
   previous: "restore session",
   room: "open room",
   resume: "open as session",
 };
-
-/** "4m", "3h", "5d", or a date for anything older than a month. */
-export function ago(ms: number, now = Date.now()): string {
-  const m = Math.max(0, Math.round((now - ms) / 60_000));
-  if (m < 60) return `${m}m ago`;
-  if (m < 24 * 60) return `${Math.round(m / 60)}h ago`;
-  if (m < 30 * 24 * 60) return `${Math.round(m / (24 * 60))}d ago`;
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: new Date(ms).getFullYear() === new Date(now).getFullYear() ? undefined : "numeric" });
-}
 
 /** The matched words of a snippet (between \u0001 and \u0002) as <mark>s. */
 export function Snippet({ text }: { text: string }) {
@@ -30,11 +22,21 @@ export function Snippet({ text }: { text: string }) {
 }
 
 /**
+ * The hits to show after a re-run: the ones already shown when nothing about
+ * them changed, so a list being re-read while the index syncs doesn't re-render
+ * (or lose its place) every time.
+ */
+export function freshHits(shown: TranscriptHit[], fresh: TranscriptHit[]): TranscriptHit[] {
+  return JSON.stringify(shown) === JSON.stringify(fresh) ? shown : fresh;
+}
+
+/**
  * Search every Claude and Codex conversation on this Mac — open, closed, or
  * never opened in Mockingbird. Debounced; a stale answer never replaces a newer
- * one; while the first index builds, the search re-runs so results fill in.
+ * one; while the index builds or syncs, the search re-runs so results fill in.
+ * Nothing runs while `enabled` is off.
  */
-export function useTranscriptSearch(q: string) {
+export function useTranscriptSearch(q: string, enabled = true) {
   const [hits, setHits] = useState<TranscriptHit[]>([]);
   const [status, setStatus] = useState<SearchStatus | null>(null);
   const [error, setError] = useState("");
@@ -43,8 +45,9 @@ export function useTranscriptSearch(q: string) {
 
   useEffect(() => {
     const n = ++seq.current;
+    if (!enabled) return;
     const t = setTimeout(async () => {
-      const r = await window.mb.searchTranscripts(q);
+      const r = await window.mb.searchTranscripts(q).catch((err: unknown) => ({ error: `Search failed: ${err instanceof Error ? err.message : err}` }));
       if (n !== seq.current) return; // a newer query is on its way
       if (r?.error) {
         setError(r.error);
@@ -53,16 +56,16 @@ export function useTranscriptSearch(q: string) {
       }
       setError(r.problem ?? "");
       setStatus(r);
-      setHits(r.hits);
+      setHits((h) => freshHits(h, r.hits));
     }, q ? 140 : 0);
     return () => clearTimeout(t);
-  }, [q, tick]);
+  }, [q, tick, enabled]);
 
   useEffect(() => {
-    if (!status?.indexing) return;
+    if (!enabled || !status?.indexing) return;
     const t = setTimeout(() => setTick((n) => n + 1), 1500);
     return () => clearTimeout(t);
-  }, [status]);
+  }, [status, enabled]);
 
   return { hits, status, error, setError };
 }

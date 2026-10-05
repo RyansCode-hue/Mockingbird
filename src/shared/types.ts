@@ -653,6 +653,10 @@ export interface CollabRoom {
   createdAt: number;
 }
 
+/** The waits a room can choose for a model's request, in minutes, and the one it starts with. */
+export const ASK_TIMEOUTS_MIN = [5, 10, 15, 20];
+export const DEFAULT_ASK_TIMEOUT_MIN = 10;
+
 /** A Claude model asking, mid-turn, to use a tool its permissions don't already cover. */
 export interface CollabPermissionRequest {
   id: string;

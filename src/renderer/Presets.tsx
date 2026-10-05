@@ -1,12 +1,13 @@
-import React, { useEffect, useState } from "react";
-import type { RepoEntry, SessionPreset } from "../shared/types";
+import React, { useState } from "react";
+import type { SessionPreset } from "../shared/types";
+import { RepoPick } from "./RepoPick";
 
 const LAUNCH_LABEL: Record<SessionPreset["launch"], string> = { claude: "Claude", codex: "Codex", shell: "Terminal" };
 
 export const newPresetId = () => `p-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
 /** One line saying what a preset starts, e.g. "Claude · backoffice · new branch review-{date} off dev · worktree". */
-export function presetSummary(p: SessionPreset): string {
+function presetSummary(p: SessionPreset): string {
   const repo = p.repoPath ? p.repoPath.split("/").pop() : "home folder";
   const branch =
     p.branch.mode === "checkout"
@@ -20,11 +21,7 @@ export function presetSummary(p: SessionPreset): string {
 /** Create or edit a preset. */
 export function PresetEditor({ initial, onSave, onClose }: { initial: SessionPreset; onSave: (p: SessionPreset) => void; onClose: () => void }) {
   const [p, setP] = useState<SessionPreset>(initial);
-  const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [error, setError] = useState("");
-  useEffect(() => {
-    window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => (Array.isArray(r) ? setRepos(r) : setError(`Couldn't list repos: ${r.error}`)));
-  }, []);
   const set = (patch: Partial<SessionPreset>) => setP((x) => ({ ...x, ...patch }));
   const mode = p.branch.mode;
   const save = () => {
@@ -33,7 +30,6 @@ export function PresetEditor({ initial, onSave, onClose }: { initial: SessionPre
     if (mode === "new" && !(p.branch as { pattern: string }).pattern.trim()) return setError("Give the new branch a name pattern");
     onSave({ ...p, name: p.name.trim() });
   };
-  const repoKnown = !p.repoPath || repos.some((r) => r.path === p.repoPath);
   return (
     <div className="modal-back" onMouseDown={onClose}>
       <div className="modal" onMouseDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.key === "Escape" && onClose()}>
@@ -50,15 +46,7 @@ export function PresetEditor({ initial, onSave, onClose }: { initial: SessionPre
           ))}
         </span>
         <label>Repo</label>
-        <select className="mb-select" value={p.repoPath ?? ""} onChange={(e) => set({ repoPath: e.target.value || null, ...(e.target.value ? {} : { branch: { mode: "checkout" } }) })}>
-          <option value="">No repo — the home folder</option>
-          {!repoKnown && <option value={p.repoPath!}>{p.repoPath}</option>}
-          {repos.map((r) => (
-            <option key={r.path} value={r.path}>
-              {r.name}
-            </option>
-          ))}
-        </select>
+        <RepoPick none="No repo — the home folder" value={p.repoPath ?? ""} onChange={(v) => set({ repoPath: v || null, ...(v ? {} : { branch: { mode: "checkout" } }) })} />
         {p.repoPath && (
           <>
             <label>Branch</label>

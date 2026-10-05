@@ -3,19 +3,61 @@ import type { AgentCheck, SetupStatus, Settings } from "../shared/types";
 
 const STEPS = ["Agents", "Status hooks", "Repos", "Azure DevOps", "Done"] as const;
 
+const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * Settings with `patch` applied and saved, or why they weren't: an { error }
+ * reply and a rejected call both come back as { error }. With no settings read
+ * yet (Skip pressed before they arrived), they're read first.
+ */
+export async function applySettings(
+  cur: Settings | null,
+  patch: Partial<Settings>,
+  mb: { getSettings: () => Promise<Settings | { error: string }>; setSettings: (s: Settings) => Promise<unknown> }
+): Promise<{ settings: Settings } | { error: string }> {
+  try {
+    const base = cur ?? (await mb.getSettings());
+    if ("error" in base) return { error: `Couldn't read settings: ${base.error}` };
+    const next = { ...base, ...patch };
+    const r = await mb.setSettings(next);
+    if (r && typeof r === "object" && "error" in r) return { error: `Couldn't save settings: ${(r as { error: string }).error}` };
+    return { settings: next };
+  } catch (err) {
+    return { error: `Couldn't save settings: ${messageOf(err)}` };
+  }
+}
+
 function Check({ ok, warn }: { ok: boolean | null; warn?: boolean }) {
   return <span className={`sw-check ${ok ? "ok" : warn ? "warn" : "bad"}`}>{ok ? "✓" : warn ? "–" : "✕"}</span>;
 }
 
-function Cmd({ children }: { children: string }) {
+function Cmd({ children, onCopyError }: { children: string; onCopyError: (message: string) => void }) {
   return (
-    <code className="sw-cmd" title="Click to copy" onClick={() => navigator.clipboard.writeText(children)}>
+    <code
+      className="sw-cmd"
+      title="Click to copy"
+      onClick={() => navigator.clipboard.writeText(children).catch((err: unknown) => onCopyError(`Couldn't copy the command: ${messageOf(err)}`))}
+    >
       {children}
     </code>
   );
 }
 
-function AgentRow({ name, a, install, login, optional }: { name: string; a: AgentCheck; install: string; login: string; optional?: boolean }) {
+function AgentRow({
+  name,
+  a,
+  install,
+  login,
+  optional,
+  onCopyError,
+}: {
+  name: string;
+  a: AgentCheck;
+  install: string;
+  login: string;
+  optional?: boolean;
+  onCopyError: (message: string) => void;
+}) {
   return (
     <div className="sw-item">
       <Check ok={a.found && a.signedIn === true} warn={optional && !a.found} />
@@ -25,11 +67,11 @@ function AgentRow({ name, a, install, login, optional }: { name: string; a: Agen
         </div>
         {!a.found ? (
           <div className="sw-sub">
-            Not installed. In Terminal: <Cmd>{install}</Cmd>
+            Not installed. In Terminal: <Cmd onCopyError={onCopyError}>{install}</Cmd>
           </div>
         ) : a.signedIn === false ? (
           <div className="sw-sub">
-            {a.version} — not signed in. In Terminal: <Cmd>{login}</Cmd>
+            {a.version} — not signed in. In Terminal: <Cmd onCopyError={onCopyError}>{login}</Cmd>
           </div>
         ) : a.signedIn === null ? (
           <div className="sw-sub">{a.version} — couldn't check sign-in: {a.detail}</div>
@@ -57,70 +99,94 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
 
   const recheck = async () => {
     setChecking(true);
-    const r = await window.mb.setupStatus();
-    setChecking(false);
-    if (r?.error) return setError(r.error);
-    setError("");
-    setSt(r);
+    try {
+      const r = await window.mb.setupStatus();
+      if (r?.error) return setError(r.error);
+      setError("");
+      setSt(r);
+    } catch (err) {
+      setError(`Couldn't check this Mac: ${messageOf(err)}`);
+    } finally {
+      setChecking(false);
+    }
   };
   useEffect(() => {
     recheck();
-    window.mb.getSettings().then(setSettings);
-    window.mb.adoConfigGet().then((r: any) => {
-      if (r?.error) setError(`Couldn't read your existing Azure DevOps config: ${r.error}`);
-      else if (r) setAdo(r);
-    });
+    window.mb.getSettings().then(setSettings, (err: unknown) => setError(`Couldn't read settings: ${messageOf(err)}`));
+    window.mb.adoConfigGet().then(
+      (r: any) => {
+        if (r?.error) setError(`Couldn't read your existing Azure DevOps config: ${r.error}`);
+        else if (r) setAdo(r);
+      },
+      (err: unknown) => setError(`Couldn't read your existing Azure DevOps config: ${messageOf(err)}`)
+    );
   }, []);
 
-  const saveSettings = async (patch: Partial<Settings>) => {
-    // Skip can be pressed before settings arrive; read them now rather than drop the write
-    const cur: Settings | { error: string } = settings ?? (await window.mb.getSettings());
-    if ("error" in cur) return setError(`Couldn't read settings: ${cur.error}`);
-    const next = { ...cur, ...patch };
-    const r = await window.mb.setSettings(next);
-    if (r?.error) return setError(`Couldn't save settings: ${r.error}`);
-    setSettings(next);
+  /** Saves a settings change; false, with the reason shown, when it didn't save. */
+  const saveSettings = async (patch: Partial<Settings>): Promise<boolean> => {
+    const r = await applySettings(settings, patch, window.mb);
+    if ("error" in r) {
+      setError(r.error);
+      return false;
+    }
+    setSettings(r.settings);
     await recheck();
+    return true;
   };
 
+  // the wizard stays open when setupDone didn't save, so the reason stays on screen
   const finish = async () => {
-    await saveSettings({ setupDone: true });
-    onFinish();
+    if (await saveSettings({ setupDone: true })) onFinish();
   };
   const skip = async () => {
-    await saveSettings({ setupDone: true });
-    onClose();
+    if (await saveSettings({ setupDone: true })) onClose();
   };
 
   const installHooks = async () => {
-    const r = await window.mb.installHooks();
-    if (r?.error) return setError(r.error);
+    try {
+      const r = await window.mb.installHooks();
+      if (r?.error) return setError(r.error);
+    } catch (err) {
+      return setError(`Couldn't install the hooks: ${messageOf(err)}`);
+    }
     await recheck();
   };
 
+  /** The folder or file picker's choice; null when cancelled, or when it couldn't open (the reason is shown). */
+  const pickPath = async (opts: { file?: boolean; defaultPath?: string }): Promise<string | null> => {
+    try {
+      return await window.mb.pickPath(opts);
+    } catch (err) {
+      setError(`Couldn't open the picker: ${messageOf(err)}`);
+      return null;
+    }
+  };
+
   const addRoot = async () => {
-    const p = await window.mb.pickPath({ defaultPath: "~" });
+    const p = await pickPath({ defaultPath: "~" });
     if (!p || !settings) return;
     if (!settings.repoRoots.includes(p)) await saveSettings({ repoRoots: [...settings.repoRoots, p] });
   };
 
   const connectAdo = async () => {
     setConnecting(true);
-    const r = await window.mb.adoConfigSet(ado);
-    if (r?.error) {
+    try {
+      const r = await window.mb.adoConfigSet(ado);
+      if (r?.error) return setError(r.error);
+      await recheck();
+    } catch (err) {
+      setError(`Couldn't connect: ${messageOf(err)}`);
+    } finally {
       setConnecting(false);
-      return setError(r.error);
     }
-    await recheck();
-    setConnecting(false);
   };
 
   const pickWorkTracker = async () => {
-    const p = await window.mb.pickPath({ defaultPath: settings?.workTrackerPath });
+    const p = await pickPath({ defaultPath: settings?.workTrackerPath });
     if (p) await saveSettings({ workTrackerPath: p });
   };
   const pickPat = async () => {
-    const p = await window.mb.pickPath({ file: true, defaultPath: settings?.workTrackerPath });
+    const p = await pickPath({ file: true, defaultPath: settings?.workTrackerPath });
     if (p) setAdo((a) => ({ ...a, patFile: p }));
   };
 
@@ -150,8 +216,8 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
               <div className="wi-note">checking this Mac…</div>
             ) : (
               <>
-                <AgentRow name="Claude Code" a={st.claude} install="npm install -g @anthropic-ai/claude-code" login="claude auth login" />
-                <AgentRow name="Codex" a={st.codex} install="npm install -g @openai/codex" login="codex login" optional />
+                <AgentRow name="Claude Code" a={st.claude} install="npm install -g @anthropic-ai/claude-code" login="claude auth login" onCopyError={setError} />
+                <AgentRow name="Codex" a={st.codex} install="npm install -g @openai/codex" login="codex login" optional onCopyError={setError} />
               </>
             )}
           </>

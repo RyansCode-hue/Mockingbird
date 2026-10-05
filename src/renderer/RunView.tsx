@@ -1,8 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { DebugFrame, RunProfile, RunServiceState, SessionInfo } from "../shared/types";
 import { BugIcon, SparkleIcon } from "./Icons";
 import { DebugPanel } from "./DebugPanel";
 import { useDebug } from "./debugStore";
+import { RUN_DOT, draftForEditing, stripRepo } from "./runDisplay";
+import { useAction } from "./useAction";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -17,7 +19,6 @@ interface ProfileInfo {
 type Conflict = { port: number; service: string; pid: number | null; command: string };
 
 const ACTIVE = new Set(["starting", "running", "stopping"]);
-const DOT: Record<RunServiceState["status"], string> = { starting: "amber", running: "teal", stopping: "amber", stopped: "grey", failed: "red" };
 
 const TEMPLATE = {
   services: [
@@ -52,20 +53,30 @@ export function RunView({
   const [progress, setProgress] = useState("");
   useEffect(() => window.mb.onRunProgress((w: string, m: string) => w === session?.cwd && setProgress(m)), [session?.cwd]);
   const [info, setInfo] = useState<Result<ProfileInfo> | null>(null);
-  const [busy, setBusy] = useState("");
-  const [error, setError] = useState("");
+  const { busy, run, error, setError } = useAction();
   const [conflicts, setConflicts] = useState<{ list: Conflict[]; services?: string[] } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState("");
   const [mode, setMode] = useState<"swap" | "side">("swap");
   const sid = session?.id ?? null;
+  // a reply for a session that's no longer shown is dropped, not applied to this one
+  const shown = useRef(sid);
+  shown.current = sid;
 
-  const load = () => sid && window.mb.runProfile(sid).then((r: Result<ProfileInfo>) => setInfo(r));
+  const load = () => {
+    const id = sid;
+    if (!id) return;
+    window.mb.runProfile(id).then(
+      (r: Result<ProfileInfo>) => shown.current === id && setInfo(r),
+      (err: unknown) => shown.current === id && setInfo({ error: `Couldn't read the run setup: ${err instanceof Error ? err.message : err}` })
+    );
+  };
   useEffect(() => {
     setInfo(null);
     setError("");
     setConflicts(null);
     setEditing(null);
+    setDraftNote("");
     load();
   }, [sid]);
   const repoKey = info && !isErr(info) ? info.repo : "";
@@ -96,20 +107,17 @@ export function RunView({
   const stateOf = (name: string) => mine.find((s) => s.service === name);
   const slot = mine.find((s) => ACTIVE.has(s.status))?.slot;
 
-  const act = async (what: string, fn: () => Promise<any>) => {
-    setBusy(what);
-    setError("");
-    try {
-      const r = await fn();
-      if (isErr(r)) setError(r.error);
-      return r;
-    } finally {
-      setBusy("");
-    }
+  /** An action on the shown session; it answers null when another session is shown by then. */
+  const act = (what: string, fn: (id: string) => Promise<any>) => {
+    const id = session.id;
+    return run(what, async () => {
+      const r = await fn(id);
+      return shown.current === id ? r : null;
+    });
   };
   const start = async (services?: string[], debug?: string[]) => {
     setProgress("");
-    const r = await act(debug ? "debug" : "start", () => window.mb.runStart(session.id, { mode, services, debug }));
+    const r = await act(debug ? "debug" : "start", (id) => window.mb.runStart(id, { mode, services, debug }));
     setProgress("");
     if (r && !isErr(r) && "blocked" in r) setConflicts({ list: r.blocked, services });
     else if (r && !isErr(r) && r.ids?.length) onShowLog(r.ids[r.ids.length - 1]);
@@ -117,8 +125,8 @@ export function RunView({
   const stopAndStart = async () => {
     if (!conflicts) return;
     const pids = [...new Set(conflicts.list.map((c) => c.pid).filter((p): p is number => p !== null))];
-    const r = await act("free", () => window.mb.runStopListeners(session.id, pids));
-    if (isErr(r)) return;
+    const r = await act("free", (id) => window.mb.runStopListeners(id, pids));
+    if (!r || isErr(r)) return;
     const services = conflicts.services;
     setConflicts(null);
     await new Promise((res) => setTimeout(res, 800)); // give them a moment to let go of the ports
@@ -131,8 +139,8 @@ export function RunView({
     } catch (err) {
       return setError(`That isn't valid JSON: ${(err as Error).message}`);
     }
-    const r = await act("save", () => window.mb.runSaveProfile(session.id, parsed));
-    if (!isErr(r)) {
+    const r = await act("save", (id) => window.mb.runSaveProfile(id, parsed));
+    if (r && !isErr(r)) {
       setEditing(null);
       setDraftNote("");
       load();
@@ -140,10 +148,11 @@ export function RunView({
   };
   const draft = async () => {
     setDraftNote("Claude is reading the repository (launch configs, scripts, compose files, README) — this takes a minute or two…");
-    const r = await act("draft", () => window.mb.runDraft(session.id));
+    const r = await act("draft", async (id) => draftForEditing(await window.mb.runDraft(id)));
+    if (!r) return;
     if (isErr(r)) return setDraftNote("");
-    setEditing(JSON.stringify("profile" in r ? stripRepo(r.profile) : safeParse(r.raw) ?? r.raw, null, 2));
-    setDraftNote("profile" in r ? "Here's the draft — check the commands and ports, then save." : `The draft needs fixing before it can be saved: ${r.error}`);
+    setEditing(r.text);
+    setDraftNote(r.note);
   };
 
   const header = (
@@ -204,11 +213,11 @@ export function RunView({
         <button className="primary" disabled={!!busy || !!preparing} onClick={() => start()} title={mode === "swap" && elsewhere.length ? `Stops it in ${[...new Set(elsewhere.map((s) => baseName(s.worktree)))].join(", ")} first` : "Start every service"}>
           ▶ {busy === "start" ? "Starting…" : "Start all"}
         </button>
-        <button className="outline" disabled={!!busy || !anyActive} onClick={() => act("stop", () => window.mb.runStop(session.id))}>
+        <button className="outline" disabled={!!busy || !anyActive} onClick={() => act("stop", (id) => window.mb.runStop(id))}>
           ■ Stop all
         </button>
         <button className="outline" disabled={!!busy || !!preparing} title="Copy the gitignored files this worktree needs (env files, certs) from the main checkout, then install what's missing" onClick={async () => {
-          const r = await act("prepare", () => window.mb.runPrepare(session.id));
+          const r = await act("prepare", (id) => window.mb.runPrepare(id));
           if (r && !isErr(r) && r.id) onShowLog(r.id);
           else if (r && !isErr(r)) setError([r.copied.length ? `Copied ${r.copied.join(", ")}` : "", r.missing.length ? `Not found in the main checkout: ${r.missing.join(", ")}` : "", "Nothing to install."].filter(Boolean).join(" · "));
         }}>
@@ -247,7 +256,7 @@ export function RunView({
           const active = st && ACTIVE.has(st.status);
           return (
             <div key={s.name} className="rv-svc" onClick={() => st && onShowLog(st.id)} title={st?.error ?? (st ? "Show its log" : s.command)}>
-              <span className={`rv-dot ${st ? DOT[st.status] : "grey"}`} />
+              <span className={`rv-dot ${st ? RUN_DOT[st.status] : "grey"}`} />
               <span className="rv-name">{s.name}</span>
               <span className="rv-ports">
                 {(st?.ports ?? (s.ports ?? []).map((p) => ({ name: p.name, port: p.base, url: undefined as string | undefined }))).map((p) =>
@@ -263,8 +272,8 @@ export function RunView({
               <span className="rv-acts" onClick={(e) => e.stopPropagation()}>
                 {active ? (
                   <>
-                    <button className="icon" title="Restart" disabled={!!busy} onClick={async () => (await act("stop", () => window.mb.runStop(session.id, [s.name])), start([s.name]))}>↻</button>
-                    <button className="icon" title="Stop (and what depends on it)" disabled={!!busy} onClick={() => act("stop", () => window.mb.runStop(session.id, [s.name]))}>■</button>
+                    <button className="icon" title="Restart" disabled={!!busy} onClick={async () => (await act("stop", (id) => window.mb.runStop(id, [s.name])), start([s.name]))}>↻</button>
+                    <button className="icon" title="Stop (and what depends on it)" disabled={!!busy} onClick={() => act("stop", (id) => window.mb.runStop(id, [s.name]))}>■</button>
                   </>
                 ) : (
                   <>
@@ -313,18 +322,4 @@ export function RunView({
       </div>
     </div>
   );
-}
-
-/** The profile without its repo path, which is implied by where it's saved. */
-function stripRepo(p: RunProfile) {
-  const { repo: _repo, ...rest } = p;
-  return rest;
-}
-
-function safeParse(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
 }

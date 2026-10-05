@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { RunServiceState } from "../shared/types";
 import { LogTerm, disposeLog } from "./LogTerm";
-import { addOutput, clearOutput, useDebug } from "./debugStore";
+import { addOutput, clearOutput, currentSession, useDebug } from "./debugStore";
+import { RUN_DOT } from "./runDisplay";
+import { settled } from "./settled";
+import { useAction } from "./useAction";
 
-export const DEBUG_CONSOLE = "__debug-console";
+const DEBUG_CONSOLE = "__debug-console";
 
 /** What debuggers print, and a prompt that evaluates in the paused frame. */
 function DebugConsole() {
@@ -16,7 +19,7 @@ function DebugConsole() {
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
   }, [debug.output.length]);
-  const target = debug.sessions.find((s) => s.state === "stopped") ?? debug.sessions.filter((s) => s.state !== "ended").pop();
+  const target = currentSession(debug.sessions);
   const names = new Map(debug.sessions.map((s) => [s.id, s.name]));
   const run = async () => {
     const expr = input.trim();
@@ -27,7 +30,7 @@ function DebugConsole() {
     addOutput({ sid: target?.id ?? "", category: "input", text: `› ${expr}\n` });
     if (!target) return addOutput({ sid: "", category: "stderr", text: "Nothing is being debugged.\n" });
     const frame = debug.selected[target.id] ?? debug.paused[target.id]?.frame ?? null;
-    const r = await window.mb.debugEvaluate(target.id, expr, frame?.id, "repl");
+    const r = await settled(window.mb.debugEvaluate(target.id, expr, frame?.id, "repl"), "Couldn't evaluate");
     addOutput({ sid: target.id, category: "error" in r ? "stderr" : "result", text: `${"error" in r ? r.error : r.result}\n` });
   };
   return (
@@ -92,6 +95,7 @@ export function BottomPanel({
 }) {
   const worktrees = new Set(states.map((s) => s.worktree));
   const debug = useDebug();
+  const { run, error, setError } = useAction();
   const hasConsole = debug.sessions.length > 0 || debug.output.length > 0;
   const consoleOn = hasConsole && (active === DEBUG_CONSOLE || !states.length);
   const shown = consoleOn ? null : states.find((s) => s.id === active) ?? states[0] ?? null;
@@ -127,7 +131,7 @@ export function BottomPanel({
             title={`${s.service} in ${s.worktree}${s.slot ? ` · slot ${s.slot}` : ""} — ${s.status}${s.error ? `: ${s.error}` : ""}`}
             onClick={() => onActive(s.id)}
           >
-            <span className={`rv-dot ${{ starting: "amber", running: "teal", stopping: "amber", stopped: "grey", failed: "red" }[s.status]}`} />
+            <span className={`rv-dot ${RUN_DOT[s.status]}`} />
             {s.service}
             {worktrees.size > 1 && <span className="bp-wt">{baseName(s.worktree)}</span>}
             {(s.status === "stopped" || s.status === "failed") && (
@@ -137,7 +141,7 @@ export function BottomPanel({
                 onClick={(e) => {
                   e.stopPropagation();
                   disposeLog(s.id);
-                  window.mb.runClear(s.id);
+                  run("close", () => window.mb.runClear(s.id));
                 }}
               >
                 ×
@@ -147,7 +151,7 @@ export function BottomPanel({
         ))}
         <span className="bp-spacer" />
         {shown && (shown.status === "running" || shown.status === "starting") && (
-          <button className="icon" title={`Stop ${shown.service} (and what depends on it)`} onClick={() => window.mb.runStopById(shown.id)}>
+          <button className="icon" title={`Stop ${shown.service} (and what depends on it)`} onClick={() => run("stop", () => window.mb.runStopById(shown.id))}>
             ■
           </button>
         )}
@@ -155,6 +159,14 @@ export function BottomPanel({
           ✕
         </button>
       </div>
+      {error && (
+        <div className="fp-note err bp-err">
+          {error}
+          <button className="bp-x" aria-label="Dismiss" title="Dismiss" onClick={() => setError("")}>
+            ×
+          </button>
+        </div>
+      )}
       {consoleOn ? <DebugConsole /> : shown ? <LogTerm key={shown.id} id={shown.id} /> : <div className="fp-note">Nothing has run yet — start a service from Run and Debug.</div>}
     </div>
   );

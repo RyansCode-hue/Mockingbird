@@ -1281,6 +1281,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .collab-inspector section { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 6px; }
 .collab-inspector .ins-foot { border-bottom: none; margin-top: auto; }
 .ins-head { display: flex; align-items: center; justify-content: space-between; font: 500 10px var(--mono); color: var(--text-4); text-transform: uppercase; letter-spacing: .04em; }
+.ins-head:has(> .err) { flex-wrap: wrap; }
+.ins-head > .err { flex-basis: 100%; margin-top: 4px; text-transform: none; letter-spacing: 0; }
 .ins-eff { font: 400 9.5px var(--mono); color: var(--text-4); }
 .ins-perms { display: flex; gap: 4px; flex-shrink: 0; }
 .ins-perms span { font: 400 9.5px var(--mono); color: var(--text-3); padding: 0 4px; border: 1px solid var(--line-med); border-radius: 4px; }
@@ -1572,6 +1574,7 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .bp-x { border: none; background: none; padding: 0 4px; color: var(--text-4); font-size: 13px; line-height: 1; }
 .bp-x:hover { color: var(--text-1); }
 .bp-spacer { flex: 1; }
+.bp-err { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; border-bottom: 1px solid var(--line-soft); }
 .log-term { flex: 1; min-height: 0; padding: 4px 0 4px 10px; overflow: hidden; }
 
 /* ---- debugger: editor gutter ---- */
