@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { UPDATE_STEPS, type UpdateProgress } from "../shared/types";
+import { UPDATE_STEPS, isErr, type UpdateProgress } from "../shared/types";
 
 /**
  * Updating from the user's clone: the build runs while Mockingbird keeps
@@ -35,7 +35,7 @@ export function UpdatePanel({
   const act = async (fn: () => Promise<unknown>) => {
     setError("");
     const r: any = await fn();
-    if (r?.error) setError(r.error);
+    if (isErr(r)) setError(r.error);
   };
 
   const mark = (id: string) => {

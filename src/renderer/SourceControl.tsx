@@ -1,13 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { GitChange, GitChanges, ScmEntry, ScmStatus } from "../shared/types";
+import { isErr, type GitChange, type GitChanges, type ScmEntry, type ScmStatus, type IpcResult } from "../shared/types";
 import { useFolderRefresh } from "./folderWatch";
 import { SparkleIcon } from "./Icons";
 import { CommitGraph } from "./CommitGraph";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
@@ -64,7 +62,7 @@ export function SourceControl({
   /** A second opinion: the other agent reviews this branch and messages its findings back. */
   review?: { agent: string; start: () => Promise<string | null> };
 }) {
-  const [status, setStatus] = useState<Result<ScmStatus> | null>(null);
+  const [status, setStatus] = useState<IpcResult<ScmStatus> | null>(null);
   const [message, setMessage] = useState("");
   // git calls aren't queued in the main process, so nothing starts while one is in flight
   const { busy, isBusy, run, error, setError } = useAction();
@@ -73,7 +71,7 @@ export function SourceControl({
   const [closed, setClosed] = useState<Set<string>>(() => new Set(["branch"]));
   // refetch the graph only when what it draws can have moved
   const graphKey = status && !isErr(status) ? `${status.branch}|${status.upstream}|${status.ahead}|${status.behind}` : "";
-  const [branch, setBranch] = useState<Result<GitChanges> | null>(null);
+  const [branch, setBranch] = useState<IpcResult<GitChanges> | null>(null);
   const broken = useRef(false);
   // the message box grows with what's in it (a generated body), up to a point
   const msgRef = useRef<HTMLTextAreaElement>(null);
@@ -85,7 +83,7 @@ export function SourceControl({
   }, [message, status]);
 
   const load = useCallback(async () => {
-    const r: Result<ScmStatus> = await settled(window.mb.scmStatus(sessionId), "Couldn't read git status");
+    const r: IpcResult<ScmStatus> = await settled(window.mb.scmStatus(sessionId), "Couldn't read git status");
     broken.current = isErr(r) && notARepository(r.error);
     setStatus((s) => (JSON.stringify(s) === JSON.stringify(r) ? s : r));
   }, [sessionId]);
@@ -103,12 +101,12 @@ export function SourceControl({
   const branchOpen = !closed.has("branch");
   useEffect(() => {
     if (!branchOpen && branch !== null) return;
-    settled<Result<GitChanges>>(window.mb.filesChanges(sessionId, "branch"), "Couldn't read the branch's changes").then(setBranch);
+    settled<IpcResult<GitChanges>>(window.mb.filesChanges(sessionId, "branch"), "Couldn't read the branch's changes").then(setBranch);
   }, [branchOpen, sessionId, status]);
 
   const generate = async () => {
     setFailed(""); // not a git failure: nothing to hand the agent
-    const r = await run("generate", (): Promise<Result<{ message: string; scope: "staged" | "all"; agent: string }>> => window.mb.scmCommitMessage(sessionId));
+    const r = await run("generate", (): Promise<IpcResult<{ message: string; scope: "staged" | "all"; agent: string }>> => window.mb.scmCommitMessage(sessionId));
     if (!isErr(r)) setMessage(r.message);
   };
 

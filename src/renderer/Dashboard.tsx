@@ -7,9 +7,8 @@ import { stateRank, suggestTicketName, ticketKickoffPrompt, useRepoBranches, wor
 import { titleOf } from "./appModel";
 import { Popover } from "./Popover";
 import { PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
-import type { SessionInfo, RepoEntry, AdoWorkItem, AdoComment, AdoBoard } from "../shared/types";
-import { slugBranch, topOfKey } from "../shared/types";
-import { ago, isError, loadLS, openLink } from "./uiUtil";
+import { isErr, slugBranch, topOfKey, type SessionInfo, type RepoEntry, type AdoWorkItem, type AdoComment, type AdoBoard } from "../shared/types";
+import { ago, loadLS, openLink } from "./uiUtil";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -57,7 +56,7 @@ export function DashboardBoard({
   const [boardsInfo, setBoardsInfo] = useState<{ team: string; boards: AdoBoard[] } | { error: string } | null>(null);
   const [boardName, setBoardName] = useState<string>(() => loadLS("mb.board.name", ""));
   useEffect(() => localStorage.setItem("mb.board.name", JSON.stringify(boardName)), [boardName]);
-  const boards = boardsInfo && !("error" in boardsInfo) ? boardsInfo.boards : null;
+  const boards = boardsInfo && !isErr(boardsInfo) ? boardsInfo.boards : null;
   const board = boards ? boards.find((b) => b.name === boardName) ?? pickBoard(items ?? [], boards) : null;
 
   // column order and hidden columns, kept per board ("states" when there's no board)
@@ -106,7 +105,7 @@ export function DashboardBoard({
     setError("");
     setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, boardColumn: col, state: mv.state } : i)) : p));
     const r = await window.mb.adoMoveToColumn(id, prev.type, board.name, col);
-    if (r?.error) {
+    if (isErr(r)) {
       setItems((p) => (p ? p.map((i) => (i.id === id ? prev : i)) : p));
       setError(`Couldn't move ${id} to ${col}: ${r.error}`);
     }
@@ -139,7 +138,7 @@ export function DashboardBoard({
     window.mb.adoBoards(fresh).then((b: { team: string; boards: AdoBoard[] } | { error: string }) => setBoardsInfo(b));
     const r: { items: AdoWorkItem[]; total: number; me: string } | { error: string } =
       await window.mb.adoList();
-    if ("error" in r) {
+    if (isErr(r)) {
       setItems([]);
       setError(r.error);
       return;
@@ -167,8 +166,8 @@ export function DashboardBoard({
   useEffect(() => {
     load();
     window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => {
-      if (Array.isArray(r)) setRepos(r);
-      else setError(`Couldn't list your repos: ${r.error}`);
+      if (isErr(r)) setError(`Couldn't list your repos: ${r.error}`);
+      else setRepos(r);
     });
   }, []);
 
@@ -255,7 +254,7 @@ export function DashboardBoard({
     setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, state: newState } : i)) : p));
     if (detailId === id) setState(newState);
     const r = await window.mb.adoUpdate(id, { state: newState });
-    if (r?.error) {
+    if (isErr(r)) {
       setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, state: prev.state } : i)) : p));
       if (detailId === id) setState(prev.state);
       setError(`Couldn't move ${id} to ${newState}: ${r.error}`);
@@ -274,7 +273,7 @@ export function DashboardBoard({
     if (desc !== detail.description) patch.description = desc;
     const r = await window.mb.adoUpdate(detail.id, patch);
     setSaving(false);
-    if (r?.error) return setError(r.error);
+    if (isErr(r)) return setError(r.error);
     setItems((p) => (p ? p.map((i) => (i.id === detail.id ? { ...i, title, state, description: desc } : i)) : p));
   };
 
@@ -284,7 +283,7 @@ export function DashboardBoard({
     setError("");
     const r = await window.mb.adoAddComment(detail.id, draft.trim());
     setPosting(false);
-    if (r?.error) return setError(r.error);
+    if (isErr(r)) return setError(r.error);
     setComments((p) => [...(p ?? []), r]);
     setDraft("");
   };
@@ -315,7 +314,7 @@ export function DashboardBoard({
       initialPrompt: prompt,
     });
     setBusy(false);
-    if (info?.error) return setError(info.error);
+    if (isErr(info)) return setError(info.error);
     onCreated(info);
   };
 
@@ -356,7 +355,7 @@ export function DashboardBoard({
             <Pick
               className="board-pick"
               value={board?.name ?? ""}
-              title={boardsInfo && !("error" in boardsInfo) ? `${boardsInfo.team}'s boards in Azure DevOps` : undefined}
+              title={boardsInfo && !isErr(boardsInfo) ? `${boardsInfo.team}'s boards in Azure DevOps` : undefined}
               onChange={(e) => setBoardName(e.target.value)}
             >
               {boards.map((b) => (
@@ -374,8 +373,8 @@ export function DashboardBoard({
             <Popover className="who-pop cols-pop" onClose={() => setColsOpen(false)}>
               <div className="who-hint cols-src">
                 {board
-                  ? `${board.name} board · ${boardsInfo && !("error" in boardsInfo) ? boardsInfo.team : ""} — as set up in Azure DevOps`
-                  : boardsInfo && "error" in boardsInfo
+                  ? `${board.name} board · ${boardsInfo && !isErr(boardsInfo) ? boardsInfo.team : ""} — as set up in Azure DevOps`
+                  : boardsInfo && isErr(boardsInfo)
                     ? `Showing work item states — couldn't read your team's board: ${boardsInfo.error}`
                     : "Showing work item states"}
               </div>
@@ -679,7 +678,7 @@ export function DashboardBoard({
                       disabled={!attachId}
                       onClick={async () => {
                         const r = await window.mb.setGroup(attachId, groupOf(detail));
-                        if (isError(r)) return setError(`Couldn't attach the session: ${r.error}`);
+                        if (isErr(r)) return setError(`Couldn't attach the session: ${r.error}`);
                         setAttachId("");
                       }}
                     >

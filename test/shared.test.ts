@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { slugBranch, sanitizeSegment, splitGroupKey, normalizeGroupPath, topOfKey, groupUngrouped } from "../src/shared/types";
+import { isErr, slugBranch, sanitizeSegment, splitGroupKey, normalizeGroupPath, topOfKey, groupUngrouped } from "../src/shared/types";
 
 describe("slugBranch", () => {
   it("joins the ticket number and a dashed title", () => {
@@ -42,5 +42,21 @@ describe("naming the ungrouped bucket", () => {
       { id: "b", group: "perf" },
       { id: "e", group: "perf/scratch" },
     ]);
+  });
+});
+
+describe("a failed main-process answer", () => {
+  it("is an object carrying an error message", () => {
+    expect(isErr({ error: "git status: timed out after 30s" })).toBe(true);
+  });
+  it("isn't a value that merely could be one", () => {
+    expect(isErr(null)).toBe(false);
+    expect(isErr(undefined)).toBe(false);
+    expect(isErr(true)).toBe(false);
+    expect(isErr("error")).toBe(false);
+    expect(isErr([])).toBe(false);
+    expect(isErr({ sessions: [] })).toBe(false);
+    expect(isErr({ error: null })).toBe(false);
+    expect(isErr({ state: "preparing", error: undefined })).toBe(false);
   });
 });

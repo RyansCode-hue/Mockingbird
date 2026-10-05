@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { AgentCheck, SetupStatus, Settings } from "../shared/types";
+import { isErr, type AgentCheck, type SetupStatus, type Settings } from "../shared/types";
 
 const STEPS = ["Agents", "Status hooks", "Repos", "Azure DevOps", "Done"] as const;
 
@@ -17,11 +17,11 @@ export async function applySettings(
 ): Promise<{ settings: Settings } | { error: string }> {
   try {
     const base = cur ?? (await mb.getSettings());
-    if ("error" in base) return { error: `Couldn't read settings: ${base.error}` };
+    if (isErr(base)) return { error: `Couldn't read settings: ${base.error}` };
     // only the change is sent: main merges it, so settings written elsewhere since aren't reverted
     const r = await mb.setSettings(patch);
     const next = { ...base, ...patch };
-    if (r && typeof r === "object" && "error" in r) return { error: `Couldn't save settings: ${(r as { error: string }).error}` };
+    if (isErr(r)) return { error: `Couldn't save settings: ${r.error}` };
     return { settings: next };
   } catch (err) {
     return { error: `Couldn't save settings: ${messageOf(err)}` };
@@ -102,7 +102,7 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
     setChecking(true);
     try {
       const r = await window.mb.setupStatus();
-      if (r?.error) return setError(r.error);
+      if (isErr(r)) return setError(r.error);
       setError("");
       setSt(r);
     } catch (err) {
@@ -116,7 +116,7 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
     window.mb.getSettings().then(setSettings, (err: unknown) => setError(`Couldn't read settings: ${messageOf(err)}`));
     window.mb.adoConfigGet().then(
       (r: any) => {
-        if (r?.error) setError(`Couldn't read your existing Azure DevOps config: ${r.error}`);
+        if (isErr(r)) setError(`Couldn't read your existing Azure DevOps config: ${r.error}`);
         else if (r) setAdo(r);
       },
       (err: unknown) => setError(`Couldn't read your existing Azure DevOps config: ${messageOf(err)}`)
@@ -126,7 +126,7 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
   /** Saves a settings change; false, with the reason shown, when it didn't save. */
   const saveSettings = async (patch: Partial<Settings>): Promise<boolean> => {
     const r = await applySettings(settings, patch, window.mb);
-    if ("error" in r) {
+    if (isErr(r)) {
       setError(r.error);
       return false;
     }
@@ -146,7 +146,7 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
   const installHooks = async () => {
     try {
       const r = await window.mb.installHooks();
-      if (r?.error) return setError(r.error);
+      if (isErr(r)) return setError(r.error);
     } catch (err) {
       return setError(`Couldn't install the hooks: ${messageOf(err)}`);
     }
@@ -173,7 +173,7 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
     setConnecting(true);
     try {
       const r = await window.mb.adoConfigSet(ado);
-      if (r?.error) return setError(r.error);
+      if (isErr(r)) return setError(r.error);
       await recheck();
     } catch (err) {
       setError(`Couldn't connect: ${messageOf(err)}`);

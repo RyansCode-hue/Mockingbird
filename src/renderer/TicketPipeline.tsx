@@ -1,13 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage } from "../shared/types";
+import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, isErr, type IpcResult } from "../shared/types";
 import { ago } from "./format";
 import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";
 import { useEscape } from "./useEscape";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 const pipelines = createIpcStore<Record<string, TicketPipeline>>({}, ({ set }) => {
   loadInto("the ticket pipelines", window.mb.pipelineAll(), (r: Record<string, TicketPipeline>) => set(r ?? {}));
@@ -108,7 +106,7 @@ export interface PipelineProps {
 function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, onClose }: Omit<PipelineProps, "details" | "onPosted"> & { target: PrTarget; onClose: () => void }) {
   const live = sessions.filter((s) => s.status !== "dead");
   const [sid, setSid] = useState(live[0]?.id ?? "");
-  const [pre, setPre] = useState<Result<PrPreflight & { lookupError: string | null }> | null>(null);
+  const [pre, setPre] = useState<IpcResult<PrPreflight & { lookupError: string | null }> | null>(null);
   const [base, setBase] = useState("");
   const [prTitle, setPrTitle] = useState(`#${ticketId} ${title}`.trim());
   const [desc, setDesc] = useState("");
@@ -120,7 +118,7 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
     const n = ++seq.current;
     setPre(null);
     window.mb.pipelinePrPreflight(sid, ticketId, target).then(
-      (r: Result<PrPreflight & { lookupError: string | null }>) => {
+      (r: IpcResult<PrPreflight & { lookupError: string | null }>) => {
         if (n !== seq.current) return; // a newer check is on its way
         setPre(r);
         // Recheck keeps a base the user picked; a new branch starts from its own default

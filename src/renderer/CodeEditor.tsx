@@ -24,12 +24,13 @@ import { rust } from "@codemirror/legacy-modes/mode/rust";
 import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { swift } from "@codemirror/legacy-modes/mode/swift";
 import { properties } from "@codemirror/legacy-modes/mode/properties";
-import type { FileContent, FileSave, LspDiagnostic, LspFileEdits, LspFileState, LspLocation } from "../shared/types";
+import { isErr, type FileContent, type FileSave, type LspDiagnostic, type LspFileEdits, type LspFileState, type LspLocation, type IpcResult } from "../shared/types";
 import type { LspPosition, LspTextEdit } from "../shared/textEdits";
 import { NO_SERVER, fromLspPos, lspExtensions, toCmDiagnostics, type LspDocContext } from "./lspEditor";
 import { guessIndent, lineBreakOf, splitBom, toEditorText, toFileText, type LineBreak } from "../shared/editorText";
 import { fileLanguage, type FileLanguage } from "../shared/fileTypes";
 import { plural } from "./changeCount";
+import { settled } from "./settled";
 
 const CM_LANGUAGE: Record<FileLanguage, (() => Extension) | null> = {
   typescript: () => javascript({ typescript: true }),
@@ -176,7 +177,7 @@ interface LspBuffer {
   root: string;
   state: LspFileState | null;
   /** The open request, once made: the file is closed with its server only after it's answered, and only if it opened. */
-  opening: Promise<Result<LspFileState>> | null;
+  opening: Promise<IpcResult<LspFileState>> | null;
   /** The text the server has, as last sent. Its answers are about this text, so its edits apply only while the buffer still holds it. */
   sentDoc: Text | null;
   /** Edits waiting to go to the server (sent 300 ms after typing stops, or before any question). */
@@ -205,10 +206,7 @@ const notify = () => {
 const isDirty = (b: Buffer) => b.state.doc.toString() !== b.saved;
 /** The mounted view of each buffer on screen. */
 const views = new Map<string, EditorView>();
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 /** A request's answer, with a failed request (a rejected promise) as its error, so the caller reports it rather than stopping halfway. */
-const answerOf = <T,>(p: Promise<Result<T>>): Promise<Result<T>> => p.catch((err: unknown) => ({ error: String(err) }));
 
 /** Change a buffer whether or not it's on screen: through its view when mounted, else its saved state. */
 export function updateBuffer(key: string, spec: (s: EditorState) => TransactionSpec): void {
@@ -288,7 +286,7 @@ async function openLsp(key: string): Promise<void> {
   listenLsp();
   const lsp = b.lsp;
   const doc = b.state.doc;
-  const opening = answerOf<LspFileState>(window.mb.lspOpen(lsp.ctx.sessionId, lsp.ctx.rel, doc.toString()));
+  const opening = settled<IpcResult<LspFileState>>(window.mb.lspOpen(lsp.ctx.sessionId, lsp.ctx.rel, doc.toString()));
   lsp.opening = opening;
   lsp.sentDoc = doc;
   const r = await opening;
@@ -304,7 +302,7 @@ function sendLspChange(key: string): Promise<unknown> {
   if (!b?.lsp) return Promise.resolve();
   b.lsp.timer = null;
   b.lsp.sentDoc = b.state.doc;
-  b.lsp.sent = answerOf<unknown>(window.mb.lspChange(b.lsp.ctx.sessionId, b.lsp.ctx.rel, b.state.doc.toString())).then((r) => {
+  b.lsp.sent = settled<IpcResult<unknown>>(window.mb.lspChange(b.lsp.ctx.sessionId, b.lsp.ctx.rel, b.state.doc.toString())).then((r) => {
     if (isErr(r)) lspNote(key, `The language server didn't get your edits: ${r.error}`);
   });
   return b.lsp.sent;
@@ -339,7 +337,7 @@ async function formatBuffer(key: string, explicit: boolean): Promise<void> {
   const asked = b.lsp.sentDoc;
   const unit = getIndentUnit(b.state);
   const tabs = b.state.facet(indentUnit).includes("\t");
-  const r = await answerOf<LspTextEdit[] | null>(window.mb.lspFormat(b.lsp.ctx.sessionId, b.lsp.ctx.rel, tabs ? b.state.tabSize : unit, !tabs));
+  const r = await settled<IpcResult<LspTextEdit[] | null>>(window.mb.lspFormat(b.lsp.ctx.sessionId, b.lsp.ctx.rel, tabs ? b.state.tabSize : unit, !tabs));
   if (isErr(r)) return lspNote(key, `Formatting failed: ${r.error}`);
   if (r === null) return explicit ? lspNote(key, `${b.lsp.state?.server?.label ?? "This"} language server doesn't format files`) : undefined;
   if (!r.length) return;
@@ -348,14 +346,14 @@ async function formatBuffer(key: string, explicit: boolean): Promise<void> {
 }
 
 /** Rename the symbol at a position, across files, with the buffer's server. */
-async function renameSymbol(key: string, at: LspPosition, name: string): Promise<Result<string>> {
+async function renameSymbol(key: string, at: LspPosition, name: string): Promise<IpcResult<string>> {
   const b = buffers.get(key);
   if (!b?.lsp || b.lsp.state?.state !== "ready") return { error: NO_SERVER };
   await flushLsp(key);
   // each open file as its server has it now, which is what the edits for it will be about
   const asked = new Map([...buffers.values()].flatMap((o) => (o.lsp ? [[o.lsp.ctx.abs, o.lsp.sentDoc] as const] : [])));
   const { sessionId, rel } = b.lsp.ctx;
-  const r = await answerOf<LspFileEdits[]>(window.mb.lspRename(sessionId, rel, at.line, at.character, name));
+  const r = await settled<IpcResult<LspFileEdits[]>>(window.mb.lspRename(sessionId, rel, at.line, at.character, name));
   if (isErr(r)) return r;
   return applyRename(r, sessionId, b.lsp.root, asked);
 }
@@ -385,7 +383,7 @@ async function applyRename(edits: LspFileEdits[], sessionId: string, root: strin
       problems.push(`${fe.path} is outside this session's folder — not changed`);
       continue;
     }
-    const r = await answerOf<FileSave>(window.mb.lspApplyEdits(sessionId, fe.path.slice(root.length + 1), fe.edits));
+    const r = await settled<IpcResult<FileSave>>(window.mb.lspApplyEdits(sessionId, fe.path.slice(root.length + 1), fe.edits));
     if (isErr(r)) problems.push(`${name}: ${r.error}`);
     else if (!r.saved) problems.push(`${name} changed on disk meanwhile — not changed`);
     else saved++;
@@ -577,14 +575,14 @@ function adoptDisk(key: string, b: Buffer, disk: { text: string; mtimeMs: number
  */
 export async function saveBuffer(
   key: string,
-  write: (text: string, expectedMtimeMs: number | null) => Promise<Result<FileSave>>,
+  write: (text: string, expectedMtimeMs: number | null) => Promise<IpcResult<FileSave>>,
   force: boolean
-): Promise<Result<"saved" | "conflict">> {
+): Promise<IpcResult<"saved" | "conflict">> {
   const b = buffers.get(key);
   if (!b || b.readOnly) return { error: "This file is read-only here" };
   if (formatOnSave) await formatBuffer(key, false);
   const text = b.state.doc.toString();
-  const r = await answerOf(write(toFileText(text, b.lineBreak, b.bom), force ? null : b.mtimeMs));
+  const r = await settled(write(toFileText(text, b.lineBreak, b.bom), force ? null : b.mtimeMs));
   if (isErr(r)) return r;
   if (!r.saved) {
     // someone else saved first: the caller reads their version so "Use theirs" has it
@@ -775,7 +773,7 @@ function LspBanner({ bufferKey, lsp }: { bufferKey: string; lsp: LspBuffer }) {
           disabled={busy}
           onClick={async () => {
             setBusy(true);
-            const r = await answerOf<unknown>(window.mb.lspInstall(server.id));
+            const r = await settled<IpcResult<unknown>>(window.mb.lspInstall(server.id));
             setBusy(false);
             if (isErr(r)) return lspNote(bufferKey, `Couldn't install it: ${r.error}`);
             lspNote(bufferKey, "");

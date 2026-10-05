@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { TranscriptHit } from "../shared/types";
+import { isErr, type TranscriptHit } from "../shared/types";
 import { ago } from "./format";
 
 type SearchStatus = { conversations: number; files: number; indexing: { done: number; total: number } | null; lastSync: number; problem: string | null };
@@ -49,7 +49,7 @@ export function useTranscriptSearch(q: string, enabled = true) {
     const t = setTimeout(async () => {
       const r = await window.mb.searchTranscripts(q).catch((err: unknown) => ({ error: `Search failed: ${err instanceof Error ? err.message : err}` }));
       if (n !== seq.current) return; // a newer query is on its way
-      if (r?.error) {
+      if (isErr(r)) {
         setError(r.error);
         setHits([]);
         return;

@@ -1,9 +1,7 @@
 import React, { useEffect, useState } from "react";
-import type { SessionInfo, TurnChange, TurnSnapshot } from "../shared/types";
+import { isErr, type SessionInfo, type TurnChange, type TurnSnapshot, type IpcResult } from "../shared/types";
 import { plural } from "./changeCount";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 const ago = (ms: number) => {
   const m = Math.round((Date.now() - ms) / 60000);
   if (m < 1) return "just now";
@@ -18,9 +16,9 @@ const ago = (ms: number) => {
  * be undone the same way. The conversation isn't rewound.
  */
 export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: SessionInfo; onClose: () => void; onTellAgent: (text: string) => void }) {
-  const [list, setList] = useState<Result<{ snapshots: TurnSnapshot[]; lastError: string | null }> | null>(null);
+  const [list, setList] = useState<IpcResult<{ snapshots: TurnSnapshot[]; lastError: string | null }> | null>(null);
   const [pick, setPick] = useState<TurnSnapshot | null>(null);
-  const [changes, setChanges] = useState<Result<TurnChange[]> | null>(null);
+  const [changes, setChanges] = useState<IpcResult<TurnChange[]> | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ restored: number; removed: number; snap: TurnSnapshot } | null>(null);
   const [error, setError] = useState("");
@@ -34,7 +32,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
     if (!pick) return;
     let live = true;
     window.mb.turnsChanges(session.id, pick.n).then(
-      (r: Result<TurnChange[]>) => live && setChanges(r),
+      (r: IpcResult<TurnChange[]>) => live && setChanges(r),
       (err: unknown) => live && setChanges({ error: `Couldn't compare with the files now: ${String(err)}` })
     );
     return () => {

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabPermissionRequest, type CollabRoom } from "../shared/types";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabPermissionRequest, type CollabRoom, isErr, type IpcResult } from "../shared/types";
 import {
   accessFlags,
   accessOf,
@@ -7,7 +7,6 @@ import {
   effortOptions,
   hasAccess,
   initials,
-  isErr,
   isLong,
   kindLabel,
   moveAt,
@@ -33,8 +32,6 @@ const MODES: { id: CollabMode; label: string; note: string }[] = [
   { id: "consensus", label: "Until agreed", note: "stops when every model agrees" },
 ];
 const nextMode = (m: CollabMode): CollabMode => MODES[(MODES.findIndex((x) => x.id === m) + 1) % MODES.length].id;
-
-type Result<T> = T | { error: string };
 
 /** A remembered UI preference; storage can be unavailable, and then the default applies. */
 function usePref<T extends string | boolean | number>(key: string, initial: T): [T, (v: T) => void] {
@@ -67,7 +64,7 @@ export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (
 
   useEffect(() => {
     window.mb.collabModels().then(setCatalog, (err: unknown) => setError(`Couldn't list the models: ${err instanceof Error ? err.message : err}`));
-    window.mb.collabList().then((r: Result<CollabRoom[]>) => {
+    window.mb.collabList().then((r: IpcResult<CollabRoom[]>) => {
       if (isErr(r)) return setError(r.error);
       setRooms(r);
       setSelected((s) => s ?? r[0]?.id ?? "new");
@@ -165,7 +162,7 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
     setSeats((s) => (s.length ? s : seedSeats(catalog)));
   }, [catalog]);
   const create = async () => {
-    const r: Result<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, participants: seats, mode });
+    const r: IpcResult<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, participants: seats, mode });
     if (isErr(r)) return setError(r.error);
     onCreated(r);
   };
@@ -672,7 +669,7 @@ function Inspector({
                     room={room}
                     busy={doing("implement")}
                     onPick={(key) =>
-                      call("implement", (): Promise<Result<{ id: string }>> => window.mb.collabImplement(room.id, key)).then((r) => !isErr(r) && onOpenSession(r.id))
+                      call("implement", (): Promise<IpcResult<{ id: string }>> => window.mb.collabImplement(room.id, key)).then((r) => !isErr(r) && onOpenSession(r.id))
                     }
                   />
                 ) : (

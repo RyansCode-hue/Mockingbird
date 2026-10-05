@@ -2,7 +2,7 @@ import { EditorView, hoverTooltip, keymap, showPanel, type Panel, type Tooltip }
 import { EditorState, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { lintGutter, type Diagnostic } from "@codemirror/lint";
 import type { Completion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
-import type { LspCompletion, LspDiagnostic, LspLocation } from "../shared/types";
+import { isErr, type LspCompletion, type LspDiagnostic, type LspLocation, type IpcResult } from "../shared/types";
 import type { LspPosition } from "../shared/textEdits";
 
 /** What the editor's language features need from the buffer they're attached to. */
@@ -16,7 +16,7 @@ export interface LspDocContext {
   flush: () => Promise<void>;
   openLocation: (loc: LspLocation) => void;
   /** Rename the symbol at a position across files; resolves to what happened, for the user. */
-  rename: (at: LspPosition, name: string) => Promise<Result<string>>;
+  rename: (at: LspPosition, name: string) => Promise<IpcResult<string>>;
   format: () => Promise<void>;
   /** A request failed: say so where the user can see it. */
   report: (message: string) => void;
@@ -24,8 +24,6 @@ export interface LspDocContext {
 
 export const NO_SERVER = "No language server is running for this file";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** A document offset as an LSP position (line, UTF-16 column — CodeMirror's own units). */
 function toLspPos(doc: Text, offset: number): LspPosition {
@@ -82,7 +80,7 @@ export function completionSource(ctx: LspDocContext) {
     await ctx.flush();
     if (c.aborted) return null;
     const p = toLspPos(c.state.doc, c.pos);
-    const r: Result<LspCompletion[]> = await window.mb.lspComplete(ctx.sessionId, ctx.rel, p.line, p.character, word?.text ?? "", trigger);
+    const r: IpcResult<LspCompletion[]> = await window.mb.lspComplete(ctx.sessionId, ctx.rel, p.line, p.character, word?.text ?? "", trigger);
     if (isErr(r)) {
       ctx.report(`Completions failed: ${r.error}`);
       return null;
@@ -140,7 +138,7 @@ export function hoverSource(ctx: LspDocContext) {
     if (!ctx.ready()) return null;
     await ctx.flush();
     const p = toLspPos(view.state.doc, pos);
-    const r: Result<string> = await window.mb.lspHover(ctx.sessionId, ctx.rel, p.line, p.character);
+    const r: IpcResult<string> = await window.mb.lspHover(ctx.sessionId, ctx.rel, p.line, p.character);
     if (isErr(r)) {
       ctx.report(`Hover failed: ${r.error}`);
       return null;
@@ -154,7 +152,7 @@ async function goToDefinition(view: EditorView, pos: number, ctx: LspDocContext)
   if (!ctx.ready()) return ctx.report(NO_SERVER);
   await ctx.flush();
   const p = toLspPos(view.state.doc, pos);
-  const r: Result<LspLocation[]> = await window.mb.lspDefinition(ctx.sessionId, ctx.rel, p.line, p.character);
+  const r: IpcResult<LspLocation[]> = await window.mb.lspDefinition(ctx.sessionId, ctx.rel, p.line, p.character);
   if (isErr(r)) return ctx.report(`Go to definition failed: ${r.error}`);
   const loc = r[0];
   if (!loc) return ctx.report("No definition found here");

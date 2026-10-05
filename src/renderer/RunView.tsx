@@ -1,14 +1,12 @@
 import React, { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import type { DebugFrame, RunProfile, RunServiceState, SessionInfo } from "../shared/types";
+import { isErr, type DebugFrame, type RunProfile, type RunServiceState, type SessionInfo, type IpcResult } from "../shared/types";
 import { BugIcon, SparkleIcon } from "./Icons";
 import { DebugPanel } from "./DebugPanel";
 import { useDebug } from "./debugStore";
 import { RUN_DOT, draftForEditing, stripRepo } from "./runDisplay";
 import { useAction } from "./useAction";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 interface ProfileInfo {
@@ -53,7 +51,7 @@ export function RunView({
   const dbg = useDebug();
   const [progress, setProgress] = useState("");
   useEffect(() => window.mb.onRunProgress((w: string, m: string) => w === session?.cwd && setProgress(m)), [session?.cwd]);
-  const [info, setInfo] = useState<Result<ProfileInfo> | null>(null);
+  const [info, setInfo] = useState<IpcResult<ProfileInfo> | null>(null);
   const { busy, run, error, setError } = useAction();
   const [conflicts, setConflicts] = useState<{ list: Conflict[]; services?: string[] } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -68,7 +66,7 @@ export function RunView({
     const id = sid;
     if (!id) return;
     window.mb.runProfile(id).then(
-      (r: Result<ProfileInfo>) => shown.current === id && setInfo(r),
+      (r: IpcResult<ProfileInfo>) => shown.current === id && setInfo(r),
       (err: unknown) => shown.current === id && setInfo({ error: `Couldn't read the run setup: ${err instanceof Error ? err.message : err}` })
     );
   };

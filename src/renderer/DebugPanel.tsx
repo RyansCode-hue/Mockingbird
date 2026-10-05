@@ -1,17 +1,15 @@
 import React, { useEffect, useState } from "react";
-import type { DebugFrame, DebugScope, DebugSessionInfo, DebugVariable } from "../shared/types";
+import { isErr, type DebugFrame, type DebugScope, type DebugSessionInfo, type DebugVariable, type IpcResult } from "../shared/types";
 import { currentSession, selectFrame, useBreakpoints, useDebug } from "./debugStore";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /** One variable, expandable when it has children (fetched on first open). */
 function VarRow({ sid, v, depth }: { sid: string; v: DebugVariable; depth: number }) {
   const [open, setOpen] = useState(false);
-  const [kids, setKids] = useState<Result<DebugVariable[]> | null>(null);
+  const [kids, setKids] = useState<IpcResult<DebugVariable[]> | null>(null);
   const toggle = () => {
     if (!v.ref) return;
     setOpen((o) => !o);
@@ -39,7 +37,7 @@ function VarRow({ sid, v, depth }: { sid: string; v: DebugVariable; depth: numbe
 function Scope({ sid, scope }: { sid: string; scope: DebugScope }) {
   // the first, cheap scope (locals) opens by itself
   const [open, setOpen] = useState(!scope.expensive);
-  const [vars, setVars] = useState<Result<DebugVariable[]> | null>(null);
+  const [vars, setVars] = useState<IpcResult<DebugVariable[]> | null>(null);
   useEffect(() => {
     if (open && !vars) settled(window.mb.debugVariables(sid, scope.ref), "Couldn't read the variables").then(setVars);
   }, [open]);
@@ -72,8 +70,8 @@ export function DebugPanel({
   const bp = useBreakpoints(paneSessionId);
   // the session to show: the one the debugger acts on, else the last to end (with how it ended)
   const cur = currentSession(sessions) ?? sessions[sessions.length - 1];
-  const [frames, setFrames] = useState<Result<DebugFrame[]> | null>(null);
-  const [scopes, setScopes] = useState<Result<DebugScope[]> | null>(null);
+  const [frames, setFrames] = useState<IpcResult<DebugFrame[]> | null>(null);
+  const [scopes, setScopes] = useState<IpcResult<DebugScope[]> | null>(null);
   const [watches, setWatches] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("mb.debug.watch") ?? "[]");
@@ -110,7 +108,7 @@ export function DebugPanel({
     if (!cur || cur.state !== "stopped" || !selected) return;
     settled(window.mb.debugScopes(cur.id, selected.id), "Couldn't read the scopes").then(setScopes);
     for (const w of watches) {
-      settled<Result<{ result: string }>>(window.mb.debugEvaluate(cur.id, w, selected.id, "watch"), "Couldn't evaluate").then((r) =>
+      settled<IpcResult<{ result: string }>>(window.mb.debugEvaluate(cur.id, w, selected.id, "watch"), "Couldn't evaluate").then((r) =>
         setWatchVals((v) => ({ ...v, [w]: isErr(r) ? `⚠ ${r.error}` : r.result }))
       );
     }

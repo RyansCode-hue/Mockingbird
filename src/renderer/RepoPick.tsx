@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { RepoEntry } from "../shared/types";
+import { isErr, type RepoEntry } from "../shared/types";
 import { Pick } from "./Menu";
 
 /** The git repositories under the configured folders, read once; `error` says why they couldn't be. */
@@ -9,7 +9,7 @@ export function useRepos(): { repos: RepoEntry[]; error: string } {
   useEffect(() => {
     let live = true;
     window.mb.listRepos().then(
-      (r: RepoEntry[] | { error: string }) => live && (Array.isArray(r) ? setRepos(r) : setError(r.error)),
+      (r: RepoEntry[] | { error: string }) => live && (isErr(r) ? setError(r.error) : setRepos(r)),
       (err: unknown) => live && setError(err instanceof Error ? err.message : String(err))
     );
     return () => {

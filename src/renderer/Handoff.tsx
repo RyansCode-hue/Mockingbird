@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { AgentKind, SessionInfo } from "../shared/types";
+import { isErr, type AgentKind, type SessionInfo } from "../shared/types";
 
 const NAME: Record<AgentKind, string> = { claude: "Claude Code", codex: "Codex" };
 export const otherAgent = (a: AgentKind | undefined): AgentKind => (a === "codex" ? "claude" : "codex");
@@ -30,7 +30,7 @@ export function HandoffDialog({
     setError("");
     const r = await window.mb.handoffDraft(session.id);
     setDrafting(false);
-    if (r?.error) return setError(r.error);
+    if (isErr(r)) return setError(r.error);
     setText(r.handoff);
   };
   useEffect(() => {
@@ -41,7 +41,7 @@ export function HandoffDialog({
     setError("");
     const r = await window.mb.handoffStart(session.id, text);
     setStarting(false);
-    if (r?.error) return setError(r.error);
+    if (isErr(r)) return setError(r.error);
     onStarted(r, closeOld);
   };
   return (

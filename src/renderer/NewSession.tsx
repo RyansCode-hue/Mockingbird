@@ -3,7 +3,7 @@ import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { newPresetId } from "./Presets";
-import type { AgentKind, SessionInfo, SessionPreset, RepoEntry, ImportableConversation, TranscriptHit, ModelCatalog } from "../shared/types";
+import { isErr, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
 import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
 import { loadLS, ago } from "./uiUtil";
 
@@ -45,7 +45,7 @@ export function NewSessionModal({
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
   useEffect(() => {
-    window.mb.modelCatalog().then((c: ModelCatalog | { error: string }) => ("error" in c ? setCatalogError(c.error) : setCatalog(c)));
+    window.mb.modelCatalog().then((c: ModelCatalog | { error: string }) => (isErr(c) ? setCatalogError(c.error) : setCatalog(c)));
   }, []);
   const [codexCustom, setCodexCustom] = useState(false);
   useEffect(() => {
@@ -178,7 +178,7 @@ export function NewSessionModal({
           ? ticketKickoffPrompt(t.id, t.title, t.description)
           : undefined,
     });
-    if (info?.error) {
+    if (isErr(info)) {
       setBusy(false);
       return setError(info.error);
     }
@@ -514,8 +514,8 @@ export function ImportModal({
 
   useEffect(() => {
     window.mb.listImportable().then((r: ImportableConversation[] | { error: string }) => {
-      if (Array.isArray(r)) setConvos(r);
-      else setError((r as any).error);
+      if (isErr(r)) setError(r.error);
+      else setConvos(r);
     });
   }, []);
 
@@ -526,7 +526,7 @@ export function ImportModal({
     const t = setTimeout(async () => {
       const r = await window.mb.searchTranscripts(q);
       if (!live) return;
-      if (r?.error) return setError(r.error);
+      if (isErr(r)) return setError(r.error);
       setError("");
       setHits(
         (r.hits as TranscriptHit[]).map((h) => ({
@@ -564,7 +564,7 @@ export function ImportModal({
       const info = c.restore
         ? await window.mb.relaunchSession(c.restore)
         : await window.mb.createSession({ repoPath: c.cwd, useWorktree: false, resumeSessionId: c.id, agent: c.agent, title: c.title.slice(0, 80) });
-      if (!info || info.error) failures.push(`✕ ${c.title.slice(0, 40)}: ${info?.error ?? "that session is no longer saved"}`);
+      if (!info || isErr(info)) failures.push(`✕ ${c.title.slice(0, 40)}: ${info?.error ?? "that session is no longer saved"}`);
       else opened.push(info);
     }
     if (opened.length) onOpened(opened);

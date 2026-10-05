@@ -29,8 +29,8 @@ import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
 import type { SessionInfo, SessionPreset, SessionStatus, Settings, WorktreeStateInfo, UsageReport, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice, MessageMode, OptionalTab } from "../shared/types";
-import { sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
-import { isError, loadLS, openLink } from "./uiUtil";
+import { isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
+import { loadLS, openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
 import { UsageMeter } from "./UsageMeter";
@@ -196,16 +196,16 @@ function App() {
   const unlessError =
     <T,>(what: string, apply: (v: T) => void) =>
     (r: T | { error: string }) =>
-      isError(r) ? readFailed(what, r) : apply(r as T);
+      isErr(r) ? readFailed(what, r) : apply(r as T);
   /** A change the main process refused: said right away. Returns whether it failed. */
   const failed = (what: string, r: unknown): boolean => {
-    if (!isError(r)) return false;
+    if (!isErr(r)) return false;
     alert(`${what}: ${r.error}`);
     return true;
   };
   const setMsgMode = async (group: string, mode: MessageMode | ""): Promise<boolean> => {
     const r = await window.mb.messagesGroupMode(group, mode || null);
-    if (r?.error) {
+    if (isErr(r)) {
       alert(`Couldn't change how agent messages arrive in ${group}: ${r.error}`);
       return false;
     }
@@ -214,7 +214,7 @@ function App() {
   };
   const askGroupStatus = async (group: string) => {
     const r = await window.mb.groupStatusCheck(group);
-    if (r?.error) return alert(r.error);
+    if (isErr(r)) return alert(r.error);
     setStatusNote(`Asked ${r.asked} session${r.asked === 1 ? "" : "s"}`);
     setTimeout(() => setStatusNote(""), 6000);
   };
@@ -353,12 +353,12 @@ function App() {
   // After an update restart: say how it went, and bring back the sessions that were open
   useEffect(() => {
     window.mb.updateOutcome().then(async (o: UpdateOutcome | null | { error: string }) => {
-      if (isError(o)) return readFailed("how the last update went", o);
+      if (isErr(o)) return readFailed("how the last update went", o);
       if (!o) return;
       const restoreErrors: string[] = [];
       for (const id of o.sessions) {
         const r = await window.mb.relaunchSession(id);
-        if (r?.error) restoreErrors.push(r.error);
+        if (isErr(r)) restoreErrors.push(r.error);
       }
       setUpdOutcome({ ...o, restoreErrors });
       refresh();
@@ -438,7 +438,7 @@ function App() {
   /** Remove a sub-group without touching its sessions — they move up into the group. */
   const dissolveSub = async (top: string, list: SessionInfo[]) => {
     const results = await Promise.all(list.map((s) => window.mb.setGroup(s.id, top)));
-    const errors = results.filter(isError);
+    const errors = results.filter(isErr);
     if (errors.length) alert(`Couldn't move ${errors.length} of the workspace's sessions into the group: ${errors.map((e) => e.error).join("; ")}`);
     refresh();
   };
@@ -457,20 +457,20 @@ function App() {
   /** Re-read the session lists; the live list comes back (the one on screen when the read fails). */
   const refresh = async (): Promise<SessionInfo[]> => {
     const live: SessionInfo[] | { error: string } = await window.mb.listSessions();
-    if (isError(live)) readFailed("the session list", live);
+    if (isErr(live)) readFailed("the session list", live);
     else setSessions(live);
     const previous: SessionInfo[] | { error: string } = await window.mb.resumableSessions();
-    if (isError(previous)) readFailed("the previous sessions", previous);
+    if (isErr(previous)) readFailed("the previous sessions", previous);
     // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
     else setResumable(previous.filter((s) => !s.debrief));
-    return isError(live) ? sessions : live;
+    return isErr(live) ? sessions : live;
   };
 
   // First launch opens the setup wizard. Installs that predate it (the help
   // popup was already seen) are marked set up without being interrupted.
   useEffect(() => {
     window.mb.getSettings().then(async (s: Settings | { error: string }) => {
-      if (isError(s)) return readFailed("settings", s);
+      if (isErr(s)) return readFailed("settings", s);
       const hidden = s.hiddenTabs ?? [];
       setHiddenTabs(hidden);
       setPresets(s.presets ?? []);
@@ -981,7 +981,7 @@ function App() {
     const failures: string[] = [];
     for (const s of resumable) {
       const info = await window.mb.relaunchSession(s.id);
-      if (info?.error) failures.push(`✕ ${s.title}: ${info.error}`);
+      if (isErr(info)) failures.push(`✕ ${s.title}: ${info.error}`);
     }
     await refresh();
     if (failures.length) alert(`Some sessions couldn't be restored:\n\n${failures.join("\n")}`);
@@ -1002,7 +1002,7 @@ function App() {
   /** Close a session's pane and process; returns why it couldn't, leaving the pane as it was. */
   const forceClose = async (s: SessionInfo, forget: boolean): Promise<string | null> => {
     const r = await window.mb.killSession(s.id, forget);
-    if (isError(r)) return r.error;
+    if (isErr(r)) return r.error;
     disposeTerm(s.id);
     hide(s.id);
     refresh();
@@ -1032,7 +1032,7 @@ function App() {
     if (failed(`Couldn't resume ${titleOf(s)}`, await window.mb.killSession(s.id, false))) return;
     disposeTerm(s.id);
     const info = await window.mb.relaunchSession(s.id);
-    if (info?.error) return alert(`Couldn't resume: ${info.error}`);
+    if (isErr(info)) return alert(`Couldn't resume: ${info.error}`);
     hide(s.id);
     await refresh();
     if (info) jumpToSession(info);
@@ -1192,7 +1192,7 @@ function App() {
         ? await window.mb.relaunchSession(h.open.sessionId)
         : await window.mb.createSession({ repoPath: h.cwd || null, useWorktree: false, resumeSessionId: h.id, agent: h.agent, title: h.title.slice(0, 60) });
     if (!info) return "That session is no longer saved.";
-    if (info.error) return info.error;
+    if (isErr(info)) return info.error;
     await refresh();
     jumpToSession(info);
     return null;
@@ -1245,28 +1245,28 @@ function App() {
   /** Mute or unmute a session's notifications. */
   const toggleMute = async (s: SessionInfo) => {
     const r = await window.mb.sessionMute(s.id, !s.muted);
-    if (r?.error) alert(`Couldn't change it: ${r.error}`);
+    if (isErr(r)) alert(`Couldn't change it: ${r.error}`);
   };
 
   /** Start the morning brief or the 4pm wrap-up on the WorkTracker tab. */
   const runDebrief = async (kind: "morning" | "wrapUp") => {
     setTab("worktracker");
     const r = await window.mb.runDebrief(kind);
-    if (r?.error) alert(`Couldn't start the ${kind === "morning" ? "morning brief" : "4pm wrap-up"}: ${r.error}`);
+    if (isErr(r)) alert(`Couldn't start the ${kind === "morning" ? "morning brief" : "4pm wrap-up"}: ${r.error}`);
     refresh();
   };
 
   /** Start a preset's session and show it. */
   const startPreset = async (p: SessionPreset) => {
     const info = await window.mb.presetStart(p.id);
-    if (info?.error) return alert(`Couldn't start “${p.name}”: ${info.error}`);
+    if (isErr(info)) return alert(`Couldn't start “${p.name}”: ${info.error}`);
     await refresh();
     jumpToSession(info);
   };
   /** Save the preset list. Settings writes merge, so only the changed key is sent. */
   const savePresets = async (next: SessionPreset[]) => {
     const r = await window.mb.setSettings({ presets: next });
-    if (r?.error) return alert(`Couldn't save the preset: ${r.error}`);
+    if (isErr(r)) return alert(`Couldn't save the preset: ${r.error}`);
     setPresets(next);
   };
 
@@ -1339,8 +1339,8 @@ function App() {
     window.mb.worktreeState(focusedCwd).then((r: WorktreeStateInfo | { error: string }) => {
       if (n !== scmSeq.current) return;
       // a folder outside any repository has nothing to count; anything else is a failure to show
-      setScmCountError("error" in r && !/not a git repository/i.test(r.error) ? r.error : null);
-      setScmCount("error" in r ? 0 : r.dirtyFiles);
+      setScmCountError(isErr(r) && !/not a git repository/i.test(r.error) ? r.error : null);
+      setScmCount(isErr(r) ? 0 : r.dirtyFiles);
     });
   };
   useEffect(loadScmCount, [focusedCwd]);
@@ -1355,7 +1355,7 @@ function App() {
     .sort()
     .join(",");
   useEffect(() => {
-    window.mb.watchFolders(watchKey ? watchKey.split(",") : []).then((r: unknown) => isError(r) && console.error("[mockingbird] couldn't watch the sessions' folders:", r.error));
+    window.mb.watchFolders(watchKey ? watchKey.split(",") : []).then((r: unknown) => isErr(r) && console.error("[mockingbird] couldn't watch the sessions' folders:", r.error));
   }, [watchKey]);
 
   const startSideResize = (e: React.PointerEvent) => {
@@ -1611,7 +1611,7 @@ function App() {
                         start: async () => {
                           const author = focusedSession;
                           const info = await window.mb.reviewStart(author.id);
-                          if (info?.error) return `Couldn't start the review: ${info.error}`;
+                          if (isErr(info)) return `Couldn't start the review: ${info.error}`;
                           await refresh();
                           // the reviewer opens beside the session it's reviewing
                           setShown((p) => placeBeside(p.includes(info.id) ? p : [...p, info.id], info.id, author.id, "after"));
@@ -1887,7 +1887,7 @@ function App() {
                       title="Relaunch, resuming the conversation"
                       onClick={async () => {
                         const info = await window.mb.relaunchSession(s.id);
-                        if (info?.error) return alert(`Couldn't relaunch: ${info.error}`);
+                        if (isErr(info)) return alert(`Couldn't relaunch: ${info.error}`);
                         if (info) {
                           await refresh();
                           jumpTo(info.id);
@@ -2127,7 +2127,7 @@ function App() {
                     onShowMessages={() => setMsgLogFor({ id: s.id, title: titleOf(s) })}
                     onRestart={async () => {
                       const r = await window.mb.sessionRestart(s.id);
-                      if (r?.error) alert(`Couldn't restart ${titleOf(s)}: ${r.error}`);
+                      if (isErr(r)) alert(`Couldn't restart ${titleOf(s)}: ${r.error}`);
                       else freshTerms([s.id]);
                       refresh();
                     }}
@@ -2386,7 +2386,7 @@ function App() {
               title="Session status (working/waiting/idle) needs Claude Code hooks — click to install"
               onClick={async () => {
                 const r = await window.mb.installHooks();
-                if (r?.error) return alert(`Couldn't install hooks: ${r.error}`);
+                if (isErr(r)) return alert(`Couldn't install hooks: ${r.error}`);
                 setHooksOk(true);
               }}
             >

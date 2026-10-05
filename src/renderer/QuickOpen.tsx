@@ -1,10 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { FileList, SessionInfo } from "../shared/types";
+import { isErr, type FileList, type SessionInfo, type IpcResult } from "../shared/types";
 import { fuzzyFilter } from "./fuzzy";
 import { useListNav } from "./listNav";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** "src/app.ts:42" → the path and the line; a bare path has no line. */
 export function parseGoTo(q: string): { query: string; line: number | null } {
@@ -35,14 +33,14 @@ export function QuickOpen({
   onOpen: (path: string, line: number | null) => void;
 }) {
   const [q, setQ] = useState("");
-  const [list, setList] = useState<Result<FileList> | null>(null);
+  const [list, setList] = useState<IpcResult<FileList> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!session) return;
     let live = true;
     window.mb.filesAll(session.id).then(
-      (r: Result<FileList>) => live && setList(r),
+      (r: IpcResult<FileList>) => live && setList(r),
       (err: unknown) => live && setList({ error: `Couldn't list the files: ${err instanceof Error ? err.message : err}` })
     );
     return () => {

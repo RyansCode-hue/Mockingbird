@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useEscape } from "./useEscape";
+import { isErr } from "../shared/types";
 
 /**
  * The weekly rollup: written into the WorkTracker folder from the conversation
@@ -22,7 +23,7 @@ export function RollupDialog({ onClose }: { onClose: () => void }) {
       live = false;
     };
   }, [weeksAgo]);
-  const ok = r && !("error" in r) ? r : null;
+  const ok = r && !isErr(r) ? r : null;
   return (
     <div className="modal-back" onMouseDown={onClose}>
       <div className="modal rollup-dlg" onMouseDown={(e) => e.stopPropagation()}>
@@ -35,7 +36,7 @@ export function RollupDialog({ onClose }: { onClose: () => void }) {
           <button className={weeksAgo === 1 ? "on" : ""} onClick={() => setWeeksAgo(1)}>Last week</button>
         </span>
         {r === null && <div className="fp-note">Writing it…</div>}
-        {r && "error" in r && <div className="err">{r.error}</div>}
+        {r && isErr(r) && <div className="err">{r.error}</div>}
         {ok && (
           <>
             <pre className="rollup-md">{ok.markdown}</pre>

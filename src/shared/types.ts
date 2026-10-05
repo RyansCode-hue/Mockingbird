@@ -81,6 +81,20 @@ export interface WorktreeEntry {
   error?: string; // not a readable git worktree
 }
 
+// ---- IPC answers -------------------------------------------------------------
+
+/** A main-process answer: every IPC handler answers { error } instead of rejecting. */
+export type IpcResult<T> = T | { error: string };
+
+/**
+ * The answer is a failure. Only a string `error` counts: an answer whose
+ * `error` key is present but unset ({ error: undefined } survives IPC) is a
+ * success.
+ */
+export function isErr(r: unknown): r is { error: string } {
+  return !!r && typeof r === "object" && typeof (r as { error?: unknown }).error === "string";
+}
+
 // ---- group paths -----------------------------------------------------------
 // A session's taskGroup is a path: "5038" is a group, "5038/backend" is the
 // "backend" workspace inside group 5038. Every producer and consumer of that

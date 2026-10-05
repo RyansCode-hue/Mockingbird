@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { Pick } from "./Menu";
 import { enterConfirms } from "./keys";
 import { titleOf } from "./appModel";
-import { isError } from "./uiUtil";
-import type { SessionInfo, WorktreeStateInfo } from "../shared/types";
+import { isErr, type SessionInfo, type WorktreeStateInfo } from "../shared/types";
 import { splitGroupKey, topOfKey } from "../shared/types";
 
 /** The grid's small dialogs: rename, move to a group, restart all, close a session. */
@@ -162,7 +161,7 @@ export function RestartAllDialog({
     setBusy(true);
     setError("");
     const r = await window.mb.restartAllSessions(includeBusy);
-    if (r?.error) {
+    if (isErr(r)) {
       setError(r.error);
       setBusy(false);
       return;
@@ -235,7 +234,7 @@ export function CloseSessionDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const wtName = session.cwd.split("/").pop();
-  const st = "error" in wt ? null : wt;
+  const st = isErr(wt) ? null : wt;
   const stateStr = st
     ? [st.dirty ? `${st.dirtyFiles} uncommitted file${st.dirtyFiles === 1 ? "" : "s"}` : null, st.ahead ? `${st.ahead} unpushed commit${st.ahead === 1 ? "" : "s"}` : null]
         .filter(Boolean)
@@ -256,9 +255,9 @@ export function CloseSessionDialog({
       if (closeErr) return stop(`Couldn't close the session: ${closeErr}`);
       if (mode !== "keep") {
         const r = await window.mb.worktreeCleanup(session.repoPath, session.cwd, mode);
-        if (isError(r)) return stop(r.error);
+        if (isErr(r)) return stop(r.error);
         const forgot = await window.mb.killSession(session.id, true);
-        if (isError(forgot)) return stop(`The worktree is done with, but the session couldn't be removed from Previous: ${forgot.error}`);
+        if (isErr(forgot)) return stop(`The worktree is done with, but the session couldn't be removed from Previous: ${forgot.error}`);
         if (r?.branchKept) alert(`The worktree is removed, but its branch is still there: ${r.branchKept}`);
       }
       onDone();
@@ -314,7 +313,7 @@ export function CloseSessionDialog({
             </>
           ) : (
             <>
-              Couldn't read worktree <span className="wt-name">{wtName}</span> ({"error" in wt ? wt.error : ""}). It may hold
+              Couldn't read worktree <span className="wt-name">{wtName}</span> ({isErr(wt) ? wt.error : ""}). It may hold
               work, so it stays on disk.
             </>
           )}

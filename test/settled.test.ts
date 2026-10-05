@@ -13,4 +13,10 @@ describe("an IPC reply a view waits on", () => {
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
   });
+  it("leaves the wording to the caller when it isn't told what failed", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await settled(Promise.reject(new Error("server exited")))).toEqual({ error: "server exited" });
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
 });

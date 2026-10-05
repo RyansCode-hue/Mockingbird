@@ -39,9 +39,6 @@ export function seedSeats(catalog: Catalog): CollabParticipantSpec[] {
 export function unusedModel(catalog: Catalog, seated: { agent: AgentKind; model: string }[]): CollabModel | null {
   return [...(catalog.defaults ?? []), ...catalog.presets].find((m) => !seated.some((s) => s.agent === m.agent && s.model === m.model)) ?? null;
 }
-/** IPC replies carry failures as { error }. */
-export const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
-
 const isModel = (m: CollabMessage) => m.speaker !== "you" && m.speaker !== "system";
 
 /** Messages long enough to fold in the thread (the newest one never folds). */

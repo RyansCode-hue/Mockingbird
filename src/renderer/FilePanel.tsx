@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, LspLocation, WorktreeStateInfo } from "../shared/types";
+import { isErr, type SessionInfo, type FileEntry, type FileContent, type GitChange, type GitChanges, type LspLocation, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { escapeHtml, highlightLines, languageFor } from "./highlight";
 import { fileKey, filesClosing, tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
@@ -9,11 +9,9 @@ import { CodeEditor, confirmClose, releaseBuffers, useDirtyKeys } from "./CodeEd
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount, plural } from "./changeCount";
+import { settled } from "./settled";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 /** A request's answer, with a failed request (a rejected promise) as its error, so it shows instead of "loading…" forever. */
-const answerOf = <T,>(p: Promise<Result<T>>): Promise<Result<T>> => p.catch((err: unknown) => ({ error: `Couldn't read it: ${String(err)}` }));
 
 function loadLS<T>(key: string, fallback: T): T {
   try {
@@ -82,22 +80,22 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
   const [shut, setShut] = useState<string[]>(() => loadLS("mb.files.shutSections", []));
   useEffect(() => localStorage.setItem("mb.files.shutSections", JSON.stringify(shut)), [shut]);
   const toggleSection = (k: string) => setShut((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
-  const [dirs, setDirs] = useState<Record<string, Result<FileEntry[]>>>({});
-  const [changes, setChanges] = useState<Result<GitChanges> | null>(null);
-  const [gitState, setGit] = useState<Result<WorktreeStateInfo> | null>(null);
+  const [dirs, setDirs] = useState<Record<string, IpcResult<FileEntry[]>>>({});
+  const [changes, setChanges] = useState<IpcResult<GitChanges> | null>(null);
+  const [gitState, setGit] = useState<IpcResult<WorktreeStateInfo> | null>(null);
 
   const sid = session?.id ?? null;
   const root = session?.cwd ?? null;
   const expanded = useMemo(() => new Set(root ? expandedByRoot[root] ?? [] : []), [expandedByRoot, root]);
 
   const loadDir = useCallback(async (id: string, rel: string) => {
-    const r = await answerOf<FileEntry[]>(window.mb.filesList(id, rel));
+    const r = await settled<IpcResult<FileEntry[]>>(window.mb.filesList(id, rel), "Couldn't read it");
     setDirs((d) => (JSON.stringify(d[rel]) === JSON.stringify(r) ? d : { ...d, [rel]: r }));
   }, []);
 
   // the tree marks what changed since the last commit
   const loadChanges = useCallback(async (id: string) => {
-    const r = await answerOf<GitChanges>(window.mb.filesChanges(id, "working"));
+    const r = await settled<IpcResult<GitChanges>>(window.mb.filesChanges(id, "working"), "Couldn't read it");
     setChanges((c) => (JSON.stringify(c) === JSON.stringify(r) ? c : r));
     return r;
   }, []);
@@ -113,7 +111,7 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
       if (gitBroken.current && !retryGit) return;
       loadChanges(sid).then((r) => (gitBroken.current = isErr(r)));
       window.mb.worktreeState(root).then(
-        (r: Result<WorktreeStateInfo>) => setGit(r ?? { error: "no answer" }),
+        (r: IpcResult<WorktreeStateInfo>) => setGit(r ?? { error: "no answer" }),
         (err: unknown) => setGit({ error: String(err) })
       );
     },
@@ -454,8 +452,8 @@ function FileViewer({
   onInsert: (text: string) => void;
   onOpenLocation: (loc: LspLocation, fromSession: string) => string | null;
 }) {
-  const [file, setFile] = useState<Result<FileContent> | null>(null);
-  const [diff, setDiff] = useState<Result<string> | null>(null);
+  const [file, setFile] = useState<IpcResult<FileContent> | null>(null);
+  const [diff, setDiff] = useState<IpcResult<string> | null>(null);
   const bp = useBreakpoints(open.sessionId);
   const debug = useDebug();
   const dirty = useDirtyKeys().has(fileKey(open));
@@ -483,16 +481,17 @@ function FileViewer({
     const latest = () => live.current && n === loads.current;
     if (open.mode === "diff") {
       const src = open.source;
-      const r = await answerOf<string>(
+      const r = await settled<IpcResult<string>>(
         src?.kind === "scm"
           ? window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
           : src?.kind === "commit"
             ? window.mb.scmCommitDiff(open.sessionId, src.sha, open.path)
-            : window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U")
+            : window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U"),
+        "Couldn't read it"
       );
       if (latest()) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
     } else {
-      const r = await answerOf<FileContent>(window.mb.filesRead(open.sessionId, open.path));
+      const r = await settled<IpcResult<FileContent>>(window.mb.filesRead(open.sessionId, open.path), "Couldn't read it");
       if (latest()) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
     }
   };

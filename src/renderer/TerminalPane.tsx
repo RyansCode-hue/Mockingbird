@@ -5,7 +5,7 @@ import { PinIcon } from "./Icons";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { formatShare, formatTokens, totalTokens, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
+import { formatShare, formatTokens, isErr, totalTokens, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
@@ -351,8 +351,8 @@ export function TerminalPane({
   };
   useEffect(readGit, [gitRoot]);
   useFolderRefresh(gitRoot, readGit, 30_000);
-  const git = gitState && !("error" in gitState) ? gitState : null;
-  const gitErr = gitState && "error" in gitState ? gitState.error : null;
+  const git = gitState && !isErr(gitState) ? gitState : null;
+  const gitErr = gitState && isErr(gitState) ? gitState.error : null;
 
   // the branch's pull request, for the rail (the main process caches lookups for 2 minutes)
   const [pr, setPr] = useState<PrStatus | null>(null);
@@ -363,7 +363,7 @@ export function TerminalPane({
     if (!prRoot) return setPr(null);
     const failed = (error: string): PrStatus => ({ branch: null, pr: null, error, at: Date.now() });
     window.mb.prStatus(prRoot, fresh).then(
-      (r: PrStatus | { error: string }) => n === prSeq.current && setPr("error" in r && !("at" in r) ? failed(r.error) : (r as PrStatus)),
+      (r: PrStatus | { error: string }) => n === prSeq.current && setPr(isErr(r) && !("at" in r) ? failed(r.error) : (r as PrStatus)),
       (err: unknown) => n === prSeq.current && setPr(failed(String(err)))
     );
   };
