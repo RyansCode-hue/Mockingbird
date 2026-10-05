@@ -32,6 +32,7 @@ import { fileLanguage, type FileLanguage } from "../shared/fileTypes";
 import { settled } from "./settled";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
+import { readPref, writePref } from "./prefs";
 
 const CM_LANGUAGE: Record<FileLanguage, (() => Extension) | null> = {
   typescript: () => javascript({ typescript: true }),
@@ -207,7 +208,6 @@ const notify = () => {
 const isDirty = (b: Buffer) => b.state.doc.toString() !== b.saved;
 /** The mounted view of each buffer on screen. */
 const views = new Map<string, EditorView>();
-/** A request's answer, with a failed request (a rejected promise) as its error, so the caller reports it rather than stopping halfway. */
 
 /** Change a buffer whether or not it's on screen: through its view when mounted, else its saved state. */
 export function updateBuffer(key: string, spec: (s: EditorState) => TransactionSpec): void {
@@ -226,21 +226,11 @@ export function updateBuffer(key: string, spec: (s: EditorState) => TransactionS
 
 // ---- language servers (lspEditor.ts has the editor features) ----
 
-let formatOnSave = (() => {
-  try {
-    return JSON.parse(localStorage.getItem("mb.formatOnSave") ?? "false") === true;
-  } catch {
-    return false;
-  }
-})();
+let formatOnSave = readPref<boolean>("mb.formatOnSave", false) === true;
 /** Settings → General: format files with their language server when they're saved. */
 export function setFormatOnSave(on: boolean): void {
   formatOnSave = on;
-  try {
-    localStorage.setItem("mb.formatOnSave", JSON.stringify(on));
-  } catch {
-    /* kept for this run only */
-  }
+  writePref("mb.formatOnSave", on);
 }
 export const getFormatOnSave = () => formatOnSave;
 

@@ -4,10 +4,11 @@ import { Pick, Select } from "./Menu";
 import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { newPresetId } from "./Presets";
 import { isErr, AGENT_NAME, slugBranch, sanitizeSegment, splitGroupKey, topOfKey, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
-import { loadLS } from "./uiUtil";
 import { agoShort } from "../shared/format";
 import { tildePath } from "../shared/paths";
 import { Modal } from "./Modal";
+import { usePersisted, writePref, readPref } from "./prefs";
+import { COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
 
 /** Starting sessions: New session (⌘N) and Import. */
 
@@ -38,11 +39,11 @@ export function NewSessionModal({
   const agentLabel = AGENT_NAME[launch === "codex" ? "codex" : "claude"];
   // model/effort ride the agent's command line; the last choice is remembered
   // per agent because people tend to have a working default for each
-  const [model, setModel] = useState(() => loadLS("mb.newModel", ""));
-  const [modelCustom, setModelCustom] = useState(() => loadLS("mb.newModelCustom", ""));
-  const [effort, setEffort] = useState(() => loadLS("mb.newEffort", ""));
-  const [codexModel, setCodexModel] = useState(() => loadLS("mb.newCodexModel", ""));
-  const [codexEffort, setCodexEffort] = useState(() => loadLS("mb.newCodexEffort", ""));
+  const [model, setModel] = usePersisted("mb.newModel", "");
+  const [modelCustom, setModelCustom] = usePersisted("mb.newModelCustom", "");
+  const [effort, setEffort] = usePersisted("mb.newEffort", "");
+  const [codexModel, setCodexModel] = usePersisted("mb.newCodexModel", "");
+  const [codexEffort, setCodexEffort] = usePersisted("mb.newCodexEffort", "");
   // the models and effort levels the CLIs offer on this Mac (read from the CLIs, not built in)
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
@@ -55,11 +56,6 @@ export function NewSessionModal({
     if (catalog && codexModel && !catalog.codex.models.some((m) => m.id === codexModel)) setCodexCustom(true);
   }, [catalog]);
   const codexInfo = catalog?.codex.models.find((m) => m.id === codexModel);
-  useEffect(() => localStorage.setItem("mb.newModel", JSON.stringify(model)), [model]);
-  useEffect(() => localStorage.setItem("mb.newModelCustom", JSON.stringify(modelCustom)), [modelCustom]);
-  useEffect(() => localStorage.setItem("mb.newEffort", JSON.stringify(effort)), [effort]);
-  useEffect(() => localStorage.setItem("mb.newCodexModel", JSON.stringify(codexModel)), [codexModel]);
-  useEffect(() => localStorage.setItem("mb.newCodexEffort", JSON.stringify(codexEffort)), [codexEffort]);
   const effModel = launch === "codex" ? codexModel.trim() : model === "__custom" ? modelCustom.trim() : model;
   const effEffort = launch === "codex" ? codexEffort : effort;
   const [repos, setRepos] = useState<RepoEntry[]>([]);
@@ -97,11 +93,11 @@ export function NewSessionModal({
   // Picking a ticket defaults to an isolated worktree under
   // <parent>/worktrees/<repo>/<branch>; unticked, the branch is checked out in
   // the repo itself. An explicit choice is remembered and wins.
-  const wtPref = loadLS<boolean | null>("mb.newWorktree", null);
+  const wtPref = readPref<boolean | null>("mb.newWorktree", null);
   const [useWorktree, setUseWorktreeRaw] = useState<boolean>(wtPref ?? false);
   const setUseWorktree = (v: boolean) => {
     setUseWorktreeRaw(v);
-    localStorage.setItem("mb.newWorktree", JSON.stringify(v));
+    writePref("mb.newWorktree", v);
   };
   const [error, setError] = useState("");
   // ADO ticket picker — same flow as the dashboard's Start session. It keeps
@@ -140,7 +136,7 @@ export function NewSessionModal({
   );
   // the Dashboard's column order (when there's no board) leads the picker too
   const columns = useMemo(
-    () => ticketsByColumn(tickets, stateOrder, loadLS<Record<string, { order: string[] }> | null>("mb.board.prefs", null)?.states?.order ?? loadLS<string[]>("mb.board.colOrder", [])),
+    () => ticketsByColumn(tickets, stateOrder, readPref<ColumnPrefs>(COLUMN_PREFS_KEY, legacyColumnPrefs()).states?.order ?? []),
     [tickets, stateOrder]
   );
   const pickable = useMemo(() => columns.flatMap((c) => c.items), [columns]);

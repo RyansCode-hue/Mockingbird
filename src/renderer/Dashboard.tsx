@@ -1,15 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Pick } from "./Menu";
-import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
+import { cardMove, columnOf, orderColumns, pickBoard, COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
 import { beginDrag, cue, dragging, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { stateRank, suggestTicketName, ticketKickoffPrompt, useRepoBranches, workflowStates } from "./tickets";
 import { titleOf } from "./appModel";
 import { Popover } from "./Popover";
 import { PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { isErr, slugBranch, topOfKey, type SessionInfo, type RepoEntry, type AdoWorkItem, type AdoComment, type AdoBoard } from "../shared/types";
-import { loadLS, openLink } from "./uiUtil";
+import { openLink } from "./uiUtil";
 import { ago, agoShort, fmtElapsed, plural } from "../shared/format";
 import { Modal } from "./Modal";
+import { usePersisted } from "./prefs";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -47,27 +48,17 @@ export function DashboardBoard({
   const [detailId, setDetailId] = useState<number | null>(null);
   // filters: multi-select "Assigned to" (empty = everyone) and hidden columns
   const [me, setMe] = useState("");
-  const [who, setWho] = useState<string[] | null>(() => loadLS<string[] | null>("mb.board.who", null));
+  const [who, setWho] = usePersisted<string[] | null>("mb.board.who", null);
   const [whoOpen, setWhoOpen] = useState(false);
-  useEffect(() => {
-    if (who !== null) localStorage.setItem("mb.board.who", JSON.stringify(who));
-  }, [who]);
 
   // The team's Azure Boards board — its real columns — when it can be read; work item states otherwise
   const [boardsInfo, setBoardsInfo] = useState<{ team: string; boards: AdoBoard[] } | { error: string } | null>(null);
-  const [boardName, setBoardName] = useState<string>(() => loadLS("mb.board.name", ""));
-  useEffect(() => localStorage.setItem("mb.board.name", JSON.stringify(boardName)), [boardName]);
+  const [boardName, setBoardName] = usePersisted<string>("mb.board.name", "");
   const boards = boardsInfo && !isErr(boardsInfo) ? boardsInfo.boards : null;
   const board = boards ? boards.find((b) => b.name === boardName) ?? pickBoard(items ?? [], boards) : null;
 
   // column order and hidden columns, kept per board ("states" when there's no board)
-  const [colPrefs, setColPrefs] = useState<Record<string, { order: string[]; hidden: string[] }>>(
-    () =>
-      loadLS<Record<string, { order: string[]; hidden: string[] }> | null>("mb.board.prefs", null) ?? {
-        states: { order: loadLS<string[]>("mb.board.colOrder", []), hidden: loadLS<string[]>("mb.board.hidden", []) },
-      }
-  );
-  useEffect(() => localStorage.setItem("mb.board.prefs", JSON.stringify(colPrefs)), [colPrefs]);
+  const [colPrefs, setColPrefs] = usePersisted<ColumnPrefs>(COLUMN_PREFS_KEY, legacyColumnPrefs);
   const prefKey = board ? `board:${board.name}` : "states";
   const defaultHidden = board ? board.columns.filter((c) => c.type === "outgoing").map((c) => c.name) : [];
   const prefs = colPrefs[prefKey] ?? { order: [], hidden: defaultHidden };

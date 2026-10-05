@@ -4,6 +4,7 @@ import { currentSession, selectFrame, useBreakpoints, useDebug } from "./debugSt
 import { settled } from "./settled";
 import { useAction } from "./useAction";
 import { baseName } from "../shared/paths";
+import { usePersisted } from "./prefs";
 
 
 /** One variable, expandable when it has children (fetched on first open). */
@@ -72,25 +73,12 @@ export function DebugPanel({
   const cur = currentSession(sessions) ?? sessions[sessions.length - 1];
   const [frames, setFrames] = useState<IpcResult<DebugFrame[]> | null>(null);
   const [scopes, setScopes] = useState<IpcResult<DebugScope[]> | null>(null);
-  const [watches, setWatches] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("mb.debug.watch") ?? "[]");
-    } catch {
-      return [];
-    }
-  });
+  const [watches, setWatches] = usePersisted<string[]>("mb.debug.watch", []);
   const [watchVals, setWatchVals] = useState<Record<string, string>>({});
   const [newWatch, setNewWatch] = useState("");
   // Continue, the steps and Stop: what the debugger refused
   const { run, error, setError } = useAction();
   useEffect(() => setError(""), [cur?.id]);
-  useEffect(() => {
-    try {
-      localStorage.setItem("mb.debug.watch", JSON.stringify(watches));
-    } catch {
-      /* not remembered */
-    }
-  }, [watches]);
 
   const paused = cur ? debug.paused[cur.id] : undefined;
   const selected = cur ? debug.selected[cur.id] ?? paused?.frame ?? null : null;

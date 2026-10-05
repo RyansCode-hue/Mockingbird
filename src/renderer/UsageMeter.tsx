@@ -3,8 +3,8 @@ import { tokenBreakdown } from "./TerminalPane";
 import { resetText, pctNow } from "./usageFormat";
 import { Popover } from "./Popover";
 import { AGENT_NAME, formatTokens, totalTokens, type UsageReport, type UsageLimit, type Meters } from "../shared/types";
-import { loadLS } from "./uiUtil";
 import { fmtElapsed } from "../shared/format";
+import { usePersisted } from "./prefs";
 
 /** The status bar's plan-usage meter and its popover. */
 
@@ -15,8 +15,7 @@ type UsageShow = "claude" | "codex" | "both";
  * every limit. Both agents report account-wide numbers from their sessions.
  */
 export function UsageMeter({ usage, meters }: { usage: UsageReport | null; meters: Meters | null }) {
-  const [show, setShow] = useState<UsageShow>(() => loadLS("mb.usageShow", "both"));
-  useEffect(() => localStorage.setItem("mb.usageShow", JSON.stringify(show)), [show]);
+  const [show, setShow] = usePersisted<UsageShow>("mb.usageShow", "both");
   const [open, setOpen] = useState(false);
   // resets pass while the app sits open with no session reporting
   const [now, setNow] = useState(Date.now());

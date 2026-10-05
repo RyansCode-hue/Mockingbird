@@ -4,10 +4,10 @@ import { reachesBroadcast, titleOf } from "./appModel";
 import { PresetsSection } from "./Presets";
 import { getFormatOnSave, setFormatOnSave } from "./CodeEditor";
 import { isErr, OPTIONAL_TABS, type AgentCheck, type BroadcastOutcome, type SetupStatus, type SessionInfo, type SessionPreset, type Settings, type WorktreeEntry, type OptionalTab } from "../shared/types";
-import { loadLS } from "./uiUtil";
 import { TAB_LABELS } from "./tabs";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
+import { readPref, writePref } from "./prefs";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
 
@@ -429,11 +429,13 @@ export function SettingsView({
   onMsgDefaultSend: (send: boolean) => void;
   onStartPreset: (p: SessionPreset) => void;
 }) {
-  const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? loadLS("mb.setSection", "general"));
+  const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? readPref("mb.setSection", "general"));
   useEffect(() => {
     if (jump) setSection(jump.section);
   }, [jump]);
-  useEffect(() => localStorage.setItem("mb.setSection", JSON.stringify(section)), [section]);
+  useEffect(() => {
+    writePref("mb.setSection", section);
+  }, [section]);
   const [s, setS] = useState<Settings | null>(null);
   const [saveState, setSaveState] = useState<{ ok: boolean; msg: string } | null>(null);
   const [status, setStatus] = useState<SetupStatus | { error: string } | null>(null);

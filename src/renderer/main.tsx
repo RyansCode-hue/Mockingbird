@@ -29,7 +29,7 @@ import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
 import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
-import { loadLS, openLink } from "./uiUtil";
+import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
 import { UsageMeter } from "./UsageMeter";
@@ -39,6 +39,7 @@ import { SettingsView, type SettingsSection } from "./Settings";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
+import { usePersisted, readPref, writePref } from "./prefs";
 
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
 /** What the side bar shows, picked from the activity bar as in VS Code. */
@@ -155,16 +156,16 @@ function gridCols(n: number): number {
 function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [resumable, setResumable] = useState<SessionInfo[]>([]);
-  const [shown, setShown] = useState<string[]>(() => loadLS("mb.shown", []));
+  const [shown, setShown] = usePersisted<string[]>("mb.shown", []);
   const [focused, setFocused] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState<string | null>(null);
   // pinned panes stay on screen when the grid switches groups
-  const [pinned, setPinned] = useState<string[]>(() => loadLS("mb.pinned", []));
+  const [pinned, setPinned] = usePersisted<string[]>("mb.pinned", []);
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   // the group the grid was last switched to (see activeGroupOf)
-  const [lastGroup, setLastGroup] = useState<string | null>(() => loadLS("mb.activeGroup", null));
+  const [lastGroup, setLastGroup] = usePersisted<string | null>("mb.activeGroup", null);
   // which pane sits in which snap-layout zone, per group (cell key per zone)
-  const [zoneSeats, setZoneSeats] = useState<Record<string, (string | null)[]>>(() => loadLS("mb.zones", {}));
+  const [zoneSeats, setZoneSeats] = usePersisted<Record<string, (string | null)[]>>("mb.zones", {});
   // an empty zone's "open a session here" picker, and a new session headed for a zone
   const [slotPick, setSlotPick] = useState<number | null>(null);
   // the ticket pipeline opened from the grid (group bar, palette)
@@ -233,7 +234,7 @@ function App() {
   // a lone pane's "+" promotes it to a workspace, but only once the new session
   // actually exists — cancelling the dialog must leave the pane exactly as it was
   const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
-  const [tab, setTab] = useState<Tab>(() => loadLS<Tab>("mb.tab", "sessions"));
+  const [tab, setTab] = usePersisted<Tab>("mb.tab", "sessions");
   // a room to open, from a permission-request notification (the counter re-triggers the same room)
   const [focusRoom, setFocusRoom] = useState<{ id: string; n: number } | null>(null);
   useEffect(
@@ -244,7 +245,6 @@ function App() {
       }),
     []
   );
-  useEffect(() => localStorage.setItem("mb.tab", JSON.stringify(tab)), [tab]);
   // tabs turned off in Settings leave the top bar (and the palette); one opened
   // anyway — by a notification or a search hit — shows while it's the active tab
   const [hiddenTabs, setHiddenTabs] = useState<OptionalTab[]>([]);
@@ -252,33 +252,30 @@ function App() {
   const [presets, setPresets] = useState<SessionPreset[]>([]);
   const [presetDraft, setPresetDraft] = useState<SessionPreset | null>(null);
   const shownTab = (t: Tab) => !(hiddenTabs as Tab[]).includes(t);
-  const [theme, setTheme] = useState<"dark" | "light">(() => loadLS<"dark" | "light">("mb.theme", "dark"));
+  const [theme, setTheme] = usePersisted<"dark" | "light">("mb.theme", "dark");
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("mb.theme", JSON.stringify(theme));
     applyTermTheme(theme === "light"); // xterm colors follow the app theme
   }, [theme]);
   const [hooksOk, setHooksOk] = useState(true);
   const [filter, setFilter] = useState("");
   // a session title being edited inline in its sidebar row
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
-  const [sideCollapsed, setSideCollapsed] = useState<boolean>(() => loadLS("mb.side", false));
-  const [colsPref, setColsPref] = useState<ColsPref>(() => loadLS<ColsPref>("mb.cols", "auto"));
+  const [sideCollapsed, setSideCollapsed] = usePersisted<boolean>("mb.side", false);
+  const [colsPref, setColsPref] = usePersisted<ColsPref>("mb.cols", "auto");
   // chosen snap layout per group ("" = auto). Kept per group because a ticket
   // with two panes and one with five want different arrangements.
-  const [layouts, setLayouts] = useState<Record<string, string>>(() => loadLS("mb.layout", {}));
+  const [layouts, setLayouts] = usePersisted<Record<string, string>>("mb.layout", {});
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadLS<string[]>("mb.collapsed", [])));
-  useEffect(() => localStorage.setItem("mb.collapsed", JSON.stringify([...collapsed])), [collapsed]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(readPref<string[]>("mb.collapsed", [])));
+  useEffect(() => {
+    writePref("mb.collapsed", [...collapsed]);
+  }, [collapsed]);
   // per-group memory of which sessions were visible, so switching back restores the subset
-  const [groupLayouts, setGroupLayouts] = useState<Record<string, string[]>>(() =>
-    loadLS<Record<string, string[]>>("mb.groupLayouts", {})
-  );
-  useEffect(() => localStorage.setItem("mb.groupLayouts", JSON.stringify(groupLayouts)), [groupLayouts]);
+  const [groupLayouts, setGroupLayouts] = usePersisted<Record<string, string[]>>("mb.groupLayouts", {});
   // active tab per workspace (sub-group) pane, keyed "top/sub" — persisted
-  const [wsTabs, setWsTabs] = useState<Record<string, string>>(() => loadLS("mb.wsTabs", {}));
-  useEffect(() => localStorage.setItem("mb.wsTabs", JSON.stringify(wsTabs)), [wsTabs]);
+  const [wsTabs, setWsTabs] = usePersisted<Record<string, string>>("mb.wsTabs", {});
   const [closeDlg, setCloseDlg] = useState<{ session: SessionInfo; wt: WorktreeStateInfo | { error: string } } | null>(null);
   const [groupDlg, setGroupDlg] = useState<SessionInfo | null>(null);
   // group/workspace renames use a dialog: inline editing broke because the same
@@ -369,13 +366,13 @@ function App() {
   useEffect(() => {
     window.mb.appVersion().then(unlessError("the app version", (v: string) => setAppVersion(String(v))));
   }, []);
-  const [sideView, setSideView] = useState<SideView>(() => loadLS<SideView>("mb.sideView", "sessions"));
-  useEffect(() => localStorage.setItem("mb.sideView", JSON.stringify(sideView)), [sideView]);
-  const [sideW, setSideW] = useState<number>(() => loadLS("mb.sideW", 264));
-  useEffect(() => localStorage.setItem("mb.sideW", JSON.stringify(sideW)), [sideW]);
+  const [sideView, setSideView] = usePersisted<SideView>("mb.sideView", "sessions");
+  const [sideW, setSideW] = usePersisted<number>("mb.sideW", 264);
   const [editor, setEditor] = useState(EMPTY_EDITOR);
-  const [search, setSearch] = useState<SearchState>(() => ({ q: "", ...loadLS("mb.search", { scope: "conversations", regex: false, matchCase: false }) }));
-  useEffect(() => localStorage.setItem("mb.search", JSON.stringify({ scope: search.scope, regex: search.regex, matchCase: search.matchCase })), [search.scope, search.regex, search.matchCase]);
+  const [search, setSearch] = useState<SearchState>(() => ({ q: "", ...readPref("mb.search", { scope: "conversations", regex: false, matchCase: false }) }));
+  useEffect(() => {
+    writePref("mb.search", { scope: search.scope, regex: search.regex, matchCase: search.matchCase });
+  }, [search.scope, search.regex, search.matchCase]);
   const [searchFocus, setSearchFocus] = useState(0);
   // Run and Debug: every service's state, and the log panel under the grid (⌘J)
   const [runStates, setRunStates] = useState<RunServiceState[]>([]);
@@ -383,10 +380,8 @@ function App() {
     window.mb.runStates().then(unlessError("the services' run states", setRunStates));
     return window.mb.onRunChanged(setRunStates);
   }, []);
-  const [panelOpen, setPanelOpen] = useState<boolean>(() => loadLS("mb.panel.open", false));
-  useEffect(() => localStorage.setItem("mb.panel.open", JSON.stringify(panelOpen)), [panelOpen]);
-  const [panelH, setPanelH] = useState<number>(() => loadLS("mb.panel.h", 260));
-  useEffect(() => localStorage.setItem("mb.panel.h", JSON.stringify(panelH)), [panelH]);
+  const [panelOpen, setPanelOpen] = usePersisted<boolean>("mb.panel.open", false);
+  const [panelH, setPanelH] = usePersisted<number>("mb.panel.h", 260);
   const [panelTab, setPanelTab] = useState<string | null>(null);
   const showLog = (id: string) => {
     setPanelTab(id);
@@ -406,15 +401,6 @@ function App() {
     setSideCollapsed(false);
     if (v === "search") setSearchFocus((n) => n + 1);
   };
-
-  // persist grid arrangement across restarts (design: Interactions & Behavior)
-  useEffect(() => localStorage.setItem("mb.shown", JSON.stringify(shown)), [shown]);
-  useEffect(() => localStorage.setItem("mb.cols", JSON.stringify(colsPref)), [colsPref]);
-  useEffect(() => localStorage.setItem("mb.layout", JSON.stringify(layouts)), [layouts]);
-  useEffect(() => localStorage.setItem("mb.side", JSON.stringify(sideCollapsed)), [sideCollapsed]);
-  useEffect(() => localStorage.setItem("mb.pinned", JSON.stringify(pinned)), [pinned]);
-  useEffect(() => localStorage.setItem("mb.activeGroup", JSON.stringify(lastGroup)), [lastGroup]);
-  useEffect(() => localStorage.setItem("mb.zones", JSON.stringify(zoneSeats)), [zoneSeats]);
 
   /** Put a session (dragged from the grid or the sidebar) beside a pane in the grid. */
   const reorder = (srcId: string, targetId: string, side: Side = "before") =>
@@ -473,9 +459,9 @@ function App() {
       setMsgDefaultSend(s.agentMessagesSubmit !== false);
       setTab((t) => ((hidden as Tab[]).includes(t) ? "sessions" : t));
       if (s.setupDone) return;
-      if (loadLS("mb.helpSeen", false)) failed("Couldn't mark setup as done", await window.mb.setSettings({ setupDone: true }));
+      if (readPref("mb.helpSeen", false)) failed("Couldn't mark setup as done", await window.mb.setSettings({ setupDone: true }));
       else {
-        localStorage.setItem("mb.helpSeen", "true");
+        writePref("mb.helpSeen", true);
         setModal("setup");
       }
     });
@@ -772,7 +758,7 @@ function App() {
   const [rowSizes, setRowSizes] = useState<number[]>([]);
 
   const loadTracks = (key: string, n: number): number[] => {
-    const v = loadLS<number[]>(key, []);
+    const v = readPref<number[]>(key, []);
     return Array.isArray(v) && v.length === n && v.every((x) => typeof x === "number" && x > 0)
       ? v
       : Array(n).fill(1);
@@ -780,10 +766,10 @@ function App() {
   useEffect(() => setColSizes(loadTracks(`mb.cw.${cols}`, cols)), [cols]);
   useEffect(() => setRowSizes(loadTracks(`mb.rh.${rows}`, rows)), [rows]);
   useEffect(() => {
-    if (colSizes.length === cols) localStorage.setItem(`mb.cw.${cols}`, JSON.stringify(colSizes));
+    if (colSizes.length === cols) writePref(`mb.cw.${cols}`, colSizes);
   }, [colSizes, cols]);
   useEffect(() => {
-    if (rowSizes.length === rows) localStorage.setItem(`mb.rh.${rows}`, JSON.stringify(rowSizes));
+    if (rowSizes.length === rows) writePref(`mb.rh.${rows}`, rowSizes);
   }, [rowSizes, rows]);
 
   /** Dragging pane (index) in `axis` grows/shrinks it against its next neighbor. */
@@ -842,8 +828,7 @@ function App() {
 
   // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
   // the rest are open exactly while the workspace is in the grid.
-  const [wsOpen, setWsOpen] = useState<Record<string, boolean>>(() => loadLS("mb.wsOpen", {}));
-  useEffect(() => localStorage.setItem("mb.wsOpen", JSON.stringify(wsOpen)), [wsOpen]);
+  const [wsOpen, setWsOpen] = usePersisted<Record<string, boolean>>("mb.wsOpen", {});
 
   const bySub = (list: SessionInfo[]): [string, SessionInfo[]][] => {
     const m = new Map<string, SessionInfo[]>();

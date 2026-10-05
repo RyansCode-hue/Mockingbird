@@ -12,17 +12,7 @@ import { ChangeCount } from "./changeCount";
 import { settled } from "./settled";
 import { plural } from "../shared/format";
 import { baseName, dirName, tildePath } from "../shared/paths";
-
-/** A request's answer, with a failed request (a rejected promise) as its error, so it shows instead of "loading…" forever. */
-
-function loadLS<T>(key: string, fallback: T): T {
-  try {
-    const v = localStorage.getItem(key);
-    return v == null ? fallback : (JSON.parse(v) as T);
-  } catch {
-    return fallback;
-  }
-}
+import { usePersisted } from "./prefs";
 
 const STATUS_TITLE: Record<GitChange["status"], string> = {
   M: "Modified",
@@ -74,10 +64,8 @@ interface ExplorerProps {
 function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTab, onCloseAll, onQuickOpen }: ExplorerProps) {
   // expanded folders are remembered per folder-on-disk, so flipping between
   // sessions restores each tree the way it was left
-  const [expandedByRoot, setExpandedByRoot] = useState<Record<string, string[]>>(() => loadLS("mb.files.expanded", {}));
-  useEffect(() => localStorage.setItem("mb.files.expanded", JSON.stringify(expandedByRoot)), [expandedByRoot]);
-  const [shut, setShut] = useState<string[]>(() => loadLS("mb.files.shutSections", []));
-  useEffect(() => localStorage.setItem("mb.files.shutSections", JSON.stringify(shut)), [shut]);
+  const [expandedByRoot, setExpandedByRoot] = usePersisted<Record<string, string[]>>("mb.files.expanded", {});
+  const [shut, setShut] = usePersisted<string[]>("mb.files.shutSections", []);
   const toggleSection = (k: string) => setShut((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
   const [dirs, setDirs] = useState<Record<string, IpcResult<FileEntry[]>>>({});
   const [changes, setChanges] = useState<IpcResult<GitChanges> | null>(null);
@@ -335,8 +323,7 @@ export function EditorDock({
   };
   // a file no tab shows any more (its tab closed to make room for a new one) lets go of its buffer
   useEffect(() => releaseBuffers(new Set(editor.tabs.map(fileKey))), [editor.tabs]);
-  const [width, setWidth] = useState<number>(() => loadLS("mb.files.viewerW", 560));
-  useEffect(() => localStorage.setItem("mb.files.viewerW", JSON.stringify(width)), [width]);
+  const [width, setWidth] = usePersisted<number>("mb.files.viewerW", 560);
   const [, setWindowW] = useState(window.innerWidth); // re-fit the editor when the window narrows
   useEffect(() => {
     const h = () => setWindowW(window.innerWidth);
@@ -462,8 +449,7 @@ function FileViewer({
     .filter((l): l is number => l !== null);
   const saveRef = useRef<(() => void) | null>(null);
   const [copyNote, copy] = useCopyNote();
-  const [layout, setLayout] = useState<"inline" | "split">(() => loadLS("mb.files.diffLayout", "inline"));
-  useEffect(() => localStorage.setItem("mb.files.diffLayout", JSON.stringify(layout)), [layout]);
+  const [layout, setLayout] = usePersisted<"inline" | "split">("mb.files.diffLayout", "inline");
   const deleted = open.status === "D";
 
   const live = useRef(true);

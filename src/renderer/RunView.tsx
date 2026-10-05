@@ -8,6 +8,7 @@ import { RUN_DOT, draftForEditing, stripRepo } from "./runDisplay";
 import { useAction } from "./useAction";
 import type { PortConflict } from "../main/run";
 import { baseName } from "../shared/paths";
+import { readPref, writePref } from "./prefs";
 
 
 
@@ -75,19 +76,11 @@ export function RunView({
   const repoKey = info && !isErr(info) ? info.repo : "";
   useEffect(() => {
     if (!repoKey) return;
-    try {
-      setMode(JSON.parse(localStorage.getItem(`mb.run.mode:${repoKey}`) ?? '"swap"'));
-    } catch {
-      setMode("swap");
-    }
+    setMode(readPref<"swap" | "side">(`mb.run.mode:${repoKey}`, "swap"));
   }, [repoKey]);
   const pickMode = (m: "swap" | "side") => {
     setMode(m);
-    try {
-      localStorage.setItem(`mb.run.mode:${repoKey}`, JSON.stringify(m));
-    } catch {
-      /* not remembered; still applies now */
-    }
+    writePref(`mb.run.mode:${repoKey}`, m);
   };
 
   if (!session) return <div className="fp-note">Click into a session to run its worktree.</div>;
