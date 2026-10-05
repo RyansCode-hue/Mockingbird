@@ -17,6 +17,7 @@ import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
 import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { activeGroupOf, dropInZone, layoutToRemember, overflowArea, parseZone, placeInZones, pruneToGroup, seating, switchTo } from "./gridModel";
 import { OVERLAYS, enterConfirms, escapeLeavesFullscreen, inEditor } from "./keys";
+import { useAdoTickets, useRepoBranches, workflowStates } from "./tickets";
 import { broadcastFate, cellKeyFor, frontOf, paneShortcuts, remapGroupKeys, remapSeats, worktreeGone, type GridCell } from "./appModel";
 import { resetText, pctNow } from "./usageFormat";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon } from "./Icons";
@@ -463,7 +464,8 @@ function App() {
   const refresh = async (): Promise<SessionInfo[]> => {
     const live: SessionInfo[] = await window.mb.listSessions();
     setSessions(live);
-    setResumable(await window.mb.resumableSessions());
+    // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
+    setResumable((await window.mb.resumableSessions()).filter((s: SessionInfo) => !s.debrief));
     return live;
   };
 
@@ -1244,6 +1246,14 @@ function App() {
     if (r?.error) alert(`Couldn't change it: ${r.error}`);
   };
 
+  /** Start the morning brief or the 4pm wrap-up on the WorkTracker tab. */
+  const runDebrief = async (kind: "morning" | "wrapUp") => {
+    setTab("worktracker");
+    const r = await window.mb.runDebrief(kind);
+    if (r?.error) alert(`Couldn't start the ${kind === "morning" ? "morning brief" : "4pm wrap-up"}: ${r.error}`);
+    refresh();
+  };
+
   /** Start a preset's session and show it. */
   const startPreset = async (p: SessionPreset) => {
     const info = await window.mb.presetStart(p.id);
@@ -1459,16 +1469,18 @@ function App() {
             onHiddenTabs={setHiddenTabs}
             presets={presets}
             onPresets={setPresets}
+            onMsgDefaultSend={setMsgDefaultSend}
             onStartPreset={startPreset}
           />
         )}
         {tab === "collaborate" && (
           <CollaborateView
             focusRoom={focusRoom}
-            onOpenSession={(id) => {
+            onOpenSession={async (id) => {
               setTab("sessions");
-              // the session was just created; give the list a moment to include it
-              setTimeout(() => jumpToRef.current(id), 300);
+              const s = (await refresh()).find((x) => x.id === id);
+              if (s) jumpToSession(s);
+              else alert("That session isn't running any more — a closed one is under Previous in the Sessions side bar.");
             }}
           />
         )}
@@ -1485,13 +1497,13 @@ function App() {
               </button>
               <button
                 className="outline"
-                onClick={() => window.mb.runDebrief("morning").then(refresh)}
+                onClick={() => runDebrief("morning")}
               >
                 Morning brief
               </button>
               <button
                 className="primary"
-                onClick={() => window.mb.runDebrief("wrapUp").then(refresh)}
+                onClick={() => runDebrief("wrapUp")}
               >
                 4pm wrap-up
               </button>
@@ -1865,7 +1877,7 @@ function App() {
                     ↺ restore all
                   </button>
                 </h2>
-                {resumable.filter((s) => !s.debrief).map((s) => (
+                {resumable.map((s) => (
                   <div key={s.id} className="sess-item" title={s.cwd}>
                     <span className="dot dead" />
                     <span className="name">{s.title}</span>
@@ -2408,8 +2420,8 @@ function App() {
             ...(shownTab("worktracker")
               ? [
                   { label: "WorkTracker — debriefs", run: () => setTab("worktracker") },
-                  { label: "Morning brief", run: () => { window.mb.runDebrief("morning"); setTab("worktracker"); } },
-                  { label: "4pm wrap-up", run: () => { window.mb.runDebrief("wrapUp"); setTab("worktracker"); } },
+                  { label: "Morning brief", run: () => runDebrief("morning") },
+                  { label: "4pm wrap-up", run: () => runDebrief("wrapUp") },
                 ]
               : []),
             ...(shownTab("collaborate") ? [{ label: "Collaborate — rooms", run: () => setTab("collaborate") }] : []),
@@ -3197,27 +3209,10 @@ function DashboardBoard({
   const [attachId, setAttachId] = useState("");
   const [branchMode, setBranchMode] = useState<"new" | "existing">("new");
   const [dashWorktree, setDashWorktree] = useState(true);
-  const [branchInfo, setBranchInfo] = useState<RepoBranches | null>(null);
-  const [baseBranch, setBaseBranch] = useState("");
+  const { branches: branchInfo, base: baseBranch, setBase: setBaseBranch, error: branchError } = useRepoBranches(repoPath);
   const [existingBranch, setExistingBranch] = useState("");
+  useEffect(() => setExistingBranch(""), [repoPath]);
   const [sendTicket, setSendTicket] = useState(true);
-
-  // branch list follows the chosen repo; default base = its dev/uat-style branch
-  useEffect(() => {
-    setBranchInfo(null);
-    setExistingBranch("");
-    setBaseBranch("");
-    if (!repoPath) return;
-    let alive = true;
-    window.mb.repoBranches(repoPath).then((r: RepoBranches | { error: string }) => {
-      if (!alive || !r || "error" in r) return;
-      setBranchInfo(r);
-      setBaseBranch(r.defaultBase ?? "");
-    });
-    return () => {
-      alive = false;
-    };
-  }, [repoPath]);
 
   const load = async (fresh = false) => {
     setError("");
@@ -3242,18 +3237,19 @@ function DashboardBoard({
     });
     setSyncedAt(Date.now());
     // board columns = union of the valid states for every type on the board
-    const types = [...new Set(r.items.map((i) => i.type))];
-    const fetched = await Promise.all(
-      types.map((t) => window.mb.adoStates(t).then((s2: string[] | { error: string }) => (Array.isArray(s2) ? s2 : [])))
-    );
-    const all = new Set<string>([...r.items.map((i) => i.state), ...fetched.flat()]);
+    const fetched = await workflowStates([...new Set(r.items.map((i) => i.type))]);
+    if (fetched.error) setError(fetched.error);
+    const all = new Set<string>([...r.items.map((i) => i.state), ...fetched.states]);
     all.delete("Removed");
     setStateCols([...all].sort((a, b) => stateRank(a) - stateRank(b) || a.localeCompare(b)));
   };
 
   useEffect(() => {
     load();
-    window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => Array.isArray(r) && setRepos(r));
+    window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => {
+      if (Array.isArray(r)) setRepos(r);
+      else setError(`Couldn't list your repos: ${r.error}`);
+    });
   }, []);
 
   const people = useMemo(() => {
@@ -3753,6 +3749,7 @@ function DashboardBoard({
                 {branchMode === "existing" && existingBranch && (
                   <div className="wi-note">opens a worktree on {existingBranch}</div>
                 )}
+                {branchError && <div className="err">{branchError}</div>}
                 {attachable.length > 0 && (
                   <>
                     <label>Attach existing</label>
@@ -4512,6 +4509,7 @@ function SettingsView({
   onHiddenTabs,
   presets,
   onPresets,
+  onMsgDefaultSend,
   onStartPreset,
 }: {
   sessions: SessionInfo[];
@@ -4526,6 +4524,7 @@ function SettingsView({
   /** The App's preset list, which ⌘N's "Save as preset" also changes while this view is open. */
   presets: SessionPreset[];
   onPresets: (presets: SessionPreset[]) => void;
+  onMsgDefaultSend: (send: boolean) => void;
   onStartPreset: (p: SessionPreset) => void;
 }) {
   const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? loadLS("mb.setSection", "general"));
@@ -4782,7 +4781,14 @@ function SettingsView({
               title="Auto-send agent messages"
               note="Sessions can message each other. Off: an incoming message waits in the prompt until you press Enter"
             >
-              <Toggle label="Auto-send agent messages" on={s.agentMessagesSubmit !== false} onChange={(v) => upd({ agentMessagesSubmit: v })} />
+              <Toggle
+                label="Auto-send agent messages"
+                on={s.agentMessagesSubmit !== false}
+                onChange={(v) => {
+                  upd({ agentMessagesSubmit: v });
+                  onMsgDefaultSend(v);
+                }}
+              />
             </SetRow>
             <SetRow title="Claude Code binary" note={s.claudeBin}>
               <button className="outline" onClick={() => pickBin("claudeBin")}>Change…</button>
@@ -5051,8 +5057,9 @@ function NewSessionModal({
   const [codexEffort, setCodexEffort] = useState(() => loadLS("mb.newCodexEffort", ""));
   // the models and effort levels the CLIs offer on this Mac (read from the CLIs, not built in)
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [catalogError, setCatalogError] = useState("");
   useEffect(() => {
-    window.mb.modelCatalog().then((c: ModelCatalog | { error: string }) => !("error" in c) && setCatalog(c));
+    window.mb.modelCatalog().then((c: ModelCatalog | { error: string }) => ("error" in c ? setCatalogError(c.error) : setCatalog(c)));
   }, []);
   const [codexCustom, setCodexCustom] = useState(false);
   useEffect(() => {
@@ -5109,53 +5116,26 @@ function NewSessionModal({
     localStorage.setItem("mb.newWorktree", JSON.stringify(v));
   };
   const [error, setError] = useState("");
-  // ADO ticket picker — same flow as the dashboard's Start session
-  const [allTickets, setAllTickets] = useState<AdoWorkItem[]>([]);
-  const [who, setWho] = useState(""); // "" until identity resolves; "*" = anyone
-  const [stateOrder, setStateOrder] = useState<string[]>([]); // ADO workflow order
-  const [adoDown, setAdoDown] = useState(false);
+  // ADO ticket picker — same flow as the dashboard's Start session. It keeps
+  // everyone's tickets: it defaults to yours (identity comes from the PAT) but
+  // you can pick up someone else's. Manual entry works without the board.
+  const ado = useAdoTickets();
+  const allTickets = ado.items ?? [];
+  const adoDown = ado.items === null && !!ado.error;
+  const [whoPick, setWhoPick] = useState(""); // "" = not picked: yours once known; "*" = anyone
+  const who = whoPick || (ado.items ? ado.me || "*" : "");
+  const stateOrder = ado.stateOrder;
   const [ticketSel, setTicketSel] = useState("");
   const [sendTicket, setSendTicket] = useState(true);
-  const [branchInfo, setBranchInfo] = useState<RepoBranches | null>(null);
-  const [baseBranch, setBaseBranch] = useState("");
+  // base-branch options follow the chosen repo (new branch is cut off origin/<base>)
+  const { branches: branchInfo, base: baseBranch, setBase: setBaseBranch, error: branchError } = useRepoBranches(sel?.path);
 
   useEffect(() => {
     window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => {
       if (Array.isArray(r)) setRepos(r);
-      else setError(`Repo scan failed: ${(r as any).error}`);
-    });
-    window.mb.adoList().then((r: { items: AdoWorkItem[]; me: string } | { error: string }) => {
-      if ("error" in r) return setAdoDown(true); // manual entry still works
-      // keep everyone's tickets: the picker defaults to yours (identity comes
-      // from the PAT) but you can pick up someone else's
-      setAllTickets(r.items);
-      setWho(r.me || "*");
-      // ADO returns a type's states in workflow order — that is the column order
-      // of the real board, so the picker reads top-to-bottom the way it looks
-      const types = [...new Set(r.items.map((i) => i.type))];
-      Promise.all(
-        types.map((t) =>
-          window.mb.adoStates(t).then((x: string[] | { error: string }) => (Array.isArray(x) ? x : []))
-        )
-      ).then((lists) => setStateOrder([...new Set(lists.flat())]));
+      else setError(`Repo scan failed: ${r.error}`);
     });
   }, []);
-
-  // base-branch options follow the chosen repo (new branch is cut off origin/<base>)
-  useEffect(() => {
-    setBranchInfo(null);
-    setBaseBranch("");
-    if (!sel) return;
-    let alive = true;
-    window.mb.repoBranches(sel.path).then((r: RepoBranches | { error: string }) => {
-      if (!alive || !r || "error" in r) return;
-      setBranchInfo(r);
-      setBaseBranch(r.defaultBase ?? "");
-    });
-    return () => {
-      alive = false;
-    };
-  }, [sel]);
 
   // people who actually have tickets on the board, you first
   const people = useMemo(() => {
@@ -5304,6 +5284,9 @@ function NewSessionModal({
             </div>
           </div>
         )}
+        {isAgent && catalogError && (
+          <div className="wi-note">Couldn't read the CLI's model list ({catalogError}) — Default and Other model id still work.</div>
+        )}
         <label>Repo</label>
         <input type="text" autoFocus placeholder="search ~/Code + ~/Personal Projects…" value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="pick-list">
@@ -5320,10 +5303,13 @@ function NewSessionModal({
           Azure DevOps tickets{" "}
           <span className="wi-note">
             {adoDown
-              ? "board unavailable — manual entry below"
-              : pickable.length
-                ? "optional — fills the fields below"
-                : "nothing in the working columns — manual entry below"}
+              ? `board unavailable (${ado.error}) — manual entry below`
+              : ado.items === null
+                ? "loading…"
+                : pickable.length
+                  ? "optional — fills the fields below"
+                  : "nothing in the working columns — manual entry below"}
+            {!adoDown && ado.error ? ` · ${ado.error}` : ""}
           </span>
         </label>
         <div style={{ display: "flex", gap: 10 }}>
@@ -5331,7 +5317,7 @@ function NewSessionModal({
             style={{ flex: "0 0 34%" }}
             value={who}
             onChange={(e) => {
-              setWho(e.target.value);
+              setWhoPick(e.target.value);
               setTicketSel(""); // the old pick may not belong to this person
             }}
             disabled={adoDown || !allTickets.length}
@@ -5456,6 +5442,7 @@ function NewSessionModal({
             ))}
           </Pick>
         )}
+        {sel && branch && branchError && <div className="wi-note">{branchError} — the branch is cut from the current HEAD</div>}
         {ticketSel && isAgent && (
           <div className="check-line">
             <input type="checkbox" checked={sendTicket} onChange={(e) => setSendTicket(e.target.checked)} id="ntk" />
