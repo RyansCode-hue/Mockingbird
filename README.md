@@ -81,10 +81,13 @@ is echoed; calls the stand-in doesn't simulate answer like a real failure and ar
 logged in the console and in `window.__mbCalls`. `?reset` starts again from the
 fixtures.
 
-A Claude Code session can drive it in Chrome: type `/chrome` in the pane (it
-needs the Claude in Chrome extension), then ask it to open
-http://localhost:5190 and check the change. When a feature adds a main-process
-call, add it to the stand-in so the preview shows it.
+Sessions find this on their own: `AGENTS.md` (Codex) and `CLAUDE.md` (Claude
+Code, which imports it) tell them how to check a change. Without a browser a
+session can take a screenshot and look at it —
+`npm run ui-preview -- --shot out/shot.png --query "tab=dashboard&theme=light"`
+renders in headless Chrome; with the Claude in Chrome extension (`/chrome`) it
+can open the live preview and click through it. When a feature adds a
+main-process call, add it to the stand-in so the preview shows it.
 
 ## Design system
 

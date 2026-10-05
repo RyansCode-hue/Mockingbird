@@ -7,7 +7,8 @@
  * Calls it doesn't simulate answer the way a real failure does
  * ({ error }) and are logged, so a view shows its error state instead of
  * crashing on a made-up shape. Every call is recorded in window.__mbCalls for
- * scripted checks. Add `?reset` to the URL to start from the fixtures again.
+ * scripted checks. Add `?reset` to the URL to start from the fixtures again;
+ * the query can also pick the screen (see the end of this file).
  */
 import type { AdoBoard, AdoWorkItem, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS } from "../shared/types";
@@ -375,13 +376,38 @@ w.mb = new Proxy(api, {
 w.__mbEmit = emit; // drive events from a script: __mbEmit("onSessionData", "s1", "text")
 
 // a first visit (or ?reset) starts from a useful layout
-const reset = new URLSearchParams(location.search).has("reset");
-if (reset || !localStorage.getItem("mb.preview")) {
+const params = new URLSearchParams(location.search);
+const set = (key: string, value: unknown) => localStorage.setItem(key, JSON.stringify(value));
+if (params.has("reset") || !localStorage.getItem("mb.preview")) {
   localStorage.clear();
   localStorage.setItem("mb.preview", "1");
   localStorage.setItem("mb.helpSeen", "true");
-  localStorage.setItem("mb.tab", JSON.stringify("sessions"));
-  localStorage.setItem("mb.sideView", JSON.stringify("sessions"));
-  localStorage.setItem("mb.shown", JSON.stringify(["s1", "s2", "s3", "s4"]));
-  if (reset) history.replaceState(null, "", location.pathname);
+  set("mb.tab", "sessions");
+  set("mb.sideView", "sessions");
+  set("mb.shown", ["s1", "s2", "s3", "s4"]);
+}
+// the screen to open on, for screenshots and links:
+// ?tab=dashboard · ?view=scm (explorer, search, run) · ?section=about (a Settings section) · ?theme=light · ?shown=s1,s5
+const tab = params.get("tab");
+const view = params.get("view");
+const section = params.get("section");
+const theme = params.get("theme");
+const shown = params.get("shown");
+if (tab) set("mb.tab", tab);
+if (view) set("mb.sideView", view);
+if (section) {
+  set("mb.tab", "settings");
+  set("mb.setSection", section);
+}
+if (theme === "light" || theme === "dark") set("mb.theme", theme);
+if (shown) set("mb.shown", shown.split(","));
+// screenshots show the settled screen: no transition caught halfway (a theme switch fades colors)
+if (params.has("shot")) {
+  const still = document.createElement("style");
+  still.textContent = "*, *::before, *::after { transition: none !important; animation: none !important; }";
+  document.head.appendChild(still);
+}
+if (params.has("reset")) {
+  params.delete("reset");
+  history.replaceState(null, "", `${location.pathname}${params.size ? `?${params}` : ""}`);
 }
