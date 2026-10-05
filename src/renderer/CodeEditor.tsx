@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useSyncExternalStore } from "react";
-import { EditorState, RangeSet, StateEffect, StateField, Transaction, type Extension, type Text, type TransactionSpec } from "@codemirror/state";
+import { EditorState, RangeSet, StateEffect, StateField, Transaction, type Extension, type RangeValue, type StateEffectType, type Text, type TransactionSpec } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, gutter, keymap, lineNumbers, type DecorationSet } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { getIndentUnit, indentUnit, StreamLanguage, HighlightStyle, syntaxHighlighting } from "@codemirror/language";
@@ -108,7 +108,7 @@ const theme = EditorView.theme({
 // ---- breakpoints, the paused line and the revealed line ----
 
 export const setBreakpoints = StateEffect.define<number[]>();
-const setPaused = StateEffect.define<number[]>();
+export const setPaused = StateEffect.define<number[]>();
 const setFlash = StateEffect.define<number | null>();
 
 const bpMarker = new (class extends GutterMarker {
@@ -120,38 +120,25 @@ const bpMarker = new (class extends GutterMarker {
 })();
 
 /**
- * Breakpoint dots on the debugger's own line numbers. They don't move with
- * edits: the debugger still stops at the line it was given, and a click on a
- * dot must remove that breakpoint rather than add one beside it.
+ * Marks on the debugger's own line numbers (set by `effect`). They don't move
+ * with edits: the debugger still stops at, and is stopped at, the lines it was
+ * given — and a click on a breakpoint dot must remove that breakpoint rather
+ * than add one beside it.
  */
-export const bpField = StateField.define<{ lines: number[]; markers: RangeSet<GutterMarker> }>({
-  create: () => ({ lines: [], markers: RangeSet.empty }),
-  update(v, tr) {
-    let lines = v.lines;
-    for (const e of tr.effects) if (e.is(setBreakpoints)) lines = [...new Set(e.value)].sort((a, b) => a - b);
-    if (lines === v.lines && !tr.docChanged) return v;
-    const doc = tr.state.doc;
-    return { lines, markers: RangeSet.of(lines.filter((l) => l >= 1 && l <= doc.lines).map((l) => bpMarker.range(doc.line(l).from))) };
-  },
-});
-
-function lineDecorations(effect: typeof setPaused, cls: string) {
-  return StateField.define<DecorationSet>({
-    create: () => Decoration.none,
-    update(set, tr) {
-      set = set.map(tr.changes);
-      for (const e of tr.effects) {
-        if (e.is(effect)) {
-          const lines = e.value.filter((l) => l >= 1 && l <= tr.state.doc.lines).sort((a, b) => a - b);
-          set = Decoration.set(lines.map((l) => Decoration.line({ class: cls }).range(tr.state.doc.line(l).from)));
-        }
-      }
-      return set;
+function debuggerLines<T extends RangeValue>(effect: StateEffectType<number[]>, mark: T) {
+  return StateField.define<{ lines: number[]; marks: RangeSet<T> }>({
+    create: () => ({ lines: [], marks: RangeSet.empty }),
+    update(v, tr) {
+      let lines = v.lines;
+      for (const e of tr.effects) if (e.is(effect)) lines = [...new Set(e.value)].sort((a, b) => a - b);
+      if (lines === v.lines && !tr.docChanged) return v;
+      const doc = tr.state.doc;
+      return { lines, marks: RangeSet.of(lines.filter((l) => l >= 1 && l <= doc.lines).map((l) => mark.range(doc.line(l).from))) };
     },
-    provide: (f) => EditorView.decorations.from(f),
   });
 }
-const pausedField = lineDecorations(setPaused, "cm-paused");
+export const bpField = debuggerLines(setBreakpoints, bpMarker);
+export const pausedField = debuggerLines(setPaused, Decoration.line({ class: "cm-paused" }));
 const flashField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
   update(set, tr) {
@@ -178,8 +165,8 @@ export interface Buffer {
   bom: boolean;
   lineBreak: LineBreak;
   readOnly: boolean;
-  /** The file changed on disk while this buffer had unsaved edits. */
-  conflict: { text: string; mtimeMs: number } | null;
+  /** The file changed on disk while this buffer had unsaved edits: the disk version, once read (text null until then). */
+  conflict: { text: string | null; mtimeMs: number; bom: boolean; lineBreak: LineBreak } | null;
   /** Its language server, when the file is open with one in reach. */
   lsp: LspBuffer | null;
 }
@@ -220,6 +207,8 @@ const isDirty = (b: Buffer) => b.state.doc.toString() !== b.saved;
 const views = new Map<string, EditorView>();
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
+/** A request's answer, with a failed request (a rejected promise) as its error, so the caller reports it rather than stopping halfway. */
+const answerOf = <T,>(p: Promise<Result<T>>): Promise<Result<T>> => p.catch((err: unknown) => ({ error: String(err) }));
 
 /** Change a buffer whether or not it's on screen: through its view when mounted, else its saved state. */
 export function updateBuffer(key: string, spec: (s: EditorState) => TransactionSpec): void {
@@ -299,9 +288,7 @@ async function openLsp(key: string): Promise<void> {
   listenLsp();
   const lsp = b.lsp;
   const doc = b.state.doc;
-  const opening: Promise<Result<LspFileState>> = window.mb
-    .lspOpen(lsp.ctx.sessionId, lsp.ctx.rel, doc.toString())
-    .catch((err: unknown) => ({ error: String(err) }));
+  const opening = answerOf<LspFileState>(window.mb.lspOpen(lsp.ctx.sessionId, lsp.ctx.rel, doc.toString()));
   lsp.opening = opening;
   lsp.sentDoc = doc;
   const r = await opening;
@@ -317,12 +304,9 @@ function sendLspChange(key: string): Promise<unknown> {
   if (!b?.lsp) return Promise.resolve();
   b.lsp.timer = null;
   b.lsp.sentDoc = b.state.doc;
-  b.lsp.sent = window.mb
-    .lspChange(b.lsp.ctx.sessionId, b.lsp.ctx.rel, b.state.doc.toString())
-    .catch((err: unknown) => ({ error: String(err) }))
-    .then((r: unknown) => {
-      if (isErr(r)) lspNote(key, `The language server didn't get your edits: ${r.error}`);
-    });
+  b.lsp.sent = answerOf<unknown>(window.mb.lspChange(b.lsp.ctx.sessionId, b.lsp.ctx.rel, b.state.doc.toString())).then((r) => {
+    if (isErr(r)) lspNote(key, `The language server didn't get your edits: ${r.error}`);
+  });
   return b.lsp.sent;
 }
 
@@ -355,7 +339,7 @@ async function formatBuffer(key: string, explicit: boolean): Promise<void> {
   const asked = b.lsp.sentDoc;
   const unit = getIndentUnit(b.state);
   const tabs = b.state.facet(indentUnit).includes("\t");
-  const r: Result<LspTextEdit[] | null> = await window.mb.lspFormat(b.lsp.ctx.sessionId, b.lsp.ctx.rel, tabs ? b.state.tabSize : unit, !tabs);
+  const r = await answerOf<LspTextEdit[] | null>(window.mb.lspFormat(b.lsp.ctx.sessionId, b.lsp.ctx.rel, tabs ? b.state.tabSize : unit, !tabs));
   if (isErr(r)) return lspNote(key, `Formatting failed: ${r.error}`);
   if (r === null) return explicit ? lspNote(key, `${b.lsp.state?.server?.label ?? "This"} language server doesn't format files`) : undefined;
   if (!r.length) return;
@@ -371,7 +355,7 @@ async function renameSymbol(key: string, at: LspPosition, name: string): Promise
   // each open file as its server has it now, which is what the edits for it will be about
   const asked = new Map([...buffers.values()].flatMap((o) => (o.lsp ? [[o.lsp.ctx.abs, o.lsp.sentDoc] as const] : [])));
   const { sessionId, rel } = b.lsp.ctx;
-  const r: Result<LspFileEdits[]> = await window.mb.lspRename(sessionId, rel, at.line, at.character, name);
+  const r = await answerOf<LspFileEdits[]>(window.mb.lspRename(sessionId, rel, at.line, at.character, name));
   if (isErr(r)) return r;
   return applyRename(r, sessionId, b.lsp.root, asked);
 }
@@ -401,7 +385,7 @@ async function applyRename(edits: LspFileEdits[], sessionId: string, root: strin
       problems.push(`${fe.path} is outside this session's folder — not changed`);
       continue;
     }
-    const r: Result<FileSave> = await window.mb.lspApplyEdits(sessionId, fe.path.slice(root.length + 1), fe.edits);
+    const r = await answerOf<FileSave>(window.mb.lspApplyEdits(sessionId, fe.path.slice(root.length + 1), fe.edits));
     if (isErr(r)) problems.push(`${name}: ${r.error}`);
     else if (!r.saved) problems.push(`${name} changed on disk meanwhile — not changed`);
     else saved++;
@@ -478,7 +462,7 @@ function newState(key: string, text: string, path: string, readOnly: boolean, ls
   return EditorState.create({
     doc: text,
     extensions: [
-      gutter({ class: "cm-bp-gutter", markers: (v) => v.state.field(bpField).markers, initialSpacer: () => bpMarker, domEventHandlers: gutterClick }),
+      gutter({ class: "cm-bp-gutter", markers: (v) => v.state.field(bpField).marks, initialSpacer: () => bpMarker, domEventHandlers: gutterClick }),
       lineNumbers({ domEventHandlers: gutterClick }),
       basicSetup,
       keymap.of([
@@ -498,6 +482,7 @@ function newState(key: string, text: string, path: string, readOnly: boolean, ls
       syntaxHighlighting(highlight),
       bpField,
       pausedField,
+      EditorView.decorations.from(pausedField, (v) => v.marks),
       flashField,
       ...(lang ? [lang] : []),
       ...(lsp ? lspExtensions(lsp) : []),
@@ -556,21 +541,63 @@ export function diskRead(key: string, file: FileContent): void {
   const b = buffers.get(key);
   if (!b || file.mtimeMs < b.mtimeMs || (file.mtimeMs === b.mtimeMs && !b.conflict)) return;
   const { bom, text } = splitBom(file.content);
-  const lf = toEditorText(text);
-  if (lf === b.saved) b.mtimeMs = file.mtimeMs;
-  else if (isDirty(b)) {
-    b.conflict = { text: lf, mtimeMs: file.mtimeMs };
-    return notify();
-  } else {
-    updateBuffer(key, (s) => ({ changes: { from: 0, to: s.doc.length, insert: lf }, annotations: Transaction.addToHistory.of(false) }));
-    b.saved = lf;
-    b.mtimeMs = file.mtimeMs;
-    b.bom = bom;
-    b.lineBreak = lineBreakOf(text);
-  }
-  // the disk now holds what the buffer was measured against: nothing left to choose between
-  b.conflict = null;
+  const disk = { text: toEditorText(text), mtimeMs: file.mtimeMs, bom, lineBreak: lineBreakOf(text) };
+  if (disk.text === b.saved) {
+    // the disk holds what the buffer was measured against: nothing left to choose between
+    b.mtimeMs = disk.mtimeMs;
+    b.conflict = null;
+  } else if (isDirty(b)) b.conflict = disk;
+  else adoptDisk(key, b, disk);
   notify();
+}
+
+/** "Use theirs": throw away the unsaved edits for the disk version the conflict holds. */
+export function takeDiskVersion(key: string): void {
+  const b = buffers.get(key);
+  const disk = b?.conflict;
+  if (!b || !disk || disk.text === null) return;
+  adoptDisk(key, b, { ...disk, text: disk.text });
+  notify();
+}
+
+/** The disk version becomes the buffer's text and what it's measured against, byte-order mark and line breaks included. */
+function adoptDisk(key: string, b: Buffer, disk: { text: string; mtimeMs: number; bom: boolean; lineBreak: LineBreak }): void {
+  updateBuffer(key, (s) => ({ changes: { from: 0, to: s.doc.length, insert: disk.text }, annotations: Transaction.addToHistory.of(false) }));
+  b.saved = disk.text;
+  b.mtimeMs = disk.mtimeMs;
+  b.bom = disk.bom;
+  b.lineBreak = disk.lineBreak;
+  b.conflict = null;
+}
+
+/**
+ * Save a buffer through `write` (checked against the mtime it was read at
+ * unless forced), formatting it first when that's on. A save that finds the
+ * file changed on disk leaves a conflict for the user to settle.
+ */
+export async function saveBuffer(
+  key: string,
+  write: (text: string, expectedMtimeMs: number | null) => Promise<Result<FileSave>>,
+  force: boolean
+): Promise<Result<"saved" | "conflict">> {
+  const b = buffers.get(key);
+  if (!b || b.readOnly) return { error: "This file is read-only here" };
+  if (formatOnSave) await formatBuffer(key, false);
+  const text = b.state.doc.toString();
+  const r = await answerOf(write(toFileText(text, b.lineBreak, b.bom), force ? null : b.mtimeMs));
+  if (isErr(r)) return r;
+  if (!r.saved) {
+    // someone else saved first: the caller reads their version so "Use theirs" has it
+    b.conflict = { text: null, mtimeMs: r.mtimeMs, bom: b.bom, lineBreak: b.lineBreak };
+    notify();
+    return "conflict";
+  }
+  b.saved = text;
+  b.mtimeMs = r.mtimeMs;
+  b.conflict = null;
+  if (b.lsp?.state?.state === "ready") void window.mb.lspSaved(b.lsp.ctx.sessionId, b.lsp.ctx.rel);
+  notify();
+  return "saved";
 }
 
 /**
@@ -613,35 +640,22 @@ export function CodeEditor({
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
-  const [, rerender] = React.useReducer((n: number) => n + 1, 0);
   const [status, setStatus] = React.useState("");
   // language-server state and notes live on the buffer
   useBufferChanges();
 
   const save = async (force = false) => {
     const b = buffers.get(bufferKey);
-    const v = view.current;
-    if (!b || !v || b.readOnly) return;
-    if (formatOnSave) await formatBuffer(bufferKey, false);
-    const lines = v.state.doc.toString();
+    if (!b || !view.current || b.readOnly) return;
     setStatus("Saving…");
-    const r = await onSave(toFileText(lines, b.lineBreak, b.bom), force ? null : b.mtimeMs);
-    if ("error" in r) return setStatus(`Not saved: ${r.error}`);
-    if (!r.saved) {
-      // someone else saved first: show the choice, and read their version so "Use theirs" has it
-      b.conflict = { text: "", mtimeMs: r.mtimeMs };
+    const r = await saveBuffer(bufferKey, onSave, force);
+    if (isErr(r)) return setStatus(`Not saved: ${r.error}`);
+    if (r === "conflict") {
       setStatus("");
-      rerender();
-      onRefresh();
-      return;
+      return onRefresh();
     }
-    b.saved = lines;
-    b.mtimeMs = r.mtimeMs;
-    b.conflict = null;
-    if (b.lsp?.state?.state === "ready") void window.mb.lspSaved(b.lsp.ctx.sessionId, b.lsp.ctx.rel);
     setStatus("Saved");
     setTimeout(() => setStatus((s) => (s === "Saved" ? "" : s)), 1500);
-    notify();
   };
 
   handlers.set(bufferKey, {
@@ -700,28 +714,22 @@ export function CodeEditor({
   }, [reveal?.at, bufferKey]);
 
   const b = buffers.get(bufferKey);
-  const reload = () => {
-    const v = view.current;
-    if (!b || !v || !b.conflict) return;
-    const text = b.conflict.text;
-    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text }, annotations: Transaction.addToHistory.of(false) });
-    b.saved = text;
-    b.mtimeMs = b.conflict.mtimeMs;
-    b.conflict = null;
-    notify();
-    rerender();
-  };
 
   return (
     <div className="ce">
       {file.truncated && <div className="fp-note">Large file — showing the first part of {file.size.toLocaleString()} bytes, read-only</div>}
       {b?.conflict && (
         <div className="ce-conflict">
-          <span>This file changed on disk{b.conflict.text ? " while you had unsaved edits" : " after you opened it"}.</span>
+          <span>This file changed on disk{b.conflict.text !== null ? " while you had unsaved edits" : " after you opened it"}.</span>
           <button className="outline" data-tip="Write your version over the one on disk" onClick={() => save(true)}>
             Keep mine
           </button>
-          <button className="outline" data-tip="Throw away your unsaved edits and show what's on disk" onClick={reload} disabled={!b.conflict.text}>
+          <button
+            className="outline"
+            data-tip="Throw away your unsaved edits and show what's on disk"
+            onClick={() => takeDiskVersion(bufferKey)}
+            disabled={b.conflict.text === null}
+          >
             Use theirs
           </button>
         </div>
@@ -767,7 +775,7 @@ function LspBanner({ bufferKey, lsp }: { bufferKey: string; lsp: LspBuffer }) {
           disabled={busy}
           onClick={async () => {
             setBusy(true);
-            const r = await window.mb.lspInstall(server.id);
+            const r = await answerOf<unknown>(window.mb.lspInstall(server.id));
             setBusy(false);
             if (isErr(r)) return lspNote(bufferKey, `Couldn't install it: ${r.error}`);
             lspNote(bufferKey, "");

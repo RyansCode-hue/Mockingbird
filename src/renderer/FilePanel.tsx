@@ -12,6 +12,8 @@ import { ChangeCount, plural } from "./changeCount";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
+/** A request's answer, with a failed request (a rejected promise) as its error, so it shows instead of "loading…" forever. */
+const answerOf = <T,>(p: Promise<Result<T>>): Promise<Result<T>> => p.catch((err: unknown) => ({ error: `Couldn't read it: ${String(err)}` }));
 
 function loadLS<T>(key: string, fallback: T): T {
   try {
@@ -89,13 +91,13 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
   const expanded = useMemo(() => new Set(root ? expandedByRoot[root] ?? [] : []), [expandedByRoot, root]);
 
   const loadDir = useCallback(async (id: string, rel: string) => {
-    const r: Result<FileEntry[]> = await window.mb.filesList(id, rel);
+    const r = await answerOf<FileEntry[]>(window.mb.filesList(id, rel));
     setDirs((d) => (JSON.stringify(d[rel]) === JSON.stringify(r) ? d : { ...d, [rel]: r }));
   }, []);
 
   // the tree marks what changed since the last commit
   const loadChanges = useCallback(async (id: string) => {
-    const r: Result<GitChanges> = await window.mb.filesChanges(id, "working");
+    const r = await answerOf<GitChanges>(window.mb.filesChanges(id, "working"));
     setChanges((c) => (JSON.stringify(c) === JSON.stringify(r) ? c : r));
     return r;
   }, []);
@@ -181,8 +183,10 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
   };
 
   if (!session) return <div className="fp-note">Click into a session to browse its folder.</div>;
-  // outside a repository the change list fails too, and there's nothing to say about git
-  const gitErr = isErr(gitState) && changes && !isErr(changes) ? gitState.error : null;
+  // outside a repository both git reads fail, and there's nothing to say about git
+  const inRepo = !!session.repoPath || (!!changes && !isErr(changes));
+  const changesErr = inRepo && isErr(changes) ? changes.error : null;
+  const gitErr = inRepo && isErr(gitState) ? gitState.error : null;
   const git = gitState && !isErr(gitState) ? gitState : null;
   const total = git ? git.insertions + git.deletions : 0;
   return (
@@ -203,6 +207,11 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
         {gitErr && (
           <div className="ex-branch err" title={gitErr}>
             git: couldn't read ({gitErr})
+          </div>
+        )}
+        {changesErr && (
+          <div className="ex-branch err" title={`${changesErr}\nRefresh (⟳) asks again.`}>
+            changed files: couldn't list ({changesErr})
           </div>
         )}
         {git && (
@@ -474,15 +483,16 @@ function FileViewer({
     const latest = () => live.current && n === loads.current;
     if (open.mode === "diff") {
       const src = open.source;
-      const r: Result<string> =
+      const r = await answerOf<string>(
         src?.kind === "scm"
-          ? await window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
+          ? window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
           : src?.kind === "commit"
-            ? await window.mb.scmCommitDiff(open.sessionId, src.sha, open.path)
-            : await window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U");
+            ? window.mb.scmCommitDiff(open.sessionId, src.sha, open.path)
+            : window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U")
+      );
       if (latest()) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
     } else {
-      const r: Result<FileContent> = await window.mb.filesRead(open.sessionId, open.path);
+      const r = await answerOf<FileContent>(window.mb.filesRead(open.sessionId, open.path));
       if (latest()) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
     }
   };
