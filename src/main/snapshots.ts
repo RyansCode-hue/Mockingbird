@@ -2,7 +2,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { git } from "./git";
+import { git, headCommit } from "./git";
 import type { TurnChange, TurnSnapshot } from "../shared/types";
 
 /**
@@ -46,11 +46,29 @@ async function withIndex<T>(fn: (env: Record<string, string>) => Promise<T>): Pr
   }
 }
 
+/**
+ * Start a temporary index as a copy of the repository's own. Its stat data lets
+ * `ls-files -m` and `add -A` pass over every file unchanged since git last
+ * looked, so only what changed is read and hashed. git rereads any entry as
+ * new as the index file itself ("racily clean"), so the copy is dated a second
+ * before the original: that can only make git check more, never less.
+ */
+async function seedIndex(top: string, file: string): Promise<void> {
+  const real = path.resolve(top, await git(top, ["rev-parse", "--git-path", "index"]));
+  // dated before copying: an index rewritten in between is then checked more, not less
+  const st = await fs.promises.stat(real).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return null; // nothing added yet in a new repository: start empty
+    throw err;
+  });
+  if (!st) return;
+  await fs.promises.copyFile(real, file);
+  const earlier = (st.mtimeMs - 1000) / 1000;
+  await fs.promises.utimes(file, earlier, earlier);
+}
+
 /** The worktree's files as a tree object, leaving out ignored files and big ones (which are returned). */
 async function treeOfWorktree(top: string, env: Record<string, string>): Promise<{ tree: string; skipped: string[] }> {
-  // starting from HEAD means add -A only hashes what changed since
-  const hasHead = !!(await git(top, ["rev-parse", "-q", "--verify", "HEAD"], { okCodes: [0, 1] }));
-  if (hasHead) await git(top, ["read-tree", "HEAD"], { env });
+  await seedIndex(top, env.GIT_INDEX_FILE);
   const changed = (await git(top, ["ls-files", "-z", "-m", "-o", "--exclude-standard"], { env, trim: false })).split("\0").filter(Boolean);
   const skipped: string[] = [];
   for (const f of changed) {
@@ -87,14 +105,18 @@ export async function listSnapshots(cwd: string, sessionId: string): Promise<Tur
 
 /**
  * Record the worktree before a turn. Returns null outside a git repository.
- * Calls for one session run one after another.
+ * Calls for one session run one after another, whichever of its folders they
+ * name: each numbers its snapshot from the ones before it.
  */
 const queues = new Map<string, Promise<unknown>>();
 export function takeSnapshot(cwd: string, sessionId: string, prompt: string): Promise<TurnSnapshot | null> {
-  const key = `${cwd}\0${sessionId}`;
-  const run = (queues.get(key) ?? Promise.resolve()).then(() => snapshotNow(cwd, sessionId, prompt));
+  const run = (queues.get(sessionId) ?? Promise.resolve()).then(() => snapshotNow(cwd, sessionId, prompt));
   // the chain only orders the calls; each caller still gets its own failure from `run`
-  queues.set(key, run.catch(() => {}));
+  const tail = run.catch(() => {});
+  queues.set(sessionId, tail);
+  void tail.then(() => {
+    if (queues.get(sessionId) === tail) queues.delete(sessionId);
+  });
   return run;
 }
 
@@ -107,7 +129,7 @@ async function snapshotNow(cwd: string, sessionId: string, prompt: string): Prom
   return withIndex(async (env) => {
     const { tree, skipped } = await treeOfWorktree(top, env);
     const message = [`Mockingbird: the files before a turn of session ${id}`, "", `prompt: ${prompt.replace(/\s+/g, " ").slice(0, 300)}`, ...(skipped.length ? [`skipped: ${JSON.stringify(skipped)}`] : [])].join("\n");
-    const parent = latest?.sha ?? ((await git(top, ["rev-parse", "-q", "--verify", "HEAD"], { okCodes: [0, 1] })) || null);
+    const parent = latest?.sha ?? (await headCommit(top));
     const sha = await git(top, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", message], { env });
     const n = (latest?.n ?? 0) + 1;
     await git(top, ["update-ref", `${REF_ROOT}/${id}/${n}`, sha]);
@@ -151,20 +173,21 @@ export async function restoreSnapshot(cwd: string, sessionId: string, n: number)
   const changes = await diffTrees(top, snap.sha, undo.sha);
   const restore = changes.filter((c) => c.action === "restore").map((c) => c.path);
   const remove = changes.filter((c) => c.action === "remove").map((c) => c.path);
-  if (restore.length) {
-    await withIndex(async (env) => {
-      await git(top, ["read-tree", snap.sha], { env });
-      // a file can't be written where a folder now stands, or under a file that replaced its folder
-      for (const p of restore) await clearWay(top, p);
-      // in batches, so a long list can't overflow the command line
-      for (let i = 0; i < restore.length; i += 200) await git(top, ["checkout-index", "-f", "--", ...restore.slice(i, i + 200)], { env });
-    });
-  }
+  // removals first: a file that took its folder's place (a/b became a) is gone before the folder comes back
   for (const p of remove) {
     const full = path.join(top, p);
     if (!full.startsWith(top + path.sep)) continue;
     await fs.promises.rm(full, { force: true });
     await pruneEmptyDirs(top, path.dirname(full));
+  }
+  if (restore.length) {
+    await withIndex(async (env) => {
+      await git(top, ["read-tree", snap.sha], { env });
+      // a file can't be written where a folder of ignored files now stands
+      for (const p of restore) await clearWay(top, p);
+      // in batches, so a long list can't overflow the command line
+      for (let i = 0; i < restore.length; i += 200) await git(top, ["checkout-index", "-f", "--", ...restore.slice(i, i + 200)], { env });
+    });
   }
   return { restored: restore.length, removed: remove.length, undo };
 }

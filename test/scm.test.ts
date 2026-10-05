@@ -108,6 +108,23 @@ describe("source control actions", () => {
     fs.writeFileSync(path.join(repo, "n.txt"), "new\n");
     expect(await scmDiff(repo, "n.txt", false, true)).toMatch(/\+new/);
   });
+
+  it("diffs a staged rename as a rename", async () => {
+    const repo = makeRepo({ "old.txt": "one\ntwo\nthree\nfour\n" });
+    git(repo, "mv", "old.txt", "new.txt");
+    const d = await scmDiff(repo, "new.txt", true, false);
+    expect(d).toMatch(/rename from old\.txt\nrename to new\.txt/);
+    expect(d).not.toMatch(/new file mode/);
+  });
+
+  it("refuses a diff too large to show, new file or not", async () => {
+    const repo = makeRepo({ "a.txt": "a\n" });
+    const big = "x".repeat(100) + "\n";
+    fs.writeFileSync(path.join(repo, "huge.txt"), big.repeat(40_000));
+    await expect(scmDiff(repo, "huge.txt", false, true)).rejects.toThrow(/too large/);
+    fs.writeFileSync(path.join(repo, "a.txt"), big.repeat(40_000));
+    await expect(scmDiff(repo, "a.txt", false, false)).rejects.toThrow(/too large/);
+  });
 });
 
 /** A repo with a bare origin whose dev branch has moved on, and a feature branch made from origin/dev the way Mockingbird makes worktrees. */
@@ -183,6 +200,22 @@ describe("the commit graph", () => {
     const first = git(repo, "rev-list", "--max-parents=0", "HEAD");
     expect(await scmCommitFiles(repo, first)).toEqual([{ path: "a.txt", status: "A" }]);
     await expect(scmCommitFiles(repo, "HEAD; rm -rf /")).rejects.toThrow(/Not a commit/);
+  });
+
+  it("shows a committed rename as a rename, not a whole new file", async () => {
+    const repo = makeRepo({ "old.txt": "one\ntwo\nthree\nfour\nfive\n" });
+    git(repo, "mv", "old.txt", "new.txt");
+    fs.appendFileSync(path.join(repo, "new.txt"), "six\n");
+    git(repo, "add", "-A");
+    git(repo, ...id, "commit", "-q", "-m", "rename");
+    const d = await scmCommitDiff(repo, git(repo, "rev-parse", "HEAD"), "new.txt");
+    expect(d).toMatch(/rename from old\.txt\nrename to new\.txt/);
+    expect(d).toMatch(/\+six/);
+    expect(d).not.toMatch(/new file mode/);
+  });
+
+  it("is an error outside a repository, not an empty history", async () => {
+    await expect(scmGraph(tempDir("plain"))).rejects.toThrow(/not a git repository/);
   });
 
   it("reads decorations into kinds", () => {

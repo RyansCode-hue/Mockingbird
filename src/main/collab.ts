@@ -203,6 +203,7 @@ export class CollabRooms {
   private aborts = new Map<string, AbortController>();
   private lookups = new Map<string, number>(); // `${room}.${seat}.${round}` → questions asked this turn
   private waiting = new Map<string, (answer: "allow" | "deny", why: string) => void>(); // permission request id → its turn
+  private implementing = new Set<string>(); // rooms whose implementing session is being started
 
   constructor(
     private dir: string,
@@ -362,6 +363,8 @@ export class CollabRooms {
   setRepo(id: string, repoPath: string | null): CollabRoom {
     const room = this.get(id);
     if (repoPath === room.repoPath) return room;
+    // a turn that runs commands is working in the test copy this throws away
+    if (room.running) throw new Error("Wait for the current turn to finish, or stop it");
     if (repoPath && !fs.existsSync(repoPath)) throw new Error(`${repoPath} doesn't exist`);
     room.repoPath = repoPath;
     this.dropTestCopy(room); // it was made from the old repository
@@ -412,7 +415,7 @@ export class CollabRooms {
     if (!t) throw new Error("Message is empty");
     room.messages.push({ id: randomUUID().slice(0, 8), speaker: "you", text: t, round: room.round, at: Date.now() });
     this.save(room);
-    if (!room.running) void this.run(id);
+    if (!room.running) this.run(id).catch((err) => console.error(`collab: room ${id} stopped on an error:`, err));
     return room;
   }
 
@@ -509,9 +512,9 @@ export class CollabRooms {
     const ac = new AbortController();
     this.aborts.set(id, ac);
     room.running = true;
-    this.save(room);
     let rounds = 0;
     try {
+      this.save(room);
       for (;;) {
         const roundNo = room.round + 1;
         let agreed = 0;
@@ -680,27 +683,34 @@ export class CollabRooms {
     const room = this.get(id);
     if (!room.plan?.approved) throw new Error("Approve a plan first");
     if (!room.repoPath) throw new Error("This room has no repository to implement in");
+    // one implementing session per room: a second would start on the same branch
+    if (room.implementedIn || this.implementing.has(id)) throw new Error("The plan is already being implemented — open the implementing session");
     const m = active(room).find((x) => x.key === key);
     if (!m) throw new Error("That model isn't in this room");
     const slug = room.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || room.id;
-    const info = await this.startSession({
-      repoPath: room.repoPath,
-      useWorktree: true,
-      branchName: `collab-${slug}`,
-      baseBranch: (await this.defaultBase(room.repoPath)) ?? undefined,
-      agent: m.agent,
-      model: m.model,
-      ...(m.effort ? { effort: m.effort } : {}),
-      taskGroup: "Collaborate",
-      title: `Collab — ${room.title}`,
-      initialPrompt:
-        `Implement this plan. It was worked out by ${active(room).map((p) => p.label).join(", ")} ` +
-        `in a Mockingbird Collaborate room and approved by the user.\n\n${room.plan.text}`,
-    });
-    room.implementedIn = info.id;
-    this.note(room, `${m.label} is implementing the plan in a new session on branch collab-${slug}.`);
-    this.save(room);
-    return info;
+    this.implementing.add(id);
+    try {
+      const info = await this.startSession({
+        repoPath: room.repoPath,
+        useWorktree: true,
+        branchName: `collab-${slug}`,
+        baseBranch: (await this.defaultBase(room.repoPath)) ?? undefined,
+        agent: m.agent,
+        model: m.model,
+        ...(m.effort ? { effort: m.effort } : {}),
+        taskGroup: "Collaborate",
+        title: `Collab — ${room.title}`,
+        initialPrompt:
+          `Implement this plan. It was worked out by ${active(room).map((p) => p.label).join(", ")} ` +
+          `in a Mockingbird Collaborate room and approved by the user.\n\n${room.plan.text}`,
+      });
+      room.implementedIn = info.id;
+      this.note(room, `${m.label} is implementing the plan in a new session on branch collab-${slug}.`);
+      this.save(room);
+      return info;
+    } finally {
+      this.implementing.delete(id);
+    }
   }
 
   private note(room: CollabRoom, text: string): void {
@@ -716,6 +726,10 @@ export class CollabRooms {
       const dest = this.testCopyDir(room);
       if (room.workspacePath && fs.existsSync(path.join(dest, ".git"))) return dest;
       const made = await makeTestCopy(room.repoPath, dest);
+      if (this.rooms.get(room.id) !== room) {
+        fs.rmSync(dest, { recursive: true, force: true });
+        throw new Error("The room was deleted");
+      }
       room.workspacePath = dest;
       this.note(room, `Made a test copy of ${path.basename(room.repoPath)} (${made}) for the models that run commands. Changes there never reach your code.`);
       return dest;
@@ -730,8 +744,16 @@ export class CollabRooms {
     return path.join(this.dir, `${id}.json`);
   }
 
+  /**
+   * Write the room whole, then rename it into place, so a crash mid-write
+   * can't leave a truncated file. A deleted room isn't written: a turn that
+   * was stopped by the delete still saves on its way out.
+   */
   private save(room: CollabRoom): void {
-    fs.writeFileSync(this.file(room.id), JSON.stringify(room, null, 2));
+    if (this.rooms.get(room.id) !== room) return;
+    const file = this.file(room.id);
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify(room, null, 2));
+    fs.renameSync(`${file}.tmp`, file);
     this.onChange(room);
   }
 }
