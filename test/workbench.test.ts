@@ -127,6 +127,20 @@ describe("file type badges", () => {
     expect(fileBadge("LICENSE")).toBeNull();
     expect(fileBadge("notes.weird")).toBeNull();
   });
+  it("agrees with the editor about a file's language", async () => {
+    const { fileBadge } = await import("../src/renderer/fileIcons");
+    expect(fileBadge("Pages/Index.cshtml")?.label).toBe(fileBadge("index.html")?.label);
+    expect(fileBadge("api/Api.csproj")?.label).toBe(fileBadge("pom.xml")?.label);
+    expect(fileBadge("deploy/app.cfg")?.label).toBe("INI");
+    expect(fileBadge("icons/logo.svg")?.label).toBe("SVG");
+  });
+  it("reads an extension the way path.extname does", async () => {
+    const { extensionOf } = await import("../src/shared/fileTypes");
+    expect(extensionOf("src/App.TSX")).toBe("tsx");
+    expect(extensionOf("Makefile")).toBe("");
+    expect(extensionOf(".bashrc")).toBe("");
+    expect(extensionOf("config/.eslintrc.json")).toBe("json");
+  });
 });
 
 describe("commit graph lanes", () => {
