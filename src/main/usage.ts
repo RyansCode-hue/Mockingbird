@@ -57,6 +57,8 @@ export function setClaudePlan(plan: string | null): void {
   claudePlan = plan ? capitalize(plan) : null;
 }
 
+const FIVE_HOUR = "5-hour limit";
+
 // Model-scoped weekly windows the Claude CLI reports when the plan has them.
 const CLAUDE_MODEL_WEEKLY: Record<string, string> = { seven_day_opus: "Opus", seven_day_sonnet: "Sonnet" };
 
@@ -84,16 +86,16 @@ function readClaude(): AgentUsage | null {
   if (!payload) return null; // no session has reported yet
   const rl = payload.rate_limits;
   const limits: UsageLimit[] = [];
-  const add = (label: string, w: any) => {
-    if (typeof w?.used_percentage === "number") limits.push({ label, usedPct: w.used_percentage, resetsAt: epochMs(w.resets_at) });
+  const add = (w: any, label: string, window: UsageLimit["window"], model?: string) => {
+    if (typeof w?.used_percentage === "number") limits.push({ label, window, ...(model ? { model } : {}), usedPct: w.used_percentage, resetsAt: epochMs(w.resets_at) });
   };
   const fiveHour = rl?.five_hour ?? openFiveHourWindow();
-  add("5-hour limit", fiveHour);
-  add("Weekly · all models", rl?.seven_day);
-  for (const [key, name] of Object.entries(CLAUDE_MODEL_WEEKLY)) add(`Weekly · ${name}`, rl?.[key]);
+  add(fiveHour, FIVE_HOUR, "5h");
+  add(rl?.seven_day, "Weekly · all models", "week");
+  for (const [key, name] of Object.entries(CLAUDE_MODEL_WEEKLY)) add(rl?.[key], `Weekly · ${name}`, "week", name);
   if (!limits.length) return null;
   if (typeof fiveHour?.used_percentage !== "number") {
-    limits.unshift({ label: "5-hour limit", usedPct: 0, resetsAt: null, note: "no reading yet" });
+    limits.unshift({ label: FIVE_HOUR, window: "5h", usedPct: 0, resetsAt: null, note: "no reading yet" });
   }
   return { agent: "claude", plan: claudePlan, limits, at: fs.statSync(USAGE_FILE).mtimeMs };
 }
@@ -120,8 +122,13 @@ function lastRateLimits(file: string): { rl: any; at: number } | null {
   return null;
 }
 
-const windowLabel = (minutes: unknown) =>
-  minutes === 300 ? "5-hour limit" : minutes === 10080 ? "Weekly limit" : typeof minutes === "number" ? `${Math.round(minutes / 60)}-hour limit` : "Limit";
+/** A Codex window by its length in minutes. */
+const codexWindow = (minutes: unknown): Pick<UsageLimit, "label" | "window"> =>
+  minutes === 300
+    ? { label: FIVE_HOUR, window: "5h" }
+    : minutes === 10080
+      ? { label: "Weekly limit", window: "week" }
+      : { label: typeof minutes === "number" ? `${Math.round(minutes / 60)}-hour limit` : "Limit", window: "other" };
 
 /**
  * Codex writes its plan limits into each session's rollout as token_count
@@ -143,7 +150,7 @@ function readCodex(): AgentUsage | null {
     if (!hit) continue;
     const limits: UsageLimit[] = [];
     for (const w of [hit.rl.primary, hit.rl.secondary]) {
-      if (typeof w?.used_percent === "number") limits.push({ label: windowLabel(w.window_minutes), usedPct: w.used_percent, resetsAt: epochMs(w.resets_at ?? w.reset_at) });
+      if (typeof w?.used_percent === "number") limits.push({ ...codexWindow(w.window_minutes), usedPct: w.used_percent, resetsAt: epochMs(w.resets_at ?? w.reset_at) });
     }
     if (!limits.length) return null;
     const plan = typeof hit.rl.plan_type === "string" ? capitalize(hit.rl.plan_type) : null;

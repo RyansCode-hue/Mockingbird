@@ -1,4 +1,4 @@
-import type { WorktreeCleanupMode } from "../shared/types";
+import type { UiCommand, WorktreeCleanupMode } from "../shared/types";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api = {
@@ -297,9 +297,9 @@ const api = {
     ipcRenderer.on("sessions:changed", h);
     return () => ipcRenderer.removeListener("sessions:changed", h);
   },
-  // tray/dock → renderer commands ("focus-session", "new-session")
-  onUiCommand: (cb: (cmd: string, arg?: string) => void) => {
-    const h = (_e: unknown, cmd: string, arg?: string) => cb(cmd, arg);
+  // tray, Dock and notifications → the window (UI_COMMANDS)
+  onUiCommand: (cb: (cmd: UiCommand, arg?: string) => void) => {
+    const h = (_e: unknown, cmd: UiCommand, arg?: string) => cb(cmd, arg);
     ipcRenderer.on("ui:command", h);
     return () => ipcRenderer.removeListener("ui:command", h);
   },

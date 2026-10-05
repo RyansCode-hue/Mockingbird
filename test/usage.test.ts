@@ -36,9 +36,9 @@ describe("Claude usage", () => {
     const c = readUsage().claude!;
     expect(c.plan).toBe("Max");
     expect(c.limits).toEqual([
-      { label: "5-hour limit", usedPct: 5, resetsAt: 1790289000_000 },
-      { label: "Weekly · all models", usedPct: 18, resetsAt: Date.parse("2026-09-27T18:00:00Z") },
-      { label: "Weekly · Opus", usedPct: 13, resetsAt: 1790532000_000 },
+      { label: "5-hour limit", window: "5h", usedPct: 5, resetsAt: 1790289000_000 },
+      { label: "Weekly · all models", window: "week", usedPct: 18, resetsAt: Date.parse("2026-09-27T18:00:00Z") },
+      { label: "Weekly · Opus", window: "week", model: "Opus", usedPct: 13, resetsAt: 1790532000_000 },
     ]);
   });
   it("keeps the 5-hour window from an earlier report while it's open, when the latest leaves it out", () => {
@@ -51,7 +51,7 @@ describe("Claude usage", () => {
     const past = Math.floor(Date.now() / 1000) - 60;
     fs.writeFileSync(path.join(mb, "usage-5h.json"), JSON.stringify({ rate_limits: { five_hour: { used_percentage: 80, resets_at: past } } }));
     writeClaude({ rate_limits: { seven_day: { used_percentage: 11, resets_at: past + 86400 * 3 } } });
-    expect(readUsage().claude!.limits[0]).toEqual({ label: "5-hour limit", usedPct: 0, resetsAt: null, note: "no reading yet" });
+    expect(readUsage().claude!.limits[0]).toEqual({ label: "5-hour limit", window: "5h", usedPct: 0, resetsAt: null, note: "no reading yet" });
   });
   it("the reporter keeps the last payload that had the 5-hour window", () => {
     usageReporterArgs();
@@ -86,8 +86,8 @@ describe("Codex usage", () => {
     const c = readUsage().codex!;
     expect(c).toMatchObject({ agent: "codex", plan: "Plus", at: Date.parse("2026-09-24T16:07:39.339Z") });
     expect(c.limits).toEqual([
-      { label: "5-hour limit", usedPct: 1, resetsAt: 1790284045_000 },
-      { label: "Weekly limit", usedPct: 4, resetsAt: 1790616570_000 },
+      { label: "5-hour limit", window: "5h", usedPct: 1, resetsAt: 1790284045_000 },
+      { label: "Weekly limit", window: "week", usedPct: 4, resetsAt: 1790616570_000 },
     ]);
   });
   it("shows nothing rather than a guess when the format isn't recognised", () => {

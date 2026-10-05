@@ -37,7 +37,7 @@ import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptL
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify } from "./notifications";
-import { composeRollup, weekBounds } from "./rollup";
+import { composeRollup, hoursMinutes, weekBounds } from "./rollup";
 import { MessageLog } from "./messageLog";
 import { changedFiles, overlaps, type WorktreeChanges } from "./conflicts";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
@@ -49,7 +49,7 @@ import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
-import { localDay, topOfKey } from "../shared/types";
+import { localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 
@@ -166,11 +166,7 @@ function notifySession(sessionId: string, title: string, body: string, kind: "wa
 // working sessions. No badge when nothing is waiting.
 let tray: Tray | null = null;
 
-function fmtWait(since: number | null): string {
-  if (!since) return "";
-  const m = Math.max(0, Math.round((Date.now() - since) / 60000));
-  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
-}
+const fmtWait = (since: number | null): string => (since ? hoursMinutes(Date.now() - since) : "");
 
 function focusPane(sessionId?: string): void {
   const win = BrowserWindow.getAllWindows()[0];
@@ -178,7 +174,7 @@ function focusPane(sessionId?: string): void {
   if (win.isMinimized()) win.restore();
   win.show();
   app.focus({ steal: true });
-  if (sessionId) win.webContents.send("ui:command", "focus-session", sessionId);
+  if (sessionId) win.webContents.send("ui:command", UI_COMMANDS.focusSession, sessionId);
 }
 
 function focusRoom(roomId: string): void {
@@ -232,7 +228,7 @@ function updateTray(): void {
     label: "New session ⌘N",
     click: () => {
       focusPane();
-      toWindow("ui:command", "new-session");
+      toWindow("ui:command", UI_COMMANDS.newSession);
     },
   });
   template.push({ label: "Run 4pm wrap-up", click: () => runDebrief("wrapUp", sessions, store).catch((err) => logError("debrief:wrapUp", err)) });
@@ -312,10 +308,10 @@ app.whenReady().then(() => {
             title: "Mockingbird update available",
             body: `v${u.latest} is out (you're on v${u.current}). Click to update — Mockingbird builds it in your clone.`,
           });
-          // the window's update panel (ui:command "update") pulls, builds and restarts in-app
+          // the window's update panel pulls, builds and restarts in-app
           n.on("click", () => {
             focusPane();
-            toWindow("ui:command", "update");
+            toWindow("ui:command", UI_COMMANDS.update);
           });
           n.show();
         }
@@ -870,7 +866,7 @@ handle("handoff:draft", async (id) => {
   const to = otherAgent(from);
   const bin = await installedBin(to);
   if (!bin) throw new Error(`${agentLabel(to)} isn't installed — set it up in Settings → Agents`);
-  const conv = s.conversation?.id ?? s.conversations?.at(-1);
+  const conv = conversationsOf(s).at(-1);
   let digest = "";
   if (conv && transcripts) {
     await syncTranscripts(transcripts);

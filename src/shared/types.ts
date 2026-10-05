@@ -1,3 +1,5 @@
+import type { LspRange, LspTextEdit } from "./textEdits";
+
 /** Which coding-agent CLI a session runs. */
 export type AgentKind = "claude" | "codex";
 export const AGENT_NAME: Record<AgentKind, string> = { claude: "Claude", codex: "Codex" };
@@ -391,6 +393,10 @@ export interface UpdateOutcome {
   logPath: string;
 }
 
+/** What the tray, the Dock and notifications ask the window to do (the "ui:command" channel). */
+export const UI_COMMANDS = { focusSession: "focus-session", newSession: "new-session", update: "update" } as const;
+export type UiCommand = (typeof UI_COMMANDS)[keyof typeof UI_COMMANDS];
+
 export interface BroadcastRequest {
   message: string;
   sessionIds: string[]; // empty = all live work sessions
@@ -691,7 +697,11 @@ export interface CollabPermissionRequest {
 
 /** One plan rate-limit window, e.g. the 5-hour limit or the weekly one. */
 export interface UsageLimit {
-  label: string; // "5-hour limit", "Weekly · all models", "Weekly · Opus"
+  label: string; // for display: "5-hour limit", "Weekly · all models", "Weekly · Opus"
+  /** Which window it is, for code to match on rather than the label. Every limit the main process reports has it. */
+  window?: "5h" | "week" | "other";
+  /** The one model a window counts ("Opus"); absent when it counts them all. */
+  model?: string;
   usedPct: number; // 0-100
   resetsAt: number | null; // epoch ms
   /** Shown instead of a percentage when there's no reading for this window. */
@@ -933,7 +943,7 @@ export interface LspFileState {
 
 /** A problem in a file, from its language server. */
 export interface LspDiagnostic {
-  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  range: LspRange;
   severity: "error" | "warning" | "info" | "hint";
   message: string;
   source?: string;
@@ -945,7 +955,7 @@ export interface LspCompletion {
   detail?: string;
   insertText: string;
   /** The range the completion replaces, when the server says (else the word before the cursor). */
-  range?: { start: { line: number; character: number }; end: { line: number; character: number } };
+  range?: LspRange;
   sortText?: string;
 }
 
@@ -959,10 +969,13 @@ export interface LspLocation {
 /** Edits a rename makes, per absolute path. */
 export interface LspFileEdits {
   path: string;
-  edits: { range: { start: { line: number; character: number }; end: { line: number; character: number } }; newText: string }[];
+  edits: LspTextEdit[];
 }
 
 // ---- undo an agent's turn ---------------------------------------------------------
+
+/** A turn's snapshot leaves out files bigger than this (named in `skipped`). */
+export const SNAPSHOT_MAX_FILE_BYTES = 5 * 1024 * 1024;
 
 /** The worktree's files as they were before one of a session's turns. */
 export interface TurnSnapshot {
@@ -971,7 +984,7 @@ export interface TurnSnapshot {
   at: number;
   /** The prompt that started the turn. */
   prompt: string;
-  /** Files over 5 MB that weren't recorded. */
+  /** Files over SNAPSHOT_MAX_FILE_BYTES that weren't recorded. */
   skipped: string[];
   /** Taken just before a restore, so the restore can be undone. */
   beforeUndo: boolean;

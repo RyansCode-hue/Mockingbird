@@ -4,19 +4,18 @@ import * as os from "os";
 import * as path from "path";
 import { parseNameStatus } from "./files";
 import { git, headCommit } from "./git";
-import type { TurnChange, TurnSnapshot } from "../shared/types";
+import { SNAPSHOT_MAX_FILE_BYTES, type TurnChange, type TurnSnapshot } from "../shared/types";
 
 /**
  * Undo an agent's turn. When a prompt is submitted, the worktree's files are
  * recorded as a commit under refs/mockingbird/snapshots/<session>/<n>, built
  * with a temporary index: the branch, the real index and the history are
- * never touched. Gitignored files aren't recorded, nor any file over 5 MB
- * (named in the snapshot so the user knows). Git stores only what changed, so
+ * never touched. Gitignored files aren't recorded, nor any file over
+ * SNAPSHOT_MAX_FILE_BYTES (named in the snapshot so the user knows). Git stores only what changed, so
  * a turn costs a few KB. The last 10 per session are kept.
  */
 const REF_ROOT = "refs/mockingbird/snapshots";
 export const KEEP = 10;
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const BEFORE_UNDO = "(before an undo)";
 
 const IDENTITY = {
@@ -74,7 +73,7 @@ async function treeOfWorktree(top: string, env: Record<string, string>): Promise
   const skipped: string[] = [];
   for (const f of changed) {
     const st = await fs.promises.stat(path.join(top, f)).catch(() => null); // deleted files have nothing to measure
-    if (st && st.isFile() && st.size > MAX_FILE_BYTES) skipped.push(f);
+    if (st && st.isFile() && st.size > SNAPSHOT_MAX_FILE_BYTES) skipped.push(f);
   }
   await git(top, ["add", "-A", "--", ".", ...skipped.map((f) => `:(exclude,literal)${f}`)], { env });
   return { tree: await git(top, ["write-tree"], { env }), skipped };

@@ -46,7 +46,7 @@ const add = (t: TokenCounts, r: UsageRow) => {
 export function fiveHourWindows(report: UsageReport, now: number): Partial<Record<AgentKind, { start: number; usedPct: number; resetsAt: number }>> {
   const out: Partial<Record<AgentKind, { start: number; usedPct: number; resetsAt: number }>> = {};
   for (const u of [report.claude, report.codex]) {
-    const w = u?.limits.find((l) => /5-hour/i.test(l.label) && !l.note && l.resetsAt);
+    const w = u?.limits.find((l) => l.window === "5h" && !l.note && l.resetsAt);
     if (u && w?.resetsAt && w.resetsAt > now) out[u.agent] = { start: w.resetsAt - WINDOW_MS, usedPct: w.usedPct, resetsAt: w.resetsAt };
   }
   return out;
