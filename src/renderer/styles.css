@@ -514,6 +514,8 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
   
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
+/* the dialog box holds focus when nothing in it does; that isn't a control to outline */
+.modal-back > :focus { outline: none; }
 .modal {
   background: var(--bg-pane-header); border: 1px solid var(--line-strong2);
   border-radius: 9px; box-shadow: 0 20px 44px rgba(0, 0, 0, .5);

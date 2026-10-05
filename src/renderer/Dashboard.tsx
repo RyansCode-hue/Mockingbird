@@ -9,6 +9,7 @@ import { PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
 import { isErr, slugBranch, topOfKey, type SessionInfo, type RepoEntry, type AdoWorkItem, type AdoComment, type AdoBoard } from "../shared/types";
 import { loadLS, openLink } from "./uiUtil";
 import { ago, agoShort, fmtElapsed, plural } from "../shared/format";
+import { Modal } from "./Modal";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -204,15 +205,6 @@ export function DashboardBoard({
       n.has(name) ? n.delete(name) : n.add(name);
       return [...n];
     });
-
-  // esc closes the work-item dialog
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && detailId != null) setDetailId(null);
-    };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [detailId]);
 
   const detail = items?.find((i) => i.id === detailId) ?? null;
 
@@ -495,201 +487,199 @@ export function DashboardBoard({
       </div>
 
       {detail && (
-        <div className="modal-back" onMouseDown={() => setDetailId(null)}>
-          <div className="bdetail" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="hd">
-              <span className="tsq" style={{ background: typeColor(detail.type) }} />
-              <span className="wi-id">{detail.id}</span>
-              <span className="path">{detail.type}{detail.assignedTo ? ` · ${detail.assignedTo}` : " · Unassigned"}</span>
-              <span style={{ marginLeft: "auto" }} />
-              {dirty && <span className="kbd" style={{ color: "var(--amber)" }}>unsaved</span>}
-              <button className="primary" disabled={!dirty || saving} onClick={save}>
-                {saving ? "Saving…" : "Save"}
-              </button>
-              <button className="outline" onClick={() => openLink(detail.url)}>Open in ADO</button>
-              <button className="icon" title="Close (esc)" onClick={() => setDetailId(null)}>✕</button>
-            </div>
-            <div className="bd-body">
-              <div className="wi-form bd-main">
-                <PipelinePanel
-                  ticketId={String(detail.id)}
-                  title={detail.title}
-                  details={desc}
-                  sessions={linked}
-                  onAskSession={(id, text) => {
-                    setDetailId(null);
-                    onAskSession(id, text);
-                  }}
-                  onOpenScm={(id) => {
-                    setDetailId(null);
-                    onOpenScm(id);
-                  }}
-                  onPosted={() => loadComments(detail.id)}
+        <Modal className="bdetail" onClose={() => setDetailId(null)}>
+          <div className="hd">
+            <span className="tsq" style={{ background: typeColor(detail.type) }} />
+            <span className="wi-id">{detail.id}</span>
+            <span className="path">{detail.type}{detail.assignedTo ? ` · ${detail.assignedTo}` : " · Unassigned"}</span>
+            <span style={{ marginLeft: "auto" }} />
+            {dirty && <span className="kbd" style={{ color: "var(--amber)" }}>unsaved</span>}
+            <button className="primary" disabled={!dirty || saving} onClick={save}>
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button className="outline" onClick={() => openLink(detail.url)}>Open in ADO</button>
+            <button className="icon" title="Close (esc)" onClick={() => setDetailId(null)}>✕</button>
+          </div>
+          <div className="bd-body">
+            <div className="wi-form bd-main">
+              <PipelinePanel
+                ticketId={String(detail.id)}
+                title={detail.title}
+                details={desc}
+                sessions={linked}
+                onAskSession={(id, text) => {
+                  setDetailId(null);
+                  onAskSession(id, text);
+                }}
+                onOpenScm={(id) => {
+                  setDetailId(null);
+                  onOpenScm(id);
+                }}
+                onPosted={() => loadComments(detail.id)}
+              />
+              <label>Title</label>
+              <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
+              <label>
+                Description <span className="wi-note">plain text — rich formatting is simplified on save</span>
+              </label>
+              <textarea value={desc} onChange={(e) => setDesc(e.target.value)} spellCheck={false} style={{ minHeight: 140 }} />
+              <div className="wi-sec">Discussion</div>
+              {comments === null && <div className="wi-empty">Loading comments…</div>}
+              {comments?.length === 0 && <div className="wi-empty">No comments yet.</div>}
+              {comments?.map((c) => (
+                <div key={c.id} className="cmt">
+                  <div className="cmt-hd">
+                    <b>{c.author}</b>
+                    <span>{c.date ? ago(Date.parse(c.date)) : ""}</span>
+                  </div>
+                  <div className="cmt-tx">{c.text}</div>
+                </div>
+              ))}
+              <div className="cmt-compose">
+                <textarea
+                  placeholder="Write a comment…"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  style={{ minHeight: 64 }}
                 />
-                <label>Title</label>
-                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
-                <label>
-                  Description <span className="wi-note">plain text — rich formatting is simplified on save</span>
-                </label>
-                <textarea value={desc} onChange={(e) => setDesc(e.target.value)} spellCheck={false} style={{ minHeight: 140 }} />
-                <div className="wi-sec">Discussion</div>
-                {comments === null && <div className="wi-empty">Loading comments…</div>}
-                {comments?.length === 0 && <div className="wi-empty">No comments yet.</div>}
-                {comments?.map((c) => (
-                  <div key={c.id} className="cmt">
-                    <div className="cmt-hd">
-                      <b>{c.author}</b>
-                      <span>{c.date ? ago(Date.parse(c.date)) : ""}</span>
-                    </div>
-                    <div className="cmt-tx">{c.text}</div>
-                  </div>
-                ))}
-                <div className="cmt-compose">
-                  <textarea
-                    placeholder="Write a comment…"
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    style={{ minHeight: 64 }}
-                  />
-                  <div className="row">
-                    <button className="primary" disabled={!draft.trim() || posting} onClick={postComment}>
-                      {posting ? "Posting…" : "Comment"}
-                    </button>
-                  </div>
+                <div className="row">
+                  <button className="primary" disabled={!draft.trim() || posting} onClick={postComment}>
+                    {posting ? "Posting…" : "Comment"}
+                  </button>
                 </div>
               </div>
-              <div className="wi-form bd-side">
-                <label>State</label>
-                <Pick value={state} onChange={(e) => setState(e.target.value)}>
-                  {[...new Set([state, ...typeStates])].map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </Pick>
-                <div className="wi-sec">Sessions on this ticket</div>
-                {linked.length === 0 && <div className="wi-empty">None yet.</div>}
-                {linked.map((s) => (
-                  <div key={s.id} className="drow" style={{ cursor: "pointer" }} onClick={() => onJump(s.id)}>
-                    <span className={`dot sm ${s.status}`} />
-                    <span className="nm">{titleOf(s)}</span>
-                    <span className="st">open ⏎</span>
-                  </div>
+            </div>
+            <div className="wi-form bd-side">
+              <label>State</label>
+              <Pick value={state} onChange={(e) => setState(e.target.value)}>
+                {[...new Set([state, ...typeStates])].map((s) => (
+                  <option key={s} value={s}>{s}</option>
                 ))}
-                <label>New session</label>
-                <Pick value={repoPath} onChange={(e) => setRepoPath(e.target.value)}>
-                  <option value="">repo…</option>
-                  {repos.map((r) => (
-                    <option key={r.path} value={r.path}>{r.name}</option>
-                  ))}
-                </Pick>
-                <div className="check-line" style={{ marginTop: 6 }}>
-                  <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
-                  <label htmlFor="dash-wt" style={{ margin: 0 }}>
-                    isolated worktree
-                    <span className="wi-note"> {dashWorktree ? "own folder under worktrees/<repo>/" : "off — branch is checked out in the repo itself"}</span>
-                  </label>
+              </Pick>
+              <div className="wi-sec">Sessions on this ticket</div>
+              {linked.length === 0 && <div className="wi-empty">None yet.</div>}
+              {linked.map((s) => (
+                <div key={s.id} className="drow" style={{ cursor: "pointer" }} onClick={() => onJump(s.id)}>
+                  <span className={`dot sm ${s.status}`} />
+                  <span className="nm">{titleOf(s)}</span>
+                  <span className="st">open ⏎</span>
                 </div>
-                <div className="pills" style={{ marginTop: 6 }}>
-                  <button className={`pill ${branchMode === "new" ? "on" : ""}`} onClick={() => setBranchMode("new")}>
-                    New branch
-                  </button>
-                  <button
-                    className={`pill ${branchMode === "existing" ? "on" : ""}`}
-                    onClick={() => setBranchMode("existing")}
-                  >
-                    Existing branch
-                  </button>
-                </div>
-                {branchMode === "new" ? (
-                  <>
-                    <input
-                      type="text"
-                      value={ticketName}
-                      onChange={(e) => setTicketName(e.target.value)}
-                      style={{ marginTop: 6 }}
-                      title="Short name — becomes the branch/worktree suffix"
-                    />
-                    {branchInfo && branchInfo.branches.length > 0 && (
-                      <Pick
-                        value={baseBranch}
-                        onChange={(e) => setBaseBranch(e.target.value)}
-                        style={{ marginTop: 6 }}
-                        title="The base is fetched fresh from origin before the new branch is cut"
-                      >
-                        <option value="">base: current HEAD</option>
-                        {branchInfo.branches.map((b) => (
-                          <option key={b} value={b}>base: origin/{b}</option>
-                        ))}
-                      </Pick>
-                    )}
-                  </>
-                ) : (
-                  <Pick
-                    value={existingBranch}
-                    onChange={(e) => setExistingBranch(e.target.value)}
-                    style={{ marginTop: 6 }}
-                  >
-                    <option value="">branch…</option>
-                    {(branchInfo?.branches ?? []).map((b) => (
-                      <option key={b} value={b}>{b}</option>
-                    ))}
-                  </Pick>
-                )}
-                <div className="check-line">
-                  <input
-                    type="checkbox"
-                    checked={sendTicket}
-                    onChange={(e) => setSendTicket(e.target.checked)}
-                    id="sendtk"
-                  />
-                  <label htmlFor="sendtk" style={{ margin: 0, textTransform: "none", letterSpacing: 0 }}>
-                    send ticket title + description to Claude
-                  </label>
-                </div>
-                <button
-                  className="primary"
-                  style={{ marginTop: 7 }}
-                  disabled={!repoPath || busy || (branchMode === "existing" && !existingBranch)}
-                  onClick={startSession}
-                >
-                  {busy ? "Starting…" : "Start session"}
+              ))}
+              <label>New session</label>
+              <Pick value={repoPath} onChange={(e) => setRepoPath(e.target.value)}>
+                <option value="">repo…</option>
+                {repos.map((r) => (
+                  <option key={r.path} value={r.path}>{r.name}</option>
+                ))}
+              </Pick>
+              <div className="check-line" style={{ marginTop: 6 }}>
+                <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
+                <label htmlFor="dash-wt" style={{ margin: 0 }}>
+                  isolated worktree
+                  <span className="wi-note"> {dashWorktree ? "own folder under worktrees/<repo>/" : "off — branch is checked out in the repo itself"}</span>
+                </label>
+              </div>
+              <div className="pills" style={{ marginTop: 6 }}>
+                <button className={`pill ${branchMode === "new" ? "on" : ""}`} onClick={() => setBranchMode("new")}>
+                  New branch
                 </button>
-                {branchMode === "new" && repoPath && ticketName && (
-                  <div className="wi-note">
-                    creates worktree {slugBranch(String(detail.id), ticketName)}
-                    {baseBranch ? ` from origin/${baseBranch}` : ""}
-                  </div>
-                )}
-                {branchMode === "existing" && existingBranch && (
-                  <div className="wi-note">opens a worktree on {existingBranch}</div>
-                )}
-                {branchError && <div className="err">{branchError}</div>}
-                {attachable.length > 0 && (
-                  <>
-                    <label>Attach existing</label>
-                    <Pick value={attachId} onChange={(e) => setAttachId(e.target.value)}>
-                      <option value="">choose session…</option>
-                      {attachable.map((s) => (
-                        <option key={s.id} value={s.id}>{titleOf(s)}</option>
+                <button
+                  className={`pill ${branchMode === "existing" ? "on" : ""}`}
+                  onClick={() => setBranchMode("existing")}
+                >
+                  Existing branch
+                </button>
+              </div>
+              {branchMode === "new" ? (
+                <>
+                  <input
+                    type="text"
+                    value={ticketName}
+                    onChange={(e) => setTicketName(e.target.value)}
+                    style={{ marginTop: 6 }}
+                    title="Short name — becomes the branch/worktree suffix"
+                  />
+                  {branchInfo && branchInfo.branches.length > 0 && (
+                    <Pick
+                      value={baseBranch}
+                      onChange={(e) => setBaseBranch(e.target.value)}
+                      style={{ marginTop: 6 }}
+                      title="The base is fetched fresh from origin before the new branch is cut"
+                    >
+                      <option value="">base: current HEAD</option>
+                      {branchInfo.branches.map((b) => (
+                        <option key={b} value={b}>base: origin/{b}</option>
                       ))}
                     </Pick>
-                    <button
-                      className="outline"
-                      style={{ marginTop: 7 }}
-                      disabled={!attachId}
-                      onClick={async () => {
-                        const r = await window.mb.setGroup(attachId, groupOf(detail));
-                        if (isErr(r)) return setError(`Couldn't attach the session: ${r.error}`);
-                        setAttachId("");
-                      }}
-                    >
-                      Attach
-                    </button>
-                  </>
-                )}
+                  )}
+                </>
+              ) : (
+                <Pick
+                  value={existingBranch}
+                  onChange={(e) => setExistingBranch(e.target.value)}
+                  style={{ marginTop: 6 }}
+                >
+                  <option value="">branch…</option>
+                  {(branchInfo?.branches ?? []).map((b) => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </Pick>
+              )}
+              <div className="check-line">
+                <input
+                  type="checkbox"
+                  checked={sendTicket}
+                  onChange={(e) => setSendTicket(e.target.checked)}
+                  id="sendtk"
+                />
+                <label htmlFor="sendtk" style={{ margin: 0, textTransform: "none", letterSpacing: 0 }}>
+                  send ticket title + description to Claude
+                </label>
               </div>
+              <button
+                className="primary"
+                style={{ marginTop: 7 }}
+                disabled={!repoPath || busy || (branchMode === "existing" && !existingBranch)}
+                onClick={startSession}
+              >
+                {busy ? "Starting…" : "Start session"}
+              </button>
+              {branchMode === "new" && repoPath && ticketName && (
+                <div className="wi-note">
+                  creates worktree {slugBranch(String(detail.id), ticketName)}
+                  {baseBranch ? ` from origin/${baseBranch}` : ""}
+                </div>
+              )}
+              {branchMode === "existing" && existingBranch && (
+                <div className="wi-note">opens a worktree on {existingBranch}</div>
+              )}
+              {branchError && <div className="err">{branchError}</div>}
+              {attachable.length > 0 && (
+                <>
+                  <label>Attach existing</label>
+                  <Pick value={attachId} onChange={(e) => setAttachId(e.target.value)}>
+                    <option value="">choose session…</option>
+                    {attachable.map((s) => (
+                      <option key={s.id} value={s.id}>{titleOf(s)}</option>
+                    ))}
+                  </Pick>
+                  <button
+                    className="outline"
+                    style={{ marginTop: 7 }}
+                    disabled={!attachId}
+                    onClick={async () => {
+                      const r = await window.mb.setGroup(attachId, groupOf(detail));
+                      if (isErr(r)) return setError(`Couldn't attach the session: ${r.error}`);
+                      setAttachId("");
+                    }}
+                  >
+                    Attach
+                  </button>
+                </>
+              )}
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

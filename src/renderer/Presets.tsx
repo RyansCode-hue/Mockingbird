@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { AGENT_NAME, type SessionPreset } from "../shared/types";
 import { RepoPick } from "./RepoPick";
 import { baseName } from "../shared/paths";
+import { Modal } from "./Modal";
 
 const LAUNCH_LABEL: Record<SessionPreset["launch"], string> = { ...AGENT_NAME, shell: "Terminal" };
 
@@ -32,89 +33,87 @@ export function PresetEditor({ initial, onSave, onClose }: { initial: SessionPre
     onSave({ ...p, name: p.name.trim() });
   };
   return (
-    <div className="modal-back" onMouseDown={onClose}>
-      <div className="modal" onMouseDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.key === "Escape" && onClose()}>
-        <h3>{initial.name ? `Preset: ${initial.name}` : "New preset"}</h3>
-        <div className="sub-h">A session setup you start in one click, from New session or ⌘K.</div>
-        <label>Name</label>
-        <input type="text" autoFocus value={p.name} placeholder="Review session on dev" onChange={(e) => set({ name: e.target.value })} />
-        <label>Launch</label>
-        <span className="seg" style={{ display: "inline-flex" }}>
-          {(["claude", "codex", "shell"] as const).map((l) => (
-            <button key={l} className={p.launch === l ? "on" : ""} onClick={() => set({ launch: l })}>
-              {LAUNCH_LABEL[l]}
-            </button>
-          ))}
-        </span>
-        <label>Repo</label>
-        <RepoPick none="No repo — the home folder" value={p.repoPath ?? ""} onChange={(v) => set({ repoPath: v || null, ...(v ? {} : { branch: { mode: "checkout" } }) })} />
-        {p.repoPath && (
-          <>
-            <label>Branch</label>
-            <span className="seg" style={{ display: "inline-flex" }}>
-              <button className={mode === "checkout" ? "on" : ""} onClick={() => set({ branch: { mode: "checkout" } })}>As checked out</button>
-              <button className={mode === "existing" ? "on" : ""} onClick={() => set({ branch: { mode: "existing", name: mode === "existing" ? p.branch.name : "dev" } })}>Existing branch</button>
-              <button className={mode === "new" ? "on" : ""} onClick={() => set({ branch: { mode: "new", pattern: mode === "new" ? p.branch.pattern : "review-{date}", base: mode === "new" ? p.branch.base : "dev" } })}>New branch</button>
-            </span>
-            {p.branch.mode === "existing" && (
-              <input type="text" style={{ marginTop: 8 }} value={p.branch.name} placeholder="dev" onChange={(e) => set({ branch: { mode: "existing", name: e.target.value } })} />
-            )}
-            {p.branch.mode === "new" && (
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <input
-                  type="text"
-                  value={p.branch.pattern}
-                  placeholder="review-{date}"
-                  title="{date} becomes YYYYMMDD and {time} HHMM; a name already taken gets -2, -3…"
-                  onChange={(e) => set({ branch: { ...(p.branch as { mode: "new"; pattern: string; base?: string }), pattern: e.target.value } })}
-                />
-                <input
-                  type="text"
-                  style={{ maxWidth: 140 }}
-                  value={p.branch.base ?? ""}
-                  placeholder="off origin/…"
-                  title="The branch it's cut from (fetched first)"
-                  onChange={(e) => set({ branch: { ...(p.branch as { mode: "new"; pattern: string; base?: string }), base: e.target.value } })}
-                />
-              </div>
-            )}
-            {mode !== "checkout" && (
-              <label className="check-line" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11, display: "flex" }}>
-                <input type="checkbox" checked={p.useWorktree} onChange={(e) => set({ useWorktree: e.target.checked })} />
-                In an isolated worktree (leaves the repo's own checkout alone)
-              </label>
-            )}
-          </>
-        )}
-        <label>Group <span className="wi-note">optional — "5038" or "5038/backend"</span></label>
-        <input type="text" value={p.group ?? ""} onChange={(e) => set({ group: e.target.value })} />
-        <label>{p.launch === "shell" ? "Command to run" : "Kickoff prompt"} <span className="wi-note">optional</span></label>
-        <textarea
-          value={p.kickoff ?? ""}
-          onChange={(e) => set({ kickoff: e.target.value })}
-          placeholder={p.launch === "shell" ? "npm test -- --watch" : "Review the latest changes on this branch for bugs and missing tests."}
-          style={{ minHeight: 90 }}
-        />
-        {p.launch !== "shell" && (
-          <div style={{ display: "flex", gap: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label>Model <span className="wi-note">optional</span></label>
-              <input type="text" value={p.model ?? ""} placeholder="Default" onChange={(e) => set({ model: e.target.value })} />
+    <Modal className="modal" onClose={onClose}>
+      <h3>{initial.name ? `Preset: ${initial.name}` : "New preset"}</h3>
+      <div className="sub-h">A session setup you start in one click, from New session or ⌘K.</div>
+      <label>Name</label>
+      <input type="text" autoFocus value={p.name} placeholder="Review session on dev" onChange={(e) => set({ name: e.target.value })} />
+      <label>Launch</label>
+      <span className="seg" style={{ display: "inline-flex" }}>
+        {(["claude", "codex", "shell"] as const).map((l) => (
+          <button key={l} className={p.launch === l ? "on" : ""} onClick={() => set({ launch: l })}>
+            {LAUNCH_LABEL[l]}
+          </button>
+        ))}
+      </span>
+      <label>Repo</label>
+      <RepoPick none="No repo — the home folder" value={p.repoPath ?? ""} onChange={(v) => set({ repoPath: v || null, ...(v ? {} : { branch: { mode: "checkout" } }) })} />
+      {p.repoPath && (
+        <>
+          <label>Branch</label>
+          <span className="seg" style={{ display: "inline-flex" }}>
+            <button className={mode === "checkout" ? "on" : ""} onClick={() => set({ branch: { mode: "checkout" } })}>As checked out</button>
+            <button className={mode === "existing" ? "on" : ""} onClick={() => set({ branch: { mode: "existing", name: mode === "existing" ? p.branch.name : "dev" } })}>Existing branch</button>
+            <button className={mode === "new" ? "on" : ""} onClick={() => set({ branch: { mode: "new", pattern: mode === "new" ? p.branch.pattern : "review-{date}", base: mode === "new" ? p.branch.base : "dev" } })}>New branch</button>
+          </span>
+          {p.branch.mode === "existing" && (
+            <input type="text" style={{ marginTop: 8 }} value={p.branch.name} placeholder="dev" onChange={(e) => set({ branch: { mode: "existing", name: e.target.value } })} />
+          )}
+          {p.branch.mode === "new" && (
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <input
+                type="text"
+                value={p.branch.pattern}
+                placeholder="review-{date}"
+                title="{date} becomes YYYYMMDD and {time} HHMM; a name already taken gets -2, -3…"
+                onChange={(e) => set({ branch: { ...(p.branch as { mode: "new"; pattern: string; base?: string }), pattern: e.target.value } })}
+              />
+              <input
+                type="text"
+                style={{ maxWidth: 140 }}
+                value={p.branch.base ?? ""}
+                placeholder="off origin/…"
+                title="The branch it's cut from (fetched first)"
+                onChange={(e) => set({ branch: { ...(p.branch as { mode: "new"; pattern: string; base?: string }), base: e.target.value } })}
+              />
             </div>
-            <div style={{ flex: 1 }}>
-              <label>Effort <span className="wi-note">optional</span></label>
-              <input type="text" value={p.effort ?? ""} placeholder="Default" onChange={(e) => set({ effort: e.target.value })} />
-            </div>
+          )}
+          {mode !== "checkout" && (
+            <label className="check-line" style={{ textTransform: "none", letterSpacing: 0, fontSize: 11, display: "flex" }}>
+              <input type="checkbox" checked={p.useWorktree} onChange={(e) => set({ useWorktree: e.target.checked })} />
+              In an isolated worktree (leaves the repo's own checkout alone)
+            </label>
+          )}
+        </>
+      )}
+      <label>Group <span className="wi-note">optional — "5038" or "5038/backend"</span></label>
+      <input type="text" value={p.group ?? ""} onChange={(e) => set({ group: e.target.value })} />
+      <label>{p.launch === "shell" ? "Command to run" : "Kickoff prompt"} <span className="wi-note">optional</span></label>
+      <textarea
+        value={p.kickoff ?? ""}
+        onChange={(e) => set({ kickoff: e.target.value })}
+        placeholder={p.launch === "shell" ? "npm test -- --watch" : "Review the latest changes on this branch for bugs and missing tests."}
+        style={{ minHeight: 90 }}
+      />
+      {p.launch !== "shell" && (
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label>Model <span className="wi-note">optional</span></label>
+            <input type="text" value={p.model ?? ""} placeholder="Default" onChange={(e) => set({ model: e.target.value })} />
           </div>
-        )}
-        {error && <div className="err">{error}</div>}
-        <div className="row">
-          <span className="foot-hint pl-dim">{presetSummary(p)}</span>
-          <button className="outline" onClick={onClose}>Cancel</button>
-          <button className="primary" onClick={save}>Save preset</button>
+          <div style={{ flex: 1 }}>
+            <label>Effort <span className="wi-note">optional</span></label>
+            <input type="text" value={p.effort ?? ""} placeholder="Default" onChange={(e) => set({ effort: e.target.value })} />
+          </div>
         </div>
+      )}
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        <span className="foot-hint pl-dim">{presetSummary(p)}</span>
+        <button className="outline" onClick={onClose}>Cancel</button>
+        <button className="primary" onClick={save}>Save preset</button>
       </div>
-    </div>
+    </Modal>
   );
 }
 

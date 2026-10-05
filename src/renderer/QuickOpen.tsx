@@ -4,6 +4,7 @@ import { fuzzyFilter } from "./fuzzy";
 import { useListNav } from "./listNav";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
+import { useEscape } from "./useEscape";
 
 
 /** "src/app.ts:42" → the path and the line; a bare path has no line. */
@@ -35,6 +36,7 @@ export function QuickOpen({
   onOpen: (path: string, line: number | null) => void;
 }) {
   const [q, setQ] = useState("");
+  useEscape(onClose);
   const [list, setList] = useState<IpcResult<FileList> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -76,7 +78,6 @@ export function QuickOpen({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
               if (onArrow(e)) return;
               if (e.key === "Enter") open(sel);
             }}

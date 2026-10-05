@@ -4,8 +4,8 @@ import { GATES, TICKET_STAGES, stageLabel, isErr, type PrPreflight, type PrTarge
 import { ago, plural } from "../shared/format";
 import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";
-import { useEscape } from "./useEscape";
 import { baseName } from "../shared/paths";
+import { Modal } from "./Modal";
 
 
 const pipelines = createIpcStore<Record<string, TicketPipeline>>({}, ({ set }) => {
@@ -450,18 +450,15 @@ export function PipelinePanel(props: PipelineProps) {
 
 /** The pipeline on its own, for tickets reached from the grid rather than the board. */
 export function PipelineDialog(props: PipelineProps & { onClose: () => void }) {
-  useEscape(props.onClose);
   return (
-    <div className="modal-back" onMouseDown={props.onClose}>
-      <div className="modal pl-modal" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>
-          #{props.ticketId} {props.title}
-        </h3>
-        <PipelinePanel {...props} />
-        <div className="row">
-          <button className="outline" onClick={props.onClose}>Close</button>
-        </div>
+    <Modal className="modal pl-modal" onClose={props.onClose}>
+      <h3>
+        #{props.ticketId} {props.title}
+      </h3>
+      <PipelinePanel {...props} />
+      <div className="row">
+        <button className="outline" onClick={props.onClose}>Close</button>
       </div>
-    </div>
+    </Modal>
   );
 }

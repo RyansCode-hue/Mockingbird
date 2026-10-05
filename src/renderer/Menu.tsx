@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useEscape } from "./useEscape";
 
 export interface MenuItem {
   key: string;
@@ -83,12 +84,7 @@ export function MenuButton({
   const [open, setOpen] = useState(false);
   const { btn, list, pos, unplace } = usePopover(open, () => setOpen(false), (_b, l) => ({ width: l.getBoundingClientRect().width, height: l.scrollHeight }), items.length);
 
-  useEffect(() => {
-    if (!open) return;
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [open]);
+  useEscape(() => setOpen(false), open);
 
   return (
     <>
