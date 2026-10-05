@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useEscape } from "./useEscape";
 
 /**
  * The weekly rollup: written into the WorkTracker folder from the conversation
@@ -8,6 +9,7 @@ export function RollupDialog({ onClose }: { onClose: () => void }) {
   const [weeksAgo, setWeeksAgo] = useState(0);
   const [r, setR] = useState<{ file: string; markdown: string } | { error: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  useEscape(onClose);
   // writing waits on a full index sync: a week picked meanwhile must not show the earlier one's reply
   useEffect(() => {
     let live = true;
@@ -23,7 +25,7 @@ export function RollupDialog({ onClose }: { onClose: () => void }) {
   const ok = r && !("error" in r) ? r : null;
   return (
     <div className="modal-back" onMouseDown={onClose}>
-      <div className="modal rollup-dlg" onMouseDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.key === "Escape" && onClose()}>
+      <div className="modal rollup-dlg" onMouseDown={(e) => e.stopPropagation()}>
         <h3>Weekly rollup</h3>
         <div className="sub-h">
           Time per ticket and outcomes, from Mockingbird's conversation index, sessions and ticket pipeline — nothing is sent to any session or model.

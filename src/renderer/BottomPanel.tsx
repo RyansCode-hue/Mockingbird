@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import type { RunServiceState } from "../shared/types";
 import { LogTerm, disposeLog } from "./LogTerm";
 import { addOutput, clearOutput, useDebug } from "./debugStore";
+import { useAction } from "./useAction";
 
 export const DEBUG_CONSOLE = "__debug-console";
 
@@ -92,6 +93,7 @@ export function BottomPanel({
 }) {
   const worktrees = new Set(states.map((s) => s.worktree));
   const debug = useDebug();
+  const { run, error, setError } = useAction();
   const hasConsole = debug.sessions.length > 0 || debug.output.length > 0;
   const consoleOn = hasConsole && (active === DEBUG_CONSOLE || !states.length);
   const shown = consoleOn ? null : states.find((s) => s.id === active) ?? states[0] ?? null;
@@ -137,7 +139,7 @@ export function BottomPanel({
                 onClick={(e) => {
                   e.stopPropagation();
                   disposeLog(s.id);
-                  window.mb.runClear(s.id);
+                  run("close", () => window.mb.runClear(s.id));
                 }}
               >
                 ×
@@ -147,7 +149,7 @@ export function BottomPanel({
         ))}
         <span className="bp-spacer" />
         {shown && (shown.status === "running" || shown.status === "starting") && (
-          <button className="icon" title={`Stop ${shown.service} (and what depends on it)`} onClick={() => window.mb.runStopById(shown.id)}>
+          <button className="icon" title={`Stop ${shown.service} (and what depends on it)`} onClick={() => run("stop", () => window.mb.runStopById(shown.id))}>
             ■
           </button>
         )}
@@ -155,6 +157,14 @@ export function BottomPanel({
           ✕
         </button>
       </div>
+      {error && (
+        <div className="fp-note err bp-err">
+          {error}
+          <button className="bp-x" aria-label="Dismiss" title="Dismiss" onClick={() => setError("")}>
+            ×
+          </button>
+        </div>
+      )}
       {consoleOn ? <DebugConsole /> : shown ? <LogTerm key={shown.id} id={shown.id} /> : <div className="fp-note">Nothing has run yet — start a service from Run and Debug.</div>}
     </div>
   );

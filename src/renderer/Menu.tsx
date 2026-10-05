@@ -7,11 +7,65 @@ export interface MenuItem {
   onPick: () => void;
 }
 
+type Rect = { left: number; top: number; bottom: number };
+
 /**
- * A button that opens a list of choices. The list floats over the page (in a
- * portal), so a scrolling or clipped container can't cut it off; it opens
- * below the button, or above when there's no room, stays inside the window,
- * and closes on a choice, a click elsewhere, Esc, or a scroll.
+ * Where a floating list goes: below its control when the list fits there (or
+ * there's more room below than above), else above; never past the window's
+ * edges, and no taller than the room on its side, so a long list scrolls.
+ */
+export function placePopover(anchor: Rect, size: { width: number; height: number }, view: { width: number; height: number }) {
+  const below = view.height - anchor.bottom - 12;
+  const above = anchor.top - 12;
+  const down = below >= Math.min(size.height, 240) || below >= above;
+  const maxHeight = Math.max(120, down ? below : above);
+  const left = Math.min(Math.max(8, anchor.left), view.width - size.width - 8);
+  return { left, maxHeight, top: down ? anchor.bottom + 4 : anchor.top - 4 - Math.min(size.height, maxHeight) };
+}
+
+/**
+ * A list floating over the page from a button, in a portal so no scrolling or
+ * clipped container cuts it off. It's placed once measured (`size` gives its
+ * full height, before any cap, so a list placed above ends at its button),
+ * and closes on a click outside it and its button, a resize, or a scroll
+ * anywhere but inside the list itself (which would leave it behind).
+ */
+function usePopover(open: boolean, close: () => void, size: (button: DOMRect, list: HTMLDivElement) => { width: number; height: number }, remeasure: unknown) {
+  const btn = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number; width: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !btn.current || !list.current) return;
+    const b = btn.current.getBoundingClientRect();
+    const s = size(b, list.current);
+    setPos({ ...placePopover(b, s, { width: window.innerWidth, height: window.innerHeight }), width: s.width });
+  }, [open, remeasure]);
+
+  useEffect(() => {
+    if (!open) return;
+    const outside = (e: MouseEvent) => {
+      if (!list.current?.contains(e.target as Node) && !btn.current?.contains(e.target as Node)) close();
+    };
+    const scroll = (e: Event) => {
+      if (!list.current?.contains(e.target as Node)) close();
+    };
+    document.addEventListener("mousedown", outside);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", scroll, true);
+    return () => {
+      document.removeEventListener("mousedown", outside);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", scroll, true);
+    };
+  }, [open]);
+
+  return { btn, list, pos, unplace: () => setPos(null) };
+}
+
+/**
+ * A button that opens a list of choices (a floating list, see usePopover);
+ * it closes on a choice, a click elsewhere, Esc, or a scroll outside it.
  */
 export function MenuButton({
   label,
@@ -27,38 +81,13 @@ export function MenuButton({
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-  const btn = useRef<HTMLButtonElement>(null);
-  const list = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    if (!open || !btn.current || !list.current) return;
-    const b = btn.current.getBoundingClientRect();
-    const l = list.current.getBoundingClientRect();
-    const gap = 4;
-    const below = b.bottom + gap + l.height <= window.innerHeight - 8;
-    const top = below ? b.bottom + gap : Math.max(8, b.top - gap - l.height);
-    const left = Math.min(Math.max(8, b.left), window.innerWidth - l.width - 8);
-    setPos({ left, top });
-  }, [open, items.length]);
+  const { btn, list, pos, unplace } = usePopover(open, () => setOpen(false), (_b, l) => ({ width: l.getBoundingClientRect().width, height: l.scrollHeight }), items.length);
 
   useEffect(() => {
     if (!open) return;
-    const close = () => setOpen(false);
-    const outside = (e: MouseEvent) => {
-      if (!list.current?.contains(e.target as Node) && !btn.current?.contains(e.target as Node)) close();
-    };
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && close();
-    document.addEventListener("mousedown", outside);
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     document.addEventListener("keydown", esc);
-    window.addEventListener("resize", close);
-    window.addEventListener("scroll", close, true); // any scrolling container would leave the list behind
-    return () => {
-      document.removeEventListener("mousedown", outside);
-      document.removeEventListener("keydown", esc);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", close, true);
-    };
+    return () => document.removeEventListener("keydown", esc);
   }, [open]);
 
   return (
@@ -71,7 +100,7 @@ export function MenuButton({
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => {
-          setPos(null);
+          unplace();
           setOpen((o) => !o);
         }}
       >
@@ -83,7 +112,7 @@ export function MenuButton({
             ref={list}
             className="mb-menu"
             role="menu"
-            style={pos ? { left: pos.left, top: pos.top } : { left: -9999, top: -9999 } /* measured first, then placed */}
+            style={pos ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight } : { left: -9999, top: -9999 } /* measured first, then placed */}
           >
             {items.map((it) => (
               <button
@@ -137,41 +166,12 @@ export function Select({
   style?: React.CSSProperties;
 }) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
   const [active, setActive] = useState(0);
-  const btn = useRef<HTMLButtonElement>(null);
-  const list = useRef<HTMLDivElement>(null);
+  const { btn, list, pos, unplace } = usePopover(open, () => setOpen(false), (b, l) => ({ width: Math.max(b.width, 220), height: l.scrollHeight }), options.length);
   const current = options.find((o) => o.value === value);
 
-  useLayoutEffect(() => {
-    if (!open || !btn.current || !list.current) return;
-    const b = btn.current.getBoundingClientRect();
-    const h = list.current.scrollHeight;
-    const below = window.innerHeight - b.bottom - 12;
-    const above = b.top - 12;
-    const down = below >= Math.min(h, 240) || below >= above;
-    const maxHeight = Math.max(120, down ? below : above);
-    const width = Math.max(b.width, 220);
-    const left = Math.min(Math.max(8, b.left), window.innerWidth - width - 8);
-    setPos({ left, width, maxHeight, top: down ? b.bottom + 4 : b.top - 4 - Math.min(h, maxHeight) });
-  }, [open, options.length]);
-
   useEffect(() => {
-    if (!open) return;
-    setActive(Math.max(0, options.findIndex((o) => o.value === value)));
-    const close = () => setOpen(false);
-    const outside = (e: MouseEvent) => {
-      if (!list.current?.contains(e.target as Node) && !btn.current?.contains(e.target as Node)) close();
-    };
-    document.addEventListener("mousedown", outside);
-    window.addEventListener("resize", close);
-    const scroll = (e: Event) => !list.current?.contains(e.target as Node) && close();
-    window.addEventListener("scroll", scroll, true);
-    return () => {
-      document.removeEventListener("mousedown", outside);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", scroll, true);
-    };
+    if (open) setActive(Math.max(0, options.findIndex((o) => o.value === value)));
   }, [open]);
 
   useEffect(() => {
@@ -197,13 +197,13 @@ export function Select({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => {
-          setPos(null);
+          unplace();
           setOpen((o) => !o);
         }}
         onKeyDown={(e) => {
           if (!open && (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
-            setPos(null);
+            unplace();
             setOpen(true);
           } else if (open && e.key === "ArrowDown") {
             e.preventDefault();

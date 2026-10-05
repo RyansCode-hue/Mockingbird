@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accessFlags, accessOf, agreement, initials, isLong, moveSeat, roundsGrid, specsOf, summaryOf, threadItems, waited } from "../src/renderer/collabView";
+import { accessFlags, accessOf, agreement, initials, isLong, moveSeat, roundsGrid, seedSeats, specsOf, summaryOf, threadItems, unusedModel, waited } from "../src/renderer/collabView";
 import type { CollabMessage, CollabParticipant, CollabRoom } from "../src/shared/types";
 
 let n = 0;
@@ -112,5 +112,26 @@ describe("access chips", () => {
     expect(toggleAccess("docker", "run")).toBe("read"); // run off takes docker with it
     expect(toggleAccess("run", "read")).toBe("none"); // read off takes everything
     expect(toggleAccess("read", "run")).toBe("run");
+  });
+});
+
+describe("a new room's seats", () => {
+  const catalog = (presets: { key: string; model: string }[], defaults?: { key: string; model: string }[]) => ({
+    presets: presets.map((p) => ({ ...p, label: p.key, agent: "claude" as const })),
+    ...(defaults ? { defaults: defaults.map((p) => ({ ...p, label: p.key, agent: "claude" as const })) } : {}),
+    efforts: { claude: [], codex: [] },
+  });
+  it("has none to seat or add before the catalog has loaded", () => {
+    expect(seedSeats(catalog([]))).toEqual([]);
+    expect(unusedModel(catalog([]), [])).toBeNull();
+  });
+  it("starts with the catalog's defaults, else its presets", () => {
+    expect(seedSeats(catalog([{ key: "a", model: "m-a" }, { key: "b", model: "m-b" }], [{ key: "b", model: "m-b" }])).map((s) => s.model)).toEqual(["m-b"]);
+    expect(seedSeats(catalog([{ key: "a", model: "m-a" }])).map((s) => s.model)).toEqual(["m-a"]);
+  });
+  it("adds the first model not seated yet, and none once every one is", () => {
+    const c = catalog([{ key: "a", model: "m-a" }, { key: "b", model: "m-b" }]);
+    expect(unusedModel(c, [{ agent: "claude", model: "m-a" }])?.key).toBe("b");
+    expect(unusedModel(c, [{ agent: "claude", model: "m-a" }, { agent: "claude", model: "m-b" }])).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { FileList, SessionInfo } from "../shared/types";
 import { fuzzyFilter } from "./fuzzy";
+import { useListNav } from "./listNav";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -35,13 +36,15 @@ export function QuickOpen({
 }) {
   const [q, setQ] = useState("");
   const [list, setList] = useState<Result<FileList> | null>(null);
-  const [sel, setSel] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!session) return;
     let live = true;
-    window.mb.filesAll(session.id).then((r: Result<FileList>) => live && setList(r));
+    window.mb.filesAll(session.id).then(
+      (r: Result<FileList>) => live && setList(r),
+      (err: unknown) => live && setList({ error: `Couldn't list the files: ${err instanceof Error ? err.message : err}` })
+    );
     return () => {
       live = false;
     };
@@ -49,7 +52,7 @@ export function QuickOpen({
 
   const { query, line } = parseGoTo(q);
   const matches = useMemo(() => (list && !isErr(list) ? fuzzyFilter(query, list.files) : []), [list, query]);
-  useEffect(() => setSel(0), [query]);
+  const { sel, setSel, onArrow } = useListNav(matches.length, [query]);
   useEffect(() => {
     listRef.current?.querySelector(".row.sel")?.scrollIntoView({ block: "nearest" });
   }, [sel]);
@@ -74,14 +77,7 @@ export function QuickOpen({
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") onClose();
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setSel((s) => Math.min(matches.length - 1, s + 1));
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setSel((s) => Math.max(0, s - 1));
-              }
+              if (onArrow(e)) return;
               if (e.key === "Enter") open(sel);
             }}
           />

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage } from "../shared/types";
 import { useAction } from "./useAction";
+import { useEscape } from "./useEscape";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -488,9 +489,10 @@ export function PipelinePanel(props: PipelineProps) {
 
 /** The pipeline on its own, for tickets reached from the grid rather than the board. */
 export function PipelineDialog(props: PipelineProps & { onClose: () => void }) {
+  useEscape(props.onClose);
   return (
     <div className="modal-back" onMouseDown={props.onClose}>
-      <div className="modal pl-modal" onMouseDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.key === "Escape" && props.onClose()}>
+      <div className="modal pl-modal" onMouseDown={(e) => e.stopPropagation()}>
         <h3>
           #{props.ticketId} {props.title}
         </h3>

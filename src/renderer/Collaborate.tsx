@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentKind, CollabMessage, CollabMode, CollabParticipantSpec, CollabPermissionRequest, CollabRoom, RepoEntry } from "../shared/types";
-import { CUSTOM_MODEL as CUSTOM, agreement, initials, isErr, isLong, presetOptions, roundsGrid, summaryOf, threadItems, waited, type Catalog } from "./collabView";
+import { CUSTOM_MODEL as CUSTOM, agreement, initials, isErr, isLong, presetOptions, roundsGrid, seedSeats, summaryOf, threadItems, unusedModel, waited, type Catalog } from "./collabView";
 import { ModelsSection } from "./CollabModels";
 import { MenuButton, Pick, Select } from "./Menu";
 import { PanelRightIcon } from "./Icons";
@@ -45,7 +45,7 @@ export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (
   const [railOpen, setRailOpen] = usePref<boolean>("mb.collab.rail", false);
 
   useEffect(() => {
-    window.mb.collabModels().then(setCatalog);
+    window.mb.collabModels().then(setCatalog, (err: unknown) => setError(`Couldn't list the models: ${err instanceof Error ? err.message : err}`));
     window.mb.collabList().then((r: Result<CollabRoom[]>) => {
       if (isErr(r)) return setError(r.error);
       setRooms(r);
@@ -136,7 +136,13 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
   const [repo, setRepo] = useState("");
   const [mode, setMode] = useState<CollabMode>("auto");
   const [error, setError] = useState("");
-  useEffect(() => setSeats((catalog.defaults ?? catalog.presets).map((m) => ({ label: m.label, agent: m.agent, model: m.model, effort: null, readsCode: true }))), [catalog]);
+  // seated once, when the catalog arrives; seats edited since are the user's
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current || !catalog.presets.length) return;
+    seeded.current = true;
+    setSeats((s) => (s.length ? s : seedSeats(catalog)));
+  }, [catalog]);
   const create = async () => {
     const r: Result<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, participants: seats, mode });
     if (isErr(r)) return setError(r.error);
@@ -720,7 +726,7 @@ function SeatEditor({
     onChange(next);
   };
   const presetOf = (s: CollabParticipantSpec) => catalog.presets.find((m) => m.agent === s.agent && m.model === s.model)?.key ?? CUSTOM;
-  const unused = [...(catalog.defaults ?? []), ...catalog.presets].find((m) => !seats.some((s) => s.agent === m.agent && s.model === m.model));
+  const unused = unusedModel(catalog, seats);
   const readers = seats.filter((s) => s.readsCode).length;
   return (
     <div className="seat-editor">
@@ -811,8 +817,12 @@ function SeatEditor({
       <div className="seat-add">
         <button
           className="outline"
+          disabled={!catalog.presets.length}
+          title={catalog.presets.length ? undefined : "Reading the models the CLIs offer…"}
           onClick={() => {
+            // every model seated: a blank seat to type another model id into
             const m = unused ?? catalog.presets[0];
+            if (!m) return;
             onChange([...seats, { label: unused ? m.label : "", agent: m.agent, model: unused ? m.model : "", effort: null, readsCode: true, runsCommands: false, usesDocker: false }]);
           }}
         >

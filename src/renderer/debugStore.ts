@@ -90,17 +90,31 @@ export function onStopped(l: Stopped): () => void {
 
 /**
  * A pane session's repository breakpoints (relative path → lines), kept in
- * step with changes made from any view.
+ * step with changes made from any view; `error` says why they couldn't be read
+ * (a folder that isn't a repository has none to read).
  */
-export function useBreakpoints(paneSessionId: string | null): { map: Record<string, number[]>; toggle: (rel: string, line: number) => void; clear: (rel: string, line: number) => void } {
+export function useBreakpoints(paneSessionId: string | null): {
+  map: Record<string, number[]>;
+  error: string;
+  toggle: (rel: string, line: number) => void;
+  clear: (rel: string, line: number) => void;
+} {
   const [map, setMap] = useState<Record<string, number[]>>({});
+  const [error, setError] = useState("");
   useEffect(() => {
+    setError("");
     if (!paneSessionId) return setMap({});
     let live = true;
     const load = () =>
-      window.mb.debugBreakpoints(paneSessionId).then((r: { breakpoints: Record<string, number[]> } | { error: string }) => {
-        if (live && !("error" in r)) setMap(r.breakpoints);
-      });
+      window.mb.debugBreakpoints(paneSessionId).then(
+        (r: { breakpoints: Record<string, number[]> } | { error: string }) => {
+          if (!live) return;
+          if ("error" in r) return setError(r.error);
+          setError("");
+          setMap(r.breakpoints);
+        },
+        (err: unknown) => live && setError(err instanceof Error ? err.message : String(err))
+      );
     load();
     const off = window.mb.onBreakpointsChanged(() => load());
     return () => {
@@ -117,6 +131,7 @@ export function useBreakpoints(paneSessionId: string | null): { map: Record<stri
   };
   return {
     map,
+    error,
     toggle: (rel, line) => {
       const cur = map[rel] ?? [];
       write(rel, cur.includes(line) ? cur.filter((l) => l !== line) : [...cur, line]);

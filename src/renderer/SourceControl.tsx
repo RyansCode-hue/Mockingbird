@@ -26,6 +26,11 @@ export function failureResolved(failed: string, st: Pick<ScmStatus, "behind" | "
   return false;
 }
 
+/** git's answer for a folder that isn't a repository: the one status failure that asking again won't fix. */
+export function notARepository(error: string): boolean {
+  return /not a git repository/i.test(error);
+}
+
 /** Which diff a row opens: staged/unstaged from Source Control, the whole branch against its base, or one commit from the graph. */
 export type DiffSource =
   | { kind: "scm"; staged: boolean; untracked: boolean }
@@ -79,13 +84,13 @@ export function SourceControl({
   }, [message, status]);
 
   const load = useCallback(async () => {
-    const r: Result<ScmStatus> = await window.mb.scmStatus(sessionId);
-    broken.current = isErr(r);
+    const r: Result<ScmStatus> = await window.mb.scmStatus(sessionId).catch((err: unknown) => ({ error: `Couldn't read git status: ${err instanceof Error ? err.message : err}` }));
+    broken.current = isErr(r) && notARepository(r.error);
     setStatus((s) => (JSON.stringify(s) === JSON.stringify(r) ? s : r));
   }, [sessionId]);
 
   // the session edits files underneath the view, so it re-reads when the folder
-  // changes; a folder that isn't a repository isn't asked again
+  // changes; a folder that isn't a repository isn't asked again until Retry
   useEffect(() => {
     setStatus(null);
     setBranch(null);
@@ -122,7 +127,22 @@ export function SourceControl({
   }, [status, error, failed]);
 
   if (status === null) return <div className="fp-note">loading…</div>;
-  if (isErr(status)) return <div className="fp-note err">{status.error}</div>;
+  if (isErr(status)) {
+    return (
+      <div className="fp-note err sc-err">
+        {status.error}
+        <button
+          className="outline"
+          onClick={() => {
+            setStatus(null);
+            load();
+          }}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   const { staged, unstaged, conflicted } = status;
   const commit = async () => {
