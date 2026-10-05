@@ -8,9 +8,17 @@ export function RollupDialog({ onClose }: { onClose: () => void }) {
   const [weeksAgo, setWeeksAgo] = useState(0);
   const [r, setR] = useState<{ file: string; markdown: string } | { error: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  // writing waits on a full index sync: a week picked meanwhile must not show the earlier one's reply
   useEffect(() => {
+    let live = true;
     setR(null);
-    window.mb.rollupWrite(weeksAgo).then(setR);
+    window.mb.rollupWrite(weeksAgo).then(
+      (res: { file: string; markdown: string } | { error: string }) => live && setR(res),
+      (err: unknown) => live && setR({ error: `Couldn't write the rollup: ${err instanceof Error ? err.message : err}` })
+    );
+    return () => {
+      live = false;
+    };
   }, [weeksAgo]);
   const ok = r && !("error" in r) ? r : null;
   return (

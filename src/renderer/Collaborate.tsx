@@ -4,6 +4,7 @@ import { CUSTOM_MODEL as CUSTOM, agreement, initials, isErr, isLong, presetOptio
 import { ModelsSection } from "./CollabModels";
 import { MenuButton, Pick, Select } from "./Menu";
 import { PanelRightIcon } from "./Icons";
+import { useAction, type RunAction } from "./useAction";
 
 const MODES: { id: CollabMode; label: string; note: string }[] = [
   { id: "step", label: "Step", note: "one round, then waits for you" },
@@ -185,12 +186,11 @@ function ModeSeg({ mode, onMode }: { mode: CollabMode; onMode: (m: CollabMode) =
   );
 }
 
-type Call = (what: string, fn: () => Promise<unknown>) => Promise<unknown>;
+type Call = RunAction;
 
 function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; catalog: Catalog; onDeleted: () => void; onOpenSession: (id: string) => void }) {
   const [draft, setDraft] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState("");
+  const { busy, doing, run: call, error, setError } = useAction();
   const [view, setView] = usePref<"thread" | "rounds">("mb.collab.view", "thread");
   const [inspector, setInspector] = usePref<boolean>("mb.collab.inspector", true);
   const [open, setOpen] = useState<Set<string>>(() => new Set()); // folded messages / grid cells the user opened
@@ -214,14 +214,6 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
     endRef.current?.scrollIntoView({ block: "end" });
   }, [room.messages.length, room.speaking, view]);
 
-  const call: Call = async (what, fn) => {
-    setBusy(what);
-    setError("");
-    const r = await fn();
-    setBusy("");
-    if (isErr(r)) setError(r.error);
-    return r;
-  };
   const setMode = (mode: CollabMode, rounds?: number) => call("mode", () => window.mb.collabMode(room.id, mode, rounds));
   const send = async () => {
     const t = draft.trim();
@@ -317,8 +309,8 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
         <Inspector
           room={room}
           busy={busy}
+          doing={doing}
           call={call}
-          setError={setError}
           catalog={catalog}
           onJump={jumpTo}
           onOpenSession={onOpenSession}
@@ -528,17 +520,18 @@ const INSPECTOR_MIN = 220;
 function Inspector({
   room,
   busy,
+  doing,
   call,
-  setError,
   catalog,
   onJump,
   onOpenSession,
   onDeleted,
 }: {
   room: CollabRoom;
+  /** The newest of the room's actions still running, "" when none is. */
   busy: string;
+  doing: (what: string) => boolean;
   call: Call;
-  setError: (e: string) => void;
   catalog: Catalog;
   onJump: (messageId: string) => void;
   onOpenSession: (id: string) => void;
@@ -635,7 +628,7 @@ function Inspector({
           <>
             <div className="ins-value">Not written yet. Approve a model's message, or have one write the plan up.</div>
             {!room.running && (
-              <SynthMenu room={room} busy={busy === "synth"} onPick={(k) => call("synth", () => window.mb.collabSynthesize(room.id, k))} />
+              <SynthMenu room={room} busy={doing("synth")} onPick={(k) => call("synth", () => window.mb.collabSynthesize(room.id, k))} />
             )}
           </>
         ) : (
@@ -648,7 +641,17 @@ function Inspector({
               {room.implementedIn ? (
                 <button className="outline" onClick={() => onOpenSession(room.implementedIn!)}>Open the implementing session</button>
               ) : room.plan.approved ? (
-                room.repoPath ? <ImplementMenu room={room} onDone={(id) => onOpenSession(id)} setError={setError} /> : <span className="ins-note">Add a repository to implement it</span>
+                room.repoPath ? (
+                  <ImplementMenu
+                    room={room}
+                    busy={doing("implement")}
+                    onPick={(key) =>
+                      call("implement", (): Promise<Result<{ id: string }>> => window.mb.collabImplement(room.id, key)).then((r) => !isErr(r) && onOpenSession(r.id))
+                    }
+                  />
+                ) : (
+                  <span className="ins-note">Add a repository to implement it</span>
+                )
               ) : (
                 planMsg && <button className="outline strong" onClick={() => call("approve", () => window.mb.collabApprove(room.id, planMsg.id))}>Approve plan</button>
               )}
@@ -681,23 +684,17 @@ function SynthMenu({ room, busy, onPick }: { room: CollabRoom; busy: boolean; on
   );
 }
 
-function ImplementMenu({ room, onDone, setError }: { room: CollabRoom; onDone: (sessionId: string) => void; setError: (e: string) => void }) {
+/** One implementing session per plan: the menu stays shut while one is being started. */
+function ImplementMenu({ room, busy, onPick }: { room: CollabRoom; busy: boolean; onPick: (key: string) => void }) {
   return (
     <MenuButton
-      label="Implement with ▾"
+      label={busy ? "Starting the session…" : "Implement with ▾"}
       className="primary"
+      disabled={busy}
       title="Start a session that makes the changes, on a new branch in its own worktree"
       items={room.participants
         .filter((p) => !p.removed)
-        .map((m) => ({
-          key: m.key,
-          label: `${m.label}${m.effort ? ` · ${m.effort}` : ""}`,
-          onPick: async () => {
-            const r = await window.mb.collabImplement(room.id, m.key);
-            if (isErr(r)) setError(r.error);
-            else onDone(r.id);
-          },
-        }))}
+        .map((m) => ({ key: m.key, label: `${m.label}${m.effort ? ` · ${m.effort}` : ""}`, onPick: () => onPick(m.key) }))}
     />
   );
 }

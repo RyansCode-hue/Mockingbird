@@ -1,5 +1,6 @@
-import React, { useEffect, useState, useSyncExternalStore } from "react";
+import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage } from "../shared/types";
+import { useAction } from "./useAction";
 
 type Result<T> = T | { error: string };
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
@@ -84,6 +85,7 @@ function StageRail({ stage, onSet }: { stage: TicketStage | null; onSet: (s: Tic
 
 /** One promotion gate's checklist; ticks are kept per ticket. */
 function Gate({ p, gate }: { p: TicketPipeline; gate: (typeof GATES)[number] }) {
+  const { run, error } = useAction();
   const done = gate.items.filter((it) => p.checks[`${gate.id}:${it.key}`]).length;
   return (
     <div className="pl-gate">
@@ -97,11 +99,12 @@ function Gate({ p, gate }: { p: TicketPipeline; gate: (typeof GATES)[number] }) 
         const key = `${gate.id}:${it.key}`;
         return (
           <label key={key} className="check-line pl-check">
-            <input type="checkbox" checked={!!p.checks[key]} onChange={(e) => window.mb.pipelineCheck(p.ticketId, key, e.target.checked)} />
+            <input type="checkbox" checked={!!p.checks[key]} onChange={(e) => run("check", () => window.mb.pipelineCheck(p.ticketId, key, e.target.checked))} />
             {it.label}
           </label>
         );
       })}
+      {error && <div className="fp-note err">{error}</div>}
     </div>
   );
 }
@@ -135,15 +138,25 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [asked, setAsked] = useState("");
+  const seq = useRef(0);
   const load = () => {
     if (!sid) return;
+    const n = ++seq.current;
     setPre(null);
-    window.mb.pipelinePrPreflight(sid, ticketId, target).then((r: Result<PrPreflight & { lookupError: string | null }>) => {
-      setPre(r);
-      if (!isErr(r)) setBase((b) => b || r.base || "");
-    });
+    window.mb.pipelinePrPreflight(sid, ticketId, target).then(
+      (r: Result<PrPreflight & { lookupError: string | null }>) => {
+        if (n !== seq.current) return; // a newer check is on its way
+        setPre(r);
+        // Recheck keeps a base the user picked; a new branch starts from its own default
+        if (!isErr(r)) setBase((b) => b || r.base || "");
+      },
+      (err: unknown) => n === seq.current && setPre({ error: `Couldn't check the branch: ${err instanceof Error ? err.message : err}` })
+    );
   };
-  useEffect(load, [sid, target]);
+  useEffect(() => {
+    setBase("");
+    load();
+  }, [sid, target]);
   const ask = (text: string, what: string) => {
     onAskSession(sid, text);
     setAsked(`${what} — typed into the session; press Return there to send it, then Recheck.`);
@@ -269,8 +282,7 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
 /** Drafted comments: edit, post to the ticket's discussion, or discard. Nothing posts without a click. */
 function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
   const [text, setText] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState("");
+  const { doing, run, error } = useAction();
   if (!p.drafts.length) return null;
   const canPost = /^\d+$/.test(p.ticketId);
   return (
@@ -279,19 +291,14 @@ function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
       {p.drafts.map((d) => {
         const cur = text[d.id] ?? d.text;
         const post = async () => {
-          setBusy(d.id);
-          setError("");
-          if (cur !== d.text) {
-            const e = await window.mb.pipelineDraftEdit(p.ticketId, d.id, cur);
-            if (isErr(e)) {
-              setBusy(null);
-              return setError(e.error);
+          const r = await run(`post:${d.id}`, async () => {
+            if (cur !== d.text) {
+              const e = await window.mb.pipelineDraftEdit(p.ticketId, d.id, cur);
+              if (isErr(e)) return e;
             }
-          }
-          const r = await window.mb.pipelineDraftPost(p.ticketId, d.id);
-          setBusy(null);
-          if (isErr(r)) return setError(r.error);
-          onPosted?.();
+            return window.mb.pipelineDraftPost(p.ticketId, d.id);
+          });
+          if (!isErr(r)) onPosted?.();
         };
         return (
           <div key={d.id} className="pl-draft">
@@ -299,13 +306,15 @@ function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
             <textarea
               value={cur}
               onChange={(e) => setText((t) => ({ ...t, [d.id]: e.target.value }))}
-              onBlur={() => cur !== d.text && window.mb.pipelineDraftEdit(p.ticketId, d.id, cur)}
+              onBlur={() => cur !== d.text && run(`edit:${d.id}`, () => window.mb.pipelineDraftEdit(p.ticketId, d.id, cur))}
               style={{ minHeight: 56 }}
             />
             <div className="row">
-              <button className="outline" onClick={() => window.mb.pipelineDraftDrop(p.ticketId, d.id)}>Discard</button>
-              <button className="primary" disabled={!canPost || busy === d.id || !cur.trim()} title={canPost ? "Post this comment to the ticket in Azure DevOps" : "Only Azure DevOps work items have a discussion"} onClick={post}>
-                {busy === d.id ? "Posting…" : "Post to ADO"}
+              <button className="outline" disabled={doing(`drop:${d.id}`)} onClick={() => run(`drop:${d.id}`, () => window.mb.pipelineDraftDrop(p.ticketId, d.id))}>
+                Discard
+              </button>
+              <button className="primary" disabled={!canPost || doing(`post:${d.id}`) || !cur.trim()} title={canPost ? "Post this comment to the ticket in Azure DevOps" : "Only Azure DevOps work items have a discussion"} onClick={post}>
+                {doing(`post:${d.id}`) ? "Posting…" : "Post to ADO"}
               </button>
             </div>
           </div>
@@ -319,16 +328,16 @@ function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
 /** The announcement for the people who use the system: drafted by an agent, copied or saved as a comment draft. */
 function Comms({ p, title, details }: { p: TicketPipeline; title: string; details?: string }) {
   const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const { doing, run, error, setError } = useAction();
   const [copied, setCopied] = useState(false);
   const draft = async () => {
-    setBusy(true);
-    setError("");
-    const r = await window.mb.pipelineComms(p.ticketId, title, details ?? "");
-    setBusy(false);
-    if (isErr(r)) return setError(r.error);
-    setText(r.text);
+    const r = await run("draft", () => window.mb.pipelineComms(p.ticketId, title, details ?? ""));
+    if (!isErr(r)) setText(r.text);
+  };
+  // the text is cleared only once it's safely saved as a draft
+  const save = async () => {
+    const r = await run("save", () => window.mb.pipelineDraftAdd(p.ticketId, "comms", text));
+    if (!isErr(r)) setText("");
   };
   return (
     <div className="pl-form">
@@ -336,7 +345,7 @@ function Comms({ p, title, details }: { p: TicketPipeline; title: string; detail
       <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="What changed, who it affects, anything they need to do." style={{ minHeight: 90 }} />
       {error && <div className="fp-note err">{error}</div>}
       <div className="row">
-        <button className="outline" disabled={busy} onClick={draft}>{busy ? "Writing…" : "Draft it from the ticket"}</button>
+        <button className="outline" disabled={doing("draft")} onClick={draft}>{doing("draft") ? "Writing…" : "Draft it from the ticket"}</button>
         <button
           className="outline"
           disabled={!text.trim()}
@@ -352,7 +361,7 @@ function Comms({ p, title, details }: { p: TicketPipeline; title: string; detail
         >
           {copied ? "Copied" : "Copy"}
         </button>
-        <button className="outline" disabled={!text.trim()} onClick={() => window.mb.pipelineDraftAdd(p.ticketId, "comms", text).then(() => setText(""))}>
+        <button className="outline" disabled={!text.trim() || doing("save")} onClick={save}>
           Save as a ticket comment draft
         </button>
       </div>
@@ -446,7 +455,7 @@ export function PipelinePanel(props: PipelineProps) {
           </div>
         </div>
       )}
-      {prFor && <PrForm {...props} target={prFor} onClose={() => setPrFor(null)} />}
+      {prFor && <PrForm key={prFor} {...props} target={prFor} onClose={() => setPrFor(null)} />}
       {p && GATES.filter((g) => g.at === p.stage).map((g) => <Gate key={g.id} p={p} gate={g} />)}
       {p?.stage === "comms" && <Comms p={p} title={title} details={details} />}
       {prs.length > 0 && (
