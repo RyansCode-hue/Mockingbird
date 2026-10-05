@@ -98,6 +98,41 @@ describe("delivering agent messages", () => {
   });
 });
 
+describe("broadcasting", () => {
+  it("submits into idle panes, queues for busy ones, skips the rest — and says which", () => {
+    const { m, out, add, status, info } = manager();
+    for (const [id, st] of [["idle", "idle"], ["busy", "working"], ["asking", "waiting"], ["gone", "dead"], ["term", "idle"], ["brief", "idle"]]) add(id, st);
+    info("term").shell = true;
+    info("brief").debrief = true;
+    expect(m.broadcast("status?", ["idle", "busy", "asking", "gone", "term", "brief", "closed"], true)).toEqual([
+      { id: "idle", outcome: "delivered" },
+      { id: "busy", outcome: "queued" },
+      { id: "asking", outcome: "queued" },
+      { id: "gone", outcome: "skipped" },
+      { id: "term", outcome: "skipped" },
+      { id: "brief", outcome: "skipped" },
+      { id: "closed", outcome: "skipped" },
+    ]);
+    vi.advanceTimersByTime(200);
+    expect(out.idle).toEqual(["|status?|", "\r"]);
+    expect(status("idle")).toBe("working"); // its turn has started: the next broadcast waits for it
+    expect([out.busy, out.asking, out.term, out.brief]).toEqual([[], [], [], []]);
+  });
+  it("never sends a user's half-typed prompt along with it: an idle pane with a draft gets it once that's sent", () => {
+    const { m, out, add } = manager();
+    add("a", "idle");
+    m.write("a", "half a thought");
+    expect(m.broadcast("status?", ["a"], true)).toEqual([{ id: "a", outcome: "queued" }]);
+    vi.advanceTimersByTime(60_000);
+    expect(out.a).toEqual(["half a thought"]);
+    m.write("a", "\r");
+    m.statusFromHook({ paneId: "a", status: "working" });
+    m.statusFromHook({ paneId: "a", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.a).toEqual(["half a thought", "\r", "|status?|", "\r"]);
+  });
+});
+
 describe("paneEnv", () => {
   it("drops a parent Claude Code session's markers so panes save their own transcripts", () => {
     const keep = { ...process.env };

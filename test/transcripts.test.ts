@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TranscriptIndex, ftsQuery, linkHits, parseClaudeLine, parseCodexLine } from "../src/main/transcripts";
 import type { CollabRoom, SessionInfo } from "../src/shared/types";
 
@@ -154,5 +154,84 @@ describe("token usage", () => {
     expect(idx.usage({ convs: ["c1"] }).map((r) => r.conv)).toEqual(["c1"]);
     expect(idx.usage({ since: Date.parse("2026-09-02T00:00:00Z") }).map((r) => r.conv)).toEqual([xId]);
     expect(idx.usage({ convs: [] })).toEqual([]);
+  });
+});
+
+describe("reading transcripts that change underneath", () => {
+  const userLine = (text: string) => L({ type: "user", sessionId: "big", timestamp: "2026-09-01T12:00:00Z", message: { role: "user", content: text } });
+  const chunks = (idx: TranscriptIndex, file: string) => ((idx as any).db.prepare("SELECT count(*) AS n FROM chunks WHERE file = ?").get(file) as { n: number }).n;
+  function single(lines: string[], sliceMs = 2) {
+    const home = fs.mkdtempSync(path.join(os.homedir(), "tx-"));
+    const claude = path.join(home, "claude");
+    fs.mkdirSync(path.join(claude, "-p"), { recursive: true });
+    const file = path.join(claude, "-p", "big.jsonl");
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    return { idx: new TranscriptIndex(path.join(home, "index.db"), { claude, codex: path.join(home, "codex") }, sliceMs), file };
+  }
+  afterEach(() => vi.restoreAllMocks());
+
+  it("skips a transcript deleted between listing and reading, drops its rows, and indexes the rest", async () => {
+    const { idx, cFile, xFile, xId } = fixture();
+    await idx.sync();
+    fs.appendFileSync(cFile, L({ type: "user", sessionId: "c1", timestamp: "2026-09-01T11:00:00Z", message: { role: "user", content: "more" } }) + "\n");
+    fs.appendFileSync(xFile, L({ timestamp: "2026-09-02T09:10:00Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "and the weekly job" }] } }) + "\n");
+    const open = fs.promises.open;
+    vi.spyOn(fs.promises, "open").mockImplementation(async (p: any, ...rest: any[]) => {
+      if (p === cFile) fs.rmSync(cFile); // Claude's cleanup, mid-pass
+      return (open as any)(p, ...rest);
+    });
+    await idx.sync();
+    expect(idx.search("donor")).toEqual([]);
+    expect(chunks(idx, cFile)).toBe(0);
+    expect(idx.search("weekly job")[0]).toMatchObject({ id: xId });
+  });
+
+  it("logs a transcript it can't read and goes on with the others", async () => {
+    const { idx, cFile, xId } = fixture();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    fs.chmodSync(cFile, 0o000);
+    await idx.sync();
+    fs.chmodSync(cFile, 0o644);
+    expect(idx.search("nightly.py")[0]).toMatchObject({ id: xId });
+    expect(errors.mock.calls.some((c) => String(c[0]).includes(cFile))).toBe(true);
+    await idx.sync(); // readable again: picked up on the next pass
+    expect(idx.search("donor")).toHaveLength(1);
+  });
+
+  it("keeps a character split between two reads whole", async () => {
+    const READ = 512 * 1024;
+    const target = userLine("a trip to the Zürichsee");
+    const at = Buffer.from(target).indexOf(Buffer.from("ü")); // its first byte ends one read, its second starts the next
+    const filler = userLine(`filler ${"x".repeat(900)}`);
+    const lines: string[] = [];
+    let size = 0;
+    while (size + 2 * (filler.length + 1) < READ - 1 - at) {
+      lines.push(filler);
+      size += filler.length + 1;
+    }
+    lines.push("y".repeat(READ - 1 - at - size - 1), target);
+    const { idx, file } = single(lines);
+    await idx.sync();
+    expect(idx.search("Zürichsee")).toHaveLength(1);
+    fs.appendFileSync(file, userLine("then the Rhine falls") + "\n");
+    await idx.sync();
+    expect(idx.search("Rhine")).toHaveLength(1);
+    expect(chunks(idx, file)).toBe(lines.length); // every message once (the padding line isn't one; the new line is)
+  });
+
+  it("resumes a file it stopped reading part-way, indexing nothing twice", async () => {
+    const { idx, file } = single(Array.from({ length: 10 }, (_, i) => userLine(`otter number ${i}`)), 0); // one line per slice
+    const apply = (idx as any).apply.bind(idx);
+    let calls = 0;
+    const failing = vi.spyOn(idx as any, "apply").mockImplementation((...a: any[]) => {
+      if (++calls === 5) throw new Error("disk I/O error");
+      return apply(...a);
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await idx.sync();
+    expect(chunks(idx, file)).toBe(4);
+    failing.mockRestore();
+    await idx.sync();
+    expect(chunks(idx, file)).toBe(10);
   });
 });

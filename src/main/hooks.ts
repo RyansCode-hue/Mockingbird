@@ -1,13 +1,18 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { StringDecoder } from "string_decoder";
 import { MB_DIR } from "./store";
 import { SessionManager } from "./sessions";
 import { SessionInfo } from "../shared/types";
+import { writeFileAtomic, writeGenerated } from "./fileOps";
 
-const EVENTS_FILE = path.join(MB_DIR, "events.jsonl");
+const EVENTS_DIR = path.join(MB_DIR, "events");
+/** Where hook scripts from older builds append; still read, for one that runs on after an upgrade. */
+const LEGACY_EVENTS_FILE = path.join(MB_DIR, "events.jsonl");
 const HOOK_SCRIPT = path.join(MB_DIR, "hook.sh");
 const CLAUDE_SETTINGS = path.join(os.homedir(), ".claude", "settings.json");
+const POLL_MS = 500;
 
 // PreToolUse clears "waiting" the moment an approved tool starts running —
 // without it, a permission approval stays amber until the whole turn finishes.
@@ -63,39 +68,48 @@ function wired(file: string, events: readonly string[]): boolean {
 }
 
 // "pane" is the MOCKINGBIRD_SESSION the pane exported, inherited through the
-// agent — empty for agents run outside Mockingbird.
+// agent — empty for agents run outside Mockingbird. Each event gets a file of
+// its own, written under a dot-name and then renamed into place: payloads carry
+// whole file contents, so hooks running at once would interleave in a shared
+// file, and the app never reads an event that is still being written.
 const SCRIPT = `#!/bin/bash
-# Mockingbird status hook — appends agent hook events for the app to tail.
-payload=$(cat)
-printf '{"event":"%s","ts":%s,"pane":"%s","payload":%s}\\n' "$1" "$(date +%s)" "\${MOCKINGBIRD_SESSION:-}" "$payload" >> "${EVENTS_FILE}"
+# Mockingbird status hook — leaves each agent hook event in a file for the app to read.
+dir="${EVENTS_DIR}"
+mkdir -p "$dir"
+tmp=$(mktemp "$dir/.tmp.XXXXXXXX") || exit 0
+if { printf '{"event":"%s","ts":%s,"pane":"%s","payload":' "$1" "$(date +%s)" "\${MOCKINGBIRD_SESSION:-}"; cat; printf '}\\n'; } > "$tmp"; then
+  mv -f "$tmp" "$dir/$(date +%s)-\${tmp##*.}.json" || rm -f "$tmp"
+else
+  rm -f "$tmp"
+fi
 exit 0
 `;
 
-/** Keep hook.sh current: installs from older builds wrote a script without the pane id. */
+/** Keep hook.sh current: installs from older builds wrote an older script. */
 export function ensureHookScript(): void {
+  if (!fs.existsSync(HOOK_SCRIPT)) return; // hooks were never installed — the Install button writes it
   try {
-    if (fs.readFileSync(HOOK_SCRIPT, "utf8") === SCRIPT) return;
-  } catch {
-    return; // hooks were never installed — the Install button writes it
+    writeGenerated(HOOK_SCRIPT, SCRIPT, 0o755);
+  } catch (err) {
+    console.error(`[hooks] couldn't update ${HOOK_SCRIPT}; its events still arrive through ${LEGACY_EVENTS_FILE}:`, err);
   }
-  fs.writeFileSync(HOOK_SCRIPT, SCRIPT, { mode: 0o755 });
 }
 
 /** Write hook.sh and merge our hooks into ~/.claude/settings.json (preserving existing hooks). */
 export function installHooks(codexBin: string | null): { installed: boolean; message: string } {
-  fs.mkdirSync(MB_DIR, { recursive: true });
-  fs.writeFileSync(HOOK_SCRIPT, SCRIPT, { mode: 0o755 });
-  if (!fs.existsSync(EVENTS_FILE)) fs.writeFileSync(EVENTS_FILE, "");
+  fs.mkdirSync(EVENTS_DIR, { recursive: true });
+  writeGenerated(HOOK_SCRIPT, SCRIPT, 0o755);
 
+  // the user's own Claude and Codex configs are replaced in one step, so a
+  // crash mid-write can't leave them truncated
   const settings = readConfig(CLAUDE_SETTINGS);
   mergeHooks(settings, HOOK_EVENTS);
-  fs.mkdirSync(path.dirname(CLAUDE_SETTINGS), { recursive: true });
-  fs.writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
+  writeFileAtomic(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
 
   if (!codexPresent(codexBin)) return { installed: true, message: "Hooks installed into ~/.claude/settings.json" };
   const codex = readConfig(CODEX_HOOKS);
   mergeHooks(codex, CODEX_EVENTS);
-  fs.writeFileSync(CODEX_HOOKS, JSON.stringify(codex, null, 2));
+  writeFileAtomic(CODEX_HOOKS, JSON.stringify(codex, null, 2)); // creates ~/.codex when Codex has never run
   return {
     installed: true,
     message:
@@ -114,74 +128,147 @@ export function hooksInstalled(codexBin: string | null): boolean {
   return wired(CLAUDE_SETTINGS, HOOK_EVENTS) && (!codexPresent(codexBin) || wired(CODEX_HOOKS, CODEX_EVENTS));
 }
 
-/** Tail events.jsonl and route status changes to the session manager. */
-export function watchEvents(
-  sessions: SessionManager,
-  onStatus: (session: SessionInfo, status: string) => void,
-  /** A prompt was submitted in a pane: its turn is starting. */
-  onPrompt?: (session: SessionInfo, prompt: string) => void
-): void {
-  let offset = 0;
-  try {
-    // PreToolUse makes this file grow with every tool call — trim it on start
-    // (we only ever read events appended after launch, so nothing is lost)
-    if (fs.statSync(EVENTS_FILE).size > 10_000_000) fs.truncateSync(EVENTS_FILE, 0);
-    offset = fs.statSync(EVENTS_FILE).size; // only new events
-  } catch {
-    fs.writeFileSync(EVENTS_FILE, "");
-  }
+type StatusHandler = (session: SessionInfo, status: string) => void;
+/** A prompt was submitted in a pane: its turn is starting. */
+type PromptHandler = (session: SessionInfo, prompt: string) => void;
 
-  fs.watchFile(EVENTS_FILE, { interval: 500 }, (curr) => {
-    if (curr.size <= offset) {
-      offset = curr.size;
+/** One hook event → its pane's status, and the alert and prompt callbacks that follow from it. */
+function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler): void {
+  const cwd: string | undefined = typeof evt.payload?.cwd === "string" ? evt.payload.cwd : undefined;
+  if (!cwd && !evt.pane) return;
+  const msg = typeof evt.payload?.message === "string" ? evt.payload.message : undefined;
+  const conversationId: string | undefined = typeof evt.payload?.session_id === "string" ? evt.payload.session_id : undefined;
+  const paneId = typeof evt.pane === "string" && evt.pane ? evt.pane : undefined;
+  // the transcript's location says which agent wrote the event
+  const transcript = typeof evt.payload?.transcript_path === "string" ? evt.payload.transcript_path : "";
+  const agent = transcript.includes("/.codex/") ? ("codex" as const) : ("claude" as const);
+  const route = { cwd, conversationId, paneId, agent };
+  // Claude Code's ~60s idle reminder ("Claude is waiting for your input")
+  // is not blocked-on-you — treat it as idle so finished sessions don't
+  // flip amber a minute after you walk away.
+  if (evt.event === "Notification" && msg && /waiting for your input/i.test(msg)) {
+    sessions.statusFromHook({ ...route, status: "idle" });
+    return;
+  }
+  // Stop → idle · Notification → waiting · UserPromptSubmit/PreToolUse → working
+  // (PreToolUse is what flips an approved permission back to working immediately)
+  const blocked = evt.event === "Notification" || evt.event === "PermissionRequest";
+  const status = evt.event === "Stop" ? "idle" : blocked ? "waiting" : "working";
+  // Notification payloads carry a specific message ("Claude needs your
+  // permission to use Bash") — surfaced in the pane's waiting banner.
+  const tool = typeof evt.payload?.tool_name === "string" ? evt.payload.tool_name : "a tool";
+  const reason =
+    evt.event === "Notification" ? msg
+    : evt.event === "PermissionRequest" ? `Codex needs your permission to use ${tool}`
+    : undefined;
+  const info = sessions.statusFromHook({ ...route, status, reason });
+  if (info && (status === "idle" || status === "waiting")) onStatus(info, status);
+  if (info && evt.event === "UserPromptSubmit") onPrompt?.(info, typeof evt.payload?.prompt === "string" ? evt.payload.prompt : "");
+}
+
+/**
+ * Read hook events as they arrive — a file each in ~/.mockingbird/events,
+ * taken oldest first and deleted once read — and route them to the session
+ * manager. Only events written after this starts count. Returns a function
+ * that stops watching.
+ */
+export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler): () => void {
+  const handle = (raw: string, source: string) => {
+    let evt: any;
+    try {
+      evt = JSON.parse(raw);
+    } catch {
+      console.warn(`[hooks] skipped a hook event that isn't JSON (${source}): ${raw.slice(0, 200)}`);
       return;
     }
-    const stream = fs.createReadStream(EVENTS_FILE, { start: offset, end: curr.size - 1, encoding: "utf8" });
-    let chunk = "";
-    stream.on("data", (d) => (chunk += d));
-    stream.on("end", () => {
-      offset = curr.size;
-      for (const line of chunk.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const evt = JSON.parse(line);
-          const cwd: string | undefined = typeof evt.payload?.cwd === "string" ? evt.payload.cwd : undefined;
-          if (!cwd && !evt.pane) continue;
-          const msg = typeof evt.payload?.message === "string" ? evt.payload.message : undefined;
-          // Claude Code's ~60s idle reminder ("Claude is waiting for your input")
-          // is not blocked-on-you — treat it as idle so finished sessions don't
-          // flip amber a minute after you walk away.
-          const conversationId: string | undefined =
-            typeof evt.payload?.session_id === "string" ? evt.payload.session_id : undefined;
-          const paneId = typeof evt.pane === "string" && evt.pane ? evt.pane : undefined;
-          // the transcript's location says which agent wrote the event
-          const transcript = typeof evt.payload?.transcript_path === "string" ? evt.payload.transcript_path : "";
-          const agent = transcript.includes("/.codex/") ? ("codex" as const) : ("claude" as const);
-          const route = { cwd, conversationId, paneId, agent };
-          if (evt.event === "Notification" && msg && /waiting for your input/i.test(msg)) {
-            sessions.statusFromHook({ ...route, status: "idle" });
-            continue;
-          }
-          // Stop → idle · Notification → waiting · UserPromptSubmit/PreToolUse → working
-          // (PreToolUse is what flips an approved permission back to working immediately)
-          const blocked = evt.event === "Notification" || evt.event === "PermissionRequest";
-          const status = evt.event === "Stop" ? "idle" : blocked ? "waiting" : "working";
-          // Notification payloads carry a specific message ("Claude needs your
-          // permission to use Bash") — surfaced in the pane's waiting banner.
-          const tool = typeof evt.payload?.tool_name === "string" ? evt.payload.tool_name : "a tool";
-          const reason =
-            evt.event === "Notification" ? msg
-            : evt.event === "PermissionRequest" ? `Codex needs your permission to use ${tool}`
-            : undefined;
-          const info = sessions.statusFromHook({ ...route, status, reason });
-          if (info && (status === "idle" || status === "waiting")) {
-            onStatus(info, status);
-          }
-          if (info && evt.event === "UserPromptSubmit") onPrompt?.(info, typeof evt.payload?.prompt === "string" ? evt.payload.prompt : "");
-        } catch {
-          /* malformed line */
-        }
+    try {
+      routeEvent(evt, sessions, onStatus, onPrompt);
+    } catch (err) {
+      console.error(`[hooks] handling ${evt?.event} for pane ${evt?.pane || "(none)"} failed:`, err);
+    }
+  };
+
+  try {
+    // events left from before this run describe panes that are gone
+    fs.rmSync(EVENTS_DIR, { recursive: true, force: true });
+    fs.mkdirSync(EVENTS_DIR, { recursive: true });
+    fs.rmSync(LEGACY_EVENTS_FILE, { force: true });
+  } catch (err) {
+    console.error(`[hooks] couldn't clear earlier hook events in ${MB_DIR}:`, err);
+  }
+
+  let problem = "";
+  const drain = () => {
+    let names: string[];
+    try {
+      names = fs.readdirSync(EVENTS_DIR).filter((n) => n.endsWith(".json") && !n.startsWith("."));
+      problem = "";
+    } catch (err) {
+      const why = (err as Error).message;
+      if (why !== problem) console.error(`[hooks] can't read ${EVENTS_DIR}; pane statuses won't update:`, err);
+      problem = why;
+      return;
+    }
+    const files: { file: string; at: bigint }[] = [];
+    for (const n of names) {
+      const file = path.join(EVENTS_DIR, n);
+      try {
+        files.push({ file, at: fs.statSync(file, { bigint: true }).mtimeNs });
+      } catch (err) {
+        console.error(`[hooks] can't read hook event ${file}:`, err);
       }
-    });
-  });
+    }
+    // a pane's hooks run one after another, so the order they were written in is the order they happened
+    files.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.file < b.file ? -1 : 1));
+    for (const { file } of files) {
+      let raw: string;
+      try {
+        raw = fs.readFileSync(file, "utf8");
+        fs.rmSync(file, { force: true });
+      } catch (err) {
+        console.error(`[hooks] can't read hook event ${file}:`, err);
+        continue;
+      }
+      handle(raw, path.basename(file));
+    }
+  };
+  const timer = setInterval(drain, POLL_MS);
+
+  // A hook script from an older build appends lines to one file instead. A
+  // line still being written waits in `carry` for the rest of it.
+  let offset = 0;
+  let carry = "";
+  let decoder = new StringDecoder("utf8");
+  const readLegacy = (curr: fs.Stats) => {
+    if (curr.size < offset) {
+      offset = 0; // removed or replaced: start over
+      carry = "";
+      decoder = new StringDecoder("utf8");
+    }
+    if (curr.size <= offset) return;
+    let text: string;
+    try {
+      const fd = fs.openSync(LEGACY_EVENTS_FILE, "r");
+      try {
+        const buf = Buffer.alloc(curr.size - offset);
+        const n = fs.readSync(fd, buf, 0, buf.length, offset);
+        offset += n;
+        text = decoder.write(buf.subarray(0, n));
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch (err) {
+      console.error(`[hooks] can't read ${LEGACY_EVENTS_FILE}:`, err);
+      return;
+    }
+    const lines = (carry + text).split("\n");
+    carry = lines.pop() ?? "";
+    for (const line of lines) if (line.trim()) handle(line, LEGACY_EVENTS_FILE);
+  };
+  fs.watchFile(LEGACY_EVENTS_FILE, { interval: POLL_MS }, readLegacy);
+
+  return () => {
+    clearInterval(timer);
+    fs.unwatchFile(LEGACY_EVENTS_FILE, readLegacy);
+  };
 }

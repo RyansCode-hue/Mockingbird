@@ -971,3 +971,13 @@ export interface AgentMessage {
 
 /** How agent messages arrive in a group's sessions: sent as a prompt, or typed in and left for the user. */
 export type MessageMode = "send" | "prompt";
+
+/**
+ * What a broadcast did in one pane: submitted now, queued (the pane is busy,
+ * or the user has unsent text in its prompt) until its turn ends, or skipped
+ * (gone, a terminal, or a debrief).
+ */
+export interface BroadcastOutcome {
+  id: string;
+  outcome: "delivered" | "queued" | "skipped";
+}

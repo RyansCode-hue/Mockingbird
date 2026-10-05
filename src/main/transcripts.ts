@@ -282,10 +282,26 @@ export class TranscriptIndex {
       const k = known.get(f.path);
       // smaller than what was read means the file was replaced, not appended: read it again
       const from = k && f.size >= k.offset ? k.offset : 0;
-      if (k && from === 0) this.forgetFile(f.path);
-      await this.ingest(f, from);
+      try {
+        if (k && from === 0) this.forgetFile(f.path);
+        await this.ingest(f, from);
+      } catch (err) {
+        // one transcript never stops the rest: Claude deletes old ones on its
+        // own schedule, so a file can vanish between listing and reading
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") this.forgetFile(f.path);
+        else this.reportSkipped(f.path, err);
+      }
       this.progress = { done: this.progress.done + 1, total: todo.length };
     }
+  }
+
+  private skipped = new Map<string, string>();
+  /** A transcript that couldn't be read is retried every pass; each new reason is logged once. */
+  private reportSkipped(file: string, err: unknown): void {
+    const why = err instanceof Error ? err.message : String(err);
+    if (this.skipped.get(file) === why) return;
+    this.skipped.set(file, why);
+    console.error(`[transcripts] couldn't index ${file}; skipped:`, err);
   }
 
   private forgetFile(file: string): void {
@@ -294,37 +310,52 @@ export class TranscriptIndex {
     this.db.prepare("DELETE FROM files WHERE path = ?").run(file);
   }
 
+  /**
+   * Index a transcript from byte `from` on. Lines are cut at newline bytes
+   * (never inside a multibyte character), and the file's offset is saved in
+   * the same transaction as the rows it covers, so stopping anywhere — a quit,
+   * an error — resumes without reading a line twice or skipping one.
+   */
   private async ingest(f: { path: string; agent: AgentKind; conv: string; size: number; mtime: number }, from: number): Promise<void> {
     const parse = f.agent === "claude" ? parseClaudeLine : parseCodexLine;
+    const saveOffset = this.db.prepare(
+      "INSERT INTO files (path, agent, conv, size, mtime, offset) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET conv = excluded.conv, size = excluded.size, mtime = excluded.mtime, offset = excluded.offset"
+    );
     const fh = await fs.promises.open(f.path, "r");
-    let offset = from;
-    let carry = "";
+    let readTo = from;
+    let done = from;
+    let carry = Buffer.alloc(0);
     let convId = f.conv;
     try {
       for (;;) {
         const buf = Buffer.alloc(READ_BYTES);
-        const { bytesRead } = await fh.read(buf, 0, READ_BYTES, offset);
+        const { bytesRead } = await fh.read(buf, 0, READ_BYTES, readTo);
         if (!bytesRead) break;
-        const text = carry + buf.toString("utf8", 0, bytesRead);
-        const cut = text.lastIndexOf("\n");
+        readTo += bytesRead;
+        const text = carry.length ? Buffer.concat([carry, buf.subarray(0, bytesRead)]) : buf.subarray(0, bytesRead);
+        const start = readTo - text.length; // the file offset of text[0]
         // a line still being written waits for the next pass
-        const complete = cut >= 0 ? text.slice(0, cut) : "";
-        carry = cut >= 0 ? text.slice(cut + 1) : text;
-        offset += bytesRead;
-        const lines = complete.split("\n");
-        let i = 0;
-        while (i < lines.length) {
+        const end = text.lastIndexOf(0x0a) + 1;
+        carry = Buffer.from(text.subarray(end));
+        let pos = 0;
+        while (pos < end) {
           const until = Date.now() + this.sliceMs;
           this.db.exec("BEGIN");
           try {
-            for (; i < lines.length && Date.now() < until; i++) {
-              if (lines[i].trim()) convId = this.apply(parse(lines[i], convId), f.agent, f.path) ?? convId;
-            }
+            do {
+              const nl = text.indexOf(0x0a, pos);
+              const line = text.toString("utf8", pos, nl);
+              pos = nl + 1;
+              if (line.trim()) convId = this.apply(parse(line, convId), f.agent, f.path) ?? convId;
+            } while (pos < end && Date.now() < until);
+            // size -1 marks the file part-read: the next pass resumes it even if it hasn't changed
+            saveOffset.run(f.path, f.agent, convId, -1, f.mtime, start + pos);
             this.db.exec("COMMIT");
           } catch (err) {
             this.db.exec("ROLLBACK");
             throw err;
           }
+          done = start + pos;
           await yieldNow();
         }
         if (bytesRead < READ_BYTES) break;
@@ -332,10 +363,7 @@ export class TranscriptIndex {
     } finally {
       await fh.close();
     }
-    const read = offset - Buffer.byteLength(carry, "utf8");
-    this.db
-      .prepare("INSERT INTO files (path, agent, conv, size, mtime, offset) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET conv = excluded.conv, size = excluded.size, mtime = excluded.mtime, offset = excluded.offset")
-      .run(f.path, f.agent, convId, f.size, f.mtime, read);
+    saveOffset.run(f.path, f.agent, convId, f.size, f.mtime, done);
   }
 
   /** Write one line's contribution; returns the conversation it belongs to. */

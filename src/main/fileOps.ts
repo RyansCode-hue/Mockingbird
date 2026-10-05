@@ -1,0 +1,48 @@
+import * as fs from "fs";
+import * as path from "path";
+
+const isMissing = (err: unknown) => (err as NodeJS.ErrnoException).code === "ENOENT";
+
+/**
+ * Replace a file's contents in one step: written next to it, then renamed over
+ * it, so a crash mid-write never leaves it truncated and a reader never sees it
+ * half-written. A symlinked file (a dotfiles-managed config) stays a symlink:
+ * its target is the file replaced. An existing file keeps its permissions;
+ * `mode` sets them.
+ */
+export function writeFileAtomic(file: string, content: string, mode?: number): void {
+  let target = file;
+  let keepMode = mode;
+  try {
+    target = fs.realpathSync(file);
+    keepMode ??= fs.statSync(target).mode & 0o7777;
+  } catch (err) {
+    if (!isMissing(err)) throw err;
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, content);
+    if (keepMode !== undefined) fs.chmodSync(tmp, keepMode);
+    fs.renameSync(tmp, target);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+/**
+ * Keep a file Mockingbird generates (a hook script, the MCP server) current:
+ * rewritten, atomically, only when its content or mode differs — other
+ * processes may be running it at that moment. Returns whether it was written.
+ */
+export function writeGenerated(file: string, content: string, mode?: number): boolean {
+  try {
+    const same = fs.readFileSync(file, "utf8") === content;
+    if (same && (mode === undefined || (fs.statSync(file).mode & 0o777) === mode)) return false;
+  } catch (err) {
+    if (!isMissing(err)) throw err;
+  }
+  writeFileAtomic(file, content, mode);
+  return true;
+}
