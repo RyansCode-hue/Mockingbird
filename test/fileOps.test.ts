@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { readSlice, writeFileAtomic, writeGenerated } from "../src/main/fileOps";
+import { readJsonFile, readSlice, writeFileAtomic, writeGenerated } from "../src/main/fileOps";
 import { codexRollouts, epochMs } from "../src/main/agentFiles";
 import { tempDir } from "./helpers";
 
@@ -35,6 +35,25 @@ describe("writing files in one step", () => {
     fs.chmodSync(f, 0o644);
     expect(writeGenerated(f, "#!/bin/bash\n", 0o755)).toBe(true); // no longer executable: rewritten
     expect(fs.statSync(f).mode & 0o777).toBe(0o755);
+  });
+});
+
+describe("reading a JSON file", () => {
+  it("answers the fallback when there is no file, or nothing in it", () => {
+    const dir = tempDir("json");
+    expect(readJsonFile(path.join(dir, "none.json"), { empty: true })).toEqual({ empty: true });
+    fs.writeFileSync(path.join(dir, "blank.json"), "  \n");
+    expect(readJsonFile(path.join(dir, "blank.json"), {})).toEqual({});
+    fs.writeFileSync(path.join(dir, "ok.json"), '{"a":1}');
+    expect(readJsonFile(path.join(dir, "ok.json"), {})).toEqual({ a: 1 });
+  });
+  it("throws, naming the file, when it isn't JSON or can't be read — and leaves it where it is", () => {
+    const dir = tempDir("json");
+    const bad = path.join(dir, "settings.json");
+    fs.writeFileSync(bad, "{ broken");
+    expect(() => readJsonFile(bad, {})).toThrow(`${bad} is not valid JSON`);
+    expect(fs.readFileSync(bad, "utf8")).toBe("{ broken");
+    expect(() => readJsonFile(dir, {})).toThrow(/EISDIR/);
   });
 });
 

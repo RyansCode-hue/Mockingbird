@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { MB_DIR } from "./store";
 import { capitalize, type AgentUsage, type UsageLimit, type UsageReport } from "../shared/types";
-import { readSlice, writeGenerated } from "./fileOps";
+import { readJsonFile, readSlice, writeGenerated } from "./fileOps";
 import { CLAUDE_SETTINGS, codexRollouts, epochMs } from "./agentFiles";
 
 const USAGE_FILE = path.join(MB_DIR, "usage.json");
@@ -37,13 +37,10 @@ exit 0
  */
 export function usageReporterArgs(): string[] {
   try {
-    const raw = fs.readFileSync(CLAUDE_SETTINGS, "utf8");
-    if (raw.trim() && JSON.parse(raw).statusLine) return [];
+    if (readJsonFile(CLAUDE_SETTINGS, {})?.statusLine) return [];
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn(`usage: cannot read ${CLAUDE_SETTINGS}, usage reporting off: ${(err as Error).message}`);
-      return [];
-    }
+    console.warn(`usage: cannot read ${CLAUDE_SETTINGS}, usage reporting off: ${(err as Error).message}`);
+    return [];
   }
   // running panes run the script every few hundred ms: it is only replaced when it changed, and in one step
   writeGenerated(STATUSLINE_SCRIPT, SCRIPT, 0o755);
@@ -65,30 +62,27 @@ const CLAUDE_MODEL_WEEKLY: Record<string, string> = { seven_day_opus: "Opus", se
 
 /** The 5-hour window from the last payload that had one, while that window is still open. */
 function openFiveHourWindow(): { used_percentage: number; resets_at: unknown } | null {
+  let w: any;
   try {
-    const w = JSON.parse(fs.readFileSync(FIVE_HOUR_FILE, "utf8")).rate_limits?.five_hour;
-    const resets = epochMs(w?.resets_at);
-    return typeof w?.used_percentage === "number" && resets !== null && resets > Date.now() ? w : null;
-  } catch {
-    return null; // never seen one, or unreadable — the panel says there's no reading
+    w = readJsonFile(FIVE_HOUR_FILE, null)?.rate_limits?.five_hour; // null: never seen one
+  } catch (err) {
+    console.warn(`usage: cannot read ${FIVE_HOUR_FILE}: ${(err as Error).message}`);
+    return null; // the panel says there's no reading
   }
+  const resets = epochMs(w?.resets_at);
+  return typeof w?.used_percentage === "number" && resets !== null && resets > Date.now() ? w : null;
 }
 
 function readClaude(): AgentUsage | null {
-  let raw: string;
+  let payload: any;
   try {
-    raw = fs.readFileSync(USAGE_FILE, "utf8");
+    payload = readJsonFile(USAGE_FILE, null);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`usage: cannot read ${USAGE_FILE}: ${(err as Error).message}`);
+    console.warn(`usage: cannot read ${USAGE_FILE}: ${(err as Error).message}`);
     return null;
   }
-  let rl: any;
-  try {
-    rl = JSON.parse(raw).rate_limits;
-  } catch (err) {
-    console.warn(`usage: ${USAGE_FILE} is not a valid statusline payload: ${(err as Error).message}`);
-    return null;
-  }
+  if (!payload) return null; // no session has reported yet
+  const rl = payload.rate_limits;
   const limits: UsageLimit[] = [];
   const add = (label: string, w: any) => {
     if (typeof w?.used_percentage === "number") limits.push({ label, usedPct: w.used_percentage, resetsAt: epochMs(w.resets_at) });

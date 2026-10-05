@@ -81,6 +81,30 @@ describe("installHooks", () => {
     expect(() => installHooks(null)).toThrow(/not valid JSON/);
     expect(fs.readFileSync(claudeSettings, "utf8")).toBe("{ broken");
   });
+  it("treats an empty settings file as no settings", () => {
+    fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    fs.writeFileSync(claudeSettings, "\n");
+    installHooks(null);
+    expect(hookStatus(null).claude).toBe(true);
+  });
+  it("refuses a settings file that isn't a settings object, leaving it as it is", () => {
+    fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    for (const odd of ["[]", "null", '{"hooks":"none"}']) {
+      fs.writeFileSync(claudeSettings, odd);
+      expect(() => installHooks(null)).toThrow(/will not overwrite it/);
+      expect(fs.readFileSync(claudeSettings, "utf8")).toBe(odd);
+    }
+  });
+  it("changes nothing when Codex's hooks file can't be parsed — not even Claude's settings", () => {
+    fs.mkdirSync(path.dirname(fakeCodex), { recursive: true });
+    fs.writeFileSync(fakeCodex, "#!/bin/sh\n");
+    fs.mkdirSync(path.dirname(codexHooks), { recursive: true });
+    fs.writeFileSync(codexHooks, "{ broken");
+    expect(() => installHooks(fakeCodex)).toThrow(/hooks\.json is not valid JSON/);
+    expect(fs.existsSync(claudeSettings)).toBe(false);
+    expect(fs.readFileSync(codexHooks, "utf8")).toBe("{ broken");
+    expect(fs.readdirSync(path.dirname(codexHooks))).toEqual(["hooks.json"]); // not moved aside either
+  });
   it("writes Codex hooks only when the Codex CLI is installed — ~/.codex alone isn't enough", () => {
     fs.mkdirSync(path.dirname(codexHooks), { recursive: true }); // what the ChatGPT desktop app leaves behind
     installHooks(null);

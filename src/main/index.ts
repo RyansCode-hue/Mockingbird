@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Store, appendLogLine, expandHome, MB_DIR } from "./store";
-import { writeFileAtomic } from "./fileOps";
+import { readJsonFile, writeFileAtomic } from "./fileOps";
 import { SessionManager, paneEnv } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
@@ -722,27 +722,16 @@ handle("agents:update", async (agent) => {
 });
 // ---- connectors (Settings → Connectors card) ----
 const wtFile = (name: string) => path.join(expandHome(store.settings.workTrackerPath), name);
-/** A JSON config file: {} when it doesn't exist yet, an error when it can't be parsed. */
-const readJsonConfig = (file: string): any => {
-  if (!fs.existsSync(file)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (err) {
-    // don't pretend the file said nothing — a syntax error here shows up in the
-    // UI as "no connectors configured", which sends people down the wrong path
-    throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
-  }
-};
 
 handle("connectors:status", async () => {
   const az = (await which("az")) !== null;
-  const globalMcp = Object.keys(readJsonConfig(path.join(os.homedir(), ".claude.json")).mcpServers ?? {});
-  const projectMcp = Object.keys(readJsonConfig(wtFile(".mcp.json")).mcpServers ?? {});
+  const globalMcp = Object.keys(readJsonFile(path.join(os.homedir(), ".claude.json"), {}).mcpServers ?? {});
+  const projectMcp = Object.keys(readJsonFile(wtFile(".mcp.json"), {}).mcpServers ?? {});
   return { az, global: globalMcp, project: projectMcp };
 });
 
 handle("ado:config:get", () => {
-  const a = readJsonConfig(wtFile("config.json")).azureDevOps ?? {};
+  const a = readJsonFile(wtFile("config.json"), {}).azureDevOps ?? {};
   return { orgUrl: a.orgUrl ?? "", project: a.project ?? "", patFile: a.patFile ?? "" };
 });
 
@@ -751,7 +740,7 @@ handle("ado:config:set", (patch) => {
   const wt = expandHome(store.settings.workTrackerPath);
   fs.mkdirSync(wt, { recursive: true });
   const file = path.join(wt, "config.json");
-  const cfg = readJsonConfig(file);
+  const cfg = readJsonFile(file, {});
   cfg.azureDevOps = {
     ...(cfg.azureDevOps ?? {}),
     orgUrl: String(patch?.orgUrl ?? "").trim(),
@@ -771,7 +760,7 @@ handle("mcp:add", (name, command) => {
   const parts = String(command ?? "").trim().split(/\s+/);
   if (!n || !parts[0]) throw new Error("Name and command are required");
   const file = wtFile(".mcp.json");
-  const j = readJsonConfig(file);
+  const j = readJsonFile(file, {});
   j.mcpServers = { ...(j.mcpServers ?? {}), [n]: { command: parts[0], args: parts.slice(1) } };
   writeFileAtomic(file, JSON.stringify(j, null, 2));
   return { ok: true };
@@ -779,7 +768,7 @@ handle("mcp:add", (name, command) => {
 
 handle("mcp:remove", (name) => {
   const file = wtFile(".mcp.json");
-  const j = readJsonConfig(file);
+  const j = readJsonFile(file, {});
   if (j.mcpServers) delete j.mcpServers[String(name)];
   writeFileAtomic(file, JSON.stringify(j, null, 2));
   return { ok: true };
