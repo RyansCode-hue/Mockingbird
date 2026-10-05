@@ -87,10 +87,13 @@ function htmlToText(html: string): string {
 
 const API = "api-version=7.0";
 
-/** Who the configured PAT belongs to — shown in Settings so users can verify their identity. */
+/**
+ * Who the configured PAT belongs to — shown in Settings so users can verify
+ * their identity, and what setup's "connected" rests on, so a failure throws.
+ */
 export async function adoIdentity(store: Store): Promise<{ display: string; email: string; org: string; project: string }> {
   const cfg = loadAdoConfig(store);
-  const me = await whoAmI(cfg);
+  const me = await connectionIdentity(cfg);
   return { ...me, org: cfg.orgUrl, project: cfg.project };
 }
 
@@ -104,15 +107,21 @@ export function resetAdoCache(): void {
   cachedMe = null;
   boardsCache = null;
 }
+async function connectionIdentity(cfg: AdoConfig): Promise<{ display: string; email: string }> {
+  const r = await adoFetch(cfg, `${cfg.orgUrl}/_apis/connectionData`);
+  const me = {
+    display: r.authenticatedUser?.providerDisplayName ?? "",
+    email: r.authenticatedUser?.properties?.Account?.$value ?? "",
+  };
+  if (!me.display && !me.email) throw new Error("Azure DevOps didn't say who the PAT belongs to — it may have expired");
+  cachedMe = me;
+  return me;
+}
+/** The PAT owner for the board's "me", or no one when that can't be resolved right now (logged). */
 async function whoAmI(cfg: AdoConfig): Promise<{ display: string; email: string }> {
   if (cachedMe) return cachedMe;
   try {
-    const r = await adoFetch(cfg, `${cfg.orgUrl}/_apis/connectionData`);
-    cachedMe = {
-      display: r.authenticatedUser?.providerDisplayName ?? "",
-      email: r.authenticatedUser?.properties?.Account?.$value ?? "",
-    };
-    return cachedMe;
+    return await connectionIdentity(cfg);
   } catch (err) {
     // do NOT cache the failure: one network blip would otherwise disable "me"
     // (board filter, my-tickets picker, debrief snapshot) for the whole run
@@ -207,6 +216,8 @@ export async function workItemStates(store: Store, type: string): Promise<string
  */
 export async function writeAdoSnapshot(store: Store): Promise<{ file: string; count: number }> {
   const { items, me } = await listWorkItems(store);
+  // with no "me", the filter below would pick the unassigned items
+  if (!me) throw new Error("Couldn't tell who the PAT belongs to, so there's no knowing which work items are yours");
   const mine = items
     .filter((i) => i.assignedTo === me && !["Closed", "Done", "Removed"].includes(i.state))
     .slice(0, 15);
@@ -216,7 +227,7 @@ export async function writeAdoSnapshot(store: Store): Promise<{ file: string; co
   const file = path.join(dir, `ado-snapshot-${date}.md`);
   const parts = [
     `# Azure DevOps snapshot — ${date}`,
-    `Generated ${new Date().toLocaleTimeString()} for ${me || "(unknown identity)"} via the ADO REST API. ` +
+    `Generated ${new Date().toLocaleTimeString()} for ${me} via the ADO REST API. ` +
       `States and comments are live as of this timestamp. PR review votes are not included.`,
   ];
   for (const it of mine) {
