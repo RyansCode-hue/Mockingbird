@@ -1,4 +1,4 @@
-import { git, upstreamOf } from "./git";
+import { git, headCommit, MAX_DIFF_BYTES, upstreamOf } from "./git";
 import { baseRef, parseNameStatus, resolveIn } from "./files";
 import type { GitChange, GraphCommit, GraphRef, ScmEntry, ScmGraph, ScmStatus, ScmStatusCode } from "../shared/types";
 
@@ -59,9 +59,8 @@ export async function scmStage(root: string, paths: string[]): Promise<void> {
 
 export async function scmUnstage(root: string, paths: string[]): Promise<void> {
   const rel = await inside(root, paths);
-  const hasHead = await git(root, ["rev-parse", "--verify", "-q", "HEAD"]).then(() => true, () => false);
   // before the first commit there's no HEAD to restore the index from
-  await git(root, hasHead ? ["restore", "--staged", "--", ...rel] : ["rm", "--cached", "-r", "-q", "--", ...rel]);
+  await git(root, (await headCommit(root)) ? ["restore", "--staged", "--", ...rel] : ["rm", "--cached", "-r", "-q", "--", ...rel]);
 }
 
 /**
@@ -102,7 +101,7 @@ export async function scmPush(root: string): Promise<{ upstream: string }> {
  * conflicts. When both sides have moved, or local edits are in the way, git's
  * refusal is passed on and nothing changes.
  */
-export async function scmPull(root: string): Promise<{ pulled: number }> {
+export async function scmPull(root: string): Promise<void> {
   const st = await scmStatus(root);
   if (!st.branch) throw new Error("Not on a branch (detached HEAD) — nothing to pull into");
   if (!st.upstream) throw new Error("This branch doesn't track a remote branch yet, so there's nothing to pull");
@@ -117,8 +116,6 @@ export async function scmPull(root: string): Promise<{ pulled: number }> {
     }
     throw err;
   }
-  const after = await scmStatus(root);
-  return { pulled: st.behind - after.behind };
 }
 
 /** Update the remote branches (what ↑/↓ and the graph compare against), dropping deleted ones. */
@@ -160,8 +157,8 @@ export function parseLog(out: string, remotes: string[]): GraphCommit[] {
  * commits, what's new on dev, and where they forked all show.
  */
 export async function scmGraph(root: string, limit = 150): Promise<ScmGraph> {
-  const hasHead = await git(root, ["rev-parse", "--verify", "-q", "HEAD"]).then(() => true, () => false);
-  if (!hasHead) return { commits: [], head: null, refs: [], more: false };
+  const head = await headCommit(root);
+  if (!head) return { commits: [], head: null, refs: [], more: false };
   const [upstream, base, remotes] = await Promise.all([
     upstreamOf(root),
     baseRef(root),
@@ -170,34 +167,56 @@ export async function scmGraph(root: string, limit = 150): Promise<ScmGraph> {
   const refs = [...new Set(["HEAD", upstream, base].filter((r): r is string => !!r))];
   const out = await git(root, ["log", "--topo-order", `-n${limit + 1}`, `--format=%H${SEP}%P${SEP}%D${SEP}%s${SEP}%an${SEP}%at${END}`, ...refs, "--"], { trim: false });
   const commits = parseLog(out, remotes);
-  return { commits: commits.slice(0, limit), head: await git(root, ["rev-parse", "HEAD"]), refs, more: commits.length > limit };
+  return { commits: commits.slice(0, limit), head, refs, more: commits.length > limit };
 }
 
 const SHA = /^[0-9a-f]{7,40}$/;
 
-/** The files a commit changed (a merge: against its first parent, as VS Code shows it). */
-export async function scmCommitFiles(root: string, sha: string): Promise<GitChange[]> {
+/** What a commit's changes are shown against: its first parent (a merge's too, as VS Code shows it), or null for a root commit. */
+async function firstParent(root: string, sha: string): Promise<string | null> {
   if (!SHA.test(sha)) throw new Error(`Not a commit: ${sha}`);
   const isRoot = (await git(root, ["rev-list", "--parents", "-n1", sha])).split(" ").length === 1;
-  const out = isRoot
-    ? await git(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", sha], { trim: false })
-    : await git(root, ["diff", "--name-status", "-z", "-M", `${sha}^1`, sha], { trim: false });
+  return isRoot ? null : `${sha}^1`;
+}
+
+/** The files a commit changed. */
+export async function scmCommitFiles(root: string, sha: string): Promise<GitChange[]> {
+  const parent = await firstParent(root, sha);
+  const out = parent
+    ? await git(root, ["diff", "--name-status", "-z", "-M", parent, sha], { trim: false })
+    : await git(root, ["diff-tree", "--root", "--no-commit-id", "-r", "-M", "--name-status", "-z", sha], { trim: false });
   return parseNameStatus(out);
+}
+
+/**
+ * `rel`, and the path it was renamed from when `range` renamed it. A diff
+ * limited to the new path alone can't pair it with the old one, and shows the
+ * rename as a whole new file.
+ */
+async function withRenameSource(root: string, range: string[], rel: string): Promise<string[]> {
+  const from = parseNameStatus(await git(root, ["diff", "--name-status", "-z", "-M", ...range], { trim: false })).find((c) => c.path === rel)?.from;
+  return from ? [from, rel] : [rel];
+}
+
+function capped(diff: string): string {
+  if (diff.length > MAX_DIFF_BYTES) throw new Error("Diff is too large to display");
+  return diff;
 }
 
 /** One file's change in a commit. */
 export async function scmCommitDiff(root: string, sha: string, rel: string): Promise<string> {
-  if (!SHA.test(sha)) throw new Error(`Not a commit: ${sha}`);
+  const parent = await firstParent(root, sha);
   await resolveIn(root, rel);
-  const isRoot = (await git(root, ["rev-list", "--parents", "-n1", sha])).split(" ").length === 1;
-  return isRoot
-    ? git(root, ["show", "--format=", sha, "--", rel], { trim: false })
-    : git(root, ["diff", "-M", `${sha}^1`, sha, "--", rel], { trim: false });
+  if (!parent) return capped(await git(root, ["show", "--format=", sha, "--", rel], { trim: false }));
+  const range = [parent, sha];
+  return capped(await git(root, ["diff", "-M", ...range, "--", ...(await withRenameSource(root, range, rel))], { trim: false }));
 }
 
 /** The diff for one file as the view shows it: staged against HEAD, or unstaged against the index. */
 export async function scmDiff(root: string, rel: string, staged: boolean, untracked: boolean): Promise<string> {
   await resolveIn(root, rel);
-  if (untracked) return git(root, ["diff", "--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false });
-  return git(root, ["diff", ...(staged ? ["--cached"] : []), "-M", "--", rel], { trim: false });
+  if (untracked) return capped(await git(root, ["diff", "--no-index", "--", "/dev/null", rel], { okCodes: [0, 1], trim: false }));
+  // renames show only between HEAD and the index; unstaged, a moved file is a deletion and an untracked file
+  const paths = staged ? await withRenameSource(root, ["--cached"], rel) : [rel];
+  return capped(await git(root, ["diff", ...(staged ? ["--cached"] : []), "-M", "--", ...paths], { trim: false }));
 }

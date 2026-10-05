@@ -1,10 +1,9 @@
-import { git } from "./git";
-import { parseRemote, prError, type AdoCall, type RemoteRepo } from "./pullRequests";
+import { ADO_API } from "./ado";
+import { currentBranch } from "./git";
+import { adoRepo, originRemote, prError, type AdoCall, type RemoteRepo } from "./pullRequests";
 import { quote } from "./shell";
 import type { ShellRunner } from "./headless";
 import type { PrState, PrStatus } from "../shared/types";
-
-const API = "api-version=7.0";
 
 /** ADO's reviewer votes: 10 approved, 5 approved with suggestions, 0 none, -5 waiting for the author, -10 rejected. */
 const VOTE: Record<number, string> = { 10: "approved", 5: "approved with suggestions", [-5]: "waiting for author", [-10]: "rejected" };
@@ -63,14 +62,12 @@ export function githubPrState(pr: any): PrState {
 /** The newest pull request from `branch`: an open one first, else the latest merged or closed. */
 async function findPr(remote: RemoteRepo, branch: string, deps: { ado: AdoCall; run: ShellRunner; cwd: string; env: Record<string, string> }): Promise<PrState | null> {
   if (remote.provider === "ado") {
-    const repoUrl = `${remote.base}/${encodeURIComponent(remote.project)}/_apis/git/repositories/${encodeURIComponent(remote.repo)}`;
-    const repo = await deps.ado(`${repoUrl}?${API}`);
-    const webUrl = repo?.webUrl ?? `${remote.base}/${encodeURIComponent(remote.project)}/_git/${encodeURIComponent(remote.repo)}`;
+    const repo = await adoRepo(deps.ado, remote);
     const q = `searchCriteria.sourceRefName=${encodeURIComponent(`refs/heads/${branch}`)}&searchCriteria.status=all&$top=10`;
-    const r = await deps.ado(`${remote.base}/${encodeURIComponent(remote.project)}/_apis/git/repositories/${repo.id}/pullrequests?${q}&${API}`);
+    const r = await deps.ado(`${repo.apiUrl}/pullrequests?${q}&${ADO_API}`);
     const list: any[] = r?.value ?? [];
     const pick = list.find((p) => p.status === "active") ?? list.sort((a, b) => String(b.creationDate).localeCompare(String(a.creationDate)))[0];
-    return pick ? adoPrState(pick, webUrl) : null;
+    return pick ? adoPrState(pick, repo.webUrl) : null;
   }
   const r = await deps.run(`gh pr view ${quote(branch)} --json number,url,title,state,isDraft,reviewDecision,mergeable,baseRefName,latestReviews`, "", { cwd: deps.cwd, env: deps.env, timeoutMs: 30_000 });
   if (r.code !== 0) {
@@ -83,10 +80,9 @@ async function findPr(remote: RemoteRepo, branch: string, deps: { ado: AdoCall; 
 /** The pull request of the branch checked out in `cwd`. A lookup that fails says why instead of reporting none. */
 export async function prStatusFor(cwd: string, deps: { ado: AdoCall; run: ShellRunner; env: Record<string, string> }): Promise<PrStatus> {
   const at = Date.now();
-  const branch = (await git(cwd, ["symbolic-ref", "--short", "-q", "HEAD"], { okCodes: [0, 1] })) || null;
+  const branch = await currentBranch(cwd);
   if (!branch) return { branch, pr: null, at };
-  const url = await git(cwd, ["remote", "get-url", "origin"], { okCodes: [0, 2] });
-  const remote = url ? parseRemote(url) : null;
+  const remote = await originRemote(cwd);
   if (!remote) return { branch, pr: null, at };
   try {
     return { branch, pr: await findPr(remote, branch, { ...deps, cwd }), at };

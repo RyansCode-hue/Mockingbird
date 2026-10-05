@@ -4,9 +4,9 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "child_process";
 import { makeTestCopy } from "../src/main/testCopy";
-import { CollabRooms, COLLAB_MODELS, dockerSockets, permissionKind, DEFAULT_ASK_TIMEOUT_MIN, PERMISSION_REMIND_MS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
+import { CollabRooms, COLLAB_MODELS, dockerSockets, permissionKind, PERMISSION_REMIND_MS, buildPrompt, parseStance, claudeTurnCommand, codexTurnCommand, type TurnRunner } from "../src/main/collab";
 import type { CollabParticipantSpec } from "../src/shared/types";
-import type { CollabRoom } from "../src/shared/types";
+import { DEFAULT_ASK_TIMEOUT_MIN, type CollabRoom } from "../src/shared/types";
 
 /** A runner whose replies come from a script: reply(modelKey, turnNumberForThatModel, prompt). */
 function rooms(reply: (key: string, n: number, prompt: string) => string | Error = (k) => `${k} thoughts\nSTANCE: CONTINUE — more to do`) {
@@ -413,9 +413,23 @@ describe("models that run commands", () => {
     expect(sh(repo, "status", "--porcelain")).toBe("M a.txt\n?? src/"); // the repo's index is untouched (output trimmed)
   });
 
+  it("the test copy carries uncommitted changes byte for byte, whatever the user's diff settings", async () => {
+    const repo = gitRepo();
+    for (const [k, v] of [["diff.noprefix", "true"], ["color.ui", "always"], ["diff.mnemonicPrefix", "true"]]) sh(repo, "config", k, v);
+    const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]); // "café\n" in Latin-1: not UTF-8
+    fs.writeFileSync(path.join(repo, "notes.txt"), "plain\n");
+    sh(repo, "add", "notes.txt");
+    sh(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "notes");
+    fs.writeFileSync(path.join(repo, "notes.txt"), latin1);
+    const dest = path.join(fs.mkdtempSync(path.join(os.homedir(), "copy-")), "work");
+    await makeTestCopy(repo, dest);
+    expect(fs.readFileSync(path.join(dest, "notes.txt"))).toEqual(latin1);
+    expect(fs.readFileSync(path.join(dest, "a.txt"), "utf8")).toBe("edited\n");
+  });
+
   it("refuses a folder that isn't a git repository, leaving nothing behind", async () => {
     const dest = path.join(fs.mkdtempSync(path.join(os.homedir(), "copy-")), "work");
-    await expect(makeTestCopy(fs.mkdtempSync(path.join(os.homedir(), "plain-")), dest)).rejects.toThrow(/git rev-parse failed/);
+    await expect(makeTestCopy(fs.mkdtempSync(path.join(os.homedir(), "plain-")), dest)).rejects.toThrow(/git rev-parse: .*not a git repository/);
     expect(fs.existsSync(dest)).toBe(false);
   });
 
@@ -484,7 +498,7 @@ describe("models that run commands", () => {
     const plain = fs.mkdtempSync(path.join(os.homedir(), "plain-"));
     const room = c.create({ title: "t", brief: "b", repoPath: plain, mode: "step", participants: [{ ...specs("gpt6")[0], runsCommands: true }, ...specs("opus")] });
     await c.run(room.id);
-    expect(room.messages.find((m) => m.kind === "error")!.text).toMatch(/^GPT-6 Astra couldn't take its turn: git rev-parse failed/);
+    expect(room.messages.find((m) => m.kind === "error")!.text).toMatch(/^GPT-6 Astra couldn't take its turn: git rev-parse: .*not a git repository/);
     expect(said(room)).toContain("1:opus");
   });
 
@@ -696,5 +710,87 @@ describe("asking the user's permission", () => {
     const docker = claudeTurnCommand("/bin/claude", { ...base, runsCommands: true, usesDocker: true }, { mcp, permit: true, sockets: ["/s"] });
     expect(docker).toContain(`--allowedTools 'Bash(docker:*)' --permission-prompt-tool`);
     expect(docker).toMatch(/--disallowedTools NotebookEdit mcp__mockingbird__approve_permission$/);
+  });
+});
+
+describe("a room's file and its lifecycle", () => {
+  /** A room whose turns wait until released, so the test can act mid-turn. */
+  function heldRooms() {
+    let release!: () => void;
+    let started!: () => void;
+    const turnStarted = new Promise<void>((r) => (started = r));
+    const runTurn: TurnRunner = async (p, _prompt, ctx) => {
+      started();
+      await new Promise<void>((r) => (release = r));
+      if (ctx.signal.aborted) throw new Error("stopped");
+      return { text: `${p.key}\nSTANCE: CONTINUE — x`, conversationId: `${p.key}-c` };
+    };
+    const changes: string[] = [];
+    const dir = fs.mkdtempSync(path.join(os.homedir(), "collab-"));
+    const c = new CollabRooms(dir, runTurn, (r) => changes.push(r.id), vi.fn(), () => null);
+    const room = c.create({ title: "t", brief: "b", repoPath: null, mode: "step", participants: specs("gpt6", "opus") });
+    return { c, room, dir, changes, turnStarted, release: () => release() };
+  }
+
+  it("a room deleted mid-turn stays deleted: the ending turn doesn't write it back", async () => {
+    const { c, room, dir, changes, turnStarted, release } = heldRooms();
+    const running = c.run(room.id);
+    await turnStarted;
+    c.delete(room.id);
+    const after = changes.length;
+    release();
+    await running;
+    expect(fs.existsSync(path.join(dir, `${room.id}.json`))).toBe(false);
+    expect(changes.length).toBe(after);
+    expect(new CollabRooms(dir, async () => ({ text: "", conversationId: "" }), () => {}, vi.fn(), () => null).list()).toEqual([]);
+  });
+
+  it("refuses to change the repository while a turn runs (it may be working in the test copy)", async () => {
+    const { c, room, turnStarted, release } = heldRooms();
+    const running = c.run(room.id);
+    await turnStarted;
+    expect(() => c.setRepo(room.id, os.homedir())).toThrow(/Wait for the current turn/);
+    c.stop(room.id);
+    release();
+    await running;
+    expect(c.setRepo(room.id, os.homedir()).repoPath).toBe(os.homedir());
+  });
+
+  it("writes through a temporary file, so a failed write leaves the last good file", () => {
+    const { c, room, dir } = heldRooms();
+    const file = path.join(dir, `${room.id}.json`);
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    fs.mkdirSync(`${file}.tmp`); // the temporary file can't be written
+    expect(() => c.setMode(room.id, "auto", 7)).toThrow();
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject({ id: room.id, mode: "step" });
+  });
+
+  it("a room that fails to save while starting is logged and left idle, not an unhandled rejection", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const dir = fs.mkdtempSync(path.join(os.homedir(), "collab-"));
+      const onChange = (r: CollabRoom) => {
+        if (r.running) throw new Error("disk full");
+      };
+      const c = new CollabRooms(dir, async (p) => ({ text: `${p.key}\nSTANCE: CONTINUE — x`, conversationId: "c" }), onChange, vi.fn(), () => null);
+      const room = c.create({ title: "t", brief: "b", repoPath: null, mode: "step", participants: specs("gpt6", "opus") });
+      c.send(room.id, "go");
+      await vi.waitFor(() => expect(errors).toHaveBeenCalledWith(expect.stringMatching(/stopped on an error/), expect.objectContaining({ message: "disk full" })));
+      expect(room.running).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("implements a plan once: a second pick, at once or later, is refused", async () => {
+    const { c, make, startSession } = rooms();
+    const room = make({ mode: "step", repoPath: "/code/app" });
+    await c.run(room.id);
+    c.approve(room.id, room.messages.find((m) => m.speaker === "opus")!.id);
+    const first = c.implement(room.id, "gpt6");
+    await expect(c.implement(room.id, "opus")).rejects.toThrow(/already being implemented/);
+    await first;
+    await expect(c.implement(room.id, "opus")).rejects.toThrow(/already being implemented/);
+    expect(startSession).toHaveBeenCalledTimes(1);
   });
 });

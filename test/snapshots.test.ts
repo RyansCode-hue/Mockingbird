@@ -98,4 +98,56 @@ describe("undoing an agent's turn", () => {
     const [a, b, c] = await Promise.all([takeSnapshot(repo, "s1", "1"), takeSnapshot(repo, "s1", "2"), takeSnapshot(repo, "s1", "3")]);
     expect([a!.n, b!.n, c!.n]).toEqual([1, 2, 3]);
   });
+
+  it("orders a session's snapshots even when they name different folders of the repository", async () => {
+    const repo = makeRepo({ "pkg/a.txt": "1\n" });
+    const [a, b] = await Promise.all([takeSnapshot(path.join(repo, "pkg"), "s1", "turn"), takeSnapshot(repo, "s1", "before an undo")]);
+    expect([a!.n, b!.n]).toEqual([1, 2]);
+    expect((await listSnapshots(repo, "s1")).map((s) => s.n)).toEqual([2, 1]);
+  });
+});
+
+describe("what a snapshot records", () => {
+  it("is exactly the working tree — staged, unstaged, untracked and deleted alike — and the real index is left as it was", async () => {
+    const repo = makeRepo({ "a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n", "d.txt": "dd\n" });
+    write(repo, { "a.txt": "a staged\n" });
+    git(repo, "add", "a.txt");
+    write(repo, { "a.txt": "a worktree\n" }); // staged, then edited again
+    git(repo, "rm", "-q", "--cached", "b.txt"); // dropped from the index, still on disk
+    fs.rmSync(path.join(repo, "c.txt")); // deleted on disk, still in the index
+    write(repo, { "n.txt": "n staged\n" });
+    git(repo, "add", "n.txt");
+    write(repo, { "n.txt": "n worktree\n", "u.txt": "untracked\n" });
+    write(repo, { "d.txt": "d1\n" });
+    git(repo, "add", "d.txt");
+    write(repo, { "d.txt": "D2\n" }); // same size, right after the index was written
+    const index = git(repo, "diff", "--cached", "--name-status");
+
+    const snap = (await takeSnapshot(repo, "s1", "x"))!;
+    expect(git(repo, "ls-tree", "-r", "--name-only", snap.sha).split("\n")).toEqual(["a.txt", "b.txt", "d.txt", "n.txt", "u.txt"]);
+    const at = (rel: string) => git(repo, "show", `${snap.sha}:${rel}`);
+    expect([at("a.txt"), at("b.txt"), at("d.txt"), at("n.txt"), at("u.txt")]).toEqual(["a worktree", "b", "D2", "n worktree", "untracked"]);
+    expect(git(repo, "diff", "--cached", "--name-status")).toBe(index);
+    expect(await changesSince(repo, "s1", snap.n)).toEqual([]);
+  });
+});
+
+describe("restoring over a changed folder layout", () => {
+  it("brings back a folder where a file now stands", async () => {
+    const repo = makeRepo({ "a/b.txt": "b\n" });
+    const snap = (await takeSnapshot(repo, "s1", "x"))!;
+    fs.rmSync(path.join(repo, "a"), { recursive: true });
+    write(repo, { a: "a file now\n" });
+    expect(await restoreSnapshot(repo, "s1", snap.n)).toMatchObject({ restored: 1, removed: 1 });
+    expect(read(repo, "a/b.txt")).toBe("b\n");
+  });
+
+  it("brings back a file where a folder now stands", async () => {
+    const repo = makeRepo({ a: "a file\n" });
+    const snap = (await takeSnapshot(repo, "s1", "x"))!;
+    fs.rmSync(path.join(repo, "a"));
+    write(repo, { "a/b.txt": "b\n" });
+    expect(await restoreSnapshot(repo, "s1", snap.n)).toMatchObject({ restored: 1, removed: 1 });
+    expect(read(repo, "a")).toBe("a file\n");
+  });
 });

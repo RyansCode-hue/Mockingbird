@@ -58,6 +58,12 @@ export interface WorktreeStateInfo {
 
 export type WorktreeCleanupMode = "keep" | "push" | "discard";
 
+/** What a close-session cleanup did. `branchKept` says why a discard left the branch in place. */
+export interface WorktreeCleanupResult {
+  removed: boolean;
+  branchKept?: string;
+}
+
 /** One entry of the worktree janitor: a `<repo>-worktrees/<name>` checkout. */
 export interface WorktreeEntry {
   repoPath: string;
@@ -663,7 +669,11 @@ export interface CollabRoom {
   createdAt: number;
 }
 
-/** The waits a room can choose for a model's request, in minutes, and the one it starts with. */
+/**
+ * How long a room's requests may wait for the user, in minutes: the choices,
+ * and the default. A turn that runs commands is cut off at 30 minutes, so a
+ * wait can't be allowed to take most of it.
+ */
 export const ASK_TIMEOUTS_MIN = [5, 10, 15, 20];
 export const DEFAULT_ASK_TIMEOUT_MIN = 10;
 
