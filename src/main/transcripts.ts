@@ -46,6 +46,15 @@ export interface Parsed {
 const ts = (v: unknown): number => epochMs(v) ?? 0;
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
 const firstLine = (s: string) => s.trim().split("\n").find((l) => l.trim())?.trim() ?? "";
+/** Import offers the conversations active in the last 30 days, the newest 80. */
+export const IMPORT_WINDOW_MS = 30 * 86_400_000;
+export const IMPORT_LIMIT = 80;
+
+/** A conversation as Import lists it: its title, else its first request, else its folder's name — one line, 70 characters at most. */
+export function importTitle(cwd: string, ...candidates: (string | null | undefined)[]): string {
+  return (candidates.find((c) => c?.trim()) ?? path.basename(cwd)).replace(/\s+/g, " ").trim().slice(0, 70);
+}
+
 /** Command wrappers and system notes, not something the user typed: left out of the index. */
 const isNoise = (s: string) => /^\s*<(command-|local-command-|system-reminder|bash-|user-memory)/.test(s) || /^Caveat: /.test(s);
 /** What can title a conversation: a request the user typed — not noise, an interruption marker or a compacted conversation's summary. */
@@ -429,7 +438,7 @@ export class TranscriptIndex {
    * folder still exists — what Import offers to reopen (`claude --resume` /
    * `codex resume` with the id, in that folder).
    */
-  recentConversations(since = Date.now() - 30 * 86_400_000, limit = 80): ImportableConversation[] {
+  recentConversations(since = Date.now() - IMPORT_WINDOW_MS, limit = IMPORT_LIMIT): ImportableConversation[] {
     const rows = this.db
       .prepare(
         `SELECT id, agent, cwd, title, first_prompt, updated FROM conversations c
@@ -441,8 +450,7 @@ export class TranscriptIndex {
     for (const r of rows) {
       if (out.length >= limit) break;
       if (!fs.existsSync(r.cwd)) continue; // worktree or repo deleted since
-      const title = (r.title || r.first_prompt || path.basename(r.cwd)).replace(/\s+/g, " ").trim().slice(0, 70);
-      out.push({ sessionId: r.id, agent: r.agent, cwd: r.cwd, title, mtimeMs: r.updated });
+      out.push({ sessionId: r.id, agent: r.agent, cwd: r.cwd, title: importTitle(r.cwd, r.title, r.first_prompt), mtimeMs: r.updated });
     }
     return out;
   }

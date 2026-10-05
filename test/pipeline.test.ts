@@ -160,6 +160,13 @@ describe("opening pull requests", () => {
     expect(seen[0].cmd).toBe("gh pr create --head 'feat/x' --base 'main' --title 'Add x' --body-file -");
     expect(seen[0].input).toBe("body");
   });
+  it("reports a failed gh run by what it printed, or by its exit code when it printed nothing", async () => {
+    const quiet: ShellRunner = async () => ({ code: 4, out: "" });
+    const gh = { provider: "github" as const, owner: "me", repo: "app" };
+    await expect(findOpenPr(gh, "b", "main", { ado: async () => ({}), run: quiet, cwd: "/", env: {} })).rejects.toThrow("gh: exited with code 4");
+    const loud: ShellRunner = async () => ({ code: 1, out: "  To get started with GitHub CLI, please run:  gh auth login\n" });
+    await expect(findOpenPr(gh, "b", "main", { ado: async () => ({}), run: loud, cwd: "/", env: {} })).rejects.toThrow(/^gh: To get started/);
+  });
   it("says which PAT scope is missing when ADO refuses", () => {
     expect(prError(new Error("Azure DevOps 401 Unauthorized: x"))).toMatch(/Code \(Read & Write\)/);
     expect(prError(new Error("Azure DevOps 404 Not Found: x"))).toBe("Azure DevOps 404 Not Found: x");

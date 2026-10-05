@@ -29,7 +29,7 @@ import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, adoRequest } from "./ado";
 import { PipelineStore } from "./pipeline";
-import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf } from "./pullRequests";
+import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS } from "./agentFiles";
@@ -779,7 +779,7 @@ const pipelineDo = async <T,>(fn: () => T | Promise<T>): Promise<T> => {
   pipelineChanged();
   return r;
 };
-const prDeps = (root: string) => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
+const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
 
 handle("pipeline:all", () => pipeline.all());
 handle("pipeline:stage", (id, stage, title) => pipelineDo(() => pipeline.setStage(String(id), stage, { title: title ? String(title) : undefined })));

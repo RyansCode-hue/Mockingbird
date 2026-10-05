@@ -3,9 +3,8 @@ import * as path from "path";
 import { ImportableConversation } from "../shared/types";
 import { CLAUDE_PROJECTS } from "./agentFiles";
 import { readSlice } from "./fileOps";
-import { isRealPrompt } from "./transcripts";
+import { IMPORT_LIMIT, IMPORT_WINDOW_MS, importTitle, isRealPrompt } from "./transcripts";
 
-const MAX_AGE_DAYS = 30;
 const HEAD_BYTES = 128 * 1024;
 
 /**
@@ -21,7 +20,7 @@ export function listClaudeConversations(): ImportableConversation[] {
   } catch {
     return [];
   }
-  const cutoff = Date.now() - MAX_AGE_DAYS * 86400_000;
+  const cutoff = Date.now() - IMPORT_WINDOW_MS;
 
   for (const dir of projectDirs) {
     const full = path.join(CLAUDE_PROJECTS, dir);
@@ -52,7 +51,7 @@ export function listClaudeConversations(): ImportableConversation[] {
     }
   }
   out.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return out.slice(0, 80);
+  return out.slice(0, IMPORT_LIMIT);
 }
 
 function parseHead(fp: string): { sessionId: string | null; cwd: string; title: string } | null {
@@ -93,6 +92,5 @@ function parseHead(fp: string): { sessionId: string | null; cwd: string; title: 
   }
 
   if (!cwd) return null;
-  const title = (summary ?? firstUserText ?? path.basename(cwd)).replace(/\s+/g, " ").trim().slice(0, 70);
-  return { sessionId, cwd, title };
+  return { sessionId, cwd, title: importTitle(cwd, summary, firstUserText) };
 }
