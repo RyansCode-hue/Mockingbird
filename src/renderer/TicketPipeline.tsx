@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
 import { GATES, TICKET_STAGES, stageLabel, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
 import { ago, plural } from "../shared/format";

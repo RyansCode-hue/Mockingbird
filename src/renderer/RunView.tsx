@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import { isErr, type DebugFrame, type RunProfile, type RunServiceState, type SessionInfo, type IpcResult, type RunProfileInfo } from "../shared/types";
+import { isErr, type DebugFrame, type RunServiceState, type SessionInfo, type IpcResult, type RunProfileInfo } from "../shared/types";
 import { BugIcon, SparkleIcon } from "./Icons";
 import { DebugPanel } from "./DebugPanel";
 import { useDebug } from "./debugStore";

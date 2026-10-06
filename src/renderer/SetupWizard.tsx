@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { isErr, type AgentCheck, type SetupStatus, type Settings } from "../shared/types";
 import { plural } from "../shared/format";
 import { Modal } from "./Modal";

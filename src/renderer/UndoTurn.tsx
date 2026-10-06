@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { isErr, SNAPSHOT_MAX_FILE_BYTES, type SessionInfo, type TurnChange, type TurnSnapshot, type IpcResult } from "../shared/types";
 import { ago, plural } from "../shared/format";
 import { Modal } from "./Modal";

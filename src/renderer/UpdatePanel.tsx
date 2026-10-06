@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { UPDATE_STEPS, type UpdateProgress } from "../shared/types";
 import { Modal } from "./Modal";
 import { useAction } from "./useAction";

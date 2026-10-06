@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { isErr, type AgentKind, type CollabParticipant, type CollabParticipantSpec, type CollabRoom } from "../shared/types";
 import { ChevronIcon, DockerIcon, ReadIcon, RunIcon } from "./Icons";
 import { Select } from "./Menu";

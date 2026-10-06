@@ -194,7 +194,7 @@ type Call = RunAction;
 
 function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; catalog: Catalog; onDeleted: () => void; onOpenSession: (id: string) => void }) {
   const [draft, setDraft] = useState("");
-  const { busy, doing, run: call, error, setError } = useAction();
+  const { busy, doing, run: call, error } = useAction();
   const [view, setView] = usePersisted<"thread" | "rounds">("mb.collab.view", "thread");
   const [inspector, setInspector] = usePersisted<boolean>("mb.collab.inspector", true);
   const [open, setOpen] = useState<Set<string>>(() => new Set()); // folded messages / grid cells the user opened
@@ -259,7 +259,7 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
         {view === "thread" ? (
           <Thread room={room} label={label} color={color} open={open} toggle={toggle} call={call} endRef={endRef} />
         ) : (
-          <RoundsGrid room={room} color={color} open={open} toggle={toggle} call={call} endRef={endRef} />
+          <RoundsGrid room={room} open={open} toggle={toggle} call={call} endRef={endRef} />
         )}
 
         {pending.length > 0 && (
@@ -417,14 +417,12 @@ function Thread({
 /** The discussion as a grid: a column per model, a row per round; a cell opens in place. */
 function RoundsGrid({
   room,
-  color,
   open,
   toggle,
   call,
   endRef,
 }: {
   room: CollabRoom;
-  color: Record<string, number>;
   open: Set<string>;
   toggle: (id: string) => void;
   call: Call;

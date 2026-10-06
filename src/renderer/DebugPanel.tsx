@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { isErr, type DebugFrame, type DebugScope, type DebugSessionInfo, type DebugVariable, type IpcResult } from "../shared/types";
 import { currentSession, selectFrame, useBreakpoints, useDebug } from "./debugStore";
 import { settled } from "./settled";

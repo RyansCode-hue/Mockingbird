@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { isErr, AGENT_NAME, otherAgent, type AgentKind, type SessionInfo } from "../shared/types";
 import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import { AGENT_NAME, type SessionPreset } from "../shared/types";
 import { RepoPick } from "./RepoPick";
 import { baseName } from "../shared/paths";

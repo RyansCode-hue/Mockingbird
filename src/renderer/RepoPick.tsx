@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { isErr, type RepoEntry } from "../shared/types";
 import { Pick } from "./Menu";
 import { baseName } from "../shared/paths";

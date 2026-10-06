@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import type { AgentMessage } from "../shared/types";
 import { createIpcStore, loadInto } from "./ipcStore";
 import { Modal } from "./Modal";

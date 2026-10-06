@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { tokenBreakdown } from "./TerminalPane";
 import { resetText, pctNow, headlineOf } from "./usageFormat";
 import { Popover } from "./Popover";
-import { AGENT_NAME, formatTokens, totalTokens, type UsageReport, type UsageLimit, type Meters } from "../shared/types";
+import { AGENT_NAME, formatTokens, totalTokens, type UsageReport, type Meters } from "../shared/types";
 import { fmtElapsed } from "../shared/format";
 import { usePersisted } from "./prefs";
 
