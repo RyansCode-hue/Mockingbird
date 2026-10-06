@@ -4,9 +4,9 @@ import * as path from "path";
 import { execFileSync } from "child_process";
 import { afterAll, describe, expect, it } from "vitest";
 import { LspManager, completionItems, hoverText, locations, workspaceEdits } from "../src/main/lsp/manager";
-import { serverFor } from "../src/main/lsp/servers";
+import { SERVERS, serverFor, type LspServerSpec } from "../src/main/lsp/servers";
 import { applyTextEdits, lineStarts, offsetAt } from "../src/shared/textEdits";
-import type { LspDiagnostic } from "../src/shared/types";
+import type { LspDiagnostic, LspServerId } from "../src/shared/types";
 import { tempDir, write } from "./helpers";
 
 describe("text edits", () => {
@@ -80,6 +80,120 @@ describe("asking about a file that has no ready server", () => {
   });
 });
 
+/**
+ * A pull-diagnostics server scripted by the `mode` file in its folder; a file
+ * whose text says ERROR has one problem. "out-of-order": the first request
+ * after an edit is held, a refresh asks for another, and the held one is
+ * answered last, with the problems from before the edit. "abandon": a
+ * refresh's request is held until the edit, then abandoned (ContentModified),
+ * and the edit's own first request fails (ServerCancelled).
+ */
+const FAKE_SERVER = String.raw`
+const fs = require("fs");
+const mode = fs.readFileSync("mode", "utf8").trim();
+const send = (m) => {
+  const b = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...m }));
+  process.stdout.write("Content-Length: " + b.length + "\r\n\r\n");
+  process.stdout.write(b);
+};
+const docs = {};
+let n = 0, held = null, ids = 1000;
+const full = (id, text) => send({ id, result: { kind: "full", items: text.includes("ERROR") ? [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } }, severity: 1, message: "an error" }] : [] } });
+const refresh = () => send({ id: ids++, method: "workspace/diagnostic/refresh" });
+function handle(m) {
+  if (m.method === "initialize") return send({ id: m.id, result: { capabilities: { textDocumentSync: 1, diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } } } });
+  if (m.method === "shutdown") return send({ id: m.id, result: null });
+  if (m.method === "exit") process.exit(0);
+  if (m.method === "textDocument/didOpen") docs[m.params.textDocument.uri] = m.params.textDocument.text;
+  if (m.method === "textDocument/didChange") {
+    docs[m.params.textDocument.uri] = m.params.contentChanges[0].text;
+    if (mode === "abandon" && held) send({ id: held.id, error: { code: -32801, message: "content modified" } });
+  }
+  if (m.method !== "textDocument/diagnostic") return;
+  const text = docs[m.params.textDocument.uri];
+  n++;
+  if (mode === "out-of-order" && n === 2) return (held = m), refresh();
+  if (mode === "out-of-order" && n === 3) return full(m.id, text), full(held.id, "ERROR from before the edit");
+  if (mode === "abandon" && n === 1) return full(m.id, text), refresh();
+  if (mode === "abandon" && n === 2) return (held = m), send({ method: "window/showMessage", params: { type: 1, message: "holding" } });
+  if (mode === "abandon" && n === 3) return send({ id: m.id, error: { code: -32802, message: "busy" } });
+  full(m.id, text);
+}
+let buf = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buf = Buffer.concat([buf, chunk]);
+  for (;;) {
+    const h = buf.indexOf("\r\n\r\n");
+    if (h < 0) return;
+    const len = Number(/Content-Length: (\d+)/i.exec(buf.subarray(0, h).toString())[1]);
+    if (buf.length < h + 4 + len) return;
+    const m = JSON.parse(buf.subarray(h + 4, h + 4 + len).toString());
+    buf = buf.subarray(h + 4 + len);
+    handle(m);
+  }
+});
+`;
+
+describe("pulled problems", () => {
+  const dir = tempDir("lsp-fake");
+  const spec: LspServerSpec = {
+    id: "fake" as LspServerId,
+    label: "Fake",
+    languages: { ".fake": "fake" },
+    pinned: () => ({ name: "fake", version: "1", url: "https://example.invalid/fake.tgz", marker: "server.js" }),
+    command: (d) => ({ cmd: process.execPath, args: [path.join(d, "server.js")], env: { ELECTRON_RUN_AS_NODE: "1" } }),
+  };
+  fs.mkdirSync(path.join(dir, "fake-1"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "fake-1", "server.js"), FAKE_SERVER);
+  SERVERS.push(spec);
+  afterAll(() => {
+    SERVERS.splice(SERVERS.indexOf(spec), 1);
+  });
+
+  const run = async (mode: string, edit: (m: LspManager, root: string, file: string, said: (msg: string) => Promise<void>) => Promise<void>) => {
+    const seen: string[][] = [];
+    const messages: string[] = [];
+    const m = new LspManager({
+      dir,
+      env: () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin" }),
+      which: async () => null,
+      node: process.execPath,
+      onDiagnostics: (_f, d) => seen.push(d.map((x) => x.message)),
+      onStatus: (st) => st.message && messages.push(st.message),
+    });
+    const until = async (cond: () => boolean, what: string) => {
+      for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 50));
+      if (!cond()) throw new Error(`never ${what}: ${JSON.stringify({ seen, messages })}`);
+    };
+    const root = tempDir(`lsp-${mode}`);
+    fs.writeFileSync(path.join(root, "mode"), mode);
+    const file = path.join(root, "a.fake");
+    try {
+      expect(await m.open(root, file, "ERROR here")).toMatchObject({ state: "ready" });
+      await until(() => seen.length > 0, "saw the first problems");
+      expect(seen.at(-1)).toEqual(["an error"]);
+      await edit(m, root, file, (msg) => until(() => messages.includes(msg), `said ${msg}`));
+      await until(() => seen.at(-1)?.length === 0, "cleared the problems");
+      await new Promise((r) => setTimeout(r, 1500)); // anything still to come
+      expect(seen.at(-1)).toEqual([]);
+      expect(messages.filter((x) => x.startsWith("Couldn't read problems"))).toEqual([]);
+    } finally {
+      m.stopAll();
+    }
+  };
+
+  it("uses only the newest request's answer when answers arrive out of order", { timeout: 20_000 }, async () => {
+    await run("out-of-order", async (m, root, file) => m.change(root, file, "all fixed"));
+  });
+
+  it("drops an abandoned request for old text and keeps asking about the new text", { timeout: 20_000 }, async () => {
+    await run("abandon", async (m, root, file, said) => {
+      await said("holding");
+      m.change(root, file, "all fixed");
+    });
+  });
+});
+
 // Real servers, downloaded once into a cache that outlives the per-file temp HOME.
 const CACHE = path.join(os.tmpdir(), "mockingbird-test-lsp-cache");
 const has = (bin: string) => {
@@ -94,6 +208,8 @@ const has = (bin: string) => {
 describe("real language servers", () => {
   const diags = new Map<string, LspDiagnostic[]>();
   const waiters: (() => void)[] = [];
+  // what the servers said, for a failure message
+  const statuses: string[] = [];
   const m = new LspManager({
     dir: CACHE,
     env: () => ({ ...process.env }) as Record<string, string>,
@@ -103,7 +219,7 @@ describe("real language servers", () => {
       diags.set(file, d);
       waiters.splice(0).forEach((w) => w());
     },
-    onStatus: () => {},
+    onStatus: (st) => statuses.push(`${st.server} ${st.state}${st.message ? `: ${st.message}` : ""}`),
   });
   afterAll(() => m.stopAll());
   const problems = async (file: string, test: (d: LspDiagnostic[]) => boolean, ms = 30_000) => {
@@ -116,7 +232,7 @@ describe("real language servers", () => {
         setTimeout(r, 500);
       });
     }
-    throw new Error(`No matching problems for ${file}: ${JSON.stringify(diags.get(file))}`);
+    throw new Error(`No matching problems for ${file}: ${JSON.stringify(diags.get(file))}; servers said: ${JSON.stringify(statuses.slice(-10))}`);
   };
 
   it("TypeScript: problems, hover, completions, definition, rename and formatting", { timeout: 180_000 }, async () => {
@@ -139,10 +255,19 @@ describe("real language servers", () => {
     expect(def[0]).toMatchObject({ path: path.join(root, "util.ts"), line: 1 }); // in the root's own spelling, as sent
     const edits = await m.rename(root, main, { line: 2, character: 1 }, "welcome");
     expect(edits.map((e) => path.basename(e.path)).sort()).toEqual(["main.ts", "util.ts"]);
+    // Edits are saved as well as sent: after a burst of file changes near the
+    // project (other tests share /tmp), TypeScript 7.0.2's server answers from
+    // the file on disk rather than the open text. Unsaved edits are covered by
+    // the scripted server above.
+    const edit = (t: string) => {
+      fs.writeFileSync(main, t);
+      m.change(root, main, t);
+      m.saved(root, main);
+    };
     // fixing the error clears it
-    m.change(root, main, 'import { greet } from "./util";\nconst n: number = 1;\ngreet("a");\n');
+    edit('import { greet } from "./util";\nconst n: number = 1;\ngreet("a");\n');
     await problems(main, (x) => x.every((p) => p.severity !== "error"));
-    m.change(root, main, "const  x=1;\n");
+    edit("const  x=1;\n");
     const fmt = await m.format(root, main, { tabSize: 2, insertSpaces: true });
     expect(applyTextEdits("const  x=1;\n", fmt ?? [])).toBe("const x = 1;\n");
     m.close(root, main);

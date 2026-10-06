@@ -10,6 +10,7 @@ import type { LspPosition, LspTextEdit } from "../../shared/textEdits";
 
 const IDLE_MS = 10 * 60_000;
 const PULL_DELAY_MS = 400;
+const PULL_ATTEMPTS = 3;
 const MAX_COMPLETIONS = 200;
 
 const SEVERITY: Record<number, LspDiagnostic["severity"]> = { 1: "error", 2: "warning", 3: "info", 4: "hint" };
@@ -48,6 +49,8 @@ interface Server {
   ready: Promise<void>;
   docs: Map<string, Doc>;
   pulls: Map<string, NodeJS.Timeout>;
+  /** Per file: the newest diagnostics request sent, the only one whose answer is used. */
+  latestPull: Map<string, number>;
   idle: NodeJS.Timeout | null;
 }
 
@@ -154,6 +157,7 @@ export class LspManager {
   private starting = new Map<string, Promise<Server>>();
   /** Per root and file: opens still waiting for their server, and the closes that arrived for them meanwhile. */
   private opening = new Map<string, { opens: number; closes: number }>();
+  private pullSeq = 0;
 
   constructor(private deps: LspDeps) {}
 
@@ -193,7 +197,7 @@ export class LspManager {
     const { cmd, args, env } = spec.command(dir, { node: this.deps.node, dotnet });
     this.deps.onStatus({ server: spec.id, root, state: "starting" });
     const { conn } = spawnRpcProcess(cmd, args, { cwd: root, env: { ...this.deps.env(), ...(env ?? {}) }, name: `${spec.label} language server` }, (input, output, onClose) => new LspConnection(input, output, onClose));
-    const s: Server = { spec, root, conn, caps: {}, ready: Promise.resolve(), docs: new Map(), pulls: new Map(), idle: null };
+    const s: Server = { spec, root, conn, caps: {}, ready: Promise.resolve(), docs: new Map(), pulls: new Map(), latestPull: new Map(), idle: null };
     conn.on("close", (reason: string) => {
       for (const t of s.pulls.values()) clearTimeout(t);
       if (s.idle) clearTimeout(s.idle);
@@ -272,11 +276,13 @@ export class LspManager {
 
   /**
    * Ask a pull-diagnostics server for a file's problems once typing settles.
-   * An answer for text that has changed since is dropped (a newer request is
-   * coming, and answers can arrive out of order); a failed request is tried
-   * once more before the failure is reported.
+   * Only the newest request speaks for the file: an answer or error for one
+   * that's been overtaken — the text changed, or a newer request went out
+   * (answers can arrive out of order) — is dropped, since the newer one will
+   * answer. A failed request (a server busy rebuilding may abandon it) is
+   * asked again a few times before the failure is reported.
    */
-  private schedulePull(s: Server, file: string, retry = true): void {
+  private schedulePull(s: Server, file: string, attempt = 0): void {
     if (!s.caps.diagnosticProvider) return; // this server pushes its problems instead
     clearTimeout(s.pulls.get(file));
     s.pulls.set(
@@ -286,16 +292,18 @@ export class LspManager {
         const doc = s.docs.get(file);
         if (!doc) return;
         const version = doc.version;
+        const seq = ++this.pullSeq;
+        s.latestPull.set(file, seq);
+        const current = () => s.docs.get(file) === doc && doc.version === version && s.latestPull.get(file) === seq;
         try {
           const r = await s.conn.request("textDocument/diagnostic", { textDocument: { uri: doc.uri } });
-          if (s.docs.get(file) !== doc || doc.version !== version) return;
-          if (r?.kind === "full") this.deps.onDiagnostics(file, diagnostics(r.items));
+          if (current() && r?.kind === "full") this.deps.onDiagnostics(file, diagnostics(r.items));
         } catch (err) {
-          if (s.conn.isClosed) return; // the close already says why
-          if (retry) return this.schedulePull(s, file, false);
+          if (s.conn.isClosed || !current()) return; // the close says why; a newer request answers instead
+          if (attempt < PULL_ATTEMPTS - 1) return this.schedulePull(s, file, attempt + 1);
           this.deps.onStatus({ server: s.spec.id, root: s.root, state: "ready", message: `Couldn't read problems: ${(err as Error).message}` });
         }
-      }, retry ? PULL_DELAY_MS : 1000)
+      }, attempt ? 1000 : PULL_DELAY_MS)
     );
   }
 
@@ -398,6 +406,7 @@ export class LspManager {
     const { s, doc } = found;
     s.docs.delete(file);
     clearTimeout(s.pulls.get(file));
+    s.latestPull.delete(file);
     s.conn.notify("textDocument/didClose", { textDocument: { uri: doc.uri } });
     if (!s.docs.size) this.idleLater(s);
   }
