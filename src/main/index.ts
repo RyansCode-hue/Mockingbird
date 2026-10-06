@@ -37,7 +37,8 @@ import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptL
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify } from "./notifications";
-import { composeRollup, hoursMinutes, weekBounds } from "./rollup";
+import { composeRollup, weekBounds } from "./rollup";
+import { fmtElapsed } from "../shared/format";
 import { MessageLog } from "./messageLog";
 import { changedFiles, overlaps, type WorktreeChanges } from "./conflicts";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
@@ -49,7 +50,7 @@ import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
-import { localDay, topOfKey, UI_COMMANDS } from "../shared/types";
+import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 
@@ -166,7 +167,8 @@ function notifySession(sessionId: string, title: string, body: string, kind: "wa
 // working sessions. No badge when nothing is waiting.
 let tray: Tray | null = null;
 
-const fmtWait = (since: number | null): string => (since ? hoursMinutes(Date.now() - since) : "");
+// the same reading the pane shows for how long it has waited
+const fmtWait = (since: number | null): string => (since ? fmtElapsed(since) : "");
 
 function focusPane(sessionId?: string): void {
   const win = BrowserWindow.getAllWindows()[0];
@@ -793,7 +795,7 @@ handle("pipeline:draft:drop", (id, draftId) => pipelineDo(() => pipeline.dropDra
 handle("pipeline:draft:post", (id, draftId) =>
   pipelineDo(async () => {
     const tid = String(id);
-    if (!/^\d+$/.test(tid)) throw new Error(`#${tid} isn't an Azure DevOps work item, so it has no discussion to post to`);
+    if (!isWorkItemId(tid)) throw new Error(`#${tid} isn't an Azure DevOps work item, so it has no discussion to post to`);
     const d = pipeline.findDraft(tid, String(draftId));
     if (!d.text.trim()) throw new Error("The comment is empty");
     await addComment(store, Number(tid), d.text);

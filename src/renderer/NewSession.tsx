@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useRepos } from "./RepoPick";
 import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
@@ -59,7 +60,7 @@ export function NewSessionModal({
   const codexInfo = catalog?.codex.models.find((m) => m.id === codexModel);
   const effModel = launch === "codex" ? codexModel.trim() : model === "__custom" ? modelCustom.trim() : model;
   const effEffort = launch === "codex" ? codexEffort : effort;
-  const [repos, setRepos] = useState<RepoEntry[]>([]);
+  const { repos, error: reposError } = useRepos();
   const [q, setQ] = useState("");
   const [sel, setSel] = useState<RepoEntry | null>(null);
   const [ticketId, setTicketId] = useState("");
@@ -116,11 +117,8 @@ export function NewSessionModal({
   const { branches: branchInfo, base: baseBranch, setBase: setBaseBranch, error: branchError } = useRepoBranches(sel?.path);
 
   useEffect(() => {
-    window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => {
-      if (Array.isArray(r)) setRepos(r);
-      else setError(`Repo scan failed: ${r.error}`);
-    });
-  }, []);
+    if (reposError) setError(`Repo scan failed: ${reposError}`);
+  }, [reposError]);
 
   // people who actually have tickets on the board, you first
   const people = useMemo(() => {

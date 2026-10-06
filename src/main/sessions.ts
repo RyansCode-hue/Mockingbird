@@ -4,7 +4,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { WebContents } from "electron";
-import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, AgentKind, type AgentUpdateNotice, type BroadcastOutcome } from "../shared/types";
+import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, ticketIdOf, AgentKind, type AgentUpdateNotice, type BroadcastOutcome } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
@@ -227,7 +227,7 @@ export class SessionManager {
       title:
         req.title ??
         (req.ticketId && req.ticketTitle
-          ? `#${req.ticketId.replace(/^#/, "")} — ${req.ticketTitle}`
+          ? `#${ticketIdOf(req.ticketId)} — ${req.ticketTitle}`
           : branch ?? (repoPath ? repoPath.split("/").pop()! : req.shell ? "terminal" : "assistant")),
       repoPath,
       cwd,

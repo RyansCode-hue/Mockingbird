@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import { isErr, type DebugFrame, type RunServiceState, type SessionInfo, type IpcResult, type RunProfileInfo } from "../shared/types";
+import { isErr, type DebugFrame, type PortConflict, type RunServiceState, type SessionInfo, type IpcResult, type RunProfileInfo } from "../shared/types";
 import { BugIcon, SparkleIcon } from "./Icons";
 import { DebugPanel } from "./DebugPanel";
 import { useDebug } from "./debugStore";
 import { RUN_DOT, draftForEditing, stripRepo } from "./runDisplay";
 import { useAction } from "./useAction";
-import type { PortConflict } from "../main/run";
 import { baseName } from "../shared/paths";
 import { readPref, writePref } from "./prefs";
 import { settled } from "./settled";

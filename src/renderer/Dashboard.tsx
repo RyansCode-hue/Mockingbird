@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useRepos } from "./RepoPick";
 import { Pick } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard, COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
 import { beginDrag, cue, dragging, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
@@ -6,7 +7,7 @@ import { stateRank, suggestTicketName, ticketKickoffPrompt, useRepoBranches, wor
 import { titleOf } from "./appModel";
 import { Popover } from "./Popover";
 import { PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
-import { isErr, slugBranch, topOfKey, type SessionInfo, type RepoEntry, type AdoWorkItem, type AdoComment, type AdoBoard } from "../shared/types";
+import { isErr, slugBranch, topOfKey, type SessionInfo, type AdoWorkItem, type AdoComment, type AdoBoard } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { ago, agoShort, fmtElapsed, plural } from "../shared/format";
 import { Modal } from "./Modal";
@@ -112,7 +113,7 @@ export function DashboardBoard({
   const [comments, setComments] = useState<AdoComment[] | null>(null);
   const [draft, setDraft] = useState("");
   // start/attach session
-  const [repos, setRepos] = useState<RepoEntry[]>([]);
+  const { repos, error: reposError } = useRepos();
   const [repoPath, setRepoPath] = useState("");
   const [ticketName, setTicketName] = useState("");
   const [attachId, setAttachId] = useState("");
@@ -155,11 +156,10 @@ export function DashboardBoard({
 
   useEffect(() => {
     load();
-    window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => {
-      if (isErr(r)) setError(`Couldn't list your repos: ${r.error}`);
-      else setRepos(r);
-    });
   }, []);
+  useEffect(() => {
+    if (reposError) setError(`Couldn't list your repos: ${reposError}`);
+  }, [reposError]);
 
   const people = useMemo(() => {
     const counts = new Map<string, number>();

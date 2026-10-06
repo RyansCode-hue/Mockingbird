@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, isErr, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabPermissionRequest, type CollabRoom, type IpcResult } from "../shared/types";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, isErr, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabLoadProblem, type CollabPermissionRequest, type CollabRoom, type IpcResult } from "../shared/types";
 import {
   accessFlags,
   accessOf,
@@ -41,9 +41,12 @@ export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (
   const [selected, setSelected] = useState<string | "new" | null>(null);
   const [error, setError] = useState("");
   const [railOpen, setRailOpen] = usePersisted<boolean>("mb.collab.rail", false);
+  // room files on disk that couldn't be read: left in place, and named here so a vanished room isn't a mystery
+  const [unreadable, setUnreadable] = useState<CollabLoadProblem[]>([]);
 
   useEffect(() => {
     window.mb.collabModels().then(setCatalog, (err: unknown) => setError(`Couldn't list the models: ${err instanceof Error ? err.message : err}`));
+    window.mb.collabProblems().then((r: IpcResult<CollabLoadProblem[]>) => (isErr(r) ? setError(r.error) : setUnreadable(r)));
     window.mb.collabList().then((r: IpcResult<CollabRoom[]>) => {
       if (isErr(r)) return setError(r.error);
       setRooms(r);
@@ -101,6 +104,12 @@ export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (
       </aside>
       <main className="collab-main">
         {error && <div className="err">{error}</div>}
+        {unreadable.length > 0 && (
+          <div className="err" title={unreadable.map((p) => `${p.file}: ${p.error}`).join("\n")}>
+            {unreadable.length === 1 ? "A room's file couldn't be read" : `${unreadable.length} room files couldn't be read`} and {unreadable.length === 1 ? "isn't" : "aren't"} listed:{" "}
+            {unreadable.map((p) => `${p.file} (${p.error})`).join("; ")}
+          </div>
+        )}
         {selected === "new" || !room ? (
           <NewRoom
             catalog={catalog}

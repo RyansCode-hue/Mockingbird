@@ -1,5 +1,5 @@
 import * as path from "path";
-import { formatTokens, stageLabel, type AgentKind, type TicketPipeline } from "../shared/types";
+import { formatTokens, stageLabel, ticketIdOf, type AgentKind, type TicketPipeline } from "../shared/types";
 import { agentLabel } from "./agents";
 
 /** Messages closer together than this count as one stretch of work. */
@@ -59,7 +59,7 @@ export function weekBounds(now: Date, weeksAgo = 0): { start: Date; end: Date } 
  */
 export function ticketOf(cwd: string, sessions: SessionRef[]): { id: string; title: string | null } | null {
   const s = sessions.find((x) => x.cwd === cwd && (x.ticketId || /^\d+/.test(x.taskGroup ?? "")));
-  if (s) return { id: (s.ticketId ?? (s.taskGroup ?? "").split("/")[0]).replace(/^#/, ""), title: s.ticketTitle };
+  if (s) return { id: ticketIdOf(s.ticketId ?? (s.taskGroup ?? "").split("/")[0]), title: s.ticketTitle };
   const m = /^(\d{3,})[-_]/.exec(path.basename(cwd));
   return m ? { id: m[1], title: null } : null;
 }

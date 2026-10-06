@@ -9,7 +9,7 @@ import { copyPrepared, setupCommand, type PrepareCopy } from "./runPrepare";
 import type { DebugManager } from "./dap/session";
 import type { debugTargetFor } from "./dap/targets";
 import { quote } from "./shell";
-import type { RunPort, RunProfile, RunService, RunServiceState } from "../shared/types";
+import type { PortConflict, RunPort, RunProfile, RunService, RunServiceState } from "../shared/types";
 
 /** What a run needs from a terminal process — node-pty in the app, a fake in tests. */
 export interface RunProc {
@@ -20,14 +20,6 @@ export interface RunProc {
   resize(cols: number, rows: number): void;
 }
 export type Spawn = (command: string, opts: { cwd: string; env: Record<string, string> }) => RunProc;
-
-/** Someone else listening on a port a service needs. */
-interface PortConflict {
-  port: number;
-  service: string;
-  pid: number | null;
-  command: string;
-}
 
 /** `ids`: the started services' run ids, in `started` order (for showing their logs). */
 type StartResult = { slot: number; started: string[]; ids: string[] } | { blocked: PortConflict[]; slot: number };

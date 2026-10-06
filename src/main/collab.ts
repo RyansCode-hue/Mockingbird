@@ -15,7 +15,7 @@ import type {
   NewSessionRequest,
   SessionInfo,
 } from "../shared/types";
-import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN } from "../shared/types";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, SEAT_PALETTE_SIZE } from "../shared/types";
 import { MB_DIR } from "./store";
 import { writeFileAtomic } from "./fileOps";
 import { quote, userShellWithInput } from "./shell";
@@ -39,7 +39,6 @@ export const COLLAB_EFFORTS: Record<AgentKind, string[]> = {
 };
 
 const DEFAULT_ROUNDS: Record<CollabMode, number> = { step: 1, auto: 3, consensus: 6 };
-const PALETTE_SIZE = 6;
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]{0,80}$/;
 
 const active = (room: CollabRoom) => room.participants.filter((p) => !p.removed);
@@ -228,7 +227,7 @@ export class CollabRooms {
           p.readsCode ??= true;
           p.runsCommands ??= false;
           p.usesDocker ??= false;
-          p.color ??= i % PALETTE_SIZE;
+          p.color ??= i % SEAT_PALETTE_SIZE;
         });
         room.workspacePath ??= null;
         room.pending = []; // their turns ended with the app
@@ -294,7 +293,7 @@ export class CollabRooms {
       throw new Error(`${s.effort} isn't an effort level ${agentLabel(s.agent)} accepts`);
     }
     const used = new Set(room.participants.filter((p) => !p.removed).map((p) => p.color));
-    const color = [...Array(PALETTE_SIZE).keys()].find((c) => !used.has(c)) ?? room.participants.length % PALETTE_SIZE;
+    const color = [...Array(SEAT_PALETTE_SIZE).keys()].find((c) => !used.has(c)) ?? room.participants.length % SEAT_PALETTE_SIZE;
     const preset = COLLAB_MODELS.find((m) => m.agent === s.agent && m.model === model);
     let key = preset?.key ?? model.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
     while (room.participants.some((p) => p.key === key)) key = `${key}-${randomUUID().slice(0, 4)}`;

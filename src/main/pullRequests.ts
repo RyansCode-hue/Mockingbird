@@ -4,7 +4,7 @@ import { dirtyFileCount } from "./scm";
 import { listAllFiles } from "./find";
 import { quote, type ShellResult } from "./shell";
 import type { ShellRunner } from "./headless";
-import type { PrPreflight, PrTarget } from "../shared/types";
+import { isWorkItemId, type PrPreflight, type PrTarget } from "../shared/types";
 
 /** The PR's base: the first usual name for the target that exists on origin. */
 export function pickBase(target: PrTarget, remoteBranches: string[]): string | null {
@@ -98,7 +98,7 @@ export async function openPr(
         targetRefName: `refs/heads/${pr.base}`,
         title: pr.title,
         description: desc,
-        ...(pr.workItemId && /^\d+$/.test(pr.workItemId) ? { workItemRefs: [{ id: pr.workItemId }] } : {}),
+        ...(pr.workItemId && isWorkItemId(pr.workItemId) ? { workItemRefs: [{ id: pr.workItemId }] } : {}),
       }),
     });
     if (!r?.pullRequestId) throw new Error("Azure DevOps didn't return the new pull request");

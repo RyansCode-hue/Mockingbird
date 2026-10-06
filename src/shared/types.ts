@@ -561,6 +561,14 @@ export interface RunProfileInfo {
 export type RunStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
 
 /** One running (or last-run) service of one worktree. */
+/** Someone else listening on a port a service needs. */
+export interface PortConflict {
+  port: number;
+  service: string;
+  pid: number | null;
+  command: string;
+}
+
 export interface RunServiceState {
   id: string;
   service: string;
