@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { DebugFrame, DebugSessionInfo } from "../shared/types";
+import { isErr, type DebugFrame, type DebugSessionInfo } from "../shared/types";
 import { createIpcStore, loadInto } from "./ipcStore";
 
 /**
@@ -102,7 +102,7 @@ export function useBreakpoints(paneSessionId: string | null): {
       window.mb.debugBreakpoints(paneSessionId).then(
         (r: { breakpoints: Record<string, number[]> } | { error: string }) => {
           if (!live) return;
-          if ("error" in r) return setError(r.error);
+          if (isErr(r)) return setError(r.error);
           setError("");
           setMap(r.breakpoints);
         },
@@ -119,7 +119,7 @@ export function useBreakpoints(paneSessionId: string | null): {
     if (!paneSessionId) return;
     setMap((m) => ({ ...m, [rel]: lines }));
     window.mb.debugSetBreakpoints(paneSessionId, rel, lines).then((r: unknown) => {
-      if (r && typeof r === "object" && "error" in r) addOutput({ sid: "", category: "stderr", text: `Breakpoint not saved: ${(r as { error: string }).error}\n` });
+      if (isErr(r)) addOutput({ sid: "", category: "stderr", text: `Breakpoint not saved: ${r.error}\n` });
     });
   };
   return {

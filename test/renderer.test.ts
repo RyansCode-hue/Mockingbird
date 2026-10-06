@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseDiff } from "../src/renderer/FilePanel";
-import { resetText, pctNow } from "../src/renderer/usageFormat";
+import { headlineOf, resetText, pctNow } from "../src/renderer/usageFormat";
 
 describe("parseDiff", () => {
   it("numbers old and new lines through a hunk", () => {
@@ -33,6 +33,13 @@ describe("usage reset text", () => {
   it("shows a window that has already reset as 0%", () => {
     expect(pctNow({ label: "5-hour limit", usedPct: 41, resetsAt: now - 1 }, now)).toBe(0);
     expect(pctNow({ label: "5-hour limit", usedPct: 41, resetsAt: now + 1 }, now)).toBe(41);
+  });
+  it("picks the status bar's readings by window, not by label", () => {
+    const at = { usedPct: 1, resetsAt: null };
+    expect(headlineOf({ ...at, label: "anything", window: "5h" })).toBe("5h");
+    expect(headlineOf({ ...at, label: "Weekly · all models", window: "week" })).toBe("wk");
+    expect(headlineOf({ ...at, label: "Weekly · Opus", window: "week", model: "Opus" })).toBeNull();
+    expect(headlineOf({ ...at, label: "3-hour limit", window: "other" })).toBeNull();
   });
 });
 

@@ -1,13 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
-import type { GitChange, GraphCommit, ScmGraph } from "../shared/types";
+import { isErr, type GitChange, type GraphCommit, type ScmGraph, type IpcResult } from "../shared/types";
 import { layoutGraph, laneCount, type GraphRow } from "./graphLayout";
-import { ago } from "./format";
+import { ago } from "../shared/format";
 import { settled } from "./settled";
+import { baseName, dirName } from "../shared/paths";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
 const H = 24;
 const W = 12;
@@ -92,13 +89,13 @@ export function CommitGraph({
   onOpenDiff: (path: string, sha: string, status: GitChange["status"]) => void;
 }) {
   const [limit, setLimit] = useState(150);
-  const [graph, setGraph] = useState<Result<ScmGraph> | null>(null);
+  const [graph, setGraph] = useState<IpcResult<ScmGraph> | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const [files, setFiles] = useState<Record<string, Result<GitChange[]>>>({});
+  const [files, setFiles] = useState<Record<string, IpcResult<GitChange[]>>>({});
 
   useEffect(() => {
     let live = true;
-    settled<Result<ScmGraph>>(window.mb.scmGraph(sessionId, limit), "Couldn't read the commit graph").then(
+    settled<IpcResult<ScmGraph>>(window.mb.scmGraph(sessionId, limit), "Couldn't read the commit graph").then(
       (r) => live && setGraph((g) => (JSON.stringify(g) === JSON.stringify(r) ? g : r))
     );
     return () => {
@@ -112,7 +109,7 @@ export function CommitGraph({
 
   const toggle = (sha: string) => {
     setOpen((o) => (o === sha ? null : sha));
-    if (!files[sha]) settled<Result<GitChange[]>>(window.mb.scmCommitFiles(sessionId, sha), "Couldn't read the commit's files").then((r) => setFiles((f) => ({ ...f, [sha]: r })));
+    if (!files[sha]) settled<IpcResult<GitChange[]>>(window.mb.scmCommitFiles(sessionId, sha), "Couldn't read the commit's files").then((r) => setFiles((f) => ({ ...f, [sha]: r })));
   };
 
   if (graph === null) return <div className="fp-note">loading…</div>;

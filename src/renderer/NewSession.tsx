@@ -3,9 +3,13 @@ import { Snippet } from "./TranscriptSearch";
 import { Pick, Select } from "./Menu";
 import { suggestTicketName, ticketKickoffPrompt, ticketsByColumn, useAdoTickets, useRepoBranches } from "./tickets";
 import { newPresetId } from "./Presets";
-import type { AgentKind, SessionInfo, SessionPreset, RepoEntry, ImportableConversation, TranscriptHit, ModelCatalog } from "../shared/types";
-import { slugBranch, sanitizeSegment, splitGroupKey, topOfKey } from "../shared/types";
-import { loadLS, ago } from "./uiUtil";
+import { isErr, AGENT_NAME, slugBranch, sanitizeSegment, splitGroupKey, topOfKey, groupKey, ticketIdOf, type AgentKind, type SessionInfo, type SessionPreset, type RepoEntry, type ImportableConversation, type TranscriptHit, type ModelCatalog } from "../shared/types";
+import { agoShort } from "../shared/format";
+import { tildePath } from "../shared/paths";
+import { Modal } from "./Modal";
+import { usePersisted, writePref, readPref } from "./prefs";
+import { COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
+import { useAction } from "./useAction";
 
 /** Starting sessions: New session (⌘N) and Import. */
 
@@ -33,19 +37,19 @@ export function NewSessionModal({
 }) {
   const [launch, setLaunch] = useState<LaunchKind>(initialLaunch ?? "claude");
   const isAgent = launch !== "shell";
-  const agentLabel = launch === "codex" ? "Codex" : "Claude";
+  const agentLabel = AGENT_NAME[launch === "codex" ? "codex" : "claude"];
   // model/effort ride the agent's command line; the last choice is remembered
   // per agent because people tend to have a working default for each
-  const [model, setModel] = useState(() => loadLS("mb.newModel", ""));
-  const [modelCustom, setModelCustom] = useState(() => loadLS("mb.newModelCustom", ""));
-  const [effort, setEffort] = useState(() => loadLS("mb.newEffort", ""));
-  const [codexModel, setCodexModel] = useState(() => loadLS("mb.newCodexModel", ""));
-  const [codexEffort, setCodexEffort] = useState(() => loadLS("mb.newCodexEffort", ""));
+  const [model, setModel] = usePersisted("mb.newModel", "");
+  const [modelCustom, setModelCustom] = usePersisted("mb.newModelCustom", "");
+  const [effort, setEffort] = usePersisted("mb.newEffort", "");
+  const [codexModel, setCodexModel] = usePersisted("mb.newCodexModel", "");
+  const [codexEffort, setCodexEffort] = usePersisted("mb.newCodexEffort", "");
   // the models and effort levels the CLIs offer on this Mac (read from the CLIs, not built in)
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
   useEffect(() => {
-    window.mb.modelCatalog().then((c: ModelCatalog | { error: string }) => ("error" in c ? setCatalogError(c.error) : setCatalog(c)));
+    window.mb.modelCatalog().then((c: ModelCatalog | { error: string }) => (isErr(c) ? setCatalogError(c.error) : setCatalog(c)));
   }, []);
   const [codexCustom, setCodexCustom] = useState(false);
   useEffect(() => {
@@ -53,11 +57,6 @@ export function NewSessionModal({
     if (catalog && codexModel && !catalog.codex.models.some((m) => m.id === codexModel)) setCodexCustom(true);
   }, [catalog]);
   const codexInfo = catalog?.codex.models.find((m) => m.id === codexModel);
-  useEffect(() => localStorage.setItem("mb.newModel", JSON.stringify(model)), [model]);
-  useEffect(() => localStorage.setItem("mb.newModelCustom", JSON.stringify(modelCustom)), [modelCustom]);
-  useEffect(() => localStorage.setItem("mb.newEffort", JSON.stringify(effort)), [effort]);
-  useEffect(() => localStorage.setItem("mb.newCodexModel", JSON.stringify(codexModel)), [codexModel]);
-  useEffect(() => localStorage.setItem("mb.newCodexEffort", JSON.stringify(codexEffort)), [codexEffort]);
   const effModel = launch === "codex" ? codexModel.trim() : model === "__custom" ? modelCustom.trim() : model;
   const effEffort = launch === "codex" ? codexEffort : effort;
   const [repos, setRepos] = useState<RepoEntry[]>([]);
@@ -91,17 +90,17 @@ export function NewSessionModal({
   );
   const effTop = grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
   const effSub = wsSel === "__new" ? sanitizeSegment(wsNew) : wsSel;
-  const group = effTop ? (effSub ? `${effTop}/${effSub}` : effTop) : "";
+  const group = effTop ? groupKey(effTop, effSub) : "";
   // Picking a ticket defaults to an isolated worktree under
   // <parent>/worktrees/<repo>/<branch>; unticked, the branch is checked out in
   // the repo itself. An explicit choice is remembered and wins.
-  const wtPref = loadLS<boolean | null>("mb.newWorktree", null);
+  const wtPref = readPref<boolean | null>("mb.newWorktree", null);
   const [useWorktree, setUseWorktreeRaw] = useState<boolean>(wtPref ?? false);
   const setUseWorktree = (v: boolean) => {
     setUseWorktreeRaw(v);
-    localStorage.setItem("mb.newWorktree", JSON.stringify(v));
+    writePref("mb.newWorktree", v);
   };
-  const [error, setError] = useState("");
+  const { isBusy, busy, run, error, setError } = useAction();
   // ADO ticket picker — same flow as the dashboard's Start session. It keeps
   // everyone's tickets: it defaults to yours (identity comes from the PAT) but
   // you can pick up someone else's. Manual entry works without the board.
@@ -138,7 +137,7 @@ export function NewSessionModal({
   );
   // the Dashboard's column order (when there's no board) leads the picker too
   const columns = useMemo(
-    () => ticketsByColumn(tickets, stateOrder, loadLS<Record<string, { order: string[] }> | null>("mb.board.prefs", null)?.states?.order ?? loadLS<string[]>("mb.board.colOrder", [])),
+    () => ticketsByColumn(tickets, stateOrder, readPref<ColumnPrefs>(COLUMN_PREFS_KEY, legacyColumnPrefs()).states?.order ?? []),
     [tickets, stateOrder]
   );
   const pickable = useMemo(() => columns.flatMap((c) => c.items), [columns]);
@@ -157,328 +156,323 @@ export function NewSessionModal({
 
   // one session per click: a second click while this one is being made would
   // create another session (and worktree)
-  const [busy, setBusy] = useState(false);
   const create = async () => {
-    if (busy) return;
-    setBusy(true);
+    if (isBusy()) return;
     const t = allTickets.find((x) => String(x.id) === ticketSel);
-    const info = await window.mb.createSession({
-      repoPath: sel?.path ?? null,
-      ticketId: ticketId || undefined,
-      ticketTitle: ticketTitle || undefined,
-      taskGroup: group || undefined,
-      useWorktree: useWorktree && !!sel,
-      ...(sel && baseBranch ? { baseBranch } : {}),
-      shell: launch === "shell",
-      ...(isAgent ? { agent: launch } : {}),
-      ...(isAgent && effModel ? { model: effModel } : {}),
-      ...(isAgent && effEffort ? { effort: effEffort } : {}),
-      initialPrompt:
-        isAgent && t && sendTicket
-          ? ticketKickoffPrompt(t.id, t.title, t.description)
-          : undefined,
-    });
-    if (info?.error) {
-      setBusy(false);
-      return setError(info.error);
-    }
+    const info = await run("create", () =>
+      window.mb.createSession({
+        repoPath: sel?.path ?? null,
+        ticketId: ticketId || undefined,
+        ticketTitle: ticketTitle || undefined,
+        taskGroup: group || undefined,
+        useWorktree: useWorktree && !!sel,
+        ...(sel && baseBranch ? { baseBranch } : {}),
+        shell: launch === "shell",
+        ...(isAgent ? { agent: launch } : {}),
+        ...(isAgent && effModel ? { model: effModel } : {}),
+        ...(isAgent && effEffort ? { effort: effEffort } : {}),
+        initialPrompt:
+          isAgent && t && sendTicket
+            ? ticketKickoffPrompt(t.id, t.title, t.description)
+            : undefined,
+      })
+    );
+    if (isErr(info)) return;
     onCreated(info);
   };
 
   return (
-    <div className="modal-back" onMouseDown={onClose}>
-      <div className="modal" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>New session</h3>
-        <div className="sub-h">Pick a repo, optionally attach a ticket — worktree and branch are handled for you.</div>
-        {presets.length > 0 && (
-          <div className="preset-chips">
-            <span className="pl-dim">Presets</span>
-            {presets.map((p) => (
-              <button key={p.id} className="outline" data-tip={`Start “${p.name}” now`} onClick={() => onStartPreset(p)}>
-                {p.name}
-              </button>
-            ))}
-          </div>
-        )}
-        <label>Launch</label>
-        <span className="seg" style={{ display: "inline-flex" }}>
-          <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>Claude</button>
-          <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">Codex</button>
-          <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
-        </span>
-        {launch === "codex" && (
-          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label>Model</label>
-              <Select
-                value={codexCustom ? "__custom" : codexModel}
-                placeholder={codexModel || "Default"}
-                options={[
-                  { value: "", label: "Default", description: "Whatever codex is set to" },
-                  ...(catalog?.codex.models ?? []).map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
-                  { value: "__custom", label: "Other model id…", group: "Other" },
-                ]}
-                onChange={(v) => {
-                  setCodexCustom(v === "__custom");
-                  if (v !== "__custom") setCodexModel(v);
-                }}
-              />
-              {codexCustom && (
-                <input type="text" placeholder="e.g. gpt-6-luna" value={codexModel} onChange={(e) => setCodexModel(e.target.value)} style={{ marginTop: 6 }} />
-              )}
-            </div>
-            <div style={{ flex: 1 }}>
-              <label>Reasoning</label>
-              <Select
-                value={codexEffort}
-                options={[
-                  { value: "", label: codexInfo?.defaultEffort ? `Default (${codexInfo.defaultEffort})` : "Default" },
-                  ...(codexInfo?.efforts ?? catalog?.codex.efforts ?? ["low", "medium", "high", "xhigh"]).map((e) => ({ value: e, label: e })),
-                ]}
-                onChange={setCodexEffort}
-              />
-            </div>
-          </div>
-        )}
-        {launch === "claude" && (
-          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label>Model</label>
-              <Select
-                value={model}
-                placeholder={model || "Default"}
-                options={[
-                  { value: "", label: "Default", description: "Whatever claude is set to" },
-                  ...(catalog?.claude.models ?? []).map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
-                  { value: "__custom", label: "Other model id…", group: "Other" },
-                ]}
-                onChange={setModel}
-              />
-              {model === "__custom" && (
-                <input
-                  type="text"
-                  placeholder="e.g. claude-sonnet-5-5"
-                  value={modelCustom}
-                  onChange={(e) => setModelCustom(e.target.value)}
-                  style={{ marginTop: 6 }}
-                />
-              )}
-            </div>
-            <div style={{ flex: 1 }}>
-              <label>Effort</label>
-              <Select
-                value={effort}
-                options={[{ value: "", label: "Default" }, ...(catalog?.claude.efforts ?? ["low", "medium", "high", "xhigh", "max"]).map((e) => ({ value: e, label: e }))]}
-                onChange={setEffort}
-              />
-            </div>
-          </div>
-        )}
-        {isAgent && catalogError && (
-          <div className="wi-note">Couldn't read the CLI's model list ({catalogError}) — Default and Other model id still work.</div>
-        )}
-        <label>Repo</label>
-        <input type="text" autoFocus placeholder="search ~/Code + ~/Personal Projects…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <div className="pick-list">
-          {filtered.map((r) => (
-            <div key={r.path} className={`item ${sel?.path === r.path ? "sel" : ""}`} onClick={() => setSel(r)}>
-              <div className="meta">
-                <div className="t">{r.name}</div>
-                <div className="s">{r.path.replace(/^\/Users\/[^/]+/, "~")}</div>
-              </div>
-            </div>
+    <Modal className="modal" onClose={onClose}>
+      <h3>New session</h3>
+      <div className="sub-h">Pick a repo, optionally attach a ticket — worktree and branch are handled for you.</div>
+      {presets.length > 0 && (
+        <div className="preset-chips">
+          <span className="pl-dim">Presets</span>
+          {presets.map((p) => (
+            <button key={p.id} className="outline" data-tip={`Start “${p.name}” now`} onClick={() => onStartPreset(p)}>
+              {p.name}
+            </button>
           ))}
         </div>
-        <label>
-          Azure DevOps tickets{" "}
-          <span className="wi-note">
-            {adoDown
-              ? `board unavailable (${ado.error}) — manual entry below`
-              : ado.items === null
-                ? "loading…"
-                : pickable.length
-                  ? "optional — fills the fields below"
-                  : "nothing in the working columns — manual entry below"}
-            {!adoDown && ado.error ? ` · ${ado.error}` : ""}
-          </span>
-        </label>
-        <div style={{ display: "flex", gap: 10 }}>
-          <Pick
-            style={{ flex: "0 0 34%" }}
-            value={who}
-            onChange={(e) => {
-              setWhoPick(e.target.value);
-              setTicketSel(""); // the old pick may not belong to this person
-            }}
-            disabled={adoDown || !allTickets.length}
-            title="Whose tickets to choose from"
-          >
-            <option value="*">Anyone</option>
-            {people.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </Pick>
-          <Pick
-            style={{ flex: 1 }}
-            value={ticketSel}
-            onChange={(e) => pickTicket(e.target.value)}
-            disabled={adoDown || pickable.length === 0}
-          >
-            <option value="">none / manual</option>
-            {columns.map((c) => (
-              <optgroup key={c.state} label={c.state}>
-                {c.items.map((t) => (
-                  <option key={t.id} value={String(t.id)}>
-                    #{t.id} · {t.title}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </Pick>
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
+      )}
+      <label>Launch</label>
+      <span className="seg" style={{ display: "inline-flex" }}>
+        <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>{AGENT_NAME.claude}</button>
+        <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">{AGENT_NAME.codex}</button>
+        <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
+      </span>
+      {launch === "codex" && (
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
           <div style={{ flex: 1 }}>
-            <label>Ticket #</label>
-            <input type="text" placeholder="5038" value={ticketId} onChange={(e) => setTicketId(e.target.value)} />
-          </div>
-          <div style={{ flex: 2 }}>
-            <label>Ticket name</label>
-            <input type="text" placeholder="filterOrgsByFoundation" value={ticketTitle} onChange={(e) => setTicketTitle(e.target.value)} />
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <div style={{ flex: 1 }}>
-            <label>Group</label>
-            <Pick
-              value={grpSel}
-              onChange={(e) => {
-                setGrpSel(e.target.value);
-                setWsSel("");
-                setWsNew("");
+            <label>Model</label>
+            <Select
+              value={codexCustom ? "__custom" : codexModel}
+              placeholder={codexModel || "Default"}
+              options={[
+                { value: "", label: "Default", description: "Whatever codex is set to" },
+                ...(catalog?.codex.models ?? []).map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
+                { value: "__custom", label: "Other model id…", group: "Other" },
+              ]}
+              onChange={(v) => {
+                setCodexCustom(v === "__custom");
+                if (v !== "__custom") setCodexModel(v);
               }}
-            >
-              <option value="">
-                {ticketId ? `auto — ticket ${ticketId.replace(/^#/, "")}` : "none"}
-              </option>
-              {allTops.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-              <option value="__new">new group…</option>
-            </Pick>
-            {grpSel === "__new" && (
+            />
+            {codexCustom && (
+              <input type="text" placeholder="e.g. gpt-6-luna" value={codexModel} onChange={(e) => setCodexModel(e.target.value)} style={{ marginTop: 6 }} />
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <label>Reasoning</label>
+            <Select
+              value={codexEffort}
+              options={[
+                { value: "", label: codexInfo?.defaultEffort ? `Default (${codexInfo.defaultEffort})` : "Default" },
+                ...(codexInfo?.efforts ?? catalog?.codex.efforts ?? ["low", "medium", "high", "xhigh"]).map((e) => ({ value: e, label: e })),
+              ]}
+              onChange={setCodexEffort}
+            />
+          </div>
+        </div>
+      )}
+      {launch === "claude" && (
+        <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+          <div style={{ flex: 1 }}>
+            <label>Model</label>
+            <Select
+              value={model}
+              placeholder={model || "Default"}
+              options={[
+                { value: "", label: "Default", description: "Whatever claude is set to" },
+                ...(catalog?.claude.models ?? []).map((m) => ({ value: m.id, label: m.label, description: m.description, group: m.group })),
+                { value: "__custom", label: "Other model id…", group: "Other" },
+              ]}
+              onChange={setModel}
+            />
+            {model === "__custom" && (
               <input
                 type="text"
-                autoFocus
-                placeholder="group name"
-                value={grpNew}
-                onChange={(e) => setGrpNew(e.target.value)}
+                placeholder="e.g. claude-sonnet-5-5"
+                value={modelCustom}
+                onChange={(e) => setModelCustom(e.target.value)}
                 style={{ marginTop: 6 }}
               />
             )}
           </div>
           <div style={{ flex: 1 }}>
-            <label>
-              Workspace
-              {effSub && <span className="hint-inline"> → opens as a tab</span>}
-            </label>
-            <Pick value={wsSel} onChange={(e) => setWsSel(e.target.value)} disabled={!effTop}>
-              <option value="">{effTop ? "none — its own pane" : "pick a group first"}</option>
-              {(grpSel && grpSel !== "__new" ? subsOf(grpSel) : []).map((w) => (
-                <option key={w} value={w}>
-                  {w}
+            <label>Effort</label>
+            <Select
+              value={effort}
+              options={[{ value: "", label: "Default" }, ...(catalog?.claude.efforts ?? ["low", "medium", "high", "xhigh", "max"]).map((e) => ({ value: e, label: e }))]}
+              onChange={setEffort}
+            />
+          </div>
+        </div>
+      )}
+      {isAgent && catalogError && (
+        <div className="wi-note">Couldn't read the CLI's model list ({catalogError}) — Default and Other model id still work.</div>
+      )}
+      <label>Repo</label>
+      <input type="text" autoFocus placeholder="search ~/Code + ~/Personal Projects…" value={q} onChange={(e) => setQ(e.target.value)} />
+      <div className="pick-list">
+        {filtered.map((r) => (
+          <div key={r.path} className={`item ${sel?.path === r.path ? "sel" : ""}`} onClick={() => setSel(r)}>
+            <div className="meta">
+              <div className="t">{r.name}</div>
+              <div className="s">{tildePath(r.path)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <label>
+        Azure DevOps tickets{" "}
+        <span className="wi-note">
+          {adoDown
+            ? `board unavailable (${ado.error}) — manual entry below`
+            : ado.items === null
+              ? "loading…"
+              : pickable.length
+                ? "optional — fills the fields below"
+                : "nothing in the working columns — manual entry below"}
+          {!adoDown && ado.error ? ` · ${ado.error}` : ""}
+        </span>
+      </label>
+      <div style={{ display: "flex", gap: 10 }}>
+        <Pick
+          style={{ flex: "0 0 34%" }}
+          value={who}
+          onChange={(e) => {
+            setWhoPick(e.target.value);
+            setTicketSel(""); // the old pick may not belong to this person
+          }}
+          disabled={adoDown || !allTickets.length}
+          title="Whose tickets to choose from"
+        >
+          <option value="*">Anyone</option>
+          {people.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </Pick>
+        <Pick
+          style={{ flex: 1 }}
+          value={ticketSel}
+          onChange={(e) => pickTicket(e.target.value)}
+          disabled={adoDown || pickable.length === 0}
+        >
+          <option value="">none / manual</option>
+          {columns.map((c) => (
+            <optgroup key={c.state} label={c.state}>
+              {c.items.map((t) => (
+                <option key={t.id} value={String(t.id)}>
+                  #{t.id} · {t.title}
                 </option>
               ))}
-              <option value="__new">new workspace…</option>
-            </Pick>
-            {wsSel === "__new" && (
-              <input
-                type="text"
-                placeholder="workspace name"
-                value={wsNew}
-                onChange={(e) => setWsNew(e.target.value)}
-                style={{ marginTop: 6 }}
-              />
-            )}
-          </div>
+            </optgroup>
+          ))}
+        </Pick>
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <label>Ticket #</label>
+          <input type="text" placeholder="5038" value={ticketId} onChange={(e) => setTicketId(e.target.value)} />
         </div>
-        <div className="check-line">
-          <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} id="wt" />
-          <label htmlFor="wt" style={{ margin: 0 }}>
-            isolated worktree
-            <span className="wi-note">
-              {" "}
-              {useWorktree
-                ? `worktrees/${sel?.name ?? "<repo>"}/${branch || "<branch>"} — its own folder, safe beside other sessions`
-                : branch
-                  ? `off — switches the repo checkout to ${branch}`
-                  : "off — runs in the repo checkout on its current branch"}
-            </span>
-          </label>
-        </div>
-        {sel && branch && branchInfo && branchInfo.branches.length > 0 && (
-          <Pick
-            value={baseBranch}
-            onChange={(e) => setBaseBranch(e.target.value)}
-            style={{ marginTop: 8 }}
-            title="The base is fetched fresh from origin before the new branch is cut"
-          >
-            <option value="">base: current HEAD</option>
-            {branchInfo.branches.map((b) => (
-              <option key={b} value={b}>base: origin/{b}</option>
-            ))}
-          </Pick>
-        )}
-        {sel && branch && branchError && <div className="wi-note">{branchError} — the branch is cut from the current HEAD</div>}
-        {ticketSel && isAgent && (
-          <div className="check-line">
-            <input type="checkbox" checked={sendTicket} onChange={(e) => setSendTicket(e.target.checked)} id="ntk" />
-            <label htmlFor="ntk" style={{ margin: 0 }}>send ticket title + description to {agentLabel}</label>
-          </div>
-        )}
-        {launch === "shell" && !sel && (
-          <div className="wi-note" style={{ marginTop: 8 }}>
-            no repo picked — the terminal opens in your home folder (pick a repo to open there, or in a worktree)
-          </div>
-        )}
-        {error && <div className="err">{error}</div>}
-        <div className="row">
-          <button
-            className="outline"
-            style={{ marginRight: "auto" }}
-            data-tip="Keep this setup as a one-click preset (no ticket: presets are for recurring sessions)"
-            onClick={() =>
-              onSavePreset({
-                id: newPresetId(),
-                name: "",
-                launch,
-                repoPath: sel?.path ?? null,
-                // a new branch per run, cut from the same base; otherwise the checkout as it is
-                branch: sel && useWorktree && baseBranch ? { mode: "new", pattern: "session-{date}-{time}", base: baseBranch } : { mode: "checkout" },
-                useWorktree: !!sel && useWorktree,
-                ...(group ? { group } : {}),
-                ...(isAgent && effModel ? { model: effModel } : {}),
-                ...(isAgent && effEffort ? { effort: effEffort } : {}),
-              })
-            }
-          >
-            Save as preset…
-          </button>
-          <button className="outline" onClick={onClose}>Cancel</button>
-          {isAgent && !sel && (
-            <span className="wi-note" style={{ marginRight: "auto" }}>
-              no repo — starts a plain {agentLabel} chat (fully tracked: resumable, restartable)
-            </span>
-          )}
-          <button className="primary cta" disabled={busy} onClick={create}>
-            {busy ? "Starting…" : launch === "shell" ? "Open terminal" : sel ? `Start ${agentLabel.toLowerCase()}` : "Start chat"}
-          </button>
+        <div style={{ flex: 2 }}>
+          <label>Ticket name</label>
+          <input type="text" placeholder="filterOrgsByFoundation" value={ticketTitle} onChange={(e) => setTicketTitle(e.target.value)} />
         </div>
       </div>
-    </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <label>Group</label>
+          <Pick
+            value={grpSel}
+            onChange={(e) => {
+              setGrpSel(e.target.value);
+              setWsSel("");
+              setWsNew("");
+            }}
+          >
+            <option value="">
+              {ticketId ? `auto — ticket ${ticketIdOf(ticketId)}` : "none"}
+            </option>
+            {allTops.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+            <option value="__new">new group…</option>
+          </Pick>
+          {grpSel === "__new" && (
+            <input
+              type="text"
+              autoFocus
+              placeholder="group name"
+              value={grpNew}
+              onChange={(e) => setGrpNew(e.target.value)}
+              style={{ marginTop: 6 }}
+            />
+          )}
+        </div>
+        <div style={{ flex: 1 }}>
+          <label>
+            Workspace
+            {effSub && <span className="hint-inline"> → opens as a tab</span>}
+          </label>
+          <Pick value={wsSel} onChange={(e) => setWsSel(e.target.value)} disabled={!effTop}>
+            <option value="">{effTop ? "none — its own pane" : "pick a group first"}</option>
+            {(grpSel && grpSel !== "__new" ? subsOf(grpSel) : []).map((w) => (
+              <option key={w} value={w}>
+                {w}
+              </option>
+            ))}
+            <option value="__new">new workspace…</option>
+          </Pick>
+          {wsSel === "__new" && (
+            <input
+              type="text"
+              placeholder="workspace name"
+              value={wsNew}
+              onChange={(e) => setWsNew(e.target.value)}
+              style={{ marginTop: 6 }}
+            />
+          )}
+        </div>
+      </div>
+      <div className="check-line">
+        <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} id="wt" />
+        <label htmlFor="wt" style={{ margin: 0 }}>
+          isolated worktree
+          <span className="wi-note">
+            {" "}
+            {useWorktree
+              ? `worktrees/${sel?.name ?? "<repo>"}/${branch || "<branch>"} — its own folder, safe beside other sessions`
+              : branch
+                ? `off — switches the repo checkout to ${branch}`
+                : "off — runs in the repo checkout on its current branch"}
+          </span>
+        </label>
+      </div>
+      {sel && branch && branchInfo && branchInfo.branches.length > 0 && (
+        <Pick
+          value={baseBranch}
+          onChange={(e) => setBaseBranch(e.target.value)}
+          style={{ marginTop: 8 }}
+          title="The base is fetched fresh from origin before the new branch is cut"
+        >
+          <option value="">base: current HEAD</option>
+          {branchInfo.branches.map((b) => (
+            <option key={b} value={b}>base: origin/{b}</option>
+          ))}
+        </Pick>
+      )}
+      {sel && branch && branchError && <div className="wi-note">{branchError} — the branch is cut from the current HEAD</div>}
+      {ticketSel && isAgent && (
+        <div className="check-line">
+          <input type="checkbox" checked={sendTicket} onChange={(e) => setSendTicket(e.target.checked)} id="ntk" />
+          <label htmlFor="ntk" style={{ margin: 0 }}>send ticket title + description to {agentLabel}</label>
+        </div>
+      )}
+      {launch === "shell" && !sel && (
+        <div className="wi-note" style={{ marginTop: 8 }}>
+          no repo picked — the terminal opens in your home folder (pick a repo to open there, or in a worktree)
+        </div>
+      )}
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        <button
+          className="outline"
+          style={{ marginRight: "auto" }}
+          data-tip="Keep this setup as a one-click preset (no ticket: presets are for recurring sessions)"
+          onClick={() =>
+            onSavePreset({
+              id: newPresetId(),
+              name: "",
+              launch,
+              repoPath: sel?.path ?? null,
+              // a new branch per run, cut from the same base; otherwise the checkout as it is
+              branch: sel && useWorktree && baseBranch ? { mode: "new", pattern: "session-{date}-{time}", base: baseBranch } : { mode: "checkout" },
+              useWorktree: !!sel && useWorktree,
+              ...(group ? { group } : {}),
+              ...(isAgent && effModel ? { model: effModel } : {}),
+              ...(isAgent && effEffort ? { effort: effEffort } : {}),
+            })
+          }
+        >
+          Save as preset…
+        </button>
+        <button className="outline" onClick={onClose}>Cancel</button>
+        {isAgent && !sel && (
+          <span className="wi-note" style={{ marginRight: "auto" }}>
+            no repo — starts a plain {agentLabel} chat (fully tracked: resumable, restartable)
+          </span>
+        )}
+        <button className="primary cta" disabled={!!busy} onClick={create}>
+          {busy ? "Starting…" : launch === "shell" ? "Open terminal" : sel ? `Start ${agentLabel.toLowerCase()}` : "Start chat"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -509,13 +503,12 @@ export function ImportModal({
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<ImportRow[] | null>(null);
   const [sel, setSel] = useState<Map<string, ImportRow>>(new Map());
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const { busy, run, error, setError } = useAction();
 
   useEffect(() => {
     window.mb.listImportable().then((r: ImportableConversation[] | { error: string }) => {
-      if (Array.isArray(r)) setConvos(r);
-      else setError((r as any).error);
+      if (isErr(r)) setError(r.error);
+      else setConvos(r);
     });
   }, []);
 
@@ -526,7 +519,7 @@ export function ImportModal({
     const t = setTimeout(async () => {
       const r = await window.mb.searchTranscripts(q);
       if (!live) return;
-      if (r?.error) return setError(r.error);
+      if (isErr(r)) return setError(r.error);
       setError("");
       setHits(
         (r.hits as TranscriptHit[]).map((h) => ({
@@ -557,85 +550,84 @@ export function ImportModal({
     });
 
   const importSelected = async () => {
-    setBusy(true);
     const opened: SessionInfo[] = [];
     const failures: string[] = [];
-    for (const c of sel.values()) {
-      const info = c.restore
-        ? await window.mb.relaunchSession(c.restore)
-        : await window.mb.createSession({ repoPath: c.cwd, useWorktree: false, resumeSessionId: c.id, agent: c.agent, title: c.title.slice(0, 80) });
-      if (!info || info.error) failures.push(`✕ ${c.title.slice(0, 40)}: ${info?.error ?? "that session is no longer saved"}`);
-      else opened.push(info);
-    }
+    const r = await run("import", async () => {
+      for (const c of sel.values()) {
+        const info = c.restore
+          ? await window.mb.relaunchSession(c.restore)
+          : await window.mb.createSession({ repoPath: c.cwd, useWorktree: false, resumeSessionId: c.id, agent: c.agent, title: c.title.slice(0, 80) });
+        if (!info || isErr(info)) failures.push(`✕ ${c.title.slice(0, 40)}: ${info?.error ?? "that session is no longer saved"}`);
+        else opened.push(info);
+      }
+    });
+    if (isErr(r)) failures.push(`✕ ${r.error}`);
     if (opened.length) onOpened(opened);
     if (failures.length) {
       setError(`Opened ${opened.length}, failed ${failures.length}:\n\n${failures.join("\n")}`);
       setSel(new Map());
-      setBusy(false);
     } else {
       onDone();
     }
   };
 
   return (
-    <div className="modal-back" onMouseDown={onClose}>
-      <div className="modal import-dlg" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>Import conversations</h3>
-        <div className="sub-h">
-          Recent Claude and Codex conversations from this Mac — including ones started in cmux or a terminal — or search every one,
-          any age. Each reopens with its full history in its original folder. Every import is a live agent process, so start
-          with the handful you're actively working on.
-        </div>
-        <input
-          className="import-search"
-          type="text"
-          autoFocus
-          placeholder="Search every conversation — words, files, commands"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <div className="pick-list">
-          {rows?.map((c) => (
-            <div
-              key={c.id}
-              className={`item ${sel.has(c.id) ? "sel" : ""} ${c.blocked ? "blocked" : ""}`}
-              title={c.blocked ? `Not imported: ${c.blocked}` : c.restore ? "Restores the closed Mockingbird session that ran this" : undefined}
-              onClick={() => !c.blocked && toggle(c)}
-            >
-              <input type="checkbox" checked={sel.has(c.id)} disabled={!!c.blocked} readOnly />
-              <div className="meta">
-                <div className="t">
-                  {c.title}
-                  {c.agent === "codex" && <span className="ts-agent codex">codex</span>}
-                </div>
-                <div className="s">
-                  {c.cwd.replace(/^\/Users\/[^/]+/, "~")}
-                  {c.blocked ? ` · ${c.blocked}` : c.restore ? " · restores your closed session" : ""}
-                </div>
-                {c.snippet && (
-                  <div className="ts-snip">
-                    <Snippet text={c.snippet} />
-                  </div>
-                )}
-              </div>
-              <span className="age">{ago(c.at)}</span>
-            </div>
-          ))}
-          {rows === null && !error && (
-            <div className="item"><div className="meta"><div className="s">{q.trim() ? "searching…" : "scanning ~/.claude/projects…"}</div></div></div>
-          )}
-          {rows?.length === 0 && (
-            <div className="item"><div className="meta"><div className="s">{q.trim() ? "No conversation mentions that." : "No recent conversations."}</div></div></div>
-          )}
-        </div>
-        {error && <div className="err">{error}</div>}
-        <div className="row">
-          <button className="outline" onClick={onClose}>Cancel</button>
-          <button className="primary" disabled={sel.size === 0 || busy} onClick={importSelected}>
-            {busy ? "Opening…" : `Open ${sel.size || ""} session${sel.size === 1 ? "" : "s"}`}
-          </button>
-        </div>
+    <Modal className="modal import-dlg" onClose={onClose}>
+      <h3>Import conversations</h3>
+      <div className="sub-h">
+        Recent Claude and Codex conversations from this Mac — including ones started in cmux or a terminal — or search every one,
+        any age. Each reopens with its full history in its original folder. Every import is a live agent process, so start
+        with the handful you're actively working on.
       </div>
-    </div>
+      <input
+        className="import-search"
+        type="text"
+        autoFocus
+        placeholder="Search every conversation — words, files, commands"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+      />
+      <div className="pick-list">
+        {rows?.map((c) => (
+          <div
+            key={c.id}
+            className={`item ${sel.has(c.id) ? "sel" : ""} ${c.blocked ? "blocked" : ""}`}
+            title={c.blocked ? `Not imported: ${c.blocked}` : c.restore ? "Restores the closed Mockingbird session that ran this" : undefined}
+            onClick={() => !c.blocked && toggle(c)}
+          >
+            <input type="checkbox" checked={sel.has(c.id)} disabled={!!c.blocked} readOnly />
+            <div className="meta">
+              <div className="t">
+                {c.title}
+                {c.agent === "codex" && <span className="ts-agent codex">codex</span>}
+              </div>
+              <div className="s">
+                {tildePath(c.cwd)}
+                {c.blocked ? ` · ${c.blocked}` : c.restore ? " · restores your closed session" : ""}
+              </div>
+              {c.snippet && (
+                <div className="ts-snip">
+                  <Snippet text={c.snippet} />
+                </div>
+              )}
+            </div>
+            <span className="age">{agoShort(c.at)}</span>
+          </div>
+        ))}
+        {rows === null && !error && (
+          <div className="item"><div className="meta"><div className="s">{q.trim() ? "searching…" : "scanning ~/.claude/projects…"}</div></div></div>
+        )}
+        {rows?.length === 0 && (
+          <div className="item"><div className="meta"><div className="s">{q.trim() ? "No conversation mentions that." : "No recent conversations."}</div></div></div>
+        )}
+      </div>
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        <button className="outline" onClick={onClose}>Cancel</button>
+        <button className="primary" disabled={sel.size === 0 || !!busy} onClick={importSelected}>
+          {busy ? "Opening…" : `Open ${sel.size || ""} session${sel.size === 1 ? "" : "s"}`}
+        </button>
+      </div>
+    </Modal>
   );
 }

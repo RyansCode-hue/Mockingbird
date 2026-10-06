@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, fmtElapsed, type PaneDensity } from "./TerminalPane";
+import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, type PaneDensity } from "./TerminalPane";
 import { EditorDock, ExplorerTree } from "./FilePanel";
 import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
@@ -19,7 +19,7 @@ import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceCon
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
 import { PipelineDialog, StageChip, usePipelines } from "./TicketPipeline";
-import { HandoffDialog, otherAgent } from "./Handoff";
+import { HandoffDialog } from "./Handoff";
 import { UndoTurnDialog } from "./UndoTurn";
 import { MessageLogDialog, useAgentMessages } from "./AgentMessages";
 import { RollupDialog } from "./Rollup";
@@ -28,9 +28,8 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import type { SessionInfo, SessionPreset, SessionStatus, Settings, WorktreeStateInfo, UsageReport, UpdateProgress, UpdateOutcome, CollabRoom, TranscriptHit, RunServiceState, DebugFrame, Meters, LspLocation, FileOverlap, AgentUpdateNotice, MessageMode, OptionalTab } from "../shared/types";
-import { sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped } from "../shared/types";
-import { isError, loadLS, openLink } from "./uiUtil";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
+import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
 import { UsageMeter } from "./UsageMeter";
@@ -38,12 +37,9 @@ import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
-
-declare global {
-  interface Window {
-    mb: any;
-  }
-}
+import { fmtElapsed, plural } from "../shared/format";
+import { baseName } from "../shared/paths";
+import { usePersisted, readPref, writePref } from "./prefs";
 
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
 /** What the side bar shows, picked from the activity bar as in VS Code. */
@@ -160,16 +156,16 @@ function gridCols(n: number): number {
 function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [resumable, setResumable] = useState<SessionInfo[]>([]);
-  const [shown, setShown] = useState<string[]>(() => loadLS("mb.shown", []));
+  const [shown, setShown] = usePersisted<string[]>("mb.shown", []);
   const [focused, setFocused] = useState<string | null>(null);
   const [zoomed, setZoomed] = useState<string | null>(null);
   // pinned panes stay on screen when the grid switches groups
-  const [pinned, setPinned] = useState<string[]>(() => loadLS("mb.pinned", []));
+  const [pinned, setPinned] = usePersisted<string[]>("mb.pinned", []);
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   // the group the grid was last switched to (see activeGroupOf)
-  const [lastGroup, setLastGroup] = useState<string | null>(() => loadLS("mb.activeGroup", null));
+  const [lastGroup, setLastGroup] = usePersisted<string | null>("mb.activeGroup", null);
   // which pane sits in which snap-layout zone, per group (cell key per zone)
-  const [zoneSeats, setZoneSeats] = useState<Record<string, (string | null)[]>>(() => loadLS("mb.zones", {}));
+  const [zoneSeats, setZoneSeats] = usePersisted<Record<string, (string | null)[]>>("mb.zones", {});
   // an empty zone's "open a session here" picker, and a new session headed for a zone
   const [slotPick, setSlotPick] = useState<number | null>(null);
   // the ticket pipeline opened from the grid (group bar, palette)
@@ -196,16 +192,16 @@ function App() {
   const unlessError =
     <T,>(what: string, apply: (v: T) => void) =>
     (r: T | { error: string }) =>
-      isError(r) ? readFailed(what, r) : apply(r as T);
+      isErr(r) ? readFailed(what, r) : apply(r as T);
   /** A change the main process refused: said right away. Returns whether it failed. */
   const failed = (what: string, r: unknown): boolean => {
-    if (!isError(r)) return false;
+    if (!isErr(r)) return false;
     alert(`${what}: ${r.error}`);
     return true;
   };
   const setMsgMode = async (group: string, mode: MessageMode | ""): Promise<boolean> => {
     const r = await window.mb.messagesGroupMode(group, mode || null);
-    if (r?.error) {
+    if (isErr(r)) {
       alert(`Couldn't change how agent messages arrive in ${group}: ${r.error}`);
       return false;
     }
@@ -214,8 +210,8 @@ function App() {
   };
   const askGroupStatus = async (group: string) => {
     const r = await window.mb.groupStatusCheck(group);
-    if (r?.error) return alert(r.error);
-    setStatusNote(`Asked ${r.asked} session${r.asked === 1 ? "" : "s"}`);
+    if (isErr(r)) return alert(r.error);
+    setStatusNote(`Asked ${plural(r.asked, "session")}`);
     setTimeout(() => setStatusNote(""), 6000);
   };
   // agent CLIs updated under running panes (they run the old version until restarted)
@@ -238,7 +234,7 @@ function App() {
   // a lone pane's "+" promotes it to a workspace, but only once the new session
   // actually exists — cancelling the dialog must leave the pane exactly as it was
   const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
-  const [tab, setTab] = useState<Tab>(() => loadLS<Tab>("mb.tab", "sessions"));
+  const [tab, setTab] = usePersisted<Tab>("mb.tab", "sessions");
   // a room to open, from a permission-request notification (the counter re-triggers the same room)
   const [focusRoom, setFocusRoom] = useState<{ id: string; n: number } | null>(null);
   useEffect(
@@ -249,7 +245,6 @@ function App() {
       }),
     []
   );
-  useEffect(() => localStorage.setItem("mb.tab", JSON.stringify(tab)), [tab]);
   // tabs turned off in Settings leave the top bar (and the palette); one opened
   // anyway — by a notification or a search hit — shows while it's the active tab
   const [hiddenTabs, setHiddenTabs] = useState<OptionalTab[]>([]);
@@ -257,33 +252,30 @@ function App() {
   const [presets, setPresets] = useState<SessionPreset[]>([]);
   const [presetDraft, setPresetDraft] = useState<SessionPreset | null>(null);
   const shownTab = (t: Tab) => !(hiddenTabs as Tab[]).includes(t);
-  const [theme, setTheme] = useState<"dark" | "light">(() => loadLS<"dark" | "light">("mb.theme", "dark"));
+  const [theme, setTheme] = usePersisted<"dark" | "light">("mb.theme", "dark");
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("mb.theme", JSON.stringify(theme));
     applyTermTheme(theme === "light"); // xterm colors follow the app theme
   }, [theme]);
   const [hooksOk, setHooksOk] = useState(true);
   const [filter, setFilter] = useState("");
   // a session title being edited inline in its sidebar row
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
-  const [sideCollapsed, setSideCollapsed] = useState<boolean>(() => loadLS("mb.side", false));
-  const [colsPref, setColsPref] = useState<ColsPref>(() => loadLS<ColsPref>("mb.cols", "auto"));
+  const [sideCollapsed, setSideCollapsed] = usePersisted<boolean>("mb.side", false);
+  const [colsPref, setColsPref] = usePersisted<ColsPref>("mb.cols", "auto");
   // chosen snap layout per group ("" = auto). Kept per group because a ticket
   // with two panes and one with five want different arrangements.
-  const [layouts, setLayouts] = useState<Record<string, string>>(() => loadLS("mb.layout", {}));
+  const [layouts, setLayouts] = usePersisted<Record<string, string>>("mb.layout", {});
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadLS<string[]>("mb.collapsed", [])));
-  useEffect(() => localStorage.setItem("mb.collapsed", JSON.stringify([...collapsed])), [collapsed]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(readPref<string[]>("mb.collapsed", [])));
+  useEffect(() => {
+    writePref("mb.collapsed", [...collapsed]);
+  }, [collapsed]);
   // per-group memory of which sessions were visible, so switching back restores the subset
-  const [groupLayouts, setGroupLayouts] = useState<Record<string, string[]>>(() =>
-    loadLS<Record<string, string[]>>("mb.groupLayouts", {})
-  );
-  useEffect(() => localStorage.setItem("mb.groupLayouts", JSON.stringify(groupLayouts)), [groupLayouts]);
+  const [groupLayouts, setGroupLayouts] = usePersisted<Record<string, string[]>>("mb.groupLayouts", {});
   // active tab per workspace (sub-group) pane, keyed "top/sub" — persisted
-  const [wsTabs, setWsTabs] = useState<Record<string, string>>(() => loadLS("mb.wsTabs", {}));
-  useEffect(() => localStorage.setItem("mb.wsTabs", JSON.stringify(wsTabs)), [wsTabs]);
+  const [wsTabs, setWsTabs] = usePersisted<Record<string, string>>("mb.wsTabs", {});
   const [closeDlg, setCloseDlg] = useState<{ session: SessionInfo; wt: WorktreeStateInfo | { error: string } } | null>(null);
   const [groupDlg, setGroupDlg] = useState<SessionInfo | null>(null);
   // group/workspace renames use a dialog: inline editing broke because the same
@@ -305,7 +297,7 @@ function App() {
     const next =
       renameDlg.kind === "group"
         ? sanitizeSegment(v)
-        : `${topOfKey(renameDlg.key)}/${sanitizeSegment(v)}`;
+        : groupKey(topOfKey(renameDlg.key), v);
     if (!next) return;
     if (renameDlg.key === "ungrouped") {
       // "ungrouped" is the absence of a group, not a stored one: naming it groups its sessions
@@ -353,12 +345,12 @@ function App() {
   // After an update restart: say how it went, and bring back the sessions that were open
   useEffect(() => {
     window.mb.updateOutcome().then(async (o: UpdateOutcome | null | { error: string }) => {
-      if (isError(o)) return readFailed("how the last update went", o);
+      if (isErr(o)) return readFailed("how the last update went", o);
       if (!o) return;
       const restoreErrors: string[] = [];
       for (const id of o.sessions) {
         const r = await window.mb.relaunchSession(id);
-        if (r?.error) restoreErrors.push(r.error);
+        if (isErr(r)) restoreErrors.push(r.error);
       }
       setUpdOutcome({ ...o, restoreErrors });
       refresh();
@@ -374,13 +366,13 @@ function App() {
   useEffect(() => {
     window.mb.appVersion().then(unlessError("the app version", (v: string) => setAppVersion(String(v))));
   }, []);
-  const [sideView, setSideView] = useState<SideView>(() => loadLS<SideView>("mb.sideView", "sessions"));
-  useEffect(() => localStorage.setItem("mb.sideView", JSON.stringify(sideView)), [sideView]);
-  const [sideW, setSideW] = useState<number>(() => loadLS("mb.sideW", 264));
-  useEffect(() => localStorage.setItem("mb.sideW", JSON.stringify(sideW)), [sideW]);
+  const [sideView, setSideView] = usePersisted<SideView>("mb.sideView", "sessions");
+  const [sideW, setSideW] = usePersisted<number>("mb.sideW", 264);
   const [editor, setEditor] = useState(EMPTY_EDITOR);
-  const [search, setSearch] = useState<SearchState>(() => ({ q: "", ...loadLS("mb.search", { scope: "conversations", regex: false, matchCase: false }) }));
-  useEffect(() => localStorage.setItem("mb.search", JSON.stringify({ scope: search.scope, regex: search.regex, matchCase: search.matchCase })), [search.scope, search.regex, search.matchCase]);
+  const [search, setSearch] = useState<SearchState>(() => ({ q: "", ...readPref("mb.search", { scope: "conversations", regex: false, matchCase: false }) }));
+  useEffect(() => {
+    writePref("mb.search", { scope: search.scope, regex: search.regex, matchCase: search.matchCase });
+  }, [search.scope, search.regex, search.matchCase]);
   const [searchFocus, setSearchFocus] = useState(0);
   // Run and Debug: every service's state, and the log panel under the grid (⌘J)
   const [runStates, setRunStates] = useState<RunServiceState[]>([]);
@@ -388,10 +380,8 @@ function App() {
     window.mb.runStates().then(unlessError("the services' run states", setRunStates));
     return window.mb.onRunChanged(setRunStates);
   }, []);
-  const [panelOpen, setPanelOpen] = useState<boolean>(() => loadLS("mb.panel.open", false));
-  useEffect(() => localStorage.setItem("mb.panel.open", JSON.stringify(panelOpen)), [panelOpen]);
-  const [panelH, setPanelH] = useState<number>(() => loadLS("mb.panel.h", 260));
-  useEffect(() => localStorage.setItem("mb.panel.h", JSON.stringify(panelH)), [panelH]);
+  const [panelOpen, setPanelOpen] = usePersisted<boolean>("mb.panel.open", false);
+  const [panelH, setPanelH] = usePersisted<number>("mb.panel.h", 260);
   const [panelTab, setPanelTab] = useState<string | null>(null);
   const showLog = (id: string) => {
     setPanelTab(id);
@@ -412,15 +402,6 @@ function App() {
     if (v === "search") setSearchFocus((n) => n + 1);
   };
 
-  // persist grid arrangement across restarts (design: Interactions & Behavior)
-  useEffect(() => localStorage.setItem("mb.shown", JSON.stringify(shown)), [shown]);
-  useEffect(() => localStorage.setItem("mb.cols", JSON.stringify(colsPref)), [colsPref]);
-  useEffect(() => localStorage.setItem("mb.layout", JSON.stringify(layouts)), [layouts]);
-  useEffect(() => localStorage.setItem("mb.side", JSON.stringify(sideCollapsed)), [sideCollapsed]);
-  useEffect(() => localStorage.setItem("mb.pinned", JSON.stringify(pinned)), [pinned]);
-  useEffect(() => localStorage.setItem("mb.activeGroup", JSON.stringify(lastGroup)), [lastGroup]);
-  useEffect(() => localStorage.setItem("mb.zones", JSON.stringify(zoneSeats)), [zoneSeats]);
-
   /** Put a session (dragged from the grid or the sidebar) beside a pane in the grid. */
   const reorder = (srcId: string, targetId: string, side: Side = "before") =>
     setShown((p) => placeBeside(p.includes(srcId) ? p : [...p, srcId], srcId, targetId, side));
@@ -438,7 +419,7 @@ function App() {
   /** Remove a sub-group without touching its sessions — they move up into the group. */
   const dissolveSub = async (top: string, list: SessionInfo[]) => {
     const results = await Promise.all(list.map((s) => window.mb.setGroup(s.id, top)));
-    const errors = results.filter(isError);
+    const errors = results.filter(isErr);
     if (errors.length) alert(`Couldn't move ${errors.length} of the workspace's sessions into the group: ${errors.map((e) => e.error).join("; ")}`);
     refresh();
   };
@@ -457,20 +438,20 @@ function App() {
   /** Re-read the session lists; the live list comes back (the one on screen when the read fails). */
   const refresh = async (): Promise<SessionInfo[]> => {
     const live: SessionInfo[] | { error: string } = await window.mb.listSessions();
-    if (isError(live)) readFailed("the session list", live);
+    if (isErr(live)) readFailed("the session list", live);
     else setSessions(live);
     const previous: SessionInfo[] | { error: string } = await window.mb.resumableSessions();
-    if (isError(previous)) readFailed("the previous sessions", previous);
+    if (isErr(previous)) readFailed("the previous sessions", previous);
     // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
     else setResumable(previous.filter((s) => !s.debrief));
-    return isError(live) ? sessions : live;
+    return isErr(live) ? sessions : live;
   };
 
   // First launch opens the setup wizard. Installs that predate it (the help
   // popup was already seen) are marked set up without being interrupted.
   useEffect(() => {
     window.mb.getSettings().then(async (s: Settings | { error: string }) => {
-      if (isError(s)) return readFailed("settings", s);
+      if (isErr(s)) return readFailed("settings", s);
       const hidden = s.hiddenTabs ?? [];
       setHiddenTabs(hidden);
       setPresets(s.presets ?? []);
@@ -478,9 +459,9 @@ function App() {
       setMsgDefaultSend(s.agentMessagesSubmit !== false);
       setTab((t) => ((hidden as Tab[]).includes(t) ? "sessions" : t));
       if (s.setupDone) return;
-      if (loadLS("mb.helpSeen", false)) failed("Couldn't mark setup as done", await window.mb.setSettings({ setupDone: true }));
+      if (readPref("mb.helpSeen", false)) failed("Couldn't mark setup as done", await window.mb.setSettings({ setupDone: true }));
       else {
-        localStorage.setItem("mb.helpSeen", "true");
+        writePref("mb.helpSeen", true);
         setModal("setup");
       }
     });
@@ -493,9 +474,9 @@ function App() {
     // reuses session ids, so a restored session lands back in its old grid slot
     const off = window.mb.onSessionsChanged((s: SessionInfo[]) => setSessions(s));
     const offUi = window.mb.onUiCommand((cmd: string, arg?: string) => {
-      if (cmd === "new-session") setModal("new");
-      if (cmd === "update") setModal("update"); // the update notification was clicked
-      if (cmd === "focus-session" && arg) jumpToRef.current(arg);
+      if (cmd === UI_COMMANDS.newSession) setModal("new");
+      if (cmd === UI_COMMANDS.update) setModal("update"); // the update notification was clicked
+      if (cmd === UI_COMMANDS.focusSession && arg) jumpToRef.current(arg);
     });
     const offUpd = window.mb.onUpdateAvailable((u: any) => u?.newer && setUpdate(u));
     window.mb.usageGet().then(unlessError("plan usage", setUsage));
@@ -777,7 +758,7 @@ function App() {
   const [rowSizes, setRowSizes] = useState<number[]>([]);
 
   const loadTracks = (key: string, n: number): number[] => {
-    const v = loadLS<number[]>(key, []);
+    const v = readPref<number[]>(key, []);
     return Array.isArray(v) && v.length === n && v.every((x) => typeof x === "number" && x > 0)
       ? v
       : Array(n).fill(1);
@@ -785,10 +766,10 @@ function App() {
   useEffect(() => setColSizes(loadTracks(`mb.cw.${cols}`, cols)), [cols]);
   useEffect(() => setRowSizes(loadTracks(`mb.rh.${rows}`, rows)), [rows]);
   useEffect(() => {
-    if (colSizes.length === cols) localStorage.setItem(`mb.cw.${cols}`, JSON.stringify(colSizes));
+    if (colSizes.length === cols) writePref(`mb.cw.${cols}`, colSizes);
   }, [colSizes, cols]);
   useEffect(() => {
-    if (rowSizes.length === rows) localStorage.setItem(`mb.rh.${rows}`, JSON.stringify(rowSizes));
+    if (rowSizes.length === rows) writePref(`mb.rh.${rows}`, rowSizes);
   }, [rowSizes, rows]);
 
   /** Dragging pane (index) in `axis` grows/shrinks it against its next neighbor. */
@@ -847,8 +828,7 @@ function App() {
 
   // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
   // the rest are open exactly while the workspace is in the grid.
-  const [wsOpen, setWsOpen] = useState<Record<string, boolean>>(() => loadLS("mb.wsOpen", {}));
-  useEffect(() => localStorage.setItem("mb.wsOpen", JSON.stringify(wsOpen)), [wsOpen]);
+  const [wsOpen, setWsOpen] = usePersisted<Record<string, boolean>>("mb.wsOpen", {});
 
   const bySub = (list: SessionInfo[]): [string, SessionInfo[]][] => {
     const m = new Map<string, SessionInfo[]>();
@@ -881,9 +861,9 @@ function App() {
 
   const groupTitle = (key: string, list: SessionInfo[]): string => {
     if (key === "ungrouped" || key === "assistant") return key;
-    if (!/^\d+$/.test(key.replace(/^#/, ""))) return key; // custom-renamed group
+    if (!isWorkItemId(ticketIdOf(key))) return key; // custom-renamed group
     const t = list.find((s) => s.ticketTitle)?.ticketTitle;
-    return `#${key.replace(/^#/, "")}${t ? ` ${t}` : ""}`;
+    return `#${ticketIdOf(key)}${t ? ` ${t}` : ""}`;
   };
 
   // existing group keys, for move targets and the New-Session picker
@@ -981,7 +961,7 @@ function App() {
     const failures: string[] = [];
     for (const s of resumable) {
       const info = await window.mb.relaunchSession(s.id);
-      if (info?.error) failures.push(`✕ ${s.title}: ${info.error}`);
+      if (isErr(info)) failures.push(`✕ ${s.title}: ${info.error}`);
     }
     await refresh();
     if (failures.length) alert(`Some sessions couldn't be restored:\n\n${failures.join("\n")}`);
@@ -1002,7 +982,7 @@ function App() {
   /** Close a session's pane and process; returns why it couldn't, leaving the pane as it was. */
   const forceClose = async (s: SessionInfo, forget: boolean): Promise<string | null> => {
     const r = await window.mb.killSession(s.id, forget);
-    if (isError(r)) return r.error;
+    if (isErr(r)) return r.error;
     disposeTerm(s.id);
     hide(s.id);
     refresh();
@@ -1032,7 +1012,7 @@ function App() {
     if (failed(`Couldn't resume ${titleOf(s)}`, await window.mb.killSession(s.id, false))) return;
     disposeTerm(s.id);
     const info = await window.mb.relaunchSession(s.id);
-    if (info?.error) return alert(`Couldn't resume: ${info.error}`);
+    if (isErr(info)) return alert(`Couldn't resume: ${info.error}`);
     hide(s.id);
     await refresh();
     if (info) jumpToSession(info);
@@ -1192,7 +1172,7 @@ function App() {
         ? await window.mb.relaunchSession(h.open.sessionId)
         : await window.mb.createSession({ repoPath: h.cwd || null, useWorktree: false, resumeSessionId: h.id, agent: h.agent, title: h.title.slice(0, 60) });
     if (!info) return "That session is no longer saved.";
-    if (info.error) return info.error;
+    if (isErr(info)) return info.error;
     await refresh();
     jumpToSession(info);
     return null;
@@ -1245,28 +1225,28 @@ function App() {
   /** Mute or unmute a session's notifications. */
   const toggleMute = async (s: SessionInfo) => {
     const r = await window.mb.sessionMute(s.id, !s.muted);
-    if (r?.error) alert(`Couldn't change it: ${r.error}`);
+    if (isErr(r)) alert(`Couldn't change it: ${r.error}`);
   };
 
   /** Start the morning brief or the 4pm wrap-up on the WorkTracker tab. */
   const runDebrief = async (kind: "morning" | "wrapUp") => {
     setTab("worktracker");
     const r = await window.mb.runDebrief(kind);
-    if (r?.error) alert(`Couldn't start the ${kind === "morning" ? "morning brief" : "4pm wrap-up"}: ${r.error}`);
+    if (isErr(r)) alert(`Couldn't start the ${kind === "morning" ? "morning brief" : "4pm wrap-up"}: ${r.error}`);
     refresh();
   };
 
   /** Start a preset's session and show it. */
   const startPreset = async (p: SessionPreset) => {
     const info = await window.mb.presetStart(p.id);
-    if (info?.error) return alert(`Couldn't start “${p.name}”: ${info.error}`);
+    if (isErr(info)) return alert(`Couldn't start “${p.name}”: ${info.error}`);
     await refresh();
     jumpToSession(info);
   };
   /** Save the preset list. Settings writes merge, so only the changed key is sent. */
   const savePresets = async (next: SessionPreset[]) => {
     const r = await window.mb.setSettings({ presets: next });
-    if (r?.error) return alert(`Couldn't save the preset: ${r.error}`);
+    if (isErr(r)) return alert(`Couldn't save the preset: ${r.error}`);
     setPresets(next);
   };
 
@@ -1281,7 +1261,7 @@ function App() {
   };
   /** A ticket group's id and title, when the group is an ADO work item. */
   const ticketOfGroup = (g: string | null): { id: string; title: string } | null => {
-    if (!g || !/^\d+$/.test(g)) return null;
+    if (!g || !isWorkItemId(g)) return null;
     const t = workSessions.find((s) => topOf(s) === g && s.ticketTitle)?.ticketTitle ?? "";
     return { id: g, title: t };
   };
@@ -1339,8 +1319,8 @@ function App() {
     window.mb.worktreeState(focusedCwd).then((r: WorktreeStateInfo | { error: string }) => {
       if (n !== scmSeq.current) return;
       // a folder outside any repository has nothing to count; anything else is a failure to show
-      setScmCountError("error" in r && !/not a git repository/i.test(r.error) ? r.error : null);
-      setScmCount("error" in r ? 0 : r.dirtyFiles);
+      setScmCountError(isErr(r) && !/not a git repository/i.test(r.error) ? r.error : null);
+      setScmCount(isErr(r) ? 0 : r.dirtyFiles);
     });
   };
   useEffect(loadScmCount, [focusedCwd]);
@@ -1355,7 +1335,7 @@ function App() {
     .sort()
     .join(",");
   useEffect(() => {
-    window.mb.watchFolders(watchKey ? watchKey.split(",") : []).then((r: unknown) => isError(r) && console.error("[mockingbird] couldn't watch the sessions' folders:", r.error));
+    window.mb.watchFolders(watchKey ? watchKey.split(",") : []).then((r: unknown) => isErr(r) && console.error("[mockingbird] couldn't watch the sessions' folders:", r.error));
   }, [watchKey]);
 
   const startSideResize = (e: React.PointerEvent) => {
@@ -1389,7 +1369,7 @@ function App() {
                 <span className="dot sm waiting" style={{ marginLeft: 6 }} />
               )}
               {t === "collaborate" && asksWaiting > 0 && (
-                <span className="tab-badge" title={`${asksWaiting} request${asksWaiting === 1 ? "" : "s"} from models waiting on you`}>
+                <span className="tab-badge" title={`${plural(asksWaiting, "request")} from models waiting on you`}>
                   {asksWaiting}
                 </span>
               )}
@@ -1567,7 +1547,7 @@ function App() {
                 ) : badge > 0 && (
                   <span
                     className={`ab-badge ${id === "sessions" ? "waiting" : ""}`}
-                    title={id === "sessions" ? `${badge} waiting on you` : id === "run" ? `${badge} service${badge === 1 ? "" : "s"} running` : `${badge} uncommitted file${badge === 1 ? "" : "s"}`}
+                    title={id === "sessions" ? `${badge} waiting on you` : id === "run" ? `${plural(badge, "service")} running` : plural(badge, "uncommitted file")}
                   >
                     {badge > 99 ? "99+" : badge}
                   </span>
@@ -1607,11 +1587,11 @@ function App() {
                   focusedSession.shell
                     ? undefined
                     : {
-                        agent: otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude",
+                        agent: otherAgent(focusedSession.agent),
                         start: async () => {
                           const author = focusedSession;
                           const info = await window.mb.reviewStart(author.id);
-                          if (info?.error) return `Couldn't start the review: ${info.error}`;
+                          if (isErr(info)) return `Couldn't start the review: ${info.error}`;
                           await refresh();
                           // the reviewer opens beside the session it's reviewing
                           setShown((p) => placeBeside(p.includes(info.id) ? p : [...p, info.id], info.id, author.id, "after"));
@@ -1807,7 +1787,7 @@ function App() {
                           {(s.branch || s.agent === "codex") && (
                             <span className="br">
                               {s.agent === "codex" ? "codex · " : ""}
-                              {s.branch && s.branch !== titleOf(s) ? s.branch : s.repoPath?.split("/").pop() ?? ""}
+                              {s.branch && s.branch !== titleOf(s) ? s.branch : (s.repoPath ? baseName(s.repoPath) : "")}
                             </span>
                           )}
                         </span>
@@ -1887,7 +1867,7 @@ function App() {
                       title="Relaunch, resuming the conversation"
                       onClick={async () => {
                         const info = await window.mb.relaunchSession(s.id);
-                        if (info?.error) return alert(`Couldn't relaunch: ${info.error}`);
+                        if (isErr(info)) return alert(`Couldn't relaunch: ${info.error}`);
                         if (info) {
                           await refresh();
                           jumpTo(info.id);
@@ -2127,7 +2107,7 @@ function App() {
                     onShowMessages={() => setMsgLogFor({ id: s.id, title: titleOf(s) })}
                     onRestart={async () => {
                       const r = await window.mb.sessionRestart(s.id);
-                      if (r?.error) alert(`Couldn't restart ${titleOf(s)}: ${r.error}`);
+                      if (isErr(r)) alert(`Couldn't restart ${titleOf(s)}: ${r.error}`);
                       else freshTerms([s.id]);
                       refresh();
                     }}
@@ -2297,10 +2277,10 @@ function App() {
           <button
             key={u.agent}
             className="sb-update"
-            title={`${u.agent === "codex" ? "Codex" : "Claude Code"} ${u.installed} is installed; these sessions still run the version they started with:\n${u.sessions.map((x) => `  ${x.title} (${x.version})`).join("\n")}\nRestarting resumes each conversation.`}
+            title={`${AGENT_NAME[u.agent]} ${u.installed} is installed; these sessions still run the version they started with:\n${u.sessions.map((x) => `  ${x.title} (${x.version})`).join("\n")}\nRestarting resumes each conversation.`}
             onClick={() => setModal("restart")}
           >
-            {u.agent === "codex" ? "Codex" : "Claude Code"} {u.installed} · restart {u.sessions.length} session{u.sessions.length === 1 ? "" : "s"}
+            {AGENT_NAME[u.agent]} {u.installed} · restart {plural(u.sessions.length, "session")}
           </button>
         ))}
         {(["working", "waiting", "idle", "dead"] as const).map((st) => {
@@ -2386,7 +2366,7 @@ function App() {
               title="Session status (working/waiting/idle) needs Claude Code hooks — click to install"
               onClick={async () => {
                 const r = await window.mb.installHooks();
-                if (r?.error) return alert(`Couldn't install hooks: ${r.error}`);
+                if (isErr(r)) return alert(`Couldn't install hooks: ${r.error}`);
                 setHooksOk(true);
               }}
             >
@@ -2449,7 +2429,7 @@ function App() {
                     ? [{ label: `Undo a turn of ${titleOf(focusedSession)} — put its files back`, run: () => setUndoFor(focusedSession) }]
                     : []),
                   ...(!focusedSession.shell
-                    ? [{ label: `Continue in ${otherAgent(focusedSession.agent) === "codex" ? "Codex" : "Claude Code"} — hand ${titleOf(focusedSession)} over with a summary`, run: () => setHandoffFor(focusedSession) }]
+                    ? [{ label: `Continue in ${AGENT_NAME[otherAgent(focusedSession.agent)]} — hand ${titleOf(focusedSession)} over with a summary`, run: () => setHandoffFor(focusedSession) }]
                     : []),
                   ...(ticketOfGroup(topOf(focusedSession))
                     ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]
@@ -2676,7 +2656,7 @@ function StatusDots({ list }: { list: SessionInfo[] }) {
   const MAX = 3;
   const extra = sorted.length - MAX;
   return (
-    <span className="sdots" title={`${list.length} session${list.length === 1 ? "" : "s"}`}>
+    <span className="sdots" title={plural(list.length, "session")}>
       {sorted.slice(0, MAX).map((s) => (
         <span key={s.id} className={`dot xs ${s.status}`} />
       ))}

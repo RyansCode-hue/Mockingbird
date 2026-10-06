@@ -1,3 +1,5 @@
+import { baseName } from "./paths";
+
 /**
  * What a file is written in, judged by its name: one table for everything that
  * treats files by type (the editor's language, the diff highlighter), so they
@@ -46,12 +48,28 @@ const BY_EXT: Record<string, FileLanguage> = {
   ini: "properties", env: "properties", properties: "properties", cfg: "properties",
 };
 
+/**
+ * A file's extension, lower-case and without the dot: "App.TSX" → "tsx".
+ * None ("") for "Makefile", or for a dotfile such as ".bashrc", whose dot
+ * starts its name.
+ */
+export function extensionOf(path: string): string {
+  const name = baseName(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1) : "";
+}
+
+/** A .env file, or one of its variants (.env.local). */
+export function isEnvFile(path: string): boolean {
+  const name = baseName(path).toLowerCase();
+  return name === ".env" || name.startsWith(".env.");
+}
+
 /** The file's language by its name; null for plain text. */
 export function fileLanguage(path: string): FileLanguage | null {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const name = baseName(path).toLowerCase();
   if (name === "dockerfile" || name.startsWith("dockerfile.")) return "dockerfile";
   if (name === "makefile") return "makefile";
-  if (name === ".env" || name.startsWith(".env.")) return "properties";
-  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
-  return BY_EXT[ext] ?? null;
+  if (isEnvFile(name)) return "properties";
+  return BY_EXT[extensionOf(name)] ?? null;
 }

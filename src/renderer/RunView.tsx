@@ -1,23 +1,17 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import type { DebugFrame, RunProfile, RunServiceState, SessionInfo } from "../shared/types";
+import { isErr, type DebugFrame, type RunServiceState, type SessionInfo, type IpcResult, type RunProfileInfo } from "../shared/types";
 import { BugIcon, SparkleIcon } from "./Icons";
 import { DebugPanel } from "./DebugPanel";
 import { useDebug } from "./debugStore";
 import { RUN_DOT, draftForEditing, stripRepo } from "./runDisplay";
 import { useAction } from "./useAction";
+import type { PortConflict } from "../main/run";
+import { baseName } from "../shared/paths";
+import { readPref, writePref } from "./prefs";
+import { settled } from "./settled";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
-interface ProfileInfo {
-  worktree: string;
-  repo: string;
-  file: string;
-  profile: RunProfile | null;
-}
-type Conflict = { port: number; service: string; pid: number | null; command: string };
 
 const ACTIVE = new Set(["starting", "running", "stopping"]);
 
@@ -53,9 +47,9 @@ export function RunView({
   const dbg = useDebug();
   const [progress, setProgress] = useState("");
   useEffect(() => window.mb.onRunProgress((w: string, m: string) => w === session?.cwd && setProgress(m)), [session?.cwd]);
-  const [info, setInfo] = useState<Result<ProfileInfo> | null>(null);
+  const [info, setInfo] = useState<IpcResult<RunProfileInfo> | null>(null);
   const { busy, run, error, setError } = useAction();
-  const [conflicts, setConflicts] = useState<{ list: Conflict[]; services?: string[] } | null>(null);
+  const [conflicts, setConflicts] = useState<{ list: PortConflict[]; services?: string[] } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [draftNote, setDraftNote] = useState("");
   const [mode, setMode] = useState<"swap" | "side">("swap");
@@ -67,10 +61,7 @@ export function RunView({
   const load = () => {
     const id = sid;
     if (!id) return;
-    window.mb.runProfile(id).then(
-      (r: Result<ProfileInfo>) => shown.current === id && setInfo(r),
-      (err: unknown) => shown.current === id && setInfo({ error: `Couldn't read the run setup: ${err instanceof Error ? err.message : err}` })
-    );
+    settled<IpcResult<RunProfileInfo>>(window.mb.runProfile(id), "Couldn't read the run setup").then((r) => shown.current === id && setInfo(r));
   };
   useEffect(() => {
     setInfo(null);
@@ -83,19 +74,11 @@ export function RunView({
   const repoKey = info && !isErr(info) ? info.repo : "";
   useEffect(() => {
     if (!repoKey) return;
-    try {
-      setMode(JSON.parse(localStorage.getItem(`mb.run.mode:${repoKey}`) ?? '"swap"'));
-    } catch {
-      setMode("swap");
-    }
+    setMode(readPref<"swap" | "side">(`mb.run.mode:${repoKey}`, "swap"));
   }, [repoKey]);
   const pickMode = (m: "swap" | "side") => {
     setMode(m);
-    try {
-      localStorage.setItem(`mb.run.mode:${repoKey}`, JSON.stringify(m));
-    } catch {
-      /* not remembered; still applies now */
-    }
+    writePref(`mb.run.mode:${repoKey}`, m);
   };
 
   if (!session) return <div className="fp-note">Click into a session to run its worktree.</div>;

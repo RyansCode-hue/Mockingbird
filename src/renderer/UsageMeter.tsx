@@ -1,23 +1,21 @@
 import { useEffect, useState } from "react";
-import { fmtElapsed, tokenBreakdown } from "./TerminalPane";
-import { resetText, pctNow } from "./usageFormat";
+import { tokenBreakdown } from "./TerminalPane";
+import { resetText, pctNow, headlineOf } from "./usageFormat";
 import { Popover } from "./Popover";
-import type { UsageReport, UsageLimit, Meters } from "../shared/types";
-import { formatTokens, totalTokens } from "../shared/types";
-import { loadLS } from "./uiUtil";
+import { AGENT_NAME, formatTokens, totalTokens, type UsageReport, type Meters } from "../shared/types";
+import { fmtElapsed } from "../shared/format";
+import { usePersisted } from "./prefs";
 
 /** The status bar's plan-usage meter and its popover. */
 
 type UsageShow = "claude" | "codex" | "both";
-const AGENT_NAME = { claude: "Claude", codex: "Codex" } as const;
 
 /**
  * Plan usage in the status bar — Claude, Codex, or both — with a popover of
  * every limit. Both agents report account-wide numbers from their sessions.
  */
 export function UsageMeter({ usage, meters }: { usage: UsageReport | null; meters: Meters | null }) {
-  const [show, setShow] = useState<UsageShow>(() => loadLS("mb.usageShow", "both"));
-  useEffect(() => localStorage.setItem("mb.usageShow", JSON.stringify(show)), [show]);
+  const [show, setShow] = usePersisted<UsageShow>("mb.usageShow", "both");
   const [open, setOpen] = useState(false);
   // resets pass while the app sits open with no session reporting
   const [now, setNow] = useState(Date.now());
@@ -28,7 +26,6 @@ export function UsageMeter({ usage, meters }: { usage: UsageReport | null; meter
   const agents: ("claude" | "codex")[] = show === "both" ? ["claude", "codex"] : [show];
   const shown = agents.map((a) => ({ a, u: usage?.[a] ?? null }));
   const compact = shown.filter((x) => x.u);
-  const short = (l: UsageLimit) => (l.label.startsWith("5-hour") ? "5h" : l.label.startsWith("Weekly") ? "wk" : l.label);
   const todayTotal = Object.values(meters?.today ?? {}).reduce((n, t) => n + totalTokens(t!), 0);
 
   return (
@@ -41,10 +38,10 @@ export function UsageMeter({ usage, meters }: { usage: UsageReport | null; meter
             <span key={a} className="usage-agent">
               {agents.length > 1 && <span className="dim">{AGENT_NAME[a]}</span>}
               {u!.limits
-                .filter((l) => l.label === "5-hour limit" || l.label.startsWith("Weekly · all") || l.label === "Weekly limit")
+                .filter((l) => headlineOf(l))
                 .map((l) => (
                   <span key={l.label} className={pctNow(l, now) >= 90 ? "hot" : ""}>
-                    {short(l)} {Math.round(pctNow(l, now))}%
+                    {headlineOf(l)} {Math.round(pctNow(l, now))}%
                   </span>
                 ))}
             </span>

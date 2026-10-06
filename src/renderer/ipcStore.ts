@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { isErr, type IpcResult } from "../shared/types";
 
 /**
  * Main-process state mirrored in the renderer: one IPC subscription, any
@@ -33,10 +34,10 @@ export function createIpcStore<T>(initial: T, connect: (store: { get: () => T; s
  * A store's first read. When it fails ({ error } or a rejection) the store
  * keeps what it has and the console says what couldn't be read and why.
  */
-export function loadInto<R>(what: string, reply: Promise<R | { error: string }>, apply: (r: R) => void): void {
+export function loadInto<R>(what: string, reply: Promise<IpcResult<R>>, apply: (r: R) => void): void {
   reply.then(
     (r) => {
-      if (r && typeof r === "object" && "error" in r) console.error(`Couldn't read ${what}: ${(r as { error: string }).error}`);
+      if (isErr(r)) console.error(`Couldn't read ${what}: ${r.error}`);
       else apply(r as R);
     },
     (err: unknown) => console.error(`Couldn't read ${what}:`, err)

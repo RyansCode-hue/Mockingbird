@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import { fmtElapsed, shortReason } from "./TerminalPane";
+import { useMemo, useState } from "react";
+import { shortReason } from "./TerminalPane";
 import { titleOf } from "./appModel";
 import type { SessionInfo } from "../shared/types";
+import { fmtElapsed } from "../shared/format";
+import { Modal } from "./Modal";
+import { useEscape } from "./useEscape";
+import { rankMatches } from "./fuzzy";
+import { useListNav } from "./listNav";
 
 /** The command palette (⌘K) and the how-to-use popup (⌘/). */
 
@@ -10,15 +15,6 @@ interface PaletteAction {
   label: string;
   kbd?: string;
   run: () => void;
-}
-
-/** Case-insensitive subsequence match for the palette. */
-function fuzzy(q: string, s: string): boolean {
-  const qq = q.toLowerCase();
-  const ss = s.toLowerCase();
-  let i = 0;
-  for (const ch of ss) if (i < qq.length && ch === qq[i]) i++;
-  return i === qq.length;
 }
 
 export function CommandPalette({
@@ -36,7 +32,7 @@ export function CommandPalette({
   onClose: () => void;
 }) {
   const [q, setQ] = useState("");
-  const [sel, setSel] = useState(0);
+  useEscape(onClose);
 
   const statusPhrase = (s: SessionInfo): string => {
     if (s.status === "waiting")
@@ -45,27 +41,22 @@ export function CommandPalette({
   };
 
   const rows = useMemo(() => {
-    const acts = actions
-      .filter((a) => !q || fuzzy(q, a.label))
-      .map((a) => ({ kind: "action" as const, label: a.label, kbd: a.kbd, run: a.run }));
-    const sess = sessions
-      .filter((s) => !q || fuzzy(q, titleOf(s)) || fuzzy(q, s.branch ?? ""))
-      .map((s) => {
-        const n = shortcuts.get(s.id);
-        return {
-          kind: "session" as const,
-          label: titleOf(s),
-          kbd: n ? `⌘${n}` : undefined,
-          status: s.status,
-          state: statusPhrase(s),
-          run: () => onJump(s.id),
-        };
-      });
+    const acts = rankMatches(q, actions, (a) => [a.label]).map((a) => ({ kind: "action" as const, label: a.label, kbd: a.kbd, run: a.run }));
+    const sess = rankMatches(q, sessions, (s) => [titleOf(s), s.branch]).map((s) => {
+      const n = shortcuts.get(s.id);
+      return {
+        kind: "session" as const,
+        label: titleOf(s),
+        kbd: n ? `⌘${n}` : undefined,
+        status: s.status,
+        state: statusPhrase(s),
+        run: () => onJump(s.id),
+      };
+    });
     return { acts, sess, flat: [...acts, ...sess] };
   }, [q, sessions, shortcuts, actions]);
 
-  useEffect(() => setSel(0), [q]);
-  const clamp = Math.min(sel, Math.max(0, rows.flat.length - 1));
+  const { sel, onArrow } = useListNav(rows.flat.length, [q]);
 
   const runRow = (i: number) => {
     const r = rows.flat[i];
@@ -88,18 +79,10 @@ export function CommandPalette({
             placeholder="Type a command or session"
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setSel((s) => Math.min(s + 1, rows.flat.length - 1));
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setSel((s) => Math.max(s - 1, 0));
-              }
+              if (onArrow(e)) return;
               if (e.key === "Enter") {
                 e.preventDefault();
-                runRow(clamp);
+                runRow(sel);
               }
             }}
           />
@@ -111,7 +94,7 @@ export function CommandPalette({
             flatIndex++;
             const i = flatIndex;
             return (
-              <div key={`a${r.label}`} className={`row ${i === clamp ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
+              <div key={`a${r.label}`} className={`row ${i === sel ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
                 <span className="lab">{r.label}</span>
                 {r.kbd && <span className="kbd">{r.kbd}</span>}
               </div>
@@ -123,7 +106,7 @@ export function CommandPalette({
             flatIndex++;
             const i = flatIndex;
             return (
-              <div key={`s${j}`} className={`row ${i === clamp ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
+              <div key={`s${j}`} className={`row ${i === sel ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
                 <span className={`dot ${r.status}`} />
                 <span className="lab">{r.label}</span>
                 <span className={`state ${r.status === "waiting" ? "amber" : ""}`}>{r.state}</span>
@@ -144,14 +127,6 @@ export function CommandPalette({
 
 // ---- how-to-use popup (shown once on first launch, then ⌘/ · palette · status bar) ----
 export function HelpModal({ onClose }: { onClose: () => void }) {
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [onClose]);
-
   const keys: [string, string][] = [
     ["⌘K", "command palette — every action, jump to any session"],
     ["⌘N", "new session"],
@@ -175,77 +150,75 @@ export function HelpModal({ onClose }: { onClose: () => void }) {
   ];
 
   return (
-    <div className="modal-back" onMouseDown={onClose}>
-      <div className="modal help" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>How to use Mockingbird</h3>
-        <div className="sub-h">
-          A grid of parallel Claude CLI sessions. Watch them all at once; the app tells you when one needs you.
+    <Modal className="modal help" onClose={onClose}>
+      <h3>How to use Mockingbird</h3>
+      <div className="sub-h">
+        A grid of parallel Claude CLI sessions. Watch them all at once; the app tells you when one needs you.
+      </div>
+      <div className="help-cols">
+        <div>
+          <div className="help-sec">The one rule</div>
+          <p>
+            <span className="dot waiting" style={{ marginRight: 6 }} />
+            <b>Amber means a session is blocked on you</b> — a permission prompt or a question.
+            The pane gets an amber border and a banner saying exactly why. Everything else is
+            just status: <span className="dot working" /> working · <span className="dot idle" /> idle ·{" "}
+            <span className="dot dead" /> dead. Press <span className="kbd">⌥⇥</span> to jump to
+            whoever has waited longest.
+          </p>
+          <div className="help-sec">Sessions &amp; the grid</div>
+          <p>
+            <b>New session</b> picks a repo, optionally a ticket # — Mockingbird creates a git
+            worktree and branch, and launches <span className="kbd">claude</span> in it. The grid
+            sizes itself to however many sessions you have open. Click sidebar rows to show/hide
+            panes; drag pane headers to rearrange; <span className="kbd">⛶</span> fullscreens a
+            pane. <b>Resize a pane from its own right edge, bottom edge, or corner grip</b> —
+            like a window; neighbors absorb the change (double-click a handle to even out).{" "}
+            <b>Double-click any name</b> — pane title or sidebar row — <b>to rename it</b>.
+            Closing a session with unsaved work always asks first — the safe choice is preselected.
+          </p>
+          <div className="help-sec">Groups &amp; sub-groups</div>
+          <p>
+            Sessions sharing a ticket # group automatically, and <b>the grid shows one group at a
+            time</b> — the bar above the grid names it. Click a group header to fill the grid with
+            it (other groups collapse — ▸ toggles them individually); click rows to hide/re-show
+            panes. <b>Workspaces (sub-groups)</b> put several sessions in <b>one pane with tabs</b>,
+            cmux-style. <b>Create</b>: drag one session row onto another in the same group (or use
+            a row's <span className="kbd">⤷</span> dialog's sub-group field). <b>Rename</b>:
+            double-click the workspace name — in the sidebar or on the pane's tab strip.{" "}
+            <b>Dissolve</b>: hover the sidebar workspace label and click ✕ — its sessions stay,
+            they just move back up into the group. Drag rows onto any group or workspace header
+            to move them between.
+          </p>
         </div>
-        <div className="help-cols">
-          <div>
-            <div className="help-sec">The one rule</div>
-            <p>
-              <span className="dot waiting" style={{ marginRight: 6 }} />
-              <b>Amber means a session is blocked on you</b> — a permission prompt or a question.
-              The pane gets an amber border and a banner saying exactly why. Everything else is
-              just status: <span className="dot working" /> working · <span className="dot idle" /> idle ·{" "}
-              <span className="dot dead" /> dead. Press <span className="kbd">⌥⇥</span> to jump to
-              whoever has waited longest.
-            </p>
-            <div className="help-sec">Sessions &amp; the grid</div>
-            <p>
-              <b>New session</b> picks a repo, optionally a ticket # — Mockingbird creates a git
-              worktree and branch, and launches <span className="kbd">claude</span> in it. The grid
-              sizes itself to however many sessions you have open. Click sidebar rows to show/hide
-              panes; drag pane headers to rearrange; <span className="kbd">⛶</span> fullscreens a
-              pane. <b>Resize a pane from its own right edge, bottom edge, or corner grip</b> —
-              like a window; neighbors absorb the change (double-click a handle to even out).{" "}
-              <b>Double-click any name</b> — pane title or sidebar row — <b>to rename it</b>.
-              Closing a session with unsaved work always asks first — the safe choice is preselected.
-            </p>
-            <div className="help-sec">Groups &amp; sub-groups</div>
-            <p>
-              Sessions sharing a ticket # group automatically, and <b>the grid shows one group at a
-              time</b> — the bar above the grid names it. Click a group header to fill the grid with
-              it (other groups collapse — ▸ toggles them individually); click rows to hide/re-show
-              panes. <b>Workspaces (sub-groups)</b> put several sessions in <b>one pane with tabs</b>,
-              cmux-style. <b>Create</b>: drag one session row onto another in the same group (or use
-              a row's <span className="kbd">⤷</span> dialog's sub-group field). <b>Rename</b>:
-              double-click the workspace name — in the sidebar or on the pane's tab strip.{" "}
-              <b>Dissolve</b>: hover the sidebar workspace label and click ✕ — its sessions stay,
-              they just move back up into the group. Drag rows onto any group or workspace header
-              to move them between.
-            </p>
-          </div>
-          <div>
-            <div className="help-sec">Keyboard</div>
-            {keys.map(([k, d]) => (
-              <div key={k} className="help-key">
-                <span className="kbd">{k}</span>
-                <span>{d}</span>
-              </div>
-            ))}
-            <div className="help-sec">Broadcast &amp; CLAUDE.md</div>
-            <p>
-              Both live in the <b>Settings</b> tab. <b>Broadcast</b> queues a message to every
-              session and delivers it when each one is idle (the delivery list shows who got it).
-              Editing <b>CLAUDE.md</b> there ends with "Save &amp; re-read in N": every session in
-              that repo re-reads it, no restarts. The <b>Dashboard</b> tab is your ADO board —
-              drag cards between columns, comment, and start sessions from tickets.
-            </p>
-            <div className="help-sec">After a restart</div>
-            <p>
-              Sessions from the last run appear under <b>Previous</b> — <span className="kbd">↺ restore all</span>{" "}
-              relaunches them with their history (<span className="kbd">claude --continue</span>) back
-              into their old grid slots and groups.
-            </p>
-          </div>
-        </div>
-        <div className="row">
-          <span className="kbd foot-hint">reopen anytime with ⌘/</span>
-          <button className="primary" onClick={onClose}>Got it</button>
+        <div>
+          <div className="help-sec">Keyboard</div>
+          {keys.map(([k, d]) => (
+            <div key={k} className="help-key">
+              <span className="kbd">{k}</span>
+              <span>{d}</span>
+            </div>
+          ))}
+          <div className="help-sec">Broadcast &amp; CLAUDE.md</div>
+          <p>
+            Both live in the <b>Settings</b> tab. <b>Broadcast</b> queues a message to every
+            session and delivers it when each one is idle (the delivery list shows who got it).
+            Editing <b>CLAUDE.md</b> there ends with "Save &amp; re-read in N": every session in
+            that repo re-reads it, no restarts. The <b>Dashboard</b> tab is your ADO board —
+            drag cards between columns, comment, and start sessions from tickets.
+          </p>
+          <div className="help-sec">After a restart</div>
+          <p>
+            Sessions from the last run appear under <b>Previous</b> — <span className="kbd">↺ restore all</span>{" "}
+            relaunches them with their history (<span className="kbd">claude --continue</span>) back
+            into their old grid slots and groups.
+          </p>
         </div>
       </div>
-    </div>
+      <div className="row">
+        <span className="kbd foot-hint">reopen anytime with ⌘/</span>
+        <button className="primary" onClick={onClose}>Got it</button>
+      </div>
+    </Modal>
   );
 }

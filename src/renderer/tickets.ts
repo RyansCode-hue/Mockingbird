@@ -4,7 +4,7 @@
  * order, and the chosen repo's branches.
  */
 import { useEffect, useState } from "react";
-import type { AdoWorkItem, RepoBranches } from "../shared/types";
+import { isErr, type AdoWorkItem, type RepoBranches } from "../shared/types";
 import { orderColumns } from "./boardView";
 
 /** Kickoff prompt for a session started from an Azure DevOps ticket. */
@@ -75,7 +75,7 @@ export function useRepoBranches(repoPath: string | null | undefined) {
     let alive = true;
     window.mb.repoBranches(repoPath).then((r: RepoBranches | { error: string }) => {
       if (!alive) return;
-      if ("error" in r) return setError(`Couldn't list the repo's branches: ${r.error}`);
+      if (isErr(r)) return setError(`Couldn't list the repo's branches: ${r.error}`);
       setBranches(r);
       setBase(r.defaultBase ?? "");
     });
@@ -116,7 +116,7 @@ export function useAdoTickets(): AdoTickets {
     let alive = true;
     window.mb.adoList().then(async (r: { items: AdoWorkItem[]; me: string } | { error: string }) => {
       if (!alive) return;
-      if ("error" in r) return setT((p) => ({ ...p, error: r.error }));
+      if (isErr(r)) return setT((p) => ({ ...p, error: r.error }));
       setT((p) => ({ ...p, items: r.items, me: r.me }));
       const { states, error } = await workflowStates([...new Set(r.items.map((i) => i.type))]);
       if (alive) setT((p) => ({ ...p, stateOrder: states, error }));

@@ -196,7 +196,7 @@ describe("saving", () => {
     CE.openBuffer("/r:save.ts", disk("a\n"), "save.ts");
     CE.updateBuffer("/r:save.ts", () => ({ changes: { from: 0, insert: "b" } }));
     const r = await CE.saveBuffer("/r:save.ts", () => Promise.reject(new Error("disk full")), false);
-    expect(r).toEqual({ error: "Error: disk full" });
+    expect(r).toEqual({ error: "disk full" });
     expect(CE.dirtyKeys()).toContain("/r:save.ts");
   });
 

@@ -1,15 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { GitChange, GitChanges, ScmEntry, ScmStatus } from "../shared/types";
+import { isErr, AGENT_NAME, type GitChange, type GitChanges, type ScmEntry, type ScmStatus, type IpcResult, type AgentKind } from "../shared/types";
 import { useFolderRefresh } from "./folderWatch";
 import { SparkleIcon } from "./Icons";
 import { CommitGraph } from "./CommitGraph";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
+import { plural } from "../shared/format";
+import { baseName, dirName } from "../shared/paths";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
 const TITLE: Record<ScmEntry["status"], string> = { M: "Modified", A: "Added", D: "Deleted", R: "Renamed", U: "Untracked", C: "Conflict" };
 
@@ -62,9 +60,9 @@ export function SourceControl({
   /** Type a request into the session's prompt — to hand a git failure to the agent. */
   onAskSession?: (text: string) => void;
   /** A second opinion: the other agent reviews this branch and messages its findings back. */
-  review?: { agent: string; start: () => Promise<string | null> };
+  review?: { agent: AgentKind; start: () => Promise<string | null> };
 }) {
-  const [status, setStatus] = useState<Result<ScmStatus> | null>(null);
+  const [status, setStatus] = useState<IpcResult<ScmStatus> | null>(null);
   const [message, setMessage] = useState("");
   // git calls aren't queued in the main process, so nothing starts while one is in flight
   const { busy, isBusy, run, error, setError } = useAction();
@@ -73,7 +71,7 @@ export function SourceControl({
   const [closed, setClosed] = useState<Set<string>>(() => new Set(["branch"]));
   // refetch the graph only when what it draws can have moved
   const graphKey = status && !isErr(status) ? `${status.branch}|${status.upstream}|${status.ahead}|${status.behind}` : "";
-  const [branch, setBranch] = useState<Result<GitChanges> | null>(null);
+  const [branch, setBranch] = useState<IpcResult<GitChanges> | null>(null);
   const broken = useRef(false);
   // the message box grows with what's in it (a generated body), up to a point
   const msgRef = useRef<HTMLTextAreaElement>(null);
@@ -85,7 +83,7 @@ export function SourceControl({
   }, [message, status]);
 
   const load = useCallback(async () => {
-    const r: Result<ScmStatus> = await settled(window.mb.scmStatus(sessionId), "Couldn't read git status");
+    const r: IpcResult<ScmStatus> = await settled(window.mb.scmStatus(sessionId), "Couldn't read git status");
     broken.current = isErr(r) && notARepository(r.error);
     setStatus((s) => (JSON.stringify(s) === JSON.stringify(r) ? s : r));
   }, [sessionId]);
@@ -103,12 +101,12 @@ export function SourceControl({
   const branchOpen = !closed.has("branch");
   useEffect(() => {
     if (!branchOpen && branch !== null) return;
-    settled<Result<GitChanges>>(window.mb.filesChanges(sessionId, "branch"), "Couldn't read the branch's changes").then(setBranch);
+    settled<IpcResult<GitChanges>>(window.mb.filesChanges(sessionId, "branch"), "Couldn't read the branch's changes").then(setBranch);
   }, [branchOpen, sessionId, status]);
 
   const generate = async () => {
     setFailed(""); // not a git failure: nothing to hand the agent
-    const r = await run("generate", (): Promise<Result<{ message: string; scope: "staged" | "all"; agent: string }>> => window.mb.scmCommitMessage(sessionId));
+    const r = await run("generate", (): Promise<IpcResult<{ message: string; scope: "staged" | "all"; agent: string }>> => window.mb.scmCommitMessage(sessionId));
     if (!isErr(r)) setMessage(r.message);
   };
 
@@ -151,7 +149,7 @@ export function SourceControl({
     if (!message.trim()) return setError("Write a commit message first");
     if (!staged.length) {
       if (!unstaged.length) return setError("There's nothing to commit");
-      if (!window.confirm(`Nothing is staged. Stage all ${unstaged.length} change${unstaged.length === 1 ? "" : "s"} and commit?`)) return;
+      if (!window.confirm(`Nothing is staged. Stage all ${plural(unstaged.length, "change")} and commit?`)) return;
     }
     // staging and committing are one action, so nothing can start in between
     let step = "commit";
@@ -236,7 +234,6 @@ export function SourceControl({
     );
 
   const pushLabel = !status.published ? "Publish branch" : status.ahead ? `Push ↑${status.ahead}` : "Push";
-  const s = (n: number) => (n === 1 ? "" : "s");
   return (
     <div className="sc">
       <div className="sc-branch">
@@ -246,7 +243,7 @@ export function SourceControl({
             className="sc-ab"
             title={
               status.upstream
-                ? `Compared with ${status.upstream} (as of the last fetch): ↑${status.ahead} commit${s(status.ahead)} here that it doesn't have, ↓${status.behind} commit${s(status.behind)} there that this branch doesn't have`
+                ? `Compared with ${status.upstream} (as of the last fetch): ↑${plural(status.ahead, "commit")} here that it doesn't have, ↓${plural(status.behind, "commit")} there that this branch doesn't have`
                 : "This branch doesn't track a remote branch yet"
             }
           >
@@ -261,7 +258,7 @@ export function SourceControl({
             <button
               className="outline"
               disabled={!!busy}
-              title={`Bring the ${status.behind} new commit${s(status.behind)} on ${status.upstream} into this branch — fast-forward only, so nothing is merged or rewritten; if both sides have moved it says so and changes nothing`}
+              title={`Bring the ${plural(status.behind, "new commit")} on ${status.upstream} into this branch — fast-forward only, so nothing is merged or rewritten; if both sides have moved it says so and changes nothing`}
               onClick={() => act("pull", () => window.mb.scmPull(sessionId))}
             >
               {busy === "pull" ? "Pulling…" : "Pull"}
@@ -310,7 +307,7 @@ export function SourceControl({
         <button
           className="outline sc-review"
           disabled={!!busy}
-          data-tip={`Starts a ${review.agent} session in this folder that reviews the branch (committed and uncommitted) for bugs, security, silent failures and missing tests, then sends its findings back to this session. It changes nothing.`}
+          data-tip={`Starts a ${AGENT_NAME[review.agent]} session in this folder that reviews the branch (committed and uncommitted) for bugs, security, silent failures and missing tests, then sends its findings back to this session. It changes nothing.`}
           onClick={() => {
             setFailed(""); // not a git failure: nothing to hand the agent
             run("review", async () => {
@@ -319,7 +316,7 @@ export function SourceControl({
             });
           }}
         >
-          {busy === "review" ? "Starting the review…" : `Second opinion: review with ${review.agent}`}
+          {busy === "review" ? "Starting the review…" : `Second opinion: review with ${AGENT_NAME[review.agent]}`}
         </button>
       )}
       {error && (

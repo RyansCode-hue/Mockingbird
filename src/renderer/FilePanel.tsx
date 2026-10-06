@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionInfo, FileEntry, FileContent, GitChange, GitChanges, LspLocation, WorktreeStateInfo } from "../shared/types";
+import { isErr, type SessionInfo, type FileEntry, type FileContent, type GitChange, type GitChanges, type LspLocation, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { escapeHtml, highlightLines, languageFor } from "./highlight";
 import { fileKey, filesClosing, tabKey, type EditorState, type OpenFile } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
@@ -8,21 +8,11 @@ import { useBreakpoints, useDebug } from "./debugStore";
 import { CodeEditor, confirmClose, releaseBuffers, useDirtyKeys } from "./CodeEditor";
 import { ChevronIcon, FileIcon, FolderIcon, SearchIcon } from "./Icons";
 import { CopyToast, useCopyNote } from "./copyNote";
-import { ChangeCount, plural } from "./changeCount";
-
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
-/** A request's answer, with a failed request (a rejected promise) as its error, so it shows instead of "loading…" forever. */
-const answerOf = <T,>(p: Promise<Result<T>>): Promise<Result<T>> => p.catch((err: unknown) => ({ error: `Couldn't read it: ${String(err)}` }));
-
-function loadLS<T>(key: string, fallback: T): T {
-  try {
-    const v = localStorage.getItem(key);
-    return v == null ? fallback : (JSON.parse(v) as T);
-  } catch {
-    return fallback;
-  }
-}
+import { ChangeCount } from "./changeCount";
+import { settled } from "./settled";
+import { plural } from "../shared/format";
+import { baseName, dirName, tildePath } from "../shared/paths";
+import { usePersisted } from "./prefs";
 
 const STATUS_TITLE: Record<GitChange["status"], string> = {
   M: "Modified",
@@ -32,10 +22,7 @@ const STATUS_TITLE: Record<GitChange["status"], string> = {
   U: "Untracked",
 };
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 /** A path with the home folder shown as ~. */
-const tildePath = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
 
 const SLIDE_MS = 200;
 
@@ -77,27 +64,25 @@ interface ExplorerProps {
 function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTab, onCloseAll, onQuickOpen }: ExplorerProps) {
   // expanded folders are remembered per folder-on-disk, so flipping between
   // sessions restores each tree the way it was left
-  const [expandedByRoot, setExpandedByRoot] = useState<Record<string, string[]>>(() => loadLS("mb.files.expanded", {}));
-  useEffect(() => localStorage.setItem("mb.files.expanded", JSON.stringify(expandedByRoot)), [expandedByRoot]);
-  const [shut, setShut] = useState<string[]>(() => loadLS("mb.files.shutSections", []));
-  useEffect(() => localStorage.setItem("mb.files.shutSections", JSON.stringify(shut)), [shut]);
+  const [expandedByRoot, setExpandedByRoot] = usePersisted<Record<string, string[]>>("mb.files.expanded", {});
+  const [shut, setShut] = usePersisted<string[]>("mb.files.shutSections", []);
   const toggleSection = (k: string) => setShut((s) => (s.includes(k) ? s.filter((x) => x !== k) : [...s, k]));
-  const [dirs, setDirs] = useState<Record<string, Result<FileEntry[]>>>({});
-  const [changes, setChanges] = useState<Result<GitChanges> | null>(null);
-  const [gitState, setGit] = useState<Result<WorktreeStateInfo> | null>(null);
+  const [dirs, setDirs] = useState<Record<string, IpcResult<FileEntry[]>>>({});
+  const [changes, setChanges] = useState<IpcResult<GitChanges> | null>(null);
+  const [gitState, setGit] = useState<IpcResult<WorktreeStateInfo> | null>(null);
 
   const sid = session?.id ?? null;
   const root = session?.cwd ?? null;
   const expanded = useMemo(() => new Set(root ? expandedByRoot[root] ?? [] : []), [expandedByRoot, root]);
 
   const loadDir = useCallback(async (id: string, rel: string) => {
-    const r = await answerOf<FileEntry[]>(window.mb.filesList(id, rel));
+    const r = await settled<IpcResult<FileEntry[]>>(window.mb.filesList(id, rel), "Couldn't read it");
     setDirs((d) => (JSON.stringify(d[rel]) === JSON.stringify(r) ? d : { ...d, [rel]: r }));
   }, []);
 
   // the tree marks what changed since the last commit
   const loadChanges = useCallback(async (id: string) => {
-    const r = await answerOf<GitChanges>(window.mb.filesChanges(id, "working"));
+    const r = await settled<IpcResult<GitChanges>>(window.mb.filesChanges(id, "working"), "Couldn't read it");
     setChanges((c) => (JSON.stringify(c) === JSON.stringify(r) ? c : r));
     return r;
   }, []);
@@ -112,10 +97,7 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
       for (const rel of expanded) loadDir(sid, rel);
       if (gitBroken.current && !retryGit) return;
       loadChanges(sid).then((r) => (gitBroken.current = isErr(r)));
-      window.mb.worktreeState(root).then(
-        (r: Result<WorktreeStateInfo>) => setGit(r ?? { error: "no answer" }),
-        (err: unknown) => setGit({ error: String(err) })
-      );
+      settled<IpcResult<WorktreeStateInfo>>(window.mb.worktreeState(root), "Couldn't read git").then((r) => setGit(r ?? { error: "no answer" }));
     },
     [sid, root, expanded, loadDir, loadChanges]
   );
@@ -338,8 +320,7 @@ export function EditorDock({
   };
   // a file no tab shows any more (its tab closed to make room for a new one) lets go of its buffer
   useEffect(() => releaseBuffers(new Set(editor.tabs.map(fileKey))), [editor.tabs]);
-  const [width, setWidth] = useState<number>(() => loadLS("mb.files.viewerW", 560));
-  useEffect(() => localStorage.setItem("mb.files.viewerW", JSON.stringify(width)), [width]);
+  const [width, setWidth] = usePersisted<number>("mb.files.viewerW", 560);
   const [, setWindowW] = useState(window.innerWidth); // re-fit the editor when the window narrows
   useEffect(() => {
     const h = () => setWindowW(window.innerWidth);
@@ -454,8 +435,8 @@ function FileViewer({
   onInsert: (text: string) => void;
   onOpenLocation: (loc: LspLocation, fromSession: string) => string | null;
 }) {
-  const [file, setFile] = useState<Result<FileContent> | null>(null);
-  const [diff, setDiff] = useState<Result<string> | null>(null);
+  const [file, setFile] = useState<IpcResult<FileContent> | null>(null);
+  const [diff, setDiff] = useState<IpcResult<string> | null>(null);
   const bp = useBreakpoints(open.sessionId);
   const debug = useDebug();
   const dirty = useDirtyKeys().has(fileKey(open));
@@ -465,8 +446,7 @@ function FileViewer({
     .filter((l): l is number => l !== null);
   const saveRef = useRef<(() => void) | null>(null);
   const [copyNote, copy] = useCopyNote();
-  const [layout, setLayout] = useState<"inline" | "split">(() => loadLS("mb.files.diffLayout", "inline"));
-  useEffect(() => localStorage.setItem("mb.files.diffLayout", JSON.stringify(layout)), [layout]);
+  const [layout, setLayout] = usePersisted<"inline" | "split">("mb.files.diffLayout", "inline");
   const deleted = open.status === "D";
 
   const live = useRef(true);
@@ -483,16 +463,17 @@ function FileViewer({
     const latest = () => live.current && n === loads.current;
     if (open.mode === "diff") {
       const src = open.source;
-      const r = await answerOf<string>(
+      const r = await settled<IpcResult<string>>(
         src?.kind === "scm"
           ? window.mb.scmDiff(open.sessionId, open.path, src.staged, src.untracked)
           : src?.kind === "commit"
             ? window.mb.scmCommitDiff(open.sessionId, src.sha, open.path)
-            : window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U")
+            : window.mb.filesDiff(open.sessionId, open.path, src?.kind === "branch" ? "branch" : "working", open.status === "U"),
+        "Couldn't read it"
       );
       if (latest()) setDiff((d) => (JSON.stringify(d) === JSON.stringify(r) ? d : r));
     } else {
-      const r = await answerOf<FileContent>(window.mb.filesRead(open.sessionId, open.path));
+      const r = await settled<IpcResult<FileContent>>(window.mb.filesRead(open.sessionId, open.path), "Couldn't read it");
       if (latest()) setFile((f) => (JSON.stringify(f) === JSON.stringify(r) ? f : r));
     }
   };

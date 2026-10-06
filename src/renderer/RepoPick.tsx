@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
-import type { RepoEntry } from "../shared/types";
+import { useEffect, useState } from "react";
+import { isErr, type RepoEntry } from "../shared/types";
 import { Pick } from "./Menu";
+import { baseName } from "../shared/paths";
 
 /** The git repositories under the configured folders, read once; `error` says why they couldn't be. */
 export function useRepos(): { repos: RepoEntry[]; error: string } {
@@ -9,7 +10,7 @@ export function useRepos(): { repos: RepoEntry[]; error: string } {
   useEffect(() => {
     let live = true;
     window.mb.listRepos().then(
-      (r: RepoEntry[] | { error: string }) => live && (Array.isArray(r) ? setRepos(r) : setError(r.error)),
+      (r: RepoEntry[] | { error: string }) => live && (isErr(r) ? setError(r.error) : setRepos(r)),
       (err: unknown) => live && setError(err instanceof Error ? err.message : String(err))
     );
     return () => {
@@ -30,7 +31,7 @@ export function RepoPick({ value, onChange, none, className, title }: { value: s
     <>
       <Pick className={className} value={value} title={title} onChange={(e) => onChange(e.target.value)}>
         <option value="">{none}</option>
-        {value && !repos.some((r) => r.path === value) && <option value={value}>{value.split("/").pop()}</option>}
+        {value && !repos.some((r) => r.path === value) && <option value={value}>{baseName(value)}</option>}
         {repos.map((r) => (
           <option key={r.path} value={r.path}>
             {r.name}

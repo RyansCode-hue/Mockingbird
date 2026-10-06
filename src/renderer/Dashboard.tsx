@@ -1,15 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { fmtElapsed } from "./TerminalPane";
 import { Pick } from "./Menu";
-import { cardMove, columnOf, orderColumns, pickBoard } from "./boardView";
+import { cardMove, columnOf, orderColumns, pickBoard, COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
 import { beginDrag, cue, dragging, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
 import { stateRank, suggestTicketName, ticketKickoffPrompt, useRepoBranches, workflowStates } from "./tickets";
 import { titleOf } from "./appModel";
 import { Popover } from "./Popover";
 import { PipelinePanel, StageChip, usePipelines } from "./TicketPipeline";
-import type { SessionInfo, RepoEntry, AdoWorkItem, AdoComment, AdoBoard } from "../shared/types";
-import { slugBranch, topOfKey } from "../shared/types";
-import { ago, isError, loadLS, openLink } from "./uiUtil";
+import { isErr, slugBranch, topOfKey, type SessionInfo, type RepoEntry, type AdoWorkItem, type AdoComment, type AdoBoard } from "../shared/types";
+import { openLink } from "./uiUtil";
+import { ago, agoShort, fmtElapsed, plural } from "../shared/format";
+import { Modal } from "./Modal";
+import { usePersisted } from "./prefs";
+import { useAction } from "./useAction";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -42,32 +44,22 @@ export function DashboardBoard({
   const [items, setItems] = useState<AdoWorkItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [stateCols, setStateCols] = useState<string[]>([]);
-  const [error, setError] = useState("");
+  const { doing, run, error, setError } = useAction();
   const [syncedAt, setSyncedAt] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   // filters: multi-select "Assigned to" (empty = everyone) and hidden columns
   const [me, setMe] = useState("");
-  const [who, setWho] = useState<string[] | null>(() => loadLS<string[] | null>("mb.board.who", null));
+  const [who, setWho] = usePersisted<string[] | null>("mb.board.who", null);
   const [whoOpen, setWhoOpen] = useState(false);
-  useEffect(() => {
-    if (who !== null) localStorage.setItem("mb.board.who", JSON.stringify(who));
-  }, [who]);
 
   // The team's Azure Boards board — its real columns — when it can be read; work item states otherwise
   const [boardsInfo, setBoardsInfo] = useState<{ team: string; boards: AdoBoard[] } | { error: string } | null>(null);
-  const [boardName, setBoardName] = useState<string>(() => loadLS("mb.board.name", ""));
-  useEffect(() => localStorage.setItem("mb.board.name", JSON.stringify(boardName)), [boardName]);
-  const boards = boardsInfo && !("error" in boardsInfo) ? boardsInfo.boards : null;
+  const [boardName, setBoardName] = usePersisted<string>("mb.board.name", "");
+  const boards = boardsInfo && !isErr(boardsInfo) ? boardsInfo.boards : null;
   const board = boards ? boards.find((b) => b.name === boardName) ?? pickBoard(items ?? [], boards) : null;
 
   // column order and hidden columns, kept per board ("states" when there's no board)
-  const [colPrefs, setColPrefs] = useState<Record<string, { order: string[]; hidden: string[] }>>(
-    () =>
-      loadLS<Record<string, { order: string[]; hidden: string[] }> | null>("mb.board.prefs", null) ?? {
-        states: { order: loadLS<string[]>("mb.board.colOrder", []), hidden: loadLS<string[]>("mb.board.hidden", []) },
-      }
-  );
-  useEffect(() => localStorage.setItem("mb.board.prefs", JSON.stringify(colPrefs)), [colPrefs]);
+  const [colPrefs, setColPrefs] = usePersisted<ColumnPrefs>(COLUMN_PREFS_KEY, legacyColumnPrefs);
   const prefKey = board ? `board:${board.name}` : "states";
   const defaultHidden = board ? board.columns.filter((c) => c.type === "outgoing").map((c) => c.name) : [];
   const prefs = colPrefs[prefKey] ?? { order: [], hidden: defaultHidden };
@@ -106,7 +98,7 @@ export function DashboardBoard({
     setError("");
     setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, boardColumn: col, state: mv.state } : i)) : p));
     const r = await window.mb.adoMoveToColumn(id, prev.type, board.name, col);
-    if (r?.error) {
+    if (isErr(r)) {
       setItems((p) => (p ? p.map((i) => (i.id === id ? prev : i)) : p));
       setError(`Couldn't move ${id} to ${col}: ${r.error}`);
     }
@@ -116,16 +108,13 @@ export function DashboardBoard({
   const [state, setState] = useState("");
   const [desc, setDesc] = useState("");
   const [typeStates, setTypeStates] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
   // discussion
   const [comments, setComments] = useState<AdoComment[] | null>(null);
   const [draft, setDraft] = useState("");
-  const [posting, setPosting] = useState(false);
   // start/attach session
   const [repos, setRepos] = useState<RepoEntry[]>([]);
   const [repoPath, setRepoPath] = useState("");
   const [ticketName, setTicketName] = useState("");
-  const [busy, setBusy] = useState(false);
   const [attachId, setAttachId] = useState("");
   const [branchMode, setBranchMode] = useState<"new" | "existing">("new");
   const [dashWorktree, setDashWorktree] = useState(true);
@@ -139,7 +128,7 @@ export function DashboardBoard({
     window.mb.adoBoards(fresh).then((b: { team: string; boards: AdoBoard[] } | { error: string }) => setBoardsInfo(b));
     const r: { items: AdoWorkItem[]; total: number; me: string } | { error: string } =
       await window.mb.adoList();
-    if ("error" in r) {
+    if (isErr(r)) {
       setItems([]);
       setError(r.error);
       return;
@@ -167,8 +156,8 @@ export function DashboardBoard({
   useEffect(() => {
     load();
     window.mb.listRepos().then((r: RepoEntry[] | { error: string }) => {
-      if (Array.isArray(r)) setRepos(r);
-      else setError(`Couldn't list your repos: ${r.error}`);
+      if (isErr(r)) setError(`Couldn't list your repos: ${r.error}`);
+      else setRepos(r);
     });
   }, []);
 
@@ -205,15 +194,6 @@ export function DashboardBoard({
       n.has(name) ? n.delete(name) : n.add(name);
       return [...n];
     });
-
-  // esc closes the work-item dialog
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && detailId != null) setDetailId(null);
-    };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [detailId]);
 
   const detail = items?.find((i) => i.id === detailId) ?? null;
 
@@ -255,7 +235,7 @@ export function DashboardBoard({
     setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, state: newState } : i)) : p));
     if (detailId === id) setState(newState);
     const r = await window.mb.adoUpdate(id, { state: newState });
-    if (r?.error) {
+    if (isErr(r)) {
       setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, state: prev.state } : i)) : p));
       if (detailId === id) setState(prev.state);
       setError(`Couldn't move ${id} to ${newState}: ${r.error}`);
@@ -266,25 +246,19 @@ export function DashboardBoard({
 
   const save = async () => {
     if (!detail || !dirty) return;
-    setSaving(true);
-    setError("");
     const patch: Record<string, string> = {};
     if (title !== detail.title) patch.title = title;
     if (state !== detail.state) patch.state = state;
     if (desc !== detail.description) patch.description = desc;
-    const r = await window.mb.adoUpdate(detail.id, patch);
-    setSaving(false);
-    if (r?.error) return setError(r.error);
+    const r = await run("save", () => window.mb.adoUpdate(detail.id, patch));
+    if (isErr(r)) return;
     setItems((p) => (p ? p.map((i) => (i.id === detail.id ? { ...i, title, state, description: desc } : i)) : p));
   };
 
   const postComment = async () => {
     if (!detail || !draft.trim()) return;
-    setPosting(true);
-    setError("");
-    const r = await window.mb.adoAddComment(detail.id, draft.trim());
-    setPosting(false);
-    if (r?.error) return setError(r.error);
+    const r = await run("comment", () => window.mb.adoAddComment(detail.id, draft.trim()));
+    if (isErr(r)) return;
     setComments((p) => [...(p ?? []), r]);
     setDraft("");
   };
@@ -299,23 +273,22 @@ export function DashboardBoard({
   const startSession = async () => {
     if (!detail || !repoPath) return;
     if (branchMode === "existing" && !existingBranch) return;
-    setBusy(true);
-    setError("");
     const prompt = sendTicket ? ticketKickoffPrompt(detail.id, title, desc) : undefined;
-    const info = await window.mb.createSession({
-      repoPath,
-      ticketId: String(detail.id),
-      ticketTitle: ticketName || suggestTicketName(detail.title),
-      useWorktree: dashWorktree,
-      ...(branchMode === "existing"
-        ? { branchName: existingBranch }
-        : baseBranch
-          ? { baseBranch }
-          : {}),
-      initialPrompt: prompt,
-    });
-    setBusy(false);
-    if (info?.error) return setError(info.error);
+    const info = await run("start", () =>
+      window.mb.createSession({
+        repoPath,
+        ticketId: String(detail.id),
+        ticketTitle: ticketName || suggestTicketName(detail.title),
+        useWorktree: dashWorktree,
+        ...(branchMode === "existing"
+          ? { branchName: existingBranch }
+          : baseBranch
+            ? { baseBranch }
+            : {}),
+        initialPrompt: prompt,
+      })
+    );
+    if (isErr(info)) return;
     onCreated(info);
   };
 
@@ -356,7 +329,7 @@ export function DashboardBoard({
             <Pick
               className="board-pick"
               value={board?.name ?? ""}
-              title={boardsInfo && !("error" in boardsInfo) ? `${boardsInfo.team}'s boards in Azure DevOps` : undefined}
+              title={boardsInfo && !isErr(boardsInfo) ? `${boardsInfo.team}'s boards in Azure DevOps` : undefined}
               onChange={(e) => setBoardName(e.target.value)}
             >
               {boards.map((b) => (
@@ -374,8 +347,8 @@ export function DashboardBoard({
             <Popover className="who-pop cols-pop" onClose={() => setColsOpen(false)}>
               <div className="who-hint cols-src">
                 {board
-                  ? `${board.name} board · ${boardsInfo && !("error" in boardsInfo) ? boardsInfo.team : ""} — as set up in Azure DevOps`
-                  : boardsInfo && "error" in boardsInfo
+                  ? `${board.name} board · ${boardsInfo && !isErr(boardsInfo) ? boardsInfo.team : ""} — as set up in Azure DevOps`
+                  : boardsInfo && isErr(boardsInfo)
                     ? `Showing work item states — couldn't read your team's board: ${boardsInfo.error}`
                     : "Showing work item states"}
               </div>
@@ -473,14 +446,14 @@ export function DashboardBoard({
                       <div className="bc-top">
                         <span className="wi-id">{it.id}</span>
                         <span className="bc-type">{it.type}</span>
-                        <span className="bc-age">{it.changed ? ago(Date.parse(it.changed)) : ""}</span>
+                        <span className="bc-age">{it.changed ? agoShort(Date.parse(it.changed)) : ""}</span>
                       </div>
                       <div className="bc-title">{it.title}</div>
                       <div className="bc-foot">
                         {live.map((s) => (
                           <span key={s.id} className={`dot sm ${s.status}`} />
                         ))}
-                        <span>{live.length ? `${live.length} session${live.length === 1 ? "" : "s"}` : "no session"}</span>
+                        <span>{live.length ? plural(live.length, "session") : "no session"}</span>
                         <StageChip p={pipelines[String(it.id)]} />
                         {it.assignedTo !== me && (
                           <span className="bc-who">{it.assignedTo || "Unassigned"}</span>
@@ -496,201 +469,199 @@ export function DashboardBoard({
       </div>
 
       {detail && (
-        <div className="modal-back" onMouseDown={() => setDetailId(null)}>
-          <div className="bdetail" onMouseDown={(e) => e.stopPropagation()}>
-            <div className="hd">
-              <span className="tsq" style={{ background: typeColor(detail.type) }} />
-              <span className="wi-id">{detail.id}</span>
-              <span className="path">{detail.type}{detail.assignedTo ? ` · ${detail.assignedTo}` : " · Unassigned"}</span>
-              <span style={{ marginLeft: "auto" }} />
-              {dirty && <span className="kbd" style={{ color: "var(--amber)" }}>unsaved</span>}
-              <button className="primary" disabled={!dirty || saving} onClick={save}>
-                {saving ? "Saving…" : "Save"}
-              </button>
-              <button className="outline" onClick={() => openLink(detail.url)}>Open in ADO</button>
-              <button className="icon" title="Close (esc)" onClick={() => setDetailId(null)}>✕</button>
-            </div>
-            <div className="bd-body">
-              <div className="wi-form bd-main">
-                <PipelinePanel
-                  ticketId={String(detail.id)}
-                  title={detail.title}
-                  details={desc}
-                  sessions={linked}
-                  onAskSession={(id, text) => {
-                    setDetailId(null);
-                    onAskSession(id, text);
-                  }}
-                  onOpenScm={(id) => {
-                    setDetailId(null);
-                    onOpenScm(id);
-                  }}
-                  onPosted={() => loadComments(detail.id)}
+        <Modal className="bdetail" onClose={() => setDetailId(null)}>
+          <div className="hd">
+            <span className="tsq" style={{ background: typeColor(detail.type) }} />
+            <span className="wi-id">{detail.id}</span>
+            <span className="path">{detail.type}{detail.assignedTo ? ` · ${detail.assignedTo}` : " · Unassigned"}</span>
+            <span style={{ marginLeft: "auto" }} />
+            {dirty && <span className="kbd" style={{ color: "var(--amber)" }}>unsaved</span>}
+            <button className="primary" disabled={!dirty || doing("save")} onClick={save}>
+              {doing("save") ? "Saving…" : "Save"}
+            </button>
+            <button className="outline" onClick={() => openLink(detail.url)}>Open in ADO</button>
+            <button className="icon" title="Close (esc)" onClick={() => setDetailId(null)}>✕</button>
+          </div>
+          <div className="bd-body">
+            <div className="wi-form bd-main">
+              <PipelinePanel
+                ticketId={String(detail.id)}
+                title={detail.title}
+                details={desc}
+                sessions={linked}
+                onAskSession={(id, text) => {
+                  setDetailId(null);
+                  onAskSession(id, text);
+                }}
+                onOpenScm={(id) => {
+                  setDetailId(null);
+                  onOpenScm(id);
+                }}
+                onPosted={() => loadComments(detail.id)}
+              />
+              <label>Title</label>
+              <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
+              <label>
+                Description <span className="wi-note">plain text — rich formatting is simplified on save</span>
+              </label>
+              <textarea value={desc} onChange={(e) => setDesc(e.target.value)} spellCheck={false} style={{ minHeight: 140 }} />
+              <div className="wi-sec">Discussion</div>
+              {comments === null && <div className="wi-empty">Loading comments…</div>}
+              {comments?.length === 0 && <div className="wi-empty">No comments yet.</div>}
+              {comments?.map((c) => (
+                <div key={c.id} className="cmt">
+                  <div className="cmt-hd">
+                    <b>{c.author}</b>
+                    <span>{c.date ? ago(Date.parse(c.date)) : ""}</span>
+                  </div>
+                  <div className="cmt-tx">{c.text}</div>
+                </div>
+              ))}
+              <div className="cmt-compose">
+                <textarea
+                  placeholder="Write a comment…"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  style={{ minHeight: 64 }}
                 />
-                <label>Title</label>
-                <input type="text" value={title} onChange={(e) => setTitle(e.target.value)} />
-                <label>
-                  Description <span className="wi-note">plain text — rich formatting is simplified on save</span>
-                </label>
-                <textarea value={desc} onChange={(e) => setDesc(e.target.value)} spellCheck={false} style={{ minHeight: 140 }} />
-                <div className="wi-sec">Discussion</div>
-                {comments === null && <div className="wi-empty">Loading comments…</div>}
-                {comments?.length === 0 && <div className="wi-empty">No comments yet.</div>}
-                {comments?.map((c) => (
-                  <div key={c.id} className="cmt">
-                    <div className="cmt-hd">
-                      <b>{c.author}</b>
-                      <span>{c.date ? `${ago(Date.parse(c.date))} ago` : ""}</span>
-                    </div>
-                    <div className="cmt-tx">{c.text}</div>
-                  </div>
-                ))}
-                <div className="cmt-compose">
-                  <textarea
-                    placeholder="Write a comment…"
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    style={{ minHeight: 64 }}
-                  />
-                  <div className="row">
-                    <button className="primary" disabled={!draft.trim() || posting} onClick={postComment}>
-                      {posting ? "Posting…" : "Comment"}
-                    </button>
-                  </div>
+                <div className="row">
+                  <button className="primary" disabled={!draft.trim() || doing("comment")} onClick={postComment}>
+                    {doing("comment") ? "Posting…" : "Comment"}
+                  </button>
                 </div>
               </div>
-              <div className="wi-form bd-side">
-                <label>State</label>
-                <Pick value={state} onChange={(e) => setState(e.target.value)}>
-                  {[...new Set([state, ...typeStates])].map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </Pick>
-                <div className="wi-sec">Sessions on this ticket</div>
-                {linked.length === 0 && <div className="wi-empty">None yet.</div>}
-                {linked.map((s) => (
-                  <div key={s.id} className="drow" style={{ cursor: "pointer" }} onClick={() => onJump(s.id)}>
-                    <span className={`dot sm ${s.status}`} />
-                    <span className="nm">{titleOf(s)}</span>
-                    <span className="st">open ⏎</span>
-                  </div>
+            </div>
+            <div className="wi-form bd-side">
+              <label>State</label>
+              <Pick value={state} onChange={(e) => setState(e.target.value)}>
+                {[...new Set([state, ...typeStates])].map((s) => (
+                  <option key={s} value={s}>{s}</option>
                 ))}
-                <label>New session</label>
-                <Pick value={repoPath} onChange={(e) => setRepoPath(e.target.value)}>
-                  <option value="">repo…</option>
-                  {repos.map((r) => (
-                    <option key={r.path} value={r.path}>{r.name}</option>
-                  ))}
-                </Pick>
-                <div className="check-line" style={{ marginTop: 6 }}>
-                  <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
-                  <label htmlFor="dash-wt" style={{ margin: 0 }}>
-                    isolated worktree
-                    <span className="wi-note"> {dashWorktree ? "own folder under worktrees/<repo>/" : "off — branch is checked out in the repo itself"}</span>
-                  </label>
+              </Pick>
+              <div className="wi-sec">Sessions on this ticket</div>
+              {linked.length === 0 && <div className="wi-empty">None yet.</div>}
+              {linked.map((s) => (
+                <div key={s.id} className="drow" style={{ cursor: "pointer" }} onClick={() => onJump(s.id)}>
+                  <span className={`dot sm ${s.status}`} />
+                  <span className="nm">{titleOf(s)}</span>
+                  <span className="st">open ⏎</span>
                 </div>
-                <div className="pills" style={{ marginTop: 6 }}>
-                  <button className={`pill ${branchMode === "new" ? "on" : ""}`} onClick={() => setBranchMode("new")}>
-                    New branch
-                  </button>
-                  <button
-                    className={`pill ${branchMode === "existing" ? "on" : ""}`}
-                    onClick={() => setBranchMode("existing")}
-                  >
-                    Existing branch
-                  </button>
-                </div>
-                {branchMode === "new" ? (
-                  <>
-                    <input
-                      type="text"
-                      value={ticketName}
-                      onChange={(e) => setTicketName(e.target.value)}
-                      style={{ marginTop: 6 }}
-                      title="Short name — becomes the branch/worktree suffix"
-                    />
-                    {branchInfo && branchInfo.branches.length > 0 && (
-                      <Pick
-                        value={baseBranch}
-                        onChange={(e) => setBaseBranch(e.target.value)}
-                        style={{ marginTop: 6 }}
-                        title="The base is fetched fresh from origin before the new branch is cut"
-                      >
-                        <option value="">base: current HEAD</option>
-                        {branchInfo.branches.map((b) => (
-                          <option key={b} value={b}>base: origin/{b}</option>
-                        ))}
-                      </Pick>
-                    )}
-                  </>
-                ) : (
-                  <Pick
-                    value={existingBranch}
-                    onChange={(e) => setExistingBranch(e.target.value)}
-                    style={{ marginTop: 6 }}
-                  >
-                    <option value="">branch…</option>
-                    {(branchInfo?.branches ?? []).map((b) => (
-                      <option key={b} value={b}>{b}</option>
-                    ))}
-                  </Pick>
-                )}
-                <div className="check-line">
-                  <input
-                    type="checkbox"
-                    checked={sendTicket}
-                    onChange={(e) => setSendTicket(e.target.checked)}
-                    id="sendtk"
-                  />
-                  <label htmlFor="sendtk" style={{ margin: 0, textTransform: "none", letterSpacing: 0 }}>
-                    send ticket title + description to Claude
-                  </label>
-                </div>
-                <button
-                  className="primary"
-                  style={{ marginTop: 7 }}
-                  disabled={!repoPath || busy || (branchMode === "existing" && !existingBranch)}
-                  onClick={startSession}
-                >
-                  {busy ? "Starting…" : "Start session"}
+              ))}
+              <label>New session</label>
+              <Pick value={repoPath} onChange={(e) => setRepoPath(e.target.value)}>
+                <option value="">repo…</option>
+                {repos.map((r) => (
+                  <option key={r.path} value={r.path}>{r.name}</option>
+                ))}
+              </Pick>
+              <div className="check-line" style={{ marginTop: 6 }}>
+                <input type="checkbox" id="dash-wt" checked={dashWorktree} onChange={(e) => setDashWorktree(e.target.checked)} />
+                <label htmlFor="dash-wt" style={{ margin: 0 }}>
+                  isolated worktree
+                  <span className="wi-note"> {dashWorktree ? "own folder under worktrees/<repo>/" : "off — branch is checked out in the repo itself"}</span>
+                </label>
+              </div>
+              <div className="pills" style={{ marginTop: 6 }}>
+                <button className={`pill ${branchMode === "new" ? "on" : ""}`} onClick={() => setBranchMode("new")}>
+                  New branch
                 </button>
-                {branchMode === "new" && repoPath && ticketName && (
-                  <div className="wi-note">
-                    creates worktree {slugBranch(String(detail.id), ticketName)}
-                    {baseBranch ? ` from origin/${baseBranch}` : ""}
-                  </div>
-                )}
-                {branchMode === "existing" && existingBranch && (
-                  <div className="wi-note">opens a worktree on {existingBranch}</div>
-                )}
-                {branchError && <div className="err">{branchError}</div>}
-                {attachable.length > 0 && (
-                  <>
-                    <label>Attach existing</label>
-                    <Pick value={attachId} onChange={(e) => setAttachId(e.target.value)}>
-                      <option value="">choose session…</option>
-                      {attachable.map((s) => (
-                        <option key={s.id} value={s.id}>{titleOf(s)}</option>
+                <button
+                  className={`pill ${branchMode === "existing" ? "on" : ""}`}
+                  onClick={() => setBranchMode("existing")}
+                >
+                  Existing branch
+                </button>
+              </div>
+              {branchMode === "new" ? (
+                <>
+                  <input
+                    type="text"
+                    value={ticketName}
+                    onChange={(e) => setTicketName(e.target.value)}
+                    style={{ marginTop: 6 }}
+                    title="Short name — becomes the branch/worktree suffix"
+                  />
+                  {branchInfo && branchInfo.branches.length > 0 && (
+                    <Pick
+                      value={baseBranch}
+                      onChange={(e) => setBaseBranch(e.target.value)}
+                      style={{ marginTop: 6 }}
+                      title="The base is fetched fresh from origin before the new branch is cut"
+                    >
+                      <option value="">base: current HEAD</option>
+                      {branchInfo.branches.map((b) => (
+                        <option key={b} value={b}>base: origin/{b}</option>
                       ))}
                     </Pick>
-                    <button
-                      className="outline"
-                      style={{ marginTop: 7 }}
-                      disabled={!attachId}
-                      onClick={async () => {
-                        const r = await window.mb.setGroup(attachId, groupOf(detail));
-                        if (isError(r)) return setError(`Couldn't attach the session: ${r.error}`);
-                        setAttachId("");
-                      }}
-                    >
-                      Attach
-                    </button>
-                  </>
-                )}
+                  )}
+                </>
+              ) : (
+                <Pick
+                  value={existingBranch}
+                  onChange={(e) => setExistingBranch(e.target.value)}
+                  style={{ marginTop: 6 }}
+                >
+                  <option value="">branch…</option>
+                  {(branchInfo?.branches ?? []).map((b) => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </Pick>
+              )}
+              <div className="check-line">
+                <input
+                  type="checkbox"
+                  checked={sendTicket}
+                  onChange={(e) => setSendTicket(e.target.checked)}
+                  id="sendtk"
+                />
+                <label htmlFor="sendtk" style={{ margin: 0, textTransform: "none", letterSpacing: 0 }}>
+                  send ticket title + description to Claude
+                </label>
               </div>
+              <button
+                className="primary"
+                style={{ marginTop: 7 }}
+                disabled={!repoPath || doing("start") || (branchMode === "existing" && !existingBranch)}
+                onClick={startSession}
+              >
+                {doing("start") ? "Starting…" : "Start session"}
+              </button>
+              {branchMode === "new" && repoPath && ticketName && (
+                <div className="wi-note">
+                  creates worktree {slugBranch(String(detail.id), ticketName)}
+                  {baseBranch ? ` from origin/${baseBranch}` : ""}
+                </div>
+              )}
+              {branchMode === "existing" && existingBranch && (
+                <div className="wi-note">opens a worktree on {existingBranch}</div>
+              )}
+              {branchError && <div className="err">{branchError}</div>}
+              {attachable.length > 0 && (
+                <>
+                  <label>Attach existing</label>
+                  <Pick value={attachId} onChange={(e) => setAttachId(e.target.value)}>
+                    <option value="">choose session…</option>
+                    {attachable.map((s) => (
+                      <option key={s.id} value={s.id}>{titleOf(s)}</option>
+                    ))}
+                  </Pick>
+                  <button
+                    className="outline"
+                    style={{ marginTop: 7 }}
+                    disabled={!attachId}
+                    onClick={async () => {
+                      const r = await window.mb.setGroup(attachId, groupOf(detail));
+                      if (isErr(r)) return setError(`Couldn't attach the session: ${r.error}`);
+                      setAttachId("");
+                    }}
+                  >
+                    Attach
+                  </button>
+                </>
+              )}
             </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

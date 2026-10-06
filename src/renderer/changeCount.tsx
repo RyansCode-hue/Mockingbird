@@ -1,5 +1,4 @@
-/** "1 file", "3 files". */
-export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+import { plural } from "../shared/format";
 
 /** "3 files · +18 −3": uncommitted files, and the lines added and removed when there are any. */
 export function ChangeCount({ files, insertions, deletions }: { files: number; insertions: number; deletions: number }) {

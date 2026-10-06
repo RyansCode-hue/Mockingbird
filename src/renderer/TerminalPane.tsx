@@ -5,21 +5,18 @@ import { PinIcon } from "./Icons";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { formatShare, formatTokens, totalTokens, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
+import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
 import { dataPump, fitTerm, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { CopyToast, useCopyNote } from "./copyNote";
-import { ChangeCount, plural } from "./changeCount";
+import { ChangeCount } from "./changeCount";
+import { fmtElapsed, plural } from "../shared/format";
+import { baseName } from "../shared/paths";
+import { settled } from "./settled";
 
 export { applyTermTheme } from "./cachedTerm";
-
-declare global {
-  interface Window {
-    mb: any;
-  }
-}
 
 // Replay (cachedTerm.ts) gates both directions. Live output waits until the
 // history is queued, and input until xterm has parsed it: xterm auto-answers
@@ -193,14 +190,6 @@ export interface PaneResize {
   reset?: () => void; // double-click a handle → even the grid back out
 }
 
-export function fmtElapsed(fromMs: number, seconds = false): string {
-  const s = Math.max(0, Math.floor((Date.now() - fromMs) / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return seconds ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${m}m`;
-  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
-}
-
 /** Shorten hook Notification messages to banner-sized reasons. */
 export function shortReason(reason: string | null): string {
   if (!reason) return "waiting for you";
@@ -344,15 +333,12 @@ export function TerminalPane({
   const readGit = () => {
     const n = ++gitSeq.current;
     if (!gitRoot) return setGit(null);
-    window.mb.worktreeState(gitRoot).then(
-      (r: WorktreeStateInfo | { error: string }) => n === gitSeq.current && setGit(r ?? { error: "no answer" }),
-      (err: unknown) => n === gitSeq.current && setGit({ error: String(err) })
-    );
+    settled<IpcResult<WorktreeStateInfo>>(window.mb.worktreeState(gitRoot), "Couldn't read git").then((r) => n === gitSeq.current && setGit(r ?? { error: "no answer" }));
   };
   useEffect(readGit, [gitRoot]);
   useFolderRefresh(gitRoot, readGit, 30_000);
-  const git = gitState && !("error" in gitState) ? gitState : null;
-  const gitErr = gitState && "error" in gitState ? gitState.error : null;
+  const git = gitState && !isErr(gitState) ? gitState : null;
+  const gitErr = gitState && isErr(gitState) ? gitState.error : null;
 
   // the branch's pull request, for the rail (the main process caches lookups for 2 minutes)
   const [pr, setPr] = useState<PrStatus | null>(null);
@@ -363,7 +349,7 @@ export function TerminalPane({
     if (!prRoot) return setPr(null);
     const failed = (error: string): PrStatus => ({ branch: null, pr: null, error, at: Date.now() });
     window.mb.prStatus(prRoot, fresh).then(
-      (r: PrStatus | { error: string }) => n === prSeq.current && setPr("error" in r && !("at" in r) ? failed(r.error) : (r as PrStatus)),
+      (r: PrStatus | { error: string }) => n === prSeq.current && setPr(isErr(r) && !("at" in r) ? failed(r.error) : (r as PrStatus)),
       (err: unknown) => n === prSeq.current && setPr(failed(String(err)))
     );
   };
@@ -762,7 +748,7 @@ export function TerminalPane({
         )}
         {density === "max" && session.ticketId && (
           <span className={`chip ${dead ? "" : "teal"}`}>
-            #{session.ticketId.replace(/^#/, "")}{dead ? "" : " · Active"}
+            #{ticketIdOf(session.ticketId)}{dead ? "" : " · Active"}
           </span>
         )}
         {assistant && density !== "min" && <span className="chip teal">assistant</span>}
@@ -823,7 +809,7 @@ export function TerminalPane({
           {onHandoff && (
             <button
               className="icon"
-              title={`Continue in ${session.agent === "codex" ? "Claude Code" : "Codex"} — hand this task over with a summary of what's done and what's next`}
+              title={`Continue in ${AGENT_NAME[otherAgent(session.agent)]} — hand this task over with a summary of what's done and what's next`}
               onClick={(e) => {
                 e.stopPropagation();
                 onHandoff();
@@ -910,13 +896,13 @@ export function TerminalPane({
           {session.repoPath && (
             <div className="cell">
               <span className="k">Repo</span>
-              <span className="v">{session.repoPath.split("/").pop()}</span>
+              <span className="v">{baseName(session.repoPath)}</span>
             </div>
           )}
           <div className="cell folder" title={session.cwd}>
             <span className="k">Folder</span>
             <span className="v">
-              <span className="fn">{session.cwd.split("/").pop()}</span>
+              <span className="fn">{baseName(session.cwd)}</span>
               {onOpenFiles && (
                 <button
                   className="mini"

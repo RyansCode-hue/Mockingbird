@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
-
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
+import { isErr } from "../shared/types";
 
 /** Run one labelled action: its { error } reply, or its rejection as one, is shown and returned. */
 export type RunAction = <R>(what: string, fn: () => PromiseLike<R> | R) => Promise<Awaited<R> | { error: string }>;

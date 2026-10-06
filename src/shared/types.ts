@@ -40,6 +40,12 @@ export interface SessionInfo {
   muted?: boolean;
 }
 
+/** Every agent, in the order the app lists them. */
+export const AGENT_KINDS: AgentKind[] = ["claude", "codex"];
+
+/** The agent a session hands over to, or asks for a second opinion; a session without one runs Claude. */
+export const otherAgent = (a: AgentKind | null | undefined): AgentKind => (a === "codex" ? "claude" : "codex");
+
 /** An agent CLI updated under running sessions: they still run the old version until restarted. */
 export interface AgentUpdateNotice {
   agent: AgentKind;
@@ -84,14 +90,35 @@ export interface WorktreeEntry {
   error?: string; // not a readable git worktree
 }
 
+// ---- IPC answers -------------------------------------------------------------
+
+/** A main-process answer: every IPC handler answers { error } instead of rejecting. */
+export type IpcResult<T> = T | { error: string };
+
+/**
+ * The answer is a failure. Only a string `error` counts: an answer whose
+ * `error` key is present but unset ({ error: undefined } survives IPC) is a
+ * success.
+ */
+export function isErr(r: unknown): r is { error: string } {
+  return !!r && typeof r === "object" && typeof (r as { error?: unknown }).error === "string";
+}
+
 // ---- group paths -----------------------------------------------------------
 // A session's taskGroup is a path: "5038" is a group, "5038/backend" is the
 // "backend" workspace inside group 5038. Every producer and consumer of that
-// string goes through these three helpers so the format has one definition.
+// string goes through these helpers so the format has one definition.
 
 /** A name typed by a user becomes one path segment — "/" is the separator. */
 export function sanitizeSegment(name: string): string {
   return name.trim().replace(/\//g, "-");
+}
+
+/** The key of group `top`, or of workspace `sub` inside it: ("5038", "backend") → "5038/backend". */
+export function groupKey(top: string, sub?: string | null): string {
+  const t = sanitizeSegment(top);
+  const s = sub ? sanitizeSegment(sub) : "";
+  return s ? `${t}/${s}` : t;
 }
 
 /** Top-level group of a group key ("5038/backend" → "5038"). */
@@ -108,9 +135,7 @@ export function normalizeGroupPath(value: string): string {
   const v = value.trim();
   if (!v) return "";
   const { top, sub } = splitGroupKey(v);
-  const t = sanitizeSegment(top);
-  const s = sub ? sanitizeSegment(sub) : null;
-  return s ? `${t}/${s}` : t;
+  return groupKey(top, sub);
 }
 
 /**
@@ -350,6 +375,18 @@ export interface TranscriptHit {
   open: { how: "pane" | "previous"; sessionId: string } | { how: "room"; roomId: string; roomTitle: string } | { how: "resume" };
 }
 
+/** A transcript search's hits, and how far the index behind them has got. */
+export interface TranscriptSearchResult {
+  hits: TranscriptHit[];
+  conversations: number;
+  files: number;
+  /** Set while the index is still reading transcripts. */
+  indexing: { done: number; total: number } | null;
+  lastSync: number;
+  /** Why the index can't be trusted right now, if it can't. */
+  problem: string | null;
+}
+
 /** The newest version on GitHub, against the one running. */
 export interface UpdateInfo {
   current: string;
@@ -513,6 +550,14 @@ export interface RunProfile {
   notes?: string[];
 }
 
+/** A session's run setup: its worktree, the main checkout whose profile it shares, and the profile's file. */
+export interface RunProfileInfo {
+  worktree: string;
+  repo: string;
+  file: string;
+  profile: RunProfile | null;
+}
+
 export type RunStatus = "starting" | "running" | "stopping" | "stopped" | "failed";
 
 /** One running (or last-run) service of one worktree. */
@@ -639,6 +684,9 @@ export interface CollabParticipant extends CollabModel {
   lookupConversationId?: string | null; // a code reader's separate thread for answering others' questions
   lastSeen: number; // index into messages: everything before it has been shown to this model
 }
+
+/** How many seat colours a room has: styles.css defines .c-0 … .c-5; seats past that share them. */
+export const SEAT_PALETTE_SIZE = 6;
 
 export interface CollabMessage {
   id: string;
@@ -792,12 +840,18 @@ export const DEFAULT_SETTINGS: Settings = {
   notifications: true,
 };
 
+/** A ticket id without the "#" it may be typed or kept with: "#5038" → "5038". */
+export const ticketIdOf = (id: string): string => id.replace(/^#/, "");
+
+/** An Azure DevOps work item id: digits only, as a group named after a ticket is. */
+export const isWorkItemId = (id: string): boolean => /^\d+$/.test(id);
+
 export function slugBranch(ticketId: string, ticketTitle: string): string {
   const slug = ticketTitle
     .trim()
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return `${ticketId.replace(/^#/, "")}-${slug}`;
+  return `${ticketIdOf(ticketId)}-${slug}`;
 }
 
 // ---- ticket pipeline ----------------------------------------------------------

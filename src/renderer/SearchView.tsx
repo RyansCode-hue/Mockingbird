@@ -1,17 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { FileHit, FileSearch, FileSearchOptions, SessionInfo, TranscriptHit } from "../shared/types";
+import { isErr, type FileHit, type FileSearch, type FileSearchOptions, type SessionInfo, type TranscriptHit, type IpcResult } from "../shared/types";
 import { ConversationRow, useTranscriptSearch } from "./TranscriptSearch";
 import { useListNav } from "./listNav";
+import { plural } from "../shared/format";
+import { baseName, dirName } from "../shared/paths";
+import { settled } from "./settled";
 
 export interface SearchState extends FileSearchOptions {
   scope: "conversations" | "files";
   q: string;
 }
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
-const dirName = (p: string) => (p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "");
 
 /** Where the query matches in a line, as [start, end) ranges — what the result list marks. */
 export function matchRanges(text: string, q: string, opts: FileSearchOptions): [number, number][] {
@@ -97,7 +96,7 @@ export function SearchView({
   const conv = useTranscriptSearch(state.q, !files);
 
   // files: the focused session's folder
-  const [fileRes, setFileRes] = useState<Result<FileSearch> | null>(null);
+  const [fileRes, setFileRes] = useState<IpcResult<FileSearch> | null>(null);
   const [searching, setSearching] = useState(false);
   const seq = useRef(0);
   const sid = session?.id ?? null;
@@ -110,7 +109,7 @@ export function SearchView({
     }
     setSearching(true);
     const t = setTimeout(async () => {
-      const r: Result<FileSearch> = await window.mb.filesSearch(sid, state.q, { regex: state.regex, matchCase: state.matchCase });
+      const r: IpcResult<FileSearch> = await window.mb.filesSearch(sid, state.q, { regex: state.regex, matchCase: state.matchCase });
       if (n !== seq.current) return;
       setFileRes(r);
       setSearching(false);
@@ -139,9 +138,10 @@ export function SearchView({
     if (busy) return;
     setBusy(true);
     conv.setError("");
-    const err = await onOpenConversation(h);
+    const err = await settled(onOpenConversation(h), "Couldn't open it");
     setBusy(false);
-    if (err) conv.setError(err);
+    if (isErr(err)) conv.setError(err.error);
+    else if (err) conv.setError(err);
   };
   const openAt = (i: number) => {
     const h = flat[i];
@@ -199,7 +199,7 @@ export function SearchView({
               <div className="sv-summary">
                 {fileRes.hits.length === 0
                   ? "No results"
-                  : `${fileRes.hits.length.toLocaleString()} result${fileRes.hits.length === 1 ? "" : "s"} in ${fileRes.files} file${fileRes.files === 1 ? "" : "s"}`}
+                  : `${fileRes.hits.length.toLocaleString()} result${fileRes.hits.length === 1 ? "" : "s"} in ${plural(fileRes.files, "file")}`}
                 {searching && " · searching…"}
               </div>
               {fileRes.stopped && (

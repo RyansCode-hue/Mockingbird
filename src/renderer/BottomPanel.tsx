@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { RunServiceState } from "../shared/types";
+import { isErr, type RunServiceState } from "../shared/types";
 import { LogTerm, disposeLog } from "./LogTerm";
 import { addOutput, clearOutput, currentSession, useDebug } from "./debugStore";
 import { RUN_DOT } from "./runDisplay";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
+import { baseName } from "../shared/paths";
 
 const DEBUG_CONSOLE = "__debug-console";
 
@@ -31,7 +32,7 @@ function DebugConsole() {
     if (!target) return addOutput({ sid: "", category: "stderr", text: "Nothing is being debugged.\n" });
     const frame = debug.selected[target.id] ?? debug.paused[target.id]?.frame ?? null;
     const r = await settled(window.mb.debugEvaluate(target.id, expr, frame?.id, "repl"), "Couldn't evaluate");
-    addOutput({ sid: target.id, category: "error" in r ? "stderr" : "result", text: `${"error" in r ? r.error : r.result}\n` });
+    addOutput({ sid: target.id, category: isErr(r) ? "stderr" : "result", text: `${isErr(r) ? r.error : r.result}\n` });
   };
   return (
     <div className="dc">
@@ -72,7 +73,6 @@ function DebugConsole() {
   );
 }
 
-const baseName = (p: string) => p.slice(p.lastIndexOf("/") + 1);
 
 /**
  * The panel under the grid (⌘J), as in VS Code: a tab per service log. Logs

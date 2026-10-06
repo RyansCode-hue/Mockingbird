@@ -1,5 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useEscape } from "./useEscape";
+import { useListNav } from "./listNav";
 
 export interface MenuItem {
   key: string;
@@ -83,12 +85,7 @@ export function MenuButton({
   const [open, setOpen] = useState(false);
   const { btn, list, pos, unplace } = usePopover(open, () => setOpen(false), (_b, l) => ({ width: l.getBoundingClientRect().width, height: l.scrollHeight }), items.length);
 
-  useEffect(() => {
-    if (!open) return;
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("keydown", esc);
-    return () => document.removeEventListener("keydown", esc);
-  }, [open]);
+  useEscape(() => setOpen(false), open);
 
   return (
     <>
@@ -166,7 +163,7 @@ export function Select({
   style?: React.CSSProperties;
 }) {
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
+  const { sel: active, setSel: setActive, onArrow } = useListNav(options.length, []);
   const { btn, list, pos, unplace } = usePopover(open, () => setOpen(false), (b, l) => ({ width: Math.max(b.width, 220), height: l.scrollHeight }), options.length);
   const current = options.find((o) => o.value === value);
 
@@ -205,12 +202,8 @@ export function Select({
             e.preventDefault();
             unplace();
             setOpen(true);
-          } else if (open && e.key === "ArrowDown") {
-            e.preventDefault();
-            setActive((i) => Math.min(options.length - 1, i + 1));
-          } else if (open && e.key === "ArrowUp") {
-            e.preventDefault();
-            setActive((i) => Math.max(0, i - 1));
+          } else if (open && onArrow(e)) {
+            return;
           } else if (open && e.key === "Enter") {
             e.preventDefault();
             if (options[active]) pick(options[active].value);

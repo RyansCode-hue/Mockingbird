@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabPermissionRequest, type CollabRoom } from "../shared/types";
+import { ASK_TIMEOUTS_MIN, DEFAULT_ASK_TIMEOUT_MIN, isErr, type CollabMessage, type CollabMode, type CollabParticipantSpec, type CollabPermissionRequest, type CollabRoom, type IpcResult } from "../shared/types";
 import {
   accessFlags,
   accessOf,
@@ -7,7 +7,6 @@ import {
   effortOptions,
   hasAccess,
   initials,
-  isErr,
   isLong,
   kindLabel,
   moveAt,
@@ -26,6 +25,7 @@ import { MenuButton, Pick, Select } from "./Menu";
 import { PanelRightIcon } from "./Icons";
 import { RepoPick } from "./RepoPick";
 import { useAction, type RunAction } from "./useAction";
+import { usePersisted } from "./prefs";
 
 const MODES: { id: CollabMode; label: string; note: string }[] = [
   { id: "step", label: "Step", note: "one round, then waits for you" },
@@ -34,40 +34,17 @@ const MODES: { id: CollabMode; label: string; note: string }[] = [
 ];
 const nextMode = (m: CollabMode): CollabMode => MODES[(MODES.findIndex((x) => x.id === m) + 1) % MODES.length].id;
 
-type Result<T> = T | { error: string };
-
-/** A remembered UI preference; storage can be unavailable, and then the default applies. */
-function usePref<T extends string | boolean | number>(key: string, initial: T): [T, (v: T) => void] {
-  const [v, setV] = useState<T>(() => {
-    try {
-      const s = localStorage.getItem(key);
-      return s === null ? initial : (JSON.parse(s) as T);
-    } catch {
-      return initial;
-    }
-  });
-  const set = (next: T) => {
-    setV(next);
-    try {
-      localStorage.setItem(key, JSON.stringify(next));
-    } catch {
-      /* not remembered this time; the choice still applies */
-    }
-  };
-  return [v, set];
-}
-
 /** Rooms where several models discuss an idea; edits only happen after the user approves a plan. */
 export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (sessionId: string) => void; focusRoom?: { id: string; n: number } | null }) {
   const [rooms, setRooms] = useState<CollabRoom[]>([]);
   const [catalog, setCatalog] = useState<Catalog>({ presets: [], efforts: { claude: [], codex: [] } });
   const [selected, setSelected] = useState<string | "new" | null>(null);
   const [error, setError] = useState("");
-  const [railOpen, setRailOpen] = usePref<boolean>("mb.collab.rail", false);
+  const [railOpen, setRailOpen] = usePersisted<boolean>("mb.collab.rail", false);
 
   useEffect(() => {
     window.mb.collabModels().then(setCatalog, (err: unknown) => setError(`Couldn't list the models: ${err instanceof Error ? err.message : err}`));
-    window.mb.collabList().then((r: Result<CollabRoom[]>) => {
+    window.mb.collabList().then((r: IpcResult<CollabRoom[]>) => {
       if (isErr(r)) return setError(r.error);
       setRooms(r);
       setSelected((s) => s ?? r[0]?.id ?? "new");
@@ -165,7 +142,7 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
     setSeats((s) => (s.length ? s : seedSeats(catalog)));
   }, [catalog]);
   const create = async () => {
-    const r: Result<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, participants: seats, mode });
+    const r: IpcResult<CollabRoom> = await window.mb.collabCreate({ title, brief, repoPath: repo || null, participants: seats, mode });
     if (isErr(r)) return setError(r.error);
     onCreated(r);
   };
@@ -217,9 +194,9 @@ type Call = RunAction;
 
 function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; catalog: Catalog; onDeleted: () => void; onOpenSession: (id: string) => void }) {
   const [draft, setDraft] = useState("");
-  const { busy, doing, run: call, error, setError } = useAction();
-  const [view, setView] = usePref<"thread" | "rounds">("mb.collab.view", "thread");
-  const [inspector, setInspector] = usePref<boolean>("mb.collab.inspector", true);
+  const { busy, doing, run: call, error } = useAction();
+  const [view, setView] = usePersisted<"thread" | "rounds">("mb.collab.view", "thread");
+  const [inspector, setInspector] = usePersisted<boolean>("mb.collab.inspector", true);
   const [open, setOpen] = useState<Set<string>>(() => new Set()); // folded messages / grid cells the user opened
   const endRef = useRef<HTMLDivElement>(null);
   const asksRef = useRef<HTMLDivElement>(null);
@@ -282,7 +259,7 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
         {view === "thread" ? (
           <Thread room={room} label={label} color={color} open={open} toggle={toggle} call={call} endRef={endRef} />
         ) : (
-          <RoundsGrid room={room} color={color} open={open} toggle={toggle} call={call} endRef={endRef} />
+          <RoundsGrid room={room} open={open} toggle={toggle} call={call} endRef={endRef} />
         )}
 
         {pending.length > 0 && (
@@ -440,14 +417,12 @@ function Thread({
 /** The discussion as a grid: a column per model, a row per round; a cell opens in place. */
 function RoundsGrid({
   room,
-  color,
   open,
   toggle,
   call,
   endRef,
 }: {
   room: CollabRoom;
-  color: Record<string, number>;
   open: Set<string>;
   toggle: (id: string) => void;
   call: Call;
@@ -565,7 +540,7 @@ function Inspector({
 }) {
   const seated = room.participants.filter((p) => !p.removed);
   const runsCommands = !!room.repoPath && seated.some((p) => p.runsCommands);
-  const [savedWidth, saveWidth] = usePref<number>("mb.collab.inspectorWidth", INSPECTOR_WIDTH);
+  const [savedWidth, saveWidth] = usePersisted<number>("mb.collab.inspectorWidth", INSPECTOR_WIDTH);
   const [width, setWidth] = useState(savedWidth);
   const startResize = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -672,7 +647,7 @@ function Inspector({
                     room={room}
                     busy={doing("implement")}
                     onPick={(key) =>
-                      call("implement", (): Promise<Result<{ id: string }>> => window.mb.collabImplement(room.id, key)).then((r) => !isErr(r) && onOpenSession(r.id))
+                      call("implement", (): Promise<IpcResult<{ id: string }>> => window.mb.collabImplement(room.id, key)).then((r) => !isErr(r) && onOpenSession(r.id))
                     }
                   />
                 ) : (

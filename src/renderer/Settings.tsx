@@ -3,10 +3,13 @@ import { Pick } from "./Menu";
 import { reachesBroadcast, titleOf } from "./appModel";
 import { PresetsSection } from "./Presets";
 import { getFormatOnSave, setFormatOnSave } from "./CodeEditor";
-import type { AgentCheck, BroadcastOutcome, SetupStatus, SessionInfo, SessionPreset, Settings, WorktreeEntry, OptionalTab } from "../shared/types";
-import { OPTIONAL_TABS } from "../shared/types";
-import { isError, loadLS } from "./uiUtil";
+import { isErr, OPTIONAL_TABS, type AgentCheck, type BroadcastOutcome, type SetupStatus, type SessionInfo, type SessionPreset, type Settings, type WorktreeEntry, type OptionalTab } from "../shared/types";
 import { TAB_LABELS } from "./tabs";
+import { plural } from "../shared/format";
+import { baseName } from "../shared/paths";
+import { readPref, writePref } from "./prefs";
+import { settled } from "./settled";
+import { useAction } from "./useAction";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
 
@@ -37,7 +40,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
       .readClaudeMd(target)
       .then((r: { path: string; content: string } | { error: string }) => {
         if (!alive) return;
-        if ("error" in r) {
+        if (isErr(r)) {
           // an unreadable file must never look like an empty one — saving that
           // empty editor back would overwrite the real CLAUDE.md
           setIoError(`Couldn't read ${target}: ${r.error}`);
@@ -112,8 +115,8 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
   const saveAndReread = async (broadcastToo: boolean) => {
     if (ioError) return; // don't write an editor we never managed to fill
     const r = await window.mb.saveClaudeMd(target, content);
-    if (r && typeof r === "object" && "error" in r) {
-      setIoError(`Couldn't save ${target}: ${(r as { error: string }).error}`);
+    if (isErr(r)) {
+      setIoError(`Couldn't save ${target}: ${r.error}`);
       return; // no broadcast — nothing was written to re-read
     }
     setIoError(null);
@@ -124,7 +127,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
         sessionIds: rereadTargets.map((s) => s.id),
         whenIdle: true,
       });
-      if (isError(b)) return setBError(`Saved, but couldn't ask the sessions to re-read it: ${b.error}`);
+      if (isErr(b)) return setBError(`Saved, but couldn't ask the sessions to re-read it: ${b.error}`);
       setBError(null);
       markDelivery(b);
     }
@@ -133,7 +136,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
   const queueBroadcast = async () => {
     if (!message.trim() || !bTargets.length) return;
     const r = await window.mb.broadcast({ message, sessionIds: bTargets.map((s) => s.id), whenIdle: true });
-    if (isError(r)) return setBError(`Couldn't queue the broadcast: ${r.error}`);
+    if (isErr(r)) return setBError(`Couldn't queue the broadcast: ${r.error}`);
     setBError(null);
     markDelivery(r);
     setMessage("");
@@ -151,12 +154,12 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
           <Pick value={target} onChange={(e) => setTarget(e.target.value)}>
             <option value="~/.claude/CLAUDE.md">global — ~/.claude/CLAUDE.md</option>
             {repoPaths.map((p) => (
-              <option key={p} value={`${p}/CLAUDE.md`}>{p.split("/").pop()} — {p}/CLAUDE.md</option>
+              <option key={p} value={`${p}/CLAUDE.md`}>{baseName(p)} — {p}/CLAUDE.md</option>
             ))}
           </Pick>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />
           <div className="ft">
-            <span className="diff">{dirty ? `${changedLines} line${changedLines === 1 ? "" : "s"} changed` : "no changes"}</span>
+            <span className="diff">{dirty ? `${plural(changedLines, "line")} changed` : "no changes"}</span>
             <button className="outline" disabled={!dirty} onClick={() => saveAndReread(false)}>Save</button>
             <button className="primary" disabled={!dirty || !rereadTargets.length} onClick={() => saveAndReread(true)}>
               Save &amp; re-read in {rereadTargets.length}
@@ -184,7 +187,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
               </button>
             </div>
             <button className="primary" disabled={!message.trim() || !bTargets.length} onClick={queueBroadcast}>
-              Queue for {bTargets.length} session{bTargets.length === 1 ? "" : "s"}
+              Queue for {plural(bTargets.length, "session")}
             </button>
             {bError && <div className="err">{bError}</div>}
           </div>
@@ -227,12 +230,11 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
 /** Settings card: every <repo>-worktrees checkout, with strays removable. */
 function WorktreeJanitor() {
   const [list, setList] = useState<WorktreeEntry[] | null>(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState<string | null>(null);
+  const { doing, run, error, setError } = useAction();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const load = async () => {
     const r = await window.mb.listWorktrees();
-    if (r?.error) return setError(r.error);
+    if (isErr(r)) return setError(r.error);
     setError("");
     setList(r);
     // a rescan drops selections for worktrees that are gone or now in use
@@ -244,9 +246,9 @@ function WorktreeJanitor() {
   }, []);
   const riskOf = (w: WorktreeEntry) =>
     w.dirty
-      ? `${w.name}: ${w.dirtyFiles} uncommitted file${w.dirtyFiles === 1 ? "" : "s"} will be lost`
+      ? `${w.name}: ${plural(w.dirtyFiles, "uncommitted file")} will be lost`
       : w.ahead
-        ? `${w.name}: ${w.ahead} unpushed commit${w.ahead === 1 ? "" : "s"} on ${w.branch} (the branch is kept)`
+        ? `${w.name}: ${plural(w.ahead, "unpushed commit")} on ${w.branch} (the branch is kept)`
         : null;
   // one confirmation for the whole batch, listing every worktree that would lose work;
   // removals run one at a time and every failure is reported, not just the first
@@ -256,13 +258,14 @@ function WorktreeJanitor() {
     const what = ws.length === 1 ? `the worktree folder ${ws[0].path}` : `${ws.length} worktree folders`;
     const msg = (risks.length ? `${risks.join("\n")}\n\n` : "") + `Remove ${what}?`;
     if (!window.confirm(msg)) return;
-    setBusy("remove");
     const failures: string[] = [];
-    for (const w of ws) {
-      const r = await window.mb.removeWorktree(w.repoPath, w.path);
-      if (r?.error) failures.push(`${w.name}: ${r.error}`);
-    }
-    setBusy(null);
+    const r = await run("remove", async () => {
+      for (const w of ws) {
+        const one = await window.mb.removeWorktree(w.repoPath, w.path);
+        if (isErr(one)) failures.push(`${w.name}: ${one.error}`);
+      }
+    });
+    if (isErr(r)) failures.push(r.error);
     await load(); // reload first: it clears the error, and these failures must stay visible
     setError(failures.join(" · "));
   };
@@ -277,13 +280,14 @@ function WorktreeJanitor() {
   const allChosen = strays.length > 0 && chosen.length === strays.length;
   const movable = list?.filter((w) => w.legacy && !w.inUse && !w.error) ?? [];
   const migrate = async (ws: WorktreeEntry[]) => {
-    setBusy("migrate");
     const failures: string[] = [];
-    for (const w of ws) {
-      const r = await window.mb.migrateWorktree(w.repoPath, w.path);
-      if (r?.error) failures.push(`${w.name}: ${r.error}`);
-    }
-    setBusy(null);
+    const r = await run("migrate", async () => {
+      for (const w of ws) {
+        const one = await window.mb.migrateWorktree(w.repoPath, w.path);
+        if (isErr(one)) failures.push(`${w.name}: ${one.error}`);
+      }
+    });
+    if (isErr(r)) failures.push(r.error);
     await load(); // reload first: it clears the error, and these failures must stay visible
     setError(failures.join(" · "));
   };
@@ -298,8 +302,8 @@ function WorktreeJanitor() {
       </label>
       {movable.length > 0 && (
         <div className="row" style={{ justifyContent: "flex-start", gap: 8, marginTop: 4 }}>
-          <button className="outline" disabled={busy === "migrate"} onClick={() => migrate(movable)}>
-            {busy === "migrate" ? "moving…" : `Move ${movable.length} old-layout worktree${movable.length === 1 ? "" : "s"} into worktrees/`}
+          <button className="outline" disabled={doing("migrate")} onClick={() => migrate(movable)}>
+            {doing("migrate") ? "moving…" : `Move ${plural(movable.length, "old-layout worktree")} into worktrees/`}
           </button>
           <span className="wi-note">from <code>&lt;repo&gt;-worktrees/</code> · in-use ones are skipped</span>
         </div>
@@ -314,8 +318,8 @@ function WorktreeJanitor() {
             />
             <span>all {strays.length} not in use</span>
           </label>
-          <button className="outline" disabled={chosen.length === 0 || busy === "remove"} onClick={() => remove(chosen)}>
-            {busy === "remove" ? "removing…" : `Remove ${chosen.length || ""} selected`}
+          <button className="outline" disabled={chosen.length === 0 || doing("remove")} onClick={() => remove(chosen)}>
+            {doing("remove") ? "removing…" : `Remove ${chosen.length || ""} selected`}
           </button>
         </div>
       )}
@@ -354,7 +358,7 @@ function WorktreeJanitor() {
               {w.inUse ? (
                 <span className="wt-live">in use</span>
               ) : (
-                <button className="outline" disabled={busy === "remove"} onClick={() => remove([w])}>
+                <button className="outline" disabled={doing("remove")} onClick={() => remove([w])}>
                   Remove
                 </button>
               )}
@@ -428,11 +432,13 @@ export function SettingsView({
   onMsgDefaultSend: (send: boolean) => void;
   onStartPreset: (p: SessionPreset) => void;
 }) {
-  const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? loadLS("mb.setSection", "general"));
+  const [section, setSection] = useState<SettingsSection>(() => jump?.section ?? readPref("mb.setSection", "general"));
   useEffect(() => {
     if (jump) setSection(jump.section);
   }, [jump]);
-  useEffect(() => localStorage.setItem("mb.setSection", JSON.stringify(section)), [section]);
+  useEffect(() => {
+    writePref("mb.setSection", section);
+  }, [section]);
   const [s, setS] = useState<Settings | null>(null);
   const [saveState, setSaveState] = useState<{ ok: boolean; msg: string } | null>(null);
   const [status, setStatus] = useState<SetupStatus | { error: string } | null>(null);
@@ -448,7 +454,7 @@ export function SettingsView({
     const where = (u: { source: string }) => (u.source === "release" ? "the latest release" : "the newest version on GitHub");
     setNewerVersion(r && !r.error && r.newer ? r.latest : null);
     if (r === null) setUpdNote("This build doesn't say where its updates come from, so it can't check.");
-    else if (r?.error) setUpdNote(`Couldn't check: ${r.error}`);
+    else if (isErr(r)) setUpdNote(`Couldn't check: ${r.error}`);
     else if (r.newer) setUpdNote(`Version ${r.latest} is available (you're on ${r.current}).`);
     else if (r.latest === r.current) setUpdNote(`Up to date — ${r.current} is ${where(r)}.`);
     else setUpdNote(`Up to date — you're on ${r.current}, ahead of ${where(r)} (${r.latest}).`);
@@ -472,12 +478,12 @@ export function SettingsView({
   };
   const loadConnectors = () => window.mb.connectorsStatus().then(setConn);
   useEffect(() => {
-    window.mb.getSettings().then((r: Settings | { error: string }) => (isError(r) ? setLoadError(r.error) : setS(r)));
+    window.mb.getSettings().then((r: Settings | { error: string }) => (isErr(r) ? setLoadError(r.error) : setS(r)));
     window.mb.appVersion().then((v: string | { error: string }) =>
-      isError(v) ? console.error("[mockingbird] couldn't read the app version:", v.error) : setVersion(v)
+      isErr(v) ? console.error("[mockingbird] couldn't read the app version:", v.error) : setVersion(v)
     );
     window.mb.adoConfigGet().then((r: any) => {
-      if (r?.error) setAdoNote({ ok: false, msg: `Couldn't read your Azure DevOps config: ${r.error}` });
+      if (isErr(r)) setAdoNote({ ok: false, msg: `Couldn't read your Azure DevOps config: ${r.error}` });
       else setAdoCfg(r);
     });
     loadStatus();
@@ -491,13 +497,13 @@ export function SettingsView({
   const upd = async (patch: Partial<Settings>) => {
     setS((cur) => cur && { ...cur, ...patch });
     const r = await window.mb.setSettings(patch);
-    setSaveState(r?.error ? { ok: false, msg: `Couldn't save: ${r.error}` } : { ok: true, msg: "Saved" });
+    setSaveState(isErr(r) ? { ok: false, msg: `Couldn't save: ${r.error}` } : { ok: true, msg: "Saved" });
     if (patch.repoRoots || patch.claudeBin || patch.codexBin) loadStatus();
   };
   /** A path from the system picker; null when it was cancelled, or failed (said beside the section list). */
   const pick = async (opts: { file?: boolean; defaultPath?: string }): Promise<string | null> => {
     const p: string | null | { error: string } = await window.mb.pickPath(opts);
-    if (isError(p)) setSaveState({ ok: false, msg: `Couldn't open the picker: ${p.error}` });
+    if (isErr(p)) setSaveState({ ok: false, msg: `Couldn't open the picker: ${p.error}` });
     return typeof p === "string" && p ? p : null;
   };
   const pickBin = async (key: "claudeBin" | "codexBin") => {
@@ -511,17 +517,17 @@ export function SettingsView({
   const connectAdo = async () => {
     if (!adoCfg) return;
     setConnecting(true);
-    const r = await window.mb.adoConfigSet(adoCfg);
-    if (r?.error) {
+    try {
+      const r = await settled(window.mb.adoConfigSet(adoCfg));
+      if (isErr(r)) return setAdoNote({ ok: false, msg: `Couldn't save: ${r.error}` });
+      const me = await settled(window.mb.adoMe());
+      setAdoNote(isErr(me) ? { ok: false, msg: me.error } : { ok: true, msg: `Connected as ${me.display}` });
+      loadStatus();
+    } finally {
       setConnecting(false);
-      return setAdoNote({ ok: false, msg: `Couldn't save: ${r.error}` });
     }
-    const me = await window.mb.adoMe();
-    setConnecting(false);
-    setAdoNote(me?.error ? { ok: false, msg: me.error } : { ok: true, msg: `Connected as ${me.display}` });
-    loadStatus();
   };
-  const st = status && !("error" in status) ? status : null;
+  const st = status && !isErr(status) ? status : null;
   const agentLine = (a?: AgentCheck) =>
     !a ? "checking…" : !a.found ? "not installed" : `${a.version ?? ""}${a.signedIn === true ? " · signed in" : a.signedIn === false ? " · not signed in" : ""}`;
 
@@ -622,7 +628,7 @@ export function SettingsView({
         {section === "agents" && (
           <>
             <h2>Agents</h2>
-            {status && "error" in status && <div className="err">Couldn't check agents: {status.error}</div>}
+            {status && isErr(status) && <div className="err">Couldn't check agents: {status.error}</div>}
             <SetRow title="Claude Code" note={agentLine(st?.claude)}>
               <button
                 className="outline"
@@ -631,7 +637,7 @@ export function SettingsView({
                   setUpdating("claude");
                   const r = await window.mb.agentUpdate("claude");
                   setUpdating(null);
-                  setAgentNote(r?.error ? `Claude Code update failed: ${r.error}` : `Claude Code: ${r} — restart sessions to use it`);
+                  setAgentNote(isErr(r) ? `Claude Code update failed: ${r.error}` : `Claude Code: ${r} — restart sessions to use it`);
                   loadStatus();
                 }}
               >
@@ -646,7 +652,7 @@ export function SettingsView({
                   setUpdating("codex");
                   const r = await window.mb.agentUpdate("codex");
                   setUpdating(null);
-                  setAgentNote(r?.error ? `Codex update failed: ${r.error}` : `Codex: ${r} — restart sessions to use it`);
+                  setAgentNote(isErr(r) ? `Codex update failed: ${r.error}` : `Codex: ${r} — restart sessions to use it`);
                   loadStatus();
                 }}
               >
@@ -677,7 +683,7 @@ export function SettingsView({
                   className="outline"
                   onClick={async () => {
                     const r = await window.mb.installHooks();
-                    if (r?.error) setAgentNote(`Couldn't install hooks: ${r.error}`);
+                    if (isErr(r)) setAgentNote(`Couldn't install hooks: ${r.error}`);
                     loadStatus();
                   }}
                 >
@@ -719,7 +725,7 @@ export function SettingsView({
                 <SetRow
                   key={r}
                   title={r}
-                  note={!found ? "" : !found.exists ? "folder not found" : `${found.repos} repo${found.repos === 1 ? "" : "s"}`}
+                  note={!found ? "" : !found.exists ? "folder not found" : plural(found.repos, "repo")}
                 >
                   <button className="danger" title="Remove" onClick={() => upd({ repoRoots: s.repoRoots.filter((x) => x !== r) })}>
                     ✕
@@ -818,7 +824,7 @@ export function SettingsView({
               note={
                 conn === null
                   ? "checking…"
-                  : "error" in conn
+                  : isErr(conn)
                     ? `Couldn't check: ${conn.error}`
                     : conn.az
                       ? "Found — your token is passed to debrief sessions, so az boards / az repos work without az login"
@@ -828,9 +834,9 @@ export function SettingsView({
             <h3 className="set-sub">MCP servers for debrief sessions</h3>
             <p className="set-lede">
               Optional. Saved to WorkTracker/.mcp.json; Claude Code asks you to approve each on first use.
-              {conn && !("error" in conn) && conn.global.length > 0 && ` Also configured for every session: ${conn.global.join(", ")} (manage with claude mcp).`}
+              {conn && !isErr(conn) && conn.global.length > 0 && ` Also configured for every session: ${conn.global.join(", ")} (manage with claude mcp).`}
             </p>
-            {conn && !("error" in conn) &&
+            {conn && !isErr(conn) &&
               conn.project.map((n) => (
                 <SetRow key={n} title={n}>
                   <button
@@ -838,7 +844,7 @@ export function SettingsView({
                     title="Remove"
                     onClick={async () => {
                       const r = await window.mb.mcpRemove(n);
-                      setMcpErr(r?.error ? `Couldn't remove ${n}: ${r.error}` : "");
+                      setMcpErr(isErr(r) ? `Couldn't remove ${n}: ${r.error}` : "");
                       loadConnectors();
                     }}
                   >
@@ -854,7 +860,7 @@ export function SettingsView({
                 disabled={!mcpName.trim() || !mcpCmd.trim()}
                 onClick={async () => {
                   const r = await window.mb.mcpAdd(mcpName.trim(), mcpCmd.trim());
-                  if (r?.error) return setMcpErr(`Couldn't add ${mcpName.trim()}: ${r.error}`);
+                  if (isErr(r)) return setMcpErr(`Couldn't add ${mcpName.trim()}: ${r.error}`);
                   setMcpErr("");
                   setMcpName("");
                   setMcpCmd("");
@@ -907,20 +913,20 @@ export function SettingsView({
 /** Where in-app updates build from: the user's clone, found automatically or chosen. */
 function UpdateSourceRow({ onUpdate }: { onUpdate: () => void }) {
   const [src, setSrc] = useState<{ configured: string | null; found: string | null; problem?: string } | null>(null);
-  const load = () => window.mb.updateSource().then((r: any) => setSrc(r?.error ? { configured: null, found: null, problem: r.error } : r));
+  const load = () => window.mb.updateSource().then((r: any) => setSrc(isErr(r) ? { configured: null, found: null, problem: r.error } : r));
   useEffect(() => {
     load();
   }, []);
   const [error, setError] = useState("");
   const choose = async (dir: string | null) => {
     const r = await window.mb.setSettings({ updateSource: dir });
-    if (isError(r)) return setError(`Couldn't save the folder: ${r.error}`);
+    if (isErr(r)) return setError(`Couldn't save the folder: ${r.error}`);
     setError("");
     load();
   };
   const browse = async () => {
     const d: string | null | { error: string } = await window.mb.pickPath({ defaultPath: src?.found ?? undefined });
-    if (isError(d)) setError(`Couldn't open the picker: ${d.error}`);
+    if (isErr(d)) setError(`Couldn't open the picker: ${d.error}`);
     else if (typeof d === "string" && d) choose(d);
   };
   const note = error

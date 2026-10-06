@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import type { AgentKind, CollabParticipant, CollabParticipantSpec, CollabRoom } from "../shared/types";
+import { useState } from "react";
+import { isErr, type AgentKind, type CollabParticipant, type CollabParticipantSpec, type CollabRoom } from "../shared/types";
 import { ChevronIcon, DockerIcon, ReadIcon, RunIcon } from "./Icons";
 import { Select } from "./Menu";
 import { RepoPick } from "./RepoPick";
@@ -11,7 +11,6 @@ import {
   accessOf,
   effortOptions,
   hasAccess,
-  isErr,
   modelPlaceholder,
   moveSeat,
   presetOptions,

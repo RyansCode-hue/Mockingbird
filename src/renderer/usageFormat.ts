@@ -12,3 +12,10 @@ export function resetText(resetsAt: number | null, now: number): string {
 
 /** A window whose reset has passed starts over at 0 until the next report says otherwise. */
 export const pctNow = (l: UsageLimit, now: number) => (l.resetsAt !== null && l.resetsAt <= now ? 0 : l.usedPct);
+
+/** A limit's short name in the status bar — "5h", or "wk" for a weekly window over every model — or null for one only the details list. */
+export function headlineOf(l: UsageLimit): "5h" | "wk" | null {
+  if (l.window === "5h") return "5h";
+  if (l.window === "week" && !l.model) return "wk";
+  return null;
+}

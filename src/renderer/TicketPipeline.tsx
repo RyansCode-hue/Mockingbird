@@ -1,13 +1,13 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
-import { GATES, TICKET_STAGES, stageLabel, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage } from "../shared/types";
-import { ago } from "./format";
+import { GATES, TICKET_STAGES, stageLabel, isErr, isWorkItemId, type PrPreflight, type PrTarget, type SessionInfo, type TicketPipeline, type TicketStage, type IpcResult } from "../shared/types";
+import { ago, plural } from "../shared/format";
 import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";
-import { useEscape } from "./useEscape";
+import { baseName } from "../shared/paths";
+import { Modal } from "./Modal";
+import { settled } from "./settled";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 const pipelines = createIpcStore<Record<string, TicketPipeline>>({}, ({ set }) => {
   loadInto("the ticket pipelines", window.mb.pipelineAll(), (r: Record<string, TicketPipeline>) => set(r ?? {}));
@@ -108,7 +108,7 @@ export interface PipelineProps {
 function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, onClose }: Omit<PipelineProps, "details" | "onPosted"> & { target: PrTarget; onClose: () => void }) {
   const live = sessions.filter((s) => s.status !== "dead");
   const [sid, setSid] = useState(live[0]?.id ?? "");
-  const [pre, setPre] = useState<Result<PrPreflight & { lookupError: string | null }> | null>(null);
+  const [pre, setPre] = useState<IpcResult<PrPreflight & { lookupError: string | null }> | null>(null);
   const [base, setBase] = useState("");
   const [prTitle, setPrTitle] = useState(`#${ticketId} ${title}`.trim());
   const [desc, setDesc] = useState("");
@@ -119,15 +119,12 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
     if (!sid) return;
     const n = ++seq.current;
     setPre(null);
-    window.mb.pipelinePrPreflight(sid, ticketId, target).then(
-      (r: Result<PrPreflight & { lookupError: string | null }>) => {
-        if (n !== seq.current) return; // a newer check is on its way
-        setPre(r);
-        // Recheck keeps a base the user picked; a new branch starts from its own default
-        if (!isErr(r)) setBase((b) => b || r.base || "");
-      },
-      (err: unknown) => n === seq.current && setPre({ error: `Couldn't check the branch: ${err instanceof Error ? err.message : err}` })
-    );
+    settled<IpcResult<PrPreflight & { lookupError: string | null }>>(window.mb.pipelinePrPreflight(sid, ticketId, target), "Couldn't check the branch").then((r) => {
+      if (n !== seq.current) return; // a newer check is on its way
+      setPre(r);
+      // Recheck keeps a base the user picked; a new branch starts from its own default
+      if (!isErr(r)) setBase((b) => b || r.base || "");
+    });
   };
   useEffect(() => {
     setBase("");
@@ -146,7 +143,7 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
         !p.branch && "The worktree isn't on a branch.",
         !p.remote && "origin isn't on Azure DevOps or GitHub.",
         !base && `origin has no ${target === "dev" ? "dev, develop or uat" : "main or master"} branch to merge into.`,
-        p.dirtyFiles > 0 && `${p.dirtyFiles} uncommitted file${p.dirtyFiles === 1 ? "" : "s"} wouldn't be in the pull request.`,
+        p.dirtyFiles > 0 && `${plural(p.dirtyFiles, "uncommitted file")} wouldn't be in the pull request.`,
         p.commits === 0 && base === p.base && `The branch has no commits that ${base} doesn't.`,
         p.existing && base === p.base && "A pull request is already open from this branch.",
       ].filter((x): x is string => !!x)
@@ -172,7 +169,7 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
           <select value={sid} onChange={(e) => setSid(e.target.value)}>
             {live.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.ticketTitle ?? s.title} · {s.branch ?? s.cwd.split("/").pop()}
+                {s.ticketTitle ?? s.title} · {s.branch ?? baseName(s.cwd)}
               </option>
             ))}
           </select>
@@ -193,10 +190,10 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
               </select>
               {p.remote && <span className="pl-dim"> on {p.remote.provider === "ado" ? "Azure DevOps" : "GitHub"} · {p.remote.repo}</span>}
             </div>
-            {base === p.base && <div className={p.commits ? "ok" : "warn"}>{p.commits} commit{p.commits === 1 ? "" : "s"} to merge</div>}
+            {base === p.base && <div className={p.commits ? "ok" : "warn"}>{plural(p.commits, "commit")} to merge</div>}
             {p.dirtyFiles > 0 && (
               <div className="warn">
-                {p.dirtyFiles} uncommitted file{p.dirtyFiles === 1 ? "" : "s"}
+                {plural(p.dirtyFiles, "uncommitted file")}
                 <button className="mini" onClick={() => onOpenScm(sid)}>Source Control</button>
                 {canAsk && <button className="mini" onClick={() => ask(`Commit the work for #${ticketId} with a clear message.`, "Asked to commit")}>Ask the session to commit</button>}
               </div>
@@ -252,7 +249,7 @@ function Drafts({ p, onPosted }: { p: TicketPipeline; onPosted?: () => void }) {
   const [text, setText] = useState<Record<string, string>>({});
   const { doing, run, error } = useAction();
   if (!p.drafts.length) return null;
-  const canPost = /^\d+$/.test(p.ticketId);
+  const canPost = isWorkItemId(p.ticketId);
   return (
     <div className="pl-drafts">
       <div className="pl-h">Drafted comments <span className="pl-count">{p.drafts.length}</span></div>
@@ -451,18 +448,15 @@ export function PipelinePanel(props: PipelineProps) {
 
 /** The pipeline on its own, for tickets reached from the grid rather than the board. */
 export function PipelineDialog(props: PipelineProps & { onClose: () => void }) {
-  useEscape(props.onClose);
   return (
-    <div className="modal-back" onMouseDown={props.onClose}>
-      <div className="modal pl-modal" onMouseDown={(e) => e.stopPropagation()}>
-        <h3>
-          #{props.ticketId} {props.title}
-        </h3>
-        <PipelinePanel {...props} />
-        <div className="row">
-          <button className="outline" onClick={props.onClose}>Close</button>
-        </div>
+    <Modal className="modal pl-modal" onClose={props.onClose}>
+      <h3>
+        #{props.ticketId} {props.title}
+      </h3>
+      <PipelinePanel {...props} />
+      <div className="row">
+        <button className="outline" onClick={props.onClose}>Close</button>
       </div>
-    </div>
+    </Modal>
   );
 }

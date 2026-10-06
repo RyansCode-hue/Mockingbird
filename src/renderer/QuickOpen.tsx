@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import type { FileList, SessionInfo } from "../shared/types";
+import { isErr, type FileList, type SessionInfo, type IpcResult } from "../shared/types";
 import { fuzzyFilter } from "./fuzzy";
 import { useListNav } from "./listNav";
+import { plural } from "../shared/format";
+import { baseName } from "../shared/paths";
+import { useEscape } from "./useEscape";
+import { settled } from "./settled";
 
-type Result<T> = T | { error: string };
-const isErr = (r: unknown): r is { error: string } => !!r && typeof r === "object" && "error" in (r as object);
 
 /** "src/app.ts:42" → the path and the line; a bare path has no line. */
 export function parseGoTo(q: string): { query: string; line: number | null } {
@@ -35,16 +37,14 @@ export function QuickOpen({
   onOpen: (path: string, line: number | null) => void;
 }) {
   const [q, setQ] = useState("");
-  const [list, setList] = useState<Result<FileList> | null>(null);
+  useEscape(onClose);
+  const [list, setList] = useState<IpcResult<FileList> | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!session) return;
     let live = true;
-    window.mb.filesAll(session.id).then(
-      (r: Result<FileList>) => live && setList(r),
-      (err: unknown) => live && setList({ error: `Couldn't list the files: ${err instanceof Error ? err.message : err}` })
-    );
+    settled<IpcResult<FileList>>(window.mb.filesAll(session.id), "Couldn't list the files").then((r) => live && setList(r));
     return () => {
       live = false;
     };
@@ -72,11 +72,10 @@ export function QuickOpen({
           <span className="prompt">⌘P</span>
           <input
             autoFocus
-            placeholder={session ? `Go to a file in ${session.cwd.slice(session.cwd.lastIndexOf("/") + 1)} — name:line jumps to a line` : "Focus a session first"}
+            placeholder={session ? `Go to a file in ${baseName(session.cwd)} — name:line jumps to a line` : "Focus a session first"}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") onClose();
               if (onArrow(e)) return;
               if (e.key === "Enter") open(sel);
             }}
@@ -110,7 +109,7 @@ export function QuickOpen({
         <div className="pfoot">
           <span>
             {list && !isErr(list)
-              ? `${list.files.length.toLocaleString()} files${list.truncated ? " (first 50,000)" : ""}${list.unreadable ? ` · ${list.unreadable} folder${list.unreadable === 1 ? "" : "s"} unreadable` : ""}`
+              ? `${list.files.length.toLocaleString()} files${list.truncated ? " (first 50,000)" : ""}${list.unreadable ? ` · ${plural(list.unreadable, "folder")} unreadable` : ""}`
               : ""}
           </span>
           <span className="right">↑↓ choose · ↵ open · esc close</span>
