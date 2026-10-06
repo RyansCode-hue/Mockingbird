@@ -2,10 +2,11 @@ import * as fs from "fs";
 import * as path from "path";
 import { insideRepo } from "./runProfile";
 import { quote } from "./shell";
+import { SKIP_DIRS } from "./find";
 import type { RunProfile } from "../shared/types";
 
 // folders a glob walk never enters unless the pattern names them: huge, and never where env files live
-const SKIP = new Set(["node_modules", ".git", ".venv", "venv", "bin", "obj", "dist", "build", "__pycache__", ".next", "target"]);
+const SKIP: ReadonlySet<string> = new Set([".git", ...SKIP_DIRS]);
 const MAX_WALK = 20_000;
 
 /** `**` crosses folders, `*` and `?` stay within one. */

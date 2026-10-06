@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { git } from "./git";
 import { MB_DIR } from "./store";
+import { writeFileAtomic } from "./fileOps";
 import type { RunDebug, RunPort, RunProfile, RunService } from "../shared/types";
 
 /**
@@ -194,10 +195,7 @@ export function loadProfile(repo: string): RunProfile | null {
 export function saveProfile(profile: unknown, repo: string): RunProfile {
   const p = validateProfile(profile, repo);
   fs.mkdirSync(RUN_DIR, { recursive: true });
-  const file = profilePath(repo);
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(p, null, 2));
-  fs.renameSync(tmp, file);
+  writeFileAtomic(profilePath(repo), JSON.stringify(p, null, 2));
   return p;
 }
 

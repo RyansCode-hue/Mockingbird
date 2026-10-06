@@ -220,7 +220,17 @@ export function RunView({
         <button className="outline" disabled={!!busy || !!preparing} title="Copy the gitignored files this worktree needs (env files, certs) from the main checkout, then install what's missing" onClick={async () => {
           const r = await act("prepare", (id) => window.mb.runPrepare(id));
           if (r && !isErr(r) && r.id) onShowLog(r.id);
-          else if (r && !isErr(r)) setError([r.copied.length ? `Copied ${r.copied.join(", ")}` : "", r.missing.length ? `Not found in the main checkout: ${r.missing.join(", ")}` : "", "Nothing to install."].filter(Boolean).join(" · "));
+          else if (r && !isErr(r))
+            setError(
+              [
+                r.copied.length ? `Copied ${r.copied.join(", ")}` : "",
+                r.missing.length ? `Not found in the main checkout: ${r.missing.join(", ")}` : "",
+                r.truncated?.length ? `Gave up looking for ${r.truncated.join(", ")} in too many files — name the folder in the pattern` : "",
+                "Nothing to install.",
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            );
         }}>
           {preparing || busy === "prepare" ? "Preparing…" : "Prepare"}
         </button>

@@ -122,6 +122,21 @@ describe("a debug session's end", () => {
     expect(ended[1]).toEqual([null, undefined]);
   });
 
+  it("lists only the newest ended sessions, however many have run", async () => {
+    const dbg = new DebugManager({ emit: () => {}, breakpointsDir: tempDir("bp-keep") });
+    const ids: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const a = fakeAdapter();
+      const id = await dbg.launch({ ...base, connect: a.connect });
+      await dbg.stop(id);
+      ids.push(id);
+    }
+    const running = fakeAdapter();
+    const live = await dbg.launch({ ...base, connect: running.connect });
+    expect(dbg.infos().map((s) => s.id)).toEqual([...ids.slice(-5), live]);
+    await dbg.stop(live);
+  });
+
   it("says why breakpoints weren't set", async () => {
     const events: unknown[][] = [];
     const dbg = new DebugManager({ emit: (...e) => events.push(e), breakpointsDir: tempDir("bp-fail") });

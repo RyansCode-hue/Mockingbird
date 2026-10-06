@@ -2,6 +2,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { RUN_DIR, insideRepo, repoJson } from "../runProfile";
+import { writeFileAtomic } from "../fileOps";
 import { tcpConnector, type DapConnection } from "./client";
 import type { DebugFrame, DebugScope, DebugSessionInfo, DebugVariable } from "../../shared/types";
 
@@ -53,6 +54,9 @@ const short = () => crypto.randomBytes(4).toString("hex");
  * (js-debug's browser targets, debugpy's subprocesses); they're tracked under
  * their parent and stopped with it.
  */
+/** How many ended debug sessions stay listed. */
+const KEEP_ENDED = 5;
+
 export class DebugManager {
   private live = new Map<string, Live>();
 
@@ -87,8 +91,7 @@ export class DebugManager {
     const sorted = [...new Set(lines.filter((l) => Number.isInteger(l) && l > 0))].sort((a, b) => a - b);
     if (sorted.length) all[rel] = sorted;
     else delete all[rel];
-    fs.mkdirSync(this.bpDir, { recursive: true });
-    fs.writeFileSync(this.bpFile(repo), JSON.stringify(all, null, 2));
+    writeFileAtomic(this.bpFile(repo), JSON.stringify(all, null, 2));
     let result: { line: number; verified: boolean; message?: string }[] | null = null;
     let failed: string | null = null;
     for (const l of this.live.values()) {
@@ -315,7 +318,20 @@ export class DebugManager {
     // children end with their parent
     for (const c of this.live.values()) if (c.info.parentId === l.info.id) this.end(c);
     if (!l.info.parentId) l.opts.onEnded?.(l.exitCode, l.info.error);
+    this.forgetOldEnded();
     this.changed();
+  }
+
+  /**
+   * Ended sessions stay listed so the panel can say how the last ones ended,
+   * but only the newest KEEP_ENDED of them (with their children): the list
+   * would otherwise grow with every run for as long as the app is open.
+   */
+  private forgetOldEnded(): void {
+    const ended = [...this.live.values()].filter((l) => !l.info.parentId && l.info.state === "ended");
+    for (const old of ended.slice(0, -KEEP_ENDED)) {
+      for (const [id, l] of this.live) if (id === old.info.id || l.info.parentId === old.info.id) this.live.delete(id);
+    }
   }
 
   async control(id: string, op: "continue" | "next" | "stepIn" | "stepOut" | "pause", threadId?: number): Promise<void> {

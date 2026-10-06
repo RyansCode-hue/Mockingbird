@@ -1,6 +1,8 @@
 import * as path from "path";
 import { git } from "./git";
-import { quote, type ShellResult } from "./shell";
+import { quote } from "./shell";
+import { parseClaudeJson, type ShellRunner } from "./headless";
+import { agentLabel, isInstalledBin } from "./agents";
 import { validateProfile } from "./runProfile";
 import type { RunProfile } from "../shared/types";
 
@@ -84,8 +86,6 @@ function extractJson(text: string): unknown {
   return JSON.parse(body);
 }
 
-export type DraftRunner = (cmd: string, input: string, opts: { cwd: string; env: Record<string, string>; timeoutMs: number }) => Promise<ShellResult>;
-
 /**
  * Draft a repository's run setup with Claude, reading the repo with its
  * read-only tools (Read, Grep, Glob) from the main checkout; nothing runs and
@@ -95,10 +95,10 @@ export type DraftRunner = (cmd: string, input: string, opts: { cwd: string; env:
 export async function draftProfile(
   repo: string,
   bin: string,
-  run: DraftRunner,
+  run: ShellRunner,
   env: Record<string, string>
 ): Promise<{ profile: RunProfile; raw: string } | { error: string; raw: string }> {
-  if (!bin.includes("/")) throw new Error("Claude Code isn't installed — drafting a run setup needs it");
+  if (!isInstalledBin(bin)) throw new Error(`${agentLabel("claude")} isn't installed — drafting a run setup needs it`);
   const prompt = draftPrompt(repo, await ignoredCandidates(repo));
   const cmd = [
     quote(bin), "-p", "--model", "sonnet", "--output-format", "json",
@@ -108,14 +108,7 @@ export async function draftProfile(
     "--strict-mcp-config", "--no-session-persistence",
   ].join(" ");
   const r = await run(cmd, prompt, { cwd: repo, env: { ...env, MOCKINGBIRD_SESSION: `run-draft-${Date.now()}` }, timeoutMs: TIMEOUT_MS });
-  let out: any;
-  try {
-    out = JSON.parse(r.out);
-  } catch {
-    throw new Error(r.out.trim().slice(0, 300) || `claude exited with code ${r.code}`);
-  }
-  if (r.code !== 0 || out.is_error) throw new Error(String(out.result ?? `claude exited with code ${r.code}`).slice(0, 300));
-  const raw = String(out.result ?? "");
+  const raw = parseClaudeJson(r).text;
   try {
     return { profile: validateProfile(extractJson(raw), repo), raw };
   } catch (err) {
