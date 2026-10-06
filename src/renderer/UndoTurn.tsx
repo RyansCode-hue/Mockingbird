@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { isErr, type SessionInfo, type TurnChange, type TurnSnapshot, type IpcResult } from "../shared/types";
+import { isErr, SNAPSHOT_MAX_FILE_BYTES, type SessionInfo, type TurnChange, type TurnSnapshot, type IpcResult } from "../shared/types";
 import { ago, plural } from "../shared/format";
 import { Modal } from "./Modal";
 
@@ -102,7 +102,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
               </div>
             </>
           )}
-          {pick.skipped.length > 0 && <div className="fp-note warn">Not recorded (over 5 MB), so left as they are: {pick.skipped.join(", ")}</div>}
+          {pick.skipped.length > 0 && <div className="fp-note warn">Not recorded (over {SNAPSHOT_MAX_FILE_BYTES / (1024 * 1024)} MB), so left as they are: {pick.skipped.join(", ")}</div>}
         </div>
       )}
       {error && <div className="err">{error}</div>}

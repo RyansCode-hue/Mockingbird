@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { tokenBreakdown } from "./TerminalPane";
-import { resetText, pctNow } from "./usageFormat";
+import { resetText, pctNow, headlineOf } from "./usageFormat";
 import { Popover } from "./Popover";
 import { AGENT_NAME, formatTokens, totalTokens, type UsageReport, type UsageLimit, type Meters } from "../shared/types";
 import { fmtElapsed } from "../shared/format";
@@ -26,7 +26,6 @@ export function UsageMeter({ usage, meters }: { usage: UsageReport | null; meter
   const agents: ("claude" | "codex")[] = show === "both" ? ["claude", "codex"] : [show];
   const shown = agents.map((a) => ({ a, u: usage?.[a] ?? null }));
   const compact = shown.filter((x) => x.u);
-  const short = (l: UsageLimit) => (l.label.startsWith("5-hour") ? "5h" : l.label.startsWith("Weekly") ? "wk" : l.label);
   const todayTotal = Object.values(meters?.today ?? {}).reduce((n, t) => n + totalTokens(t!), 0);
 
   return (
@@ -39,10 +38,10 @@ export function UsageMeter({ usage, meters }: { usage: UsageReport | null; meter
             <span key={a} className="usage-agent">
               {agents.length > 1 && <span className="dim">{AGENT_NAME[a]}</span>}
               {u!.limits
-                .filter((l) => l.label === "5-hour limit" || l.label.startsWith("Weekly · all") || l.label === "Weekly limit")
+                .filter((l) => headlineOf(l))
                 .map((l) => (
                   <span key={l.label} className={pctNow(l, now) >= 90 ? "hot" : ""}>
-                    {short(l)} {Math.round(pctNow(l, now))}%
+                    {headlineOf(l)} {Math.round(pctNow(l, now))}%
                   </span>
                 ))}
             </span>

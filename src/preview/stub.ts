@@ -116,8 +116,8 @@ const pipelines: Record<string, TicketPipeline> = {
 };
 
 const usage: UsageReport = {
-  claude: { agent: "claude", plan: "Max", at: now - 2 * min, limits: [{ label: "5-hour limit", usedPct: 38, resetsAt: now + 2.5 * 60 * min }, { label: "Weekly · all models", usedPct: 61, resetsAt: now + 3 * 24 * 60 * min }] },
-  codex: { agent: "codex", plan: "Plus", at: now - 20 * min, limits: [{ label: "5-hour limit", usedPct: 9, resetsAt: now + 4 * 60 * min }] },
+  claude: { agent: "claude", plan: "Max", at: now - 2 * min, limits: [{ label: "5-hour limit", window: "5h", usedPct: 38, resetsAt: now + 2.5 * 60 * min }, { label: "Weekly · all models", window: "week", usedPct: 61, resetsAt: now + 3 * 24 * 60 * min }] },
+  codex: { agent: "codex", plan: "Plus", at: now - 20 * min, limits: [{ label: "5-hour limit", window: "5h", usedPct: 9, resetsAt: now + 4 * 60 * min }] },
 };
 const tokens = (input: number, output: number, cacheRead: number) => ({ input, output, cacheRead, cacheWrite: Math.round(input / 3), replies: 40 });
 const meters: Meters = {

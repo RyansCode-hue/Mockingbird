@@ -28,7 +28,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -474,9 +474,9 @@ function App() {
     // reuses session ids, so a restored session lands back in its old grid slot
     const off = window.mb.onSessionsChanged((s: SessionInfo[]) => setSessions(s));
     const offUi = window.mb.onUiCommand((cmd: string, arg?: string) => {
-      if (cmd === "new-session") setModal("new");
-      if (cmd === "update") setModal("update"); // the update notification was clicked
-      if (cmd === "focus-session" && arg) jumpToRef.current(arg);
+      if (cmd === UI_COMMANDS.newSession) setModal("new");
+      if (cmd === UI_COMMANDS.update) setModal("update"); // the update notification was clicked
+      if (cmd === UI_COMMANDS.focusSession && arg) jumpToRef.current(arg);
     });
     const offUpd = window.mb.onUpdateAvailable((u: any) => u?.newer && setUpdate(u));
     window.mb.usageGet().then(unlessError("plan usage", setUsage));
