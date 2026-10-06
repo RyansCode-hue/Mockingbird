@@ -2,7 +2,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { reachesBroadcast, cellKeyFor, frontOf, paneShortcuts, remapGroupKeys, remapSeats, sessionHolding, worktreeGone, type GridCell } from "../src/renderer/appModel";
+import { reachesBroadcast, cellKeyFor, frontOf, inReadingOrder, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, worktreeGone, type GridCell } from "../src/renderer/appModel";
+import { keysOf, leaf, split } from "../src/renderer/layoutTree";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
 import type { SessionInfo } from "../src/shared/types";
@@ -22,6 +23,15 @@ describe("pane numbers", () => {
     // with no tab chosen the first one is in front
     expect(paneShortcuts(cells, {}).get("w1")).toBe(2);
     expect(frontOf(ws, { "5038/api": "gone" }).id).toBe("w1");
+  });
+  it("follow the grid's reading order, top-left first, whatever order the panes were opened in", () => {
+    // b on the left; a above the workspace on the right
+    const tree = split("row", [leaf("b"), split("col", [leaf("a"), leaf("ws:5038/api")])]);
+    const ordered = inReadingOrder(cells, tree);
+    expect(ordered.map((c) => (c.kind === "session" ? c.s.id : c.key))).toEqual(["b", "a", "5038/api"]);
+    expect([...paneShortcuts(ordered, {})]).toEqual([["b", 1], ["a", 2], ["w1", 3]]);
+    // a cell the tree doesn't place yet comes last
+    expect(inReadingOrder(cells, leaf("b")).map((c) => (c.kind === "session" ? c.s.id : c.key))).toEqual(["b", "a", "5038/api"]);
   });
   it("stop at 9", () => {
     const many: GridCell[] = Array.from({ length: 12 }, (_, i) => ({ kind: "session", s: session(`s${i}`) }));
@@ -63,10 +73,18 @@ describe("group-keyed state across a rename", () => {
     // a workspace rename touches only that workspace
     expect(remapGroupKeys(rec, "5038/api", "5038/backend")).toEqual({ "5038": 1, "5038/backend": 2, "50380": 3, other: 4 });
   });
-  it("renames workspace cells seated in zones as well as the groups the seats belong to", () => {
-    const seats = { "5038": ["s1", "ws:5038/api", null, "ws:50380/x"] };
-    expect(remapSeats(seats, "5038", "orgs")).toEqual({ orgs: ["s1", "ws:orgs/api", null, "ws:50380/x"] });
-    expect(remapSeats(seats, "5038/api", "5038/web")).toEqual({ "5038": ["s1", "ws:5038/web", null, "ws:50380/x"] });
+  it("renames the workspace panes in layout trees as well as the groups the trees belong to", () => {
+    const trees = { "5038": split("row", [leaf("s1"), leaf("ws:5038/api"), leaf("ws:50380/x")])! };
+    const top = remapTrees(trees, "5038", "orgs");
+    expect(Object.keys(top)).toEqual(["orgs"]);
+    expect(keysOf(top.orgs)).toEqual(["s1", "ws:orgs/api", "ws:50380/x"]);
+    expect(keysOf(remapTrees(trees, "5038/api", "5038/web")["5038"])).toEqual(["s1", "ws:5038/web", "ws:50380/x"]);
+  });
+  it("keeps a tree already saved under the new name, dropping the old one", () => {
+    const ahead = { "5038": leaf("s1"), orgs: split("row", [leaf("s1"), leaf("ws:orgs/api")])! };
+    const out = remapTrees(ahead, "5038", "orgs");
+    expect(Object.keys(out)).toEqual(["orgs"]);
+    expect(keysOf(out.orgs)).toEqual(["s1", "ws:orgs/api"]);
   });
 });
 
