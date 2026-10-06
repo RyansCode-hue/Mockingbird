@@ -50,7 +50,7 @@ const SCHEMA = `interface RunProfile {
   notes?: string[];                              // e.g. sign-in redirect URIs to register for slots 1–3
 }`;
 
-export function draftPrompt(repo: string, candidates: string[]): string {
+function draftPrompt(repo: string, candidates: string[]): string {
   return [
     `Work out how to run the application in this repository (${path.basename(repo)}) locally, and describe it as JSON matching this TypeScript type:`,
     "",
@@ -76,7 +76,7 @@ export function draftPrompt(repo: string, candidates: string[]): string {
 }
 
 /** The JSON object in a reply: the whole reply, a fenced block, or the outermost braces. */
-export function extractJson(text: string): unknown {
+function extractJson(text: string): unknown {
   const t = text.trim();
   const fence = /```(?:json)?\s*\n([\s\S]*?)\n```/.exec(t);
   const body = fence ? fence[1] : t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1);

@@ -82,3 +82,9 @@ export async function connectTcp(port: number, host = "127.0.0.1", timeoutMs = 1
     }
   }
 }
+
+/** Connects to an adapter already listening on TCP (debugpy --listen, a subprocess debugpy announced). */
+export const tcpConnector = (port: number, host = "127.0.0.1", timeoutMs?: number) => async () => {
+  const conn = await connectTcp(port, host, timeoutMs);
+  return { conn, dispose: () => conn.close() };
+};

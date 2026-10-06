@@ -21,9 +21,13 @@ export async function mainCheckout(cwd: string): Promise<string> {
 /** A short id of a main checkout's path: repos that share a folder name get different ones. */
 export const repoHash = (repo: string) => crypto.createHash("sha1").update(repo).digest("hex").slice(0, 8);
 
-export function profilePath(repo: string): string {
-  return path.join(RUN_DIR, `${path.basename(repo).replace(/[^\w.-]/g, "_")}-${repoHash(repo)}.json`);
-}
+/** A repository's own JSON file in `dir`, named for its folder and its path's hash. */
+export const repoJson = (dir: string, repo: string) => path.join(dir, `${path.basename(repo).replace(/[^\w.-]/g, "_")}-${repoHash(repo)}.json`);
+
+export const profilePath = (repo: string) => repoJson(RUN_DIR, repo);
+
+/** A relative path that stays inside the repository (no absolute path, no `..`). */
+export const insideRepo = (p: string) => !path.isAbsolute(p) && !p.split("/").includes("..");
 
 const isObj = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
 const strMap = (x: unknown) => isObj(x) && Object.values(x).every((v) => typeof v === "string");
@@ -53,7 +57,7 @@ export function validateProfile(x: unknown, repo: string): RunProfile {
     if (kind !== "process" && kind !== "compose") fail(`${at}.kind`, 'must be "process" or "compose"');
     if (typeof s.command !== "string" && kind === "process") fail(`${at}.command`, "is required");
     const cwd = typeof s.cwd === "string" ? s.cwd : ".";
-    if (path.isAbsolute(cwd) || cwd.split("/").includes("..")) fail(`${at}.cwd`, "must be a path inside the repository");
+    if (!insideRepo(cwd)) fail(`${at}.cwd`, "must be a path inside the repository");
     if (s.env !== undefined && !strMap(s.env)) fail(`${at}.env`, "must map names to strings");
     if (s.envFiles !== undefined && !strList(s.envFiles)) fail(`${at}.envFiles`, "must be a list of paths");
     const ports: RunPort[] = (s.ports ?? []).map((pt: any, j: number) => {
@@ -105,7 +109,7 @@ export function validateProfile(x: unknown, repo: string): RunProfile {
   if (prepare !== undefined) {
     if (!isObj(prepare)) fail("prepare", "must be an object");
     if (prepare.copy !== undefined && !strList(prepare.copy)) fail("prepare.copy", "must be a list of paths or globs");
-    for (const c of prepare.copy ?? []) if (path.isAbsolute(c) || c.split("/").includes("..")) fail("prepare.copy", `"${c}" must be inside the repository`);
+    for (const c of prepare.copy ?? []) if (!insideRepo(c)) fail("prepare.copy", `"${c}" must be inside the repository`);
     if (prepare.commands !== undefined && (!Array.isArray(prepare.commands) || !prepare.commands.every((c: any) => isObj(c) && typeof c.command === "string" && typeof c.ifMissing === "string"))) {
       fail("prepare.commands", "each needs a command and an ifMissing path");
     }

@@ -4,9 +4,10 @@ import * as fs from "fs";
 import * as net from "net";
 import * as path from "path";
 import { DEBUG_DIR, DEBUGPY, JS_DEBUG, NETCOREDBG, ensureAdapter, spawnStdioAdapter } from "./adapters";
+import { DEBUGPY_IN_CONTAINER } from "../composeOverride";
 import { killIfAlive, stderrTail } from "../rpc";
 import { quote } from "../shell";
-import { connectTcp, type DapConnection } from "./client";
+import { connectTcp, tcpConnector, type DapConnection } from "./client";
 import type { Connection } from "./session";
 import type { RunDebug } from "../../shared/types";
 
@@ -203,10 +204,7 @@ export async function debugTargetFor(
       kind: "alongside",
       adapterID: "debugpy",
       // `debugpy --listen` runs its adapter in the process's own environment: connect to it directly
-      connect: async () => {
-        const conn = await connectTcp(port, "127.0.0.1", 30_000);
-        return { conn, dispose: () => conn.close() };
-      },
+      connect: tcpConnector(port, "127.0.0.1", 30_000),
       config: {
         request: "attach",
         type: "debugpy",
@@ -218,7 +216,7 @@ export async function debugTargetFor(
       pre,
       notes: [
         ...notes,
-        `Attaches to debugpy on port ${port}. The process must be listening: \`python -m debugpy --listen 0.0.0.0:5678 …\`${debug.container ? " — debugpy is mounted in the container at /opt/mockingbird/debugpy and MOCKINGBIRD_DEBUGPY points at it" : ""}.`,
+        `Attaches to debugpy on port ${port}. The process must be listening: \`python -m debugpy --listen 0.0.0.0:5678 …\`${debug.container ? ` — debugpy is mounted in the container at ${DEBUGPY_IN_CONTAINER} and MOCKINGBIRD_DEBUGPY points at it` : ""}.`,
       ],
     };
   }

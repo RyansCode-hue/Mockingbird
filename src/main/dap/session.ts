@@ -1,8 +1,8 @@
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import { RUN_DIR } from "../runProfile";
-import { connectTcp, type DapConnection } from "./client";
+import { RUN_DIR, insideRepo, repoJson } from "../runProfile";
+import { tcpConnector, type DapConnection } from "./client";
 import type { DebugFrame, DebugScope, DebugSessionInfo, DebugVariable } from "../../shared/types";
 
 export interface Connection {
@@ -40,7 +40,6 @@ interface Live {
   conn: DapConnection;
   opts: LaunchOptions;
   dispose(): void;
-  exceptionFilters: string[];
   exitCode: number | null;
   stopRequested: boolean;
 }
@@ -64,8 +63,7 @@ export class DebugManager {
   }
 
   private bpFile(repo: string) {
-    const hash = crypto.createHash("sha1").update(repo).digest("hex").slice(0, 8);
-    return path.join(this.bpDir, `${path.basename(repo).replace(/[^\w.-]/g, "_")}-${hash}.json`);
+    return repoJson(this.bpDir, repo);
   }
 
   /** A repo's breakpoints: relative path → line numbers. */
@@ -84,7 +82,7 @@ export class DebugManager {
    * first session that answered (unverified lines are where code can't stop).
    */
   async setBreakpoints(repo: string, rel: string, lines: number[]): Promise<{ line: number; verified: boolean; message?: string }[]> {
-    if (path.isAbsolute(rel) || rel.split("/").includes("..")) throw new Error(`Not a path inside the repository: ${rel}`);
+    if (!insideRepo(rel)) throw new Error(`Not a path inside the repository: ${rel}`);
     const all = this.breakpoints(repo);
     const sorted = [...new Set(lines.filter((l) => Number.isInteger(l) && l > 0))].sort((a, b) => a - b);
     if (sorted.length) all[rel] = sorted;
@@ -148,7 +146,7 @@ export class DebugManager {
     } catch (err) {
       throw new Error(`Couldn't start the debugger: ${(err as Error).message}`);
     }
-    const l: Live = { info, conn: c.conn, opts, dispose: c.dispose, exceptionFilters: [], exitCode: null, stopRequested: false };
+    const l: Live = { info, conn: c.conn, opts, dispose: c.dispose, exitCode: null, stopRequested: false };
     this.live.set(id, l);
     this.wire(l);
     this.changed();
@@ -191,7 +189,7 @@ export class DebugManager {
       supportsMemoryReferences: false,
       locale: "en",
     });
-    l.exceptionFilters = (caps.exceptionBreakpointFilters ?? []).filter((f: any) => f.default).map((f: any) => f.filter);
+    const exceptionFilters = (caps.exceptionBreakpointFilters ?? []).filter((f: any) => f.default).map((f: any) => f.filter);
     // most adapters answer launch only after configurationDone, so it's awaited last
     const launched = conn.request(opts.config.request, opts.config, 180_000);
     launched.catch(() => {}); // reported below; a failure before "initialized" ends the wait
@@ -201,7 +199,7 @@ export class DebugManager {
     }
     if (caps.supportsExceptionInfoRequest !== undefined || caps.exceptionBreakpointFilters) {
       await conn
-        .request("setExceptionBreakpoints", { filters: l.exceptionFilters })
+        .request("setExceptionBreakpoints", { filters: exceptionFilters })
         .catch((err) => this.output(l.info.id, "important", `Exception breakpoints weren't set: ${err.message}\n`));
     }
     if (caps.supportsConfigurationDoneRequest) await conn.request("configurationDone");
@@ -261,10 +259,7 @@ export class DebugManager {
             ...l.opts,
             name: String(body.name ?? `${info.name} (subprocess)`),
             parentId: info.id,
-            connect: async () => {
-              const conn = await connectTcp(Number(target.port), String(target.host ?? "127.0.0.1"));
-              return { conn, dispose: () => conn.close() };
-            },
+            connect: tcpConnector(Number(target.port), String(target.host ?? "127.0.0.1")),
             config: { ...body, request: "attach" },
           }).catch((err) => this.output(info.id, "important", `The subprocess session didn't start: ${err.message}\n`));
           break;
@@ -365,18 +360,8 @@ export class DebugManager {
     this.end(l);
   }
 
-  /** End every session debugging this worktree's service. */
-  async stopService(worktree: string, service: string): Promise<void> {
-    for (const l of [...this.live.values()]) if (l.info.worktree === worktree && l.info.service === service && !l.info.parentId) await this.stop(l.info.id);
-  }
-
+  /** Every session, for quitting the app. */
   async stopAll(): Promise<void> {
     for (const l of [...this.live.values()]) if (!l.info.parentId) await this.stop(l.info.id);
-  }
-
-  /** Forget ended sessions. */
-  prune(): void {
-    for (const [id, l] of this.live) if (l.info.state === "ended") this.live.delete(id);
-    this.changed();
   }
 }

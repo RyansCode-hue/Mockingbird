@@ -9,7 +9,7 @@ import { copyPrepared, setupCommand, type PrepareCopy } from "./runPrepare";
 import type { DebugManager } from "./dap/session";
 import type { debugTargetFor } from "./dap/targets";
 import { quote } from "./shell";
-import type { RunProfile, RunService, RunServiceState } from "../shared/types";
+import type { RunPort, RunProfile, RunService, RunServiceState } from "../shared/types";
 
 /** What a run needs from a terminal process — node-pty in the app, a fake in tests. */
 export interface RunProc {
@@ -22,7 +22,7 @@ export interface RunProc {
 export type Spawn = (command: string, opts: { cwd: string; env: Record<string, string> }) => RunProc;
 
 /** Someone else listening on a port a service needs. */
-export interface PortConflict {
+interface PortConflict {
   port: number;
   service: string;
   pid: number | null;
@@ -30,14 +30,14 @@ export interface PortConflict {
 }
 
 /** `ids`: the started services' run ids, in `started` order (for showing their logs). */
-export type StartResult = { slot: number; started: string[]; ids: string[] } | { blocked: PortConflict[]; slot: number };
+type StartResult = { slot: number; started: string[]; ids: string[] } | { blocked: PortConflict[]; slot: number };
 
 const BUFFER_MAX = 400_000;
 const STOP_GRACE_MS = 5_000;
 const READY_TIMEOUT_MS = 180_000;
 
 /** Is anything accepting connections on this port (IPv4 or IPv6 loopback)? */
-export function portInUse(port: number, timeoutMs = 400): Promise<boolean> {
+function portInUse(port: number, timeoutMs = 400): Promise<boolean> {
   const one = (host: string) =>
     new Promise<boolean>((resolve) => {
       const s = net.connect({ host, port });
@@ -53,7 +53,7 @@ export function portInUse(port: number, timeoutMs = 400): Promise<boolean> {
 }
 
 /** Who's listening on a port, from lsof: [{pid, command}] (empty when nobody is). */
-export function portListeners(port: number): Promise<{ pid: number; command: string }[]> {
+function portListeners(port: number): Promise<{ pid: number; command: string }[]> {
   return new Promise((resolve, reject) =>
     execFile("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fpc"], { timeout: 10_000 }, (err, stdout) => {
       // lsof exits 1 when nothing matches
@@ -70,7 +70,7 @@ export function portListeners(port: number): Promise<{ pid: number; command: str
 }
 
 /** The process groups of a process and of everything descended from it, its own first (from ps). */
-export function processGroups(leader: number): Promise<number[]> {
+function processGroups(leader: number): Promise<number[]> {
   return new Promise((resolve, reject) =>
     execFile("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid="], { timeout: 10_000 }, (err, stdout) => {
       if (err) return reject(new Error(`ps: ${err.message}`));
@@ -106,6 +106,9 @@ interface Live {
   /** For a service the debugger runs itself: called when its session ends, with why when it didn't end normally. */
   endVirtual?: (exitCode: number | null, error?: string) => void;
 }
+
+/** A port's URL, which may say ${port} (its own) or ${port:name} (any service's). */
+const portUrl = (url: string, p: RunPort, ctx: { ports: Map<string, number>; slot: number; worktree: string }) => expand(url.replace(/\$\{port\}/g, String(ctx.ports.get(p.name))), ctx);
 
 const runId = (worktree: string, service: string) => crypto.createHash("sha1").update(`${worktree}\0${service}`).digest("hex").slice(0, 12);
 
@@ -352,7 +355,7 @@ export class RunManager {
     if (!this.deps.debugger || !this.deps.debugTarget) throw new Error("Debugging isn't available");
     const { ctx, cwd, env, command } = this.serviceSetup(worktree, repo, s, slot, ports);
     const first = (s.ports ?? []).find((p) => p.url) ?? s.ports?.[0];
-    const url = first ? expand((first.url ?? "http://localhost:${port}").replace(/\$\{port\}/g, String(ports.get(first.name))), ctx) : undefined;
+    const url = first ? portUrl(first.url ?? "http://localhost:${port}", first, ctx) : undefined;
     const target = await this.deps.debugTarget(s, { cwd, env, command, url, expand: (x) => expand(x, ctx), onProgress: (m) => this.deps.emit("run:progress", worktree, m) });
     if (s.kind === "compose" && target.kind !== "alongside") {
       throw new Error(`${s.name} is a Docker Compose service: debug it by attaching ("python-attach" in its run setup) to a process listening with debugpy`);
@@ -493,8 +496,7 @@ export class RunManager {
       repo,
       slot,
       status: "starting",
-      // a url may say ${port} (its own) or ${port:name} (any service's)
-      ports: (s.ports ?? []).map((p) => ({ name: p.name, port: ports.get(p.name)!, ...(p.url ? { url: expand(p.url.replace(/\$\{port\}/g, String(ports.get(p.name))), ctx) } : {}) })),
+      ports: (s.ports ?? []).map((p) => ({ name: p.name, port: ports.get(p.name)!, ...(p.url ? { url: portUrl(p.url, p, ctx) } : {}) })),
       pid: null,
       exitCode: null,
       startedAt: Date.now(),

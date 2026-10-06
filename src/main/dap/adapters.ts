@@ -133,7 +133,7 @@ export async function ensureAdapter(p: Pinned, onProgress: (msg: string) => void
 }
 
 /** A running adapter process speaking DAP on its stdio. */
-export interface StdioAdapter {
+interface StdioAdapter {
   conn: DapConnection;
   dispose(): void;
   stderr(): string;

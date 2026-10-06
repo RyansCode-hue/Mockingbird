@@ -2,7 +2,7 @@ import type { Readable, Writable } from "stream";
 import { RpcConnection } from "../rpc";
 
 /** A request the server sends the client (workspace/configuration and the like). */
-export type ServerRequestHandler = (method: string, params: any) => Promise<any>;
+type ServerRequestHandler = (method: string, params: any) => Promise<any>;
 
 const METHOD_NOT_FOUND = -32601;
 

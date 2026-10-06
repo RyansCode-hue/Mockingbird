@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
+import { insideRepo } from "./runProfile";
 import { quote } from "./shell";
 import type { RunProfile } from "../shared/types";
 
@@ -73,7 +74,7 @@ export function copyPrepared(main: string, worktree: string, patterns: string[],
   const res: PrepareCopy = { copied: [], kept: [], missing: [], truncated: [] };
   if (path.resolve(main) === path.resolve(worktree)) return res; // the main checkout already has them
   for (const pat of patterns) {
-    if (path.isAbsolute(pat) || pat.split("/").includes("..")) throw new Error(`"${pat}" must be a path inside the repository`);
+    if (!insideRepo(pat)) throw new Error(`"${pat}" must be a path inside the repository`);
     const { files, truncated } = isGlob(pat) ? matchGlob(main, pat, limit) : { files: fs.existsSync(path.join(main, pat)) ? [pat] : [], truncated: false };
     if (truncated) res.truncated.push(pat);
     if (!files.length) {
