@@ -127,7 +127,8 @@ export function inferPython(command: string): { debug: Extract<RunDebug, { type:
 /**
  * The debug target for a service: its explicit `debug` setup, or one read from
  * its command. `cwd` and `env` are the service's own (placeholders already
- * filled in); `command` is its expanded command.
+ * filled in); `command` is its expanded command. Adapters run in `env` too,
+ * never Mockingbird's own environment, which they'd pass on to the program.
  */
 export async function debugTargetFor(
   service: { name: string; debug?: RunDebug },
@@ -175,7 +176,7 @@ export async function debugTargetFor(
     return {
       kind: "terminal",
       adapterID: "debugpy",
-      connect: async () => spawnStdioAdapter(python, ["-m", "debugpy.adapter"], { ...process.env, ...env, PYTHONPATH: dir } as Record<string, string>, ctx.cwd),
+      connect: async () => spawnStdioAdapter(python, ["-m", "debugpy.adapter"], { ...env, PYTHONPATH: dir }, ctx.cwd),
       config: {
         request: "launch",
         type: "debugpy",
@@ -232,7 +233,7 @@ export async function debugTargetFor(
     return {
       kind: "internal",
       adapterID: "coreclr",
-      connect: async () => spawnStdioAdapter(path.join(dir, "netcoredbg", "netcoredbg"), ["--interpreter=vscode"], { ...process.env, ...env } as Record<string, string>, projectDir),
+      connect: async () => spawnStdioAdapter(path.join(dir, "netcoredbg", "netcoredbg"), ["--interpreter=vscode"], env, projectDir),
       config: {
         request: "launch",
         type: "coreclr",
@@ -269,7 +270,7 @@ export async function debugTargetFor(
   }
   if (debug.type === "node") {
     const dir = await ensureAdapter(JS_DEBUG, ctx.onProgress, ctx.debugRoot);
-    const connect = jsDebugConnector(dir);
+    const connect = jsDebugConnector(dir, ctx.env);
     const resolveSourceMapLocations = ["**", "!**/node_modules/**"];
     return {
       kind: "terminal",
@@ -302,7 +303,7 @@ async function chromeTarget(
   name: string,
   url: string,
   webRoot: string,
-  ctx: { cwd: string; onProgress?: (msg: string) => void; debugRoot?: string; browserArgs?: string[] },
+  ctx: { cwd: string; env: Record<string, string>; onProgress?: (msg: string) => void; debugRoot?: string; browserArgs?: string[] },
   extra: Record<string, unknown>
 ): Promise<DebugTarget> {
   const dir = await ensureAdapter(JS_DEBUG, ctx.onProgress, ctx.debugRoot);
@@ -310,7 +311,7 @@ async function chromeTarget(
   return {
     kind: "alongside",
     adapterID: "pwa-chrome",
-    connect: jsDebugConnector(dir),
+    connect: jsDebugConnector(dir, ctx.env),
     config: {
       request: "launch",
       type: "pwa-chrome",
@@ -347,13 +348,13 @@ function freePort(): Promise<number> {
  * server is started on the first connect (with Electron's own Node) and
  * stopped when that first session ends, or when the first connect fails.
  */
-function jsDebugConnector(dir: string): () => Promise<Connection> {
+function jsDebugConnector(dir: string, env: Record<string, string>): () => Promise<Connection> {
   let server: Promise<{ port: number; kill: () => void; stderr: () => string }> | null = null;
   let first = true;
   const start = async () => {
     const port = await freePort();
     const proc = spawn(process.execPath, [path.join(dir, "js-debug", "src", "dapDebugServer.js"), String(port), "127.0.0.1"], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+      env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["ignore", "ignore", "pipe"],
     });
     const tail = stderrTail(proc, 4000);

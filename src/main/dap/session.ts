@@ -27,8 +27,12 @@ export interface LaunchOptions {
   parentId?: string;
   /** The program's output, when the debugger runs it itself (no terminal): child sessions report here too. */
   onOutput?: (category: string, text: string) => void;
-  /** The top session ended, with the program's exit code when the adapter reported one. */
-  onEnded?: (exitCode: number | null) => void;
+  /**
+   * The top session ended, with the program's exit code when the adapter
+   * reported one, and why when it wasn't the program ending or a stop asked
+   * for (the debugger didn't start, or its adapter went away).
+   */
+  onEnded?: (exitCode: number | null, error?: string) => void;
 }
 
 interface Live {
@@ -38,6 +42,7 @@ interface Live {
   dispose(): void;
   exceptionFilters: string[];
   exitCode: number | null;
+  stopRequested: boolean;
 }
 
 const short = () => crypto.randomBytes(4).toString("hex");
@@ -86,17 +91,19 @@ export class DebugManager {
     else delete all[rel];
     fs.mkdirSync(this.bpDir, { recursive: true });
     fs.writeFileSync(this.bpFile(repo), JSON.stringify(all, null, 2));
-    let result: { line: number; verified: boolean; message?: string }[] = sorted.map((line) => ({ line, verified: false }));
-    let answered = false;
+    let result: { line: number; verified: boolean; message?: string }[] | null = null;
+    let failed: string | null = null;
     for (const l of this.live.values()) {
       if (l.info.repo !== repo || l.info.state === "ended") continue;
-      const r = await this.sendFile(l, rel, sorted).catch(() => null);
-      if (r && !answered) {
-        result = r;
-        answered = true;
+      try {
+        const r = await this.sendFile(l, rel, sorted);
+        result ??= r;
+      } catch (err) {
+        failed ??= (err as Error).message;
+        this.output(l.info.id, "important", `Breakpoints in ${rel} weren't set: ${(err as Error).message}\n`);
       }
     }
-    return result;
+    return result ?? sorted.map((line) => ({ line, verified: false, ...(failed ? { message: `Not set: ${failed}` } : {}) }));
   }
 
   private async sendFile(l: Live, rel: string, lines: number[]) {
@@ -141,7 +148,7 @@ export class DebugManager {
     } catch (err) {
       throw new Error(`Couldn't start the debugger: ${(err as Error).message}`);
     }
-    const l: Live = { info, conn: c.conn, opts, dispose: c.dispose, exceptionFilters: [], exitCode: null };
+    const l: Live = { info, conn: c.conn, opts, dispose: c.dispose, exceptionFilters: [], exitCode: null, stopRequested: false };
     this.live.set(id, l);
     this.wire(l);
     this.changed();
@@ -193,7 +200,9 @@ export class DebugManager {
       await this.sendFile(l, rel, lines).catch((err) => this.output(l.info.id, "important", `Breakpoints in ${rel} weren't set: ${err.message}\n`));
     }
     if (caps.supportsExceptionInfoRequest !== undefined || caps.exceptionBreakpointFilters) {
-      await conn.request("setExceptionBreakpoints", { filters: l.exceptionFilters }).catch(() => {});
+      await conn
+        .request("setExceptionBreakpoints", { filters: l.exceptionFilters })
+        .catch((err) => this.output(l.info.id, "important", `Exception breakpoints weren't set: ${err.message}\n`));
     }
     if (caps.supportsConfigurationDoneRequest) await conn.request("configurationDone");
     await launched;
@@ -272,7 +281,8 @@ export class DebugManager {
     });
     conn.on("close", (why: string) => {
       if (info.state !== "ended") {
-        if (info.state === "starting") info.error ??= why;
+        // an adapter that ends a session normally says "terminated" first
+        if (!l.stopRequested) info.error ??= why;
         this.end(l);
       }
     });
@@ -309,7 +319,7 @@ export class DebugManager {
     }
     // children end with their parent
     for (const c of this.live.values()) if (c.info.parentId === l.info.id) this.end(c);
-    if (!l.info.parentId) l.opts.onEnded?.(l.exitCode);
+    if (!l.info.parentId) l.opts.onEnded?.(l.exitCode, l.info.error);
     this.changed();
   }
 
@@ -349,6 +359,7 @@ export class DebugManager {
   async stop(id: string): Promise<void> {
     const l = this.live.get(id);
     if (!l || l.info.state === "ended") return;
+    l.stopRequested = true;
     for (const c of [...this.live.values()]) if (c.info.parentId === id) await this.stop(c.info.id);
     await l.conn.request("disconnect", { terminateDebuggee: true, restart: false }, 8_000).catch(() => {});
     this.end(l);

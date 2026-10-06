@@ -5,7 +5,7 @@ import * as net from "net";
 import * as path from "path";
 import { buildOverride, composeConfig, composeProject, writeOverride } from "./composeOverride";
 import { DEFAULT_SIDE_BY_SIDE, expand, loadProfile, mainCheckout, parseEnvFile, slotPorts, startOrder } from "./runProfile";
-import { copyPrepared, setupCommand } from "./runPrepare";
+import { copyPrepared, setupCommand, type PrepareCopy } from "./runPrepare";
 import type { DebugManager } from "./dap/session";
 import type { debugTargetFor } from "./dap/targets";
 import { quote } from "./shell";
@@ -97,12 +97,14 @@ interface Live {
   outputFrom: number;
   exited: Promise<void>;
   stopRequested: boolean;
+  /** The services it was started after (its dependsOn then): stopping one of them stops it too. */
+  dependsOn: string[];
   /** Settles once: true when the service is up, false if it exited first. */
   ready?: Promise<boolean>;
   /** For compose services: how to take the stack down after the foreground process ends, in the folder and environment it came up in. */
   down?: { command: string; cwd: string; env: Record<string, string> };
-  /** For a service the debugger runs itself: called when its session ends. */
-  endVirtual?: (exitCode: number | null) => void;
+  /** For a service the debugger runs itself: called when its session ends, with why when it didn't end normally. */
+  endVirtual?: (exitCode: number | null, error?: string) => void;
 }
 
 const runId = (worktree: string, service: string) => crypto.createHash("sha1").update(`${worktree}\0${service}`).digest("hex").slice(0, 12);
@@ -379,7 +381,7 @@ export class RunManager {
         connect: target.connect,
         config: { ...target.config, program },
         onOutput: (_c, text) => this.append(l, text.replace(/\r?\n/g, "\r\n")),
-        onEnded: (code) => l.endVirtual?.(code),
+        onEnded: (code, error) => l.endVirtual?.(code, error),
       });
       l.state.debug = sessionId;
       this.changed();
@@ -454,13 +456,13 @@ export class RunManager {
     let resolveExit!: () => void;
     const state: RunServiceState = { ...build.state, status: "starting", pid: null, exitCode: null, startedAt: Date.now() };
     const n = build.buffer.length;
-    const l: Live = { state, proc: null, buffer: build.buffer, written: n, outputFrom: n, exited: new Promise((r) => (resolveExit = r)), stopRequested: false };
-    l.endVirtual = (code) => {
+    const l: Live = { state, proc: null, buffer: build.buffer, written: n, outputFrom: n, dependsOn: build.dependsOn, exited: new Promise((r) => (resolveExit = r)), stopRequested: false };
+    l.endVirtual = (code, error) => {
       state.exitCode = code;
-      if (l.stopRequested || !code) state.status = "stopped";
+      if (l.stopRequested || (!code && !error)) state.status = "stopped";
       else {
         state.status = "failed";
-        state.error ??= `Exited with code ${code}`;
+        state.error ??= error ?? `Exited with code ${code}`;
       }
       resolveExit();
       this.changed();
@@ -501,7 +503,7 @@ export class RunManager {
     const prior = this.live.get(id)?.buffer;
     const buffer = prior ? `${prior}\r\n` : "";
     let resolveExit!: () => void;
-    const l: Live = { state, proc: null, buffer, written: buffer.length, outputFrom: 0, exited: new Promise((r) => (resolveExit = r)), stopRequested: false, down };
+    const l: Live = { state, proc: null, buffer, written: buffer.length, outputFrom: 0, dependsOn: s.dependsOn ?? [], exited: new Promise((r) => (resolveExit = r)), stopRequested: false, down };
     this.live.set(id, l);
     this.append(l, `\x1b[2m$ ${command}\x1b[0m\r\n${notes.map((n) => `\x1b[33m${n}\x1b[0m\r\n`).join("")}`);
     l.outputFrom = l.written;
@@ -574,18 +576,12 @@ export class RunManager {
     let targets = this.running(worktree);
     if (services?.length) {
       const names = new Set(services);
-      // whatever depends on a stopped service goes too
+      // whatever depends on a stopped service goes too, by what each was started after
+      const all = [...this.live.values()].filter((l) => l.state.worktree === worktree);
       let grew = true;
-      const deps = new Map<string, string[]>();
-      try {
-        const { profile } = await this.profile(worktree);
-        for (const s of profile.services) deps.set(s.name, s.dependsOn ?? []);
-      } catch {
-        /* the profile was removed; stop just what was named */
-      }
       while (grew) {
         grew = false;
-        for (const [n, d] of deps) if (!names.has(n) && d.some((x) => names.has(x))) (names.add(n), (grew = true));
+        for (const l of all) if (!names.has(l.state.service) && l.dependsOn.some((x) => names.has(x))) (names.add(l.state.service), (grew = true));
       }
       targets = targets.filter((l) => names.has(l.state.service));
     }
@@ -653,7 +649,7 @@ export class RunManager {
    * main checkout, then run the setup commands it still needs, logged like a
    * service named "prepare".
    */
-  async prepare(worktree: string): Promise<{ copied: string[]; kept: string[]; missing: string[]; ran: boolean; id: string | null }> {
+  async prepare(worktree: string): Promise<PrepareCopy & { ran: boolean; id: string | null }> {
     const { repo, profile } = await this.profile(worktree);
     const copy = copyPrepared(repo, worktree, profile.prepare?.copy ?? []);
     const command = setupCommand(worktree, profile.prepare);
@@ -662,6 +658,7 @@ export class RunManager {
       copy.copied.length ? `Copied from ${path.basename(repo)}: ${copy.copied.join(", ")}` : "",
       copy.kept.length ? `Already here (kept): ${copy.kept.join(", ")}` : "",
       copy.missing.length ? `Not in ${path.basename(repo)} either: ${copy.missing.join(", ")}` : "",
+      copy.truncated.length ? `Gave up looking for ${copy.truncated.join(", ")} in too many files — name the folder in the pattern` : "",
       command ? "" : "No setup commands needed.",
     ].filter(Boolean);
     if (!command) {

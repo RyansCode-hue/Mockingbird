@@ -86,6 +86,114 @@ describe("the DAP wire format", () => {
   });
 });
 
+/** An adapter at the other end of a pair of streams: it answers every request, failing the ones named in `fail`. */
+function fakeAdapter(fail: Record<string, string> = {}) {
+  const toAdapter = new PassThrough();
+  const fromAdapter = new PassThrough();
+  const parser = new FrameParser();
+  let seq = 1;
+  const send = (m: object) => fromAdapter.write(frame({ seq: seq++, ...m }));
+  toAdapter.on("data", (d) => {
+    for (const m of parser.push(d)) {
+      if (m.type !== "request") continue;
+      const why = fail[m.command];
+      send({ type: "response", request_seq: m.seq, command: m.command, success: !why, ...(why ? { message: why } : { body: m.command === "initialize" ? { supportsConfigurationDoneRequest: true } : {} }) });
+      if (m.command === "initialize") send({ type: "event", event: "initialized" });
+    }
+  });
+  const conn = new DapConnection(fromAdapter, toAdapter);
+  return { connect: async () => ({ conn, dispose: () => conn.close() }), crash: () => fromAdapter.end() };
+}
+
+describe("a debug session's end", () => {
+  const base = { worktree: "/w", repo: "/r", service: "s", name: "s", adapterID: "fake", config: { request: "launch" as const } };
+
+  it("says why when the adapter went away, and nothing when it was stopped", async () => {
+    const dbg = new DebugManager({ emit: () => {}, breakpointsDir: tempDir("bp-end") });
+    const ended: unknown[][] = [];
+    const a = fakeAdapter();
+    await dbg.launch({ ...base, connect: a.connect, onEnded: (...x) => ended.push(x) });
+    a.crash();
+    await new Promise((r) => setImmediate(r));
+    expect(ended).toEqual([[null, "The debug adapter closed the connection"]]);
+    const b = fakeAdapter();
+    const id = await dbg.launch({ ...base, connect: b.connect, onEnded: (...x) => ended.push(x) });
+    await dbg.stop(id);
+    expect(ended[1]).toEqual([null, undefined]);
+  });
+
+  it("says why breakpoints weren't set", async () => {
+    const events: unknown[][] = [];
+    const dbg = new DebugManager({ emit: (...e) => events.push(e), breakpointsDir: tempDir("bp-fail") });
+    await dbg.launch({ ...base, connect: fakeAdapter({ setBreakpoints: "no such file" }).connect });
+    expect(await dbg.setBreakpoints("/r", "app.py", [3])).toEqual([{ line: 3, verified: false, message: "Not set: no such file" }]);
+    expect(events.some((e) => e[0] === "debug:output" && e[2] === "important" && /app\.py weren't set: no such file/.test(String(e[3])))).toBe(true);
+  });
+
+  it("marks a service the debugger runs as failed, with why, when its adapter dies or never starts", async () => {
+    const dbg = new DebugManager({ emit: () => {}, breakpointsDir: tempDir("bp-virtual") });
+    const procs: { exit: (code: number) => void }[] = [];
+    const spawn: Spawn = () => {
+      let onExit: (e: { exitCode: number }) => void = () => {};
+      procs.push({ exit: (exitCode) => onExit({ exitCode }) });
+      return { pid: 5000 + procs.length, onData: () => {}, onExit: (cb) => (onExit = cb), write: () => {}, resize: () => {} };
+    };
+    let adapter = fakeAdapter();
+    const runs = new RunManager({
+      spawn,
+      emit: () => {},
+      baseEnv: () => ({}),
+      docker: async () => "docker",
+      runShell: async () => ({ code: 0, out: "/w/bin/app.dll\n" }),
+      profileFor: () => validateProfile({ services: [{ name: "app", command: "dotnet run" }] }, "/r"),
+      mainOf: async () => "/r",
+      debugger: dbg,
+      debugTarget: async () => ({ kind: "internal", internal: { build: "build", locate: "locate" }, adapterID: "coreclr", connect: () => adapter.connect(), config: { request: "launch" }, pre: [], notes: [] }),
+    });
+    const build = async () => {
+      const n = procs.length;
+      for (let i = 0; i < 50 && procs.length === n; i++) await new Promise((r) => setImmediate(r));
+      procs[n].exit(0);
+    };
+    const run = runs.start("/w", { mode: "swap", debug: ["app"] });
+    await build();
+    await run;
+    expect(runs.states()[0].status).toBe("running");
+    adapter.crash();
+    await new Promise((r) => setImmediate(r));
+    expect(runs.states()[0]).toMatchObject({ status: "failed", error: "The debug adapter closed the connection" });
+
+    adapter = fakeAdapter();
+    adapter.crash();
+    const again = runs.start("/w", { mode: "swap", debug: ["app"] }).catch((e: Error) => e);
+    await build();
+    expect(((await again) as Error).message).toMatch(/closed the connection/);
+    expect(runs.states()[0]).toMatchObject({ status: "failed", error: expect.stringMatching(/closed the connection/) });
+  });
+});
+
+describe("the environment adapters run in", () => {
+  it("is the service's own, not Mockingbird's", async () => {
+    const dir = fs.realpathSync(tempDir("py-env"));
+    fs.mkdirSync(path.join(dir, ".venv/bin"), { recursive: true });
+    const dump = path.join(dir, "env.txt");
+    // stands in for the venv's Python: records the environment the adapter would get
+    fs.writeFileSync(path.join(dir, ".venv/bin/python"), `#!/bin/sh\nenv > '${dump}'\n`, { mode: 0o755 });
+    process.env.MOCKINGBIRD_TEST_MARKER = "leaked";
+    try {
+      const t = await debugTargetFor({ name: "api" }, { cwd: dir, env: { PATH: "/usr/bin:/bin", APP: "1" }, command: ".venv/bin/uvicorn app:app", expand: (x) => x, debugRoot: cache });
+      const c = await t.connect();
+      await new Promise((r) => (c.conn.isClosed ? r(null) : c.conn.once("close", r)));
+      const env = fs.readFileSync(dump, "utf8");
+      expect(env).toMatch(/^APP=1$/m);
+      expect(env).toMatch(/^PYTHONPATH=.*debugpy/m);
+      expect(env).not.toContain("MOCKINGBIRD_TEST_MARKER");
+    } finally {
+      delete process.env.MOCKINGBIRD_TEST_MARKER;
+    }
+  }, 120_000);
+});
+
 describe("downloading an adapter", () => {
   it("fails, rather than hanging, when the connection drops or stalls mid-download", async () => {
     const { download } = await import("../src/main/dap/adapters");

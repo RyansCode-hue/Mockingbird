@@ -24,13 +24,17 @@ export function globToRegex(glob: string): RegExp {
 
 const isGlob = (p: string) => /[*?]/.test(p);
 
-/** Files under `root` matching a glob, walked from the glob's literal folder. */
-function matchGlob(root: string, glob: string): string[] {
+/**
+ * Files and folders under `root` matching a glob, walked from the glob's
+ * literal folder; a matching folder is taken whole. `truncated` when the walk
+ * gave up after `limit` entries.
+ */
+function matchGlob(root: string, glob: string, limit: number): { files: string[]; truncated: boolean } {
   const re = globToRegex(glob);
   const literal = glob.slice(0, glob.search(/[*?]/));
   const start = literal.includes("/") ? literal.slice(0, literal.lastIndexOf("/")) : "";
   const named = new Set(glob.split("/"));
-  const out: string[] = [];
+  const files: string[] = [];
   let seen = 0;
   const walk = (rel: string) => {
     let entries: fs.Dirent[];
@@ -41,36 +45,39 @@ function matchGlob(root: string, glob: string): string[] {
       throw err;
     }
     for (const e of entries) {
-      if (++seen > MAX_WALK) return;
+      if (++seen > limit) return;
       const p = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) {
-        if (!SKIP.has(e.name) || named.has(e.name)) walk(p);
-      } else if (re.test(p)) out.push(p);
+      if (re.test(p)) files.push(p);
+      else if (e.isDirectory() && (!SKIP.has(e.name) || named.has(e.name))) walk(p);
     }
   };
   walk(start);
-  return out;
+  return { files, truncated: seen > limit };
 }
 
 export interface PrepareCopy {
   copied: string[];
   kept: string[];
   missing: string[];
+  /** Globs whose search gave up in a folder too large to finish (what it found before is copied). */
+  truncated: string[];
 }
 
 /**
  * Copy the files a worktree needs but git doesn't carry (env files, local
  * certs) from the main checkout. A file the worktree already has is kept — it
  * may have been changed on purpose. Paths are checked to stay inside both folders.
+ * A glob's search looks at no more than `limit` entries.
  */
-export function copyPrepared(main: string, worktree: string, patterns: string[]): PrepareCopy {
-  const res: PrepareCopy = { copied: [], kept: [], missing: [] };
+export function copyPrepared(main: string, worktree: string, patterns: string[], limit = MAX_WALK): PrepareCopy {
+  const res: PrepareCopy = { copied: [], kept: [], missing: [], truncated: [] };
   if (path.resolve(main) === path.resolve(worktree)) return res; // the main checkout already has them
   for (const pat of patterns) {
     if (path.isAbsolute(pat) || pat.split("/").includes("..")) throw new Error(`"${pat}" must be a path inside the repository`);
-    const files = isGlob(pat) ? matchGlob(main, pat) : fs.existsSync(path.join(main, pat)) ? [pat] : [];
+    const { files, truncated } = isGlob(pat) ? matchGlob(main, pat, limit) : { files: fs.existsSync(path.join(main, pat)) ? [pat] : [], truncated: false };
+    if (truncated) res.truncated.push(pat);
     if (!files.length) {
-      res.missing.push(pat);
+      if (!truncated) res.missing.push(pat);
       continue;
     }
     for (const rel of files) {

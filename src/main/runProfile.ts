@@ -46,6 +46,8 @@ export function validateProfile(x: unknown, repo: string): RunProfile {
     if (!isObj(s)) fail(at, "must be an object");
     if (typeof s.name !== "string" || !/^[\w.-]+$/.test(s.name)) fail(`${at}.name`, "must be a word (letters, digits, - _ .)");
     if (names.has(s.name)) fail(`${at}.name`, `"${s.name}" is used twice`);
+    // Prepare's log is a service named "prepare"
+    if (s.name === "prepare") fail(`${at}.name`, `"prepare" is taken by Prepare — call it something else`);
     names.add(s.name);
     const kind = s.kind ?? "process";
     if (kind !== "process" && kind !== "compose") fail(`${at}.kind`, 'must be "process" or "compose"');
@@ -222,11 +224,10 @@ export function parseEnvFile(text: string): Record<string, string> {
     if (!line || line.startsWith("#")) continue;
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.*)$/.exec(line);
     if (!m) continue;
-    let v = m[2];
-    if (/^".*"$/.test(v)) v = v.slice(1, -1).replace(/\\n/g, "\n").replace(/\\"/g, '"');
-    else if (/^'.*'$/.test(v)) v = v.slice(1, -1);
-    else v = v.replace(/\s+#.*$/, "");
-    out[m[1]] = v;
+    // a quoted value may be followed by a comment; an unquoted one ends where its comment starts
+    const dq = /^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/.exec(m[2]);
+    const sq = /^'([^']*)'\s*(?:#.*)?$/.exec(m[2]);
+    out[m[1]] = dq ? dq[1].replace(/\\n/g, "\n").replace(/\\"/g, '"') : sq ? sq[1] : m[2].replace(/\s+#.*$/, "");
   }
   return out;
 }

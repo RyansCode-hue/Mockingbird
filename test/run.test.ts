@@ -71,6 +71,11 @@ describe("run profiles", () => {
 
   it("read env files the way shells and dotenv write them", () => {
     expect(parseEnvFile('# c\nA=1\nexport B="two words"\nC=\'x y\'\nD=plain # note\n\nbad line\n')).toEqual({ A: "1", B: "two words", C: "x y", D: "plain" });
+    expect(parseEnvFile('DB="postgres://u@h/db#1" # local\nK=\'a # b\'  # note\nE="say \\"hi\\""\n')).toEqual({ DB: "postgres://u@h/db#1", K: "a # b", E: 'say "hi"' });
+  });
+
+  it("keep the name \"prepare\" for Prepare", () => {
+    expect(() => validateProfile({ services: [{ name: "prepare", command: "x" }] }, "/r")).toThrow(/services\[0\]\.name "prepare" is taken by Prepare/);
   });
 });
 
@@ -279,6 +284,23 @@ describe("running a worktree's services", () => {
     await t.m.stop("/wt/a", ["api"]);
     expect(t.m.states().map((s) => s.status)).toEqual(["stopped", "stopped"]);
     expect(t.killed.map(([pid]) => -pid)).toEqual([t.procs[1].proc.pid, t.procs[0].proc.pid]); // web, then api
+  });
+
+  it("stops what depends on a service by what it was started after, even with the run setup now broken", async () => {
+    let profile: RunProfile | null = web();
+    const t = manager(web(), {
+      profileFor: () => {
+        if (!profile) throw new Error("Run setup: services must list at least one service");
+        return profile;
+      },
+    });
+    const run = t.m.start("/wt/a", { mode: "swap" });
+    await new Promise((r) => setTimeout(r, 50));
+    t.busy.add(8000);
+    await run;
+    profile = null;
+    await t.m.stop("/wt/a", ["api"]);
+    expect(t.m.states().map((s) => s.status)).toEqual(["stopped", "stopped"]);
   });
 
   it("stops a service by its id, for a log whose session has closed", async () => {
@@ -549,6 +571,23 @@ describe("preparing a worktree", () => {
     expect(() => copyPrepared(main, wt, ["../../etc/passwd"])).toThrow(/inside the repository/);
     expect(globToRegex("**/.env").test(".env")).toBe(true);
     expect(globToRegex("a/*.env").test("a/b/c.env")).toBe(false);
+  });
+
+  it("matches folders with a glob, and says when a search gave up rather than calling the file missing", async () => {
+    const { copyPrepared } = await import("../src/main/runPrepare");
+    const main = tempDir("prep-glob-main");
+    const wt = tempDir("prep-glob-wt");
+    fs.mkdirSync(path.join(main, "api/.certs"), { recursive: true });
+    fs.writeFileSync(path.join(main, "api/.certs/dev.pem"), "k");
+    expect(copyPrepared(main, wt, ["**/.certs"])).toMatchObject({ copied: ["api/.certs"], missing: [], truncated: [] });
+    expect(fs.readFileSync(path.join(wt, "api/.certs/dev.pem"), "utf8")).toBe("k");
+    // more entries than the search may look at
+    fs.mkdirSync(path.join(main, "aaa-big"));
+    for (let i = 0; i < 30; i++) fs.writeFileSync(path.join(main, "aaa-big", `f${i}`), "");
+    fs.mkdirSync(path.join(main, "zzz"));
+    fs.writeFileSync(path.join(main, "zzz/.env"), "A=1");
+    expect(copyPrepared(main, wt, ["**/.env"], 20)).toMatchObject({ missing: [], truncated: ["**/.env"] });
+    expect(copyPrepared(main, wt, ["**/.env"])).toMatchObject({ copied: ["zzz/.env"], truncated: [] });
   });
 
   it("runs only the setup commands whose result is missing", async () => {

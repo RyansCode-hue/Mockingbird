@@ -6,6 +6,7 @@ import * as https from "https";
 import * as path from "path";
 import { pipeline } from "stream/promises";
 import { spawnRpcProcess } from "../rpc";
+import { quote } from "../shell";
 import { MB_DIR } from "../store";
 import { DapConnection } from "./client";
 
@@ -120,7 +121,9 @@ export async function ensureAdapter(p: Pinned, onProgress: (msg: string) => void
     else await run("/usr/bin/unzip", ["-q", file, "-d", into], tmp);
     if (!fs.existsSync(path.join(into, p.marker))) throw new Error(`${p.name} unpacked without ${p.marker}`);
     // a downloaded binary carries the quarantine flag, which stops it running
-    await run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", into], tmp).catch(() => {});
+    await run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", into], tmp).catch((err) =>
+      onProgress(`Couldn't clear macOS's quarantine flag on ${p.name} (${err.message}) — if it won't start, run: xattr -dr com.apple.quarantine ${quote(dir)}`)
+    );
     fs.rmSync(dir, { recursive: true, force: true });
     fs.renameSync(into, dir);
     return dir;
