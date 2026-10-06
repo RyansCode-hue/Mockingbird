@@ -4,6 +4,7 @@ import {
   arrange,
   asTree,
   canResize,
+  drawTree,
   dropRegion,
   equalize,
   evenGrid,
@@ -24,7 +25,6 @@ import {
   renameWorkspaces,
   resizePane,
   sameTree,
-  shapeOf,
   split,
   swap,
   templateOf,
@@ -32,6 +32,7 @@ import {
   TEMPLATES,
   type LayoutNode,
   type LegacyLayout,
+  worthSaving,
 } from "../src/renderer/layoutTree";
 
 const WIDE = { w: 1600, h: 900 };
@@ -202,11 +203,16 @@ describe("snap layouts and even grids", () => {
     expect(pic(arrange("big-left", ["a"], WIDE))).toBe("a");
     expect(pic(arrange("cols-2", ["a", "b", "c"], WIDE))).toBe("row(a,col(b,c))");
   });
-  it("knows which template the tree is shaped as, if any", () => {
+  it("knows which template the panes look like, if any", () => {
     for (const t of TEMPLATES) expect(templateOf(arrange(t.id, ["p", "q", "r", "s"].slice(0, t.slots), WIDE))).toBe(t.id);
     expect(templateOf(a)).toBeNull();
     expect(templateOf(row(a, b, c, d))).toBeNull();
-    expect(shapeOf(row(a, col(b, c)))).toBe("row(L,col(L,L))");
+    // the default rule's four panes are two columns of two: quadrants all the same
+    expect(templateOf(row(col(a, d), col(b, c)))).toBe("quad");
+    // resized, two columns are still two columns
+    expect(templateOf(split("row", [a, b], [0.7, 0.3]))).toBe("cols-2");
+    // but quadrants whose rows no longer line up aren't quadrants
+    expect(templateOf(split("row", [split("col", [a, d], [0.4, 0.6])!, col(b, c)]))).toBeNull();
   });
   it("lays panes out in rows of N, a short last row sharing the full width", () => {
     expect(pic(evenGrid(["a", "b", "c"], 2))).toBe("col(row(a,b),c)");
@@ -336,6 +342,42 @@ describe("the layout prefs from before split trees", () => {
   it("leaves groups it never knew to the default rule", () => {
     expect(legacyTree(legacy, "9999", ["a", "b"], WIDE)).toBeNull();
     expect(legacyTree(legacy, "5101", [], WIDE)).toBeNull();
+  });
+});
+
+describe("panes the main process is about to add or rekey", () => {
+  const now = 1_000_000;
+  const land = (place: (t: LayoutNode | null) => LayoutNode | null, at = now) => ({ at, place });
+  it("land where they were meant to on the render their key appears, not by the default rule", () => {
+    // a tab dragged out of a workspace to the left of b: its own key appears with its new group
+    const landings = new Map([["s3", land((t) => t && insertBeside(t, "b", "left", "s3"))]]);
+    expect(pic(drawTree(row(a, b), ["a", "b", "s3"], WIDE, landings, now, 10_000))).toBe("row(a,s3,b)");
+    expect(pic(drawTree(row(a, b), ["a", "b", "s3"], WIDE, new Map(), now, 10_000))).toBe("row(a,col(b,s3))");
+  });
+  it("keep a lone pane's place when it becomes a workspace", () => {
+    const landings = new Map([["ws:g/tabs", land((t) => rename(t, "b", "ws:g/tabs"))]]);
+    // b's key is gone and the workspace's has appeared, in the same render
+    expect(pic(drawTree(row(b, a), ["ws:g/tabs", "a"], WIDE, landings, now, 10_000))).toBe("row(ws:g/tabs,a)");
+  });
+  it("wait while the key hasn't appeared, and lapse after a while", () => {
+    const place = (t: LayoutNode | null) => t && insertBeside(t, "a", "left", "s3");
+    expect(pic(drawTree(row(a, b), ["a", "b"], WIDE, new Map([["s3", land(place)]]), now, 10_000))).toBe("row(a,b)");
+    expect(pic(drawTree(row(a, b), ["a", "b", "s3"], WIDE, new Map([["s3", land(place, now - 20_000)]]), now, 10_000))).toBe("row(a,col(b,s3))");
+  });
+});
+
+describe("saving the tree as drawn", () => {
+  const none = new Set<string>();
+  it("saves panes added by the default rule, and panes that left", () => {
+    expect(worthSaving(row(a, b), row(a, col(b, c)), none)).toBe(true);
+    expect(worthSaving(row(a, b), a, none)).toBe(true);
+    expect(worthSaving(null, a, none)).toBe(true);
+    expect(worthSaving(row(a, b), row(a, b), none)).toBe(false);
+  });
+  it("keeps the places of panes awaiting a relaunch, which come back under the same keys", () => {
+    expect(worthSaving(row(a, col(b, c)), row(a, b), new Set(["c"]))).toBe(false);
+    // anything else changing saves, and then they come back by the default rule
+    expect(worthSaving(row(a, col(b, c)), row(a, d), new Set(["b", "c"]))).toBe(true);
   });
 });
 

@@ -277,6 +277,38 @@ export function reconcile(tree: LayoutNode | null, keys: string[], grid: Extent)
   return t;
 }
 
+/** Where a pane that's about to appear lands, instead of by the default rule; `at` is when it was set. */
+export interface Landing {
+  at: number;
+  place: (t: LayoutNode | null) => LayoutNode | null;
+}
+
+/**
+ * The tree to draw for `keys`: the saved one, with each pane that isn't in it
+ * yet placed by its landing (one set within `maxAge` of `now`), then
+ * reconciled — so a pane renamed or moved by a change the main process makes
+ * lands where it was meant to, on the render where its key first appears.
+ */
+export function drawTree(saved: LayoutNode | null, keys: string[], grid: Extent, landings: ReadonlyMap<string, Landing>, now: number, maxAge: number): LayoutNode | null {
+  let t = saved;
+  for (const k of keys) {
+    const l = landings.get(k);
+    if (l && now - l.at < maxAge && !hasLeaf(t, k)) t = l.place(t);
+  }
+  return reconcile(t, keys, grid);
+}
+
+/**
+ * Whether the tree as drawn should replace the saved one. Not when all it did
+ * was lose panes awaiting a relaunch: those come back under the same keys, and
+ * find their places still saved.
+ */
+export function worthSaving(saved: LayoutNode | null, drawn: LayoutNode, awaiting: ReadonlySet<string>): boolean {
+  if (sameTree(saved, drawn)) return false;
+  if (!saved || keysOf(drawn).some((k) => !hasLeaf(saved, k))) return true;
+  return !keysOf(saved).every((k) => hasLeaf(drawn, k) || awaiting.has(k));
+}
+
 /** Rows of `cols` panes, in order; a short last row shares the full width. */
 export function evenGrid(keys: string[], cols: number): LayoutNode | null {
   const n = Math.max(1, Math.floor(cols));
@@ -318,16 +350,16 @@ export function arrange(id: string, keys: string[], grid: Extent): LayoutNode | 
   return reconcile(t.build(Array.from({ length: t.slots }, (_, i) => keys[i] ?? null)), keys, grid);
 }
 
-/** The tree's shape: directions and nesting, without keys or sizes. */
-export function shapeOf(tree: LayoutNode | null): string {
-  if (!tree) return "";
-  return tree.kind === "leaf" ? "L" : `${tree.dir}(${tree.children.map(shapeOf).join(",")})`;
-}
-
-/** The template whose full shape the tree has, if any. */
+/**
+ * The template the panes on screen look like, if any: panes in the same grid
+ * cells, whatever the tree's nesting (two columns of two and two rows of two
+ * are both quadrants) or the sizes they've been dragged to — as long as the
+ * edges still line up the same way.
+ */
 export function templateOf(tree: LayoutNode | null): string | null {
-  const s = shapeOf(tree);
-  return TEMPLATES.find((t) => shapeOf(templateTree(t)) === s)?.id ?? null;
+  const look = (t: LayoutNode | null) => Object.values(toGrid(t).areas).sort().join(" ");
+  const mine = look(tree);
+  return TEMPLATES.find((t) => look(templateTree(t)) === mine)?.id ?? null;
 }
 
 // ---- rendering --------------------------------------------------------------------

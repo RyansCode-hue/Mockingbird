@@ -18,6 +18,7 @@ import {
   arrange,
   asTree,
   canResize,
+  drawTree,
   dropRegion,
   equalize,
   evenGrid,
@@ -39,8 +40,10 @@ import {
   templateOf,
   templateTree,
   toGrid,
+  worthSaving,
   type DragSource,
   type Extent,
+  type Landing,
   type LayoutNode,
   type LegacyLayout,
   type Side as EdgeSide,
@@ -376,10 +379,12 @@ function App() {
 
   /** Remove a sub-group without touching its sessions — they move up into the group. */
   const dissolveSub = async (top: string, list: SessionInfo[]) => {
-    // the first of its tabs on screen takes the workspace pane's place
+    // the first of its tabs on screen takes the workspace pane's place; it moves
+    // last, so the pane is gone by the time it lands
     const first = list.find((s) => shown.includes(s.id));
     if (first) expectPane(first.id, (t) => rename(t, cellKeyOfSession(first), first.id));
-    const results = await Promise.all(list.map((s) => window.mb.setGroup(s.id, top)));
+    const order = first ? [...list.filter((s) => s !== first), first] : list;
+    const results = await Promise.all(order.map((s) => window.mb.setGroup(s.id, top)));
     const errors = results.filter(isErr);
     if (errors.length) alert(`Couldn't move ${errors.length} of the workspace's sessions into the group: ${errors.map((e) => e.error).join("; ")}`);
     refresh();
@@ -692,7 +697,8 @@ function App() {
   const gridRef = useRef<HTMLDivElement>(null);
   // the grid's size, read when panes are added (the default rule splits along the longer side)
   const gridExtent = useRef<Extent>({ w: window.innerWidth, h: window.innerHeight });
-  const hasGrid = gridSessions.length > 0;
+  // the grid element comes and goes with the Sessions tab and with having panes at all
+  const hasGrid = tab === "sessions" && gridSessions.length > 0;
   useEffect(() => {
     const el = gridRef.current;
     if (!el) return;
@@ -713,38 +719,26 @@ function App() {
    * change returns. So the place is set before the call, and applied on the
    * render where the key first appears.
    */
-  const expected = useRef(new Map<string, { at: number; place: (t: LayoutNode | null) => LayoutNode | null }>());
-  const expectPane = (key: string, place: (t: LayoutNode | null) => LayoutNode | null) => expected.current.set(key, { at: Date.now(), place });
+  const expected = useRef(new Map<string, Landing>());
+  const expectPane = (key: string, place: Landing["place"]) => expected.current.set(key, { at: Date.now(), place });
 
   const tree = useMemo(() => {
     if (!layoutKeys.length) return null;
-    let base = asTree(trees[seatKey]) ?? legacyTree(legacyLayout, seatKey, layoutKeys, gridExtent.current);
-    const now = Date.now();
-    for (const k of layoutKeys) {
-      const x = expected.current.get(k);
-      if (x && now - x.at < EXPECT_MS && !hasLeaf(base, k)) base = x.place(base);
-    }
-    return reconcile(base, layoutKeys, gridExtent.current);
+    const saved = asTree(trees[seatKey]) ?? legacyTree(legacyLayout, seatKey, layoutKeys, gridExtent.current);
+    return drawTree(saved, layoutKeys, gridExtent.current, expected.current, Date.now(), EXPECT_MS);
   }, [trees, seatKey, layoutKeys, legacyLayout]);
 
-  // The tree is saved as drawn, so panes added by the default rule keep their
-  // places. A tree that only lost panes awaiting a relaunch (the same ids come
-  // back) isn't saved, so they return to where they were.
+  // the tree is saved as drawn, so panes added by the default rule keep their places
   useEffect(() => {
     if (!tree) return;
     for (const k of keysOf(tree)) expected.current.delete(k);
+    // shown but not running: ids a relaunch brings back (by session, or by workspace)
     const awaiting = new Set(
       shown
         .filter((id) => !sessions.some((s) => s.id === id))
         .flatMap((id) => [id, cellKeyFor(id, resumable.find((r) => r.id === id)?.taskGroup)])
     );
-    setTrees((p) => {
-      const saved = asTree(p[seatKey]);
-      if (sameTree(saved, tree)) return p;
-      const added = keysOf(tree).some((k) => !hasLeaf(saved, k));
-      if (saved && !added && keysOf(saved).every((k) => hasLeaf(tree, k) || awaiting.has(k))) return p;
-      return { ...p, [seatKey]: tree };
-    });
+    setTrees((p) => (worthSaving(asTree(p[seatKey]), tree, awaiting) ? { ...p, [seatKey]: tree } : p));
   }, [tree, seatKey]);
 
   /** Change the active group's layout, starting from the tree as drawn. */
