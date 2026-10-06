@@ -187,6 +187,7 @@ const fontSizeFor = (density: PaneDensity) => (density === "max" ? 11.5 : 11);
 export interface PaneResize {
   x?: (e: React.PointerEvent) => void; // right edge
   y?: (e: React.PointerEvent) => void; // bottom edge
+  xy?: (e: React.PointerEvent) => void; // the corner, when the pane has both edges
   reset?: () => void; // double-click a handle → even the grid back out
 }
 
@@ -211,6 +212,7 @@ export function TerminalPane({
   zoomed,
   density,
   paneIndex,
+  area,
   onFocus,
   onClose,
   onOpenFiles,
@@ -220,8 +222,6 @@ export function TerminalPane({
   meter,
   onZoom,
   onAddTab,
-  onReorder,
-  drop,
   onResume,
   onCleanup,
   closeTitle,
@@ -244,6 +244,8 @@ export function TerminalPane({
   zoomed: boolean;
   density: PaneDensity;
   paneIndex: number;
+  /** Its place in the grid ("row-start/col-start/row-end/col-end"). */
+  area?: string;
   onFocus: () => void;
   onClose: () => void;
   /** Show this session's folder in the explorer dock. */
@@ -257,9 +259,6 @@ export function TerminalPane({
   onOpenRun?: () => void;
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
   onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
-  onReorder?: (srcId: string, targetId: string) => void;
-  /** Drag-and-drop onto this pane (the grid decides what a drop means); without it, a drop reorders. */
-  drop?: { over: (e: React.DragEvent) => void; drop: (e: React.DragEvent) => void; cue?: string };
   onResume: () => void;
   onCleanup: () => void;
   closeTitle?: string;
@@ -270,7 +269,7 @@ export function TerminalPane({
   onPin?: () => void;
   /** Shown on a pinned pane visiting from another group: which group it belongs to. */
   pinNote?: string;
-  /** A session dropped on the header joins this pane as a tab (a drop on the body moves panes). */
+  /** A session dropped on the header joins this pane as a tab (the grid handles drops on the body). */
   tabDrop?: { over: (e: React.DragEvent) => void; drop: (e: React.DragEvent) => void; cue?: string };
   /** Continue this session's task in the other agent. */
   onHandoff?: () => void;
@@ -641,21 +640,14 @@ export function TerminalPane({
         dead ? "st-dead" : "",
         assistant ? "kind-assistant" : "",
       ].join(" ")}
+      style={area ? { gridArea: area } : undefined}
       onMouseDown={onFocus}
-      data-drop={drop?.cue}
-      onDragOver={(e) => (drop ? drop.over(e) : e.preventDefault())}
-      onDrop={(e) => {
-        e.preventDefault();
-        if (drop) return drop.drop(e);
-        const src = e.dataTransfer.getData("text/mb-session");
-        if (src && src !== session.id) onReorder?.(src, session.id);
-      }}
     >
       <div
         className="pane-header"
         draggable={editTitle === null}
         onDragStart={(e) => beginDrag(e, "text/mb-session", session.id, `Moving ${session.ticketTitle ?? session.title}`, "pane")}
-        title="drag onto another pane's header to make it a tab there, or onto its body to move it · double-click the name to rename"
+        title="drag onto another pane's edge to put it beside that pane, onto its middle to swap, or onto its header to make it a tab there · double-click the name to rename"
         data-drop={tabDrop?.cue}
         onDragOver={(e) => {
           if (!tabDrop || !dragging("text/mb-session")) return;
@@ -1041,10 +1033,7 @@ export function TerminalPane({
         <div
           className="rz rz-se"
           title="drag to resize · double-click to even out"
-          onPointerDown={(e) => {
-            resize.x?.(e);
-            resize.y?.(e);
-          }}
+          onPointerDown={(e) => (resize.xy ?? resize.x ?? resize.y)?.(e)}
           onDoubleClick={resize.reset}
         />
       )}

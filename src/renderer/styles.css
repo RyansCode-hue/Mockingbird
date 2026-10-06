@@ -281,7 +281,7 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
   font: 600 11px var(--ui); color: var(--text-1);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1;
 }
-.grid { display: grid; flex: 1; min-height: 0; gap: 8px; padding: 8px; }
+.grid { position: relative; display: grid; flex: 1; min-height: 0; gap: 8px; padding: 8px; }
 .grid.slide-in { animation: gridslide .24s ease-out; }
 @keyframes gridslide {
   from { transform: translateX(28px); opacity: .2; }
@@ -298,7 +298,7 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 .pane.focused { border-color: var(--line-focus); }
 
 /* window-style resize: a pane's own right edge (x), bottom edge (y), corner (both) —
-   the grid tracks adjust so neighboring panes absorb the change */
+   the boundary there moves and the panes on either side trade size */
 .rz { position: absolute; z-index: 7; }
 .rz-e { top: 0; right: 0; width: 5px; height: 100%; cursor: ew-resize; }
 .rz-s { left: 0; bottom: 0; height: 5px; width: 100%; cursor: ns-resize; }
@@ -407,10 +407,6 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .pane.kind-assistant { border-color: rgba(79, 179, 165, .28); }
 .pane.kind-assistant .pane-header { background: var(--bg-assist); }
 
-
-/* a pane spanning leftover columns in an incomplete last row */
-.spanwrap { display: flex; min-width: 0; min-height: 0; }
-.spanwrap > * { flex: 1; min-width: 0; }
 
 /* workspace pane (cmux-style): one grid cell, session tabs on top */
 .ws-pane {
@@ -843,7 +839,6 @@ input[type=checkbox] { accent-color: var(--teal); }
   background: none; color: var(--text-2); font: 400 11px var(--mono); cursor: pointer;
 }
 .lay-auto:hover { color: var(--text-1); border-color: var(--line-btn-hover); }
-.lay-auto.on { border-color: var(--amber); color: var(--text-1); }
 .lay-note { margin-top: 8px; font: 400 10px var(--mono); color: var(--text-3); line-height: 1.5; }
 
 /* transient confirmation after copy-on-select */
@@ -1323,8 +1318,8 @@ button.link.danger { color: var(--red); }
 .collab-inspector section > button.outline, .collab-inspector section > button.primary { align-self: flex-start; }
 /* drag-and-drop cues (drag.tsx): where a drop lands, and what it will do */
 [data-drop="into"] { outline: 2px solid var(--amber); outline-offset: -2px; background-color: var(--fill-waiting) !important; border-radius: 6px; }
-.pane[data-drop="before"], .bcol[data-drop="before"] { box-shadow: inset 3px 0 0 var(--amber); }
-.pane[data-drop="after"], .bcol[data-drop="after"] { box-shadow: inset -3px 0 0 var(--amber); }
+.bcol[data-drop="before"] { box-shadow: inset 3px 0 0 var(--amber); }
+.bcol[data-drop="after"] { box-shadow: inset -3px 0 0 var(--amber); }
 .ins-card[data-drop="before"], .sess-item[data-drop="before"] { box-shadow: inset 0 2px 0 var(--amber); }
 .ins-card[data-drop="after"], .sess-item[data-drop="after"] { box-shadow: inset 0 -2px 0 var(--amber); }
 .drag-label { position: fixed; z-index: 200; pointer-events: none; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 3px 8px; border-radius: 6px; background: var(--bg-pane-header); border: 1px solid var(--line-strong2); box-shadow: 0 6px 18px rgba(0,0,0,.35); font: 500 11px var(--ui); color: var(--text-3); }
@@ -1651,20 +1646,32 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .sess-item.pinned .pin { display: inline-block; opacity: 1; color: var(--teal); }
 /* a session dropped on a pane's header or a workspace's tab strip becomes a tab there */
 .pane-header[data-drop="into"], .ws-tabs[data-drop="into"] { border-radius: 6px 6px 0 0; }
-/* empty snap-layout zones: open a session here (Snap Assist) */
-.zone-slot {
-  display: flex; align-items: center; justify-content: center; min-width: 0; min-height: 0;
-  border: 1px dashed var(--line-strong); border-radius: 8px; background: transparent;
+/* drag preview (GridPreview.tsx): while a session is dragged over the grid, the
+   layout the drop would leave, framed over the dimmed panes; frames morph as the
+   pointer moves between drop regions. The panes themselves don't move until the drop. */
+.grid > .pane, .grid > .ws-pane { transition: opacity .15s ease-out; }
+.grid.previewing > .pane, .grid.previewing > .ws-pane { opacity: .4; }
+.grid-preview {
+  position: absolute; inset: 4px; z-index: 20; pointer-events: none;
+  opacity: 0; transition: opacity .15s ease-out;
 }
-.zone-open { border: none; background: transparent; color: var(--text-3); font: 500 11px var(--ui); padding: 8px 12px; border-radius: 6px; }
-.zone-open:hover { color: var(--text-1); background: var(--fill-subtle); }
-.zone-pick { display: flex; flex-direction: column; gap: 6px; width: min(280px, 90%); max-height: 90%; padding: 10px; background: var(--bg-pane); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
-.zone-pick-h { font: 600 11px var(--ui); color: var(--text-2); }
-.zone-pick-list { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; min-height: 0; }
-.zone-pick-row { display: flex; align-items: center; gap: 6px; text-align: left; border: none; background: transparent; padding: 5px 6px; border-radius: 4px; font: 400 11.5px var(--ui); color: var(--text-1); }
-.zone-pick-row:hover { background: var(--fill-selected); }
-.zone-pick-row .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zone-pick .row { display: flex; justify-content: flex-end; gap: 6px; }
+.grid-preview.on { opacity: 1; animation: gp-fade .15s ease-out; }
+@keyframes gp-fade { from { opacity: 0; } }
+.gp-frame { position: absolute; transition: left .2s ease-out, top .2s ease-out, width .2s ease-out, height .2s ease-out; animation: gp-in .2s ease-out; }
+@keyframes gp-in { from { opacity: 0; transform: scale(.94); } }
+.gp-box {
+  position: absolute; inset: 4px; display: flex; align-items: center; justify-content: center; overflow: hidden;
+  border: 1px solid var(--line-strong2); border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-pane-header) 90%, transparent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .18);
+}
+.gp-title { max-width: 86%; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11.5px var(--ui); color: var(--text-3); }
+/* the dragged pane, in the drop cues' color */
+.gp-frame.hot .gp-box { border: 2px solid var(--amber); background: color-mix(in srgb, var(--bg-pane-header) 82%, var(--amber)); }
+.gp-frame.hot .gp-title { color: var(--text-1); }
+@media (prefers-reduced-motion: reduce) {
+  .grid > .pane, .grid > .ws-pane, .grid-preview, .grid-preview.on, .gp-frame { transition: none; animation: none; }
+}
 /* ---- ticket pipeline (TicketPipeline.tsx) ---- */
 .pl { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 .pl-rail { display: flex; gap: 2px; overflow-x: auto; padding-bottom: 2px; }

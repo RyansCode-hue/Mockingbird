@@ -38,7 +38,7 @@ const WIDE = { w: 1600, h: 900 };
 const TALL = { w: 700, h: 1100 };
 const row = (...c: LayoutNode[]) => split("row", c)!;
 const col = (...c: LayoutNode[]) => split("col", c)!;
-const [a, b, c, d, e] = ["a", "b", "c", "d", "e"].map(leaf);
+const [a, b, c, d] = ["a", "b", "c", "d"].map(leaf);
 
 /** A compact picture of a tree: row(a,col(b,c)) with sizes in percent where uneven. */
 const pic = (t: LayoutNode | null): string => {

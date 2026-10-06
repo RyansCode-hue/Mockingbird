@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, type PaneDensity } from "./TerminalPane";
+import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, type PaneDensity, type PaneResize } from "./TerminalPane";
 import { EditorDock, ExplorerTree } from "./FilePanel";
 import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
@@ -11,10 +11,43 @@ import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
 import { CollaborateView } from "./Collaborate";
 import { UpdatePanel } from "./UpdatePanel";
-import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, samePlace, sideOf, useDrag, type Side } from "./drag";
-import { activeGroupOf, dropInZone, layoutToRemember, overflowArea, parseZone, placeInZones, pruneToGroup, seating, switchTo } from "./gridModel";
+import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, useDrag } from "./drag";
+import { activeGroupOf, layoutToRemember, pruneToGroup, switchTo } from "./gridModel";
+import {
+  TEMPLATES,
+  arrange,
+  asTree,
+  canResize,
+  dropRegion,
+  equalize,
+  evenGrid,
+  hasLeaf,
+  insertBeside,
+  keysOf,
+  leafAt,
+  legacyTree,
+  maxAcross,
+  planDrop,
+  readingOrder,
+  reconcile,
+  rects,
+  remove,
+  rename,
+  renameWorkspaces,
+  resizePane,
+  sameTree,
+  templateOf,
+  templateTree,
+  toGrid,
+  type DragSource,
+  type Extent,
+  type LayoutNode,
+  type LegacyLayout,
+  type Side as EdgeSide,
+} from "./layoutTree";
+import { GridPreview } from "./GridPreview";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
-import { cellKeyFor, frontOf, sessionHolding, titleOf, paneShortcuts, remapGroupKeys, remapSeats, worktreeGone, type GridCell } from "./appModel";
+import { cellKeyFor, cellKeyOf, frontOf, inReadingOrder, sessionHolding, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon } from "./Icons";
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
@@ -51,106 +84,39 @@ const SIDE_VIEWS: { id: SideView; label: string; keys?: string; Icon: () => Reac
   { id: "search", label: "Search", keys: "⇧⌘F", Icon: SearchIcon },
   { id: "run", label: "Run and Debug", keys: "⇧⌘D", Icon: RunDebugIcon },
 ];
-type ColsPref = number | "auto";
 
-/**
- * Snap-layout templates, in the spirit of Windows' snap layouts: pick an
- * arrangement rather than a column count. `zones` are CSS grid areas
- * (row-start / col-start / row-end / col-end). Panes fill the zones in order
- * unless dragged into one (gridModel.placeInZones); a zone with no pane offers
- * to open a session there, and panes beyond the zones flow into rows below.
- */
-interface GridLayout {
-  id: string;
-  label: string;
-  cols: number;
-  rows: number;
-  zones: string[];
-}
-const LAYOUTS: GridLayout[] = [
-  { id: "cols-2", label: "Two columns", cols: 2, rows: 1, zones: ["1/1/2/2", "1/2/2/3"] },
-  { id: "rows-2", label: "Two rows", cols: 1, rows: 2, zones: ["1/1/2/2", "2/1/3/2"] },
-  { id: "cols-3", label: "Three columns", cols: 3, rows: 1, zones: ["1/1/2/2", "1/2/2/3", "1/3/2/4"] },
-  { id: "big-left", label: "Big left, two stacked", cols: 2, rows: 2, zones: ["1/1/3/2", "1/2/2/3", "2/2/3/3"] },
-  { id: "big-top", label: "Big top, two below", cols: 2, rows: 2, zones: ["1/1/2/3", "2/1/3/2", "2/2/3/3"] },
-  { id: "quad", label: "Four quadrants", cols: 2, rows: 2, zones: ["1/1/2/2", "1/2/2/3", "2/1/3/2", "2/2/3/3"] },
-];
-
-/** Miniature of a layout's zones, drawn the way the snap-layout flyout shows them. */
-function LayoutThumb({ layout }: { layout: GridLayout }) {
+/** Miniature of a snap layout's shape, drawn the way the snap-layout flyout shows them. */
+function LayoutThumb({ tree }: { tree: LayoutNode }) {
+  const g = toGrid(tree);
   return (
     <span
       className="lay-thumb"
       style={{
-        gridTemplateColumns: `repeat(${layout.cols}, 1fr)`,
-        gridTemplateRows: `repeat(${layout.rows}, 1fr)`,
+        gridTemplateColumns: g.cols.map((f) => `${f}fr`).join(" "),
+        gridTemplateRows: g.rows.map((f) => `${f}fr`).join(" "),
       }}
     >
-      {layout.zones.map((z, i) => (
-        <i key={i} style={{ gridArea: z }} />
+      {Object.values(g.areas).map((area, i) => (
+        <i key={i} style={{ gridArea: area }} />
       ))}
     </span>
   );
 }
 
-/**
- * An empty snap-layout zone, like Windows' Snap Assist: open one of the group's
- * minimized sessions here, start a new one, or drop a pane or session in.
- */
-function ZoneSlot({
-  area,
-  cue: dropCue,
-  picking,
-  onPick,
-  minimized,
-  onOpen,
-  onNew,
-  over,
-  drop,
-}: {
-  area: string;
-  cue?: string;
-  picking: boolean;
-  onPick: (open: boolean) => void;
-  minimized: SessionInfo[];
-  onOpen: (s: SessionInfo) => void;
-  onNew: () => void;
-  over: (e: React.DragEvent) => void;
-  drop: (e: React.DragEvent) => void;
-}) {
-  return (
-    <div className="zone-slot" style={{ gridArea: area }} data-drop={dropCue} onDragOver={over} onDrop={drop}>
-      {picking ? (
-        <div className="zone-pick" onKeyDown={(e) => e.key === "Escape" && onPick(false)}>
-          <div className="zone-pick-h">Open in this zone</div>
-          <div className="zone-pick-list">
-            {minimized.length === 0 && <div className="fp-note">Every session in this group is already open.</div>}
-            {minimized.map((s) => (
-              <button key={s.id} className="zone-pick-row" onClick={() => onOpen(s)}>
-                <span className={`dot sm ${s.status}`} />
-                <span className="t">{titleOf(s)}</span>
-              </button>
-            ))}
-          </div>
-          <div className="row">
-            <button className="outline" onClick={() => onPick(false)}>Cancel</button>
-            <button className="primary" autoFocus onClick={onNew}>New session…</button>
-          </div>
-        </div>
-      ) : (
-        <button className="zone-open" onClick={() => onPick(true)} title="Open one of this group's minimized sessions here, or start a new one">
-          + Open a session here
-        </button>
-      )}
-    </div>
-  );
-}
+/** How long a pane the main process is about to add or rekey waits for its place (see `expected` in App). */
+const EXPECT_MS = 10_000;
+const SIDE_WORDS: Record<EdgeSide, string> = { left: "to the left of", right: "to the right of", top: "above", bottom: "below" };
+const asRecord = (v: unknown): Record<string, any> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, any>) : {});
 
-function gridCols(n: number): number {
-  if (n <= 1) return 1;
-  if (n <= 4) return 2;
-  if (n <= 9) return 3;
-  return 4;
+/** The layout prefs from before split trees, read once at startup for groups that have no tree yet. */
+function readLegacyLayout(): LegacyLayout {
+  const cols = readPref<unknown>("mb.cols", "auto");
+  return {
+    templates: asRecord(readPref("mb.layout", {})),
+    seats: asRecord(readPref("mb.zones", {})),
+    cols: typeof cols === "number" && cols >= 1 ? cols : "auto",
+    groups: Object.keys(asRecord(readPref("mb.groupLayouts", {}))),
+  };
 }
 
 function App() {
@@ -164,10 +130,9 @@ function App() {
   const pinnedSet = useMemo(() => new Set(pinned), [pinned]);
   // the group the grid was last switched to (see activeGroupOf)
   const [lastGroup, setLastGroup] = usePersisted<string | null>("mb.activeGroup", null);
-  // which pane sits in which snap-layout zone, per group (cell key per zone)
-  const [zoneSeats, setZoneSeats] = usePersisted<Record<string, (string | null)[]>>("mb.zones", {});
-  // an empty zone's "open a session here" picker, and a new session headed for a zone
-  const [slotPick, setSlotPick] = useState<number | null>(null);
+  // where each pane sits, per group: a split tree (layoutTree.ts) whose leaves are cell keys
+  const [trees, setTrees] = usePersisted<Record<string, LayoutNode>>("mb.trees", {});
+  const [legacyLayout] = useState(readLegacyLayout);
   // the ticket pipeline opened from the grid (group bar, palette)
   const pipelines = usePipelines();
   const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string } | null>(null);
@@ -226,7 +191,6 @@ function App() {
     window.mb.overlapsGet().then(unlessError("files changed in two worktrees", (o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {})));
     return window.mb.onOverlapsChanged((o: Record<string, FileOverlap[]>) => setOverlaps(o ?? {}));
   }, []);
-  const [pendingZone, setPendingZone] = useState<{ group: string; zone: number } | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [newLaunch, setNewLaunch] = useState<LaunchKind>("claude");
   // seeds New Session's Group field — set to "top/sub" by a workspace's + button
@@ -262,10 +226,6 @@ function App() {
   // a session title being edited inline in its sidebar row
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [sideCollapsed, setSideCollapsed] = usePersisted<boolean>("mb.side", false);
-  const [colsPref, setColsPref] = usePersisted<ColsPref>("mb.cols", "auto");
-  // chosen snap layout per group ("" = auto). Kept per group because a ticket
-  // with two panes and one with five want different arrangements.
-  const [layouts, setLayouts] = usePersisted<Record<string, string>>("mb.layout", {});
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(readPref<string[]>("mb.collapsed", [])));
@@ -300,12 +260,14 @@ function App() {
         : groupKey(topOfKey(renameDlg.key), v);
     if (!next) return;
     if (renameDlg.key === "ungrouped") {
+      expectRename(renameDlg.key, next);
       // "ungrouped" is the absence of a group, not a stored one: naming it groups its sessions
       for (const m of groupUngrouped(workSessions, next)) {
         if (failed("Couldn't name the group", await window.mb.setGroup(m.id, m.group))) return refresh();
       }
       await migrateGroupKeys(renameDlg.key, next);
     } else if (next !== renameDlg.key) {
+      expectRename(renameDlg.key, next);
       if (failed("Couldn't rename the group", await window.mb.renameGroup(renameDlg.key, next))) return;
       await migrateGroupKeys(renameDlg.key, next);
     }
@@ -402,10 +364,6 @@ function App() {
     if (v === "search") setSearchFocus((n) => n + 1);
   };
 
-  /** Put a session (dragged from the grid or the sidebar) beside a pane in the grid. */
-  const reorder = (srcId: string, targetId: string, side: Side = "before") =>
-    setShown((p) => placeBeside(p.includes(srcId) ? p : [...p, srcId], srcId, targetId, side));
-
   // inline editing is session titles only — group and workspace names are
   // renamed through RenameDialog (a second mounted input stole its focus)
   const commitEdit = async () => {
@@ -418,6 +376,9 @@ function App() {
 
   /** Remove a sub-group without touching its sessions — they move up into the group. */
   const dissolveSub = async (top: string, list: SessionInfo[]) => {
+    // the first of its tabs on screen takes the workspace pane's place
+    const first = list.find((s) => shown.includes(s.id));
+    if (first) expectPane(first.id, (t) => rename(t, cellKeyOfSession(first), first.id));
     const results = await Promise.all(list.map((s) => window.mb.setGroup(s.id, top)));
     const errors = results.filter(isErr);
     if (errors.length) alert(`Couldn't move ${errors.length} of the workspace's sessions into the group: ${errors.map((e) => e.error).join("; ")}`);
@@ -515,8 +476,7 @@ function App() {
     setGroupLayouts(remap);
     setWsTabs(remap);
     setWsOpen(remap);
-    setLayouts(remap);
-    setZoneSeats((prev) => remapSeats(prev, oldKey, newKey));
+    setTrees((prev) => remapTrees(prev, oldKey, newKey));
     setLastGroup((g) => (g === oldKey ? topOfKey(newKey) : g));
     setCollapsed((prev) => {
       if (!prev.has(oldKey)) return prev;
@@ -599,8 +559,9 @@ function App() {
    * a session moved into the group on screen opens there (as the front tab of
    * its workspace); one moved to another group leaves the grid and is open
    * when that group is next shown — unless it's pinned, which keeps it here.
+   * Returns whether it moved.
    */
-  const moveToGroup = async (id: string, group: string | null) => {
+  const moveToGroup = async (id: string, group: string | null): Promise<boolean> => {
     const top = topOfKey(group ?? "ungrouped");
     const stays = !activeGroup || top === activeGroup || pinnedSet.has(id);
     if (!stays) {
@@ -610,12 +571,13 @@ function App() {
     const before = shown;
     if (failed("Couldn't move the session", await window.mb.setGroup(id, group))) {
       setShown(before);
-      return;
+      return false;
     }
     if (stays) {
       setShown((p) => (p.includes(id) ? p : [...p, id]));
       if (group && splitGroupKey(group).sub) setWsTabs((p) => ({ ...p, [group]: id }));
     }
+    return true;
   };
 
   const hide = (id: string) => {
@@ -687,21 +649,19 @@ function App() {
       : workSessions;
   }, [workSessions, filter]);
 
-  const gridSessions = useMemo(
-    () =>
-      zoomed
-        ? sessions.filter((s) => s.id === zoomed)
-        : shown.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
-    [zoomed, sessions, shown]
+  // the sessions the layout holds: everything shown, even while one is fullscreen
+  const layoutSessions = useMemo(
+    () => shown.map((id) => sessions.find((s) => s.id === id)).filter((s): s is SessionInfo => !!s),
+    [sessions, shown]
   );
+  const gridSessions = useMemo(() => (zoomed ? sessions.filter((s) => s.id === zoomed) : layoutSessions), [zoomed, sessions, layoutSessions]);
 
   // grid cells: plain sessions render individually; a sub-group renders as ONE
   // workspace pane with tabs (cmux-style)
-  const cells: GridCell[] = useMemo(() => {
-    if (zoomed) return gridSessions.map((s) => ({ kind: "session" as const, s }));
+  const layoutCells: GridCell[] = useMemo(() => {
     const out: GridCell[] = [];
     const seen = new Set<string>();
-    for (const s of gridSessions) {
+    for (const s of layoutSessions) {
       const sub = subOf(s);
       const key = `${topOf(s)}/${sub}`;
       if (!sub) out.push({ kind: "session", s });
@@ -718,85 +678,147 @@ function App() {
       }
     }
     return out;
-  }, [gridSessions, workSessions, zoomed, shown]);
-  /** How zones and drops name a cell: its session, or "ws:<workspace key>". */
-  const cellKey = (c: GridCell) => (c.kind === "session" ? c.s.id : `ws:${c.key}`);
+  }, [layoutSessions, workSessions, shown]);
+  // fullscreen shows the one session on its own; leaving it returns to the layout as it was
+  const cells: GridCell[] = useMemo(
+    () => (zoomed ? gridSessions.map((s) => ({ kind: "session" as const, s })) : layoutCells),
+    [zoomed, gridSessions, layoutCells]
+  );
   const cellKeyOfSession = (s: SessionInfo) => cellKeyFor(s.id, s.taskGroup);
 
-  // without a template the grid grows with the cell count — equal cells, no filler tiles
+  // ---- the layout: a split tree per group (layoutTree.ts) says where each pane sits ----
   const seatKey = activeGroup ?? "";
-  const curLayoutId = layouts[seatKey] ?? "";
-  const layout = useMemo(() => (zoomed ? null : LAYOUTS.find((x) => x.id === curLayoutId) ?? null), [curLayoutId, zoomed]);
-  const cellKeys = useMemo(() => cells.map(cellKey), [cells]);
-  const shortcuts = useMemo(() => paneShortcuts(cells, wsTabs), [cells, wsTabs]);
-  const zoning = useMemo(
-    () => (layout ? placeInZones(cellKeys, layout.zones.length, zoneSeats[seatKey] ?? []) : null),
-    [layout, cellKeys, zoneSeats, seatKey]
-  );
-  /** Seat a cell in a zone (a swap when it comes from another zone). */
-  const seatInZone = (key: string, zone: number) => {
-    if (!layout || !zoning) return;
-    setZoneSeats((p) => ({ ...p, [seatKey]: dropInZone(seating(cellKeys, zoning, layout.zones.length), key, zone) }));
+  const layoutKeys = useMemo(() => layoutCells.map(cellKeyOf), [layoutCells]);
+  const gridRef = useRef<HTMLDivElement>(null);
+  // the grid's size, read when panes are added (the default rule splits along the longer side)
+  const gridExtent = useRef<Extent>({ w: window.innerWidth, h: window.innerHeight });
+  const hasGrid = gridSessions.length > 0;
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const measure = () => {
+      if (el.clientWidth && el.clientHeight) gridExtent.current = { w: el.clientWidth, h: el.clientHeight };
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasGrid]);
+
+  /**
+   * Panes about to appear, and where each lands instead of by the default rule.
+   * A session changing group changes its cell's key (joining a workspace, or
+   * leaving one for a pane of its own), and the main process sends the new
+   * session list — which redraws the grid — before the call that made the
+   * change returns. So the place is set before the call, and applied on the
+   * render where the key first appears.
+   */
+  const expected = useRef(new Map<string, { at: number; place: (t: LayoutNode | null) => LayoutNode | null }>());
+  const expectPane = (key: string, place: (t: LayoutNode | null) => LayoutNode | null) => expected.current.set(key, { at: Date.now(), place });
+
+  const tree = useMemo(() => {
+    if (!layoutKeys.length) return null;
+    let base = asTree(trees[seatKey]) ?? legacyTree(legacyLayout, seatKey, layoutKeys, gridExtent.current);
+    const now = Date.now();
+    for (const k of layoutKeys) {
+      const x = expected.current.get(k);
+      if (x && now - x.at < EXPECT_MS && !hasLeaf(base, k)) base = x.place(base);
+    }
+    return reconcile(base, layoutKeys, gridExtent.current);
+  }, [trees, seatKey, layoutKeys, legacyLayout]);
+
+  // The tree is saved as drawn, so panes added by the default rule keep their
+  // places. A tree that only lost panes awaiting a relaunch (the same ids come
+  // back) isn't saved, so they return to where they were.
+  useEffect(() => {
+    if (!tree) return;
+    for (const k of keysOf(tree)) expected.current.delete(k);
+    const awaiting = new Set(
+      shown
+        .filter((id) => !sessions.some((s) => s.id === id))
+        .flatMap((id) => [id, cellKeyFor(id, resumable.find((r) => r.id === id)?.taskGroup)])
+    );
+    setTrees((p) => {
+      const saved = asTree(p[seatKey]);
+      if (sameTree(saved, tree)) return p;
+      const added = keysOf(tree).some((k) => !hasLeaf(saved, k));
+      if (saved && !added && keysOf(saved).every((k) => hasLeaf(tree, k) || awaiting.has(k))) return p;
+      return { ...p, [seatKey]: tree };
+    });
+  }, [tree, seatKey]);
+
+  /** Change the active group's layout, starting from the tree as drawn. */
+  const commitTree = (fn: (t: LayoutNode) => LayoutNode | null) => {
+    if (!tree) return;
+    const next = fn(tree);
+    if (next && !sameTree(next, tree)) setTrees((p) => ({ ...p, [seatKey]: next }));
   };
-  const cols = zoomed
-    ? 1
-    : layout
-      ? layout.cols
-      : colsPref === "auto"
-        ? gridCols(Math.max(1, cells.length))
-        : colsPref;
-  const rows = layout
-    ? layout.rows + Math.ceil((zoning?.overflow.length ?? 0) / layout.cols)
-    : Math.max(1, Math.ceil(Math.max(1, cells.length) / cols));
-  // pane density follows column count (design 1b); a fullscreened pane is instrumented
-  const density: PaneDensity = zoomed ? "max" : cols >= 4 ? "min" : cols === 3 ? "std" : "max";
+  /** Arrange the panes, in the order they're read, into a snap layout or N even columns. */
+  const arrangeAs = (id: string) => commitTree((t) => arrange(id, readingOrder(t), gridExtent.current));
+  const arrangeInCols = (n: number) => commitTree((t) => evenGrid(readingOrder(t), n));
+  const refit = () => commitTree((t) => reconcile(null, readingOrder(t), gridExtent.current));
+
+  /**
+   * A group rename is about to change keys: the group's tree is copied under
+   * its new name, and each workspace pane under it keeps its place when its
+   * key changes (see `expected`). migrateGroupKeys tidies up once it's done.
+   */
+  const expectRename = (oldKey: string, newKey: string) => {
+    for (const k of keysOf(tree)) {
+      const nk = keysOf(renameWorkspaces({ kind: "leaf", key: k }, oldKey, newKey))[0];
+      if (nk !== k) expectPane(nk, (t) => rename(t, k, nk));
+    }
+    setTrees((p) => {
+      const from = asTree(p[oldKey]);
+      return from && !splitGroupKey(oldKey).sub ? { ...p, [topOfKey(newKey)]: renameWorkspaces(from, oldKey, newKey) } : p;
+    });
+  };
+
+  // pane numbers (⌘1–9, the badges, the palette's hints) follow the grid top-left first
+  const orderedCells = useMemo(() => (zoomed ? cells : inReadingOrder(cells, tree)), [cells, tree, zoomed]);
+  const shortcuts = useMemo(() => paneShortcuts(orderedCells, wsTabs), [orderedCells, wsTabs]);
+  const layoutGrid = useMemo(() => (zoomed || !tree ? null : toGrid(tree)), [tree, zoomed]);
+  const across = zoomed ? 1 : maxAcross(tree);
+  // pane density follows how many panes sit side by side (design 1b); a fullscreened pane is instrumented
+  const density: PaneDensity = zoomed ? "max" : across >= 4 ? "min" : across === 3 ? "std" : "max";
+
+  /** The grid's content box in client pixels, and the pixels its tracks share (gaps taken out). */
+  const gridBox = () => {
+    const el = gridRef.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const px = (v: string) => parseFloat(v) || 0;
+    const width = r.width - px(cs.paddingLeft) - px(cs.paddingRight);
+    const height = r.height - px(cs.paddingTop) - px(cs.paddingBottom);
+    return {
+      left: r.left + px(cs.paddingLeft),
+      top: r.top + px(cs.paddingTop),
+      width,
+      height,
+      trackW: width - px(cs.columnGap) * Math.max(0, (layoutGrid?.cols.length ?? 1) - 1),
+      trackH: height - px(cs.rowGap) * Math.max(0, (layoutGrid?.rows.length ?? 1) - 1),
+    };
+  };
 
   // ---- window-style pane resizing: grab a pane's own right edge / bottom edge /
-  // corner; the grid tracks adjust so neighbors absorb the change ----
-  const gridRef = useRef<HTMLDivElement>(null);
-  const [colSizes, setColSizes] = useState<number[]>([]);
-  const [rowSizes, setRowSizes] = useState<number[]>([]);
-
-  const loadTracks = (key: string, n: number): number[] => {
-    const v = readPref<number[]>(key, []);
-    return Array.isArray(v) && v.length === n && v.every((x) => typeof x === "number" && x > 0)
-      ? v
-      : Array(n).fill(1);
-  };
-  useEffect(() => setColSizes(loadTracks(`mb.cw.${cols}`, cols)), [cols]);
-  useEffect(() => setRowSizes(loadTracks(`mb.rh.${rows}`, rows)), [rows]);
-  useEffect(() => {
-    if (colSizes.length === cols) writePref(`mb.cw.${cols}`, colSizes);
-  }, [colSizes, cols]);
-  useEffect(() => {
-    if (rowSizes.length === rows) writePref(`mb.rh.${rows}`, rowSizes);
-  }, [rowSizes, rows]);
-
-  /** Dragging pane (index) in `axis` grows/shrinks it against its next neighbor. */
-  const startTrackDrag = (axis: "col" | "row", index: number, e: React.PointerEvent) => {
+  // corner; the boundary there moves and the panes on either side trade size ----
+  const startResize = (key: string, axes: ("x" | "y")[], e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const grid = gridRef.current;
-    const sizes = axis === "col" ? colSizes : rowSizes;
-    const count = axis === "col" ? cols : rows;
-    if (!grid || sizes.length !== count || index >= count - 1) return;
-    const totalPx = (axis === "col" ? grid.clientWidth : grid.clientHeight) - 16 - 8 * (count - 1);
-    const totalFr = sizes.reduce((a, b) => a + b, 0);
-    const pxPerFr = totalPx / totalFr;
-    const start = axis === "col" ? e.clientX : e.clientY;
-    const a0 = sizes[index];
-    const b0 = sizes[index + 1];
-    const minFr = (axis === "col" ? 150 : 90) / pxPerFr; // keep panes usable
-    if (a0 + b0 <= 2 * minFr) return;
+    const box = gridBox();
+    if (!box || !tree) return;
+    const t0 = tree;
+    const group = seatKey;
+    const start = { x: e.clientX, y: e.clientY };
+    const min = { x: 150 / box.trackW, y: 90 / box.trackH }; // keep panes usable
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
-    document.body.classList.add(axis === "col" ? "rz-x" : "rz-y");
-    const setSizes = axis === "col" ? setColSizes : setRowSizes;
+    for (const a of axes) document.body.classList.add(a === "x" ? "rz-x" : "rz-y");
     const onMove = (ev: PointerEvent) => {
-      const d = ((axis === "col" ? ev.clientX : ev.clientY) - start) / pxPerFr;
-      const na = Math.min(Math.max(a0 + d, minFr), a0 + b0 - minFr);
-      const nb = a0 + b0 - na;
-      setSizes((prev) => prev.map((v, i) => (i === index ? na : i === index + 1 ? nb : v)));
+      let t = t0;
+      for (const a of axes) t = resizePane(t, key, a, a === "x" ? (ev.clientX - start.x) / box.trackW : (ev.clientY - start.y) / box.trackH, min);
+      setTrees((p) => ({ ...p, [group]: t }));
     };
     const onUp = () => {
       target.removeEventListener("pointermove", onMove);
@@ -810,10 +832,18 @@ function App() {
     // resize cursor stays stuck and the handle keeps resizing with no button held
     target.addEventListener("pointercancel", onUp);
   };
-
-  const equalizeTracks = () => {
-    setColSizes(Array(cols).fill(1));
-    setRowSizes(Array(rows).fill(1));
+  /** The resize handles a pane gets: only on edges it shares with another pane. */
+  const resizeFor = (key: string): PaneResize | undefined => {
+    if (zoomed || !tree) return undefined;
+    const x = canResize(tree, key, "x");
+    const y = canResize(tree, key, "y");
+    if (!x && !y) return undefined;
+    return {
+      x: x ? (e) => startResize(key, ["x"], e) : undefined,
+      y: y ? (e) => startResize(key, ["y"], e) : undefined,
+      xy: x && y ? (e) => startResize(key, ["x", "y"], e) : undefined,
+      reset: () => commitTree(equalize),
+    };
   };
 
   // sidebar structure: top-level groups, each with sessions bucketed by sub-group
@@ -906,7 +936,7 @@ function App() {
   /** The drop cue for moving a dragged sidebar/pane session into `group` (null = out of any group). */
   const intoGroupTarget = (targetKey: string, group: string | null, name: string) => {
     const src = sessions.find((x) => x.id === dragging("text/mb-session"));
-    if (!src || (src.taskGroup ?? null) === group) return null; // already there
+    if (!src || dragFrom() === "workspace" || (src.taskGroup ?? null) === group) return null; // already there
     return { key: targetKey, outcome: group === null ? `Move ${titleOf(src)} out of its group` : `Move ${titleOf(src)} into ${name}` };
   };
 
@@ -923,7 +953,7 @@ function App() {
    * workspace, or a new workspace holding both when the target is a lone pane —
    * `newKey` when the caller already chose it, else auto-named and offered for
    * renaming. Every way of making a workspace comes through here, so the lone
-   * pane's zone and pin always carry over to the workspace.
+   * pane's place and pin always carry over to the workspace.
    */
   const addAsTab = async (src: SessionInfo, target: SessionInfo, newKey?: string) => {
     if (src.id === target.id) return;
@@ -932,12 +962,12 @@ function App() {
       const top = topOf(target);
       key = newKey ?? `${top}/${nextSubName(top)}`;
       const wsKey = key;
-      if (failed("Couldn't make the workspace", await window.mb.setGroup(target.id, wsKey))) return;
-      // the lone pane's zone becomes the workspace's
-      setZoneSeats((p) => {
-        const g = activeGroup ?? "";
-        return p[g] ? { ...p, [g]: p[g].map((v) => (v === target.id ? `ws:${wsKey}` : v)) } : p;
-      });
+      // the lone pane's place becomes the workspace's
+      expectPane(`ws:${wsKey}`, (t) => rename(t, target.id, `ws:${wsKey}`));
+      if (failed("Couldn't make the workspace", await window.mb.setGroup(target.id, wsKey))) {
+        expected.current.delete(`ws:${wsKey}`);
+        return;
+      }
       if (!newKey) setRenameDlg({ kind: "sub", key: wsKey, initial: splitGroupKey(wsKey).sub ?? "" });
     }
     const wsKey = key;
@@ -948,14 +978,104 @@ function App() {
     setFocused(src.id);
   };
 
+  // ---- dragging sessions onto the grid ----
+
+  /** What the dragged session is to the grid (see DragSource). */
+  const dragSourceOf = (src: SessionInfo): DragSource => {
+    const k = cellKeyOfSession(src);
+    if (!tree || !hasLeaf(tree, k)) return { key: src.id, from: null };
+    const cell = layoutCells.find((c) => cellKeyOf(c) === k);
+    // a lone pane, a workspace dragged by its name, or a workspace's only tab on screen moves as the pane it is
+    const sole = cell?.kind === "workspace" && cell.list.length === 1 && cell.list[0].id === src.id;
+    if (k === src.id || dragFrom() === "workspace" || sole) return { key: k, from: k };
+    // any other tab on screen is dragged out of its workspace
+    return shown.includes(src.id) ? { key: src.id, from: null, tabOf: k } : { key: src.id, from: null };
+  };
+
+  /** A pane's name in drop outcomes and the drag preview: its session's title, or its workspace's name. */
+  const paneName = (key: string): string => {
+    const c = layoutCells.find((x) => cellKeyOf(x) === key);
+    if (c) return c.kind === "session" ? titleOf(c.s) : c.sub;
+    const s = sessions.find((x) => x.id === key);
+    return s ? titleOf(s) : key;
+  };
+
   /** The drop cue for making the dragged session a tab in `target`'s pane, if that would change anything. */
   const tabTarget = (key: string, target: SessionInfo) => {
     const src = sessions.find((x) => x.id === dragging("text/mb-session"));
-    if (!src || src.id === target.id) return null;
+    if (!src || src.id === target.id || dragFrom() === "workspace") return null;
     const ws = subOf(target) ? `${topOf(target)}/${subOf(target)}` : null;
     if (ws && src.taskGroup === ws && shown.includes(src.id)) return null; // already a tab here
-    return { key, outcome: ws ? `Open ${titleOf(src)} as a tab in ${subOf(target)}` : `Open ${titleOf(src)} as a tab with ${titleOf(target)}` };
+    // the layout once it's a tab: a pane of its own on screen closes
+    const from = dragSourceOf(src).from;
+    const after = from ? remove(tree, from) : tree;
+    return {
+      key,
+      outcome: ws ? `Open ${titleOf(src)} as a tab in ${subOf(target)}` : `Open ${titleOf(src)} as a tab with ${titleOf(target)}`,
+      preview: after ? { tree: after, hot: cellKeyOfSession(target) } : undefined,
+    };
   };
+
+  /**
+   * What dropping the dragged session on a pane's body would do, from where
+   * the pointer is in the layout: an edge splits that pane for it, the center
+   * swaps panes or makes it a tab (planDrop). Null where a drop changes nothing.
+   */
+  const gridDropAt = (e: React.DragEvent) => {
+    const src = sessions.find((x) => x.id === dragging("text/mb-session"));
+    const box = gridBox();
+    if (!src || !box || !tree || zoomed) return null;
+    const p = { x: (e.clientX - box.left) / box.width, y: (e.clientY - box.top) / box.height };
+    const target = leafAt(tree, p);
+    if (!target) return null;
+    const source = dragSourceOf(src);
+    const plan = planDrop(tree, source, target, dropRegion(rects(tree)[target], p));
+    if (!plan) return null;
+    if (plan.kind === "tab") {
+      const c = layoutCells.find((x) => cellKeyOf(x) === target);
+      const front = c && frontOf(c, wsTabs);
+      const cue = front && tabTarget(`grid:tab:${target}`, front);
+      return front && cue ? { plan, src, source, front, cue } : null;
+    }
+    const name = dragFrom() === "workspace" ? paneName(source.key) : titleOf(src);
+    const outcome = plan.kind === "swap" ? `Swap ${name} and ${paneName(target)}` : `Put ${name} ${SIDE_WORDS[plan.side]} ${paneName(target)}`;
+    const cue = { key: `grid:${plan.kind}:${target}:${plan.kind === "split" ? plan.side : ""}`, outcome, preview: { tree: plan.tree, hot: plan.key } };
+    return { plan, src, source, front: null, cue };
+  };
+
+  /** One handler for the whole grid: panes' headers take tab drops themselves, and files dropped on a pane go to its terminal. */
+  const overGrid = (e: React.DragEvent) => {
+    if (!dragging("text/mb-session")) return;
+    overTarget(e, gridDropAt(e)?.cue ?? null);
+  };
+  const dropOnGrid = async (e: React.DragEvent) => {
+    if (!dragging("text/mb-session")) return;
+    e.preventDefault();
+    const at = gridDropAt(e);
+    if (!at) return;
+    const { plan, src } = at;
+    setFocused(src.id);
+    if (plan.kind === "tab") return void (at.front && addAsTab(src, at.front));
+    if (at.source.from) return commitTree(() => plan.tree); // a pane on screen moves, or two swap
+    if (plan.kind !== "split") return;
+    // a session that isn't a pane of its own yet lands beside the target once it is one
+    const { target, side } = plan;
+    expectPane(src.id, (t) => t && insertBeside(t, target, side, src.id));
+    // it joins the group on screen (a pinned visitor keeps its own), leaving any workspace
+    const top = pinnedSet.has(src.id) ? topOf(src) : activeGroup ?? topOf(src);
+    const dest = top === "ungrouped" ? null : top;
+    if ((src.taskGroup ?? null) === dest) setShown((p) => (p.includes(src.id) ? p : [...p, src.id]));
+    else if (!(await moveToGroup(src.id, dest))) expected.current.delete(src.id);
+  };
+
+  // While a session is dragged over the grid, the preview shows the layout the
+  // drop would leave — or the one on screen, where a drop changes nothing.
+  const sessionDrag = drag?.type === "text/mb-session" ? drag : null;
+  const gridRect = sessionDrag && !zoomed ? gridRef.current?.getBoundingClientRect() : undefined;
+  const previewOn =
+    !!sessionDrag && !!gridRect && sessionDrag.x >= gridRect.left && sessionDrag.x <= gridRect.right && sessionDrag.y >= gridRect.top && sessionDrag.y <= gridRect.bottom;
+  const dragged = sessionDrag ? sessions.find((s) => s.id === sessionDrag.payload) : undefined;
+  const preview = sessionDrag?.target?.preview ?? { tree, hot: dragged ? dragSourceOf(dragged).from : null };
 
   const restoreAll = async () => {
     const failures: string[] = [];
@@ -1114,13 +1234,13 @@ function App() {
     }
     if (cmd && e.ctrlKey && /^[1-4]$/.test(e.key)) {
       handled();
-      setColsPref(parseInt(e.key, 10));
+      arrangeInCols(parseInt(e.key, 10));
       return;
     }
     if (cmd && !e.ctrlKey && /^[1-9]$/.test(e.key)) {
       // by CELL, not by session: a workspace pane holding 3 sessions is one
       // number, which is what the pane's own ⌘n badge shows
-      const cell = cells[parseInt(e.key, 10) - 1];
+      const cell = orderedCells[parseInt(e.key, 10) - 1];
       const target = cell && frontOf(cell, wsTabs);
       if (target) {
         handled();
@@ -1178,12 +1298,11 @@ function App() {
     return null;
   };
 
-  // what New session was opened for (a pane's "+", an empty zone, a workspace's
-  // tab strip, a launch kind) lasts only while it's open, however it closes
+  // what New session was opened for (a pane's "+", a workspace's tab strip, a
+  // launch kind) lasts only while it's open, however it closes
   useEffect(() => {
     if (modal === "new") return;
     setPendingWs(null);
-    setPendingZone(null);
     setNewGroup("");
     setNewLaunch("claude");
   }, [modal]);
@@ -1192,8 +1311,6 @@ function App() {
     // the lone pane joins its new workspace — unless the dialog put the session elsewhere
     const lone = pendingWs && s.taskGroup === pendingWs.key ? sessions.find((x) => x.id === pendingWs.id) : undefined;
     if (lone && pendingWs) await addAsTab(s, lone, pendingWs.key);
-    // "New session" from an empty zone: the zone holds the session's cell, its workspace if it joined one
-    if (pendingZone && pendingZone.group === seatKey) seatInZone(cellKeyFor(s.id, s.taskGroup), pendingZone.zone);
     refresh();
     jumpToSession(s);
     setModal(null);
@@ -1390,34 +1507,31 @@ function App() {
               {layoutOpen && (
                 <Popover className="lay-pop" onClose={() => setLayoutOpen(false)}>
                   <div className="lay-grid">
-                    {LAYOUTS.map((l) => (
+                    {TEMPLATES.map((l) => (
                       <button
                         key={l.id}
-                        className={`lay-opt ${curLayoutId === l.id ? "on" : ""}`}
-                        title={`${l.label} — ${l.zones.length} zones`}
+                        className={`lay-opt ${templateOf(tree) === l.id ? "on" : ""}`}
+                        title={`${l.label} — arranges the panes on screen in this shape`}
                         onClick={() => {
-                          setLayouts((p) => ({ ...p, [seatKey]: l.id }));
-                          setZoneSeats((p) => ({ ...p, [seatKey]: [] }));
+                          arrangeAs(l.id);
                           setLayoutOpen(false);
                         }}
                       >
-                        <LayoutThumb layout={l} />
+                        <LayoutThumb tree={templateTree(l)} />
                       </button>
                     ))}
                   </div>
                   <button
-                    className={`lay-auto ${!curLayoutId ? "on" : ""}`}
+                    className="lay-auto"
                     onClick={() => {
-                      setLayouts((p) => ({ ...p, [seatKey]: "" }));
+                      refit();
                       setLayoutOpen(false);
                     }}
                   >
                     Auto — fit panes to the window
                   </button>
                   <div className="lay-note">
-                    {curLayoutId
-                      ? "Drag a pane onto another to swap places, or into an empty zone. Drag any pane edge to fine-tune."
-                      : "Panes fill the window automatically."}
+                    Drag a session onto a pane's edge to split it there, onto its middle to swap places or open it as a tab. Drag any pane edge to fine-tune; double-click it to even out.
                   </div>
                 </Popover>
               )}
@@ -1594,6 +1708,8 @@ function App() {
                           if (isErr(info)) return `Couldn't start the review: ${info.error}`;
                           await refresh();
                           // the reviewer opens beside the session it's reviewing
+                          const reviewer = cellKeyFor(info.id, info.taskGroup);
+                          expectPane(reviewer, (t) => t && insertBeside(t, cellKeyOfSession(author), "right", reviewer));
                           setShown((p) => placeBeside(p.includes(info.id) ? p : [...p, info.id], info.id, author.id, "after"));
                           return null;
                         },
@@ -1965,92 +2081,22 @@ function App() {
             </div>
           ) : (
             <div
-              className={`grid ${sliding ? "slide-in" : ""}`}
+              className={`grid ${sliding ? "slide-in" : ""} ${previewOn ? "previewing" : ""}`}
               ref={gridRef}
               style={{
-                gridTemplateColumns:
-                  colSizes.length === cols ? colSizes.map((f) => `${f}fr`).join(" ") : `repeat(${cols}, 1fr)`,
-                gridTemplateRows:
-                  rowSizes.length === rows ? rowSizes.map((f) => `${f}fr`).join(" ") : undefined,
+                gridTemplateColumns: (layoutGrid?.cols ?? [1]).map((f) => `minmax(0, ${f}fr)`).join(" "),
+                gridTemplateRows: (layoutGrid?.rows ?? [1]).map((f) => `minmax(0, ${f}fr)`).join(" "),
               }}
+              onDragOver={overGrid}
+              onDrop={dropOnGrid}
             >
-              {cells.map((cell, i) => {
-                // with a template, a cell sits in its zone (or a row below it);
-                // without one, cells flow in order and the last of an incomplete
-                // row spans the leftover columns — no dead cells
-                const zi = zoning ? zoning.zoneOf[i] : -1;
-                const below = zoning ? zoning.overflow.indexOf(i) : -1;
-                const area =
-                  layout && zoning
-                    ? zi >= 0
-                      ? layout.zones[zi]
-                      : overflowArea(below, cols, layout.rows, below === zoning.overflow.length - 1)
-                    : undefined;
-                const box = area ? parseZone(area) : null;
-                const col = box ? box.ce - 2 : i % cols;
-                const row = box ? box.re - 2 : Math.floor(i / cols);
-                const remainder = cells.length % cols;
-                const span = !zoomed && !layout && remainder !== 0 && i === cells.length - 1 ? cols - (i % cols) : 1;
-                const canX = !zoomed && (box ? box.ce <= cols : col + span - 1 < cols - 1);
-                const canY = !zoomed && (box ? box.re <= rows : row < rows - 1);
-                const resize =
-                  canX || canY
-                    ? {
-                        x: canX ? (e: React.PointerEvent) => startTrackDrag("col", box ? col : col + span - 1, e) : undefined,
-                        y: canY ? (e: React.PointerEvent) => startTrackDrag("row", row, e) : undefined,
-                        reset: equalizeTracks,
-                      }
-                    : undefined;
-                const myKey = cellKey(cell);
-                /** A drop on a pane's body: from the sidebar it opens as a tab; a pane
-                 *  swaps zones (with a template) or moves beside this one. */
-                const bodyDrop = (s: SessionInfo) => ({
-                  cue: cue(drag, `p:${s.id}`),
-                  over: (e: React.DragEvent) => {
-                    const src = dragging("text/mb-session");
-                    if (!src) return e.preventDefault(); // files from Finder: the pane handles those itself
-                    const srcS = sessions.find((x) => x.id === src);
-                    if (!srcS || src === s.id) return overTarget(e, null);
-                    if (dragFrom() === "sidebar" && !shown.includes(src)) return overTarget(e, tabTarget(`p:${s.id}`, s));
-                    const srcKey = cellKeyOfSession(srcS);
-                    if (srcKey === myKey) return overTarget(e, null);
-                    if (layout && zoning) {
-                      const from = cellKeys.indexOf(srcKey);
-                      if (zi < 0 || from < 0) return overTarget(e, null);
-                      const seated = zoning.zoneOf[from] >= 0;
-                      return overTarget(e, { key: `p:${s.id}`, outcome: seated ? `Swap ${titleOf(srcS)} and ${titleOf(s)}` : `Put ${titleOf(srcS)} here` });
-                    }
-                    const side = sideOf(e, e.currentTarget, "x");
-                    const inGrid = shown.includes(src);
-                    if (inGrid && samePlace(shown, src, s.id, side)) return overTarget(e, null);
-                    overTarget(e, { key: `p:${s.id}`, side, outcome: `${inGrid ? "Move" : "Show"} ${titleOf(srcS)} ${side} ${titleOf(s)}` });
-                  },
-                  drop: (e: React.DragEvent) => {
-                    const src = e.dataTransfer.getData("text/mb-session");
-                    const srcS = sessions.find((x) => x.id === src);
-                    if (!srcS || src === s.id) return;
-                    if (dragFrom() === "sidebar" && !shown.includes(src)) return void addAsTab(srcS, s);
-                    const srcKey = cellKeyOfSession(srcS);
-                    if (srcKey === myKey) return;
-                    if (layout && zoning) {
-                      if (zi >= 0 && cellKeys.includes(srcKey)) seatInZone(srcKey, zi);
-                      return;
-                    }
-                    // a workspace moves as a whole: all of its tabs go beside the target
-                    const moving = shown.filter((id) => {
-                      const x = sessions.find((y) => y.id === id);
-                      return x ? cellKeyOfSession(x) === cellKeyOfSession(srcS) : false;
-                    });
-                    const side = sideOf(e, e.currentTarget, "x");
-                    setShown((p) => {
-                      let next = p.includes(src) ? p : [...p, src];
-                      for (const id of side === "after" ? [...(moving.length ? moving : [src])].reverse() : moving.length ? moving : [src]) {
-                        next = placeBeside(next, id, s.id, side);
-                      }
-                      return next;
-                    });
-                  },
-                });
+              {cells.map((cell) => {
+                // panes stay in `shown` order as the grid's children, each placed by
+                // its area, so a layout change moves them without remounting any
+                const myKey = cellKeyOf(cell);
+                const area = layoutGrid?.areas[myKey];
+                const i = orderedCells.indexOf(cell);
+                const resize = resizeFor(myKey);
                 const tabDrop = (s: SessionInfo, key: string) => ({
                   cue: cue(drag, key),
                   over: (e: React.DragEvent) => overTarget(e, tabTarget(key, s)),
@@ -2069,6 +2115,7 @@ function App() {
                     zoomed={zoomed === s.id}
                     density={density}
                     paneIndex={i}
+                    area={embedded ? undefined : area}
                     embedded={embedded}
                     onFocus={() => setFocused(s.id)}
                     onOpenFiles={() => {
@@ -2088,8 +2135,6 @@ function App() {
                     onClose={onCloseOverride ?? (() => hide(s.id))}
                     onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
                     onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
-                    onReorder={reorder}
-                    drop={bodyDrop(s)}
                     tabDrop={embedded ? undefined : tabDrop(s, `h:${s.id}`)}
                     pinned={isPinned(pinIds)}
                     onPin={zoomed ? undefined : () => togglePin(pinIds)}
@@ -2114,33 +2159,14 @@ function App() {
                     resize={resize}
                   />
                 );
-                if (cell.kind === "session") {
-                  const pane = paneFor(cell.s, false);
-                  if (area)
-                    return (
-                      <div key={`zone-${cell.s.id}`} className="spanwrap" style={{ gridArea: area }}>
-                        {pane}
-                      </div>
-                    );
-                  return span > 1 ? (
-                    <div key={`span-${cell.s.id}`} className="spanwrap" style={{ gridColumn: `span ${span}` }}>
-                      {pane}
-                    </div>
-                  ) : (
-                    pane
-                  );
-                }
+                if (cell.kind === "session") return paneFor(cell.s, false);
                 // workspace pane: one cell, session tabs across the top (cmux-style)
                 const key = cell.key;
                 const active = frontOf(cell, wsTabs);
                 const anyWaiting = cell.list.some((s) => s.status === "waiting");
                 const strip = tabDrop(active, `h:ws:${key}`);
                 return (
-                  <div
-                    key={`ws-${key}`}
-                    className={`ws-pane ${anyWaiting ? "st-waiting" : ""}`}
-                    style={area ? { gridArea: area } : span > 1 ? { gridColumn: `span ${span}` } : undefined}
-                  >
+                  <div key={`ws-${key}`} className={`ws-pane ${anyWaiting ? "st-waiting" : ""}`} style={area ? { gridArea: area } : undefined}>
                     <div
                       className="ws-tabs"
                       data-drop={strip.cue}
@@ -2158,7 +2184,9 @@ function App() {
                     >
                       <span
                         className="ws-name"
-                        title="double-click to rename this workspace"
+                        title="drag to move this workspace's pane · double-click to rename it"
+                        draggable
+                        onDragStart={(e) => beginDrag(e, "text/mb-session", active.id, `Moving ${cell.sub}`, "workspace")}
                         onDoubleClick={() => setRenameDlg({ kind: "sub", key, initial: cell.sub })}
                       >
                         {cell.sub}
@@ -2167,6 +2195,9 @@ function App() {
                         <button
                           key={s.id}
                           className={`ws-tab ${active.id === s.id ? "on" : ""}`}
+                          title="drag onto the grid to give it a pane of its own, or onto another pane to make it a tab there"
+                          draggable
+                          onDragStart={(e) => beginDrag(e, "text/mb-session", s.id, `Moving ${titleOf(s)}`, "tab")}
                           onClick={() => {
                             setWsTabs((p) => ({ ...p, [key]: s.id }));
                             setFocused(s.id);
@@ -2205,55 +2236,7 @@ function App() {
                   </div>
                 );
               })}
-              {layout &&
-                zoning?.empty.map((z) => (
-                  <ZoneSlot
-                    key={`slot-${z}`}
-                    area={layout.zones[z]}
-                    cue={cue(drag, `z:${z}`)}
-                    picking={slotPick === z}
-                    onPick={(open) => setSlotPick(open ? z : null)}
-                    // a tab of a workspace already on screen opens in that pane, not a zone
-                    minimized={workSessions.filter((s) => topOf(s) === activeGroup && !cellKeys.includes(cellKeyOfSession(s)))}
-                    onOpen={(s) => {
-                      setSlotPick(null);
-                      setShown((p) => (p.includes(s.id) ? p : [...p, s.id]));
-                      seatInZone(cellKeyOfSession(s), z);
-                      setFocused(s.id);
-                    }}
-                    onNew={() => {
-                      setSlotPick(null);
-                      setPendingZone({ group: seatKey, zone: z });
-                      setNewGroup(activeGroup && activeGroup !== "ungrouped" ? activeGroup : "");
-                      setNewLaunch("claude");
-                      setModal("new");
-                    }}
-                    over={(e) => {
-                      const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
-                      if (!srcS) return overTarget(e, null);
-                      const inGrid = cellKeys.includes(cellKeyOfSession(srcS));
-                      // from the sidebar, a tab of a workspace on screen belongs in that pane
-                      if (inGrid && !shown.includes(srcS.id)) return overTarget(e, null);
-                      overTarget(e, { key: `z:${z}`, outcome: `${inGrid ? "Put" : "Open"} ${titleOf(srcS)} here` });
-                    }}
-                    drop={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      const srcS = sessions.find((x) => x.id === e.dataTransfer.getData("text/mb-session"));
-                      if (!srcS) return;
-                      if (cellKeys.includes(cellKeyOfSession(srcS)) && !shown.includes(srcS.id)) return;
-                      if (topOf(srcS) !== activeGroup && !pinnedSet.has(srcS.id)) {
-                        // a session from another group joins this one (as a lone pane) to take the zone
-                        const dest = activeGroup === "ungrouped" ? null : activeGroup;
-                        moveToGroup(srcS.id, dest);
-                        seatInZone(cellKeyFor(srcS.id, dest), z);
-                      } else {
-                        setShown((p) => (p.includes(srcS.id) ? p : [...p, srcS.id]));
-                        seatInZone(cellKeyOfSession(srcS), z);
-                      }
-                    }}
-                  />
-                ))}
+              <GridPreview on={previewOn} tree={preview.tree} hot={preview.hot} title={paneName} />
             </div>
           )}
           {panelOpen && (
@@ -2440,10 +2423,7 @@ function App() {
                   },
                 ]
               : []),
-            { label: "Columns: 1", kbd: "⌘⌃1", run: () => setColsPref(1) },
-            { label: "Columns: 2", kbd: "⌘⌃2", run: () => setColsPref(2) },
-            { label: "Columns: 3", kbd: "⌘⌃3", run: () => setColsPref(3) },
-            { label: "Columns: 4", kbd: "⌘⌃4", run: () => setColsPref(4) },
+            ...[1, 2, 3, 4].map((n) => ({ label: `Arrange in ${plural(n, "column")}`, kbd: `⌘⌃${n}`, run: () => arrangeInCols(n) })),
             { label: "Next waiting session", kbd: "⌥⇥", run: cycleWaiting },
             { label: `Switch to ${theme === "dark" ? "light" : "dark"} mode`, run: () => setTheme(theme === "dark" ? "light" : "dark") },
             { label: "How to use Mockingbird", kbd: "⌘/", run: () => setModal("help") },
@@ -2500,12 +2480,15 @@ function App() {
             const old = handoffFor;
             setHandoffFor(null);
             await refresh();
+            const [oldKey, nextKey] = [cellKeyOfSession(old), cellKeyFor(next.id, next.taskGroup)];
             // the old one is kept under Previous; its worktree is the new session's
             if (closeOld && !failed(`Couldn't close ${titleOf(old)}`, await window.mb.killSession(old.id, false))) {
               disposeTerm(old.id);
+              expectPane(nextKey, (t) => rename(t, oldKey, nextKey)); // the new session takes the old one's place
               setShown((p) => (p.includes(old.id) ? p.map((x) => (x === old.id ? next.id : x)) : [...p, next.id]));
               refresh();
             } else {
+              expectPane(nextKey, (t) => t && insertBeside(t, oldKey, "right", nextKey));
               setShown((p) => placeBeside(p.includes(next.id) ? p : [...p, next.id], next.id, old.id, "after"));
             }
             setFocused(next.id);
@@ -2535,7 +2518,7 @@ function App() {
         <GroupDialog
           session={groupDlg}
           groups={groupKeys}
-          onMove={(g) => moveToGroup(groupDlg.id, g)}
+          onMove={async (g) => void (await moveToGroup(groupDlg.id, g))}
           onClose={() => setGroupDlg(null)}
         />
       )}

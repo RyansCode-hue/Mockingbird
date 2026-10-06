@@ -1,4 +1,5 @@
 import React, { useSyncExternalStore } from "react";
+import type { LayoutNode } from "./layoutTree";
 
 /**
  * Drag-and-drop feedback shared by every drag in the app: what's being dragged,
@@ -12,6 +13,15 @@ import React, { useSyncExternalStore } from "react";
 
 export type Side = "before" | "after";
 
+/** Where a drop would land and what it would do. */
+export interface DropTarget {
+  key: string;
+  outcome: string;
+  side?: Side;
+  /** A drop on the grid: the layout it would leave, and the pane to highlight in it. */
+  preview?: { tree: LayoutNode; hot: string };
+}
+
 export interface DragState {
   type: string; // the dataTransfer type, e.g. "text/mb-session"
   payload: string;
@@ -19,7 +29,7 @@ export interface DragState {
   /** Where the drag started, when one payload type can come from places that drop differently. */
   from?: string;
   /** The target under the cursor, if the drop would do something there. */
-  target: { key: string; outcome: string; side?: Side } | null;
+  target: DropTarget | null;
   x: number;
   y: number;
 }
@@ -73,7 +83,7 @@ export function dragFrom(): string | undefined {
  * Call from a target's onDragOver. With a target, the drop is allowed and the
  * cursor label says `outcome`; null means "not here" (no-op or not allowed).
  */
-export function overTarget(e: React.DragEvent, target: { key: string; outcome: string; side?: Side } | null): void {
+export function overTarget(e: React.DragEvent, target: DropTarget | null): void {
   (e.nativeEvent as any).__mbTarget = true; // this event found a target: the page-level handler leaves it alone
   if (target) {
     e.preventDefault();
@@ -176,8 +186,10 @@ export function installDragListeners(): () => void {
 export function DragLabel() {
   const d = useDrag();
   if (!d) return null;
+  // near the window's right edge the label sits left of the cursor, so it stays readable
+  const flip = d.x > window.innerWidth - 340;
   return (
-    <div className={`drag-label ${d.target ? "ok" : ""}`} style={{ left: d.x + 14, top: d.y + 16 }}>
+    <div className={`drag-label ${d.target ? "ok" : ""}`} style={flip ? { right: window.innerWidth - d.x + 14, top: d.y + 16 } : { left: d.x + 14, top: d.y + 16 }}>
       {d.target ? d.target.outcome : d.label}
     </div>
   );

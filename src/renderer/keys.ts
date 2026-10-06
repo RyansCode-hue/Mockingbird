@@ -12,7 +12,7 @@ export interface KeyTarget {
 }
 
 /** Dialogs, popovers and menus: while one is open, Escape is its to close. */
-export const OVERLAYS = ".modal-back, .scrim, .who-back, .mb-menu, .zone-pick";
+export const OVERLAYS = ".modal-back, .scrim, .who-back, .mb-menu";
 
 const FIELDS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 

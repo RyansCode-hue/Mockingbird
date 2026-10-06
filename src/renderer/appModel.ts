@@ -67,18 +67,6 @@ export function remapGroupKeys<T>(rec: Record<string, T>, oldKey: string, newKey
   return out;
 }
 
-/** Zone seats across a rename: the groups they belong to, and the workspace cells ("ws:<path>") seated in them. */
-export function remapSeats(seats: Record<string, (string | null)[]>, oldKey: string, newKey: string): Record<string, (string | null)[]> {
-  const out = remapGroupKeys(seats, oldKey, newKey);
-  for (const k of Object.keys(out)) {
-    out[k] = out[k].map((v) => {
-      const ws = v?.startsWith("ws:") ? renamed(v.slice(3), oldKey, newKey) : null;
-      return ws === null ? v : `ws:${ws}`;
-    });
-  }
-  return out;
-}
-
 /**
  * Layout trees across a rename: the groups they belong to, and the workspace
  * panes ("ws:<path>") in them. A tree already saved under the new name — the
