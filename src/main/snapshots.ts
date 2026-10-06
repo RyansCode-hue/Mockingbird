@@ -3,20 +3,19 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { parseNameStatus } from "./files";
-import { git, headCommit } from "./git";
-import type { TurnChange, TurnSnapshot } from "../shared/types";
+import { git, headCommit, repoTop } from "./git";
+import { SNAPSHOT_MAX_FILE_BYTES, type TurnChange, type TurnSnapshot } from "../shared/types";
 
 /**
  * Undo an agent's turn. When a prompt is submitted, the worktree's files are
  * recorded as a commit under refs/mockingbird/snapshots/<session>/<n>, built
  * with a temporary index: the branch, the real index and the history are
- * never touched. Gitignored files aren't recorded, nor any file over 5 MB
- * (named in the snapshot so the user knows). Git stores only what changed, so
+ * never touched. Gitignored files aren't recorded, nor any file over
+ * SNAPSHOT_MAX_FILE_BYTES (named in the snapshot so the user knows). Git stores only what changed, so
  * a turn costs a few KB. The last 10 per session are kept.
  */
 const REF_ROOT = "refs/mockingbird/snapshots";
 export const KEEP = 10;
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const BEFORE_UNDO = "(before an undo)";
 
 const IDENTITY = {
@@ -30,12 +29,6 @@ const safeId = (id: string) => {
   if (!/^[\w-]+$/.test(id)) throw new Error(`"${id}" isn't a session id`);
   return id;
 };
-
-/** The repository's top folder, or null when `cwd` isn't in one. */
-async function topOf(cwd: string): Promise<string | null> {
-  const top = await git(cwd, ["rev-parse", "--show-toplevel"], { okCodes: [0, 128] });
-  return top || null;
-}
 
 /** A throwaway index, removed once `fn` is done with it. */
 async function withIndex<T>(fn: (env: Record<string, string>) => Promise<T>): Promise<T> {
@@ -74,7 +67,7 @@ async function treeOfWorktree(top: string, env: Record<string, string>): Promise
   const skipped: string[] = [];
   for (const f of changed) {
     const st = await fs.promises.stat(path.join(top, f)).catch(() => null); // deleted files have nothing to measure
-    if (st && st.isFile() && st.size > MAX_FILE_BYTES) skipped.push(f);
+    if (st && st.isFile() && st.size > SNAPSHOT_MAX_FILE_BYTES) skipped.push(f);
   }
   await git(top, ["add", "-A", "--", ".", ...skipped.map((f) => `:(exclude,literal)${f}`)], { env });
   return { tree: await git(top, ["write-tree"], { env }), skipped };
@@ -88,7 +81,7 @@ function parseMessage(body: string): { prompt: string; skipped: string[] } {
 
 /** A session's snapshots, newest first. */
 export async function listSnapshots(cwd: string, sessionId: string): Promise<TurnSnapshot[]> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) return [];
   const out = await git(top, ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(creatordate:unix)%00%(contents)%01", `${REF_ROOT}/${safeId(sessionId)}/`], { trim: false });
   return out
@@ -122,7 +115,7 @@ export function takeSnapshot(cwd: string, sessionId: string, prompt: string): Pr
 }
 
 async function snapshotNow(cwd: string, sessionId: string, prompt: string): Promise<TurnSnapshot | null> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) return null;
   const id = safeId(sessionId);
   const prior = await listSnapshots(top, id);
@@ -141,7 +134,7 @@ async function snapshotNow(cwd: string, sessionId: string, prompt: string): Prom
 
 /** What restoring a snapshot would do to the worktree as it is now. */
 export async function changesSince(cwd: string, sessionId: string, n: number): Promise<TurnChange[]> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) throw new Error("Not a git repository");
   const snap = (await listSnapshots(top, sessionId)).find((s) => s.n === n);
   if (!snap) throw new Error("That snapshot is gone");
@@ -162,7 +155,7 @@ async function diffTrees(top: string, from: string, to: string): Promise<TurnCha
  * changed.
  */
 export async function restoreSnapshot(cwd: string, sessionId: string, n: number): Promise<{ restored: number; removed: number; undo: TurnSnapshot | null }> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) throw new Error("Not a git repository");
   const snap = (await listSnapshots(top, sessionId)).find((s) => s.n === n);
   if (!snap) throw new Error("That snapshot is gone");
@@ -207,7 +200,7 @@ async function pruneEmptyDirs(top: string, dir: string): Promise<void> {
 
 /** Drop a closed session's snapshots. */
 export async function dropSnapshots(cwd: string, sessionId: string): Promise<void> {
-  const top = await topOf(cwd);
+  const top = await repoTop(cwd);
   if (!top) return;
   for (const s of await listSnapshots(top, sessionId)) await git(top, ["update-ref", "-d", `${REF_ROOT}/${safeId(sessionId)}/${s.n}`]);
 }

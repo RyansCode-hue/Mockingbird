@@ -8,7 +8,7 @@ import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, AgentKind, t
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
 import { adoEnv } from "./ado";
-import { agentFor, AgentAdapter, type LaunchContext } from "./agents";
+import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 import { conversationsOf, withConversation } from "./meters";
@@ -218,7 +218,7 @@ export class SessionManager {
     } catch (err) {
       throw new Error(
         `Failed to launch ${req.shell ? "a terminal" : `"${this.resolveBin(agent)}"`} in ${cwd}: ${err instanceof Error ? err.message : err}. ` +
-          `If it isn't found, set its full path in Settings → ${agent.label.toLowerCase()} binary.`
+          `If it isn't found, set its full path in Settings → ${agentLabel(req.agent).toLowerCase()} binary.`
       );
     }
 

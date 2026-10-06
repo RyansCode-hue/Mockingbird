@@ -3,14 +3,15 @@ import { execFile } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { which } from "./shell";
+import { parseRemote } from "./git";
 import type { UpdateInfo } from "../shared/types";
 
 /** owner/repo from a package.json "repository" field ("github:owner/repo", a URL, or { url }). */
 export function repoFromPackage(pkg: { repository?: string | { url?: string } }): { owner: string; repo: string } | null {
   const r = pkg.repository;
-  const url = typeof r === "string" ? r : (r?.url ?? "");
-  const m = url.match(/github(?:\.com)?[/:]([^/]+)\/([^/.]+)/i);
-  return m ? { owner: m[1], repo: m[2] } : null;
+  const url = (typeof r === "string" ? r : (r?.url ?? "")).trim().replace(/^github:/i, "https://github.com/");
+  const remote = parseRemote(url);
+  return remote?.provider === "github" ? { owner: remote.owner, repo: remote.repo } : null;
 }
 
 /** Is b newer than a (simple semver x.y.z compare). */

@@ -64,8 +64,9 @@ export function ticketOf(cwd: string, sessions: SessionRef[]): { id: string; tit
   return m ? { id: m[1], title: null } : null;
 }
 
-const hm = (ms: number) => {
-  const m = Math.round(ms / 60_000);
+/** A duration in whole minutes: "45m", "2h", "2h 5m". */
+export const hoursMinutes = (ms: number): string => {
+  const m = Math.max(0, Math.round(ms / 60_000));
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}`;
 };
 const day = (ms: number) => new Date(ms).toLocaleDateString([], { weekday: "short" });
@@ -133,7 +134,7 @@ export function composeRollup(i: RollupInput): string {
     `Generated ${i.generated.toLocaleString()} from Mockingbird's conversation index, sessions and ticket pipeline. Time is active time: messages less than 10 minutes apart, plus a minute per stretch.`,
     "",
     "## Summary",
-    `- Active time: ${hm(allMs)} across ${i.activity.filter((a) => a.times.some(inWeek)).length} conversations${allMs ? ` (${split(byAgent, hm)})` : ""}`,
+    `- Active time: ${hoursMinutes(allMs)} across ${i.activity.filter((a) => a.times.some(inWeek)).length} conversations${allMs ? ` (${split(byAgent, hoursMinutes)})` : ""}`,
     `- Tokens: ${formatTokens(allTokens)}${allTokens ? ` (${split(tokensByAgent, formatTokens)})` : ""}${cacheReads ? `, plus ${formatTokens(cacheReads)} read from cache` : ""}`,
     `- Tickets: ${tickets.size} worked on, ${moved.length} moved stage, ${prs.length} pull request${prs.length === 1 ? "" : "s"} opened`,
   ];
@@ -143,19 +144,19 @@ export function composeRollup(i: RollupInput): string {
     for (const [id, b] of [...tickets].sort((x, y) => y[1].ms - x[1].ms)) {
       const p = i.pipelines[id];
       out.push("", `### #${id}${b.title ?? p?.title ? ` ${b.title ?? p?.title}` : ""}${p ? ` — now: ${stageLabel(p.stage)}` : ""}`);
-      if (b.ms) out.push(`- Time: ${hm(b.ms)} (${[...b.byDay].map(([d, ms]) => `${d} ${hm(ms)}`).join(", ")})`);
+      if (b.ms) out.push(`- Time: ${hoursMinutes(b.ms)} (${[...b.byDay].map(([d, ms]) => `${d} ${hoursMinutes(ms)}`).join(", ")})`);
       const steps = p?.history.filter((h) => inWeek(h.at)) ?? [];
       if (steps.length) out.push(`- Stages: ${steps.map((h) => `${stageLabel(h.stage)} (${day(h.at)})`).join(" → ")}`);
       for (const { r } of prs.filter((x) => x.p.ticketId === id)) out.push(`- Pull request: ${r.url} (${r.branch} → ${r.base})`);
       for (const f of p?.feedback.filter((f) => inWeek(f.at)) ?? []) out.push(`- Feedback (${day(f.at)}): ${f.text.replace(/\s+/g, " ").slice(0, 160)}`);
-      for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentLabel(c.agent)}: "${c.title}" — ${hm(c.ms)}`);
+      for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentLabel(c.agent)}: "${c.title}" — ${hoursMinutes(c.ms)}`);
     }
   }
   if (other.size) {
     out.push("", "## Other work");
     for (const [name, b] of [...other].sort((x, y) => y[1].ms - x[1].ms)) {
-      out.push("", `### ${name} — ${hm(b.ms)}`);
-      for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentLabel(c.agent)}: "${c.title}" — ${hm(c.ms)}`);
+      out.push("", `### ${name} — ${hoursMinutes(b.ms)}`);
+      for (const c of b.convs.sort((x, y) => y.ms - x.ms).slice(0, 6)) out.push(`- ${agentLabel(c.agent)}: "${c.title}" — ${hoursMinutes(c.ms)}`);
     }
   }
   const digests = i.digests.filter((d) => /^\d{4}-\d{2}-\d{2}\.md$/.test(d)).sort();

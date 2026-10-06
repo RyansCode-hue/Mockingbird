@@ -1,5 +1,5 @@
 import * as fs from "fs";
-import { currentBranch, git } from "./git";
+import { currentBranch, git, isRepo } from "./git";
 import { parseClaudeLine, parseCodexLine } from "./transcripts";
 import type { AgentKind } from "../shared/types";
 import { readSlice } from "./fileOps";
@@ -53,8 +53,7 @@ export function transcriptDigest(lines: string[], agent: AgentKind, conv: string
 
 /** The worktree as it stands: branch, uncommitted files, recent commits. */
 export async function repoState(cwd: string): Promise<string> {
-  const isRepo = (await git(cwd, ["rev-parse", "--is-inside-work-tree"], { okCodes: [0, 128] })) === "true";
-  if (!isRepo) return "(not a git repository)";
+  if (!(await isRepo(cwd))) return "(not a git repository)";
   const [branch, status, log, stat] = await Promise.all([
     currentBranch(cwd),
     // untrimmed: the first line's leading space is its "unstaged" column

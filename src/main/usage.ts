@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { MB_DIR } from "./store";
 import { capitalize, type AgentUsage, type UsageLimit, type UsageReport } from "../shared/types";
-import { readSlice, writeGenerated } from "./fileOps";
+import { readJsonFile, readSlice, writeGenerated } from "./fileOps";
 import { CLAUDE_SETTINGS, codexRollouts, epochMs } from "./agentFiles";
 
 const USAGE_FILE = path.join(MB_DIR, "usage.json");
@@ -37,13 +37,10 @@ exit 0
  */
 export function usageReporterArgs(): string[] {
   try {
-    const raw = fs.readFileSync(CLAUDE_SETTINGS, "utf8");
-    if (raw.trim() && JSON.parse(raw).statusLine) return [];
+    if (readJsonFile(CLAUDE_SETTINGS, {})?.statusLine) return [];
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn(`usage: cannot read ${CLAUDE_SETTINGS}, usage reporting off: ${(err as Error).message}`);
-      return [];
-    }
+    console.warn(`usage: cannot read ${CLAUDE_SETTINGS}, usage reporting off: ${(err as Error).message}`);
+    return [];
   }
   // running panes run the script every few hundred ms: it is only replaced when it changed, and in one step
   writeGenerated(STATUSLINE_SCRIPT, SCRIPT, 0o755);
@@ -60,46 +57,45 @@ export function setClaudePlan(plan: string | null): void {
   claudePlan = plan ? capitalize(plan) : null;
 }
 
+const FIVE_HOUR = "5-hour limit";
+
 // Model-scoped weekly windows the Claude CLI reports when the plan has them.
 const CLAUDE_MODEL_WEEKLY: Record<string, string> = { seven_day_opus: "Opus", seven_day_sonnet: "Sonnet" };
 
 /** The 5-hour window from the last payload that had one, while that window is still open. */
 function openFiveHourWindow(): { used_percentage: number; resets_at: unknown } | null {
+  let w: any;
   try {
-    const w = JSON.parse(fs.readFileSync(FIVE_HOUR_FILE, "utf8")).rate_limits?.five_hour;
-    const resets = epochMs(w?.resets_at);
-    return typeof w?.used_percentage === "number" && resets !== null && resets > Date.now() ? w : null;
-  } catch {
-    return null; // never seen one, or unreadable — the panel says there's no reading
+    w = readJsonFile(FIVE_HOUR_FILE, null)?.rate_limits?.five_hour; // null: never seen one
+  } catch (err) {
+    console.warn(`usage: cannot read ${FIVE_HOUR_FILE}: ${(err as Error).message}`);
+    return null; // the panel says there's no reading
   }
+  const resets = epochMs(w?.resets_at);
+  return typeof w?.used_percentage === "number" && resets !== null && resets > Date.now() ? w : null;
 }
 
 function readClaude(): AgentUsage | null {
-  let raw: string;
+  let payload: any;
   try {
-    raw = fs.readFileSync(USAGE_FILE, "utf8");
+    payload = readJsonFile(USAGE_FILE, null);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`usage: cannot read ${USAGE_FILE}: ${(err as Error).message}`);
+    console.warn(`usage: cannot read ${USAGE_FILE}: ${(err as Error).message}`);
     return null;
   }
-  let rl: any;
-  try {
-    rl = JSON.parse(raw).rate_limits;
-  } catch (err) {
-    console.warn(`usage: ${USAGE_FILE} is not a valid statusline payload: ${(err as Error).message}`);
-    return null;
-  }
+  if (!payload) return null; // no session has reported yet
+  const rl = payload.rate_limits;
   const limits: UsageLimit[] = [];
-  const add = (label: string, w: any) => {
-    if (typeof w?.used_percentage === "number") limits.push({ label, usedPct: w.used_percentage, resetsAt: epochMs(w.resets_at) });
+  const add = (w: any, label: string, window: UsageLimit["window"], model?: string) => {
+    if (typeof w?.used_percentage === "number") limits.push({ label, window, ...(model ? { model } : {}), usedPct: w.used_percentage, resetsAt: epochMs(w.resets_at) });
   };
   const fiveHour = rl?.five_hour ?? openFiveHourWindow();
-  add("5-hour limit", fiveHour);
-  add("Weekly · all models", rl?.seven_day);
-  for (const [key, name] of Object.entries(CLAUDE_MODEL_WEEKLY)) add(`Weekly · ${name}`, rl?.[key]);
+  add(fiveHour, FIVE_HOUR, "5h");
+  add(rl?.seven_day, "Weekly · all models", "week");
+  for (const [key, name] of Object.entries(CLAUDE_MODEL_WEEKLY)) add(rl?.[key], `Weekly · ${name}`, "week", name);
   if (!limits.length) return null;
   if (typeof fiveHour?.used_percentage !== "number") {
-    limits.unshift({ label: "5-hour limit", usedPct: 0, resetsAt: null, note: "no reading yet" });
+    limits.unshift({ label: FIVE_HOUR, window: "5h", usedPct: 0, resetsAt: null, note: "no reading yet" });
   }
   return { agent: "claude", plan: claudePlan, limits, at: fs.statSync(USAGE_FILE).mtimeMs };
 }
@@ -126,8 +122,13 @@ function lastRateLimits(file: string): { rl: any; at: number } | null {
   return null;
 }
 
-const windowLabel = (minutes: unknown) =>
-  minutes === 300 ? "5-hour limit" : minutes === 10080 ? "Weekly limit" : typeof minutes === "number" ? `${Math.round(minutes / 60)}-hour limit` : "Limit";
+/** A Codex window by its length in minutes. */
+const codexWindow = (minutes: unknown): Pick<UsageLimit, "label" | "window"> =>
+  minutes === 300
+    ? { label: FIVE_HOUR, window: "5h" }
+    : minutes === 10080
+      ? { label: "Weekly limit", window: "week" }
+      : { label: typeof minutes === "number" ? `${Math.round(minutes / 60)}-hour limit` : "Limit", window: "other" };
 
 /**
  * Codex writes its plan limits into each session's rollout as token_count
@@ -136,12 +137,17 @@ const windowLabel = (minutes: unknown) =>
  */
 function readCodex(): AgentUsage | null {
   const newest: { file: string; mtime: number }[] = [];
-  for (const file of codexRollouts(CODEX_FILES_CHECKED * 3)) {
-    try {
-      newest.push({ file, mtime: fs.statSync(file).mtimeMs });
-    } catch {
-      continue; // removed since it was listed
+  try {
+    for (const file of codexRollouts(CODEX_FILES_CHECKED * 3)) {
+      try {
+        newest.push({ file, mtime: fs.statSync(file).mtimeMs });
+      } catch {
+        continue; // removed since it was listed
+      }
     }
+  } catch (err) {
+    console.warn(`usage: ${(err as Error).message}`);
+    return null;
   }
   newest.sort((a, b) => b.mtime - a.mtime);
   for (const { file } of newest.slice(0, CODEX_FILES_CHECKED)) {
@@ -149,7 +155,7 @@ function readCodex(): AgentUsage | null {
     if (!hit) continue;
     const limits: UsageLimit[] = [];
     for (const w of [hit.rl.primary, hit.rl.secondary]) {
-      if (typeof w?.used_percent === "number") limits.push({ label: windowLabel(w.window_minutes), usedPct: w.used_percent, resetsAt: epochMs(w.resets_at ?? w.reset_at) });
+      if (typeof w?.used_percent === "number") limits.push({ ...codexWindow(w.window_minutes), usedPct: w.used_percent, resetsAt: epochMs(w.resets_at ?? w.reset_at) });
     }
     if (!limits.length) return null;
     const plan = typeof hit.rl.plan_type === "string" ? capitalize(hit.rl.plan_type) : null;

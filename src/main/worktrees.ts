@@ -1,5 +1,6 @@
-import type { PrTarget, WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
-import { branchesOf, currentBranch, dirtyFileCount, git, originUrl, upstreamOf } from "./git";
+import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
+import { branchesOf, currentBranch, git, originUrl, pickDefaultBase, upstreamOf } from "./git";
+import { dirtyFileCount } from "./scm";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -78,14 +79,6 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
       : ["worktree", "add", ...(sp.track ? ["--track"] : []), "-b", branch, wtPath, ...(sp.from ? [sp.from] : [])]
   );
   return wtPath;
-}
-
-/** The usual names of the branches work merges into, by team convention, each in the order it's preferred. */
-export const BASE_NAMES: Record<PrTarget, string[]> = { dev: ["dev", "develop", "development", "uat"], main: ["main", "master"] };
-
-/** The integration branch new work usually starts from: a dev-like one before main. */
-export function pickDefaultBase(branches: string[]): string | null {
-  return [...BASE_NAMES.dev, ...BASE_NAMES.main].find((b) => branches.includes(b)) ?? null;
 }
 
 /** Local + origin branches for a repo, with a best-guess dev/uat base branch. */
@@ -261,12 +254,12 @@ export async function checkoutBranch(repoPath: string, branch: string, baseBranc
         `Close that session, or tick "isolated worktree" to work on both at once.`
     );
   }
-  const current = await git(repoPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const current = await currentBranch(repoPath);
   if (current === branch) return;
   const n = await dirtyFileCount(repoPath);
   if (n) {
     throw new Error(
-      `${path.basename(repoPath)} has ${n} uncommitted change${n === 1 ? "" : "s"} on ${current}. ` +
+      `${path.basename(repoPath)} has ${n} uncommitted change${n === 1 ? "" : "s"} on ${current ?? "a detached HEAD"}. ` +
         `Commit or stash before switching to ${branch}, or tick "isolated worktree".`
     );
   }

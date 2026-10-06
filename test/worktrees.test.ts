@@ -1,7 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranches, listWorktrees, migrateWorktree, parseShortstat, pickDefaultBase, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
+import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranches, listWorktrees, migrateWorktree, parseShortstat, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
+import { pickDefaultBase } from "../src/main/git";
+import { changedPaths, scmStatus } from "../src/main/scm";
 import { git, makeRepo } from "./helpers";
 
 describe("pickDefaultBase", () => {
@@ -103,6 +105,16 @@ describe("git without blocking", () => {
     fs.writeFileSync(path.join(repo, "README.md"), "changed\n");
     await expect(checkoutBranch(repo, "feat/x")).rejects.toThrow(/1 uncommitted change on main/);
   });
+
+  it("knows the branch a checkout is on before its first commit, and says when HEAD is detached", async () => {
+    const fresh = fs.mkdtempSync(path.join(require("os").homedir(), "unborn-"));
+    git(fresh, "-c", "init.defaultBranch=main", "init", "-q");
+    await expect(checkoutBranch(fresh, "main")).resolves.toBeUndefined(); // already on it
+    const repo = makeRepo();
+    git(repo, "checkout", "-q", "--detach");
+    fs.writeFileSync(path.join(repo, "README.md"), "changed\n");
+    await expect(checkoutBranch(repo, "feat/x")).rejects.toThrow(/on a detached HEAD/);
+  });
 });
 
 describe("branches on origin", () => {
@@ -169,6 +181,20 @@ describe("a folder's uncommitted lines", () => {
     fs.writeFileSync(path.join(repo, "new.txt"), "x\n");
     forgetState(repo); // what a folder-change notice does
     expect(await worktreeState(repo)).toMatchObject({ dirtyFiles: 2, insertions: 2, deletions: 1 });
+  });
+
+  it("counts the files Source Control lists: each file in a new folder, and a staged file with more edits once", async () => {
+    const repo = makeRepo({ "a.txt": "one\n", "b.txt": "two\n" });
+    fs.mkdirSync(path.join(repo, "newdir"));
+    fs.writeFileSync(path.join(repo, "newdir", "x.txt"), "x\n");
+    fs.writeFileSync(path.join(repo, "newdir", "y.txt"), "y\n");
+    fs.writeFileSync(path.join(repo, "a.txt"), "one!\n");
+    git(repo, "add", "a.txt");
+    fs.writeFileSync(path.join(repo, "a.txt"), "one!!\n"); // staged, then edited again
+    fs.writeFileSync(path.join(repo, "b.txt"), "two!\n");
+    const listed = changedPaths(await scmStatus(repo));
+    expect(listed.sort()).toEqual(["a.txt", "b.txt", "newdir/x.txt", "newdir/y.txt"]);
+    expect((await worktreeState(repo)).dirtyFiles).toBe(listed.length);
   });
 
   it("reads git's shortstat wording, singular or plural", () => {

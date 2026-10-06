@@ -6,7 +6,7 @@ import { formatTokens, type UsageReport } from "../src/shared/types";
 const now = Date.parse("2026-10-03T15:00:00Z");
 const resetsAt = now + 2 * 3_600_000; // the window started 3 hours ago
 const report = (pct: number): UsageReport => ({
-  claude: { agent: "claude", plan: "Max", limits: [{ label: "5-hour limit", usedPct: pct, resetsAt }], at: now },
+  claude: { agent: "claude", plan: "Max", limits: [{ label: "5-hour limit", window: "5h", usedPct: pct, resetsAt }], at: now },
   codex: null,
 });
 const row = (conv: string, model: string, input: number, output: number, cacheRead = 0): UsageRow => ({ conv, agent: "claude", model, input, output, cacheRead, cacheWrite: 0, replies: 1 });
@@ -44,7 +44,7 @@ describe("token meters", () => {
 
   it("has no window share without a current 5-hour reading", () => {
     expect(fiveHourWindows(report(10), resetsAt + 1)).toEqual({}); // already reset
-    expect(fiveHourWindows({ claude: { agent: "claude", plan: null, limits: [{ label: "5-hour limit", usedPct: 0, resetsAt: null, note: "no reading yet" }], at: now }, codex: null }, now)).toEqual({});
+    expect(fiveHourWindows({ claude: { agent: "claude", plan: null, limits: [{ label: "5-hour limit", window: "5h", usedPct: 0, resetsAt: null, note: "no reading yet" }], at: now }, codex: null }, now)).toEqual({});
     const m = computeMeters({ sessions: [{ id: "A", conversations: ["a"] }], rows: [row("a", "x", 1, 1)], windowRows: {}, todayRows: [], report: { claude: null, codex: null }, now });
     expect(m.sessions.A.window).toBeNull();
   });

@@ -19,7 +19,7 @@ const CLAUDE_SONNET = [3, 15, 0.3, 3.75];
 const CLAUDE_HAIKU = [1, 5, 0.1, 1.25];
 const CODEX = [1.25, 10, 0.125, 1.25];
 
-export function weightsFor(agent: AgentKind, model: string | null): number[] {
+function weightsFor(agent: AgentKind, model: string | null): number[] {
   if (agent === "codex") return CODEX;
   const m = (model ?? "").toLowerCase();
   if (/haiku/.test(m)) return CLAUDE_HAIKU;
@@ -46,7 +46,7 @@ const add = (t: TokenCounts, r: UsageRow) => {
 export function fiveHourWindows(report: UsageReport, now: number): Partial<Record<AgentKind, { start: number; usedPct: number; resetsAt: number }>> {
   const out: Partial<Record<AgentKind, { start: number; usedPct: number; resetsAt: number }>> = {};
   for (const u of [report.claude, report.codex]) {
-    const w = u?.limits.find((l) => /5-hour/i.test(l.label) && !l.note && l.resetsAt);
+    const w = u?.limits.find((l) => l.window === "5h" && !l.note && l.resetsAt);
     if (u && w?.resetsAt && w.resetsAt > now) out[u.agent] = { start: w.resetsAt - WINDOW_MS, usedPct: w.usedPct, resetsAt: w.resetsAt };
   }
   return out;

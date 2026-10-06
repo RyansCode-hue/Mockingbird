@@ -1,45 +1,10 @@
 import { ADO_API } from "./ado";
-import { branchesOf, currentBranch, dirtyFileCount, git, originUrl } from "./git";
-import { BASE_NAMES } from "./worktrees";
+import { BASE_NAMES, branchesOf, currentBranch, git, originRemote, remoteName, type RemoteRepo } from "./git";
+import { dirtyFileCount } from "./scm";
 import { listAllFiles } from "./find";
-import { quote } from "./shell";
+import { quote, type ShellResult } from "./shell";
 import type { ShellRunner } from "./headless";
 import type { PrPreflight, PrTarget } from "../shared/types";
-
-/** Where a repository's origin lives, read from its remote URL. */
-export type RemoteRepo =
-  | { provider: "ado"; base: string; project: string; repo: string }
-  | { provider: "github"; owner: string; repo: string };
-
-const dec = (s: string) => decodeURIComponent(s);
-
-/**
- * Recognise Azure DevOps and GitHub remotes (HTTPS and SSH):
- * https://[user@]dev.azure.com/org/project/_git/repo,
- * https://org.visualstudio.com/[DefaultCollection/]project/_git/repo,
- * git@ssh.dev.azure.com:v3/org/project/repo, org@vs-ssh.visualstudio.com:v3/org/project/repo,
- * https://github.com/owner/repo(.git), git@github.com:owner/repo(.git).
- */
-export function parseRemote(url: string): RemoteRepo | null {
-  const u = url.trim();
-  let m = /^https?:\/\/(?:[^@/]+@)?dev\.azure\.com\/([^/]+)\/([^/]+)\/_git\/([^/?#]+)/i.exec(u);
-  if (m) return { provider: "ado", base: `https://dev.azure.com/${m[1]}`, project: dec(m[2]), repo: dec(m[3]) };
-  m = /^https?:\/\/(?:[^@/]+@)?([^./]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/]+)\/_git\/([^/?#]+)/i.exec(u);
-  if (m) return { provider: "ado", base: `https://${m[1]}.visualstudio.com`, project: dec(m[2]), repo: dec(m[3]) };
-  m = /^(?:ssh:\/\/)?[^@]+@(?:ssh\.dev\.azure\.com|vs-ssh\.visualstudio\.com):(?:\d+\/)?v3\/([^/]+)\/([^/]+)\/([^/]+?)\/?$/i.exec(u);
-  if (m) return { provider: "ado", base: `https://dev.azure.com/${m[1]}`, project: dec(m[2]), repo: dec(m[3]) };
-  m = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])([^/]+)\/([^/]+?)(?:\.git)?\/?$/i.exec(u);
-  if (m) return { provider: "github", owner: m[1], repo: m[2] };
-  return null;
-}
-
-export const remoteName = (r: RemoteRepo) => (r.provider === "ado" ? `${r.project}/${r.repo}` : `${r.owner}/${r.repo}`);
-
-/** Where `cwd`'s origin lives, or null when there's no origin or it's neither Azure DevOps nor GitHub. */
-export async function originRemote(cwd: string): Promise<RemoteRepo | null> {
-  const url = await originUrl(cwd);
-  return url ? parseRemote(url) : null;
-}
 
 /** The PR's base: the first usual name for the target that exists on origin. */
 export function pickBase(target: PrTarget, remoteBranches: string[]): string | null {
@@ -64,6 +29,24 @@ export function prBaseProblem(target: PrTarget, base: string, bases: string[]): 
 /** An ADO API call with the configured PAT (ado.adoRequest), injected so tests can stub it. */
 export type AdoCall = (url: string, init?: RequestInit) => Promise<any>;
 
+/** What finding or opening a pull request needs: ADO's API, the user's shell for gh, and the repository it runs in. */
+export interface PrDeps {
+  ado: AdoCall;
+  run: ShellRunner;
+  cwd: string;
+  env: Record<string, string>;
+}
+
+/** The user's gh, run in the repository, so its sign-in applies. */
+export const runGh = (deps: PrDeps, cmd: string, input = "", timeoutMs = 30_000): Promise<ShellResult> =>
+  deps.run(cmd, input, { cwd: deps.cwd, env: deps.env, timeoutMs });
+
+/** A failed gh run's error: what it printed, else its exit code. */
+export const ghError = (r: ShellResult): Error => new Error(`gh: ${r.out.trim().slice(0, 300) || `exited with code ${r.code}`}`);
+
+/** A pull request's page on Azure DevOps, from its repository's page. */
+export const adoPrUrl = (webUrl: string, id: number): string => `${webUrl}/pullrequest/${id}`;
+
 /** An Azure DevOps repository: its id, its API root (`<apiUrl>/pullrequests`…) and its page. */
 export async function adoRepo(call: AdoCall, r: Extract<RemoteRepo, { provider: "ado" }>): Promise<{ id: string; apiUrl: string; webUrl: string }> {
   const project = `${r.base}/${encodeURIComponent(r.project)}`;
@@ -77,17 +60,17 @@ export async function findOpenPr(
   remote: RemoteRepo,
   branch: string,
   base: string,
-  deps: { ado: AdoCall; run: ShellRunner; cwd: string; env: Record<string, string> }
+  deps: PrDeps
 ): Promise<{ id: number; url: string } | null> {
   if (remote.provider === "ado") {
     const repo = await adoRepo(deps.ado, remote);
     const q = `searchCriteria.sourceRefName=${encodeURIComponent(`refs/heads/${branch}`)}&searchCriteria.targetRefName=${encodeURIComponent(`refs/heads/${base}`)}&searchCriteria.status=active`;
     const r = await deps.ado(`${repo.apiUrl}/pullrequests?${q}&${ADO_API}`);
     const pr = (r?.value ?? [])[0];
-    return pr ? { id: pr.pullRequestId, url: `${repo.webUrl}/pullrequest/${pr.pullRequestId}` } : null;
+    return pr ? { id: pr.pullRequestId, url: adoPrUrl(repo.webUrl, pr.pullRequestId) } : null;
   }
-  const r = await deps.run(`gh pr list --head ${quote(branch)} --base ${quote(base)} --state open --json number,url --limit 1`, "", { cwd: deps.cwd, env: deps.env, timeoutMs: 30_000 });
-  if (r.code !== 0) throw new Error(`gh: ${r.out.trim().slice(0, 300)}`);
+  const r = await runGh(deps, `gh pr list --head ${quote(branch)} --base ${quote(base)} --state open --json number,url --limit 1`);
+  if (r.code !== 0) throw ghError(r);
   const list = JSON.parse(r.out || "[]");
   return list[0] ? { id: list[0].number, url: list[0].url } : null;
 }
@@ -102,7 +85,7 @@ const ADO_DESC_MAX = 4000;
 export async function openPr(
   remote: RemoteRepo,
   pr: { branch: string; base: string; title: string; description: string; workItemId?: string },
-  deps: { ado: AdoCall; run: ShellRunner; cwd: string; env: Record<string, string> }
+  deps: PrDeps
 ): Promise<{ id: number; url: string }> {
   if (remote.provider === "ado") {
     const repo = await adoRepo(deps.ado, remote);
@@ -119,15 +102,11 @@ export async function openPr(
       }),
     });
     if (!r?.pullRequestId) throw new Error("Azure DevOps didn't return the new pull request");
-    return { id: r.pullRequestId, url: `${repo.webUrl}/pullrequest/${r.pullRequestId}` };
+    return { id: r.pullRequestId, url: adoPrUrl(repo.webUrl, r.pullRequestId) };
   }
-  const r = await deps.run(`gh pr create --head ${quote(pr.branch)} --base ${quote(pr.base)} --title ${quote(pr.title)} --body-file -`, pr.description, {
-    cwd: deps.cwd,
-    env: deps.env,
-    timeoutMs: 60_000,
-  });
+  const r = await runGh(deps, `gh pr create --head ${quote(pr.branch)} --base ${quote(pr.base)} --title ${quote(pr.title)} --body-file -`, pr.description, 60_000);
   const url = r.out.split("\n").map((l) => l.trim()).find((l) => /^https:\/\/github\.com\/.+\/pull\/\d+$/.test(l));
-  if (r.code !== 0 || !url) throw new Error(`gh: ${r.out.trim().slice(0, 300) || `exited with code ${r.code}`}`);
+  if (r.code !== 0 || !url) throw ghError(r);
   return { id: Number(url.split("/").pop()), url };
 }
 
@@ -150,7 +129,7 @@ export async function prPreflight(
   root: string,
   ticketId: string,
   target: PrTarget,
-  deps: { ado: AdoCall; run: ShellRunner; env: Record<string, string> }
+  deps: Omit<PrDeps, "cwd">
 ): Promise<PrPreflight & { lookupError: string | null }> {
   const branch = await currentBranch(root);
   const remoteBranches = (await branchesOf(root)).origin;

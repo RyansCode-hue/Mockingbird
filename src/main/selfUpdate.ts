@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { UPDATE_STEPS, type UpdateOutcome, type UpdateProgress, type UpdateStepId } from "../shared/types";
 import { isNewer } from "./updates";
-import { git } from "./git";
+import { isRepo, originUrl, parseRemote } from "./git";
 import { indexRepos } from "./repos";
 import { loginShell, quote } from "./shell";
 
@@ -14,21 +14,21 @@ import { loginShell, quote } from "./shell";
  */
 
 const LOG_LINES = 400;
-export const MIN_NODE = 22;
+const MIN_NODE = 22;
 
 /** Is this git remote URL (https or ssh) the GitHub repository owner/repo? */
 export function remoteMatches(url: string, owner: string, repo: string): boolean {
-  const m = url.trim().match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?\/?$/i);
-  return !!m && m[1].toLowerCase() === owner.toLowerCase() && m[2].toLowerCase() === repo.toLowerCase();
+  const r = parseRemote(url);
+  return r?.provider === "github" && r.owner.toLowerCase() === owner.toLowerCase() && r.repo.toLowerCase() === repo.toLowerCase();
 }
 
 /**
- * The folder's origin URL, or null when it isn't a repository (git exits 128)
- * or has no origin (2). Anything else — git missing, a timeout — is an error,
- * not an answer about the folder.
+ * The folder's origin URL, or null when it isn't a repository or has no
+ * origin. Anything else — git missing, a timeout — is an error, not an answer
+ * about the folder.
  */
 async function originOf(dir: string): Promise<string | null> {
-  return (await git(dir, ["remote", "get-url", "origin"], { okCodes: [0, 2, 128] })) || null;
+  return (await isRepo(dir)) ? originUrl(dir) : null;
 }
 
 /**
@@ -216,7 +216,7 @@ export function newestBuild(clone: string): string | null {
 }
 
 /** The detached installer. $MB_OPEN stands in for `open` in tests. */
-export const INSTALLER = `#!/bin/bash
+const INSTALLER = `#!/bin/bash
 # Mockingbird's installer, started by the app just before it quits for an update.
 # Waits for the old app to exit, swaps the new bundle in (putting the old one back
 # if anything fails), records the result for the next launch, and reopens the app.

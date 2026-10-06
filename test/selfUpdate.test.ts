@@ -27,6 +27,8 @@ describe("finding the clone", () => {
     expect(remoteMatches("git@github.com:ryanscode-hue/mockingbird.git", "RyansCode-hue", "Mockingbird")).toBe(true);
     expect(remoteMatches("https://github.com/RyansCode-hue/Mockingbird-fork", "RyansCode-hue", "Mockingbird")).toBe(false);
     expect(remoteMatches("https://gitlab.com/RyansCode-hue/Mockingbird", "RyansCode-hue", "Mockingbird")).toBe(false);
+    expect(remoteMatches("ssh://git@github.com/me/my.app.git", "me", "my.app")).toBe(true);
+    expect(remoteMatches("https://github.com/me/my.app", "me", "my")).toBe(false);
   });
 
   it("finds it under the repo folders, or uses the folder chosen in Settings (which must be it)", async () => {
@@ -78,7 +80,7 @@ function cloneWithBuild(): string {
   return clone;
 }
 
-const happy = (clone: string): Parameters<typeof fakeExec>[0] => [
+const happy = (): Parameters<typeof fakeExec>[0] => [
   [/^git status/, { out: "" }],
   [/rev-parse --abbrev-ref/, { out: "main" }],
   [/symbolic-ref/, { out: "origin/main" }],
@@ -95,7 +97,7 @@ function runner(exec: Exec, clone: string | null, current = "1.1.5") {
 describe("preparing an update", () => {
   it("checks, pulls, installs and builds in order, then waits ready with the new build", async () => {
     const clone = cloneWithBuild();
-    const { exec, ran } = fakeExec(happy(clone));
+    const { exec, ran } = fakeExec(happy());
     const { r } = runner(exec, clone);
     const p = await r.prepare();
     expect(p).toMatchObject({ state: "ready", version: "1.2.0", appPath: path.join(clone, "release", "mac-arm64", "Mockingbird.app"), clone });
@@ -121,22 +123,22 @@ describe("preparing an update", () => {
   it("explains a missing clone, old Node, and a clone that can't fast-forward", async () => {
     expect((await runner(fakeExec([]).exec, null).r.prepare()).error).toMatch(/No clone of Mockingbird was found/);
     const clone = cloneWithBuild();
-    const old = runner(fakeExec([[/^node -v/, { out: "v18.20.8" }], ...happy(clone)]).exec, clone);
+    const old = runner(fakeExec([[/^node -v/, { out: "v18.20.8" }], ...happy()]).exec, clone);
     expect(await old.r.prepare()).toMatchObject({ step: "node", error: expect.stringMatching(/needs Node 22; your shell has v18\.20\.8/) });
-    const diverged = runner(fakeExec([[/merge --ff-only/, { code: 128, out: "fatal: Not possible to fast-forward" }], ...happy(clone)]).exec, clone);
+    const diverged = runner(fakeExec([[/merge --ff-only/, { code: 128, out: "fatal: Not possible to fast-forward" }], ...happy()]).exec, clone);
     expect(await diverged.r.prepare()).toMatchObject({ step: "pull", error: expect.stringMatching(/commits GitHub's main doesn't/) });
   });
 
   it("refuses a build that isn't newer than what's running", async () => {
     const clone = cloneWithBuild();
-    const { r } = runner(fakeExec(happy(clone)).exec, clone, "1.2.0");
+    const { r } = runner(fakeExec(happy()).exec, clone, "1.2.0");
     expect(await r.prepare()).toMatchObject({ state: "failed", step: "verify", error: expect.stringMatching(/nothing newer to install/) });
   });
 
   it("can be cancelled mid-step, leaving nothing installed", async () => {
     const clone = cloneWithBuild();
     const npm = (signal: AbortSignal) => new Promise<{ code: number; out: string }>((res) => signal.addEventListener("abort", () => res({ code: 1, out: "cancelled" })));
-    const { r } = runner(fakeExec([[/^npm ci/, npm], ...happy(clone)]).exec, clone);
+    const { r } = runner(fakeExec([[/^npm ci/, npm], ...happy()]).exec, clone);
     const done = r.prepare();
     await until(() => r.progress.step === "install");
     r.cancel();
@@ -145,7 +147,7 @@ describe("preparing an update", () => {
 
   it("stays ready to install when the restart is called off", async () => {
     const clone = cloneWithBuild();
-    const { r } = runner(fakeExec(happy(clone)).exec, clone);
+    const { r } = runner(fakeExec(happy()).exec, clone);
     await r.prepare();
     r.markInstalling();
     expect(r.progress.state).toBe("installing");

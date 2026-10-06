@@ -1,9 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
-import type { AgentKind, NewSessionRequest, Settings } from "../shared/types";
+import { AGENT_NAME, type AgentKind, type NewSessionRequest, type Settings } from "../shared/types";
 import { expandHome } from "./store";
 import { usageReporterArgs } from "./usage";
-import type { McpLaunch } from "./messaging";
+import { MCP_SERVER, MCP_TOOL, claudeToolName, type McpLaunch } from "./messaging";
 import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
 import { readSlice } from "./fileOps";
 
@@ -14,7 +14,6 @@ export interface LaunchContext {
 
 /** Everything that differs between the coding-agent CLIs a session can run. */
 export interface AgentAdapter {
-  label: string;
   /** The Settings field holding this agent's binary name or path. */
   binSetting: keyof Pick<Settings, "claudeBin" | "codexBin">;
   launchArgs(req: NewSessionRequest, ctx: LaunchContext): string[];
@@ -30,7 +29,6 @@ export interface AgentAdapter {
 }
 
 const claude: AgentAdapter = {
-  label: "Claude",
   binSetting: "claudeBin",
   promptInArgs: false,
   launchArgs(req, ctx) {
@@ -44,12 +42,7 @@ const claude: AgentAdapter = {
     // --mcp-config adds to the user's own servers; the allow rule spares a
     // permission prompt on every message
     if (ctx.mcp) {
-      args.push(
-        "--mcp-config",
-        JSON.stringify({ mcpServers: { mockingbird: { type: "stdio", ...ctx.mcp } } }),
-        "--allowedTools",
-        "mcp__mockingbird__list_sessions,mcp__mockingbird__send_message"
-      );
+      args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", [MCP_TOOL.listSessions, MCP_TOOL.sendMessage].map(claudeToolName).join(","));
     }
     return args;
   },
@@ -102,16 +95,19 @@ let cwdIndex: { cwds: Set<string>; at: number } | null = null;
 function codexCwds(): Set<string> {
   if (cwdIndex && Date.now() - cwdIndex.at < INDEX_TTL_MS) return cwdIndex.cwds;
   const cwds = new Set<string>();
-  for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) {
-    const cwd = rolloutCwd(file);
-    if (cwd) cwds.add(cwd);
+  try {
+    for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) {
+      const cwd = rolloutCwd(file);
+      if (cwd) cwds.add(cwd);
+    }
+  } catch (err) {
+    console.warn(`[agents] can't tell which folders have a Codex conversation to resume, so they start fresh: ${(err as Error).message}`);
   }
   cwdIndex = { cwds, at: Date.now() };
   return cwds;
 }
 
 const codex: AgentAdapter = {
-  label: "Codex",
   binSetting: "codexBin",
   promptInArgs: true,
   launchArgs(req, ctx) {
@@ -122,16 +118,7 @@ const codex: AgentAdapter = {
     // -c values are parsed as TOML, so the string needs its quotes
     if (req.effort) args.push("-c", `model_reasoning_effort="${req.effort}"`);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
-    if (ctx.mcp) {
-      // -c values are TOML; JSON strings, arrays and this flat table are valid TOML too
-      const env = Object.entries(ctx.mcp.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
-      args.push(
-        "-c", `mcp_servers.mockingbird.command=${JSON.stringify(ctx.mcp.command)}`,
-        "-c", `mcp_servers.mockingbird.args=${JSON.stringify(ctx.mcp.args)}`,
-        "-c", `mcp_servers.mockingbird.env={${env}}`,
-        "-c", `mcp_servers.mockingbird.default_tools_approval_mode="approve"`
-      );
-    }
+    if (ctx.mcp) args.push(...codexMcpSettings(ctx.mcp).flatMap((c) => ["-c", c]));
     // positional, last, after "--": a prompt starting with "-" is not an option
     if (req.initialPrompt) args.push("--", req.initialPrompt);
     return args;
@@ -144,20 +131,52 @@ const codex: AgentAdapter = {
   },
   // the conversation id ends the rollout's file name; bounded like the cwd index
   conversationExists(id) {
-    for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) if (ROLLOUT_NAME_RE.exec(path.basename(file))?.[1] === id) return true;
+    try {
+      for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) if (ROLLOUT_NAME_RE.exec(path.basename(file))?.[1] === id) return true;
+    } catch (err) {
+      console.warn(`[agents] can't look for Codex conversation ${id}, so the session starts fresh: ${(err as Error).message}`);
+    }
     return false;
   },
 };
 
 const ADAPTERS: Record<AgentKind, AgentAdapter> = { claude, codex };
 
+/** Claude's --mcp-config value for the Mockingbird MCP server. */
+export function claudeMcpConfig(mcp: McpLaunch): string {
+  return JSON.stringify({ mcpServers: { [MCP_SERVER]: { type: "stdio", ...mcp } } });
+}
+
+/**
+ * Codex's -c settings for the Mockingbird MCP server, its tools pre-approved.
+ * -c values are TOML; JSON strings, arrays and this flat table are valid TOML
+ * too. `toolTimeoutSec` raises Codex's limit for a tool that can take minutes.
+ */
+export function codexMcpSettings(mcp: McpLaunch, opts: { toolTimeoutSec?: number } = {}): string[] {
+  const key = `mcp_servers.${MCP_SERVER}`;
+  const env = Object.entries(mcp.env).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", ");
+  return [
+    `${key}.command=${JSON.stringify(mcp.command)}`,
+    `${key}.args=${JSON.stringify(mcp.args)}`,
+    `${key}.env={${env}}`,
+    `${key}.default_tools_approval_mode="approve"`,
+    ...(opts.toolTimeoutSec ? [`${key}.tool_timeout_sec=${opts.toolTimeoutSec}`] : []),
+  ];
+}
+
 /** Sessions persisted before agents existed carry no agent field — they were all Claude. */
 export function agentFor(kind: AgentKind | null | undefined): AgentAdapter {
   return ADAPTERS[kind ?? "claude"];
 }
 
-/** An agent's name as people see it: "Claude", "Codex". */
-export const agentLabel = (kind: AgentKind | null | undefined): string => agentFor(kind).label;
+/** An agent's name as people see it: "Claude", "Codex" (sessions saved before agents existed are Claude's). */
+export const agentLabel = (kind: AgentKind | null | undefined): string => AGENT_NAME[kind ?? "claude"];
+
+/**
+ * Whether a binary from SessionManager.binFor is an installed CLI: once the
+ * user's shell has found it, it is a path; a bare name means it wasn't found.
+ */
+export const isInstalledBin = (bin: string): boolean => bin.includes("/");
 
 /** An agent CLI's version, e.g. "2.1.5" from "2.1.5 (Claude Code)" or "codex-cli 0.46.0". */
 export function cliVersion(out: string): string | null {

@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { Store, appendLogLine, expandHome, MB_DIR } from "./store";
-import { writeFileAtomic } from "./fileOps";
+import { readJsonFile, writeFileAtomic } from "./fileOps";
 import { SessionManager, paneEnv } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
@@ -29,15 +29,15 @@ import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, adoRequest } from "./ado";
 import { PipelineStore } from "./pipeline";
-import { openPr, parseRemote, prBaseProblem, prDescriptionPrompt, prError, prPreflight, remoteName, summaryOf } from "./pullRequests";
+import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
-import { currentBranch, git } from "./git";
+import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS } from "./agentFiles";
 import { handoffKickoff, handoffPrompt, repoState, transcriptDigest, transcriptLines } from "./handoff";
 import { presetRequest } from "./presets";
 import { reviewPrompt } from "./review";
 import { shouldNotify } from "./notifications";
-import { composeRollup, weekBounds } from "./rollup";
+import { composeRollup, hoursMinutes, weekBounds } from "./rollup";
 import { MessageLog } from "./messageLog";
 import { changedFiles, overlaps, type WorktreeChanges } from "./conflicts";
 import { changesSince, dropSnapshots, listSnapshots, restoreSnapshot, takeSnapshot } from "./snapshots";
@@ -45,11 +45,11 @@ import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
 import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
-import { cliVersion } from "./agents";
+import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
-import { localDay, topOfKey } from "../shared/types";
+import { localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 
@@ -131,7 +131,7 @@ function lookUpBins(reset = false): Promise<void> {
 async function installedBin(kind: AgentKind): Promise<string | null> {
   await lookUpBins();
   const bin = sessions.binFor(kind);
-  return bin.includes("/") ? bin : null;
+  return isInstalledBin(bin) ? bin : null;
 }
 const otherAgent = (a: AgentKind): AgentKind => (a === "claude" ? "codex" : "claude");
 /** The agent to ask a one-off question: the one wanted, or the other one when it isn't installed. */
@@ -142,7 +142,6 @@ async function askingAgent(want: AgentKind = "claude"): Promise<{ agent: AgentKi
   }
   return { agent: want, bin: sessions.binFor(want) }; // neither: askAgent says it isn't installed
 }
-const agentName = (a: AgentKind) => (a === "codex" ? "Codex" : "Claude Code");
 /** One question for an agent's CLI (Sonnet, for Claude), answered with the reply alone; an empty reply is an error naming `what`. */
 async function askFor(prompt: string, who: { agent: AgentKind; bin: string }, o: { tag: string; label: RegExp; timeoutMs: number; what: string }): Promise<string> {
   const reply = await askAgent(prompt, { ...who, run: userShellWithInput, env: paneEnv(), tag: o.tag, model: "sonnet", timeoutMs: o.timeoutMs });
@@ -167,11 +166,7 @@ function notifySession(sessionId: string, title: string, body: string, kind: "wa
 // working sessions. No badge when nothing is waiting.
 let tray: Tray | null = null;
 
-function fmtWait(since: number | null): string {
-  if (!since) return "";
-  const m = Math.max(0, Math.round((Date.now() - since) / 60000));
-  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
-}
+const fmtWait = (since: number | null): string => (since ? hoursMinutes(Date.now() - since) : "");
 
 function focusPane(sessionId?: string): void {
   const win = BrowserWindow.getAllWindows()[0];
@@ -179,7 +174,7 @@ function focusPane(sessionId?: string): void {
   if (win.isMinimized()) win.restore();
   win.show();
   app.focus({ steal: true });
-  if (sessionId) win.webContents.send("ui:command", "focus-session", sessionId);
+  if (sessionId) win.webContents.send("ui:command", UI_COMMANDS.focusSession, sessionId);
 }
 
 function focusRoom(roomId: string): void {
@@ -233,7 +228,7 @@ function updateTray(): void {
     label: "New session ⌘N",
     click: () => {
       focusPane();
-      toWindow("ui:command", "new-session");
+      toWindow("ui:command", UI_COMMANDS.newSession);
     },
   });
   template.push({ label: "Run 4pm wrap-up", click: () => runDebrief("wrapUp", sessions, store).catch((err) => logError("debrief:wrapUp", err)) });
@@ -313,10 +308,10 @@ app.whenReady().then(() => {
             title: "Mockingbird update available",
             body: `v${u.latest} is out (you're on v${u.current}). Click to update — Mockingbird builds it in your clone.`,
           });
-          // the window's update panel (ui:command "update") pulls, builds and restarts in-app
+          // the window's update panel pulls, builds and restarts in-app
           n.on("click", () => {
             focusPane();
-            toWindow("ui:command", "update");
+            toWindow("ui:command", UI_COMMANDS.update);
           });
           n.show();
         }
@@ -670,6 +665,7 @@ handle("collab:revokeKind", (id, kind) => collab.revokeAllowKind(id, kind));
 handle("collab:resetCopy", (id) => collab.resetTestCopy(id));
 handle("collab:participants", (id, specs) => collab.setParticipants(id, specs));
 handle("collab:list", () => collab.list());
+handle("collab:problems", () => collab.unreadable());
 handle("collab:create", (spec) => collab.create(spec));
 handle("collab:delete", (id) => collab.delete(id));
 handle("collab:send", (id, text) => collab.send(id, text));
@@ -714,35 +710,24 @@ handle("update:check", () => checkForUpdate());
 handle("agents:update", async (agent) => {
   const kind = agent === "codex" ? "codex" : "claude";
   const bin = await installedBin(kind);
-  if (!bin) throw new Error(`${kind} isn't installed (not found on your shell's PATH)`);
+  if (!bin) throw new Error(`${agentLabel(kind)} isn't installed (not found on your shell's PATH)`);
   const r = await userShell(`${quote(bin)} update 2>&1`, 180_000);
-  if (r.code !== 0) throw new Error(r.out || `${kind} update exited with code ${r.code}`);
+  if (r.code !== 0) throw new Error(r.out || `${agentLabel(kind)}'s update exited with code ${r.code}`);
   void lookUpBins(true); // a self-updater may have moved the binary
   return r.out.split("\n").slice(-2).join(" · ");
 });
 // ---- connectors (Settings → Connectors card) ----
 const wtFile = (name: string) => path.join(expandHome(store.settings.workTrackerPath), name);
-/** A JSON config file: {} when it doesn't exist yet, an error when it can't be parsed. */
-const readJsonConfig = (file: string): any => {
-  if (!fs.existsSync(file)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (err) {
-    // don't pretend the file said nothing — a syntax error here shows up in the
-    // UI as "no connectors configured", which sends people down the wrong path
-    throw new Error(`${file} is not valid JSON: ${(err as Error).message}`);
-  }
-};
 
 handle("connectors:status", async () => {
   const az = (await which("az")) !== null;
-  const globalMcp = Object.keys(readJsonConfig(path.join(os.homedir(), ".claude.json")).mcpServers ?? {});
-  const projectMcp = Object.keys(readJsonConfig(wtFile(".mcp.json")).mcpServers ?? {});
+  const globalMcp = Object.keys(readJsonFile(path.join(os.homedir(), ".claude.json"), {}).mcpServers ?? {});
+  const projectMcp = Object.keys(readJsonFile(wtFile(".mcp.json"), {}).mcpServers ?? {});
   return { az, global: globalMcp, project: projectMcp };
 });
 
 handle("ado:config:get", () => {
-  const a = readJsonConfig(wtFile("config.json")).azureDevOps ?? {};
+  const a = readJsonFile(wtFile("config.json"), {}).azureDevOps ?? {};
   return { orgUrl: a.orgUrl ?? "", project: a.project ?? "", patFile: a.patFile ?? "" };
 });
 
@@ -751,7 +736,7 @@ handle("ado:config:set", (patch) => {
   const wt = expandHome(store.settings.workTrackerPath);
   fs.mkdirSync(wt, { recursive: true });
   const file = path.join(wt, "config.json");
-  const cfg = readJsonConfig(file);
+  const cfg = readJsonFile(file, {});
   cfg.azureDevOps = {
     ...(cfg.azureDevOps ?? {}),
     orgUrl: String(patch?.orgUrl ?? "").trim(),
@@ -771,7 +756,7 @@ handle("mcp:add", (name, command) => {
   const parts = String(command ?? "").trim().split(/\s+/);
   if (!n || !parts[0]) throw new Error("Name and command are required");
   const file = wtFile(".mcp.json");
-  const j = readJsonConfig(file);
+  const j = readJsonFile(file, {});
   j.mcpServers = { ...(j.mcpServers ?? {}), [n]: { command: parts[0], args: parts.slice(1) } };
   writeFileAtomic(file, JSON.stringify(j, null, 2));
   return { ok: true };
@@ -779,7 +764,7 @@ handle("mcp:add", (name, command) => {
 
 handle("mcp:remove", (name) => {
   const file = wtFile(".mcp.json");
-  const j = readJsonConfig(file);
+  const j = readJsonFile(file, {});
   if (j.mcpServers) delete j.mcpServers[String(name)];
   writeFileAtomic(file, JSON.stringify(j, null, 2));
   return { ok: true };
@@ -795,7 +780,7 @@ const pipelineDo = async <T,>(fn: () => T | Promise<T>): Promise<T> => {
   pipelineChanged();
   return r;
 };
-const prDeps = (root: string) => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
+const prDeps = (root: string): PrDeps => ({ ado: (url: string, init?: RequestInit) => adoRequest(store, url, init), run: userShellWithInput, env: paneEnv(), cwd: root });
 
 handle("pipeline:all", () => pipeline.all());
 handle("pipeline:stage", (id, stage, title) => pipelineDo(() => pipeline.setStage(String(id), stage, { title: title ? String(title) : undefined })));
@@ -842,9 +827,9 @@ handle("pipeline:pr:create", (sessionId, ticketId, req) =>
     if (wrongBase) throw new Error(`Can't open this pull request: ${wrongBase}`);
     if (pre.dirtyFiles) throw new Error(`Commit or stash the ${pre.dirtyFiles} uncommitted file${pre.dirtyFiles === 1 ? "" : "s"} first — they wouldn't be in the pull request`);
     if (pre.existing && pre.base === base) throw new Error(`A pull request is already open from ${pre.branch}: ${pre.existing.url}`);
-    const url = await git(s.cwd, ["remote", "get-url", "origin"]);
-    const remote = parseRemote(url);
-    if (!remote) throw new Error(`origin (${url}) isn't on Azure DevOps or GitHub`);
+    const url = await originUrl(s.cwd);
+    const remote = url ? parseRemote(url) : null;
+    if (!remote) throw new Error(url ? `origin (${url}) isn't on Azure DevOps or GitHub` : "The repository has no origin remote to open a pull request on");
     await scmPush(s.cwd);
     let made: { id: number; url: string };
     try {
@@ -881,8 +866,8 @@ handle("handoff:draft", async (id) => {
   const from: AgentKind = s.agent ?? "claude";
   const to = otherAgent(from);
   const bin = await installedBin(to);
-  if (!bin) throw new Error(`${agentName(to)} isn't installed — set it up in Settings → Agents`);
-  const conv = s.conversation?.id ?? s.conversations?.at(-1);
+  if (!bin) throw new Error(`${agentLabel(to)} isn't installed — set it up in Settings → Agents`);
+  const conv = conversationsOf(s).at(-1);
   let digest = "";
   if (conv && transcripts) {
     await syncTranscripts(transcripts);
@@ -1166,7 +1151,7 @@ handle("review:start", async (id) => {
   if (!s.repoPath) throw new Error("This session isn't in a repository");
   const author: AgentKind = s.agent ?? "claude";
   const reviewer = otherAgent(author);
-  if (!(await installedBin(reviewer))) throw new Error(`${agentName(reviewer)} isn't installed — set it up in Settings → Agents`);
+  if (!(await installedBin(reviewer))) throw new Error(`${agentLabel(reviewer)} isn't installed — set it up in Settings → Agents`);
   const base = await baseRef(s.cwd);
   const prompt = reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base });
   return companionSession(s, reviewer, `Review · ${s.ticketTitle ?? s.title}`, prompt);

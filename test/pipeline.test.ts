@@ -2,7 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { PipelineStore, stageComment } from "../src/main/pipeline";
-import { findOpenPr, prBaseProblem, openPr, parseRemote, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
+import { parseRemote } from "../src/main/git";
+import { findOpenPr, prBaseProblem, openPr, pickBase, prDescriptionPrompt, prError, prPreflight, summaryOf, type AdoCall } from "../src/main/pullRequests";
 import type { ShellRunner } from "../src/main/headless";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
@@ -91,6 +92,12 @@ describe("pull request remotes", () => {
     expect(parseRemote("git@github.com:RyansCode-hue/Mockingbird.git")).toEqual({ provider: "github", owner: "RyansCode-hue", repo: "Mockingbird" });
     expect(parseRemote("https://github.com/RyansCode-hue/Mockingbird")).toEqual({ provider: "github", owner: "RyansCode-hue", repo: "Mockingbird" });
     expect(parseRemote("https://gitlab.com/a/b.git")).toBeNull();
+    // names with dots keep them; only a final .git goes
+    expect(parseRemote("git@github.com:socketio/socket.io.git")).toEqual({ provider: "github", owner: "socketio", repo: "socket.io" });
+    expect(parseRemote("https://github.com/me/my.dotted.repo")).toEqual({ provider: "github", owner: "me", repo: "my.dotted.repo" });
+    for (const u of ["ssh://git@github.com/me/app.git", "git+https://github.com/me/app.git", "git://github.com/me/app", "https://www.github.com/me/app/"]) {
+      expect(parseRemote(u)).toEqual({ provider: "github", owner: "me", repo: "app" });
+    }
   });
   it("picks the target's usual branch name that exists on origin", () => {
     expect(pickBase("dev", ["main", "develop"])).toBe("develop");
@@ -152,6 +159,13 @@ describe("opening pull requests", () => {
     expect(r).toEqual({ id: 9, url: "https://github.com/RyansCode-hue/Mockingbird/pull/9" });
     expect(seen[0].cmd).toBe("gh pr create --head 'feat/x' --base 'main' --title 'Add x' --body-file -");
     expect(seen[0].input).toBe("body");
+  });
+  it("reports a failed gh run by what it printed, or by its exit code when it printed nothing", async () => {
+    const quiet: ShellRunner = async () => ({ code: 4, out: "" });
+    const gh = { provider: "github" as const, owner: "me", repo: "app" };
+    await expect(findOpenPr(gh, "b", "main", { ado: async () => ({}), run: quiet, cwd: "/", env: {} })).rejects.toThrow("gh: exited with code 4");
+    const loud: ShellRunner = async () => ({ code: 1, out: "  To get started with GitHub CLI, please run:  gh auth login\n" });
+    await expect(findOpenPr(gh, "b", "main", { ado: async () => ({}), run: loud, cwd: "/", env: {} })).rejects.toThrow(/^gh: To get started/);
   });
   it("says which PAT scope is missing when ADO refuses", () => {
     expect(prError(new Error("Azure DevOps 401 Unauthorized: x"))).toMatch(/Code \(Read & Write\)/);

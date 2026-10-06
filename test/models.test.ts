@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildCatalog, claudeAccountModels, codexModelsFromCache, collabModels, parseClaudeHelp } from "../src/main/models";
 
 const HELP = `
@@ -54,6 +54,18 @@ describe("reading models from the CLIs", () => {
     expect(c.codex.efforts).toEqual(["low", "max", "ultra"]);
     const bare = buildCatalog({ claudeHelp: null, recent: { claude: [], codex: [] }, home: fs.mkdtempSync(path.join(os.homedir(), "none-")) });
     expect(bare).toEqual({ claude: { models: [], efforts: ["low", "medium", "high", "xhigh", "max"] }, codex: { models: [], efforts: ["low", "medium", "high", "xhigh"] } });
+  });
+  it("leaves out a cache it can't parse, and says so", () => {
+    const home = fs.mkdtempSync(path.join(os.homedir(), "models-"));
+    fs.mkdirSync(path.join(home, ".codex"));
+    fs.writeFileSync(path.join(home, ".codex", "models_cache.json"), "{ half-written");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(buildCatalog({ claudeHelp: null, recent: { claude: [], codex: [] }, home }).codex.models).toEqual([]);
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/models_cache\.json/);
+    } finally {
+      warn.mockRestore();
+    }
   });
   it("seats a new Collaborate room with Codex's top model and the latest Opus and Fable", () => {
     const home = fs.mkdtempSync(path.join(os.homedir(), "models-"));

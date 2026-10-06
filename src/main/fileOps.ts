@@ -1,7 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 
-const isMissing = (err: unknown) => (err as NodeJS.ErrnoException).code === "ENOENT";
+/** The error of a file or folder that isn't there: "nothing yet", unlike every other failure. */
+export const isMissing = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === "ENOENT";
 
 /**
  * Replace a file's contents in one step: written next to it, then renamed over
@@ -28,6 +29,30 @@ export function writeFileAtomic(file: string, content: string, mode?: number): v
   } catch (err) {
     fs.rmSync(tmp, { force: true });
     throw err;
+  }
+}
+
+/**
+ * A JSON file's contents, or `fallback` when there is no file or it holds
+ * nothing but whitespace. A file that can't be read or isn't JSON throws,
+ * naming the file: "nothing configured" and "couldn't tell" must not look the
+ * same to the caller. Nothing is moved or rewritten — the file may be the
+ * user's own (their agent settings); for Mockingbird's own stores see
+ * readJsonOrSetAside.
+ */
+export function readJsonFile(file: string, fallback: unknown): any {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    if (isMissing(err)) return fallback;
+    throw err;
+  }
+  if (!text.trim()) return fallback;
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${file} is not valid JSON (${(err as Error).message})`);
   }
 }
 

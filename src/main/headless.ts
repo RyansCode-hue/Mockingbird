@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { quote, type ShellResult } from "./shell";
 import type { AgentKind } from "../shared/types";
+import { agentLabel, isInstalledBin } from "./agents";
 
 const TIMEOUT_MS = 120_000;
 
@@ -11,11 +12,11 @@ const TIMEOUT_MS = 120_000;
  * model needs is in the prompt, so it only writes. Claude runs a fast model;
  * Codex runs the user's default model at low effort, read-only.
  */
-export function claudeAskCommand(bin: string, model = "haiku"): string {
+function claudeAskCommand(bin: string, model = "haiku"): string {
   return [quote(bin), "-p", "--model", model, "--output-format", "json", "--tools", quote(""), "--strict-mcp-config", "--no-session-persistence"].join(" ");
 }
 
-export function codexAskCommand(bin: string, lastFile: string): string {
+function codexAskCommand(bin: string, lastFile: string): string {
   return [
     quote(bin),
     "exec",
@@ -82,7 +83,7 @@ export async function readCodexReply(lastFile: string, r: ShellResult, maxError 
  * folder, so no project instructions or settings load.
  */
 export async function askAgent(prompt: string, o: AskOptions): Promise<string> {
-  if (!o.bin.includes("/")) throw new Error(`${o.agent === "codex" ? "Codex" : "Claude Code"} isn't installed`);
+  if (!isInstalledBin(o.bin)) throw new Error(`${agentLabel(o.agent)} isn't installed`);
   const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), `mb-${o.tag}-`));
   const opts = { cwd: tmp, env: { ...o.env, MOCKINGBIRD_SESSION: `${o.tag}-${path.basename(tmp)}` }, timeoutMs: o.timeoutMs ?? TIMEOUT_MS };
   try {

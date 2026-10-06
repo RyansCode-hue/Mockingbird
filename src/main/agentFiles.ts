@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { isMissing } from "./fileOps";
 
 /**
  * Where the agent CLIs keep their files, and how to read their timestamps.
@@ -16,24 +17,36 @@ export const CODEX_DIR = path.join(os.homedir(), ".codex");
 export const CODEX_SESSIONS = path.join(CODEX_DIR, "sessions");
 export const ROLLOUT_NAME_RE = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/;
 
-/** Codex rollout files, newest first (by their date folders, then name), at most `limit` of them. */
+/**
+ * Codex rollout files, newest first (by their date folders, then name), at
+ * most `limit` of them. A folder that isn't there holds none. One that can't
+ * be listed is left out and logged; when that leaves nothing at all, it throws.
+ */
 export function* codexRollouts(limit = Infinity): Generator<string> {
+  const failed: string[] = [];
   const ls = (dir: string): string[] => {
     try {
       return fs.readdirSync(dir).sort().reverse();
-    } catch {
-      return []; // no Codex history (yet) at this level
+    } catch (err) {
+      if (!isMissing(err) && (err as NodeJS.ErrnoException).code !== "ENOTDIR") failed.push(`${dir}: ${(err as Error).message}`);
+      return []; // missing, or a stray file where a date folder goes: no rollouts there
     }
   };
   let n = 0;
-  for (const y of ls(CODEX_SESSIONS))
-    for (const m of ls(path.join(CODEX_SESSIONS, y)))
-      for (const d of ls(path.join(CODEX_SESSIONS, y, m)))
-        for (const f of ls(path.join(CODEX_SESSIONS, y, m, d))) {
-          if (!f.endsWith(".jsonl")) continue;
-          if (n++ >= limit) return;
-          yield path.join(CODEX_SESSIONS, y, m, d, f);
-        }
+  try {
+    for (const y of ls(CODEX_SESSIONS))
+      for (const m of ls(path.join(CODEX_SESSIONS, y)))
+        for (const d of ls(path.join(CODEX_SESSIONS, y, m)))
+          for (const f of ls(path.join(CODEX_SESSIONS, y, m, d))) {
+            if (!f.endsWith(".jsonl")) continue;
+            if (n >= limit) return;
+            n++;
+            yield path.join(CODEX_SESSIONS, y, m, d, f);
+          }
+  } finally {
+    if (failed.length && n) console.warn(`[codex] left out rollouts in folders that couldn't be listed: ${failed.join("; ")}`);
+  }
+  if (failed.length && !n) throw new Error(`Couldn't list Codex's sessions: ${failed.join("; ")}`);
 }
 
 /** A timestamp as epoch ms: an ISO string, or a number in seconds or milliseconds. Null when it isn't one. */

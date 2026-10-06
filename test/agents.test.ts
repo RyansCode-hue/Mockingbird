@@ -9,9 +9,10 @@ const base = { repoPath: null, useWorktree: false };
 
 // agents.ts caches its Codex index for 30s, so each test loads a fresh copy
 let agentFor: typeof import("../src/main/agents").agentFor;
+let agentLabel: typeof import("../src/main/agents").agentLabel;
 beforeEach(async () => {
   vi.resetModules();
-  ({ agentFor } = await import("../src/main/agents"));
+  ({ agentFor, agentLabel } = await import("../src/main/agents"));
 });
 
 function rollout(cwd: string, source: string, day = "01"): void {
@@ -37,7 +38,14 @@ describe("Claude launch", () => {
     expect(agentFor("codex").launchArgs({ ...base }, {}).join(" ")).not.toContain("mcp_servers.mockingbird");
   });
   it("is the agent for sessions saved before agents existed", () => {
-    expect(agentFor(undefined).label).toBe("Claude");
+    expect(agentFor(undefined)).toBe(agentFor("claude"));
+    expect(agentLabel(undefined)).toBe("Claude");
+    expect(agentLabel("codex")).toBe("Codex");
+  });
+  it("counts a binary as installed once the shell has found it (a path), not as a bare name", async () => {
+    const { isInstalledBin } = await import("../src/main/agents");
+    expect(isInstalledBin("/opt/homebrew/bin/claude")).toBe(true);
+    expect(isInstalledBin("claude")).toBe(false);
   });
 });
 
@@ -49,6 +57,7 @@ describe("Codex launch", () => {
     expect(args).toContain(`mcp_servers.mockingbird.args=["/h/.mockingbird/mcp.js"]`);
     expect(args).toContain(`mcp_servers.mockingbird.env={MOCKINGBIRD_SESSION="abc12345", ELECTRON_RUN_AS_NODE="1"}`);
     expect(args).toContain(`mcp_servers.mockingbird.default_tools_approval_mode="approve"`);
+    expect(args.join(" ")).not.toContain("tool_timeout_sec"); // only Collaborate's code reader needs minutes
     expect(args.slice(-2)).toEqual(["--", "Ticket #1\nline two"]);
   });
   it("passes a kickoff that starts with a dash as the prompt, not as options", () => {
@@ -95,5 +104,19 @@ describe("resume detection", () => {
     expect(codex.hasConversation("/work/exec-only")).toBe(false);
     expect(codex.hasConversation("/work/desktop")).toBe(false);
     expect(codex.hasConversation("/work/nothing")).toBe(false);
+  });
+  it("Codex: an unreadable sessions folder means starting fresh, and says why", () => {
+    const sessions = path.join(os.homedir(), ".codex", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.chmodSync(sessions, 0o000);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(agentFor("codex").hasConversation("/work/interactive")).toBe(false);
+      expect(agentFor("codex").conversationExists("0199aaaa-bbbb")).toBe(false);
+      expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([expect.stringContaining(sessions), expect.stringContaining(sessions)]);
+    } finally {
+      fs.chmodSync(sessions, 0o755);
+      warn.mockRestore();
+    }
   });
 });

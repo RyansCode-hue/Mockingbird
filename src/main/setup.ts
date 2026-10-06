@@ -5,6 +5,7 @@ import { indexRepos } from "./repos";
 import { hookStatus } from "./hooks";
 import { userShell, quote } from "./shell";
 import { adoIdentity } from "./ado";
+import { isInstalledBin } from "./agents";
 
 /**
  * The agents' binaries. `refresh` looks them up afresh in the user's shell
@@ -16,8 +17,8 @@ export interface AgentBins {
 }
 
 async function checkAgent(sessions: AgentBins, kind: AgentKind): Promise<AgentCheck> {
-  const bin = sessions.binFor(kind); // an absolute path once the user's shell found it
-  if (!bin.includes("/")) return { found: false, path: null, version: null, signedIn: null };
+  const bin = sessions.binFor(kind);
+  if (!isInstalledBin(bin)) return { found: false, path: null, version: null, signedIn: null };
   const path = bin;
   const version = (await userShell(`${quote(path)} --version 2>&1`)).out.split("\n")[0] || null;
   if (kind === "claude") {

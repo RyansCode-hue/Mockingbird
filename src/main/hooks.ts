@@ -4,7 +4,7 @@ import { StringDecoder } from "string_decoder";
 import { MB_DIR } from "./store";
 import { SessionManager } from "./sessions";
 import { SessionInfo } from "../shared/types";
-import { writeFileAtomic, writeGenerated } from "./fileOps";
+import { readJsonFile, writeFileAtomic, writeGenerated } from "./fileOps";
 import { CLAUDE_SETTINGS, CODEX_DIR } from "./agentFiles";
 
 const EVENTS_DIR = path.join(MB_DIR, "events");
@@ -30,18 +30,22 @@ const CODEX_EVENTS = ["Stop", "PermissionRequest", "UserPromptSubmit", "PreToolU
  */
 const codexPresent = (codexBin: string | null) => !!codexBin && fs.existsSync(codexBin);
 
-/** Parse a JSON config we are about to rewrite; an unparseable file aborts rather than being replaced. */
+/**
+ * A JSON config we are about to rewrite: {} when there is none yet. One that
+ * can't be read, or doesn't hold a JSON object, aborts the install rather than
+ * being replaced — it is the user's own file.
+ */
 function readConfig(file: string): any {
-  if (!fs.existsSync(file)) return {};
-  const raw = fs.readFileSync(file, "utf8");
+  const refuse = (why: string) => new Error(`${why}. Fix or move that file, then install hooks again — Mockingbird will not overwrite it.`);
+  let config: any;
   try {
-    return raw.trim() ? JSON.parse(raw) : {};
+    config = readJsonFile(file, {});
   } catch (err) {
-    throw new Error(
-      `${file} is not valid JSON (${(err as Error).message}). ` +
-        `Fix or move that file, then install hooks again — Mockingbird will not overwrite it.`
-    );
+    throw refuse((err as Error).message);
   }
+  const isObject = (v: unknown) => !!v && typeof v === "object" && !Array.isArray(v);
+  if (!isObject(config) || (config.hooks !== undefined && !isObject(config.hooks))) throw refuse(`${file} isn't a settings object with "hooks" as an object`);
+  return config;
 }
 
 /** Add our hook command to each event, leaving every existing hook in place. */
@@ -58,7 +62,7 @@ function mergeHooks(config: any, events: readonly string[]): void {
 
 function wired(file: string, events: readonly string[]): boolean {
   try {
-    const config = JSON.parse(fs.readFileSync(file, "utf8"));
+    const config = readJsonFile(file, {});
     return events.every((ev) => JSON.stringify(config.hooks?.[ev] ?? []).includes(HOOK_SCRIPT));
   } catch {
     return false; // missing or unreadable counts as not installed — the UI offers the install
@@ -93,19 +97,23 @@ export function ensureHookScript(): void {
   }
 }
 
-/** Write hook.sh and merge our hooks into ~/.claude/settings.json (preserving existing hooks). */
+/**
+ * Write hook.sh and merge our hooks into ~/.claude/settings.json (and Codex's
+ * hooks.json where its CLI is installed), keeping every hook already there.
+ * Both configs are read before either is written, so a refusal changes nothing.
+ */
 export function installHooks(codexBin: string | null): { installed: boolean; message: string } {
+  const withCodex = codexPresent(codexBin);
+  const settings = readConfig(CLAUDE_SETTINGS);
+  const codex = withCodex ? readConfig(CODEX_HOOKS) : null;
+
   fs.mkdirSync(EVENTS_DIR, { recursive: true });
   writeGenerated(HOOK_SCRIPT, SCRIPT, 0o755);
-
   // the user's own Claude and Codex configs are replaced in one step, so a
   // crash mid-write can't leave them truncated
-  const settings = readConfig(CLAUDE_SETTINGS);
   mergeHooks(settings, HOOK_EVENTS);
   writeFileAtomic(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2));
-
-  if (!codexPresent(codexBin)) return { installed: true, message: "Hooks installed into ~/.claude/settings.json" };
-  const codex = readConfig(CODEX_HOOKS);
+  if (!codex) return { installed: true, message: "Hooks installed into ~/.claude/settings.json" };
   mergeHooks(codex, CODEX_EVENTS);
   writeFileAtomic(CODEX_HOOKS, JSON.stringify(codex, null, 2)); // creates ~/.codex when Codex has never run
   return {

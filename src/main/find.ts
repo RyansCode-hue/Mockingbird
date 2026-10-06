@@ -1,25 +1,19 @@
 import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { git } from "./git";
+import { git, isRepo } from "./git";
 import type { FileHit, FileList, FileSearch, FileSearchOptions } from "../shared/types";
 
 const MAX_FILES = 50_000;
 const MAX_HITS = 2_000;
 const SEARCH_TIMEOUT_MS = 20_000;
 const MAX_TEXT = 240; // a minified line is cut to a window around its match
-// folders a non-git walk skips: dependencies and build output nobody opens by name
-const SKIP_DIRS = new Set(["node_modules", "dist", "build", "out", "target", "vendor", "__pycache__", "bin", "obj"]);
-
-/** Whether `root` is inside a git work tree. Only "not a repository" means no; other failures are real errors. */
-async function isRepo(root: string): Promise<boolean> {
-  try {
-    return (await git(root, ["rev-parse", "--is-inside-work-tree"])) === "true";
-  } catch (err) {
-    if (/not a git repository/i.test((err as Error).message)) return false;
-    throw err;
-  }
-}
+/**
+ * Dependency and build-output folders: huge, generated, and never opened by
+ * name. Listing and searching a folder outside git skips them (and .git), and
+ * so does any other walk for the files people edit.
+ */
+export const SKIP_DIRS: ReadonlySet<string> = new Set(["node_modules", "vendor", "venv", ".venv", "__pycache__", "dist", "build", "out", "target", "bin", "obj", ".next"]);
 
 /**
  * Every file in a session's folder, relative to it, for ⌘P. In a repository

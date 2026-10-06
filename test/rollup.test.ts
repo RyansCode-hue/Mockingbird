@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { activeMs, composeRollup, GAP_MS, ticketOf, weekBounds } from "../src/main/rollup";
+import { activeMs, composeRollup, GAP_MS, hoursMinutes, ticketOf, weekBounds } from "../src/main/rollup";
 import type { TicketPipeline } from "../src/shared/types";
 
 const min = 60_000;
 const mon = new Date(2026, 8, 28, 9, 0); // Monday Sep 28, 2026, 09:00
 
 describe("weekly rollup", () => {
+  it("writes durations in hours and minutes, leaving out a zero", () => {
+    expect([0, 45, 60, 125].map((m) => hoursMinutes(m * min))).toEqual(["0m", "45m", "1h", "2h 5m"]);
+    expect(hoursMinutes(-5 * min)).toBe("0m"); // a clock that moved back
+  });
   it("counts active time as stretches of messages under 10 minutes apart", () => {
     const t0 = mon.getTime();
     expect(activeMs([t0])).toBe(min); // one message: a minute

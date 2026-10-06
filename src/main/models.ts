@@ -1,6 +1,6 @@
-import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { readJsonFile } from "./fileOps";
 import { capitalize, type AgentKind, type CollabModel, type ModelCatalog, type ModelChoice } from "../shared/types";
 
 /**
@@ -59,11 +59,13 @@ export function codexModelsFromCache(cache: any): ModelChoice[] {
     }));
 }
 
-function readJson(file: string): any {
+/** A CLI's cache file, or null when it hasn't written one; one that can't be read is left out, and logged. */
+function readCache(file: string): any {
   try {
-    return JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    return null; // not there, or the CLI hasn't written it yet
+    return readJsonFile(file, null);
+  } catch (err) {
+    console.warn(`[models] left out ${file}: ${(err as Error).message}`);
+    return null;
   }
 }
 
@@ -77,9 +79,9 @@ export function buildCatalog(opts: { claudeHelp: string | null; recent: Record<A
   const aliases = [...new Set([...help.aliases, ...(help.aliases.length ? CLAUDE_ALIASES_ALWAYS : [])])];
   const claude: ModelChoice[] = [
     ...aliases.map((a) => ({ id: a, label: `${capitalize(a)} (latest)`, group: "Latest" })),
-    ...claudeAccountModels(readJson(path.join(home, ".claude.json"))),
+    ...claudeAccountModels(readCache(path.join(home, ".claude.json"))),
   ];
-  const codex = codexModelsFromCache(readJson(path.join(home, ".codex", "models_cache.json")));
+  const codex = codexModelsFromCache(readCache(path.join(home, ".codex", "models_cache.json")));
   const add = (list: ModelChoice[], ids: string[]) => {
     for (const id of ids) if (!list.some((m) => m.id === id || m.id.replace(/\[1m\]$/, "") === id)) list.push({ id, label: id, group: "Recently used" });
   };

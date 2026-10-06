@@ -15,7 +15,7 @@ describe("listing every file (⌘P)", () => {
 
   it("walks a plain folder, skipping hidden and dependency folders", async () => {
     const dir = tempDir("plain");
-    write(dir, { "a.txt": "a", "sub/b.txt": "b", ".hidden/c.txt": "c", "node_modules/x/d.js": "d" });
+    write(dir, { "a.txt": "a", "sub/b.txt": "b", ".hidden/c.txt": "c", "node_modules/x/d.js": "d", "venv/lib/e.py": "e" });
     expect((await listAllFiles(dir)).files.sort()).toEqual(["a.txt", "sub/b.txt"]);
   });
 });
@@ -49,7 +49,7 @@ describe("searching file contents (⌘⇧F)", () => {
 
   it("searches a folder that isn't a repository with grep", async () => {
     const dir = tempDir("plain-grep");
-    write(dir, { "a.txt": "needle here\n", "node_modules/m.js": "needle\n" });
+    write(dir, { "a.txt": "needle here\n", "node_modules/m.js": "needle\n", ".venv/lib/n.py": "needle\n", ".next/o.js": "needle\n" });
     const r = await searchFiles(dir, "NEEDLE", { regex: false, matchCase: false });
     expect(r.hits).toEqual([{ path: "a.txt", line: 1, text: "needle here" }]);
   });

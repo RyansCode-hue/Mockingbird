@@ -20,6 +20,10 @@ describe("update source", () => {
     expect(repoFromPackage({ repository: "github:RyansCode-hue/Mockingbird" })).toEqual({ owner: "RyansCode-hue", repo: "Mockingbird" });
     expect(repoFromPackage({ repository: { url: "git+https://github.com/me/app.git" } })).toEqual({ owner: "me", repo: "app" });
     expect(repoFromPackage({})).toBeNull();
+    // a dot in the name is part of it
+    expect(repoFromPackage({ repository: "github:me/my.app" })).toEqual({ owner: "me", repo: "my.app" });
+    expect(repoFromPackage({ repository: { url: "git+https://github.com/me/my.app.git" } })).toEqual({ owner: "me", repo: "my.app" });
+    expect(repoFromPackage({ repository: "https://gitlab.com/me/app" })).toBeNull();
   });
   it("compares x.y.z versions", () => {
     expect(isNewer("1.1.0", "1.1.5")).toBe(true);
