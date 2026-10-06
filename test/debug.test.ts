@@ -1,10 +1,14 @@
 import * as fs from "fs";
+import * as http from "http";
+import type * as https from "https";
+import type { AddressInfo } from "net";
 import * as os from "os";
 import * as path from "path";
 import * as pty from "node-pty";
 import { PassThrough } from "stream";
 import { describe, expect, it } from "vitest";
-import { DapConnection, FrameParser, frame } from "../src/main/dap/client";
+import { DapConnection } from "../src/main/dap/client";
+import { FrameParser, frame } from "../src/main/rpc";
 import { DebugManager } from "../src/main/dap/session";
 import { debugTargetFor, inferPython, shellWords } from "../src/main/dap/targets";
 import { RunManager, type Spawn } from "../src/main/run";
@@ -44,6 +48,174 @@ describe("the DAP wire format", () => {
     const pending = c.request("next", { threadId: 1 });
     fromAdapter.end();
     await expect(pending).rejects.toThrow(/closed the connection/);
+  });
+
+  it("closes on something unreadable, keeping what came before it in the same chunk", async () => {
+    const fromAdapter = new PassThrough();
+    const c = new DapConnection(fromAdapter, new PassThrough());
+    const events: string[] = [];
+    c.on("event", (e) => events.push(e));
+    const closed = new Promise<string>((r) => c.once("close", r));
+    const pending = c.request("threads");
+    fromAdapter.write(Buffer.concat([frame({ seq: 1, type: "event", event: "initialized" }), Buffer.from("Bogus: 1\r\n\r\n{}")]));
+    await expect(pending).rejects.toThrow(/sent something unreadable: a message header without Content-Length/);
+    expect(await closed).toMatch(/unreadable/);
+    expect(events).toEqual(["initialized"]);
+    fromAdapter.write(frame({ seq: 2, type: "event", event: "output" })); // nothing more is read
+    await new Promise((r) => setImmediate(r));
+    expect(events).toEqual(["initialized"]);
+  });
+
+  it("closes when it can't write to the adapter, rather than throwing", async () => {
+    const toAdapter = new PassThrough();
+    const c = new DapConnection(new PassThrough(), toAdapter);
+    const pending = c.request("threads");
+    toAdapter.destroy(new Error("write EPIPE"));
+    await expect(pending).rejects.toThrow(/Couldn't write to the debug adapter: write EPIPE/);
+    await expect(c.request("threads")).rejects.toThrow(/write EPIPE/);
+  });
+
+  it("reports an adapter that stops reading and exits, with its last error line", async () => {
+    const { spawnStdioAdapter } = await import("../src/main/dap/adapters");
+    const a = spawnStdioAdapter("/bin/sh", ["-c", "exec 0<&-; echo 'adapter broke' >&2; sleep 0.3; exit 3"], { PATH: "/usr/bin:/bin" }, os.tmpdir());
+    await new Promise((r) => setTimeout(r, 100));
+    await expect(a.conn.request("initialize")).rejects.toThrow(/Couldn't write to the debug adapter|exited with code 3/);
+    await new Promise<void>((r) => (a.conn.isClosed ? r() : a.conn.once("close", () => r())));
+    const late = spawnStdioAdapter("/bin/sh", ["-c", "echo 'adapter broke' >&2; exit 3"], { PATH: "/usr/bin:/bin" }, os.tmpdir());
+    await expect(new Promise((r) => late.conn.once("close", r))).resolves.toBe("The debug adapter exited with code 3: adapter broke");
+  });
+});
+
+/** An adapter at the other end of a pair of streams: it answers every request, failing the ones named in `fail`. */
+function fakeAdapter(fail: Record<string, string> = {}) {
+  const toAdapter = new PassThrough();
+  const fromAdapter = new PassThrough();
+  const parser = new FrameParser();
+  let seq = 1;
+  const send = (m: object) => fromAdapter.write(frame({ seq: seq++, ...m }));
+  toAdapter.on("data", (d) => {
+    for (const m of parser.push(d)) {
+      if (m.type !== "request") continue;
+      const why = fail[m.command];
+      send({ type: "response", request_seq: m.seq, command: m.command, success: !why, ...(why ? { message: why } : { body: m.command === "initialize" ? { supportsConfigurationDoneRequest: true } : {} }) });
+      if (m.command === "initialize") send({ type: "event", event: "initialized" });
+    }
+  });
+  const conn = new DapConnection(fromAdapter, toAdapter);
+  return { connect: async () => ({ conn, dispose: () => conn.close() }), crash: () => fromAdapter.end() };
+}
+
+describe("a debug session's end", () => {
+  const base = { worktree: "/w", repo: "/r", service: "s", name: "s", adapterID: "fake", config: { request: "launch" as const } };
+
+  it("says why when the adapter went away, and nothing when it was stopped", async () => {
+    const dbg = new DebugManager({ emit: () => {}, breakpointsDir: tempDir("bp-end") });
+    const ended: unknown[][] = [];
+    const a = fakeAdapter();
+    await dbg.launch({ ...base, connect: a.connect, onEnded: (...x) => ended.push(x) });
+    a.crash();
+    await new Promise((r) => setImmediate(r));
+    expect(ended).toEqual([[null, "The debug adapter closed the connection"]]);
+    const b = fakeAdapter();
+    const id = await dbg.launch({ ...base, connect: b.connect, onEnded: (...x) => ended.push(x) });
+    await dbg.stop(id);
+    expect(ended[1]).toEqual([null, undefined]);
+  });
+
+  it("says why breakpoints weren't set", async () => {
+    const events: unknown[][] = [];
+    const dbg = new DebugManager({ emit: (...e) => events.push(e), breakpointsDir: tempDir("bp-fail") });
+    await dbg.launch({ ...base, connect: fakeAdapter({ setBreakpoints: "no such file" }).connect });
+    expect(await dbg.setBreakpoints("/r", "app.py", [3])).toEqual([{ line: 3, verified: false, message: "Not set: no such file" }]);
+    expect(events.some((e) => e[0] === "debug:output" && e[2] === "important" && /app\.py weren't set: no such file/.test(String(e[3])))).toBe(true);
+  });
+
+  it("marks a service the debugger runs as failed, with why, when its adapter dies or never starts", async () => {
+    const dbg = new DebugManager({ emit: () => {}, breakpointsDir: tempDir("bp-virtual") });
+    const procs: { exit: (code: number) => void }[] = [];
+    const spawn: Spawn = () => {
+      let onExit: (e: { exitCode: number }) => void = () => {};
+      procs.push({ exit: (exitCode) => onExit({ exitCode }) });
+      return { pid: 5000 + procs.length, onData: () => {}, onExit: (cb) => (onExit = cb), write: () => {}, resize: () => {} };
+    };
+    let adapter = fakeAdapter();
+    const runs = new RunManager({
+      spawn,
+      emit: () => {},
+      baseEnv: () => ({}),
+      docker: async () => "docker",
+      runShell: async () => ({ code: 0, out: "/w/bin/app.dll\n" }),
+      profileFor: () => validateProfile({ services: [{ name: "app", command: "dotnet run" }] }, "/r"),
+      mainOf: async () => "/r",
+      debugger: dbg,
+      debugTarget: async () => ({ kind: "internal", internal: { build: "build", locate: "locate" }, adapterID: "coreclr", connect: () => adapter.connect(), config: { request: "launch" }, pre: [], notes: [] }),
+    });
+    const build = async () => {
+      const n = procs.length;
+      for (let i = 0; i < 50 && procs.length === n; i++) await new Promise((r) => setImmediate(r));
+      procs[n].exit(0);
+    };
+    const run = runs.start("/w", { mode: "swap", debug: ["app"] });
+    await build();
+    await run;
+    expect(runs.states()[0].status).toBe("running");
+    adapter.crash();
+    await new Promise((r) => setImmediate(r));
+    expect(runs.states()[0]).toMatchObject({ status: "failed", error: "The debug adapter closed the connection" });
+
+    adapter = fakeAdapter();
+    adapter.crash();
+    const again = runs.start("/w", { mode: "swap", debug: ["app"] }).catch((e: Error) => e);
+    await build();
+    expect(((await again) as Error).message).toMatch(/closed the connection/);
+    expect(runs.states()[0]).toMatchObject({ status: "failed", error: expect.stringMatching(/closed the connection/) });
+  });
+});
+
+describe("the environment adapters run in", () => {
+  it("is the service's own, not Mockingbird's", async () => {
+    const dir = fs.realpathSync(tempDir("py-env"));
+    fs.mkdirSync(path.join(dir, ".venv/bin"), { recursive: true });
+    const dump = path.join(dir, "env.txt");
+    // stands in for the venv's Python: records the environment the adapter would get
+    fs.writeFileSync(path.join(dir, ".venv/bin/python"), `#!/bin/sh\nenv > '${dump}'\n`, { mode: 0o755 });
+    process.env.MOCKINGBIRD_TEST_MARKER = "leaked";
+    try {
+      const t = await debugTargetFor({ name: "api" }, { cwd: dir, env: { PATH: "/usr/bin:/bin", APP: "1" }, command: ".venv/bin/uvicorn app:app", expand: (x) => x, debugRoot: cache });
+      const c = await t.connect();
+      await new Promise((r) => (c.conn.isClosed ? r(null) : c.conn.once("close", r)));
+      const env = fs.readFileSync(dump, "utf8");
+      expect(env).toMatch(/^APP=1$/m);
+      expect(env).toMatch(/^PYTHONPATH=.*debugpy/m);
+      expect(env).not.toContain("MOCKINGBIRD_TEST_MARKER");
+    } finally {
+      delete process.env.MOCKINGBIRD_TEST_MARKER;
+    }
+  }, 120_000);
+});
+
+describe("downloading an adapter", () => {
+  it("fails, rather than hanging, when the connection drops or stalls mid-download", async () => {
+    const { download } = await import("../src/main/dap/adapters");
+    const server = http.createServer((req, res) => {
+      if (req.url === "/missing") return void res.writeHead(404).end();
+      res.writeHead(200, { "Content-Length": "100000" });
+      res.write("partial");
+      if (req.url === "/drop") setTimeout(() => res.socket?.destroy(), 50);
+      // "/stall" sends nothing more
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const dir = tempDir("dl");
+    const get = http.get as unknown as typeof https.get;
+    try {
+      await expect(download(`${base}/drop`, path.join(dir, "a"), { get })).rejects.toThrow(/Downloading .*\/drop failed/);
+      await expect(download(`${base}/stall`, path.join(dir, "b"), { get, timeoutMs: 300 })).rejects.toThrow(/Downloading .*\/stall failed/);
+      await expect(download(`${base}/missing`, path.join(dir, "c"), { get })).rejects.toThrow(/HTTP 404/);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
   });
 });
 
@@ -136,6 +308,7 @@ describe("reading a Node service's command for the debugger", () => {
     expect(inferNode("npm run dev -- --port 5183 --strictPort", vite, "http://localhost:5183")).toEqual({ type: "chrome", url: "http://localhost:5183" });
     expect(inferNode("npx vite --port 5173", tempDir("x"), "http://localhost:5173")).toEqual({ type: "chrome", url: "http://localhost:5173" });
     expect(inferNode("node src/app.js --flag", tempDir("y"), undefined)).toEqual({ type: "node", program: "src/app.js", args: ["--flag"] });
+    // the program only: PORT=3000 is the command's environment (see lastStep)
     expect(inferNode("PORT=3000 npm run dev", tempDir("z"), undefined)).toEqual({ type: "node", runtimeExecutable: "npm", runtimeArgs: ["run", "dev"] });
     expect(inferNode("dotnet run", tempDir("w"), undefined)).toBeNull();
     expect(inferNode('node -e "console.log(1)"', tempDir("v"), undefined)).toEqual({ type: "node", runtimeExecutable: "node", runtimeArgs: ["-e", "console.log(1)"] });
@@ -234,6 +407,27 @@ describe("reading a .NET service's command for the debugger", () => {
     expect(inferDotnet("ASPNETCORE_ENVIRONMENT=Development dotnet watch run --project api/Api.csproj", repo)?.program).toBe("api/Api.csproj");
     expect(inferDotnet("dotnet test", repo)).toBeNull();
   });
+});
+
+describe("a command's variables and earlier steps under the debugger", () => {
+  it("splits off the last step's variables and the steps before it, quotes respected", async () => {
+    const { lastStep } = await import("../src/main/dap/targets");
+    expect(lastStep(`A=1 B="x y" npm run dev`)).toEqual({ pre: [], env: { A: "1", B: "x y" }, words: ["npm", "run", "dev"] });
+    expect(lastStep(`dotnet ef database update && node -e "a && b"`)).toEqual({ pre: ["dotnet ef database update"], env: {}, words: ["node", "-e", "a && b"] });
+  });
+
+  it("keeps them for .NET and Node programs too", async () => {
+    const dir = fs.realpathSync(tempDir("dn-env"));
+    fs.writeFileSync(path.join(dir, "Api.csproj"), "<Project/>");
+    const ctx = { cwd: dir, env: { PATH: "/usr/bin" }, expand: (x: string) => x, debugRoot: cache };
+    const dn = await debugTargetFor({ name: "api" }, { ...ctx, command: "dotnet ef database update && ASPNETCORE_ENVIRONMENT=Development dotnet run --urls http://localhost:5000" });
+    expect(dn.config.env).toEqual({ PATH: "/usr/bin", ASPNETCORE_ENVIRONMENT: "Development" });
+    expect(dn.internal!.build).toMatch(/^dotnet ef database update && dotnet build /);
+    expect(dn.notes.join("\n")).toContain("These run first, in the same terminal: dotnet ef database update");
+    const node = await debugTargetFor({ name: "web" }, { ...ctx, command: "npm ci && PORT=3000 npm run dev" });
+    expect(node.config.env).toEqual({ PATH: "/usr/bin", PORT: "3000" });
+    expect(node.pre).toEqual(["npm ci"]);
+  }, 120_000);
 });
 
 // the newest installed SDK decides the target framework, so the test builds wherever .NET is

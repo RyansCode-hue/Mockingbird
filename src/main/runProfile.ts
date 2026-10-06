@@ -18,10 +18,16 @@ export async function mainCheckout(cwd: string): Promise<string> {
   return path.basename(common) === ".git" ? path.dirname(common) : common;
 }
 
-export function profilePath(repo: string): string {
-  const hash = crypto.createHash("sha1").update(repo).digest("hex").slice(0, 8);
-  return path.join(RUN_DIR, `${path.basename(repo).replace(/[^\w.-]/g, "_")}-${hash}.json`);
-}
+/** A short id of a main checkout's path: repos that share a folder name get different ones. */
+export const repoHash = (repo: string) => crypto.createHash("sha1").update(repo).digest("hex").slice(0, 8);
+
+/** A repository's own JSON file in `dir`, named for its folder and its path's hash. */
+export const repoJson = (dir: string, repo: string) => path.join(dir, `${path.basename(repo).replace(/[^\w.-]/g, "_")}-${repoHash(repo)}.json`);
+
+export const profilePath = (repo: string) => repoJson(RUN_DIR, repo);
+
+/** A relative path that stays inside the repository (no absolute path, no `..`). */
+export const insideRepo = (p: string) => !path.isAbsolute(p) && !p.split("/").includes("..");
 
 const isObj = (x: unknown): x is Record<string, any> => !!x && typeof x === "object" && !Array.isArray(x);
 const strMap = (x: unknown) => isObj(x) && Object.values(x).every((v) => typeof v === "string");
@@ -44,12 +50,14 @@ export function validateProfile(x: unknown, repo: string): RunProfile {
     if (!isObj(s)) fail(at, "must be an object");
     if (typeof s.name !== "string" || !/^[\w.-]+$/.test(s.name)) fail(`${at}.name`, "must be a word (letters, digits, - _ .)");
     if (names.has(s.name)) fail(`${at}.name`, `"${s.name}" is used twice`);
+    // Prepare's log is a service named "prepare"
+    if (s.name === "prepare") fail(`${at}.name`, `"prepare" is taken by Prepare — call it something else`);
     names.add(s.name);
     const kind = s.kind ?? "process";
     if (kind !== "process" && kind !== "compose") fail(`${at}.kind`, 'must be "process" or "compose"');
     if (typeof s.command !== "string" && kind === "process") fail(`${at}.command`, "is required");
     const cwd = typeof s.cwd === "string" ? s.cwd : ".";
-    if (path.isAbsolute(cwd) || cwd.split("/").includes("..")) fail(`${at}.cwd`, "must be a path inside the repository");
+    if (!insideRepo(cwd)) fail(`${at}.cwd`, "must be a path inside the repository");
     if (s.env !== undefined && !strMap(s.env)) fail(`${at}.env`, "must map names to strings");
     if (s.envFiles !== undefined && !strList(s.envFiles)) fail(`${at}.envFiles`, "must be a list of paths");
     const ports: RunPort[] = (s.ports ?? []).map((pt: any, j: number) => {
@@ -101,7 +109,7 @@ export function validateProfile(x: unknown, repo: string): RunProfile {
   if (prepare !== undefined) {
     if (!isObj(prepare)) fail("prepare", "must be an object");
     if (prepare.copy !== undefined && !strList(prepare.copy)) fail("prepare.copy", "must be a list of paths or globs");
-    for (const c of prepare.copy ?? []) if (path.isAbsolute(c) || c.split("/").includes("..")) fail("prepare.copy", `"${c}" must be inside the repository`);
+    for (const c of prepare.copy ?? []) if (!insideRepo(c)) fail("prepare.copy", `"${c}" must be inside the repository`);
     if (prepare.commands !== undefined && (!Array.isArray(prepare.commands) || !prepare.commands.every((c: any) => isObj(c) && typeof c.command === "string" && typeof c.ifMissing === "string"))) {
       fail("prepare.commands", "each needs a command and an ifMissing path");
     }
@@ -220,11 +228,10 @@ export function parseEnvFile(text: string): Record<string, string> {
     if (!line || line.startsWith("#")) continue;
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*(.*)$/.exec(line);
     if (!m) continue;
-    let v = m[2];
-    if (/^".*"$/.test(v)) v = v.slice(1, -1).replace(/\\n/g, "\n").replace(/\\"/g, '"');
-    else if (/^'.*'$/.test(v)) v = v.slice(1, -1);
-    else v = v.replace(/\s+#.*$/, "");
-    out[m[1]] = v;
+    // a quoted value may be followed by a comment; an unquoted one ends where its comment starts
+    const dq = /^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/.exec(m[2]);
+    const sq = /^'([^']*)'\s*(?:#.*)?$/.exec(m[2]);
+    out[m[1]] = dq ? dq[1].replace(/\\n/g, "\n").replace(/\\"/g, '"') : sq ? sq[1] : m[2].replace(/\s+#.*$/, "");
   }
   return out;
 }

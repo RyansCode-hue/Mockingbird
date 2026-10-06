@@ -1,8 +1,8 @@
-import { spawn, type ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { ensureAdapter, installDir } from "../dap/adapters";
+import { spawnRpcProcess } from "../rpc";
 import { LspConnection } from "./connection";
 import { projectPython, SERVERS, serverFor, type LspServerSpec } from "./servers";
 import type { LspCompletion, LspDiagnostic, LspFileEdits, LspFileState, LspLocation, LspServerId } from "../../shared/types";
@@ -10,6 +10,7 @@ import type { LspPosition, LspTextEdit } from "../../shared/textEdits";
 
 const IDLE_MS = 10 * 60_000;
 const PULL_DELAY_MS = 400;
+const PULL_ATTEMPTS = 3;
 const MAX_COMPLETIONS = 200;
 
 const SEVERITY: Record<number, LspDiagnostic["severity"]> = { 1: "error", 2: "warning", 3: "info", 4: "hint" };
@@ -36,19 +37,21 @@ interface Doc {
   uri: string;
   languageId: string;
   version: number;
+  /** The editors that have it open: the server is told it closed when the last one closes. */
+  refs: number;
 }
 
 interface Server {
   spec: LspServerSpec;
   root: string;
   conn: LspConnection;
-  proc: ChildProcess;
   caps: any;
   ready: Promise<void>;
   docs: Map<string, Doc>;
   pulls: Map<string, NodeJS.Timeout>;
+  /** Per file: the newest diagnostics request sent, the only one whose answer is used. */
+  latestPull: Map<string, number>;
   idle: NodeJS.Timeout | null;
-  stderr: string;
 }
 
 export interface LspDeps {
@@ -125,11 +128,13 @@ export function workspaceEdits(w: any): LspFileEdits[] {
     cur.edits.push(...edits.map((e) => ({ range: e.range, newText: e.newText })));
     out.set(p, cur);
   };
-  for (const [uri, edits] of Object.entries(w.changes ?? {})) add(uri, edits as LspTextEdit[]);
-  for (const dc of w.documentChanges ?? []) {
-    if (dc.kind) throw new Error(`The rename would ${dc.kind} a file, which Mockingbird doesn't do — rename it in the session instead`);
-    add(dc.textDocument.uri, dc.edits);
-  }
+  // a server may send both forms of the same edit; documentChanges is the one to use when present
+  if (w.documentChanges) {
+    for (const dc of w.documentChanges) {
+      if (dc.kind) throw new Error(`The rename would ${dc.kind} a file, which Mockingbird doesn't do — rename it in the session instead`);
+      add(dc.textDocument.uri, dc.edits);
+    }
+  } else for (const [uri, edits] of Object.entries(w.changes ?? {})) add(uri, edits as LspTextEdit[]);
   return [...out.values()];
 }
 
@@ -150,6 +155,9 @@ export function diagnostics(list: any[]): LspDiagnostic[] {
 export class LspManager {
   private servers = new Map<string, Server>();
   private starting = new Map<string, Promise<Server>>();
+  /** Per root and file: opens still waiting for their server, and the closes that arrived for them meanwhile. */
+  private opening = new Map<string, { opens: number; closes: number }>();
+  private pullSeq = 0;
 
   constructor(private deps: LspDeps) {}
 
@@ -188,18 +196,15 @@ export class LspManager {
     const dotnet = spec.requires?.bin === "dotnet" ? await this.deps.which("dotnet") : null;
     const { cmd, args, env } = spec.command(dir, { node: this.deps.node, dotnet });
     this.deps.onStatus({ server: spec.id, root, state: "starting" });
-    const proc = spawn(cmd, args, { cwd: root, env: { ...this.deps.env(), ...(env ?? {}) }, stdio: ["pipe", "pipe", "pipe"] });
-    const conn = new LspConnection(proc.stdout!, proc.stdin!, () => {
-      if (proc.exitCode === null) proc.kill();
-    });
-    const s: Server = { spec, root, conn, proc, caps: {}, ready: Promise.resolve(), docs: new Map(), pulls: new Map(), idle: null, stderr: "" };
-    proc.stderr!.on("data", (d) => (s.stderr = (s.stderr + d).slice(-8000)));
-    proc.on("error", (e) => conn.close(`${spec.label} language server didn't start: ${e.message}`));
-    proc.on("exit", (code) => conn.close(`${spec.label} language server exited${code ? ` with code ${code}` : ""}${s.stderr ? `: ${s.stderr.trim().split("\n").pop()}` : ""}`));
+    const { conn } = spawnRpcProcess(cmd, args, { cwd: root, env: { ...this.deps.env(), ...(env ?? {}) }, name: `${spec.label} language server` }, (input, output, onClose) => new LspConnection(input, output, onClose));
+    const s: Server = { spec, root, conn, caps: {}, ready: Promise.resolve(), docs: new Map(), pulls: new Map(), latestPull: new Map(), idle: null };
     conn.on("close", (reason: string) => {
       for (const t of s.pulls.values()) clearTimeout(t);
       if (s.idle) clearTimeout(s.idle);
-      if (this.servers.get(this.key(spec, root)) === s) this.servers.delete(this.key(spec, root));
+      const key = this.key(spec, root);
+      if (this.servers.get(key) === s) this.servers.delete(key);
+      // one stopped while idle may have a successor for this folder already, which reports for itself
+      if (this.servers.has(key)) return;
       // its problems are no longer known
       for (const file of s.docs.keys()) this.deps.onDiagnostics(file, []);
       this.deps.onStatus({ server: spec.id, root, state: s.docs.size ? "failed" : "stopped", message: reason });
@@ -271,11 +276,13 @@ export class LspManager {
 
   /**
    * Ask a pull-diagnostics server for a file's problems once typing settles.
-   * An answer for text that has changed since is dropped (a newer request is
-   * coming, and answers can arrive out of order); a failed request is tried
-   * once more before the failure is reported.
+   * Only the newest request speaks for the file: an answer or error for one
+   * that's been overtaken — the text changed, or a newer request went out
+   * (answers can arrive out of order) — is dropped, since the newer one will
+   * answer. A failed request (a server busy rebuilding may abandon it) is
+   * asked again a few times before the failure is reported.
    */
-  private schedulePull(s: Server, file: string, retry = true): void {
+  private schedulePull(s: Server, file: string, attempt = 0): void {
     if (!s.caps.diagnosticProvider) return; // this server pushes its problems instead
     clearTimeout(s.pulls.get(file));
     s.pulls.set(
@@ -285,42 +292,78 @@ export class LspManager {
         const doc = s.docs.get(file);
         if (!doc) return;
         const version = doc.version;
+        const seq = ++this.pullSeq;
+        s.latestPull.set(file, seq);
+        const current = () => s.docs.get(file) === doc && doc.version === version && s.latestPull.get(file) === seq;
         try {
           const r = await s.conn.request("textDocument/diagnostic", { textDocument: { uri: doc.uri } });
-          if (s.docs.get(file) !== doc || doc.version !== version) return;
-          if (r?.kind === "full") this.deps.onDiagnostics(file, diagnostics(r.items));
+          if (current() && r?.kind === "full") this.deps.onDiagnostics(file, diagnostics(r.items));
         } catch (err) {
-          if (s.conn.isClosed) return; // the close already says why
-          if (retry) return this.schedulePull(s, file, false);
+          if (s.conn.isClosed || !current()) return; // the close says why; a newer request answers instead
+          if (attempt < PULL_ATTEMPTS - 1) return this.schedulePull(s, file, attempt + 1);
           this.deps.onStatus({ server: s.spec.id, root: s.root, state: "ready", message: `Couldn't read problems: ${(err as Error).message}` });
         }
-      }, retry ? PULL_DELAY_MS : 1000)
+      }, attempt ? 1000 : PULL_DELAY_MS)
     );
   }
 
-  private find(root: string, file: string): { s: Server; doc: Doc } {
+  /** The server and document for an open file; null when it isn't open (yet, or any more) with a ready server. */
+  private lookup(root: string, file: string): { s: Server; doc: Doc } | null {
     const sf = serverFor(file);
     const s = sf && this.servers.get(this.key(sf.spec, root));
     const doc = s?.docs.get(file);
-    if (!s || !doc) throw new Error(`${path.basename(file)} isn't open with a language server`);
-    return { s, doc };
+    return s && doc ? { s, doc } : null;
   }
 
-  /** A file opened in the editor: start its server if it's installed, and send the text. */
-  async open(root: string, file: string, text: string): Promise<LspFileState> {
-    const sf = serverFor(file);
-    if (!sf) return { server: null, state: "none" };
+  private find(root: string, file: string): { s: Server; doc: Doc } {
+    const found = this.lookup(root, file);
+    if (!found) throw new Error(`${path.basename(file)} isn't open with a language server`);
+    return found;
+  }
+
+  /** The folder's server for a file, started and ready; or why the file can't have one. */
+  private async acquire(sf: { spec: LspServerSpec }, root: string): Promise<Server | LspFileState> {
     const server = { id: sf.spec.id, label: sf.spec.label };
     if (sf.spec.requires && !(await this.deps.which(sf.spec.requires.bin))) return { server, state: "missing", message: sf.spec.requires.why };
     if (!this.installed(sf.spec)) {
       const p = sf.spec.pinned();
       return { server, state: "install", message: `${p.name} ${p.version}` };
     }
-    let s: Server;
     try {
-      s = await this.server(sf.spec, root);
+      return await this.server(sf.spec, root);
     } catch (err) {
       return { server, state: "failed", message: (err as Error).message };
+    }
+  }
+
+  /**
+   * A file opened in an editor: start its server if it's installed, and send
+   * the text. Several editors may have the same file open; each open that
+   * answers "ready", or hasn't answered yet, is balanced by one close.
+   */
+  async open(root: string, file: string, text: string): Promise<LspFileState> {
+    const sf = serverFor(file);
+    if (!sf) return { server: null, state: "none" };
+    const key = `${root}\0${file}`;
+    const flight = this.opening.get(key) ?? { opens: 0, closes: 0 };
+    flight.opens++;
+    this.opening.set(key, flight);
+    let got: Server | LspFileState;
+    let cancelled = false;
+    try {
+      got = await this.acquire(sf, root);
+    } finally {
+      // a close that arrived while the server started cancels this open
+      cancelled = flight.closes > 0;
+      if (cancelled) flight.closes--;
+      if (!--flight.opens) this.opening.delete(key);
+    }
+    if (!("conn" in got)) return got;
+    const s = got;
+    const server = { id: sf.spec.id, label: sf.spec.label };
+    if (cancelled) {
+      if (!s.docs.size) this.idleLater(s);
+      return { server, state: "ready" };
     }
     if (s.idle) {
       clearTimeout(s.idle);
@@ -328,12 +371,13 @@ export class LspManager {
     }
     const cur = s.docs.get(file);
     if (cur) {
+      cur.refs++;
       cur.version++;
       s.conn.notify("textDocument/didChange", { textDocument: { uri: cur.uri, version: cur.version }, contentChanges: [{ text }] });
     } else {
-      const doc = { uri: uriOf(file), languageId: sf.languageId, version: 1 };
+      const doc = { uri: uriOf(file), languageId: sf.languageId, version: 1, refs: 1 };
       s.docs.set(file, doc);
-      s.conn.notify("textDocument/didOpen", { textDocument: { ...doc, text } });
+      s.conn.notify("textDocument/didOpen", { textDocument: { uri: doc.uri, languageId: doc.languageId, version: doc.version, text } });
     }
     this.schedulePull(s, file);
     return { server, state: "ready" };
@@ -352,24 +396,40 @@ export class LspManager {
   }
 
   close(root: string, file: string): void {
-    const sf = serverFor(file);
-    const s = sf && this.servers.get(this.key(sf.spec, root));
-    const doc = s?.docs.get(file);
-    if (!s || !doc) return;
+    const flight = this.opening.get(`${root}\0${file}`);
+    if (flight && flight.opens > flight.closes) {
+      flight.closes++;
+      return;
+    }
+    const found = this.lookup(root, file);
+    if (!found || --found.doc.refs > 0) return;
+    const { s, doc } = found;
     s.docs.delete(file);
     clearTimeout(s.pulls.get(file));
+    s.latestPull.delete(file);
     s.conn.notify("textDocument/didClose", { textDocument: { uri: doc.uri } });
-    if (!s.docs.size) s.idle = setTimeout(() => this.stop(s), IDLE_MS);
+    if (!s.docs.size) this.idleLater(s);
   }
 
+  /** Stop a server once it has had no open files for a while. */
+  private idleLater(s: Server): void {
+    if (s.idle) clearTimeout(s.idle);
+    s.idle = setTimeout(() => this.stop(s), IDLE_MS);
+  }
+
+  /** Nothing to show (no text) while the file isn't open with a ready server. */
   async hover(root: string, file: string, pos: LspPosition): Promise<string> {
-    const { s, doc } = this.find(root, file);
+    const found = this.lookup(root, file);
+    if (!found) return "";
+    const { s, doc } = found;
     return hoverText((await s.conn.request("textDocument/hover", { textDocument: { uri: doc.uri }, position: pos }))?.contents);
   }
 
-  /** `prefix` is the word before the cursor, which narrows the list (see completionItems). */
+  /** `prefix` is the word before the cursor, which narrows the list (see completionItems). None while the file isn't open with a ready server. */
   async completion(root: string, file: string, pos: LspPosition, prefix = "", trigger?: string): Promise<LspCompletion[]> {
-    const { s, doc } = this.find(root, file);
+    const found = this.lookup(root, file);
+    if (!found) return [];
+    const { s, doc } = found;
     const context = trigger ? { triggerKind: 2, triggerCharacter: trigger } : { triggerKind: 1 };
     return completionItems(await s.conn.request("textDocument/completion", { textDocument: { uri: doc.uri }, position: pos, context }), prefix);
   }
@@ -393,6 +453,9 @@ export class LspManager {
 
   private async stop(s: Server): Promise<void> {
     if (s.conn.isClosed) return;
+    // no longer handed out: a file opened from now on starts a fresh server
+    const key = this.key(s.spec, s.root);
+    if (this.servers.get(key) === s) this.servers.delete(key);
     try {
       await s.conn.request("shutdown", null, 3000);
       s.conn.notify("exit", null);
@@ -403,7 +466,7 @@ export class LspManager {
   }
 
   stopAll(): void {
-    for (const s of this.servers.values()) {
+    for (const s of [...this.servers.values()]) {
       s.docs.clear();
       void this.stop(s);
     }

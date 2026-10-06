@@ -1,8 +1,12 @@
-import { execFile, spawn } from "child_process";
+import { execFile } from "child_process";
 import * as crypto from "crypto";
 import * as fs from "fs";
+import type * as http from "http";
 import * as https from "https";
 import * as path from "path";
+import { pipeline } from "stream/promises";
+import { spawnRpcProcess } from "../rpc";
+import { quote } from "../shell";
 import { MB_DIR } from "../store";
 import { DapConnection } from "./client";
 
@@ -52,29 +56,34 @@ export const NETCOREDBG: Pinned = {
 
 export const installDir = (p: Pinned, root = DEBUG_DIR) => path.join(root, `${p.name}-${p.version}`);
 
-function download(url: string, dest: string, redirects = 5): Promise<void> {
-  return new Promise((resolve, reject) => {
-    https
-      .get(url, { headers: { "User-Agent": "Mockingbird" }, timeout: 60_000 }, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          if (!redirects) return reject(new Error(`Too many redirects downloading ${url}`));
-          return download(res.headers.location, dest, redirects - 1).then(resolve, reject);
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          return reject(new Error(`Downloading ${url} failed: HTTP ${res.statusCode}`));
-        }
-        const out = fs.createWriteStream(dest);
-        res.pipe(out);
-        out.on("finish", () => out.close(() => resolve()));
-        out.on("error", reject);
-      })
-      .on("error", reject)
-      .on("timeout", function (this: any) {
-        this.destroy(new Error(`Downloading ${url} timed out`));
-      });
-  });
+/**
+ * Download `url` to `dest`, following redirects. Settles exactly once: an
+ * HTTP error, a connection that fails or sits idle for `timeoutMs` (before or
+ * during the body), and a failed write all reject.
+ */
+export function download(url: string, dest: string, opts: { get?: typeof https.get; timeoutMs?: number; redirects?: number } = {}): Promise<void> {
+  const { get = https.get, timeoutMs = 60_000, redirects = 5 } = opts;
+  return new Promise<http.IncomingMessage>((resolve, reject) => {
+    const req = get(url, { headers: { "User-Agent": "Mockingbird" }, timeout: timeoutMs }, resolve);
+    req.on("error", reject);
+    // the socket's idle timeout; destroying the request also fails a body still arriving
+    req.on("timeout", () => req.destroy(new Error(`timed out after ${Math.round(timeoutMs / 1000)}s`)));
+  })
+    .then(async (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        if (!redirects) throw new Error("too many redirects");
+        return download(new URL(res.headers.location, url).href, dest, { ...opts, redirects: redirects - 1 });
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        throw new Error(`HTTP ${res.statusCode}`);
+      }
+      await pipeline(res, fs.createWriteStream(dest));
+    })
+    .catch((err: Error) => {
+      throw err.message.startsWith("Downloading ") ? err : new Error(`Downloading ${url} failed: ${err.message}`);
+    });
 }
 
 const run = (cmd: string, args: string[], cwd: string) =>
@@ -112,7 +121,9 @@ export async function ensureAdapter(p: Pinned, onProgress: (msg: string) => void
     else await run("/usr/bin/unzip", ["-q", file, "-d", into], tmp);
     if (!fs.existsSync(path.join(into, p.marker))) throw new Error(`${p.name} unpacked without ${p.marker}`);
     // a downloaded binary carries the quarantine flag, which stops it running
-    await run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", into], tmp).catch(() => {});
+    await run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", into], tmp).catch((err) =>
+      onProgress(`Couldn't clear macOS's quarantine flag on ${p.name} (${err.message}) — if it won't start, run: xattr -dr com.apple.quarantine ${quote(dir)}`)
+    );
     fs.rmSync(dir, { recursive: true, force: true });
     fs.renameSync(into, dir);
     return dir;
@@ -122,20 +133,13 @@ export async function ensureAdapter(p: Pinned, onProgress: (msg: string) => void
 }
 
 /** A running adapter process speaking DAP on its stdio. */
-export interface StdioAdapter {
+interface StdioAdapter {
   conn: DapConnection;
   dispose(): void;
   stderr(): string;
 }
 
 export function spawnStdioAdapter(command: string, args: string[], env: Record<string, string>, cwd: string): StdioAdapter {
-  const proc = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-  let err = "";
-  proc.stderr.on("data", (d) => (err = (err + d).slice(-8000)));
-  const conn = new DapConnection(proc.stdout, proc.stdin, () => {
-    if (proc.exitCode === null) proc.kill();
-  });
-  proc.on("error", (e) => conn.close(`The debug adapter didn't start: ${e.message}`));
-  proc.on("exit", (code) => conn.close(code ? `The debug adapter exited with code ${code}${err ? `: ${err.trim().split("\n").pop()}` : ""}` : "The debug adapter exited"));
-  return { conn, dispose: () => conn.close(), stderr: () => err };
+  const { conn, stderr } = spawnRpcProcess(command, args, { cwd, env, name: "The debug adapter" }, (input, output, onClose) => new DapConnection(input, output, { onClose, closeOnEnd: false }));
+  return { conn, dispose: () => conn.close(), stderr };
 }

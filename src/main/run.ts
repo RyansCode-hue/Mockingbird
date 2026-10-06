@@ -5,11 +5,11 @@ import * as net from "net";
 import * as path from "path";
 import { buildOverride, composeConfig, composeProject, writeOverride } from "./composeOverride";
 import { DEFAULT_SIDE_BY_SIDE, expand, loadProfile, mainCheckout, parseEnvFile, slotPorts, startOrder } from "./runProfile";
-import { copyPrepared, setupCommand } from "./runPrepare";
+import { copyPrepared, setupCommand, type PrepareCopy } from "./runPrepare";
 import type { DebugManager } from "./dap/session";
 import type { debugTargetFor } from "./dap/targets";
 import { quote } from "./shell";
-import type { RunProfile, RunService, RunServiceState } from "../shared/types";
+import type { RunPort, RunProfile, RunService, RunServiceState } from "../shared/types";
 
 /** What a run needs from a terminal process — node-pty in the app, a fake in tests. */
 export interface RunProc {
@@ -22,7 +22,7 @@ export interface RunProc {
 export type Spawn = (command: string, opts: { cwd: string; env: Record<string, string> }) => RunProc;
 
 /** Someone else listening on a port a service needs. */
-export interface PortConflict {
+interface PortConflict {
   port: number;
   service: string;
   pid: number | null;
@@ -30,14 +30,14 @@ export interface PortConflict {
 }
 
 /** `ids`: the started services' run ids, in `started` order (for showing their logs). */
-export type StartResult = { slot: number; started: string[]; ids: string[] } | { blocked: PortConflict[]; slot: number };
+type StartResult = { slot: number; started: string[]; ids: string[] } | { blocked: PortConflict[]; slot: number };
 
 const BUFFER_MAX = 400_000;
 const STOP_GRACE_MS = 5_000;
 const READY_TIMEOUT_MS = 180_000;
 
 /** Is anything accepting connections on this port (IPv4 or IPv6 loopback)? */
-export function portInUse(port: number, timeoutMs = 400): Promise<boolean> {
+function portInUse(port: number, timeoutMs = 400): Promise<boolean> {
   const one = (host: string) =>
     new Promise<boolean>((resolve) => {
       const s = net.connect({ host, port });
@@ -53,7 +53,7 @@ export function portInUse(port: number, timeoutMs = 400): Promise<boolean> {
 }
 
 /** Who's listening on a port, from lsof: [{pid, command}] (empty when nobody is). */
-export function portListeners(port: number): Promise<{ pid: number; command: string }[]> {
+function portListeners(port: number): Promise<{ pid: number; command: string }[]> {
   return new Promise((resolve, reject) =>
     execFile("/usr/sbin/lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fpc"], { timeout: 10_000 }, (err, stdout) => {
       // lsof exits 1 when nothing matches
@@ -69,17 +69,46 @@ export function portListeners(port: number): Promise<{ pid: number; command: str
   );
 }
 
+/** The process groups of a process and of everything descended from it, its own first (from ps). */
+function processGroups(leader: number): Promise<number[]> {
+  return new Promise((resolve, reject) =>
+    execFile("/bin/ps", ["-A", "-o", "pid=,ppid=,pgid="], { timeout: 10_000 }, (err, stdout) => {
+      if (err) return reject(new Error(`ps: ${err.message}`));
+      const children = new Map<number, { pid: number; pgid: number }[]>();
+      for (const line of stdout.split("\n")) {
+        const [pid, ppid, pgid] = line.trim().split(/\s+/).map(Number);
+        if (!pid) continue;
+        children.set(ppid, [...(children.get(ppid) ?? []), { pid, pgid }]);
+      }
+      const groups = new Set([leader]);
+      const todo = [leader];
+      while (todo.length) for (const c of children.get(todo.pop()!) ?? []) (groups.add(c.pgid), todo.push(c.pid));
+      resolve([...groups]);
+    })
+  );
+}
+
 interface Live {
   state: RunServiceState;
   proc: RunProc | null;
   buffer: string;
+  /** Characters ever added to the buffer, and the count at which this run's own output began: the ready pattern reads only from there. */
+  written: number;
+  outputFrom: number;
   exited: Promise<void>;
   stopRequested: boolean;
-  /** For compose services: how to take the stack down after the foreground process ends. */
-  down?: string;
-  /** For a service the debugger runs itself: called when its session ends. */
-  endVirtual?: (exitCode: number | null) => void;
+  /** The services it was started after (its dependsOn then): stopping one of them stops it too. */
+  dependsOn: string[];
+  /** Settles once: true when the service is up, false if it exited first. */
+  ready?: Promise<boolean>;
+  /** For compose services: how to take the stack down after the foreground process ends, in the folder and environment it came up in. */
+  down?: { command: string; cwd: string; env: Record<string, string> };
+  /** For a service the debugger runs itself: called when its session ends, with why when it didn't end normally. */
+  endVirtual?: (exitCode: number | null, error?: string) => void;
 }
+
+/** A port's URL, which may say ${port} (its own) or ${port:name} (any service's). */
+const portUrl = (url: string, p: RunPort, ctx: { ports: Map<string, number>; slot: number; worktree: string }) => expand(url.replace(/\$\{port\}/g, String(ctx.ports.get(p.name))), ctx);
 
 const runId = (worktree: string, service: string) => crypto.createHash("sha1").update(`${worktree}\0${service}`).digest("hex").slice(0, 12);
 
@@ -87,14 +116,16 @@ const runId = (worktree: string, service: string) => crypto.createHash("sha1").u
  * Runs a repository's services for a worktree, each on its own terminal so
  * colors and prompts behave. Swap mode runs a repo one worktree at a time on
  * its standard ports — starting one stops the other first. Side-by-side mode
- * gives each running worktree its own slot of ports. Stopping signals the
- * whole process group (dotnet, uvicorn --reload and Vite all fork), then
- * kills it if it lingers.
+ * gives each running worktree its own slot of ports. Stopping signals every
+ * process group the service's processes are in (dotnet, uvicorn --reload and
+ * Vite all fork; the shell gives each job a group), then kills what lingers.
  */
 export class RunManager {
   private live = new Map<string, Live>();
   /** The last port check's conflicts per worktree: the only processes the user may ask us to stop. */
   private offered = new Map<string, Set<number>>();
+  /** Per repo: the start in progress, which the next start of that repo waits for. */
+  private starts = new Map<string, Promise<void>>();
 
   constructor(
     private deps: {
@@ -105,7 +136,9 @@ export class RunManager {
       runShell: (command: string, cwd: string, env: Record<string, string>) => Promise<{ code: number; out: string }>;
       inUse?: (port: number) => Promise<boolean>;
       listeners?: (port: number) => Promise<{ pid: number; command: string }[]>;
-      kill?: (pid: number, signal: NodeJS.Signals) => void;
+      /** Signal 0 only asks whether the process (group) exists, throwing ESRCH when it doesn't. */
+      kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
+      processGroups?: (leader: number) => Promise<number[]>;
       profileFor?: (repo: string) => RunProfile | null;
       mainOf?: (worktree: string) => Promise<string>;
       readyTimeoutMs?: number;
@@ -118,7 +151,7 @@ export class RunManager {
     return this.deps.inUse ?? portInUse;
   }
   private get kill() {
-    return this.deps.kill ?? ((pid: number, sig: NodeJS.Signals) => process.kill(pid, sig));
+    return this.deps.kill ?? ((pid: number, sig: NodeJS.Signals | 0) => process.kill(pid, sig));
   }
 
   states(): RunServiceState[] {
@@ -195,6 +228,29 @@ export class RunManager {
    */
   async start(worktree: string, opts: { mode: "swap" | "side"; services?: string[]; debug?: string[] }): Promise<StartResult> {
     const { repo, profile } = await this.profile(worktree);
+    return this.serial(repo, () => this.startNow(worktree, repo, profile, opts));
+  }
+
+  /**
+   * One repo's starts run one at a time: a slot, the services still to start
+   * and the port check are all read from what's running, which the start
+   * before may still be adding to.
+   */
+  private serial<T>(repo: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.starts.get(repo) ?? Promise.resolve()).then(fn);
+    // the queue only orders starts; each caller gets its own outcome from `run`
+    const settled = run.then(
+      () => {},
+      () => {}
+    );
+    this.starts.set(repo, settled);
+    void settled.then(() => {
+      if (this.starts.get(repo) === settled) this.starts.delete(repo);
+    });
+    return run;
+  }
+
+  private async startNow(worktree: string, repo: string, profile: RunProfile, opts: { mode: "swap" | "side"; services?: string[]; debug?: string[] }): Promise<StartResult> {
     const slot = this.slotFor(repo, worktree, opts.mode, profile);
     if (opts.mode === "swap") {
       // one copy of the app at a time: the other worktrees' runs make way
@@ -274,7 +330,7 @@ export class RunManager {
   ): Promise<Live> {
     const { ctx, cwd, env, command: plain } = this.serviceSetup(worktree, repo, s, slot, ports);
     let command = plain;
-    let down: string | undefined;
+    let down: Live["down"];
     if (s.kind === "compose") {
       const docker = await this.deps.docker();
       const project = composeProject(repo, slot);
@@ -284,7 +340,8 @@ export class RunManager {
       const override = writeOverride(project, buildOverride(cfg, { main: mains, worktree, slot, step: (profile.sideBySide ?? DEFAULT_SIDE_BY_SIDE).step, project, debugpy }));
       const base = `${quote(docker)} compose -p ${quote(project)} -f ${quote(file)} -f ${quote(override)}`;
       command = `${base} up --remove-orphans ${(s.compose!.services ?? []).map(quote).join(" ")}`.trim();
-      down = `${base} down --remove-orphans`;
+      // -f is relative to the service's folder, and the file may need its env files' variables
+      down = { command: `${base} down --remove-orphans`, cwd, env };
     }
     return this.spawnLive(worktree, repo, s, slot, ports, ctx, command, cwd, env, down);
   }
@@ -298,7 +355,7 @@ export class RunManager {
     if (!this.deps.debugger || !this.deps.debugTarget) throw new Error("Debugging isn't available");
     const { ctx, cwd, env, command } = this.serviceSetup(worktree, repo, s, slot, ports);
     const first = (s.ports ?? []).find((p) => p.url) ?? s.ports?.[0];
-    const url = first ? expand((first.url ?? "http://localhost:${port}").replace(/\$\{port\}/g, String(ports.get(first.name))), ctx) : undefined;
+    const url = first ? portUrl(first.url ?? "http://localhost:${port}", first, ctx) : undefined;
     const target = await this.deps.debugTarget(s, { cwd, env, command, url, expand: (x) => expand(x, ctx), onProgress: (m) => this.deps.emit("run:progress", worktree, m) });
     if (s.kind === "compose" && target.kind !== "alongside") {
       throw new Error(`${s.name} is a Docker Compose service: debug it by attaching ("python-attach" in its run setup) to a process listening with debugpy`);
@@ -327,7 +384,7 @@ export class RunManager {
         connect: target.connect,
         config: { ...target.config, program },
         onOutput: (_c, text) => this.append(l, text.replace(/\r?\n/g, "\r\n")),
-        onEnded: (code) => l.endVirtual?.(code),
+        onEnded: (code, error) => l.endVirtual?.(code, error),
       });
       l.state.debug = sessionId;
       this.changed();
@@ -351,7 +408,9 @@ export class RunManager {
     }
     let resolveLive!: (l: Live) => void;
     const started = new Promise<Live>((r) => (resolveLive = r));
+    let abandoned = false;
     const runInTerminal = async (req: { cwd: string; args: string[]; env?: Record<string, string | null> }) => {
+      if (abandoned) throw new Error(`Starting ${s.name} under the debugger was given up on`);
       const e = { ...env };
       for (const [k, v] of Object.entries(req.env ?? {})) if (v === null) delete e[k];
       else e[k] = v;
@@ -361,16 +420,35 @@ export class RunManager {
       return l.state.pid ?? undefined;
     };
     const sessionId = await this.deps.debugger.launch({ worktree, repo, service: s.name, name: s.name, adapterID: target.adapterID, connect: target.connect, config: target.config, runInTerminal });
-    const l = await Promise.race([started, new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`The debugger started but never ran ${s.name}`)), 30_000))]);
+    let timer: NodeJS.Timeout | undefined;
+    let l: Live;
+    try {
+      l = await Promise.race([started, new Promise<never>((_, rej) => (timer = setTimeout(() => rej(new Error(`The debugger started but never ran ${s.name}`)), 30_000)))]);
+    } catch (err) {
+      // a program the debugger runs some other way would run with no log and no stop
+      abandoned = true;
+      await this.deps.debugger.stop(sessionId);
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     l.state.debug = sessionId;
     this.changed();
     return l;
   }
 
+  /** Add to a service's log, and to its log view if one is open. */
   private append(l: Live, text: string) {
     if (this.live.get(l.state.id) !== l) return;
     l.buffer = (l.buffer + text).slice(-BUFFER_MAX);
+    l.written += text.length;
     this.deps.emit("run:data", l.state.id, text);
+  }
+
+  /** End a service's debug session; a failure to stop it is noted in its log. */
+  private async stopDebug(l: Live): Promise<void> {
+    if (!l.state.debug) return;
+    await this.deps.debugger?.stop(l.state.debug).catch((err) => this.append(l, `\r\n\x1b[33mThe debugger didn't stop cleanly: ${(err as Error).message}\x1b[0m\r\n`));
   }
 
   /**
@@ -380,13 +458,14 @@ export class RunManager {
   private virtualLive(build: Live): Live {
     let resolveExit!: () => void;
     const state: RunServiceState = { ...build.state, status: "starting", pid: null, exitCode: null, startedAt: Date.now() };
-    const l: Live = { state, proc: null, buffer: build.buffer, exited: new Promise((r) => (resolveExit = r)), stopRequested: false };
-    l.endVirtual = (code) => {
+    const n = build.buffer.length;
+    const l: Live = { state, proc: null, buffer: build.buffer, written: n, outputFrom: n, dependsOn: build.dependsOn, exited: new Promise((r) => (resolveExit = r)), stopRequested: false };
+    l.endVirtual = (code, error) => {
       state.exitCode = code;
-      if (l.stopRequested || !code) state.status = "stopped";
+      if (l.stopRequested || (!code && !error)) state.status = "stopped";
       else {
         state.status = "failed";
-        state.error ??= `Exited with code ${code}`;
+        state.error ??= error ?? `Exited with code ${code}`;
       }
       resolveExit();
       this.changed();
@@ -406,7 +485,7 @@ export class RunManager {
     command: string,
     cwd: string,
     env: Record<string, string>,
-    down?: string,
+    down?: Live["down"],
     notes: string[] = []
   ): Live {
     const id = runId(worktree, s.name);
@@ -417,19 +496,19 @@ export class RunManager {
       repo,
       slot,
       status: "starting",
-      // a url may say ${port} (its own) or ${port:name} (any service's)
-      ports: (s.ports ?? []).map((p) => ({ name: p.name, port: ports.get(p.name)!, ...(p.url ? { url: expand(p.url.replace(/\$\{port\}/g, String(ports.get(p.name))), ctx) } : {}) })),
+      ports: (s.ports ?? []).map((p) => ({ name: p.name, port: ports.get(p.name)!, ...(p.url ? { url: portUrl(p.url, p, ctx) } : {}) })),
       pid: null,
       exitCode: null,
       startedAt: Date.now(),
     };
-    const prior = this.live.get(id);
+    // the previous run's log stays above this one's
+    const prior = this.live.get(id)?.buffer;
+    const buffer = prior ? `${prior}\r\n` : "";
     let resolveExit!: () => void;
-    const l: Live = { state, proc: null, buffer: prior?.buffer ? `${prior.buffer}\r\n` : "", exited: new Promise((r) => (resolveExit = r)), stopRequested: false, down };
+    const l: Live = { state, proc: null, buffer, written: buffer.length, outputFrom: 0, dependsOn: s.dependsOn ?? [], exited: new Promise((r) => (resolveExit = r)), stopRequested: false, down };
     this.live.set(id, l);
-    const header = `\x1b[2m$ ${command}\x1b[0m\r\n${notes.map((n) => `\x1b[33m${n}\x1b[0m\r\n`).join("")}`;
-    l.buffer += header;
-    this.deps.emit("run:data", id, header);
+    this.append(l, `\x1b[2m$ ${command}\x1b[0m\r\n${notes.map((n) => `\x1b[33m${n}\x1b[0m\r\n`).join("")}`);
+    l.outputFrom = l.written;
     try {
       l.proc = this.deps.spawn(command, { cwd, env });
     } catch (err) {
@@ -440,11 +519,7 @@ export class RunManager {
       return l;
     }
     state.pid = l.proc.pid;
-    l.proc.onData((d) => {
-      if (this.live.get(id) !== l) return;
-      l.buffer = (l.buffer + d).slice(-BUFFER_MAX);
-      this.deps.emit("run:data", id, d);
-    });
+    l.proc.onData((d) => this.append(l, d));
     l.proc.onExit(({ exitCode }) => {
       state.exitCode = exitCode;
       state.pid = null;
@@ -455,13 +530,23 @@ export class RunManager {
       }
       resolveExit();
       this.changed();
+      // a debugger beside the service (a browser on its page) goes with it; a requested stop ends it first
+      if (!l.stopRequested) void this.stopDebug(l);
     });
     this.changed();
     return l;
   }
 
-  /** Wait until the service is up: its ready port answers or its ready line appears. False if it exited first. */
-  private async whenReady(l: Live, s: RunService, ports: Map<string, number>): Promise<boolean> {
+  /**
+   * Wait until the service is up: its ready port answers or its ready line
+   * appears in this run's output. False if it exited first. Waited for once
+   * per run, however many ask.
+   */
+  private whenReady(l: Live, s: RunService, ports: Map<string, number>): Promise<boolean> {
+    return (l.ready ??= this.waitReady(l, s, ports));
+  }
+
+  private async waitReady(l: Live, s: RunService, ports: Map<string, number>): Promise<boolean> {
     const finish = (ok: boolean) => {
       if (ok && l.state.status === "starting") l.state.status = "running";
       this.changed();
@@ -478,8 +563,9 @@ export class RunManager {
     l.exited.then(() => (exited = true));
     while (Date.now() < deadline) {
       if (exited) return finish(false);
-      // strip colors so a pattern matches what the eye sees
-      if (readyLog && readyLog.test(l.buffer.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""))) return finish(true);
+      // only this run's output, without colors, so a pattern matches what the eye sees
+      const own = l.buffer.slice(Math.max(0, l.buffer.length - (l.written - l.outputFrom)));
+      if (readyLog && readyLog.test(own.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""))) return finish(true);
       if (readyPort !== undefined && (await this.inUse(readyPort))) return finish(true);
       await new Promise((r) => setTimeout(r, 300));
     }
@@ -492,18 +578,12 @@ export class RunManager {
     let targets = this.running(worktree);
     if (services?.length) {
       const names = new Set(services);
-      // whatever depends on a stopped service goes too
+      // whatever depends on a stopped service goes too, by what each was started after
+      const all = [...this.live.values()].filter((l) => l.state.worktree === worktree);
       let grew = true;
-      const deps = new Map<string, string[]>();
-      try {
-        const { profile } = await this.profile(worktree);
-        for (const s of profile.services) deps.set(s.name, s.dependsOn ?? []);
-      } catch {
-        /* the profile was removed; stop just what was named */
-      }
       while (grew) {
         grew = false;
-        for (const [n, d] of deps) if (!names.has(n) && d.some((x) => names.has(x))) (names.add(n), (grew = true));
+        for (const l of all) if (!names.has(l.state.service) && l.dependsOn.some((x) => names.has(x))) (names.add(l.state.service), (grew = true));
       }
       targets = targets.filter((l) => names.has(l.state.service));
     }
@@ -517,32 +597,47 @@ export class RunManager {
     if (!virtual && (!l.proc || l.state.pid === null)) return;
     l.stopRequested = true;
     l.state.status = "stopping";
-    // taken now: ending the debugger may end the process, which clears it
-    const pid = l.state.pid ?? 0;
     this.changed();
+    // taken now, with what it started: ending the debugger may end the process, orphaning its children
+    const pid = l.state.pid;
+    const groups = pid === null ? [] : await this.groupsOf(l, pid);
     // the debugger first: disconnecting ends the debuggee cleanly
-    if (l.state.debug) await this.deps.debugger?.stop(l.state.debug).catch(() => {});
+    await this.stopDebug(l);
     if (virtual) {
       await Promise.race([l.exited, new Promise((r) => setTimeout(r, STOP_GRACE_MS))]);
       if (l.state.status === "stopping") l.endVirtual!(null);
       return;
     }
     const signal = (sig: NodeJS.Signals) => {
+      for (const g of groups) {
+        try {
+          this.kill(-g, sig);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+        }
+      }
+    };
+    const alive = (g: number) => {
       try {
-        this.kill(-pid, sig); // the whole process group: the shell and everything it started
+        this.kill(-g, 0);
+        return true;
       } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+        return (err as NodeJS.ErrnoException).code !== "ESRCH";
       }
     };
     signal("SIGTERM");
-    const timer = setTimeout(() => signal("SIGKILL"), STOP_GRACE_MS);
+    let forced = false;
+    const timer = setTimeout(() => {
+      forced = true;
+      signal("SIGKILL");
+    }, STOP_GRACE_MS);
     await l.exited;
+    // a job the shell gave a group of its own can outlive the shell
+    while (!forced && groups.some(alive)) await new Promise((r) => setTimeout(r, 100));
     clearTimeout(timer);
     if (l.down) {
-      const r = await this.deps.runShell(l.down, path.join(l.state.worktree), this.deps.baseEnv());
-      const note = `\r\n\x1b[2m$ ${l.down}\x1b[0m\r\n${r.out.replace(/\n/g, "\r\n")}`;
-      l.buffer = (l.buffer + note).slice(-BUFFER_MAX);
-      this.deps.emit("run:data", l.state.id, note);
+      const r = await this.deps.runShell(l.down.command, l.down.cwd, l.down.env);
+      this.append(l, `\r\n\x1b[2m$ ${l.down.command}\x1b[0m\r\n${r.out.replace(/\n/g, "\r\n")}`);
       if (r.code !== 0) {
         l.state.error = `docker compose down failed (exit ${r.code}) — containers may still be running`;
         l.state.status = "failed";
@@ -556,7 +651,7 @@ export class RunManager {
    * main checkout, then run the setup commands it still needs, logged like a
    * service named "prepare".
    */
-  async prepare(worktree: string): Promise<{ copied: string[]; kept: string[]; missing: string[]; ran: boolean; id: string | null }> {
+  async prepare(worktree: string): Promise<PrepareCopy & { ran: boolean; id: string | null }> {
     const { repo, profile } = await this.profile(worktree);
     const copy = copyPrepared(repo, worktree, profile.prepare?.copy ?? []);
     const command = setupCommand(worktree, profile.prepare);
@@ -565,15 +660,12 @@ export class RunManager {
       copy.copied.length ? `Copied from ${path.basename(repo)}: ${copy.copied.join(", ")}` : "",
       copy.kept.length ? `Already here (kept): ${copy.kept.join(", ")}` : "",
       copy.missing.length ? `Not in ${path.basename(repo)} either: ${copy.missing.join(", ")}` : "",
+      copy.truncated.length ? `Gave up looking for ${copy.truncated.join(", ")} in too many files — name the folder in the pattern` : "",
       command ? "" : "No setup commands needed.",
     ].filter(Boolean);
     if (!command) {
       const l = this.live.get(id);
-      const note = `${summary.join("\r\n")}\r\n`;
-      if (l) {
-        l.buffer = (l.buffer + note).slice(-BUFFER_MAX);
-        this.deps.emit("run:data", id, note);
-      }
+      if (l) this.append(l, `${summary.join("\r\n")}\r\n`);
       return { ...copy, ran: false, id: l ? id : null };
     }
     if (this.running(worktree).some((l) => l.state.service === "prepare")) throw new Error("Prepare is already running for this worktree");
@@ -581,6 +673,21 @@ export class RunManager {
     const l = await this.launch(worktree, repo, profile, service, 0, new Map());
     await l.exited;
     return { ...copy, ran: true, id };
+  }
+
+  /**
+   * The process groups a service's process and everything it started are in:
+   * its own, and each job's — the interactive shell services run in gives
+   * every job a group of its own. If they can't be listed, its own group is
+   * all that's stopped, and the log says so.
+   */
+  private async groupsOf(l: Live, pid: number): Promise<number[]> {
+    try {
+      return await (this.deps.processGroups ?? processGroups)(pid);
+    } catch (err) {
+      this.append(l, `\r\n\x1b[33mCouldn't list what ${l.state.service} started (${(err as Error).message}) — stopping only its own process group\x1b[0m\r\n`);
+      return [pid];
+    }
   }
 
   /** Everything, for quitting the app. */

@@ -1,8 +1,8 @@
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import { RUN_DIR } from "../runProfile";
-import { connectTcp, type DapConnection } from "./client";
+import { RUN_DIR, insideRepo, repoJson } from "../runProfile";
+import { tcpConnector, type DapConnection } from "./client";
 import type { DebugFrame, DebugScope, DebugSessionInfo, DebugVariable } from "../../shared/types";
 
 export interface Connection {
@@ -27,8 +27,12 @@ export interface LaunchOptions {
   parentId?: string;
   /** The program's output, when the debugger runs it itself (no terminal): child sessions report here too. */
   onOutput?: (category: string, text: string) => void;
-  /** The top session ended, with the program's exit code when the adapter reported one. */
-  onEnded?: (exitCode: number | null) => void;
+  /**
+   * The top session ended, with the program's exit code when the adapter
+   * reported one, and why when it wasn't the program ending or a stop asked
+   * for (the debugger didn't start, or its adapter went away).
+   */
+  onEnded?: (exitCode: number | null, error?: string) => void;
 }
 
 interface Live {
@@ -36,8 +40,8 @@ interface Live {
   conn: DapConnection;
   opts: LaunchOptions;
   dispose(): void;
-  exceptionFilters: string[];
   exitCode: number | null;
+  stopRequested: boolean;
 }
 
 const short = () => crypto.randomBytes(4).toString("hex");
@@ -59,8 +63,7 @@ export class DebugManager {
   }
 
   private bpFile(repo: string) {
-    const hash = crypto.createHash("sha1").update(repo).digest("hex").slice(0, 8);
-    return path.join(this.bpDir, `${path.basename(repo).replace(/[^\w.-]/g, "_")}-${hash}.json`);
+    return repoJson(this.bpDir, repo);
   }
 
   /** A repo's breakpoints: relative path → line numbers. */
@@ -79,24 +82,26 @@ export class DebugManager {
    * first session that answered (unverified lines are where code can't stop).
    */
   async setBreakpoints(repo: string, rel: string, lines: number[]): Promise<{ line: number; verified: boolean; message?: string }[]> {
-    if (path.isAbsolute(rel) || rel.split("/").includes("..")) throw new Error(`Not a path inside the repository: ${rel}`);
+    if (!insideRepo(rel)) throw new Error(`Not a path inside the repository: ${rel}`);
     const all = this.breakpoints(repo);
     const sorted = [...new Set(lines.filter((l) => Number.isInteger(l) && l > 0))].sort((a, b) => a - b);
     if (sorted.length) all[rel] = sorted;
     else delete all[rel];
     fs.mkdirSync(this.bpDir, { recursive: true });
     fs.writeFileSync(this.bpFile(repo), JSON.stringify(all, null, 2));
-    let result: { line: number; verified: boolean; message?: string }[] = sorted.map((line) => ({ line, verified: false }));
-    let answered = false;
+    let result: { line: number; verified: boolean; message?: string }[] | null = null;
+    let failed: string | null = null;
     for (const l of this.live.values()) {
       if (l.info.repo !== repo || l.info.state === "ended") continue;
-      const r = await this.sendFile(l, rel, sorted).catch(() => null);
-      if (r && !answered) {
-        result = r;
-        answered = true;
+      try {
+        const r = await this.sendFile(l, rel, sorted);
+        result ??= r;
+      } catch (err) {
+        failed ??= (err as Error).message;
+        this.output(l.info.id, "important", `Breakpoints in ${rel} weren't set: ${(err as Error).message}\n`);
       }
     }
-    return result;
+    return result ?? sorted.map((line) => ({ line, verified: false, ...(failed ? { message: `Not set: ${failed}` } : {}) }));
   }
 
   private async sendFile(l: Live, rel: string, lines: number[]) {
@@ -141,7 +146,7 @@ export class DebugManager {
     } catch (err) {
       throw new Error(`Couldn't start the debugger: ${(err as Error).message}`);
     }
-    const l: Live = { info, conn: c.conn, opts, dispose: c.dispose, exceptionFilters: [], exitCode: null };
+    const l: Live = { info, conn: c.conn, opts, dispose: c.dispose, exitCode: null, stopRequested: false };
     this.live.set(id, l);
     this.wire(l);
     this.changed();
@@ -184,7 +189,7 @@ export class DebugManager {
       supportsMemoryReferences: false,
       locale: "en",
     });
-    l.exceptionFilters = (caps.exceptionBreakpointFilters ?? []).filter((f: any) => f.default).map((f: any) => f.filter);
+    const exceptionFilters = (caps.exceptionBreakpointFilters ?? []).filter((f: any) => f.default).map((f: any) => f.filter);
     // most adapters answer launch only after configurationDone, so it's awaited last
     const launched = conn.request(opts.config.request, opts.config, 180_000);
     launched.catch(() => {}); // reported below; a failure before "initialized" ends the wait
@@ -193,7 +198,9 @@ export class DebugManager {
       await this.sendFile(l, rel, lines).catch((err) => this.output(l.info.id, "important", `Breakpoints in ${rel} weren't set: ${err.message}\n`));
     }
     if (caps.supportsExceptionInfoRequest !== undefined || caps.exceptionBreakpointFilters) {
-      await conn.request("setExceptionBreakpoints", { filters: l.exceptionFilters }).catch(() => {});
+      await conn
+        .request("setExceptionBreakpoints", { filters: exceptionFilters })
+        .catch((err) => this.output(l.info.id, "important", `Exception breakpoints weren't set: ${err.message}\n`));
     }
     if (caps.supportsConfigurationDoneRequest) await conn.request("configurationDone");
     await launched;
@@ -252,10 +259,7 @@ export class DebugManager {
             ...l.opts,
             name: String(body.name ?? `${info.name} (subprocess)`),
             parentId: info.id,
-            connect: async () => {
-              const conn = await connectTcp(Number(target.port), String(target.host ?? "127.0.0.1"));
-              return { conn, dispose: () => conn.close() };
-            },
+            connect: tcpConnector(Number(target.port), String(target.host ?? "127.0.0.1")),
             config: { ...body, request: "attach" },
           }).catch((err) => this.output(info.id, "important", `The subprocess session didn't start: ${err.message}\n`));
           break;
@@ -270,9 +274,10 @@ export class DebugManager {
           break;
       }
     });
-    conn.on("closed", (why: string) => {
+    conn.on("close", (why: string) => {
       if (info.state !== "ended") {
-        if (info.state === "starting") info.error ??= why;
+        // an adapter that ends a session normally says "terminated" first
+        if (!l.stopRequested) info.error ??= why;
         this.end(l);
       }
     });
@@ -309,7 +314,7 @@ export class DebugManager {
     }
     // children end with their parent
     for (const c of this.live.values()) if (c.info.parentId === l.info.id) this.end(c);
-    if (!l.info.parentId) l.opts.onEnded?.(l.exitCode);
+    if (!l.info.parentId) l.opts.onEnded?.(l.exitCode, l.info.error);
     this.changed();
   }
 
@@ -349,23 +354,14 @@ export class DebugManager {
   async stop(id: string): Promise<void> {
     const l = this.live.get(id);
     if (!l || l.info.state === "ended") return;
+    l.stopRequested = true;
     for (const c of [...this.live.values()]) if (c.info.parentId === id) await this.stop(c.info.id);
     await l.conn.request("disconnect", { terminateDebuggee: true, restart: false }, 8_000).catch(() => {});
     this.end(l);
   }
 
-  /** End every session debugging this worktree's service. */
-  async stopService(worktree: string, service: string): Promise<void> {
-    for (const l of [...this.live.values()]) if (l.info.worktree === worktree && l.info.service === service && !l.info.parentId) await this.stop(l.info.id);
-  }
-
+  /** Every session, for quitting the app. */
   async stopAll(): Promise<void> {
     for (const l of [...this.live.values()]) if (!l.info.parentId) await this.stop(l.info.id);
-  }
-
-  /** Forget ended sessions. */
-  prune(): void {
-    for (const [id, l] of this.live) if (l.info.state === "ended") this.live.delete(id);
-    this.changed();
   }
 }
