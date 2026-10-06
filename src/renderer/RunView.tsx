@@ -9,6 +9,7 @@ import { useAction } from "./useAction";
 import type { PortConflict } from "../main/run";
 import { baseName } from "../shared/paths";
 import { readPref, writePref } from "./prefs";
+import { settled } from "./settled";
 
 
 
@@ -60,10 +61,7 @@ export function RunView({
   const load = () => {
     const id = sid;
     if (!id) return;
-    window.mb.runProfile(id).then(
-      (r: IpcResult<RunProfileInfo>) => shown.current === id && setInfo(r),
-      (err: unknown) => shown.current === id && setInfo({ error: `Couldn't read the run setup: ${err instanceof Error ? err.message : err}` })
-    );
+    settled<IpcResult<RunProfileInfo>>(window.mb.runProfile(id), "Couldn't read the run setup").then((r) => shown.current === id && setInfo(r));
   };
   useEffect(() => {
     setInfo(null);

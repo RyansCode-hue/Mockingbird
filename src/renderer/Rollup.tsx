@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { isErr } from "../shared/types";
+import { isErr, type IpcResult } from "../shared/types";
 import { Modal } from "./Modal";
+import { settled } from "./settled";
 
 /**
  * The weekly rollup: written into the WorkTracker folder from the conversation
@@ -14,10 +15,7 @@ export function RollupDialog({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     let live = true;
     setR(null);
-    window.mb.rollupWrite(weeksAgo).then(
-      (res: { file: string; markdown: string } | { error: string }) => live && setR(res),
-      (err: unknown) => live && setR({ error: `Couldn't write the rollup: ${err instanceof Error ? err.message : err}` })
-    );
+    settled<IpcResult<{ file: string; markdown: string }>>(window.mb.rollupWrite(weeksAgo), "Couldn't write the rollup").then((res) => live && setR(res));
     return () => {
       live = false;
     };

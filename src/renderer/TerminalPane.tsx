@@ -5,7 +5,7 @@ import { PinIcon } from "./Icons";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo } from "../shared/types";
+import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
@@ -14,6 +14,7 @@ import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
 import { fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
+import { settled } from "./settled";
 
 export { applyTermTheme } from "./cachedTerm";
 
@@ -332,10 +333,7 @@ export function TerminalPane({
   const readGit = () => {
     const n = ++gitSeq.current;
     if (!gitRoot) return setGit(null);
-    window.mb.worktreeState(gitRoot).then(
-      (r: WorktreeStateInfo | { error: string }) => n === gitSeq.current && setGit(r ?? { error: "no answer" }),
-      (err: unknown) => n === gitSeq.current && setGit({ error: String(err) })
-    );
+    settled<IpcResult<WorktreeStateInfo>>(window.mb.worktreeState(gitRoot), "Couldn't read git").then((r) => n === gitSeq.current && setGit(r ?? { error: "no answer" }));
   };
   useEffect(readGit, [gitRoot]);
   useFolderRefresh(gitRoot, readGit, 30_000);

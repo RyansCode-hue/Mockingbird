@@ -97,10 +97,7 @@ function FolderTree({ session, activePath, editor, onOpen, onActivate, onCloseTa
       for (const rel of expanded) loadDir(sid, rel);
       if (gitBroken.current && !retryGit) return;
       loadChanges(sid).then((r) => (gitBroken.current = isErr(r)));
-      window.mb.worktreeState(root).then(
-        (r: IpcResult<WorktreeStateInfo>) => setGit(r ?? { error: "no answer" }),
-        (err: unknown) => setGit({ error: String(err) })
-      );
+      settled<IpcResult<WorktreeStateInfo>>(window.mb.worktreeState(root), "Couldn't read git").then((r) => setGit(r ?? { error: "no answer" }));
     },
     [sid, root, expanded, loadDir, loadChanges]
   );

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { isErr, SNAPSHOT_MAX_FILE_BYTES, type SessionInfo, type TurnChange, type TurnSnapshot, type IpcResult } from "../shared/types";
 import { ago, plural } from "../shared/format";
 import { Modal } from "./Modal";
+import { settled } from "./settled";
 
 
 /**
@@ -16,7 +17,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ restored: number; removed: number; snap: TurnSnapshot } | null>(null);
   const [error, setError] = useState("");
-  const load = () => window.mb.turnsList(session.id).then(setList, (err: unknown) => setList({ error: `Couldn't list the turns: ${String(err)}` }));
+  const load = () => settled(window.mb.turnsList(session.id), "Couldn't list the turns").then(setList);
   useEffect(() => {
     load();
   }, [session.id]);
@@ -25,10 +26,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
     setChanges(null);
     if (!pick) return;
     let live = true;
-    window.mb.turnsChanges(session.id, pick.n).then(
-      (r: IpcResult<TurnChange[]>) => live && setChanges(r),
-      (err: unknown) => live && setChanges({ error: `Couldn't compare with the files now: ${String(err)}` })
-    );
+    settled<IpcResult<TurnChange[]>>(window.mb.turnsChanges(session.id, pick.n), "Couldn't compare with the files now").then((r) => live && setChanges(r));
     return () => {
       live = false;
     };
@@ -37,7 +35,7 @@ export function UndoTurnDialog({ session, onClose, onTellAgent }: { session: Ses
     if (!pick) return;
     setBusy(true);
     setError("");
-    const r = await window.mb.turnsRestore(session.id, pick.n).catch((err: unknown) => ({ error: String(err) }));
+    const r = await settled(window.mb.turnsRestore(session.id, pick.n), "Couldn't restore");
     setBusy(false);
     if (isErr(r)) return setError(r.error);
     setDone({ restored: r.restored, removed: r.removed, snap: pick });

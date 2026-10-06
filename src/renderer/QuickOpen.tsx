@@ -5,6 +5,7 @@ import { useListNav } from "./listNav";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { useEscape } from "./useEscape";
+import { settled } from "./settled";
 
 
 /** "src/app.ts:42" → the path and the line; a bare path has no line. */
@@ -43,10 +44,7 @@ export function QuickOpen({
   useEffect(() => {
     if (!session) return;
     let live = true;
-    window.mb.filesAll(session.id).then(
-      (r: IpcResult<FileList>) => live && setList(r),
-      (err: unknown) => live && setList({ error: `Couldn't list the files: ${err instanceof Error ? err.message : err}` })
-    );
+    settled<IpcResult<FileList>>(window.mb.filesAll(session.id), "Couldn't list the files").then((r) => live && setList(r));
     return () => {
       live = false;
     };

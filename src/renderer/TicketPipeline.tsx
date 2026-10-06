@@ -6,6 +6,7 @@ import { createIpcStore, loadInto } from "./ipcStore";
 import { useAction } from "./useAction";
 import { baseName } from "../shared/paths";
 import { Modal } from "./Modal";
+import { settled } from "./settled";
 
 
 const pipelines = createIpcStore<Record<string, TicketPipeline>>({}, ({ set }) => {
@@ -118,15 +119,12 @@ function PrForm({ ticketId, title, target, sessions, onAskSession, onOpenScm, on
     if (!sid) return;
     const n = ++seq.current;
     setPre(null);
-    window.mb.pipelinePrPreflight(sid, ticketId, target).then(
-      (r: IpcResult<PrPreflight & { lookupError: string | null }>) => {
-        if (n !== seq.current) return; // a newer check is on its way
-        setPre(r);
-        // Recheck keeps a base the user picked; a new branch starts from its own default
-        if (!isErr(r)) setBase((b) => b || r.base || "");
-      },
-      (err: unknown) => n === seq.current && setPre({ error: `Couldn't check the branch: ${err instanceof Error ? err.message : err}` })
-    );
+    settled<IpcResult<PrPreflight & { lookupError: string | null }>>(window.mb.pipelinePrPreflight(sid, ticketId, target), "Couldn't check the branch").then((r) => {
+      if (n !== seq.current) return; // a newer check is on its way
+      setPre(r);
+      // Recheck keeps a base the user picked; a new branch starts from its own default
+      if (!isErr(r)) setBase((b) => b || r.base || "");
+    });
   };
   useEffect(() => {
     setBase("");
