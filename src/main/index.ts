@@ -665,6 +665,7 @@ handle("collab:revokeKind", (id, kind) => collab.revokeAllowKind(id, kind));
 handle("collab:resetCopy", (id) => collab.resetTestCopy(id));
 handle("collab:participants", (id, specs) => collab.setParticipants(id, specs));
 handle("collab:list", () => collab.list());
+handle("collab:problems", () => collab.unreadable());
 handle("collab:create", (spec) => collab.create(spec));
 handle("collab:delete", (id) => collab.delete(id));
 handle("collab:send", (id, text) => collab.send(id, text));

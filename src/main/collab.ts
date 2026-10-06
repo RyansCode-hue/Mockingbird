@@ -4,6 +4,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import type {
   AgentKind,
+  CollabLoadProblem,
   CollabMessage,
   CollabMode,
   CollabModel,
@@ -201,6 +202,7 @@ export class CollabRooms {
   private lookups = new Map<string, number>(); // `${room}.${seat}.${round}` → questions asked this turn
   private waiting = new Map<string, (answer: "allow" | "deny", why: string) => void>(); // permission request id → its turn
   private implementing = new Set<string>(); // rooms whose implementing session is being started
+  private problems: CollabLoadProblem[] = [];
 
   constructor(
     private dir: string,
@@ -233,9 +235,16 @@ export class CollabRooms {
         room.allowKinds ??= [];
         this.rooms.set(room.id, room);
       } catch (err) {
-        console.error(`collab: skipping unreadable room ${f}:`, err);
+        const file = path.join(dir, f);
+        console.error(`collab: skipping unreadable room ${file}:`, err);
+        this.problems.push({ file, error: err instanceof Error ? err.message : String(err) });
       }
     }
+  }
+
+  /** Room files that couldn't be loaded at startup; each is still on disk, untouched. */
+  unreadable(): CollabLoadProblem[] {
+    return [...this.problems];
   }
 
   list(): CollabRoom[] {

@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readJsonFile, readSlice, writeFileAtomic, writeGenerated } from "../src/main/fileOps";
 import { codexRollouts, epochMs } from "../src/main/agentFiles";
 import { tempDir } from "./helpers";
@@ -84,6 +84,40 @@ describe("agent files", () => {
       "rollout-2026-09-01T10-00-00-a.jsonl",
     ]);
     expect([...codexRollouts(2)]).toHaveLength(2);
+  });
+  it("lists no rollouts without a sessions folder, and passes over stray files in it", () => {
+    const sessions = path.join(os.homedir(), ".codex", "sessions");
+    fs.rmSync(sessions, { recursive: true, force: true });
+    expect([...codexRollouts()]).toEqual([]);
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.writeFileSync(path.join(sessions, ".DS_Store"), "");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect([...codexRollouts()]).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  it("leaves out, and logs, a folder it can't list — and throws when that leaves nothing", () => {
+    const sessions = path.join(os.homedir(), ".codex", "sessions");
+    fs.rmSync(sessions, { recursive: true, force: true });
+    const good = path.join(sessions, "2026", "09", "02");
+    fs.mkdirSync(good, { recursive: true });
+    fs.writeFileSync(path.join(good, "rollout-2026-09-02T09-00-00-b.jsonl"), "{}\n");
+    const locked = path.join(sessions, "2026", "08");
+    fs.mkdirSync(path.join(locked, "30"), { recursive: true });
+    fs.chmodSync(locked, 0o000);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect([...codexRollouts()].map((f) => path.basename(f))).toEqual(["rollout-2026-09-02T09-00-00-b.jsonl"]);
+      expect(String(warn.mock.calls[0]?.[0])).toContain(locked);
+      fs.rmSync(path.join(sessions, "2026", "09"), { recursive: true });
+      expect(() => [...codexRollouts()]).toThrow(locked);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+      warn.mockRestore();
+    }
   });
   it("reads timestamps as ISO strings, epoch seconds or epoch milliseconds", () => {
     expect(epochMs("2026-09-01T10:00:00Z")).toBe(Date.parse("2026-09-01T10:00:00Z"));

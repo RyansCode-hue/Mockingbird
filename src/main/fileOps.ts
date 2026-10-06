@@ -1,7 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 
-const isMissing = (err: unknown) => (err as NodeJS.ErrnoException).code === "ENOENT";
+/** The error of a file or folder that isn't there: "nothing yet", unlike every other failure. */
+export const isMissing = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === "ENOENT";
 
 /**
  * Replace a file's contents in one step: written next to it, then renamed over

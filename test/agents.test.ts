@@ -105,4 +105,18 @@ describe("resume detection", () => {
     expect(codex.hasConversation("/work/desktop")).toBe(false);
     expect(codex.hasConversation("/work/nothing")).toBe(false);
   });
+  it("Codex: an unreadable sessions folder means starting fresh, and says why", () => {
+    const sessions = path.join(os.homedir(), ".codex", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.chmodSync(sessions, 0o000);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(agentFor("codex").hasConversation("/work/interactive")).toBe(false);
+      expect(agentFor("codex").conversationExists("0199aaaa-bbbb")).toBe(false);
+      expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([expect.stringContaining(sessions), expect.stringContaining(sessions)]);
+    } finally {
+      fs.chmodSync(sessions, 0o755);
+      warn.mockRestore();
+    }
+  });
 });

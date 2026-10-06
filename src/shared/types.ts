@@ -695,6 +695,12 @@ export interface CollabPermissionRequest {
   at: number;
 }
 
+/** A Collaborate room file that couldn't be loaded: left on disk as it was, and not listed. */
+export interface CollabLoadProblem {
+  file: string;
+  error: string;
+}
+
 /** One plan rate-limit window, e.g. the 5-hour limit or the weekly one. */
 export interface UsageLimit {
   label: string; // for display: "5-hour limit", "Weekly · all models", "Weekly · Opus"

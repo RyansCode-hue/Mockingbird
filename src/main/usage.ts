@@ -137,12 +137,17 @@ const codexWindow = (minutes: unknown): Pick<UsageLimit, "label" | "window"> =>
  */
 function readCodex(): AgentUsage | null {
   const newest: { file: string; mtime: number }[] = [];
-  for (const file of codexRollouts(CODEX_FILES_CHECKED * 3)) {
-    try {
-      newest.push({ file, mtime: fs.statSync(file).mtimeMs });
-    } catch {
-      continue; // removed since it was listed
+  try {
+    for (const file of codexRollouts(CODEX_FILES_CHECKED * 3)) {
+      try {
+        newest.push({ file, mtime: fs.statSync(file).mtimeMs });
+      } catch {
+        continue; // removed since it was listed
+      }
     }
+  } catch (err) {
+    console.warn(`usage: ${(err as Error).message}`);
+    return null;
   }
   newest.sort((a, b) => b.mtime - a.mtime);
   for (const { file } of newest.slice(0, CODEX_FILES_CHECKED)) {

@@ -113,6 +113,25 @@ describe("rooms", () => {
     await c.run(room.id);
     const again = new CollabRooms(dir, async () => ({ text: "", conversationId: "" }), () => {}, vi.fn(), () => null);
     expect(again.get(room.id)).toMatchObject({ title: "Export feature", round: 1, running: false });
+    expect(again.unreadable()).toEqual([]);
+  });
+  it("keeps a list of room files it couldn't load, and leaves them as they were", () => {
+    const { make, dir } = rooms();
+    const room = make();
+    const broken = path.join(dir, "half-written.json");
+    fs.writeFileSync(broken, '{ "id": "x", ');
+    const shapeless = path.join(dir, "shapeless.json");
+    fs.writeFileSync(shapeless, '{ "id": "y" }'); // no participants
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const again = new CollabRooms(dir, async () => ({ text: "", conversationId: "" }), () => {}, vi.fn(), () => null);
+      expect(again.list().map((r) => r.id)).toEqual([room.id]);
+      expect(again.unreadable().map((p) => p.file).sort()).toEqual([broken, shapeless]);
+      expect(again.unreadable().every((p) => p.error.length > 0)).toBe(true);
+      expect(fs.readFileSync(broken, "utf8")).toBe('{ "id": "x", ');
+    } finally {
+      err.mockRestore();
+    }
   });
 });
 

@@ -43,6 +43,8 @@ const api = {
   appVersion: () => ipcRenderer.invoke("app:version"),
   collabModels: () => ipcRenderer.invoke("collab:models"),
   collabList: () => ipcRenderer.invoke("collab:list"),
+  /** Room files that couldn't be loaded: [{ file, error }]. */
+  collabProblems: () => ipcRenderer.invoke("collab:problems"),
   collabCreate: (spec: unknown) => ipcRenderer.invoke("collab:create", spec),
   collabRepo: (id: string, repo: string | null) => ipcRenderer.invoke("collab:repo", id, repo),
   collabResetCopy: (id: string) => ipcRenderer.invoke("collab:resetCopy", id),

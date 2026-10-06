@@ -2,7 +2,7 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readUsage, setClaudePlan, usageReporterArgs } from "../src/main/usage";
 
 const mb = path.join(os.homedir(), ".mockingbird");
@@ -94,6 +94,19 @@ describe("Codex usage", () => {
     fs.mkdirSync(codexDir, { recursive: true });
     fs.writeFileSync(path.join(codexDir, "rollout-b.jsonl"), event({ something_new: { pct: 5 } }) + "\n");
     expect(readUsage().codex).toBeNull();
+  });
+  it("has no reading, and says why, when Codex's sessions folder can't be listed", () => {
+    const sessions = path.join(os.homedir(), ".codex", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+    fs.chmodSync(sessions, 0o000);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(readUsage().codex).toBeNull();
+      expect(String(warn.mock.calls[0]?.[0])).toContain(sessions);
+    } finally {
+      fs.chmodSync(sessions, 0o755);
+      warn.mockRestore();
+    }
   });
 });
 

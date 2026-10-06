@@ -95,9 +95,13 @@ let cwdIndex: { cwds: Set<string>; at: number } | null = null;
 function codexCwds(): Set<string> {
   if (cwdIndex && Date.now() - cwdIndex.at < INDEX_TTL_MS) return cwdIndex.cwds;
   const cwds = new Set<string>();
-  for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) {
-    const cwd = rolloutCwd(file);
-    if (cwd) cwds.add(cwd);
+  try {
+    for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) {
+      const cwd = rolloutCwd(file);
+      if (cwd) cwds.add(cwd);
+    }
+  } catch (err) {
+    console.warn(`[agents] can't tell which folders have a Codex conversation to resume, so they start fresh: ${(err as Error).message}`);
   }
   cwdIndex = { cwds, at: Date.now() };
   return cwds;
@@ -127,7 +131,11 @@ const codex: AgentAdapter = {
   },
   // the conversation id ends the rollout's file name; bounded like the cwd index
   conversationExists(id) {
-    for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) if (ROLLOUT_NAME_RE.exec(path.basename(file))?.[1] === id) return true;
+    try {
+      for (const file of codexRollouts(ROLLOUT_SCAN_LIMIT)) if (ROLLOUT_NAME_RE.exec(path.basename(file))?.[1] === id) return true;
+    } catch (err) {
+      console.warn(`[agents] can't look for Codex conversation ${id}, so the session starts fresh: ${(err as Error).message}`);
+    }
     return false;
   },
 };
