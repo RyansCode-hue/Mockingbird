@@ -76,6 +76,23 @@ should stop more members joining later.
   `*.pem`, `*.key`, `credentials.json`…), the same mechanism the run-setup
   drafter uses. Nothing in that list is ever sent over the connection.
   Teammates swap `.env` files by hand.
+- **What the deny rules don't cover:** they stop Claude's file tools, not a
+  shell command the user approves (`cat .env`). Codex gets none: its deny-read
+  rules live in a permission profile in `~/.codex/config.toml`, which replaces
+  its sandbox settings, so Mockingbird doesn't set them; a Codex room session
+  says "codex: secrets unguarded". A terminal in a shared group is shared too
+  (anyone in the room sees and can type into it) and says so. A session moved
+  into a shared group while running keeps what it started with until it's
+  restarted, and offers the restart.
+- **How commits get the trailer:** a room session starts with
+  `GIT_CONFIG_PARAMETERS` pointing `core.hooksPath` at Mockingbird's hooks
+  folder, so every git the session runs uses it and no repository's config
+  changes. Each hook there runs the repository's own hook of the same name
+  (`.git/hooks`, or its `core.hooksPath`, e.g. husky); `prepare-commit-msg`
+  and `commit-msg` then add a trailer per teammate who typed into the current
+  turn (in a terminal, which has no turns: in the last ten minutes).
+- **Who's told what:** teammates are notified when a room session waits, not
+  when a turn finishes. Muting a teammate's session mutes it for you only.
 
 ## Take-over
 
