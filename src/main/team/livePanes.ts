@@ -256,10 +256,10 @@ export class LivePanes implements RemotePanes {
 
   stop(): void {
     if (!this.started) return;
+    for (const id of [...this.batches.keys()]) this.flush(id); // output gathered for teammates goes out first
     this.started = false;
     if (this.reconcileTimer) clearTimeout(this.reconcileTimer);
     this.reconcileTimer = null;
-    for (const id of [...this.batches.keys()]) this.flush(id);
     for (const off of this.offs.splice(0)) off();
     for (const t of this.timers.splice(0)) clearInterval(t);
     for (const p of this.panes.values()) if (p.resyncTimer) clearTimeout(p.resyncTimer);
