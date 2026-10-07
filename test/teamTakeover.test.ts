@@ -4,7 +4,8 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
-import { groupRoomHost, TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
+import { liveRoomHost, TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
+import { TurnFeed } from "../src/main/team/roomSessions";
 import { agentFor } from "../src/main/agents";
 import { claudeProjectDir, codexRolloutPath, realpathOr } from "../src/main/agentFiles";
 import { publicUrl, repoIdentity, withoutCredentials } from "../src/main/git";
@@ -632,16 +633,22 @@ describe("cleaning up backups", () => {
 });
 
 describe("take-over pieces", () => {
-  it("counts a session as a room's when its top-level group is shown as the room, workspaces included", () => {
+  it("takes room sessions and their turn ends from the live panes", () => {
+    const R = "R".repeat(22);
     const s = (id: string, taskGroup: string | null) => session({ id, cwd: "/w", repoPath: "/r", taskGroup });
-    const host = groupRoomHost({
-      sessions: () => [s("a", "5110"), s("b", "5110/api"), s("c", "5102"), s("d", null)],
-      rooms: () => [{ id: "R".repeat(22), groupKey: "5110" }],
-      onTurnEnd: () => () => {},
-    });
-    expect(["a", "b", "c", "d", "gone"].map((id) => host.roomOf(id))).toEqual(["R".repeat(22), "R".repeat(22), null, null, null]);
-    expect(host.groupOf("R".repeat(22))).toBe("5110");
+    const feed = new TurnFeed();
+    // what the live panes say, not the group alone: a taken-over session has left the room
+    const live = { roomOfSession: (id: string) => (id === "a" ? R : null), onTurnEnded: (cb: Parameters<TurnFeed["on"]>[0]) => feed.on(cb) };
+    const host = liveRoomHost(live, { sessions: () => [s("a", "5110"), s("b", "5110/api"), s("c", "5102")], rooms: () => [{ id: R, groupKey: "5110" }] });
+    expect(["a", "b", "c", "gone"].map((id) => host.roomOf(id))).toEqual([R, null, null, null]);
+    expect(host.groupOf(R)).toBe("5110");
     expect(host.session("b")?.taskGroup).toBe("5110/api");
+    const ends: string[] = [];
+    const off = host.onTurnEnd((id) => ends.push(id));
+    feed.emit({ sessionId: "a", roomId: R, status: "idle", drivers: [] });
+    off();
+    feed.emit({ sessionId: "a", roomId: R, status: "idle", drivers: [] });
+    expect(ends).toEqual(["a"]);
   });
 
   it("matches a repository across laptops by origin, however its URL is spelled", () => {

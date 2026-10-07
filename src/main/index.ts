@@ -61,7 +61,8 @@ import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 // team rooms: team chat
 import { TeamRoom } from "./team/teamRoom";
 // team rooms: take-over
-import { groupRoomHost, TakeoverService } from "./team/takeover";
+import { liveRoomHost, TakeoverService } from "./team/takeover";
+import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
 // team rooms: live panes
 import { LivePanes } from "./team/livePanes";
@@ -128,24 +129,23 @@ const teamPlan = new PlanService({
   author: () => ({ name: (store.settings.teamName ?? "").trim() || os.userInfo().username }),
 });
 // team rooms: take-over — room sessions back up after each turn; a teammate can
-// continue one on their laptop. A room session here is one in a shared group;
-// the hooks' Stop events are its turn ends (roomTurnEnds).
-const roomTurnEnds = new Set<(sessionId: string) => void>();
+// continue one on their laptop. Room sessions and their turn ends are the live
+// panes' (roomSessions.ts).
 let takeover: TakeoverService | null = null;
+let secretFilesProblem: string | null = null;
 function startTakeover(): TakeoverService | null {
   const transport = team.transport;
   if (!transport) return null; // team rooms didn't start: Settings → Team says why
   return new TakeoverService({
     team: transport,
     roomsDir: ROOMS_DIR,
-    host: groupRoomHost({
-      sessions: () => sessions.list(),
-      rooms: () => team.status().rooms,
-      onTurnEnd: (cb) => {
-        roomTurnEnds.add(cb);
-        return () => roomTurnEnds.delete(cb);
-      },
-    }),
+    host: liveRoomHost(livePanes, { sessions: () => sessions.list(), rooms: () => team.status().rooms }),
+    secretFiles: () => {
+      const known = knownSecretFiles(store.settings.workTrackerPath);
+      if (known.problem && known.problem !== secretFilesProblem) logError("team: what room backups leave out", known.problem);
+      secretFilesProblem = known.problem;
+      return known.files;
+    },
     repos: () => [...new Set([...indexRepos(store.settings.repoRoots).map((r) => r.path), ...sessions.list().flatMap((s) => (s.repoPath ? [s.repoPath] : []))])],
     launch: (req) => sessions.create(req),
     log: logError,
@@ -493,8 +493,6 @@ app.whenReady().then(() => {
         : `${info.title} is done responding`,
       status === "waiting" ? "waiting" : "finished"
     );
-    // team rooms: take-over — idle comes only from Stop: the agent's turn ended
-    if (status === "idle") for (const cb of roomTurnEnds) cb(info.id);
   }, (info, prompt) => {
     // the files before this turn, so it can be undone (agent panes in a repository only)
     if (info.shell || !info.repoPath) return;

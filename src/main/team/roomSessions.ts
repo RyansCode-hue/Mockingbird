@@ -10,8 +10,10 @@ import type { Coauthor } from "./coauthors";
  * changes, and session.removed when the session closes for good or leaves
  * the room. Only the owner (the event's author) can change its sessions.
  *
- * Other stages reach room sessions through the functions at the end of this
- * file: isRoomSession, roomOfSession and onTurnEnded.
+ * Other stages reach room sessions through the end of this file: the running
+ * live panes are a RoomSessionSource (take-over is built on that one), and
+ * isRoomSession, roomOfSession and onTurnEnded answer for whichever live
+ * panes run in this process.
  */
 
 const STATUSES: SessionStatus[] = ["working", "waiting", "idle", "dead"];
@@ -166,11 +168,38 @@ export interface TurnEnded {
 
 /** What the running live panes answer about this install's room sessions. */
 export interface RoomSessionLookup {
+  /** The room a session of this install's is in; null outside rooms, and once a teammate took it over. */
   roomOfSession(id: string): RoomId | null;
 }
 
+/** The live panes as other stages use them: room sessions, and their turn ends. */
+export interface RoomSessionSource extends RoomSessionLookup {
+  /** Hear when one of this install's room sessions ends an agent turn. Returns the unsubscribe. */
+  onTurnEnded(cb: (e: TurnEnded) => void): () => void;
+}
+
+/** Listeners for turn ends; one failing never stops the others. */
+export class TurnFeed {
+  private listeners = new Set<(e: TurnEnded) => void>();
+
+  on(cb: (e: TurnEnded) => void): () => void {
+    this.listeners.add(cb);
+    return () => this.listeners.delete(cb);
+  }
+
+  emit(e: TurnEnded): void {
+    for (const l of this.listeners) {
+      try {
+        l(e);
+      } catch (err) {
+        console.error(`[team] a turn-ended listener failed for session ${e.sessionId}:`, err);
+      }
+    }
+  }
+}
+
 let lookup: RoomSessionLookup | null = null;
-const turnListeners = new Set<(e: TurnEnded) => void>();
+const turns = new TurnFeed();
 
 /** Set by the live panes when they start (null when they stop). */
 export function setRoomSessionLookup(l: RoomSessionLookup | null): void {
@@ -187,20 +216,13 @@ export function isRoomSession(id: string): boolean {
   return roomOfSession(id) !== null;
 }
 
-/** Hear when a room session's turn ends. Returns the unsubscribe. */
+/** Hear when a room session's turn ends, whichever live panes run it. Returns the unsubscribe. */
 export function onTurnEnded(cb: (e: TurnEnded) => void): () => void {
-  turnListeners.add(cb);
-  return () => turnListeners.delete(cb);
+  return turns.on(cb);
 }
 
 export function turnEnded(e: TurnEnded): void {
-  for (const l of turnListeners) {
-    try {
-      l(e);
-    } catch (err) {
-      console.error(`[team] a turn-ended listener failed for session ${e.sessionId}:`, err);
-    }
-  }
+  turns.emit(e);
 }
 
 /** Who a member is in a room (its name there). */

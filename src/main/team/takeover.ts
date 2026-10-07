@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { defineEventType } from "./rooms";
+import type { RoomSessionSource } from "./roomSessions";
 import type { RequestContext, Team, Unsubscribe } from "./transport";
 import { branchesOf, currentBranch, git, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, skippedIn, snapshotCommit } from "../snapshots";
@@ -30,7 +31,7 @@ import {
   type TakeoverResult,
   type TakeoverView,
 } from "../../shared/team/takeover";
-import { topOfKey, type AgentKind, type NewSessionRequest, type SessionInfo } from "../../shared/types";
+import type { AgentKind, NewSessionRequest, SessionInfo } from "../../shared/types";
 import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/types";
 
 /**
@@ -186,12 +187,11 @@ defineEventType("session.takenOver", {
 // ---- the seams ------------------------------------------------------------------------------
 
 /**
- * What take-over needs from the app's sessions. index.ts provides one over
- * SessionManager and the hooks' Stop events (a room session there is one in a
- * shared group); live shared panes (stage 2) can provide their own.
+ * What take-over needs from the app's sessions. index.ts provides liveRoomHost
+ * (the live panes' room sessions and their turn ends); tests provide their own.
  */
 export interface RoomSessionHost {
-  /** The room a session on this install is shared in, or null when it's private. */
+  /** The room a session on this install is shared in, or null when it's private (or a teammate took it over). */
   roomOf(sessionId: string): RoomId | null;
   /** A session on this install. */
   session(sessionId: string): SessionInfo | undefined;
@@ -202,19 +202,17 @@ export interface RoomSessionHost {
 }
 
 /**
- * The host over the app's own sessions: a room session is one whose top-level
- * group is shown as a room here (workspaces inside it included).
+ * The host over this install's room sessions as the live panes know them
+ * (roomSessions.ts): a session's room, and the turn ends they report — the
+ * same turn ends the Co-authored-by trailers count, so a backup follows every
+ * turn a teammate's typing is credited for.
  */
-export function groupRoomHost(o: { sessions: () => SessionInfo[]; rooms: () => { id: RoomId; groupKey: string }[]; onTurnEnd: RoomSessionHost["onTurnEnd"] }): RoomSessionHost {
-  const session = (id: string) => o.sessions().find((s) => s.id === id);
+export function liveRoomHost(live: RoomSessionSource, o: { sessions: () => SessionInfo[]; rooms: () => { id: RoomId; groupKey: string }[] }): RoomSessionHost {
   return {
-    roomOf: (id) => {
-      const s = session(id);
-      return (s && o.rooms().find((r) => r.groupKey === topOfKey(s.taskGroup ?? "ungrouped"))?.id) ?? null;
-    },
-    session,
+    roomOf: (id) => live.roomOfSession(id),
+    session: (id) => o.sessions().find((s) => s.id === id),
     groupOf: (roomId) => o.rooms().find((r) => r.id === roomId)?.groupKey ?? null,
-    onTurnEnd: o.onTurnEnd,
+    onTurnEnd: (cb) => live.onTurnEnded((e) => cb(e.sessionId)),
   };
 }
 

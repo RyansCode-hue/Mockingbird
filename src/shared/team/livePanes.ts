@@ -119,6 +119,12 @@ export interface RoomSessionTag {
   guards: { secrets: boolean; coauthors: boolean };
   /** Why typing into it or showing it failed just now (remote only). */
   problem?: string;
+  /**
+   * A teammate took this install's session over (own only): it continues on
+   * their laptop, and this copy has left the room — nothing of it is shared
+   * any more, and teammates can't type into it.
+   */
+  takenOver?: { by: MemberId; byName: string; at: number };
 }
 
 /** What a teammate is showing, in this window's session ids. */

@@ -34,7 +34,7 @@ import { roomAgentContext } from "./planService";
 import { PLAN_CONTEXT_ENV, PLAN_TOOL } from "../../shared/team/plan";
 import { TEAM_DIR } from "./identity";
 import { CoauthorTurns, COAUTHORS_DIR, ensureHooks, hooksEnv, HOOKS_DIR } from "./coauthors";
-import { gitOf, memberName, originIdentity, recordFor, setRoomSessionLookup, turnEnded } from "./roomSessions";
+import { gitOf, memberName, originIdentity, recordFor, setRoomSessionLookup, turnEnded, TurnFeed, type RoomSessionSource, type TurnEnded } from "./roomSessions";
 import { TeamError, type Team, type TeamStream } from "./transport";
 
 /**
@@ -144,12 +144,13 @@ type ViewsByRoom = Map<RoomId, { msg: ViewMessage; at: number }>;
 const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-export class LivePanes implements RemotePanes {
+export class LivePanes implements RemotePanes, RoomSessionSource {
   private readonly t: Timing;
   private readonly now: () => number;
   private readonly coauthors: CoauthorTurns;
   private hooksReady = false;
   private started = false;
+  private turns = new TurnFeed();
   private offs: (() => void)[] = [];
   private timers: ReturnType<typeof setInterval>[] = [];
 
@@ -310,9 +311,22 @@ export class LivePanes implements RemotePanes {
     return this.ownRooms.get(id) ?? null;
   }
 
+  /** The room a session of this install's is in: its group's, unless a teammate took it over (then this copy has left the room). */
   private roomOfInfo(s: SessionInfo): RoomId | null {
-    if (s.debrief) return null;
-    return this.roomForGroup(topOfKey(s.taskGroup ?? "ungrouped"));
+    const roomId = this.groupRoomOf(s);
+    return roomId && !this.takenOverOwn(roomId, s.id) ? roomId : null;
+  }
+
+  /** The room a session's group is shared as, taken over or not. */
+  private groupRoomOf(s: SessionInfo): RoomId | null {
+    return s.debrief ? null : this.roomForGroup(topOfKey(s.taskGroup ?? "ungrouped"));
+  }
+
+  /** A teammate took this install's session `sessionId` over in `roomId`: who and when; null when not. */
+  private takenOverOwn(roomId: RoomId, sessionId: string): { by: MemberId; at: number } | null {
+    const team = this.d.team();
+    const b = team?.room(roomId)?.ext.takeover?.sessions[sessionId];
+    return b?.takenOver && b.owner === team!.self.id ? b.takenOver : null;
   }
 
   /**
@@ -463,7 +477,9 @@ export class LivePanes implements RemotePanes {
     if (!roomId) return;
     const drivers = this.coauthors.statusChanged(info.id, before, info.status);
     if (!drivers) return;
-    turnEnded({ sessionId: info.id, roomId, status: info.status, drivers });
+    const e: TurnEnded = { sessionId: info.id, roomId, status: info.status, drivers };
+    this.turns.emit(e);
+    turnEnded(e);
     void this.pollGit(info.id);
   }
 
@@ -538,6 +554,8 @@ export class LivePanes implements RemotePanes {
     const id = (params as { session?: unknown })?.session;
     if (typeof id !== "string" || !roomId) throw new Error("name a session and its room");
     const s = this.d.sessions.list().find((x) => x.id === id);
+    const taken = s && this.groupRoomOf(s) === roomId ? this.takenOverOwn(roomId, s.id) : null;
+    if (taken) throw new Error(`that session was taken over by ${memberNameIn(this.d.team(), roomId, taken.by)}: it runs on their Mac now`);
     if (!s || this.roomOfInfo(s) !== roomId) throw new Error("that session isn't running in this room");
     return s;
   }
@@ -576,6 +594,11 @@ export class LivePanes implements RemotePanes {
     return { ok: true };
   }
 
+  /** Hear when one of this install's room sessions ends an agent turn (take-over backs it up then). */
+  onTurnEnded(cb: (e: TurnEnded) => void): () => void {
+    return this.turns.on(cb);
+  }
+
   /** Who drives a room session's current turn (teammates who typed into it). */
   drivers(sessionId: string) {
     return this.coauthors.drivers(sessionId);
@@ -592,6 +615,9 @@ export class LivePanes implements RemotePanes {
         if (!groupKey) continue;
         for (const rec of Object.values(room.ext.sessions ?? {})) {
           if (rec.owner === team.self.id) continue;
+          // taken over: the taker's own session is the room's now (its owner may be offline, so the record stays)
+          const backup = room.ext.takeover?.sessions[rec.id];
+          if (backup?.takenOver && backup.owner === rec.owner) continue;
           const paneId = remotePaneId(rec.owner, rec.id);
           next.set(paneId, { paneId, roomId: room.id, groupKey, rec });
         }
@@ -981,10 +1007,11 @@ export class LivePanes implements RemotePanes {
     };
     for (const s of [...this.d.sessions.list(), ...this.d.sessions.resumable()]) {
       if (own[s.id]) continue;
-      const roomId = this.roomOfInfo(s);
+      const roomId = this.groupRoomOf(s);
       if (!roomId) continue;
       const pub = this.published.get(`${roomId}\n${s.id}`)?.rec;
       const out = this.d.sessions.paneOutput(s.id);
+      const taken = this.takenOverOwn(roomId, s.id);
       own[s.id] = {
         roomId,
         sessionId: s.id,
@@ -1000,6 +1027,7 @@ export class LivePanes implements RemotePanes {
         repo: pub?.repo ?? null,
         repoName: pub?.repoName ?? null,
         guards: this.d.sessions.guardsOf(s.id) ?? NO_GUARDS,
+        ...(taken ? { takenOver: { by: taken.by, byName: memberNameIn(team, roomId, taken.by), at: taken.at } } : {}),
       };
     }
     return { remote, own, views, problems: this.problems };
