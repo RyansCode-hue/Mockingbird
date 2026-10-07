@@ -5,9 +5,9 @@ import { git, makeRepo, tempDir, write } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { applyPlanOp, planOfRoom } from "../src/main/team/board";
 import { publishPlan, planFilesAt, PLAN_REF, type PlanRender } from "../src/main/team/planGit";
-import { PlanService, planToolCall, roomAgentContext, type PlanServiceDeps, type PlanWarningNotice } from "../src/main/team/planService";
+import { PlanService, planToolCall, roomAgentContext, type PlanServiceDeps } from "../src/main/team/planService";
 import { changedFiles, mergeOverlaps, overlaps, teammateOverlaps } from "../src/main/conflicts";
-import { claimConflicts, claimsFile, claimsRoom, renderPlanMarkdown, type ClaimsFile } from "../src/shared/team/plan";
+import { claimConflicts, claimsFile, claimsRoom, renderPlanMarkdown, type ClaimsFile, type PlanWarningNotice } from "../src/shared/team/plan";
 import type { SessionInfo } from "../src/shared/types";
 
 /** A repository on origin (a local bare one), and a clone of it for each name. */

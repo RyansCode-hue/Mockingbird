@@ -326,7 +326,7 @@ export function describeChange(c: PlanChange, nameOf: (id: MemberId) => string):
     case "removed":
       return `${who} removed ${what}`;
     case "repo":
-      return `${who} keeps the plan in ${c.repo ?? "a repo"}`;
+      return `${who} chose ${c.repo ?? "a repo"} to keep the plan in`;
   }
 }
 
@@ -433,6 +433,17 @@ export interface PlanView {
   /** When teammates' branches were last fetched (0: never), and why it failed. */
   fetchedAt: number;
   fetchProblem?: string;
+}
+
+/** A claim warning (or the claims check's failure), as the window shows it. */
+export interface PlanWarningNotice {
+  at: number;
+  sessionId: string | null;
+  sessionTitle: string;
+  decision: ClaimWarning["decision"] | "failed";
+  tool: string;
+  conflicts: ClaimWarning["conflicts"];
+  error?: string;
 }
 
 /** A repo the plan can be kept in: a local clone and its origin. */

@@ -17,7 +17,7 @@ import {
   PLAN_BRANCH,
   PLAN_FILE,
   renderPlanMarkdown,
-  type ClaimWarning,
+  type PlanWarningNotice,
   type PlanGitStatus,
   type PlanOp,
   type PlanRepoChoice,
@@ -73,17 +73,6 @@ interface Timing {
 const DEFAULT_TIMING: Timing = { ownSyncMs: 300, repairSyncMs: 20_000, pollMs: 5_000, fetchMs: 5 * 60_000 };
 const ORIGIN_TTL_MS = 5 * 60_000;
 const BASES = new Set([...BASE_NAMES.dev, ...BASE_NAMES.main, PLAN_BRANCH]);
-
-/** A claim warning as the window shows it. */
-export interface PlanWarningNotice {
-  at: number;
-  sessionId: string | null;
-  sessionTitle: string;
-  decision: ClaimWarning["decision"] | "failed";
-  tool: string;
-  conflicts: ClaimWarning["conflicts"];
-  error?: string;
-}
 
 let active: PlanService | null = null;
 
