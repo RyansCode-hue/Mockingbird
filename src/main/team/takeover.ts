@@ -778,10 +778,11 @@ export class TakeoverService {
     for (let i = 0; i < 1000; i++) {
       const len = probe ? 0 : Math.max(0, Math.min(TRANSCRIPT_CHUNK, size - at));
       const data = len ? await readBytes(file, at, len) : Buffer.alloc(0);
+      // ownerCwd as the CLI records it (symbolic links resolved); the backup's descriptor has the folder as Mockingbird named it: a take-over moves the transcript from either
       const r = await this.d.team.request<{ have: number }>(
         peer,
         "takeover.transcript",
-        { roomId, sessionId, agent: conv.agent, conversationId: conv.id, file: path.basename(file), ownerCwd: s.cwd, offset: at, data: data.toString("base64"), total: size, ...(reset ? { reset: true } : {}) },
+        { roomId, sessionId, agent: conv.agent, conversationId: conv.id, file: path.basename(file), ownerCwd: realpathOr(s.cwd), offset: at, data: data.toString("base64"), total: size, ...(reset ? { reset: true } : {}) },
         { roomId, timeoutMs: SEND_TIMEOUT_MS }
       );
       probe = reset = false;
@@ -1552,10 +1553,12 @@ export class TakeoverService {
   }
 
   private ownTranscript(agent: AgentKind, id: string, cwd: string): string | null {
-    const cached = this.ownFiles.get(id);
+    // by folder too: a session taken back runs the same conversation as the stopped copy, in another worktree with its own transcript
+    const key = `${agent}\n${id}\n${cwd}`;
+    const cached = this.ownFiles.get(key);
     if (cached && fs.existsSync(cached)) return cached;
     const file = agent === "codex" ? codexRolloutOf(id, this.codexSessions) : claudeTranscriptOf(id, cwd, this.claudeProjects);
-    if (file) this.ownFiles.set(id, file);
+    if (file) this.ownFiles.set(key, file);
     return file;
   }
 

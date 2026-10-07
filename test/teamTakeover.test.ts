@@ -344,7 +344,7 @@ describe("the conversation's copy", () => {
     await t.ryan.svc.settled();
     expect(same()).toBe(true);
     const meta = JSON.parse(fs.readFileSync(path.join(path.dirname(copy), "meta.json"), "utf8"));
-    expect(meta).toMatchObject({ agent: "claude", conversationId: CONV, file: `${CONV}.jsonl`, ownerCwd: t.wt, from: t.ryanM.id });
+    expect(meta).toMatchObject({ agent: "claude", conversationId: CONV, file: `${CONV}.jsonl`, ownerCwd: realpathOr(t.wt), from: t.ryanM.id });
   });
 
   it("sends a long conversation in chunks", async () => {

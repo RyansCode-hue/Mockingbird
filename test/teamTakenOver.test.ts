@@ -417,6 +417,12 @@ describe("the copy a take-over leaves behind", () => {
     expect(left()).toMatchObject({ now: { self: true, sessionId: mine.sessionId }, takeBack: false });
     await until(() => !!t.nickRun.tk.view().left.some((l) => l.sessionId === r.sessionId && l.now.owner === t.ryanM.id), "Nick's copy to know");
     await expect(t.ryan.sessions.relaunch(t.s.id)).rejects.toThrow(/was taken back into another session here/);
+    // the session taken back backs up its own conversation, not the stopped copy's (same conversation, another worktree)
+    turn(t.ryan.sessions, mine.sessionId);
+    const copy = path.join(t.nickM.store.dir, t.roomId, "transcripts", mine.sessionId, `${CONV}.jsonl`);
+    await until(() => fs.existsSync(copy), "the taken-back conversation at Nick's", 15_000);
+    await t.ryanRun.tk.settled();
+    expect(JSON.parse(fs.readFileSync(copy, "utf8").split("\n")[0]).cwd).toBe(fs.realpathSync(mine.cwd));
   });
 });
 
