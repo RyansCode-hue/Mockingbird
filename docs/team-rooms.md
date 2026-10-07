@@ -37,6 +37,14 @@ should stop more members joining later.
   "needs an update" instead of half-working.
 - The transport sits behind one small interface, so another way to connect
   could replace WebRTC later without the rest changing.
+- **What the room log holds** (each event signed by its author; only a
+  session's owner changes its records): `room.created`, `member.added`,
+  `member.renamed`; `session.upsert` / `session.removed` (room sessions);
+  `session.backup`, `session.takenOver`, `session.backupDropped` (take-over);
+  `chat.message`, `chat.update`, `chat.assistant` (team room); `plan.package`,
+  `plan.claim`, `plan.status`, `plan.remove`, `plan.repo`, `plan.branches`
+  (plan board). Terminal output, views and typing are streams and requests
+  between connected members, never stored.
 
 ## Rooms
 
@@ -74,8 +82,9 @@ should stop more members joining later.
 - **Secrets:** room sessions start with Claude Code permission rules denying
   reads of `.env*` files and the known secret paths (the ADO PAT file,
   `*.pem`, `*.key`, `credentials.json`…), the same mechanism the run-setup
-  drafter uses. Nothing in that list is ever sent over the connection.
-  Teammates swap `.env` files by hand.
+  drafter uses. One list of secret file patterns (`src/main/secrets.ts`)
+  makes both those rules and what backups leave out, so nothing in it is ever
+  sent over the connection or pushed. Teammates swap `.env` files by hand.
 - **What the deny rules don't cover:** they stop Claude's file tools, not a
   shell command the user approves (`cat .env`). Codex gets none: its deny-read
   rules live in a permission profile in `~/.codex/config.toml`, which replaces
@@ -100,11 +109,14 @@ When the owner is away, a member clicks **Take over** and the session continues
 on their laptop under their own account.
 
 - **Work:** while members are connected, each room session's uncommitted work
-  mirrors peer to peer. After every agent turn, Mockingbird also snapshots the
-  worktree, the same way Undo turn does, and pushes it to a hidden ref
-  `refs/mockingbird/rooms/<room>/<session>` on origin. That's the backup when
-  the owner's laptop is off. Each session shows how fresh its backup is
-  ("backed up 2 min ago", or a warning when a push failed).
+  mirrors peer to peer. After every agent turn (the agent going from working
+  or waiting to idle, or exiting: the same turns Co-authored-by counts),
+  Mockingbird also snapshots the worktree, the same way Undo turn does, and
+  pushes it to a hidden ref `refs/mockingbird/rooms/<room>/<session>` on
+  origin. That's the backup when the owner's laptop is off. Each session's
+  sidebar row and pane header show how fresh its backup is ("backed up 2 min
+  ago", or a warning when a push failed); a teammate's also offers **Take
+  over**, prominent while its owner is offline.
 - **Conversation:** the transcript syncs **peer to peer only, never to GitHub**.
   Take-over places it where the taker's CLI resumes it (Claude's
   `~/.claude/projects/<slug>/<id>.jsonl` for the taker's checkout path, or
@@ -112,8 +124,12 @@ on their laptop under their own account.
   resumes from a handoff summary instead (the existing handoff digest), and says so.
 - Take-over creates the session's branch/worktree on the taker's laptop from
   the newest snapshot it has (peer copy or hidden ref, whichever is newer). It
-  says which snapshot it used. The original owner sees the session as
-  taken over when they come back.
+  says which snapshot it used. The taker's new session is the room's from then
+  on. The original owner's copy leaves the room: their Mockingbird removes its
+  record, stops streaming it, refuses teammates' typing into it and stops
+  backing it up, as soon as it learns of the take-over — at once, or when it's
+  next online or started. Until then, teammates hide the stale record. The copy
+  stays on the owner's laptop, marked "taken over by <name>".
 - **Who can see a backup:** while a session is backed up, anyone with read
   access to the repository can fetch its work in progress from the hidden ref
   (secrets — `.env*`, keys, certificates, credential files — are never in it).
@@ -144,15 +160,20 @@ A chat thread in each room, for people and agents:
   syncs it live between members. Feature branches never touch it, so it never
   conflicts.
 - Every worktree in a room gets a **read-only copy** at a git-ignored path, kept
-  current, plus agent instructions pointing at it. Agents propose changes
-  through a Mockingbird tool rather than editing it.
+  current, plus agent instructions pointing at it. An agent started in a room
+  gets those instructions in its launch (Claude's appended system prompt,
+  Codex's developer instructions), with the tool pre-allowed for Claude;
+  otherwise the SessionStart hook adds them from the worktree's copy. Agents
+  propose changes through that Mockingbird tool (`update_team_plan`) rather
+  than editing it.
 - A work package lists what it owns (folders/files), what it provides and uses
   (contracts), and how it's tested. It's claimed by a member.
 - **Claims + warnings:**
   - Before an agent edits a file claimed by a teammate's package, it's warned
     (hook/tool feedback), and so are you. You can still proceed.
   - Mockingbird's overlap check extends across machines: files changed on a
-    teammate's pushed branches show up as "Nick's branch also changes this".
+    teammate's pushed branches show on the pane as "Nick's branch also changes
+    <file>", and clicking it opens the room's plan board.
 
 ## Not in this release
 
@@ -167,8 +188,14 @@ A chat thread in each room, for people and agents:
   the secret deny list. The Worker's room logic is a plain module, tested
   directly and also served by a local signaling server for tests.
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
-  signaling server, real WebRTC between them) driven end to end: create room, join by code, live pane, remote
-  typing, notifications, chat, cross-machine message, board claim + warning,
-  take-over with the owner offline.
+  signaling server, real WebRTC between them) driven end to end
+  (`MB_E2E_APP=1`): create room, join by code, live pane, remote typing,
+  chat, board claim, a backed-up turn, take-over with the owner quit, and the
+  owner's app reconciling when it starts again. Notifications, the
+  cross-machine message and the claim warning are tested over the loopback.
+- The same against the deployed Worker (`MB_E2E_SIGNALING_URL`, the creator's
+  fingerprint from `npm run team:e2e-fingerprint` allowed on it), asserting
+  each connection's path, plus a relay-only variant that forces the TURN
+  fallback.
 - Then a real run between Ryan's and Nick's laptops through the deployed
   Worker, including from a network that forces the TURN fallback.

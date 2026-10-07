@@ -68,21 +68,20 @@ helpers, the setup checks, and the renderer's diff and usage formatting.
 
 Team rooms are tested at every layer: the signed protocol and invite codes, the
 signaling room logic (also served over WebSockets by the local signaling
-server, `npm run team:signaling`), the event log, the transport over an
-in-process loopback (`src/main/team/loopback.ts`, for later stages' tests too),
-and the WebRTC wire against the local server with a stand-in peer host.
-`test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer hosts in
-Electron (skipped in CI), and `MB_E2E_APP=1 npx vitest run
-test/teamApp.e2e.test.ts` runs two real Mockingbird instances, with throwaway
-homes, that share and join a room (their windows open while it runs).
-Take-over runs end to end over the loopback against real git — a local bare
-origin and two clones — in `test/teamTakeover.test.ts`.
-Live panes are tested over the loopback with real session managers (records,
-streaming and catching up after gaps, remote typing and its audit,
-notifications, views, launch guards), the Co-authored-by hooks against real
-git, and end to end by `MB_E2E_APP=1 npx vitest run
-test/teamLiveApp.e2e.test.ts`: a terminal shared on one instance, watched and
-typed into from the other.
+server, `npm run team:signaling`), the event log, and the WebRTC wire against
+the local server. Everything above the transport runs over an in-process
+loopback (`src/main/team/loopback.ts`) with real session managers and real git
+(a local bare origin and clones): live panes, the Co-authored-by hooks, chat,
+the plan board, backups and take-over with the owner online, away or
+restarted. `test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer
+hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
+`test/teamLiveApp.e2e.test.ts` run two real Mockingbird instances in throwaway
+homes (their windows open while they run): share and join, a terminal watched
+and typed into, chat, a package claimed, a turn of a Claude stand-in backed up,
+and Take over once the owner has quit. `MB_E2E_SIGNALING_URL=https://…` runs
+them against a deployed Worker — allow the fingerprint `npm run
+team:e2e-fingerprint` prints there first — with a relay-only variant that
+proves the TURN fallback.
 
 ## UI preview
 
@@ -283,49 +282,44 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-- **Team rooms** ([design](docs/team-rooms.md)) — two Mockingbirds sharing a
-  group live. Built so far, the foundation: each install's key pair and display
-  name (Settings → Team, or `npm run team:fingerprint` for the fingerprint);
-  the signaling Worker (`signaling/`, deployed once to a free Cloudflare
-  account, with Cloudflare TURN as the fallback relay; only fingerprints on its
-  `ALLOWED_CREATORS` secret can create rooms, so nobody who learns its URL can
-  spend the relay — see `signaling/README.md`); peer-to-
-  peer WebRTC connections in a hidden window, with every connection detail
-  signed and each certificate pinned; a signed, Lamport-ordered event log per
-  room that every member keeps and merges on reconnect; share a group as a room
-  (⇪ on its row) and join one with a code (⇲); a shared group shows who's
-  connected. The plan and claims board (▦ on a shared group's row): work
-  packages with owned paths, contracts and tests, claimed by members, kept on
-  the `mockingbird/plan` branch and as a read-only copy in every worktree of
-  the room's repo; agents get the plan at start and change it through the
-  `update_team_plan` tool, an agent's first edit of a file a teammate's package
-  owns is held back once with a warning (to you as well), and teammates'
-  pushed branches join the overlap check. Live panes: a session in a shared
-  group shows on every member's Mockingbird with its owner's initials, streams
-  to whoever has it on screen, and anyone can type into it (the owner's
-  terminal size holds); initials show who's looking at which pane, Follow
-  mirrors a teammate's grid, everyone is notified when a room session waits,
-  room sessions start with Claude denied reading secrets, and commits in turns
-  a teammate typed into credit them with Co-authored-by.
-  The team room chat: each room's thread in the side bar's **Team room** view
-  (and the group bar's **Room chat** chip), with unread counts and @mentions
-  that notify, working offline (messages merge on reconnect); room agents'
-  turns, waits, take-overs and board changes posted as compact updates;
-  `list_sessions` / `send_message` reaching teammates' room sessions through
-  the room; and **@assistant**, answered on the asker's laptop from the room's
-  chat, sessions, board and docs.
-  - Take-over: after every turn a room session's worktree is snapshotted
-    (ignored and secret files left out) and pushed to a hidden ref on origin,
-    `refs/mockingbird/rooms/<room>/<session>`, never a branch; connected
-    teammates also get it peer to peer, with the conversation (which never
-    goes to git). The sidebar shows how fresh each backup is; Take over
-    continues a teammate's session on your laptop from the newest snapshot, on
-    its branch, resuming the conversation — or, when it didn't all arrive, from
-    a summary of what did, and the agent says so. While a session is backed
-    up, anyone with read access to the repository can fetch its work in
-    progress (secrets excluded). Its owner deletes the backup when the session
-    is forgotten, merged into the base branch, idle for 14 days, or taken over
-    and backed up by the taker.
+- **Team rooms** ([design](docs/team-rooms.md)) — a group shared live with a
+  teammate's Mockingbird. Built and tested end to end on one Mac; next is the
+  first run between two laptops through the deployed Worker.
+  - **Connecting:** each install has a key pair and a display name (Settings →
+    Team; `npm run team:fingerprint`). Laptops connect peer to peer over WebRTC
+    (in a hidden window), introduced by a Cloudflare signaling Worker
+    (`signaling/`, deployed once; only fingerprints in its `ALLOWED_CREATORS`
+    create rooms) with Cloudflare TURN as the fallback relay. Every connection
+    detail is signed and each certificate pinned. A room is a shared group (⇪
+    shares, ⇲ joins with a code); every member keeps its signed, ordered event
+    log and merges it on reconnect.
+  - **Sessions:** a session in a shared group is one row and one pane on every
+    member's Mockingbird, tagged with its owner's initials. It streams to
+    whoever shows it, anyone can type into it, initials show who's looking,
+    Follow mirrors a teammate's grid, and everyone hears when it waits. Room
+    sessions start with Claude denied reading secret files and knowing the
+    room's plan, and commits in turns a teammate typed into credit them with
+    Co-authored-by.
+  - **Backups and Take over:** after every agent turn a room session's worktree
+    (ignored and secret files left out) is pushed to a hidden ref on origin,
+    `refs/mockingbird/rooms/<room>/<session>`, and sent to connected teammates
+    with its conversation, which never goes to git. Rows and panes say how
+    fresh each backup is. **Take over** continues a teammate's session on your
+    laptop from the newest snapshot, on its branch, resuming the conversation
+    (or a summary of what arrived); the owner's copy leaves the room, at once or
+    when their Mockingbird is next online. Anyone who can read the repository
+    can fetch backed-up work in progress; a backup is deleted once its session
+    is forgotten, merged, idle for 14 days, or taken over and backed up again.
+  - **Team room chat:** a thread per room (the **Team room** view, the **Room
+    chat** chip) with @mentions, agents' updates (turns, waits, take-overs,
+    board changes), `list_sessions` and `send_message` across laptops, and
+    **@assistant**, answered on the asker's laptop.
+  - **Plan board** (▦): work packages with owned paths, contracts and tests,
+    claimed by members, kept on the `mockingbird/plan` branch and as a
+    read-only copy in every worktree. Agents change it with `update_team_plan`;
+    an agent's first edit of a file a teammate's package owns is held back once
+    with a warning; a teammate's pushed branch that changes your files shows on
+    the pane ("Nick's branch also changes …") and opens the board.
 
 ### Next
 
