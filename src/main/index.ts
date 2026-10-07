@@ -55,6 +55,8 @@ import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpda
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 import { TeamService } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
+// team rooms: live panes
+import { LivePanes } from "./team/livePanes";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -99,6 +101,22 @@ const team = new TeamService({
   emit: (status) => toWindow("team:changed", status),
   log: logError,
   assetsDir: __dirname,
+});
+
+// team rooms: live panes — sessions in shared groups, streamed to and typed into by teammates
+const livePanes = new LivePanes({
+  team: () => team.transport,
+  rooms: () => team.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey })),
+  sessions,
+  settings: () => store.settings,
+  notify: (title, body, paneId) => {
+    const n = new Notification({ title, body });
+    n.on("click", () => focusPane(paneId));
+    n.show();
+  },
+  toWindow,
+  audit: (line) => Store.audit(line),
+  log: logError,
 });
 
 // Run and Debug: a repo's services per worktree, each on its own terminal,
@@ -315,6 +333,7 @@ app.whenReady().then(() => {
   }
   createWindow();
   team.start();
+  livePanes.start(); // team rooms: live panes
   powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   void lookUpBins();
@@ -442,6 +461,7 @@ app.on("before-quit", (e) => {
 setInterval(() => sessions.saveScrollback(), 60_000);
 app.on("will-quit", () => {
   sessions.saveScrollback(true);
+  livePanes.stop(); // team rooms: live panes — pending output sent first
   team.stop(); // room snapshots written, connections closed
 });
 
@@ -475,7 +495,7 @@ handle("sessions:kill", (id, forget) => {
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
-handle("session:buffer", (id) => sessions.buffer(id));
+handle("session:buffer", (id) => sessions.paneBuffer(id));
 handle("sessions:broadcast", (req: Partial<BroadcastRequest>) => {
   if (typeof req?.message !== "string" || !req.message) throw new Error("Nothing to broadcast");
   return sessions.broadcast(req.message, req.sessionIds ?? [], req.whenIdle ?? true);
@@ -734,6 +754,10 @@ handle("team:invite", (roomId) => ({ invite: team.createInvite(String(roomId)) }
 handle("team:join", (code) => team.join(String(code ?? "")));
 handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
 handle("team:checkSignaling", (url) => TeamService.checkSignaling(String(url ?? "")));
+// team rooms: live panes
+handle("team:live", () => livePanes.state());
+handle("team:paneResync", (id) => livePanes.resync(String(id)));
+ipcMain.on("team:liveView", (_e, view) => livePanes.setView(view));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 

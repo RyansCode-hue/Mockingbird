@@ -10,6 +10,13 @@ import { readSlice } from "./fileOps";
 export interface LaunchContext {
   /** The per-session Mockingbird MCP server that lets agents message each other; absent for an agent outside messaging. */
   mcp?: McpLaunch;
+  /**
+   * Permission rules denying file reads (a team room session's secrets).
+   * Claude takes them as --disallowedTools. Codex ignores them: its
+   * deny-read rules live in a permission profile in ~/.codex/config.toml,
+   * which replaces its sandbox settings, so they aren't set from here.
+   */
+  denyReads?: string[];
 }
 
 /** Everything that differs between the coding-agent CLIs a session can run. */
@@ -44,6 +51,7 @@ const claude: AgentAdapter = {
     if (ctx.mcp) {
       args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", [MCP_TOOL.listSessions, MCP_TOOL.sendMessage].map(claudeToolName).join(","));
     }
+    if (ctx.denyReads?.length) args.push("--disallowedTools", ...ctx.denyReads);
     return args;
   },
   conversationExists(id) {

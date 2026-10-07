@@ -30,3 +30,11 @@ export function shouldNotify(o: { settings: Settings; session?: Pick<SessionInfo
   if (o.kind === "finished" && o.settings.notifyFinished === false) return false;
   return true;
 }
+
+/**
+ * A teammate's room session waiting on input (team rooms): every member is
+ * told, under their own notification settings. Anyone in the room can answer it.
+ */
+export function roomWaitingNotice(o: { owner: string; title: string; reason: string | null }): { title: string; body: string } {
+  return { title: `Needs input · ${o.owner}'s session`, body: `${o.title} · ${o.reason ?? "waiting on you"}` };
+}
