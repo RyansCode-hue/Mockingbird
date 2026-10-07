@@ -1,0 +1,21 @@
+# Mockingbird's signaling Worker: one Durable Object per team room.
+# Deploy: see README.md (npx wrangler deploy).
+name = "mockingbird-signaling"
+main = "src/worker.ts"
+compatibility_date = "2025-09-01"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SignalingRoomObject"
+
+# The Workers Free plan has SQLite-backed Durable Objects only.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SignalingRoomObject"]
+
+[observability]
+enabled = true
+
+# Secrets (never in this file): TURN_KEY_ID and TURN_KEY_API_TOKEN, set with
+#   npx wrangler secret put TURN_KEY_ID
+#   npx wrangler secret put TURN_KEY_API_TOKEN

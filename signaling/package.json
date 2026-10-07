@@ -1,0 +1,9 @@
+{
+  "name": "mockingbird-signaling",
+  "private": true,
+  "description": "Mockingbird team rooms: the signaling Worker (Cloudflare Workers, one Durable Object per room)",
+  "scripts": {
+    "deploy": "npx wrangler deploy",
+    "logs": "npx wrangler tail"
+  }
+}
