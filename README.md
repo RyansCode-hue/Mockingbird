@@ -75,6 +75,12 @@ and the WebRTC wire against the local server with a stand-in peer host.
 Electron (skipped in CI), and `MB_E2E_APP=1 npx vitest run
 test/teamApp.e2e.test.ts` runs two real Mockingbird instances, with throwaway
 homes, that share and join a room (their windows open while it runs).
+Live panes are tested over the loopback with real session managers (records,
+streaming and catching up after gaps, remote typing and its audit,
+notifications, views, launch guards), the Co-authored-by hooks against real
+git, and end to end by `MB_E2E_APP=1 npx vitest run
+test/teamLiveApp.e2e.test.ts`: a terminal shared on one instance, watched and
+typed into from the other.
 
 ## UI preview
 
@@ -283,8 +289,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
   signed and each certificate pinned; a signed, Lamport-ordered event log per
   room that every member keeps and merges on reconnect; share a group as a room
   (⇪ on its row) and join one with a code (⇲); a shared group shows who's
-  connected. Next, built on its transport: live shared panes and typing,
-  take-over, the team room chat with agents, and the plan and claims board.
+  connected. Live panes: a session in a shared group shows on every member's
+  Mockingbird with its owner's initials, streams to whoever has it on screen,
+  and anyone can type into it (the owner's terminal size holds); initials show
+  who's looking at which pane, Follow mirrors a teammate's grid, everyone is
+  notified when a room session waits, room sessions start with Claude denied
+  reading secrets, and commits in turns a teammate typed into credit them with
+  Co-authored-by. Next, built on its transport: take-over, the team room chat
+  with agents, and the plan and claims board.
 
 ### Next
 

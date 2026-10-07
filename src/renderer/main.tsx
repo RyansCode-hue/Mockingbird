@@ -1579,7 +1579,7 @@ function App() {
         )}
         {tab === "settings" && (
           <SettingsView
-            sessions={sessions}
+            sessions={ownSessions /* team rooms: live panes — broadcasts reach this Mac's sessions */}
             theme={theme}
             onTheme={setTheme}
             onRestartAll={() => setModal("restart")}
@@ -2636,7 +2636,7 @@ function App() {
       )}
       {modal === "restart" && (
         <RestartAllDialog
-          sessions={sessions}
+          sessions={ownSessions /* team rooms: live panes — teammates' sessions restart on their Mockingbirds */}
           onClose={() => setModal(null)}
           onDone={(ids) => {
             freshTerms(ids);
