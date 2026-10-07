@@ -67,6 +67,7 @@ import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
 // team rooms: live panes
 import { LivePanes } from "./team/livePanes";
+import { stopTeamRooms } from "./team/shutdown";
 import { isRemotePaneId } from "../shared/team/livePanes";
 
 const LOG = path.join(MB_DIR, "main.log");
@@ -345,7 +346,7 @@ function createWindow(): void {
   // closing the window quits the app: the hidden team window mustn't keep it open
   win.on("closed", () => {
     if (mainWindow === win) mainWindow = null;
-    team.stop();
+    stopTeam();
   });
   win.loadFile(path.join(__dirname, "index.html"));
   // the editor holds unsaved changes: the window says so (beforeunload), and quitting asks first
@@ -531,11 +532,16 @@ app.on("before-quit", (e) => {
 setInterval(() => sessions.saveScrollback(), 60_000);
 app.on("will-quit", () => {
   sessions.saveScrollback(true);
-  teamPlan.stop(); // team rooms: plan board
-  takeover?.close(); // team rooms: take-over
-  livePanes.stop(); // team rooms: live panes — pending output sent first
-  team.stop(); // room snapshots written, connections closed
+  stopTeam();
 });
+
+// team rooms stop once, whichever comes first (the window closing, or quitting): see stopTeamRooms for the order
+let teamStopped = false;
+function stopTeam(): void {
+  if (teamStopped) return;
+  teamStopped = true;
+  stopTeamRooms({ livePanes, chat: teamRoom, plan: teamPlan, takeover: () => takeover, team }, logError);
+}
 
 app.on("window-all-closed", () => {
   app.quit();
@@ -859,8 +865,6 @@ const teamRoom = new TeamRoom({
   windowFocused: () => !!appWindow()?.isFocused(),
   log: (msg) => void logError("team chat", msg),
 });
-// before team.stop() closes the transport: gathered agent updates are posted
-app.prependListener("will-quit", () => teamRoom.stop());
 handle("teamChat:view", (roomId) => teamRoom.chat.view(String(roomId)));
 handle("teamChat:post", (roomId, text) => teamRoom.chat.post(String(roomId), String(text ?? "")));
 handle("teamChat:read", (roomId) => teamRoom.chat.markRead(String(roomId)));
