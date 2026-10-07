@@ -5,6 +5,9 @@ import { MB_DIR } from "./store";
 import type { SessionManager } from "./sessions";
 import { SessionInfo, topOfKey, type AgentKind, type AgentMessage, type SessionStatus } from "../shared/types";
 import { writeGenerated } from "./fileOps";
+import { PLAN_TOOL } from "../shared/team/plan";
+import { PLAN_TOOL_SCHEMA } from "./team/claims";
+import { planToolCall } from "./team/planService";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
@@ -107,6 +110,7 @@ const SESSION_TOOLS = [
       additionalProperties: false,
     },
   },
+  ${JSON.stringify(PLAN_TOOL_SCHEMA)},
 ];
 
 function ask(req) {
@@ -334,6 +338,9 @@ export class Messaging {
     const live = this.live();
     const me = live.find((s) => s.id === req.from);
     if (!me) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
+
+    // team rooms: plan board — it answers "not in a team room" for sessions outside one
+    if (req.op === PLAN_TOOL) return planToolCall(me.id, req.args ?? {});
 
     if (req.op === MCP_TOOL.listSessions) {
       const others: Record<string, unknown>[] = live

@@ -1,4 +1,5 @@
 import { execFile } from "child_process";
+import { PLAN_BRANCH, PLAN_FILE } from "../../shared/team/plan";
 import * as fs from "fs";
 import * as path from "path";
 import { clampAnswer } from "./chat";
@@ -16,8 +17,8 @@ import type { MemberId, RoomEvent, RoomEventBodies, RoomId, RoomState } from "..
  */
 
 /** Where the board lives: stage 5's read-only copy in a worktree, else plan.md on its branch. */
-export const BOARD_COPY_PATHS = [".mockingbird/plan.md"];
-export const BOARD_REFS = ["mockingbird/plan", "origin/mockingbird/plan"];
+export const BOARD_COPY_PATHS = [PLAN_FILE];
+export const BOARD_REFS = [PLAN_BRANCH, `origin/${PLAN_BRANCH}`];
 export const BOARD_FILE = "plan.md";
 
 const CHAT_LINES = 40;

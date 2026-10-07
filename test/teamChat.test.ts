@@ -3,25 +3,16 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
-import { defineEventType } from "../src/main/team/rooms";
 import { TeamRoom } from "../src/main/team/teamRoom";
 import { TeamChat } from "../src/main/team/chat";
-import { AgentUpdateFeed, BOARD_EVENT_PREFIX, TAKEOVER_EVENT, type Scheduled } from "../src/main/team/agentUpdates";
+import { AgentUpdateFeed, type Scheduled } from "../src/main/team/agentUpdates";
+import "../src/main/team/board"; // the plan board's room events
+import "../src/main/team/takeover"; // the take-over's room events
 import { assistantPrompt, readBoard, readDocs } from "../src/main/team/assistant";
 import { Messaging } from "../src/main/messaging";
 import { isRead, parseMentions, unreadCounts, updateLine, type ChatEntry } from "../src/shared/team/chat";
 import type { SessionInfo } from "../src/shared/types";
 import type { RoomEvent } from "../src/shared/team/types";
-
-// stand-ins for stage 3's take-over and stage 5's board events, by the names the feed listens for
-declare module "../src/shared/team/types" {
-  interface RoomEventBodies {
-    "session.takeover": { sessionId: string; title: string; from: string };
-    "board.claimed": { title: string };
-  }
-}
-defineEventType(TAKEOVER_EVENT as "session.takeover", { reduce() {} });
-defineEventType(`${BOARD_EVENT_PREFIX}claimed` as "board.claimed", { reduce() {} });
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, title: id, ticketTitle: null, repoPath: "/code/backoffice", branch: `${id}-branch`, taskGroup: "5110", status: "idle", agent: "claude", cwd: `/w/${id}`, kind: "work", waitingReason: null, waitingSince: null, extraDirs: [], createdAt: 0, ticketId: null, ...over }) as SessionInfo;
@@ -231,10 +222,21 @@ describe("agent updates", () => {
     ryan.room.sessionsChanged();
     await until(() => nick.room.chat.view(roomId).entries.some((e) => e.kind === "update"), "Nick to see the update");
     expect(texts(nick, roomId)).toEqual(["update:Export API — started a turn"]);
-    ryan.m.team.publish(roomId, "board.claimed", { title: "Donor export" });
-    nick.m.team.publish(roomId, "session.takeover", { sessionId: "api", title: "Export API", from: ryan.m.id });
+    ryan.m.team.publish(roomId, "plan.package", { id: "p-donor1", title: "Donor export" });
+    ryan.m.team.publish(roomId, "plan.claim", { id: "p-donor1", owner: ryan.m.id });
+    ryan.m.team.publish(roomId, "plan.branches", { origin: "git@github.com:acme/backoffice.git", branches: ["5110-export"] }); // bookkeeping: no update
+    nick.m.team.publish(roomId, "session.takenOver", {
+      sessionId: "api",
+      from: ryan.m.id,
+      newSessionId: "t-api",
+      snapshot: { sha: "a".repeat(40), takenAt: Date.now(), source: "peer" },
+      conversation: "full",
+      branch: null,
+    });
     await until(() => texts(ryan, roomId).length === 3 && texts(nick, roomId).length === 3, "both updates");
-    expect(texts(nick, roomId).slice(1).sort()).toEqual(["update:Export API — was taken over: Nick took it over from Ryan", "update:Ryan claimed Donor export"].sort());
+    expect(texts(nick, roomId).slice(1).sort()).toEqual(
+      ['update:Ryan created "Donor export"|Ryan claimed "Donor export"', "update:a session — was taken over: Nick took it over from Ryan"].sort()
+    );
     await new Promise((r) => setTimeout(r, 200));
     expect(texts(ryan, roomId)).toHaveLength(3);
   });

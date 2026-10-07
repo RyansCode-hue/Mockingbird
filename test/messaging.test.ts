@@ -142,15 +142,18 @@ describe("MCP server script", () => {
     w({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_sessions", arguments: {} } });
     w({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "send_message", arguments: { to: "front", message: "x" } } });
     w({ jsonrpc: "2.0", id: 5, method: "nope" });
+    w({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "update_team_plan", arguments: { action: "claim", id: "p-abcd" } } });
     await new Promise((r) => setTimeout(r, 1500));
     p.kill();
     const byId = Object.fromEntries(out.trim().split("\n").map((l) => JSON.parse(l)).map((m) => [m.id, m]));
     expect(byId[1].result).toMatchObject({ protocolVersion: "2025-06-18", serverInfo: { name: "mockingbird" } });
-    expect(byId[2].result.tools.map((t: any) => t.name)).toEqual(["list_sessions", "send_message"]);
+    expect(byId[2].result.tools.map((t: any) => t.name)).toEqual(["list_sessions", "send_message", "update_team_plan"]);
     expect(byId[3].result.isError).toBe(false);
     expect(JSON.parse(byId[3].result.content[0].text).you.id).toBe("front");
     expect(byId[4].result).toMatchObject({ isError: true, content: [{ text: "That is your own session." }] });
     expect(byId[5].error.code).toBe(-32601);
+    // the plan board's tool reaches Mockingbird, which says why it can't act here
+    expect(byId[6].result).toMatchObject({ isError: true, content: [{ text: expect.stringMatching(/team plan isn't running/) }] });
   });
   it("offers a room model only the ask_code_reader tool", async () => {
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SESSION: "collab-r1.fable" } });
