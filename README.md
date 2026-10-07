@@ -286,8 +286,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
   signed and each certificate pinned; a signed, Lamport-ordered event log per
   room that every member keeps and merges on reconnect; share a group as a room
   (⇪ on its row) and join one with a code (⇲); a shared group shows who's
-  connected. Next, built on its transport: live shared panes and typing,
-  take-over, the team room chat with agents, and the plan and claims board.
+  connected. The plan and claims board (▦ on a shared group's row): work
+  packages with owned paths, contracts and tests, claimed by members, kept on
+  the `mockingbird/plan` branch and as a read-only copy in every worktree of
+  the room's repo; agents get the plan at start and change it through the
+  `update_team_plan` tool, an agent's first edit of a file a teammate's package
+  owns is held back once with a warning (to you as well), and teammates'
+  pushed branches join the overlap check. Next, built on its transport: live
+  shared panes and typing, take-over, and the team room chat with agents.
 
 ### Next
 
