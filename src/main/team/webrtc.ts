@@ -56,6 +56,8 @@ export interface WebRtcWireOptions {
   WebSocketImpl?: typeof WebSocket;
   /** ICE servers before the signaling server's arrive (the app: public STUN; tests: none). */
   defaultIce?: IceServer[];
+  /** Connect through TURN relays only: the two-instance tests use it to exercise the fallback (MOCKINGBIRD_E2E_RELAY_ONLY). */
+  relayOnly?: boolean;
   timing?: Partial<WebRtcTiming>;
 }
 
@@ -287,7 +289,7 @@ export class WebRtcWire implements PeerWire {
     p.route = null;
     p.congested = false;
     p.attempts++;
-    this.o.host.command({ op: "open", peer: p.id, epoch: p.epoch, role: "offerer", iceServers: this.ice.servers });
+    this.o.host.command({ op: "open", peer: p.id, epoch: p.epoch, role: "offerer", iceServers: this.ice.servers, ...(this.o.relayOnly ? { relayOnly: true } : {}) });
     this.armConnectTimeout(p);
     this.handler?.changed();
   }
@@ -473,7 +475,7 @@ export class WebRtcWire implements PeerWire {
           p.since = Date.now();
           p.route = null;
           p.congested = false;
-          this.o.host.command({ op: "open", peer: p.id, epoch: body.epoch, role: "answerer", iceServers: this.ice.servers });
+          this.o.host.command({ op: "open", peer: p.id, epoch: body.epoch, role: "answerer", iceServers: this.ice.servers, ...(this.o.relayOnly ? { relayOnly: true } : {}) });
           this.armConnectTimeout(p);
           this.handler?.changed();
         }

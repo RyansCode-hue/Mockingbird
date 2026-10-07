@@ -83,7 +83,7 @@ import { backupOf, type RoomSessionBackupView } from "../shared/team/takeover";
 // team rooms: live panes
 import { FollowControls, LiveProblems, RoomRowTag, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
-import { fmtElapsed, plural } from "../shared/format";
+import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { usePersisted, readPref, writePref } from "./prefs";
 
@@ -2076,10 +2076,16 @@ function App() {
                     ↺ restore all
                   </button>
                 </h2>
-                {resumable.map((s) => (
-                  <div key={s.id} className="sess-item" title={s.cwd}>
+                {resumable.map((s) => {
+                  // team rooms: a teammate continued it; relaunching brings back this copy, apart from the room's
+                  const taken = roomLive.state?.own[s.id]?.takenOver;
+                  return (
+                  <div key={s.id} className="sess-item" title={taken ? `${s.cwd} — ${taken.byName} took this session over: it continues on their Mac. Relaunching it here runs this copy on its own.` : s.cwd}>
                     <span className="dot dead" />
-                    <span className="name">{s.title}</span>
+                    <span className="name">
+                      <span className="nm">{s.title}</span>
+                      {taken && <span className="br tk-fresh muted">taken over by {taken.byName} {ago(taken.at)}</span>}
+                    </span>
                     <button
                       title="Relaunch, resuming the conversation"
                       onClick={async () => {
@@ -2103,7 +2109,8 @@ function App() {
                       ✕
                     </button>
                   </div>
-                ))}
+                  );
+                })}
               </>
             )}
           </div>

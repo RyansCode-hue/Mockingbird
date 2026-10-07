@@ -470,6 +470,10 @@ describe("a teammate's session in the session manager", () => {
     await expect(nick.sessions.restart(paneId)).rejects.toThrow(/only its owner/);
     await expect(nick.sessions.relaunch(paneId)).rejects.toThrow(/only its owner/);
     expect(nick.sessions.list().some((x) => x.id === paneId)).toBe(false);
+    // a broadcast never reaches a teammate's session, named or not
+    expect(nick.sessions.broadcast("status?", [paneId], false)).toEqual([{ id: paneId, outcome: "skipped" }]);
+    expect(nick.sessions.broadcast("status?", [], false).map((o) => o.id)).not.toContain(paneId);
+    expect(ptyOf(s.id).writes.join("")).not.toContain("status?");
     // the owner's resize reaches the teammate's copy
     ryan.sessions.resize(s.id, 100, 30);
     await until(() => remoteOf(nick, s.id)?.room?.cols === 100, "the new size");

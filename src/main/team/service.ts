@@ -55,7 +55,7 @@ export class TeamService {
       return;
     }
     const log = (m: string) => this.d.log("team", m);
-    const wire = this.d.wire ? this.d.wire(this.identity, log) : new WebRtcWire({ identity: this.identity, host: new ElectronPeerHost({ assetsDir: this.d.assetsDir, log }), log });
+    const wire = this.d.wire ? this.d.wire(this.identity, log) : new WebRtcWire({ identity: this.identity, host: new ElectronPeerHost({ assetsDir: this.d.assetsDir, log }), log, relayOnly: process.env.MOCKINGBIRD_E2E_RELAY_ONLY === "1" });
     this.core = new TeamCore({
       identity: this.identity,
       store: new RoomStore(path.join(dir, "rooms")).load(),

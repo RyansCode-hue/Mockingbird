@@ -25,7 +25,7 @@ export interface IceCandidate {
 
 export type HostCommand =
   /** A new connection to `peer` (replacing any other); the offerer makes the offer straight away. */
-  | { op: "open"; peer: string; epoch: string; role: "offerer" | "answerer"; iceServers: IceServer[] }
+  | { op: "open"; peer: string; epoch: string; role: "offerer" | "answerer"; iceServers: IceServer[]; relayOnly?: boolean }
   /** The peer's verified description; `fingerprint` is the DTLS certificate the connection must use. */
   | { op: "remote"; peer: string; epoch: string; description: SessionDescription; fingerprint: string }
   | { op: "candidate"; peer: string; epoch: string; candidate: IceCandidate }

@@ -115,22 +115,22 @@ afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
 });
 
-function member(name: string, net: FakeNet, dir: string) {
+function member(name: string, net: FakeNet, dir: string, relayOnly = false) {
   const identity = loadIdentity(path.join(dir, name, "team"));
   const store = new RoomStore(path.join(dir, name, "team", "rooms")).load();
   const host = new FakeHost(identity.id, net);
   const logs: string[] = [];
-  const wire = new WebRtcWire({ identity, host, log: (m) => logs.push(m), defaultIce: [], timing: { retryMs: [50, 100, 200], knockMs: 100, connectTimeoutMs: 2000, iceWaitMs: 200 } });
+  const wire = new WebRtcWire({ identity, host, log: (m) => logs.push(m), defaultIce: [], relayOnly, timing: { retryMs: [50, 100, 200], knockMs: 100, connectTimeoutMs: 2000, iceWaitMs: 200 } });
   const team = new TeamCore({ identity, store, wire, name: () => name, log: (m) => logs.push(m) });
   teams.push(team);
   return { name, identity, store, host, wire, team, logs };
 }
 
-async function roomOverSignaling(signal: LocalSignaling) {
+async function roomOverSignaling(signal: LocalSignaling, relayOnly = false) {
   const dir = tempDir("wire");
   const net = new FakeNet();
-  const ryan = member("Ryan", net, dir);
-  const nick = member("Nick", net, dir);
+  const ryan = member("Ryan", net, dir, relayOnly);
+  const nick = member("Nick", net, dir, relayOnly);
   const room = ryan.team.createRoom({ name: "#5110 Donor entities", groupKey: "5110", signalingUrl: signal.url });
   // the inviter's app is online when it hands over a code
   await until(() => ryan.team.status().rooms[0]?.signaling === "online", "Ryan's signaling", 5000);
@@ -140,6 +140,17 @@ async function roomOverSignaling(signal: LocalSignaling) {
 }
 
 describe("the WebRTC wire over the local signaling server", () => {
+  it("asks the peer host for relay-only connections when told to (the TURN fallback's e2e test)", async () => {
+    const signal = await startLocalSignaling({ log: () => undefined });
+    servers.push(signal);
+    const plain = await roomOverSignaling(signal);
+    const relayed = await roomOverSignaling(signal, true);
+    await until(() => [plain, relayed].every((r) => [r.ryan, r.nick].some((m) => m.host.commands.some((c) => c.op === "open"))), "connections opened", 8000);
+    const opens = (r: typeof plain) => [r.ryan, r.nick].flatMap((m) => m.host.commands.filter((c) => c.op === "open"));
+    expect(opens(plain).every((c) => !("relayOnly" in c))).toBe(true);
+    expect(opens(relayed).every((c) => c.op === "open" && c.relayOnly === true)).toBe(true);
+  });
+
   it("joins by invite code and connects: signed details checked, fingerprints pinned, room copied", async () => {
     const signal = await startLocalSignaling({ log: () => undefined });
     servers.push(signal);

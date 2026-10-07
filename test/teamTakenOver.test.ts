@@ -83,6 +83,8 @@ function app(m: LoopbackMember, clone: string) {
   const rooms = () => m.team.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey }));
   const claudeProjects = path.join(dir, ".claude", "projects");
   const takenOver: string[] = [];
+  /** How often the window was told the take-over view changed. */
+  const viewChanges = { n: 0 };
   const startLive = () => {
     const live = new LivePanes({
       team: () => m.team,
@@ -111,6 +113,7 @@ function app(m: LoopbackMember, clone: string) {
       launch: (req: NewSessionRequest) => sessions.create(req),
       log,
       onTakenOver: (id, by) => takenOver.push(`${id} by ${by}`),
+      changed: () => viewChanges.n++,
       claudeProjects,
       codexSessions: path.join(dir, ".codex", "sessions"),
     });
@@ -121,7 +124,7 @@ function app(m: LoopbackMember, clone: string) {
     stops.push(stop);
     return { live, tk, stop };
   };
-  return { m, sessions, logs, takenOver, claudeProjects, startLive };
+  return { m, sessions, logs, takenOver, viewChanges, claudeProjects, startLive };
 }
 
 async function setup() {
@@ -224,6 +227,17 @@ describe("take-over over live panes", () => {
     turn(t.ryan.sessions, t.s.id);
     await t.ryanRun.tk.settled();
     expect(backupIn(t.ryanM, t.roomId, t.s.id)!.latest.sha).toBe(before);
+  });
+
+  it("tells the window when a session's owner goes away, so Take over can lead", async () => {
+    const t = await setup();
+    turn(t.ryan.sessions, t.s.id);
+    await until(() => !!backupIn(t.nickM, t.roomId, t.s.id)?.pushed, "the backup at Nick's", 15_000);
+    await new Promise((r) => setTimeout(r, 300));
+    const before = t.nick.viewChanges.n;
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => t.nick.viewChanges.n > before, "the window to be told");
+    expect(t.nickRun.tk.view().sessions.find((v) => v.sessionId === t.s.id)).toMatchObject({ ownerOnline: false });
   });
 
   it("an owner whose Mockingbird was quit reconciles on its next start", async () => {

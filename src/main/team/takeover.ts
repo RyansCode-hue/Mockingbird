@@ -676,13 +676,14 @@ export class TakeoverService {
     this.presence.set(roomId, new Set(online));
     // a teammate who reconnects is asked what they hold again
     for (const k of [...this.transcriptAt.keys()]) if (!online.includes(k.split("\n")[0]) && before.has(k.split("\n")[0])) this.transcriptAt.delete(k);
+    // who's online is part of the view: Take over leads while a session's owner is away
+    this.changed();
     const fresh = online.filter((p) => !before.has(p));
     if (!fresh.length) return;
     for (const sessionId of Object.keys(this.local(roomId).own)) {
       if (this.d.host.roomOf(sessionId) !== roomId || !this.d.host.session(sessionId)) continue;
       for (const peer of fresh) this.mirror(peer, roomId, sessionId);
     }
-    this.changed();
   }
 
   // ---- receiving (teammate) ----------------------------------------------------------------

@@ -6,6 +6,12 @@
 // would (an Ed25519 key, owner-only), and prints the fingerprint and the
 // command that lets it create rooms on the signaling Worker
 // (signaling/README.md). The private key is never printed.
+//
+//   npm run team:e2e-fingerprint
+//
+// The same for the two-instance tests' room creator, whose HOME is
+// $TMPDIR/mockingbird-e2e-creator (E2E_CREATOR_HOME in test/e2e/appInstance.ts):
+// allow it on a Worker to run those tests against it (MB_E2E_SIGNALING_URL).
 import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as os from "os";
@@ -28,10 +34,12 @@ await esbuild.build({
 });
 try {
   const { loadIdentity, TEAM_DIR, formatFingerprint, allowCreatorsCommand } = await import(pathToFileURL(out).href);
-  const existed = fs.existsSync(path.join(TEAM_DIR, "identity.json"));
-  const id = loadIdentity(TEAM_DIR);
-  console.log(`This Mockingbird's team fingerprint: ${formatFingerprint(id.id)}`);
-  console.log(existed ? `(from ${path.join(TEAM_DIR, "identity.json")})` : `(new: ${path.join(TEAM_DIR, "identity.json")} — the app uses this same key)`);
+  const e2e = process.argv.includes("--e2e");
+  const dir = e2e ? path.join(os.tmpdir(), "mockingbird-e2e-creator", ".mockingbird", "team") : TEAM_DIR;
+  const existed = fs.existsSync(path.join(dir, "identity.json"));
+  const id = loadIdentity(dir);
+  console.log(`${e2e ? "The e2e tests' room creator's" : "This Mockingbird's"} team fingerprint: ${formatFingerprint(id.id)}`);
+  console.log(existed ? `(from ${path.join(dir, "identity.json")})` : `(new: ${path.join(dir, "identity.json")} — the ${e2e ? "tests use" : "app uses"} this same key)`);
   console.log("");
   console.log("To let it create rooms on your signaling Worker (list every creator's fingerprint,");
   console.log("comma-separated: the secret is replaced each time):");

@@ -156,7 +156,7 @@ async function verify(c: Conn): Promise<void> {
 function open(cmd: Extract<HostCommand, { op: "open" }>): void {
   const old = conns.get(cmd.peer);
   if (old) close(old, "replaced");
-  const pc = new RTCPeerConnection({ iceServers: cmd.iceServers as RTCIceServer[] });
+  const pc = new RTCPeerConnection({ iceServers: cmd.iceServers as RTCIceServer[], ...(cmd.relayOnly ? { iceTransportPolicy: "relay" as const } : {}) });
   const c: Conn = {
     peer: cmd.peer,
     epoch: cmd.epoch,
