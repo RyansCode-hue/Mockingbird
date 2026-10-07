@@ -51,7 +51,7 @@ import {
 import { GridPreview } from "./GridPreview";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
 import { cellKeyFor, cellKeyOf, frontOf, inReadingOrder, sessionHolding, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
-import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon } from "./Icons";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon } from "./Icons";
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
 import { PipelineDialog, StageChip, usePipelines } from "./TicketPipeline";
@@ -2322,19 +2322,20 @@ function App() {
           )}
           {(upd.state !== "idle" || update?.newer) && (
             <span
-              className={`update-link ${upd.state === "failed" ? "bad" : ""}`}
+              className={`update-link ${upd.state === "failed" ? "bad" : ""} ${upd.state === "preparing" || upd.state === "installing" ? "busy" : ""}`}
               title="Update Mockingbird from your clone — it builds while you work and restarts when you say"
               onClick={() => setModal("update")}
             >
+              <UpdateIcon />
               {upd.state === "preparing"
-                ? `⭮ building${update?.latest ? ` v${update.latest}` : ""}…`
+                ? `building${update?.latest ? ` v${update.latest}` : ""}…`
                 : upd.state === "ready"
-                  ? `⭮ restart to update to v${upd.version}`
+                  ? `restart to update to v${upd.version}`
                   : upd.state === "failed"
-                    ? "⭮ update failed"
+                    ? "update failed"
                     : upd.state === "installing"
-                      ? "⭮ restarting…"
-                      : `⭮ v${update!.latest} available`}
+                      ? "restarting…"
+                      : `v${update!.latest} available`}
             </span>
           )}
           {!hooksOk && (

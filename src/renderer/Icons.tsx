@@ -173,3 +173,11 @@ export const BellOffIcon = () => (
     <path d="M6.75 13.75a1.25 1.25 0 0 0 2.5 0M2.5 2.5l11 11" />
   </Icon>
 );
+
+/** A circular arrow: an update of Mockingbird is available, building or installing. */
+export const UpdateIcon = () => (
+  <Icon>
+    <path d="M13 8a5 5 0 1 1-1.46-3.54" />
+    <path d="M13 2.5v2.75h-2.75" />
+  </Icon>
+);

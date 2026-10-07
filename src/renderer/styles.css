@@ -544,7 +544,10 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .help-key span:last-child { font: 400 10.5px var(--ui); color: var(--text-3); }
 .statusbar .help-link { cursor: pointer; }
 .statusbar .help-link:hover { color: var(--text-2); }
-.statusbar .update-link { color: var(--teal-text); cursor: pointer; font-weight: 500; }
+.statusbar .update-link { color: var(--teal-text); cursor: pointer; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; }
+.statusbar .update-link.busy .ico { animation: upd-spin 1.2s linear infinite; }
+@keyframes upd-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .statusbar .update-link.busy .ico { animation: none; } }
 .statusbar .update-link:hover { color: var(--teal); }
 .statusbar .update-link.bad { color: var(--red); }
 .statusbar .update-note { display: inline-flex; align-items: center; gap: 2px; color: var(--teal-text); }
