@@ -212,6 +212,28 @@ describe("the plan service", () => {
     await until(() => fs.existsSync(path.join(wtB, ".mockingbird", "plan.md")) && fs.readFileSync(path.join(wtB, ".mockingbird", "plan.md"), "utf8").includes("in progress"), "the new worktree's copy");
   });
 
+  it("moves the copies when the plan moves to another repo, and never writes over a repo's own .mockingbird/", async () => {
+    const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("t") });
+    const [ryan] = members;
+    const a = origin(["ryan"]);
+    const b = origin(["ryan"]);
+    write(b.clones.ryan, { ".mockingbird/notes.md": "the repo's own\n" });
+    git(b.clones.ryan, "add", "-A");
+    git(b.clones.ryan, "commit", "-q", "-m", "notes");
+    const r = service(ryan, roomId, a.clones.ryan, () => [], { knownRepos: () => [a.clones.ryan, b.clones.ryan] });
+    r.svc.apply(roomId, { kind: "repo", origin: a.bare, name: "a" });
+    r.svc.apply(roomId, { kind: "create", title: "Donor API", paths: ["src/api"] });
+    const copy = path.join(a.clones.ryan, ".mockingbird", "plan.md");
+    await until(() => fs.existsSync(copy), "the copy in repo a");
+
+    r.svc.apply(roomId, { kind: "repo", origin: b.bare, name: "b" });
+    await until(() => !fs.existsSync(copy) && !!r.svc.view(roomId).git.copiesProblem, "repo a's copy to go, and b to be refused");
+    await r.svc.idle();
+    expect(r.svc.view(roomId).git.copiesProblem).toMatch(/tracks files under \.mockingbird\/ \(\.mockingbird\/notes\.md…\); Mockingbird won't write the plan's copy over them/);
+    expect(fs.readdirSync(path.join(b.clones.ryan, ".mockingbird"))).toEqual(["notes.md"]);
+    expect(r.logs.some((l) => l.includes("tracks files under .mockingbird/"))).toBe(true);
+  });
+
   it("shows a teammate's pushed branch next to a worktree here that changes the same file", async () => {
     const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("t") });
     const [ryan, nick] = members;
@@ -282,5 +304,11 @@ describe("the plan service", () => {
     expect(notices[1]).toMatchObject({ sessionId: "s1", decision: "failed", error: expect.stringContaining("claims.json isn't JSON") });
     expect(r.notes).toEqual([`Nick's package: API tests tried to edit src/api/x.ts — it's in "Donor API". The agent was held back once and can go ahead.`]);
     expect(r.logs).toEqual([expect.stringContaining("the claims check in an agent's hook failed")]);
+    // the edits that follow the warning: one notice, not one per edit
+    const repeat = { kind: "warning" as const, warning: { pane: "s1", cwd: clones.ryan, conversation: "c1", tool: "Edit", decision: "context" as const, conflicts: [{ file: "src/api/x.ts", root: clones.ryan, hits: [hit] }] } };
+    r.svc.claimEvent(repeat);
+    r.svc.claimEvent(repeat);
+    expect(r.emitted.filter(([c, v]) => c === "plan:warning" && v.decision === "context")).toHaveLength(1);
+    expect(r.notes).toHaveLength(1);
   });
 });

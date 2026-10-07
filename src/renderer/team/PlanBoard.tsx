@@ -244,12 +244,13 @@ function GitLine({ view, act }: { view: PlanView; act: (what: string, op: PlanOp
     );
   }
   return (
-    <div className="plan-git">
+    <div className={`plan-git ${g.copiesProblem ? "bad" : ""}`}>
       <span>{where}</span>
       <span className="plan-dim">
         {g.state === "syncing" ? "committing…" : g.state === "pending" ? "waiting to commit" : g.commit ? `${g.commit.pushed ? "pushed" : "committed"} ${ago(g.commit.at)} · ${g.commit.sha.slice(0, 7)}` : "up to date"}
         {copies}
       </span>
+      {g.copiesProblem && <span className="plan-problem">{g.copiesProblem}</span>}
     </div>
   );
 }

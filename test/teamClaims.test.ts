@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
 import { installHooks, watchEvents, type ClaimEvent } from "../src/main/hooks";
-import { CLAIMS_CHECK_SCRIPT, CLAIMS_LOG } from "../src/main/team/claims";
+import { CLAIMS_CHECK_SCRIPT, CLAIMS_LOG, CLAIMS_WARNED_DIR, pruneWarned } from "../src/main/team/claims";
 import { claimsFile, PLAN_CONTEXT_ENV, type ClaimsFile } from "../src/shared/team/plan";
 
 const mb = path.join(os.homedir(), ".mockingbird");
@@ -126,6 +126,18 @@ describe("the claims check in the agents' PreToolUse hook", () => {
     );
     expect(out.hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" });
     expect(out.hookSpecificOutput.permissionDecisionReason).toContain("Nick's package");
+  });
+
+  it("forgets old conversations' warnings, so a long-gone conversation's markers don't pile up", async () => {
+    const repo = roomCheckout();
+    await runHook("PreToolUse", claudeEdit(repo, "src/api/x.ts", "old-conv"), repo);
+    await runHook("PreToolUse", claudeEdit(repo, "src/api/x.ts", "new-conv"), repo);
+    const old = path.join(CLAIMS_WARNED_DIR, "old-conv.json");
+    const longAgo = (Date.now() - 30 * 24 * 3_600_000) / 1000;
+    fs.utimesSync(old, longAgo, longAgo);
+    pruneWarned(14 * 24 * 3_600_000);
+    expect(fs.readdirSync(CLAIMS_WARNED_DIR)).toContain("new-conv.json");
+    expect(fs.readdirSync(CLAIMS_WARNED_DIR)).not.toContain("old-conv.json");
   });
 
   it("never blocks an edit by failing: an unreadable claims file lets it run and tells the app", async () => {

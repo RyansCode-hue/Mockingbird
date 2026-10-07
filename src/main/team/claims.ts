@@ -48,8 +48,14 @@ export async function worktreesOf(repo: string): Promise<string[]> {
   return list;
 }
 
-/** Add .mockingbird/ to the repository's own exclude file (shared by all its worktrees), once. */
+/**
+ * Add .mockingbird/ to the repository's own exclude file (shared by all its
+ * worktrees), once. A repository that tracks files under .mockingbird/ is
+ * refused: the copies would overwrite them.
+ */
 export async function excludePlanDir(repo: string): Promise<void> {
+  const tracked = await git(repo, ["ls-files", "--", PLAN_DIR]);
+  if (tracked) throw new Error(`${repo} tracks files under ${PLAN_DIR}/ (${tracked.split("\n")[0]}…); Mockingbird won't write the plan's copy over them`);
   const file = path.resolve(repo, await git(repo, ["rev-parse", "--git-path", "info/exclude"]));
   let text = "";
   try {
@@ -106,7 +112,7 @@ export function agentContextText(room: { name: string; teammates: string[] }, wo
   const at = (rel: string) => (worktree ? path.join(worktree, rel) : rel);
   const mates = room.teammates.length ? room.teammates.join(", ") : "your teammates";
   return [
-    `You're working in a Mockingbird team room, "${room.name}", shared with ${mates}. The room keeps a plan board of work packages: what each one owns (folders, files, globs), the contracts it provides and uses, how it's tested, and which member has claimed it.`,
+    `This repository is part of a Mockingbird team room, "${room.name}", shared with ${mates}. The room keeps a plan board of work packages: what each one owns (folders, files, globs), the contracts it provides and uses, how it's tested, and which member has claimed it.`,
     "",
     `- Read the plan before you start: ${at(PLAN_FILE)} (machine-readable claims: ${at(CLAIMS_FILE)}). It is kept current; read it again when you pick up new work.`,
     "- Stay within the paths of your user's packages. Mockingbird stops the first edit of a file a teammate's package owns and tells you why; check with your user before going on. Repeating the edit goes through.",
@@ -222,6 +228,21 @@ try {
   }
 }
 `;
+
+/** Forget which files were already warned about in conversations older than `maxAgeMs` (their markers would pile up). */
+export function pruneWarned(maxAgeMs: number, now = Date.now()): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(CLAIMS_WARNED_DIR);
+  } catch (err) {
+    if (isMissing(err)) return;
+    throw err;
+  }
+  for (const n of names) {
+    const file = path.join(CLAIMS_WARNED_DIR, n);
+    if (now - fs.statSync(file).mtimeMs > maxAgeMs) fs.rmSync(file, { force: true });
+  }
+}
 
 /** Write (or refresh) the claims check script next to hook.sh. */
 export function writeClaimsCheck(eventsDir: string): void {

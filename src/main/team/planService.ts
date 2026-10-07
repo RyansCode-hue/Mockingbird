@@ -1,6 +1,6 @@
 import * as path from "path";
 import { applyPlanOp, opFromTool, planOfRoom } from "./board";
-import { agentContextText, excludePlanDir, removePlanCopy, worktreesOf, writePlanCopy, type PlanCopy } from "./claims";
+import { agentContextText, excludePlanDir, pruneWarned, removePlanCopy, worktreesOf, writePlanCopy, type PlanCopy } from "./claims";
 import { fetchOrigin, originKey, publishPlan, pushedBranchFiles, type PlanRender } from "./planGit";
 import { TEAM_DIR } from "./identity";
 import type { Team, Unsubscribe } from "./transport";
@@ -72,6 +72,9 @@ interface Timing {
 
 const DEFAULT_TIMING: Timing = { ownSyncMs: 300, repairSyncMs: 20_000, pollMs: 5_000, fetchMs: 5 * 60_000 };
 const ORIGIN_TTL_MS = 5 * 60_000;
+const REPEAT_NOTICE_MS = 10 * 60_000;
+/** How long a conversation's "already warned" files are remembered. */
+const WARNED_TTL_MS = 14 * 24 * 3_600_000;
 const BASES = new Set([...BASE_NAMES.dev, ...BASE_NAMES.main, PLAN_BRANCH]);
 
 let active: PlanService | null = null;
@@ -99,11 +102,14 @@ export class PlanService {
   private t: Timing;
   private git = new Map<RoomId, PlanGitStatus & { timer?: ReturnType<typeof setTimeout>; due?: number; chain: Promise<void> }>();
   private origins = new Map<string, { main: string; key: string | null; url: string | null; at: number }>();
-  private copies = new Set<string>();
+  /** Worktrees holding a copy, and the clone each belongs to. */
+  private copies = new Map<string, string>();
   private copiesFile: string;
   private copyRun: Promise<void> | null = null;
   private copyAgain = false;
   private sessionSig = "";
+  private roomsSig = "";
+  private repeatNotices = new Map<string, number>();
   private teammates = new Map<RoomId, TeammateBranch[]>();
   private fetched = new Map<RoomId, { at: number; problem?: string }>();
   private emitTimers = new Map<RoomId, ReturnType<typeof setTimeout>>();
@@ -118,12 +124,20 @@ export class PlanService {
     this.team = team;
     active = this;
     const v = readJsonOrSetAside(this.copiesFile, [], "the plan copies' list");
-    for (const w of Array.isArray(v) ? v : []) if (typeof w === "string") this.copies.add(w);
+    for (const e of Array.isArray(v) ? v : []) if (Array.isArray(e) && typeof e[0] === "string" && typeof e[1] === "string") this.copies.set(e[0], e[1]);
     this.offs.push(
       team.onEvent("*", (e, room) => this.onEvent(e, room)),
       team.onPresence((roomId) => this.emitSoon(roomId)),
       team.onRoomsChanged(() => {
         for (const r of team.rooms()) this.emitSoon(r.id);
+        // the copies name rooms and members: rewrite them only when those changed, not on every room event
+        const sig = team
+          .rooms()
+          .map((r) => `${r.id}\t${r.name}\t${r.members.map((m) => `${m.id}=${m.name}`).join(",")}`)
+          .sort()
+          .join("\n");
+        if (sig === this.roomsSig) return;
+        this.roomsSig = sig;
         this.refreshCopies();
       })
     );
@@ -137,6 +151,11 @@ export class PlanService {
       }, this.t.fetchMs)
     );
     for (const t of this.timers) t.unref?.();
+    try {
+      pruneWarned(WARNED_TTL_MS);
+    } catch (err) {
+      this.d.log("team plan: forgetting old claim warnings", err);
+    }
     this.refreshCopies();
     for (const r of team.rooms()) {
       if (!planOfRoom(r).repo) continue;
@@ -210,8 +229,10 @@ export class PlanService {
     this.room(roomId);
     this.scheduleSync(roomId, 0);
     this.refreshCopies();
-    await Promise.all([this.refreshTeammates(roomId, true), this.git.get(roomId)?.chain]);
-    await this.idle();
+    const g = this.gitEntry(roomId);
+    await this.refreshTeammates(roomId, true);
+    while (g.timer) await new Promise((r) => setTimeout(r, 10));
+    await Promise.all([g.chain, this.copyRun]);
     return this.view(roomId);
   }
 
@@ -253,6 +274,13 @@ export class PlanService {
       return;
     }
     const w = e.warning;
+    // an agent working through a teammate's file repeats the edit many times: one notice for those a while
+    if (w.decision === "context") {
+      const key = `${w.conversation}\n${w.conflicts.map((c) => `${c.root}/${c.file}`).sort().join("\n")}`;
+      const last = this.repeatNotices.get(key) ?? 0;
+      if (Date.now() - last < REPEAT_NOTICE_MS) return;
+      this.repeatNotices.set(key, Date.now());
+    }
     const live = this.d.sessions();
     const s = (w.pane && live.find((x) => x.id === w.pane)) || live.filter((x) => w.cwd && (w.cwd === x.cwd || w.cwd.startsWith(`${x.cwd}/`))).sort((a, b) => b.cwd.length - a.cwd.length)[0];
     const notice: PlanWarningNotice = { at: Date.now(), sessionId: s?.id ?? null, sessionTitle: s ? s.ticketTitle ?? s.title : path.basename(w.cwd || "an agent"), decision: w.decision, tool: w.tool, conflicts: w.conflicts };
@@ -330,7 +358,15 @@ export class PlanService {
     const g = this.git.get(roomId);
     const repo = planOfRoom(this.room(roomId)).repo;
     if (!repo) return { repo: null, clones: [], state: "unbound", copies: 0 };
-    return { repo, clones: g?.clones ?? [], state: g?.state ?? "pending", ...(g?.commit ? { commit: g.commit } : {}), ...(g?.problem ? { problem: g.problem } : {}), copies: g?.copies ?? 0 };
+    return {
+      repo,
+      clones: g?.clones ?? [],
+      state: g?.state ?? "pending",
+      ...(g?.commit ? { commit: g.commit } : {}),
+      ...(g?.problem ? { problem: g.problem } : {}),
+      copies: g?.copies ?? 0,
+      ...(g?.copiesProblem ? { copiesProblem: g.copiesProblem } : {}),
+    };
   }
 
   private gitEntry(roomId: RoomId) {
@@ -449,8 +485,10 @@ export class PlanService {
       roomsOfClone.set(room.id, clones);
       for (const c of clones) byClone.set(c, [...(byClone.get(c) ?? []), room]);
     }
-    const written = new Set<string>();
+    const written = new Map<string, string>();
     const perRoom = new Map<RoomId, number>();
+    const problems = new Map<RoomId, string>();
+    const failed = new Set<string>();
     for (const [clone, rooms] of byClone) {
       try {
         await excludePlanDir(clone);
@@ -461,33 +499,39 @@ export class PlanService {
         });
         for (const wt of await worktreesOf(clone)) {
           writePlanCopy(wt, copyFor(wt));
-          written.add(wt);
+          written.set(wt, clone);
           for (const r of rooms) perRoom.set(r.id, (perRoom.get(r.id) ?? 0) + 1);
         }
       } catch (err) {
+        failed.add(clone);
         const why = this.d.log(`team plan: writing the plan into ${clone}'s worktrees`, err);
-        for (const r of rooms) {
-          const g = this.gitEntry(r.id);
-          g.problem = `Couldn't write the plan into ${clone}'s worktrees: ${why}`;
-        }
+        for (const r of rooms) problems.set(r.id, `Couldn't write the plan into ${clone}'s worktrees: ${why}`);
       }
     }
-    for (const wt of this.copies) {
+    // a clone that failed keeps its copies as they were: removing them would turn the claims check off there
+    for (const [wt, clone] of this.copies) {
       if (written.has(wt)) continue;
+      if (failed.has(clone)) {
+        written.set(wt, clone);
+        continue;
+      }
       try {
         removePlanCopy(wt);
       } catch (err) {
         this.d.log(`team plan: removing the stale plan copy in ${wt}`, err);
       }
     }
-    const before = [...this.copies].sort().join("\n");
+    const listOf = (m: Map<string, string>) => [...m].sort(([a], [b]) => (a < b ? -1 : 1));
+    const changed = JSON.stringify(listOf(written)) !== JSON.stringify(listOf(this.copies));
     this.copies = written;
-    if ([...written].sort().join("\n") !== before) writeFileAtomic(this.copiesFile, JSON.stringify([...written].sort(), null, 2));
+    if (changed) writeFileAtomic(this.copiesFile, JSON.stringify(listOf(written), null, 2));
     for (const room of team.rooms()) {
       const g = this.gitEntry(room.id);
       const n = perRoom.get(room.id) ?? 0;
-      if (g.copies !== n || (roomsOfClone.get(room.id)?.length ?? 0) !== g.clones.length) {
+      const problem = problems.get(room.id);
+      if (g.copies !== n || g.copiesProblem !== problem || (roomsOfClone.get(room.id)?.length ?? 0) !== g.clones.length) {
         g.copies = n;
+        g.copiesProblem = problem;
         g.clones = roomsOfClone.get(room.id) ?? g.clones;
         this.emitSoon(room.id);
       }

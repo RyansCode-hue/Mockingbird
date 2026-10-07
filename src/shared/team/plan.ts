@@ -408,6 +408,8 @@ export interface PlanGitStatus {
   problem?: string;
   /** Worktrees holding a current read-only copy. */
   copies: number;
+  /** Why the copies couldn't be written (the claims check then runs on the last copy written). */
+  copiesProblem?: string;
 }
 
 /** A teammate's pushed branch and the files it changes against its base. */
