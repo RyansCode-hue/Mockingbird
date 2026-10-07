@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "url";
 import { ensureAdapter, installDir } from "../dap/adapters";
 import { spawnRpcProcess } from "../rpc";
 import { LspConnection } from "./connection";
+import { WatchedFiles } from "./watchedFiles";
 import { projectPython, SERVERS, serverFor, type LspServerSpec } from "./servers";
 import type { LspCompletion, LspDiagnostic, LspFileEdits, LspFileState, LspLocation, LspServerId } from "../../shared/types";
 import type { LspPosition, LspTextEdit } from "../../shared/textEdits";
@@ -29,7 +30,8 @@ const CLIENT_CAPABILITIES = {
     publishDiagnostics: { relatedInformation: false },
     diagnostic: { dynamicRegistration: false, relatedDocumentSupport: false },
   },
-  workspace: { configuration: true, workspaceFolders: true, applyEdit: false, workspaceEdit: { documentChanges: true }, diagnostics: { refreshSupport: true } },
+  // watching is done here (see watchedFiles.ts), so a server never runs its own watcher
+  workspace: { configuration: true, workspaceFolders: true, applyEdit: false, workspaceEdit: { documentChanges: true }, diagnostics: { refreshSupport: true }, didChangeWatchedFiles: { dynamicRegistration: true, relativePatternSupport: true } },
   window: { workDoneProgress: false, showMessage: {} },
 };
 
@@ -52,6 +54,8 @@ interface Server {
   /** Per file: the newest diagnostics request sent, the only one whose answer is used. */
   latestPull: Map<string, number>;
   idle: NodeJS.Timeout | null;
+  /** The files it asked to be told about, watched in its folder. */
+  watched: WatchedFiles;
 }
 
 export interface LspDeps {
@@ -197,8 +201,10 @@ export class LspManager {
     const { cmd, args, env } = spec.command(dir, { node: this.deps.node, dotnet });
     this.deps.onStatus({ server: spec.id, root, state: "starting" });
     const { conn } = spawnRpcProcess(cmd, args, { cwd: root, env: { ...this.deps.env(), ...(env ?? {}) }, name: `${spec.label} language server` }, (input, output, onClose) => new LspConnection(input, output, onClose));
-    const s: Server = { spec, root, conn, caps: {}, ready: Promise.resolve(), docs: new Map(), pulls: new Map(), latestPull: new Map(), idle: null };
+    const watched = new WatchedFiles(root, (changes) => conn.notify("workspace/didChangeWatchedFiles", { changes }));
+    const s: Server = { spec, root, conn, caps: {}, ready: Promise.resolve(), docs: new Map(), pulls: new Map(), latestPull: new Map(), idle: null, watched };
     conn.on("close", (reason: string) => {
+      watched.dispose();
       for (const t of s.pulls.values()) clearTimeout(t);
       if (s.idle) clearTimeout(s.idle);
       const key = this.key(spec, root);
@@ -219,7 +225,14 @@ export class LspManager {
           for (const file of s.docs.keys()) this.schedulePull(s, file);
           return null;
         case "client/registerCapability":
+          for (const r of params?.registrations ?? []) {
+            if (r?.method === "workspace/didChangeWatchedFiles") watched.register(String(r.id), r.registerOptions?.watchers ?? []);
+          }
+          return null;
         case "client/unregisterCapability":
+          // the protocol spells it "unregisterations"
+          for (const r of params?.unregisterations ?? params?.unregistrations ?? []) watched.unregister(String(r?.id));
+          return null;
         case "window/workDoneProgress/create":
         case "window/showMessageRequest":
           return null;

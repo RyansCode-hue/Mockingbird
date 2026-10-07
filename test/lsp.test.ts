@@ -255,21 +255,54 @@ describe("real language servers", () => {
     expect(def[0]).toMatchObject({ path: path.join(root, "util.ts"), line: 1 }); // in the root's own spelling, as sent
     const edits = await m.rename(root, main, { line: 2, character: 1 }, "welcome");
     expect(edits.map((e) => path.basename(e.path)).sort()).toEqual(["main.ts", "util.ts"]);
-    // Edits are saved as well as sent: after a burst of file changes near the
-    // project (other tests share /tmp), TypeScript 7.0.2's server answers from
-    // the file on disk rather than the open text. Unsaved edits are covered by
-    // the scripted server above.
-    const edit = (t: string) => {
-      fs.writeFileSync(main, t);
-      m.change(root, main, t);
-      m.saved(root, main);
-    };
-    // fixing the error clears it
-    edit('import { greet } from "./util";\nconst n: number = 1;\ngreet("a");\n');
+    // fixing the error clears it — unsaved: the server answers from the open text
+    m.change(root, main, 'import { greet } from "./util";\nconst n: number = 1;\ngreet("a");\n');
     await problems(main, (x) => x.every((p) => p.severity !== "error"));
-    edit("const  x=1;\n");
+    m.change(root, main, "const  x=1;\n");
     const fmt = await m.format(root, main, { tabSize: 2, insertSpaces: true });
     expect(applyTextEdits("const  x=1;\n", fmt ?? [])).toBe("const x = 1;\n");
+    m.close(root, main);
+  });
+
+  it("TypeScript: keeps up with edits while files are written beside the project", { timeout: 180_000 }, async () => {
+    await m.install("typescript", () => {});
+    const root = tempDir("tsburst");
+    write(root, {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, target: "es2022", module: "esnext" } }),
+      "main.ts": 'const n: number = "x";\n',
+    });
+    const main = path.join(root, "main.ts");
+    expect(await m.open(root, main, fs.readFileSync(main, "utf8"))).toMatchObject({ state: "ready" });
+    await problems(main, (x) => x.some((p) => p.severity === "error"));
+    // a burst of writes outside the project: left to watch for itself, the
+    // server watched the whole temp folder and dropped the edit that follows
+    const beside = path.join(path.dirname(root), "burst");
+    fs.mkdirSync(beside);
+    for (let i = 0; i < 20_000; i++) fs.writeFileSync(path.join(beside, `f${i}.txt`), "x");
+    m.change(root, main, "const n: number = 1;\n");
+    await problems(main, (x) => x.every((p) => p.severity !== "error"), 15_000);
+    m.close(root, main);
+  });
+
+  it("TypeScript: hears about files changed on disk outside the editor", { timeout: 180_000 }, async () => {
+    await m.install("typescript", () => {});
+    const root = tempDir("tsdisk");
+    write(root, {
+      "tsconfig.json": JSON.stringify({ compilerOptions: { strict: true, target: "es2022", module: "esnext" } }),
+      "util.ts": "export function greet(name: string): string {\n  return name;\n}\n",
+      "main.ts": 'import { greet } from "./util";\ngreet("a");\n',
+    });
+    const main = path.join(root, "main.ts");
+    expect(await m.open(root, main, fs.readFileSync(main, "utf8"))).toMatchObject({ state: "ready" });
+    await problems(main, (x) => x.every((p) => p.severity !== "error"));
+    // util.ts changes on disk (an agent's edit; it isn't open in the editor): main.ts's call is now wrong
+    fs.writeFileSync(path.join(root, "util.ts"), "export function greet(n: number): number {\n  return n;\n}\n");
+    await problems(main, (x) => x.some((p) => p.severity === "error"));
+    // and a file created on disk is found: main.ts can import it
+    m.change(root, main, 'import { later } from "./later";\nlater();\n');
+    await problems(main, (x) => x.some((p) => /later/.test(p.message)));
+    fs.writeFileSync(path.join(root, "later.ts"), "export function later(): void {}\n");
+    await problems(main, (x) => x.every((p) => p.severity !== "error"));
     m.close(root, main);
   });
 
