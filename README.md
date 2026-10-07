@@ -297,9 +297,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
     member's Mockingbird, tagged with its owner's initials. It streams to
     whoever shows it, anyone can type into it, initials show who's looking,
     Follow mirrors a teammate's grid, and everyone hears when it waits. Room
-    sessions start with Claude denied reading secret files and knowing the
-    room's plan, and commits in turns a teammate typed into credit them with
-    Co-authored-by.
+    sessions start knowing the room's plan and unable to read secret files:
+    Claude through permission rules, Codex (0.138+) through a permission
+    profile set by `-c` on that launch alone, enforced by its sandbox on
+    every command (so its git writes and home-cache installs are left to you).
+    Commits in turns a teammate typed into credit them with Co-authored-by.
   - **Backups and Take over:** after every agent turn a room session's worktree
     (ignored and secret files left out) is pushed to a hidden ref on origin,
     `refs/mockingbird/rooms/<room>/<session>`, and sent to connected teammates

@@ -10,16 +10,14 @@ import { readSlice } from "./fileOps";
 export interface LaunchContext {
   /** The per-session Mockingbird MCP server that lets agents message each other; absent for an agent outside messaging. */
   mcp?: McpLaunch;
-  /**
-   * Permission rules denying file reads (a team room session's secrets).
-   * Claude takes them as --disallowedTools. Codex ignores them: its
-   * deny-read rules live in a permission profile in ~/.codex/config.toml,
-   * which replaces its sandbox settings, so they aren't set from here.
-   */
+  /** Claude permission rules denying file reads (a team room session's secrets), as --disallowedTools. */
   denyReads?: string[];
+  /** Codex -c settings running it under a permission profile that denies reading secrets (a team room session's). */
+  codexPermissions?: string[];
   /**
    * Instructions the agent starts with on top of its own (a team room's plan
-   * board): Claude's --append-system-prompt, Codex's developer_instructions.
+   * board, and Codex's room sandbox): Claude's --append-system-prompt,
+   * Codex's developer_instructions.
    */
   instructions?: string;
   /** More Mockingbird MCP tools the agent may call without asking (Claude; Codex approves all of the server's). */
@@ -136,6 +134,7 @@ const codex: AgentAdapter = {
     if (req.effort) args.push("-c", `model_reasoning_effort="${req.effort}"`);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
     if (ctx.mcp) args.push(...codexMcpSettings(ctx.mcp).flatMap((c) => ["-c", c]));
+    for (const c of ctx.codexPermissions ?? []) args.push("-c", c);
     // a JSON string is a valid TOML basic string
     if (ctx.instructions) args.push("-c", `developer_instructions=${JSON.stringify(ctx.instructions)}`);
     // positional, last, after "--": a prompt starting with "-" is not an option

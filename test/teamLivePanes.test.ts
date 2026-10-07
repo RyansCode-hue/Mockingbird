@@ -7,7 +7,8 @@ import { SessionManager } from "../src/main/sessions";
 import { LivePanes, type LivePanesDeps } from "../src/main/team/livePanes";
 import { onTurnEnded, isRoomSession, originIdentity, roomOfSession, setRoomSessionLookup, validateRecord, type TurnEnded } from "../src/main/team/roomSessions";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
-import { decodePtyChunk, encodePtyChunk, remotePaneId, type RoomSessionRecord } from "../src/shared/team/livePanes";
+import { CODEX_ROOM_GUARD_SINCE, decodePtyChunk, encodePtyChunk, remotePaneId, type RoomSessionRecord } from "../src/shared/team/livePanes";
+import { CODEX_ROOM_PROFILE } from "../src/main/secrets";
 import { PlanService } from "../src/main/team/planService";
 import { claudeToolName } from "../src/main/messaging";
 import { PLAN_CONTEXT_ENV, PLAN_TOOL } from "../src/shared/team/plan";
@@ -386,7 +387,7 @@ describe("room session launch", () => {
     expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
   });
 
-  it("leaves sessions outside rooms alone; Codex and terminals get the hooks but no deny rules", async () => {
+  it("leaves sessions outside rooms alone; a Codex of unknown version and terminals get the hooks but no deny rules", async () => {
     const { ryan } = await pair();
     const outside = await ryan.start({ taskGroup: "private" });
     expect(ptyOf(outside.id).args.join(" ")).not.toContain("--disallowedTools");
@@ -394,10 +395,50 @@ describe("room session launch", () => {
     expect(ryan.sessions.guardsOf(outside.id)).toBeNull();
     const codex = await ryan.start({ agent: "codex" });
     expect(ptyOf(codex.id).args.join(" ")).not.toContain("--disallowedTools");
+    expect(ptyOf(codex.id).args.join(" ")).not.toContain("default_permissions");
     expect(ryan.sessions.guardsOf(codex.id)).toEqual({ secrets: false, coauthors: true });
     const term = await ryan.start({ shell: true, agent: undefined });
     expect(ryan.sessions.guardsOf(term.id)).toEqual({ secrets: false, coauthors: true });
     expect(ptyOf(term.id).env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
+  });
+
+  it("starts Codex under the room's permission profile once its version is known to hold it, and tells it about the sandbox", async () => {
+    const { ryan } = await pair();
+    const reads: string[] = [];
+    ryan.sessions.readVersion = async (kind) => {
+      reads.push(kind);
+      return kind === "codex" ? CODEX_ROOM_GUARD_SINCE : "2.1.5";
+    };
+    // a burst of launches reads the version once
+    const [a, b] = await Promise.all([ryan.start({ agent: "codex" }), ryan.start({ agent: "codex" })]);
+    expect(reads.filter((k) => k === "codex")).toEqual(["codex"]);
+    for (const s of [a, b]) {
+      const cmd = ptyOf(s.id).args.join(" ");
+      expect(cmd).toContain(`'-c' 'default_permissions="${CODEX_ROOM_PROFILE}"'`);
+      expect(cmd).toContain(`"**/.env"="deny"`);
+      expect(cmd).toContain(JSON.stringify(path.join(ryan.settings.workTrackerPath, "secrets/ado.pat")));
+      expect(cmd).toContain("git commands that write (commit, fetch, pull, push) fail here");
+      expect(cmd).not.toContain("--disallowedTools");
+      // the board couldn't be read here, so the SessionStart hook still adds it
+      expect(ptyOf(s.id).env[PLAN_CONTEXT_ENV]).toBeUndefined();
+      expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
+      expect(ryan.sessions.list().find((x) => x.id === s.id)?.agentVersion).toBe(CODEX_ROOM_GUARD_SINCE);
+    }
+    // outside the room, Codex runs as configured
+    const outside = await ryan.start({ agent: "codex", taskGroup: "private" });
+    expect(ptyOf(outside.id).args.join(" ")).not.toContain("default_permissions");
+    expect(ryan.sessions.guardsOf(outside.id)).toBeNull();
+  });
+
+  it("leaves a Codex older than the permission profile unguarded, and says so", async () => {
+    const { ryan, nick } = await pair();
+    ryan.sessions.setAgentVersions({ codex: "0.137.9" });
+    const s = await ryan.start({ agent: "codex" });
+    expect(ptyOf(s.id).args.join(" ")).not.toContain("default_permissions");
+    expect(ptyOf(s.id).args.join(" ")).not.toContain("git commands that write");
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: false, coauthors: true });
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    expect(remoteOf(nick, s.id)!.room!.guards).toEqual({ secrets: false, coauthors: true });
   });
 
   it("starts an agent knowing the room's plan board, with its tool allowed (Claude) — so the SessionStart hook adds nothing", async () => {

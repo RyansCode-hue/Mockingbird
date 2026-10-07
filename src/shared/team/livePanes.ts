@@ -10,6 +10,7 @@
  * streams only to members who show it, and anyone can type into it.
  */
 import type { AgentKind, SessionInfo, SessionStatus } from "../types";
+import { isNewer } from "../versions";
 import type { MemberId, RoomId } from "./types";
 
 /** The owner's git state for a room session's folder: the chips a pane shows. */
@@ -50,13 +51,24 @@ export interface RoomSessionRecord {
   cols: number;
   rows: number;
   /**
-   * What the session was started with: secret reads denied (Claude only) and
-   * Co-authored-by trailers for teammates' turns. False for a session that
-   * joined the room while running, until it restarts.
+   * What the session was started with: secret reads denied (Claude, and Codex
+   * from CODEX_ROOM_GUARD_SINCE) and Co-authored-by trailers for teammates'
+   * turns. False for a session that joined the room while running, until it
+   * restarts.
    */
   guards: { secrets: boolean; coauthors: boolean };
   git: RoomGitState | null;
 }
+
+/**
+ * The first Codex release whose permission profiles a room session can run
+ * under from -c settings alone: deny-read globs that no approval lifts, chosen
+ * over sandbox_mode in the user's config files.
+ */
+export const CODEX_ROOM_GUARD_SINCE = "0.138.0";
+
+/** Whether a Codex CLI at `version` starts room sessions unable to read secret files; false when the version is unknown. */
+export const codexGuardsSecrets = (version: string | null | undefined): boolean => !!version && !isNewer(version, CODEX_ROOM_GUARD_SINCE);
 
 /** A room session as every member's room state holds it. */
 export interface RoomSessionState extends RoomSessionRecord {

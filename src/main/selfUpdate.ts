@@ -2,7 +2,7 @@ import { spawn } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { UPDATE_STEPS, type UpdateOutcome, type UpdateProgress, type UpdateStepId } from "../shared/types";
-import { isNewer } from "./updates";
+import { isNewer } from "../shared/versions";
 import { isRepo, originUrl, parseRemote } from "./git";
 import { indexRepos } from "./repos";
 import { loginShell, quote } from "./shell";

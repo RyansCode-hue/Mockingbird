@@ -1230,15 +1230,21 @@ handle("shell:reveal", (file) => {
 // ---- session health: CLIs updated under running panes, and panes that went quiet mid-turn ----
 const STALL_MS = 5 * 60_000;
 let lastNotices = "";
+/** An agent CLI's installed version; null when it isn't installed or doesn't say (logged). */
+async function readAgentVersion(agent: AgentKind): Promise<string | null> {
+  const bin = await installedBin(agent);
+  if (!bin) return null;
+  const r = await userShell(`${quote(bin)} --version`, 20_000);
+  const v = r.code === 0 ? cliVersion(r.out) : null;
+  if (!v) logError(`version ${agent}`, new Error(r.out.trim().slice(0, 200) || `exited with code ${r.code}`));
+  return v;
+}
+sessions.readVersion = readAgentVersion;
 async function refreshAgentVersions(): Promise<void> {
   const found: Partial<Record<AgentKind, string>> = {};
   for (const agent of ["claude", "codex"] as AgentKind[]) {
-    const bin = await installedBin(agent);
-    if (!bin) continue;
-    const r = await userShell(`${quote(bin)} --version`, 20_000);
-    const v = r.code === 0 ? cliVersion(r.out) : null;
+    const v = await readAgentVersion(agent);
     if (v) found[agent] = v;
-    else logError(`version ${agent}`, new Error(r.out.trim().slice(0, 200) || `exited with code ${r.code}`));
   }
   sessions.setAgentVersions(found);
   healthChanged();

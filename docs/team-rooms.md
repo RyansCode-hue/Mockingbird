@@ -83,16 +83,45 @@ should stop more members joining later.
   reads of `.env*` files and the known secret paths (the ADO PAT file,
   `*.pem`, `*.key`, `credentials.json`…), the same mechanism the run-setup
   drafter uses. One list of secret file patterns (`src/main/secrets.ts`)
-  makes both those rules and what backups leave out, so nothing in it is ever
-  sent over the connection or pushed. Teammates swap `.env` files by hand.
-- **What the deny rules don't cover:** they stop Claude's file tools, not a
-  shell command the user approves (`cat .env`). Codex gets none: its deny-read
-  rules live in a permission profile in `~/.codex/config.toml`, which replaces
-  its sandbox settings, so Mockingbird doesn't set them; a Codex room session
-  says "codex: secrets unguarded". A terminal in a shared group is shared too
-  (anyone in the room sees and can type into it) and says so. A session moved
-  into a shared group while running keeps what it started with until it's
-  restarted, and offers the restart.
+  makes those rules, Codex's room permission profile (below) and what backups
+  leave out, so nothing in it is ever sent over the connection or pushed.
+  Teammates swap `.env` files by hand.
+- **Codex room sessions** (Codex 0.138 or later) start under a permission
+  profile, `mockingbird-room`, defined and selected entirely by `-c` settings
+  on that launch (`default_permissions` and an inline
+  `permissions.mockingbird-room` table: `-c` splits its key on every dot, so
+  the glob keys go inside the value). `~/.codex/config.toml` is never touched,
+  sessions outside rooms are unaffected, and settings from the command line
+  outrank `sandbox_mode` in any config file. The profile extends Codex's
+  `:workspace` sandbox (writes only in the session's folders and temp folders,
+  `.git` and `.codex` read-only), turns the network on, and denies the secret
+  patterns inside the session's folders and, except `*.pem`, anywhere on disk,
+  plus `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`,
+  `~/.mockingbird/team` and the ADO PAT file. `*.pem` is denied only in the
+  session's folders because system and Python CA bundles are `.pem` files and
+  every TLS client reads them.
+  - Codex enforces it with the macOS sandbox on every command it runs —
+    `cat`, `cp`, `ln`, a symlink — and on its own file reads (`apply_patch`,
+    images). While a profile denies reads, Codex never runs a command outside
+    the sandbox, even once approved, so approvals can't open a secret and
+    can't grant anything else either. That's why the profile turns the
+    network on, and why git commands that write (commit, fetch, pull, push)
+    and installs that write to caches in home fail in a Codex room session:
+    the session is told so at launch and leaves those to the user (a `!`
+    command in the pane, which Codex runs outside its sandbox, or Source
+    Control). Approvals otherwise follow the user's own Codex settings.
+  - Older Codex releases lack parts of this (`-c` settings outranking a
+    config file's `sandbox_mode`, `extends`, `:workspace_roots`, denied reads
+    that hold through approvals), so a Codex older than 0.138 starts its room
+    sessions as configured and they say "codex: secrets unguarded", naming
+    the update to make. Mockingbird reads the installed version before a room
+    launch when it doesn't know it yet.
+- **What the deny rules don't cover:** Claude's stop Claude's file tools, not
+  a shell command the user approves (`cat .env`); Codex's stop everything the
+  agent runs, but not a `!` command typed into the pane. A terminal in a
+  shared group is shared too (anyone in the room sees and can type into it)
+  and says so. A session moved into a shared group while running keeps what
+  it started with until it's restarted, and offers the restart.
 - **How commits get the trailer:** a room session starts with
   `GIT_CONFIG_PARAMETERS` pointing `core.hooksPath` at Mockingbird's hooks
   folder, so every git the session runs uses it and no repository's config
@@ -187,6 +216,12 @@ A chat thread in each room, for people and agents:
   invite codes, snapshot/ref naming, transcript placement, claims matching, and
   the secret deny list. The Worker's room logic is a plain module, tested
   directly and also served by a local signaling server for tests.
+- Codex's room profile against the installed binary, without a model:
+  `codex sandbox` runs a probe under the exact `-c` settings a room launch
+  passes (through the pane's shell quoting), over a throwaway `CODEX_HOME`,
+  and every secret file — in the repository, another folder, home and the PAT
+  file — is unreadable while ordinary files and `/etc/ssl/cert.pem` stay
+  readable (skipped under CI and without Codex 0.138+).
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
   (`MB_E2E_APP=1`): create room, join by code, live pane, remote typing,

@@ -4,10 +4,11 @@ import { git } from "../git";
 import { worktreeState } from "../worktrees";
 import { readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { roomWaitingNotice, shouldNotify } from "../notifications";
-import { roomSecretReads } from "../secrets";
+import { CODEX_ROOM_SANDBOX_NOTE, codexRoomPermissions, roomSecretReads } from "../secrets";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
 import { isMouseReports, isTermReply } from "../../shared/termInput";
 import {
+  codexGuardsSecrets,
   decodePtyChunk,
   encodePtyChunk,
   isRemotePaneId,
@@ -331,17 +332,25 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
 
   /**
    * What a session starting in a shared group gets: secret reads denied
-   * (Claude), its commits credit teammates, and an agent starts knowing the
-   * room's plan board, with its tool allowed.
+   * (Claude's rules; a Codex new enough runs under a permission profile and
+   * is told about its sandbox), its commits credit teammates, and an agent
+   * starts knowing the room's plan board, with its tool allowed.
    */
   roomLaunch(target: LaunchTarget): RoomLaunch | null {
     const roomId = target.group ? this.roomForGroup(splitGroupKey(target.group).top) : null;
     if (!roomId) return null;
     let denyReads: string[] = [];
+    let codexPermissions: string[] = [];
     if (target.agent === "claude") {
       const secrets = roomSecretReads(this.d.settings().workTrackerPath);
       if (secrets.problem) this.problem(secrets.problem);
       denyReads = secrets.rules;
+    }
+    const codexGuarded = target.agent === "codex" && codexGuardsSecrets(target.agentVersion);
+    if (codexGuarded) {
+      const secrets = codexRoomPermissions(this.d.settings().workTrackerPath);
+      if (secrets.problem) this.problem(secrets.problem);
+      codexPermissions = secrets.config;
     }
     let instructions: string | null = null;
     if (target.agent) {
@@ -353,11 +362,13 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       }
     }
     return {
+      // PLAN_CONTEXT_ENV: the board itself is in the launch, so the SessionStart hook adds nothing
       env: { ...(this.hooksReady ? hooksEnv(this.d.hooksDir ?? HOOKS_DIR) : {}), ...(instructions ? { [PLAN_CONTEXT_ENV]: "1" } : {}) },
       denyReads,
-      instructions,
+      codexPermissions,
+      instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
       allowTools: target.agent === "claude" ? [PLAN_TOOL] : [],
-      guards: { secrets: target.agent === "claude", coauthors: this.hooksReady },
+      guards: { secrets: target.agent === "claude" || codexGuarded, coauthors: this.hooksReady },
     };
   }
 

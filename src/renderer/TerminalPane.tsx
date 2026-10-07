@@ -14,7 +14,7 @@ import { Lookers, OwnerTag } from "./team/RoomLive";
 import { overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
 import type { RoomSessionBackupView } from "../shared/team/takeover";
-import { isRemotePaneId } from "../shared/team/livePanes";
+import { CODEX_ROOM_GUARD_SINCE, codexGuardsSecrets, isRemotePaneId } from "../shared/team/livePanes";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
 import { ago, fmtElapsed, plural } from "../shared/format";
@@ -214,8 +214,9 @@ export function shortReason(reason: string | null): string {
 
 /**
  * A room session of this Mac's that teammates see but that runs without the
- * room's protections: a terminal (it can read anything), Codex (no deny rules
- * from here), or a session that joined the room while running.
+ * room's protections: a terminal (it can read anything), a Codex too old for
+ * the room's permission profile, or a session that joined the room while
+ * running.
  */
 function GuardChip({ session, guards, onRestart }: { session: SessionInfo; guards: { secrets: boolean; coauthors: boolean }; onRestart?: () => void }) {
   if (guards.secrets && guards.coauthors) return null;
@@ -234,11 +235,12 @@ function GuardChip({ session, guards, onRestart }: { session: SessionInfo; guard
       </span>
     );
   }
-  if (session.agent === "codex") {
+  if (session.agent === "codex" && !codexGuardsSecrets(session.agentVersion)) {
+    const which = session.agentVersion ? `Codex ${session.agentVersion} is older than` : "Mockingbird couldn't read this Codex's version, so it can't tell whether it's at least";
     return (
       <span
         className="chip warn"
-        title={`Teammates in this room see what this session prints. Mockingbird can't stop Codex reading .env files and keys from here: Codex's deny-read rules live in a permission profile in ~/.codex/config.toml ([permissions.<name>.filesystem] with "**/*.env" = "none"). Set one up there before working near secrets.${credit}`}
+        title={`Teammates in this room see what this session prints, and Codex can read .env files and keys: ${which} ${CODEX_ROOM_GUARD_SINCE}, the first release whose permission profiles keep a room session from reading them. Update Codex (Settings → Agents → Update), then restart this session.${credit}`}
       >
         codex: secrets unguarded
       </span>

@@ -5,6 +5,7 @@ import * as path from "path";
 import { which } from "./shell";
 import { parseRemote } from "./git";
 import type { UpdateInfo } from "../shared/types";
+import { isNewer } from "../shared/versions";
 
 /** owner/repo from a package.json "repository" field ("github:owner/repo", a URL, or { url }). */
 export function repoFromPackage(pkg: { repository?: string | { url?: string } }): { owner: string; repo: string } | null {
@@ -12,17 +13,6 @@ export function repoFromPackage(pkg: { repository?: string | { url?: string } })
   const url = (typeof r === "string" ? r : (r?.url ?? "")).trim().replace(/^github:/i, "https://github.com/");
   const remote = parseRemote(url);
   return remote?.provider === "github" ? { owner: remote.owner, repo: remote.repo } : null;
-}
-
-/** Is b newer than a (simple semver x.y.z compare). */
-export function isNewer(a: string, b: string): boolean {
-  const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
-  const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    const d = (pb[i] ?? 0) - (pa[i] ?? 0);
-    if (d !== 0) return d > 0;
-  }
-  return false;
 }
 
 /**

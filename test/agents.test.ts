@@ -67,6 +67,16 @@ describe("Codex launch", () => {
   it("resumes the most recent conversation in the folder", () => {
     expect(agentFor("codex").launchArgs({ ...base, resume: true }, { mcp }).slice(0, 2)).toEqual(["resume", "--last"]);
   });
+  it("takes a room's permission settings as -c overrides, before the prompt; Claude's deny rules are Claude's alone", () => {
+    const ctx = { mcp, codexPermissions: ['default_permissions="room"', 'permissions.room={extends=":workspace"}'], denyReads: ["Read(**/.env)"] };
+    const args = agentFor("codex").launchArgs({ ...base, initialPrompt: "go" }, ctx);
+    expect(args.join(" ")).toContain(`-c default_permissions="room" -c permissions.room={extends=":workspace"}`);
+    expect(args.slice(-2)).toEqual(["--", "go"]);
+    expect(args.join(" ")).not.toContain("Read(");
+    const claude = agentFor("claude").launchArgs({ ...base }, ctx);
+    expect(claude.join(" ")).not.toContain("default_permissions");
+    expect(claude[claude.indexOf("--disallowedTools") + 1]).toBe("Read(**/.env)");
+  });
 });
 
 describe("conversationExists", () => {
