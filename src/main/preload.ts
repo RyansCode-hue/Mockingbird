@@ -309,6 +309,36 @@ const api = {
     ipcRenderer.on("plan:warning", h);
     return () => ipcRenderer.removeListener("plan:warning", h);
   },
+  // team rooms: team chat
+  teamChatView: (roomId: string) => ipcRenderer.invoke("teamChat:view", roomId),
+  teamChatPost: (roomId: string, text: string) => ipcRenderer.invoke("teamChat:post", roomId, text),
+  teamChatRead: (roomId: string) => ipcRenderer.invoke("teamChat:read", roomId),
+  teamChatUnread: () => ipcRenderer.invoke("teamChat:unread"),
+  /** The room the window shows (null: none): its mentions don't notify while the window has focus. */
+  teamChatViewing: (roomId: string | null) => ipcRenderer.invoke("teamChat:viewing", roomId),
+  onTeamChatChanged: (cb: (roomId: string) => void) => {
+    const h = (_e: unknown, roomId: string) => cb(roomId);
+    ipcRenderer.on("teamChat:changed", h);
+    return () => ipcRenderer.removeListener("teamChat:changed", h);
+  },
+  /** A mention notification was clicked: show that room's chat. */
+  onTeamChatOpen: (cb: (roomId: string) => void) => {
+    const h = (_e: unknown, roomId: string) => cb(roomId);
+    ipcRenderer.on("teamChat:open", h);
+    return () => ipcRenderer.removeListener("teamChat:open", h);
+  },
+
+  // team rooms: take-over
+  /** Room sessions' backups as this Mac knows them (TakeoverView). */
+  teamTakeover: () => ipcRenderer.invoke("team:takeover"),
+  /** What taking over a teammate's session would use (TakeoverPlan); `clonePath` when the user chose their clone. */
+  teamTakeoverPlan: (roomId: string, sessionId: string, clonePath?: string | null) => ipcRenderer.invoke("team:takeoverPlan", roomId, sessionId, clonePath ?? null),
+  teamTakeOver: (roomId: string, sessionId: string, clonePath?: string | null) => ipcRenderer.invoke("team:takeOver", roomId, sessionId, clonePath ?? null),
+  onTeamTakeoverChanged: (cb: (view: unknown) => void) => {
+    const h = (_e: unknown, v: unknown) => cb(v);
+    ipcRenderer.on("team:takeoverChanged", h);
+    return () => ipcRenderer.removeListener("team:takeoverChanged", h);
+  },
   // team rooms: live panes
   /** Teammates' room sessions, tags for this install's own, and teammates' views: LivePanesState. */
   teamLive: () => ipcRenderer.invoke("team:live"),

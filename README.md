@@ -75,6 +75,8 @@ and the WebRTC wire against the local server with a stand-in peer host.
 Electron (skipped in CI), and `MB_E2E_APP=1 npx vitest run
 test/teamApp.e2e.test.ts` runs two real Mockingbird instances, with throwaway
 homes, that share and join a room (their windows open while it runs).
+Take-over runs end to end over the loopback against real git — a local bare
+origin and two clones — in `test/teamTakeover.test.ts`.
 Live panes are tested over the loopback with real session managers (records,
 streaming and catching up after gaps, remote typing and its audit,
 notifications, views, launch guards), the Co-authored-by hooks against real
@@ -304,8 +306,26 @@ agreed direction, **Later** is worth doing once the foundations settle.
   terminal size holds); initials show who's looking at which pane, Follow
   mirrors a teammate's grid, everyone is notified when a room session waits,
   room sessions start with Claude denied reading secrets, and commits in turns
-  a teammate typed into credit them with Co-authored-by. Next, built on its
-  transport: take-over, and the team room chat with agents.
+  a teammate typed into credit them with Co-authored-by.
+  The team room chat: each room's thread in the side bar's **Team room** view
+  (and the group bar's **Room chat** chip), with unread counts and @mentions
+  that notify, working offline (messages merge on reconnect); room agents'
+  turns, waits, take-overs and board changes posted as compact updates;
+  `list_sessions` / `send_message` reaching teammates' room sessions through
+  the room; and **@assistant**, answered on the asker's laptop from the room's
+  chat, sessions, board and docs.
+  - Take-over: after every turn a room session's worktree is snapshotted
+    (ignored and secret files left out) and pushed to a hidden ref on origin,
+    `refs/mockingbird/rooms/<room>/<session>`, never a branch; connected
+    teammates also get it peer to peer, with the conversation (which never
+    goes to git). The sidebar shows how fresh each backup is; Take over
+    continues a teammate's session on your laptop from the newest snapshot, on
+    its branch, resuming the conversation — or, when it didn't all arrive, from
+    a summary of what did, and the agent says so. While a session is backed
+    up, anyone with read access to the repository can fetch its work in
+    progress (secrets excluded). Its owner deletes the backup when the session
+    is forgotten, merged into the base branch, idle for 14 days, or taken over
+    and backed up by the taker.
 
 ### Next
 

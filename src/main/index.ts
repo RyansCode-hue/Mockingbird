@@ -58,6 +58,11 @@ import { configureWebRtc } from "./team/peerHost";
 // team rooms: plan board (importing it registers the board's room events, before any room log loads)
 import { PlanService } from "./team/planService";
 import { mergeOverlaps, teammateOverlaps } from "./conflicts";
+// team rooms: team chat
+import { TeamRoom } from "./team/teamRoom";
+// team rooms: take-over
+import { groupRoomHost, TakeoverService } from "./team/takeover";
+import { ROOMS_DIR } from "./team/rooms";
 // team rooms: live panes
 import { LivePanes } from "./team/livePanes";
 
@@ -122,6 +127,36 @@ const teamPlan = new PlanService({
   overlapsChanged: () => overlapsSoon(),
   author: () => ({ name: (store.settings.teamName ?? "").trim() || os.userInfo().username }),
 });
+// team rooms: take-over — room sessions back up after each turn; a teammate can
+// continue one on their laptop. A room session here is one in a shared group;
+// the hooks' Stop events are its turn ends (roomTurnEnds).
+const roomTurnEnds = new Set<(sessionId: string) => void>();
+let takeover: TakeoverService | null = null;
+function startTakeover(): TakeoverService | null {
+  const transport = team.transport;
+  if (!transport) return null; // team rooms didn't start: Settings → Team says why
+  return new TakeoverService({
+    team: transport,
+    roomsDir: ROOMS_DIR,
+    host: groupRoomHost({
+      sessions: () => sessions.list(),
+      rooms: () => team.status().rooms,
+      onTurnEnd: (cb) => {
+        roomTurnEnds.add(cb);
+        return () => roomTurnEnds.delete(cb);
+      },
+    }),
+    repos: () => [...new Set([...indexRepos(store.settings.repoRoots).map((r) => r.path), ...sessions.list().flatMap((s) => (s.repoPath ? [s.repoPath] : []))])],
+    launch: (req) => sessions.create(req),
+    log: logError,
+    changed: () => toWindow("team:takeoverChanged", takeover?.view()),
+    onTakenOver: (id, by) => notifySession(id, "Taken over", `${by} took over ${sessions.list().find((s) => s.id === id)?.title ?? "a room session"} on their Mac`),
+  });
+}
+const needTakeover = (): TakeoverService => {
+  if (!takeover) throw new Error("Team rooms haven't started — see Settings → Team");
+  return takeover;
+};
 
 // team rooms: live panes — sessions in shared groups, streamed to and typed into by teammates
 const livePanes = new LivePanes({
@@ -354,6 +389,11 @@ app.whenReady().then(() => {
   createWindow();
   team.start();
   if (team.transport) teamPlan.start(team.transport); // team rooms: plan board
+  // team rooms: take-over — unneeded backups are pruned now and daily
+  takeover = startTakeover();
+  const pruneBackups = () => takeover?.prune().catch((err) => logError("team: pruning room backups", err));
+  void pruneBackups();
+  setInterval(pruneBackups, 86_400_000).unref();
   livePanes.start(); // team rooms: live panes
   powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
@@ -420,6 +460,13 @@ app.whenReady().then(() => {
   );
   messaging.start();
   messaging.setRoomHandler((roomId, seat, op, args) => collab.handleRoomRequest(roomId, seat, op, args));
+  // team rooms: team chat
+  teamRoom.start(team.transport, messaging);
+  const beforeTeamRoom = sessions.onChanged;
+  sessions.onChanged = () => {
+    beforeTeamRoom?.();
+    teamRoom.sessionsChanged();
+  };
   // the plan name isn't in Claude's statusline payload; `claude auth status` has it
   void (async () => {
     const bin = await installedBin("claude");
@@ -446,6 +493,8 @@ app.whenReady().then(() => {
         : `${info.title} is done responding`,
       status === "waiting" ? "waiting" : "finished"
     );
+    // team rooms: take-over — idle comes only from Stop: the agent's turn ended
+    if (status === "idle") for (const cb of roomTurnEnds) cb(info.id);
   }, (info, prompt) => {
     // the files before this turn, so it can be undone (agent panes in a repository only)
     if (info.shell || !info.repoPath) return;
@@ -483,6 +532,7 @@ setInterval(() => sessions.saveScrollback(), 60_000);
 app.on("will-quit", () => {
   sessions.saveScrollback(true);
   teamPlan.stop(); // team rooms: plan board
+  takeover?.close(); // team rooms: take-over
   livePanes.stop(); // team rooms: live panes — pending output sent first
   team.stop(); // room snapshots written, connections closed
 });
@@ -514,6 +564,7 @@ handle("sessions:kill", (id, forget) => {
     const at = fs.existsSync(s.cwd) ? s.cwd : s.repoPath;
     dropSnapshots(at, s.id).catch((err) => logError(`drop snapshots ${id}`, err));
   }
+  if (forget) void takeover?.sessionForgotten(String(id)); // team rooms: take-over — its room backup goes too (failures shown in the sidebar)
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
@@ -781,6 +832,42 @@ handle("plan:get", (roomId) => teamPlan.view(String(roomId)));
 handle("plan:apply", (roomId, op) => teamPlan.apply(String(roomId), op));
 handle("plan:repos", (roomId) => teamPlan.repoChoices(String(roomId)));
 handle("plan:sync", (roomId) => teamPlan.syncNow(String(roomId)));
+// team rooms: team chat — each room's chat, its agent updates, the @assistant
+// (on this laptop, under this user's account), and agent messaging across laptops
+const teamRoom = new TeamRoom({
+  sessions: () => sessions.list(),
+  roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
+  // Claude only: it runs with no tools, while Codex's read-only sandbox can still read files,
+  // and the room's chat (which teammates write) is in the prompt
+  ask: async (prompt) => {
+    const bin = await installedBin("claude");
+    if (!bin) throw new Error("The room's assistant runs Claude Code (with no tools), and Claude Code isn't installed on this laptop");
+    return askAgent(prompt, { agent: "claude", bin, run: userShellWithInput, env: paneEnv(), tag: "team-assistant", model: "sonnet", timeoutMs: 180_000 });
+  },
+  chatChanged: (roomId) => toWindow("teamChat:changed", roomId),
+  notify: ({ roomId, title, body }) => {
+    if (!shouldNotify({ settings: store.settings, kind: "other", now: new Date() })) return;
+    const n = new Notification({ title, body });
+    n.on("click", () => {
+      focusPane();
+      toWindow("teamChat:open", roomId);
+    });
+    n.show();
+  },
+  windowFocused: () => !!appWindow()?.isFocused(),
+  log: (msg) => void logError("team chat", msg),
+});
+// before team.stop() closes the transport: gathered agent updates are posted
+app.prependListener("will-quit", () => teamRoom.stop());
+handle("teamChat:view", (roomId) => teamRoom.chat.view(String(roomId)));
+handle("teamChat:post", (roomId, text) => teamRoom.chat.post(String(roomId), String(text ?? "")));
+handle("teamChat:read", (roomId) => teamRoom.chat.markRead(String(roomId)));
+handle("teamChat:unread", () => teamRoom.chat.unread());
+handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(roomId) : null));
+// team rooms: take-over
+handle("team:takeover", () => takeover?.view() ?? { sessions: [], unbacked: [] });
+handle("team:takeoverPlan", (roomId, sessionId, clonePath) => needTakeover().plan(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
+handle("team:takeOver", (roomId, sessionId, clonePath) => needTakeover().takeOver(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 // team rooms: live panes
 handle("team:live", () => livePanes.state());
 handle("team:paneResync", (id) => livePanes.resync(String(id)));

@@ -75,6 +75,10 @@ import { SettingsView, type SettingsSection } from "./Settings";
 import { JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
 // team rooms: plan board
 import { PlanBoardDialog, PlanWarnings } from "./team/PlanBoard";
+// team rooms: team chat
+import { RoomChatChip, RoomChatPanel, TeamRoomIcon, useRoomChatOpen } from "./team/RoomChat";
+// team rooms: take-over
+import { RoomBackups } from "./team/TakeOver";
 // team rooms: live panes
 import { FollowControls, LiveProblems, RoomRowTag, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
@@ -84,13 +88,17 @@ import { usePersisted, readPref, writePref } from "./prefs";
 
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
 /** What the side bar shows, picked from the activity bar as in VS Code. */
-type SideView = "sessions" | "explorer" | "scm" | "search" | "run";
+type SideView = "sessions" | "explorer" | "scm" | "search" | "run"
+  // team rooms: team chat
+  | "room";
 const SIDE_VIEWS: { id: SideView; label: string; keys?: string; Icon: () => React.JSX.Element }[] = [
   { id: "sessions", label: "Sessions", Icon: SessionsIcon },
   { id: "explorer", label: "Explorer", keys: "⇧⌘E", Icon: FilesIcon },
   { id: "scm", label: "Source Control", keys: "⌃⇧G", Icon: SourceControlIcon },
   { id: "search", label: "Search", keys: "⇧⌘F", Icon: SearchIcon },
   { id: "run", label: "Run and Debug", keys: "⇧⌘D", Icon: RunDebugIcon },
+  // team rooms: team chat (the icon carries its own unread badge)
+  { id: "room", label: "Team room", Icon: TeamRoomIcon },
 ];
 
 /** Miniature of a snap layout's shape, drawn the way the snap-layout flyout shows them. */
@@ -380,6 +388,8 @@ function App() {
     setSideCollapsed(false);
     if (v === "search") setSearchFocus((n) => n + 1);
   };
+  // team rooms: team chat — a clicked mention notification opens the room's chat
+  useRoomChatOpen(() => showView("room"));
 
   // inline editing is session titles only — group and workspace names are
   // renamed through RenameDialog (a second mounted input stole its focus)
@@ -1762,6 +1772,8 @@ function App() {
               onOpenFrame={openFrame}
             />
           )}
+          {/* team rooms: team chat */}
+          {sideView === "room" && <RoomChatPanel status={teamStatus} activeGroup={activeGroup} visible={!sideCollapsed} />}
           {sideView === "sessions" && (
           <div className="scroll">
             <div className="filter-row">
@@ -1851,6 +1863,11 @@ function App() {
                     )}
                   </div>
                 )}
+                {/* team rooms: take-over — teammates' room sessions, their backups and Take over */}
+                {!collapsed.has(key) && (() => {
+                  const room = roomOfGroup(teamStatus, key);
+                  return room ? <RoomBackups room={room} /> : null;
+                })()}
                 {!collapsed.has(key) && bySub(list).map(([sub, subList]) => {
                   const wsKey = `${key}/${sub}`;
                   const inGrid = subList.some((s) => shown.includes(s.id));
@@ -2101,6 +2118,11 @@ function App() {
                       Pipeline
                     </button>
                   ))}
+                {/* team rooms: team chat */}
+                {(() => {
+                  const room = roomOfGroup(teamStatus, activeGroup);
+                  return room ? <RoomChatChip room={room} onOpen={() => showView("room")} /> : null;
+                })()}
                 {/* team rooms: live panes */}
                 <FollowControls follow={follow} />
                 <span style={{ marginLeft: "auto" }} />

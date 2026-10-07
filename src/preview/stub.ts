@@ -14,6 +14,10 @@ import type { AdoBoard, AdoWorkItem, GraphCommit, Meters, SessionInfo, Settings,
 import { DEFAULT_SETTINGS } from "../shared/types";
 import type { TeamStatus } from "../shared/team/types";
 import type { PlanChange, PlanOp, PlanView, WorkPackage } from "../shared/team/plan"; // team rooms: plan board
+// team rooms: team chat
+import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../shared/team/chat";
+// team rooms: take-over
+import type { RoomSessionBackupView, TakeoverPlan, TakeoverView } from "../shared/team/takeover";
 // team rooms: live panes
 import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
 
@@ -200,6 +204,97 @@ const plans: Record<string, PlanView> = {
     fetchedAt: 0,
   },
 };
+// team rooms: team chat — 5101's chat has a mention of you, agent updates, an assistant answer and one unread message from Sam
+let lamport = 0;
+const chatEntry = (over: Partial<ChatEntry> & Pick<ChatEntry, "kind" | "author" | "at">): ChatEntry => ({ id: `c${++lamport}`, lamport, text: "", ...over });
+const chats: Record<string, ChatEntry[]> = {
+  R5101aaaaaaaaaaaaaaaaa: [
+    chatEntry({ kind: "message", author: NICK, at: now - 40 * min, text: "Morning! I'll take the **dropdown UI** — @You can you own the `last-org` endpoint?", mentions: [ME] }),
+    chatEntry({ kind: "message", author: ME, at: now - 38 * min, text: "On it. Branch `5101-orgDropdowns`; the API session is going now.", mentions: [] }),
+    chatEntry({ kind: "update", author: NICK, at: now - 30 * min, items: [
+      { session: "n1", title: "Dropdown UI", kind: "finished", at: now - 30 * min },
+      { session: "n2", title: "Dropdown tests", kind: "waiting", detail: "Claude needs your permission to use Bash", at: now - 30 * min },
+    ] }),
+    chatEntry({ kind: "update", author: NICK, at: now - 22 * min, items: [{ session: "", title: "Org dropdown UI", kind: "board", detail: "Nick claimed", at: now - 22 * min }] }),
+    chatEntry({ kind: "message", author: NICK, at: now - 12 * min, text: "@assistant what's left before we can open the PR?", mentions: ["assistant"] }),
+    chatEntry({ kind: "assistant", author: NICK, at: now - 11 * min, replyTo: "c5", state: "answer", text: "Two things:\n- **API**: `GET /api/users/me/last-org` is in; the PUT still needs a test (the *API tests* session is on it).\n- **UI**: Nick's dropdown tests wait on a Bash permission.\nOnce both are green, open the PR against `dev`." }),
+    chatEntry({ kind: "update", author: ME, at: now - 6 * min, items: [{ session: "s2", title: "API: last org per user", kind: "waiting", detail: "Claude needs your permission to use Bash", at: now - 6 * min }] }),
+    chatEntry({ kind: "message", author: SAM, at: now - 3 * min, text: "Heads up: `dev` moved this morning — rebase before the PR. Notes: https://dev.azure.com/acme/Backoffice/_wiki/rebase", mentions: [] }),
+  ],
+  // 5110: an assistant turn that failed, and one still thinking
+  R5110bbbbbbbbbbbbbbbbb: (() => {
+    const draft = chatEntry({ kind: "message", author: NICK, at: now - 90 * min, text: "Donor entities: the schema draft is in docs/donors.md — @You have a look when you can.", mentions: [ME] });
+    const asked = chatEntry({ kind: "message", author: ME, at: now - 5 * min, text: "@assistant which tables does the draft add?", mentions: ["assistant"] });
+    const failed = chatEntry({ kind: "assistant", author: ME, at: now - 5 * min, replyTo: asked.id, state: "error", text: "Claude Code isn't installed (not found on your shell's PATH)" });
+    const again = chatEntry({ kind: "message", author: NICK, at: now - 20_000, text: "@assistant summarize the draft for @You, then", mentions: ["assistant", ME] });
+    return [draft, asked, failed, again, chatEntry({ kind: "assistant", author: NICK, at: now - 18_000, replyTo: again.id, state: "thinking" })];
+  })(),
+};
+const chatRead: Record<string, ReadMarks> = { R5101aaaaaaaaaaaaaaaaa: { [NICK]: 6, [ME]: 7 } };
+const chatJoined = now - 2 * 24 * 60 * min;
+const chatView = (roomId: string) => {
+  const entries = chats[roomId] ?? [];
+  return { roomId, self: ME, joinedAt: chatJoined, entries, read: chatRead[roomId] ?? {}, ...unreadCounts(entries, ME, chatRead[roomId], chatJoined) };
+};
+const chatChanged = (roomId: string) => emit("onTeamChatChanged", roomId);
+// team rooms: take-over — Nick's session backed up; Sam (offline) couldn't push, but his newest snapshot was copied here; one of yours taken over by Nick
+const takeoverView: TakeoverView = (() => {
+  const sha = (c: string) => c.repeat(40).slice(0, 40);
+  const base = (o: Partial<RoomSessionBackupView> & Pick<RoomSessionBackupView, "sessionId" | "owner" | "ownerName">): RoomSessionBackupView => ({
+    roomId: "R5101aaaaaaaaaaaaaaaaa",
+    session: { title: "", agent: "claude", branch: "5101-orgDropdowns", originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", cwd: "/Users/nick/Code/worktrees/backoffice/5101-orgDropdowns", conversationId: "c0ffee00-0000-4000-8000-000000000001" },
+    latest: { sha: sha("a1"), takenAt: now - 2 * min },
+    push: { ok: true, at: now - 2 * min, sha: sha("a1") },
+    pushed: { sha: sha("a1"), takenAt: now - 2 * min, at: now - 2 * min },
+    transcriptBytes: 412_000,
+    takenOver: null,
+    dropped: null,
+    ownerOnline: true,
+    self: false,
+    takenOverByName: null,
+    peerCopy: { sha: sha("a1"), takenAt: now - 2 * min },
+    transcript: { have: 412_000, of: 412_000 },
+    problem: null,
+    ...o,
+  });
+  return {
+    sessions: [
+      base({ sessionId: "n1", owner: NICK, ownerName: "Nick Smith", session: { ...base({ sessionId: "", owner: NICK, ownerName: "" }).session, title: "Org dropdown — remember per user" } }),
+      base({
+        sessionId: "m1",
+        owner: SAM,
+        ownerName: "Sam",
+        ownerOnline: false,
+        session: { ...base({ sessionId: "", owner: SAM, ownerName: "" }).session, title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", conversationId: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" },
+        latest: { sha: sha("b2"), takenAt: now - 4 * min },
+        push: { ok: false, at: now - 4 * min, error: "remote: TF401027: You need the Git 'ForcePush' permission", sha: sha("b2") },
+        pushed: { sha: sha("c3"), takenAt: now - 31 * min, at: now - 31 * min },
+        peerCopy: { sha: sha("b2"), takenAt: now - 4 * min },
+        transcriptBytes: 980_000,
+        transcript: { have: 640_000, of: 980_000 },
+      }),
+      base({
+        roomId: "R5110bbbbbbbbbbbbbbbbb",
+        sessionId: "y1",
+        owner: ME,
+        ownerName: "You",
+        self: true,
+        session: { ...base({ sessionId: "", owner: ME, ownerName: "" }).session, title: "Donor entity model", branch: "5110-donor-entities" },
+        takenOver: { by: NICK, at: now - 12 * min, newSessionId: "n7", snapshot: { sha: sha("d4"), takenAt: now - 15 * min, source: "peer" }, conversation: "full" },
+        takenOverByName: "Nick Smith",
+        peerCopy: null,
+        transcript: null,
+      }),
+    ],
+    unbacked: [],
+    cleanup: [],
+  };
+})();
+const takeoverPlans: Record<string, TakeoverPlan> = {
+  n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Org dropdown — remember per user", agent: "claude", branch: "5101-orgDropdowns", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: "origin", skipped: [] }, other: null, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 } },
+  m1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 } },
+};
+const takeoverChanged = () => emit("onTeamTakeoverChanged", JSON.parse(JSON.stringify(takeoverView)));
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
 
 // team rooms: live panes — Nick's session in the shared 5101 room, shown here as a copy;
@@ -581,6 +676,51 @@ const api: Record<string, (...a: any[]) => any> = {
     planChanged(roomId);
     return { pkg: "id" in op ? op.id : null };
   },
+  // team rooms: team chat — posting works; @assistant thinks, then answers
+  teamChatView: async (roomId: string) => (team.rooms.some((r) => r.id === roomId) ? chatView(roomId) : err("You're not in that room")),
+  teamChatUnread: async () => Object.fromEntries(team.rooms.map((r) => [r.id, (({ unread, mentions }) => ({ unread, mentions }))(chatView(r.id))])),
+  teamChatViewing: async () => undefined,
+  teamChatRead: async (roomId: string) => {
+    const marks = { ...(chatRead[roomId] ?? {}) };
+    for (const e of chats[roomId] ?? []) marks[e.author] = Math.max(marks[e.author] ?? 0, e.lamport);
+    chatRead[roomId] = marks;
+    chatChanged(roomId);
+    const { unread, mentions } = chatView(roomId);
+    return { unread, mentions };
+  },
+  teamChatPost: async (roomId: string, text: string) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    if (!room) return err("You're not in that room");
+    if (!text.trim()) return err("The message is empty");
+    const message = chatEntry({ kind: "message", author: ME, at: Date.now(), text: text.trim(), mentions: parseMentions(text, room.members) });
+    (chats[roomId] ??= []).push(message);
+    chatChanged(roomId);
+    if (message.mentions!.includes("assistant")) {
+      const thinking = chatEntry({ kind: "assistant", author: ME, at: Date.now(), replyTo: message.id, state: "thinking" });
+      chats[roomId].push(thinking);
+      chatChanged(roomId);
+      setTimeout(() => {
+        chats[roomId] = chats[roomId].filter((e) => e !== thinking);
+        chats[roomId].push(chatEntry({ kind: "assistant", author: ME, at: Date.now(), replyTo: message.id, state: "answer", text: "In the UI preview the assistant only pretends — in the app it answers from the room's chat, board, sessions and docs." }));
+        chatChanged(roomId);
+      }, 1500);
+    }
+    return { id: message.id };
+  },
+
+  // team rooms: take-over — plans and the take-over are simulated; nothing is copied or launched
+  teamTakeover: async () => JSON.parse(JSON.stringify(takeoverView)),
+  teamTakeoverPlan: async (_roomId: string, sessionId: string) => (takeoverPlans[sessionId] ? later(takeoverPlans[sessionId], 500) : err("No backup of that session has reached this Mac yet")),
+  teamTakeOver: async (_roomId: string, sessionId: string) => {
+    const s = takeoverView.sessions.find((x) => x.sessionId === sessionId);
+    const plan = takeoverPlans[sessionId];
+    if (!s || !plan?.snapshot) return err("No backup of that session has reached this Mac yet");
+    s.takenOver = { by: ME, at: Date.now(), newSessionId: `t-${sessionId}`, snapshot: plan.snapshot, conversation: plan.conversation.kind === "full" ? "full" : "digest" };
+    s.takenOverByName = "You";
+    setTimeout(takeoverChanged, 50);
+    return later({ sessionId: `t-${sessionId}`, cwd: `/Users/you/Code/worktrees/backoffice/${plan.branch}`, branch: plan.branch, renamedFrom: null, snapshot: plan.snapshot, conversation: s.takenOver.conversation }, 900);
+  },
+
   // team rooms: live panes — Nick's session is a fixture; typing into it echoes like the others
   teamLive: async () => JSON.parse(JSON.stringify(live)),
   teamLiveView: () => undefined,
@@ -632,6 +772,8 @@ if (section) {
 }
 if (theme === "light" || theme === "dark") set("mb.theme", theme);
 if (shown) set("mb.shown", shown.split(","));
+// team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared)
+if (params.get("chat")) set("mb.roomChat.room", params.get("chat"));
 // screenshots show the settled screen: no transition caught halfway (a theme switch fades colors)
 if (params.has("shot")) {
   const still = document.createElement("style");
