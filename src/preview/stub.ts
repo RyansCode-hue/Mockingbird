@@ -13,6 +13,7 @@
 import type { AdoBoard, AdoWorkItem, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS } from "../shared/types";
 import type { TeamStatus } from "../shared/team/types";
+import type { PlanChange, PlanOp, PlanView, WorkPackage } from "../shared/team/plan"; // team rooms: plan board
 // team rooms: live panes
 import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
 
@@ -153,6 +154,52 @@ const team: TeamStatus = {
   ],
   problems: [],
 };
+// team rooms: plan board — 5101's board is kept in backoffice and has a package in every column; 5110 has none yet and no repo
+const pkg = (id: string, over: Partial<WorkPackage>): WorkPackage => ({ id, title: id, description: "", owner: null, status: "open", statusNote: "", paths: [], provides: "", uses: "", tests: "", createdBy: ME, createdAt: now - 5 * 60 * min, updatedBy: ME, updatedAt: now - 60 * min, ...over });
+const plans: Record<string, PlanView> = {
+  R5101aaaaaaaaaaaaaaaaa: {
+    roomId: "R5101aaaaaaaaaaaaaaaaa",
+    room: "#5101 Org dropdowns remember the last org",
+    self: ME,
+    members: [{ id: ME, name: "You", self: true, online: true }, { id: NICK, name: "Nick Smith", self: false, online: true }, { id: SAM, name: "Sam", self: false, online: false }],
+    plan: {
+      repo: { origin: "git@github.com:acme/backoffice.git", name: "backoffice" },
+      packages: [
+        pkg("p-api0last", { title: "Last-org API", owner: NICK, status: "in-progress", paths: ["src/api/orgs/", "src/shared/org.ts"], provides: "GET/PUT /api/users/me/last-org → { orgId } (src/shared/org.ts)", tests: "pytest tests/api/test_orgs.py", createdBy: NICK }),
+        pkg("p-ui00drop", { title: "Org dropdown remembers the last org", owner: ME, status: "claimed", paths: ["src/org/Dropdown.tsx", "src/org/**/*.test.tsx"], uses: "GET /api/users/me/last-org", tests: "Dropdown.test.tsx; manual check in the org switcher" }),
+        pkg("p-mig0fill", { title: "Backfill each user's last org", paths: ["migrations/"], description: "One-off migration from the audit log.", tests: "migration dry run on a staging copy" }),
+        pkg("p-doc0note", { title: "Release notes and help article", owner: SAM, status: "blocked", statusNote: "waiting on the API's final shape", paths: ["docs/releases/"], uses: "Last-org API" }),
+        pkg("p-spk0tent", { title: "Spike: per-tenant defaults", owner: NICK, status: "done", paths: ["spikes/tenant-defaults/"] }),
+      ],
+      changes: [
+        { at: now - 5 * 60 * min, by: ME, kind: "repo", repo: "backoffice" },
+        { at: now - 4 * 60 * min, by: NICK, kind: "created", pkg: "p-api0last", title: "Last-org API" },
+        { at: now - 3 * 60 * min, by: NICK, kind: "claimed", pkg: "p-api0last", title: "Last-org API" },
+        { at: now - 70 * min, by: SAM, kind: "status", pkg: "p-doc0note", title: "Release notes and help article", status: "blocked", note: "waiting on the API's final shape" },
+        { at: now - 40 * min, by: NICK, via: "#5101 — API: last org per user", kind: "status", pkg: "p-api0last", title: "Last-org API", status: "in-progress" },
+        { at: now - 6 * min, by: ME, kind: "claimed", pkg: "p-ui00drop", title: "Org dropdown remembers the last org" },
+      ],
+      removed: [],
+      updatedAt: now - 6 * min,
+    },
+    git: { repo: { origin: "git@github.com:acme/backoffice.git", name: "backoffice" }, clones: [REPO], state: "synced", commit: { sha: "4f9c2e1d8b7a6c5e4d3c2b1a0f9e8d7c6b5a4f3e", at: now - 6 * min, pushed: true }, copies: 3 },
+    teammates: [
+      { member: NICK, name: "Nick Smith", branch: "5101-lastOrgApi", repo: REPO, files: ["src/api/orgs/last.py", "src/org/Dropdown.tsx", "src/shared/org.ts"] },
+      { member: SAM, name: "Sam", branch: "5101-releaseNotes", repo: REPO, files: [], problem: "5101-releaseNotes isn't on origin (not pushed yet)" },
+    ],
+    fetchedAt: now - 3 * min,
+  },
+  R5110bbbbbbbbbbbbbbbbb: {
+    roomId: "R5110bbbbbbbbbbbbbbbbb",
+    room: "#5110 Donor entities",
+    self: ME,
+    members: [{ id: NICK, name: "Nick Smith", self: false, online: true }, { id: ME, name: "You", self: true, online: true }],
+    plan: { repo: null, packages: [], changes: [], removed: [], updatedAt: 0 },
+    git: { repo: null, clones: [], state: "unbound", copies: 0 },
+    teammates: [],
+    fetchedAt: 0,
+  },
+};
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
 
 // team rooms: live panes — Nick's session in the shared 5101 room, shown here as a copy;
@@ -194,6 +241,9 @@ const on = (name: string) => (cb: (...a: any[]) => void) => {
 const emit = (name: string, ...args: unknown[]) => listeners[name]?.forEach((cb) => cb(...args));
 const sessionsChanged = () => emit("onSessionsChanged", sessions.map((s) => ({ ...s })));
 const teamChanged = () => emit("onTeamChanged", JSON.parse(JSON.stringify(team)));
+// team rooms: plan board
+const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
+const planChanged = (roomId: string) => emit("onPlanChanged", clone(plans[roomId]));
 const byId = (id: string) => sessions.find((s) => s.id === id);
 const later = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(v), ms));
 const err = (message: string) => ({ error: message });
@@ -438,6 +488,10 @@ const api: Record<string, (...a: any[]) => any> = {
   // team rooms: sharing, invites and joins are simulated; nothing connects
   teamStatus: async () => JSON.parse(JSON.stringify(team)),
   teamShareGroup: async (groupKey: string, title: string) => {
+    // ?refuse: the signaling Worker refuses new rooms, as one without this key on ALLOWED_CREATORS does
+    if (new URLSearchParams(location.search).has("refuse") && !team.rooms.some((r) => r.groupKey === groupKey)) {
+      return later(err(`This signaling Worker doesn't allow new rooms yet — add your fingerprint (${team.self!.fingerprint}) to ALLOWED_CREATORS.\n\nOn the Worker, once: …`), 300);
+    }
     let room = team.rooms.find((r) => r.groupKey === groupKey);
     if (!room) {
       room = { id: `R${groupKey}`.padEnd(22, "c").slice(0, 22), name: title, groupKey, members: [{ id: ME, name: "You", self: true }], online: [], signalingUrl: SIGNAL, signaling: "online" };
@@ -467,7 +521,66 @@ const api: Record<string, (...a: any[]) => any> = {
     team.pending = team.pending.filter((p) => p.roomId !== roomId);
     teamChanged();
   },
-  teamCheckSignaling: async () => later({ protocol: 1, relay: true, problem: null }, 400),
+  teamCheckSignaling: async () => later({ protocol: 1, relay: true, creators: 2, problem: null }, 400),
+
+  // team rooms: plan board — changes apply to the fixture board; nothing reaches git
+  planGet: async (roomId: string) => (plans[roomId] ? clone(plans[roomId]) : err(`Not a member of room ${roomId}`)),
+  planRepos: async () => later([{ path: REPO, name: "backoffice", origin: "git@github.com:acme/backoffice.git", inRoom: true }, { path: "/Users/you/Code/donor-service", name: "donor-service", origin: "git@github.com:acme/donor-service.git", inRoom: false }], 150),
+  planSync: async (roomId: string) => {
+    const v = plans[roomId];
+    if (!v) return err(`Not a member of room ${roomId}`);
+    if (v.git.commit) v.git.commit.at = Date.now();
+    v.fetchedAt = Date.now();
+    planChanged(roomId);
+    return later(clone(v), 500);
+  },
+  planApply: async (roomId: string, op: PlanOp) => {
+    const v = plans[roomId];
+    if (!v) return err(`Not a member of room ${roomId}`);
+    const p = "id" in op ? v.plan.packages.find((x) => x.id === op.id) : undefined;
+    if ("id" in op && !p) return err(`There's no package ${op.id} on the board`);
+    const change = (c: Omit<PlanChange, "at" | "by">) => v.plan.changes.push({ at: Date.now(), by: ME, ...c });
+    switch (op.kind) {
+      case "create": {
+        const id = `p-${Math.random().toString(36).slice(2, 10)}`;
+        v.plan.packages.push(pkg(id, { ...op, title: op.title, createdAt: Date.now(), updatedAt: Date.now() }));
+        change({ kind: "created", pkg: id, title: op.title });
+        break;
+      }
+      case "edit":
+        Object.assign(p!, Object.fromEntries(Object.entries(op).filter(([k]) => k !== "kind" && k !== "id")));
+        change({ kind: "edited", pkg: p!.id, title: p!.title });
+        break;
+      case "claim":
+        p!.owner = op.owner ?? ME;
+        if (p!.status === "open") p!.status = "claimed";
+        change({ kind: "claimed", pkg: p!.id, title: p!.title });
+        break;
+      case "release":
+        p!.owner = null;
+        if (p!.status !== "done") p!.status = "open";
+        change({ kind: "released", pkg: p!.id, title: p!.title });
+        break;
+      case "status":
+        p!.status = op.status;
+        p!.statusNote = op.note ?? "";
+        if (op.status === "open") p!.owner = null;
+        else p!.owner ??= ME;
+        change({ kind: "status", pkg: p!.id, title: p!.title, status: op.status, note: op.note });
+        break;
+      case "remove":
+        v.plan.packages = v.plan.packages.filter((x) => x.id !== op.id);
+        change({ kind: "removed", pkg: op.id, title: p!.title });
+        break;
+      case "repo":
+        v.plan.repo = { origin: op.origin, name: op.name };
+        v.git = { repo: v.plan.repo, clones: [REPO], state: "synced", commit: { sha: "9a8b7c6d5e4f30211a2b3c4d5e6f708192a3b4c5", at: Date.now(), pushed: true }, copies: 2 };
+        change({ kind: "repo", repo: op.name });
+        break;
+    }
+    planChanged(roomId);
+    return { pkg: "id" in op ? op.id : null };
+  },
   // team rooms: live panes — Nick's session is a fixture; typing into it echoes like the others
   teamLive: async () => JSON.parse(JSON.stringify(live)),
   teamLiveView: () => undefined,
@@ -524,6 +637,21 @@ if (params.has("shot")) {
   const still = document.createElement("style");
   still.textContent = "*, *::before, *::after { transition: none !important; animation: none !important; }";
   document.head.appendChild(still);
+}
+// team rooms: plan board — ?plan=1 opens the first shared group's plan board (2: the second); ?planWarning adds a claim warning
+if (params.has("plan") || params.has("planWarning")) {
+  let tries = 0;
+  const open = setInterval(() => {
+    const n = Number(params.get("plan")) || 1;
+    const button = document.querySelectorAll('button[title^="Plan board"]')[n - 1] as HTMLElement | undefined;
+    if (!button && ++tries < 50) return;
+    clearInterval(open);
+    if (params.has("plan")) button?.click();
+    if (params.has("planWarning")) {
+      const hit = { roomId: "R5101aaaaaaaaaaaaaaaaa", room: "#5101 Org dropdowns remember the last org", pkg: "p-api0last", title: "Last-org API", status: "in-progress", owner: { id: NICK, name: "Nick Smith" }, pattern: "src/api/orgs/" };
+      emit("onPlanWarning", { at: Date.now(), sessionId: "s1", sessionTitle: "Org dropdowns remember the last org", decision: "deny", tool: "Edit", conflicts: [{ file: "src/api/orgs/last.py", root: WT("5101-orgDropdowns"), hits: [hit] }] });
+    }
+  }, 100);
 }
 if (params.has("reset")) {
   params.delete("reset");

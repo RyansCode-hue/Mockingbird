@@ -185,7 +185,7 @@ export class LoopbackWire implements PeerWire {
     return [];
   }
 
-  wake(): void {
+  wake(_roomId?: RoomId): void {
     this.net.reconcile();
   }
 

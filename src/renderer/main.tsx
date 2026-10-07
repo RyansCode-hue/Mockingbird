@@ -73,6 +73,8 @@ import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
 import { JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
+// team rooms: plan board
+import { PlanBoardDialog, PlanWarnings } from "./team/PlanBoard";
 // team rooms: live panes
 import { FollowControls, LiveProblems, RoomRowTag, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
@@ -251,6 +253,8 @@ function App() {
   const teamStatus = useTeamStatus();
   const [shareDlg, setShareDlg] = useState<{ key: string; title: string } | null>(null);
   const [joinDlg, setJoinDlg] = useState(false);
+  // team rooms: plan board — the room whose board is open
+  const [planDlg, setPlanDlg] = useState<string | null>(null);
   // group/workspace renames use a dialog: inline editing broke because the same
   // edit field rendered in two places (sidebar + workspace tab strip) and the
   // second mount stole focus from the first, instantly closing it. Sessions use
@@ -1818,6 +1822,20 @@ function App() {
                       const room = roomOfGroup(teamStatus, key);
                       return room ? <SharedBadge room={room} /> : null;
                     })()}
+                    {/* team rooms: plan board */}
+                    {roomOfGroup(teamStatus, key) && (
+                      <button
+                        className="glbtn"
+                        title="Plan board — work packages, who has what, and the files each owns"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelClick();
+                          setPlanDlg(roomOfGroup(teamStatus, key)!.id);
+                        }}
+                      >
+                        ▦
+                      </button>
+                    )}
                     {key !== "ungrouped" && key !== "assistant" && (
                       <button
                         className="glbtn"
@@ -2452,6 +2470,10 @@ function App() {
                   },
                 ]
               : []),
+            // team rooms: plan board
+            ...(activeGroup && roomOfGroup(teamStatus, activeGroup)
+              ? [{ label: `Plan board — ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))}`, run: () => setPlanDlg(roomOfGroup(teamStatus, activeGroup)!.id) }]
+              : []),
             ...(shownTab("worktracker")
               ? [
                   { label: "WorkTracker — debriefs", run: () => setTab("worktracker") },
@@ -2590,6 +2612,9 @@ function App() {
 
       {shareDlg && <ShareRoomDialog groupKey={shareDlg.key} title={shareDlg.title} onClose={() => setShareDlg(null)} />}
       {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
+      {/* team rooms: plan board */}
+      {planDlg && <PlanBoardDialog roomId={planDlg} onClose={() => setPlanDlg(null)} />}
+      <PlanWarnings onJump={jumpTo} onOpenBoard={setPlanDlg} />
 
       {renameDlg && (
         <RenameDialog

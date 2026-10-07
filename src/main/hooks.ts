@@ -6,6 +6,8 @@ import { SessionManager } from "./sessions";
 import { SessionInfo } from "../shared/types";
 import { readJsonFile, writeFileAtomic, writeGenerated } from "./fileOps";
 import { CLAUDE_SETTINGS, CODEX_DIR } from "./agentFiles";
+import { hookShellLines, writeClaimsCheck } from "./team/claims";
+import type { ClaimWarning } from "../shared/team/plan";
 
 const EVENTS_DIR = path.join(MB_DIR, "events");
 /** Where hook scripts from older builds append; still read, for one that runs on after an upgrade. */
@@ -15,13 +17,15 @@ const POLL_MS = 500;
 
 // PreToolUse clears "waiting" the moment an approved tool starts running —
 // without it, a permission approval stays amber until the whole turn finishes.
-const HOOK_EVENTS = ["Stop", "Notification", "UserPromptSubmit", "PreToolUse"] as const;
+// It also checks edits against a team room's plan claims, and SessionStart
+// hands an agent in a room's repo the plan's instructions (see team/claims.ts).
+const HOOK_EVENTS = ["Stop", "Notification", "UserPromptSubmit", "PreToolUse", "SessionStart"] as const;
 
 // Codex uses the same hook format in its own file. It has no Notification event:
 // PermissionRequest is its "blocked on you", and because that fires after
 // PreToolUse, PostToolUse is what flips an approved tool back to working.
 const CODEX_HOOKS = path.join(CODEX_DIR, "hooks.json");
-const CODEX_EVENTS = ["Stop", "PermissionRequest", "UserPromptSubmit", "PreToolUse", "PostToolUse"] as const;
+const CODEX_EVENTS = ["Stop", "PermissionRequest", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionStart"] as const;
 
 /**
  * Codex hooks are only managed where the Codex CLI is installed. ~/.codex alone
@@ -74,12 +78,30 @@ function wired(file: string, events: readonly string[]): boolean {
 // its own, written under a dot-name and then renamed into place: payloads carry
 // whole file contents, so hooks running at once would interleave in a shared
 // file, and the app never reads an event that is still being written.
+// SessionStart leaves no event (it isn't a status); it only answers the agent.
+//
+// Team plan claims: an edit of a file a teammate's package owns is answered
+// with the same JSON by both CLIs. The first such edit of a file in a
+// conversation is denied, with the reason for the agent (Claude Code and Codex
+// both give a deny's reason to the model, before anything is written) and a
+// systemMessage for the user; repeating it goes through the normal permission
+// flow with a reminder (additionalContext). That is the plan's "warned, and
+// you can still proceed": "allow" would skip permission prompts the user would
+// otherwise see, and its reason reaches only a debug log; "ask" shows its
+// reason to the user but not the agent, and Codex doesn't support it (the hook
+// fails and the edit runs); additionalContext alone reaches Claude only next
+// to the tool's result, after the edit has landed.
+const PLAN = hookShellLines();
 const SCRIPT = `#!/bin/bash
-# Mockingbird status hook — leaves each agent hook event in a file for the app to read.
+# Mockingbird hook — leaves each agent hook event in a file for the app to read,
+# hands agents in a team room's repo the plan, and checks their edits against its claims.
+${PLAN.functions}
+${PLAN.sessionStart}
 dir="${EVENTS_DIR}"
 mkdir -p "$dir"
 tmp=$(mktemp "$dir/.tmp.XXXXXXXX") || exit 0
 if { printf '{"event":"%s","ts":%s,"pane":"%s","payload":' "$1" "$(date +%s)" "\${MOCKINGBIRD_SESSION:-}"; cat; printf '}\\n'; } > "$tmp"; then
+${PLAN.preToolUse}
   mv -f "$tmp" "$dir/$(date +%s)-\${tmp##*.}.json" || rm -f "$tmp"
 else
   rm -f "$tmp"
@@ -91,6 +113,7 @@ exit 0
 export function ensureHookScript(): void {
   if (!fs.existsSync(HOOK_SCRIPT)) return; // hooks were never installed — the Install button writes it
   try {
+    writeClaimsCheck(EVENTS_DIR);
     writeGenerated(HOOK_SCRIPT, SCRIPT, 0o755);
   } catch (err) {
     console.error(`[hooks] couldn't update ${HOOK_SCRIPT}; its events still arrive through ${LEGACY_EVENTS_FILE}:`, err);
@@ -108,6 +131,7 @@ export function installHooks(codexBin: string | null): { installed: boolean; mes
   const codex = withCodex ? readConfig(CODEX_HOOKS) : null;
 
   fs.mkdirSync(EVENTS_DIR, { recursive: true });
+  writeClaimsCheck(EVENTS_DIR);
   writeGenerated(HOOK_SCRIPT, SCRIPT, 0o755);
   // the user's own Claude and Codex configs are replaced in one step, so a
   // crash mid-write can't leave them truncated
@@ -139,8 +163,29 @@ type StatusHandler = (session: SessionInfo, status: string) => void;
 /** A prompt was submitted in a pane: its turn is starting. */
 type PromptHandler = (session: SessionInfo, prompt: string) => void;
 
+/** What the claims check left for the app: a warning it gave an agent, or its own failure. */
+export type ClaimEvent = { kind: "warning"; warning: ClaimWarning } | { kind: "failed"; pane: string; message: string };
+type ClaimHandler = (e: ClaimEvent) => void;
+
+function claimEvent(evt: any): ClaimEvent | null {
+  const p = evt.payload ?? {};
+  const pane = typeof evt.pane === "string" ? evt.pane : "";
+  if (evt.event === "ClaimCheckFailed") return { kind: "failed", pane, message: String(p.message ?? "no reason given").slice(0, 2000) };
+  if (!Array.isArray(p.conflicts) || (p.decision !== "deny" && p.decision !== "context")) {
+    console.error(`[hooks] skipped a claim warning that doesn't have the expected shape: ${JSON.stringify(p).slice(0, 300)}`);
+    return null;
+  }
+  return { kind: "warning", warning: { pane, cwd: String(p.cwd ?? ""), conversation: String(p.conversation ?? ""), tool: String(p.tool ?? ""), decision: p.decision, conflicts: p.conflicts } };
+}
+
 /** One hook event → its pane's status, and the alert and prompt callbacks that follow from it. */
-function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler): void {
+function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler, onClaim?: ClaimHandler): void {
+  if (evt.event === "ClaimWarning" || evt.event === "ClaimCheckFailed") {
+    const e = claimEvent(evt);
+    if (e) onClaim?.(e);
+    return;
+  }
+  if (evt.event === "SessionStart") return; // not a status: hook.sh leaves none, but an event file could still name it
   const cwd: string | undefined = typeof evt.payload?.cwd === "string" ? evt.payload.cwd : undefined;
   if (!cwd && !evt.pane) return;
   const msg = typeof evt.payload?.message === "string" ? evt.payload.message : undefined;
@@ -177,9 +222,9 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
  * Read hook events as they arrive — a file each in ~/.mockingbird/events,
  * taken oldest first and deleted once read — and route them to the session
  * manager. Only events written after this starts count. Returns a function
- * that stops watching.
+ * that stops watching. `onClaim` hears the team plan's claim warnings.
  */
-export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler): () => void {
+export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler, onClaim?: ClaimHandler): () => void {
   const handle = (raw: string, source: string) => {
     let evt: any;
     try {
@@ -189,7 +234,7 @@ export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, o
       return;
     }
     try {
-      routeEvent(evt, sessions, onStatus, onPrompt);
+      routeEvent(evt, sessions, onStatus, onPrompt, onClaim);
     } catch (err) {
       console.error(`[hooks] handling ${evt?.event} for pane ${evt?.pane || "(none)"} failed:`, err);
     }

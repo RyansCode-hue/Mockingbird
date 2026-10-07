@@ -47,8 +47,9 @@ export interface SignalingClientOptions {
 
 export class SignalingClient {
   state: "connecting" | "online" | "offline" | "stopped" = "offline";
-  /** Why it isn't online, when there's something to say. */
+  /** Why the server refused this install (set until it's let in), and that refusal's code. */
   problem: string | null = null;
+  problemCode: "protocol" | "not-member" | "creation-refused" | "bad-url" | null = null;
   /** Members connected to the room right now (not this install). */
   readonly peers = new Map<string, SignalingPeer>();
   relay = false;
@@ -94,6 +95,7 @@ export class SignalingClient {
   reconnect(): void {
     if (this.state === "stopped") return;
     this.attempt = 0;
+    this.problem = this.problemCode = null; // asked again: the server's answer decides
     this.drop("reconnecting");
     this.connect();
   }
@@ -116,6 +118,7 @@ export class SignalingClient {
       url = signalingSocketUrl(this.o.url, this.o.roomId);
     } catch (err) {
       this.problem = (err as Error).message;
+      this.problemCode = "bad-url";
       this.state = "offline";
       this.o.onEvent({ t: "offline", reason: this.problem });
       return;
@@ -165,7 +168,7 @@ export class SignalingClient {
         for (const p of msg.peers) this.peers.set(p.id, p);
         this.relay = msg.relay;
         this.state = "online";
-        this.problem = null;
+        this.problem = this.problemCode = null;
         this.attempt = 0;
         this.startKeepAlive(ws);
         this.o.onEvent({ t: "online", peers: msg.peers, relay: msg.relay });
@@ -185,8 +188,16 @@ export class SignalingClient {
         this.o.onEvent({ t: "turn", iceServers: msg.iceServers, ttl: msg.ttl, relay: msg.relay, ...(msg.error ? { error: msg.error } : {}) });
         return;
       case "error":
+        if (msg.code === "creation-refused") {
+          this.problem = msg.message;
+          this.problemCode = "creation-refused";
+          this.retryAfter = 60_000;
+          this.o.log(`signaling ${this.o.roomId}: ${msg.message}`);
+          return;
+        }
         if (msg.code === "protocol") {
           this.retryAfter = 60_000;
+          this.problemCode = "protocol";
           this.problem =
             (msg.serverProtocol ?? 0) < SIGNALING_PROTOCOL
               ? "The signaling Worker is older than this Mockingbird — redeploy it (cd signaling && npx wrangler deploy)"
@@ -200,6 +211,7 @@ export class SignalingClient {
             ? "The room code isn't active yet: the inviter's Mockingbird has to be online with the room once"
             : "The signaling server doesn't know this install as a member of the room";
           this.retryAfter = this.o.join ? 10_000 : 30_000;
+          this.problemCode = "not-member";
           this.o.log(`signaling ${this.o.roomId}: ${this.problem} (${msg.message})`);
           return;
         }

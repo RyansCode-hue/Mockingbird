@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as util from "util";
@@ -32,6 +33,24 @@ describe("team identity", () => {
     expect(util.inspect(id)).toBe(`Identity(${id.id})`);
     expect(Object.keys(id)).not.toContain("privateKey");
   });
+
+  it("npm run team:fingerprint prints the same fingerprint the app uses, creating the identity the same way", () => {
+    // runs under this test file's throwaway HOME (inherited), never the real one
+    const run = () => execFileSync(process.execPath, [path.resolve(__dirname, "../scripts/team-fingerprint.mjs")], { encoding: "utf8", env: { ...process.env } });
+    const file = path.join(TEAM_DIR, "identity.json");
+    fs.rmSync(file, { force: true });
+    const first = run();
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    const id = loadIdentity(TEAM_DIR);
+    expect(first).toContain(`This Mockingbird's team fingerprint: ${formatFingerprint(id.id)}`);
+    expect(first).toContain("(new:");
+    expect(first).toContain(`cd signaling && echo "${formatFingerprint(id.id)}" | npx wrangler secret put ALLOWED_CREATORS`);
+    expect(first).not.toContain(JSON.parse(fs.readFileSync(file, "utf8")).privateKey);
+    // run again: the same identity, not a new one
+    const second = run();
+    expect(second).toContain(formatFingerprint(id.id));
+    expect(second).toContain("(from ");
+  }, 30_000);
 
   it("tightens a key file other users could read", () => {
     const dir = path.join(tempDir("id"), "team");

@@ -515,6 +515,13 @@ export class RoomStore {
     writeFileAtomic(this.joinsFile, JSON.stringify(joins, null, 2), 0o600);
   }
 
+  /** Delete a room from this install: its log, snapshot, invites and settings. */
+  remove(roomId: RoomId): void {
+    if (!ROOM_ID_RE.test(roomId)) throw new Error(`not a room id: ${roomId}`);
+    this.logs.delete(roomId);
+    fs.rmSync(path.join(this.dir, roomId), { recursive: true, force: true });
+  }
+
   /** Snapshot every room (on quit). */
   flush(): void {
     for (const log of this.logs.values()) {

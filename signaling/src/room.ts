@@ -1,5 +1,6 @@
 import {
   CLOSE,
+  formatFingerprint,
   fromBase64Url,
   helloPayload,
   MAX_SIGNALING_MESSAGE,
@@ -32,9 +33,12 @@ import {
  * (only a hash of a key derived from it).
  *
  * Getting in: an existing member by key; the room's creator, by the salt its
- * room id was made from; or a newcomer holding a join key from an invite,
- * once. Members can also admit keys they already trust (their room log's
- * members), which keeps the server's list in step after it lost its storage.
+ * room id was made from — only when that key is on the server's allowlist of
+ * creators (ALLOWED_CREATORS), since anyone can make a room id from their own
+ * key and members can mint TURN credentials; or a newcomer holding a join key
+ * from an invite, once. Members can also admit keys they already trust (their
+ * room log's members), which keeps the server's list in step after it lost
+ * its storage.
  *
  * State survives the Durable Object hibernating: the member list and invites
  * live in storage, each connection's own state in its attachment (save()).
@@ -141,8 +145,62 @@ export interface RoomDeps {
   turn?: TurnConfig | null;
   /** STUN servers handed out (the local server passes [] for loopback-only tests). */
   stun?: IceServer[];
+  /**
+   * Member ids allowed to create rooms (ALLOWED_CREATORS). None or empty: no
+   * new rooms at all. "any" is for the local test server only.
+   */
+  allowedCreators?: readonly string[] | "any";
+  /** The server-wide daily budget of TURN credentials; each mint takes one. */
+  turnQuota?: TurnQuota | null;
   log?: (msg: string) => void;
   limits?: Partial<RoomLimits>;
+}
+
+export interface TurnQuota {
+  take(now: number): Promise<QuotaAnswer>;
+}
+
+export interface QuotaAnswer {
+  ok: boolean;
+  used: number;
+  limit: number;
+}
+
+/** TURN credentials a Worker mints per UTC day, across all rooms, unless TURN_DAILY_LIMIT says otherwise. */
+export const DEFAULT_TURN_DAILY_LIMIT = 200;
+
+/**
+ * A count per UTC day, refusing once it reaches `limit`: the Worker's TURN
+ * budget (one Durable Object holds it for every room), and the local
+ * server's. Logs the first refusal of each day.
+ */
+export class DailyCounter implements TurnQuota {
+  private rec: { day: string; used: number; tripped?: boolean } | null = null;
+
+  constructor(private storage: RoomStorage, private limit: number, private log: (msg: string) => void) {}
+
+  async take(now: number): Promise<QuotaAnswer> {
+    const day = new Date(now).toISOString().slice(0, 10);
+    this.rec ??= (await this.storage.get<{ day: string; used: number; tripped?: boolean }>("daily")) ?? { day, used: 0 };
+    if (this.rec.day !== day) this.rec = { day, used: 0 };
+    if (this.rec.used >= this.limit) {
+      if (!this.rec.tripped) {
+        this.rec.tripped = true;
+        await this.storage.put("daily", this.rec);
+        this.log(`TURN budget used up: ${this.rec.used} credentials minted today (${day}, limit ${this.limit}); refusing more until midnight UTC`);
+      }
+      return { ok: false, used: this.rec.used, limit: this.limit };
+    }
+    this.rec.used += 1;
+    await this.storage.put("daily", this.rec);
+    return { ok: true, used: this.rec.used, limit: this.limit };
+  }
+}
+
+/** TURN_DAILY_LIMIT as a count, or the default when unset or not a positive whole number. */
+export function turnDailyLimit(value: string | undefined): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_TURN_DAILY_LIMIT;
 }
 
 interface RoomRecord {
@@ -253,7 +311,17 @@ export class SignalingRoom {
     let admitted = !!rec.members[id];
     if (!admitted && msg.create) {
       const rid = toBase64Url(await this.crypto.sha256(utf8(roomIdInput(msg.publicKey, msg.create)))).slice(0, 22);
-      if (rid === this.deps.roomId) admitted = changed = true;
+      if (rid === this.deps.roomId) {
+        const allowed = this.deps.allowedCreators ?? [];
+        if (allowed !== "any" && !allowed.includes(id)) {
+          const message = allowed.length
+            ? `This key (${formatFingerprint(id)}) isn't allowed to create rooms on this signaling Worker — add its fingerprint to ALLOWED_CREATORS`
+            : `This signaling Worker doesn't allow new rooms yet — add your fingerprint (${formatFingerprint(id)}) to ALLOWED_CREATORS`;
+          this.log(`room ${this.deps.roomId}: refused to create it for ${id} (not in ALLOWED_CREATORS)`);
+          return this.fail(sock, "creation-refused", message, CLOSE.creationRefused);
+        }
+        admitted = changed = true;
+      }
     }
     if (!admitted && msg.join) {
       const hash = toBase64Url(await this.crypto.sha256(utf8(msg.join)));
@@ -337,6 +405,18 @@ export class SignalingRoom {
     sock.save(state);
     const stun = this.deps.stun ?? PUBLIC_STUN;
     if (!this.deps.turn) return this.send(sock, { t: "turn", iceServers: stun, ttl: 0, relay: false });
+    if (this.deps.turnQuota) {
+      let q: QuotaAnswer;
+      try {
+        q = await this.deps.turnQuota.take(now);
+      } catch (err) {
+        // the budget couldn't be checked: no credentials, rather than unmetered ones
+        const why = `couldn't check the relay budget: ${(err as Error).message}`;
+        this.log(`room ${this.deps.roomId}: ${why}`);
+        return this.send(sock, { t: "turn", iceServers: stun, ttl: 0, relay: false, error: why });
+      }
+      if (!q.ok) return this.send(sock, { t: "turn", iceServers: stun, ttl: 0, relay: false, error: `the signaling Worker's daily relay budget (${q.limit} credentials) is used up until midnight UTC` });
+    }
     try {
       const iceServers = await mintTurnCredentials(this.deps.turn, this.limits.turnTtlSeconds, this.deps.fetch ?? fetch);
       this.send(sock, { t: "turn", iceServers, ttl: this.limits.turnTtlSeconds, relay: true });

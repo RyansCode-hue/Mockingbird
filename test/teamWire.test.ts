@@ -1,10 +1,13 @@
 import * as crypto from "crypto";
+import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 import { loadIdentity } from "../src/main/team/identity";
 import { RoomStore } from "../src/main/team/rooms";
 import { TeamCore } from "../src/main/team/transport";
+import { TeamService } from "../src/main/team/service";
+import { DEFAULT_SETTINGS } from "../src/shared/types";
 import { WebRtcWire, type PeerHostBridge } from "../src/main/team/webrtc";
 import { until } from "../src/main/team/loopback";
 import { startLocalSignaling, type LocalSignaling } from "../signaling/src/local/server";
@@ -237,5 +240,61 @@ describe("the WebRTC wire over the local signaling server", () => {
     await until(() => ryan.team.peers()[0]?.state === "needs-update", "needs-update");
     expect(ryan.team.peers()[0].detail).toMatch(/Their Mockingbird needs an update|needs an update/);
     expect(ryan.team.presence(roomId)).toEqual([]);
+  });
+});
+
+describe("sharing a group with a signaling Worker that limits who creates rooms", () => {
+  const stops: (() => void)[] = [];
+  afterEach(() => stops.splice(0).forEach((f) => f()));
+
+  /** The app's team service with its identity under `home`, over the WebRTC wire with a stand-in peer host. */
+  function service(name: string, home: string, net: FakeNet, signalingUrl: string) {
+    const dir = path.join(home, "team");
+    const s = new TeamService({
+      settings: () => ({ ...DEFAULT_SETTINGS, teamName: name, signalingUrl }),
+      localGroups: () => [],
+      emit: () => undefined,
+      log: (_ctx, err) => String(err),
+      assetsDir: "",
+      dir,
+      wire: (identity, log) => new WebRtcWire({ identity, host: new FakeHost(identity.id, net), log, defaultIce: [], timing: { retryMs: [50, 100, 200], knockMs: 100, connectTimeoutMs: 2000, iceWaitMs: 200 } }),
+    });
+    s.start();
+    stops.push(() => s.stop());
+    return { s, dir };
+  }
+
+  it("says plainly when the Worker refuses, with the command to fix it, and keeps no half-made room", async () => {
+    const signal = await startLocalSignaling({ log: () => undefined, allowedCreators: [] });
+    servers.push(signal);
+    const ryan = service("Ryan", tempDir("ryan"), new FakeNet(), signal.url);
+    const fp = ryan.s.status().self!.fingerprint;
+    const err = await ryan.s.shareGroup("5110", "#5110 Donor entities").then(
+      () => null,
+      (e: Error) => e.message
+    );
+    expect(err).toContain("This signaling Worker doesn't allow new rooms yet");
+    expect(err).toContain(`cd signaling && echo "${fp}" | npx wrangler secret put ALLOWED_CREATORS`);
+    expect(ryan.s.status().rooms).toEqual([]);
+    expect(fs.readdirSync(path.join(ryan.dir, "rooms"))).toEqual([]);
+    // the Check button says the same before anyone tries
+    expect(await TeamService.checkSignaling(signal.url)).toMatchObject({ creators: 0, problem: expect.stringMatching(/doesn't allow new rooms yet/) });
+  });
+
+  it("an allowlisted creator shares; a teammate who isn't on the list joins by code but can't create rooms there", async () => {
+    const net = new FakeNet();
+    const ryanHome = tempDir("ryan");
+    const ryanId = loadIdentity(path.join(ryanHome, "team")).id;
+    const signal = await startLocalSignaling({ log: () => undefined, allowedCreators: [ryanId] });
+    servers.push(signal);
+    expect(await TeamService.checkSignaling(signal.url)).toMatchObject({ creators: 1, problem: null });
+    const ryan = service("Ryan", ryanHome, net, signal.url);
+    const shared = await ryan.s.shareGroup("5110", "#5110 Donor entities");
+    expect(shared.warning).toBeUndefined();
+    const nick = service("Nick", tempDir("nick"), net, signal.url);
+    nick.s.join(shared.invite);
+    await until(() => nick.s.status().rooms.length === 1 && nick.s.status().rooms[0].online.length === 1, "Nick to join and connect", 10_000);
+    expect(nick.s.status().rooms[0].members.map((m) => m.name)).toEqual(["Ryan", "Nick"]);
+    await expect(nick.s.shareGroup("5200", "Nick's own")).rejects.toThrow(/isn't allowed to create rooms on this signaling Worker/);
   });
 });

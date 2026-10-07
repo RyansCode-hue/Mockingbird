@@ -294,6 +294,21 @@ const api = {
     ipcRenderer.on("team:changed", h);
     return () => ipcRenderer.removeListener("team:changed", h);
   },
+  // team rooms: plan board
+  planGet: (roomId: string) => ipcRenderer.invoke("plan:get", roomId),
+  planApply: (roomId: string, op: unknown) => ipcRenderer.invoke("plan:apply", roomId, op),
+  planRepos: (roomId: string) => ipcRenderer.invoke("plan:repos", roomId),
+  planSync: (roomId: string) => ipcRenderer.invoke("plan:sync", roomId),
+  onPlanChanged: (cb: (view: unknown) => void) => {
+    const h = (_e: unknown, v: unknown) => cb(v);
+    ipcRenderer.on("plan:changed", h);
+    return () => ipcRenderer.removeListener("plan:changed", h);
+  },
+  onPlanWarning: (cb: (notice: unknown) => void) => {
+    const h = (_e: unknown, n: unknown) => cb(n);
+    ipcRenderer.on("plan:warning", h);
+    return () => ipcRenderer.removeListener("plan:warning", h);
+  },
   // team rooms: live panes
   /** Teammates' room sessions, tags for this install's own, and teammates' views: LivePanesState. */
   teamLive: () => ipcRenderer.invoke("team:live"),

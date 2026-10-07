@@ -27,29 +27,29 @@ function service(net: LoopbackNetwork, name: string, o: { settings?: Partial<Set
 }
 
 describe("the team service", () => {
-  it("shares a group as a room once, then hands out fresh invites to it", () => {
+  it("shares a group as a room once, then hands out fresh invites to it", async () => {
     const net = new LoopbackNetwork();
     const { s } = service(net, "Ryan");
-    const a = s.shareGroup("5110", "#5110 Donor entities");
-    const b = s.shareGroup("5110", "#5110 Donor entities");
+    const a = await s.shareGroup("5110", "#5110 Donor entities");
+    const b = await s.shareGroup("5110", "#5110 Donor entities");
     expect(b.roomId).toBe(a.roomId);
     expect(b.invite).not.toBe(a.invite);
     const st = s.status();
     expect(st.self).toMatchObject({ name: "Ryan" });
     expect(st.rooms).toEqual([expect.objectContaining({ id: a.roomId, name: "#5110 Donor entities", groupKey: "5110", signalingUrl: "https://signal.example" })]);
-    expect(() => s.shareGroup("ungrouped", "ungrouped")).toThrow(/named group/);
+    await expect(s.shareGroup("ungrouped", "ungrouped")).rejects.toThrow(/named group/);
   });
 
-  it("needs a signaling URL to share", () => {
+  it("needs a signaling URL to share", async () => {
     const { s } = service(new LoopbackNetwork(), "Ryan", { settings: { signalingUrl: "" } });
-    expect(() => s.shareGroup("5110", "x")).toThrow(/signaling URL in Settings → Team/);
+    await expect(s.shareGroup("5110", "x")).rejects.toThrow(/signaling URL in Settings → Team/);
   });
 
   it("shows a joined room as its group, or beside a private group of the same name", async () => {
     const net = new LoopbackNetwork();
     const ryan = service(net, "Ryan");
     const nick = service(net, "Nick", { groups: ["5110"] }); // Nick already has a private group 5110
-    const { invite, roomId } = ryan.s.shareGroup("5110", "#5110 Donor entities");
+    const { invite, roomId } = await ryan.s.shareGroup("5110", "#5110 Donor entities");
     nick.s.join(invite);
     await until(() => nick.s.status().rooms.length === 1, "the join");
     expect(nick.s.status().rooms[0]).toMatchObject({ id: roomId, groupKey: "5110 (team)", members: [{ name: "Ryan" }, { name: "Nick", self: true }] });
@@ -60,12 +60,12 @@ describe("the team service", () => {
     const net = new LoopbackNetwork();
     const ryan = service(net, "Ryan");
     const nick = service(net, "Nick");
-    const { invite, roomId } = ryan.s.shareGroup("5110", "#5110");
+    const { invite, roomId } = await ryan.s.shareGroup("5110", "#5110");
     nick.s.join(invite);
     await until(() => nick.s.status().rooms.length === 1, "the join");
     ryan.s.groupRenamed("5110", "Donors");
     expect(ryan.s.status().rooms[0].groupKey).toBe("Donors");
-    expect(ryan.s.shareGroup("Donors", "Donors").roomId).toBe(roomId);
+    expect((await ryan.s.shareGroup("Donors", "Donors")).roomId).toBe(roomId);
     const before = { ...ryan.settings };
     ryan.settings.teamName = "Ryan E";
     ryan.s.settingsChanged(before, ryan.settings);
@@ -77,13 +77,13 @@ describe("the team service", () => {
     expect(["Nick Smith", "nick", " Sam  de Vries ", ""].map(initialsOf)).toEqual(["NS", "N", "SV", "?"]);
     const net = new LoopbackNetwork();
     const ryan = service(net, "Ryan");
-    ryan.s.shareGroup("5110", "#5110");
+    await ryan.s.shareGroup("5110", "#5110");
     expect(roomOfGroup(ryan.s.status(), "5110")?.name).toBe("#5110");
     expect(roomOfGroup(ryan.s.status(), "5101")).toBeUndefined();
     expect(roomOfGroup({ error: "x" }, "5110")).toBeUndefined();
   });
 
-  it("reports an unreadable identity instead of making a new one", () => {
+  it("reports an unreadable identity instead of making a new one", async () => {
     const net = new LoopbackNetwork();
     const dir = path.join(tempDir("bad"), "team");
     fs.mkdirSync(dir, { recursive: true });
@@ -91,7 +91,7 @@ describe("the team service", () => {
     const s = new TeamService({ settings: () => DEFAULT_SETTINGS, localGroups: () => [], emit: () => undefined, log: (_c, e) => String(e), assetsDir: "", dir, wire: (i) => net.wire(i.id) });
     s.start();
     expect(s.status()).toMatchObject({ self: null, error: expect.stringMatching(/unreadable/) });
-    expect(() => s.shareGroup("5110", "x")).toThrow(/unreadable/);
+    await expect(s.shareGroup("5110", "x")).rejects.toThrow(/unreadable/);
     expect(s.transport).toBeNull();
   });
 });

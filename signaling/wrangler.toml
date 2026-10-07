@@ -8,14 +8,25 @@ compatibility_date = "2025-09-01"
 name = "ROOMS"
 class_name = "SignalingRoomObject"
 
+# The daily TURN budget, one counter for every room
+[[durable_objects.bindings]]
+name = "TURN_QUOTA"
+class_name = "TurnQuotaObject"
+
 # The Workers Free plan has SQLite-backed Durable Objects only.
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["SignalingRoomObject"]
+new_sqlite_classes = ["SignalingRoomObject", "TurnQuotaObject"]
+
+[vars]
+# TURN credentials minted per UTC day across all rooms; past it, members get
+# STUN only until midnight UTC. A member's app asks about twice a day.
+TURN_DAILY_LIMIT = "200"
 
 [observability]
 enabled = true
 
-# Secrets (never in this file): TURN_KEY_ID and TURN_KEY_API_TOKEN, set with
-#   npx wrangler secret put TURN_KEY_ID
-#   npx wrangler secret put TURN_KEY_API_TOKEN
+# Secrets (never in this file), set with `npx wrangler secret put <NAME>`:
+#   ALLOWED_CREATORS     fingerprints that may create rooms (none: no new rooms)
+#   TURN_KEY_ID          Cloudflare Realtime TURN key
+#   TURN_KEY_API_TOKEN

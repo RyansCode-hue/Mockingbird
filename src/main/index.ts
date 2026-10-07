@@ -55,6 +55,9 @@ import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpda
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 import { TeamService } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
+// team rooms: plan board (importing it registers the board's room events, before any room log loads)
+import { PlanService } from "./team/planService";
+import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 // team rooms: live panes
 import { LivePanes } from "./team/livePanes";
 
@@ -101,6 +104,23 @@ const team = new TeamService({
   emit: (status) => toWindow("team:changed", status),
   log: logError,
   assetsDir: __dirname,
+});
+
+// team rooms: plan board — the board in git and in the room repo's worktrees, claims, teammates' branches
+let planRepoIndex = { at: 0, repos: [] as string[] };
+const teamPlan = new PlanService({
+  roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
+  sessions: () => sessions.list(),
+  knownRepos: () => {
+    if (Date.now() - planRepoIndex.at > 5 * 60_000) planRepoIndex = { at: Date.now(), repos: indexRepos(store.settings.repoRoots).map((r) => r.path) };
+    const used = [...sessions.list(), ...store.state.sessions].map((s) => s.repoPath).filter((p): p is string => !!p);
+    return [...new Set([...used, ...planRepoIndex.repos])];
+  },
+  emit: toWindow,
+  log: logError,
+  notify: (title, body, sessionId) => (sessionId ? notifySession(sessionId, title, body) : new Notification({ title, body }).show()),
+  overlapsChanged: () => overlapsSoon(),
+  author: () => ({ name: (store.settings.teamName ?? "").trim() || os.userInfo().username }),
 });
 
 // team rooms: live panes — sessions in shared groups, streamed to and typed into by teammates
@@ -333,6 +353,7 @@ app.whenReady().then(() => {
   }
   createWindow();
   team.start();
+  if (team.transport) teamPlan.start(team.transport); // team rooms: plan board
   livePanes.start(); // team rooms: live panes
   powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
@@ -432,7 +453,7 @@ app.whenReady().then(() => {
       () => snapshotErrors.delete(info.id),
       (err) => snapshotErrors.set(info.id, logError(`snapshot ${info.id}`, err))
     );
-  });
+  }, (e) => teamPlan.claimEvent(e)); // team rooms: plan board — claim warnings from the agents' hooks
   startScheduler(sessions, store);
   app.on("activate", () => {
     if (!appWindow()) createWindow();
@@ -461,6 +482,7 @@ app.on("before-quit", (e) => {
 setInterval(() => sessions.saveScrollback(), 60_000);
 app.on("will-quit", () => {
   sessions.saveScrollback(true);
+  teamPlan.stop(); // team rooms: plan board
   livePanes.stop(); // team rooms: live panes — pending output sent first
   team.stop(); // room snapshots written, connections closed
 });
@@ -754,6 +776,11 @@ handle("team:invite", (roomId) => ({ invite: team.createInvite(String(roomId)) }
 handle("team:join", (code) => team.join(String(code ?? "")));
 handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
 handle("team:checkSignaling", (url) => TeamService.checkSignaling(String(url ?? "")));
+// team rooms: plan board
+handle("plan:get", (roomId) => teamPlan.view(String(roomId)));
+handle("plan:apply", (roomId, op) => teamPlan.apply(String(roomId), op));
+handle("plan:repos", (roomId) => teamPlan.repoChoices(String(roomId)));
+handle("plan:sync", (roomId) => teamPlan.syncNow(String(roomId)));
 // team rooms: live panes
 handle("team:live", () => livePanes.state());
 handle("team:paneResync", (id) => livePanes.resync(String(id)));
@@ -1178,7 +1205,7 @@ async function refreshOverlaps(): Promise<void> {
     const c = worktreeChanges.get(s.cwd);
     return c ? [{ sessionId: s.id, title: s.ticketTitle ?? s.title, branch: c.branch, repo: c.repo, cwd: s.cwd, files: c.files }] : [];
   });
-  const next = overlaps(list);
+  const next = mergeOverlaps(overlaps(list), teammateOverlaps(list, teamPlan.teammateChanges())); // team rooms: plan board — teammates' pushed branches too
   if (JSON.stringify(next) === JSON.stringify(overlapState)) return;
   overlapState = next;
   toWindow("overlaps:changed", overlapState);

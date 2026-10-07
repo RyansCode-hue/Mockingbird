@@ -283,20 +283,29 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 - **Team rooms** ([design](docs/team-rooms.md)) — two Mockingbirds sharing a
   group live. Built so far, the foundation: each install's key pair and display
-  name (Settings → Team); the signaling Worker (`signaling/`, deployed once to a
-  free Cloudflare account, with Cloudflare TURN as the fallback relay); peer-to-
+  name (Settings → Team, or `npm run team:fingerprint` for the fingerprint);
+  the signaling Worker (`signaling/`, deployed once to a free Cloudflare
+  account, with Cloudflare TURN as the fallback relay; only fingerprints on its
+  `ALLOWED_CREATORS` secret can create rooms, so nobody who learns its URL can
+  spend the relay — see `signaling/README.md`); peer-to-
   peer WebRTC connections in a hidden window, with every connection detail
   signed and each certificate pinned; a signed, Lamport-ordered event log per
   room that every member keeps and merges on reconnect; share a group as a room
   (⇪ on its row) and join one with a code (⇲); a shared group shows who's
-  connected. Live panes: a session in a shared group shows on every member's
-  Mockingbird with its owner's initials, streams to whoever has it on screen,
-  and anyone can type into it (the owner's terminal size holds); initials show
-  who's looking at which pane, Follow mirrors a teammate's grid, everyone is
-  notified when a room session waits, room sessions start with Claude denied
-  reading secrets, and commits in turns a teammate typed into credit them with
-  Co-authored-by. Next, built on its transport: take-over, the team room chat
-  with agents, and the plan and claims board.
+  connected. The plan and claims board (▦ on a shared group's row): work
+  packages with owned paths, contracts and tests, claimed by members, kept on
+  the `mockingbird/plan` branch and as a read-only copy in every worktree of
+  the room's repo; agents get the plan at start and change it through the
+  `update_team_plan` tool, an agent's first edit of a file a teammate's package
+  owns is held back once with a warning (to you as well), and teammates'
+  pushed branches join the overlap check. Live panes: a session in a shared
+  group shows on every member's Mockingbird with its owner's initials, streams
+  to whoever has it on screen, and anyone can type into it (the owner's
+  terminal size holds); initials show who's looking at which pane, Follow
+  mirrors a teammate's grid, everyone is notified when a room session waits,
+  room sessions start with Claude denied reading secrets, and commits in turns
+  a teammate typed into credit them with Co-authored-by. Next, built on its
+  transport: take-over, and the team room chat with agents.
 
 ### Next
 
