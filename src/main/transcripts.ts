@@ -184,6 +184,42 @@ export function parseCodexLine(line: string, fileConv: string): Parsed {
   return out;
 }
 
+/**
+ * A transcript moved to another working directory: the fields its CLI resumes
+ * from (Claude's `cwd` on each line; Codex's in session_meta and turn_context)
+ * changed from any of `from` to `to`, folders inside them included. Every other
+ * line stays byte for byte; a last line without its newline was cut short and
+ * is dropped, as the CLI couldn't read it either.
+ */
+export function rebaseTranscript(text: string, agent: AgentKind, from: string[], to: string): string {
+  const move = (p: unknown): string | null => {
+    if (typeof p !== "string") return null;
+    for (const f of from) {
+      if (p === f) return to;
+      if (p.startsWith(`${f}/`)) return to + p.slice(f.length);
+    }
+    return null;
+  };
+  const lines = text.split("\n");
+  lines.pop(); // "" after the last newline, or a line cut short
+  return lines
+    .map((line) => {
+      let d: any;
+      try {
+        d = JSON.parse(line);
+      } catch {
+        return line; // not JSON: nothing to move, and not ours to drop
+      }
+      const holder = agent === "codex" ? (d?.type === "session_meta" || d?.type === "turn_context" ? d.payload : null) : d;
+      const moved = holder && typeof holder === "object" ? move(holder.cwd) : null;
+      if (moved === null) return line;
+      holder.cwd = moved;
+      return JSON.stringify(d);
+    })
+    .map((l) => `${l}\n`)
+    .join("");
+}
+
 /** Free text → an FTS5 query: every word must appear; the last one may be a prefix. */
 export function ftsQuery(q: string): string | null {
   const words = q.match(/[\p{L}\p{N}_]+(?:[./:-][\p{L}\p{N}_]+)*/gu) ?? [];

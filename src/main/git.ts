@@ -162,3 +162,34 @@ export async function upstreamOf(cwd: string): Promise<string | null> {
     throw err;
   }
 }
+
+/** A remote URL without the user name or password it may carry (https://user:token@host/…): safe to show or share. */
+export function publicUrl(url: string): string {
+  return url.trim().replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");
+}
+
+/** Text from git (an error) with any credentials in the URLs it quotes taken out. */
+export function withoutCredentials(text: string): string {
+  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@/\s'"]*@/gi, "$1");
+}
+
+/**
+ * One name for a repository however its remote URL is spelled — HTTPS or SSH,
+ * with or without a user, a trailing .git or slash — so two laptops' clones of
+ * it match: "github.com/owner/repo", "dev.azure.com/org/project/repo", or for
+ * other hosts "host/path". A local path (a bare repository on disk) is itself.
+ * Hosted names ignore case, as the hosts do.
+ */
+export function repoIdentity(url: string): string {
+  const u = url.trim();
+  const r = parseRemote(u);
+  if (r?.provider === "github") return `github.com/${r.owner}/${r.repo}`.toLowerCase();
+  if (r?.provider === "ado") {
+    const org = /^https:\/\/dev\.azure\.com\/([^/]+)$/i.exec(r.base)?.[1] ?? /^https:\/\/([^.]+)\.visualstudio\.com$/i.exec(r.base)?.[1] ?? r.base;
+    return `dev.azure.com/${org}/${r.project}/${r.repo}`.toLowerCase();
+  }
+  if (/^file:\/\//i.test(u)) return decodeURIComponent(u.replace(/^file:\/\//i, "")).replace(/\/+$/, "").replace(/\.git$/, "");
+  if (u.startsWith("/") || u.startsWith("~")) return u.replace(/\/+$/, "").replace(/\.git$/, "");
+  const m = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/](.+?)(?:\.git)?\/?$/i.exec(u);
+  return m ? `${m[1]}/${m[2].replace(/^\/+/, "")}`.toLowerCase() : u.toLowerCase();
+}

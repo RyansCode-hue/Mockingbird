@@ -93,6 +93,26 @@ export function handoffPrompt(o: { from: AgentKind; to: AgentKind; cwd: string; 
   ].join("\n");
 }
 
+/**
+ * What a session continued on a teammate's laptop is told first when its own
+ * conversation didn't reach that laptop whole: whose work it is, that the
+ * conversation is missing (or missing its end), what of it did arrive, and the
+ * files as they are. The agent is asked to say so before carrying on.
+ */
+export function takeoverKickoff(o: { owner: string; taker: string; agent: AgentKind; title: string; digest: string; repo: string; partial: boolean }): string {
+  return [
+    `You're continuing "${o.title}", a ${agentLabel(o.agent)} session ${o.owner} was running on their laptop. ${o.taker} took it over on this one, from a snapshot of ${o.owner}'s files.`,
+    o.partial
+      ? `Only part of that session's conversation reached this laptop — its most recent turns are missing. What did arrive, condensed (USER is the person, AGENT the session, TOOL its tool calls):`
+      : `That session's conversation didn't reach this laptop, so you're starting without it.`,
+    ...(o.partial ? ["", o.digest, ""] : []),
+    "The repository now:",
+    o.repo,
+    "",
+    `First tell ${o.taker} in one line that you're working from ${o.partial ? "a partial conversation" : "the files alone, without the conversation"}. Then check the files and the recent commits to work out where things stand, say what you think was in progress, and ask before going further.`,
+  ].join("\n");
+}
+
 /** What the new session is told first: it's taking over, and from what. */
 export function handoffKickoff(from: AgentKind, handoff: string): string {
   return [

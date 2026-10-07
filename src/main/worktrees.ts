@@ -81,6 +81,55 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
   return wtPath;
 }
 
+/**
+ * A fresh worktree at commit `base`, to continue a session from another
+ * laptop: on `branch` when that's free here — absent, or checked out nowhere
+ * and at or behind `base` (then moved up to it) — else on `<branch>-takeover`
+ * (then -takeover-2, …), so no local work is ever moved or lost. Detached when
+ * `branch` is null. The folder is always new.
+ */
+export async function worktreeAt(repoPath: string, branch: string | null, base: string): Promise<{ path: string; branch: string | null; renamedFrom: string | null }> {
+  const root = worktreeRoot(repoPath);
+  fs.mkdirSync(root, { recursive: true });
+  const freshFolder = (name: string): string => {
+    for (let i = 1; ; i++) {
+      const p = path.join(root, i === 1 ? name : `${name}-${i}`);
+      if (!p.startsWith(root + path.sep)) throw new Error(`"${name}" can't name a worktree folder`);
+      if (!fs.existsSync(p)) return p;
+    }
+  };
+  if (!branch) {
+    const p = freshFolder(`takeover-${base.slice(0, 8)}`);
+    await git(repoPath, ["worktree", "add", "--detach", p, base]);
+    return { path: p, branch: null, renamedFrom: null };
+  }
+  await git(repoPath, ["check-ref-format", "--branch", branch]); // throws on a name git won't take
+  const checkedOut = new Set(
+    (await git(repoPath, ["worktree", "list", "--porcelain"]))
+      .split("\n")
+      .filter((l) => l.startsWith("branch refs/heads/"))
+      .map((l) => l.slice("branch refs/heads/".length))
+  );
+  for (let i = 0; ; i++) {
+    const name = i === 0 ? branch : i === 1 ? `${branch}-takeover` : `${branch}-takeover-${i}`;
+    const tip = await git(repoPath, ["rev-parse", "--verify", "-q", `refs/heads/${name}`], { okCodes: [0, 1] });
+    if (tip && (checkedOut.has(name) || !(await isAncestor(repoPath, tip, base)))) continue; // in use, or holds commits `base` lacks
+    const p = freshFolder(name);
+    if (!tip) await git(repoPath, ["worktree", "add", "-b", name, p, base]);
+    else {
+      if (tip !== base) await git(repoPath, ["branch", "-f", name, base]);
+      await git(repoPath, ["worktree", "add", p, name]);
+    }
+    return { path: p, branch: name, renamedFrom: name === branch ? null : branch };
+  }
+}
+
+/** Whether commit `a` is `b` or one of its ancestors. */
+async function isAncestor(repo: string, a: string, b: string): Promise<boolean> {
+  // an ancestor is its own merge base with a descendant; exit 1: no common history
+  return (await git(repo, ["merge-base", a, b], { okCodes: [0, 1] })) === a;
+}
+
 /** Local + origin branches for a repo, with a best-guess dev/uat base branch. */
 export async function listBranches(repoPath: string): Promise<{ branches: string[]; defaultBase: string | null }> {
   const { local, origin } = await branchesOf(repoPath);
