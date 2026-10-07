@@ -60,6 +60,9 @@ import { PlanService } from "./team/planService";
 import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 // team rooms: team chat
 import { TeamRoom } from "./team/teamRoom";
+// team rooms: take-over
+import { groupRoomHost, TakeoverService } from "./team/takeover";
+import { ROOMS_DIR } from "./team/rooms";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -122,6 +125,36 @@ const teamPlan = new PlanService({
   overlapsChanged: () => overlapsSoon(),
   author: () => ({ name: (store.settings.teamName ?? "").trim() || os.userInfo().username }),
 });
+// team rooms: take-over — room sessions back up after each turn; a teammate can
+// continue one on their laptop. A room session here is one in a shared group;
+// the hooks' Stop events are its turn ends (roomTurnEnds).
+const roomTurnEnds = new Set<(sessionId: string) => void>();
+let takeover: TakeoverService | null = null;
+function startTakeover(): TakeoverService | null {
+  const transport = team.transport;
+  if (!transport) return null; // team rooms didn't start: Settings → Team says why
+  return new TakeoverService({
+    team: transport,
+    roomsDir: ROOMS_DIR,
+    host: groupRoomHost({
+      sessions: () => sessions.list(),
+      rooms: () => team.status().rooms,
+      onTurnEnd: (cb) => {
+        roomTurnEnds.add(cb);
+        return () => roomTurnEnds.delete(cb);
+      },
+    }),
+    repos: () => [...new Set([...indexRepos(store.settings.repoRoots).map((r) => r.path), ...sessions.list().flatMap((s) => (s.repoPath ? [s.repoPath] : []))])],
+    launch: (req) => sessions.create(req),
+    log: logError,
+    changed: () => toWindow("team:takeoverChanged", takeover?.view()),
+    onTakenOver: (id, by) => notifySession(id, "Taken over", `${by} took over ${sessions.list().find((s) => s.id === id)?.title ?? "a room session"} on their Mac`),
+  });
+}
+const needTakeover = (): TakeoverService => {
+  if (!takeover) throw new Error("Team rooms haven't started — see Settings → Team");
+  return takeover;
+};
 
 // Run and Debug: a repo's services per worktree, each on its own terminal,
 // optionally under the debugger
@@ -338,6 +371,11 @@ app.whenReady().then(() => {
   createWindow();
   team.start();
   if (team.transport) teamPlan.start(team.transport); // team rooms: plan board
+  // team rooms: take-over — unneeded backups are pruned now and daily
+  takeover = startTakeover();
+  const pruneBackups = () => takeover?.prune().catch((err) => logError("team: pruning room backups", err));
+  void pruneBackups();
+  setInterval(pruneBackups, 86_400_000).unref();
   powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   void lookUpBins();
@@ -436,6 +474,8 @@ app.whenReady().then(() => {
         : `${info.title} is done responding`,
       status === "waiting" ? "waiting" : "finished"
     );
+    // team rooms: take-over — idle comes only from Stop: the agent's turn ended
+    if (status === "idle") for (const cb of roomTurnEnds) cb(info.id);
   }, (info, prompt) => {
     // the files before this turn, so it can be undone (agent panes in a repository only)
     if (info.shell || !info.repoPath) return;
@@ -473,6 +513,7 @@ setInterval(() => sessions.saveScrollback(), 60_000);
 app.on("will-quit", () => {
   sessions.saveScrollback(true);
   teamPlan.stop(); // team rooms: plan board
+  takeover?.close(); // team rooms: take-over
   team.stop(); // room snapshots written, connections closed
 });
 
@@ -503,6 +544,7 @@ handle("sessions:kill", (id, forget) => {
     const at = fs.existsSync(s.cwd) ? s.cwd : s.repoPath;
     dropSnapshots(at, s.id).catch((err) => logError(`drop snapshots ${id}`, err));
   }
+  if (forget) void takeover?.sessionForgotten(String(id)); // team rooms: take-over — its room backup goes too (failures shown in the sidebar)
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
@@ -802,6 +844,10 @@ handle("teamChat:post", (roomId, text) => teamRoom.chat.post(String(roomId), Str
 handle("teamChat:read", (roomId) => teamRoom.chat.markRead(String(roomId)));
 handle("teamChat:unread", () => teamRoom.chat.unread());
 handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(roomId) : null));
+// team rooms: take-over
+handle("team:takeover", () => takeover?.view() ?? { sessions: [], unbacked: [] });
+handle("team:takeoverPlan", (roomId, sessionId, clonePath) => needTakeover().plan(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
+handle("team:takeOver", (roomId, sessionId, clonePath) => needTakeover().takeOver(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 

@@ -16,6 +16,8 @@ import type { TeamStatus } from "../shared/team/types";
 import type { PlanChange, PlanOp, PlanView, WorkPackage } from "../shared/team/plan"; // team rooms: plan board
 // team rooms: team chat
 import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../shared/team/chat";
+// team rooms: take-over
+import type { RoomSessionBackupView, TakeoverPlan, TakeoverView } from "../shared/team/takeover";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -233,6 +235,64 @@ const chatView = (roomId: string) => {
   return { roomId, self: ME, joinedAt: chatJoined, entries, read: chatRead[roomId] ?? {}, ...unreadCounts(entries, ME, chatRead[roomId], chatJoined) };
 };
 const chatChanged = (roomId: string) => emit("onTeamChatChanged", roomId);
+// team rooms: take-over — Nick's session backed up; Sam (offline) couldn't push, but his newest snapshot was copied here; one of yours taken over by Nick
+const takeoverView: TakeoverView = (() => {
+  const sha = (c: string) => c.repeat(40).slice(0, 40);
+  const base = (o: Partial<RoomSessionBackupView> & Pick<RoomSessionBackupView, "sessionId" | "owner" | "ownerName">): RoomSessionBackupView => ({
+    roomId: "R5101aaaaaaaaaaaaaaaaa",
+    session: { title: "", agent: "claude", branch: "5101-orgDropdowns", originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", cwd: "/Users/nick/Code/worktrees/backoffice/5101-orgDropdowns", conversationId: "c0ffee00-0000-4000-8000-000000000001" },
+    latest: { sha: sha("a1"), takenAt: now - 2 * min },
+    push: { ok: true, at: now - 2 * min, sha: sha("a1") },
+    pushed: { sha: sha("a1"), takenAt: now - 2 * min, at: now - 2 * min },
+    transcriptBytes: 412_000,
+    takenOver: null,
+    dropped: null,
+    ownerOnline: true,
+    self: false,
+    takenOverByName: null,
+    peerCopy: { sha: sha("a1"), takenAt: now - 2 * min },
+    transcript: { have: 412_000, of: 412_000 },
+    problem: null,
+    ...o,
+  });
+  return {
+    sessions: [
+      base({ sessionId: "n1", owner: NICK, ownerName: "Nick Smith", session: { ...base({ sessionId: "", owner: NICK, ownerName: "" }).session, title: "Org dropdown — remember per user" } }),
+      base({
+        sessionId: "m1",
+        owner: SAM,
+        ownerName: "Sam",
+        ownerOnline: false,
+        session: { ...base({ sessionId: "", owner: SAM, ownerName: "" }).session, title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", conversationId: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b" },
+        latest: { sha: sha("b2"), takenAt: now - 4 * min },
+        push: { ok: false, at: now - 4 * min, error: "remote: TF401027: You need the Git 'ForcePush' permission", sha: sha("b2") },
+        pushed: { sha: sha("c3"), takenAt: now - 31 * min, at: now - 31 * min },
+        peerCopy: { sha: sha("b2"), takenAt: now - 4 * min },
+        transcriptBytes: 980_000,
+        transcript: { have: 640_000, of: 980_000 },
+      }),
+      base({
+        roomId: "R5110bbbbbbbbbbbbbbbbb",
+        sessionId: "y1",
+        owner: ME,
+        ownerName: "You",
+        self: true,
+        session: { ...base({ sessionId: "", owner: ME, ownerName: "" }).session, title: "Donor entity model", branch: "5110-donor-entities" },
+        takenOver: { by: NICK, at: now - 12 * min, newSessionId: "n7", snapshot: { sha: sha("d4"), takenAt: now - 15 * min, source: "peer" }, conversation: "full" },
+        takenOverByName: "Nick Smith",
+        peerCopy: null,
+        transcript: null,
+      }),
+    ],
+    unbacked: [],
+    cleanup: [],
+  };
+})();
+const takeoverPlans: Record<string, TakeoverPlan> = {
+  n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Org dropdown — remember per user", agent: "claude", branch: "5101-orgDropdowns", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: "origin", skipped: [] }, other: null, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 } },
+  m1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 } },
+};
+const takeoverChanged = () => emit("onTeamTakeoverChanged", JSON.parse(JSON.stringify(takeoverView)));
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
 
 // ---- event plumbing ------------------------------------------------------------
@@ -615,6 +675,19 @@ const api: Record<string, (...a: any[]) => any> = {
       }, 1500);
     }
     return { id: message.id };
+  },
+
+  // team rooms: take-over — plans and the take-over are simulated; nothing is copied or launched
+  teamTakeover: async () => JSON.parse(JSON.stringify(takeoverView)),
+  teamTakeoverPlan: async (_roomId: string, sessionId: string) => (takeoverPlans[sessionId] ? later(takeoverPlans[sessionId], 500) : err("No backup of that session has reached this Mac yet")),
+  teamTakeOver: async (_roomId: string, sessionId: string) => {
+    const s = takeoverView.sessions.find((x) => x.sessionId === sessionId);
+    const plan = takeoverPlans[sessionId];
+    if (!s || !plan?.snapshot) return err("No backup of that session has reached this Mac yet");
+    s.takenOver = { by: ME, at: Date.now(), newSessionId: `t-${sessionId}`, snapshot: plan.snapshot, conversation: plan.conversation.kind === "full" ? "full" : "digest" };
+    s.takenOverByName = "You";
+    setTimeout(takeoverChanged, 50);
+    return later({ sessionId: `t-${sessionId}`, cwd: `/Users/you/Code/worktrees/backoffice/${plan.branch}`, branch: plan.branch, renamedFrom: null, snapshot: plan.snapshot, conversation: s.takenOver.conversation }, 900);
   },
 };
 

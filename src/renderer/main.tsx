@@ -77,6 +77,8 @@ import { JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatu
 import { PlanBoardDialog, PlanWarnings } from "./team/PlanBoard";
 // team rooms: team chat
 import { RoomChatChip, RoomChatPanel, TeamRoomIcon, useRoomChatOpen } from "./team/RoomChat";
+// team rooms: take-over
+import { RoomBackups } from "./team/TakeOver";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
@@ -1841,6 +1843,11 @@ function App() {
                     )}
                   </div>
                 )}
+                {/* team rooms: take-over — teammates' room sessions, their backups and Take over */}
+                {!collapsed.has(key) && (() => {
+                  const room = roomOfGroup(teamStatus, key);
+                  return room ? <RoomBackups room={room} /> : null;
+                })()}
                 {!collapsed.has(key) && bySub(list).map(([sub, subList]) => {
                   const wsKey = `${key}/${sub}`;
                   const inGrid = subList.some((s) => shown.includes(s.id));

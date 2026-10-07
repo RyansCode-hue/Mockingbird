@@ -60,8 +60,12 @@ async function seedIndex(top: string, file: string): Promise<void> {
   await fs.promises.utimes(file, earlier, earlier);
 }
 
-/** The worktree's files as a tree object, leaving out ignored files and big ones (which are returned). */
-async function treeOfWorktree(top: string, env: Record<string, string>): Promise<{ tree: string; skipped: string[] }> {
+/**
+ * The worktree's files as a tree object, leaving out ignored files and big ones
+ * (which are returned). `exclude` (pathspecs) leaves more out: files it
+ * matches keep the version the repository's index had, if any.
+ */
+async function treeOfWorktree(top: string, env: Record<string, string>, exclude: string[] = []): Promise<{ tree: string; skipped: string[] }> {
   await seedIndex(top, env.GIT_INDEX_FILE);
   const changed = (await git(top, ["ls-files", "-z", "-m", "-o", "--exclude-standard"], { env, trim: false })).split("\0").filter(Boolean);
   const skipped: string[] = [];
@@ -69,8 +73,73 @@ async function treeOfWorktree(top: string, env: Record<string, string>): Promise
     const st = await fs.promises.stat(path.join(top, f)).catch(() => null); // deleted files have nothing to measure
     if (st && st.isFile() && st.size > SNAPSHOT_MAX_FILE_BYTES) skipped.push(f);
   }
-  await git(top, ["add", "-A", "--", ".", ...skipped.map((f) => `:(exclude,literal)${f}`)], { env });
+  await git(top, ["add", "-A", "--", ".", ...skipped.map((f) => `:(exclude,literal)${f}`), ...exclude], { env });
   return { tree: await git(top, ["write-tree"], { env }), skipped };
+}
+
+/**
+ * Files a snapshot that leaves this Mac never carries, even when the
+ * repository doesn't ignore them: env files, keys and certificates, and the
+ * usual credential and PAT files. Teammates swap these by hand.
+ */
+export const SECRET_PATHSPECS = [
+  "**/.env",
+  "**/.env.*",
+  "**/*.env",
+  "**/*.pem",
+  "**/*.key",
+  "**/*.pfx",
+  "**/*.p12",
+  "**/*.pat",
+  "**/*_pat.txt",
+  "**/credentials.json",
+  "**/secrets.json",
+  "**/local.settings.json",
+].map((g) => `:(exclude,glob)${g}`);
+
+export interface WorktreeSnapshot {
+  sha: string;
+  tree: string;
+  /** HEAD when it was taken: the snapshot's parent. Null before the first commit. */
+  parent: string | null;
+  skipped: string[];
+}
+
+/**
+ * The worktree's files as a commit on top of HEAD, under no ref (the caller
+ * names it): the branch, the index and the history are untouched. Ignored and
+ * big files are left out, as for Undo turn, and so is whatever `exclude`
+ * matches. Null outside a git repository.
+ */
+export async function snapshotCommit(cwd: string, message: string, opts: { exclude?: string[] } = {}): Promise<WorktreeSnapshot | null> {
+  const top = await repoTop(cwd);
+  if (!top) return null;
+  return withIndex(async (env) => {
+    const { tree, skipped } = await treeOfWorktree(top, env, opts.exclude);
+    const parent = await headCommit(top);
+    const body = [message, ...(skipped.length ? ["", `skipped: ${JSON.stringify(skipped)}`] : [])].join("\n");
+    const sha = await git(top, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", body], { env });
+    return { sha, tree, parent, skipped };
+  });
+}
+
+/** The files a snapshot commit left out for being too big (from its message). */
+export async function skippedIn(cwd: string, sha: string): Promise<string[]> {
+  return parseMessage(await git(cwd, ["show", "-s", "--format=%B", sha])).skipped;
+}
+
+/**
+ * Make the worktree's files those of snapshot commit `sha` (from any
+ * repository sharing these objects): changed and deleted files come back, new
+ * ones go. The index, branch and history are untouched, so files the snapshot
+ * adds show as untracked and its edits as unstaged changes against HEAD.
+ * Ignored files aren't touched.
+ */
+export async function checkoutSnapshotFiles(cwd: string, sha: string): Promise<{ restored: number; removed: number }> {
+  const top = await repoTop(cwd);
+  if (!top) throw new Error(`${cwd} isn't in a git repository`);
+  const now = await withIndex(async (env) => (await treeOfWorktree(top, env)).tree);
+  return putFiles(top, sha, await diffTrees(top, sha, now));
 }
 
 function parseMessage(body: string): { prompt: string; skipped: string[] } {
@@ -161,7 +230,11 @@ export async function restoreSnapshot(cwd: string, sessionId: string, n: number)
   if (!snap) throw new Error("That snapshot is gone");
   const undo = await takeSnapshot(top, sessionId, BEFORE_UNDO);
   if (!undo) throw new Error("Couldn't record the files before restoring");
-  const changes = await diffTrees(top, snap.sha, undo.sha);
+  return { ...(await putFiles(top, snap.sha, await diffTrees(top, snap.sha, undo.sha))), undo };
+}
+
+/** Apply `changes` (from diffTrees(top, sha, now)): restore files from `sha`, remove the ones it doesn't have. */
+async function putFiles(top: string, sha: string, changes: TurnChange[]): Promise<{ restored: number; removed: number }> {
   const restore = changes.filter((c) => c.action === "restore").map((c) => c.path);
   const remove = changes.filter((c) => c.action === "remove").map((c) => c.path);
   // removals first: a file that took its folder's place (a/b became a) is gone before the folder comes back
@@ -173,14 +246,14 @@ export async function restoreSnapshot(cwd: string, sessionId: string, n: number)
   }
   if (restore.length) {
     await withIndex(async (env) => {
-      await git(top, ["read-tree", snap.sha], { env });
+      await git(top, ["read-tree", sha], { env });
       // a file can't be written where a folder of ignored files now stands
       for (const p of restore) await clearWay(top, p);
       // in batches, so a long list can't overflow the command line
       for (let i = 0; i < restore.length; i += 200) await git(top, ["checkout-index", "-f", "--", ...restore.slice(i, i + 200)], { env });
     });
   }
-  return { restored: restore.length, removed: remove.length, undo };
+  return { restored: restore.length, removed: remove.length };
 }
 
 async function clearWay(top: string, rel: string): Promise<void> {
