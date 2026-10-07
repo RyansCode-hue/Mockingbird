@@ -73,6 +73,8 @@ import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
 import { JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
+// team rooms: live panes
+import { FollowControls, LiveProblems, RoomRowTag, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
@@ -124,10 +126,13 @@ function readLegacyLayout(): LegacyLayout {
 }
 
 function App() {
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [ownSessions, setSessions] = useState<SessionInfo[]>([]);
   const [resumable, setResumable] = useState<SessionInfo[]>([]);
   const [shown, setShown] = usePersisted<string[]>("mb.shown", []);
   const [focused, setFocused] = useState<string | null>(null);
+  // team rooms: live panes — teammates' room sessions are sessions here too (session.room says whose)
+  const roomLive = useRoomLive(ownSessions, shown, focused);
+  const sessions = roomLive.sessions;
   const [zoomed, setZoomed] = useState<string | null>(null);
   // pinned panes stay on screen when the grid switches groups
   const [pinned, setPinned] = usePersisted<string[]>("mb.pinned", []);
@@ -635,6 +640,18 @@ function App() {
   // directly — that closure would search the first render's empty session list
   const jumpToRef = useRef(jumpTo);
   jumpToRef.current = jumpTo;
+
+  // team rooms: live panes — Follow mirrors a teammate's shown room sessions and focus
+  const follow = useFollow({
+    views: roomLive.state?.views ?? [],
+    sessions,
+    shown,
+    groupOf: topOf,
+    show: (g, ids, f) => {
+      switchGrid(g, ids);
+      if (f) setFocused(f);
+    },
+  });
 
   // one group on screen: a pane whose session moved to another group (or a stale
   // persisted layout) leaves the grid, unless it's pinned
@@ -1327,7 +1344,8 @@ function App() {
     setModal("new");
   };
 
-  const focusedSession = sessions.find((s) => s.id === focused) ?? null;
+  // a teammate's session has no folder here: the file views and session commands are for this Mac's sessions
+  const focusedSession = sessions.find((s) => s.id === focused && !isRemote(s)) ?? null;
 
   /**
    * Open a definition: in the editor tab's own session when the file is in its
@@ -1753,6 +1771,8 @@ function App() {
                 ⇲
               </button>
             </div>
+            {/* team rooms: live panes */}
+            <LiveProblems state={roomLive.state} />
             {groups.map(([key, list]) => (
               <div key={key}>
                 {(
@@ -1917,7 +1937,7 @@ function App() {
                           className="name"
                           onDoubleClick={(e) => {
                             e.stopPropagation();
-                            setEditing({ key: s.id, value: titleOf(s) });
+                            if (!isRemote(s)) setEditing({ key: s.id, value: titleOf(s) });
                           }}
                         >
                           <span className="nm">{titleOf(s)}</span>
@@ -1929,6 +1949,9 @@ function App() {
                           )}
                         </span>
                       )}
+                      {/* team rooms: live panes — whose session it is, who's looking; a teammate's is theirs to rename, move or close */}
+                      <RoomRowTag s={s} />
+                      {!isRemote(s) && (
                       <button
                         title="Rename"
                         onClick={(e) => {
@@ -1938,6 +1961,7 @@ function App() {
                       >
                         ✎
                       </button>
+                      )}
                       <button
                         className={`mute ${s.muted ? "on" : ""}`}
                         title={s.muted ? "Notifications muted — click to hear from this session again" : "Mute this session's notifications"}
@@ -1960,6 +1984,8 @@ function App() {
                       >
                         <PinIcon />
                       </button>
+                      {!isRemote(s) && (
+                      <>
                       <button
                         title="Move to group…"
                         onClick={(e) => {
@@ -1979,6 +2005,8 @@ function App() {
                       >
                         ✕
                       </button>
+                      </>
+                      )}
                     </div>
                   );
                 })}
@@ -2055,6 +2083,8 @@ function App() {
                       Pipeline
                     </button>
                   ))}
+                {/* team rooms: live panes */}
+                <FollowControls follow={follow} />
                 <span style={{ marginLeft: "auto" }} />
                 {statusNote && <span className="flbl-info">{statusNote}</span>}
                 <select
@@ -2410,6 +2440,10 @@ function App() {
             { label: "Settings", run: () => setTab("settings") },
             { label: "Import sessions", run: () => setModal("import") },
             { label: "Join a team room — paste a teammate's code", run: () => setJoinDlg(true) },
+            // team rooms: live panes
+            ...(follow.leader
+              ? [{ label: `Stop following ${follow.leader.name}`, run: follow.stop }]
+              : follow.candidates.map((v) => ({ label: `Follow ${v.name} — mirror the shared sessions they show`, run: () => follow.follow(v.member) }))),
             ...(activeGroup && activeGroup !== "ungrouped" && activeGroup !== "assistant"
               ? [
                   {

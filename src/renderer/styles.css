@@ -1826,3 +1826,27 @@ button.chip { border: none; cursor: pointer; }
 .team-link.direct, .team-link.turn { color: var(--teal-text); }
 .team-link.needs-update, .team-link.error { color: var(--amber-text); }
 .set-lede.team-deploy { margin: 8px 0 4px; }
+
+/* ---- team rooms: live panes ---- */
+/* a teammate's session: the owner's initials, and who's looking (ringed: the pane they're in) */
+.team-owner {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 15px; height: 15px; padding: 0 3px; flex-shrink: 0;
+  border-radius: 3px; border: 1px solid color-mix(in srgb, var(--teal) 55%, transparent); color: var(--teal-text); font: 600 8.5px var(--ui);
+}
+.team-owner.away { border-color: var(--line-strong); color: var(--text-3); }
+.team-lookers { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.team-initials.focused { box-shadow: 0 0 0 1px var(--teal); }
+.sess-item .team-owner, .sess-item .team-lookers { margin-left: 2px; }
+.chip.warn { color: var(--amber-text); background: var(--fill-waiting); flex-shrink: 0; }
+button.chip.warn { border: 0; cursor: pointer; }
+/* rendered at its owner's terminal size: the font fits it to the pane, past that the pane scrolls */
+.term-holder.fixed { overflow: auto; }
+.team-pane-note {
+  margin: 0 8px 8px; padding: 5px 7px; border-radius: 4px; flex-shrink: 0;
+  background: var(--fill-subtle); font: 500 10px var(--ui); color: var(--text-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.team-follow { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; font: 500 10.5px var(--ui); color: var(--text-2); }
+.team-follow button.chip { border: 0; cursor: pointer; }
+.team-follow.on { color: var(--teal-text); }
+.team-live-problems { padding: 0 8px 6px; }

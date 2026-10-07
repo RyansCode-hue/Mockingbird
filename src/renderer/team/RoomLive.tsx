@@ -1,0 +1,182 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { isErr, type SessionInfo } from "../../shared/types";
+import type { LivePanesState, MemberView, RoomSessionTag } from "../../shared/team/livePanes";
+import type { MemberId } from "../../shared/team/types";
+import { initialsOf } from "../Team";
+import { followPlan, mergeRoomSessions, sameList } from "./roomLiveModel";
+
+/**
+ * Team rooms in the window, stage 2 (live panes): teammates' room sessions
+ * shown with this window's own, who's looking at what, and Follow. See
+ * docs/team-rooms.md, "Sessions in a room".
+ */
+
+/**
+ * This window's sessions with teammates' room sessions merged in (and its own
+ * room sessions tagged), kept current. Tells the main process what the grid
+ * shows and which pane is focused, for teammates' presence initials, Follow,
+ * and which teammates' sessions to stream here.
+ */
+export function useRoomLive(own: SessionInfo[], shown: string[], focused: string | null): { sessions: SessionInfo[]; state: LivePanesState | null } {
+  const [state, setState] = useState<LivePanesState | null>(null);
+  useEffect(() => {
+    let alive = true;
+    window.mb.teamLive().then((s: LivePanesState | { error: string }) => {
+      if (!alive) return;
+      if (isErr(s)) console.error("[mockingbird] couldn't read the room sessions:", s.error);
+      else setState(s);
+    });
+    const off = window.mb.onTeamLive((s: LivePanesState) => setState(s));
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
+  const sessions = useMemo(() => mergeRoomSessions(own, state), [own, state]);
+  const shownKey = shown.join(",");
+  useEffect(() => {
+    window.mb.teamLiveView({ shown, focused });
+  }, [shownKey, focused]);
+  return { sessions, state };
+}
+
+export interface Follow {
+  /** The teammate being followed, and their view (undefined while they show nothing here). */
+  leader: { id: MemberId; name: string; view: MemberView | undefined } | null;
+  /** Teammates who can be followed: connected, with a view. */
+  candidates: MemberView[];
+  follow(id: MemberId): void;
+  stop(): void;
+}
+
+/** A change to the grid this soon after following applied a view is following's own. */
+const OWN_CHANGE_MS = 600;
+
+/**
+ * Follow a teammate: the grid mirrors the room sessions they show and the one
+ * they're in, until you stop or change the grid yourself (show, hide or move
+ * a pane, switch groups). Clicking into a pane to type doesn't stop it.
+ */
+export function useFollow(o: {
+  views: MemberView[];
+  sessions: SessionInfo[];
+  shown: string[];
+  groupOf: (s: SessionInfo) => string;
+  show: (group: string, ids: string[], focused: string | null) => void;
+}): Follow {
+  const [leader, setLeader] = useState<{ id: MemberId; name: string } | null>(null);
+  const applied = useRef<{ plan: string; at: number; shown: string[] | null } | null>(null);
+  const view = leader ? o.views.find((v) => v.member === leader.id) : undefined;
+  const plan = leader ? followPlan(view, o.sessions, o.groupOf) : null;
+  const planKey = plan ? JSON.stringify(plan) : "";
+  useEffect(() => {
+    if (!leader || !plan || applied.current?.plan === planKey) return;
+    applied.current = { plan: planKey, at: Date.now(), shown: null };
+    o.show(plan.group, plan.ids, plan.focused);
+  }, [leader?.id, planKey]);
+  const shownKey = o.shown.join(",");
+  useEffect(() => {
+    const a = applied.current;
+    if (!leader || !a) return;
+    if (a.shown === null && Date.now() - a.at < OWN_CHANGE_MS) {
+      a.shown = o.shown;
+      return;
+    }
+    if (a.shown === null || !sameList(a.shown, o.shown)) {
+      applied.current = null;
+      setLeader(null);
+    }
+  }, [shownKey]);
+  return {
+    leader: leader ? { ...leader, view } : null,
+    candidates: o.views,
+    follow: (id) => {
+      const v = o.views.find((x) => x.member === id);
+      applied.current = null;
+      setLeader({ id, name: v?.name ?? id.slice(0, 8) });
+    },
+    stop: () => {
+      applied.current = null;
+      setLeader(null);
+    },
+  };
+}
+
+/** The owner's initials on a teammate's session (its sidebar row and pane header). */
+export function OwnerTag({ room }: { room: RoomSessionTag }) {
+  if (!room.remote) return null;
+  const where = !room.online ? " — their Mockingbird is offline" : !room.live ? " — closed there (they can resume it)" : "";
+  return (
+    <span className={`team-owner ${room.online && room.live ? "" : "away"}`} title={`${room.ownerName}'s session: it runs on ${room.ownerName}'s Mockingbird${where}. You can watch it and type into it.`}>
+      {initialsOf(room.ownerName)}
+    </span>
+  );
+}
+
+/** Initials of the teammates showing a room session; ringed for the ones in it. */
+export function Lookers({ room }: { room: RoomSessionTag }) {
+  if (!room.lookers.length) return null;
+  const tip = room.lookers.map((l) => `${l.name} ${l.focused ? "is in this pane" : "has it on screen"}`).join("\n");
+  return (
+    <span className="team-lookers" title={tip}>
+      {room.lookers.map((l) => (
+        <span key={l.id} className={`team-initials ${l.focused ? "focused" : ""}`}>
+          {initialsOf(l.name)}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** A sidebar row's room marks: whose session it is, and who's looking at it. */
+export function RoomRowTag({ s }: { s: SessionInfo }) {
+  if (!s.room) return null;
+  return (
+    <>
+      <OwnerTag room={s.room} />
+      <Lookers room={s.room} />
+    </>
+  );
+}
+
+/** Following someone, or who can be followed, for the group bar. */
+export function FollowControls({ follow }: { follow: Follow }) {
+  if (follow.leader) {
+    const away = !follow.leader.view;
+    return (
+      <span className="team-follow on" title={`Your grid mirrors what ${follow.leader.name} shows. Changing your grid stops it.`}>
+        {away ? `Following ${follow.leader.name} — waiting for them to show a shared session` : `Following ${follow.leader.name}`}
+        <button className="chip" onClick={follow.stop}>
+          Stop
+        </button>
+      </span>
+    );
+  }
+  if (!follow.candidates.length) return null;
+  return (
+    <span className="team-follow">
+      {follow.candidates.map((v) => (
+        <button key={v.member} className="chip" title={`Mirror ${v.name}'s grid: the shared sessions they show, and the one they're in`} onClick={() => follow.follow(v.member)}>
+          Follow {v.name}
+        </button>
+      ))}
+    </span>
+  );
+}
+
+/** Problems with room sessions (a record that couldn't be published…), above the session list. */
+export function LiveProblems({ state }: { state: LivePanesState | null }) {
+  if (!state?.problems.length) return null;
+  return (
+    <div className="team-live-problems">
+      {state.problems.map((p) => (
+        <div key={p} className="err">
+          {p}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Whether a session runs on a teammate's Mockingbird (shown here as a copy). */
+export const isRemote = (s: SessionInfo | null | undefined): boolean => !!s?.room?.remote;
