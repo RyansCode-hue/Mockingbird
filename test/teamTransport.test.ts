@@ -3,6 +3,7 @@ import { tempDir } from "./helpers";
 import { LoopbackNetwork, loopbackMember, loopbackRoom, until } from "../src/main/team/loopback";
 import { TeamCore, TeamError } from "../src/main/team/transport";
 import { defineEventType, RoomStore } from "../src/main/team/rooms";
+import { MAX_STREAM_CHUNK } from "../src/main/team/frames";
 import { encodeInvite, decodeInvite, TEAM_PROTOCOL } from "../src/shared/team/protocol";
 import type { RoomEvent } from "../src/shared/team/types";
 
@@ -138,7 +139,7 @@ describe("the team transport over the loopback", () => {
     await until(() => drained, "the drain");
     s.write("three");
     s.write("z".repeat(70_000)); // split into pieces, each its own sequence number
-    await until(() => got.length === 6, "the rest");
+    await until(() => got.length === 3 + Math.ceil(70_000 / MAX_STREAM_CHUNK), "the rest");
     expect(got.slice(0, 3).map((g) => [g.chunk, g.seq, g.gap])).toEqual([["one", 1, false], ["two", 2, false], ["three", 4, true]]);
     expect(got.slice(3).map((g) => g.chunk).join("")).toBe("z".repeat(70_000));
     expect(got.every((g) => g.from === ryan.id)).toBe(true);

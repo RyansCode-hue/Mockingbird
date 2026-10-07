@@ -66,6 +66,16 @@ logic, plan usage parsing, hook install and status routing, agent messaging (the
 socket relay and the MCP server itself), message delivery timing, the shell
 helpers, the setup checks, and the renderer's diff and usage formatting.
 
+Team rooms are tested at every layer: the signed protocol and invite codes, the
+signaling room logic (also served over WebSockets by the local signaling
+server, `npm run team:signaling`), the event log, the transport over an
+in-process loopback (`src/main/team/loopback.ts`, for later stages' tests too),
+and the WebRTC wire against the local server with a stand-in peer host.
+`test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer hosts in
+Electron (skipped in CI), and `MB_E2E_APP=1 npx vitest run
+test/teamApp.e2e.test.ts` runs two real Mockingbird instances, with throwaway
+homes, that share and join a room (their windows open while it runs).
+
 ## UI preview
 
 ```bash
@@ -265,7 +275,16 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Now
 
-Nothing in progress — the agreed roadmap is built.
+- **Team rooms** ([design](docs/team-rooms.md)) — two Mockingbirds sharing a
+  group live. Built so far, the foundation: each install's key pair and display
+  name (Settings → Team); the signaling Worker (`signaling/`, deployed once to a
+  free Cloudflare account, with Cloudflare TURN as the fallback relay); peer-to-
+  peer WebRTC connections in a hidden window, with every connection detail
+  signed and each certificate pinned; a signed, Lamport-ordered event log per
+  room that every member keeps and merges on reconnect; share a group as a room
+  (⇪ on its row) and join one with a code (⇲); a shared group shows who's
+  connected. Next, built on its transport: live shared panes and typing,
+  take-over, the team room chat with agents, and the plan and claims board.
 
 ### Next
 

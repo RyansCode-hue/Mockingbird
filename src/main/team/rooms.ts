@@ -37,7 +37,12 @@ const SNAPSHOT_EVERY = 100;
 export interface EventDef<B> {
   /** Throw when the body is malformed; runs before the event is stored. */
   validate?(body: unknown, event: RoomEvent): void;
-  /** Apply the event, in total order, to the room's state (mutated in place). */
+  /**
+   * Apply the event, in total order, to the room's state (mutated in place).
+   * Deterministic and JSON only: every member reduces the same events to the
+   * same state, which is snapshotted to disk. An event that arrives late
+   * replays the room from the start.
+   */
   reduce(state: RoomState, event: RoomEvent & { body: B }): void;
 }
 

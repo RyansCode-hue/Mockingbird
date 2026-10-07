@@ -24,7 +24,11 @@ export type TeamFrame =
   /** One piece of a frame too big for a single message, in order. */
   | { k: "part"; id: string; i: number; n: number; s: string };
 
-/** The largest single message either transport carries (SCTP messages beyond 64 KiB aren't safe everywhere). */
+/**
+ * The largest single message, in characters. A frame is already JSON (control
+ * characters escaped), so a part's piece at most doubles (quotes, backslashes)
+ * or triples in UTF-8: under the 256 KB a WebRTC message may be.
+ */
 export const MAX_MESSAGE = 48 * 1024;
 /** The largest whole frame accepted after reassembly. */
 export const MAX_FRAME = 64 * 1024 * 1024;
@@ -99,5 +103,10 @@ export interface StreamFrame {
   d: string;
 }
 
-/** The largest stream chunk in one message; longer writes are split (each piece its own sequence number). */
-export const MAX_STREAM_CHUNK = 32 * 1024;
+/**
+ * The largest stream chunk in one message; longer writes are split (each
+ * piece its own sequence number). Terminal output is full of control
+ * characters, which JSON writes as six (\u001b), so 16K characters stay well
+ * under the 256 KB a WebRTC message may be.
+ */
+export const MAX_STREAM_CHUNK = 16 * 1024;

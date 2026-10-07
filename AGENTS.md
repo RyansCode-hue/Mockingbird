@@ -3,7 +3,9 @@
 An Electron app that runs Claude Code and Codex sessions side by side.
 `src/main` is the main process (sessions, git, language servers, debuggers,
 ADO), `src/renderer` the React interface, `src/shared` types and helpers used
-by both, `src/preview` the UI preview's stand-in, `test` the Vitest suite.
+by both, `src/preview` the UI preview's stand-in, `src/peerhost` the hidden
+window holding team rooms' WebRTC connections, `signaling` team rooms'
+Cloudflare Worker, `test` the Vitest suite.
 
 This is Ryan's personal app: the team's ticket workflow (ticket numbers,
 ticket-doc folders, security-considerations docs, promotion gates) doesn't

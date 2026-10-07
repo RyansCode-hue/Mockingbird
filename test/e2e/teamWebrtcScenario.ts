@@ -91,10 +91,15 @@ async function run(): Promise<void> {
       let refused = 0;
       for (let i = 0; i < 500; i++) if (!s.write(`line ${i}\r\n`)) refused++;
       await until(() => got.length + refused >= 500, "the chunks", 10_000);
-      off();
       const inOrder = got.every((g, i) => i === 0 || g.seq > got[i - 1].seq);
       if (!inOrder) throw new Error("out of order");
-      return { received: got.length, refused, gaps: got.filter((g) => g.gap).length };
+      // a burst of terminal escapes: JSON-escaped six times over, still within one message per piece
+      const escapes = "\u001b[0m\u001b[38;5;214m".repeat(8000);
+      const before = got.length;
+      if (!s.write(escapes)) throw new Error("the escape burst was dropped");
+      await until(() => got.slice(before).map((g) => g.chunk).join("") === escapes, "the escape burst", 10_000);
+      off();
+      return { received: got.length, refused, gaps: got.filter((g) => g.gap).length, escapeBurst: escapes.length };
     });
 
     await step("host restart: the hidden window dies; connections come back, room state intact", async () => {
