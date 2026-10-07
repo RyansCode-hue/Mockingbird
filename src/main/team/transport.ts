@@ -192,6 +192,7 @@ export class TeamCore implements Team {
   private nextRequest = 1;
   private sentSeq = new Map<string, number>();
   private receivedSeq = new Map<string, number>();
+  private refusedStreams = new Set<string>();
   private joins: PendingJoin[];
   private lastPresence = new Map<RoomId, string>();
   /** Events just applied, to pass on to the room's other members (not back to the member they came from). */
@@ -626,7 +627,13 @@ export class TeamCore implements Team {
       return this.log(`dropped a malformed stream message from ${this.nameOf(peer)}`);
     }
     if (typeof f?.r !== "string" || typeof f.c !== "string" || typeof f.q !== "number" || typeof f.d !== "string") return this.log(`dropped a malformed stream message from ${this.nameOf(peer)}`);
-    if (!this.hellos.has(peer) || !this.allowed(peer, f.r)) return;
+    if (!this.hellos.has(peer) || !this.allowed(peer, f.r)) {
+      // said once per peer and room: a stream is many messages
+      const k = key(peer, f.r);
+      if (!this.refusedStreams.has(k)) this.log(`refused a ${f.c} stream for room ${f.r} from ${this.nameOf(peer)}, who isn't a member`);
+      this.refusedStreams.add(k);
+      return;
+    }
     const k = key(peer, f.r, f.c);
     const last = this.receivedSeq.get(k);
     if (last !== undefined && f.q <= last) return; // a stale chunk from before a reconnect

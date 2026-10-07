@@ -518,7 +518,7 @@ export class WebRtcWire implements PeerWire {
   private onIce(e: Extract<SignalingEvent, { t: "turn" }>): void {
     const wasReady = this.ice.ready;
     this.ice = {
-      servers: e.iceServers.length || !this.o.defaultIce ? e.iceServers : this.o.defaultIce,
+      servers: e.iceServers.length ? e.iceServers : (this.o.defaultIce ?? PUBLIC_STUN),
       ready: true,
       fetchedAt: e.relay ? Date.now() : 0,
       ttl: e.ttl,
