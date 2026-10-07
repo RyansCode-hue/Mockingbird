@@ -407,6 +407,10 @@ const api: Record<string, (...a: any[]) => any> = {
   // team rooms: sharing, invites and joins are simulated; nothing connects
   teamStatus: async () => JSON.parse(JSON.stringify(team)),
   teamShareGroup: async (groupKey: string, title: string) => {
+    // ?refuse: the signaling Worker refuses new rooms, as one without this key on ALLOWED_CREATORS does
+    if (new URLSearchParams(location.search).has("refuse") && !team.rooms.some((r) => r.groupKey === groupKey)) {
+      return later(err(`This signaling Worker doesn't allow new rooms yet — add your fingerprint (${team.self!.fingerprint}) to ALLOWED_CREATORS.\n\nOn the Worker, once: …`), 300);
+    }
     let room = team.rooms.find((r) => r.groupKey === groupKey);
     if (!room) {
       room = { id: `R${groupKey}`.padEnd(22, "c").slice(0, 22), name: title, groupKey, members: [{ id: ME, name: "You", self: true }], online: [], signalingUrl: SIGNAL, signaling: "online" };
@@ -436,7 +440,7 @@ const api: Record<string, (...a: any[]) => any> = {
     team.pending = team.pending.filter((p) => p.roomId !== roomId);
     teamChanged();
   },
-  teamCheckSignaling: async () => later({ protocol: 1, relay: true, problem: null }, 400),
+  teamCheckSignaling: async () => later({ protocol: 1, relay: true, creators: 2, problem: null }, 400),
 };
 
 w.mb = new Proxy(api, {

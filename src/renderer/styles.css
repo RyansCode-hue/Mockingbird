@@ -1826,3 +1826,10 @@ button.chip { border: none; cursor: pointer; }
 .team-link.direct, .team-link.turn { color: var(--teal-text); }
 .team-link.needs-update, .team-link.error { color: var(--amber-text); }
 .set-lede.team-deploy { margin: 8px 0 4px; }
+.team-allow { padding: 11px 0; border-bottom: 1px solid var(--line-soft); }
+.team-dlg .team-allow { border-bottom: none; padding-bottom: 0; }
+.team-cmd { position: relative; display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.team-cmd code {
+  flex: 1; min-width: 0; padding: 6px 8px; border-radius: 5px; background: var(--fill-subtle); border: 1px solid var(--line-med);
+  font: 400 10.5px/1.5 var(--mono); color: var(--text-2); overflow-wrap: anywhere; user-select: all;
+}

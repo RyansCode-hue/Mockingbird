@@ -3,6 +3,7 @@ import { Modal } from "./Modal";
 import { SetRow } from "./SetRow";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { isErr, type Settings } from "../shared/types";
+import { allowCreatorsCommand } from "../shared/team/protocol";
 import type { PeerStatus, TeamRoomSummary, TeamStatus } from "../shared/team/types";
 
 /**
@@ -67,14 +68,46 @@ export function SharedBadge({ room }: { room: TeamRoomSummary }) {
   );
 }
 
+/**
+ * The one step that lets this Mockingbird create rooms: the signaling Worker
+ * refuses new rooms from keys not on its ALLOWED_CREATORS secret (anyone who
+ * learned its URL could otherwise use its TURN relay).
+ */
+export function AllowCreatorStep({ id }: { id: string }) {
+  const [note, copy] = useCopyNote();
+  const command = allowCreatorsCommand([id]);
+  return (
+    <div className="team-allow">
+      <div className="set-row-title">Let this Mockingbird create rooms</div>
+      <div className="set-row-note">
+        The Worker only lets listed fingerprints create rooms (joining with a code needs nothing). Run once in this repo; for several creators, list their
+        fingerprints comma-separated in one command — the secret is replaced each time.
+      </div>
+      <div className="team-cmd">
+        <code>{command}</code>
+        <button className="outline" onClick={() => copy(command, "the command")}>
+          Copy
+        </button>
+        <CopyToast note={note} failed="Couldn't copy" />
+      </div>
+    </div>
+  );
+}
+
 /** Share a group as a room: shows a one-time invite code to send a teammate. */
 export function ShareRoomDialog({ groupKey, title, onClose }: { groupKey: string; title: string; onClose: () => void }) {
-  const [code, setCode] = useState<{ roomId: string; invite: string } | null>(null);
+  const status = useTeamStatus();
+  const [code, setCode] = useState<{ roomId: string; invite: string; warning?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [note, copy] = useCopyNote();
   useEffect(() => {
-    window.mb.teamShareGroup(groupKey, title).then((r: { roomId: string; invite: string } | { error: string }) => (isErr(r) ? setError(r.error) : setCode(r)));
-  }, [groupKey, title]);
+    setError(null);
+    window.mb.teamShareGroup(groupKey, title).then((r: { roomId: string; invite: string; warning?: string } | { error: string }) => (isErr(r) ? setError(r.error) : setCode(r)));
+  }, [groupKey, title, attempt]);
+  // the Worker refused to create the room: the fix is one command on it
+  const self = status && !isErr(status) ? status.self : null;
+  const notAllowed = !!error && /ALLOWED_CREATORS/.test(error);
   const fresh = async () => {
     if (!code) return;
     const r: { invite: string } | { error: string } = await window.mb.teamCreateInvite(code.roomId);
@@ -87,16 +120,28 @@ export function ShareRoomDialog({ groupKey, title, onClose }: { groupKey: string
       <div className="sub-h">
         Teammates who join see this group as a shared room. Sessions outside rooms are never visible to anyone.
       </div>
-      {error && <div className="err">{error}</div>}
-      {!code && !error && <div className="hint">Creating the room…</div>}
+      {error && !notAllowed && <div className="err">{error}</div>}
+      {notAllowed && (
+        <>
+          <div className="err">The signaling Worker refused to create this room: it only lets fingerprints on its ALLOWED_CREATORS list create rooms.</div>
+          {self && <AllowCreatorStep id={self.id} />}
+        </>
+      )}
+      {!code && !error && <div className="hint">Creating the room and checking with the signaling server…</div>}
       {code && (
         <>
           <label>Invite code</label>
           <textarea className="team-code" readOnly value={code.invite} onFocus={(e) => e.currentTarget.select()} />
+          {code.warning && <div className="err">{code.warning}</div>}
           <div className="hint">Works once, for 7 days. Your teammate pastes it into Join room (the sidebar's ⇲, or ⌘K). Your Mockingbird must be open for them to join.</div>
         </>
       )}
       <div className="row" style={{ position: "relative" }}>
+        {error && (
+          <button className="outline" onClick={() => setAttempt((n) => n + 1)}>
+            Try again
+          </button>
+        )}
         {code && (
           <button className="outline" onClick={fresh}>
             New code
@@ -195,10 +240,13 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
   const checkUrl = async () => {
     saveUrl();
     setCheck({ ok: true, msg: "Checking…" });
-    const r: { protocol: number; relay: boolean; problem: string | null } | { error: string } = await window.mb.teamCheckSignaling(url.trim());
+    const r: { protocol: number; relay: boolean; creators: number | "any"; problem: string | null } | { error: string } = await window.mb.teamCheckSignaling(url.trim());
     if (isErr(r)) setCheck({ ok: false, msg: r.error });
     else if (r.problem) setCheck({ ok: false, msg: r.problem });
-    else setCheck({ ok: true, msg: `Reachable · protocol ${r.protocol} · ${r.relay ? "TURN relay configured" : "no TURN relay (set its secrets for strict networks)"}` });
+    else {
+      const creators = r.creators === "any" ? "anyone can create rooms (local test server)" : `${r.creators} room creator${r.creators === 1 ? "" : "s"} allowed`;
+      setCheck({ ok: true, msg: `Reachable · protocol ${r.protocol} · ${creators} · ${r.relay ? "TURN relay configured" : "no TURN relay (set its secrets for strict networks)"}` });
+    }
   };
 
   return (
@@ -229,8 +277,9 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
       </SetRow>
       {check && <div className={check.ok ? "set-note ok" : "err"}>{check.msg}</div>}
       <p className="set-lede team-deploy">
-        No Worker yet? Deploy it once to a free Cloudflare account: <code>cd signaling && npx wrangler login && npx wrangler deploy</code>, then paste the
-        printed workers.dev URL above. signaling/README.md has the optional TURN relay step (for teammates behind strict firewalls).
+        No Worker yet? Deploy it once to a free Cloudflare account: <code>cd signaling && npx wrangler login && npx wrangler deploy</code>, allow this
+        Mockingbird to create rooms (below), then paste the printed workers.dev URL above. signaling/README.md has the optional TURN relay step (for
+        teammates behind strict firewalls).
       </p>
       <SetRow title="This Mockingbird's fingerprint" note="Teammates can compare it with what their Mockingbird shows for you">
         <span style={{ position: "relative" }}>
@@ -243,6 +292,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
           <CopyToast note={note} failed="Couldn't copy" />
         </span>
       </SetRow>
+      {st?.self && <AllowCreatorStep id={st.self.id} />}
 
       <div className="set-sub">Teammates</div>
       {st && !st.peers.length && <div className="set-note">No teammates yet. Share a group from its row in the sidebar (⇪), or join a room with a code.</div>}

@@ -12,6 +12,7 @@
     "start": "npm run build && electron .",
     "ui-preview": "node scripts/ui-preview.mjs",
     "team:signaling": "node scripts/team-signaling.mjs",
+    "team:fingerprint": "node scripts/team-fingerprint.mjs",
     "icon": "electron scripts/make-icon.js && bash scripts/make-icns.sh",
     "package": "npm run build && electron-builder --mac",
     "package:app": "npm run build && electron-builder --mac --dir",

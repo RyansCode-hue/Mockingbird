@@ -1,30 +1,28 @@
 import { DurableObject } from "cloudflare:workers";
-import { SignalingRoom, type ConnState, type RoomSocket } from "./room";
-import { ROOM_ID_RE, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL } from "../../src/shared/team/protocol";
+import { DailyCounter, SignalingRoom, type ConnState, type QuotaAnswer, type RoomSocket } from "./room";
+import { healthBody, workerConfig, type WorkerConfigEnv } from "./config";
+import { ROOM_ID_RE, SIGNALING_PING, SIGNALING_PONG } from "../../src/shared/team/protocol";
 
 /**
  * Mockingbird's signaling Worker: one Durable Object per room introduces its
  * members to each other (see room.ts for what it does and doesn't see).
  * WebSockets use the hibernation API, so idle rooms cost nothing; the
- * keep-alive ping is answered without waking the room.
+ * keep-alive ping is answered without waking the room. One more Durable
+ * Object keeps the daily TURN budget for every room.
  *
- *   GET /             health: { service, protocol }
+ *   GET /             health: { service, protocol, relay, creators }
  *   GET /rooms/<id>   WebSocket upgrade into the room
  */
 
-export interface Env {
+export interface Env extends WorkerConfigEnv {
   ROOMS: DurableObjectNamespace;
-  /** Cloudflare Realtime TURN key, set with `npx wrangler secret put TURN_KEY_ID`. */
-  TURN_KEY_ID?: string;
-  TURN_KEY_API_TOKEN?: string;
+  TURN_QUOTA: DurableObjectNamespace;
 }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/" || url.pathname === "/health") {
-      return Response.json({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: !!(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) });
-    }
+    if (url.pathname === "/" || url.pathname === "/health") return Response.json(healthBody(env));
     const m = /^\/rooms\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
     if (!m || !ROOM_ID_RE.test(m[1])) return new Response("not found", { status: 404 });
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("expected a WebSocket upgrade", { status: 426 });
@@ -79,11 +77,23 @@ export class SignalingRoomObject extends DurableObject<Env> {
   }
 
   private roomFor(roomId: string): SignalingRoom {
-    this.room ??= new SignalingRoom({
+    if (this.room) return this.room;
+    const config = workerConfig(this.env);
+    if (config.invalidCreators.length) console.error(`ALLOWED_CREATORS has entries that aren't fingerprints (ignored): ${config.invalidCreators.length}`);
+    const quota = this.env.TURN_QUOTA;
+    this.room = new SignalingRoom({
       roomId,
       storage: { get: (k) => this.ctx.storage.get(k), put: (k, v) => this.ctx.storage.put(k, v) },
       sockets: () => this.ctx.getWebSockets().filter((ws) => (ws.deserializeAttachment() as Attachment | null)?.roomId === roomId).map((ws) => this.socket(ws)),
-      turn: this.env.TURN_KEY_ID && this.env.TURN_KEY_API_TOKEN ? { keyId: this.env.TURN_KEY_ID, apiToken: this.env.TURN_KEY_API_TOKEN } : null,
+      turn: config.turn,
+      allowedCreators: config.allowedCreators,
+      turnQuota: {
+        take: async () => {
+          const res = await quota.get(quota.idFromName("global")).fetch(new Request("https://turn-quota/take", { method: "POST" }));
+          if (!res.ok) throw new Error(`the budget answered ${res.status}`);
+          return (await res.json()) as QuotaAnswer;
+        },
+      },
       log: (m) => console.log(m),
     });
     return this.room;
@@ -101,5 +111,20 @@ export class SignalingRoomObject extends DurableObject<Env> {
       },
       save: (s) => ws.serializeAttachment({ ...s, roomId: a?.roomId ?? "" }),
     };
+  }
+}
+
+/** The daily TURN budget shared by every room (one instance, named "global"). */
+export class TurnQuotaObject extends DurableObject<Env> {
+  private counter: DailyCounter;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.counter = new DailyCounter({ get: (k) => this.ctx.storage.get(k), put: (k, v) => this.ctx.storage.put(k, v) }, workerConfig(env).turnDailyLimit, (m) => console.log(m));
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    if (request.method !== "POST" || new URL(request.url).pathname !== "/take") return new Response("not found", { status: 404 });
+    return Response.json(await this.counter.take(Date.now()));
   }
 }

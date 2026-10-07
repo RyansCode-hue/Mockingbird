@@ -132,11 +132,19 @@ export interface PeerWire {
   /** Send a join introduction through the room's signaling. Rejects when `to` can't be reached there. */
   introduce(roomId: RoomId, to: MemberId, type: IntroType, body: unknown): Promise<void>;
   linkStates(): Map<MemberId, { state: PeerLinkState; detail?: string; since: number }>;
-  roomStates(): Map<RoomId, { signaling: "online" | "connecting" | "offline"; problem?: string }>;
+  roomStates(): Map<RoomId, RoomSignalingState>;
   problems(): string[];
-  /** After sleep or a network change: reconnect everything now. */
-  wake(): void;
+  /** After sleep or a network change: reconnect everything now (or only one room's signaling). */
+  wake(roomId?: RoomId): void;
   close(): void;
+}
+
+export interface RoomSignalingState {
+  signaling: "online" | "connecting" | "offline";
+  /** Why the signaling server refused this install, until it lets it in. */
+  problem?: string;
+  /** That refusal's kind: creation-refused (not on ALLOWED_CREATORS), not-member, protocol, bad-url. */
+  code?: string;
 }
 
 // ---- the team ------------------------------------------------------------------------------
@@ -388,6 +396,20 @@ export class TeamCore implements Team {
     return { roomId: j.roomId, name: j.name };
   }
 
+  /**
+   * Take back a room this install created and nobody joined (the signaling
+   * server refused it): nothing of it ever left this machine. Throws for a
+   * room with other members.
+   */
+  discardUnsharedRoom(roomId: RoomId): void {
+    const room = this.room(roomId);
+    if (!room) return;
+    if (room.creator !== this.self.id || room.members.length > 1) throw new Error(`${room.name} has members; it can't be discarded`);
+    this.store.remove(roomId);
+    this.syncWire();
+    this.changedSoon();
+  }
+
   /** Give up on a pasted code. */
   cancelJoin(roomId: RoomId): void {
     this.joins = this.joins.filter((j) => j.roomId !== roomId);
@@ -416,9 +438,24 @@ export class TeamCore implements Team {
       .filter((k): k is string => !!k);
   }
 
-  /** After sleep or a network change: reconnect now. */
-  wake(): void {
-    this.wire.wake();
+  /** After sleep or a network change: reconnect now (or only one room's signaling). */
+  wake(roomId?: RoomId): void {
+    this.wire.wake(roomId);
+  }
+
+  /** The room's signaling connection as it is right now. */
+  signalingState(roomId: RoomId): RoomSignalingState | undefined {
+    return this.wire.roomStates().get(roomId);
+  }
+
+  /** Wait until the room's signaling server has let this install in, refused it, or `ms` has passed. */
+  async signalingSettled(roomId: RoomId, ms: number): Promise<RoomSignalingState | undefined> {
+    const until = Date.now() + ms;
+    for (;;) {
+      const st = this.signalingState(roomId);
+      if (st?.signaling === "online" || st?.problem || Date.now() >= until) return st;
+      await new Promise((r) => setTimeout(r, 100));
+    }
   }
 
   /** This install's display name changed: every room hears it. */

@@ -2,9 +2,10 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { tempDir } from "./helpers";
 import { loadIdentity, randomToken, roomIdFor, signalingJoinKey, signalingTokenHash, type Identity } from "../src/main/team/identity";
-import { SignalingRoom, mintTurnCredentials, type ConnState, type RoomSocket, type RoomLimits } from "../signaling/src/room";
+import { DailyCounter, SignalingRoom, mintTurnCredentials, turnDailyLimit, DEFAULT_TURN_DAILY_LIMIT, type ConnState, type RoomSocket, type RoomLimits, type TurnQuota } from "../signaling/src/room";
+import { healthBody } from "../signaling/src/config";
 import { startLocalSignaling } from "../signaling/src/local/server";
-import { CLOSE, helloPayload, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, signalingSocketUrl, TEAM_PROTOCOL, type ServerMessage } from "../src/shared/team/protocol";
+import { allowCreatorsCommand, CLOSE, formatFingerprint, helloPayload, parseAllowedCreators, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, signalingSocketUrl, TEAM_PROTOCOL, type ServerMessage } from "../src/shared/team/protocol";
 
 const newId = (name: string) => loadIdentity(path.join(tempDir(name), "team"));
 
@@ -31,8 +32,21 @@ class FakeSocket implements RoomSocket {
 }
 
 /** A room over fake sockets and in-memory storage, as the Worker would drive it. */
-function harness(o: { roomId?: string; limits?: Partial<RoomLimits>; turn?: { keyId: string; apiToken: string } | null; fetch?: typeof fetch; now?: () => number; storage?: Map<string, unknown> } = {}) {
+function harness(
+  o: {
+    roomId?: string;
+    limits?: Partial<RoomLimits>;
+    turn?: { keyId: string; apiToken: string } | null;
+    fetch?: typeof fetch;
+    now?: () => number;
+    storage?: Map<string, unknown>;
+    /** Who may create rooms; default: the harness's creator. */
+    allowed?: (creatorId: string) => readonly string[] | undefined;
+    turnQuota?: TurnQuota;
+  } = {}
+) {
   const creator = newId("creator");
+  let allowed = o.allowed ? o.allowed(creator.id) : [creator.id];
   const salt = randomToken();
   const roomId = o.roomId ?? roomIdFor(creator.publicKey, salt);
   const sockets: FakeSocket[] = [];
@@ -48,6 +62,8 @@ function harness(o: { roomId?: string; limits?: Partial<RoomLimits>; turn?: { ke
       fetch: o.fetch,
       stun: [{ urls: "stun:stun.example:3478" }],
       limits: o.limits,
+      allowedCreators: allowed,
+      turnQuota: o.turnQuota,
       log: (m) => logs.push(m),
     });
   let room = make();
@@ -63,7 +79,25 @@ function harness(o: { roomId?: string; limits?: Partial<RoomLimits>; turn?: { ke
     return s;
   };
   const say = (s: FakeSocket, msg: unknown) => room.message(s, JSON.stringify(msg));
-  return { creator, salt, roomId, sockets, storage, logs, connect, say, get room() { return room; }, rehydrate: () => (room = make()) };
+  return {
+    creator,
+    salt,
+    roomId,
+    sockets,
+    storage,
+    logs,
+    connect,
+    say,
+    get room() {
+      return room;
+    },
+    rehydrate: () => (room = make()),
+    /** The Worker restarted with another ALLOWED_CREATORS. */
+    setAllowed: (ids: readonly string[] | undefined) => {
+      allowed = ids;
+      room = make();
+    },
+  };
 }
 
 describe("signaling room: who gets in", () => {
@@ -141,6 +175,74 @@ describe("signaling room: who gets in", () => {
     expect(s.last("error")).toMatchObject({ code: "not-ready" });
     await h.room.message(s, SIGNALING_PING);
     expect(s.last("pong")).toBeTruthy();
+  });
+});
+
+describe("signaling room: who may create rooms (ALLOWED_CREATORS)", () => {
+  it("lets an allowlisted creator create the room", async () => {
+    const h = harness({ allowed: (id) => ["f".repeat(32), id] });
+    const c = await h.connect(h.creator, { create: h.salt });
+    expect(c.last("welcome")).toMatchObject({ you: h.creator.id });
+    expect(await h.room.memberIds()).toEqual([h.creator.id]);
+  });
+
+  it("refuses to create a room for a key that isn't listed, saying which fingerprint to add", async () => {
+    const h = harness({ allowed: () => ["f".repeat(32)] });
+    const c = await h.connect(h.creator, { create: h.salt });
+    expect(c.last("error")).toEqual({ t: "error", code: "creation-refused", message: `This key (${formatFingerprint(h.creator.id)}) isn't allowed to create rooms on this signaling Worker — add its fingerprint to ALLOWED_CREATORS` });
+    expect(c.closed?.code).toBe(CLOSE.creationRefused);
+    expect(c.sent.some((m) => m.t === "welcome")).toBe(false);
+    expect(await h.room.memberIds()).toEqual([]);
+    expect(h.logs.join("\n")).toMatch(/refused to create it for/);
+  });
+
+  it("refuses every new room while ALLOWED_CREATORS is unset or empty", async () => {
+    for (const allowed of [undefined, []]) {
+      const h = harness({ allowed: () => allowed });
+      const c = await h.connect(h.creator, { create: h.salt });
+      expect(c.last("error")).toMatchObject({ code: "creation-refused", message: expect.stringMatching(/doesn't allow new rooms yet — add your fingerprint \(.+\) to ALLOWED_CREATORS/) });
+      expect(c.closed?.code).toBe(CLOSE.creationRefused);
+      // and so nobody in it can mint TURN credentials
+      await h.say(c, { t: "turn" });
+      expect(c.sent.some((m) => m.t === "turn")).toBe(false);
+    }
+  });
+
+  it("still lets invited joiners in, and members back, whatever the list says later", async () => {
+    const h = harness();
+    const c = await h.connect(h.creator, { create: h.salt });
+    const token = randomToken();
+    await h.say(c, { t: "invite", tokenHash: signalingTokenHash(token), expiresAt: Date.now() + 3_600_000 });
+    // the Worker is redeployed with an empty list: existing rooms carry on
+    h.setAllowed([]);
+    const nick = newId("nick"); // never on the list
+    const n = await h.connect(nick, { join: signalingJoinKey(token) });
+    expect(n.last("welcome")).toMatchObject({ you: nick.id });
+    expect((await h.connect(h.creator, { create: h.salt })).last("welcome")).toBeTruthy(); // a member, by key
+    expect((await h.connect(nick)).last("welcome")).toBeTruthy();
+  });
+
+  it("reads fingerprints as Settings shows them: grouped, comma- or space-separated; reports the rest", () => {
+    const a = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    const b = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+    expect(parseAllowedCreators(`${formatFingerprint(a)}, ${formatFingerprint(b)}`)).toEqual({ ids: [a, b], invalid: [] });
+    expect(parseAllowedCreators(`${formatFingerprint(a)} ${formatFingerprint(b)}`)).toEqual({ ids: [a, b], invalid: [] });
+    expect(parseAllowedCreators(`${a.toUpperCase()}\n${b}; ${a}`)).toEqual({ ids: [a, b], invalid: [] });
+    expect(parseAllowedCreators("ryan, a1b2")).toEqual({ ids: [], invalid: ["ryan", "a1b2"] });
+    expect(parseAllowedCreators(undefined)).toEqual({ ids: [], invalid: [] });
+    expect(allowCreatorsCommand([a, b])).toBe(`cd signaling && echo "${formatFingerprint(a)}, ${formatFingerprint(b)}" | npx wrangler secret put ALLOWED_CREATORS`);
+    // the command's own value parses back to the same list
+    expect(parseAllowedCreators(/echo "(.*)"/.exec(allowCreatorsCommand([a, b]))![1]).ids).toEqual([a, b]);
+  });
+});
+
+describe("the Worker's /health", () => {
+  it("says how many may create rooms and whether TURN is set, never who", () => {
+    const a = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    expect(healthBody({})).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: false, creators: 0 });
+    const h = healthBody({ ALLOWED_CREATORS: `${formatFingerprint(a)}, ${"b".repeat(32)}, typo`, TURN_KEY_ID: "k", TURN_KEY_API_TOKEN: "t" });
+    expect(h).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: true, creators: 2, creatorsInvalid: 1 });
+    expect(JSON.stringify(h)).not.toContain("a1b2");
   });
 });
 
@@ -272,6 +374,60 @@ describe("signaling room: TURN credentials", () => {
   });
 });
 
+describe("the Worker's daily TURN budget", () => {
+  const memStorage = () => {
+    const m = new Map<string, unknown>();
+    return { get: async (k: string) => structuredClone(m.get(k)) as any, put: async (k: string, v: unknown) => void m.set(k, structuredClone(v)) };
+  };
+
+  it("counts per UTC day across callers, refuses past the limit, logs once, and resets the next day", async () => {
+    const logs: string[] = [];
+    const storage = memStorage();
+    const day1 = Date.UTC(2026, 9, 7, 12);
+    const counter = new DailyCounter(storage, 2, (m) => logs.push(m));
+    expect(await counter.take(day1)).toEqual({ ok: true, used: 1, limit: 2 });
+    // a second room's Durable Object reads the same counter (the Worker's one instance)
+    expect(await new DailyCounter(storage, 2, (m) => logs.push(m)).take(day1)).toEqual({ ok: true, used: 2, limit: 2 });
+    const again = new DailyCounter(storage, 2, (m) => logs.push(m));
+    expect(await again.take(day1 + 1000)).toEqual({ ok: false, used: 2, limit: 2 });
+    expect(await again.take(day1 + 2000)).toEqual({ ok: false, used: 2, limit: 2 });
+    expect(logs).toEqual([expect.stringMatching(/TURN budget used up: 2 credentials minted today \(2026-10-07, limit 2\)/)]);
+    expect(await again.take(Date.UTC(2026, 9, 8, 0, 0, 1))).toEqual({ ok: true, used: 1, limit: 2 });
+  });
+
+  it("stops a member looping on credentials: past the budget they get STUN only, and Cloudflare isn't asked", async () => {
+    let now = Date.UTC(2026, 9, 7, 12);
+    const fetchStub = vi.fn(async () => new Response(JSON.stringify({ iceServers: [{ urls: ["turn:t:3478"], username: "u", credential: "c" }] }), { status: 201 }));
+    const quotaLogs: string[] = [];
+    const h = harness({ turn: { keyId: "k", apiToken: "t" }, fetch: fetchStub as unknown as typeof fetch, now: () => now, turnQuota: new DailyCounter(memStorage(), 3, (m) => quotaLogs.push(m)) });
+    const c = await h.connect(h.creator, { create: h.salt });
+    for (let i = 0; i < 5; i++) {
+      await h.say(c, { t: "turn" });
+      now += 31_000; // past the per-connection interval each time
+    }
+    const turns = c.sent.filter((m): m is Extract<ServerMessage, { t: "turn" }> => m.t === "turn");
+    expect(turns.map((t) => t.relay)).toEqual([true, true, true, false, false]);
+    expect(turns[3]).toMatchObject({ relay: false, iceServers: [{ urls: "stun:stun.example:3478" }], error: expect.stringMatching(/daily relay budget \(3 credentials\) is used up/) });
+    expect(fetchStub).toHaveBeenCalledTimes(3);
+    expect(quotaLogs).toHaveLength(1);
+  });
+
+  it("gives no credentials when the budget can't be checked", async () => {
+    const fetchStub = vi.fn();
+    const h = harness({ turn: { keyId: "k", apiToken: "t" }, fetch: fetchStub as unknown as typeof fetch, turnQuota: { take: async () => Promise.reject(new Error("quota object unreachable")) } });
+    const c = await h.connect(h.creator, { create: h.salt });
+    await h.say(c, { t: "turn" });
+    expect(c.last("turn")).toMatchObject({ relay: false, error: expect.stringMatching(/couldn't check the relay budget: quota object unreachable/) });
+    expect(fetchStub).not.toHaveBeenCalled();
+    expect(h.logs.join("\n")).toMatch(/couldn't check the relay budget/);
+  });
+
+  it("reads TURN_DAILY_LIMIT, falling back to the default for anything but a positive count", () => {
+    expect(turnDailyLimit("50")).toBe(50);
+    for (const v of [undefined, "", "0", "-3", "1.5", "lots"]) expect(turnDailyLimit(v)).toBe(DEFAULT_TURN_DAILY_LIMIT);
+  });
+});
+
 describe("the local signaling server", () => {
   /** A client over Node's own WebSocket (the one the app's main process uses). */
   function client(url: string) {
@@ -305,7 +461,7 @@ describe("the local signaling server", () => {
     const server = await startLocalSignaling({ log: () => undefined });
     try {
       const health = await (await fetch(`${server.url}/health`)).json();
-      expect(health).toMatchObject({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL });
+      expect(health).toMatchObject({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, creators: "any", local: true });
       const ryan = newId("ryan");
       const salt = randomToken();
       const roomId = roomIdFor(ryan.publicKey, salt);

@@ -1,8 +1,8 @@
 import * as crypto from "crypto";
 import * as http from "http";
 import { acceptWebSocket, type WsConnection } from "./wsServer";
-import { SignalingRoom, type ConnState, type RoomLimits, type TurnConfig } from "../room";
-import { ROOM_ID_RE, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, type IceServer, type ServerMessage, type SignedEnvelope } from "../../../src/shared/team/protocol";
+import { DailyCounter, DEFAULT_TURN_DAILY_LIMIT, SignalingRoom, type ConnState, type RoomLimits, type TurnConfig } from "../room";
+import { ROOM_ID_RE, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, type IceServer, type ServerMessage, type SignalingHealth, type SignedEnvelope } from "../../../src/shared/team/protocol";
 
 /**
  * The signaling Worker's room logic served from Node, for tests and for two
@@ -21,6 +21,9 @@ export interface LocalSignalingOptions {
   /** STUN handed out (default none: tests stay on loopback). */
   stun?: IceServer[];
   turn?: TurnConfig | null;
+  /** Who may create rooms. Default "any": this server is for tests and dev instances on one Mac. */
+  allowedCreators?: readonly string[] | "any";
+  turnDailyLimit?: number;
   fetch?: typeof fetch;
   limits?: Partial<RoomLimits>;
   tamper?: Tamper | null;
@@ -49,6 +52,9 @@ export async function startLocalSignaling(opts: LocalSignalingOptions = {}): Pro
   const log = opts.log ?? ((m: string) => console.log(`[local signaling] ${m}`));
   let tamper = opts.tamper ?? null;
   const rooms = new Map<string, { room: SignalingRoom; conns: Map<string, Conn> }>();
+  const allowedCreators = opts.allowedCreators ?? "any";
+  const quotaStore = new Map<string, unknown>();
+  const turnQuota = new DailyCounter({ get: async (k) => structuredClone(quotaStore.get(k)) as any, put: async (k, v) => void quotaStore.set(k, structuredClone(v)) }, opts.turnDailyLimit ?? DEFAULT_TURN_DAILY_LIMIT, log);
   const sockets = new Set<WsConnection>();
 
   const roomFor = (roomId: string) => {
@@ -62,6 +68,8 @@ export async function startLocalSignaling(opts: LocalSignalingOptions = {}): Pro
         sockets: () => [...conns.entries()].filter(([, c]) => c.ws.open).map(([cid]) => socketFor(roomId, cid, conns)),
         stun: opts.stun ?? [],
         turn: opts.turn ?? null,
+        allowedCreators,
+        turnQuota,
         fetch: opts.fetch,
         limits: opts.limits,
         log,
@@ -96,7 +104,8 @@ export async function startLocalSignaling(opts: LocalSignalingOptions = {}): Pro
   const server = http.createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
     if (path === "/" || path === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: !!opts.turn, local: true }));
+      const health: SignalingHealth = { service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: !!opts.turn, creators: allowedCreators === "any" ? "any" : allowedCreators.length, local: true };
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(health));
       return;
     }
     res.writeHead(path.startsWith("/rooms/") ? 426 : 404).end(path.startsWith("/rooms/") ? "expected a WebSocket upgrade" : "not found");

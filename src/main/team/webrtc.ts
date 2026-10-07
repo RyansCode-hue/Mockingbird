@@ -1,6 +1,6 @@
 import { randomNonce, verifySignature, fingerprintOf, type Identity } from "./identity";
 import { SignalingClient, type SignalingEvent } from "./signalingClient";
-import type { IntroType, PeerWire, WireHandler, WireRoom } from "./transport";
+import type { IntroType, PeerWire, RoomSignalingState, WireHandler, WireRoom } from "./transport";
 import { envelopeProblem, INTRO_TYPES, PUBLIC_KEY_RE, ReplayGuard, sdpFingerprint, signalPayload, TEAM_PROTOCOL, type IceServer, type SignalType, type SignedEnvelope, type UnsignedEnvelope } from "../../shared/team/protocol";
 import { FINGERPRINT_MISMATCH, type HostCommand, type HostEvent, type IceCandidate, type Route } from "../../shared/team/peerHost";
 import type { MemberId, PeerLinkState, RoomId } from "../../shared/team/types";
@@ -197,11 +197,11 @@ export class WebRtcWire implements PeerWire {
     return out;
   }
 
-  roomStates(): Map<RoomId, { signaling: "online" | "connecting" | "offline"; problem?: string }> {
-    const out = new Map<RoomId, { signaling: "online" | "connecting" | "offline"; problem?: string }>();
+  roomStates(): Map<RoomId, RoomSignalingState> {
+    const out = new Map<RoomId, RoomSignalingState>();
     for (const [id, r] of this.rooms) {
       const st = r.client.state === "stopped" ? "offline" : r.client.state;
-      out.set(id, { signaling: st, ...(r.client.problem ? { problem: r.client.problem } : {}) });
+      out.set(id, { signaling: st, ...(r.client.problem ? { problem: r.client.problem } : {}), ...(r.client.problemCode ? { code: r.client.problemCode } : {}) });
     }
     return out;
   }
@@ -210,8 +210,9 @@ export class WebRtcWire implements PeerWire {
     return this.ice.problem ? [this.ice.problem] : [];
   }
 
-  wake(): void {
+  wake(roomId?: RoomId): void {
     if (this.closed) return;
+    if (roomId) return this.rooms.get(roomId)?.client.reconnect();
     this.o.log("waking: reconnecting signaling and repairing connections");
     for (const r of this.rooms.values()) r.client.reconnect();
     for (const p of this.peers.values()) {

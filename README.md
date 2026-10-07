@@ -277,8 +277,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 - **Team rooms** ([design](docs/team-rooms.md)) — two Mockingbirds sharing a
   group live. Built so far, the foundation: each install's key pair and display
-  name (Settings → Team); the signaling Worker (`signaling/`, deployed once to a
-  free Cloudflare account, with Cloudflare TURN as the fallback relay); peer-to-
+  name (Settings → Team, or `npm run team:fingerprint` for the fingerprint);
+  the signaling Worker (`signaling/`, deployed once to a free Cloudflare
+  account, with Cloudflare TURN as the fallback relay; only fingerprints on its
+  `ALLOWED_CREATORS` secret can create rooms, so nobody who learns its URL can
+  spend the relay — see `signaling/README.md`); peer-to-
   peer WebRTC connections in a hidden window, with every connection detail
   signed and each certificate pinned; a signed, Lamport-ordered event log per
   room that every member keeps and merges on reconnect; share a group as a room

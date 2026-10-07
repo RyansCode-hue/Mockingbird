@@ -49,6 +49,44 @@ export function formatFingerprint(fp: string): string {
   return fp.replace(/(.{4})(?=.)/g, "$1 ");
 }
 
+/**
+ * The fingerprints a signaling Worker's ALLOWED_CREATORS secret lists. Entries
+ * are separated by commas, semicolons or line breaks; within one, spaces and
+ * colons are ignored, so fingerprints as Settings → Team shows them ("a1b2
+ * c3d4 …") work, and so do several separated only by spaces. An entry that
+ * isn't whole fingerprints is returned in `invalid`.
+ */
+export function parseAllowedCreators(text: string | undefined | null): { ids: string[]; invalid: string[] } {
+  const ids = new Set<string>();
+  const invalid: string[] = [];
+  for (const raw of (text ?? "").split(/[,;\n]+/)) {
+    const entry = raw.replace(/[\s:]+/g, "").toLowerCase();
+    if (!entry) continue;
+    if (!/^[0-9a-f]+$/.test(entry) || entry.length % 32 !== 0) {
+      invalid.push(raw.trim());
+      continue;
+    }
+    for (let i = 0; i < entry.length; i += 32) ids.add(entry.slice(i, i + 32));
+  }
+  return { ids: [...ids], invalid };
+}
+
+/** The command that lets these fingerprints create rooms on the signaling Worker (it replaces the whole list). */
+export function allowCreatorsCommand(fingerprints: string[]): string {
+  return `cd signaling && echo "${fingerprints.map(formatFingerprint).join(", ")}" | npx wrangler secret put ALLOWED_CREATORS`;
+}
+
+/** What a signaling server's /health answers. `creators` is how many keys may create rooms ("any" on the local test server), never which. */
+export interface SignalingHealth {
+  service: "mockingbird-signaling";
+  protocol: number;
+  relay: boolean;
+  creators: number | "any";
+  /** ALLOWED_CREATORS entries that aren't fingerprints. */
+  creatorsInvalid?: number;
+  local?: boolean;
+}
+
 // ---- encoding --------------------------------------------------------------------
 
 export function toBase64Url(bytes: Uint8Array): string {
@@ -197,6 +235,7 @@ export type SignalingErrorCode =
   | "protocol" // the hello's SIGNALING_PROTOCOL isn't the server's
   | "bad-message"
   | "not-member" // neither a member, the room's creator, nor holding a valid join token
+  | "creation-refused" // a new room, from a key not on the Worker's ALLOWED_CREATORS
   | "not-ready" // a message before the hello was accepted
   | "room-full"
   | "rate" // too many messages
@@ -221,6 +260,7 @@ export const CLOSE = {
   protocol: 4000,
   notMember: 4001,
   replaced: 4002,
+  creationRefused: 4003,
   rate: 4008,
   badMessage: 4009,
   helloTimeout: 4010,
