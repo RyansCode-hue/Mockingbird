@@ -52,3 +52,42 @@ export function overlaps(list: WorktreeChanges[]): Record<string, FileOverlap[]>
   }
   return out;
 }
+
+/** A team room member's pushed branch, as fetched into a local clone, and the files it changes against its base. */
+export interface TeammateChanges {
+  member: string;
+  name: string;
+  branch: string;
+  /** The local clone's main checkout (as WorktreeChanges.repo). */
+  repo: string;
+  files: string[];
+}
+
+/** The `other` of a teammate's overlap: not a session here, so there's no pane to jump to. */
+export const teammateOverlapId = (member: string, branch: string) => `team:${member}:${branch}`;
+
+/**
+ * Which sessions' worktrees change files a teammate's pushed branch also
+ * changes ("Nick's branch also changes this"). A worktree on that same branch
+ * is the teammate's work checked out here, not a clash.
+ */
+export function teammateOverlaps(list: WorktreeChanges[], teammates: TeammateChanges[]): Record<string, FileOverlap[]> {
+  const out: Record<string, FileOverlap[]> = {};
+  for (const a of list) {
+    for (const t of teammates) {
+      if (a.repo !== t.repo || a.branch === t.branch) continue;
+      const theirs = new Set(t.files);
+      const both = a.files.filter((f) => theirs.has(f));
+      if (!both.length) continue;
+      (out[a.sessionId] ??= []).push({ other: teammateOverlapId(t.member, t.branch), otherTitle: `${t.name}'s pushed branch`, otherBranch: t.branch, files: both, teammate: { id: t.member, name: t.name } });
+    }
+  }
+  return out;
+}
+
+/** Overlaps from several checks, per session: this machine's worktrees first, so a click still jumps to a session here. */
+export function mergeOverlaps(...maps: Record<string, FileOverlap[]>[]): Record<string, FileOverlap[]> {
+  const out: Record<string, FileOverlap[]> = {};
+  for (const m of maps) for (const [id, list] of Object.entries(m)) (out[id] ??= []).push(...list);
+  return out;
+}
