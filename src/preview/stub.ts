@@ -13,6 +13,8 @@
 import type { AdoBoard, AdoWorkItem, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS } from "../shared/types";
 import type { TeamStatus } from "../shared/team/types";
+// team rooms: team chat
+import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../shared/team/chat";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -151,6 +153,39 @@ const team: TeamStatus = {
   ],
   problems: [],
 };
+// team rooms: team chat — 5101's chat has a mention of you, agent updates, an assistant answer and one unread message from Sam
+let lamport = 0;
+const chatEntry = (over: Partial<ChatEntry> & Pick<ChatEntry, "kind" | "author" | "at">): ChatEntry => ({ id: `c${++lamport}`, lamport, text: "", ...over });
+const chats: Record<string, ChatEntry[]> = {
+  R5101aaaaaaaaaaaaaaaaa: [
+    chatEntry({ kind: "message", author: NICK, at: now - 40 * min, text: "Morning! I'll take the **dropdown UI** — @You can you own the `last-org` endpoint?", mentions: [ME] }),
+    chatEntry({ kind: "message", author: ME, at: now - 38 * min, text: "On it. Branch `5101-orgDropdowns`; the API session is going now.", mentions: [] }),
+    chatEntry({ kind: "update", author: NICK, at: now - 30 * min, items: [
+      { session: "n1", title: "Dropdown UI", kind: "finished", at: now - 30 * min },
+      { session: "n2", title: "Dropdown tests", kind: "waiting", detail: "Claude needs your permission to use Bash", at: now - 30 * min },
+    ] }),
+    chatEntry({ kind: "update", author: NICK, at: now - 22 * min, items: [{ session: "", title: "Org dropdown UI", kind: "board", detail: "Nick claimed", at: now - 22 * min }] }),
+    chatEntry({ kind: "message", author: NICK, at: now - 12 * min, text: "@assistant what's left before we can open the PR?", mentions: ["assistant"] }),
+    chatEntry({ kind: "assistant", author: NICK, at: now - 11 * min, replyTo: "c5", state: "answer", text: "Two things:\n- **API**: `GET /api/users/me/last-org` is in; the PUT still needs a test (the *API tests* session is on it).\n- **UI**: Nick's dropdown tests wait on a Bash permission.\nOnce both are green, open the PR against `dev`." }),
+    chatEntry({ kind: "update", author: ME, at: now - 6 * min, items: [{ session: "s2", title: "API: last org per user", kind: "waiting", detail: "Claude needs your permission to use Bash", at: now - 6 * min }] }),
+    chatEntry({ kind: "message", author: SAM, at: now - 3 * min, text: "Heads up: `dev` moved this morning — rebase before the PR. Notes: https://dev.azure.com/acme/Backoffice/_wiki/rebase", mentions: [] }),
+  ],
+  // 5110: an assistant turn that failed, and one still thinking
+  R5110bbbbbbbbbbbbbbbbb: (() => {
+    const draft = chatEntry({ kind: "message", author: NICK, at: now - 90 * min, text: "Donor entities: the schema draft is in docs/donors.md — @You have a look when you can.", mentions: [ME] });
+    const asked = chatEntry({ kind: "message", author: ME, at: now - 5 * min, text: "@assistant which tables does the draft add?", mentions: ["assistant"] });
+    const failed = chatEntry({ kind: "assistant", author: ME, at: now - 5 * min, replyTo: asked.id, state: "error", text: "Claude Code isn't installed (not found on your shell's PATH)" });
+    const again = chatEntry({ kind: "message", author: NICK, at: now - 20_000, text: "@assistant summarize the draft for @You, then", mentions: ["assistant", ME] });
+    return [draft, asked, failed, again, chatEntry({ kind: "assistant", author: NICK, at: now - 18_000, replyTo: again.id, state: "thinking" })];
+  })(),
+};
+const chatRead: Record<string, ReadMarks> = { R5101aaaaaaaaaaaaaaaaa: { [NICK]: 6, [ME]: 7 } };
+const chatJoined = now - 2 * 24 * 60 * min;
+const chatView = (roomId: string) => {
+  const entries = chats[roomId] ?? [];
+  return { roomId, self: ME, joinedAt: chatJoined, entries, read: chatRead[roomId] ?? {}, ...unreadCounts(entries, ME, chatRead[roomId], chatJoined) };
+};
+const chatChanged = (roomId: string) => emit("onTeamChatChanged", roomId);
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
 
 // ---- event plumbing ------------------------------------------------------------
@@ -441,6 +476,38 @@ const api: Record<string, (...a: any[]) => any> = {
     teamChanged();
   },
   teamCheckSignaling: async () => later({ protocol: 1, relay: true, creators: 2, problem: null }, 400),
+
+  // team rooms: team chat — posting works; @assistant thinks, then answers
+  teamChatView: async (roomId: string) => (team.rooms.some((r) => r.id === roomId) ? chatView(roomId) : err("You're not in that room")),
+  teamChatUnread: async () => Object.fromEntries(team.rooms.map((r) => [r.id, (({ unread, mentions }) => ({ unread, mentions }))(chatView(r.id))])),
+  teamChatViewing: async () => undefined,
+  teamChatRead: async (roomId: string) => {
+    const marks = { ...(chatRead[roomId] ?? {}) };
+    for (const e of chats[roomId] ?? []) marks[e.author] = Math.max(marks[e.author] ?? 0, e.lamport);
+    chatRead[roomId] = marks;
+    chatChanged(roomId);
+    const { unread, mentions } = chatView(roomId);
+    return { unread, mentions };
+  },
+  teamChatPost: async (roomId: string, text: string) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    if (!room) return err("You're not in that room");
+    if (!text.trim()) return err("The message is empty");
+    const message = chatEntry({ kind: "message", author: ME, at: Date.now(), text: text.trim(), mentions: parseMentions(text, room.members) });
+    (chats[roomId] ??= []).push(message);
+    chatChanged(roomId);
+    if (message.mentions!.includes("assistant")) {
+      const thinking = chatEntry({ kind: "assistant", author: ME, at: Date.now(), replyTo: message.id, state: "thinking" });
+      chats[roomId].push(thinking);
+      chatChanged(roomId);
+      setTimeout(() => {
+        chats[roomId] = chats[roomId].filter((e) => e !== thinking);
+        chats[roomId].push(chatEntry({ kind: "assistant", author: ME, at: Date.now(), replyTo: message.id, state: "answer", text: "In the UI preview the assistant only pretends — in the app it answers from the room's chat, board, sessions and docs." }));
+        chatChanged(roomId);
+      }, 1500);
+    }
+    return { id: message.id };
+  },
 };
 
 w.mb = new Proxy(api, {
@@ -488,6 +555,8 @@ if (section) {
 }
 if (theme === "light" || theme === "dark") set("mb.theme", theme);
 if (shown) set("mb.shown", shown.split(","));
+// team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared)
+if (params.get("chat")) set("mb.roomChat.room", params.get("chat"));
 // screenshots show the settled screen: no transition caught halfway (a theme switch fades colors)
 if (params.has("shot")) {
   const still = document.createElement("style");

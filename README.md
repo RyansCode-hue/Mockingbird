@@ -288,6 +288,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
   (⇪ on its row) and join one with a code (⇲); a shared group shows who's
   connected. Next, built on its transport: live shared panes and typing,
   take-over, the team room chat with agents, and the plan and claims board.
+  The team room chat: each room's thread in the side bar's **Team room** view
+  (and the group bar's **Room chat** chip), with unread counts and @mentions
+  that notify, working offline (messages merge on reconnect); room agents'
+  turns, waits, take-overs and board changes posted as compact updates;
+  `list_sessions` / `send_message` reaching teammates' room sessions through
+  the room; and **@assistant**, answered on the asker's laptop from the room's
+  chat, sessions, board and docs.
 
 ### Next
 

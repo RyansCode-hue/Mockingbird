@@ -33,6 +33,12 @@ export function messageKeys(list: AgentMessage[]): string[] {
   });
 }
 
+/** A session ("<id>@<teammate>" runs on a teammate's laptop, through a team room: nothing here to jump to). */
+function Party({ id, title, onJump }: { id: string; title: string; onJump: (id: string) => void }) {
+  if (id.includes("@")) return <span title="A session on a teammate's laptop, reached through the team room">{title}</span>;
+  return <a onClick={(e) => (e.stopPropagation(), onJump(id))}>{title}</a>;
+}
+
 /** Who told whom what — all sessions, or the ones a session sent and received. */
 export function MessageLogDialog({ sessionId, title, onJump, onClose }: { sessionId?: string; title?: string; onJump: (id: string) => void; onClose: () => void }) {
   const all = useAgentMessages();
@@ -50,9 +56,9 @@ export function MessageLogDialog({ sessionId, title, onJump, onClose }: { sessio
           <div key={key} className={`msg-row ${m.refused ? "refused" : ""}`} onClick={() => setOpen(open === key ? null : key)}>
             <div className="msg-hd">
               <span className="msg-when">{when(m.at)}</span>
-              <a onClick={(e) => (e.stopPropagation(), onJump(m.from))}>{m.fromTitle}</a>
+              <Party id={m.from} title={m.fromTitle} onJump={onJump} />
               <span className="msg-arrow">→</span>
-              <a onClick={(e) => (e.stopPropagation(), onJump(m.to))}>{m.toTitle}</a>
+              <Party id={m.to} title={m.toTitle} onJump={onJump} />
               <span className="msg-how">{m.outcome}</span>
             </div>
             <div className={`msg-text ${open === key ? "open" : ""}`}>{m.text}</div>
