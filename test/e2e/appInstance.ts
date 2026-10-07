@@ -72,7 +72,10 @@ export async function launchApp(name: string, signalingUrl: string, o: LaunchOpt
       // not listening yet
     }
   }
-  if (!wsUrl) throw new Error(`${name}'s window never appeared:\n${output.join("").slice(-2000)}`);
+  if (!wsUrl) {
+    child.kill("SIGKILL"); // the caller never gets it to quit
+    throw new Error(`${name}'s window never appeared:\n${output.join("").slice(-2000)}`);
+  }
   const ws = new WebSocket(wsUrl);
   await new Promise((resolve, reject) => ((ws.onopen = resolve), (ws.onerror = () => reject(new Error("no DevTools connection")))));
   let id = 0;

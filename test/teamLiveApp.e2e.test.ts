@@ -14,9 +14,11 @@ import type { RoomChatView as ChatView } from "../src/shared/team/chat";
  * and userData, real WebRTC), through the local signaling server or the
  * deployed Worker at MB_E2E_SIGNALING_URL. Ryan shares a group; Nick joins.
  * Live panes (a shared terminal Nick watches and types into), the team chat,
- * the plan board, a room session's backup after an agent turn, and Nick
- * taking it over once Ryan's Mockingbird has quit — then Ryan's coming back
- * to it taken over. The agent is a stand-in for Claude Code (FAKE_CLAUDE):
+ * the plan board, a room session's backup after an agent turn, Nick asking
+ * for a session while Ryan is connected and Ryan handing it over from his
+ * prompt (his agent stops, Nick's continues), and Nick taking one over once
+ * Ryan's Mockingbird has quit — then Ryan's coming back to it, his copy
+ * stopped even though it ran again at start. The agent is a stand-in for Claude Code (FAKE_CLAUDE):
  * nothing calls a model. Windows open on screen while it runs, so it's opt-in:
  *
  *   MB_E2E_APP=1 npx vitest run test/teamLiveApp.e2e.test.ts
@@ -28,14 +30,17 @@ import type { RoomChatView as ChatView } from "../src/shared/team/chat";
  *   MB_E2E_APP=1 MB_E2E_SIGNALING_URL=https://… npx vitest run test/teamLiveApp.e2e.test.ts
  */
 
-const CONV = "e2e00000-0000-4000-8000-000000000001";
+/** The stand-in's conversation for a session started fresh: its own, as Claude's would be. */
+const convOf = (sessionId: string) => `e2e-${sessionId}`;
 /**
  * Claude Code's stand-in: says how it was started, then runs a "turn" for each
  * line typed into it — the hook events Mockingbird reads (as hook.sh leaves
- * them), a line in notes.txt and one in its conversation's transcript.
+ * them), a line in notes.txt and one in its conversation's transcript. Started
+ * with --resume, it carries on that conversation.
  */
 const FAKE_CLAUDE = `#!/bin/bash
-conv=${CONV}
+conv="e2e-$MOCKINGBIRD_SESSION"
+if [ "$1" = "--resume" ]; then conv="$2"; fi
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code stand-in)"; exit 0; fi
 echo "fake-claude started: $*"
 cwd=$(pwd -P)
@@ -96,7 +101,7 @@ async function connect(signal: { url: string; real: boolean; creatorHome?: strin
 
 describe("team rooms between two Mockingbird instances", () => {
   it.skipIf(!appE2E)(
-    "live panes, chat, the plan board, a backed-up turn, and a take-over while the owner is away",
+    "live panes, chat, the plan board, a backed-up turn, a hand-over from the owner's prompt, and a take-over while the owner is away",
     async () => {
       execFileSync(process.execPath, ["esbuild.mjs"], { cwd: root, stdio: "ignore" });
       const signal = await e2eSignaling();
@@ -173,6 +178,46 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("the freshness on Nick's row", async () => /^backed up/.test(await nick.evaluate<string>(`${row("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
         expect(await nick.evaluate<boolean>(`!!${row("Donor entities")}?.querySelector(".tk-btn")`)).toBe(true);
 
+        // ---- Ryan online: Nick asks for another of his sessions, Ryan hands it over from his prompt
+        const ex = await ryan.evaluate<{ id: string; cwd: string; error?: string }>(
+          `window.mb.createSession({ repoPath: ${JSON.stringify(r.ryan.clone)}, useWorktree: true, branchName: "5110-export", agent: "claude", taskGroup: "5110", title: "Gift export" })`
+        );
+        expect(ex.error).toBeUndefined();
+        await untilTrue("the export agent to start", async () => (await buffer(ryan, ex.id)).includes("fake-claude started"), 20_000);
+        await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(ex.id)}, "write the gift export\\r")`);
+        await untilTrue("the export turn", async () => (await buffer(ryan, ex.id)).includes("did: write the gift export"));
+        await untilTrue(
+          "the export's backup and conversation at Nick's",
+          async () => {
+            const b = (await takeovers(nick)).sessions.find((v) => v.sessionId === ex.id && v.owner === ryanId);
+            return !!b?.pushed && !!b.peerCopy && (b.transcript?.have ?? 0) > 0;
+          },
+          60_000
+        );
+        await untilTrue("Take over on Nick's export row", async () => nick.evaluate<boolean>(`!!${row("Gift export")}?.querySelector(".tk-btn")`));
+        await nick.evaluate(`${row("Gift export")}.querySelector(".tk-btn").click()`);
+        const askButton = `[...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Ask Ryan")`;
+        await untilTrue("Ask Ryan in Nick's dialog", async () => nick.evaluate<boolean>(`(() => { const b = ${askButton}; return !!b && !b.disabled; })()`));
+        await nick.evaluate(`${askButton}.click()`);
+        await untilTrue("Ryan's prompt", async () => /Nick wants to continue “Gift export” on their laptop/.test(await ryan.evaluate<string>(`document.querySelector(".tk-ask")?.textContent ?? ""`)));
+        await untilTrue("Nick told he's waiting", async () => /Waiting for Ryan to answer/.test(await nick.evaluate<string>(`document.querySelector(".tk-dlg")?.textContent ?? ""`)));
+        await ryan.evaluate(`[...document.querySelectorAll(".tk-ask button.primary")].find((x) => x.textContent === "Hand over").click()`);
+        await untilTrue("the hand-over done", async () => /Running here now/.test(await nick.evaluate<string>(`document.querySelector(".tk-dlg")?.textContent ?? ""`)), 90_000);
+        // Ryan's agent stopped, his worktree as it was; Nick continues from exactly the snapshot handed over
+        const ryanEx = (await ryan.evaluate<{ id: string; status: string }[]>("window.mb.listSessions()")).find((x) => x.id === ex.id);
+        expect(ryanEx?.status).toBe("dead");
+        expect(fs.readFileSync(path.join(ex.cwd, "notes.txt"), "utf8")).toBe("write the gift export\n");
+        const exView = (await takeovers(nick)).sessions.find((v) => v.sessionId === ex.id)!;
+        expect(exView.takenOver).toMatchObject({ by: nickId, conversation: "full", snapshot: { sha: exView.latest.sha } });
+        const nickEx = (await nick.evaluate<{ id: string; cwd: string }[]>("window.mb.listSessions()")).find((x) => x.id === exView.takenOver!.newSessionId)!;
+        expect(fs.readFileSync(path.join(nickEx.cwd, "notes.txt"), "utf8")).toBe("write the gift export\n");
+        await untilTrue("Nick's export agent resumed", async () => (await buffer(nick, nickEx.id)).includes(`fake-claude started: --resume ${convOf(ex.id)}`), 20_000);
+        await untilTrue("Ryan's row: continued on Nick's laptop", async () =>
+          /continued on Nick's laptop/.test(await ryan.evaluate<string>(`[...document.querySelectorAll(".sess-item")].filter((x) => x.textContent.includes("Gift export")).map((x) => x.textContent).join("|")`))
+        );
+        expect(await ryan.evaluate(`window.mb.relaunchSession(${JSON.stringify(ex.id)})`)).toMatchObject({ error: expect.stringMatching(/continues on Nick's laptop/) });
+        await nick.evaluate(`[...document.querySelectorAll(".tk-dlg button")].find((x) => x.textContent === "Close").click()`);
+
         // ---- Ryan's Mockingbird quits; Nick takes the session over from his sidebar
         ryan.close();
         await quitApp(ryan.child);
@@ -192,18 +237,34 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(mine).toMatchObject({ branch: "5110-donors", taskGroup: "5110" });
         expect(fs.readFileSync(path.join(mine.cwd, "notes.txt"), "utf8")).toBe("add the donor notes\n");
         expect(git(mine.cwd, "rev-parse", "--show-toplevel")).not.toBe(fs.realpathSync(r.nick.clone));
-        await untilTrue("the resumed agent", async () => (await buffer(nick, mine.id)).includes(`fake-claude started: --resume ${CONV}`), 20_000);
+        await untilTrue("the resumed agent", async () => (await buffer(nick, mine.id)).includes(`fake-claude started: --resume ${convOf(s.id)}`), 20_000);
         // the room's session is Nick's now; Ryan's copy no longer shows
         expect((await live(nick)).own[mine.id]).toMatchObject({ roomId, remote: false });
         expect((await live(nick)).remote.some((x) => x.room?.sessionId === s.id)).toBe(false);
         await untilTrue("the old row gone from Nick's sidebar", async () => !(await nick.evaluate<boolean>(`[...document.querySelectorAll(".sess-item")].some((x) => x.textContent.includes("Donor entities") && x.querySelector(".team-owner")?.textContent === "R")`)));
 
-        // ---- Ryan's Mockingbird starts again: his copy has left the room, taken over by Nick
+        // ---- Ryan's Mockingbird starts again, and runs his session again at once (as an update restart brings
+        // open sessions back), before the room has caught up: his copy stops as soon as it hears
         ryan = await launchApp("Ryan", signal.url, { home: ryan.home, keepState: true });
+        const relaunched = await ryan.evaluate<{ id?: string; error?: string }>(`window.mb.relaunchSession(${JSON.stringify(s.id)})`);
+        if (relaunched.error) expect(relaunched.error).toMatch(/continues on Nick's laptop/); // the room had caught up first
+        console.log(`[e2e] Ryan's copy at start: ${relaunched.error ? "refused to run (the room had caught up)" : "running again, until the room catches up"}`);
         await untilTrue("Ryan back", async () => (await ryan.status()).rooms[0]?.online.length === 1, 90_000);
         await untilTrue("Ryan's copy marked taken over", async () => (await live(ryan)).own[s.id]?.takenOver?.byName === "Nick", 30_000);
+        await untilTrue(
+          "Ryan's copy stopped",
+          async () => {
+            const x = (await ryan.evaluate<{ id: string; status: string }[]>("window.mb.listSessions()")).find((y) => y.id === s.id);
+            return !x || x.status === "dead";
+          },
+          30_000
+        );
+        expect(await ryan.evaluate(`window.mb.relaunchSession(${JSON.stringify(s.id)})`)).toMatchObject({ error: expect.stringMatching(/continues on Nick's laptop/) });
         await untilTrue("Nick's session at Ryan's", async () => (await live(ryan)).remote.some((x) => x.room?.sessionId === mine.id && x.room.owner === nickId));
-        await untilTrue("Ryan's row says so", async () => /taken over by Nick/.test(await ryan.evaluate<string>(`[...document.querySelectorAll(".sess-item")].filter((x) => x.textContent.includes("Donor entities")).map((x) => x.textContent).join("|")`)));
+        await untilTrue("Ryan's row says so", async () =>
+          /continued on Nick's laptop/.test(await ryan.evaluate<string>(`[...document.querySelectorAll(".sess-item")].filter((x) => x.textContent.includes("Donor entities")).map((x) => x.textContent).join("|")`))
+        );
+        expect((await takeovers(ryan)).left.map((l) => l.sessionId).sort()).toEqual([ex.id, s.id].sort());
       } catch (err) {
         throw new Error(`${(err as Error).message}\n--- Ryan's log ---\n${mainLog(ryan).slice(-4000)}\n--- Nick's log ---\n${mainLog(nick).slice(-4000)}`);
       } finally {
