@@ -72,13 +72,16 @@ server, `npm run team:signaling`), the event log, and the WebRTC wire against
 the local server. Everything above the transport runs over an in-process
 loopback (`src/main/team/loopback.ts`) with real session managers and real git
 (a local bare origin and clones): live panes, the Co-authored-by hooks, chat,
-the plan board, backups and take-over with the owner online, away or
-restarted. `test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer
+the plan board, backups and take-over with the owner online (Hand over, Keep,
+no answer, dropping offline mid-request), away or restarted, the old copy
+stopping, its unsent changes sent and applied, and Take it back.
+`test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer
 hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
 `test/teamLiveApp.e2e.test.ts` run two real Mockingbird instances in throwaway
 homes (their windows open while they run): share and join, a terminal watched
 and typed into, chat, a package claimed, a turn of a Claude stand-in backed up,
-and Take over once the owner has quit. `MB_E2E_SIGNALING_URL=https://…` runs
+a session handed over from the owner's prompt, and Take over once the owner
+has quit, their copy stopping when it starts again. `MB_E2E_SIGNALING_URL=https://…` runs
 them against a deployed Worker — allow the fingerprint `npm run
 team:e2e-fingerprint` prints there first — with a relay-only variant that
 proves the TURN fallback.
@@ -306,10 +309,17 @@ agreed direction, **Later** is worth doing once the foundations settle.
     with its conversation, which never goes to git. Rows and panes say how
     fresh each backup is. **Take over** continues a teammate's session on your
     laptop from the newest snapshot, on its branch, resuming the conversation
-    (or a summary of what arrived); the owner's copy leaves the room, at once or
-    when their Mockingbird is next online. Anyone who can read the repository
-    can fetch backed-up work in progress; a backup is deleted once its session
-    is forgotten, merged, idle for 14 days, or taken over and backed up again.
+    (or a summary of what arrived). A connected owner is asked first (**Hand
+    over** / **Keep**, kept after 2 minutes unanswered): handing over lets their
+    turn finish, sends that exact backup straight to you and stops their agent.
+    An owner who was away stops their copy as soon as their Mockingbird is back
+    (or started): its worktree stays untouched, its pane says "Continued on
+    Nick's laptop" with **Take it back** (the same take-over, in reverse) and
+    **Close**, and when it has changes the taker never got it says so and
+    **Send to Nick** delivers them as a patch he reviews and applies — never
+    applied by itself. Anyone who can read the repository can fetch backed-up
+    work in progress; a backup is deleted once its session is forgotten,
+    merged, idle for 14 days, or taken over and backed up again.
   - **Team room chat:** a thread per room (the **Team room** view, the **Room
     chat** chip) with @mentions, agents' updates (turns, waits, take-overs,
     board changes), `list_sessions` and `send_message` across laptops, and

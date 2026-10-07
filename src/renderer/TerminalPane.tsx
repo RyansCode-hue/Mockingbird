@@ -296,6 +296,8 @@ export function TerminalPane({
   onOpenPlan,
   backup,
   onTakeOver,
+  leftCopy,
+  teamNotice,
   onRestart,
   messages,
   onShowMessages,
@@ -344,6 +346,10 @@ export function TerminalPane({
   /** A room session's backup (team rooms), and taking a teammate's over. */
   backup?: RoomSessionBackupView | null;
   onTakeOver?: (view: RoomSessionBackupView) => void;
+  /** A teammate continues this session (team rooms): what its stopped copy shows instead of the dead pane's Resume. */
+  leftCopy?: React.ReactNode;
+  /** A line over the terminal from team rooms (changes a teammate sent, to review). */
+  teamNotice?: React.ReactNode;
   /** Restart this pane, resuming its conversation (for a stuck one). */
   onRestart?: () => void;
   /** Agent messages this pane received and sent, and opening their log. */
@@ -1050,6 +1056,8 @@ export function TerminalPane({
             {remote.ownerName} closed this session{remote.online ? "" : ", and their Mockingbird is offline"} · they can resume it
           </div>
         </div>
+      ) : dead && leftCopy ? (
+        <div className="dead-body">{leftCopy}</div>
       ) : dead ? (
         <div className="dead-body">
           <div>
@@ -1093,9 +1101,10 @@ export function TerminalPane({
           <CopyToast note={copyNote} failed="Couldn't copy selection" />
           {room?.takenOver && !remote && (
             <div className="team-pane-note" title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
-              Taken over by {room.takenOver.byName} {ago(room.takenOver.at)} — it continues on their Mac; this copy has left the room
+              Continued on {room.takenOver.byName}'s laptop {ago(room.takenOver.at)} — this copy is stopping; its files stay as they are
             </div>
           )}
+          {teamNotice}
           {remote && (!remote.online || remote.problem) && (
             <div className="team-pane-note" title={remote.problem ?? undefined}>
               {!remote.online ? `${remote.ownerName}'s Mockingbird is offline — this is what it last sent` : remote.problem}

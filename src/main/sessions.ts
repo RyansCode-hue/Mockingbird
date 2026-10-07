@@ -121,6 +121,8 @@ export class SessionManager {
   remote: RemotePanes | null = null;
   /** Extra launch settings for a session in a shared group (team rooms); null outside rooms. */
   roomLaunch: ((target: LaunchTarget) => RoomLaunch | null) | null = null;
+  /** Why a session mustn't run again here (a teammate continues it: team rooms' take-over), or null when it may. */
+  relaunchGuard: ((id: string) => string | null) | null = null;
   private watchers = new Set<() => void>();
   private outputListeners = new Set<(id: string, data: string, end: number, epoch: string) => void>();
   private statusListeners = new Set<(info: SessionInfo, before: SessionStatus) => void>();
@@ -510,9 +512,33 @@ export class SessionManager {
     if (isRemotePaneId(id)) throw new Error(`That's a teammate's session: only its owner can ${what}`);
   }
 
+  private mayRun(id: string): void {
+    const refusal = this.relaunchGuard?.(id);
+    if (refusal) throw new Error(refusal);
+  }
+
+  /**
+   * End a live session's process and leave its pane: dead, its scrollback
+   * kept, nothing in its folder touched. Returns whether it was running.
+   */
+  stop(id: string): boolean {
+    this.ownOnly(id, "stop it");
+    const s = this.live.get(id);
+    if (!s || s.info.status === "dead") return false;
+    try {
+      s.proc.kill();
+    } catch (err) {
+      // node-pty throws for a process that has already exited; the pane is dead either way
+      console.warn(`[sessions] ${id}: stopping a process that had already exited: ${err instanceof Error ? err.message : err}`);
+    }
+    this.setStatus(id, "dead");
+    return true;
+  }
+
   /** Restart one pane in place: same id, its conversation resumed. */
   async restart(id: string): Promise<SessionInfo> {
     this.ownOnly(id, "restart it");
+    this.mayRun(id);
     this.kill(id, false); // keep the store entry so relaunch can resume it
     const info = await this.relaunch(id);
     if (!info) throw new Error("no persisted session to resume");
@@ -567,6 +593,7 @@ export class SessionManager {
   /** Relaunch a persisted session in its old cwd, resuming the conversation. */
   async relaunch(id: string): Promise<SessionInfo | null> {
     this.ownOnly(id, "relaunch it");
+    this.mayRun(id);
     const old = this.store.state.sessions.find((s) => s.id === id);
     if (!old) return null;
     // create() re-adds the record; only forget the old one once it has, or a

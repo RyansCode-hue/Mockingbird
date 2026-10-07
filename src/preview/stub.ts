@@ -58,7 +58,8 @@ let sessions: SessionInfo[] = [
   session("s5", { title: "#5102 — Pathways quick view freezes", ticketId: "5102", ticketTitle: "Pathways quick view freezes", taskGroup: "5102", branch: "5102-quickViewFreeze", cwd: WT("5102-quickViewFreeze"), status: "idle" }),
   session("s6", { title: "Crashed session", taskGroup: "5102", status: "dead", exitCode: 1 }),
   session("s7", { title: "assistant", repoPath: null, cwd: "/Users/you", kind: "assistant", taskGroup: null, status: "idle" }),
-  session("y1", { title: "Donor entity model", taskGroup: "5110", branch: "5110-donor-entities", cwd: WT("5110-donor-entities"), status: "idle" }),
+  // continued on Nick's laptop: its agent stopped here (team rooms: take-over)
+  session("y1", { title: "Donor entity model", taskGroup: "5110", branch: "5110-donor-entities", cwd: WT("5110-donor-entities"), status: "dead" }),
 ];
 const previous: SessionInfo[] = [session("p1", { title: "Yesterday's spike", status: "dead", taskGroup: null })];
 
@@ -295,8 +296,69 @@ const takeoverView: TakeoverView = (() => {
     ],
     unbacked: [],
     cleanup: [{ roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "s0", title: "Spike: org cache", problem: "remote: TF401027: You need the Git 'ForcePush' permission to delete the backup" }],
+    // ?handover: Nick asks to continue s1 on his laptop
+    asks: new URLSearchParams(location.search).has("handover")
+      ? [{ askId: "a1b2c3d4e5f60718293a4b5c", roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "s1", title: "#5101 — Org dropdowns remember the last org", from: NICK, fromName: "Nick Smith", at: now, deadline: now + 120_000, state: "waiting" as const }]
+      : [],
+    asking: [],
+    // y1 was continued on Nick's laptop: stopped here, with three files he doesn't have
+    left: [
+      {
+        roomId: "R5110bbbbbbbbbbbbbbbbb",
+        sessionId: "y1",
+        title: "Donor entity model",
+        by: NICK,
+        byName: "Nick Smith",
+        at: now - 12 * min,
+        now: { owner: NICK, ownerName: "Nick Smith", sessionId: "n7", self: false, online: true },
+        takeBack: true,
+        unsent: { files: ["src/donors/gift.ts", "src/donors/donor.test.ts", "notes/donor-model.md"], checkedAt: now - min },
+        sent: null,
+        sending: false,
+      },
+    ],
+    // s8 continues Sam's session; Sam sent what his copy had after that
+    received: [
+      {
+        id: "0f1e2d3c4b5a6978",
+        roomId: "R5101aaaaaaaaaaaaaaaaa",
+        sessionId: "s8",
+        fromSessionId: "m0",
+        from: SAM,
+        fromName: "Sam",
+        title: "Release notes for #5101",
+        files: [
+          { path: "docs/release-notes.md", status: "modified" },
+          { path: "docs/release-checklist.md", status: "added" },
+        ],
+        bytes: 2_310,
+        at: now - 3 * min,
+        applied: null,
+      },
+    ],
   };
 })();
+const receivedPatch = `diff --git a/docs/release-notes.md b/docs/release-notes.md
+index 3b18e51..a1c9f04 100644
+--- a/docs/release-notes.md
++++ b/docs/release-notes.md
+@@ -1,4 +1,6 @@
+ # Release notes
+
+-- Org pickers open on the org you used last.
++- Org pickers now open on the org you used last, on every page that has one.
++- The choice is kept per user, across devices.
++
+diff --git a/docs/release-checklist.md b/docs/release-checklist.md
+new file mode 100644
+index 0000000..5d1e2f3
+--- /dev/null
++++ b/docs/release-checklist.md
+@@ -0,0 +1,3 @@
++- [ ] The org dropdown remembers the last org on every page
++- [ ] Release note reviewed
++- [ ] Screenshots updated
+`;
 const takeoverPlans: Record<string, TakeoverPlan> = {
   n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: "origin", skipped: [] }, other: null, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 } },
   m1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 } },
@@ -739,6 +801,48 @@ const api: Record<string, (...a: any[]) => any> = {
     s.takenOverByName = "You";
     setTimeout(takeoverChanged, 50);
     return later({ sessionId: `t-${sessionId}`, cwd: `/Users/you/Code/worktrees/backoffice/${plan.branch}`, branch: plan.branch, renamedFrom: null, snapshot: plan.snapshot, conversation: s.takenOver.conversation }, 900);
+  },
+  teamTakeoverAnswer: async (askId: string, answer: string) => {
+    const a = takeoverView.asks.find((x) => x.askId === askId);
+    if (!a) return err("That request was withdrawn, answered, or timed out");
+    if (answer === "keep") takeoverView.asks = takeoverView.asks.filter((x) => x !== a);
+    else a.state = "handing-over";
+    takeoverChanged();
+    if (answer === "handover") {
+      setTimeout(() => {
+        takeoverView.asks = takeoverView.asks.filter((x) => x !== a);
+        takeoverChanged();
+      }, 2500);
+    }
+    return null;
+  },
+  teamTakeoverCheckLeft: async () => null,
+  teamTakeoverSendLeft: async (_roomId: string, sessionId: string) => {
+    const l = takeoverView.left.find((x) => x.sessionId === sessionId);
+    if (!l || !l.unsent || "error" in l.unsent) return err("That session wasn't continued by a teammate");
+    const files = l.unsent.files.length;
+    l.sending = true;
+    takeoverChanged();
+    await later(null, 900);
+    l.sending = false;
+    l.sent = { at: Date.now(), files };
+    l.unsent = { files: [], checkedAt: Date.now() };
+    takeoverChanged();
+    return { files };
+  },
+  teamTakeoverReceivedPatch: async (_roomId: string, id: string) =>
+    takeoverView.received.some((r) => r.id === id) ? later({ patch: receivedPatch, truncated: false, file: `/Users/you/.mockingbird/team/rooms/R5101/received/${id}.patch` }, 300) : err("Those changes aren't here any more"),
+  teamTakeoverApplyReceived: async (_roomId: string, id: string) => {
+    const r = takeoverView.received.find((x) => x.id === id);
+    if (!r) return err("Those changes aren't here any more");
+    r.applied = Date.now();
+    takeoverChanged();
+    return later({ files: r.files.length }, 600);
+  },
+  teamTakeoverDismissReceived: async (_roomId: string, id: string) => {
+    takeoverView.received = takeoverView.received.filter((x) => x.id !== id);
+    takeoverChanged();
+    return null;
   },
 
   // team rooms: live panes — Nick's session is a fixture; typing into it echoes like the others

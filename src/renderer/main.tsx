@@ -78,8 +78,19 @@ import { PlanBoardDialog, PlanWarnings } from "./team/PlanBoard";
 // team rooms: team chat
 import { RoomChatChip, RoomChatPanel, TeamRoomIcon, useRoomChatOpen } from "./team/RoomChat";
 // team rooms: take-over
-import { BackupFreshness, RoomBackupWarnings, TakeOverButton, TakeOverDialog, useTakeover } from "./team/TakeOver";
-import { backupOf, type RoomSessionBackupView } from "../shared/team/takeover";
+import {
+  BackupFreshness,
+  HandOverPrompt,
+  LeftCopyLine,
+  LeftCopyPanel,
+  ReceivedDialog,
+  ReceivedNotice,
+  RoomBackupWarnings,
+  TakeOverButton,
+  TakeOverDialog,
+  useTakeover,
+} from "./team/TakeOver";
+import { backupOf, type LeftCopy, type ReceivedChanges, type RoomSessionBackupView } from "../shared/team/takeover";
 // team rooms: live panes
 import { FollowControls, LiveProblems, RoomRowTag, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
@@ -146,8 +157,19 @@ function App() {
   const sessions = roomLive.sessions;
   // team rooms: take-over — each room session's backup, shown on its row and pane; Take over opens one dialog
   const takeoverView = useTakeover();
-  const backupFor = (s: SessionInfo): RoomSessionBackupView | null => (takeoverView && !isErr(takeoverView) ? backupOf(takeoverView, s.room) : null);
-  const [takeOverFor, setTakeOverFor] = useState<RoomSessionBackupView | null>(null);
+  const tkView = takeoverView && !isErr(takeoverView) ? takeoverView : null;
+  const backupFor = (s: SessionInfo): RoomSessionBackupView | null => (tkView ? backupOf(tkView, s.room) : null);
+  const [takeOverFor, setTakeOverFor] = useState<(RoomSessionBackupView & { back?: boolean }) | null>(null);
+  // a copy of this Mac's that a teammate continued (stopped here), and changes a teammate sent for one of this Mac's sessions
+  const leftFor = (s: SessionInfo): LeftCopy | null => (tkView && !isRemote(s) ? tkView.left.find((l) => l.sessionId === s.id) ?? null : null);
+  const receivedFor = (s: SessionInfo): ReceivedChanges[] => (tkView && !isRemote(s) ? tkView.received.filter((r) => r.sessionId === s.id) : []);
+  const [reviewing, setReviewing] = useState<ReceivedChanges | null>(null);
+  /** Take it back: a take-over of the copy that continues it now (asking its owner first when they're connected). */
+  const takeBack = (l: LeftCopy) => {
+    const v = tkView && backupOf(tkView, { roomId: l.roomId, sessionId: l.now.sessionId, owner: l.now.owner });
+    if (!v) return alert(`${l.now.ownerName}'s copy has no backup here yet — Take it back is offered once it has one`);
+    setTakeOverFor({ ...v, back: true });
+  };
   const [zoomed, setZoomed] = useState<string | null>(null);
   // pinned panes stay on screen when the grid switches groups
   const [pinned, setPinned] = usePersisted<string[]>("mb.pinned", []);
@@ -1119,7 +1141,8 @@ function App() {
 
   const restoreAll = async () => {
     const failures: string[] = [];
-    for (const s of resumable) {
+    // team rooms: a copy a teammate continued doesn't run again (Take it back continues theirs)
+    for (const s of resumable.filter((x) => !roomLive.state?.own[x.id]?.takenOver)) {
       const info = await window.mb.relaunchSession(s.id);
       if (isErr(info)) failures.push(`✕ ${s.title}: ${info.error}`);
     }
@@ -1168,6 +1191,8 @@ function App() {
   };
 
   const resumeDead = async (s: SessionInfo) => {
+    // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed)
+    if (s.room?.takenOver) return alert(`${s.room.takenOver.byName} continues ${titleOf(s)} on their laptop — take it back rather than resuming this copy.`);
     // drop the dead pty, keep the store entry
     if (failed(`Couldn't resume ${titleOf(s)}`, await window.mb.killSession(s.id, false))) return;
     disposeTerm(s.id);
@@ -1990,11 +2015,14 @@ function App() {
                               {s.branch && s.branch !== titleOf(s) ? s.branch : (s.repoPath ? baseName(s.repoPath) : "")}
                             </span>
                           )}
-                          {/* team rooms: take-over — how fresh this room session's backup is */}
+                          {/* team rooms: take-over — how fresh this room session's backup is; or, continued by a teammate, what's left of this copy */}
                           {(() => {
+                            const l = leftFor(s);
+                            if (l) return <LeftCopyLine left={l} onTakeBack={() => takeBack(l)} />;
                             const b = backupFor(s);
                             return b && <span className="br fresh"><BackupFreshness view={b} /></span>;
                           })()}
+                          <ReceivedNotice received={receivedFor(s)} onReview={setReviewing} compact />
                         </span>
                       )}
                       {/* team rooms: live panes — whose session it is, who's looking; a teammate's is theirs to rename, move or close */}
@@ -2077,15 +2105,17 @@ function App() {
                   </button>
                 </h2>
                 {resumable.map((s) => {
-                  // team rooms: a teammate continued it; relaunching brings back this copy, apart from the room's
+                  // team rooms: a teammate continued it, so this copy doesn't run again — it can be taken back instead
                   const taken = roomLive.state?.own[s.id]?.takenOver;
+                  const left = leftFor(s);
                   return (
-                  <div key={s.id} className="sess-item" title={taken ? `${s.cwd} — ${taken.byName} took this session over: it continues on their Mac. Relaunching it here runs this copy on its own.` : s.cwd}>
+                  <div key={s.id} className="sess-item" title={taken ? `${s.cwd} — ${taken.byName} continued this session on their laptop, so this copy doesn't run again here.` : s.cwd}>
                     <span className="dot dead" />
                     <span className="name">
                       <span className="nm">{s.title}</span>
-                      {taken && <span className="br tk-fresh muted">taken over by {taken.byName} {ago(taken.at)}</span>}
+                      {left ? <LeftCopyLine left={left} onTakeBack={() => takeBack(left)} /> : taken && <span className="br tk-fresh muted">continued on {taken.byName}'s laptop {ago(taken.at)}</span>}
                     </span>
+                    {!taken && (
                     <button
                       title="Relaunch, resuming the conversation"
                       onClick={async () => {
@@ -2099,6 +2129,7 @@ function App() {
                     >
                       ↺
                     </button>
+                    )}
                     <button
                       className="danger"
                       onClick={async () => {
@@ -2263,6 +2294,11 @@ function App() {
                     onOpenPlan={setPlanDlg}
                     backup={backupFor(s)}
                     onTakeOver={setTakeOverFor}
+                    leftCopy={(() => {
+                      const l = leftFor(s);
+                      return l && <LeftCopyPanel left={l} onTakeBack={() => takeBack(l)} onClose={() => requestClose(s)} />;
+                    })()}
+                    teamNotice={<ReceivedNotice received={receivedFor(s)} onReview={setReviewing} />}
                     messages={(() => {
                       const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
                       return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
@@ -2669,7 +2705,17 @@ function App() {
       {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
       {/* team rooms: plan board */}
       {planDlg && <PlanBoardDialog roomId={planDlg} onClose={() => setPlanDlg(null)} />}
-      {takeOverFor && <TakeOverDialog view={takeOverFor} onClose={() => setTakeOverFor(null)} />}
+      {takeOverFor && (
+        <TakeOverDialog
+          view={takeOverFor}
+          takeBack={takeOverFor.back}
+          asking={tkView?.asking.find((a) => a.roomId === takeOverFor.roomId && a.sessionId === takeOverFor.sessionId) ?? null}
+          onClose={() => setTakeOverFor(null)}
+        />
+      )}
+      {/* team rooms: a teammate asks to continue one of this Mac's sessions — one prompt at a time, oldest first */}
+      {tkView?.asks[0] && <HandOverPrompt key={tkView.asks[0].askId} ask={tkView.asks[0]} onShow={jumpTo} />}
+      {reviewing && <ReceivedDialog received={tkView?.received.find((r) => r.id === reviewing.id) ?? reviewing} onClose={() => setReviewing(null)} />}
       <PlanWarnings onJump={jumpTo} onOpenBoard={setPlanDlg} />
 
       {renameDlg && (

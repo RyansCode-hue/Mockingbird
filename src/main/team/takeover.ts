@@ -4,9 +4,10 @@ import * as os from "os";
 import * as path from "path";
 import { defineEventType } from "./rooms";
 import type { RoomSessionSource } from "./roomSessions";
-import type { RequestContext, Team, Unsubscribe } from "./transport";
-import { branchesOf, currentBranch, git, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
-import { checkoutSnapshotFiles, skippedIn, snapshotCommit } from "../snapshots";
+import { TeamError, type RequestContext, type Team, type Unsubscribe } from "./transport";
+import { branchesOf, currentBranch, git, gitBytes, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
+import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
+import { parseNameStatus } from "../files";
 import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, codexRolloutPath, realpathOr } from "../agentFiles";
@@ -15,14 +16,23 @@ import { repoState, takeoverKickoff, transcriptDigest, transcriptLines } from ".
 import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { MEMBER_ID_RE } from "../../shared/team/protocol";
 import {
+  ASK_MS,
+  continuation,
   DROP_REASONS,
+  HANDOVER_TURN_MS,
   ORIGIN_COPY_ROOT,
   roomBackupRef,
   SESSION_ID_RE,
   STALE_BACKUP_MS,
+  type AskAnswer,
+  type ChangedFile,
   type ConversationCarried,
   type DropReason,
+  type IncomingAsk,
+  type LeftCopy,
+  type OutgoingAsk,
   type PushOutcome,
+  type ReceivedChanges,
   type RoomSessionBackup,
   type RoomSessionBackupView,
   type RoomSessionDescriptor,
@@ -58,6 +68,23 @@ import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/t
  * resumes it (or, when it didn't all arrive, a kickoff built from the handoff
  * digest that says so), the session launched, and `session.takenOver` published.
  *
+ * Owner online: the taker asks first (takeover.ask). The owner is prompted
+ * (Hand over / Keep, kept after ASK_MS unanswered); handing over lets the
+ * turn in progress finish, backs the session up, copies that snapshot and the
+ * conversation to the taker, stops the agent here and answers with the
+ * snapshot, which the take-over then uses exactly. Keep, no answer, or the
+ * owner going offline mid-request leaves the session where it is (offline,
+ * the taker can then take it over from the newest backup).
+ *
+ * The old copy: when the owner's Mockingbird learns of a take-over (at once,
+ * on reconnecting, or on starting), it stops that session's agent and never
+ * runs it again (SessionManager.relaunchGuard); its worktree is left exactly
+ * as it is. The snapshot the taker continued from is kept under
+ * refs/mockingbird/rooms-left/<room>/<session>, so the copy's changes since
+ * (made while the owner was offline) can be counted and sent to whoever runs
+ * the session now (takeover.changes): a patch they review and apply, never
+ * applied by itself. Take it back is a take-over of the taker's copy.
+ *
  * Cleanup: only a session's current owner (the taker, once taken over)
  * deletes its backup ref on origin, then publishes `session.backupDropped`
  * and every member deletes its copies — when the owner forgets the session,
@@ -65,7 +92,8 @@ import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/t
  * turn for STALE_BACKUP_MS, and when a taker's first backup of its copy lands.
  *
  * Request methods between members: takeover.have, takeover.snapshot,
- * takeover.transcript (each names its room; the transport checks membership).
+ * takeover.transcript, takeover.ask, takeover.progress, takeover.changes
+ * (each names its room; the transport checks membership).
  */
 
 const SHA_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
@@ -77,6 +105,15 @@ export const TRANSCRIPT_CHUNK = 4 * 1024 * 1024;
 const MAX_CANDIDATES = 32;
 const SEND_TIMEOUT_MS = 120_000;
 const REPO_INDEX_MS = 60_000;
+/** A taken-over copy's changes are counted again this often. */
+const LEFT_CHECK_MS = 60_000;
+/** The patch a review shows at most. */
+const REVIEW_MAX = 400_000;
+/** Where the owner keeps the snapshot a teammate continued from, and the changes last sent them. */
+const LEFT_ROOT = "refs/mockingbird/rooms-left";
+const SENT_ROOT = "refs/mockingbird/rooms-sent";
+const ASK_ID_RE = /^[0-9a-f]{16,64}$/;
+const RECEIVED_ID_RE = /^[0-9a-f]{12,64}$/;
 
 // ---- room events ------------------------------------------------------------------------
 
@@ -193,12 +230,14 @@ defineEventType("session.takenOver", {
 export interface RoomSessionHost {
   /** The room a session on this install is shared in, or null when it's private (or a teammate took it over). */
   roomOf(sessionId: string): RoomId | null;
-  /** A session on this install. */
+  /** A session on this install: running, or closed and resumable. */
   session(sessionId: string): SessionInfo | undefined;
   /** The local group a room is shown as: where a taken-over session goes. */
   groupOf(roomId: RoomId): string | null;
   /** Each agent turn's end in a session on this install. */
   onTurnEnd(cb: (sessionId: string) => void): Unsubscribe;
+  /** End a running session's agent, leaving its pane and folder as they are; false when it wasn't running. */
+  stop(sessionId: string): boolean;
 }
 
 /**
@@ -207,12 +246,16 @@ export interface RoomSessionHost {
  * same turn ends the Co-authored-by trailers count, so a backup follows every
  * turn a teammate's typing is credited for.
  */
-export function liveRoomHost(live: RoomSessionSource, o: { sessions: () => SessionInfo[]; rooms: () => { id: RoomId; groupKey: string }[] }): RoomSessionHost {
+export function liveRoomHost(
+  live: RoomSessionSource,
+  o: { sessions: () => SessionInfo[]; resumable: () => SessionInfo[]; rooms: () => { id: RoomId; groupKey: string }[]; stop: (sessionId: string) => boolean }
+): RoomSessionHost {
   return {
     roomOf: (id) => live.roomOfSession(id),
-    session: (id) => o.sessions().find((s) => s.id === id),
+    session: (id) => o.sessions().find((s) => s.id === id) ?? o.resumable().find((s) => s.id === id),
     groupOf: (roomId) => o.rooms().find((r) => r.id === roomId)?.groupKey ?? null,
     onTurnEnd: (cb) => live.onTurnEnded((e) => cb(e.sessionId)),
+    stop: (id) => o.stop(id),
   };
 }
 
@@ -230,6 +273,15 @@ export interface TakeoverDeps {
   changed?: () => void;
   /** A teammate took over a session this install runs. */
   onTakenOver?: (sessionId: string, byName: string) => void;
+  /** A teammate asks to continue a session this install runs: the owner is prompted (the window shows view().asks). */
+  onAsk?: (ask: IncomingAsk) => void;
+  /** A teammate sent changes from their copy of a session this install now runs. */
+  onReceived?: (r: ReceivedChanges) => void;
+  /** Post a line to a room's chat as this install's member (TeamChat.post). */
+  chat: (roomId: RoomId, text: string) => void;
+  /** How long the owner has to answer (default ASK_MS), and a hand-over waits for a turn (HANDOVER_TURN_MS). */
+  askMs?: number;
+  handoverTurnMs?: number;
   /** Secret files at known places on this Mac (absolute paths): a backup leaves them out, with every SECRET_FILE_GLOBS match. */
   secretFiles?: () => string[];
   /** Where the CLIs keep conversations on this Mac (default ~/.claude/projects, ~/.codex/sessions). */
@@ -264,12 +316,46 @@ interface MirrorRecord {
   from: MemberId;
   at: number;
 }
+/** A session of this install's that a teammate continued: what's needed to tell (and send) what they lack. */
+interface LeftRecord {
+  /** The snapshot the teammate continued from (kept under LEFT_ROOT). */
+  base: string;
+  /** The session's repository (its refs) and folder. */
+  repo: string;
+  cwd: string;
+  title: string;
+  at: number;
+  /** The changes last sent: a commit on top of `base` (or of the send before), kept under SENT_ROOT. */
+  sent?: { sha: string; at: number; files: number };
+}
+/** Changes a teammate sent from their copy (the patch is <room>/received/<id>.patch). */
+interface ReceivedRecord {
+  sessionId: string;
+  fromSessionId: string;
+  from: MemberId;
+  title: string;
+  files: ChangedFile[];
+  bytes: number;
+  at: number;
+  applied: number | null;
+}
 interface LocalState {
   v: 1;
   /** Room sessions this install runs: the newest snapshot and what origin has. */
   own: Record<string, OwnRecord>;
   /** Teammates' sessions: the snapshot copied into this Mac's clone. */
   mirrored: Record<string, MirrorRecord>;
+  /** This install's sessions that teammates continued. */
+  left: Record<string, LeftRecord>;
+  /** Changes teammates sent, by id. */
+  received: Record<string, ReceivedRecord>;
+}
+type Decision = "handover" | "keep" | "timeout" | "gone" | "closed";
+interface PendingAsk extends IncomingAsk {
+  decide: (d: Decision) => void;
+}
+interface PendingOutgoing extends OutgoingAsk {
+  owner: MemberId;
 }
 interface TranscriptMeta {
   agent: AgentKind;
@@ -316,11 +402,24 @@ export class TakeoverService {
   private cleanupProblems = new Map<string, { roomId: RoomId; title: string; problem: string }>();
   private changeTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  private readonly askMs: number;
+  private readonly handoverTurnMs: number;
+  /** Teammates' requests to continue this install's sessions, by ask id. */
+  private incoming = new Map<string, PendingAsk>();
+  /** This install's requests to owners, by ask id. */
+  private outgoing = new Map<string, PendingOutgoing>();
+  /** What each left copy has that its teammate lacks, as last counted. */
+  private unsent = new Map<string, LeftCopy["unsent"]>();
+  private checks = new Map<string, Job>();
+  private sending = new Set<string>();
+  private leftTimer: ReturnType<typeof setInterval>;
 
   constructor(private d: TakeoverDeps) {
     this.now = d.now ?? Date.now;
     this.claudeProjects = d.claudeProjects ?? CLAUDE_PROJECTS;
     this.codexSessions = d.codexSessions ?? CODEX_SESSIONS;
+    this.askMs = d.askMs ?? ASK_MS;
+    this.handoverTurnMs = d.handoverTurnMs ?? HANDOVER_TURN_MS;
     const t = d.team;
     for (const r of t.rooms()) this.presence.set(r.id, new Set(t.presence(r.id)));
     this.offs.push(
@@ -328,11 +427,22 @@ export class TakeoverService {
       t.onRequest("takeover.have", (p, ctx) => this.onHave(p, ctx)),
       t.onRequest("takeover.snapshot", (p, ctx) => this.onSnapshot(p, ctx)),
       t.onRequest("takeover.transcript", (p, ctx) => this.onTranscript(p, ctx)),
+      t.onRequest("takeover.ask", (p, ctx) => this.onAsk(p, ctx)),
+      t.onRequest("takeover.progress", (p, ctx) => this.onProgress(p, ctx)),
+      t.onRequest("takeover.changes", (p, ctx) => this.onChanges(p, ctx)),
       t.onEvent("session.backup", () => this.changed()),
       t.onEvent("session.takenOver", (e, room) => this.onTakenOver(e, room)),
       t.onEvent("session.backupDropped", (e, room) => this.onDropped(e, room)),
       t.onPresence((roomId, online) => this.onPresence(roomId, online))
     );
+    // take-overs this install already knows of (heard before it last quit, or kept in the room log): their copies stay stopped
+    for (const room of t.rooms()) {
+      for (const e of Object.values(room.ext.takeover?.sessions ?? {})) if (e.takenOver && e.owner === t.self.id) this.leave(room.id, e.sessionId);
+    }
+    this.leftTimer = setInterval(() => {
+      for (const room of this.d.team.rooms()) for (const id of Object.keys(this.local(room.id).left)) void this.track(this.checkLeft(room.id, id));
+    }, LEFT_CHECK_MS);
+    this.leftTimer.unref?.();
   }
 
   close(): void {
@@ -340,6 +450,8 @@ export class TakeoverService {
     for (const off of this.offs) off();
     this.offs = [];
     if (this.changeTimer) clearTimeout(this.changeTimer);
+    clearInterval(this.leftTimer);
+    for (const a of this.incoming.values()) a.decide("closed");
   }
 
   /** Resolves once every background send and push started so far has finished (for tests and quitting). */
@@ -436,7 +548,21 @@ export class TakeoverService {
     this.forgotten.add(sessionId);
     await this.backups.get(sessionId)?.done; // a push under way would bring the ref back
     for (const room of this.d.team.rooms()) {
-      const rec = this.local(room.id).own[sessionId];
+      const local = this.local(room.id);
+      const left = local.left[sessionId];
+      if (left) {
+        // the copy a teammate continued is closed: what kept count of its changes goes (its folder stays)
+        try {
+          if (fs.existsSync(left.repo)) for (const root of [LEFT_ROOT, SENT_ROOT]) await git(left.repo, ["update-ref", "-d", roomBackupRef(room.id, sessionId, root)]);
+          delete local.left[sessionId];
+          this.unsent.delete(sessionId);
+          this.saveLocal(room.id);
+        } catch (err) {
+          this.cleanupFailed(room.id, sessionId, left.title, err);
+        }
+      }
+      for (const [id, r] of Object.entries(local.received)) if (r.sessionId === sessionId) await this.dropReceived(room.id, id);
+      const rec = local.own[sessionId];
       if (!rec) continue;
       const entry = room.ext.takeover?.sessions[sessionId];
       try {
@@ -592,13 +718,14 @@ export class TakeoverService {
     );
   }
 
-  private async sendSnapshot(peer: MemberId, roomId: RoomId, sessionId: string): Promise<void> {
+  /** Copy a session's newest snapshot into a teammate's clone; true once their clone holds it, false when there's nothing to send or they have no clone. */
+  private async sendSnapshot(peer: MemberId, roomId: RoomId, sessionId: string): Promise<boolean> {
     const rec = this.local(roomId).own[sessionId];
     const s = this.d.host.session(sessionId);
-    if (!rec || !s) return;
+    if (!rec || !s) return false;
     const top = await repoTop(s.cwd);
     const url = top && (await originUrl(top));
-    if (!top || !url) return;
+    if (!top || !url) return false;
     const ref = roomBackupRef(roomId, sessionId);
     const candidates = [rec.parent, ...(await git(top, ["for-each-ref", `--count=${MAX_CANDIDATES}`, "--sort=-committerdate", "--format=%(objectname)", "refs/remotes/origin"])).split("\n")].filter(
       (c): c is string => !!c && SHA_RE.test(c)
@@ -613,10 +740,10 @@ export class TakeoverService {
       const k = `${peer}\n${repoIdentity(url)}`;
       if (!this.noClone.has(k)) this.d.log(`team: session ${sessionId}`, `${this.nameOf(roomId, peer)} has no clone of ${publicUrl(url)}: they'll take it over from origin's backup`);
       this.noClone.add(k);
-      return;
+      return false;
     }
     const current = typeof r.current === "string" ? r.current : null;
-    if (current === rec.sha) return;
+    if (current === rec.sha) return true;
     const have = Array.isArray(r.have) ? r.have.filter((h): h is string => typeof h === "string" && SHA_RE.test(h)) : [];
     let bundle: string | null = null;
     if (!have.includes(rec.sha)) {
@@ -633,6 +760,7 @@ export class TakeoverService {
       }
     }
     await this.d.team.request(peer, "takeover.snapshot", { roomId, sessionId, sha: rec.sha, originUrl: publicUrl(url), bundle }, { roomId, timeoutMs: SEND_TIMEOUT_MS });
+    return true;
   }
 
   /** The conversation's bytes the teammate lacks, from where they are; a gap or a rewrite starts over from what they hold. */
@@ -674,6 +802,8 @@ export class TakeoverService {
   private onPresence(roomId: RoomId, online: MemberId[]): void {
     const before = this.presence.get(roomId) ?? new Set<MemberId>();
     this.presence.set(roomId, new Set(online));
+    // a teammate who asked for a session and went away can't hear the answer: their request lapses
+    for (const a of this.incoming.values()) if (a.roomId === roomId && a.state === "waiting" && !online.includes(a.from)) a.decide("gone");
     // a teammate who reconnects is asked what they hold again
     for (const k of [...this.transcriptAt.keys()]) if (!online.includes(k.split("\n")[0]) && before.has(k.split("\n")[0])) this.transcriptAt.delete(k);
     // who's online is part of the view: Take over leads while a session's owner is away
@@ -770,6 +900,7 @@ export class TakeoverService {
     const s = room.ext.takeover?.sessions[e.body.sessionId];
     // only the take-over the room settled on counts
     if (s?.takenOver?.by === e.author && e.body.from === this.d.team.self.id) {
+      this.leave(room.id, e.body.sessionId);
       try {
         this.d.onTakenOver?.(e.body.sessionId, this.nameOf(room.id, e.author));
       } catch (err) {
@@ -777,6 +908,380 @@ export class TakeoverService {
       }
     }
     this.changed();
+  }
+
+  // ---- the copy left behind (owner) ------------------------------------------------------------
+
+  /**
+   * A teammate continues this install's session `sessionId`: its agent stops
+   * here at once, its folder untouched, and what it has that they lack is
+   * counted. Idempotent: run for every take-over heard and on start.
+   */
+  private leave(roomId: RoomId, sessionId: string): void {
+    try {
+      this.d.host.stop(sessionId);
+    } catch (err) {
+      this.d.log(`team: stopping session ${sessionId}, which a teammate continues`, err);
+    }
+    void this.track(
+      this.recordLeft(roomId, sessionId).catch((err) => {
+        const error = withoutCredentials((err as Error).message);
+        this.d.log(`team: keeping track of session ${sessionId}, which a teammate continues`, error);
+        this.unsent.set(sessionId, { error });
+        this.changed();
+      })
+    );
+  }
+
+  private async recordLeft(roomId: RoomId, sessionId: string): Promise<void> {
+    const entry = this.d.team.room(roomId)?.ext.takeover?.sessions[sessionId];
+    if (!entry?.takenOver || entry.owner !== this.d.team.self.id) return;
+    const local = this.local(roomId);
+    if (!local.left[sessionId]) {
+      const s = this.d.host.session(sessionId);
+      if (!s) return; // closed for good before the take-over reached this Mac: nothing of it is left here
+      const repo = s.repoPath ?? local.own[sessionId]?.repo ?? s.cwd;
+      const base = entry.takenOver.snapshot.sha;
+      local.left[sessionId] = { base, repo, cwd: s.cwd, title: entry.session.title, at: this.now() };
+      this.saveLocal(roomId);
+      this.changed();
+      // the snapshot they continued from outlives its backup ref, which is deleted once they back up theirs
+      const pin = roomBackupRef(roomId, sessionId, LEFT_ROOT);
+      if (!(await hasCommits(repo, [base])).length) {
+        try {
+          await git(repo, ["fetch", "--no-tags", "--no-write-fetch-head", "origin", `+${roomBackupRef(roomId, sessionId)}:${pin}`], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 });
+        } catch (err) {
+          this.d.log(`team: fetching the snapshot session ${sessionId} was continued from`, err);
+        }
+      }
+      if ((await hasCommits(repo, [base])).length) await git(repo, ["update-ref", pin, base]);
+    }
+    await this.checkLeft(roomId, sessionId);
+  }
+
+  /** Count what a left copy has that whoever continues it lacks: its files against the snapshot they continued from (or what was last sent them). */
+  checkLeft(roomId: RoomId, sessionId: string): Promise<void> {
+    return this.coalesce(this.checks, sessionId, async () => {
+      const rec = this.local(roomId).left[sessionId];
+      if (!rec) return;
+      const by = this.continuedBy(roomId, sessionId);
+      try {
+        if (!fs.existsSync(rec.cwd)) throw new Error(`its folder ${rec.cwd} isn't there any more`);
+        const top = await repoTop(rec.cwd);
+        if (!top) throw new Error(`${rec.cwd} isn't in a git repository any more`);
+        const base = rec.sent?.sha ?? rec.base;
+        if (!(await hasCommits(top, [base])).length) throw new Error(`the snapshot ${by} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told`);
+        const now = await worktreeTree(top, { exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
+        const files = await changedFiles(top, `${base}^{tree}`, now!.tree);
+        this.unsent.set(sessionId, { files: files.map((f) => f.path), checkedAt: this.now() });
+      } catch (err) {
+        const error = withoutCredentials((err as Error).message).replace(/\s+/g, " ").trim().slice(0, 300);
+        const before = this.unsent.get(sessionId);
+        // counted again every minute: the same failure is logged once, and shown on the copy all along
+        if (!before || !("error" in before) || before.error !== error) this.d.log(`team: counting what session ${sessionId}'s copy has that ${by} lacks`, error);
+        this.unsent.set(sessionId, { error });
+      }
+      this.changed();
+    });
+  }
+
+  /**
+   * Send a left copy's changes (since the snapshot the teammate continued
+   * from, or since the last send) to whoever runs the session now: a patch
+   * that lands on their session to review and apply. Secrets, ignored and
+   * big files are left out, as in backups. A line in the room's chat says so.
+   */
+  async sendLeft(roomId: RoomId, sessionId: string): Promise<{ files: number }> {
+    if (this.sending.has(sessionId)) throw new Error("Those changes are already being sent");
+    const rec = this.local(roomId).left[sessionId];
+    if (!rec) throw new Error("That session wasn't continued by a teammate");
+    const room = this.d.team.room(roomId);
+    const now = continuation(room?.ext.takeover, sessionId);
+    if (!room || !now) throw new Error("That session wasn't continued by a teammate");
+    const name = this.nameOf(roomId, now.owner);
+    if (now.owner === this.d.team.self.id) throw new Error("It continues on this Mac now: there's no one to send it to");
+    if (!this.d.team.presence(roomId).includes(now.owner)) throw new Error(`${name} is offline — send it once they're back`);
+    this.sending.add(sessionId);
+    this.changed();
+    try {
+      const top = await repoTop(rec.cwd);
+      if (!top) throw new Error(`${rec.cwd} isn't in a git repository any more`);
+      const base = rec.sent?.sha ?? rec.base;
+      if (!(await hasCommits(top, [base])).length) throw new Error(`The snapshot ${name} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told`);
+      const me = this.nameOf(roomId, this.d.team.self.id);
+      const commit = await worktreeCommitOn(top, base, `Mockingbird: ${me}'s changes to “${rec.title}” after ${name} continued it\n\nfrom-session: ${sessionId}`, {
+        exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []),
+      });
+      const files = await changedFiles(top, base, commit.sha);
+      if (!files.length) throw new Error(`Nothing to send: ${name} has everything in this copy`);
+      const patch = await gitBytes(top, ["diff", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", base, commit.sha]);
+      if (patch.length > MAX_BUNDLE) throw new Error(`The changes come to ${mb(patch.length)}, over the ${mb(MAX_BUNDLE)} sent peer to peer`);
+      await this.d.team.request(now.owner, "takeover.changes", { roomId, sessionId, title: rec.title, files, patch: patch.toString("base64") }, { roomId, timeoutMs: SEND_TIMEOUT_MS });
+      await git(top, ["update-ref", roomBackupRef(roomId, sessionId, SENT_ROOT), commit.sha]);
+      rec.sent = { sha: commit.sha, at: this.now(), files: files.length };
+      this.saveLocal(roomId);
+      this.unsent.set(sessionId, { files: [], checkedAt: this.now() });
+      const n = files.length === 1 ? "1 changed file" : `${files.length} changed files`;
+      try {
+        this.d.chat(roomId, `Sent ${name} ${n} from my copy of “${rec.title}”, made after the snapshot they continued from. They're on ${name}'s session to review and apply.`);
+      } catch (err) {
+        this.d.log(`team: telling room ${roomId} the changes to session ${sessionId} were sent`, err);
+      }
+      return { files: files.length };
+    } finally {
+      this.sending.delete(sessionId);
+      this.changed();
+    }
+  }
+
+  /** Who continues a session of this install's, by name. */
+  private continuedBy(roomId: RoomId, sessionId: string): string {
+    const now = continuation(this.d.team.room(roomId)?.ext.takeover, sessionId);
+    return now ? this.nameOf(roomId, now.owner) : "the teammate";
+  }
+
+  /** Why one of this install's sessions mustn't run again here: a teammate continues it (or it was taken back into another session). Null when it may. */
+  relaunchRefusal(sessionId: string): string | null {
+    for (const room of this.d.team.rooms()) {
+      const e = room.ext.takeover?.sessions[sessionId];
+      if (!e?.takenOver || e.owner !== this.d.team.self.id) continue;
+      const now = continuation(room.ext.takeover, sessionId);
+      if (now?.owner === this.d.team.self.id) return `“${e.session.title}” was taken back into another session here: this copy doesn't run again`;
+      return `“${e.session.title}” continues on ${this.nameOf(room.id, now?.owner ?? e.takenOver.by)}'s laptop — take it back rather than running this copy again`;
+    }
+    return null;
+  }
+
+  // ---- changes sent from a left copy (taker) ------------------------------------------------------
+
+  /** A teammate's changes from their copy of a session this install continues: kept as a patch to review and apply. */
+  private async onChanges(p: any, ctx: RequestContext): Promise<{ id: string }> {
+    if (!p || typeof p !== "object") throw new Error("no parameters");
+    if (!ctx.roomId || p.roomId !== ctx.roomId) throw new Error("the request doesn't name its room");
+    const roomId = ctx.roomId;
+    const fromSessionId = sessionIdOf(p.sessionId);
+    const room = this.d.team.room(roomId);
+    const entry = room?.ext.takeover?.sessions[fromSessionId];
+    if (!entry || entry.owner !== ctx.from || !entry.takenOver) throw new Error(`session ${fromSessionId} isn't a session of ${this.nameOf(roomId, ctx.from)}'s that was continued`);
+    const now = continuation(room!.ext.takeover, fromSessionId);
+    if (now?.owner !== this.d.team.self.id) throw new Error(`session ${fromSessionId} doesn't continue on this Mac`);
+    if (!this.d.host.session(now.sessionId)) throw new Error(`the session that continues ${fromSessionId} isn't on this Mac any more`);
+    const title = text(p.title, "title", 300);
+    if (!Array.isArray(p.files) || !p.files.length || p.files.length > 10_000) throw new Error("files must be a list");
+    const files: ChangedFile[] = p.files.map((f: any) => {
+      if (!f || typeof f.path !== "string" || !f.path || f.path.length > 1000 || !["added", "modified", "deleted"].includes(f.status)) throw new Error("a file isn't a changed file");
+      return { path: f.path, status: f.status };
+    });
+    const patch = Buffer.from(text(p.patch, "patch", Math.ceil(MAX_BUNDLE / 3) * 4 + 4, 1), "base64");
+    if (!patch.length || patch.length > MAX_BUNDLE) throw new Error("the patch is empty or too big");
+    const id = crypto.randomBytes(8).toString("hex");
+    const dir = path.join(this.d.roomsDir, roomId, "received");
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    await fs.promises.writeFile(path.join(dir, `${id}.patch`), patch, { mode: 0o600 });
+    const rec: ReceivedRecord = { sessionId: now.sessionId, fromSessionId, from: ctx.from, title, files, bytes: patch.length, at: this.now(), applied: null };
+    this.local(roomId).received[id] = rec;
+    this.saveLocal(roomId);
+    this.changed();
+    try {
+      this.d.onReceived?.(this.receivedView(roomId, id, rec));
+    } catch (err) {
+      this.d.log(`team: telling about the changes ${this.nameOf(roomId, ctx.from)} sent`, err);
+    }
+    return { id };
+  }
+
+  /** The patch of changes a teammate sent, to review (cut to REVIEW_MAX, saying so), and where it's kept. */
+  async receivedPatch(roomId: RoomId, id: string): Promise<{ patch: string; truncated: boolean; file: string }> {
+    this.received(roomId, id);
+    const file = this.receivedFile(roomId, id);
+    const bytes = await fs.promises.readFile(file);
+    return { patch: bytes.subarray(0, REVIEW_MAX).toString("utf8"), truncated: bytes.length > REVIEW_MAX, file };
+  }
+
+  /**
+   * Apply a teammate's changes to the worktree of the session they're for —
+   * only when they apply cleanly to it as it is now, and after an Undo-turn
+   * snapshot of it, so applying can be undone. Otherwise nothing changes and
+   * the files in the way are named.
+   */
+  async applyReceived(roomId: RoomId, id: string): Promise<{ files: number }> {
+    const rec = this.received(roomId, id);
+    if (rec.applied) throw new Error("Those changes were applied already");
+    const s = this.d.host.session(rec.sessionId);
+    if (!s) throw new Error("The session they're for isn't on this Mac any more");
+    const top = await repoTop(s.cwd);
+    if (!top) throw new Error(`${s.cwd} isn't in a git repository`);
+    const file = this.receivedFile(roomId, id);
+    const patch = await fs.promises.readFile(file);
+    try {
+      await git(top, ["apply", "--check", "--binary", "-"], { input: patch });
+    } catch (err) {
+      const msg = (err as Error).message;
+      const inTheWay = [...new Set([...msg.matchAll(/^error: (.+?): (?:patch does not apply|already exists in working directory|does not exist in working directory|No such file or directory)/gm)].map((m) => m[1]))];
+      throw new Error(
+        `They don't apply cleanly to this worktree, so nothing was changed${inTheWay.length ? ` — changed here too: ${inTheWay.join(", ")}` : `: ${msg.replace(/\s+/g, " ").slice(0, 300)}`}. To merge them by hand: git apply --3way ${file}`
+      );
+    }
+    const before = await takeSnapshot(top, rec.sessionId, `(before applying ${this.nameOf(roomId, rec.from)}'s changes)`);
+    if (!before) throw new Error(`Couldn't record ${top}'s files before applying, so nothing was changed`);
+    await git(top, ["apply", "--binary", "-"], { input: patch });
+    rec.applied = this.now();
+    this.saveLocal(roomId);
+    this.changed();
+    return { files: rec.files.length };
+  }
+
+  /** Forget changes a teammate sent (applied or not): their patch goes. */
+  async dismissReceived(roomId: RoomId, id: string): Promise<void> {
+    this.received(roomId, id);
+    await this.dropReceived(roomId, id);
+  }
+
+  private async dropReceived(roomId: RoomId, id: string): Promise<void> {
+    await fs.promises.rm(this.receivedFile(roomId, id), { force: true });
+    delete this.local(roomId).received[id];
+    this.saveLocal(roomId);
+    this.changed();
+  }
+
+  private received(roomId: RoomId, id: string): ReceivedRecord {
+    if (typeof id !== "string" || !RECEIVED_ID_RE.test(id)) throw new Error("Not a set of changes");
+    const rec = this.local(roomId).received[id];
+    if (!rec) throw new Error("Those changes aren't here any more");
+    return rec;
+  }
+
+  private receivedFile(roomId: RoomId, id: string): string {
+    if (!RECEIVED_ID_RE.test(id)) throw new Error("Not a set of changes");
+    return path.join(this.d.roomsDir, roomId, "received", `${id}.patch`);
+  }
+
+  private receivedView(roomId: RoomId, id: string, r: ReceivedRecord): ReceivedChanges {
+    return { id, roomId, sessionId: r.sessionId, fromSessionId: r.fromSessionId, from: r.from, fromName: this.nameOf(roomId, r.from), title: r.title, files: r.files, bytes: r.bytes, at: r.at, applied: r.applied };
+  }
+
+  // ---- asking the owner first ---------------------------------------------------------------
+
+  /**
+   * A teammate asks to continue this install's session (its owner is online).
+   * The owner is prompted; on Hand over the turn in progress finishes, the
+   * session is backed up, that snapshot and the conversation are copied to
+   * the teammate, and the agent stops here — then the answer names the
+   * snapshot. Keep, no answer within askMs, the teammate going away or this
+   * app closing leave the session running here.
+   */
+  private async onAsk(p: any, ctx: RequestContext): Promise<AskAnswer> {
+    if (!p || typeof p !== "object") throw new Error("no parameters");
+    if (!ctx.roomId || p.roomId !== ctx.roomId) throw new Error("the request doesn't name its room");
+    const roomId = ctx.roomId;
+    const sessionId = sessionIdOf(p.sessionId);
+    const askId = text(p.askId, "askId", 64, 16);
+    if (!ASK_ID_RE.test(askId)) throw new Error("bad request id");
+    const entry = this.d.team.room(roomId)?.ext.takeover?.sessions[sessionId];
+    if (!entry || entry.owner !== this.d.team.self.id) throw new Error(`session ${sessionId} isn't this Mac's`);
+    if (entry.takenOver) throw new Error(`${this.nameOf(roomId, entry.takenOver.by)} already continues it`);
+    if (entry.dropped) throw new Error("its backup was deleted");
+    if (!this.d.host.session(sessionId) || this.d.host.roomOf(sessionId) !== roomId) throw new Error("that session isn't on this Mac any more");
+    if (this.incoming.has(askId)) throw new Error("that request is being answered already");
+    const busy = [...this.incoming.values()].find((a) => a.sessionId === sessionId && a.state === "handing-over");
+    if (busy) throw new Error(`it's being handed over to ${busy.fromName}`);
+    const at = this.now();
+    let decide!: (d: Decision) => void;
+    const decided = new Promise<Decision>((resolve) => (decide = resolve));
+    const ask: PendingAsk = { askId, roomId, sessionId, title: entry.session.title, from: ctx.from, fromName: this.nameOf(roomId, ctx.from), at, deadline: at + this.askMs, state: "waiting", decide };
+    this.incoming.set(askId, ask);
+    const timer = setTimeout(() => decide("timeout"), this.askMs);
+    this.changed();
+    try {
+      this.d.onAsk?.(askView(ask));
+    } catch (err) {
+      this.d.log(`team: telling about ${ask.fromName}'s request for session ${sessionId}`, err);
+    }
+    try {
+      const d = await decided;
+      clearTimeout(timer);
+      if (d !== "handover") return d === "timeout" ? { answer: "timeout" } : { answer: "kept" };
+      ask.state = "handing-over";
+      this.changed();
+      // anyone else asking for it is answered: it goes to this teammate
+      for (const other of this.incoming.values()) if (other !== ask && other.sessionId === sessionId) other.decide("keep");
+      this.d.team.request(ctx.from, "takeover.progress", { roomId, sessionId, askId, state: "handing-over" }, { roomId }).catch((err) => this.d.log(`team: telling ${ask.fromName} session ${sessionId} is being handed over`, err));
+      return await this.handOver(roomId, sessionId, ctx.from);
+    } finally {
+      clearTimeout(timer);
+      this.incoming.delete(askId);
+      this.changed();
+    }
+  }
+
+  /** The owner's answer to a teammate's request: hand the session over, or keep it. */
+  answerAsk(askId: string, answer: "handover" | "keep"): void {
+    const a = this.incoming.get(askId);
+    if (!a || a.state !== "waiting") throw new Error("That request was withdrawn, answered, or timed out");
+    a.decide(answer);
+  }
+
+  /** Let the turn in progress finish, back the session up, copy that to `to`, stop the agent: the snapshot `to` continues from. */
+  private async handOver(roomId: RoomId, sessionId: string, to: MemberId): Promise<AskAnswer> {
+    const deadline = Date.now() + this.handoverTurnMs;
+    while (this.d.host.session(sessionId)?.status === "working") {
+      if (this.closed) throw new Error("Mockingbird is quitting");
+      if (Date.now() > deadline) throw new Error(`its turn didn't finish within ${Math.round(this.handoverTurnMs / 60_000)} minutes, so it carries on here`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    await this.turnEnded(sessionId);
+    const unbacked = this.unbacked.get(sessionId);
+    if (unbacked) throw new Error(`it couldn't be backed up: ${unbacked.problem}`);
+    const rec = this.local(roomId).own[sessionId];
+    if (!rec) throw new Error("it couldn't be backed up");
+    // a copy to them already under way finishes first; then make sure they hold exactly this snapshot and the whole conversation
+    await this.mirrors.get(`${to}\n${sessionId}`)?.done;
+    const delivered = await this.sendSnapshot(to, roomId, sessionId);
+    await this.sendTranscript(to, roomId, sessionId);
+    if (!delivered && rec.pushed !== rec.sha) throw new Error(`${this.nameOf(roomId, to)} has no clone to copy it into, and origin's backup didn't take it`);
+    this.d.host.stop(sessionId);
+    return { answer: "handed-over", sha: rec.sha, takenAt: rec.takenAt };
+  }
+
+  /** The owner is handing over the session this install asked for. */
+  private onProgress(p: any, ctx: RequestContext): { ok: true } {
+    if (!p || typeof p !== "object" || typeof p.askId !== "string") throw new Error("no request id");
+    const out = this.outgoing.get(p.askId);
+    if (!out || out.owner !== ctx.from || out.roomId !== ctx.roomId) throw new Error("no such request");
+    if (p.state !== "handing-over") throw new Error("unknown state");
+    out.state = "handing-over";
+    this.changed();
+    return { ok: true };
+  }
+
+  /** Ask a connected owner to hand their session over: the snapshot they handed over, or why not (thrown). */
+  private async ask(roomId: RoomId, b: RoomSessionBackup): Promise<{ sha: string; takenAt: number }> {
+    const askId = crypto.randomBytes(12).toString("hex");
+    const ownerName = this.nameOf(roomId, b.owner);
+    const title = b.session.title;
+    const at = this.now();
+    this.outgoing.set(askId, { roomId, sessionId: b.sessionId, owner: b.owner, ownerName, at, deadline: at + this.askMs, state: "asking" });
+    this.changed();
+    try {
+      const r = await this.d.team.request<AskAnswer>(b.owner, "takeover.ask", { roomId, sessionId: b.sessionId, askId }, { roomId, timeoutMs: this.askMs + this.handoverTurnMs + 3 * SEND_TIMEOUT_MS });
+      if (r?.answer === "handed-over") return { sha: sha(r.sha), takenAt: time(r.takenAt, "takenAt") };
+      if (r?.answer === "kept") throw new Error(`${ownerName} kept “${title}”: it carries on on their laptop`);
+      if (r?.answer === "timeout") throw new Error(`${ownerName} didn't answer in time, so “${title}” stays on their laptop`);
+      throw new Error(`${ownerName}'s Mockingbird gave an answer this one doesn't know`);
+    } catch (err) {
+      if (err instanceof TeamError) {
+        if (err.code === "offline" || err.code === "disconnected" || err.code === "closed") {
+          throw new Error(`${ownerName} went offline before handing “${title}” over — you can take it over from the newest backup now`);
+        }
+        if (err.code === "no-handler") throw new Error(`${ownerName}'s Mockingbird can't hand sessions over yet: it needs an update`);
+        if (err.code === "remote") throw new Error(`${ownerName}'s Mockingbird couldn't hand “${title}” over: ${err.message}`);
+        if (err.code === "timeout") throw new Error(`${ownerName}'s Mockingbird stopped answering while handing “${title}” over`);
+      }
+      throw err;
+    } finally {
+      this.outgoing.delete(askId);
+      this.changed();
+    }
   }
 
   // ---- taking over (teammate) ----------------------------------------------------------------
@@ -812,29 +1317,40 @@ export class TakeoverService {
    * Continue a teammate's room session on this Mac: a worktree on its branch
    * from the newest snapshot, the conversation placed for this Mac's CLI (or a
    * kickoff from what arrived, which says so), the session launched under this
-   * Mac's account, and the room told.
+   * Mac's account, and the room told. A connected owner is asked first and
+   * hands over the exact snapshot to continue from (their agent stopped);
+   * when they keep it, don't answer, or go offline meanwhile, this throws
+   * saying which.
    */
   async takeOver(roomId: RoomId, sessionId: string, clonePath?: string | null): Promise<TakeoverResult> {
     const k = `${roomId}\n${sessionId}`;
     if (this.taking.has(k)) throw new Error("This session is already being taken over");
     this.taking.add(k);
     try {
-      const plan = await this.plan(roomId, sessionId, clonePath);
+      let plan = await this.plan(roomId, sessionId, clonePath);
       if (!plan.clone) throw new Error(`No clone of ${plan.originUrl} was found among your repositories — choose yours`);
-      const snap = plan.snapshot;
+      const clone = plan.clone;
+      const handed = plan.ownerOnline ? await this.ask(roomId, this.backupOf(roomId, sessionId)) : null;
+      if (handed) plan = await this.plan(roomId, sessionId, clone);
+      const snap = handed ? ([plan.snapshot, plan.other].find((c) => c?.sha === handed.sha) ?? null) : plan.snapshot;
+      if (!snap && handed) {
+        throw new Error(
+          `${plan.ownerName} handed it over, but its snapshot ${handed.sha.slice(0, 8)} reached neither this Mac nor origin${plan.originProblem ? ` (reading origin failed: ${plan.originProblem})` : ""} — ${plan.ownerName} can resume it there`
+        );
+      }
       if (!snap) {
         throw new Error(
           `No snapshot of this session reached this Mac or origin${plan.originProblem ? ` (reading origin failed: ${plan.originProblem})` : ""} — it's only on ${plan.ownerName}'s laptop`
         );
       }
       const b = this.backupOf(roomId, sessionId);
-      const base = (await git(plan.clone, ["rev-parse", "--verify", "-q", `${snap.sha}^1`], { okCodes: [0, 1] })) || null;
+      const base = (await git(clone, ["rev-parse", "--verify", "-q", `${snap.sha}^1`], { okCodes: [0, 1] })) || null;
       if (!base) throw new Error("The snapshot has no parent commit (the repository had no commits yet), so there's no branch to continue");
-      const wt = await worktreeAt(plan.clone, b.session.branch, base);
+      const wt = await worktreeAt(clone, b.session.branch, base);
       await checkoutSnapshotFiles(wt.path, snap.sha);
       const carried = await this.carryConversation(roomId, b, plan, wt.path);
       const req: NewSessionRequest = {
-        repoPath: plan.clone,
+        repoPath: clone,
         cwd: wt.path,
         branchName: wt.branch ?? undefined,
         useWorktree: false,
@@ -956,7 +1472,41 @@ export class TakeoverService {
       }
     }
     const list = (m: Map<string, { roomId: RoomId; title: string; problem: string }>) => [...m].map(([sessionId, u]) => ({ sessionId, ...u }));
-    return { sessions, unbacked: list(this.unbacked), cleanup: list(this.cleanupProblems) };
+    const left: LeftCopy[] = [];
+    const received: ReceivedChanges[] = [];
+    for (const room of this.d.team.rooms()) {
+      const online = this.d.team.presence(room.id);
+      const local = this.local(room.id);
+      for (const e of Object.values(room.ext.takeover?.sessions ?? {})) {
+        if (!e.takenOver || e.owner !== this.d.team.self.id || (!local.left[e.sessionId] && !this.d.host.session(e.sessionId))) continue;
+        const now = continuation(room.ext.takeover, e.sessionId)!;
+        const self = now.owner === this.d.team.self.id;
+        const sent = local.left[e.sessionId]?.sent;
+        left.push({
+          roomId: room.id,
+          sessionId: e.sessionId,
+          title: e.session.title,
+          by: e.takenOver.by,
+          byName: this.nameOf(room.id, e.takenOver.by),
+          at: e.takenOver.at,
+          now: { owner: now.owner, ownerName: this.nameOf(room.id, now.owner), sessionId: now.sessionId, self, online: self || online.includes(now.owner) },
+          takeBack: !self && now.backedUp,
+          unsent: this.unsent.get(e.sessionId) ?? null,
+          sent: sent ? { at: sent.at, files: sent.files } : null,
+          sending: this.sending.has(e.sessionId),
+        });
+      }
+      for (const [id, r] of Object.entries(local.received)) received.push(this.receivedView(room.id, id, r));
+    }
+    return {
+      sessions,
+      unbacked: list(this.unbacked),
+      cleanup: list(this.cleanupProblems),
+      asks: [...this.incoming.values()].map(askView),
+      asking: [...this.outgoing.values()].map(({ owner: _owner, ...o }) => o),
+      left,
+      received,
+    };
   }
 
   // ---- helpers ------------------------------------------------------------------------------
@@ -1022,7 +1572,7 @@ export class TakeoverService {
     let s = this.locals.get(roomId);
     if (!s) {
       const v = readJsonOrSetAside(path.join(this.d.roomsDir, roomId, "takeover.json"), null, `room ${roomId}'s backups`) as LocalState | null;
-      s = v && v.v === 1 ? { v: 1, own: v.own ?? {}, mirrored: v.mirrored ?? {} } : { v: 1, own: {}, mirrored: {} };
+      s = v && v.v === 1 ? { v: 1, own: v.own ?? {}, mirrored: v.mirrored ?? {}, left: v.left ?? {}, received: v.received ?? {} } : { v: 1, own: {}, mirrored: {}, left: {}, received: {} };
       this.locals.set(roomId, s);
     }
     return s;
@@ -1123,6 +1673,15 @@ async function takenAtOf(repo: string, commit: string): Promise<number> {
 }
 
 const conversationOf = (s: SessionInfo): { agent: AgentKind; id: string } | null => (s.conversation && CONV_ID_RE.test(s.conversation.id) ? s.conversation : null);
+
+/** The files that differ between two commits (or trees), as added, modified or deleted. */
+async function changedFiles(repo: string, from: string, to: string): Promise<ChangedFile[]> {
+  const out = await git(repo, ["diff", "--name-status", "--no-renames", "-z", from, to], { trim: false });
+  return parseNameStatus(out).map((c) => ({ path: c.path, status: c.status === "A" ? "added" : c.status === "D" ? "deleted" : "modified" }));
+}
+
+/** A pending request as the window sees it. */
+const askView = (a: PendingAsk): IncomingAsk => ({ askId: a.askId, roomId: a.roomId, sessionId: a.sessionId, title: a.title, from: a.from, fromName: a.fromName, at: a.at, deadline: a.deadline, state: a.state });
 
 async function readBytes(file: string, at: number, len: number): Promise<Buffer> {
   const fh = await fs.promises.open(file, "r");

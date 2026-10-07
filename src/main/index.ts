@@ -142,7 +142,7 @@ function startTakeover(): TakeoverService | null {
   return new TakeoverService({
     team: transport,
     roomsDir: ROOMS_DIR,
-    host: liveRoomHost(livePanes, { sessions: () => sessions.list(), rooms: () => team.status().rooms }),
+    host: liveRoomHost(livePanes, { sessions: () => sessions.list(), resumable: () => sessions.resumable(), rooms: () => team.status().rooms, stop: (id) => sessions.stop(id) }),
     secretFiles: () => {
       const known = knownSecretFiles(store.settings.workTrackerPath);
       if (known.problem && known.problem !== secretFilesProblem) logError("team: what room backups leave out", known.problem);
@@ -153,9 +153,21 @@ function startTakeover(): TakeoverService | null {
     launch: (req) => sessions.create(req),
     log: logError,
     changed: () => toWindow("team:takeoverChanged", takeover?.view()),
-    onTakenOver: (id, by) => notifySession(id, "Taken over", `${by} took over ${sessions.list().find((s) => s.id === id)?.title ?? "a room session"} on their Mac`),
+    onTakenOver: (id, by) => notifySession(id, "Taken over", `${by} continues ${titleOfSession(id)} on their Mac: it stopped here`),
+    // asked to hand a session over: told even when its pane's notifications were just shown (no coalescing)
+    onAsk: (a) => {
+      if (!shouldNotify({ settings: store.settings, kind: "other", now: new Date() })) return;
+      const n = new Notification({ title: `${a.fromName} wants to continue a session`, body: `${a.title} — on their laptop. Hand over or keep it?` });
+      n.on("click", () => focusPane(a.sessionId));
+      n.show();
+    },
+    onReceived: (r) => notifySession(r.sessionId, `Changes from ${r.fromName}`, `${r.files.length === 1 ? "1 changed file" : `${r.files.length} changed files`} from their copy of ${r.title}, to review`),
+    chat: (roomId, text) => void teamRoom.chat.post(roomId, text),
   });
 }
+const titleOfSession = (id: string) => [...sessions.list(), ...sessions.resumable()].find((s) => s.id === id)?.title ?? "a room session";
+// a session a teammate continues never runs here again (team rooms: take-over)
+sessions.relaunchGuard = (id) => takeover?.relaunchRefusal(id) ?? null;
 const needTakeover = (): TakeoverService => {
   if (!takeover) throw new Error("Team rooms haven't started — see Settings → Team");
   return takeover;
@@ -871,9 +883,18 @@ handle("teamChat:read", (roomId) => teamRoom.chat.markRead(String(roomId)));
 handle("teamChat:unread", () => teamRoom.chat.unread());
 handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(roomId) : null));
 // team rooms: take-over
-handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], unbacked: [], cleanup: [] });
+handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [] });
 handle("team:takeoverPlan", (roomId, sessionId, clonePath) => needTakeover().plan(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 handle("team:takeOver", (roomId, sessionId, clonePath) => needTakeover().takeOver(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
+handle("team:takeoverAnswer", (askId, answer) => {
+  if (answer !== "handover" && answer !== "keep") throw new Error("Answer hand over or keep");
+  needTakeover().answerAsk(String(askId), answer);
+});
+handle("team:takeoverCheckLeft", (roomId, sessionId) => needTakeover().checkLeft(String(roomId), String(sessionId)));
+handle("team:takeoverSendLeft", (roomId, sessionId) => needTakeover().sendLeft(String(roomId), String(sessionId)));
+handle("team:takeoverReceivedPatch", (roomId, id) => needTakeover().receivedPatch(String(roomId), String(id)));
+handle("team:takeoverApplyReceived", (roomId, id) => needTakeover().applyReceived(String(roomId), String(id)));
+handle("team:takeoverDismissReceived", (roomId, id) => needTakeover().dismissReceived(String(roomId), String(id)));
 // team rooms: live panes
 handle("team:live", () => livePanes.state());
 handle("team:paneResync", (id) => livePanes.resync(String(id)));

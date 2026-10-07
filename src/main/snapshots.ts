@@ -103,6 +103,33 @@ export async function snapshotCommit(cwd: string, message: string, opts: { exclu
   });
 }
 
+/**
+ * The worktree's files as a tree object (ignored and big files left out, and
+ * whatever `exclude` matches), without making a commit or touching the
+ * index. Null outside a git repository.
+ */
+export async function worktreeTree(cwd: string, opts: { exclude?: string[] } = {}): Promise<{ top: string; tree: string; skipped: string[] } | null> {
+  const top = await repoTop(cwd);
+  if (!top) return null;
+  return withIndex(async (env) => ({ top, ...(await treeOfWorktree(top, env, opts.exclude)) }));
+}
+
+/**
+ * The worktree's files as a commit on top of `parent` (any commit, not
+ * necessarily HEAD), under no ref: its diff against `parent` is what the
+ * worktree changed since. Ignored, big and `exclude`d files are left out.
+ */
+export async function worktreeCommitOn(cwd: string, parent: string, message: string, opts: { exclude?: string[] } = {}): Promise<WorktreeSnapshot> {
+  const top = await repoTop(cwd);
+  if (!top) throw new Error(`${cwd} isn't in a git repository`);
+  return withIndex(async (env) => {
+    const { tree, skipped } = await treeOfWorktree(top, env, opts.exclude);
+    const body = [message, ...(skipped.length ? ["", `skipped: ${JSON.stringify(skipped)}`] : [])].join("\n");
+    const sha = await git(top, ["commit-tree", tree, "-p", parent, "-m", body], { env });
+    return { sha, tree, parent, skipped };
+  });
+}
+
 /** The files a snapshot commit left out for being too big (from its message). */
 export async function skippedIn(cwd: string, sha: string): Promise<string[]> {
   return parseMessage(await git(cwd, ["show", "-s", "--format=%B", sha])).skipped;

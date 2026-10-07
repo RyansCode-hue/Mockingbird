@@ -1,9 +1,20 @@
 import { useEffect, useState } from "react";
 import { Modal } from "../Modal";
 import { settled } from "../settled";
-import { ago } from "../../shared/format";
+import { ago, plural } from "../../shared/format";
 import { AGENT_NAME, isErr } from "../../shared/types";
-import { backupFreshness, type RoomSessionBackupView, type TakeoverPlan, type TakeoverResult, type TakeoverView } from "../../shared/team/takeover";
+import {
+  backupFreshness,
+  leftCopyText,
+  type IncomingAsk,
+  type LeftCopy,
+  type OutgoingAsk,
+  type ReceivedChanges,
+  type RoomSessionBackupView,
+  type TakeoverPlan,
+  type TakeoverResult,
+  type TakeoverView,
+} from "../../shared/team/takeover";
 import type { TeamRoomSummary } from "../../shared/team/types";
 
 /**
@@ -16,6 +27,12 @@ import type { TeamRoomSummary } from "../../shared/team/types";
  * TakeOverButton, found by backupOf. RoomBackupWarnings lists what has no
  * row: this Mac's sessions that couldn't be backed up, and backups it
  * couldn't delete.
+ *
+ * A connected owner is asked first: HandOverPrompt is theirs. A copy a
+ * teammate continued is stopped here and shows LeftCopyPanel (its pane) and
+ * LeftCopyLine (its row): Take it back, and Send the changes the teammate
+ * lacks. Changes sent that way land on the teammate's session as
+ * ReceivedNotice, reviewed and applied in ReceivedDialog.
  */
 
 /** The take-over view from main, kept current; an { error } when it couldn't be read. */
@@ -129,43 +146,67 @@ export function RoomBackupWarnings({ room, view }: { room: TeamRoomSummary; view
   );
 }
 
-/** Confirm a take-over: which snapshot, whether the conversation is whole, which clone. */
-export function TakeOverDialog({ view, onClose }: { view: RoomSessionBackupView; onClose: () => void }) {
+/** "1:42": what's left until `deadline`. */
+const countdown = (deadline: number, now: number) => {
+  const s = Math.max(0, Math.ceil((deadline - now) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+/**
+ * Confirm a take-over: which snapshot, whether the conversation is whole,
+ * which clone. A connected owner is asked first (`asking` follows the
+ * request); when they keep it, don't answer or drop offline, the dialog says
+ * so and checks again — offline, the take-over can then go ahead.
+ */
+export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: RoomSessionBackupView; asking?: OutgoingAsk | null; onClose: () => void; takeBack?: boolean }) {
   const [clone, setClone] = useState<string | null>(null);
   const [plan, setPlan] = useState<TakeoverPlan | { error: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState<TakeoverResult | null>(null);
-  const now = useNow();
+  const [checks, setChecks] = useState(0);
+  const now = useNow(busy ? 1000 : 30_000);
   useEffect(() => {
     let live = true;
-    setPlan(null);
     settled(window.mb.teamTakeoverPlan(view.roomId, view.sessionId, clone), "Couldn't check what's here").then((p: TakeoverPlan | { error: string }) => live && setPlan(p));
     return () => {
       live = false;
     };
-  }, [view.roomId, view.sessionId, clone]);
+  }, [view.roomId, view.sessionId, clone, checks]);
   const choose = async () => {
     const dir = await settled(window.mb.pickPath({}), "Couldn't open the folder picker");
     if (isErr(dir)) return setError(dir.error);
-    if (dir) setClone(String(dir));
+    if (dir) {
+      setPlan(null);
+      setClone(String(dir));
+    }
   };
   const go = async () => {
     setBusy(true);
     setError("");
     const r = await settled(window.mb.teamTakeOver(view.roomId, view.sessionId, clone), "Couldn't take over");
     setBusy(false);
-    if (isErr(r)) return setError(r.error);
+    if (isErr(r)) {
+      setError(r.error);
+      setChecks((n) => n + 1); // the owner may have kept it or gone offline: what's possible now
+      return;
+    }
     setDone(r);
   };
   const p = plan && !isErr(plan) ? plan : null;
+  const online = p ? p.ownerOnline : view.ownerOnline;
   const from = (src: "peer" | "origin") => (src === "peer" ? `copied from ${view.ownerName}'s laptop` : "the backup on origin");
+  const verb = takeBack ? "Take back" : "Take over";
   return (
     <Modal className="modal tk-dlg" onClose={onClose} closeOnBackdrop={!busy}>
-      <h3>Take over “{view.session.title}”</h3>
+      <h3>
+        {verb} “{view.session.title}”
+      </h3>
       <div className="sub-h">
-        {view.ownerOnline ? `${view.ownerName} is connected — tell them first.` : `${view.ownerName} is offline.`} The session continues on this Mac under your account, in a worktree of your
-        clone on its branch. {view.ownerName} sees it as taken over.
+        {online
+          ? `${view.ownerName} is connected, so they're asked first: their turn in progress finishes, and the session continues here from exactly where it stopped on their laptop. If they keep it or don't answer within 2 minutes, it stays with them.`
+          : `${view.ownerName} is offline. Their copy stops when their Mockingbird is back, and keeps its files.`}{" "}
+        The session continues on this Mac under your account, in a worktree of your clone on its branch.
       </div>
       {plan === null && <div className="fp-note">Checking this Mac and origin…</div>}
       {isErr(plan) && <div className="err">{plan.error}</div>}
@@ -212,6 +253,13 @@ export function TakeOverDialog({ view, onClose }: { view: RoomSessionBackupView;
           <dd>{p.branch ?? "(detached)"}</dd>
         </dl>
       )}
+      {busy && asking && (
+        <div className="fp-note tk-asking">
+          {asking.state === "asking"
+            ? `Waiting for ${asking.ownerName} to answer — kept in ${countdown(asking.deadline, now)} if they don't.`
+            : `${asking.ownerName} is handing it over: their turn finishes, then the backup comes straight here and their agent stops.`}
+        </div>
+      )}
       {error && <div className="err">{error}</div>}
       {done && (
         <div className="fp-note">
@@ -225,7 +273,267 @@ export function TakeOverDialog({ view, onClose }: { view: RoomSessionBackupView;
         </button>
         {!done && (
           <button className="primary" onClick={go} disabled={busy || !p?.clone || !p.snapshot}>
-            {busy ? "Taking over…" : "Take over"}
+            {busy ? (online ? `Asking ${view.ownerName}…` : `${verb === "Take back" ? "Taking back" : "Taking over"}…`) : online ? `Ask ${view.ownerName}` : verb}
+          </button>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * A teammate asks to continue one of this Mac's sessions on their laptop:
+ * Hand over or Keep, kept by itself when the time runs out. While it's being
+ * handed over, says what's happening.
+ */
+export function HandOverPrompt({ ask, onShow }: { ask: IncomingAsk; onShow?: (sessionId: string) => void }) {
+  const now = useNow(1000);
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState(false);
+  const answer = async (a: "handover" | "keep") => {
+    setSent(true);
+    setError("");
+    const r = await settled(window.mb.teamTakeoverAnswer(ask.askId, a), "Couldn't answer");
+    if (isErr(r)) {
+      setSent(false);
+      setError(r.error);
+    }
+  };
+  const waiting = ask.state === "waiting";
+  return (
+    <Modal className="modal tk-dlg tk-ask" onClose={() => waiting && !sent && void answer("keep")} closeOnBackdrop={false}>
+      <h3>
+        {ask.fromName} wants to continue “{ask.title}” on their laptop
+      </h3>
+      {waiting ? (
+        <>
+          <div className="sub-h">
+            <b>Hand over</b>: the turn in progress finishes, Mockingbird backs the session up and sends it straight to {ask.fromName}, then stops the agent here. Your worktree stays exactly
+            as it is, and you can take the session back later.
+            <br />
+            <b>Keep</b>: it carries on here, and {ask.fromName} is told.
+          </div>
+          <div className="fp-note tk-quiet">Kept in {countdown(ask.deadline, now)} if you don't answer.</div>
+        </>
+      ) : (
+        <div className="fp-note">Handing it over to {ask.fromName}: waiting for the turn to finish, then the backup goes to them and the agent stops here…</div>
+      )}
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        {onShow && (
+          <button className="outline" onClick={() => onShow(ask.sessionId)}>
+            Show the session
+          </button>
+        )}
+        <span style={{ flex: 1 }} />
+        <button className="outline" onClick={() => answer("keep")} disabled={!waiting || sent}>
+          Keep
+        </button>
+        <button className="primary" onClick={() => answer("handover")} disabled={!waiting || sent}>
+          {waiting ? "Hand over" : "Handing over…"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+
+/** Send a left copy's changes to whoever continues it; the outcome comes back as text (or an error). */
+async function sendLeft(l: LeftCopy): Promise<string | null> {
+  const r = await settled(window.mb.teamTakeoverSendLeft(l.roomId, l.sessionId), `Couldn't send the changes to ${l.now.ownerName}`);
+  return isErr(r) ? r.error : null;
+}
+
+/** What a left copy has that whoever continues it lacks, in words; null when there's nothing to say. */
+function unsentText(l: LeftCopy): { tone: "warn" | "muted"; text: string } | null {
+  if (!l.unsent) return { tone: "muted", text: "Checking this copy's files…" };
+  if ("error" in l.unsent) return { tone: "warn", text: `Couldn't tell what ${l.now.ownerName} lacks: ${l.unsent.error}` };
+  const n = l.unsent.files.length;
+  if (n) return { tone: "warn", text: l.now.self ? `This copy has ${plural(n, "changed file")} the session here doesn't — they stay in its folder` : `This copy has ${plural(n, "changed file")} ${l.now.ownerName} doesn't have` };
+  if (l.sent) return { tone: "muted", text: `Its changes were sent to ${l.now.ownerName} ${ago(l.sent.at)}` };
+  return null;
+}
+
+/**
+ * The pane of a copy a teammate continued: stopped, its files untouched.
+ * Take it back (once their copy has a backup), Close, and — when this copy
+ * has changes they lack — Send them.
+ */
+export function LeftCopyPanel({ left, onTakeBack, onClose }: { left: LeftCopy; onTakeBack: () => void; onClose: () => void }) {
+  const [error, setError] = useState("");
+  const u = unsentText(left);
+  const n = left.unsent && !("error" in left.unsent) ? left.unsent.files.length : 0;
+  useEffect(() => {
+    void settled(window.mb.teamTakeoverCheckLeft(left.roomId, left.sessionId), "Couldn't count this copy's changes").then((r) => isErr(r) && setError(r.error));
+  }, [left.roomId, left.sessionId]);
+  return (
+    <div className="tk-left">
+      <div className="tk-left-title">{leftCopyText(left)}</div>
+      <div className="tk-quiet">
+        {left.byName} continued it {ago(left.at)}. The agent stopped here; this worktree and every file in it are as they were.
+      </div>
+      {u && (
+        <div className={`tk-left-unsent ${u.tone}`} title={n ? (left.unsent as { files: string[] }).files.slice(0, 40).join("\n") : undefined}>
+          {u.text}
+          {n > 0 && !left.now.self && (
+            <button
+              className="outline tk-small"
+              disabled={left.sending || !left.now.online}
+              title={left.now.online ? `Send them to ${left.now.ownerName}: they land on their session as a patch to review and apply` : `${left.now.ownerName} is offline`}
+              onClick={async () => setError((await sendLeft(left)) ?? "")}
+            >
+              {left.sending ? "Sending…" : `Send to ${left.now.ownerName}`}
+            </button>
+          )}
+        </div>
+      )}
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        {!left.now.self && (
+          <button className="outline strong" onClick={onTakeBack} disabled={!left.takeBack} title={left.takeBack ? `Continue ${left.now.ownerName}'s copy here, from their newest backup` : `Offered once ${left.now.ownerName}'s copy has a backup`}>
+            Take it back
+          </button>
+        )}
+        <button className="outline" onClick={onClose}>
+          Close
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** A left copy on its sidebar row: where it continues, and the changes this copy has that they lack (with Send). */
+export function LeftCopyLine({ left, onTakeBack }: { left: LeftCopy; onTakeBack: () => void }) {
+  const [error, setError] = useState("");
+  const u = unsentText(left);
+  const n = left.unsent && !("error" in left.unsent) ? left.unsent.files.length : 0;
+  return (
+    <>
+      <span className="br tk-fresh muted tk-line-btn" title={`${leftCopyText(left)} — ${left.byName} continued it ${ago(left.at)}`}>
+        <span className="tk-t">{left.now.self ? "taken back into another session" : `continued on ${left.now.ownerName}'s laptop`}</span>
+        {left.takeBack && (
+          <button
+            className="tk-btn outline show tk-takeback"
+            title={`Continue ${left.now.ownerName}'s copy here, from their newest backup`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onTakeBack();
+            }}
+          >
+            Take it back
+          </button>
+        )}
+      </span>
+      {u && u.tone === "warn" && (
+        <span className="br tk-fresh warn tk-line-btn" title={error || u.text}>
+          <span className="tk-t">{n ? `${plural(n, "changed file")} ${left.now.self ? "only here" : `${left.now.ownerName} doesn't have`}` : u.text}</span>
+          {n > 0 && !left.now.self && (
+            <button
+              className="tk-btn outline show"
+              disabled={left.sending || !left.now.online}
+              onClick={async (e) => {
+                e.stopPropagation();
+                setError((await sendLeft(left)) ?? "");
+              }}
+            >
+              {left.sending ? "Sending…" : "Send"}
+            </button>
+          )}
+        </span>
+      )}
+      {error && <span className="br tk-fresh warn">{error}</span>}
+    </>
+  );
+}
+
+/** Changes a teammate sent for one of this Mac's sessions, waiting to be reviewed: on its pane and row. */
+export function ReceivedNotice({ received, onReview, compact }: { received: ReceivedChanges[]; onReview: (r: ReceivedChanges) => void; compact?: boolean }) {
+  const open = received.filter((r) => !r.applied);
+  if (!open.length) return null;
+  return (
+    <>
+      {open.map((r) => (
+        <div key={r.id} className={compact ? "br tk-fresh warn tk-line-btn" : "team-pane-note tk-received"} title={`${r.fromName}'s copy of “${r.title}” had these after you continued it`}>
+          <span className="tk-t">
+            {r.fromName} sent {plural(r.files.length, "changed file")}
+            {compact ? "" : " from their copy, made after you continued it"}
+          </span>
+          <button
+            className={compact ? "tk-btn outline show" : "outline tk-small"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onReview(r);
+            }}
+          >
+            Review
+          </button>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/** Review a teammate's changes: the files and the patch; apply them to this session's worktree (only cleanly), or dismiss them. */
+export function ReceivedDialog({ received, onClose }: { received: ReceivedChanges; onClose: () => void }) {
+  const [patch, setPatch] = useState<{ patch: string; truncated: boolean; file: string } | { error: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [applied, setApplied] = useState(received.applied !== null);
+  useEffect(() => {
+    let live = true;
+    settled(window.mb.teamTakeoverReceivedPatch(received.roomId, received.id), "Couldn't read the changes").then((p) => live && setPatch(p));
+    return () => {
+      live = false;
+    };
+  }, [received.roomId, received.id]);
+  const run = async (what: "apply" | "dismiss") => {
+    setBusy(true);
+    setError("");
+    const r =
+      what === "apply"
+        ? await settled(window.mb.teamTakeoverApplyReceived(received.roomId, received.id), "Couldn't apply the changes")
+        : await settled(window.mb.teamTakeoverDismissReceived(received.roomId, received.id), "Couldn't dismiss the changes");
+    setBusy(false);
+    if (isErr(r)) return setError(r.error);
+    if (what === "apply") setApplied(true);
+    else onClose();
+  };
+  const mark = { added: "A", modified: "M", deleted: "D" } as const;
+  return (
+    <Modal className="modal tk-dlg tk-received-dlg" onClose={onClose} closeOnBackdrop={!busy}>
+      <h3>Changes from {received.fromName}</h3>
+      <div className="sub-h">
+        {received.fromName}'s copy of “{received.title}” had these after you continued it ({ago(received.at)}). Applying puts them into this session's worktree only where they apply
+        cleanly; nothing is overwritten, and Undo turn can take them out again.
+      </div>
+      <div className="tk-files">
+        {received.files.map((f) => (
+          <div key={f.path}>
+            <span className={`tk-mark ${f.status}`}>{mark[f.status]}</span> <span className="tk-path">{f.path}</span>
+          </div>
+        ))}
+      </div>
+      {patch === null && <div className="fp-note">Reading the changes…</div>}
+      {isErr(patch) && <div className="err">{patch.error}</div>}
+      {patch && !isErr(patch) && (
+        <>
+          <pre className="tk-patch">{patch.patch}</pre>
+          {patch.truncated && <div className="tk-quiet">The rest is in {patch.file}</div>}
+        </>
+      )}
+      {error && <div className="err">{error}</div>}
+      {applied && <div className="fp-note">Applied to this session's worktree.</div>}
+      <div className="row">
+        <button className="outline" onClick={() => run("dismiss")} disabled={busy} title="Forget these changes (the teammate's copy still has them)">
+          {applied ? "Done" : "Dismiss"}
+        </button>
+        <span style={{ flex: 1 }} />
+        <button className="outline" onClick={onClose} disabled={busy}>
+          Close
+        </button>
+        {!applied && (
+          <button className="primary" onClick={() => run("apply")} disabled={busy}>
+            {busy ? "Applying…" : "Apply to my worktree"}
           </button>
         )}
       </div>

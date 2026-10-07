@@ -6,10 +6,10 @@ import { git, makeRepo, tempDir, write } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { SessionManager } from "../src/main/sessions";
 import { LivePanes } from "../src/main/team/livePanes";
-import { liveRoomHost, TakeoverService } from "../src/main/team/takeover";
+import { liveRoomHost, TakeoverService, type TakeoverDeps } from "../src/main/team/takeover";
 import { claudeProjectDir } from "../src/main/agentFiles";
 import { LIVE_METHODS, remotePaneId, roomSessionKey } from "../src/shared/team/livePanes";
-import { backupFreshness, backupOf, roomBackupRef } from "../src/shared/team/takeover";
+import { backupFreshness, backupOf, roomBackupRef, type IncomingAsk } from "../src/shared/team/takeover";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
 
 /**
@@ -54,7 +54,7 @@ function repos() {
 }
 
 /** One member's Mockingbird: sessions, live panes and take-over, joined as index.ts joins them. */
-function app(m: LoopbackMember, clone: string) {
+function app(m: LoopbackMember, clone: string, takeoverOpts: Partial<TakeoverDeps> = {}) {
   const dir = tempDir(`${m.name}-app`);
   const settings: Settings = { ...DEFAULT_SETTINGS, claudeBin: "/bin/echo", codexBin: "/bin/echo", workTrackerPath: path.join(dir, "WorkTracker") };
   const saved: any[] = [];
@@ -83,6 +83,8 @@ function app(m: LoopbackMember, clone: string) {
   const rooms = () => m.team.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey }));
   const claudeProjects = path.join(dir, ".claude", "projects");
   const takenOver: string[] = [];
+  const chat: string[] = [];
+  const asks: IncomingAsk[] = [];
   /** How often the window was told the take-over view changed. */
   const viewChanges = { n: 0 };
   const startLive = () => {
@@ -108,15 +110,20 @@ function app(m: LoopbackMember, clone: string) {
     const tk = new TakeoverService({
       team: m.team,
       roomsDir: m.store.dir,
-      host: liveRoomHost(live, { sessions: () => sessions.list(), rooms }),
+      host: liveRoomHost(live, { sessions: () => sessions.list(), resumable: () => sessions.resumable(), rooms, stop: (id) => sessions.stop(id) }),
       repos: () => [clone],
       launch: (req: NewSessionRequest) => sessions.create(req),
       log,
       onTakenOver: (id, by) => takenOver.push(`${id} by ${by}`),
+      onAsk: (a) => asks.push(a),
+      chat: (_roomId, text) => chat.push(text),
       changed: () => viewChanges.n++,
       claudeProjects,
       codexSessions: path.join(dir, ".codex", "sessions"),
+      ...takeoverOpts,
     });
+    // as index.ts does: a session a teammate continues never runs here again
+    sessions.relaunchGuard = (id) => tk.relaunchRefusal(id);
     const stop = () => {
       tk.close();
       live.stop();
@@ -124,15 +131,15 @@ function app(m: LoopbackMember, clone: string) {
     stops.push(stop);
     return { live, tk, stop };
   };
-  return { m, sessions, logs, takenOver, viewChanges, claudeProjects, startLive };
+  return { m, sessions, logs, takenOver, chat, asks, viewChanges, claudeProjects, startLive };
 }
 
-async function setup() {
+async function setup(takeoverOpts: Partial<TakeoverDeps> = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("team") });
   const [ryanM, nickM] = members;
-  const ryan = app(ryanM, r.ryanClone);
-  const nick = app(nickM, r.nickClone);
+  const ryan = app(ryanM, r.ryanClone, takeoverOpts);
+  const nick = app(nickM, r.nickClone, takeoverOpts);
   const ryanRun = ryan.startLive();
   const nickRun = nick.startLive();
   // Ryan's room session, with a conversation on disk for its transcript
@@ -144,6 +151,21 @@ async function setup() {
 }
 
 const backupIn = (m: LoopbackMember, roomId: string, id: string) => m.team.room(roomId)?.ext.takeover?.sessions[id];
+const statusOf = (sessions: SessionManager, id: string) => sessions.list().find((x) => x.id === id)?.status;
+/** Every file in a working tree but .git, with its content. */
+function files(root: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const walk = (dir: string) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === ".git") continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else out[path.relative(root, p)] = fs.readFileSync(p, "utf8");
+    }
+  };
+  walk(root);
+  return out;
+}
 const recordIn = (m: LoopbackMember, roomId: string, owner: string, id: string) => m.team.room(roomId)?.ext.sessions?.[roomSessionKey(owner, id)];
 /** A turn of the agent: the hooks say it's working (on conversation CONV), then that it stopped. */
 function turn(sessions: SessionManager, id: string) {
@@ -156,7 +178,7 @@ describe("a room session's backup in the window", () => {
     const view = (owner: string, sessionId: string, roomId = "R1") => ({ roomId, owner, sessionId }) as any;
     const ryan = "a".repeat(32);
     const nick = "b".repeat(32);
-    const v = { sessions: [view(ryan, "s1"), view(nick, "s1"), view(nick, "s2", "R2")], unbacked: [], cleanup: [] };
+    const v = { sessions: [view(ryan, "s1"), view(nick, "s1"), view(nick, "s2", "R2")], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [] };
     // Nick's s1 shows here as remotePaneId(nick, "s1"); its tag still names s1
     expect(backupOf(v, { roomId: "R1", sessionId: "s1", owner: nick })).toBe(v.sessions[1]);
     expect(backupOf(v, { roomId: "R1", sessionId: "s1", owner: ryan })).toBe(v.sessions[0]);
@@ -211,8 +233,15 @@ describe("take-over over live panes", () => {
     expect(t.nickRun.live.state().own[r.sessionId]).toMatchObject({ remote: false, roomId: t.roomId });
 
     // Ryan is back: his Mockingbird hears of it and takes its copy out of the room
+    const filesBefore = files(t.wt);
     t.net.setOnline(t.ryanM.id, true);
     await until(() => !!backupIn(t.ryanM, t.roomId, t.s.id)?.takenOver, "Ryan to hear of the take-over");
+    // ...and stops it: the agent ends, every file in its worktree stays as it was, and it never runs again here
+    await until(() => statusOf(t.ryan.sessions, t.s.id) === "dead", "Ryan's copy to stop");
+    expect(files(t.wt)).toEqual(filesBefore);
+    await expect(t.ryan.sessions.relaunch(t.s.id)).rejects.toThrow(/continues on Nick's laptop — take it back/);
+    await expect(t.ryan.sessions.restart(t.s.id)).rejects.toThrow(/continues on Nick's laptop/);
+    expect(statusOf(t.ryan.sessions, t.s.id)).toBe("dead"); // the refused restart didn't close the pane either
     await until(() => !recordIn(t.nickM, t.roomId, t.ryanM.id, t.s.id), "Ryan's record to be removed from the room");
     expect(t.ryan.takenOver).toEqual([`${t.s.id} by Nick`]);
     expect(t.ryanRun.live.roomOfSession(t.s.id)).toBeNull();
@@ -256,5 +285,215 @@ describe("take-over over live panes", () => {
     await until(() => !recordIn(t.nickM, t.roomId, t.ryanM.id, t.s.id), "Ryan's record to be removed from the room");
     expect(again.live.state().own[t.s.id]?.takenOver?.byName).toBe("Nick");
     await until(() => !!recordIn(t.ryanM, t.roomId, t.nickM.id, r.sessionId), "Nick's session in Ryan's room log");
+  });
+});
+
+/** Ryan's session backed up after a turn, then Ryan offline: Nick can take it over from that backup. */
+async function takenOverWhileAway(t: Awaited<ReturnType<typeof setup>>) {
+  turn(t.ryan.sessions, t.s.id);
+  await until(() => !!backupIn(t.nickM, t.roomId, t.s.id)?.pushed && t.nickRun.tk.view().sessions.some((v) => v.sessionId === t.s.id && v.transcript?.have), "the backup and conversation at Nick's", 15_000);
+  await t.ryanRun.tk.settled();
+  t.net.setOnline(t.ryanM.id, false);
+  await until(() => !t.nickM.team.presence(t.roomId).includes(t.ryanM.id), "Ryan to be offline");
+}
+
+describe("the copy a take-over leaves behind", () => {
+  it("stops when the owner's Mockingbird starts again, even one relaunched before it reconnected — and doesn't run again after that", async () => {
+    const t = await setup();
+    await takenOverWhileAway(t);
+    // Ryan quits: the pane closes to resume, as quitting leaves it
+    t.ryan.sessions.kill(t.s.id, false);
+    t.ryanRun.stop();
+    const r = await t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
+    const before = files(t.wt);
+    // he starts again and his open session runs again (as an update restart relaunches it), before the room catches up
+    const again = t.ryan.startLive();
+    await t.ryan.sessions.create({ repoPath: t.ryanClone, cwd: t.wt, useWorktree: false, agent: "claude", taskGroup: "5110", title: "Donor entities", reuseId: t.s.id });
+    expect(statusOf(t.ryan.sessions, t.s.id)).not.toBe("dead");
+    t.net.setOnline(t.ryanM.id, true);
+    await until(() => statusOf(t.ryan.sessions, t.s.id) === "dead", "the relaunched copy to stop once he hears");
+    expect(files(t.wt)).toEqual(before);
+    expect(again.tk.view().left).toEqual([
+      expect.objectContaining({ sessionId: t.s.id, byName: "Nick", now: expect.objectContaining({ owner: t.nickM.id, sessionId: r.sessionId, self: false, online: true }) }),
+    ]);
+    // the next start knows from the room log already: the copy stays stopped, and relaunching it is refused
+    t.ryan.sessions.kill(t.s.id, false);
+    again.stop();
+    const third = t.ryan.startLive();
+    await expect(t.ryan.sessions.relaunch(t.s.id)).rejects.toThrow(/continues on Nick's laptop/);
+    expect(third.tk.relaunchRefusal("someone-else")).toBeNull();
+  });
+
+  it("counts the files the copy changed after the snapshot the teammate continued from, and sends them as a patch that lands on their session to review — never applied by itself", async () => {
+    const t = await setup();
+    await takenOverWhileAway(t);
+    // offline (its laptop asleep mid-turn: nothing backed up), Ryan's agent kept working: an edit, a new file, a deletion (and a secret, which never leaves)
+    write(t.wt, { "src/a.ts": "export const a = 43; // offline\n", "src/offline.ts": "export const later = true;\n", ".env": "TOKEN=changed\n" });
+    fs.rmSync(path.join(t.wt, "notes/todo.md"));
+    const r = await t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
+    expect(fs.readFileSync(path.join(r.cwd, "src/a.ts"), "utf8")).toBe("export const a = 42; // edited\n");
+    t.net.setOnline(t.ryanM.id, true);
+    await until(() => statusOf(t.ryan.sessions, t.s.id) === "dead", "Ryan's copy to stop");
+    const left = () => t.ryanRun.tk.view().left.find((l) => l.sessionId === t.s.id)!;
+    await until(() => !!left()?.unsent, "the copy's changes counted");
+    expect(left().unsent).toEqual({ files: ["notes/todo.md", "src/a.ts", "src/offline.ts"], checkedAt: expect.any(Number) });
+    expect(left().takeBack).toBe(false); // Nick's copy has no backup yet
+
+    // Send to Nick: a patch on his session, his worktree as it was
+    const nickBefore = files(r.cwd);
+    await expect(t.ryanRun.tk.sendLeft(t.roomId, t.s.id)).resolves.toEqual({ files: 3 });
+    expect(t.ryan.chat).toEqual([`Sent Nick 3 changed files from my copy of “Donor entities”, made after the snapshot they continued from. They're on Nick's session to review and apply.`]);
+    expect(left()).toMatchObject({ unsent: { files: [] }, sent: { files: 3 } });
+    await expect(t.ryanRun.tk.sendLeft(t.roomId, t.s.id)).rejects.toThrow(/Nothing to send: Nick has everything in this copy/);
+    const got = t.nickRun.tk.view().received;
+    expect(got).toEqual([
+      expect.objectContaining({
+        sessionId: r.sessionId,
+        fromSessionId: t.s.id,
+        fromName: "Ryan",
+        applied: null,
+        files: [
+          { path: "notes/todo.md", status: "deleted" },
+          { path: "src/a.ts", status: "modified" },
+          { path: "src/offline.ts", status: "added" },
+        ],
+      }),
+    ]);
+    expect(files(r.cwd)).toEqual(nickBefore);
+    const { patch } = await t.nickRun.tk.receivedPatch(t.roomId, got[0].id);
+    expect(patch).toContain("+export const a = 43; // offline");
+    expect(patch).not.toContain("TOKEN");
+
+    // Nick changed src/a.ts too: applying refuses and changes nothing
+    write(r.cwd, { "src/a.ts": "export const a = 99; // Nick's\n" });
+    await expect(t.nickRun.tk.applyReceived(t.roomId, got[0].id)).rejects.toThrow(/don't apply cleanly to this worktree, so nothing was changed — changed here too: src\/a\.ts\. To merge them by hand: git apply --3way /);
+    expect(fs.existsSync(path.join(r.cwd, "src/offline.ts"))).toBe(false);
+    // with his edit undone, they apply: Ryan's files in Nick's worktree, uncommitted, and an Undo-turn snapshot from before
+    write(r.cwd, { "src/a.ts": "export const a = 42; // edited\n" });
+    await expect(t.nickRun.tk.applyReceived(t.roomId, got[0].id)).resolves.toEqual({ files: 3 });
+    expect(fs.readFileSync(path.join(r.cwd, "src/a.ts"), "utf8")).toBe("export const a = 43; // offline\n");
+    expect(fs.readFileSync(path.join(r.cwd, "src/offline.ts"), "utf8")).toBe("export const later = true;\n");
+    expect(fs.existsSync(path.join(r.cwd, "notes/todo.md"))).toBe(false);
+    expect(fs.existsSync(path.join(r.cwd, ".env"))).toBe(false);
+    expect(sh(r.cwd, "for-each-ref", "--format=%(refname)", `refs/mockingbird/snapshots/${r.sessionId}/`)).not.toBe("");
+    expect(t.nickRun.tk.view().received[0].applied).toEqual(expect.any(Number));
+    await expect(t.nickRun.tk.applyReceived(t.roomId, got[0].id)).rejects.toThrow(/applied already/);
+    await t.nickRun.tk.dismissReceived(t.roomId, got[0].id);
+    expect(t.nickRun.tk.view().received).toEqual([]);
+
+    // later edits in Ryan's copy count from what was sent
+    write(t.wt, { "src/b.ts": "b\n" });
+    await t.ryanRun.tk.checkLeft(t.roomId, t.s.id);
+    expect(left().unsent).toMatchObject({ files: ["src/b.ts"] });
+    // and a teammate can't send changes for a session that isn't theirs
+    await expect(
+      t.nickM.team.request(t.ryanM.id, "takeover.changes", { roomId: t.roomId, sessionId: r.sessionId, title: "x", files: [{ path: "a", status: "added" }], patch: "eA==" }, { roomId: t.roomId })
+    ).rejects.toThrow(/isn't a session of Nick's that was continued/);
+  });
+
+  it("takes it back: Nick's copy continues on Ryan's laptop again, asking Nick first, and Nick's copy stops in turn", async () => {
+    const t = await setup();
+    await takenOverWhileAway(t);
+    const r = await t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
+    t.net.setOnline(t.ryanM.id, true);
+    await until(() => statusOf(t.ryan.sessions, t.s.id) === "dead", "Ryan's copy to stop");
+    // Nick works on: a turn, backed up — now it can be taken back
+    write(r.cwd, { "src/nick.ts": "by nick\n" });
+    t.nick.sessions.statusFromHook({ paneId: r.sessionId, status: "working", conversationId: CONV, agent: "claude" });
+    t.nick.sessions.statusFromHook({ paneId: r.sessionId, status: "idle" });
+    const left = () => t.ryanRun.tk.view().left.find((l) => l.sessionId === t.s.id);
+    await until(() => !!left()?.takeBack, "Take it back to be offered", 15_000);
+    await until(() => !!t.ryanRun.tk.view().sessions.find((v) => v.sessionId === r.sessionId)?.peerCopy, "Nick's snapshot at Ryan's", 15_000);
+    // Nick is connected: he's asked, and hands over
+    const back = t.ryanRun.tk.takeOver(t.roomId, r.sessionId, null);
+    await until(() => t.nick.asks.length === 1, "Nick to be asked");
+    expect(t.nick.asks[0]).toMatchObject({ fromName: "Ryan", sessionId: r.sessionId, title: "Donor entities" });
+    t.nickRun.tk.answerAsk(t.nick.asks[0].askId, "handover");
+    const mine = await back;
+    expect(statusOf(t.nick.sessions, r.sessionId)).toBe("dead");
+    expect(fs.readFileSync(path.join(mine.cwd, "src/nick.ts"), "utf8")).toBe("by nick\n");
+    expect(statusOf(t.ryan.sessions, mine.sessionId)).toBe("working"); // the new copy runs here
+    // Ryan's old copy now says it continues here; Nick's says it continues on Ryan's laptop
+    expect(left()).toMatchObject({ now: { self: true, sessionId: mine.sessionId }, takeBack: false });
+    await until(() => !!t.nickRun.tk.view().left.some((l) => l.sessionId === r.sessionId && l.now.owner === t.ryanM.id), "Nick's copy to know");
+    await expect(t.ryan.sessions.relaunch(t.s.id)).rejects.toThrow(/was taken back into another session here/);
+  });
+});
+
+describe("asking a connected owner first", () => {
+  it("hands over: the turn in progress finishes, that snapshot goes to the taker, the owner's agent stops, and the take-over uses exactly it", async () => {
+    const t = await setup();
+    turn(t.ryan.sessions, t.s.id);
+    await until(() => !!backupIn(t.nickM, t.roomId, t.s.id)?.pushed, "a first backup at Nick's", 15_000);
+    await t.ryanRun.tk.settled();
+    // Ryan's agent is mid-turn when Nick asks
+    t.ryan.sessions.statusFromHook({ paneId: t.s.id, status: "working", conversationId: CONV, agent: "claude" });
+    const taking = t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
+    await until(() => t.ryanRun.tk.view().asks.length === 1, "Ryan to be asked");
+    const ask = t.ryanRun.tk.view().asks[0];
+    expect(ask).toMatchObject({ fromName: "Nick", sessionId: t.s.id, title: "Donor entities", state: "waiting", deadline: ask.at + 120_000 });
+    expect(t.ryan.asks).toEqual([ask]); // and he's notified
+    expect(t.nickRun.tk.view().asking).toEqual([expect.objectContaining({ sessionId: t.s.id, ownerName: "Ryan", state: "asking" })]);
+    t.ryanRun.tk.answerAsk(ask.askId, "handover");
+    await until(() => t.nickRun.tk.view().asking[0]?.state === "handing-over", "Nick to hear it's being handed over");
+    // the turn goes on: nothing stops yet
+    await new Promise((res) => setTimeout(res, 300));
+    expect(statusOf(t.ryan.sessions, t.s.id)).toBe("working");
+    write(t.wt, { "src/last-turn.ts": "written in the turn that was running\n" });
+    t.ryan.sessions.statusFromHook({ paneId: t.s.id, status: "idle" });
+    const r = await taking;
+    // Ryan's agent stopped; Nick continues from the snapshot taken after that turn, with its file
+    expect(statusOf(t.ryan.sessions, t.s.id)).toBe("dead");
+    const handed = backupIn(t.ryanM, t.roomId, t.s.id)!.latest.sha;
+    expect(r.snapshot.sha).toBe(handed);
+    expect(fs.readFileSync(path.join(r.cwd, "src/last-turn.ts"), "utf8")).toBe("written in the turn that was running\n");
+    expect(r.conversation).toBe("full");
+    expect(t.ryanRun.tk.view().asks).toEqual([]);
+    expect(t.nickRun.tk.view().asking).toEqual([]);
+    // Ryan's copy: continued on Nick's laptop, nothing Nick lacks
+    await until(() => !!t.ryanRun.tk.view().left.find((l) => l.sessionId === t.s.id)?.unsent, "Ryan's copy counted");
+    expect(t.ryanRun.tk.view().left[0]).toMatchObject({ byName: "Nick", unsent: { files: [] } });
+  });
+
+  it("keeps it: the taker is told, the owner's agent runs on, nothing is taken over", async () => {
+    const t = await setup();
+    turn(t.ryan.sessions, t.s.id);
+    await until(() => !!backupIn(t.nickM, t.roomId, t.s.id)?.pushed, "a backup at Nick's", 15_000);
+    const taking = t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
+    await until(() => t.ryanRun.tk.view().asks.length === 1, "Ryan to be asked");
+    t.ryanRun.tk.answerAsk(t.ryanRun.tk.view().asks[0].askId, "keep");
+    await expect(taking).rejects.toThrow(/Ryan kept “Donor entities”: it carries on on their laptop/);
+    expect(statusOf(t.ryan.sessions, t.s.id)).not.toBe("dead");
+    expect(backupIn(t.nickM, t.roomId, t.s.id)!.takenOver).toBeNull();
+    expect(t.nick.sessions.list()).toEqual([]);
+    expect(() => t.ryanRun.tk.answerAsk("0".repeat(24), "handover")).toThrow(/withdrawn, answered, or timed out/);
+  });
+
+  it("keeps it when the owner doesn't answer in time", async () => {
+    const t = await setup({ askMs: 400 });
+    turn(t.ryan.sessions, t.s.id);
+    await until(() => !!backupIn(t.nickM, t.roomId, t.s.id)?.pushed, "a backup at Nick's", 15_000);
+    await expect(t.nickRun.tk.takeOver(t.roomId, t.s.id, null)).rejects.toThrow(/Ryan didn't answer in time, so “Donor entities” stays on their laptop/);
+    expect(t.ryanRun.tk.view().asks).toEqual([]);
+    expect(statusOf(t.ryan.sessions, t.s.id)).not.toBe("dead");
+  });
+
+  it("an owner who drops offline mid-request leaves it to a normal take-over from the newest backup", async () => {
+    const t = await setup();
+    turn(t.ryan.sessions, t.s.id);
+    await until(() => !!backupIn(t.nickM, t.roomId, t.s.id)?.pushed, "a backup at Nick's", 15_000);
+    await t.ryanRun.tk.settled();
+    const taking = t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
+    await until(() => t.ryanRun.tk.view().asks.length === 1, "Ryan to be asked");
+    t.net.setOnline(t.ryanM.id, false);
+    await expect(taking).rejects.toThrow(/Ryan went offline before handing “Donor entities” over — you can take it over from the newest backup now/);
+    await until(() => t.ryanRun.tk.view().asks.length === 0, "the request to lapse at Ryan's");
+    expect(statusOf(t.ryan.sessions, t.s.id)).not.toBe("dead"); // nothing was handed over: his agent runs until he hears
+    const plan = await t.nickRun.tk.plan(t.roomId, t.s.id);
+    expect(plan.ownerOnline).toBe(false);
+    const r = await t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
+    expect(r.snapshot.sha).toBe(backupIn(t.nickM, t.roomId, t.s.id)!.latest.sha);
+    t.net.setOnline(t.ryanM.id, true);
+    await until(() => statusOf(t.ryan.sessions, t.s.id) === "dead", "Ryan's copy to stop when he's back");
   });
 });

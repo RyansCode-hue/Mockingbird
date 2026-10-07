@@ -334,6 +334,16 @@ const api = {
   /** What taking over a teammate's session would use (TakeoverPlan); `clonePath` when the user chose their clone. */
   teamTakeoverPlan: (roomId: string, sessionId: string, clonePath?: string | null) => ipcRenderer.invoke("team:takeoverPlan", roomId, sessionId, clonePath ?? null),
   teamTakeOver: (roomId: string, sessionId: string, clonePath?: string | null) => ipcRenderer.invoke("team:takeOver", roomId, sessionId, clonePath ?? null),
+  /** Answer a teammate's request to continue one of this Mac's sessions. */
+  teamTakeoverAnswer: (askId: string, answer: "handover" | "keep") => ipcRenderer.invoke("team:takeoverAnswer", askId, answer),
+  /** Count again what a copy a teammate continued has that they lack. */
+  teamTakeoverCheckLeft: (roomId: string, sessionId: string) => ipcRenderer.invoke("team:takeoverCheckLeft", roomId, sessionId),
+  /** Send that copy's changes to whoever runs the session now. */
+  teamTakeoverSendLeft: (roomId: string, sessionId: string) => ipcRenderer.invoke("team:takeoverSendLeft", roomId, sessionId),
+  /** Changes a teammate sent: their patch, to review; applied to the session's worktree; forgotten. */
+  teamTakeoverReceivedPatch: (roomId: string, id: string) => ipcRenderer.invoke("team:takeoverReceivedPatch", roomId, id),
+  teamTakeoverApplyReceived: (roomId: string, id: string) => ipcRenderer.invoke("team:takeoverApplyReceived", roomId, id),
+  teamTakeoverDismissReceived: (roomId: string, id: string) => ipcRenderer.invoke("team:takeoverDismissReceived", roomId, id),
   onTeamTakeoverChanged: (cb: (view: unknown) => void) => {
     const h = (_e: unknown, v: unknown) => cb(v);
     ipcRenderer.on("team:takeoverChanged", h);

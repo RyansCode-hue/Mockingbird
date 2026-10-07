@@ -11,7 +11,7 @@ import { claudeProjectDir, codexRolloutPath, realpathOr } from "../src/main/agen
 import { publicUrl, repoIdentity, withoutCredentials } from "../src/main/git";
 import { rebaseTranscript } from "../src/main/transcripts";
 import { worktreeAt } from "../src/main/worktrees";
-import { backupFreshness, roomBackupRef, type RoomSessionBackupView } from "../src/shared/team/takeover";
+import { backupFreshness, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
 import type { NewSessionRequest, SessionInfo } from "../src/shared/types";
 
 const CONV = "7f3c2a10-1b2c-4d5e-8f90-a1b2c3d4e5f6";
@@ -59,12 +59,17 @@ function session(o: Partial<SessionInfo> & { id: string; cwd: string; repoPath: 
 }
 
 /** A member's take-over service over fakes for the app: its sessions, its repositories, a launch that only records. */
-function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessions?: SessionInfo[]; now?: () => number }) {
+function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessions?: SessionInfo[]; now?: () => number; askMs?: number }) {
   const sessions = new Map((o.sessions ?? []).map((s) => [s.id, s]));
   const turnEnds = new Set<(id: string) => void>();
   const launched: NewSessionRequest[] = [];
   const takenOver: string[] = [];
   const logs: string[] = [];
+  /** Sessions whose agent was stopped, the room chat lines posted, and the requests to hand over that were shown. */
+  const stopped: string[] = [];
+  const chat: string[] = [];
+  const asks: IncomingAsk[] = [];
+  const received: ReceivedChanges[] = [];
   const base = tempDir(`${m.name}-home`);
   const claudeProjects = path.join(base, ".claude", "projects");
   const codexSessions = path.join(base, ".codex", "sessions");
@@ -79,7 +84,18 @@ function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessi
         turnEnds.add(cb);
         return () => turnEnds.delete(cb);
       },
+      stop: (id) => {
+        const s = sessions.get(id);
+        if (!s || s.status === "dead") return false;
+        stopped.push(id);
+        sessions.set(id, { ...s, status: "dead" });
+        return true;
+      },
     },
+    chat: (_roomId, text) => chat.push(text),
+    onAsk: (a) => asks.push(a),
+    onReceived: (r) => received.push(r),
+    askMs: o.askMs,
     repos: () => o.repos,
     launch: async (req) => {
       launched.push(req);
@@ -97,7 +113,7 @@ function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessi
     claudeProjects,
     codexSessions,
   });
-  return { svc, sessions, launched, takenOver, logs, claudeProjects, codexSessions, turnEnd: (id: string) => turnEnds.forEach((cb) => cb(id)) };
+  return { svc, sessions, launched, takenOver, logs, stopped, chat, asks, received, claudeProjects, codexSessions, turnEnd: (id: string) => turnEnds.forEach((cb) => cb(id)) };
 }
 
 /** Ryan's Claude transcript for the session, in his fake ~/.claude. */
@@ -394,8 +410,9 @@ describe("taking over", () => {
     await until(() => !!backupIn(t.ryanM, t.roomId)?.takenOver, "Ryan to hear of the take-over");
     await until(() => t.ryan.takenOver.length === 1, "Ryan to be told");
     expect(t.ryan.takenOver).toEqual(["s1 by Nick"]);
+    expect(t.ryan.stopped).toEqual(["s1"]); // his copy's agent stops as soon as he hears
     const mine = t.ryan.svc.view().sessions.find((s) => s.sessionId === "s1")!;
-    expect(backupFreshness(mine).text).toMatch(/^taken over by Nick/);
+    expect(backupFreshness(mine).text).toMatch(/^continued on Nick's laptop/);
     const ref = refIn(t.bare, roomBackupRef(t.roomId, "s1"));
     const events = t.ryanM.team.room(t.roomId)!.events;
     write(t.wt, { "src/a.ts": "Ryan keeps typing\n" });
@@ -489,6 +506,8 @@ describe("taking over", () => {
     t.ryan.sessions.set("s1", { ...t.ryan.sessions.get("s1")!, agent: "codex", conversation: { agent: "codex", id: CODEX_CONV } });
     await t.ryan.svc.turnEnded("s1");
     await t.ryan.svc.settled();
+    t.net.setOnline(t.ryanM.id, false); // away: taken over without asking
+    await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
     const r = await t.nick.svc.takeOver(t.roomId, "s1");
     expect(r.conversation).toBe("full");
     const placed = codexRolloutPath(name, t.nick.codexSessions);
@@ -510,6 +529,8 @@ describe("taking over", () => {
     await expect(t.nick.svc.plan(t.roomId, "s1", other)).rejects.toThrow(/origin is not set, not /);
     const plan = await t.nick.svc.plan(t.roomId, "s1", t.nickClone);
     expect(plan).toMatchObject({ clone: sh(t.nickClone, "rev-parse", "--show-toplevel"), snapshot: { source: "origin" } });
+    t.net.setOnline(t.ryanM.id, false); // away: taken over without asking
+    await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
     const r = await t.nick.svc.takeOver(t.roomId, "s1", t.nickClone);
     expect(files(r.cwd)).toEqual(files(t.wt));
   });
@@ -639,10 +660,19 @@ describe("take-over pieces", () => {
     const feed = new TurnFeed();
     // what the live panes say, not the group alone: a taken-over session has left the room
     const live = { roomOfSession: (id: string) => (id === "a" ? R : null), onTurnEnded: (cb: Parameters<TurnFeed["on"]>[0]) => feed.on(cb) };
-    const host = liveRoomHost(live, { sessions: () => [s("a", "5110"), s("b", "5110/api"), s("c", "5102")], rooms: () => [{ id: R, groupKey: "5110" }] });
+    const stopped: string[] = [];
+    const host = liveRoomHost(live, {
+      sessions: () => [s("a", "5110"), s("b", "5110/api"), s("c", "5102")],
+      resumable: () => [s("r", "5110")],
+      rooms: () => [{ id: R, groupKey: "5110" }],
+      stop: (id) => (stopped.push(id), true),
+    });
     expect(["a", "b", "c", "gone"].map((id) => host.roomOf(id))).toEqual([R, null, null, null]);
     expect(host.groupOf(R)).toBe("5110");
     expect(host.session("b")?.taskGroup).toBe("5110/api");
+    expect(host.session("r")?.id).toBe("r"); // closed to resume: its files still back a hand-over
+    expect(host.stop("a")).toBe(true);
+    expect(stopped).toEqual(["a"]);
     const ends: string[] = [];
     const off = host.onTurnEnd((id) => ends.push(id));
     feed.emit({ sessionId: "a", roomId: R, status: "idle", drivers: [] });
@@ -726,8 +756,8 @@ describe("take-over pieces", () => {
     expect(backupFreshness(v(failed), now)).toEqual({ tone: "warn", text: "latest only on Nick's laptop · backup failed: no access" });
     expect(backupFreshness(v({ ...failed, peerCopy: { sha: "1".repeat(40), takenAt: now - 60_000 } }), now).text).toBe("latest copied here 1m ago · backup failed: no access");
     expect(backupFreshness(v({ ...failed, self: true }), now)).toEqual({ tone: "warn", text: "backup failed: no access" });
-    expect(backupFreshness(v({ takenOver: { by: "b".repeat(32), at: now - 300_000, newSessionId: "x", snapshot: { sha: "1".repeat(40), takenAt: 0, source: "peer" }, conversation: "full" }, takenOverByName: "Ryan" }), now).text).toBe(
-      "taken over by Ryan 5m ago"
-    );
+    const takenOver = { by: "b".repeat(32), at: now - 300_000, newSessionId: "x", snapshot: { sha: "1".repeat(40), takenAt: 0, source: "peer" as const }, conversation: "full" as const };
+    expect(backupFreshness(v({ takenOver, takenOverByName: "Ryan" }), now).text).toBe("taken over by Ryan 5m ago");
+    expect(backupFreshness(v({ takenOver, takenOverByName: "Ryan", self: true }), now).text).toBe("continued on Ryan's laptop 5m ago");
   });
 });

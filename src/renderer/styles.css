@@ -1988,8 +1988,33 @@ button.tk-btn { flex-shrink: 0; padding: 1px 7px; font: 500 10px var(--ui); }
 button.tk-small { padding: 0 6px; font-size: 10px; margin-left: 4px; }
 /* on a room session's sidebar row (a line under its name) and its pane header */
 .sess-item .name .fresh .tk-fresh { font-size: 9.5px; }
-.sess-item button.tk-btn.primary { display: inline-block; opacity: 1; }
+.sess-item button.tk-btn.primary, .sess-item button.tk-btn.show { display: inline-block; opacity: 1; }
 .pane-header .tk-fresh { flex-shrink: 0; white-space: nowrap; }
+/* a row's line with a button at its end: the text gives way, the button stays */
+.sess-item .name .br.tk-line-btn { display: flex; align-items: center; gap: 5px; min-width: 0; font: 400 9.5px var(--ui); }
+.tk-line-btn .tk-t, .team-pane-note.tk-received .tk-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sess-item .tk-line-btn button.tk-btn { flex-shrink: 0; padding: 0 5px; font-size: 9.5px; }
+/* a copy a teammate continued: stopped, with what's left in it */
+.tk-left { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: min(92%, 560px); text-align: center; font: 400 11px/1.5 var(--ui); color: var(--text-3); }
+.tk-left-title { font: 600 13px var(--ui); color: var(--text-1); }
+.tk-left-unsent { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.tk-left-unsent.warn { color: var(--amber-text); }
+.tk-left .row { display: flex; gap: 8px; margin-top: 4px; }
+.team-pane-note.tk-received { display: flex; align-items: center; gap: 6px; color: var(--amber-text); }
+/* asking an owner, and the owner's prompt */
+.tk-asking { color: var(--text-2); }
+.modal.tk-ask b { color: var(--text-1); font-weight: 600; }
+/* changes a teammate sent: the files and the patch */
+.modal.tk-received-dlg { width: 640px; }
+.tk-files { max-height: 120px; overflow: auto; margin: 4px 0 8px; font: 400 11px var(--ui); color: var(--text-2); }
+.tk-mark { display: inline-block; width: 12px; font: 600 10px var(--mono); }
+.tk-mark.added { color: var(--teal-text); }
+.tk-mark.deleted { color: var(--red); }
+.tk-mark.modified { color: var(--amber-text); }
+.tk-patch {
+  max-height: 300px; overflow: auto; margin: 0; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 6px;
+  background: var(--bg-pane); color: var(--text-2); font: 400 10.5px/1.45 var(--mono); white-space: pre; text-align: left;
+}
 
 /* ---- team rooms: live panes ---- */
 /* a teammate's session: the owner's initials, and who's looking (ringed: the pane they're in) */

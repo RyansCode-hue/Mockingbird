@@ -133,6 +133,126 @@ export interface TakeoverView {
   unbacked: { roomId: RoomId; sessionId: string; title: string; problem: string }[];
   /** Backups this install should have deleted and couldn't (retried on the next prune). */
   cleanup: { roomId: RoomId; sessionId: string; title: string; problem: string }[];
+  /** Teammates asking to continue this install's sessions on their laptops, waiting for an answer here. */
+  asks: IncomingAsk[];
+  /** This install asked a session's owner to hand it over, and is waiting. */
+  asking: OutgoingAsk[];
+  /** This install's copies of sessions a teammate continued: stopped here, with what's left in them. */
+  left: LeftCopy[];
+  /** Changes a teammate sent from their copy after this install continued a session of theirs. */
+  received: ReceivedChanges[];
+}
+
+// ---- asking the owner first --------------------------------------------------------------
+
+/**
+ * How long a session's owner has to answer a teammate's request to continue
+ * it before it's kept (docs/team-rooms.md, "Take-over").
+ */
+export const ASK_MS = 120_000;
+/** How long a hand-over waits for the owner's turn in progress to finish before giving up (the session is then kept). */
+export const HANDOVER_TURN_MS = 30 * 60_000;
+
+/** A teammate wants to continue one of this install's sessions (owner side). */
+export interface IncomingAsk {
+  askId: string;
+  roomId: RoomId;
+  sessionId: string;
+  title: string;
+  from: MemberId;
+  fromName: string;
+  at: number;
+  /** Unanswered by then, the session is kept. */
+  deadline: number;
+  /** waiting: for this install's answer; handing-over: the turn finishing, the backup going to the teammate, the agent stopping. */
+  state: "waiting" | "handing-over";
+}
+
+/** This install asked a session's owner to hand it over (taker side). */
+export interface OutgoingAsk {
+  roomId: RoomId;
+  sessionId: string;
+  ownerName: string;
+  at: number;
+  deadline: number;
+  state: "asking" | "handing-over";
+}
+
+/** What the owner answered a request to continue their session. */
+export type AskAnswer = { answer: "handed-over"; sha: string; takenAt: number } | { answer: "kept" } | { answer: "timeout" };
+
+// ---- what's left of a taken-over copy --------------------------------------------------------
+
+/**
+ * This install's copy of a session a teammate continued (owner side): its
+ * agent stopped here, its worktree untouched. `now` is where the room's
+ * session runs today, at the end of its take-overs.
+ */
+export interface LeftCopy {
+  roomId: RoomId;
+  sessionId: string;
+  title: string;
+  by: MemberId;
+  byName: string;
+  at: number;
+  now: { owner: MemberId; ownerName: string; sessionId: string; self: boolean; online: boolean };
+  /** The copy that continues it has a backup, so it can be taken back (the same take-over, in reverse). */
+  takeBack: boolean;
+  /**
+   * Files this copy has that the teammate doesn't: changed since the snapshot
+   * they took over from (or since what was last sent them). Null while it's
+   * being checked.
+   */
+  unsent: { files: string[]; checkedAt: number } | { error: string } | null;
+  /** The last time this copy's changes were sent to the teammate. */
+  sent: { at: number; files: number } | null;
+  sending: boolean;
+}
+
+/** Changes a teammate sent from their copy of a session this install continues (taker side): a patch to review and apply. */
+export interface ReceivedChanges {
+  id: string;
+  roomId: RoomId;
+  /** This install's session the changes are for: the one that continues the teammate's. */
+  sessionId: string;
+  /** The teammate's session they come from. */
+  fromSessionId: string;
+  from: MemberId;
+  fromName: string;
+  title: string;
+  files: ChangedFile[];
+  bytes: number;
+  at: number;
+  /** When they were applied to this session's worktree; null until then. */
+  applied: number | null;
+}
+
+export interface ChangedFile {
+  path: string;
+  status: "added" | "modified" | "deleted";
+}
+
+/**
+ * Where a room session runs now: the end of its take-overs, followed from
+ * `sessionId` (its backup's newSessionId at each step). `backedUp` once that
+ * copy has a backup of its own (so it can be taken over in turn).
+ */
+export function continuation(state: TakeoverRoomState | undefined, sessionId: string): { owner: MemberId; sessionId: string; backedUp: boolean } | null {
+  let at = state?.sessions[sessionId];
+  if (!at?.takenOver) return null;
+  for (let hop = 0; hop < 100; hop++) {
+    const t: TakenOver = at!.takenOver!;
+    const next: RoomSessionBackup | undefined = state!.sessions[t.newSessionId];
+    if (!next || next.owner !== t.by) return { owner: t.by, sessionId: t.newSessionId, backedUp: false };
+    if (!next.takenOver) return { owner: next.owner, sessionId: next.sessionId, backedUp: !next.dropped };
+    at = next;
+  }
+  throw new Error(`session ${sessionId}'s take-overs go round in a circle`);
+}
+
+/** The words for a left copy's state, for its row and pane. */
+export function leftCopyText(l: Pick<LeftCopy, "now" | "byName">): string {
+  return l.now.self ? "Taken back: it continues in another session here" : `Continued on ${l.now.ownerName}'s laptop`;
 }
 
 /** What the confirm dialog shows before a take-over. */
@@ -214,7 +334,10 @@ export interface Freshness {
  * "backup failed: …", "latest only on Nick's laptop", or who took it over.
  */
 export function backupFreshness(v: RoomSessionBackupView, now = Date.now()): Freshness {
-  if (v.takenOver) return { tone: "muted", text: `taken over by ${v.takenOverByName ?? "a teammate"} ${ago(v.takenOver.at, now)}` };
+  if (v.takenOver) {
+    const who = v.takenOverByName ?? "a teammate";
+    return { tone: "muted", text: v.self ? `continued on ${who}'s laptop ${ago(v.takenOver.at, now)}` : `taken over by ${who} ${ago(v.takenOver.at, now)}` };
+  }
   if (v.dropped) return { tone: "muted", text: `backup deleted ${ago(v.dropped.at, now)}: ${DROPPED_BECAUSE[v.dropped.reason]}` };
   const here = !!v.peerCopy && v.peerCopy.takenAt >= v.latest.takenAt;
   if (v.push.ok && v.push.sha === v.latest.sha && v.pushed) return { tone: "ok", text: `backed up ${ago(v.pushed.at, now)}` };

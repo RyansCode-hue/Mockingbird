@@ -44,7 +44,9 @@ should stop more members joining later.
   `chat.message`, `chat.update`, `chat.assistant` (team room); `plan.package`,
   `plan.claim`, `plan.status`, `plan.remove`, `plan.repo`, `plan.branches`
   (plan board). Terminal output, views and typing are streams and requests
-  between connected members, never stored.
+  between connected members, never stored; so are take-over's copies and
+  questions (`takeover.have`, `.snapshot`, `.transcript`, `.ask`, `.progress`,
+  `.changes`).
 
 ## Rooms
 
@@ -128,8 +130,43 @@ on their laptop under their own account.
   on. The original owner's copy leaves the room: their Mockingbird removes its
   record, stops streaming it, refuses teammates' typing into it and stops
   backing it up, as soon as it learns of the take-over — at once, or when it's
-  next online or started. Until then, teammates hide the stale record. The copy
-  stays on the owner's laptop, marked "taken over by <name>".
+  next online or started. Until then, teammates hide the stale record.
+- **Owner online → asked first** (decided with Ryan, 2026-10-07). If the owner
+  is connected when a teammate clicks Take over, it doesn't happen at once:
+  the owner gets a prompt (and a notification), "<Nick> wants to continue
+  <session> on their laptop", with **Hand over** / **Keep**. Hand over lets
+  the turn in progress finish (at once if the agent isn't working; a turn
+  still running after 30 minutes keeps the session), backs the session up,
+  copies that snapshot and the whole conversation to the taker peer to peer,
+  stops the owner's agent, and answers with the snapshot: the take-over then
+  uses exactly it. Keep, no answer within 2 minutes, or the owner dropping
+  offline mid-request: the taker is told, and nothing is taken over; once the
+  owner is offline, Take over works from the newest backup as before. The
+  taker's dialog shows the request's progress. An owner whose Mockingbird is
+  older can't be asked: the taker is told it needs an update, and it isn't
+  taken over while it's connected.
+- **The old copy stops.** When the owner's Mockingbird learns of a take-over
+  (at once, on reconnecting, or on starting — even after relaunching the
+  session before the room caught up), it ends that session's agent and never
+  runs it again (relaunch, restart and Resume refuse it), leaving the worktree
+  and every file in it as they are. Its pane and row say "Continued on
+  <Nick>'s laptop" with **Take it back** — the same take-over, in reverse, of
+  the copy that continues it now (asking its owner first when they're
+  connected), offered once that copy has a backup — and **Close** (the usual
+  close, the worktree kept or removed as for any session).
+- **Nothing lost.** The snapshot the taker continued from is kept on the
+  owner's side (`refs/mockingbird/rooms-left/<room>/<session>`), so changes
+  the copy has that the taker never received — made after that snapshot, e.g.
+  while offline — are counted ("This copy has 3 changed files Nick doesn't
+  have", recounted every minute) and **Send to Nick** delivers them peer to
+  peer: a patch (secrets, ignored and big files left out, as in backups) that
+  lands on the taker's session as "Ryan sent 3 changed files", to review and
+  **Apply** — only where it applies cleanly to their worktree as it is, after
+  an Undo-turn snapshot so it can be taken out again; otherwise nothing
+  changes and the files in the way are named, with the patch's path for a
+  `git apply --3way` by hand. A line in the room's chat says it was sent. What
+  was sent is remembered (`refs/mockingbird/rooms-sent/…`), so later edits
+  count from there.
 - **Who can see a backup:** while a session is backed up, anyone with read
   access to the repository can fetch its work in progress from the hidden ref
   (secrets — `.env*`, keys, certificates, credential files — are never in it).
@@ -190,9 +227,12 @@ A chat thread in each room, for people and agents:
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
   (`MB_E2E_APP=1`): create room, join by code, live pane, remote typing,
-  chat, board claim, a backed-up turn, take-over with the owner quit, and the
-  owner's app reconciling when it starts again. Notifications, the
-  cross-machine message and the claim warning are tested over the loopback.
+  chat, board claim, a backed-up turn, a hand-over from the owner's prompt
+  (their agent stopped, the taker continuing), take-over with the owner quit,
+  and the owner's app stopping its copy when it starts again. Notifications,
+  the cross-machine message, the claim warning, Keep / no answer / dropping
+  offline mid-request, unsent changes sent and applied, and Take it back are
+  tested over the loopback.
 - The same against the deployed Worker (`MB_E2E_SIGNALING_URL`, the creator's
   fingerprint from `npm run team:e2e-fingerprint` allowed on it), asserting
   each connection's path, plus a relay-only variant that forces the TURN
