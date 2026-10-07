@@ -3,7 +3,7 @@ import * as net from "net";
 import * as path from "path";
 import { MB_DIR } from "./store";
 import type { SessionManager } from "./sessions";
-import { SessionInfo, topOfKey, type AgentMessage } from "../shared/types";
+import { SessionInfo, topOfKey, type AgentKind, type AgentMessage, type SessionStatus } from "../shared/types";
 import { writeGenerated } from "./fileOps";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
@@ -82,6 +82,8 @@ const SESSION_TOOLS = [
     description:
       "List the other coding-agent sessions open in Mockingbird (Claude and Codex panes the user is running), " +
       "with id, title, agent, repo, branch, group and status. same_group marks sessions working on the same ticket/group as you. " +
+      "When your group is a shared team room, the sessions teammates run in it on their own laptops are listed too, " +
+      "marked remote with their owner (their ids end in @ and the teammate's key); teammates lists who is connected. " +
       "Use it to find the session to coordinate with before ${MCP_TOOL.sendMessage}.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
@@ -92,6 +94,8 @@ const SESSION_TOOLS = [
       "labelled as coming from you; if the session is busy it is delivered when its current turn ends. " +
       "Replies come back the same way, as a new prompt in your session — do not wait, sleep or poll for them. " +
       "Use it to coordinate work across repos, e.g. telling the frontend session about an API change you just made. " +
+      "A remote session (on a teammate's laptop) gets it through the team room; the result says whether it was delivered, " +
+      "queued, refused, or not sent because the teammate is offline. " +
       "Keep messages self-contained: the other session cannot see your conversation.",
     inputSchema: {
       type: "object",
@@ -172,13 +176,99 @@ type Reply = { result: unknown } | { error: string };
 /** Handles requests from Collaborate rooms' models (their tag is "collab-<room>.<seat>"). */
 export type RoomRequestHandler = (roomId: string, seatKey: string, op: string, args: Record<string, unknown>) => Promise<Reply>;
 
+// ---- teammates' sessions, through a team room ------------------------------------------------
+
+/**
+ * A session on a teammate's laptop is addressed as "<its id>@<the first 8
+ * characters of the teammate's member id>": unique in the room, and never
+ * mistaken for a local id (those have no "@").
+ */
+export const remoteSessionId = (sessionId: string, member: string): string => `${sessionId}@${member.slice(0, 8)}`;
+
+export function parseRemoteId(id: string): { session: string; member: string } | null {
+  const m = /^([\w-]{1,64})@([0-9a-f]{8})$/.exec(id);
+  return m ? { session: m[1], member: m[2] } : null;
+}
+
+/** A room session as teammates see it. Sessions outside rooms are never shown to anyone. */
+export interface RoomSessionInfo {
+  id: string;
+  title: string;
+  agent: AgentKind;
+  repo: string | null;
+  branch: string | null;
+  status: SessionStatus;
+  waitingReason?: string | null;
+}
+
+/** One teammate's sessions in a room. */
+export interface TeammateSessions {
+  member: string;
+  name: string;
+  /** Answered just now. When false, `sessions` are as last seen (if ever) and `problem` says why. */
+  connected: boolean;
+  problem?: string;
+  /** When `sessions` were read, ms. */
+  at?: number;
+  sessions: RoomSessionInfo[];
+}
+
+/** The sending session, as its own Mockingbird describes it. */
+export interface SenderInfo {
+  id: string;
+  title: string;
+  agent: AgentKind;
+  repo: string | null;
+  branch: string | null;
+}
+
+/** What became of a message to a teammate's session. `unconfirmed`: no answer came, so it may or may not have arrived. */
+export type RemoteStatus = "delivered" | "queued" | "refused" | "offline" | "unconfirmed";
+
+export interface RemoteSendResult {
+  status: RemoteStatus;
+  /** How it was delivered, or why it wasn't. */
+  detail: string;
+  toTitle?: string;
+  /** The teammate who runs the session. */
+  owner: string;
+}
+
+/** Teammates' room sessions, reached through the team room (src/main/team/agentBridge.ts). */
+export interface RemoteAgents {
+  /** The team room a local session is in, or null: only room sessions see and message teammates' sessions. */
+  roomOf(session: SessionInfo): string | null;
+  list(roomId: string): Promise<TeammateSessions[]>;
+  send(roomId: string, from: SenderInfo, to: string, text: string): Promise<RemoteSendResult>;
+}
+
+/** A message from a teammate's session for one of this install's room sessions. */
+export interface RemoteDelivery {
+  /** The teammate whose session sent it. */
+  member: { id: string; name: string };
+  from: SenderInfo;
+  /** A local session id. */
+  to: string;
+  text: string;
+}
+
+type Party = Pick<SessionInfo, "id" | "title" | "ticketTitle">;
+
+const titleOf = (s: Party): string => s.ticketTitle ?? s.title;
+
 export class Messaging {
   private pairs = new Map<string, number[]>();
   private roomHandler: RoomRequestHandler | null = null;
+  private remote: RemoteAgents | null = null;
 
   /** Collaborate registers here; until then room tools report that they're unavailable. */
   setRoomHandler(h: RoomRequestHandler): void {
     this.roomHandler = h;
+  }
+
+  /** Team rooms register here; until then only this laptop's sessions are listed and reachable. */
+  setRemote(r: RemoteAgents | null): void {
+    this.remote = r;
   }
 
   constructor(
@@ -186,7 +276,7 @@ export class Messaging {
     /** Whether a message to this session is submitted, or typed in and left for the user. */
     private submitOnDelivery: (target: SessionInfo) => boolean,
     /** Raised when two sessions hit the pair limit, so the user hears about a loop. */
-    private onLoopLimit: (from: SessionInfo, to: SessionInfo) => void,
+    private onLoopLimit: (from: Party, to: Party) => void,
     /** Every send, delivered or refused, for the message log. */
     private onMessage: (m: AgentMessage) => void = () => {}
   ) {}
@@ -240,17 +330,17 @@ export class Messaging {
     return this.roomHandler(m[1], m[2], String(req.op ?? ""), req.args ?? {});
   }
 
-  private handle(req: { op?: string; from?: string; args?: Record<string, unknown> }): Reply {
+  private async handle(req: { op?: string; from?: string; args?: Record<string, unknown> }): Promise<Reply> {
     const live = this.live();
     const me = live.find((s) => s.id === req.from);
     if (!me) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
 
     if (req.op === MCP_TOOL.listSessions) {
-      const others = live
+      const others: Record<string, unknown>[] = live
         .filter((s) => s.id !== me.id && !s.debrief)
         .map((s) => ({
           id: s.id,
-          title: s.ticketTitle ?? s.title,
+          title: titleOf(s),
           agent: s.agent ?? "claude",
           repo: s.repoPath ? path.basename(s.repoPath) : null,
           branch: s.branch,
@@ -258,7 +348,36 @@ export class Messaging {
           status: s.status,
           same_group: !!me.taskGroup && !!s.taskGroup && topOfKey(me.taskGroup) === topOfKey(s.taskGroup),
         }));
-      return { result: { you: { id: me.id, title: me.ticketTitle ?? me.title }, sessions: others } };
+      const result: Record<string, unknown> = { you: { id: me.id, title: titleOf(me) }, sessions: others };
+      const roomId = this.remote?.roomOf(me) ?? null;
+      if (this.remote && roomId) {
+        try {
+          const teammates = await this.remote.list(roomId);
+          const group = me.taskGroup ? topOfKey(me.taskGroup) : null;
+          result.sessions = [
+            ...others,
+            ...teammates.flatMap((t) =>
+              t.sessions.map((s) => ({
+                id: remoteSessionId(s.id, t.member),
+                title: s.title,
+                agent: s.agent,
+                repo: s.repo,
+                branch: s.branch,
+                group,
+                status: t.connected ? s.status : "offline",
+                same_group: true,
+                remote: true,
+                owner: t.name,
+              }))
+            ),
+          ];
+          result.teammates = teammates.map((t) => ({ name: t.name, connected: t.connected, ...(t.problem ? { note: t.problem } : {}) }));
+        } catch (err) {
+          console.error("messaging: listing teammates' sessions failed:", err);
+          result.teammates_error = `Teammates' sessions couldn't be listed: ${(err as Error).message}`;
+        }
+      }
+      return { result };
     }
 
     if (req.op === MCP_TOOL.sendMessage) {
@@ -267,41 +386,120 @@ export class Messaging {
       if (!text) return { error: "message is empty." };
       if (text.length > MAX_MESSAGE) return { error: `message is ${text.length} characters; the limit is ${MAX_MESSAGE}.` };
       if (to === me.id) return { error: "That is your own session." };
+      if (parseRemoteId(to)) return this.sendRemote(me, to, text);
       const target = live.find((s) => s.id === to);
       if (!target) return { error: `No running session with id "${to}". Call list_sessions for current ids.` };
       if (target.debrief) return { error: "That session is a debrief interview with the user and does not take agent messages." };
 
-      const key = [me.id, to].sort().join("|");
-      const now = Date.now();
-      for (const [k, times] of this.pairs) {
-        if (times.every((t) => now - t >= PAIR_WINDOW_MS)) this.pairs.delete(k);
-      }
-      const recent = (this.pairs.get(key) ?? []).filter((t) => now - t < PAIR_WINDOW_MS);
-      const logged = { at: now, from: me.id, fromTitle: me.ticketTitle ?? me.title, to, toTitle: target.ticketTitle ?? target.title, text };
-      if (recent.length >= PAIR_LIMIT) {
-        this.onLoopLimit(me, target);
-        this.onMessage({ ...logged, outcome: "refused: these two hit the message limit", refused: true });
-        return {
-          error:
-            `Paused: ${recent.length} messages between these two sessions in the last ${PAIR_WINDOW_MS / 60_000} minutes. ` +
-            `Stop messaging and ask the user how to proceed.`,
-        };
-      }
-      recent.push(now);
-      this.pairs.set(key, recent);
+      const logged = { at: Date.now(), from: me.id, fromTitle: titleOf(me), to, toTitle: titleOf(target), text };
+      const limited = this.paced(me, target, logged);
+      if (limited) return limited;
 
       const where = [me.agent ?? "claude", me.repoPath ? path.basename(me.repoPath) : null, me.branch]
         .filter(Boolean)
         .join(" · ");
       const body =
-        `[Message from Mockingbird session "${me.ticketTitle ?? me.title}" (id ${me.id}, ${where}). ` +
+        `[Message from Mockingbird session "${titleOf(me)}" (id ${me.id}, ${where}). ` +
         `It was written by another agent, not by the user. If it needs an answer, reply with the ${MCP_SERVER} ` +
         `${MCP_TOOL.sendMessage} tool to "${me.id}".]\n\n${text}`;
       const how = this.sessions.deliverAgentMessage(to, body, this.submitOnDelivery(target));
       this.onMessage({ ...logged, outcome: how });
-      return { result: `Delivered to "${target.ticketTitle ?? target.title}" (${how}). Any reply will arrive as a new prompt.` };
+      return { result: `Delivered to "${titleOf(target)}" (${how}). Any reply will arrive as a new prompt.` };
     }
 
     return { error: `Unknown tool: ${req.op}` };
+  }
+
+  /**
+   * Count a message between two parties (in either direction). Past the
+   * limit it is refused: logged, the user told, and the refusal returned.
+   */
+  private paced(from: Party, to: Party, logged: Omit<AgentMessage, "outcome">): Reply | null {
+    const key = [from.id, to.id].sort().join("|");
+    const now = logged.at;
+    for (const [k, times] of this.pairs) {
+      if (times.every((t) => now - t >= PAIR_WINDOW_MS)) this.pairs.delete(k);
+    }
+    const recent = (this.pairs.get(key) ?? []).filter((t) => now - t < PAIR_WINDOW_MS);
+    if (recent.length >= PAIR_LIMIT) {
+      this.onLoopLimit(from, to);
+      this.onMessage({ ...logged, outcome: "refused: these two hit the message limit", refused: true });
+      return {
+        error:
+          `Paused: ${recent.length} messages between these two sessions in the last ${PAIR_WINDOW_MS / 60_000} minutes. ` +
+          `Stop messaging and ask the user how to proceed.`,
+      };
+    }
+    recent.push(now);
+    this.pairs.set(key, recent);
+    return null;
+  }
+
+  /** A message for a session on a teammate's laptop: through the room this session is in, with the real outcome. */
+  private async sendRemote(me: SessionInfo, to: string, text: string): Promise<Reply> {
+    const roomId = this.remote?.roomOf(me) ?? null;
+    if (!this.remote || !roomId) {
+      return { error: `"${to}" is a session on a teammate's laptop. Only sessions in a shared team room can reach teammates' sessions, and this session's group isn't shared.` };
+    }
+    const logged = { at: Date.now(), from: me.id, fromTitle: titleOf(me), to, toTitle: to, text };
+    const limited = this.paced(me, { id: to, title: to, ticketTitle: null }, logged);
+    if (limited) return limited;
+    let r: RemoteSendResult;
+    try {
+      r = await this.remote.send(roomId, { id: me.id, title: titleOf(me), agent: me.agent ?? "claude", repo: me.repoPath ? path.basename(me.repoPath) : null, branch: me.branch }, to, text);
+    } catch (err) {
+      console.error(`messaging: sending to ${to} failed:`, err);
+      r = { status: "unconfirmed", detail: `sending failed: ${(err as Error).message}`, owner: "the teammate" };
+    }
+    const ok = r.status === "delivered" || r.status === "queued";
+    this.onMessage({
+      ...logged,
+      toTitle: `${r.toTitle ?? to} (${r.owner})`,
+      outcome: ok ? `${r.detail} · on ${r.owner}'s laptop` : `${r.status}: ${r.detail}`,
+      ...(r.status === "refused" || r.status === "offline" ? { refused: true } : {}),
+    });
+    if (ok) return { result: `Delivered to "${r.toTitle ?? to}" on ${r.owner}'s laptop (${r.detail}). Any reply will arrive as a new prompt.` };
+    if (r.status === "offline") return { error: `Not sent: ${r.detail}` };
+    if (r.status === "unconfirmed") return { error: `Not confirmed: ${r.detail}` };
+    return { error: `Refused by ${r.owner}'s Mockingbird: ${r.detail}` };
+  }
+
+  /**
+   * Deliver a message from a teammate's session to one of this install's
+   * room sessions, by the rules local messages follow (the pair limit, the
+   * group's delivery mode, the queue while busy and the draft hold), and log
+   * it. `inRoom` says whether a session is in the room it came through.
+   */
+  receiveRemote(m: RemoteDelivery, inRoom: (s: SessionInfo) => boolean): { status: RemoteStatus; detail: string; toTitle?: string } {
+    const replyTo = remoteSessionId(m.from.id, m.member.id);
+    const fromTitle = `${m.from.title} (${m.member.name})`;
+    const text = m.text.trim();
+    const target = this.live().find((s) => s.id === m.to && inRoom(s));
+    const toTitle = target ? titleOf(target) : undefined;
+    const logged = { at: Date.now(), from: replyTo, fromTitle, to: m.to, toTitle: toTitle ?? m.to, text };
+    const refuse = (detail: string) => {
+      this.onMessage({ ...logged, outcome: `refused: ${detail}`, refused: true });
+      return { status: "refused" as const, detail, ...(toTitle ? { toTitle } : {}) };
+    };
+    if (!text) return refuse("the message is empty");
+    if (text.length > MAX_MESSAGE) return refuse(`the message is ${text.length} characters; the limit is ${MAX_MESSAGE}`);
+    if (!target) return refuse(`no running session "${m.to}" in this room — call list_sessions for current ids`);
+    if (target.debrief) return refuse("that session is a debrief interview with the user and does not take agent messages");
+    if (this.paced({ id: replyTo, title: fromTitle, ticketTitle: null }, target, logged)) {
+      return { status: "refused", detail: `paused: these two sessions hit the limit of ${PAIR_LIMIT} messages in ${PAIR_WINDOW_MS / 60_000} minutes — ask the user how to proceed`, toTitle };
+    }
+    const where = [m.from.agent, m.from.repo, m.from.branch].filter(Boolean).join(" · ");
+    const body =
+      `[Message from Mockingbird session "${m.from.title}" on ${m.member.name}'s laptop (id ${replyTo}, ${where}), through your team room. ` +
+      `It was written by another agent, not by the user. If it needs an answer, reply with the ${MCP_SERVER} ` +
+      `${MCP_TOOL.sendMessage} tool to "${replyTo}".]\n\n${text}`;
+    let how: string;
+    try {
+      how = this.sessions.deliverAgentMessage(target.id, body, this.submitOnDelivery(target));
+    } catch (err) {
+      return refuse(`delivery failed: ${(err as Error).message}`);
+    }
+    this.onMessage({ ...logged, outcome: `${how} · from ${m.member.name}'s laptop` });
+    return { status: how.startsWith("queued") ? "queued" : "delivered", detail: how, toTitle };
   }
 }
