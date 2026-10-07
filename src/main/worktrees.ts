@@ -1,5 +1,5 @@
 import type { WorktreeCleanupMode, WorktreeCleanupResult, WorktreeEntry, WorktreeStateInfo } from "../shared/types";
-import { branchesOf, currentBranch, git, originUrl, pickDefaultBase, upstreamOf } from "./git";
+import { branchesOf, currentBranch, git, isAncestor, originUrl, pickDefaultBase, upstreamOf } from "./git";
 import { dirtyFileCount } from "./scm";
 import * as fs from "fs";
 import * as path from "path";
@@ -122,12 +122,6 @@ export async function worktreeAt(repoPath: string, branch: string | null, base: 
     }
     return { path: p, branch: name, renamedFrom: name === branch ? null : branch };
   }
-}
-
-/** Whether commit `a` is `b` or one of its ancestors. */
-async function isAncestor(repo: string, a: string, b: string): Promise<boolean> {
-  // an ancestor is its own merge base with a descendant; exit 1: no common history
-  return (await git(repo, ["merge-base", a, b], { okCodes: [0, 1] })) === a;
 }
 
 /** Local + origin branches for a repo, with a best-guess dev/uat base branch. */

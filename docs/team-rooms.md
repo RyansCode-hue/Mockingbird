@@ -97,6 +97,16 @@ on their laptop under their own account.
   the newest snapshot it has (peer copy or hidden ref, whichever is newer). It
   says which snapshot it used. The original owner sees the session as
   taken over when they come back.
+- **Who can see a backup:** while a session is backed up, anyone with read
+  access to the repository can fetch its work in progress from the hidden ref
+  (secrets — `.env*`, keys, certificates, credential files — are never in it).
+  The conversation is never there.
+- **Backups don't pile up.** Only a session's current owner deletes its hidden
+  ref (and members then delete their copies): when the owner forgets the
+  session, when all its work is merged into the base branch, after 14 days
+  without a turn (pruned on start and daily), and — for a taken-over session —
+  once the taker's own first backup has landed. A deletion that fails is shown
+  and retried.
 
 ## Team room
 

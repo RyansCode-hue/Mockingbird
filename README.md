@@ -294,7 +294,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
     goes to git). The sidebar shows how fresh each backup is; Take over
     continues a teammate's session on your laptop from the newest snapshot, on
     its branch, resuming the conversation — or, when it didn't all arrive, from
-    a summary of what did, and the agent says so.
+    a summary of what did, and the agent says so. While a session is backed
+    up, anyone with read access to the repository can fetch its work in
+    progress (secrets excluded). Its owner deletes the backup when the session
+    is forgotten, merged into the base branch, idle for 14 days, or taken over
+    and backed up by the taker.
 
 ### Next
 

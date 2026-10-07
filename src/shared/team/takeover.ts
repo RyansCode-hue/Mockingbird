@@ -13,7 +13,9 @@ import { ago } from "../format";
  * peer into connected teammates' clones under the same ref, and sends them the
  * conversation's new lines. A `session.backup` event records each snapshot and
  * how its push went; `session.takenOver` records that a teammate continued the
- * session on their own laptop.
+ * session on their own laptop; `session.backupDropped` that its current owner
+ * deleted the backup (members then delete their copies). While a backup
+ * exists, anyone who can read the repository can fetch that work in progress.
  */
 
 /** What a teammate needs to continue a room session on their own laptop; sent with every backup. */
@@ -62,7 +64,19 @@ export interface RoomSessionBackup {
   /** The transcript's size when the newest snapshot was taken: a complete copy has at least this much. */
   transcriptBytes: number | null;
   takenOver: TakenOver | null;
+  /** Its backup was deleted from origin and members' clones; a later backup by its owner revives it. */
+  dropped: { at: number; by: MemberId; reason: DropReason } | null;
 }
+
+/**
+ * Why a session's backup was deleted: its owner forgot the session, its work
+ * is all in the base branch, it saw no turn for STALE_BACKUP_MS, or the
+ * teammate who took it over has backed up their own copy.
+ */
+export type DropReason = "closed" | "merged" | "stale" | "taken-over";
+export const DROP_REASONS: DropReason[] = ["closed", "merged", "stale", "taken-over"];
+/** A backup with no turn for this long is deleted by its owner's daily prune. */
+export const STALE_BACKUP_MS = 14 * 86_400_000;
 
 export interface TakeoverRoomState {
   sessions: Record<string, RoomSessionBackup>;
@@ -88,6 +102,8 @@ declare module "./types" {
       conversation: ConversationCarried;
       branch: string | null;
     };
+    /** The session's current owner deleted its backup ref on origin: members delete their copies. */
+    "session.backupDropped": { sessionId: string; reason: DropReason };
   }
   interface RoomExtensions {
     takeover: TakeoverRoomState;
@@ -115,6 +131,8 @@ export interface TakeoverView {
   sessions: RoomSessionBackupView[];
   /** This install's room sessions that couldn't be backed up at all (no origin, not a repository…). */
   unbacked: { roomId: RoomId; sessionId: string; title: string; problem: string }[];
+  /** Backups this install should have deleted and couldn't (retried on the next prune). */
+  cleanup: { roomId: RoomId; sessionId: string; title: string; problem: string }[];
 }
 
 /** What the confirm dialog shows before a take-over. */
@@ -168,6 +186,13 @@ export function roomBackupRef(roomId: RoomId, sessionId: string, root = ROOM_REF
 
 // ---- freshness ---------------------------------------------------------------------------
 
+const DROPPED_BECAUSE: Record<DropReason, string> = {
+  closed: "the session was closed",
+  merged: "its work is in the base branch",
+  stale: "no turns for 14 days",
+  "taken-over": "the new copy is backed up",
+};
+
 export interface Freshness {
   tone: "ok" | "warn" | "muted";
   text: string;
@@ -179,6 +204,7 @@ export interface Freshness {
  */
 export function backupFreshness(v: RoomSessionBackupView, now = Date.now()): Freshness {
   if (v.takenOver) return { tone: "muted", text: `taken over by ${v.takenOverByName ?? "a teammate"} ${ago(v.takenOver.at, now)}` };
+  if (v.dropped) return { tone: "muted", text: `backup deleted ${ago(v.dropped.at, now)}: ${DROPPED_BECAUSE[v.dropped.reason]}` };
   const here = !!v.peerCopy && v.peerCopy.takenAt >= v.latest.takenAt;
   if (v.push.ok && v.push.sha === v.latest.sha && v.pushed) return { tone: "ok", text: `backed up ${ago(v.pushed.at, now)}` };
   const failed = v.push.ok ? "" : `backup failed: ${v.push.error}`;

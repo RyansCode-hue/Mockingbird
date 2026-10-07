@@ -163,6 +163,13 @@ export async function upstreamOf(cwd: string): Promise<string | null> {
   }
 }
 
+/** Whether commit `a` is `b` or one of its ancestors. */
+export async function isAncestor(repo: string, a: string, b: string): Promise<boolean> {
+  // an ancestor is its own merge base with a descendant; exit 1: no common history
+  const [base, full] = await Promise.all([git(repo, ["merge-base", a, b], { okCodes: [0, 1] }), git(repo, ["rev-parse", "--verify", `${a}^{commit}`])]);
+  return base === full;
+}
+
 /** A remote URL without the user name or password it may carry (https://user:token@host/…): safe to show or share. */
 export function publicUrl(url: string): string {
   return url.trim().replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");

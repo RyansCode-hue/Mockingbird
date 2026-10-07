@@ -96,8 +96,13 @@ export function TakeOverButton({ view }: { view: RoomSessionBackupView }) {
 export function RoomBackups({ room }: { room: TeamRoomSummary }) {
   const view = useTakeover();
   if (!view || isErr(view)) return view && isErr(view) ? <div className="tk-rows"><div className="tk-row-note warn">{view.error}</div></div> : null;
-  const rows = view.sessions.filter((s) => s.roomId === room.id && (!s.self || s.takenOver || !s.push.ok || s.problem));
-  const unbacked = view.unbacked.filter((u) => u.roomId === room.id);
+  // a deleted backup's session is gone; a take-over stays noted for a week
+  const live = (s: RoomSessionBackupView) => (s.takenOver ? Date.now() - s.takenOver.at < 7 * 86_400_000 : !s.dropped);
+  const rows = view.sessions.filter((s) => s.roomId === room.id && live(s) && (!s.self || s.takenOver || !s.push.ok || s.problem));
+  const unbacked = [
+    ...view.unbacked.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: "not backed up" })),
+    ...view.cleanup.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: "backup not deleted from origin" })),
+  ];
   if (!rows.length && !unbacked.length) return null;
   return (
     <div className="tk-rows">
@@ -120,13 +125,15 @@ export function RoomBackups({ room }: { room: TeamRoomSummary }) {
         </div>
       ))}
       {unbacked.map((u) => (
-        <div key={u.sessionId} className="tk-row" title={u.problem}>
+        <div key={`${u.what}:${u.sessionId}`} className="tk-row" title={u.problem}>
           <div className="tk-line">
             <span className="dot waiting" />
             <span className="tk-name">{u.title}</span>
           </div>
           <div className="tk-sub">
-            <span className="tk-fresh warn">not backed up: {u.problem}</span>
+            <span className="tk-fresh warn">
+              {u.what}: {u.problem}
+            </span>
           </div>
         </div>
       ))}

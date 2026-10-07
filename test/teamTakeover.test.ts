@@ -58,7 +58,7 @@ function session(o: Partial<SessionInfo> & { id: string; cwd: string; repoPath: 
 }
 
 /** A member's take-over service over fakes for the app: its sessions, its repositories, a launch that only records. */
-function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessions?: SessionInfo[] }) {
+function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessions?: SessionInfo[]; now?: () => number }) {
   const sessions = new Map((o.sessions ?? []).map((s) => [s.id, s]));
   const turnEnds = new Set<(id: string) => void>();
   const launched: NewSessionRequest[] = [];
@@ -82,8 +82,11 @@ function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessi
     repos: () => o.repos,
     launch: async (req) => {
       launched.push(req);
-      return session({ id: `new${launched.length}`, cwd: req.cwd!, repoPath: req.repoPath!, branch: req.branchName ?? null });
+      const info = session({ id: `new${launched.length}`, cwd: req.cwd!, repoPath: req.repoPath!, branch: req.branchName ?? null, agent: req.agent });
+      sessions.set(info.id, info); // a room session of this member now
+      return info;
     },
+    now: o.now,
     log: (ctx, err) => {
       const s = `${ctx}: ${err instanceof Error ? err.message : String(err)}`;
       logs.push(s);
@@ -122,11 +125,11 @@ function files(root: string): Record<string, string> {
   return out;
 }
 
-async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean } = {}) {
+async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number } = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(names, { dir: tempDir("team") });
   const [ryanM, nickM, samM] = members;
-  const ryan = takeover(ryanM, roomId, { repos: [r.ryanClone], sessions: [session({ id: "s1", cwd: r.wt, repoPath: r.ryanClone })] });
+  const ryan = takeover(ryanM, roomId, { repos: [r.ryanClone], sessions: [session({ id: "s1", cwd: r.wt, repoPath: r.ryanClone })], now: o.ryanNow });
   const nick = takeover(nickM, roomId, { repos: o.nickHasClone === false ? [] : [r.nickClone] });
   const sam = samM ? takeover(samM, roomId, { repos: [] }) : null;
   const transcript = claudeTranscript(ryan.claudeProjects, r.wt, [userLine(r.wt, "Add the donor entity"), agentLine(r.wt, "Added src/b.ts and started on a.ts")]);
@@ -511,6 +514,123 @@ describe("taking over", () => {
   });
 });
 
+describe("cleaning up backups", () => {
+  const nickCopy = (t: Awaited<ReturnType<typeof setup>>, id = "s1") => ({
+    ref: refIn(t.nickClone, roomBackupRef(t.roomId, id)),
+    transcript: fs.existsSync(path.join(t.nickM.store.dir, t.roomId, "transcripts", id)),
+  });
+
+  it("deletes a forgotten session's backup on origin and every member's copy", async () => {
+    const t = await setup();
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    expect([refIn(t.bare, ref), refIn(t.ryanClone, ref)].every(Boolean)).toBe(true);
+    expect(nickCopy(t)).toEqual({ ref: expect.any(String), transcript: true });
+    await t.ryan.svc.sessionForgotten("s1");
+    expect(refIn(t.bare, ref)).toBeNull();
+    expect(refIn(t.ryanClone, ref)).toBeNull();
+    expect(backupIn(t.ryanM, t.roomId)!.dropped).toMatchObject({ by: t.ryanM.id, reason: "closed" });
+    await until(() => !nickCopy(t).ref && !nickCopy(t).transcript, "Nick's copies to go");
+    // nothing brings it back
+    await t.ryan.svc.turnEnded("s1");
+    expect(refIn(t.bare, ref)).toBeNull();
+    expect(t.ryan.svc.view().cleanup).toEqual([]);
+  });
+
+  it("keeps the backup and shows why when deleting it fails, and retries on the next prune", async () => {
+    const t = await setup();
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    rejectPushes(t.bare, true);
+    await t.ryan.svc.sessionForgotten("s1");
+    expect(refIn(t.bare, ref)).not.toBeNull();
+    expect(backupIn(t.ryanM, t.roomId)!.dropped).toBeNull();
+    expect(t.ryan.svc.view().cleanup).toEqual([{ roomId: t.roomId, sessionId: "s1", title: "Donor entities", problem: expect.stringMatching(/backups are switched off here|declined/) }]);
+    expect(t.ryan.logs.some((l) => /deleting the backup of session s1/.test(l))).toBe(true);
+    expect(nickCopy(t).ref).not.toBeNull(); // members keep theirs until origin's is gone
+    rejectPushes(t.bare, false);
+    await t.ryan.svc.prune();
+    expect(refIn(t.bare, ref)).toBeNull();
+    expect(t.ryan.svc.view().cleanup).toEqual([]);
+    expect(backupIn(t.ryanM, t.roomId)!.dropped).toMatchObject({ reason: "closed" });
+  });
+
+  it("prunes a backup that saw no turn for 14 days, and keeps a recent one", async () => {
+    let clock = Date.parse("2026-10-07T09:00:00Z");
+    const t = await setup(["Ryan", "Nick"], { ryanNow: () => clock });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    clock += 13 * 86_400_000;
+    await t.ryan.svc.prune();
+    expect(refIn(t.bare, ref)).not.toBeNull();
+    clock += 2 * 86_400_000;
+    await t.ryan.svc.prune();
+    expect(refIn(t.bare, ref)).toBeNull();
+    expect(backupIn(t.ryanM, t.roomId)!.dropped).toMatchObject({ reason: "stale" });
+    await until(() => !nickCopy(t).ref, "Nick's copy to go");
+    // a turn after all brings the session's backup back
+    write(t.wt, { "src/a.ts": "back at it\n" });
+    await t.ryan.svc.turnEnded("s1");
+    expect(refIn(t.bare, ref)).not.toBeNull();
+    expect(backupIn(t.ryanM, t.roomId)!.dropped).toBeNull();
+  });
+
+  it("prunes a backup whose work is all merged into the base branch — not one with uncommitted work", async () => {
+    const t = await setup();
+    await t.ryan.svc.turnEnded("s1");
+    const ref = roomBackupRef(t.roomId, "s1");
+    // the branch's commit merged, but edits still uncommitted: the backup is the only copy of them
+    git(t.wt, "push", "-q", "origin", "HEAD:main");
+    git(t.ryanClone, "fetch", "-q", "origin");
+    await t.ryan.svc.prune();
+    expect(refIn(t.bare, ref)).not.toBeNull();
+    // everything committed and merged
+    fs.rmSync(path.join(t.wt, ".env"));
+    fs.rmSync(path.join(t.wt, "certs"), { recursive: true });
+    git(t.wt, "add", "-A");
+    git(t.wt, "commit", "-q", "-m", "the rest");
+    git(t.wt, "push", "-q", "origin", "HEAD:main");
+    git(t.ryanClone, "fetch", "-q", "origin");
+    await t.ryan.svc.turnEnded("s1");
+    expect(refIn(t.bare, ref)).not.toBeNull();
+    await t.ryan.svc.prune();
+    expect(refIn(t.bare, ref)).toBeNull();
+    expect(backupIn(t.ryanM, t.roomId)!.dropped).toMatchObject({ reason: "merged" });
+  });
+
+  it("deletes a taken-over session's old backup once the taker's first backup lands — and only the taker does", async () => {
+    const t = await setup();
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const old = roomBackupRef(t.roomId, "s1");
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
+    const r = await t.nick.svc.takeOver(t.roomId, "s1");
+    expect(refIn(t.bare, old)).not.toBeNull();
+    // Ryan, back, isn't the owner any more: forgetting his copy leaves origin's backup alone,
+    // and a deletion he announces doesn't count
+    t.net.setOnline(t.ryanM.id, true);
+    await until(() => !!backupIn(t.ryanM, t.roomId)?.takenOver, "Ryan to hear of the take-over");
+    await t.ryan.svc.sessionForgotten("s1");
+    expect(refIn(t.bare, old)).not.toBeNull();
+    expect(refIn(t.ryanClone, old)).toBeNull();
+    t.ryanM.team.publish(t.roomId, "session.backupDropped", { sessionId: "s1", reason: "closed" });
+    await until(() => (t.nickM.team.room(t.roomId)?.events ?? 0) === t.ryanM.team.room(t.roomId)!.events, "Nick to get the event");
+    expect(backupIn(t.nickM, t.roomId)!.dropped).toBeNull();
+    expect(nickCopy(t).ref).not.toBeNull();
+    // Nick's first backup of his copy
+    await t.nick.svc.turnEnded(r.sessionId);
+    expect(refIn(t.bare, roomBackupRef(t.roomId, r.sessionId))).not.toBeNull();
+    expect(refIn(t.bare, old)).toBeNull();
+    expect(backupIn(t.nickM, t.roomId)!.dropped).toMatchObject({ by: t.nickM.id, reason: "taken-over" });
+    await until(() => !nickCopy(t).ref && !nickCopy(t).transcript, "Nick's copies of the old session to go");
+    expect(refIn(t.nickClone, roomBackupRef(t.roomId, "s1", "refs/mockingbird/rooms-origin"))).toBeNull();
+  });
+});
+
 describe("take-over pieces", () => {
   it("counts a session as a room's when its top-level group is shown as the room, workspaces included", () => {
     const s = (id: string, taskGroup: string | null) => session({ id, cwd: "/w", repoPath: "/r", taskGroup });
@@ -583,6 +703,7 @@ describe("take-over pieces", () => {
       pushed: { sha: "1".repeat(40), takenAt: now - 120_000, at: now - 120_000 },
       transcriptBytes: null,
       takenOver: null,
+      dropped: null,
       roomId: "r".repeat(22),
       ownerName: "Nick",
       ownerOnline: false,

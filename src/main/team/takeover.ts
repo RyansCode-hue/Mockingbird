@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { defineEventType } from "./rooms";
 import type { RequestContext, Team, Unsubscribe } from "./transport";
-import { currentBranch, git, originUrl, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
+import { branchesOf, currentBranch, git, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, SECRET_PATHSPECS, skippedIn, snapshotCommit } from "../snapshots";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, codexRolloutPath, realpathOr } from "../agentFiles";
@@ -13,10 +13,13 @@ import { repoState, takeoverKickoff, transcriptDigest, transcriptLines } from ".
 import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { MEMBER_ID_RE } from "../../shared/team/protocol";
 import {
+  DROP_REASONS,
   ORIGIN_COPY_ROOT,
   roomBackupRef,
   SESSION_ID_RE,
+  STALE_BACKUP_MS,
   type ConversationCarried,
+  type DropReason,
   type PushOutcome,
   type RoomSessionBackup,
   type RoomSessionBackupView,
@@ -52,6 +55,12 @@ import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/t
  * the peer copy and origin's, the transcript placed where the taker's CLI
  * resumes it (or, when it didn't all arrive, a kickoff built from the handoff
  * digest that says so), the session launched, and `session.takenOver` published.
+ *
+ * Cleanup: only a session's current owner (the taker, once taken over)
+ * deletes its backup ref on origin, then publishes `session.backupDropped`
+ * and every member deletes its copies — when the owner forgets the session,
+ * when the daily prune finds all its work merged into the base branch or no
+ * turn for STALE_BACKUP_MS, and when a taker's first backup of its copy lands.
  *
  * Request methods between members: takeover.have, takeover.snapshot,
  * takeover.transcript (each names its room; the transport checks membership).
@@ -132,7 +141,22 @@ defineEventType("session.backup", {
       pushed: b.push.ok ? { sha: b.sha, takenAt: b.takenAt, at: b.push.at } : prev?.pushed ?? null,
       transcriptBytes: b.transcriptBytes ?? prev?.transcriptBytes ?? null,
       takenOver: null,
+      dropped: null,
     };
+  },
+});
+
+defineEventType("session.backupDropped", {
+  validate(b: any) {
+    if (!b || typeof b !== "object") throw new Error("no body");
+    sessionIdOf(b.sessionId);
+    if (!DROP_REASONS.includes(b.reason)) throw new Error("bad reason");
+  },
+  reduce(state, e) {
+    const s = state.ext.takeover?.sessions[e.body.sessionId];
+    // only the session's current owner deletes its backup: the taker, once it's taken over
+    if (!s || s.dropped || e.author !== (s.takenOver?.by ?? s.owner)) return;
+    s.dropped = { at: e.at, by: e.author, reason: e.body.reason };
   },
 });
 
@@ -153,7 +177,7 @@ defineEventType("session.takenOver", {
     const b = e.body;
     const s = state.ext.takeover?.sessions[b.sessionId];
     // the first take-over in the room's order wins; an owner can't take over their own
-    if (!s || s.takenOver || s.owner !== b.from || e.author === b.from) return;
+    if (!s || s.takenOver || s.dropped || s.owner !== b.from || e.author === b.from) return;
     s.takenOver = { by: e.author, at: e.at, newSessionId: b.newSessionId, snapshot: b.snapshot, conversation: b.conversation };
   },
 });
@@ -224,6 +248,13 @@ interface OwnRecord {
   /** What origin's backup ref was last set to by this install. */
   pushed: string | null;
   pushedAt?: number;
+  /** The session's repository (its main clone: refs are shared by its worktrees, which may be gone). */
+  repo: string;
+  title: string;
+  /** The last turn's end: a backup with none for STALE_BACKUP_MS is deleted. */
+  activeAt: number;
+  /** Deleting the backup failed: retried on the next prune. */
+  drop?: { reason: DropReason; error: string; at: number };
 }
 interface MirrorRecord {
   sha: string;
@@ -279,6 +310,9 @@ export class TakeoverService {
   private ownFiles = new Map<string, string>();
   private noClone = new Set<string>();
   private taking = new Set<string>();
+  /** Sessions the owner forgot: no more backups. */
+  private forgotten = new Set<string>();
+  private cleanupProblems = new Map<string, { roomId: RoomId; title: string; problem: string }>();
   private changeTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
 
@@ -295,6 +329,7 @@ export class TakeoverService {
       t.onRequest("takeover.transcript", (p, ctx) => this.onTranscript(p, ctx)),
       t.onEvent("session.backup", () => this.changed()),
       t.onEvent("session.takenOver", (e, room) => this.onTakenOver(e, room)),
+      t.onEvent("session.backupDropped", (e, room) => this.onDropped(e, room)),
       t.onPresence((roomId, online) => this.onPresence(roomId, online))
     );
   }
@@ -329,7 +364,7 @@ export class TakeoverService {
     const roomId = this.d.host.roomOf(sessionId);
     if (!roomId) return;
     const s = this.d.host.session(sessionId);
-    if (!s || s.shell || !s.repoPath) return;
+    if (!s || s.shell || !s.repoPath || this.forgotten.has(sessionId)) return;
     if (this.d.team.room(roomId)?.ext.takeover?.sessions[sessionId]?.takenOver) return; // a teammate continues it: this copy isn't the room's
     try {
       await this.backup(roomId, s);
@@ -354,7 +389,8 @@ export class TakeoverService {
     if (!snap) throw new Error(`${s.cwd} isn't in a git repository`);
     // nothing changed since the last turn: keep that snapshot, with nothing new to send or push
     const same = !!prev && prev.tree === snap.tree && prev.parent === snap.parent && (await hasCommits(top, [prev.sha])).length === 1;
-    let rec: OwnRecord = same ? prev : { sha: snap.sha, tree: snap.tree, parent: snap.parent, takenAt, pushed: prev?.pushed ?? null, pushedAt: prev?.pushedAt };
+    const kept = { repo: s.repoPath ?? top, title: (s.ticketTitle ?? s.title).slice(0, 300), activeAt: takenAt }; // a turn is activity: a pending drop no longer applies
+    let rec: OwnRecord = same ? { ...prev, ...kept, drop: undefined } : { sha: snap.sha, tree: snap.tree, parent: snap.parent, takenAt, pushed: prev?.pushed ?? null, pushedAt: prev?.pushedAt, ...kept };
     await git(top, ["update-ref", ref, rec.sha]);
     this.saveOwn(roomId, s.id, rec);
     for (const peer of this.d.team.presence(roomId)) this.mirror(peer, roomId, s.id);
@@ -377,9 +413,130 @@ export class TakeoverService {
     const body = { sessionId: s.id, sha: rec.sha, takenAt: rec.takenAt, push, session, transcriptBytes: file ? (await fs.promises.stat(file)).size : null };
     // a turn that changed nothing anyone records isn't a new event
     const key = JSON.stringify({ ...body, push: push.ok ? { ok: true, at: push.at } : { ok: false, error: push.error } });
-    if (this.lastPublished.get(s.id) === key) return;
-    this.d.team.publish(roomId, "session.backup", body);
-    this.lastPublished.set(s.id, key);
+    if (this.lastPublished.get(s.id) !== key) {
+      this.d.team.publish(roomId, "session.backup", body);
+      this.lastPublished.set(s.id, key);
+    }
+    // the session this one took over: its backup goes once this copy's is on origin
+    if (!push.ok) return;
+    for (const old of Object.values(this.d.team.room(roomId)?.ext.takeover?.sessions ?? {})) {
+      if (old.takenOver?.by === this.d.team.self.id && old.takenOver.newSessionId === s.id && !old.dropped) await this.dropBackup(roomId, old.sessionId, "taken-over", rec.repo, old.session.title);
+    }
+  }
+
+  // ---- deleting backups (their current owner) --------------------------------------------------
+
+  /**
+   * The owner forgot a session (closed it without keeping it to resume): its
+   * backup goes from origin and from members' clones. Not when the session
+   * was taken over: then it's the taker's to delete.
+   */
+  async sessionForgotten(sessionId: string): Promise<void> {
+    this.forgotten.add(sessionId);
+    await this.backups.get(sessionId)?.done; // a push under way would bring the ref back
+    for (const room of this.d.team.rooms()) {
+      const rec = this.local(room.id).own[sessionId];
+      if (!rec) continue;
+      const entry = room.ext.takeover?.sessions[sessionId];
+      try {
+        if (entry?.takenOver || entry?.dropped) await this.forgetLocal(room.id, sessionId);
+        else await this.dropBackup(room.id, sessionId, "closed", rec.repo, rec.title);
+      } catch (err) {
+        this.cleanupFailed(room.id, sessionId, rec.title, err);
+      }
+    }
+  }
+
+  /**
+   * Delete this install's backups that are no longer needed: no turn for
+   * STALE_BACKUP_MS, all their work in the base branch, or a deletion that
+   * failed before. Run on start and daily. Never rejects: failures are logged
+   * and shown, and retried next time.
+   */
+  async prune(): Promise<void> {
+    for (const room of this.d.team.rooms()) {
+      for (const [sessionId, rec] of Object.entries(this.local(room.id).own)) {
+        if (this.backups.has(sessionId)) continue; // being backed up: it's active
+        try {
+          const entry = room.ext.takeover?.sessions[sessionId];
+          // taken over (the taker deletes it) or already deleted: only this Mac's own copy is left
+          if (entry?.takenOver || entry?.dropped) {
+            await this.forgetLocal(room.id, sessionId);
+            continue;
+          }
+          const reason: DropReason | null = rec.drop?.reason ?? (this.now() - rec.activeAt > STALE_BACKUP_MS ? "stale" : (await this.merged(rec)) ? "merged" : null);
+          if (reason) await this.dropBackup(room.id, sessionId, reason, rec.repo, rec.title);
+        } catch (err) {
+          this.cleanupFailed(room.id, sessionId, rec.title, err);
+        }
+      }
+    }
+  }
+
+  /** All of a backup's work is in the repository's base branch on origin: no uncommitted changes, and its commit merged. */
+  private async merged(rec: OwnRecord): Promise<boolean> {
+    if (!rec.parent || !fs.existsSync(rec.repo)) return false;
+    if ((await git(rec.repo, ["rev-parse", `${rec.parent}^{tree}`])) !== rec.tree) return false; // uncommitted work lives only in the backup
+    const base = pickDefaultBase((await branchesOf(rec.repo)).origin);
+    return !!base && (await isAncestor(rec.repo, rec.parent, `refs/remotes/origin/${base}`));
+  }
+
+  /**
+   * Delete a session's backup ref on origin (expecting the value it has there,
+   * so nothing written meanwhile is lost), then tell the room, whose members
+   * delete their copies. A failure is kept on the session and shown.
+   */
+  private async dropBackup(roomId: RoomId, sessionId: string, reason: DropReason, repo: string, title: string): Promise<void> {
+    const ref = roomBackupRef(roomId, sessionId);
+    try {
+      const there = (await git(repo, ["ls-remote", "origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 })).split("\t")[0];
+      if (there) await git(repo, ["push", "--no-verify", "--quiet", `--force-with-lease=${ref}:${there}`, "origin", `:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000 });
+      this.d.team.publish(roomId, "session.backupDropped", { sessionId, reason });
+      this.cleanupProblems.delete(sessionId);
+    } catch (err) {
+      const rec = this.local(roomId).own[sessionId];
+      const error = this.cleanupFailed(roomId, sessionId, title, err);
+      if (rec) this.saveOwn(roomId, sessionId, { ...rec, drop: { reason, error, at: this.now() } });
+    }
+    this.changed();
+  }
+
+  private cleanupFailed(roomId: RoomId, sessionId: string, title: string, err: unknown): string {
+    const problem = withoutCredentials(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim().slice(0, 300);
+    this.d.log(`team: deleting the backup of session ${sessionId}`, problem);
+    this.cleanupProblems.set(sessionId, { roomId, title, problem });
+    this.changed();
+    return problem;
+  }
+
+  /** A session's backup was deleted: this Mac's copies go too (its own ref, a teammate's copy in a clone, the conversation). */
+  private async forgetLocal(roomId: RoomId, sessionId: string): Promise<void> {
+    const local = this.local(roomId);
+    const own = local.own[sessionId];
+    const mirrored = local.mirrored[sessionId];
+    const entry = this.d.team.room(roomId)?.ext.takeover?.sessions[sessionId];
+    const clone = entry && !own ? await this.cloneFor(entry.session.originUrl) : null;
+    const ref = roomBackupRef(roomId, sessionId);
+    for (const repo of new Set([own?.repo, mirrored?.repo, clone].filter((r): r is string => !!r && fs.existsSync(r)))) {
+      for (const r of [ref, roomBackupRef(roomId, sessionId, ORIGIN_COPY_ROOT)]) await git(repo, ["update-ref", "-d", r]);
+    }
+    await fs.promises.rm(this.transcriptDir(roomId, sessionId), { recursive: true, force: true });
+    delete local.own[sessionId];
+    delete local.mirrored[sessionId];
+    this.saveLocal(roomId);
+    this.lastPublished.delete(sessionId);
+    this.cleanupProblems.delete(sessionId);
+    this.changed();
+  }
+
+  private onDropped(e: RoomEvent<"session.backupDropped">, room: RoomState): void {
+    const s = room.ext.takeover?.sessions[e.body.sessionId];
+    if (s?.dropped?.by !== e.author) return; // not the owner's: the room ignored it
+    this.track(
+      this.forgetLocal(room.id, e.body.sessionId).catch((err) => {
+        this.cleanupFailed(room.id, e.body.sessionId, s.session.title, err);
+      })
+    );
   }
 
   /** Set origin's backup ref, only if it still holds what this install last put there. */
@@ -796,7 +953,8 @@ export class TakeoverService {
         });
       }
     }
-    return { sessions, unbacked: [...this.unbacked].map(([sessionId, u]) => ({ sessionId, ...u })) };
+    const list = (m: Map<string, { roomId: RoomId; title: string; problem: string }>) => [...m].map(([sessionId, u]) => ({ sessionId, ...u }));
+    return { sessions, unbacked: list(this.unbacked), cleanup: list(this.cleanupProblems) };
   }
 
   // ---- helpers ------------------------------------------------------------------------------
@@ -809,6 +967,7 @@ export class TakeoverService {
     if (!b) throw new Error("No backup of that session has reached this Mac yet");
     if (b.owner === this.d.team.self.id) throw new Error("That's your own session");
     if (b.takenOver) throw new Error(`${this.nameOf(roomId, b.takenOver.by)} already took that session over`);
+    if (b.dropped) throw new Error("Its backup was deleted: the session was closed, its work merged, or it sat idle");
     return b;
   }
 

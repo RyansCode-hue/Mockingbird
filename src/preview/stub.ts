@@ -164,6 +164,7 @@ const takeoverView: TakeoverView = (() => {
     pushed: { sha: sha("a1"), takenAt: now - 2 * min, at: now - 2 * min },
     transcriptBytes: 412_000,
     takenOver: null,
+    dropped: null,
     ownerOnline: true,
     self: false,
     takenOverByName: null,
@@ -202,6 +203,7 @@ const takeoverView: TakeoverView = (() => {
       }),
     ],
     unbacked: [],
+    cleanup: [],
   };
 })();
 const takeoverPlans: Record<string, TakeoverPlan> = {

@@ -349,7 +349,11 @@ app.whenReady().then(() => {
   }
   createWindow();
   team.start();
-  takeover = startTakeover(); // team rooms: take-over
+  // team rooms: take-over — unneeded backups are pruned now and daily
+  takeover = startTakeover();
+  const pruneBackups = () => takeover?.prune().catch((err) => logError("team: pruning room backups", err));
+  void pruneBackups();
+  setInterval(pruneBackups, 86_400_000).unref();
   powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   void lookUpBins();
@@ -510,6 +514,7 @@ handle("sessions:kill", (id, forget) => {
     const at = fs.existsSync(s.cwd) ? s.cwd : s.repoPath;
     dropSnapshots(at, s.id).catch((err) => logError(`drop snapshots ${id}`, err));
   }
+  if (forget) void takeover?.sessionForgotten(String(id)); // team rooms: take-over — its room backup goes too (failures shown in the sidebar)
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
