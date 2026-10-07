@@ -9,9 +9,10 @@
 //
 //   npm run team:e2e-fingerprint
 //
-// The same for the two-instance tests' room creator, whose HOME is
-// $TMPDIR/mockingbird-e2e-creator (E2E_CREATOR_HOME in test/e2e/appInstance.ts):
-// allow it on a Worker to run those tests against it (MB_E2E_SIGNALING_URL).
+// The same for the two-instance tests' room creator, whose identity is kept
+// under $TMPDIR/mockingbird-e2e-creator (E2E_CREATOR_HOME in
+// test/e2e/appInstance.ts): allow it on a Worker to run those tests against
+// it (MB_E2E_SIGNALING_URL).
 import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as os from "os";

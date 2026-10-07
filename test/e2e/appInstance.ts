@@ -124,18 +124,19 @@ export const mainLog = (a: { home: string }) => {
 // ---- the signaling server: local, or a deployed Worker -----------------------------------------
 
 /**
- * Where the room creator's HOME lives when the tests run against a deployed
- * Worker: outside ~/.mockingbird, at a fixed path, so its identity — the
- * fingerprint in the Worker's ALLOWED_CREATORS — is the same every run
- * (`npm run team:e2e-fingerprint` prints it).
+ * Where the room creator's identity lives when the tests run against a
+ * deployed Worker: outside ~/.mockingbird, at a fixed path, so its
+ * fingerprint — which the Worker's ALLOWED_CREATORS must hold — is the same
+ * every run. `npm run team:e2e-fingerprint` creates it and prints it.
  */
 export const E2E_CREATOR_HOME = path.join(os.tmpdir(), "mockingbird-e2e-creator");
 
 /**
  * The signaling server the two-instance tests use: the deployed Worker at
- * MB_E2E_SIGNALING_URL, or a local one. `creatorHome` is the room creator's
- * HOME for a Worker: E2E_CREATOR_HOME emptied of everything but its identity,
- * so each run starts with no rooms.
+ * MB_E2E_SIGNALING_URL, or a local one. Against a Worker, `creatorHome` is a
+ * fresh HOME holding E2E_CREATOR_HOME's identity — fresh each time, so each
+ * run (and each test file running alongside) starts with no rooms; short, as
+ * macOS caps the app's socket paths.
  */
 export async function e2eSignaling(): Promise<{ url: string; real: boolean; creatorHome: string | undefined; close: () => Promise<void> }> {
   const real = process.env.MB_E2E_SIGNALING_URL?.trim().replace(/\/+$/, "");
@@ -144,13 +145,12 @@ export async function e2eSignaling(): Promise<{ url: string; real: boolean; crea
     return { url: local.url, real: false, creatorHome: undefined, close: () => local.close() };
   }
   const identity = path.join(E2E_CREATOR_HOME, ".mockingbird", "team", "identity.json");
-  const keep = fs.existsSync(identity) ? fs.readFileSync(identity) : null;
-  fs.rmSync(E2E_CREATOR_HOME, { recursive: true, force: true });
-  if (keep) {
-    fs.mkdirSync(path.dirname(identity), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(identity, keep, { mode: 0o600 });
-  } else fs.mkdirSync(E2E_CREATOR_HOME, { recursive: true });
-  return { url: real, real: true, creatorHome: E2E_CREATOR_HOME, close: async () => {} };
+  if (!fs.existsSync(identity)) throw new Error(`There's no e2e room creator at ${identity}: run npm run team:e2e-fingerprint and allow its fingerprint on the Worker first`);
+  const home = fs.mkdtempSync("/tmp/mbe2e-");
+  fs.mkdirSync(path.join(home, ".mockingbird", "team"), { recursive: true, mode: 0o700 });
+  fs.copyFileSync(identity, path.join(home, ".mockingbird", "team", "identity.json"));
+  fs.chmodSync(path.join(home, ".mockingbird", "team", "identity.json"), 0o600);
+  return { url: real, real: true, creatorHome: home, close: async () => fs.rmSync(home, { recursive: true, force: true }) };
 }
 
 /** How each instance reaches the other right now ("direct", "turn", …), from its peer status. */
