@@ -34,11 +34,12 @@ describe("chat text", () => {
     expect(segs.map((s) => s.s).join("")).toBe("@Nick and @assistant, ping @ryan. Mail nick@example.com or @nobody");
   });
 
-  it("finds links without their trailing punctuation", () => {
+  it("finds https links without their trailing punctuation", () => {
     expect(chatSegments("see https://example.com/a?b=1.", members, "Ryan")).toEqual([
       { t: "text", s: "see " },
       { t: "link", s: "https://example.com/a?b=1" },
       { t: "text", s: "." },
     ]);
+    expect(chatSegments("not http://example.com", members, "Ryan")).toEqual([{ t: "text", s: "not http://example.com" }]);
   });
 });

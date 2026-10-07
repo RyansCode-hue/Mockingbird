@@ -1749,7 +1749,7 @@ function App() {
             />
           )}
           {/* team rooms: team chat */}
-          {sideView === "room" && <RoomChatPanel status={teamStatus} activeGroup={activeGroup} />}
+          {sideView === "room" && <RoomChatPanel status={teamStatus} activeGroup={activeGroup} visible={!sideCollapsed} />}
           {sideView === "sessions" && (
           <div className="scroll">
             <div className="filter-row">

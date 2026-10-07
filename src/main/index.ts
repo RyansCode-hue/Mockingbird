@@ -748,7 +748,13 @@ handle("team:checkSignaling", (url) => TeamService.checkSignaling(String(url ?? 
 const teamRoom = new TeamRoom({
   sessions: () => sessions.list(),
   roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
-  ask: async (prompt) => askAgent(prompt, { ...(await askingAgent("claude")), run: userShellWithInput, env: paneEnv(), tag: "team-assistant", model: "sonnet", timeoutMs: 180_000 }),
+  // Claude only: it runs with no tools, while Codex's read-only sandbox can still read files,
+  // and the room's chat (which teammates write) is in the prompt
+  ask: async (prompt) => {
+    const bin = await installedBin("claude");
+    if (!bin) throw new Error("The room's assistant runs Claude Code (with no tools), and Claude Code isn't installed on this laptop");
+    return askAgent(prompt, { agent: "claude", bin, run: userShellWithInput, env: paneEnv(), tag: "team-assistant", model: "sonnet", timeoutMs: 180_000 });
+  },
   chatChanged: (roomId) => toWindow("teamChat:changed", roomId),
   notify: ({ roomId, title, body }) => {
     if (!shouldNotify({ settings: store.settings, kind: "other", now: new Date() })) return;

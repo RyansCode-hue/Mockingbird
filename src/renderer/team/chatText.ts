@@ -2,7 +2,8 @@ import { ASSISTANT_MENTION, knownHandle, mentionHandle } from "../../shared/team
 
 /**
  * Chat text as the room shows it: light markdown — ```code blocks```,
- * `inline code`, **bold**, *emphasis* — plus links and @mentions. Parsed
+ * `inline code`, **bold**, *emphasis* — plus https links (the only ones
+ * the app opens) and @mentions. Parsed
  * into segments the view renders as elements, never as HTML.
  */
 export type ChatSegment =
@@ -14,7 +15,7 @@ export type ChatSegment =
   | { t: "link"; s: string }
   | { t: "mention"; s: string; me: boolean; assistant: boolean };
 
-const INLINE = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(?<![\w*])\*([^*\s][^*\n]*?)\*(?![\w*])|(https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"])|(^|[^\w@])@([A-Za-z0-9][\w.-]*)/g;
+const INLINE = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|(?<![\w*])\*([^*\s][^*\n]*?)\*(?![\w*])|(https:\/\/[^\s<>()]*[^\s<>().,;:!?'"])|(^|[^\w@])@([A-Za-z0-9][\w.-]*)/g;
 
 export function chatSegments(text: string, members: readonly { name: string }[], selfName: string): ChatSegment[] {
   const out: ChatSegment[] = [];

@@ -4,7 +4,7 @@ import { readPref, writePref } from "../prefs";
 import { initialsOf, roomOfGroup } from "../Team";
 import { chatSegments, type ChatSegment } from "./chatText";
 import { isErr } from "../../shared/types";
-import { ASSISTANT_MENTION, isRead, mentionHandle, mentionsOf, updateLine, type AgentUpdate, type ChatEntry, type ChatUnread, type RoomChatView } from "../../shared/team/chat";
+import { ASSISTANT_MENTION, countsAsUnread, isRead, mentionHandle, mentionsOf, updateLine, type AgentUpdate, type ChatEntry, type ChatUnread, type RoomChatView } from "../../shared/team/chat";
 import type { TeamRoomSummary, TeamStatus } from "../../shared/team/types";
 
 /**
@@ -95,7 +95,7 @@ export function useRoomChatOpen(open: () => void): void {
 }
 
 /** The side bar view: the chat of the room picked, or of the shared group on screen. */
-export function RoomChatPanel({ status, activeGroup }: { status: TeamStatus | { error: string } | null; activeGroup: string | null }) {
+export function RoomChatPanel({ status, activeGroup, visible }: { status: TeamStatus | { error: string } | null; activeGroup: string | null; visible: boolean }) {
   const choice = picked.use();
   const groupRoom = activeGroup ? roomOfGroup(status, activeGroup) : undefined;
   // switching the grid to a shared group shows its room
@@ -114,7 +114,7 @@ export function RoomChatPanel({ status, activeGroup }: { status: TeamStatus | { 
       </div>
     );
   }
-  return <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} />;
+  return <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} />;
 }
 
 const when = (ms: number) => {
@@ -128,7 +128,7 @@ const when = (ms: number) => {
 const THINKING_STALE_MS = 5 * 60_000;
 const DOT_OF: Record<AgentUpdate["kind"], string> = { started: "working", finished: "idle", waiting: "waiting", ended: "dead", takeover: "rc-dot", board: "rc-dot" };
 
-function RoomChat({ room, rooms, selfName }: { room: TeamRoomSummary; rooms: TeamRoomSummary[]; selfName: string }) {
+function RoomChat({ room, rooms, selfName, visible }: { room: TeamRoomSummary; rooms: TeamRoomSummary[]; selfName: string; visible: boolean }) {
   const [view, setView] = useState<RoomChatView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -154,10 +154,11 @@ function RoomChat({ room, rooms, selfName }: { room: TeamRoomSummary; rooms: Tea
     load();
     return window.mb.onTeamChatChanged((id: string) => (id === room.id || id === "*") && load());
   }, [load]);
+  // a collapsed side bar keeps the view mounted but off screen: not viewing, and nothing gets read
   useEffect(() => {
-    window.mb.teamChatViewing(room.id);
+    window.mb.teamChatViewing(visible ? room.id : null);
     return () => void window.mb.teamChatViewing(null);
-  }, [room.id]);
+  }, [room.id, visible]);
   useEffect(() => {
     const on = () => setFocused(true);
     const off = () => setFocused(false);
@@ -171,10 +172,10 @@ function RoomChat({ room, rooms, selfName }: { room: TeamRoomSummary; rooms: Tea
   // what's on screen in a focused window is read
   useEffect(() => {
     if (!view || !view.unread) return;
-    if (!newFrom) setNewFrom(view.entries.find((e) => !isRead(e, view.read, view.joinedAt) && e.author !== view.self)?.id ?? null);
-    if (!focused) return;
+    if (!newFrom) setNewFrom(view.entries.find((e) => !isRead(e, view.read, view.joinedAt) && countsAsUnread(e, view.self))?.id ?? null);
+    if (!focused || !visible) return;
     window.mb.teamChatRead(room.id).then((r: unknown) => isErr(r) && setError(`Couldn't mark the room read: ${r.error}`));
-  }, [view, focused]);
+  }, [view, focused, visible]);
   // stay at the newest entry unless scrolled up to read
   useEffect(() => {
     const el = listRef.current;
