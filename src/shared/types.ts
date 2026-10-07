@@ -1080,7 +1080,8 @@ export interface FileOverlap {
   otherBranch: string | null;
   files: string[];
   // team rooms: plan board — set when the other side is a teammate's pushed branch (`other` is then no session here)
-  teammate?: { id: string; name: string };
+  /** The teammate whose pushed branch it is, and the room whose plan board lists it. */
+  teammate?: { id: string; name: string; roomId: string };
 }
 
 /** One agent-to-agent message, as the message log shows it. */

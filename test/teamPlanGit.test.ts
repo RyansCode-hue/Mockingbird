@@ -255,14 +255,14 @@ describe("the plan service", () => {
 
     await until(() => ryan.team.room(roomId)!.ext.memberBranches?.[nick.id]?.branches.join() === "nick-donor", "Nick's branches to be announced (not main)");
     await until(() => r.svc.teammateChanges().length === 1, "Ryan to read Nick's branch");
-    expect(r.svc.teammateChanges()).toEqual([{ member: nick.id, name: "Nick", branch: "nick-donor", repo: expect.any(String), files: ["src/api/x.ts", "src/api/z.ts"] }]);
+    expect(r.svc.teammateChanges()).toEqual([{ roomId, member: nick.id, name: "Nick", branch: "nick-donor", repo: expect.any(String), files: ["src/api/x.ts", "src/api/z.ts"] }]);
     expect(r.overlaps).toBeGreaterThan(0);
     expect(ryan.team.room(roomId)!.ext.memberBranches?.[ryan.id]?.branches).toEqual(["ryan-feature"]);
 
     const mine = await changedFiles(wtA);
     const local = [{ sessionId: "r1", title: "r1", cwd: wtA, ...mine }];
     const found = mergeOverlaps(overlaps(local), teammateOverlaps(local, r.svc.teammateChanges()));
-    expect(found).toEqual({ r1: [{ other: `team:${nick.id}:nick-donor`, otherTitle: "Nick's pushed branch", otherBranch: "nick-donor", files: ["src/api/x.ts"], teammate: { id: nick.id, name: "Nick" } }] });
+    expect(found).toEqual({ r1: [{ other: `team:${nick.id}:nick-donor`, otherTitle: "Nick's pushed branch", otherBranch: "nick-donor", files: ["src/api/x.ts"], teammate: { id: nick.id, name: "Nick", roomId } }] });
     expect(r.svc.view(roomId)).toMatchObject({ teammates: [{ name: "Nick", branch: "nick-donor" }], fetchedAt: expect.any(Number) });
   });
 

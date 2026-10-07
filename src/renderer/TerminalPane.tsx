@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
 import { beginDrag, dragging } from "./drag";
 import { PinIcon } from "./Icons";
@@ -11,6 +11,7 @@ import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
 import { dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
+import { overlapChips } from "./overlapChips";
 import { isRemotePaneId } from "../shared/team/livePanes";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
@@ -290,6 +291,7 @@ export function TerminalPane({
   onUndoTurn,
   overlaps,
   onJump,
+  onOpenPlan,
   onRestart,
   messages,
   onShowMessages,
@@ -333,6 +335,8 @@ export function TerminalPane({
   /** Files another worktree of this repository has also changed. */
   overlaps?: FileOverlap[];
   onJump?: (sessionId: string) => void;
+  /** Open a team room's plan board (a teammate's branch overlaps this worktree). */
+  onOpenPlan?: (roomId: string) => void;
   /** Restart this pane, resuming its conversation (for a stuck one). */
   onRestart?: () => void;
   /** Agent messages this pane received and sent, and opening their log. */
@@ -340,6 +344,7 @@ export function TerminalPane({
   onShowMessages?: () => void;
 }) {
   const holder = useRef<HTMLDivElement>(null);
+  const chips = useMemo(() => overlapChips(overlaps), [overlaps]);
   const dead = session.status === "dead";
   const waiting = session.status === "waiting";
   // team rooms: a teammate's session runs on their Mockingbird; this pane is its copy, at its owner's size
@@ -797,22 +802,37 @@ export function TerminalPane({
             git: couldn't read
           </span>
         )}
-        {overlaps && overlaps.length > 0 && density !== "min" && (
+        {chips.local.length > 0 && density !== "min" && (
           <button
             className="chip overlap"
             title={[
               "Changed here and in another worktree of this repository — a merge conflict waiting to happen:",
-              ...overlaps.map((o) => `\n${o.otherTitle}${o.otherBranch ? ` (${o.otherBranch})` : ""}:\n${o.files.map((f) => `  ${f}`).join("\n")}`),
+              ...chips.local.map((o) => `\n${o.otherTitle}${o.otherBranch ? ` (${o.otherBranch})` : ""}:\n${o.files.map((f) => `  ${f}`).join("\n")}`),
               "\nClick to go to that session.",
             ].join("\n")}
             onClick={(e) => {
               e.stopPropagation();
-              onJump?.(overlaps[0].other);
+              onJump?.(chips.local[0].other);
             }}
           >
-            ⚠ {overlapCount(overlaps)} overlap
+            ⚠ {overlapCount(chips.local)} overlap
           </button>
         )}
+        {/* team rooms: a teammate's pushed branch changes the same files — their package is on the plan board */}
+        {density !== "min" &&
+          chips.teammates.map((c) => (
+            <button
+              key={c.key}
+              className="chip overlap"
+              title={c.title}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenPlan?.(c.roomId);
+              }}
+            >
+              ⚠ {c.label}
+            </button>
+          ))}
         {density === "max" && (session.model || session.effort) && (
           <span className="chip" title="model · effort for this session">
             {[session.model, session.effort].filter(Boolean).join(" · ")}

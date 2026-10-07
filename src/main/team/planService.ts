@@ -297,7 +297,7 @@ export class PlanService {
   /** Teammates' pushed branches with the files they change, for the overlap check. */
   teammateChanges(): TeammateChanges[] {
     const out: TeammateChanges[] = [];
-    for (const list of this.teammates.values()) for (const t of list) if (!t.problem && t.files.length) out.push({ member: t.member, name: t.name, branch: t.branch, repo: t.repo, files: t.files });
+    for (const [roomId, list] of this.teammates) for (const t of list) if (!t.problem && t.files.length) out.push({ roomId, member: t.member, name: t.name, branch: t.branch, repo: t.repo, files: t.files });
     return out;
   }
 

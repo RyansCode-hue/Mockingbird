@@ -2236,6 +2236,7 @@ function App() {
                     onUndoTurn={s.shell || !s.repoPath ? undefined : () => setUndoFor(s)}
                     overlaps={overlaps[s.id]}
                     onJump={jumpTo}
+                    onOpenPlan={setPlanDlg}
                     messages={(() => {
                       const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
                       return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;

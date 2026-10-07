@@ -55,6 +55,8 @@ export function overlaps(list: WorktreeChanges[]): Record<string, FileOverlap[]>
 
 /** A team room member's pushed branch, as fetched into a local clone, and the files it changes against its base. */
 export interface TeammateChanges {
+  /** The room whose plan board announced the branch. */
+  roomId: string;
   member: string;
   name: string;
   branch: string;
@@ -79,7 +81,7 @@ export function teammateOverlaps(list: WorktreeChanges[], teammates: TeammateCha
       const theirs = new Set(t.files);
       const both = a.files.filter((f) => theirs.has(f));
       if (!both.length) continue;
-      (out[a.sessionId] ??= []).push({ other: teammateOverlapId(t.member, t.branch), otherTitle: `${t.name}'s pushed branch`, otherBranch: t.branch, files: both, teammate: { id: t.member, name: t.name } });
+      (out[a.sessionId] ??= []).push({ other: teammateOverlapId(t.member, t.branch), otherTitle: `${t.name}'s pushed branch`, otherBranch: t.branch, files: both, teammate: { id: t.member, name: t.name, roomId: t.roomId } });
     }
   }
   return out;
