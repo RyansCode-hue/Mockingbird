@@ -13,7 +13,7 @@ import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
-import type { PaneSnapshot } from "../shared/team/livePanes";
+import { isRemotePaneId, type PaneSnapshot } from "../shared/team/livePanes";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
 
@@ -505,8 +505,14 @@ export class SessionManager {
     this.emitChanged();
   }
 
+  /** A teammate's session runs on their Mockingbird: only its owner can do `what` to it. */
+  private ownOnly(id: string, what: string): void {
+    if (isRemotePaneId(id)) throw new Error(`That's a teammate's session: only its owner can ${what}`);
+  }
+
   /** Restart one pane in place: same id, its conversation resumed. */
   async restart(id: string): Promise<SessionInfo> {
+    this.ownOnly(id, "restart it");
     this.kill(id, false); // keep the store entry so relaunch can resume it
     const info = await this.relaunch(id);
     if (!info) throw new Error("no persisted session to resume");
@@ -560,6 +566,7 @@ export class SessionManager {
 
   /** Relaunch a persisted session in its old cwd, resuming the conversation. */
   async relaunch(id: string): Promise<SessionInfo | null> {
+    this.ownOnly(id, "relaunch it");
     const old = this.store.state.sessions.find((s) => s.id === id);
     if (!old) return null;
     // create() re-adds the record; only forget the old one once it has, or a
@@ -624,6 +631,7 @@ export class SessionManager {
 
   /** Manual override for a stale waiting state — marks the session idle. */
   clearWaiting(id: string): void {
+    this.ownOnly(id, "mark it as no longer waiting");
     const s = this.live.get(id);
     if (!s || s.info.status !== "waiting") return;
     this.setStatus(id, "idle");
@@ -737,6 +745,7 @@ export class SessionManager {
 
   /** Close a pane. Unless `forget`, it stays resumable: its scrollback and undelivered messages are kept for its relaunch. */
   kill(id: string, forget = false): void {
+    this.ownOnly(id, "close it");
     const s = this.live.get(id);
     if (s) {
       try {

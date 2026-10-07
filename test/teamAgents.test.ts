@@ -7,7 +7,7 @@ import { tempDir } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember, type LoopbackNetwork } from "../src/main/team/loopback";
 import { TeamRoom } from "../src/main/team/teamRoom";
 import { Messaging, mcpLaunch, remoteSessionId } from "../src/main/messaging";
-import { AGENT_REQUESTS } from "../src/main/team/agentBridge";
+import { AGENT_REQUESTS, AgentBridge } from "../src/main/team/agentBridge";
 import type { AgentMessage, SessionInfo } from "../src/shared/types";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
@@ -200,5 +200,17 @@ describe("the MCP server script", () => {
     expect(byId[2].result.isError).toBe(false);
     expect(byId[2].result.content[0].text).toMatch(/^Delivered to "Export API" on Nick's laptop/);
     expect(nick.delivered.at(-1)!.text.endsWith("via MCP")).toBe(true);
+  });
+});
+
+describe("a session that left its room", () => {
+  it("isn't listed to teammates or reachable through the room once the live panes say it left (taken over)", () => {
+    const R = "R".repeat(22);
+    const bridge = new AgentBridge({ sessions: () => [session("kept"), session("taken")], roomGroups: () => [{ roomId: R, groupKey: "5110" }], roomOf: (id) => (id === "kept" ? R : null), log: () => {} });
+    expect(bridge.localSessions(R).map((s) => s.id)).toEqual(["kept"]);
+    expect(bridge.roomOf(session("taken"))).toBeNull();
+    // without the live panes' word, the group decides
+    const byGroup = new AgentBridge({ sessions: () => [session("kept"), session("taken")], roomGroups: () => [{ roomId: R, groupKey: "5110" }], log: () => {} });
+    expect(byGroup.localSessions(R).map((s) => s.id)).toEqual(["kept", "taken"]);
   });
 });

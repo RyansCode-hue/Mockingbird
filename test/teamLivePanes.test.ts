@@ -464,6 +464,12 @@ describe("a teammate's session in the session manager", () => {
     expect(remoteOf(nick, s.id)?.room).toMatchObject({ cols: 120, rows: 32 });
     expect(() => nick.sessions.rename(paneId, "x")).toThrow(/only its owner/);
     expect(() => nick.sessions.setGroup(paneId, "other")).toThrow(/only its owner/);
+    // closing, restarting or relaunching it here would act on nothing of this Mac's: refused, not silently ignored
+    expect(() => nick.sessions.kill(paneId, true)).toThrow(/only its owner/);
+    expect(() => nick.sessions.clearWaiting(paneId)).toThrow(/only its owner/);
+    await expect(nick.sessions.restart(paneId)).rejects.toThrow(/only its owner/);
+    await expect(nick.sessions.relaunch(paneId)).rejects.toThrow(/only its owner/);
+    expect(nick.sessions.list().some((x) => x.id === paneId)).toBe(false);
     // the owner's resize reaches the teammate's copy
     ryan.sessions.resize(s.id, 100, 30);
     await until(() => remoteOf(nick, s.id)?.room?.cols === 100, "the new size");

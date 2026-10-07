@@ -62,10 +62,12 @@ import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 import { TeamRoom } from "./team/teamRoom";
 // team rooms: take-over
 import { liveRoomHost, TakeoverService } from "./team/takeover";
+import type { TakeoverView } from "../shared/team/takeover";
 import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
 // team rooms: live panes
 import { LivePanes } from "./team/livePanes";
+import { isRemotePaneId } from "../shared/team/livePanes";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -618,6 +620,7 @@ handle("worktrees:migrate", async (repo, wtPath) => {
 });
 function sessionOf(id: string): SessionInfo {
   const s = sessions.list().find((x) => x.id === id);
+  if (!s && isRemotePaneId(id)) throw new Error("That's a teammate's session: it runs on their Mac");
   if (!s) throw new Error("Session is no longer running");
   return s;
 }
@@ -835,6 +838,7 @@ handle("plan:sync", (roomId) => teamPlan.syncNow(String(roomId)));
 const teamRoom = new TeamRoom({
   sessions: () => sessions.list(),
   roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
+  roomOf: (id) => livePanes.roomOfSession(id),
   // Claude only: it runs with no tools, while Codex's read-only sandbox can still read files,
   // and the room's chat (which teammates write) is in the prompt
   ask: async (prompt) => {
@@ -863,7 +867,7 @@ handle("teamChat:read", (roomId) => teamRoom.chat.markRead(String(roomId)));
 handle("teamChat:unread", () => teamRoom.chat.unread());
 handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(roomId) : null));
 // team rooms: take-over
-handle("team:takeover", () => takeover?.view() ?? { sessions: [], unbacked: [] });
+handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], unbacked: [], cleanup: [] });
 handle("team:takeoverPlan", (roomId, sessionId, clonePath) => needTakeover().plan(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 handle("team:takeOver", (roomId, sessionId, clonePath) => needTakeover().takeOver(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 // team rooms: live panes

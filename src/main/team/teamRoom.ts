@@ -19,6 +19,8 @@ export interface TeamRoomDeps {
   sessions: () => SessionInfo[];
   /** Which local group each room is shown as. */
   roomGroups: () => { roomId: RoomId; groupKey: string }[];
+  /** The room a session of this install's is in (the live panes'); see AgentBridgeDeps.roomOf. */
+  roomOf?: (sessionId: string) => RoomId | null;
   /** One headless turn of the user's own agent CLI (the assistant). */
   ask: (prompt: string) => Promise<string>;
   /** Tell the window a room's chat changed ("*": any room's may have). */
@@ -50,7 +52,7 @@ export class TeamRoom {
       if (!this.groups || Date.now() - this.groups.at > GROUPS_TTL_MS) this.groups = { at: Date.now(), list: d.roomGroups() };
       return this.groups.list;
     };
-    this.bridge = new AgentBridge({ sessions: d.sessions, roomGroups, log: d.log });
+    this.bridge = new AgentBridge({ sessions: d.sessions, roomGroups, roomOf: d.roomOf, log: d.log });
     this.assistant = new RoomAssistant({
       ask: d.ask,
       room: (roomId) => this.team?.room(roomId),

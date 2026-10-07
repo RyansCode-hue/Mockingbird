@@ -31,6 +31,12 @@ export interface AgentBridgeDeps {
   sessions: () => SessionInfo[];
   /** Which local group each room is shown as. */
   roomGroups: () => { roomId: RoomId; groupKey: string }[];
+  /**
+   * The room a session of this install's is in, when the live panes say
+   * (a session a teammate took over has left its room). Without it, a
+   * session's room is its top-level group's.
+   */
+  roomOf?: (sessionId: string) => RoomId | null;
   log: (msg: string) => void;
   now?: () => number;
 }
@@ -77,6 +83,7 @@ export class AgentBridge implements RemoteAgents {
   }
 
   roomOf(session: SessionInfo): RoomId | null {
+    if (this.d.roomOf) return this.d.roomOf(session.id);
     if (!session.taskGroup) return null;
     const top = topOfKey(session.taskGroup);
     return this.d.roomGroups().find((r) => r.groupKey === top)?.roomId ?? null;
@@ -84,9 +91,7 @@ export class AgentBridge implements RemoteAgents {
 
   /** This install's live agent sessions in a room. */
   localSessions(roomId: RoomId): SessionInfo[] {
-    const group = this.d.roomGroups().find((r) => r.roomId === roomId)?.groupKey;
-    if (!group) return [];
-    return this.d.sessions().filter((s) => shareable(s) && !!s.taskGroup && topOfKey(s.taskGroup) === group);
+    return this.d.sessions().filter((s) => shareable(s) && this.roomOf(s) === roomId);
   }
 
   /** Each teammate's sessions in the room: asked now when they're connected, else as last seen. */
