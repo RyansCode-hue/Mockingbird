@@ -63,6 +63,8 @@ import { TeamRoom } from "./team/teamRoom";
 // team rooms: take-over
 import { groupRoomHost, TakeoverService } from "./team/takeover";
 import { ROOMS_DIR } from "./team/rooms";
+// team rooms: live panes
+import { LivePanes } from "./team/livePanes";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -155,6 +157,22 @@ const needTakeover = (): TakeoverService => {
   if (!takeover) throw new Error("Team rooms haven't started — see Settings → Team");
   return takeover;
 };
+
+// team rooms: live panes — sessions in shared groups, streamed to and typed into by teammates
+const livePanes = new LivePanes({
+  team: () => team.transport,
+  rooms: () => team.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey })),
+  sessions,
+  settings: () => store.settings,
+  notify: (title, body, paneId) => {
+    const n = new Notification({ title, body });
+    n.on("click", () => focusPane(paneId));
+    n.show();
+  },
+  toWindow,
+  audit: (line) => Store.audit(line),
+  log: logError,
+});
 
 // Run and Debug: a repo's services per worktree, each on its own terminal,
 // optionally under the debugger
@@ -376,6 +394,7 @@ app.whenReady().then(() => {
   const pruneBackups = () => takeover?.prune().catch((err) => logError("team: pruning room backups", err));
   void pruneBackups();
   setInterval(pruneBackups, 86_400_000).unref();
+  livePanes.start(); // team rooms: live panes
   powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   void lookUpBins();
@@ -514,6 +533,7 @@ app.on("will-quit", () => {
   sessions.saveScrollback(true);
   teamPlan.stop(); // team rooms: plan board
   takeover?.close(); // team rooms: take-over
+  livePanes.stop(); // team rooms: live panes — pending output sent first
   team.stop(); // room snapshots written, connections closed
 });
 
@@ -548,7 +568,7 @@ handle("sessions:kill", (id, forget) => {
   return r;
 });
 handle("sessions:restartAll", (includeBusy) => sessions.restartAll(!!includeBusy));
-handle("session:buffer", (id) => sessions.buffer(id));
+handle("session:buffer", (id) => sessions.paneBuffer(id));
 handle("sessions:broadcast", (req: Partial<BroadcastRequest>) => {
   if (typeof req?.message !== "string" || !req.message) throw new Error("Nothing to broadcast");
   return sessions.broadcast(req.message, req.sessionIds ?? [], req.whenIdle ?? true);
@@ -848,6 +868,10 @@ handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(
 handle("team:takeover", () => takeover?.view() ?? { sessions: [], unbacked: [] });
 handle("team:takeoverPlan", (roomId, sessionId, clonePath) => needTakeover().plan(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 handle("team:takeOver", (roomId, sessionId, clonePath) => needTakeover().takeOver(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
+// team rooms: live panes
+handle("team:live", () => livePanes.state());
+handle("team:paneResync", (id) => livePanes.resync(String(id)));
+ipcMain.on("team:liveView", (_e, view) => livePanes.setView(view));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 

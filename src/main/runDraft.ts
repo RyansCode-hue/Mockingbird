@@ -5,14 +5,13 @@ import { parseClaudeJson, type ShellRunner } from "./headless";
 import { agentLabel, isInstalledBin } from "./agents";
 import { validateProfile } from "./runProfile";
 import type { RunProfile } from "../shared/types";
+import { SECRET_READS } from "./secrets";
 
 const TIMEOUT_MS = 6 * 60_000;
 // gitignored files worth carrying into a worktree: env files, local certs, local settings
 const CARRY = /(^|\/)(\.env(\.[\w-]+)?|[\w.-]+\.env|local\.settings\.json|\.certs|[\w.-]+\.(pem|key|crt|p12|pfx))(\/|$)/;
 
 /** Gitignored files and folders in the main checkout that a worktree would lack, e.g. backend/.env. */
-const SECRET_READS = ["Read(**/.env)", "Read(**/.env.*)", "Read(**/*.env)", "Read(**/*.pem)", "Read(**/*.key)", "Read(**/*.pfx)", "Read(**/*.p12)", "Read(**/local.settings.json)", "Read(**/secrets.json)"];
-
 export async function ignoredCandidates(repo: string): Promise<string[]> {
   const out = await git(repo, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], { trim: false });
   return out

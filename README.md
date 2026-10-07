@@ -77,6 +77,12 @@ test/teamApp.e2e.test.ts` runs two real Mockingbird instances, with throwaway
 homes, that share and join a room (their windows open while it runs).
 Take-over runs end to end over the loopback against real git — a local bare
 origin and two clones — in `test/teamTakeover.test.ts`.
+Live panes are tested over the loopback with real session managers (records,
+streaming and catching up after gaps, remote typing and its audit,
+notifications, views, launch guards), the Co-authored-by hooks against real
+git, and end to end by `MB_E2E_APP=1 npx vitest run
+test/teamLiveApp.e2e.test.ts`: a terminal shared on one instance, watched and
+typed into from the other.
 
 ## UI preview
 
@@ -294,7 +300,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
   the room's repo; agents get the plan at start and change it through the
   `update_team_plan` tool, an agent's first edit of a file a teammate's package
   owns is held back once with a warning (to you as well), and teammates'
-  pushed branches join the overlap check. The team room chat: each room's thread in the side bar's **Team room** view
+  pushed branches join the overlap check. Live panes: a session in a shared
+  group shows on every member's Mockingbird with its owner's initials, streams
+  to whoever has it on screen, and anyone can type into it (the owner's
+  terminal size holds); initials show who's looking at which pane, Follow
+  mirrors a teammate's grid, everyone is notified when a room session waits,
+  room sessions start with Claude denied reading secrets, and commits in turns
+  a teammate typed into credit them with Co-authored-by.
+  The team room chat: each room's thread in the side bar's **Team room** view
   (and the group bar's **Room chat** chip), with unread counts and @mentions
   that notify, working offline (messages merge on reconnect); room agents'
   turns, waits, take-overs and board changes posted as compact updates;

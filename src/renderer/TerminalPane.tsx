@@ -7,9 +7,11 @@ import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
-import { classifyTermInput, pasteRoute } from "./inputGuard";
+import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
 import { useFolderRefresh } from "./folderWatch";
-import { dataPump, fitTerm, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
+import { dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
+import { Lookers, OwnerTag } from "./team/RoomLive";
+import { isRemotePaneId } from "../shared/team/livePanes";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
 import { fmtElapsed, plural } from "../shared/format";
@@ -37,6 +39,7 @@ interface TermEntry extends CachedTerm, MouseModeState {
   hold: string[] | null; // output parked during a native selection drag
   holdStart: number;
   wheelAcc: number; // accumulated wheel pixels not yet emitted as scroll lines
+  refit?: () => void; // a teammate's session: fit its owner's size again (the size or the pane's density changed)
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
@@ -145,6 +148,12 @@ const ensureDataPump = dataPump((cb) => window.mb.onSessionData(cb), terms, pump
 export async function resyncTerm(id: string): Promise<void> {
   const entry = terms.get(id);
   if (!entry) return;
+  // a teammate's session isn't resized from here: its owner sends the scrollback again, which redraws the pane
+  if (isRemotePaneId(id)) {
+    const r = await window.mb.teamPaneResync(id);
+    if (isErr(r)) console.error(`[mockingbird] couldn't redraw ${id} from its owner:`, r.error);
+    return;
+  }
   const { term } = entry;
   // RIS rather than term.reset(): it applies after output already queued, so a
   // queued mode change can't land after the reset. The CLI still believes its
@@ -198,6 +207,52 @@ export function shortReason(reason: string | null): string {
   if (perm) return `permission: ${perm[1]}`;
   if (/waiting for your input/i.test(reason)) return "waiting for you";
   return reason;
+}
+
+/**
+ * A room session of this Mac's that teammates see but that runs without the
+ * room's protections: a terminal (it can read anything), Codex (no deny rules
+ * from here), or a session that joined the room while running.
+ */
+function GuardChip({ session, guards, onRestart }: { session: SessionInfo; guards: { secrets: boolean; coauthors: boolean }; onRestart?: () => void }) {
+  if (guards.secrets && guards.coauthors) return null;
+  if (guards.secrets) {
+    return (
+      <span className="chip warn" title="Commits in this session won't get Co-authored-by trailers for teammates who type into it: the git hooks that add them couldn't be set up (the reason is above the session list).">
+        no co-author trailers
+      </span>
+    );
+  }
+  const credit = guards.coauthors ? "" : " It started outside the room, so its commits don't credit teammates who type into it until it restarts.";
+  if (session.shell) {
+    return (
+      <span className="chip warn" title={`Teammates in this room see this terminal and can type into it. A terminal can read any file you can, .env files included.${credit}`}>
+        shared terminal
+      </span>
+    );
+  }
+  if (session.agent === "codex") {
+    return (
+      <span
+        className="chip warn"
+        title={`Teammates in this room see what this session prints. Mockingbird can't stop Codex reading .env files and keys from here: Codex's deny-read rules live in a permission profile in ~/.codex/config.toml ([permissions.<name>.filesystem] with "**/*.env" = "none"). Set one up there before working near secrets.${credit}`}
+      >
+        codex: secrets unguarded
+      </span>
+    );
+  }
+  return (
+    <button
+      className="chip warn"
+      title="This session joined the room while it was running, so it started without the room's rules: it can read .env files and keys, teammates see what it prints, and its commits don't credit teammates who type into it. Click to restart it with them (its conversation resumes)."
+      onClick={(e) => {
+        e.stopPropagation();
+        onRestart?.();
+      }}
+    >
+      secrets unguarded · restart
+    </button>
+  );
 }
 
 /** Distinct files across a pane's overlaps. */
@@ -287,12 +342,19 @@ export function TerminalPane({
   const holder = useRef<HTMLDivElement>(null);
   const dead = session.status === "dead";
   const waiting = session.status === "waiting";
+  // team rooms: a teammate's session runs on their Mockingbird; this pane is its copy, at its owner's size
+  const room = session.room ?? null;
+  const remote = room?.remote ? room : null;
+  const ownerSize = useRef({ cols: room?.cols ?? 120, rows: room?.rows ?? 32 });
+  ownerSize.current = { cols: room?.cols ?? 120, rows: room?.rows ?? 32 };
+  const densityNow = useRef(density);
+  densityNow.current = density;
   const [editTitle, setEditTitle] = useState<string | null>(null);
   const [copyNote, copy] = useCopyNote();
   const [panelClose, setPanelClose] = useState<{ col: number; row: number } | null>(null);
   const [exitTail, setExitTail] = useState<string | null>(null);
   useEffect(() => {
-    if (!dead) {
+    if (!dead || remote) {
       setExitTail(null);
       return;
     }
@@ -336,7 +398,8 @@ export function TerminalPane({
   };
   useEffect(readGit, [gitRoot]);
   useFolderRefresh(gitRoot, readGit, 30_000);
-  const git = gitState && !isErr(gitState) ? gitState : null;
+  // a teammate's session shows its owner's git state, as they last published it
+  const git: WorktreeStateInfo | null = remote ? (remote.git && !dead ? { ...remote.git, dirty: remote.git.dirtyFiles > 0 } : null) : gitState && !isErr(gitState) ? gitState : null;
   const gitErr = gitState && isErr(gitState) ? gitState.error : null;
 
   // the branch's pull request, for the rail (the main process caches lookups for 2 minutes)
@@ -363,6 +426,7 @@ export function TerminalPane({
     if (dead) return; // dead panes show the resume body instead of the terminal
     ensureDataPump();
     let entry = terms.get(session.id);
+    const remoteEntry = isRemotePaneId(session.id);
     if (!entry) {
       // a session id keeps its agent and shell flag through restarts, and a
       // resumed pane gets a fresh entry, so the policy is fixed per entry
@@ -415,13 +479,15 @@ export function TerminalPane({
       term.onData((d) => {
         const now = Date.now();
         const source = classifyTermInput(d, now - e.lastInput, term.modes.mouseTrackingMode);
-        if (source === "user" || source === "mouse") return writeSession(session.id, d);
+        const action = forwardTermInput(source, remoteEntry);
+        if (action === "send" && source !== "reply") return writeSession(session.id, d);
         // no user input behind this: it is either an answer to a query the
         // program asked for, or something that has no business being typed
-        if (source === "unattributed") {
+        if (action === "audit") {
           window.mb.auditWrite(session.id, "dropped-unattributed", d);
           return;
         }
+        if (action === "drop") return;
         if (d === e.lastReply && now - e.lastReplyStart < REPLY_LOOP_WINDOW_MS) {
           e.lastReplyCount++;
           if (e.lastReplyCount > REPLY_LOOP_COUNT) {
@@ -468,7 +534,14 @@ export function TerminalPane({
     if (holder.current && !term.element) term.open(holder.current);
     else if (holder.current && term.element && term.element.parentElement !== holder.current) holder.current.appendChild(term.element);
     trackUserInput(entry);
-    const stopFollowing = followSize(entry, holder.current, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
+    let stopFollowing: () => void;
+    if (remoteEntry) {
+      const fixed = followFixedSize(entry, holder.current, () => ownerSize.current, () => fontSizeFor(densityNow.current));
+      entry.refit = fixed.refit;
+      stopFollowing = fixed.stop;
+    } else {
+      stopFollowing = followSize(entry, holder.current, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
+    }
 
     const stamp = () => {
       const t = terms.get(session.id);
@@ -605,10 +678,15 @@ export function TerminalPane({
     };
   }, [session.id, dead]);
 
+  // a teammate's session follows its owner's terminal size; its font fits it to the pane
+  useEffect(() => {
+    if (remote) terms.get(session.id)?.refit?.();
+  }, [remote?.cols, remote?.rows, density, session.id]);
+
   // terminal body steps up in the instrumented tier (design 1b)
   useEffect(() => {
     const entry = terms.get(session.id);
-    if (!entry || entry.term.options.fontSize === fontSizeFor(density)) return;
+    if (!entry || remote || entry.term.options.fontSize === fontSizeFor(density)) return;
     entry.term.options.fontSize = fontSizeFor(density);
     fitTerm(entry, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
   }, [density, session.id]);
@@ -678,15 +756,17 @@ export function TerminalPane({
         ) : (
           <span
             className="title"
-            title="double-click to rename"
+            title={remote ? `${remote.ownerName}'s session` : "double-click to rename"}
             onDoubleClick={(e) => {
               e.stopPropagation();
-              setEditTitle(session.ticketTitle ?? session.title);
+              if (!remote) setEditTitle(session.ticketTitle ?? session.title);
             }}
           >
             {session.ticketTitle ?? session.title}
           </span>
         )}
+        {room && <OwnerTag room={room} />}
+        {room && <Lookers room={room} />}
         {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
         {!!runCount && density !== "min" && (
           <button
@@ -703,10 +783,10 @@ export function TerminalPane({
         {git?.dirty && (
           <button
             className="chip changes"
-            title={`${plural(git.dirtyFiles, "uncommitted file")}: +${git.insertions} −${git.deletions} lines in tracked files — open Source Control`}
+            title={`${plural(git.dirtyFiles, "uncommitted file")}: +${git.insertions} −${git.deletions} lines in tracked files${remote ? ` on ${remote.ownerName}'s laptop` : " — open Source Control"}`}
             onClick={(e) => {
               e.stopPropagation();
-              onOpenChanges?.();
+              if (!remote) onOpenChanges?.();
             }}
           >
             <ChangeCount files={git.dirtyFiles} insertions={git.insertions} deletions={git.deletions} />
@@ -748,6 +828,7 @@ export function TerminalPane({
         {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
         {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
         {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row or ⌘K)">muted</span>}
+        {room && !remote && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} onRestart={onRestart} />}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <span className="controls">
           {!dead && (
@@ -774,7 +855,7 @@ export function TerminalPane({
               ⊟
             </button>
           )}
-          {onAddTab && !dead && (
+          {onAddTab && !dead && !remote && (
             <button
               className="icon"
               title="New tab — turn this pane into a workspace and open another session in it"
@@ -798,7 +879,7 @@ export function TerminalPane({
               ↶
             </button>
           )}
-          {onHandoff && (
+          {onHandoff && !remote && (
             <button
               className="icon"
               title={`Continue in ${AGENT_NAME[otherAgent(session.agent)]} — hand this task over with a summary of what's done and what's next`}
@@ -845,7 +926,7 @@ export function TerminalPane({
             <span className="v">{fmtElapsed(session.createdAt, true)}</span>
           </div>
           {gitStr && (
-            <div className={`cell ${onOpenChanges ? "click" : ""}`} title={gitTitle} onClick={onOpenChanges}>
+            <div className={`cell ${onOpenChanges && !remote ? "click" : ""}`} title={remote ? `On ${remote.ownerName}'s laptop, as they last published it.\n${gitTitle}` : gitTitle} onClick={remote ? undefined : onOpenChanges}>
               <span className="k">Git</span>
               <span className={`v ${git!.dirty ? "red" : "teal"}`}>{gitStr}</span>
             </div>
@@ -891,6 +972,14 @@ export function TerminalPane({
               <span className="v">{baseName(session.repoPath)}</span>
             </div>
           )}
+          {remote ? (
+            <div className="cell" title={`${remote.ownerName}'s session: it runs on their laptop, in their clone${remote.repo ? ` of ${remote.repo}` : ""}`}>
+              <span className="k">Runs on</span>
+              <span className="v">
+                {remote.ownerName}'s Mockingbird{remote.repoName ? ` · ${remote.repoName}` : ""}
+              </span>
+            </div>
+          ) : (
           <div className="cell folder" title={session.cwd}>
             <span className="k">Folder</span>
             <span className="v">
@@ -906,6 +995,7 @@ export function TerminalPane({
               )}
             </span>
           </div>
+          )}
           {session.queuedCount ? (
             <div className="cell">
               <span className="k">Queued</span>
@@ -925,7 +1015,13 @@ export function TerminalPane({
         </div>
       )}
 
-      {dead ? (
+      {dead && remote ? (
+        <div className="dead-body">
+          <div>
+            {remote.ownerName} closed this session{remote.online ? "" : ", and their Mockingbird is offline"} · they can resume it
+          </div>
+        </div>
+      ) : dead ? (
         <div className="dead-body">
           <div>
             process exited
@@ -946,7 +1042,7 @@ export function TerminalPane({
       ) : (
         <>
           <div
-            className="term-holder"
+            className={`term-holder ${remote ? "fixed" : ""}`}
             ref={holder}
             onDragOver={(e) => {
               if (e.dataTransfer.types.includes("Files")) e.preventDefault();
@@ -965,6 +1061,11 @@ export function TerminalPane({
             }}
           />
           <CopyToast note={copyNote} failed="Couldn't copy selection" />
+          {remote && (!remote.online || remote.problem) && (
+            <div className="team-pane-note" title={remote.problem ?? undefined}>
+              {!remote.online ? `${remote.ownerName}'s Mockingbird is offline — this is what it last sent` : remote.problem}
+            </div>
+          )}
           {session.stalledSince && session.status === "working" && (
             <div className="stall-banner" title="An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process.">
               <span className="reason">No output for {fmtElapsed(session.stalledSince, true)} while working — it may be stuck</span>
@@ -998,6 +1099,7 @@ export function TerminalPane({
                 {session.waitingSince ? ` · ${fmtElapsed(session.waitingSince, true)}` : ""}
               </span>
               {shortcut && <span className="kbd">{shortcut}</span>}
+              {!remote && (
               <button
                 className="icon"
                 title="Dismiss — mark this session idle (use if the status is stale)"
@@ -1008,6 +1110,7 @@ export function TerminalPane({
               >
                 ✕
               </button>
+              )}
             </div>
           )}
         </>

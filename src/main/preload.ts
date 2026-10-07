@@ -339,6 +339,18 @@ const api = {
     ipcRenderer.on("team:takeoverChanged", h);
     return () => ipcRenderer.removeListener("team:takeoverChanged", h);
   },
+  // team rooms: live panes
+  /** Teammates' room sessions, tags for this install's own, and teammates' views: LivePanesState. */
+  teamLive: () => ipcRenderer.invoke("team:live"),
+  /** What this window shows and which pane it's in, for teammates' presence initials and Follow. */
+  teamLiveView: (view: { shown: string[]; focused: string | null }) => ipcRenderer.send("team:liveView", view),
+  /** Fetch a teammate's session's scrollback again and redraw its pane. */
+  teamPaneResync: (id: string) => ipcRenderer.invoke("team:paneResync", id),
+  onTeamLive: (cb: (state: unknown) => void) => {
+    const h = (_e: unknown, s: unknown) => cb(s);
+    ipcRenderer.on("team:liveChanged", h);
+    return () => ipcRenderer.removeListener("team:liveChanged", h);
+  },
 
   // hooks / settings / debriefs
   hooksInstalled: () => ipcRenderer.invoke("hooks:installed"),

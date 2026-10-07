@@ -71,6 +71,58 @@ export function fitTerm(e: { term: Terminal; fit: FitAddon }, resize: (cols: num
   }
 }
 
+/**
+ * Show a terminal at a size decided elsewhere — a teammate's session renders
+ * at its owner's size, and never resizes their pty. The font shrinks to fit
+ * the holder (down to `minFont`); past that the holder scrolls.
+ */
+export function fitFixed(e: { term: Terminal }, holder: HTMLElement | null, size: { cols: number; rows: number }, maxFont: number, minFont = 6): void {
+  const { term } = e;
+  if (term.cols !== size.cols || term.rows !== size.rows) term.resize(size.cols, size.rows);
+  if (!holder?.clientWidth || !holder.clientHeight) return;
+  const pad = getComputedStyle(holder);
+  const w = holder.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
+  const h = holder.clientHeight - parseFloat(pad.paddingTop) - parseFloat(pad.paddingBottom);
+  // xterm measures its cell as soon as the font changes, but draws the screen a frame or two later:
+  // the cell is what to go by
+  const fits = (f: number): boolean | null => {
+    if (term.options.fontSize !== f) term.options.fontSize = f;
+    const cell = cellOf(term);
+    return cell ? size.cols * cell.width <= w && size.rows * cell.height <= h : null;
+  };
+  let font = Math.min(maxFont, Math.max(minFont, term.options.fontSize ?? maxFont));
+  let ok = fits(font);
+  if (ok === null) return; // not drawn yet: fitted again once its holder has a size
+  while (!ok && font > minFont) ok = fits((font -= 0.5));
+  while (ok && font + 0.5 <= maxFont) {
+    if (fits(font + 0.5)) font += 0.5;
+    else {
+      fits(font);
+      break;
+    }
+  }
+}
+
+/** xterm's cell size in CSS pixels, for its current font (not public API: null when it isn't there). */
+function cellOf(term: Terminal): { width: number; height: number } | null {
+  const cell = (term as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } } })._core?._renderService?.dimensions?.css?.cell;
+  return cell?.width && cell.height ? cell : null;
+}
+
+/**
+ * Keep a terminal at a fixed size, fitted to its holder by its font, from now
+ * on. Returns the stop, and `refit` for when the size or the largest font changes.
+ */
+export function followFixedSize(e: { term: Terminal }, holder: HTMLElement | null, size: () => { cols: number; rows: number }, maxFont: () => number): { stop: () => void; refit: () => void } {
+  const refit = () => fitFixed(e, holder, size(), maxFont());
+  refit();
+  // the terminal font may still be loading: its proportions decide the fit
+  void document.fonts?.ready.then(refit);
+  const ro = new ResizeObserver(refit);
+  if (holder) ro.observe(holder);
+  return { stop: () => ro.disconnect(), refit };
+}
+
 /** Keep a terminal fitted to its holder from now on; returns the stop. */
 export function followSize(e: { term: Terminal; fit: FitAddon }, holder: HTMLElement | null, resize: (cols: number, rows: number) => void): () => void {
   const fit = () => fitTerm(e, resize);

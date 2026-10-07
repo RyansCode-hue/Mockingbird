@@ -13,6 +13,7 @@ import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
+import type { PaneSnapshot } from "../shared/team/livePanes";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
 
@@ -49,6 +50,34 @@ export function paneEnv(): Record<string, string> {
 
 type Queued = { text: string; submit: boolean };
 
+/**
+ * Teammates' room sessions shown in this window (team rooms): they run on
+ * their owners' Mockingbirds, so typing, scrollback and muting go there.
+ */
+export interface RemotePanes {
+  has(id: string): boolean;
+  write(id: string, data: string): void;
+  buffer(id: string): Promise<string>;
+  setMuted(id: string, muted: boolean): void;
+}
+
+/** What a session in a room's shared group is started with (team rooms). */
+export interface RoomLaunch {
+  env: Record<string, string>;
+  /** Claude permission rules denying file reads (--disallowedTools). */
+  denyReads: string[];
+  guards: { secrets: boolean; coauthors: boolean };
+}
+
+/** Where a session would run, for deciding its room launch. */
+export interface LaunchTarget {
+  id: string;
+  /** Its group key ("5110", "5110/api"), or null. */
+  group: string | null;
+  /** null for a terminal. */
+  agent: AgentKind | null;
+}
+
 interface LiveSession {
   info: SessionInfo;
   proc: pty.IPty;
@@ -60,6 +89,11 @@ interface LiveSession {
   lastOutput: number; // ms of the pty's last output — a working pane that goes quiet may be stuck
   outputs: number; // chunks of output so far
   saved: number; // `outputs` when its scrollback was last written to disk
+  epoch: string; // this pty's id: a relaunch under the same session id is a new epoch
+  total: number; // characters this pty's buffer has taken in, including what it started with
+  cols: number;
+  rows: number;
+  guards: RoomLaunch["guards"] | null; // set when it was started as a room session
 }
 
 export class SessionManager {
@@ -79,11 +113,48 @@ export class SessionManager {
   /** Called whenever the session list changes — drives the tray + Dock badge. */
   onChanged: (() => void) | null = null;
 
+  /** Teammates' sessions shown here (team rooms); their I/O is routed to their owners. */
+  remote: RemotePanes | null = null;
+  /** Extra launch settings for a session in a shared group (team rooms); null outside rooms. */
+  roomLaunch: ((target: LaunchTarget) => RoomLaunch | null) | null = null;
+  private watchers = new Set<() => void>();
+  private outputListeners = new Set<(id: string, data: string, end: number, epoch: string) => void>();
+  private statusListeners = new Set<(info: SessionInfo, before: SessionStatus) => void>();
+
+  /** Told whenever a session is added, removed or changed (status, title, group, terminal size). */
+  watch(cb: () => void): () => void {
+    this.watchers.add(cb);
+    return () => this.watchers.delete(cb);
+  }
+
+  /** Every pane's output as it arrives, with where it ends in its pty's output (see paneOutput). */
+  onOutput(cb: (id: string, data: string, end: number, epoch: string) => void): () => void {
+    this.outputListeners.add(cb);
+    return () => this.outputListeners.delete(cb);
+  }
+
+  /** A session's status changed (from its hooks, a delivered message, a dismissal, its exit). */
+  onStatusChanged(cb: (info: SessionInfo, before: SessionStatus) => void): () => void {
+    this.statusListeners.add(cb);
+    return () => this.statusListeners.delete(cb);
+  }
+
+  private tell<A extends unknown[]>(what: string, listeners: Iterable<(...a: A) => void>, ...args: A): void {
+    for (const l of listeners) {
+      try {
+        l(...args);
+      } catch (err) {
+        console.error(`[sessions] a ${what} listener failed:`, err);
+      }
+    }
+  }
+
   constructor(private store: Store) {}
 
   private emitChanged(): void {
     this.wc?.send("sessions:changed", this.list());
     this.onChanged?.();
+    this.tell("change", this.watchers);
   }
 
   /** Drop the cached binary paths so a Settings change takes effect immediately. */
@@ -185,16 +256,20 @@ export class SessionManager {
     const shellArgs = ["-il"];
     let claudeArgs: string[] = shellArgs;
     const id = req.reuseId ?? randomUUID().slice(0, 8);
+    // a session in a room's shared group starts with the room's protections
+    const group = req.taskGroup ?? req.ticketId ?? null;
+    const room = req.debrief ? null : this.roomLaunch?.({ id, group, agent: req.shell ? null : req.agent ?? "claude" }) ?? null;
+    const denyReads = room?.denyReads.length ? room.denyReads : undefined;
     const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext) => [this.resolveBin(a), ...a.launchArgs(r, ctx)].map(quote).join(" ");
     if (!req.shell) {
-      claudeArgs = ["-ilc", `exec ${commandFor(agent, req, { mcp: mcpLaunch(id) })}`];
+      claudeArgs = ["-ilc", `exec ${commandFor(agent, req, { mcp: mcpLaunch(id), denyReads })}`];
     } else if (req.shellResume) {
       // a terminal that had an agent running in it: bring the conversation
       // back, and leave the user at the shell prompt when they quit it. It
       // gets no messaging tools: terminals are outside agent messaging, since
       // a message typed in once the agent has quit would run as a command.
       const a = agentFor(req.shellResume.agent);
-      claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id }, {})}; exec /bin/zsh -il`];
+      claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id }, { denyReads })}; exec /bin/zsh -il`];
     }
     let proc: pty.IPty;
     try {
@@ -213,6 +288,7 @@ export class SessionManager {
           // debriefs get PAT auth for the az DevOps CLI (AZURE_DEVOPS_EXT_PAT)
           // so ticket/PR queries work without az login or an MCP server
           ...(req.debrief ? adoEnv(this.store) : {}),
+          ...(room?.env ?? {}),
         } as Record<string, string>,
       });
     } catch (err) {
@@ -234,7 +310,7 @@ export class SessionManager {
       branch,
       ticketId: req.ticketId ?? null,
       ticketTitle: req.ticketTitle ?? null,
-      taskGroup: req.taskGroup ?? req.ticketId ?? null,
+      taskGroup: group,
       status: req.shell ? "idle" : "working", // shells have no hooks — grey until claude runs inside
       createdAt: Date.now(),
       kind: repoPath ? "work" : "assistant",
@@ -280,7 +356,13 @@ export class SessionManager {
       lastOutput: Date.now(),
       outputs: 0,
       saved: 0,
+      epoch: randomUUID().slice(0, 8),
+      total: 0,
+      cols: 120,
+      rows: 32,
+      guards: room?.guards ?? null,
     };
+    sess.total = sess.buffer.length;
     this.live.set(info.id, sess);
     this.store.upsertSession(info);
 
@@ -289,6 +371,7 @@ export class SessionManager {
     proc.onData((data) => {
       if (this.live.get(info.id) !== sess) return;
       sess.buffer = (sess.buffer + data).slice(-BUFFER_MAX);
+      sess.total += data.length;
       sess.lastOutput = Date.now();
       sess.outputs++;
       if (info.stalledSince) {
@@ -296,6 +379,7 @@ export class SessionManager {
         this.emitChanged();
       }
       this.wc?.send("session:data", info.id, data);
+      this.tell("output", this.outputListeners, info.id, data, sess.total, sess.epoch);
     });
     proc.onExit(({ exitCode }) => {
       if (this.live.get(info.id) !== sess) return;
@@ -406,6 +490,7 @@ export class SessionManager {
   /** Mute or unmute a session's notifications; kept across restarts. */
   setMuted(id: string, muted: boolean): void {
     const s = this.live.get(id);
+    if (!s && this.remote?.has(id)) return this.remote.setMuted(id, muted);
     if (!s) throw new Error("Session is no longer running");
     s.info.muted = muted || undefined;
     this.store.upsertSession(s.info);
@@ -539,6 +624,7 @@ export class SessionManager {
 
   /** Move a session (live or previous) to a task group; null removes it from its group. */
   setGroup(id: string, group: string | null): void {
+    if (!this.live.has(id) && this.remote?.has(id)) throw new Error("That's a teammate's session: only its owner can move it to another group");
     const g = group?.trim() || null;
     const s = this.live.get(id);
     if (s) {
@@ -555,6 +641,7 @@ export class SessionManager {
   }
 
   rename(id: string, title: string): void {
+    if (!this.live.has(id) && this.remote?.has(id)) throw new Error("That's a teammate's session: only its owner can rename it");
     const s = this.live.get(id);
     if (s) {
       s.info.title = title;
@@ -591,7 +678,10 @@ export class SessionManager {
 
   write(id: string, data: string): void {
     const s = this.live.get(id);
-    if (!s) return;
+    if (!s) {
+      if (this.remote?.has(id)) this.remote.write(id, data);
+      return;
+    }
     s.lastInput = Date.now();
     // Enter sends the draft and Ctrl-C clears it; escape sequences (arrows, focus
     // reports) don't add text — except a bracketed paste, which is text.
@@ -601,16 +691,40 @@ export class SessionManager {
     s.proc.write(data);
   }
 
+  /** Resize a pane's pty. A teammate's session is never resized from here: its owner's window decides its size. */
   resize(id: string, cols: number, rows: number): void {
+    const s = this.live.get(id);
+    if (!s) return;
     try {
-      this.live.get(id)?.proc.resize(cols, rows);
+      s.proc.resize(cols, rows);
     } catch {
-      /* dead pty */
+      return; // dead pty
     }
+    if (s.cols === cols && s.rows === rows) return;
+    s.cols = cols;
+    s.rows = rows;
+    this.tell("change", this.watchers);
   }
 
   buffer(id: string): string {
     return this.live.get(id)?.buffer ?? "";
+  }
+
+  /** What a pane's terminal starts from: its scrollback, or for a teammate's session, its owner's. */
+  paneBuffer(id: string): string | Promise<string> {
+    if (!this.live.has(id) && this.remote?.has(id)) return this.remote.buffer(id);
+    return this.buffer(id);
+  }
+
+  /** A live pane's output so far, where it ends in its pty's output, and its pty's size (what a teammate's copy starts from). */
+  paneOutput(id: string): PaneSnapshot | null {
+    const s = this.live.get(id);
+    return s ? { data: s.buffer, epoch: s.epoch, end: s.total, cols: s.cols, rows: s.rows } : null;
+  }
+
+  /** What a live session was started with as a room session; null when it wasn't started in a room. */
+  guardsOf(id: string): RoomLaunch["guards"] | null {
+    return this.live.get(id)?.guards ?? null;
   }
 
   /** Close a pane. Unless `forget`, it stays resumable: its scrollback and undelivered messages are kept for its relaunch. */
@@ -813,6 +927,7 @@ export class SessionManager {
     const s = this.live.get(id);
     if (!s || s.info.status === "dead") return; // its pty has exited; only a relaunch (a new pty) revives it
     if (s.info.status === status && (status !== "waiting" || !reason)) return;
+    const before = s.info.status;
     s.info.status = status;
     if (status !== "working") s.info.stalledSince = null;
     if (status === "waiting") {
@@ -824,5 +939,6 @@ export class SessionManager {
     }
     this.store.upsertSession(s.info);
     this.emitChanged();
+    this.tell("status", this.statusListeners, s.info, before);
   }
 }

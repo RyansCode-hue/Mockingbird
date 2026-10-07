@@ -1,4 +1,6 @@
 import type { LspRange, LspTextEdit } from "./textEdits";
+// team rooms: live panes
+import type { RoomSessionTag } from "./team/livePanes";
 
 /** Which coding-agent CLI a session runs. */
 export type AgentKind = "claude" | "codex";
@@ -38,6 +40,9 @@ export interface SessionInfo {
   stalledSince?: number | null;
   /** No notifications from this session. */
   muted?: boolean;
+  // team rooms: live panes
+  /** Set in the window on a session in a shared group: its room, owner, and who's looking at it. */
+  room?: RoomSessionTag;
 }
 
 /** Every agent, in the order the app lists them. */

@@ -18,6 +18,8 @@ import type { PlanChange, PlanOp, PlanView, WorkPackage } from "../shared/team/p
 import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../shared/team/chat";
 // team rooms: take-over
 import type { RoomSessionBackupView, TakeoverPlan, TakeoverView } from "../shared/team/takeover";
+// team rooms: live panes
+import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -294,6 +296,35 @@ const takeoverPlans: Record<string, TakeoverPlan> = {
 };
 const takeoverChanged = () => emit("onTeamTakeoverChanged", JSON.parse(JSON.stringify(takeoverView)));
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
+
+// team rooms: live panes — Nick's session in the shared 5101 room, shown here as a copy;
+// he has your s1 open and is in it. 5101's own sessions are room sessions: the terminal
+// and the Codex one run without the secret deny rules, and say so.
+const ROOM_5101 = "R5101aaaaaaaaaaaaaaaaa";
+const NICK_PANE = remotePaneId(NICK, "n1");
+const roomTag = (over: Partial<RoomSessionTag>): RoomSessionTag => ({
+  roomId: ROOM_5101, sessionId: "", owner: ME, ownerName: "You", remote: false, online: true, live: true, lookers: [], cols: 120, rows: 32,
+  git: null, repo: "https://github.com/acme/backoffice.git", repoName: "backoffice", guards: { secrets: true, coauthors: true }, ...over,
+});
+const nickGit = { branch: "5101-csvExport", upstream: "origin/5101-csvExport", ahead: 2, behind: 0, dirtyFiles: 3, insertions: 41, deletions: 6 };
+const live: LivePanesState = {
+  remote: [
+    session(NICK_PANE, {
+      title: "Donor export: CSV writer", taskGroup: "5101", branch: "5101-csvExport", repoPath: null, cwd: "(on Nick Smith's Mockingbird) backoffice", status: "working", model: "sonnet",
+      room: roomTag({ sessionId: "n1", owner: NICK, ownerName: "Nick Smith", remote: true, cols: 110, rows: 30, git: nickGit, lookers: [{ id: NICK, name: "Nick Smith", focused: false }] }),
+    }),
+  ],
+  own: {
+    s1: roomTag({ sessionId: "s1", lookers: [{ id: NICK, name: "Nick Smith", focused: true }] }),
+    s2: roomTag({ sessionId: "s2" }),
+    s3: roomTag({ sessionId: "s3", guards: { secrets: false, coauthors: true } }),
+    s4: roomTag({ sessionId: "s4", guards: { secrets: false, coauthors: true } }),
+    s8: roomTag({ sessionId: "s8" }),
+  },
+  views: [{ member: NICK, name: "Nick Smith", shown: ["s1", NICK_PANE], focused: "s1", at: now }],
+  problems: [],
+};
+buffers[NICK_PANE] = `${C.bold}> Write the donor CSV export (UTF-8 BOM, one row per gift)${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Write(src/donors/exportCsv.ts)\r\n  ⎿  Wrote 64 lines\r\n\r\n${C.amber}✻${C.reset} Running the export tests… ${C.dim}(18s · esc to interrupt)${C.reset}\r\n`;
 
 // ---- event plumbing ------------------------------------------------------------
 
@@ -689,6 +720,11 @@ const api: Record<string, (...a: any[]) => any> = {
     setTimeout(takeoverChanged, 50);
     return later({ sessionId: `t-${sessionId}`, cwd: `/Users/you/Code/worktrees/backoffice/${plan.branch}`, branch: plan.branch, renamedFrom: null, snapshot: plan.snapshot, conversation: s.takenOver.conversation }, 900);
   },
+
+  // team rooms: live panes — Nick's session is a fixture; typing into it echoes like the others
+  teamLive: async () => JSON.parse(JSON.stringify(live)),
+  teamLiveView: () => undefined,
+  teamPaneResync: async (id: string) => emit("onSessionData", id, `\x1bc${buffers[id] ?? ""}`),
 };
 
 w.mb = new Proxy(api, {
