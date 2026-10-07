@@ -183,6 +183,7 @@ export function backupFreshness(v: RoomSessionBackupView, now = Date.now()): Fre
   if (v.push.ok && v.push.sha === v.latest.sha && v.pushed) return { tone: "ok", text: `backed up ${ago(v.pushed.at, now)}` };
   const failed = v.push.ok ? "" : `backup failed: ${v.push.error}`;
   if (v.self) return { tone: "warn", text: failed || "not backed up yet" };
+  // where the newest work is matters most to a teammate: it leads, ahead of a long push error
   const where = here ? `latest copied here ${ago(v.peerCopy!.takenAt, now)}` : `latest only on ${v.ownerName}'s laptop`;
-  return { tone: here ? "ok" : "warn", text: [failed, where].filter(Boolean).join(" · ") };
+  return { tone: here ? "ok" : "warn", text: [where, failed].filter(Boolean).join(" · ") };
 }

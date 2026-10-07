@@ -4,7 +4,7 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
-import { TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
+import { groupRoomHost, TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
 import { agentFor } from "../src/main/agents";
 import { claudeProjectDir, codexRolloutPath, realpathOr } from "../src/main/agentFiles";
 import { publicUrl, repoIdentity, withoutCredentials } from "../src/main/git";
@@ -217,7 +217,7 @@ describe("room session backups", () => {
     expect(backupFreshness(mine).text).toMatch(/^backup failed: /);
     await until(() => !!t.nick.svc.view().sessions.find((s) => s.sessionId === "s1")?.peerCopy, "Nick's copy");
     const theirs = t.nick.svc.view().sessions.find((s) => s.sessionId === "s1")!;
-    expect(backupFreshness(theirs)).toMatchObject({ tone: "ok", text: expect.stringMatching(/^backup failed: .* · latest copied here/) });
+    expect(backupFreshness(theirs)).toMatchObject({ tone: "ok", text: expect.stringMatching(/^latest copied here .* · backup failed: /) });
   });
 
   it("says the latest is only on the owner's laptop when neither origin nor this Mac has it", async () => {
@@ -229,7 +229,7 @@ describe("room session backups", () => {
     await until(() => !!backupIn(t.nickM, t.roomId), "Nick to hear of the backup through Sam");
     const v = t.nick.svc.view().sessions.find((s) => s.sessionId === "s1")!;
     expect(v.peerCopy).toBeNull();
-    expect(backupFreshness(v)).toMatchObject({ tone: "warn", text: expect.stringMatching(/^backup failed: .* · latest only on Ryan's laptop$/) });
+    expect(backupFreshness(v)).toMatchObject({ tone: "warn", text: expect.stringMatching(/^latest only on Ryan's laptop · backup failed: /) });
   });
 
   it("reports a session that can't be backed up at all", async () => {
@@ -512,6 +512,18 @@ describe("taking over", () => {
 });
 
 describe("take-over pieces", () => {
+  it("counts a session as a room's when its top-level group is shown as the room, workspaces included", () => {
+    const s = (id: string, taskGroup: string | null) => session({ id, cwd: "/w", repoPath: "/r", taskGroup });
+    const host = groupRoomHost({
+      sessions: () => [s("a", "5110"), s("b", "5110/api"), s("c", "5102"), s("d", null)],
+      rooms: () => [{ id: "R".repeat(22), groupKey: "5110" }],
+      onTurnEnd: () => () => {},
+    });
+    expect(["a", "b", "c", "d", "gone"].map((id) => host.roomOf(id))).toEqual(["R".repeat(22), "R".repeat(22), null, null, null]);
+    expect(host.groupOf("R".repeat(22))).toBe("5110");
+    expect(host.session("b")?.taskGroup).toBe("5110/api");
+  });
+
   it("matches a repository across laptops by origin, however its URL is spelled", () => {
     const gh = ["https://github.com/Acme/App.git", "git@github.com:acme/app.git", "ssh://git@github.com/acme/app", "https://token:x-oauth@github.com/acme/app/"];
     expect(new Set(gh.map(repoIdentity))).toEqual(new Set(["github.com/acme/app"]));
@@ -583,8 +595,8 @@ describe("take-over pieces", () => {
     });
     expect(backupFreshness(v({}), now)).toEqual({ tone: "ok", text: "backed up 2m ago" });
     const failed = { push: { ok: false as const, at: now, error: "no access", sha: "1".repeat(40) }, pushed: null };
-    expect(backupFreshness(v(failed), now)).toEqual({ tone: "warn", text: "backup failed: no access · latest only on Nick's laptop" });
-    expect(backupFreshness(v({ ...failed, peerCopy: { sha: "1".repeat(40), takenAt: now - 60_000 } }), now).text).toBe("backup failed: no access · latest copied here 1m ago");
+    expect(backupFreshness(v(failed), now)).toEqual({ tone: "warn", text: "latest only on Nick's laptop · backup failed: no access" });
+    expect(backupFreshness(v({ ...failed, peerCopy: { sha: "1".repeat(40), takenAt: now - 60_000 } }), now).text).toBe("latest copied here 1m ago · backup failed: no access");
     expect(backupFreshness(v({ ...failed, self: true }), now)).toEqual({ tone: "warn", text: "backup failed: no access" });
     expect(backupFreshness(v({ takenOver: { by: "b".repeat(32), at: now - 300_000, newSessionId: "x", snapshot: { sha: "1".repeat(40), takenAt: 0, source: "peer" }, conversation: "full" }, takenOverByName: "Ryan" }), now).text).toBe(
       "taken over by Ryan 5m ago"

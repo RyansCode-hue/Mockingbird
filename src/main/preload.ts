@@ -295,6 +295,18 @@ const api = {
     return () => ipcRenderer.removeListener("team:changed", h);
   },
 
+  // team rooms: take-over
+  /** Room sessions' backups as this Mac knows them (TakeoverView). */
+  teamTakeover: () => ipcRenderer.invoke("team:takeover"),
+  /** What taking over a teammate's session would use (TakeoverPlan); `clonePath` when the user chose their clone. */
+  teamTakeoverPlan: (roomId: string, sessionId: string, clonePath?: string | null) => ipcRenderer.invoke("team:takeoverPlan", roomId, sessionId, clonePath ?? null),
+  teamTakeOver: (roomId: string, sessionId: string, clonePath?: string | null) => ipcRenderer.invoke("team:takeOver", roomId, sessionId, clonePath ?? null),
+  onTeamTakeoverChanged: (cb: (view: unknown) => void) => {
+    const h = (_e: unknown, v: unknown) => cb(v);
+    ipcRenderer.on("team:takeoverChanged", h);
+    return () => ipcRenderer.removeListener("team:takeoverChanged", h);
+  },
+
   // hooks / settings / debriefs
   hooksInstalled: () => ipcRenderer.invoke("hooks:installed"),
   installHooks: () => ipcRenderer.invoke("hooks:install"),

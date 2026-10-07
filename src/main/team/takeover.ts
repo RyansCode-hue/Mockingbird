@@ -26,7 +26,7 @@ import {
   type TakeoverResult,
   type TakeoverView,
 } from "../../shared/team/takeover";
-import type { AgentKind, NewSessionRequest, SessionInfo } from "../../shared/types";
+import { topOfKey, type AgentKind, type NewSessionRequest, type SessionInfo } from "../../shared/types";
 import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/types";
 
 /**
@@ -174,6 +174,23 @@ export interface RoomSessionHost {
   groupOf(roomId: RoomId): string | null;
   /** Each agent turn's end in a session on this install. */
   onTurnEnd(cb: (sessionId: string) => void): Unsubscribe;
+}
+
+/**
+ * The host over the app's own sessions: a room session is one whose top-level
+ * group is shown as a room here (workspaces inside it included).
+ */
+export function groupRoomHost(o: { sessions: () => SessionInfo[]; rooms: () => { id: RoomId; groupKey: string }[]; onTurnEnd: RoomSessionHost["onTurnEnd"] }): RoomSessionHost {
+  const session = (id: string) => o.sessions().find((s) => s.id === id);
+  return {
+    roomOf: (id) => {
+      const s = session(id);
+      return (s && o.rooms().find((r) => r.groupKey === topOfKey(s.taskGroup ?? "ungrouped"))?.id) ?? null;
+    },
+    session,
+    groupOf: (roomId) => o.rooms().find((r) => r.id === roomId)?.groupKey ?? null,
+    onTurnEnd: o.onTurnEnd,
+  };
 }
 
 export interface TakeoverDeps {

@@ -75,6 +75,8 @@ and the WebRTC wire against the local server with a stand-in peer host.
 Electron (skipped in CI), and `MB_E2E_APP=1 npx vitest run
 test/teamApp.e2e.test.ts` runs two real Mockingbird instances, with throwaway
 homes, that share and join a room (their windows open while it runs).
+Take-over runs end to end over the loopback against real git — a local bare
+origin and two clones — in `test/teamTakeover.test.ts`.
 
 ## UI preview
 
@@ -285,6 +287,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
   (⇪ on its row) and join one with a code (⇲); a shared group shows who's
   connected. Next, built on its transport: live shared panes and typing,
   take-over, the team room chat with agents, and the plan and claims board.
+  - Take-over: after every turn a room session's worktree is snapshotted
+    (ignored and secret files left out) and pushed to a hidden ref on origin,
+    `refs/mockingbird/rooms/<room>/<session>`, never a branch; connected
+    teammates also get it peer to peer, with the conversation (which never
+    goes to git). The sidebar shows how fresh each backup is; Take over
+    continues a teammate's session on your laptop from the newest snapshot, on
+    its branch, resuming the conversation — or, when it didn't all arrive, from
+    a summary of what did, and the agent says so.
 
 ### Next
 

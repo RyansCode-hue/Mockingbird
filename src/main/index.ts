@@ -55,6 +55,9 @@ import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpda
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 import { TeamService } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
+// team rooms: take-over
+import { groupRoomHost, TakeoverService } from "./team/takeover";
+import { ROOMS_DIR } from "./team/rooms";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -100,6 +103,37 @@ const team = new TeamService({
   log: logError,
   assetsDir: __dirname,
 });
+
+// team rooms: take-over — room sessions back up after each turn; a teammate can
+// continue one on their laptop. A room session here is one in a shared group;
+// the hooks' Stop events are its turn ends (roomTurnEnds).
+const roomTurnEnds = new Set<(sessionId: string) => void>();
+let takeover: TakeoverService | null = null;
+function startTakeover(): TakeoverService | null {
+  const transport = team.transport;
+  if (!transport) return null; // team rooms didn't start: Settings → Team says why
+  return new TakeoverService({
+    team: transport,
+    roomsDir: ROOMS_DIR,
+    host: groupRoomHost({
+      sessions: () => sessions.list(),
+      rooms: () => team.status().rooms,
+      onTurnEnd: (cb) => {
+        roomTurnEnds.add(cb);
+        return () => roomTurnEnds.delete(cb);
+      },
+    }),
+    repos: () => [...new Set([...indexRepos(store.settings.repoRoots).map((r) => r.path), ...sessions.list().flatMap((s) => (s.repoPath ? [s.repoPath] : []))])],
+    launch: (req) => sessions.create(req),
+    log: logError,
+    changed: () => toWindow("team:takeoverChanged", takeover?.view()),
+    onTakenOver: (id, by) => notifySession(id, "Taken over", `${by} took over ${sessions.list().find((s) => s.id === id)?.title ?? "a room session"} on their Mac`),
+  });
+}
+const needTakeover = (): TakeoverService => {
+  if (!takeover) throw new Error("Team rooms haven't started — see Settings → Team");
+  return takeover;
+};
 
 // Run and Debug: a repo's services per worktree, each on its own terminal,
 // optionally under the debugger
@@ -315,6 +349,7 @@ app.whenReady().then(() => {
   }
   createWindow();
   team.start();
+  takeover = startTakeover(); // team rooms: take-over
   powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   void lookUpBins();
@@ -406,6 +441,8 @@ app.whenReady().then(() => {
         : `${info.title} is done responding`,
       status === "waiting" ? "waiting" : "finished"
     );
+    // team rooms: take-over — idle comes only from Stop: the agent's turn ended
+    if (status === "idle") for (const cb of roomTurnEnds) cb(info.id);
   }, (info, prompt) => {
     // the files before this turn, so it can be undone (agent panes in a repository only)
     if (info.shell || !info.repoPath) return;
@@ -442,6 +479,7 @@ app.on("before-quit", (e) => {
 setInterval(() => sessions.saveScrollback(), 60_000);
 app.on("will-quit", () => {
   sessions.saveScrollback(true);
+  takeover?.close(); // team rooms: take-over
   team.stop(); // room snapshots written, connections closed
 });
 
@@ -734,6 +772,10 @@ handle("team:invite", (roomId) => ({ invite: team.createInvite(String(roomId)) }
 handle("team:join", (code) => team.join(String(code ?? "")));
 handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
 handle("team:checkSignaling", (url) => TeamService.checkSignaling(String(url ?? "")));
+// team rooms: take-over
+handle("team:takeover", () => takeover?.view() ?? { sessions: [], unbacked: [] });
+handle("team:takeoverPlan", (roomId, sessionId, clonePath) => needTakeover().plan(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
+handle("team:takeOver", (roomId, sessionId, clonePath) => needTakeover().takeOver(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 
