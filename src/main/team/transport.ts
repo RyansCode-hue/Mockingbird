@@ -534,6 +534,7 @@ export class TeamCore implements Team {
     const before = this.hellos.get(peer)?.rooms ?? new Set<RoomId>();
     const rooms = new Set((Array.isArray(f.rooms) ? f.rooms : []).filter((r) => typeof r === "string"));
     this.hellos.set(peer, { name: typeof f.name === "string" ? f.name.slice(0, 100) : "", rooms });
+    if (!before.size) this.log(`${this.nameOf(peer)} is connected (${rooms.size} shared room${rooms.size === 1 ? "" : "s"})`);
     if (!this.helloSent.has(peer)) this.sendHello(peer);
     for (const roomId of rooms) if (!before.has(roomId) && this.allowed(peer, roomId)) this.sendSync(peer, roomId);
     this.presenceChanged();

@@ -1,5 +1,6 @@
 import * as esbuild from "esbuild";
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { buildPeerHost } from "./scripts/build-peerhost.mjs";
 
 mkdirSync("dist", { recursive: true });
 
@@ -32,6 +33,9 @@ await esbuild.build({
   outfile: "dist/renderer.js",
   loader: { ".css": "css" },
 });
+
+// The hidden window that holds team rooms' WebRTC connections
+await buildPeerHost("dist");
 
 writeFileSync("dist/index.html", readFileSync("src/renderer/index.html"));
 console.log("build ok");
