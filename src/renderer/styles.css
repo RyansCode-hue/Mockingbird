@@ -1902,3 +1902,64 @@ button.plan-toast-body:hover { background: none; color: var(--text-1-warm); }
 @media (max-width: 600px) {
   .plan-cols { grid-template-columns: minmax(0, 1fr); }
 }
+/* ---- team rooms: team chat ---- */
+.rc { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.rc-head { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 8px; border-bottom: 1px solid var(--line-med); }
+.rc-name { font: 600 11.5px var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-pick { width: 100%; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 5px; padding: 3px 6px; font: 600 11px var(--ui); }
+.rc-members { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.rc-member { display: inline-flex; align-items: center; gap: 4px; font: 400 10px var(--ui); color: var(--text-4); }
+.rc-member.on { color: var(--text-2); }
+.rc-initials {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 15px; height: 15px; padding: 0 2px; border-radius: 8px;
+  background: var(--fill-subtle); color: var(--text-3); font: 600 8.5px var(--ui);
+}
+.rc-member.on .rc-initials { background: color-mix(in srgb, var(--teal) 28%, var(--bg-sidebar)); color: var(--text-1); }
+.rc-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.rc-empty { padding: 12px; font: 400 11px/1.55 var(--ui); color: var(--text-3); }
+.rc-msg { padding: 5px 0 1px; }
+.rc-msg.cont { padding-top: 1px; }
+.rc-msg.for-me { border-left: 2px solid var(--teal); padding-left: 6px; margin-left: -8px; }
+.rc-msg-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 1px; min-width: 0; }
+.rc-who { font: 600 11.5px var(--ui); color: var(--text-1); }
+.rc-via { font: 400 10px var(--ui); color: var(--text-3); }
+.rc-when { font: 400 9px var(--mono); color: var(--text-4); margin-left: auto; white-space: nowrap; }
+.rc-text { font: 400 12px/1.5 var(--ui); color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.rc-text code { font: 400 11px var(--mono); background: var(--fill-subtle); border-radius: 3px; padding: 0 3px; }
+.rc-text pre { font: 400 11px/1.45 var(--mono); background: var(--fill-subtle); border: 1px solid var(--line-soft); border-radius: 5px; padding: 6px 8px; margin: 3px 0; overflow-x: auto; white-space: pre; }
+.rc-text a { color: var(--teal-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.rc-mention { color: var(--teal-text); font-weight: 600; }
+.rc-mention.me { background: color-mix(in srgb, var(--teal) 20%, transparent); border-radius: 3px; padding: 0 2px; }
+.rc-assist { margin: 5px 0 3px; padding: 6px 8px; border-radius: 6px; background: var(--bg-assist); border: 1px solid var(--line-soft); }
+.rc-assist .rc-who { color: var(--teal-text); }
+.rc-assist.error { border-color: color-mix(in srgb, var(--red) 55%, transparent); }
+.rc-error { color: var(--red); }
+.rc-quote { font: 400 10.5px var(--ui); color: var(--text-3); margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-thinking { font: italic 400 11.5px var(--ui); color: var(--text-3); animation: rc-think 1.6s ease-in-out infinite; }
+@keyframes rc-think { 50% { opacity: .5; } }
+.rc-update { margin: 4px 0; padding: 4px 7px 5px; border-radius: 5px; background: var(--fill-subtle); }
+.rc-update-head { display: flex; align-items: baseline; gap: 6px; font: 500 8.5px var(--ui); letter-spacing: .6px; text-transform: uppercase; color: var(--text-4); margin-bottom: 1px; }
+.rc-upd { display: flex; align-items: center; gap: 6px; font: 400 11px/1.55 var(--ui); color: var(--text-2); min-width: 0; }
+.rc-upd-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-upd .dot.rc-dot { background: var(--git-mod); }
+.rc-new { display: flex; align-items: center; gap: 6px; margin: 4px 0; font: 600 8.5px var(--ui); letter-spacing: .6px; text-transform: uppercase; color: var(--teal-text); }
+.rc-new::before, .rc-new::after { content: ""; flex: 1; height: 1px; background: color-mix(in srgb, var(--teal) 45%, transparent); }
+.rc-new::before { flex: 0 0 8px; }
+.rc-err { margin: 4px 10px 0; }
+.rc-bar { position: relative; padding: 8px 10px 0; border-top: 1px solid var(--line-med); }
+.rc-bar textarea {
+  width: 100%; min-height: 48px; max-height: 160px; resize: vertical; background: var(--fill-subtle); color: var(--text-1);
+  border: 1px solid var(--line-med); border-radius: 6px; padding: 6px 8px; font: 400 12px/1.45 var(--ui);
+}
+.rc-bar textarea:focus { outline: none; border-color: var(--line-btn-hover); }
+.rc-bar textarea::placeholder { color: var(--text-4); }
+.rc-hint { display: flex; justify-content: space-between; gap: 8px; padding: 4px 10px 8px; font: 400 9.5px var(--ui); color: var(--text-4); }
+.rc-hint > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-hint > span:last-child { white-space: nowrap; }
+.rc-suggest {
+  position: absolute; left: 10px; right: 10px; bottom: calc(100% - 4px); z-index: 10; padding: 3px;
+  background: var(--bg-pane); border: 1px solid var(--line-strong2); border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, .25);
+}
+.rc-sug { display: flex; align-items: baseline; gap: 6px; padding: 4px 7px; border-radius: 4px; cursor: pointer; font: 400 11px var(--ui); color: var(--text-3); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.rc-sug b { font-weight: 600; color: var(--text-1); }
+.rc-sug.on, .rc-sug:hover { background: var(--fill-selected); }

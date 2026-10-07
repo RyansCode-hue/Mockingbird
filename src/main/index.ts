@@ -58,6 +58,8 @@ import { configureWebRtc } from "./team/peerHost";
 // team rooms: plan board (importing it registers the board's room events, before any room log loads)
 import { PlanService } from "./team/planService";
 import { mergeOverlaps, teammateOverlaps } from "./conflicts";
+// team rooms: team chat
+import { TeamRoom } from "./team/teamRoom";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -401,6 +403,13 @@ app.whenReady().then(() => {
   );
   messaging.start();
   messaging.setRoomHandler((roomId, seat, op, args) => collab.handleRoomRequest(roomId, seat, op, args));
+  // team rooms: team chat
+  teamRoom.start(team.transport, messaging);
+  const beforeTeamRoom = sessions.onChanged;
+  sessions.onChanged = () => {
+    beforeTeamRoom?.();
+    teamRoom.sessionsChanged();
+  };
   // the plan name isn't in Claude's statusline payload; `claude auth status` has it
   void (async () => {
     const bin = await installedBin("claude");
@@ -761,6 +770,38 @@ handle("plan:get", (roomId) => teamPlan.view(String(roomId)));
 handle("plan:apply", (roomId, op) => teamPlan.apply(String(roomId), op));
 handle("plan:repos", (roomId) => teamPlan.repoChoices(String(roomId)));
 handle("plan:sync", (roomId) => teamPlan.syncNow(String(roomId)));
+// team rooms: team chat — each room's chat, its agent updates, the @assistant
+// (on this laptop, under this user's account), and agent messaging across laptops
+const teamRoom = new TeamRoom({
+  sessions: () => sessions.list(),
+  roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
+  // Claude only: it runs with no tools, while Codex's read-only sandbox can still read files,
+  // and the room's chat (which teammates write) is in the prompt
+  ask: async (prompt) => {
+    const bin = await installedBin("claude");
+    if (!bin) throw new Error("The room's assistant runs Claude Code (with no tools), and Claude Code isn't installed on this laptop");
+    return askAgent(prompt, { agent: "claude", bin, run: userShellWithInput, env: paneEnv(), tag: "team-assistant", model: "sonnet", timeoutMs: 180_000 });
+  },
+  chatChanged: (roomId) => toWindow("teamChat:changed", roomId),
+  notify: ({ roomId, title, body }) => {
+    if (!shouldNotify({ settings: store.settings, kind: "other", now: new Date() })) return;
+    const n = new Notification({ title, body });
+    n.on("click", () => {
+      focusPane();
+      toWindow("teamChat:open", roomId);
+    });
+    n.show();
+  },
+  windowFocused: () => !!appWindow()?.isFocused(),
+  log: (msg) => void logError("team chat", msg),
+});
+// before team.stop() closes the transport: gathered agent updates are posted
+app.prependListener("will-quit", () => teamRoom.stop());
+handle("teamChat:view", (roomId) => teamRoom.chat.view(String(roomId)));
+handle("teamChat:post", (roomId, text) => teamRoom.chat.post(String(roomId), String(text ?? "")));
+handle("teamChat:read", (roomId) => teamRoom.chat.markRead(String(roomId)));
+handle("teamChat:unread", () => teamRoom.chat.unread());
+handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(roomId) : null));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 

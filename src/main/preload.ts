@@ -309,6 +309,24 @@ const api = {
     ipcRenderer.on("plan:warning", h);
     return () => ipcRenderer.removeListener("plan:warning", h);
   },
+  // team rooms: team chat
+  teamChatView: (roomId: string) => ipcRenderer.invoke("teamChat:view", roomId),
+  teamChatPost: (roomId: string, text: string) => ipcRenderer.invoke("teamChat:post", roomId, text),
+  teamChatRead: (roomId: string) => ipcRenderer.invoke("teamChat:read", roomId),
+  teamChatUnread: () => ipcRenderer.invoke("teamChat:unread"),
+  /** The room the window shows (null: none): its mentions don't notify while the window has focus. */
+  teamChatViewing: (roomId: string | null) => ipcRenderer.invoke("teamChat:viewing", roomId),
+  onTeamChatChanged: (cb: (roomId: string) => void) => {
+    const h = (_e: unknown, roomId: string) => cb(roomId);
+    ipcRenderer.on("teamChat:changed", h);
+    return () => ipcRenderer.removeListener("teamChat:changed", h);
+  },
+  /** A mention notification was clicked: show that room's chat. */
+  onTeamChatOpen: (cb: (roomId: string) => void) => {
+    const h = (_e: unknown, roomId: string) => cb(roomId);
+    ipcRenderer.on("teamChat:open", h);
+    return () => ipcRenderer.removeListener("teamChat:open", h);
+  },
 
   // hooks / settings / debriefs
   hooksInstalled: () => ipcRenderer.invoke("hooks:installed"),

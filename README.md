@@ -292,8 +292,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
   the room's repo; agents get the plan at start and change it through the
   `update_team_plan` tool, an agent's first edit of a file a teammate's package
   owns is held back once with a warning (to you as well), and teammates'
-  pushed branches join the overlap check. Next, built on its transport: live
-  shared panes and typing, take-over, and the team room chat with agents.
+  pushed branches join the overlap check. The team room chat: each room's thread in the side bar's **Team room** view
+  (and the group bar's **Room chat** chip), with unread counts and @mentions
+  that notify, working offline (messages merge on reconnect); room agents'
+  turns, waits, take-overs and board changes posted as compact updates;
+  `list_sessions` / `send_message` reaching teammates' room sessions through
+  the room; and **@assistant**, answered on the asker's laptop from the room's
+  chat, sessions, board and docs.
 
 ### Next
 
