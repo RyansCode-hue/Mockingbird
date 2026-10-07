@@ -8,6 +8,9 @@ import { LivePanes, type LivePanesDeps } from "../src/main/team/livePanes";
 import { onTurnEnded, isRoomSession, originIdentity, roomOfSession, setRoomSessionLookup, validateRecord, type TurnEnded } from "../src/main/team/roomSessions";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
 import { decodePtyChunk, encodePtyChunk, remotePaneId, type RoomSessionRecord } from "../src/shared/team/livePanes";
+import { PlanService } from "../src/main/team/planService";
+import { claudeToolName } from "../src/main/messaging";
+import { PLAN_CONTEXT_ENV, PLAN_TOOL } from "../src/shared/team/plan";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; emit(d: string): void; exit(code: number): void };
@@ -395,6 +398,50 @@ describe("room session launch", () => {
     const term = await ryan.start({ shell: true, agent: undefined });
     expect(ryan.sessions.guardsOf(term.id)).toEqual({ secrets: false, coauthors: true });
     expect(ptyOf(term.id).env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
+  });
+
+  it("starts an agent knowing the room's plan board, with its tool allowed (Claude) — so the SessionStart hook adds nothing", async () => {
+    const { ryan, roomId } = await pair();
+    const plan = new PlanService({
+      roomGroups: () => [{ roomId, groupKey: "5110" }],
+      sessions: () => ryan.sessions.list(),
+      knownRepos: () => [],
+      emit: () => {},
+      log: (c, e) => String(e),
+      author: () => ({ name: "Ryan" }),
+      copiesFile: path.join(tempDir("copies"), "plan-copies.json"),
+      timing: { pollMs: 60_000, fetchMs: 60_000 },
+    });
+    plan.start(ryan.m.team);
+    try {
+      const s = await ryan.start();
+      const claude = ptyOf(s.id);
+      const cmd = claude.args.join(" ");
+      expect(cmd).toContain("--append-system-prompt");
+      expect(cmd).toContain("Mockingbird team room");
+      expect(cmd).toContain(claudeToolName(PLAN_TOOL));
+      expect(claude.env[PLAN_CONTEXT_ENV]).toBe("1");
+      const codex = ptyOf((await ryan.start({ agent: "codex" })).id);
+      expect(codex.args.join(" ")).toContain(`'-c' 'developer_instructions="This repository is part of a Mockingbird team room`);
+      expect(codex.env[PLAN_CONTEXT_ENV]).toBe("1");
+      const term = ptyOf((await ryan.start({ shell: true, agent: undefined })).id);
+      expect(term.args.join(" ")).not.toContain("--append-system-prompt");
+      expect(term.env[PLAN_CONTEXT_ENV]).toBeUndefined();
+      const outside = ptyOf((await ryan.start({ taskGroup: "private" })).id);
+      expect(outside.args.join(" ")).not.toContain("--append-system-prompt");
+      expect(outside.args.join(" ")).not.toContain(claudeToolName(PLAN_TOOL));
+      expect(outside.env[PLAN_CONTEXT_ENV]).toBeUndefined();
+    } finally {
+      plan.stop();
+    }
+  });
+
+  it("without the plan board running, an agent starts without it and the SessionStart hook adds it", async () => {
+    const { ryan } = await pair();
+    const s = await ryan.start();
+    expect(ptyOf(s.id).args.join(" ")).not.toContain("--append-system-prompt");
+    expect(ptyOf(s.id).env[PLAN_CONTEXT_ENV]).toBeUndefined();
+    expect(ryan.logs.some((l) => /plan board for session/.test(l))).toBe(true);
   });
 
   it("flags a session moved into the room while running as unguarded", async () => {

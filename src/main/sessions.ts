@@ -66,6 +66,10 @@ export interface RoomLaunch {
   env: Record<string, string>;
   /** Claude permission rules denying file reads (--disallowedTools). */
   denyReads: string[];
+  /** What the agent starts knowing about the room (its plan board); null for a terminal, or when it couldn't be read. */
+  instructions: string | null;
+  /** Mockingbird MCP tools the agent may call without asking (the plan board's). */
+  allowTools: string[];
   guards: { secrets: boolean; coauthors: boolean };
 }
 
@@ -259,17 +263,21 @@ export class SessionManager {
     // a session in a room's shared group starts with the room's protections
     const group = req.taskGroup ?? req.ticketId ?? null;
     const room = req.debrief ? null : this.roomLaunch?.({ id, group, agent: req.shell ? null : req.agent ?? "claude" }) ?? null;
-    const denyReads = room?.denyReads.length ? room.denyReads : undefined;
+    const roomCtx: LaunchContext = {
+      ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
+      ...(room?.instructions ? { instructions: room.instructions } : {}),
+      ...(room?.allowTools.length ? { allowTools: room.allowTools } : {}),
+    };
     const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext) => [this.resolveBin(a), ...a.launchArgs(r, ctx)].map(quote).join(" ");
     if (!req.shell) {
-      claudeArgs = ["-ilc", `exec ${commandFor(agent, req, { mcp: mcpLaunch(id), denyReads })}`];
+      claudeArgs = ["-ilc", `exec ${commandFor(agent, req, { mcp: mcpLaunch(id), ...roomCtx })}`];
     } else if (req.shellResume) {
       // a terminal that had an agent running in it: bring the conversation
       // back, and leave the user at the shell prompt when they quit it. It
       // gets no messaging tools: terminals are outside agent messaging, since
       // a message typed in once the agent has quit would run as a command.
       const a = agentFor(req.shellResume.agent);
-      claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id }, { denyReads })}; exec /bin/zsh -il`];
+      claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id }, roomCtx)}; exec /bin/zsh -il`];
     }
     let proc: pty.IPty;
     try {

@@ -30,6 +30,8 @@ import {
 import type { MemberId, RoomId, RoomState } from "../../shared/team/types";
 import type { LaunchTarget, RemotePanes, RoomLaunch, SessionManager } from "../sessions";
 import { MAX_STREAM_CHUNK, splitText } from "./frames";
+import { roomAgentContext } from "./planService";
+import { PLAN_CONTEXT_ENV, PLAN_TOOL } from "../../shared/team/plan";
 import { TEAM_DIR } from "./identity";
 import { CoauthorTurns, COAUTHORS_DIR, ensureHooks, hooksEnv, HOOKS_DIR } from "./coauthors";
 import { gitOf, memberName, originIdentity, recordFor, setRoomSessionLookup, turnEnded } from "./roomSessions";
@@ -77,6 +79,8 @@ export interface LivePanesDeps {
   originOf?: (repoPath: string) => Promise<string | null>;
   /** This install's git email, for teammates' Co-authored-by trailers. */
   gitEmail?: () => Promise<string | null>;
+  /** What an agent in a room starts knowing about its plan board (default: the plan service's roomAgentContext). */
+  agentContext?: (roomId: RoomId) => string;
   /** Where per-person settings for teammates' sessions (mutes) are kept. */
   dir?: string;
   hooksDir?: string;
@@ -311,7 +315,11 @@ export class LivePanes implements RemotePanes {
     return this.roomForGroup(topOfKey(s.taskGroup ?? "ungrouped"));
   }
 
-  /** What a session starting in a shared group gets: secret reads denied (Claude), and its commits credit teammates. */
+  /**
+   * What a session starting in a shared group gets: secret reads denied
+   * (Claude), its commits credit teammates, and an agent starts knowing the
+   * room's plan board, with its tool allowed.
+   */
   roomLaunch(target: LaunchTarget): RoomLaunch | null {
     const roomId = target.group ? this.roomForGroup(splitGroupKey(target.group).top) : null;
     if (!roomId) return null;
@@ -321,9 +329,20 @@ export class LivePanes implements RemotePanes {
       if (secrets.problem) this.problem(secrets.problem);
       denyReads = secrets.rules;
     }
+    let instructions: string | null = null;
+    if (target.agent) {
+      try {
+        instructions = (this.d.agentContext ?? roomAgentContext)(roomId);
+      } catch (err) {
+        // the SessionStart hook adds the board from the worktree's copy instead
+        this.d.log(`team: the plan board for session ${target.id}'s launch`, err);
+      }
+    }
     return {
-      env: this.hooksReady ? hooksEnv(this.d.hooksDir ?? HOOKS_DIR) : {},
+      env: { ...(this.hooksReady ? hooksEnv(this.d.hooksDir ?? HOOKS_DIR) : {}), ...(instructions ? { [PLAN_CONTEXT_ENV]: "1" } : {}) },
       denyReads,
+      instructions,
+      allowTools: target.agent === "claude" ? [PLAN_TOOL] : [],
       guards: { secrets: target.agent === "claude", coauthors: this.hooksReady },
     };
   }

@@ -17,6 +17,13 @@ export interface LaunchContext {
    * which replaces its sandbox settings, so they aren't set from here.
    */
   denyReads?: string[];
+  /**
+   * Instructions the agent starts with on top of its own (a team room's plan
+   * board): Claude's --append-system-prompt, Codex's developer_instructions.
+   */
+  instructions?: string;
+  /** More Mockingbird MCP tools the agent may call without asking (Claude; Codex approves all of the server's). */
+  allowTools?: string[];
 }
 
 /** Everything that differs between the coding-agent CLIs a session can run. */
@@ -49,9 +56,11 @@ const claude: AgentAdapter = {
     // --mcp-config adds to the user's own servers; the allow rule spares a
     // permission prompt on every message
     if (ctx.mcp) {
-      args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", [MCP_TOOL.listSessions, MCP_TOOL.sendMessage].map(claudeToolName).join(","));
+      const tools = [...new Set<string>([MCP_TOOL.listSessions, MCP_TOOL.sendMessage, ...(ctx.allowTools ?? [])])];
+      args.push("--mcp-config", claudeMcpConfig(ctx.mcp), "--allowedTools", tools.map(claudeToolName).join(","));
     }
     if (ctx.denyReads?.length) args.push("--disallowedTools", ...ctx.denyReads);
+    if (ctx.instructions) args.push("--append-system-prompt", ctx.instructions);
     return args;
   },
   conversationExists(id) {
@@ -127,6 +136,8 @@ const codex: AgentAdapter = {
     if (req.effort) args.push("-c", `model_reasoning_effort="${req.effort}"`);
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
     if (ctx.mcp) args.push(...codexMcpSettings(ctx.mcp).flatMap((c) => ["-c", c]));
+    // a JSON string is a valid TOML basic string
+    if (ctx.instructions) args.push("-c", `developer_instructions=${JSON.stringify(ctx.instructions)}`);
     // positional, last, after "--": a prompt starting with "-" is not an option
     if (req.initialPrompt) args.push("--", req.initialPrompt);
     return args;
