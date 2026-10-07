@@ -77,26 +77,6 @@ async function treeOfWorktree(top: string, env: Record<string, string>, exclude:
   return { tree: await git(top, ["write-tree"], { env }), skipped };
 }
 
-/**
- * Files a snapshot that leaves this Mac never carries, even when the
- * repository doesn't ignore them: env files, keys and certificates, and the
- * usual credential and PAT files. Teammates swap these by hand.
- */
-export const SECRET_PATHSPECS = [
-  "**/.env",
-  "**/.env.*",
-  "**/*.env",
-  "**/*.pem",
-  "**/*.key",
-  "**/*.pfx",
-  "**/*.p12",
-  "**/*.pat",
-  "**/*_pat.txt",
-  "**/credentials.json",
-  "**/secrets.json",
-  "**/local.settings.json",
-].map((g) => `:(exclude,glob)${g}`);
-
 export interface WorktreeSnapshot {
   sha: string;
   tree: string;

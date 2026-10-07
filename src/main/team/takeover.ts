@@ -5,7 +5,8 @@ import * as path from "path";
 import { defineEventType } from "./rooms";
 import type { RequestContext, Team, Unsubscribe } from "./transport";
 import { branchesOf, currentBranch, git, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
-import { checkoutSnapshotFiles, SECRET_PATHSPECS, skippedIn, snapshotCommit } from "../snapshots";
+import { checkoutSnapshotFiles, skippedIn, snapshotCommit } from "../snapshots";
+import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, codexRolloutPath, realpathOr } from "../agentFiles";
 import { rebaseTranscript } from "../transcripts";
@@ -231,6 +232,8 @@ export interface TakeoverDeps {
   changed?: () => void;
   /** A teammate took over a session this install runs. */
   onTakenOver?: (sessionId: string, byName: string) => void;
+  /** Secret files at known places on this Mac (absolute paths): a backup leaves them out, with every SECRET_FILE_GLOBS match. */
+  secretFiles?: () => string[];
   /** Where the CLIs keep conversations on this Mac (default ~/.claude/projects, ~/.codex/sessions). */
   claudeProjects?: string;
   codexSessions?: string;
@@ -385,7 +388,7 @@ export class TakeoverService {
     const ref = roomBackupRef(roomId, s.id);
     const prev = this.local(roomId).own[s.id];
     const takenAt = this.now();
-    const snap = await snapshotCommit(top, `${snapshotSubject(s.id)}\n\ntaken-at: ${takenAt}`, { exclude: SECRET_PATHSPECS });
+    const snap = await snapshotCommit(top, `${snapshotSubject(s.id)}\n\ntaken-at: ${takenAt}`, { exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
     if (!snap) throw new Error(`${s.cwd} isn't in a git repository`);
     // nothing changed since the last turn: keep that snapshot, with nothing new to send or push
     const same = !!prev && prev.tree === snap.tree && prev.parent === snap.parent && (await hasCommits(top, [prev.sha])).length === 1;
