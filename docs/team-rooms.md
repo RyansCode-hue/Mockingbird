@@ -1,0 +1,126 @@
+# Team rooms
+
+Live co-presence between two (later more) Mockingbirds: share a group as a
+room, see and type into each other's sessions, talk in a team room with your
+agents, claim work on a shared plan board, and take over a teammate's session
+when they're away.
+
+Decided with Ryan, 2026-10-07. Built for Ryan and Nick first; nothing here
+should stop more members joining later.
+
+## Connection
+
+- **Tailscale, free plan.** Mockingbirds talk to each other directly over the
+  tailnet (WireGuard-encrypted, peer to peer). Nothing is hosted.
+- Each Mockingbird listens **only on its Tailscale address** (100.x / fd7a:…),
+  never on the LAN or loopback in normal use. Tests use a loopback transport.
+- Who's on the other end comes from Tailscale (`tailscale whois <peer>`), not
+  from anything the peer claims. Settings → Team shows the Tailscale status
+  (installed, signed in, this Mac's tailnet name) and what to do if it's missing.
+- Messages are versioned. A peer on a different protocol version is shown as
+  "needs an update" instead of half-working.
+- The transport sits behind one small interface, so a relay could replace
+  Tailscale later without the rest changing.
+
+## Rooms
+
+- **A room is a shared top-level group** (e.g. "#5110 Donor entities"). It's
+  created on one laptop, and teammates join with an **invite code** that the
+  creator hands over (one-time code plus the creator's tailnet address).
+- Being in a room is the permission. Members can do anything in it. There are
+  no roles yet; leave room for viewer/driver roles later.
+- **Every member keeps a full copy of the room's state**: members, sessions,
+  chat, board, presence. It's an append-only event log, ordered by Lamport time
+  and merged on reconnect. The room keeps working for whoever's online when the
+  creator's laptop is off.
+- The sidebar shows the room as a group with a shared badge and the initials of
+  who's connected right now. Sessions outside rooms are never visible to anyone.
+
+## Sessions in a room
+
+- **Either member can start a session in the room.** It runs on the starter's
+  laptop, in their clone of the repo (matched across laptops by the origin URL,
+  not the path), under their own Claude/Codex account. It shows for everyone,
+  tagged with the owner's initials.
+- **Live panes:** a room session's terminal streams to every member. Its
+  scrollback is replayed on join, then live output follows. Remote panes render
+  like local ones (status, waiting reason, git chips from the owner's side).
+- **Typing:** any member can type into any room session, at the same time, like
+  plain tmux. No lock.
+- **Notifications:** when an agent in a room is waiting on input, every member
+  is notified, whatever their focus.
+- **Layout:** each member arranges their own grid. "Follow <name>" mirrors the
+  other's shown panes and focus until you stop following.
+- **Commits** in a session someone else typed into are authored by the owner,
+  with `Co-authored-by: <teammate>` added for the turns the teammate drove.
+- **Secrets:** room sessions start with Claude Code permission rules denying
+  reads of `.env*` files and the known secret paths (the ADO PAT file,
+  `*.pem`, `*.key`, `credentials.json`…), the same mechanism the run-setup
+  drafter uses. Nothing in that list is ever sent over the connection.
+  Teammates swap `.env` files by hand.
+
+## Take-over
+
+When the owner is away, a member clicks **Take over** and the session continues
+on their laptop under their own account.
+
+- **Work:** while members are connected, each room session's uncommitted work
+  mirrors peer to peer. After every agent turn, Mockingbird also snapshots the
+  worktree, the same way Undo turn does, and pushes it to a hidden ref
+  `refs/mockingbird/rooms/<room>/<session>` on origin. That's the backup when
+  the owner's laptop is off. Each session shows how fresh its backup is
+  ("backed up 2 min ago", or a warning when a push failed).
+- **Conversation:** the transcript syncs **peer to peer only, never to GitHub**.
+  Take-over places it where the taker's CLI resumes it (Claude's
+  `~/.claude/projects/<slug>/<id>.jsonl` for the taker's checkout path, or
+  Codex's rollout). If the newest transcript never reached the taker, the agent
+  resumes from a handoff summary instead (the existing handoff digest), and says so.
+- Take-over creates the session's branch/worktree on the taker's laptop from
+  the newest snapshot it has (peer copy or hidden ref, whichever is newer). It
+  says which snapshot it used. The original owner sees the session as
+  taken over when they come back.
+
+## Team room
+
+A chat thread in each room, for people and agents:
+
+- **Agent updates:** agents post what they claimed, finished, and where
+  they're stuck (from board changes and session status).
+- **Agents across machines:** Mockingbird's agent messaging (`send_message`,
+  `list_sessions`) reaches room sessions on the other laptop through the room.
+- **@assistant:** a member @-mentions the assistant. It runs on **the asker's
+  laptop under their account**, reads the room (chat, board, session list) and
+  the repo's docs, and posts its answer to the room.
+
+## Plan and claims board
+
+- Lives on its own branch, **`mockingbird/plan`**, as `plan.md` (plus a small
+  machine-readable claims block). Mockingbird commits and pushes each change and
+  syncs it live between members. Feature branches never touch it, so it never
+  conflicts.
+- Every worktree in a room gets a **read-only copy** at a git-ignored path, kept
+  current, plus agent instructions pointing at it. Agents propose changes
+  through a Mockingbird tool rather than editing it.
+- A work package lists what it owns (folders/files), what it provides and uses
+  (contracts), and how it's tested. It's claimed by a member.
+- **Claims + warnings:**
+  - Before an agent edits a file claimed by a teammate's package, it's warned
+    (hook/tool feedback), and so are you. You can still proceed.
+  - Mockingbird's overlap check extends across machines: files changed on a
+    teammate's pushed branches show up as "Nick's branch also changes this".
+
+## Not in this release
+
+- Roles/permissions beyond "member".
+- Relay transport (designed for, not built).
+- Running sessions on an always-on shared host.
+
+## Testing
+
+- Unit tests for the protocol, event-log merge, invite codes, snapshot/ref
+  naming, transcript placement, claims matching, and the secret deny list.
+- Two Mockingbird instances on one Mac (separate HOME/userData, loopback
+  transport) driven end to end: create room, join by code, live pane, remote
+  typing, notifications, chat, cross-machine message, board claim + warning,
+  take-over with the owner offline.
+- Then a real run between Ryan's and Nick's laptops over Tailscale.
