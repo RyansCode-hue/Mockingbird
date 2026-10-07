@@ -5,28 +5,46 @@ room, see and type into each other's sessions, talk in a team room with your
 agents, claim work on a shared plan board, and take over a teammate's session
 when they're away.
 
-Decided with Ryan, 2026-10-07. Built for Ryan and Nick first; nothing here
+Decided with Ryan, 2026-10-07 (connection changed from Tailscale to WebRTC the same day). Built for Ryan and Nick first; nothing here
 should stop more members joining later.
 
 ## Connection
 
-- **Tailscale, free plan.** Mockingbirds talk to each other directly over the
-  tailnet (WireGuard-encrypted, peer to peer). Nothing is hosted.
-- Each Mockingbird listens **only on its Tailscale address** (100.x / fd7a:…),
-  never on the LAN or loopback in normal use. Tests use a loopback transport.
-- Who's on the other end comes from Tailscale (`tailscale whois <peer>`), not
-  from anything the peer claims. Settings → Team shows the Tailscale status
-  (installed, signed in, this Mac's tailnet name) and what to do if it's missing.
+- **WebRTC data channels, peer to peer.** After the introduction, everything
+  between two Mockingbirds goes laptop to laptop, encrypted end to end
+  (DTLS). Nothing needs installing. The peer connections live in a hidden
+  window (Electron's built-in WebRTC), bridged to the main process over IPC,
+  so they survive the app window reloading.
+- **Signaling: a Cloudflare Worker** with a Durable Object per room. It
+  introduces two members and re-introduces them after sleep or a Wi-Fi change.
+  Ryan deploys it once to a free Cloudflare account (the Worker's code lives in
+  this repo, with a one-command deploy; the free plan's 100,000 requests a day
+  is far more than two people use). It only ever sees signed connection
+  details, never content.
+- **NAT traversal:** public STUN. Where a direct connection is blocked (office
+  firewalls, hotspots), traffic falls back automatically to **Cloudflare TURN**
+  (still end-to-end encrypted; 1,000 GB a month free). The TURN API token stays
+  in the Worker as a secret. The Worker hands room members short-lived TURN
+  credentials, so no laptop holds the token.
+- **Identity:** each Mockingbird install has its own key pair (in
+  `~/.mockingbird`, never synced) and a display name set in Settings → Team.
+  Connection details are signed by the sender's key and checked against the
+  room's member list. Each side pins the other's DTLS fingerprint from those
+  signed details, so a tampered signaling server can't step in between.
+- Settings → Team: display name, signaling URL (from the deploy), connection
+  status per teammate (direct / via TURN / offline).
 - Messages are versioned. A peer on a different protocol version is shown as
   "needs an update" instead of half-working.
-- The transport sits behind one small interface, so a relay could replace
-  Tailscale later without the rest changing.
+- The transport sits behind one small interface, so another way to connect
+  could replace WebRTC later without the rest changing.
 
 ## Rooms
 
 - **A room is a shared top-level group** (e.g. "#5110 Donor entities"). It's
-  created on one laptop, and teammates join with an **invite code** that the
-  creator hands over (one-time code plus the creator's tailnet address).
+  created on one laptop, and teammates join with an **invite code** the
+  creator hands over (room id, signaling URL, a one-time join token, and the
+  creator's key fingerprint). Joining records the joiner's public key as a
+  member; after that, members reconnect by key.
 - Being in a room is the permission. Members can do anything in it. There are
   no roles yet; leave room for viewer/driver roles later.
 - **Every member keeps a full copy of the room's state**: members, sessions,
@@ -112,15 +130,18 @@ A chat thread in each room, for people and agents:
 ## Not in this release
 
 - Roles/permissions beyond "member".
-- Relay transport (designed for, not built).
+- Other transports (Tailscale, a self-hosted relay): designed for, not built.
 - Running sessions on an always-on shared host.
 
 ## Testing
 
-- Unit tests for the protocol, event-log merge, invite codes, snapshot/ref
-  naming, transcript placement, claims matching, and the secret deny list.
-- Two Mockingbird instances on one Mac (separate HOME/userData, loopback
-  transport) driven end to end: create room, join by code, live pane, remote
+- Unit tests for the protocol, signed signaling messages, event-log merge,
+  invite codes, snapshot/ref naming, transcript placement, claims matching, and
+  the secret deny list. The Worker's room logic is a plain module, tested
+  directly and also served by a local signaling server for tests.
+- Two Mockingbird instances on one Mac (separate HOME/userData, local
+  signaling server, real WebRTC between them) driven end to end: create room, join by code, live pane, remote
   typing, notifications, chat, cross-machine message, board claim + warning,
   take-over with the owner offline.
-- Then a real run between Ryan's and Nick's laptops over Tailscale.
+- Then a real run between Ryan's and Nick's laptops through the deployed
+  Worker, including from a network that forces the TURN fallback.
