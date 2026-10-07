@@ -1986,6 +1986,10 @@ button.tk-btn { flex-shrink: 0; padding: 1px 7px; font: 500 10px var(--ui); }
 .tk-quiet { color: var(--text-4); }
 .tk-path { font: 400 10.5px var(--mono); word-break: break-all; }
 button.tk-small { padding: 0 6px; font-size: 10px; margin-left: 4px; }
+/* on a room session's sidebar row (a line under its name) and its pane header */
+.sess-item .name .fresh .tk-fresh { font-size: 9.5px; }
+.sess-item button.tk-btn.primary { display: inline-block; opacity: 1; }
+.pane-header .tk-fresh { flex-shrink: 0; white-space: nowrap; }
 
 /* ---- team rooms: live panes ---- */
 /* a teammate's session: the owner's initials, and who's looking (ringed: the pane they're in) */

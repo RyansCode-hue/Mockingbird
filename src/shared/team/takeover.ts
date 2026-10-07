@@ -184,6 +184,17 @@ export function roomBackupRef(roomId: RoomId, sessionId: string, root = ROOM_REF
   return `${root}/${roomId}/${sessionId}`;
 }
 
+/**
+ * A room session's backup in the take-over view. A session is known by its
+ * owner's id for it, in its room (a teammate's session's id in this window is
+ * remotePaneId(owner, id): match on the tag's sessionId and owner, never the
+ * window's id).
+ */
+export function backupOf(view: TakeoverView | null | undefined, tag: { roomId: RoomId; sessionId: string; owner: MemberId } | null | undefined): RoomSessionBackupView | null {
+  if (!view || !tag) return null;
+  return view.sessions.find((v) => v.roomId === tag.roomId && v.sessionId === tag.sessionId && v.owner === tag.owner) ?? null;
+}
+
 // ---- freshness ---------------------------------------------------------------------------
 
 const DROPPED_BECAUSE: Record<DropReason, string> = {

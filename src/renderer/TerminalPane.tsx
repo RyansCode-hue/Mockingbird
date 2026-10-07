@@ -12,10 +12,12 @@ import { useFolderRefresh } from "./folderWatch";
 import { dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
 import { overlapChips } from "./overlapChips";
+import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
+import type { RoomSessionBackupView } from "../shared/team/takeover";
 import { isRemotePaneId } from "../shared/team/livePanes";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { ChangeCount } from "./changeCount";
-import { fmtElapsed, plural } from "../shared/format";
+import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { settled } from "./settled";
 
@@ -292,6 +294,8 @@ export function TerminalPane({
   overlaps,
   onJump,
   onOpenPlan,
+  backup,
+  onTakeOver,
   onRestart,
   messages,
   onShowMessages,
@@ -337,6 +341,9 @@ export function TerminalPane({
   onJump?: (sessionId: string) => void;
   /** Open a team room's plan board (a teammate's branch overlaps this worktree). */
   onOpenPlan?: (roomId: string) => void;
+  /** A room session's backup (team rooms), and taking a teammate's over. */
+  backup?: RoomSessionBackupView | null;
+  onTakeOver?: (view: RoomSessionBackupView) => void;
   /** Restart this pane, resuming its conversation (for a stuck one). */
   onRestart?: () => void;
   /** Agent messages this pane received and sent, and opening their log. */
@@ -772,6 +779,8 @@ export function TerminalPane({
         )}
         {room && <OwnerTag room={room} />}
         {room && <Lookers room={room} />}
+        {backup && density !== "min" && <BackupFreshness view={backup} />}
+        {backup && remote && onTakeOver && <TakeOverButton view={backup} onOpen={onTakeOver} />}
         {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
         {!!runCount && density !== "min" && (
           <button
@@ -848,7 +857,7 @@ export function TerminalPane({
         {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
         {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
         {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row or ⌘K)">muted</span>}
-        {room && !remote && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} onRestart={onRestart} />}
+        {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} onRestart={onRestart} />}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <span className="controls">
           {!dead && (
@@ -1072,6 +1081,7 @@ export function TerminalPane({
               if (!e.dataTransfer.files.length) return;
               e.preventDefault();
               e.stopPropagation();
+              if (remote) return; // this Mac's paths mean nothing on the teammate's
               const paths = [...e.dataTransfer.files]
                 .map((f) => window.mb.getFilePath(f))
                 .filter((p): p is string => !!p);
@@ -1081,6 +1091,11 @@ export function TerminalPane({
             }}
           />
           <CopyToast note={copyNote} failed="Couldn't copy selection" />
+          {room?.takenOver && !remote && (
+            <div className="team-pane-note" title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
+              Taken over by {room.takenOver.byName} {ago(room.takenOver.at)} — it continues on their Mac; this copy has left the room
+            </div>
+          )}
           {remote && (!remote.online || remote.problem) && (
             <div className="team-pane-note" title={remote.problem ?? undefined}>
               {!remote.online ? `${remote.ownerName}'s Mockingbird is offline — this is what it last sent` : remote.problem}

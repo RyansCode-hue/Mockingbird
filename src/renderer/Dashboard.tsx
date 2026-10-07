@@ -13,6 +13,7 @@ import { ago, agoShort, fmtElapsed, plural } from "../shared/format";
 import { Modal } from "./Modal";
 import { usePersisted } from "./prefs";
 import { useAction } from "./useAction";
+import { isRemote } from "./team/RoomLive";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -268,7 +269,8 @@ export function DashboardBoard({
   const topGroupOf = (s: SessionInfo) => topOfKey(s.taskGroup ?? "");
   const linkedTo = (it: AdoWorkItem) => sessions.filter((s) => topGroupOf(s) === groupOf(it));
   const linked = detail ? linkedTo(detail) : [];
-  const attachable = detail ? sessions.filter((s) => topGroupOf(s) !== groupOf(detail) && s.status !== "dead") : [];
+  // a teammate's session is theirs to move, and the pipeline types into sessions: this Mac's only
+  const attachable = detail ? sessions.filter((s) => topGroupOf(s) !== groupOf(detail) && s.status !== "dead" && !isRemote(s)) : [];
 
   const startSession = async () => {
     if (!detail || !repoPath) return;
@@ -488,7 +490,7 @@ export function DashboardBoard({
                 ticketId={String(detail.id)}
                 title={detail.title}
                 details={desc}
-                sessions={linked}
+                sessions={linked.filter((s) => !isRemote(s))}
                 onAskSession={(id, text) => {
                   setDetailId(null);
                   onAskSession(id, text);

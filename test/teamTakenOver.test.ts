@@ -9,7 +9,7 @@ import { LivePanes } from "../src/main/team/livePanes";
 import { liveRoomHost, TakeoverService } from "../src/main/team/takeover";
 import { claudeProjectDir } from "../src/main/agentFiles";
 import { LIVE_METHODS, remotePaneId, roomSessionKey } from "../src/shared/team/livePanes";
-import { backupFreshness, roomBackupRef } from "../src/shared/team/takeover";
+import { backupFreshness, backupOf, roomBackupRef } from "../src/shared/team/takeover";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
 
 /**
@@ -147,6 +147,21 @@ function turn(sessions: SessionManager, id: string) {
   sessions.statusFromHook({ paneId: id, status: "working", conversationId: CONV, agent: "claude" });
   sessions.statusFromHook({ paneId: id, status: "idle" });
 }
+
+describe("a room session's backup in the window", () => {
+  it("is found by its room, owner and the owner's session id — never by the window's id for it", () => {
+    const view = (owner: string, sessionId: string, roomId = "R1") => ({ roomId, owner, sessionId }) as any;
+    const ryan = "a".repeat(32);
+    const nick = "b".repeat(32);
+    const v = { sessions: [view(ryan, "s1"), view(nick, "s1"), view(nick, "s2", "R2")], unbacked: [], cleanup: [] };
+    // Nick's s1 shows here as remotePaneId(nick, "s1"); its tag still names s1
+    expect(backupOf(v, { roomId: "R1", sessionId: "s1", owner: nick })).toBe(v.sessions[1]);
+    expect(backupOf(v, { roomId: "R1", sessionId: "s1", owner: ryan })).toBe(v.sessions[0]);
+    expect(backupOf(v, { roomId: "R1", sessionId: "s2", owner: nick })).toBeNull();
+    expect(backupOf(v, undefined)).toBeNull();
+    expect(backupOf(null, { roomId: "R1", sessionId: "s1", owner: ryan })).toBeNull();
+  });
+});
 
 describe("take-over over live panes", () => {
   it("backs up a room session at the end of each agent turn the live panes report, and the teammate sees how fresh it is", async () => {

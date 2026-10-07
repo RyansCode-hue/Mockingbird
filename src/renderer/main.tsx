@@ -78,7 +78,8 @@ import { PlanBoardDialog, PlanWarnings } from "./team/PlanBoard";
 // team rooms: team chat
 import { RoomChatChip, RoomChatPanel, TeamRoomIcon, useRoomChatOpen } from "./team/RoomChat";
 // team rooms: take-over
-import { RoomBackups } from "./team/TakeOver";
+import { BackupFreshness, RoomBackupWarnings, TakeOverButton, TakeOverDialog, useTakeover } from "./team/TakeOver";
+import { backupOf, type RoomSessionBackupView } from "../shared/team/takeover";
 // team rooms: live panes
 import { FollowControls, LiveProblems, RoomRowTag, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
@@ -143,6 +144,10 @@ function App() {
   // team rooms: live panes — teammates' room sessions are sessions here too (session.room says whose)
   const roomLive = useRoomLive(ownSessions, shown, focused);
   const sessions = roomLive.sessions;
+  // team rooms: take-over — each room session's backup, shown on its row and pane; Take over opens one dialog
+  const takeoverView = useTakeover();
+  const backupFor = (s: SessionInfo): RoomSessionBackupView | null => (takeoverView && !isErr(takeoverView) ? backupOf(takeoverView, s.room) : null);
+  const [takeOverFor, setTakeOverFor] = useState<RoomSessionBackupView | null>(null);
   const [zoomed, setZoomed] = useState<string | null>(null);
   // pinned panes stay on screen when the grid switches groups
   const [pinned, setPinned] = usePersisted<string[]>("mb.pinned", []);
@@ -402,7 +407,9 @@ function App() {
   };
 
   /** Remove a sub-group without touching its sessions — they move up into the group. */
-  const dissolveSub = async (top: string, list: SessionInfo[]) => {
+  const dissolveSub = async (top: string, all: SessionInfo[]) => {
+    // teammates' sessions stay in the workspace their owners put them in
+    const list = all.filter((s) => !isRemote(s));
     // the first of its tabs on screen takes the workspace pane's place; it moves
     // last, so the pane is gone by the time it lands
     const first = list.find((s) => shown.includes(s.id));
@@ -434,7 +441,7 @@ function App() {
     if (isErr(previous)) readFailed("the previous sessions", previous);
     // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
     else setResumable(previous.filter((s) => !s.debrief));
-    return isErr(live) ? sessions : live;
+    return isErr(live) ? ownSessions : live;
   };
 
   // First launch opens the setup wizard. Installs that predate it (the help
@@ -591,6 +598,7 @@ function App() {
    * Returns whether it moved.
    */
   const moveToGroup = async (id: string, group: string | null): Promise<boolean> => {
+    if (isRemote(sessions.find((s) => s.id === id))) return false; // a teammate's: only its owner moves it
     const top = topOfKey(group ?? "ungrouped");
     const stays = !activeGroup || top === activeGroup || pinnedSet.has(id);
     if (!stays) {
@@ -917,7 +925,7 @@ function App() {
 
   const counts = useMemo(() => {
     const c = { working: 0, waiting: 0, idle: 0, dead: 0 };
-    for (const s of workSessions) c[s.status]++;
+    for (const s of workSessions) if (!isRemote(s)) c[s.status]++;
     return c;
   }, [workSessions]);
 
@@ -968,7 +976,7 @@ function App() {
   /** The drop cue for moving a dragged sidebar/pane session into `group` (null = out of any group). */
   const intoGroupTarget = (targetKey: string, group: string | null, name: string) => {
     const src = sessions.find((x) => x.id === dragging("text/mb-session"));
-    if (!src || dragFrom() === "workspace" || (src.taskGroup ?? null) === group) return null; // already there
+    if (!src || isRemote(src) || dragFrom() === "workspace" || (src.taskGroup ?? null) === group) return null; // already there, or a teammate's
     return { key: targetKey, outcome: group === null ? `Move ${titleOf(src)} out of its group` : `Move ${titleOf(src)} into ${name}` };
   };
 
@@ -988,7 +996,7 @@ function App() {
    * pane's place and pin always carry over to the workspace.
    */
   const addAsTab = async (src: SessionInfo, target: SessionInfo, newKey?: string) => {
-    if (src.id === target.id) return;
+    if (src.id === target.id || isRemote(src)) return;
     let key = subOf(target) ? `${topOf(target)}/${subOf(target)}` : null;
     if (!key) {
       const top = topOf(target);
@@ -1035,7 +1043,7 @@ function App() {
   /** The drop cue for making the dragged session a tab in `target`'s pane, if that would change anything. */
   const tabTarget = (key: string, target: SessionInfo) => {
     const src = sessions.find((x) => x.id === dragging("text/mb-session"));
-    if (!src || src.id === target.id || dragFrom() === "workspace") return null;
+    if (!src || isRemote(src) || src.id === target.id || dragFrom() === "workspace") return null;
     const ws = subOf(target) ? `${topOf(target)}/${subOf(target)}` : null;
     if (ws && src.taskGroup === ws && shown.includes(src.id)) return null; // already a tab here
     // the layout once it's a tab: a pane of its own on screen closes
@@ -1173,7 +1181,7 @@ function App() {
   // ⌥⇥ cycles waiting sessions, oldest wait first — the primary motion for a busy grid
   const cycleWaiting = () => {
     const waiting = sessions
-      .filter((s) => s.status === "waiting")
+      .filter((s) => s.status === "waiting" && !isRemote(s))
       .sort((a, b) => (a.waitingSince ?? 0) - (b.waitingSince ?? 0));
     if (!waiting.length) return;
     const i = waiting.findIndex((s) => s.id === focused);
@@ -1863,10 +1871,10 @@ function App() {
                     )}
                   </div>
                 )}
-                {/* team rooms: take-over — teammates' room sessions, their backups and Take over */}
+                {/* team rooms: take-over — what the session rows don't show (backups that failed outright or weren't deleted) */}
                 {!collapsed.has(key) && (() => {
                   const room = roomOfGroup(teamStatus, key);
-                  return room ? <RoomBackups room={room} /> : null;
+                  return room ? <RoomBackupWarnings room={room} view={takeoverView} /> : null;
                 })()}
                 {!collapsed.has(key) && bySub(list).map(([sub, subList]) => {
                   const wsKey = `${key}/${sub}`;
@@ -1982,10 +1990,19 @@ function App() {
                               {s.branch && s.branch !== titleOf(s) ? s.branch : (s.repoPath ? baseName(s.repoPath) : "")}
                             </span>
                           )}
+                          {/* team rooms: take-over — how fresh this room session's backup is */}
+                          {(() => {
+                            const b = backupFor(s);
+                            return b && <span className="br fresh"><BackupFreshness view={b} /></span>;
+                          })()}
                         </span>
                       )}
                       {/* team rooms: live panes — whose session it is, who's looking; a teammate's is theirs to rename, move or close */}
                       <RoomRowTag s={s} />
+                      {(() => {
+                        const b = isRemote(s) ? backupFor(s) : null;
+                        return b && <TakeOverButton view={b} onOpen={setTakeOverFor} />;
+                      })()}
                       {!isRemote(s) && (
                       <button
                         title="Rename"
@@ -2233,10 +2250,12 @@ function App() {
                     onResume={() => resumeDead(s)}
                     onCleanup={() => requestClose(s)}
                     onHandoff={s.shell ? undefined : () => setHandoffFor(s)}
-                    onUndoTurn={s.shell || !s.repoPath ? undefined : () => setUndoFor(s)}
+                    onUndoTurn={s.shell || !s.repoPath || isRemote(s) ? undefined : () => setUndoFor(s)}
                     overlaps={overlaps[s.id]}
                     onJump={jumpTo}
                     onOpenPlan={setPlanDlg}
+                    backup={backupFor(s)}
+                    onTakeOver={setTakeOverFor}
                     messages={(() => {
                       const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
                       return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
@@ -2298,6 +2317,8 @@ function App() {
                         >
                           <span className={`dot sm ${s.status}`} />
                           <span className="t">{titleOf(s)}</span>
+                          {/* a teammate's session is theirs to close */}
+                          {!isRemote(s) && (
                           <span
                             className="ws-x"
                             role="button"
@@ -2310,6 +2331,7 @@ function App() {
                           >
                             ×
                           </span>
+                          )}
                         </button>
                       ))}
                       <button
@@ -2449,7 +2471,10 @@ function App() {
               ⚠ install hooks
             </span>
           )}
-          <span>{workSessions.length} sessions · {groups.length} groups</span>
+          {(() => {
+            const theirs = workSessions.filter(isRemote).length;
+            return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {groups.length} groups</span>;
+          })()}
           <span>⌘K commands</span>
           <span className="help-link" onClick={() => setModal("help")}>? help</span>
         </span>
@@ -2611,7 +2636,7 @@ function App() {
         <PipelineDialog
           ticketId={pipelineFor.id}
           title={pipelineFor.title}
-          sessions={workSessions.filter((s) => topOf(s) === pipelineFor.id)}
+          sessions={workSessions.filter((s) => topOf(s) === pipelineFor.id && !isRemote(s))}
           onAskSession={(id, text) => {
             setPipelineFor(null);
             typeInto(id, text);
@@ -2637,6 +2662,7 @@ function App() {
       {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
       {/* team rooms: plan board */}
       {planDlg && <PlanBoardDialog roomId={planDlg} onClose={() => setPlanDlg(null)} />}
+      {takeOverFor && <TakeOverDialog view={takeOverFor} onClose={() => setTakeOverFor(null)} />}
       <PlanWarnings onJump={jumpTo} onOpenBoard={setPlanDlg} />
 
       {renameDlg && (

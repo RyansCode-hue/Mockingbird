@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Modal } from "../Modal";
 import { settled } from "../settled";
-import { initialsOf } from "../Team";
 import { ago } from "../../shared/format";
 import { AGENT_NAME, isErr } from "../../shared/types";
 import { backupFreshness, type RoomSessionBackupView, type TakeoverPlan, type TakeoverResult, type TakeoverView } from "../../shared/team/takeover";
@@ -12,9 +11,11 @@ import type { TeamRoomSummary } from "../../shared/team/types";
  * backup is, and "Take over" on a teammate's session with a confirm dialog
  * naming the snapshot and whether the whole conversation is here.
  *
- * BackupFreshness and TakeOverButton take a RoomSessionBackupView, so a remote
- * pane's header can show them; RoomBackups lists a shared group's room
- * sessions in the sidebar.
+ * Each room session is one row in the sidebar and one pane (live panes): the
+ * row and the pane header carry BackupFreshness, and a teammate's also
+ * TakeOverButton, found by backupOf. RoomBackupWarnings lists what has no
+ * row: this Mac's sessions that couldn't be backed up, and backups it
+ * couldn't delete.
  */
 
 /** The take-over view from main, kept current; an { error } when it couldn't be read. */
@@ -64,67 +65,54 @@ export function BackupFreshness({ view }: { view: RoomSessionBackupView }) {
   return (
     <span className={`tk-fresh ${f.tone}`} title={tip}>
       {f.text}
+      {view.problem && !view.takenOver && <span className="tk-fresh warn"> · not sent to teammates</span>}
     </span>
   );
 }
 
-/** "Take over" on a teammate's room session, with its confirm dialog. Prominent while the owner is offline. */
-export function TakeOverButton({ view }: { view: RoomSessionBackupView }) {
-  const [open, setOpen] = useState(false);
-  // the dialog outlives the take-over it confirms: it says where the session now runs
-  if (view.self || (view.takenOver && !open)) return null;
+/**
+ * "Take over" on a teammate's room session (its sidebar row and pane header):
+ * prominent while the owner is offline. The confirm dialog is the window's
+ * (TakeOverDialog), so it outlives the row and the take-over it confirms.
+ */
+export function TakeOverButton({ view, onOpen }: { view: RoomSessionBackupView; onOpen: (view: RoomSessionBackupView) => void }) {
+  if (view.self || view.takenOver || view.dropped) return null;
   return (
-    <>
-      {!view.takenOver && (
-        <button
-          className={`tk-btn ${view.ownerOnline ? "outline" : "primary"}`}
-          title={view.ownerOnline ? `Continue this session on your Mac (${view.ownerName} is connected)` : `${view.ownerName} is offline — continue this session on your Mac`}
-          onClick={(e) => {
-            e.stopPropagation();
-            setOpen(true);
-          }}
-        >
-          Take over
-        </button>
-      )}
-      {open && <TakeOverDialog view={view} onClose={() => setOpen(false)} />}
-    </>
+    <button
+      className={`tk-btn ${view.ownerOnline ? "outline" : "primary"}`}
+      title={view.ownerOnline ? `Continue this session on your Mac (${view.ownerName} is connected)` : `${view.ownerName} is offline — continue this session on your Mac`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen(view);
+      }}
+    >
+      Take over
+    </button>
   );
 }
 
-/** A shared group's room sessions in the sidebar: teammates' (freshness, Take over), and this Mac's that need a look. */
-export function RoomBackups({ room }: { room: TeamRoomSummary }) {
-  const view = useTakeover();
-  if (!view || isErr(view)) return view && isErr(view) ? <div className="tk-rows"><div className="tk-row-note warn">{view.error}</div></div> : null;
-  // a deleted backup's session is gone; a take-over stays noted for a week
-  const live = (s: RoomSessionBackupView) => (s.takenOver ? Date.now() - s.takenOver.at < 7 * 86_400_000 : !s.dropped);
-  const rows = view.sessions.filter((s) => s.roomId === room.id && live(s) && (!s.self || s.takenOver || !s.push.ok || s.problem));
-  const unbacked = [
+/**
+ * What the sidebar rows don't show about a shared group's backups: this
+ * Mac's room sessions that couldn't be backed up at all, and backups it
+ * should have deleted and couldn't.
+ */
+export function RoomBackupWarnings({ room, view }: { room: TeamRoomSummary; view: TakeoverView | { error: string } | null }) {
+  if (!view) return null;
+  if (isErr(view)) {
+    return (
+      <div className="tk-rows">
+        <div className="tk-row-note warn">{view.error}</div>
+      </div>
+    );
+  }
+  const warnings = [
     ...view.unbacked.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: "not backed up" })),
     ...view.cleanup.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: "backup not deleted from origin" })),
   ];
-  if (!rows.length && !unbacked.length) return null;
+  if (!warnings.length) return null;
   return (
     <div className="tk-rows">
-      {rows.map((s) => (
-        <div key={s.sessionId} className={`tk-row ${s.takenOver ? "gone" : ""}`} title={`${s.session.title}${s.session.branch ? ` · ${s.session.branch}` : ""} · ${s.self ? "on this Mac" : `${s.ownerName}'s session`}`}>
-          <div className="tk-line">
-            <span className={`dot ${s.ownerOnline && !s.takenOver ? "idle" : "offline"}`} />
-            <span className="tk-name">{s.session.title}</span>
-            {!s.self && (
-              <span className="team-initials" title={`${s.ownerName} · ${s.ownerOnline ? "connected" : "offline"}`}>
-                {initialsOf(s.ownerName)}
-              </span>
-            )}
-            <TakeOverButton view={s} />
-          </div>
-          <div className="tk-sub">
-            <BackupFreshness view={s} />
-            {s.problem && <span className="tk-fresh warn" title={s.problem}> · not sent to teammates</span>}
-          </div>
-        </div>
-      ))}
-      {unbacked.map((u) => (
+      {warnings.map((u) => (
         <div key={`${u.what}:${u.sessionId}`} className="tk-row" title={u.problem}>
           <div className="tk-line">
             <span className="dot waiting" />
