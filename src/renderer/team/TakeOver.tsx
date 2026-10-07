@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal } from "../Modal";
 import { settled } from "../settled";
 import { ago, plural } from "../../shared/format";
@@ -92,12 +92,19 @@ export function BackupFreshness({ view }: { view: RoomSessionBackupView }) {
  * prominent while the owner is offline. The confirm dialog is the window's
  * (TakeOverDialog), so it outlives the row and the take-over it confirms.
  */
-export function TakeOverButton({ view, onOpen }: { view: RoomSessionBackupView; onOpen: (view: RoomSessionBackupView) => void }) {
+export function TakeOverButton({ view, onOpen, asking }: { view: RoomSessionBackupView; onOpen: (view: RoomSessionBackupView) => void; asking?: OutgoingAsk | null }) {
   if (view.self || view.takenOver || view.dropped) return null;
+  if (asking) {
+    return (
+      <button className="tk-btn outline show" disabled title={asking.state === "asking" ? `Waiting for ${asking.ownerName} to answer` : `${asking.ownerName} is handing it over`}>
+        {asking.state === "asking" ? `Asking ${asking.ownerName}…` : "Handing over…"}
+      </button>
+    );
+  }
   return (
     <button
       className={`tk-btn ${view.ownerOnline ? "outline" : "primary"}`}
-      title={view.ownerOnline ? `Continue this session on your Mac (${view.ownerName} is connected)` : `${view.ownerName} is offline — continue this session on your Mac`}
+      title={view.ownerOnline ? `Ask ${view.ownerName} to hand this session over to your Mac (they're connected)` : `${view.ownerName} is offline — continue this session on your Mac`}
       onClick={(e) => {
         e.stopPropagation();
         onOpen(view);
@@ -181,10 +188,22 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
       setClone(String(dir));
     }
   };
+  // hidden while the owner decides or their turn finishes: the take-over carries on, and a failure is still told
+  const shown = useRef(true);
+  useEffect(() => {
+    shown.current = true;
+    return () => {
+      shown.current = false;
+    };
+  }, []);
   const go = async () => {
     setBusy(true);
     setError("");
     const r = await settled(window.mb.teamTakeOver(view.roomId, view.sessionId, clone), "Couldn't take over");
+    if (!shown.current) {
+      if (isErr(r)) alert(`“${view.session.title}”: ${r.error}`);
+      return;
+    }
     setBusy(false);
     if (isErr(r)) {
       setError(r.error);
@@ -268,8 +287,8 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
         </div>
       )}
       <div className="row">
-        <button className="outline" onClick={onClose} disabled={busy}>
-          {done ? "Close" : "Cancel"}
+        <button className="outline" onClick={onClose} disabled={busy && !asking} title={busy && asking ? "Hide this: it carries on, and you're told if it doesn't happen" : undefined}>
+          {done ? "Close" : busy && asking ? "Hide" : "Cancel"}
         </button>
         {!done && (
           <button className="primary" onClick={go} disabled={busy || !p?.clone || !p.snapshot}>

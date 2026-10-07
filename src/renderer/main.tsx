@@ -2029,7 +2029,7 @@ function App() {
                       <RoomRowTag s={s} />
                       {(() => {
                         const b = isRemote(s) ? backupFor(s) : null;
-                        return b && <TakeOverButton view={b} onOpen={setTakeOverFor} />;
+                        return b && <TakeOverButton view={b} onOpen={setTakeOverFor} asking={tkView?.asking.find((a) => a.roomId === b.roomId && a.sessionId === b.sessionId)} />;
                       })()}
                       {!isRemote(s) && (
                       <button
