@@ -178,6 +178,8 @@ export class LivePanes implements RemotePanes {
   private problems: string[] = [];
   private changeTimer: ReturnType<typeof setTimeout> | null = null;
   private roomCache: { id: RoomId; groupKey: string }[] | null = null;
+  /** This install's sessions' rooms, until a session or a room changes. */
+  private ownRooms: Map<string, RoomId | null> | null = null;
 
   constructor(private d: LivePanesDeps) {
     this.t = { ...TIMING, ...d.timing };
@@ -218,6 +220,7 @@ export class LivePanes implements RemotePanes {
     this.offs.push(
       team.onRoomsChanged(() => {
         this.roomCache = null;
+        this.ownRooms = null;
         this.indexRemotes();
         this.schedule(50);
         this.changed();
@@ -229,6 +232,7 @@ export class LivePanes implements RemotePanes {
       team.onRequest(LIVE_METHODS.scrollback, (params, ctx) => this.answerScrollback(params, ctx.from, ctx.roomId)),
       team.onRequest(LIVE_METHODS.input, (params, ctx) => this.answerInput(params, ctx.from, ctx.roomId)),
       s.watch(() => {
+        this.ownRooms = null;
         this.schedule(50);
         this.changed();
       }),
@@ -295,8 +299,11 @@ export class LivePanes implements RemotePanes {
   /** The room one of this install's sessions is shared in (live or resumable), or null. */
   roomOfSession(id: string): RoomId | null {
     if (!this.started) return null;
-    const s = this.d.sessions.list().find((x) => x.id === id) ?? this.d.sessions.resumable().find((x) => x.id === id);
-    return s ? this.roomOfInfo(s) : null;
+    if (!this.ownRooms) {
+      this.ownRooms = new Map();
+      for (const s of [...this.d.sessions.list(), ...this.d.sessions.resumable()]) if (!this.ownRooms.has(s.id)) this.ownRooms.set(s.id, this.roomOfInfo(s));
+    }
+    return this.ownRooms.get(id) ?? null;
   }
 
   private roomOfInfo(s: SessionInfo): RoomId | null {
