@@ -281,6 +281,20 @@ const api = {
   readClaudeMd: (p: string) => ipcRenderer.invoke("claudemd:read", p),
   saveClaudeMd: (p: string, content: string) => ipcRenderer.invoke("claudemd:save", p, content),
 
+  // team rooms
+  teamStatus: () => ipcRenderer.invoke("team:status"),
+  /** Share a top-level group as a room (or a fresh invite when it already is one): { roomId, invite }. */
+  teamShareGroup: (groupKey: string, title: string) => ipcRenderer.invoke("team:share", groupKey, title),
+  teamCreateInvite: (roomId: string) => ipcRenderer.invoke("team:invite", roomId),
+  teamJoin: (code: string) => ipcRenderer.invoke("team:join", code),
+  teamCancelJoin: (roomId: string) => ipcRenderer.invoke("team:cancelJoin", roomId),
+  teamCheckSignaling: (url: string) => ipcRenderer.invoke("team:checkSignaling", url),
+  onTeamChanged: (cb: (status: unknown) => void) => {
+    const h = (_e: unknown, s: unknown) => cb(s);
+    ipcRenderer.on("team:changed", h);
+    return () => ipcRenderer.removeListener("team:changed", h);
+  },
+
   // hooks / settings / debriefs
   hooksInstalled: () => ipcRenderer.invoke("hooks:installed"),
   installHooks: () => ipcRenderer.invoke("hooks:install"),

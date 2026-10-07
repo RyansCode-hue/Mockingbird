@@ -72,6 +72,7 @@ import { UsageMeter } from "./UsageMeter";
 import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
+import { JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
@@ -241,6 +242,10 @@ function App() {
   const [wsTabs, setWsTabs] = usePersisted<Record<string, string>>("mb.wsTabs", {});
   const [closeDlg, setCloseDlg] = useState<{ session: SessionInfo; wt: WorktreeStateInfo | { error: string } } | null>(null);
   const [groupDlg, setGroupDlg] = useState<SessionInfo | null>(null);
+  // team rooms: which groups are shared, and the share / join dialogs
+  const teamStatus = useTeamStatus();
+  const [shareDlg, setShareDlg] = useState<{ key: string; title: string } | null>(null);
+  const [joinDlg, setJoinDlg] = useState(false);
   // group/workspace renames use a dialog: inline editing broke because the same
   // edit field rendered in two places (sidebar + workspace tab strip) and the
   // second mount stole focus from the first, instantly closing it. Sessions use
@@ -847,8 +852,10 @@ function App() {
       const key = topOfKey(s.taskGroup ?? "ungrouped");
       g.set(key, [...(g.get(key) ?? []), s]);
     }
+    // a joined room is a group here even before any of its sessions runs on this Mac
+    if (!filter && teamStatus && !isErr(teamStatus)) for (const r of teamStatus.rooms) if (!g.has(r.groupKey)) g.set(r.groupKey, []);
     return [...g.entries()];
-  }, [visible]);
+  }, [visible, filter, teamStatus]);
 
   // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
   // the rest are open exactly while the workspace is in the grid.
@@ -1742,6 +1749,9 @@ function App() {
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
+              <button className="icon" title="Join a team room with a code a teammate sent you" onClick={() => setJoinDlg(true)}>
+                ⇲
+              </button>
             </div>
             {groups.map(([key, list]) => (
               <div key={key}>
@@ -1784,6 +1794,23 @@ function App() {
                       <ChevronIcon open={!collapsed.has(key)} />
                     </span>
                     <span className="txt">{groupTitle(key, list)}</span>
+                    {(() => {
+                      const room = roomOfGroup(teamStatus, key);
+                      return room ? <SharedBadge room={room} /> : null;
+                    })()}
+                    {key !== "ungrouped" && key !== "assistant" && (
+                      <button
+                        className="glbtn"
+                        title={roomOfGroup(teamStatus, key) ? "Invite a teammate to this shared room" : "Share this group as a team room"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelClick();
+                          setShareDlg({ key, title: groupTitle(key, list) });
+                        }}
+                      >
+                        ⇪
+                      </button>
+                    )}
                   </div>
                 )}
                 {!collapsed.has(key) && bySub(list).map(([sub, subList]) => {
@@ -2382,6 +2409,15 @@ function App() {
             { label: "Toggle the log panel", kbd: "⌘J", run: () => (setTab("sessions"), setPanelOpen((o) => !o)) },
             { label: "Settings", run: () => setTab("settings") },
             { label: "Import sessions", run: () => setModal("import") },
+            { label: "Join a team room — paste a teammate's code", run: () => setJoinDlg(true) },
+            ...(activeGroup && activeGroup !== "ungrouped" && activeGroup !== "assistant"
+              ? [
+                  {
+                    label: roomOfGroup(teamStatus, activeGroup) ? `Invite a teammate to ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))}` : `Share ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))} as a team room`,
+                    run: () => setShareDlg({ key: activeGroup, title: groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup)) }),
+                  },
+                ]
+              : []),
             ...(shownTab("worktracker")
               ? [
                   { label: "WorkTracker — debriefs", run: () => setTab("worktracker") },
@@ -2517,6 +2553,9 @@ function App() {
           onClose={() => setGroupDlg(null)}
         />
       )}
+
+      {shareDlg && <ShareRoomDialog groupKey={shareDlg.key} title={shareDlg.title} onClose={() => setShareDlg(null)} />}
+      {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
 
       {renameDlg && (
         <RenameDialog

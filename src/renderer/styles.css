@@ -1804,3 +1804,25 @@ button.chip { border: none; cursor: pointer; }
 .rail .cell.folder .v { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rail .cell.folder .v .fn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .rail .cell.folder .v .mini { flex-shrink: 0; }
+
+/* ---- team rooms ---- */
+.team-badge { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.team-shared {
+  font: 500 9px var(--ui); letter-spacing: .3px; color: var(--teal-text);
+  border: 1px solid color-mix(in srgb, var(--teal) 45%, transparent); border-radius: 4px; padding: 0 4px; line-height: 13px;
+}
+.team-shared.bad { color: var(--amber-text); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
+.team-initials {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 15px; height: 15px; padding: 0 2px;
+  border-radius: 8px; background: color-mix(in srgb, var(--teal) 28%, var(--bg-sidebar)); color: var(--text-1);
+  font: 600 8.5px var(--ui); letter-spacing: 0;
+}
+.modal.team-dlg { width: 480px; }
+.modal textarea.team-code { min-height: 84px; word-break: break-all; }
+.set-body input[type=text].team-input { width: 220px; }
+.set-body input[type=text].team-input.wide { width: 300px; }
+.team-fp { font: 400 10.5px var(--mono); color: var(--text-2); margin-right: 8px; }
+.team-link { font: 500 11px var(--ui); color: var(--text-3); white-space: nowrap; }
+.team-link.direct, .team-link.turn { color: var(--teal-text); }
+.team-link.needs-update, .team-link.error { color: var(--amber-text); }
+.set-lede.team-deploy { margin: 8px 0 4px; }

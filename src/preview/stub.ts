@@ -12,6 +12,7 @@
  */
 import type { AdoBoard, AdoWorkItem, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS } from "../shared/types";
+import type { TeamStatus } from "../shared/team/types";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -102,7 +103,7 @@ const board: AdoBoard = {
   ],
 };
 
-let settings: Settings = { ...DEFAULT_SETTINGS, setupDone: true, presets: [{ id: "p-review", name: "Review on dev", launch: "claude", repoPath: REPO, branch: { mode: "new", pattern: "review-{date}", base: "dev" }, useWorktree: true, kickoff: "Review the latest changes on dev for bugs and missing tests." }] };
+let settings: Settings = { ...DEFAULT_SETTINGS, setupDone: true, teamName: "You", signalingUrl: "https://mockingbird-signaling.you.workers.dev", presets: [{ id: "p-review", name: "Review on dev", launch: "claude", repoPath: REPO, branch: { mode: "new", pattern: "review-{date}", base: "dev" }, useWorktree: true, kickoff: "Review the latest changes on dev for bugs and missing tests." }] };
 
 const pipelines: Record<string, TicketPipeline> = {
   "5101": {
@@ -131,6 +132,27 @@ const meters: Meters = {
   },
 };
 
+// team rooms: 5101 is shared with Nick (connected) and Sam (offline); 5110 was joined and has no session here yet
+const ME = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
+const NICK = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+const SAM = "5a5a5a5a6b6b6b6b7c7c7c7c8d8d8d8d";
+const SIGNAL = "https://mockingbird-signaling.you.workers.dev";
+const team: TeamStatus = {
+  self: { id: ME, name: "You", fingerprint: ME.replace(/(.{4})(?=.)/g, "$1 ") },
+  signalingUrl: SIGNAL,
+  rooms: [
+    { id: "R5101aaaaaaaaaaaaaaaaa", name: "#5101 Org dropdowns remember the last org", groupKey: "5101", members: [{ id: ME, name: "You", self: true }, { id: NICK, name: "Nick Smith", self: false }, { id: SAM, name: "Sam", self: false }], online: [NICK], signalingUrl: SIGNAL, signaling: "online" },
+    { id: "R5110bbbbbbbbbbbbbbbbb", name: "#5110 Donor entities", groupKey: "5110", members: [{ id: NICK, name: "Nick Smith", self: false }, { id: ME, name: "You", self: true }], online: [NICK], signalingUrl: SIGNAL, signaling: "online" },
+  ],
+  pending: [],
+  peers: [
+    { id: NICK, name: "Nick Smith", state: "turn", since: now - 40 * min },
+    { id: SAM, name: "Sam", state: "offline", since: now - 3 * 60 * min },
+  ],
+  problems: [],
+};
+const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
+
 // ---- event plumbing ------------------------------------------------------------
 
 const listeners: Record<string, Set<(...a: any[]) => void>> = {};
@@ -140,6 +162,7 @@ const on = (name: string) => (cb: (...a: any[]) => void) => {
 };
 const emit = (name: string, ...args: unknown[]) => listeners[name]?.forEach((cb) => cb(...args));
 const sessionsChanged = () => emit("onSessionsChanged", sessions.map((s) => ({ ...s })));
+const teamChanged = () => emit("onTeamChanged", JSON.parse(JSON.stringify(team)));
 const byId = (id: string) => sessions.find((s) => s.id === id);
 const later = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(v), ms));
 const err = (message: string) => ({ error: message });
@@ -380,6 +403,40 @@ const api: Record<string, (...a: any[]) => any> = {
   }),
   adoConfigGet: async () => ({ orgUrl: "https://dev.azure.com/acme", project: "Backoffice", patFile: "secrets/ado.pat" }),
   modelCatalog: async () => err("UI preview: no model catalog"),
+
+  // team rooms: sharing, invites and joins are simulated; nothing connects
+  teamStatus: async () => JSON.parse(JSON.stringify(team)),
+  teamShareGroup: async (groupKey: string, title: string) => {
+    let room = team.rooms.find((r) => r.groupKey === groupKey);
+    if (!room) {
+      room = { id: `R${groupKey}`.padEnd(22, "c").slice(0, 22), name: title, groupKey, members: [{ id: ME, name: "You", self: true }], online: [], signalingUrl: SIGNAL, signaling: "online" };
+      team.rooms.push(room);
+      teamChanged();
+    }
+    return later({ roomId: room.id, invite: inviteCode(room.id) }, 300);
+  },
+  teamCreateInvite: async (roomId: string) => ({ invite: inviteCode(roomId) }),
+  teamJoin: async (code: string) => {
+    if (!/^MBR1-/.test(code.trim())) return err("That isn't a Mockingbird room code — it starts with MBR1-");
+    const roomId = "Rjoinedddddddddddddddd";
+    team.pending.push({ roomId, name: "#5120 Gift aid", inviter: SAM, state: "waiting", since: Date.now() });
+    teamChanged();
+    setTimeout(() => {
+      team.pending = team.pending.map((p) => (p.roomId === roomId ? { ...p, state: "syncing" } : p));
+      teamChanged();
+    }, 1200);
+    setTimeout(() => {
+      team.pending = team.pending.filter((p) => p.roomId !== roomId);
+      team.rooms.push({ id: roomId, name: "#5120 Gift aid", groupKey: "5120", members: [{ id: SAM, name: "Sam", self: false }, { id: ME, name: "You", self: true }], online: [SAM], signalingUrl: SIGNAL, signaling: "online" });
+      teamChanged();
+    }, 2400);
+    return { roomId, name: "#5120 Gift aid" };
+  },
+  teamCancelJoin: async (roomId: string) => {
+    team.pending = team.pending.filter((p) => p.roomId !== roomId);
+    teamChanged();
+  },
+  teamCheckSignaling: async () => later({ protocol: 1, relay: true, problem: null }, 400),
 };
 
 w.mb = new Proxy(api, {

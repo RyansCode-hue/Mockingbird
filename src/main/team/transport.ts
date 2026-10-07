@@ -408,6 +408,18 @@ export class TeamCore implements Team {
     return this.rooms().find((r) => this.store.meta(r.id)?.groupKey === groupKey);
   }
 
+  /** The local groups rooms are shown as. */
+  boundGroups(): string[] {
+    return this.rooms()
+      .map((r) => this.store.meta(r.id)?.groupKey)
+      .filter((k): k is string => !!k);
+  }
+
+  /** After sleep or a network change: reconnect now. */
+  wake(): void {
+    this.wire.wake();
+  }
+
   /** This install's display name changed: every room hears it. */
   nameChanged(): void {
     const name = this.o.name().trim();

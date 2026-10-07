@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, powerMonitor, shell } from "electron";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -53,6 +53,8 @@ import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, Pr
 import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
+import { TeamService } from "./team/service";
+import { configureWebRtc } from "./team/peerHost";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -84,7 +86,20 @@ if (isPrimary) {
   store.save();
 }
 const sessions = new SessionManager(store);
-const toWindow = (channel: string, ...args: unknown[]) => BrowserWindow.getAllWindows()[0]?.webContents.send(channel, ...args);
+// The app's window. Not BrowserWindow.getAllWindows()[0]: team rooms keep a hidden window of their own.
+let mainWindow: BrowserWindow | null = null;
+const appWindow = (): BrowserWindow | null => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null);
+const toWindow = (channel: string, ...args: unknown[]) => appWindow()?.webContents.send(channel, ...args);
+
+// Team rooms (docs/team-rooms.md): identity, rooms and the WebRTC transport
+configureWebRtc(app);
+const team = new TeamService({
+  settings: () => store.settings,
+  localGroups: () => [...new Set([...sessions.list(), ...store.state.sessions].map((s) => topOfKey(s.taskGroup ?? "ungrouped")))],
+  emit: (status) => toWindow("team:changed", status),
+  log: logError,
+  assetsDir: __dirname,
+});
 
 // Run and Debug: a repo's services per worktree, each on its own terminal,
 // optionally under the debugger
@@ -171,7 +186,7 @@ let tray: Tray | null = null;
 const fmtWait = (since: number | null): string => (since ? fmtElapsed(since) : "");
 
 function focusPane(sessionId?: string): void {
-  const win = BrowserWindow.getAllWindows()[0];
+  const win = appWindow();
   if (!win) return createWindow();
   if (win.isMinimized()) win.restore();
   win.show();
@@ -251,6 +266,12 @@ function createWindow(): void {
       nodeIntegration: false,
     },
   });
+  mainWindow = win;
+  // closing the window quits the app: the hidden team window mustn't keep it open
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+    team.stop();
+  });
   win.loadFile(path.join(__dirname, "index.html"));
   // the editor holds unsaved changes: the window says so (beforeunload), and quitting asks first
   win.webContents.on("will-prevent-unload", (event) => {
@@ -293,6 +314,8 @@ app.whenReady().then(() => {
     }
   }
   createWindow();
+  team.start();
+  powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   void lookUpBins();
   startTranscriptIndex();
@@ -393,7 +416,7 @@ app.whenReady().then(() => {
   });
   startScheduler(sessions, store);
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!appWindow()) createWindow();
   });
 });
 
@@ -417,7 +440,10 @@ app.on("before-quit", (e) => {
 
 // each pane's scrollback, so relaunched panes show their earlier output
 setInterval(() => sessions.saveScrollback(), 60_000);
-app.on("will-quit", () => sessions.saveScrollback(true));
+app.on("will-quit", () => {
+  sessions.saveScrollback(true);
+  team.stop(); // room snapshots written, connections closed
+});
 
 app.on("window-all-closed", () => {
   app.quit();
@@ -688,6 +714,7 @@ handle("settings:set", (s) => {
   store.setSettings(s);
   // a new claude or codex path applies without a restart
   if (binSettingsChanged(before, store.settings)) void lookUpBins(true);
+  team.settingsChanged(before, store.settings);
   return store.settings;
 });
 handle("debrief:run", (kind) => runDebrief(kind, sessions, store));
@@ -695,7 +722,18 @@ handle("debrief:run", (kind) => runDebrief(kind, sessions, store));
 // it (it couldn't open), Claude's are still read from its own folder
 handle("import:list", () => importable(transcripts?.recentConversations() ?? listClaudeConversations(), sessions.list(), collab.list()));
 handle("sessions:rename", (id, title) => sessions.rename(id, title));
-handle("sessions:renameGroup", (oldKey, newKey) => sessions.renameGroup(oldKey, newKey));
+handle("sessions:renameGroup", (oldKey, newKey) => {
+  sessions.renameGroup(oldKey, newKey);
+  team.groupRenamed(String(oldKey), String(newKey)); // a shared group stays its room
+});
+
+// ---- Team rooms ----
+handle("team:status", () => team.status());
+handle("team:share", (groupKey, title) => team.shareGroup(String(groupKey ?? ""), String(title ?? "")));
+handle("team:invite", (roomId) => ({ invite: team.createInvite(String(roomId)) }));
+handle("team:join", (code) => team.join(String(code ?? "")));
+handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
+handle("team:checkSignaling", (url) => TeamService.checkSignaling(String(url ?? "")));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 
@@ -1364,11 +1402,12 @@ handle("update:install", () => {
 });
 
 handle("dialog:pick", async (opts) => {
-  const win = BrowserWindow.getAllWindows()[0];
-  const r = await dialog.showOpenDialog(win, {
+  const win = appWindow();
+  const options = {
     properties: [opts?.file ? "openFile" : "openDirectory", "createDirectory"] as any,
     defaultPath: opts?.defaultPath ? expandHome(String(opts.defaultPath)) : undefined,
-  });
+  };
+  const r = await (win ? dialog.showOpenDialog(win, options) : dialog.showOpenDialog(options));
   return r.canceled || !r.filePaths.length ? null : r.filePaths[0];
 });
 

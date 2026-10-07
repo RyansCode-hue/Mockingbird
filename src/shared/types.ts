@@ -260,6 +260,10 @@ export interface Settings {
   quietHours?: QuietHours;
   /** Notify when a session finishes its turn, not only when it needs you (default on). */
   notifyFinished?: boolean;
+  /** Team rooms: the name teammates see (default: the macOS user name). */
+  teamName?: string;
+  /** Team rooms: the signaling Worker's URL (signaling/README.md); new rooms use it, invite codes carry it. */
+  signalingUrl?: string;
 }
 
 export interface QuietHours {

@@ -10,6 +10,8 @@ import { baseName } from "../shared/paths";
 import { readPref, writePref } from "./prefs";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
+import { SetRow } from "./SetRow";
+import { TeamSection } from "./Team";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
 
@@ -376,24 +378,13 @@ const SETTINGS_SECTIONS = [
   { id: "repos", label: "Repos" },
   { id: "presets", label: "Presets" },
   { id: "ado", label: "Azure DevOps" },
+  { id: "team", label: "Team" },
   { id: "debriefs", label: "Debriefs" },
   { id: "control", label: "Control room" },
   { id: "about", label: "About" },
 ] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
 
-/** One setting: name and a short note on the left, its control on the right. */
-function SetRow({ title, note, children }: { title: React.ReactNode; note?: React.ReactNode; children?: React.ReactNode }) {
-  return (
-    <div className="set-row">
-      <div className="set-row-text">
-        <div className="set-row-title">{title}</div>
-        {note && <div className="set-row-note">{note}</div>}
-      </div>
-      {children && <div className="set-row-ctl">{children}</div>}
-    </div>
-  );
-}
 
 function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
@@ -808,6 +799,8 @@ export function SettingsView({
             {adoNote && <div className={adoNote.ok ? "set-note ok" : "err"}>{adoNote.msg}</div>}
           </>
         )}
+
+        {section === "team" && <TeamSection settings={s} onChange={upd} />}
 
         {section === "debriefs" && (
           <>
