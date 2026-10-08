@@ -1,4 +1,4 @@
-import { defineEventType } from "./rooms";
+import { defineEventType, onMemberRemoved } from "./rooms";
 import { AGENT_KINDS, splitGroupKey, type SessionInfo, type SessionStatus, type WorktreeStateInfo } from "../../shared/types";
 import { roomSessionKey, type RoomGitState, type RoomSessionRecord } from "../../shared/team/livePanes";
 import type { MemberId, RoomId } from "../../shared/team/types";
@@ -81,6 +81,13 @@ defineEventType("session.removed", {
   reduce(state, e) {
     if (state.ext.sessions) delete state.ext.sessions[roomSessionKey(e.author, e.body.id)];
   },
+});
+
+// a member who left or was removed takes their sessions out of the room (on their Mac they carry on as local sessions)
+onMemberRemoved("sessions", (state, member) => {
+  const sessions = state.ext.sessions;
+  if (!sessions) return;
+  for (const [k, s] of Object.entries(sessions)) if (s.owner === member) delete sessions[k];
 });
 
 /** What a room session's record holds besides what SessionInfo says. */

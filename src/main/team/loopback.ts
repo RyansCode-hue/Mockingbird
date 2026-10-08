@@ -1,8 +1,9 @@
 import * as path from "path";
 import { loadIdentity, type Identity } from "./identity";
 import { RoomStore } from "./rooms";
-import { TeamCore, type IntroType, type PeerWire, type TeamOptions, type WireHandler, type WireRoom } from "./transport";
-import type { MemberId, PeerLinkState, RoomId } from "../../shared/team/types";
+import { TeamCore, type IntroType, type PeerWire, type RevokeOutcome, type RoomSignalingState, type TeamOptions, type WireHandler, type WireRoom } from "./transport";
+import { OLD_WORKER_REVOKE } from "./signalingClient";
+import type { MemberId, PeerLinkState, RoomEvent, RoomId } from "../../shared/team/types";
 
 /**
  * Team members in one process, connected in memory: for tests of everything
@@ -14,6 +15,12 @@ import type { MemberId, PeerLinkState, RoomId } from "../../shared/team/types";
  *   const { members: [ryan, nick], roomId } = await loopbackRoom(["Ryan", "Nick"], { dir });
  *   ryan.team.publish(roomId, "member.renamed", { name: "R" });
  *   net.setOnline(nick.id, false)   // Nick's laptop sleeps
+ *
+ * The network also plays the signaling server's revoke: a revoked member is
+ * told of its removal (the event revoke carried) when it's online with the
+ * room, so is every member once (the welcome's events), and it can't be
+ * introduced in the room again until it joins with a new code. `workerRevoke`
+ * false plays a Worker deployed before revoke.
  */
 
 const pair = (a: MemberId, b: MemberId) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -25,6 +32,29 @@ export class LoopbackNetwork {
   private full = new Set<string>();
   private links = new Set<string>();
   private reachableSent = new Map<string, string>();
+  /** The signaling server knows revoke (false: one deployed before it). */
+  workerRevoke = true;
+  /** Per room, members cut off and the removal their revoke carried. */
+  readonly revoked = new Map<RoomId, Map<MemberId, RoomEvent | null>>();
+  /** Revokes made, in order (for assertions). */
+  readonly revokes: { roomId: RoomId; by: MemberId; member: MemberId }[] = [];
+  private eventsSent = new Set<string>();
+
+  isRevoked(roomId: RoomId, id: MemberId): boolean {
+    return !!this.revoked.get(roomId)?.has(id);
+  }
+
+  /** What a revoke does at the signaling server. */
+  revoke(roomId: RoomId, by: MemberId, member: MemberId, event: RoomEvent | null): RevokeOutcome {
+    if (!this.online(by)) return { ok: false, reason: "offline", message: "the signaling server couldn't be reached" };
+    if (!this.workerRevoke) return { ok: false, reason: "unsupported", message: OLD_WORKER_REVOKE };
+    let room = this.revoked.get(roomId);
+    if (!room) this.revoked.set(roomId, (room = new Map()));
+    room.set(member, event);
+    this.revokes.push({ roomId, by, member });
+    this.reconcile();
+    return { ok: true };
+  }
 
   /** The wire for a member: one at a time (a closed one is replaced, as by an app restart). */
   wire(self: MemberId): LoopbackWire {
@@ -100,11 +130,39 @@ export class LoopbackNetwork {
       this.later(() => this.wires.get(a)?.handler?.up(b));
       this.later(() => this.wires.get(b)?.handler?.up(a));
     }
+    // a new code lets a revoked member back in; the admin's wire keeps former members cut off;
+    // revoked members hear of their removal, and everyone of removals (the welcome)
+    for (const w of this.wires.values()) {
+      if (!this.online(w.self)) continue;
+      for (const spec of w.specs()) {
+        if (this.workerRevoke) {
+          for (const r of spec.revoke ?? []) {
+            let room = this.revoked.get(spec.roomId);
+            if (room?.has(r.member)) continue;
+            if (!room) this.revoked.set(spec.roomId, (room = new Map()));
+            room.set(r.member, r.event);
+            this.revokes.push({ roomId: spec.roomId, by: w.self, member: r.member });
+          }
+        }
+        const revoked = this.revoked.get(spec.roomId);
+        if (!revoked) continue;
+        if (spec.join && revoked.has(w.self)) revoked.delete(w.self);
+        for (const event of revoked.values()) {
+          if (!event) continue;
+          const k = `${w.self}\n${spec.roomId}\n${event.id}`;
+          if (this.eventsSent.has(k)) continue;
+          this.eventsSent.add(k);
+          const copy = JSON.parse(JSON.stringify(event));
+          this.later(() => w.handler?.roomEvents(spec.roomId, [copy]));
+        }
+      }
+    }
     // who can be introduced to whom, per room
     for (const w of this.wires.values()) {
       if (!this.online(w.self)) continue;
       for (const roomId of w.roomIds()) {
-        const ids = [...this.wires.values()].filter((o) => o !== w && this.online(o.self) && o.roomIds().includes(roomId) && !this.cut.has(pair(o.self, w.self))).map((o) => o.self).sort();
+        if (this.isRevoked(roomId, w.self)) continue;
+        const ids = [...this.wires.values()].filter((o) => o !== w && this.online(o.self) && o.roomIds().includes(roomId) && !this.isRevoked(roomId, o.self) && !this.cut.has(pair(o.self, w.self))).map((o) => o.self).sort();
         const k = `${w.self}\n${roomId}`;
         if (this.reachableSent.get(k) === ids.join(",")) continue;
         this.reachableSent.set(k, ids.join(","));
@@ -138,6 +196,15 @@ export class LoopbackWire implements PeerWire {
 
   roomIds(): RoomId[] {
     return this.rooms.map((r) => r.roomId);
+  }
+
+  specs(): readonly WireRoom[] {
+    return this.rooms;
+  }
+
+  async revoke(roomId: RoomId, member: MemberId, event: RoomEvent | null): Promise<RevokeOutcome> {
+    if (!this.rooms.some((r) => r.roomId === roomId)) return { ok: false, reason: "offline", message: "this install isn't connecting to the room's signaling server" };
+    return this.net.revoke(roomId, this.self, member, event);
   }
 
   send(peer: MemberId, text: string): boolean {
@@ -177,8 +244,14 @@ export class LoopbackWire implements PeerWire {
     return out;
   }
 
-  roomStates(): Map<RoomId, { signaling: "online" | "offline" }> {
-    return new Map(this.rooms.map((r) => [r.roomId, { signaling: this.net.online(this.self) ? "online" : "offline" }]));
+  roomStates(): Map<RoomId, RoomSignalingState> {
+    return new Map(
+      this.rooms.map((r): [RoomId, RoomSignalingState] =>
+        this.net.isRevoked(r.roomId, this.self)
+          ? [r.roomId, { signaling: "offline", problem: "The signaling server says this install was removed from the room", code: "revoked", revoke: this.net.workerRevoke }]
+          : [r.roomId, { signaling: this.net.online(this.self) ? "online" : "offline", revoke: this.net.workerRevoke }]
+      )
+    );
   }
 
   problems(): string[] {

@@ -653,6 +653,47 @@ describe("cleaning up backups", () => {
   });
 });
 
+describe("leaving the room", () => {
+  it("the one who leaves deletes their backups on origin and every hidden ref of the room here; teammates forget the copies they had", async () => {
+    const t = await setup();
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    const nickTranscript = path.join(t.nickM.store.dir, t.roomId, "transcripts", "s1");
+    expect([refIn(t.bare, ref), refIn(t.ryanClone, ref), refIn(t.nickClone, ref)].every(Boolean)).toBe(true);
+    expect(fs.existsSync(nickTranscript)).toBe(true);
+    // what else of the room Ryan's clone holds (a copy left behind, one sent), and another room's ref, which stays
+    const head = sh(t.ryanClone, "rev-parse", "HEAD");
+    const leftRef = roomBackupRef(t.roomId, "s0", "refs/mockingbird/rooms-left");
+    const sentRef = roomBackupRef(t.roomId, "s0", "refs/mockingbird/rooms-sent");
+    const otherRoom = roomBackupRef("O".repeat(22), "s7");
+    for (const r of [leftRef, sentRef, otherRoom]) sh(t.ryanClone, "update-ref", r, head);
+
+    const out = await t.ryanM.team.leave(t.roomId);
+    expect(await t.ryan.svc.roomLeft(out.room)).toEqual([]);
+    expect(refIn(t.bare, ref)).toBeNull();
+    for (const r of [ref, leftRef, sentRef]) expect(refIn(t.ryanClone, r)).toBeNull();
+    expect(refIn(t.ryanClone, otherRoom)).toBe(head);
+    // Nick: Ryan's session is gone from the room, and so are the copies of it on his Mac
+    await until(() => !refIn(t.nickClone, ref) && !fs.existsSync(nickTranscript), "Nick's copies to go");
+    expect(backupIn(t.nickM, t.roomId)!.dropped).toMatchObject({ by: t.ryanM.id, reason: "left-room" });
+    expect(t.nick.svc.view().sessions).toEqual([]);
+    await expect(t.nick.svc.plan(t.roomId, "s1")).rejects.toThrow(/Ryan left the room: their sessions can't be taken over/);
+  });
+
+  it("says which backup couldn't be deleted from origin, instead of hiding it", async () => {
+    const t = await setup();
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    rejectPushes(t.bare, true);
+    const out = await t.ryanM.team.leave(t.roomId);
+    const problems = await t.ryan.svc.roomLeft(out.room);
+    expect(problems).toEqual([expect.stringMatching(/^The backup of “Donor entities” couldn't be deleted from origin \(refs\/mockingbird\/rooms\/.*\/s1\): .*switched off/)]);
+    expect(refIn(t.bare, roomBackupRef(t.roomId, "s1"))).not.toBeNull();
+    expect(refIn(t.ryanClone, roomBackupRef(t.roomId, "s1"))).toBeNull(); // this Mac's own copy still goes
+  });
+});
+
 describe("take-over pieces", () => {
   it("takes room sessions and their turn ends from the live panes", () => {
     const R = "R".repeat(22);

@@ -3,7 +3,7 @@ import { PLAN_BRANCH, PLAN_FILE } from "../../shared/team/plan";
 import * as fs from "fs";
 import * as path from "path";
 import { clampAnswer } from "./chat";
-import { updateLine, type ChatEntry } from "../../shared/team/chat";
+import { memberLine, updateLine, type ChatEntry } from "../../shared/team/chat";
 import type { MemberId, RoomEvent, RoomEventBodies, RoomId, RoomState } from "../../shared/team/types";
 
 /**
@@ -98,7 +98,7 @@ export class RoomAssistant {
   }
 }
 
-const nameIn = (room: RoomState, id: MemberId) => room.members.find((m) => m.id === id)?.name ?? "a teammate";
+const nameIn = (room: RoomState, id: MemberId) => (room.members.find((m) => m.id === id) ?? room.former?.find((m) => m.id === id))?.name ?? "a teammate";
 
 const clock = (ms: number) => {
   const d = new Date(ms);
@@ -110,6 +110,7 @@ export function chatLine(room: RoomState, e: ChatEntry): string | null {
   const when = `[${clock(e.at)}]`;
   if (e.kind === "message") return `${when} ${nameIn(room, e.author)}: ${e.text}`;
   if (e.kind === "assistant") return e.state === "answer" ? `${when} assistant (via ${nameIn(room, e.author)}): ${e.text}` : null;
+  if (e.kind === "member") return `${when} ${memberLine(e, (id) => nameIn(room, id))}`;
   return `${when} agents on ${nameIn(room, e.author)}'s laptop: ${(e.items ?? []).map(updateLine).join("; ")}`;
 }
 

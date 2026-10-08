@@ -233,6 +233,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         this.changed();
       }),
       team.onEvent("session.upsert", (e, room) => this.heardUpsert(e.author, e.body, room)),
+      team.onEvent("member.removed", (e, room) => this.memberRemoved(room.id, e.body.member, room)),
       team.onPresence((roomId, online) => this.presenceChanged(roomId, online)),
       team.onStream("pty:*", (chunk, ctx) => this.heardChunk(chunk, ctx.roomId, ctx.from)),
       team.onStream(VIEW_CHANNEL, (chunk, ctx) => this.heardView(chunk, ctx.roomId, ctx.from)),
@@ -788,6 +789,76 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     if (muted) this.muted.add(id);
     else this.muted.delete(id);
     writeFileAtomic(this.mutedFile, JSON.stringify([...this.muted], null, 2));
+    this.changed();
+  }
+
+  /** Stop muting these panes (their sessions left the room): saved at once. Returns the problem, or null. */
+  private unmute(ids: string[]): string | null {
+    const gone = ids.filter((id) => this.muted.has(id));
+    if (!gone.length) return null;
+    for (const id of gone) this.muted.delete(id);
+    try {
+      writeFileAtomic(this.mutedFile, JSON.stringify([...this.muted], null, 2));
+      return null;
+    } catch (err) {
+      const why = `The muted teammates' sessions couldn't be saved to ${this.mutedFile}: ${errText(err)}`;
+      this.d.log("team: live panes", why);
+      return why;
+    }
+  }
+
+  /**
+   * This install left `room` (shown as group `groupKey` here): its sessions
+   * there carry on as local sessions — not published, nobody typing in, no
+   * Co-authored-by trailers — and teammates' panes, views and mutes of it go.
+   * Returns what couldn't be cleaned up.
+   */
+  roomLeft(room: RoomState, groupKey: string | null): string[] {
+    const problems: string[] = [];
+    const own = new Set<string>();
+    for (const k of [...this.published.keys()]) {
+      const [roomId, id] = k.split("\n");
+      if (roomId !== room.id) continue;
+      this.published.delete(k);
+      own.add(id);
+    }
+    if (groupKey) for (const s of [...this.d.sessions.list(), ...this.d.sessions.resumable()]) if (topOfKey(s.taskGroup ?? "ungrouped") === groupKey) own.add(s.id);
+    for (const id of own) {
+      this.coauthors.forget(id);
+      this.leases.delete(id);
+      this.watchedOwn.delete(id);
+    }
+    // teammates' sessions as the room last had them (this install's own records went with its removal)
+    const theirs = Object.values(room.ext.sessions ?? {}).map((r) => remotePaneId(r.owner, r.id));
+    for (const [id, r] of this.remotes) if (r.roomId === room.id) theirs.push(id);
+    for (const id of theirs) {
+      const p = this.panes.get(id);
+      if (p?.resyncTimer) clearTimeout(p.resyncTimer);
+      this.panes.delete(id);
+      this.notified.delete(id);
+    }
+    const muteProblem = this.unmute(theirs);
+    if (muteProblem) problems.push(muteProblem);
+    for (const byRoom of this.views.values()) byRoom.delete(room.id);
+    this.sentViews.delete(room.id);
+    this.roomCache = null;
+    this.ownRooms = null;
+    this.indexRemotes();
+    this.schedule(0);
+    this.changed();
+    return problems;
+  }
+
+  /** A teammate left or was removed: their panes went with the room's records; their mutes and views go too. */
+  private memberRemoved(roomId: RoomId, member: MemberId, room: RoomState): void {
+    const team = this.team();
+    if (!team || member === team.self.id || room.members.some((m) => m.id === member)) return;
+    this.indexRemotes();
+    const prefix = remotePaneId(member, "");
+    const unmute = [...this.muted].filter((id) => id.startsWith(prefix) && !this.remotes.has(id));
+    const problem = this.unmute(unmute);
+    if (problem) this.problem(problem);
+    this.views.get(member)?.delete(roomId);
     this.changed();
   }
 

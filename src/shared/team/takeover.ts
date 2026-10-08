@@ -64,9 +64,12 @@ export interface RoomSessionBackup {
   /** The transcript's size when the newest snapshot was taken: a complete copy has at least this much. */
   transcriptBytes: number | null;
   takenOver: TakenOver | null;
-  /** Its backup was deleted from origin and members' clones; a later backup by its owner revives it. */
-  dropped: { at: number; by: MemberId; reason: DropReason } | null;
+  /** Its backup was deleted from origin and members' clones (or its owner left the room); a later backup by its owner revives it. */
+  dropped: { at: number; by: MemberId; reason: DroppedBecause } | null;
 }
+
+/** Why a backup counts as deleted: a DropReason its owner published, or "left-room" (its owner left or was removed: they delete it). */
+export type DroppedBecause = DropReason | "left-room";
 
 /**
  * Why a session's backup was deleted: its owner forgot the session, its work
@@ -317,11 +320,12 @@ export function backupOf(view: TakeoverView | null | undefined, tag: { roomId: R
 
 // ---- freshness ---------------------------------------------------------------------------
 
-const DROPPED_BECAUSE: Record<DropReason, string> = {
+const DROPPED_BECAUSE: Record<DroppedBecause, string> = {
   closed: "the session was closed",
   merged: "its work is in the base branch",
   stale: "no turns for 14 days",
   "taken-over": "the new copy is backed up",
+  "left-room": "its owner left the room",
 };
 
 export interface Freshness {

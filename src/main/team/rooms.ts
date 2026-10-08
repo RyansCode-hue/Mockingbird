@@ -4,7 +4,7 @@ import * as path from "path";
 import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { fingerprintOf, roomIdFor, TEAM_DIR, verifySignature, type Identity } from "./identity";
 import { canonicalJson, MEMBER_ID_RE, PUBLIC_KEY_RE, ROOM_ID_RE, SIGNATURE_RE, toBase64Url, TOKEN_RE } from "../../shared/team/protocol";
-import type { MemberId, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState } from "../../shared/team/types";
+import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState } from "../../shared/team/types";
 
 /**
  * Room state: every member keeps a full copy of each room as an append-only
@@ -15,9 +15,16 @@ import type { MemberId, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomS
  * summary/missingFor) and the order settles itself.
  *
  * An event is accepted only when its id is the hash of what it says, its
- * author is a member (or, for room.created, the key the room id was made
- * from), and the author's key signed it. Events from authors not yet known
- * wait (an add may arrive later); events that fail a check are refused.
+ * author is or was a member (or, for room.created, the key the room id was
+ * made from), and the author's key signed it. Events from authors not yet
+ * known wait (an add may arrive later); events that fail a check are refused.
+ *
+ * Membership is decided where an event falls in the room's order, the same
+ * on every member: an event counts only if its author is a member at that
+ * point. So a member who left or was removed (member.removed) is kept as a
+ * former member — what they did before still counts, what they do after
+ * changes nothing — until a later member.added brings them back. Only the
+ * room's admin (roomAdmin) removes someone else; anyone may leave.
  *
  * Adding an event type: declare its body in RoomEventBodies (and any state
  * in RoomExtensions), then defineEventType(type, { validate, reduce }).
@@ -54,6 +61,30 @@ export function defineEventType<K extends RoomEventType>(type: K, def: EventDef<
   registry.set(type, def);
 }
 
+/** What a stage does to its own part of a room's state when a member leaves or is removed (part of reducing: deterministic, JSON only). */
+export type MemberRemovedReducer = (state: RoomState, member: MemberId, event: RoomEvent<"member.removed">) => void;
+const removalReducers = new Map<string, MemberRemovedReducer>();
+
+/** Have member.removed also change a stage's state (its sessions go, its chat says so). `name` is the stage's, once. */
+export function onMemberRemoved(name: string, reduce: MemberRemovedReducer): void {
+  if (removalReducers.has(name)) throw new Error(`a member.removed reducer named ${name} is already defined`);
+  removalReducers.set(name, reduce);
+}
+
+/** Everything that reduces events: a snapshot made under another set is reduced again. */
+const reducerNames = (): string[] => [...registry.keys(), ...[...removalReducers.keys()].map((n) => `member.removed:${n}`)];
+
+/**
+ * Who may remove other members: the room's creator while it's a member, else
+ * the longest-standing member (the earliest member.added, in room order, of
+ * those still in it). Null once nobody is left. The signaling Worker follows
+ * the same rule as far as it can know it (signaling/src/room.ts signalingAdmin).
+ */
+export function roomAdmin(state: Pick<RoomState, "creator" | "members">): MemberId | null {
+  if (state.members.some((m) => m.id === state.creator)) return state.creator;
+  return state.members[0]?.id ?? null;
+}
+
 const str = (v: unknown, what: string, max: number, min = 0): string => {
   if (typeof v !== "string" || v.length > max || v.length < min) throw new Error(`${what} must be text of ${min}–${max} characters`);
   return v;
@@ -82,7 +113,29 @@ defineEventType("member.added", {
   },
   reduce(state, e) {
     if (state.members.some((m) => m.id === e.body.id)) return;
+    // someone who left or was removed comes back with a new invite: as the newest member
     state.members.push({ id: e.body.id, name: e.body.name, publicKey: e.body.publicKey, joinedAt: e.at, invitedBy: e.author });
+    if (state.former?.some((f) => f.id === e.body.id)) state.former = state.former.filter((f) => f.id !== e.body.id);
+  },
+});
+
+defineEventType("member.removed", {
+  validate(b: any, e) {
+    if (!b || typeof b !== "object") throw new Error("no body");
+    if (typeof b.member !== "string" || !MEMBER_ID_RE.test(b.member)) throw new Error("bad member id");
+    if (b.reason !== undefined && b.reason !== "left" && b.reason !== "removed") throw new Error("bad reason");
+    if (b.reason === "left" && b.member !== e.author) throw new Error("only the member themselves can leave");
+  },
+  reduce(state, e) {
+    const target = e.body.member;
+    const i = state.members.findIndex((m) => m.id === target);
+    if (i < 0) return;
+    // anyone may leave; only the admin removes someone else
+    if (target !== e.author && roomAdmin(state) !== e.author) return;
+    const [m] = state.members.splice(i, 1);
+    const former: FormerMember = { ...m, leftAt: e.at, removedBy: target === e.author ? null : e.author };
+    state.former = [...(state.former ?? []).filter((f) => f.id !== target), former];
+    for (const reduce of removalReducers.values()) reduce(state, target, e as RoomEvent<"member.removed">);
   },
 });
 
@@ -118,6 +171,7 @@ function createdState(e: RoomEvent<"room.created">): RoomState {
     creator: e.author,
     createdAt: e.at,
     members: [{ id: e.author, name: e.body.creatorName, publicKey: e.body.publicKey, joinedAt: e.at, invitedBy: null }],
+    former: [],
     ext: {},
     lamport: e.lamport,
     events: 1,
@@ -128,7 +182,8 @@ function createdState(e: RoomEvent<"room.created">): RoomState {
 export function applyEvent(state: RoomState | null, e: RoomEvent): RoomState | null {
   if (e.type === "room.created") return state ?? createdState(e as RoomEvent<"room.created">);
   if (!state) return null;
-  registry.get(e.type)?.reduce(state, e);
+  // an author who isn't a member at this point in the order (gone, or not yet back) changes nothing
+  if (state.members.some((m) => m.id === e.author)) registry.get(e.type)?.reduce(state, e);
   state.lamport = Math.max(state.lamport, e.lamport);
   state.events += 1;
   return state;
@@ -225,7 +280,7 @@ export class RoomLog {
     this.clock = this.events.reduce((m, e) => Math.max(m, e.lamport), 0);
     const snap = readJsonOrSetAside(this.snapshotFile, null, `room ${this.roomId}'s snapshot`) as Snapshot | null;
     const last = this.events.at(-1)?.id ?? null;
-    if (snap && snap.v === 1 && snap.count === this.events.length && snap.lastId === last && sameList(snap.reducers, [...registry.keys()])) {
+    if (snap && snap.v === 1 && snap.count === this.events.length && snap.lastId === last && sameList(snap.reducers, reducerNames())) {
       this._state = snap.state;
     } else {
       this._state = reduceRoom(this.events);
@@ -248,6 +303,16 @@ export class RoomLog {
 
   isMember(id: MemberId): boolean {
     return !!this.memberKey(id);
+  }
+
+  /** The key of a member, or of someone who was one: what their events are checked against (where they fall decides whether they count). */
+  private knownKey(id: MemberId): string | undefined {
+    return this.memberKey(id) ?? this._state?.former?.find((m) => m.id === id)?.publicKey;
+  }
+
+  /** Was `id` a member who left or was removed (and isn't back)? */
+  wasMember(id: MemberId): boolean {
+    return !this.isMember(id) && !!this._state?.former?.some((m) => m.id === id);
   }
 
   /** Events whose author isn't known as a member yet. */
@@ -279,7 +344,7 @@ export class RoomLog {
       if (typeof b.salt !== "string" || roomIdFor(b.publicKey, b.salt) !== this.roomId) return { status: "rejected", reason: "the room id wasn't made from the creator's key" };
       key = b.publicKey;
     } else {
-      key = this.memberKey(e.author);
+      key = this.knownKey(e.author);
       if (!key) {
         if (!this.pending.has(e.id)) {
           if (this.pending.size >= MAX_PENDING) {
@@ -334,6 +399,26 @@ export class RoomLog {
     return this.events.filter((e) => e.author === author).map((e) => e.id);
   }
 
+  /** The newest member.removed of `member` in the log (applied or not), or null. */
+  removalOf(member: MemberId): RoomEvent<"member.removed"> | null {
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      const e = this.events[i];
+      if (e.type === "member.removed" && (e.body as RoomEventBodies["member.removed"])?.member === member) return e as RoomEvent<"member.removed">;
+    }
+    return null;
+  }
+
+  /**
+   * What a former member needs to see their own removal: the events that
+   * decide membership (room.created, member.added, member.removed), up to and
+   * including their newest removal — never what was said after it.
+   */
+  membershipUpTo(member: MemberId): RoomEvent[] {
+    const removal = this.removalOf(member);
+    if (!removal) return [];
+    return this.events.filter((e) => (e.type === "room.created" || e.type === "member.added" || e.type === "member.removed") && compareEvents(e, removal) <= 0);
+  }
+
   /** This log's events by `author` that aren't among `theirIds`, in total order. */
   missingFor(author: MemberId, theirIds: string[]): RoomEvent[] {
     const have = new Set(theirIds);
@@ -343,7 +428,7 @@ export class RoomLog {
   /** Write the snapshot now (on quit, and every SNAPSHOT_EVERY events). */
   flush(): void {
     if (!this.sinceSnapshot) return;
-    const snap: Snapshot = { v: 1, count: this.events.length, lastId: this.events.at(-1)?.id ?? null, reducers: [...registry.keys()], state: this._state };
+    const snap: Snapshot = { v: 1, count: this.events.length, lastId: this.events.at(-1)?.id ?? null, reducers: reducerNames(), state: this._state };
     writeFileAtomic(this.snapshotFile, JSON.stringify(snap));
     this.sinceSnapshot = 0;
   }
@@ -386,7 +471,7 @@ export class RoomLog {
       while (progressed && this.pending.size) {
         progressed = false;
         for (const e of [...this.pending.values()].sort(compareEvents)) {
-          if (!this.isMember(e.author)) continue;
+          if (!this.knownKey(e.author)) continue;
           this.pending.delete(e.id);
           const r = this.add(e);
           if (r.status === "rejected") console.error(`[mockingbird] room ${this.roomId}: refused event ${e.id} (${e.type}) by ${e.author}: ${r.reason}`);

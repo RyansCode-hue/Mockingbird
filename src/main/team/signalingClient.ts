@@ -26,8 +26,16 @@ export type SignalingEvent =
   | { t: "peer-left"; id: string }
   | { t: "signal"; from: string; env: SignedEnvelope }
   | { t: "turn"; iceServers: IceServer[]; ttl: number; relay: boolean; error?: string }
+  /** Signed room events the server passed on: removals made while this install was offline, or its own. */
+  | { t: "room-events"; events: unknown[] }
   /** The server refused a request (a signal to someone offline, too many messages…). */
   | { t: "refused"; code: string; message: string; to?: string };
+
+/** What the server said to a revoke (see transport.ts RevokeOutcome). */
+export type RevokeAnswer = { ok: true } | { ok: false; reason: "unsupported" | "refused" | "offline" | "failed"; message: string };
+
+export const OLD_WORKER_REVOKE =
+  "The signaling Worker is older and can't cut members off — update it (cd signaling && npx wrangler deploy) to also cut them off at the Worker";
 
 export interface SignalingClientOptions {
   url: string;
@@ -49,10 +57,14 @@ export class SignalingClient {
   state: "connecting" | "online" | "offline" | "stopped" = "offline";
   /** Why the server refused this install (set until it's let in), and that refusal's code. */
   problem: string | null = null;
-  problemCode: "protocol" | "not-member" | "creation-refused" | "bad-url" | null = null;
+  problemCode: "protocol" | "not-member" | "revoked" | "creation-refused" | "bad-url" | null = null;
   /** Members connected to the room right now (not this install). */
   readonly peers = new Map<string, SignalingPeer>();
   relay = false;
+  /** What the server announced it can do beyond the protocol (from its welcome); null until welcomed. */
+  features: Set<string> | null = null;
+  /** Revokes sent, waiting for the server's answer, by member. */
+  private revokes = new Map<string, { resolve: (a: RevokeAnswer) => void; timer: ReturnType<typeof setTimeout> }[]>();
   private ws: WebSocket | null = null;
   private attempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -86,9 +98,40 @@ export class SignalingClient {
     this.state = "stopped";
     this.clearTimers();
     this.peers.clear();
+    this.settleRevokes(null, { ok: false, reason: "failed", message: "the signaling connection was closed before the server answered" });
     const ws = this.ws;
     this.ws = null;
     ws?.close(1000, "stopped");
+  }
+
+  /**
+   * Ask the server to cut `member` off the room (oneself, or — from the room's
+   * admin — someone removed), passing `event` on. Waits for the connection
+   * (up to `timeoutMs`), and for the answer. Never rejects.
+   */
+  async revoke(member: string, event: unknown, timeoutMs = 10_000): Promise<RevokeAnswer> {
+    const until = Date.now() + timeoutMs;
+    while (this.state !== "online" && this.state !== "stopped" && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+    if (this.state !== "online") return { ok: false, reason: "offline", message: this.problem ? `the signaling server refused this install: ${this.problem}` : "the signaling server couldn't be reached" };
+    if (!this.features?.has("revoke")) return { ok: false, reason: "unsupported", message: OLD_WORKER_REVOKE };
+    return new Promise<RevokeAnswer>((resolve) => {
+      const timer = setTimeout(() => this.settleRevokes(member, { ok: false, reason: "failed", message: "the signaling server didn't answer" }), Math.max(1000, until - Date.now()));
+      timer.unref?.();
+      this.revokes.set(member, [...(this.revokes.get(member) ?? []), { resolve, timer }]);
+      if (!this.send({ t: "revoke", member, ...(event ? { event } : {}) })) this.settleRevokes(member, { ok: false, reason: "offline", message: "the signaling connection dropped" });
+    });
+  }
+
+  /** Answer the revokes waiting for `member` (null: all of them). */
+  private settleRevokes(member: string | null, answer: RevokeAnswer): void {
+    for (const [m, waiting] of [...this.revokes]) {
+      if (member !== null && m !== member) continue;
+      this.revokes.delete(m);
+      for (const w of waiting) {
+        clearTimeout(w.timer);
+        w.resolve(answer);
+      }
+    }
   }
 
   /** Drop the connection and connect again now (after sleep, the old socket may be silently dead). */
@@ -167,11 +210,16 @@ export class SignalingClient {
         this.peers.clear();
         for (const p of msg.peers) this.peers.set(p.id, p);
         this.relay = msg.relay;
+        this.features = new Set(Array.isArray(msg.features) ? msg.features.filter((f): f is string => typeof f === "string") : []);
         this.state = "online";
         this.problem = this.problemCode = null;
         this.attempt = 0;
         this.startKeepAlive(ws);
         this.o.onEvent({ t: "online", peers: msg.peers, relay: msg.relay });
+        if (Array.isArray(msg.events) && msg.events.length) this.o.onEvent({ t: "room-events", events: msg.events });
+        return;
+      case "revoked":
+        if (typeof msg.member === "string") this.settleRevokes(msg.member, { ok: true });
         return;
       case "peer-joined":
         this.peers.set(msg.peer.id, msg.peer);
@@ -205,6 +253,15 @@ export class SignalingClient {
           this.o.log(`signaling ${this.o.roomId}: ${this.problem}`);
           return;
         }
+        if (msg.code === "not-member" && msg.revoked) {
+          // cut off by a revoke: the removal it passes on is signed, and the room log decides whether it counts
+          this.problem = "The signaling server says this install was removed from the room";
+          this.problemCode = "revoked";
+          this.retryAfter = 10 * 60_000;
+          this.o.log(`signaling ${this.o.roomId}: ${this.problem}`);
+          if (msg.event !== undefined) this.o.onEvent({ t: "room-events", events: [msg.event] });
+          return;
+        }
         if (msg.code === "not-member") {
           // with a join key, the likely reason is that the inviter's Mockingbird hasn't registered the code yet
           this.problem = this.o.join
@@ -213,6 +270,15 @@ export class SignalingClient {
           this.retryAfter = this.o.join ? 10_000 : 30_000;
           this.problemCode = "not-member";
           this.o.log(`signaling ${this.o.roomId}: ${this.problem} (${msg.message})`);
+          return;
+        }
+        if (msg.code === "forbidden" && typeof msg.member === "string") {
+          this.settleRevokes(msg.member, { ok: false, reason: "refused", message: `the signaling Worker refused: ${msg.message}` });
+          return;
+        }
+        if (msg.code === "bad-message" && /^unknown message revoke\b/.test(msg.message)) {
+          this.features?.delete("revoke");
+          this.settleRevokes(null, { ok: false, reason: "unsupported", message: OLD_WORKER_REVOKE });
           return;
         }
         if (msg.code === "replaced") return;
@@ -268,6 +334,7 @@ export class SignalingClient {
       }
     }
     this.peers.clear();
+    this.settleRevokes(null, { ok: false, reason: "offline", message: `the signaling connection dropped before the server answered (${reason})` });
     if (this.state !== "stopped") this.state = "offline";
     this.o.onEvent({ t: "offline", reason });
   }

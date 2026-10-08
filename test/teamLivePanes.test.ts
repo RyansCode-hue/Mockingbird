@@ -351,6 +351,38 @@ describe("notifications for a teammate's waiting session", () => {
   });
 });
 
+describe("leaving and removal", () => {
+  /** What a member's live-muted.json holds (it's under the live panes' dir). */
+  const mutedIn = (s: ReturnType<typeof side>) => {
+    const file = s.live["mutedFile" as never] as string;
+    return fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, "utf8")) as string[]) : [];
+  };
+
+  it("a removed teammate's sessions leave everyone's panes, mutes of them too; theirs carry on as local sessions", async () => {
+    const { ryan, nick, roomId } = await pair();
+    const theirs = await nick.start({ title: "nick's" });
+    const mine = await ryan.start({ title: "ryan's" });
+    await until(() => !!remoteOf(ryan, theirs.id) && !!remoteOf(nick, mine.id), "both sessions to show");
+    ryan.sessions.setMuted(remotePaneId(nick.m.id, theirs.id), true);
+    nick.sessions.setMuted(remotePaneId(ryan.m.id, mine.id), true);
+    expect(mutedIn(ryan)).toEqual([remotePaneId(nick.m.id, theirs.id)]);
+    expect(nick.live.roomOfSession(theirs.id)).toBe(roomId);
+
+    await ryan.m.team.removeMember(roomId, nick.m.id);
+    await until(() => !remoteOf(ryan, theirs.id), "Nick's session to leave Ryan's panes");
+    expect(mutedIn(ryan)).toEqual([]);
+    expect(remoteOf(ryan, mine.id)).toBeUndefined(); // his own session is his, not a remote
+
+    // Nick's Mac: the room's gone; his session runs on, as a local one, and Ryan's pane and its mute go
+    await until(() => !nick.m.team.room(roomId), "Nick to hear of it");
+    expect(nick.live.roomLeft(nick.m.store.get(roomId)!.state!, "5110")).toEqual([]);
+    expect(nick.live.roomOfSession(theirs.id)).toBeNull();
+    expect(nick.sessions.list().find((s) => s.id === theirs.id)?.status).not.toBe("dead");
+    expect(remoteOf(nick, mine.id)).toBeUndefined();
+    expect(mutedIn(nick)).toEqual([]);
+  });
+});
+
 describe("views: who's looking at what", () => {
   it("shows a teammate's initials on the panes they show, and what they're in, for Follow", async () => {
     const { ryan, nick } = await pair();
