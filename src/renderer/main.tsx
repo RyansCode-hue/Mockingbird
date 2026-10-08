@@ -50,7 +50,7 @@ import {
 } from "./layoutTree";
 import { GridPreview } from "./GridPreview";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
-import { cellKeyFor, cellKeyOf, frontOf, inReadingOrder, sessionHolding, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
+import { cellKeyFor, cellKeyOf, frontOf, groupChoices, inReadingOrder, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon } from "./Icons";
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
@@ -72,7 +72,7 @@ import { UsageMeter } from "./UsageMeter";
 import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
-import { JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
+import { ConnectedDivider, JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
 // team rooms: plan board
 import { PlanBoardDialog, PlanWarnings } from "./team/PlanBoard";
 // team rooms: team chat
@@ -908,17 +908,11 @@ function App() {
     };
   };
 
-  // sidebar structure: top-level groups, each with sessions bucketed by sub-group
-  const groups = useMemo(() => {
-    const g = new Map<string, SessionInfo[]>();
-    for (const s of visible) {
-      const key = topOfKey(s.taskGroup ?? "ungrouped");
-      g.set(key, [...(g.get(key) ?? []), s]);
-    }
-    // a joined room is a group here even before any of its sessions runs on this Mac
-    if (!filter && teamStatus && !isErr(teamStatus)) for (const r of teamStatus.rooms) if (!g.has(r.groupKey)) g.set(r.groupKey, []);
-    return [...g.entries()];
-  }, [visible, filter, teamStatus]);
+  // the groups shown as team rooms
+  const roomGroups = useMemo(() => teamRooms.map((r) => r.groupKey), [teamRooms]);
+  // sidebar structure: this Mac's top-level groups, then the rooms' under "Connected Sessions"; each with sessions bucketed by sub-group
+  const outline = useMemo(() => sessionOutline(visible, roomGroups, !!filter), [visible, roomGroups, filter]);
+  const groupCount = outline.filter((e) => e.kind === "group").length;
 
   // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
   // the rest are open exactly while the workspace is in the grid.
@@ -960,11 +954,8 @@ function App() {
     return `#${ticketIdOf(key)}${t ? ` ${t}` : ""}`;
   };
 
-  // existing group keys, for move targets and the New-Session picker
-  const groupKeys = useMemo(
-    () => [...new Set(sessions.map((s) => s.taskGroup).filter((g): g is string => !!g && g !== "assistant"))],
-    [sessions]
-  );
+  // existing group keys, for move targets and the New-Session picker — a joined room's even before it has a session here
+  const groupKeys = useMemo(() => groupChoices(sessions, roomGroups), [sessions, roomGroups]);
 
   // single-click actions on group/workspace headers are deferred so a
   // double-click (rename) can cancel them — otherwise the first click
@@ -1381,6 +1372,13 @@ function App() {
     refresh();
     jumpToSession(s);
     setModal(null);
+  };
+
+  /** New session seeded with group `key` (a group or "top/sub" workspace path; "ungrouped" seeds none). */
+  const newSessionIn = (key: string) => {
+    setNewGroup(key === "ungrouped" ? "" : key);
+    setNewLaunch("claude");
+    setModal("new");
   };
 
   /** "+" on a pane that isn't in a workspace yet: open a second tab beside it. */
@@ -1808,7 +1806,7 @@ function App() {
             />
           )}
           {/* team rooms: team chat */}
-          {sideView === "room" && <RoomChatPanel status={teamStatus} activeGroup={activeGroup} visible={!sideCollapsed} />}
+          {sideView === "room" && <RoomChatPanel status={teamStatus} activeGroup={activeGroup} visible={!sideCollapsed} onNewSession={newSessionIn} />}
           {sideView === "sessions" && (
           <div className="scroll">
             <div className="filter-row">
@@ -1824,7 +1822,10 @@ function App() {
             </div>
             {/* team rooms: live panes */}
             <LiveProblems state={roomLive.state} />
-            {groups.map(([key, list]) => (
+            {outline.map((entry) => {
+              if (entry.kind === "connected") return <ConnectedDivider key="connected" status={teamStatus} />;
+              const { key, list, shared } = entry;
+              return (
               <div key={key}>
                 {(
                   <div
@@ -1894,6 +1895,25 @@ function App() {
                         }}
                       >
                         ⇪
+                      </button>
+                    )}
+                    {key !== "assistant" && (
+                      <button
+                        className="glbtn"
+                        title={
+                          key === "ungrouped"
+                            ? "New session (no group)"
+                            : shared
+                              ? `New connected session in ${groupTitle(key, list)} — teammates see it`
+                              : `New session in ${groupTitle(key, list)}`
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelClick();
+                          newSessionIn(key);
+                        }}
+                      >
+                        +
                       </button>
                     )}
                   </div>
@@ -2096,7 +2116,8 @@ function App() {
                   );
                 })}
               </div>
-            ))}
+              );
+            })}
 
             {resumable.length > 0 && (
               <>
@@ -2382,11 +2403,7 @@ function App() {
                       <button
                         className="ws-add"
                         title={`New tab in “${cell.sub}”`}
-                        onClick={() => {
-                          setNewGroup(key);
-                          setNewLaunch("claude");
-                          setModal("new");
-                        }}
+                        onClick={() => newSessionIn(key)}
                       >
                         +
                       </button>
@@ -2518,7 +2535,7 @@ function App() {
           )}
           {(() => {
             const theirs = workSessions.filter(isRemote).length;
-            return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {groups.length} groups</span>;
+            return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {groupCount} groups</span>;
           })()}
           <span>⌘K commands</span>
           <span className="help-link" onClick={() => setModal("help")}>? help</span>

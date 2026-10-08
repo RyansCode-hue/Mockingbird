@@ -1034,6 +1034,9 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .sess-item:hover button { display: inline-block; }
 .sub-label button { display: none; }
 .sub-label:hover button { display: inline-block; }
+/* like the rows': a header's actions take no width until it's hovered, so the group's name gets it */
+.group-label .glbtn { display: none; }
+.group-label:hover .glbtn { display: inline-block; }
 .group-label .txt { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* ---- settings: category sidebar + rows ---- */
@@ -1862,6 +1865,16 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
   border-radius: 8px; background: color-mix(in srgb, var(--teal) 28%, var(--bg-sidebar)); color: var(--text-1);
   font: 600 8.5px var(--ui); letter-spacing: 0;
 }
+/* the Sessions outline's divider above the shared groups, styled like the side bar's section titles */
+.connected-label {
+  display: flex; align-items: center; gap: 8px; margin: 18px 2px 0;
+  font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); white-space: nowrap;
+}
+.filter-row + .connected-label { margin-top: 10px; }
+.connected-label::after { content: ""; flex: 1; height: 1px; background: var(--line-med); min-width: 8px; order: 1; }
+.connected-label > span:first-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.connected-label .cl-online { order: 2; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; letter-spacing: .3px; text-transform: none; font-size: 9.5px; }
+.connected-label .cl-online::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--teal); }
 .modal.team-dlg { width: 480px; }
 .modal textarea.team-code { min-height: 84px; word-break: break-all; }
 .set-body input[type=text].team-input { width: 220px; }
@@ -1952,7 +1965,13 @@ button.plan-toast-body:hover { background: none; color: var(--text-1-warm); }
 .rc-head { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 8px; border-bottom: 1px solid var(--line-med); }
 .rc-name { font: 600 11.5px var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rc-pick { width: 100%; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 5px; padding: 3px 6px; font: 600 11px var(--ui); }
-.rc-members { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.rc-sub { display: flex; align-items: flex-start; gap: 8px; }
+.rc-members { display: flex; flex-wrap: wrap; gap: 4px 8px; flex: 1; min-width: 0; }
+button.rc-new-session {
+  flex-shrink: 0; margin-top: -1px; padding: 1px 7px; border-color: var(--line-btn); border-radius: 5px;
+  font: 500 10px/15px var(--ui); color: var(--text-2); white-space: nowrap;
+}
+button.rc-new-session:hover { border-color: var(--line-btn-hover); color: var(--text-1); }
 .rc-member { display: inline-flex; align-items: center; gap: 4px; font: 400 10px var(--ui); color: var(--text-4); }
 .rc-member.on { color: var(--text-2); }
 .rc-initials {

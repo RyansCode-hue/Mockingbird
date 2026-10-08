@@ -68,6 +68,29 @@ export function SharedBadge({ room }: { room: TeamRoomSummary }) {
   );
 }
 
+/** Teammates connected to any room right now, once each. */
+export function teammatesOnline(status: TeamStatus | { error: string } | null): { id: string; name: string }[] {
+  if (!status || isErr(status)) return [];
+  const out = new Map<string, string>();
+  for (const r of status.rooms) for (const m of r.members) if (!m.self && r.online.includes(m.id)) out.set(m.id, m.name);
+  return [...out].map(([id, name]) => ({ id, name }));
+}
+
+/** The Sessions outline's divider above the groups shared as team rooms, with how many teammates are connected. */
+export function ConnectedDivider({ status }: { status: TeamStatus | { error: string } | null }) {
+  const online = teammatesOnline(status);
+  return (
+    <div className="connected-label" title="Groups shared as team rooms — their sessions show on every member's Mockingbird">
+      <span>Connected Sessions</span>
+      {online.length > 0 && (
+        <span className="cl-online" title={`Connected now: ${online.map((m) => m.name).join(", ")}`}>
+          {online.length} online
+        </span>
+      )}
+    </div>
+  );
+}
+
 /**
  * The one step that lets this Mockingbird create rooms: the signaling Worker
  * refuses new rooms from keys not on its ALLOWED_CREATORS secret (anyone who

@@ -4,7 +4,7 @@
  * and broadcast flows read the main process's answers.
  */
 import type { SessionInfo } from "../shared/types";
-import { splitGroupKey } from "../shared/types";
+import { splitGroupKey, topOfKey } from "../shared/types";
 import { readingOrder, renameWorkspaces, type LayoutNode } from "./layoutTree";
 
 /** A session's display name: its ticket title when it has one. */
@@ -100,4 +100,36 @@ export function worktreeGone(error: string): boolean {
  */
 export function reachesBroadcast(s: Pick<SessionInfo, "status" | "shell" | "debrief">): boolean {
   return !(s.status === "dead" || s.shell || s.debrief);
+}
+
+/** A row of the Sessions outline: a top-level group with its sessions, or the divider above the team rooms' groups. */
+export type OutlineGroup<T> = { kind: "group"; key: string; list: T[]; shared: boolean };
+export type OutlineEntry<T> = OutlineGroup<T> | { kind: "connected" };
+
+/**
+ * The Sessions outline's top-level rows. Groups keep first-appearance order
+ * within each half: this Mac's own groups first, then — under one
+ * "connected" divider, only when there are any — the groups shown as team
+ * rooms (`roomGroups`). A joined room is a group even before any of its
+ * sessions runs here, except while `filtering`, when only groups with a
+ * matching session show.
+ */
+export function sessionOutline<T extends Pick<SessionInfo, "taskGroup">>(visible: readonly T[], roomGroups: readonly string[], filtering: boolean): OutlineEntry<T>[] {
+  const byKey = new Map<string, T[]>();
+  for (const s of visible) {
+    const key = topOfKey(s.taskGroup ?? "ungrouped");
+    byKey.set(key, [...(byKey.get(key) ?? []), s]);
+  }
+  if (!filtering) for (const key of roomGroups) if (!byKey.has(key)) byKey.set(key, []);
+  const rooms = new Set(roomGroups);
+  const groups = [...byKey].map(([key, list]): OutlineGroup<T> => ({ kind: "group", key, list, shared: rooms.has(key) }));
+  const own = groups.filter((g) => !g.shared);
+  const connected = groups.filter((g) => g.shared);
+  return connected.length ? [...own, { kind: "connected" }, ...connected] : own;
+}
+
+/** The groups New Session and the move dialog offer: every session's group and every joined room's, once each. */
+export function groupChoices(sessions: readonly Pick<SessionInfo, "taskGroup">[], roomGroups: readonly string[]): string[] {
+  const keys = [...sessions.map((s) => s.taskGroup), ...roomGroups];
+  return [...new Set(keys.filter((g): g is string => !!g && g !== "assistant"))];
 }
