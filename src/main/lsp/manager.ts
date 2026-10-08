@@ -464,24 +464,34 @@ export class LspManager {
     return (await s.conn.request("textDocument/formatting", { textDocument: { uri: doc.uri }, options })) ?? [];
   }
 
+  /**
+   * Ask a server to shut down, and resolve once its connection has closed:
+   * the server exited, or a second after `exit` it was killed.
+   */
   private async stop(s: Server): Promise<void> {
     if (s.conn.isClosed) return;
     // no longer handed out: a file opened from now on starts a fresh server
     const key = this.key(s.spec, s.root);
     if (this.servers.get(key) === s) this.servers.delete(key);
+    const closed = new Promise<void>((resolve) => s.conn.once("close", () => resolve()));
     try {
       await s.conn.request("shutdown", null, 3000);
       s.conn.notify("exit", null);
     } catch {
       /* it's going away either way */
     }
-    setTimeout(() => s.conn.close("Stopped"), 1000);
+    const kill = setTimeout(() => s.conn.close("Stopped"), 1000);
+    await closed;
+    clearTimeout(kill);
   }
 
-  stopAll(): void {
-    for (const s of [...this.servers.values()]) {
-      s.docs.clear();
-      void this.stop(s);
-    }
+  /** Stop every server; resolves once they've all stopped. */
+  stopAll(): Promise<void> {
+    return Promise.all(
+      [...this.servers.values()].map((s) => {
+        s.docs.clear();
+        return this.stop(s);
+      })
+    ).then(() => undefined);
   }
 }

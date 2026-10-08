@@ -1121,7 +1121,7 @@ const lsp = new LspManager({
   onDiagnostics: (file, d) => toWindow("lsp:diagnostics", file, d),
   onStatus: (st) => toWindow("lsp:status", st),
 });
-app.on("will-quit", () => lsp.stopAll());
+app.on("will-quit", () => void lsp.stopAll());
 /** A file of a session's folder, as the root and an absolute path inside it. */
 const lspFile = async (sessionId: string, rel: string) => {
   const root = sessionRoot(String(sessionId));

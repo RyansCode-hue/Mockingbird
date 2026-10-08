@@ -178,7 +178,7 @@ describe("pulled problems", () => {
       expect(seen.at(-1)).toEqual([]);
       expect(messages.filter((x) => x.startsWith("Couldn't read problems"))).toEqual([]);
     } finally {
-      m.stopAll();
+      await m.stopAll();
     }
   };
 
@@ -191,6 +191,16 @@ describe("pulled problems", () => {
       await said("holding");
       m.change(root, file, "all fixed");
     });
+  });
+  it("stops every server before stopAll resolves, so nothing outlives it", { timeout: 20_000 }, async () => {
+    const m = new LspManager({ dir, env: () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin" }), which: async () => null, node: process.execPath, onDiagnostics: () => {}, onStatus: () => {} });
+    const root = tempDir("lsp-stop");
+    fs.writeFileSync(path.join(root, "mode"), "stop");
+    expect(await m.open(root, path.join(root, "a.fake"), "fine")).toMatchObject({ state: "ready" });
+    const conns = [...(m as any).servers.values()].map((s: any) => s.conn);
+    expect(conns).toHaveLength(1);
+    await m.stopAll();
+    expect(conns.every((c: any) => c.isClosed)).toBe(true);
   });
 });
 
