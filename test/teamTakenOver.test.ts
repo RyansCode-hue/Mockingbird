@@ -327,8 +327,9 @@ describe("the copy a take-over leaves behind", () => {
   it("counts the files the copy changed after the snapshot the teammate continued from, and sends them as a patch that lands on their session to review — never applied by itself", async () => {
     const t = await setup();
     await takenOverWhileAway(t);
-    // offline (its laptop asleep mid-turn: nothing backed up), Ryan's agent kept working: an edit, a new file, a deletion (and a secret, which never leaves)
+    // offline (its laptop asleep mid-turn: nothing backed up), Ryan's agent kept working: an edit, a new file, a deletion (and a secret, staged even, which never leaves)
     write(t.wt, { "src/a.ts": "export const a = 43; // offline\n", "src/offline.ts": "export const later = true;\n", ".env": "TOKEN=changed\n" });
+    git(t.wt, "add", ".env");
     fs.rmSync(path.join(t.wt, "notes/todo.md"));
     const r = await t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
     expect(fs.readFileSync(path.join(r.cwd, "src/a.ts"), "utf8")).toBe("export const a = 42; // edited\n");

@@ -498,7 +498,7 @@ export class TakeoverService {
     const ref = roomBackupRef(roomId, s.id);
     const prev = this.local(roomId).own[s.id];
     const takenAt = this.now();
-    const snap = await snapshotCommit(top, `${snapshotSubject(s.id)}\n\ntaken-at: ${takenAt}`, { exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
+    const snap = await snapshotCommit(top, `${snapshotSubject(s.id)}\n\ntaken-at: ${takenAt}`, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
     if (!snap) throw new Error(`${s.cwd} isn't in a git repository`);
     // nothing changed since the last turn: keep that snapshot, with nothing new to send or push
     const same = !!prev && prev.tree === snap.tree && prev.parent === snap.parent && (await hasCommits(top, [prev.sha])).length === 1;
@@ -972,7 +972,7 @@ export class TakeoverService {
         if (!top) throw new Error(`${rec.cwd} isn't in a git repository any more`);
         const base = rec.sent?.sha ?? rec.base;
         if (!(await hasCommits(top, [base])).length) throw new Error(`the snapshot ${by} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told`);
-        const now = await worktreeTree(top, { exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
+        const now = await worktreeTree(top, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []), base });
         const files = await changedFiles(top, `${base}^{tree}`, now!.tree);
         this.unsent.set(sessionId, { files: files.map((f) => f.path), checkedAt: this.now() });
       } catch (err) {
@@ -1011,7 +1011,7 @@ export class TakeoverService {
       if (!(await hasCommits(top, [base])).length) throw new Error(`The snapshot ${name} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told`);
       const me = this.nameOf(roomId, this.d.team.self.id);
       const commit = await worktreeCommitOn(top, base, `Mockingbird: ${me}'s changes to “${rec.title}” after ${name} continued it\n\nfrom-session: ${sessionId}`, {
-        exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []),
+        secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []),
       });
       const files = await changedFiles(top, base, commit.sha);
       if (!files.length) throw new Error(`Nothing to send: ${name} has everything in this copy`);

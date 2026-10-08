@@ -69,7 +69,7 @@ export function roomSecretReads(workTrackerPath: string): { rules: string[]; pro
 export const notDeniedByPath = (problem: string | null) => problem && `${problem} — so it isn't denied by path`;
 
 /**
- * Git pathspecs (for `git add` run at `top`) that leave secret files out:
+ * Git pathspecs (for git run at `top`) that match secret files:
  * SECRET_FILE_GLOBS at any depth, and each of `files` (absolute paths, such as
  * knownSecretFiles) that lies inside `top`.
  */
@@ -77,7 +77,7 @@ export function secretPathspecs(top: string, files: readonly string[] = []): str
   const inside = files
     .map((f) => path.relative(realpathOr(top), realpathOr(f)))
     .filter((rel) => rel && !rel.startsWith("..") && !path.isAbsolute(rel));
-  return [...SECRET_FILE_GLOBS.map((g) => `:(exclude,glob)**/${g}`), ...inside.map((rel) => `:(exclude,literal)${rel}`)];
+  return [...SECRET_FILE_GLOBS.map((g) => `:(glob)**/${g}`), ...inside.map((rel) => `:(literal)${rel}`)];
 }
 
 const realpathOr = (p: string): string => {

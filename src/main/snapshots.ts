@@ -62,20 +62,32 @@ async function seedIndex(top: string, file: string): Promise<void> {
 
 /**
  * The worktree's files as a tree object, leaving out ignored files and big ones
- * (which are returned). `exclude` (pathspecs) leaves more out: files it
- * matches keep the version the repository's index had, if any.
+ * (which are returned). Files `secrets` (pathspecs) matches are never taken
+ * from the worktree or the index: they are as commit `base` has them, or
+ * absent when it has none (or there's no `base`). So a secret that is only
+ * staged, or edited since `base`, never reaches the tree, and a diff against
+ * `base` never shows one.
  */
-async function treeOfWorktree(top: string, env: Record<string, string>, exclude: string[] = []): Promise<{ tree: string; skipped: string[] }> {
+async function treeOfWorktree(top: string, env: Record<string, string>, secrets: string[] = [], base: string | null = null): Promise<{ tree: string; skipped: string[] }> {
   await seedIndex(top, env.GIT_INDEX_FILE);
-  const changed = (await git(top, ["ls-files", "-z", "-m", "-o", "--exclude-standard"], { env, trim: false })).split("\0").filter(Boolean);
+  const notSecret = secrets.map(excluding);
+  const changed = (await git(top, ["ls-files", "-z", "-m", "-o", "--exclude-standard", "--", ".", ...notSecret], { env, trim: false })).split("\0").filter(Boolean);
   const skipped: string[] = [];
   for (const f of changed) {
     const st = await fs.promises.stat(path.join(top, f)).catch(() => null); // deleted files have nothing to measure
     if (st && st.isFile() && st.size > SNAPSHOT_MAX_FILE_BYTES) skipped.push(f);
   }
-  await git(top, ["add", "-A", "--", ".", ...skipped.map((f) => `:(exclude,literal)${f}`), ...exclude], { env });
+  await git(top, ["add", "-A", "--", ".", ...skipped.map((f) => `:(exclude,literal)${f}`), ...notSecret], { env });
+  // the index was seeded from the repository's, so its secrets are still whatever was staged there
+  if (secrets.length) {
+    if (base) await git(top, ["reset", "-q", base, "--", ...secrets], { env });
+    else await git(top, ["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", ...secrets], { env });
+  }
   return { tree: await git(top, ["write-tree"], { env }), skipped };
 }
+
+/** A pathspec, plain or with long-form magic such as `:(glob)`, as one that excludes what it matches. */
+const excluding = (spec: string) => (spec.startsWith(":(") ? `:(exclude,${spec.slice(2)}` : `:(exclude)${spec}`);
 
 export interface WorktreeSnapshot {
   sha: string;
@@ -88,15 +100,15 @@ export interface WorktreeSnapshot {
 /**
  * The worktree's files as a commit on top of HEAD, under no ref (the caller
  * names it): the branch, the index and the history are untouched. Ignored and
- * big files are left out, as for Undo turn, and so is whatever `exclude`
- * matches. Null outside a git repository.
+ * big files are left out, as for Undo turn; files `secrets` matches are as
+ * HEAD has them. Null outside a git repository.
  */
-export async function snapshotCommit(cwd: string, message: string, opts: { exclude?: string[] } = {}): Promise<WorktreeSnapshot | null> {
+export async function snapshotCommit(cwd: string, message: string, opts: { secrets?: string[] } = {}): Promise<WorktreeSnapshot | null> {
   const top = await repoTop(cwd);
   if (!top) return null;
   return withIndex(async (env) => {
-    const { tree, skipped } = await treeOfWorktree(top, env, opts.exclude);
     const parent = await headCommit(top);
+    const { tree, skipped } = await treeOfWorktree(top, env, opts.secrets, parent);
     const body = [message, ...(skipped.length ? ["", `skipped: ${JSON.stringify(skipped)}`] : [])].join("\n");
     const sha = await git(top, ["commit-tree", tree, ...(parent ? ["-p", parent] : []), "-m", body], { env });
     return { sha, tree, parent, skipped };
@@ -104,26 +116,29 @@ export async function snapshotCommit(cwd: string, message: string, opts: { exclu
 }
 
 /**
- * The worktree's files as a tree object (ignored and big files left out, and
- * whatever `exclude` matches), without making a commit or touching the
- * index. Null outside a git repository.
+ * The worktree's files as a tree object (ignored and big files left out;
+ * files `secrets` matches as commit `base` has them, HEAD by default),
+ * without making a commit or touching the index. Null outside a git
+ * repository.
  */
-export async function worktreeTree(cwd: string, opts: { exclude?: string[] } = {}): Promise<{ top: string; tree: string; skipped: string[] } | null> {
+export async function worktreeTree(cwd: string, opts: { secrets?: string[]; base?: string } = {}): Promise<{ top: string; tree: string; skipped: string[] } | null> {
   const top = await repoTop(cwd);
   if (!top) return null;
-  return withIndex(async (env) => ({ top, ...(await treeOfWorktree(top, env, opts.exclude)) }));
+  const base = opts.base ?? (await headCommit(top));
+  return withIndex(async (env) => ({ top, ...(await treeOfWorktree(top, env, opts.secrets, base)) }));
 }
 
 /**
  * The worktree's files as a commit on top of `parent` (any commit, not
  * necessarily HEAD), under no ref: its diff against `parent` is what the
- * worktree changed since. Ignored, big and `exclude`d files are left out.
+ * worktree changed since. Ignored and big files are left out; files
+ * `secrets` matches are as `parent` has them, so the diff never shows one.
  */
-export async function worktreeCommitOn(cwd: string, parent: string, message: string, opts: { exclude?: string[] } = {}): Promise<WorktreeSnapshot> {
+export async function worktreeCommitOn(cwd: string, parent: string, message: string, opts: { secrets?: string[] } = {}): Promise<WorktreeSnapshot> {
   const top = await repoTop(cwd);
   if (!top) throw new Error(`${cwd} isn't in a git repository`);
   return withIndex(async (env) => {
-    const { tree, skipped } = await treeOfWorktree(top, env, opts.exclude);
+    const { tree, skipped } = await treeOfWorktree(top, env, opts.secrets, parent);
     const body = [message, ...(skipped.length ? ["", `skipped: ${JSON.stringify(skipped)}`] : [])].join("\n");
     const sha = await git(top, ["commit-tree", tree, "-p", parent, "-m", body], { env });
     return { sha, tree, parent, skipped };
