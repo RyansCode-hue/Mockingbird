@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Modal } from "./Modal";
 import { SetRow } from "./SetRow";
 import { CopyToast, useCopyNote } from "./copyNote";
+import { RoomBackupsSetting } from "./team/RoomBackups";
 import { isErr, type Settings } from "../shared/types";
 import { allowCreatorsCommand } from "../shared/team/protocol";
 import type { LeaveOutcome, PeerStatus, RemoveOutcome, TeamNotice, TeamRoomSummary, TeamStatus } from "../shared/team/types";
@@ -575,6 +576,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
               Leave room…
             </button>
           </SetRow>
+          <RoomBackupsSetting room={r} />
           <RoomMembers room={r} onRemove={(member) => setRemoving({ room: r, member })} />
         </div>
       ))}

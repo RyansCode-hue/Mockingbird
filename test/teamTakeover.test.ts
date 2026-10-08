@@ -11,7 +11,7 @@ import { claudeProjectDir, codexRolloutPath, realpathOr } from "../src/main/agen
 import { publicUrl, repoIdentity, withoutCredentials } from "../src/main/git";
 import { rebaseTranscript } from "../src/main/transcripts";
 import { worktreeAt } from "../src/main/worktrees";
-import { backupFreshness, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
+import { backupFreshness, NOT_PUSHED, remoteLabel, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
 import type { NewSessionRequest, SessionInfo } from "../src/shared/types";
 
 const CONV = "7f3c2a10-1b2c-4d5e-8f90-a1b2c3d4e5f6";
@@ -142,10 +142,19 @@ function files(root: string): Record<string, string> {
   return out;
 }
 
-async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number } = {}) {
+/**
+ * Ryan's session s1 in a room with Nick (and Sam). Most tests here are about
+ * backups on origin, so the room's admin (Ryan) turns those on, unless
+ * `backupsToOrigin: false` keeps the room as every room starts: peer to peer.
+ */
+async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number; backupsToOrigin?: boolean } = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(names, { dir: tempDir("team") });
   const [ryanM, nickM, samM] = members;
+  if (o.backupsToOrigin !== false) {
+    ryanM.team.publish(roomId, "room.settings", { backupsToOrigin: true });
+    await until(() => members.every((m) => m.team.room(roomId)?.ext.settings?.backupsToOrigin === true), "everyone to hear the room backs up to origin");
+  }
   const ryan = takeover(ryanM, roomId, { repos: [r.ryanClone], sessions: [session({ id: "s1", cwd: r.wt, repoPath: r.ryanClone })], now: o.ryanNow });
   const nick = takeover(nickM, roomId, { repos: o.nickHasClone === false ? [] : [r.nickClone] });
   const sam = samM ? takeover(samM, roomId, { repos: [] }) : null;
@@ -250,8 +259,8 @@ describe("room session backups", () => {
     await Promise.all(runs);
     const backups = t.ryanM.team.room(t.roomId)!.events;
     expect(backupIn(t.ryanM, t.roomId)!.push.ok).toBe(true);
-    // created, Nick added, then two backups at most: the first, and one for everything that ended while it ran
-    expect(backups).toBeLessThanOrEqual(4);
+    // created, Nick added, backups to origin turned on, then two backups at most: the first, and one for everything that ended while it ran
+    expect(backups).toBeLessThanOrEqual(5);
   });
 
   it("records a failed push in the room and shows it, without stopping the copy to teammates", async () => {
@@ -726,7 +735,201 @@ describe("leaving the room", () => {
   });
 });
 
+const viewOf = (svc: TakeoverService, id = "s1") => svc.view().sessions.find((s) => s.sessionId === id)!;
+const originRefs = (bare: string) => sh(bare, "for-each-ref", "--format=%(refname)", "refs/mockingbird");
+
+describe("backups kept peer to peer (every room's default)", () => {
+  it("never pushes a turn's backup, still copies it to teammates, and a take-over works from that copy", async () => {
+    const t = await setup(["Ryan", "Nick"], { backupsToOrigin: false });
+    expect(t.ryanM.team.room(t.roomId)!.ext.settings).toBeUndefined(); // nobody turned anything on
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    const sha = backupIn(t.ryanM, t.roomId)!.latest.sha;
+    expect(originRefs(t.bare)).toBe("");
+    expect(refIn(t.ryanClone, ref)).toBe(sha);
+    expect(refIn(t.nickClone, ref)).toBe(sha);
+    expect(backupIn(t.ryanM, t.roomId)).toMatchObject({ toOrigin: false, pushed: null });
+    // the event still carries a push outcome, so a Mockingbird from before the setting takes it
+    const event = t.ryanM.store.get(t.roomId)!.all().find((e) => e.type === "session.backup")!;
+    expect(event.body).toMatchObject({ toOrigin: false, push: { ok: false, error: NOT_PUSHED } });
+    // each side says where the copies are
+    expect(backupFreshness(viewOf(t.ryan.svc))).toMatchObject({ tone: "ok", text: expect.stringMatching(/^copied to Nick /) });
+    await until(() => !!viewOf(t.nick.svc)?.peerCopy, "Nick's copy in his view");
+    expect(backupFreshness(viewOf(t.nick.svc))).toMatchObject({ tone: "ok", text: expect.stringMatching(/^copied here /) });
+
+    const ryanFiles = files(t.wt);
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
+    const plan = await t.nick.svc.plan(t.roomId, "s1");
+    expect(plan).toMatchObject({ toOrigin: false, snapshot: { sha, source: "peer" }, other: null, originProblem: null, latestMissing: false, conversation: { kind: "full" } });
+    const r = await t.nick.svc.takeOver(t.roomId, "s1");
+    expect(files(r.cwd)).toEqual(ryanFiles);
+    expect(r.conversation).toBe("full");
+    // origin was never read: no copy of origin's in Nick's clone
+    expect(sh(t.nickClone, "for-each-ref", "refs/mockingbird/rooms-origin")).toBe("");
+    // Nick's first backup of his copy stays off origin too, and retires the old one everywhere
+    await t.nick.svc.turnEnded(r.sessionId);
+    expect(originRefs(t.bare)).toBe("");
+    expect(backupIn(t.nickM, t.roomId, r.sessionId)).toMatchObject({ toOrigin: false });
+    expect(backupIn(t.nickM, t.roomId)!.dropped).toMatchObject({ by: t.nickM.id, reason: "taken-over" });
+  });
+
+  it("says how old the copy here is when the owner's laptop has newer work", async () => {
+    const t = await setup(["Ryan", "Nick", "Sam"], { backupsToOrigin: false });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const first = backupIn(t.ryanM, t.roomId)!.latest.sha;
+    await until(() => refIn(t.nickClone, roomBackupRef(t.roomId, "s1")) === first, "Nick's copy");
+    t.net.partition(t.ryanM.id, t.nickM.id); // Nick hears of the next turn through Sam, but gets no copy of it
+    await until(() => !t.ryanM.team.presence(t.roomId).includes(t.nickM.id), "the partition");
+    write(t.wt, { "src/a.ts": "a newer turn\n" });
+    await t.ryan.svc.turnEnded("s1");
+    const second = backupIn(t.ryanM, t.roomId)!.latest.sha;
+    await until(() => backupIn(t.nickM, t.roomId)?.latest.sha === second, "Nick to hear of the newer turn through Sam");
+    expect(backupFreshness(viewOf(t.nick.svc))).toMatchObject({ tone: "warn", text: expect.stringMatching(/^copied here .* · newer on Ryan's laptop$/) });
+    const plan = await t.nick.svc.plan(t.roomId, "s1");
+    expect(plan).toMatchObject({ toOrigin: false, ownerOnline: false, snapshot: { sha: first, source: "peer" }, latestMissing: true });
+  });
+
+  it("refuses a take-over with no copy here, saying why", async () => {
+    const t = await setup(["Ryan", "Nick", "Sam"], { backupsToOrigin: false });
+    t.net.partition(t.ryanM.id, t.nickM.id); // Nick hears of it through Sam, but gets no copy
+    await until(() => !t.ryanM.team.presence(t.roomId).includes(t.nickM.id), "the partition");
+    await t.ryan.svc.turnEnded("s1");
+    await until(() => !!backupIn(t.nickM, t.roomId), "Nick to hear of the backup through Sam");
+    expect(backupFreshness(viewOf(t.nick.svc))).toEqual({ tone: "warn", text: "no copy here · only on Ryan's laptop" });
+    expect(await t.nick.svc.plan(t.roomId, "s1")).toMatchObject({ toOrigin: false, snapshot: null, originProblem: null, latestMissing: true });
+    await expect(t.nick.svc.takeOver(t.roomId, "s1")).rejects.toThrow(/^No copy of this session has reached this Mac yet: this room keeps backups peer to peer, and Ryan's laptop hasn't sent one/);
+    expect(sh(t.nickClone, "for-each-ref", "refs/mockingbird")).toBe("");
+    expect(originRefs(t.bare)).toBe("");
+  });
+
+  it("is the admin's alone to change: anyone else's change is refused here and changes nothing in the room", async () => {
+    const t = await setup(["Ryan", "Nick"], { backupsToOrigin: false });
+    expect(() => t.nick.svc.setBackupsToOrigin(t.roomId, true)).toThrow(/^Only the room's admin \(Ryan\) can change where its backups go/);
+    expect(t.nick.svc.view().rooms).toEqual([{ roomId: t.roomId, toOrigin: false, changed: null, adminName: "Ryan", canChange: false, remote: "origin" }]);
+    expect(t.ryan.svc.view().rooms[0]).toMatchObject({ canChange: true, adminName: "Ryan" });
+    // a Mockingbird that doesn't cooperate signs one anyway: every member applies it as nothing
+    t.nickM.team.publish(t.roomId, "room.settings", { backupsToOrigin: true });
+    await until(() => (t.ryanM.team.room(t.roomId)?.events ?? 0) === t.nickM.team.room(t.roomId)!.events, "Ryan to get the event");
+    for (const m of [t.ryanM, t.nickM]) expect(m.team.room(t.roomId)!.ext.settings).toBeUndefined();
+    await t.ryan.svc.turnEnded("s1");
+    expect(originRefs(t.bare)).toBe("");
+    expect(() => t.ryanM.team.publish(t.roomId, "room.settings", { backupsToOrigin: "yes" } as never)).toThrow(/backupsToOrigin must be true or false/);
+    // once the creator leaves, the longest-standing member is the admin, and their change counts
+    await t.ryanM.team.leave(t.roomId);
+    await until(() => !t.nickM.team.room(t.roomId)!.members.some((m) => m.id === t.ryanM.id), "Ryan gone at Nick's");
+    t.nick.svc.setBackupsToOrigin(t.roomId, true);
+    expect(t.nickM.team.room(t.roomId)!.ext.settings).toMatchObject({ backupsToOrigin: true, by: t.nickM.id });
+  });
+
+  it("treats a room from before the setting as off: its old backups read as pushed, and their owner deletes them from origin on start", async () => {
+    const t = await setup(["Ryan", "Nick"], { backupsToOrigin: false });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    const b = backupIn(t.ryanM, t.roomId)!;
+    // what a Mockingbird from before left: the backup on origin, its record saying so, and an event without toOrigin
+    sh(t.ryanClone, "push", "-q", "origin", `${b.latest.sha}:${ref}`);
+    const file = path.join(t.ryanM.store.dir, t.roomId, "takeover.json");
+    const local = JSON.parse(fs.readFileSync(file, "utf8"));
+    local.own.s1.pushed = b.latest.sha;
+    fs.writeFileSync(file, JSON.stringify(local));
+    t.ryanM.team.publish(t.roomId, "session.backup", { sessionId: "s1", sha: b.latest.sha, takenAt: Date.now(), push: { ok: true, at: Date.now() }, session: b.session, transcriptBytes: null });
+    expect(backupIn(t.ryanM, t.roomId)).toMatchObject({ toOrigin: true, pushed: { sha: b.latest.sha } });
+    // Ryan's Mockingbird starts again, as after the update: its first prune takes the backup off origin
+    t.ryan.svc.close();
+    const again = takeover(t.ryanM, t.roomId, { repos: [t.ryanClone], sessions: [...t.ryan.sessions.values()] });
+    await again.svc.prune();
+    expect(refIn(t.bare, ref)).toBeNull();
+    expect(again.svc.view().cleanup).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).own.s1.pushed).toBeNull();
+    // and its next backup stays off origin
+    write(t.wt, { "src/a.ts": "after the update\n" });
+    await again.svc.turnEnded("s1");
+    expect(originRefs(t.bare)).toBe("");
+    expect(backupIn(t.ryanM, t.roomId)).toMatchObject({ toOrigin: false, pushed: null });
+  });
+});
+
+describe("backups to origin (the admin's opt-in)", () => {
+  it("runs the repository's pre-push hook on each push, and a hook that refuses one shows as a failed backup", async () => {
+    const t = await setup();
+    const ran = path.join(tempDir("hook"), "ran");
+    const hook = path.join(t.ryanClone, ".git", "hooks", "pre-push");
+    fs.writeFileSync(hook, `#!/bin/sh\ncat >> "${ran}"\necho 'secret scanner: an AWS key in src/a.ts' >&2\nexit 1\n`, { mode: 0o755 });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    expect(fs.readFileSync(ran, "utf8")).toContain(ref); // the hook saw the push it refused
+    expect(refIn(t.bare, ref)).toBeNull();
+    const b = backupIn(t.ryanM, t.roomId)!;
+    expect(b.push).toMatchObject({ ok: false, error: expect.stringContaining("secret scanner: an AWS key in src/a.ts") });
+    expect(backupFreshness(viewOf(t.ryan.svc)).text).toMatch(/^backup failed: .*secret scanner: an AWS key/);
+    expect(refIn(t.nickClone, ref)).toBe(b.latest.sha); // the copy to Nick still went
+    // a hook that lets it through: on origin
+    fs.writeFileSync(hook, `#!/bin/sh\ncat >> "${ran}"\nexit 0\n`, { mode: 0o755 });
+    write(t.wt, { "src/a.ts": "no key\n" });
+    await t.ryan.svc.turnEnded("s1");
+    expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
+  });
+
+  it("turned on: what each owner has goes to origin at once, without waiting for a turn", async () => {
+    const t = await setup(["Ryan", "Nick"], { backupsToOrigin: false });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    expect(refIn(t.bare, ref)).toBeNull();
+    t.ryan.svc.setBackupsToOrigin(t.roomId, true);
+    await t.ryan.svc.settled();
+    expect(refIn(t.bare, ref)).toBe(backupIn(t.ryanM, t.roomId)!.latest.sha);
+    expect(backupIn(t.ryanM, t.roomId)).toMatchObject({ toOrigin: true, push: { ok: true } });
+    await until(() => t.nick.svc.view().rooms[0]?.toOrigin === true, "Nick to see it on");
+    expect(t.nick.svc.view().rooms[0]).toMatchObject({ changed: { byName: "Ryan", self: false }, canChange: false });
+    expect(t.ryan.svc.view().rooms[0]).toMatchObject({ changed: { self: true }, canChange: true });
+  });
+
+  it("turned off: each owner deletes what it pushed (a failure shown and retried), pushes nothing more, and teammates stop reading origin", async () => {
+    const t = await setup();
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const ref = roomBackupRef(t.roomId, "s1");
+    expect(refIn(t.bare, ref)).not.toBeNull();
+    rejectPushes(t.bare, true);
+    t.ryan.svc.setBackupsToOrigin(t.roomId, false);
+    await t.ryan.svc.settled();
+    expect(refIn(t.bare, ref)).not.toBeNull();
+    expect(t.ryan.svc.view().cleanup).toEqual([{ roomId: t.roomId, sessionId: "s1", title: "Donor entities", problem: expect.stringMatching(/backups are switched off here|declined/) }]);
+    expect(t.ryan.logs.some((l) => /deleting the backup of session s1/.test(l))).toBe(true);
+    rejectPushes(t.bare, false);
+    await t.ryan.svc.prune();
+    expect(refIn(t.bare, ref)).toBeNull();
+    expect(t.ryan.svc.view().cleanup).toEqual([]);
+    // the next turn: copied to Nick, not pushed
+    write(t.wt, { "src/a.ts": "after\n" });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    expect(originRefs(t.bare)).toBe("");
+    const b = backupIn(t.ryanM, t.roomId)!;
+    expect(b).toMatchObject({ toOrigin: false, pushed: null });
+    expect(refIn(t.nickClone, ref)).toBe(b.latest.sha);
+    await until(() => backupIn(t.nickM, t.roomId)?.latest.sha === b.latest.sha, "Nick to hear of it");
+    expect(await t.nick.svc.plan(t.roomId, "s1")).toMatchObject({ toOrigin: false, snapshot: { source: "peer", sha: b.latest.sha }, other: null });
+    expect(sh(t.nickClone, "for-each-ref", "refs/mockingbird/rooms-origin")).toBe("");
+  });
+});
+
 describe("take-over pieces", () => {
+  it("names the remote backups would go to", () => {
+    expect(remoteLabel(["git@github.com:acme/app.git", "https://github.com/acme/other"])).toBe("GitHub");
+    expect(remoteLabel(["https://acme@dev.azure.com/acme/Backoffice/_git/Api", "git@ssh.dev.azure.com:v3/acme/Backoffice/Api"])).toBe("Azure DevOps");
+    expect(remoteLabel(["git@gitlab.example.com:team/app.git"])).toBe("gitlab.example.com");
+    expect(remoteLabel(["git@github.com:acme/app.git", "https://gitlab.com/acme/app"])).toBe("origin");
+    expect(remoteLabel(["/srv/git/app.git"])).toBe("origin");
+    expect(remoteLabel([])).toBe("origin");
+  });
+
   it("takes room sessions and their turn ends from the live panes", () => {
     const R = "R".repeat(22);
     const s = (id: string, taskGroup: string | null) => session({ id, cwd: "/w", repoPath: "/r", taskGroup });
@@ -819,6 +1022,7 @@ describe("take-over pieces", () => {
       owner: "a".repeat(32),
       session: { title: "t", agent: "claude", branch: "b", originUrl: "u", cwd: "/c", conversationId: null },
       latest: { sha: "1".repeat(40), takenAt: now - 120_000 },
+      toOrigin: true,
       push: { ok: true, at: now - 120_000, sha: "1".repeat(40) },
       pushed: { sha: "1".repeat(40), takenAt: now - 120_000, at: now - 120_000 },
       transcriptBytes: null,
@@ -830,6 +1034,7 @@ describe("take-over pieces", () => {
       self: false,
       takenOverByName: null,
       peerCopy: null,
+      heldBy: [],
       transcript: null,
       problem: null,
       ...o,
@@ -842,5 +1047,12 @@ describe("take-over pieces", () => {
     const takenOver = { by: "b".repeat(32), at: now - 300_000, newSessionId: "x", snapshot: { sha: "1".repeat(40), takenAt: 0, source: "peer" as const }, conversation: "full" as const };
     expect(backupFreshness(v({ takenOver, takenOverByName: "Ryan" }), now).text).toBe("taken over by Ryan 5m ago");
     expect(backupFreshness(v({ takenOver, takenOverByName: "Ryan", self: true }), now).text).toBe("continued on Ryan's laptop 5m ago");
+    // kept peer to peer: where the copies are, never a push
+    const p2p = { toOrigin: false, push: { ok: false as const, at: now, error: NOT_PUSHED, sha: "1".repeat(40) }, pushed: null };
+    expect(backupFreshness(v({ ...p2p, self: true, heldBy: ["Nick"] }), now)).toEqual({ tone: "ok", text: "copied to Nick 2m ago" });
+    expect(backupFreshness(v({ ...p2p, self: true }), now)).toEqual({ tone: "muted", text: "snapshot 2m ago · no teammate has a copy yet" });
+    expect(backupFreshness(v({ ...p2p, peerCopy: { sha: "1".repeat(40), takenAt: now - 120_000 } }), now)).toEqual({ tone: "ok", text: "copied here 2m ago" });
+    expect(backupFreshness(v({ ...p2p, peerCopy: { sha: "0".repeat(40), takenAt: now - 3_600_000 } }), now)).toEqual({ tone: "warn", text: "copied here 1h ago · newer on Nick's laptop" });
+    expect(backupFreshness(v(p2p), now)).toEqual({ tone: "warn", text: "no copy here · only on Nick's laptop" });
   });
 });

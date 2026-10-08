@@ -1089,6 +1089,9 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .toggle.on span { transform: translateX(14px); }
 .toggle:hover { background: var(--line-btn-hover); }
 .toggle.on:hover { background: var(--teal); }
+.toggle:disabled { opacity: .45; cursor: default; }
+.toggle:disabled:hover { background: var(--line-strong); }
+.toggle.on:disabled:hover { background: var(--teal); }
 @media (prefers-reduced-motion: reduce) { .toggle, .toggle span { transition: none; } }
 
 /* ---- plan usage: status-bar meter + popover ---- */
@@ -2098,6 +2101,7 @@ button.tk-btn { flex-shrink: 0; padding: 1px 7px; font: 500 10px var(--ui); }
 .tk-facts dt { font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); padding-top: 2px; }
 .tk-facts dd { margin: 0; min-width: 0; }
 .tk-facts .warn { color: var(--amber-text); }
+.tk-facts .tk-p2p { margin-top: 2px; color: var(--text-1); }
 .tk-quiet { color: var(--text-4); }
 .tk-path { font: 400 10.5px var(--mono); word-break: break-all; }
 button.tk-small { padding: 0 6px; font-size: 10px; margin-left: 4px; }
