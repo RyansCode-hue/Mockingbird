@@ -3,6 +3,7 @@ import {
   formatFingerprint,
   fromBase64Url,
   helloPayload,
+  INTRO_TYPES,
   MAX_REVOKE_EVENT,
   MAX_SIGNALING_MESSAGE,
   MEMBER_ID_RE,
@@ -39,9 +40,17 @@ import {
  * room id was made from — only when that key is on the server's allowlist of
  * creators (ALLOWED_CREATORS), since anyone can make a room id from their own
  * key and members can mint TURN credentials; or a newcomer holding a join key
- * from an invite, once. Members can also admit keys they already trust (their
- * room log's members), which keeps the server's list in step after it lost
- * its storage.
+ * from an invite, once — which (approve) only gets it to the door: knocking,
+ * it exchanges the join handshake (INTRO_TYPES) with members and nothing
+ * else — no TURN, no invites or admits, no member list but its inviter's
+ * presence — until the room's admin admits its key, or denies it (declined:
+ * dropped, the invite stays used). The knock expires with the invite. Only
+ * the admin's admit adds keys: every member's Mockingbird admits its room
+ * log's members (which keeps the server in step after it lost its storage),
+ * and only the admin's member.added counts in the log, so the admin's admit
+ * is all a joiner needs. A room whose admin the server doesn't know (from
+ * before revoke, its creator not seen since) takes any member's admit, as
+ * before, so it can't lock everyone out.
  *
  * Getting out (revoke): a member cuts itself off when it leaves; the room's
  * admin cuts off someone it removed. The admin is the creator while a member
@@ -61,7 +70,8 @@ export interface ConnState {
   cid: string;
   nonce: string;
   openedAt: number;
-  member?: { id: string; publicKey: string; team: number };
+  /** Said hello. `knocking`: a joiner at the door (approve), whose invite `inviter` made. */
+  member?: { id: string; publicKey: string; team: number; knocking?: boolean; inviter?: string };
   /** Rate limiting: a token bucket. */
   tokens: number;
   refilledAt: number;
@@ -225,6 +235,16 @@ interface RoomRecord {
   creator?: string;
   /** Keys cut off, with the signed removal to pass on. */
   revoked?: Record<string, { at: number; by: string; event?: unknown }>;
+  /** Joiners at the door (approve): the invite (hash) they used, who made it, and when the knock expires (with the invite). */
+  knocking?: Record<string, Knock>;
+}
+
+interface Knock {
+  publicKey: string;
+  invite: string;
+  by: string;
+  at: number;
+  expiresAt: number;
 }
 
 /** Revocations a room remembers (the oldest go first); the newest are handed to members in the welcome. */
@@ -294,9 +314,29 @@ export class SignalingRoom {
     }
     const me = state.member;
     // membership is checked on every message: a connection whose key was revoked meanwhile gets nothing more (TURN included)
-    if (!(await this.load()).members[me.id]) {
+    const rec = await this.load();
+    if (!rec.members[me.id]) {
+      const knock = this.approves() ? rec.knocking?.[me.id] : undefined;
+      if (knock && knock.expiresAt > this.now()) {
+        // at the door: the join handshake with members, and nothing else
+        if (msg.t === "signal") return this.relay(sock, me, msg);
+        if (msg.t === "hello") return this.error(sock, "bad-message", "already said hello");
+        this.log(`room ${this.deps.roomId}: refused a ${String(msg.t).slice(0, 20)} from ${me.id}, who's waiting at the door`);
+        return this.error(sock, "knocking", `this key is waiting for the room's admin to accept it: ${String(msg.t).slice(0, 20)} is for members`);
+      }
+      if (knock) {
+        delete rec.knocking![me.id];
+        await this.save();
+        this.log(`room ${this.deps.roomId}: ${me.id}'s knock expired with its invite`);
+        return this.fail(sock, "not-member", "the invite expired before the room's admin accepted this key", CLOSE.notMember);
+      }
       this.log(`room ${this.deps.roomId}: refused a ${String(msg.t).slice(0, 20)} from ${me.id}, who isn't a member any more`);
       return this.fail(sock, "not-member", "this key isn't a member of the room any more", CLOSE.notMember);
+    }
+    if (me.knocking) {
+      // admitted since this connection said hello (promote() tells open connections at once; this catches one it missed)
+      state.member = { id: me.id, publicKey: me.publicKey, team: me.team };
+      sock.save(state);
     }
     switch (msg.t) {
       case "hello":
@@ -312,6 +352,9 @@ export class SignalingRoom {
       case "revoke":
         if (this.features.includes("revoke")) return this.revoke(sock, me, msg);
         return this.error(sock, "bad-message", "unknown message revoke");
+      case "deny":
+        if (this.approves()) return this.deny(sock, me, msg);
+        return this.error(sock, "bad-message", "unknown message deny");
       default:
         return this.error(sock, "bad-message", `unknown message ${String((msg as { t: unknown }).t).slice(0, 20)}`);
     }
@@ -322,12 +365,24 @@ export class SignalingRoom {
     const me = sock.state()?.member;
     if (!me) return;
     const still = this.members().some((s) => s.cid !== sock.cid && s.state()?.member?.id === me.id);
-    if (!still) this.broadcast(sock.cid, { t: "peer-left", id: me.id });
+    if (!still) this.presence(sock.cid, me, false);
   }
 
   /** Member ids the room admits (for tests and diagnostics). */
   async memberIds(): Promise<string[]> {
     return Object.keys((await this.load()).members);
+  }
+
+  /** Keys knocking at the door, their knock not expired (for tests and diagnostics). */
+  async knockingIds(): Promise<string[]> {
+    const now = this.now();
+    return Object.entries((await this.load()).knocking ?? {})
+      .filter(([, k]) => k.expiresAt > now)
+      .map(([id]) => id);
+  }
+
+  private approves(): boolean {
+    return this.features.includes("approve");
   }
 
   // ---- messages --------------------------------------------------------------------
@@ -374,7 +429,28 @@ export class SignalingRoom {
       rec.creator = id;
       changed = true;
     }
-    if (!admitted && msg.join) {
+    let knock: Knock | undefined;
+    if (!admitted && this.approves()) {
+      // a join key gets a key to the door, not in: the room's admin admits it (or denies it)
+      const held = rec.knocking?.[id];
+      if (held && held.expiresAt > now && held.publicKey === msg.publicKey) knock = held;
+      else {
+        if (held) {
+          delete rec.knocking![id];
+          changed = true;
+        }
+        if (msg.join) {
+          const hash = toBase64Url(await this.crypto.sha256(utf8(msg.join)));
+          const invite = rec.invites[hash];
+          if (invite && !invite.usedAt && invite.expiresAt > now) {
+            invite.usedAt = now;
+            rec.knocking ??= {};
+            knock = rec.knocking[id] = { publicKey: msg.publicKey, invite: hash, by: invite.by, at: now, expiresAt: invite.expiresAt };
+            changed = true;
+          }
+        }
+      }
+    } else if (!admitted && msg.join) {
       const hash = toBase64Url(await this.crypto.sha256(utf8(msg.join)));
       const invite = rec.invites[hash];
       if (invite && !invite.usedAt && invite.expiresAt > now) {
@@ -384,21 +460,22 @@ export class SignalingRoom {
         if (revoked) delete rec.revoked![id];
       }
     }
-    if (!admitted && revoked) {
+    if (!admitted && !knock && revoked) {
       if (changed) await this.save();
       this.log(`room ${this.deps.roomId}: refused ${id} (revoked by ${revoked.by})`);
       this.send(sock, { t: "error", code: "not-member", message: "this key was removed from the room", revoked: true, ...(revoked.event !== undefined ? { event: revoked.event } : {}) });
       return sock.close(CLOSE.notMember, "not-member");
     }
-    if (!admitted) {
+    if (!admitted && !knock) {
+      if (changed) await this.save();
       this.log(`room ${this.deps.roomId}: refused ${id} (not a member, no valid join key)`);
       return this.fail(sock, "not-member", "this key isn't a member of the room, and holds no valid invite", CLOSE.notMember);
     }
     const online = new Set(this.members().filter((s) => s.cid !== sock.cid && s.state()!.member!.id !== id).map((s) => s.state()!.member!.id));
     if (online.size >= this.limits.maxOnline) return this.fail(sock, "room-full", `at most ${this.limits.maxOnline} members can be connected at once`, CLOSE.roomFull);
-    if (!rec.members[id]) rec.members[id] = { publicKey: msg.publicKey, addedAt: now };
+    if (admitted && !rec.members[id]) rec.members[id] = { publicKey: msg.publicKey, addedAt: now };
     if (changed) await this.save();
-    state.member = { id, publicKey: msg.publicKey, team: msg.team };
+    state.member = knock ? { id, publicKey: msg.publicKey, team: msg.team, knocking: true, inviter: knock.by } : { id, publicKey: msg.publicKey, team: msg.team };
     sock.save(state);
     // one connection per member: an app that reconnected replaces its old socket
     for (const s of this.members()) {
@@ -407,10 +484,25 @@ export class SignalingRoom {
         s.close(CLOSE.replaced, "replaced");
       }
     }
-    const peers: SignalingPeer[] = this.members()
-      .filter((s) => s.cid !== sock.cid && s.state()!.member!.id !== id)
-      .map((s) => ({ id: s.state()!.member!.id, team: s.state()!.member!.team }));
-    const welcome: ServerMessage = { t: "welcome", v: SIGNALING_PROTOCOL, you: id, now, peers, relay: !!this.deps.turn };
+    this.send(sock, this.welcome(sock, state.member, rec, now));
+    this.presence(sock.cid, state.member, true);
+    this.closeStale(now, rec);
+  }
+
+  /**
+   * What a connection is told on hello (and again once a knocking key is
+   * admitted): a member, everyone connected (joiners at the door flagged),
+   * the server's features and the newest removals; a joiner at the door, only
+   * whether its inviter is connected — nothing else of the room.
+   */
+  private welcome(sock: RoomSocket, me: NonNullable<ConnState["member"]>, rec: RoomRecord, now: number): ServerMessage {
+    const others = this.members().filter((s) => s.cid !== sock.cid && s.state()!.member!.id !== me.id).map((s) => s.state()!.member!);
+    if (me.knocking) {
+      const peers: SignalingPeer[] = others.filter((m) => m.id === me.inviter && !m.knocking).map((m) => ({ id: m.id, team: m.team }));
+      return { t: "welcome", v: SIGNALING_PROTOCOL, you: me.id, now, peers, relay: false, features: [...this.features], knocking: true };
+    }
+    const peers: SignalingPeer[] = others.map((m) => ({ id: m.id, team: m.team, ...(m.knocking ? { knocking: true } : {}) }));
+    const welcome: ServerMessage = { t: "welcome", v: SIGNALING_PROTOCOL, you: me.id, now, peers, relay: !!this.deps.turn };
     if (this.features.length) {
       welcome.features = [...this.features];
       // removals members who were offline then haven't heard of: each app checks the signed event itself
@@ -421,14 +513,36 @@ export class SignalingRoom {
         .map((r) => r.event);
       if (events.length) welcome.events = events;
     }
-    this.send(sock, welcome);
-    this.broadcast(sock.cid, { t: "peer-joined", peer: { id, team: msg.team } }, id);
-    this.closeStale(now);
+    return welcome;
   }
 
-  private relay(sock: RoomSocket, me: NonNullable<ConnState["member"]>, msg: Extract<ClientMessage, { t: "signal" }>): void {
+  /**
+   * Tell connections that `who` came (or went): members hear of everyone,
+   * joiners at the door flagged; a joiner at the door hears only of its
+   * inviter.
+   */
+  private presence(exceptCid: string, who: { id: string; team?: number; knocking?: boolean }, joined: boolean): void {
+    for (const s of this.members()) {
+      const m = s.state()!.member!;
+      if (s.cid === exceptCid || m.id === who.id) continue;
+      if (m.knocking && (who.knocking || who.id !== m.inviter)) continue;
+      this.send(s, joined ? { t: "peer-joined", peer: { id: who.id, team: who.team ?? 0, ...(who.knocking ? { knocking: true } : {}) } } : { t: "peer-left", id: who.id });
+    }
+  }
+
+  private async relay(sock: RoomSocket, me: NonNullable<ConnState["member"]>, msg: Extract<ClientMessage, { t: "signal" }>): Promise<void> {
     if (typeof msg.to !== "string" || !MEMBER_ID_RE.test(msg.to) || !msg.env || typeof msg.env !== "object") return this.error(sock, "bad-message", "malformed signal");
     if (msg.env.from !== me.id) return this.error(sock, "bad-message", "a signal's sender must be the connected member");
+    if (this.approves()) {
+      // a joiner at the door and a member exchange the join handshake, and only that
+      const rec = await this.load();
+      const fromDoor = !rec.members[me.id];
+      const toDoor = !rec.members[msg.to] && !!rec.knocking?.[msg.to];
+      const intro = INTRO_TYPES.includes((msg.env as { type?: unknown }).type as never);
+      if ((fromDoor || toDoor) && (!intro || (fromDoor && !rec.members[msg.to]))) {
+        return this.send(sock, { t: "error", code: "knocking", message: "a joiner at the door only exchanges the join handshake with members until the room's admin admits it", to: msg.to });
+      }
+    }
     const targets = this.members().filter((s) => s.state()!.member!.id === msg.to);
     if (!targets.length) return this.send(sock, { t: "error", code: "peer-offline", message: "that member isn't connected", to: msg.to });
     for (const t of targets) this.send(t, { t: "signal", from: me.id, env: msg.env });
@@ -455,9 +569,13 @@ export class SignalingRoom {
     }
     const rec = await this.load();
     const ids: string[] = [];
+    const promoted: { id: string; publicKey: string }[] = [];
     let changed = false;
     // a member who hasn't heard of a removal yet would admit the key again: only the admin brings a revoked key back
-    const admin = signalingAdmin(rec) === me.id;
+    const known = signalingAdmin(rec);
+    const admin = known === me.id;
+    // approve: only the admin adds keys (with no known admin — a room from before revoke — any member, as before)
+    const mayAdd = !this.approves() || admin || known === null;
     for (const k of msg.publicKeys) {
       const id = toHex(await this.crypto.sha256(fromBase64Url(k))).slice(0, 32);
       if (rec.revoked?.[id]) {
@@ -468,14 +586,73 @@ export class SignalingRoom {
         delete rec.revoked[id];
         changed = true;
       }
+      if (!rec.members[id] && !mayAdd) {
+        this.log(`room ${this.deps.roomId}: ignored ${me.id}'s admit of ${id}: only the room's admin (${known}) adds keys${rec.knocking?.[id] ? "; it waits at the door" : ""}`);
+        continue;
+      }
       ids.push(id);
       if (!rec.members[id]) {
         rec.members[id] = { publicKey: k, addedAt: this.now() };
         changed = true;
+        if (rec.knocking?.[id]) {
+          delete rec.knocking[id];
+          promoted.push({ id, publicKey: k });
+        }
       }
     }
     if (changed) await this.save();
     this.send(sock, { t: "admitted", ids });
+    for (const p of promoted) {
+      this.log(`room ${this.deps.roomId}: ${me.id} let ${p.id} in from the door`);
+      this.promote(p.id, rec);
+    }
+  }
+
+  /** A key at the door was admitted: its open connections become a member's (welcomed again, as members get), and members hear it's here. */
+  private promote(id: string, rec: RoomRecord): void {
+    const now = this.now();
+    for (const s of this.members()) {
+      const st = s.state()!;
+      const m = st.member!;
+      if (m.id !== id || !m.knocking) continue;
+      st.member = { id: m.id, publicKey: m.publicKey, team: m.team };
+      s.save(st);
+      this.send(s, this.welcome(s, st.member, rec, now));
+      this.presence(s.cid, st.member, true);
+    }
+  }
+
+  /**
+   * Drop a joiner knocking at the door (its admin declined the join): its
+   * knock and connections go, and the invite it used stays used, so it needs
+   * a new code to ask again. The room's admin only (or anyone, in a room
+   * whose admin the server doesn't know).
+   */
+  private async deny(sock: RoomSocket, me: NonNullable<ConnState["member"]>, msg: Extract<ClientMessage, { t: "deny" }>): Promise<void> {
+    if (typeof msg.member !== "string" || !MEMBER_ID_RE.test(msg.member)) return this.error(sock, "bad-message", "malformed deny");
+    const rec = await this.load();
+    const target = msg.member;
+    const admin = signalingAdmin(rec);
+    if (admin !== null && admin !== me.id) {
+      const why = `only the room's admin can decline joins, and this server sees ${admin} as the admin`;
+      this.log(`room ${this.deps.roomId}: refused ${me.id}'s deny of ${target}: ${why}`);
+      return this.send(sock, { t: "error", code: "forbidden", message: why, member: target });
+    }
+    if (rec.members[target]) return this.send(sock, { t: "error", code: "forbidden", message: "that key is a member, not at the door: remove it instead", member: target });
+    if (rec.knocking?.[target]) {
+      delete rec.knocking[target];
+      await this.save();
+    }
+    this.log(`room ${this.deps.roomId}: ${me.id} declined ${target} at the door`);
+    this.send(sock, { t: "denied", member: target });
+    let had = false;
+    for (const s of this.members()) {
+      if (s.state()?.member?.id !== target) continue;
+      had = true;
+      this.send(s, { t: "error", code: "not-member", message: "the room's admin declined this join", declined: true });
+      s.close(CLOSE.notMember, "declined");
+    }
+    if (had) this.presence("", { id: target }, false);
   }
 
   /**
@@ -511,6 +688,7 @@ export class SignalingRoom {
       }
     }
     delete rec.members[target];
+    if (rec.knocking?.[target]) delete rec.knocking[target];
     for (const [hash, inv] of Object.entries(rec.invites)) if (inv.by === target) delete rec.invites[hash];
     rec.revoked ??= {};
     rec.revoked[target] = { at: this.now(), by: me.id, ...(event !== undefined ? { event } : {}) };
@@ -527,7 +705,7 @@ export class SignalingRoom {
       if (s.cid !== sock.cid) this.send(s, { t: "error", code: "not-member", message: "this key was removed from the room", revoked: true, ...(event !== undefined ? { event } : {}) });
       s.close(CLOSE.notMember, "revoked");
     }
-    if (had) this.broadcast("", { t: "peer-left", id: target }, target);
+    if (had) this.presence("", { id: target }, false);
   }
 
   private async turn(sock: RoomSocket, state: ConnState): Promise<void> {
@@ -566,17 +744,16 @@ export class SignalingRoom {
     return this.deps.sockets().filter((s) => !!s.state()?.member);
   }
 
-  private broadcast(exceptCid: string, msg: ServerMessage, exceptMember?: string): void {
-    for (const s of this.members()) {
-      if (s.cid !== exceptCid && s.state()!.member!.id !== exceptMember) this.send(s, msg);
-    }
-  }
-
-  /** Close connections that never said hello. */
-  private closeStale(now: number): void {
+  /** Close connections that never said hello, and joiners at the door whose knock expired with its invite. */
+  private closeStale(now: number, rec: RoomRecord): void {
     for (const s of this.deps.sockets()) {
       const st = s.state();
       if (st && !st.member && now - st.openedAt > this.limits.helloTimeoutMs) s.close(CLOSE.helloTimeout, "no hello");
+      const m = st?.member;
+      if (m?.knocking && !rec.members[m.id] && !((rec.knocking?.[m.id]?.expiresAt ?? 0) > now)) {
+        this.send(s, { t: "error", code: "not-member", message: "the invite expired before the room's admin accepted this key" });
+        s.close(CLOSE.notMember, "expired");
+      }
     }
   }
 

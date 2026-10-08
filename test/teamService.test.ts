@@ -26,6 +26,13 @@ function service(net: LoopbackNetwork, name: string, o: { settings?: Partial<Set
   return { s, settings, emitted, logs, dir };
 }
 
+/** The room's admin accepts the next request to join, as Accept in its prompt would. */
+async function acceptNext(admin: TeamService, roomId: string) {
+  const asked = () => admin.status().rooms.find((r) => r.id === roomId)?.requests?.find((q) => q.role === "admin" && q.state === "waiting");
+  await until(() => !!asked(), "the admin to be asked");
+  return admin.answerJoin(roomId, asked()!.id, true);
+}
+
 describe("the team service", () => {
   it("shares a group as a room once, then hands out fresh invites to it", async () => {
     const net = new LoopbackNetwork();
@@ -51,6 +58,7 @@ describe("the team service", () => {
     const nick = service(net, "Nick", { groups: ["5110"] }); // Nick already has a private group 5110
     const { invite, roomId } = await ryan.s.shareGroup("5110", "#5110 Donor entities");
     nick.s.join(invite);
+    await acceptNext(ryan.s, roomId);
     await until(() => nick.s.status().rooms.length === 1, "the join");
     expect(nick.s.status().rooms[0]).toMatchObject({ id: roomId, groupKey: "5110 (team)", members: [{ name: "Ryan" }, { name: "Nick", self: true }] });
     await until(() => nick.emitted.some((st) => st.rooms.length === 1), "the window to hear of it");
@@ -62,6 +70,7 @@ describe("the team service", () => {
     const nick = service(net, "Nick");
     const { invite, roomId } = await ryan.s.shareGroup("5110", "#5110");
     nick.s.join(invite);
+    await acceptNext(ryan.s, roomId);
     await until(() => nick.s.status().rooms.length === 1, "the join");
     ryan.s.groupRenamed("5110", "Donors");
     expect(ryan.s.status().rooms[0].groupKey).toBe("Donors");

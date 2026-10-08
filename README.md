@@ -76,11 +76,14 @@ the plan board, backups and take-over with the owner online (Hand over, Keep,
 no answer, dropping offline mid-request), away or restarted, the old copy
 stopping, its unsent changes sent and applied, and Take it back; leaving and
 removal (who may remove whom, what each Mac deletes, the Worker's revoke, and
-an older Worker).
+an older Worker); joining (only the admin's add counts, rooms from before
+keeping theirs; accept, decline, a request passed on to an offline admin,
+expiry; the Worker's door — knocking, the admin's admit, deny — and an older
+Worker).
 `test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer
 hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
 `test/teamLiveApp.e2e.test.ts` run two real Mockingbird instances in throwaway
-homes (their windows open while they run): share and join, a terminal watched
+homes (their windows open while they run): share, join (the admin accepting from its prompt), a terminal watched
 and typed into, chat, a package claimed, a turn of a Claude stand-in backed up,
 a session handed over from the owner's prompt, and Take over once the owner
 has quit, their copy stopping when it starts again. `MB_E2E_SIGNALING_URL=https://…` runs
@@ -300,6 +303,18 @@ agreed direction, **Later** is worth doing once the foundations settle.
     starts the session in it, then shows the invite code; Join a room… — in the
     Team tab, New/Import Session → Connected, or ⌘K — takes a teammate's code);
     every member keeps its signed, ordered event log and merges it on reconnect.
+  - **Joining needs the admin:** any member hands out codes, but only the
+    room's admin lets someone in. The admin gets a notification and a prompt —
+    "Nick wants to join #5101", with Nick's fingerprint to check with him and
+    who invited him — to **Accept** or **Decline** (or answer later from
+    Settings → Team, where requests wait under the room). A code from a
+    teammate who isn't the admin is sent to the admin for approval (held until
+    the admin's Mockingbird is online); the joiner sees "Waiting for Ryan to
+    accept", then joins or is told it was declined, and gets nothing of the
+    room meanwhile. The signaling Worker holds joiners at its door until the
+    admin admits them (redeploy it to get this; an older Worker still works,
+    and the app says so). The chat says "Ryan accepted Nick", and members are
+    notified.
   - **Leaving and removing:** **Leave room…** (Settings → Team, or the Team
     tab's ⋯) tells the teammates online, has the signaling Worker cut your key
     off, and deletes the room from your Mac — its folder, chat read marks,

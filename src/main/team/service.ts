@@ -7,7 +7,7 @@ import { TeamCore, type LeftInfo, type PeerWire, type RevokeOutcome, type Team }
 import { WebRtcWire } from "./webrtc";
 import { allowCreatorsCommand, formatFingerprint, SIGNALING_PROTOCOL, type SignalingHealth } from "../../shared/team/protocol";
 import { isShareableGroup, type Settings } from "../../shared/types";
-import type { LeaveOutcome, RemoveOutcome, RoomId, RoomState, TeamNotice, TeamStatus } from "../../shared/team/types";
+import type { JoinAnswerOutcome, LeaveOutcome, RemoveOutcome, RoomEvent, RoomId, RoomState, TeamNotice, TeamStatus } from "../../shared/team/types";
 
 /**
  * Team rooms inside the app: this install's identity, its rooms, and the
@@ -47,7 +47,7 @@ export interface TeamServiceDeps {
   wire?: (identity: Identity, log: (msg: string) => void) => PeerWire;
   /** The stages that keep something of a room, in the order they forget it (the room's folder goes last). */
   cleanup?: () => RoomCleanup[];
-  /** A desktop notification (this install was removed from a room). */
+  /** A desktop notification: this install was removed from a room, someone asks to join (to the admin), someone joined. */
   notify?: (title: string, body: string) => void;
 }
 
@@ -90,6 +90,32 @@ export class TeamService {
     });
     this.core.onRoomsChanged(() => this.changed());
     this.core.onLeft((roomId, info) => void this.ended(roomId, info));
+    // the admin is asked; everyone hears who joined
+    this.core.onJoinRequest((r) => this.tell(`${r.name} wants to join ${this.core?.room(r.roomId)?.name ?? "a room"}`, `${r.role === "admin" && r.inviter === this.identity?.id ? "With your code" : `Invited by ${r.inviterName}`}. Check their fingerprint (${r.fingerprint}) with them, then Accept or Decline in Mockingbird.`, "a join request"));
+    this.core.onEvent("member.added", (e, room) => {
+      const line = joinAnnouncement(e, room, this.identity!.id, Date.now());
+      if (line) this.tell(line.title, line.body, "a join");
+    });
+  }
+
+  /** A desktop notification; one that can't be shown is logged. */
+  private tell(title: string, body: string, what: string): void {
+    try {
+      this.d.notify?.(title, body);
+    } catch (err) {
+      this.d.log(`team: telling about ${what}`, err);
+    }
+  }
+
+  /**
+   * Accept or decline someone's request to join (the room's admin only).
+   * Declining also drops them at the signaling Worker's door; `worker` says
+   * why it didn't, when it didn't.
+   */
+  async answerJoin(roomId: RoomId, joinerId: string, accept: boolean): Promise<JoinAnswerOutcome> {
+    const r = await this.need().answerJoin(roomId, joinerId, accept);
+    this.changed();
+    return { name: r.name, accepted: r.accepted, worker: r.worker && !r.worker.ok ? denyProblem(r.worker, r.name) : null };
   }
 
   status(): TeamStatus {
@@ -276,7 +302,7 @@ export class TeamService {
   }
 
   /** Is the signaling Worker at `url` there, and on this app's protocol? */
-  static async checkSignaling(url: string): Promise<{ protocol: number; relay: boolean; creators: number | "any"; revoke: boolean; problem: string | null }> {
+  static async checkSignaling(url: string): Promise<{ protocol: number; relay: boolean; creators: number | "any"; revoke: boolean; approve: boolean; problem: string | null }> {
     if (!/^https?:\/\/[^\s]+$/.test(url.trim())) throw new Error("The signaling URL starts with https:// (the address `npx wrangler deploy` printed)");
     const res = await fetch(`${url.trim().replace(/\/+$/, "")}/health`, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`The signaling server answered ${res.status}`);
@@ -294,7 +320,7 @@ export class TeamService {
             : body.creatorsInvalid
               ? `${body.creatorsInvalid} of the Worker's ALLOWED_CREATORS entries aren't fingerprints — set the secret again`
               : null;
-    return { protocol, relay: !!body.relay, creators, revoke: Array.isArray(body.features) && body.features.includes("revoke"), problem };
+    return { protocol, relay: !!body.relay, creators, revoke: Array.isArray(body.features) && body.features.includes("revoke"), approve: Array.isArray(body.features) && body.features.includes("approve"), problem };
   }
 
   private need(): TeamCore {
@@ -333,6 +359,35 @@ export class TeamService {
         this.d.log("team: sending the status to the window", err);
       }
     }, 100);
+  }
+}
+
+/** How long after a join it's still news: older ones (a long-offline teammate catching up, or this install's own join copying the room) say nothing. */
+const JOIN_NEWS_MS = 10 * 60_000;
+
+/**
+ * The notice a member gets when someone joins: not the one who joined, not
+ * the admin who accepted them (they just did), and nothing for joins older
+ * than this install's own membership or than a few minutes.
+ */
+export function joinAnnouncement(e: RoomEvent<"member.added">, room: RoomState, self: string, now: number): { title: string; body: string } | null {
+  const joined = room.members.find((m) => m.id === e.body?.id);
+  const me = room.members.find((m) => m.id === self);
+  if (!joined || !me || joined.id === self || e.author === self || joined.joinedAt !== e.at || now - e.at > JOIN_NEWS_MS || e.at < me.joinedAt) return null;
+  const by = room.members.find((m) => m.id === e.author)?.name ?? room.former?.find((m) => m.id === e.author)?.name ?? "The admin";
+  return { title: `${joined.name} joined ${room.name}`, body: joined.acceptedBy ? `${by} accepted them.` : `With ${by}'s code.` };
+}
+
+/** Why the signaling Worker didn't drop a declined joiner at the door, in a sentence for the window. */
+export function denyProblem(r: Extract<RevokeOutcome, { ok: false }>, who: string): string {
+  switch (r.reason) {
+    case "unsupported":
+      return `Your signaling Worker is older: it let ${who} connect before you answered (they got nothing of the room). Update it (cd signaling && npx wrangler deploy) to also hold joiners at the door.`;
+    case "refused":
+      return `The signaling Worker didn't drop ${who} at the door: ${r.message.replace(/^the signaling Worker refused: /, "")}. Their code is used up either way.`;
+    case "offline":
+    case "failed":
+      return `The signaling Worker couldn't be asked to drop ${who} at the door (${r.message}); their code is used up, and the door closes on them when the code expires.`;
   }
 }
 

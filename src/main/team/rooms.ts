@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { fingerprintOf, roomIdFor, TEAM_DIR, verifySignature, type Identity } from "./identity";
-import { canonicalJson, MEMBER_ID_RE, PUBLIC_KEY_RE, ROOM_ID_RE, SIGNATURE_RE, toBase64Url, TOKEN_RE } from "../../shared/team/protocol";
+import { canonicalJson, MEMBER_ID_RE, PUBLIC_KEY_RE, ROOM_ID_RE, SIGNATURE_RE, toBase64Url, TOKEN_RE, type JoinRequestFields } from "../../shared/team/protocol";
 import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState } from "../../shared/team/types";
 
 /**
@@ -24,7 +24,9 @@ import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType,
  * point. So a member who left or was removed (member.removed) is kept as a
  * former member — what they did before still counts, what they do after
  * changes nothing — until a later member.added brings them back. Only the
- * room's admin (roomAdmin) removes someone else; anyone may leave.
+ * room's admin (roomAdmin) removes someone else; anyone may leave. Joins
+ * need the admin's acceptance: only the admin's member.added counts, except
+ * in rooms from before that, up to their switch (mayAddMember).
  *
  * Adding an event type: declare its body in RoomEventBodies (and any state
  * in RoomExtensions), then defineEventType(type, { validate, reduce }).
@@ -83,8 +85,22 @@ export function onMemberRemoved(name: string, reduce: MemberRemovedReducer): voi
   removalReducers.set(name, reduce);
 }
 
+/** What a member.added that counts also does to a stage's state (the chat says who joined). Part of reducing: deterministic, JSON only. */
+export type MemberAddedReducer = (state: RoomState, event: RoomEvent<"member.added">) => void;
+const addedReducers = new Map<string, MemberAddedReducer>();
+
+/** Have member.added also change a stage's state. `name` is the stage's, once. */
+export function onMemberAdded(name: string, reduce: MemberAddedReducer): void {
+  if (addedReducers.has(name)) throw new Error(`a member.added reducer named ${name} is already defined`);
+  addedReducers.set(name, reduce);
+}
+
 /** Everything that reduces events: a snapshot made under another set is reduced again. */
-const reducerNames = (): string[] => [...registry.keys(), ...[...removalReducers.keys()].map((n) => `member.removed:${n}`)];
+const reducerNames = (): string[] => [
+  ...registry.keys(),
+  ...[...removalReducers.keys()].map((n) => `member.removed:${n}`),
+  ...[...addedReducers.keys()].map((n) => `member.added:${n}`),
+];
 
 /**
  * Who may remove other members: the room's creator while it's a member, else
@@ -95,6 +111,20 @@ const reducerNames = (): string[] => [...registry.keys(), ...[...removalReducers
 export function roomAdmin(state: Pick<RoomState, "creator" | "members">): MemberId | null {
   if (state.members.some((m) => m.id === state.creator)) return state.creator;
   return state.members[0]?.id ?? null;
+}
+
+/**
+ * May `author` add a member at this point in the room's order? Joins need the
+ * admin's acceptance: once the room says so (`joinApproval`, from its
+ * room.created or its first room.approval by the admin), only the admin's
+ * member.added counts. Before that point — every room created before joins
+ * needed accepting, up to the admin's switch — any member's counts, as it did
+ * then, so the members they added stay members. Which side of the switch an
+ * event falls on is its place in the room's order, the same on every member.
+ */
+export function mayAddMember(state: Pick<RoomState, "creator" | "members" | "joinApproval">, author: MemberId): boolean {
+  if (!state.members.some((m) => m.id === author)) return false;
+  return !state.joinApproval || roomAdmin(state) === author;
 }
 
 const str = (v: unknown, what: string, max: number, min = 0): string => {
@@ -110,6 +140,7 @@ defineEventType("room.created", {
     str(b.creatorName, "creatorName", 100);
     if (typeof b.publicKey !== "string" || !PUBLIC_KEY_RE.test(b.publicKey)) throw new Error("bad creator key");
     if (typeof b.salt !== "string" || !TOKEN_RE.test(b.salt)) throw new Error("bad salt");
+    if (b.approval !== undefined && b.approval !== true) throw new Error("bad approval");
   },
   reduce() {
     // creates the state: see applyEvent
@@ -122,12 +153,39 @@ defineEventType("member.added", {
     if (typeof b.id !== "string" || !MEMBER_ID_RE.test(b.id)) throw new Error("bad member id");
     str(b.name, "name", 100);
     if (typeof b.publicKey !== "string" || !PUBLIC_KEY_RE.test(b.publicKey) || fingerprintOf(b.publicKey) !== b.id) throw new Error("the member's key doesn't match its id");
+    if (b.inviter !== undefined && (typeof b.inviter !== "string" || !MEMBER_ID_RE.test(b.inviter))) throw new Error("bad inviter");
   },
   reduce(state, e) {
+    // kept in the log either way; only an add the room allows at this point counts
+    if (!mayAddMember(state, e.author)) return;
     if (state.members.some((m) => m.id === e.body.id)) return;
     // someone who left or was removed comes back with a new invite: as the newest member
-    state.members.push({ id: e.body.id, name: e.body.name, publicKey: e.body.publicKey, joinedAt: e.at, invitedBy: e.author });
+    const accepted = state.joinApproval ? { acceptedBy: e.author } : {};
+    state.members.push({ id: e.body.id, name: e.body.name, publicKey: e.body.publicKey, joinedAt: e.at, invitedBy: e.body.inviter ?? e.author, ...accepted });
     if (state.former?.some((f) => f.id === e.body.id)) state.former = state.former.filter((f) => f.id !== e.body.id);
+    for (const reduce of addedReducers.values()) reduce(state, e as RoomEvent<"member.added">);
+  },
+});
+
+// a room created before joins needed accepting switches over at its admin's room.approval (see mayAddMember)
+defineEventType("room.approval", {
+  validate(b: any) {
+    if (!b || typeof b !== "object" || Array.isArray(b)) throw new Error("no body");
+  },
+  reduce(state, e) {
+    if (roomAdmin(state) === e.author) state.joinApproval = true;
+  },
+});
+
+defineEventType("join.declined", {
+  validate(b: any) {
+    if (!b || typeof b !== "object") throw new Error("no body");
+    if (typeof b.id !== "string" || !MEMBER_ID_RE.test(b.id)) throw new Error("bad member id");
+    if (typeof b.invite !== "string" || !TOKEN_RE.test(b.invite)) throw new Error("bad invite");
+    if (typeof b.inviter !== "string" || !MEMBER_ID_RE.test(b.inviter)) throw new Error("bad inviter");
+  },
+  reduce() {
+    // a message from the admin to the inviter, kept so it reaches them whenever they're next online; the joiner never gets the room
   },
 });
 
@@ -184,6 +242,7 @@ function createdState(e: RoomEvent<"room.created">): RoomState {
     createdAt: e.at,
     members: [{ id: e.author, name: e.body.creatorName, publicKey: e.body.publicKey, joinedAt: e.at, invitedBy: null }],
     former: [],
+    ...(e.body.approval ? { joinApproval: true as const } : {}),
     ext: {},
     lamport: e.lamport,
     events: 1,
@@ -530,9 +589,32 @@ export interface PendingJoin {
   inviter: MemberId;
   name: string;
   since: number;
-  /** The inviter accepted; its key, so its connection details can be checked before the room's log arrives. */
+  /** The joiner was let in (the admin accepted); the inviter's key, so its connection details can be checked before the room's log arrives. */
   inviterKey?: string;
   rejected?: string;
+  /** The rejection was the admin declining. */
+  declined?: boolean;
+  /** The inviter passed the request on: who answers it, and when it expires with the invite. */
+  admin?: MemberId;
+  adminName?: string;
+  expiresAt?: number;
+}
+
+/**
+ * A join request this install holds: as the room's admin, to accept or
+ * decline; as the inviter, to pass on to the admin (held until the admin's
+ * Mockingbird has it) and to tell the joiner how it went. Both, when the
+ * admin's own code was used.
+ */
+export interface JoinRequestRecord extends JoinRequestFields {
+  /** The inviter's signature over joinRequestPayload: the admin keeps what the inviter vouched for. */
+  sig: string;
+  decision?: "accepted" | "declined";
+  decidedAt?: number;
+  /** Inviter: the admin whose Mockingbird confirmed it has the request. */
+  forwardedTo?: MemberId;
+  /** Inviter: why the admin couldn't be given it yet (an older Mockingbird). */
+  problem?: string;
 }
 
 export class RoomStore {
@@ -598,6 +680,15 @@ export class RoomStore {
 
   saveInvites(roomId: RoomId, invites: StoredInvite[]): void {
     writeFileAtomic(path.join(this.dir, roomId, "invites.json"), JSON.stringify(invites, null, 2), 0o600);
+  }
+
+  joinRequests(roomId: RoomId): JoinRequestRecord[] {
+    const v = readJsonOrSetAside(path.join(this.dir, roomId, "join-requests.json"), [], `room ${roomId}'s join requests`);
+    return Array.isArray(v) ? (v as JoinRequestRecord[]) : [];
+  }
+
+  saveJoinRequests(roomId: RoomId, requests: JoinRequestRecord[]): void {
+    writeFileAtomic(path.join(this.dir, roomId, "join-requests.json"), JSON.stringify(requests, null, 2), 0o600);
   }
 
   private get joinsFile() {

@@ -186,6 +186,12 @@ export class WebRtcWire implements PeerWire {
     return room.client.revoke(member, event, timeoutMs);
   }
 
+  deny(roomId: RoomId, member: MemberId, timeoutMs?: number): Promise<RevokeOutcome> {
+    const room = this.rooms.get(roomId);
+    if (!room) return Promise.resolve({ ok: false, reason: "offline", message: "this install isn't connecting to the room's signaling server" });
+    return room.client.deny(member, timeoutMs);
+  }
+
   async introduce(roomId: RoomId, to: MemberId, type: IntroType, body: unknown): Promise<void> {
     const room = this.rooms.get(roomId);
     if (!room || room.client.state !== "online") throw new Error("not connected to the room's signaling server yet");
@@ -214,7 +220,8 @@ export class WebRtcWire implements PeerWire {
         signaling: st,
         ...(r.client.problem ? { problem: r.client.problem } : {}),
         ...(r.client.problemCode ? { code: r.client.problemCode } : {}),
-        ...(r.client.features ? { revoke: r.client.features.has("revoke") } : {}),
+        ...(r.client.features ? { revoke: r.client.features.has("revoke"), approve: r.client.features.has("approve") } : {}),
+        ...(r.client.knocking ? { knocking: true } : {}),
       });
     }
     return out;
@@ -258,10 +265,10 @@ export class WebRtcWire implements PeerWire {
     return { id, link: "idle", up: false, epoch: null, role: this.self < id ? "offerer" : "answerer", since: Date.now(), route: null, error: null, attempts: 0, congested: false, lastKnock: 0, otherProtocol: null, retryTimer: null, connectTimer: null, graceTimer: null };
   }
 
-  /** A room through which `peer` can be signaled right now. */
+  /** A room through which `peer` can be signaled right now (not one where this install is still at the door: only the join handshake gets through there). */
   private signalingRoomFor(peer: MemberId): Room | undefined {
     for (const r of this.rooms.values()) {
-      if (r.client.state === "online" && r.client.peers.has(peer) && r.spec.members.some((m) => m.id === peer)) return r;
+      if (r.client.state === "online" && !r.client.knocking && r.client.peers.has(peer) && !r.client.peers.get(peer)?.knocking && r.spec.members.some((m) => m.id === peer)) return r;
     }
     return undefined;
   }
@@ -378,6 +385,8 @@ export class WebRtcWire implements PeerWire {
       case "online":
         room.registered.clear();
         room.admitted = "";
+        // at the door, a joiner only exchanges the join handshake: no invites, admits or relay credentials until it's admitted (welcomed again)
+        if (e.knocking) break;
         this.register(room);
         this.requestIce(room);
         break;
@@ -413,7 +422,7 @@ export class WebRtcWire implements PeerWire {
 
   /** Register the room's invites and admit its members with the signaling server (once per connection). */
   private register(room: Room): void {
-    if (room.client.state !== "online") return;
+    if (room.client.state !== "online" || room.client.knocking) return;
     for (const inv of room.spec.invites) {
       if (room.registered.has(inv.tokenHash)) continue;
       if (room.client.send({ t: "invite", tokenHash: inv.tokenHash, expiresAt: inv.expiresAt })) room.registered.add(inv.tokenHash);
@@ -567,7 +576,7 @@ export class WebRtcWire implements PeerWire {
 
   private refreshIce(): void {
     if (!this.ice.relay || !this.ice.fetchedAt || Date.now() - this.ice.fetchedAt < (this.ice.ttl * 1000) / 2) return;
-    const room = [...this.rooms.values()].find((r) => r.client.state === "online");
+    const room = [...this.rooms.values()].find((r) => r.client.state === "online" && !r.client.knocking);
     if (room) room.client.send({ t: "turn" });
   }
 

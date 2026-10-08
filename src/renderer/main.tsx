@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, type PaneDensity, type PaneResize } from "./TerminalPane";
@@ -73,6 +73,7 @@ import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
 import { ConnectedDivider, JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
+import { adminRequests, JoinRequestPrompt } from "./team/JoinRequests";
 // team rooms: plan board
 import { PlanBoardDialog, PlanWarnings } from "./team/PlanBoard";
 // team rooms: team chat
@@ -290,6 +291,17 @@ function App() {
   const teamRooms = useMemo(() => (teamStatus && !isErr(teamStatus) ? teamStatus.rooms : []), [teamStatus]);
   const [shareDlg, setShareDlg] = useState<{ key: string; title: string } | null>(null);
   const [joinDlg, setJoinDlg] = useState(false);
+  // team rooms: join requests this install answers as a room's admin, one prompt at a time, oldest first;
+  // Later puts one off for this window (it stays in Settings → Team)
+  const [laterJoins, setLaterJoins] = useState<string[]>([]);
+  const joinKey = (r: { roomId: string; id: string; at: number }) => `${r.roomId}:${r.id}:${r.at}`;
+  const joinAsks = adminRequests(teamStatus);
+  const joinAsk = joinAsks.find((a) => !laterJoins.includes(joinKey(a.request)));
+  const [joinShown, setJoinShown] = useState<typeof joinAsk | null>(null);
+  useEffect(() => {
+    if (!joinShown && joinAsk) setJoinShown(joinAsk);
+  }, [joinShown, joinAsk]);
+  const joinDone = useCallback(() => setJoinShown(null), []);
   // team rooms: plan board — the room whose board is open
   const [planDlg, setPlanDlg] = useState<string | null>(null);
   // group/workspace renames use a dialog: inline editing broke because the same
@@ -2731,6 +2743,21 @@ function App() {
       )}
       {/* team rooms: a teammate asks to continue one of this Mac's sessions — one prompt at a time, oldest first */}
       {tkView?.asks[0] && <HandOverPrompt key={tkView.asks[0].askId} ask={tkView.asks[0]} onShow={jumpTo} />}
+      {/* team rooms: someone asks to join a room this install is the admin of */}
+      {joinShown && !tkView?.asks[0] && (
+        <JoinRequestPrompt
+          key={joinKey(joinShown.request)}
+          request={joinShown.request}
+          room={joinShown.room}
+          self={teamStatus && !isErr(teamStatus) ? teamStatus.self?.id : undefined}
+          stillAsked={joinAsks.some((a) => joinKey(a.request) === joinKey(joinShown.request))}
+          onLater={() => {
+            setLaterJoins((l) => [...l, joinKey(joinShown.request)]);
+            setJoinShown(null);
+          }}
+          onDone={joinDone}
+        />
+      )}
       {reviewing && <ReceivedDialog received={tkView?.received.find((r) => r.id === reviewing.id) ?? reviewing} onClose={() => setReviewing(null)} />}
       <PlanWarnings onJump={jumpTo} onOpenBoard={setPlanDlg} />
 

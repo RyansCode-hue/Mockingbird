@@ -292,6 +292,8 @@ const api = {
   teamLeaveRoom: (roomId: string) => ipcRenderer.invoke("team:leaveRoom", roomId),
   /** Remove a teammate from a room (its admin only): RemoveOutcome. Again for someone removed: the Worker is asked again. */
   teamRemoveMember: (roomId: string, memberId: string) => ipcRenderer.invoke("team:removeMember", roomId, memberId),
+  /** Accept or decline someone's request to join a room (its admin only): JoinAnswerOutcome. */
+  teamAnswerJoin: (roomId: string, joinerId: string, accept: boolean) => ipcRenderer.invoke("team:answerJoin", roomId, joinerId, accept),
   teamDismissNotice: (id: string) => ipcRenderer.invoke("team:dismissNotice", id),
   teamCheckSignaling: (url: string) => ipcRenderer.invoke("team:checkSignaling", url),
   onTeamChanged: (cb: (status: unknown) => void) => {

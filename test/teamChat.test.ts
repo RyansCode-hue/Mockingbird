@@ -10,7 +10,7 @@ import "../src/main/team/board"; // the plan board's room events
 import "../src/main/team/takeover"; // the take-over's room events
 import { assistantPrompt, readBoard, readDocs } from "../src/main/team/assistant";
 import { Messaging } from "../src/main/messaging";
-import { isRead, parseMentions, unreadCounts, updateLine, type ChatEntry } from "../src/shared/team/chat";
+import { isRead, memberLine, parseMentions, unreadCounts, updateLine, type ChatEntry } from "../src/shared/team/chat";
 import type { SessionInfo } from "../src/shared/types";
 import type { RoomEvent } from "../src/shared/team/types";
 
@@ -53,19 +53,24 @@ async function setup(names = ["Ryan", "Nick"]) {
   return { roomId, net, sides, dir };
 }
 
-const texts = (s: Side, roomId: string) => s.room.chat.view(roomId).entries.map((e) => (e.kind === "update" ? `update:${e.items!.map(updateLine).join("|")}` : `${e.kind}:${e.text}`));
+/** What was said: not the "Ryan accepted Nick" lines joining the room left. */
+const said = (e: ChatEntry) => e.kind !== "member";
+const texts = (s: Side, roomId: string) => s.room.chat.view(roomId).entries.filter(said).map((e) => (e.kind === "update" ? `update:${e.items!.map(updateLine).join("|")}` : `${e.kind}:${e.text}`));
 
 describe("the team room's chat", () => {
   it("posts messages every member sees, in the room log's order", async () => {
     const { roomId, sides } = await setup();
     const [ryan, nick] = sides;
+    // the join is in the chat on both sides: the admin accepted the joiner
+    for (const s of sides) expect(s.room.chat.view(roomId).entries).toMatchObject([{ kind: "member", change: "accepted", author: ryan.m.id, member: nick.m.id }]);
+    expect(memberLine(nick.room.chat.view(roomId).entries[0], (id) => (id === ryan.m.id ? "Ryan" : "Nick"))).toBe("Ryan accepted Nick");
     ryan.room.chat.post(roomId, "morning — I'm on the export API");
-    await until(() => nick.room.chat.view(roomId).entries.length === 1, "Nick to see Ryan's message");
+    await until(() => nick.room.chat.view(roomId).entries.filter(said).length === 1, "Nick to see Ryan's message");
     nick.room.chat.post(roomId, "great, I'll take the UI");
-    await until(() => ryan.room.chat.view(roomId).entries.length === 2, "Ryan to see Nick's reply");
+    await until(() => ryan.room.chat.view(roomId).entries.filter(said).length === 2, "Ryan to see Nick's reply");
     expect(texts(ryan, roomId)).toEqual(["message:morning — I'm on the export API", "message:great, I'll take the UI"]);
     expect(texts(nick, roomId)).toEqual(texts(ryan, roomId));
-    const [first] = nick.room.chat.view(roomId).entries;
+    const [first] = nick.room.chat.view(roomId).entries.filter(said);
     expect(first.author).toBe(ryan.m.id);
     await until(() => nick.changed.includes(roomId), "the window to be told");
   });
@@ -83,7 +88,7 @@ describe("the team room's chat", () => {
     const { roomId, net, sides } = await setup();
     const [ryan, nick] = sides;
     ryan.room.chat.post(roomId, "before");
-    await until(() => nick.room.chat.view(roomId).entries.length === 1, "Nick to have the first message");
+    await until(() => nick.room.chat.view(roomId).entries.filter(said).length === 1, "Nick to have the first message");
     net.setOnline(nick.m.id, false);
     await until(() => ryan.m.team.presence(roomId).length === 0, "Nick to drop");
     nick.room.chat.post(roomId, "written on the plane");
@@ -92,7 +97,7 @@ describe("the team room's chat", () => {
     ryan.room.chat.markRead(roomId);
     expect(ryan.room.chat.unread()[roomId]).toEqual({ unread: 0, mentions: 0 });
     net.setOnline(nick.m.id, true);
-    await until(() => ryan.room.chat.view(roomId).entries.length === 4 && nick.room.chat.view(roomId).entries.length === 4, "both to have every message");
+    await until(() => ryan.room.chat.view(roomId).entries.filter(said).length === 4 && nick.room.chat.view(roomId).entries.filter(said).length === 4, "both to have every message");
     expect(texts(ryan, roomId)).toEqual(texts(nick, roomId));
     // Nick's message sorts by Lamport time before Ryan's later ones, yet Ryan hasn't read it
     expect(ryan.room.chat.unread()[roomId]).toEqual({ unread: 1, mentions: 0 });
@@ -107,9 +112,9 @@ describe("the team room's chat", () => {
     const [ryan, nick] = sides;
     nick.room.chat.post(roomId, "one");
     nick.room.chat.post(roomId, "two");
-    await until(() => ryan.room.chat.view(roomId).entries.length === 2, "Ryan to have Nick's two");
+    await until(() => ryan.room.chat.view(roomId).entries.filter(said).length === 2, "Ryan to have Nick's two");
     ryan.room.chat.post(roomId, "mine never counts");
-    await until(() => ryan.room.chat.view(roomId).entries.length === 3, "Ryan to have all three");
+    await until(() => ryan.room.chat.view(roomId).entries.filter(said).length === 3, "Ryan to have all three");
     // posting reads the room
     expect(ryan.room.chat.unread()[roomId].unread).toBe(0);
     nick.room.chat.post(roomId, "three");
@@ -220,7 +225,7 @@ describe("agent updates", () => {
     ryan.sessions[0] = { ...ryan.sessions[0], status: "working" };
     ryan.sessions[1] = { ...ryan.sessions[1], status: "working" };
     ryan.room.sessionsChanged();
-    await until(() => nick.room.chat.view(roomId).entries.some((e) => e.kind === "update"), "Nick to see the update");
+    await until(() => nick.room.chat.view(roomId).entries.filter(said).some((e) => e.kind === "update"), "Nick to see the update");
     expect(texts(nick, roomId)).toEqual(["update:Export API — started a turn"]);
     ryan.m.team.publish(roomId, "plan.package", { id: "p-donor1", title: "Donor export" });
     ryan.m.team.publish(roomId, "plan.claim", { id: "p-donor1", owner: ryan.m.id });
@@ -264,9 +269,9 @@ describe("@assistant", () => {
     const reply = deferred();
     ryan.answer = () => reply.promise;
     nick.room.chat.post(roomId, "the export should skip archived donors");
-    await until(() => ryan.room.chat.view(roomId).entries.length === 1, "Ryan to have Nick's note");
+    await until(() => ryan.room.chat.view(roomId).entries.filter(said).length === 1, "Ryan to have Nick's note");
     ryan.room.chat.post(roomId, "@assistant what's left on the export?");
-    await until(() => nick.room.chat.view(roomId).entries.some((e) => e.kind === "assistant" && e.state === "thinking"), "Nick to see it thinking");
+    await until(() => nick.room.chat.view(roomId).entries.filter(said).some((e) => e.kind === "assistant" && e.state === "thinking"), "Nick to see it thinking");
     await until(() => ryan.asked.length === 1, "the runner to be asked");
     expect(nick.asked).toEqual([]);
     const prompt = ryan.asked[0];
@@ -280,10 +285,10 @@ describe("@assistant", () => {
     expect(prompt).toContain("### AGENTS.md\nRun npm test.");
     expect(prompt).toContain("Also in docs/ (not included): api.md");
     reply.resolve("Only the archived-donor filter, which Nick flagged.");
-    await until(() => nick.room.chat.view(roomId).entries.some((e) => e.kind === "assistant" && e.state === "answer"), "Nick to see the answer");
-    const answer = nick.room.chat.view(roomId).entries.at(-1)!;
+    await until(() => nick.room.chat.view(roomId).entries.filter(said).some((e) => e.kind === "assistant" && e.state === "answer"), "Nick to see the answer");
+    const answer = nick.room.chat.view(roomId).entries.filter(said).at(-1)!;
     expect(answer).toMatchObject({ kind: "assistant", author: ryan.m.id, state: "answer", text: "Only the archived-donor filter, which Nick flagged." });
-    expect(nick.room.chat.view(roomId).entries.filter((e) => e.kind === "assistant")).toHaveLength(1);
+    expect(nick.room.chat.view(roomId).entries.filter(said).filter((e) => e.kind === "assistant")).toHaveLength(1);
     // the answer counts as unread for Nick (and for Ryan, until he reads it)
     expect(nick.room.chat.unread()[roomId].unread).toBeGreaterThanOrEqual(2);
   });
@@ -295,20 +300,20 @@ describe("@assistant", () => {
       throw new Error("Claude Code isn't installed");
     };
     ryan.room.chat.post(roomId, "@assistant summarize the day");
-    await until(() => nick.room.chat.view(roomId).entries.some((e) => e.state === "error"), "Nick to see the error");
-    expect(nick.room.chat.view(roomId).entries.at(-1)).toMatchObject({ kind: "assistant", state: "error", text: "Claude Code isn't installed" });
+    await until(() => nick.room.chat.view(roomId).entries.filter(said).some((e) => e.state === "error"), "Nick to see the error");
+    expect(nick.room.chat.view(roomId).entries.filter(said).at(-1)).toMatchObject({ kind: "assistant", state: "error", text: "Claude Code isn't installed" });
     expect(ryan.logs.some((l) => /assistant failed/.test(l))).toBe(true);
 
     // Ryan's Mockingbird quits mid-turn: on the next start the dangling turn is closed
     const stuck = deferred();
     ryan.answer = () => stuck.promise;
     const q = ryan.room.chat.post(roomId, "@assistant are you there?");
-    await until(() => ryan.room.chat.view(roomId).entries.some((e) => e.replyTo === q.id && e.state === "thinking"), "thinking");
+    await until(() => ryan.room.chat.view(roomId).entries.filter(said).some((e) => e.replyTo === q.id && e.state === "thinking"), "thinking");
     ryan.room.stop();
     const restarted = new TeamChat({ dir: tempDir("again"), emit: () => {}, notify: () => {}, windowFocused: () => false, log: () => {} });
     restarted.attach(ryan.m.team);
-    await until(() => nick.room.chat.view(roomId).entries.some((e) => e.replyTo === q.id && e.state === "error"), "the turn to be closed");
-    expect(nick.room.chat.view(roomId).entries.find((e) => e.replyTo === q.id)!.text).toMatch(/closed before the assistant answered/);
+    await until(() => nick.room.chat.view(roomId).entries.filter(said).some((e) => e.replyTo === q.id && e.state === "error"), "the turn to be closed");
+    expect(nick.room.chat.view(roomId).entries.filter(said).find((e) => e.replyTo === q.id)!.text).toMatch(/closed before the assistant answered/);
     restarted.detach();
   });
 

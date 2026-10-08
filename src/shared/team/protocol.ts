@@ -44,6 +44,27 @@ export const signalingJoinKeyInput = (token: string) => `mockingbird-team/signal
 /** HMAC input (keyed by the invite token) that proves to the inviter that a joiner holds the code. */
 export const joinProofInput = (roomId: string, joinerPublicKey: string) => `mockingbird-team/join/v1\n${roomId}\n${joinerPublicKey}`;
 
+/** A join request as the inviter vouches for it to the room's admin (it checked the joiner's proof). */
+export interface JoinRequestFields {
+  roomId: string;
+  /** The joiner: its member id (the key's fingerprint), key and display name. */
+  id: string;
+  publicKey: string;
+  name: string;
+  /** The member whose invite code the joiner used. */
+  inviter: string;
+  /** Which invite: its token hash (the one registered with the signaling server), never the token. */
+  invite: string;
+  /** When the inviter took the request, and when it expires with the invite (ms). */
+  at: number;
+  expiresAt: number;
+}
+
+/** The exact text the inviter's signature on a forwarded join request covers. */
+export function joinRequestPayload(r: JoinRequestFields): string {
+  return `mockingbird-team/join-request/v1\n${JSON.stringify([r.roomId, r.id, r.publicKey, r.name, r.inviter, r.invite, r.at, r.expiresAt])}`;
+}
+
 /** "a1b2c3d4…" → "a1b2 c3d4 e5f6 …": how a fingerprint is read aloud or compared by eye. */
 export function formatFingerprint(fp: string): string {
   return fp.replace(/(.{4})(?=.)/g, "$1 ");
@@ -140,12 +161,13 @@ export function canonicalJson(v: unknown): string {
 /**
  * Connection details between two members, relayed by the signaling server.
  * offer/answer/ice carry WebRTC negotiation; knock asks the other side (the
- * offerer) to connect; join and join-* introduce a new member to its inviter.
+ * offerer) to connect; join and join-* introduce a new member to its inviter
+ * (join-pending: the room's admin has the request and hasn't answered yet).
  */
-export type SignalType = "offer" | "answer" | "ice" | "knock" | "join" | "join-accepted" | "join-rejected";
-export const SIGNAL_TYPES: SignalType[] = ["offer", "answer", "ice", "knock", "join", "join-accepted", "join-rejected"];
-/** Signals that travel before the two sides know each other as members: the sender's key is in the body. */
-export const INTRO_TYPES: SignalType[] = ["join", "join-accepted", "join-rejected"];
+export type SignalType = "offer" | "answer" | "ice" | "knock" | "join" | "join-pending" | "join-accepted" | "join-rejected";
+export const SIGNAL_TYPES: SignalType[] = ["offer", "answer", "ice", "knock", "join", "join-pending", "join-accepted", "join-rejected"];
+/** Signals that travel before the two sides know each other as members: the sender's key is in the body. The only ones a key at the door exchanges. */
+export const INTRO_TYPES: SignalType[] = ["join", "join-pending", "join-accepted", "join-rejected"];
 
 export interface UnsignedEnvelope {
   /** TEAM_PROTOCOL of the sender. */
@@ -223,15 +245,22 @@ export interface IceServer {
 export interface SignalingPeer {
   id: string;
   team: number;
+  /** A joiner at the door (approve): it exchanges only INTRO_TYPES with members until the room's admin admits it. */
+  knocking?: boolean;
 }
 
 /**
  * What a signaling server can do beyond SIGNALING_PROTOCOL, announced in its
  * welcome (a Worker deployed before a feature announces none of it):
- *   revoke  cut a member off: their key, connections, invites and TURN go,
- *           and their next hello is refused with the removal passed on.
+ *   revoke   cut a member off: their key, connections, invites and TURN go,
+ *            and their next hello is refused with the removal passed on.
+ *   approve  a valid join key only lets a key knock: it exchanges the join
+ *            handshake with members and nothing else (no TURN, no member
+ *            list beyond its inviter, no invites or admits) until the room's
+ *            admin admits it, or denies it; the knock expires with the
+ *            invite. Only the admin's admit adds keys.
  */
-export const SIGNALING_FEATURES = ["revoke"] as const;
+export const SIGNALING_FEATURES = ["revoke", "approve"] as const;
 export type SignalingFeature = (typeof SIGNALING_FEATURES)[number];
 /** The largest signed room event a revoke carries for the server to pass on. */
 export const MAX_REVOKE_EVENT = 8 * 1024;
@@ -249,6 +278,8 @@ export type ClientMessage =
    * connect later (the server can't forge or alter one: each app checks it).
    */
   | { t: "revoke"; member: string; event?: unknown }
+  /** Drop a key knocking at the door (the room's admin declined its join): its connections close; the invite it used stays used. */
+  | { t: "deny"; member: string }
   | { t: "ping" };
 
 export type SignalingErrorCode =
@@ -261,13 +292,18 @@ export type SignalingErrorCode =
   | "rate" // too many messages
   | "too-big"
   | "peer-offline" // a signal to a member who isn't connected
-  | "forbidden" // a revoke the sender may not make (`member` names whom)
+  | "forbidden" // a revoke or deny the sender may not make (`member` names whom)
+  | "knocking" // a joiner at the door asked for something only members get
   | "replaced"; // the same member connected again; this connection is closed
 
 export type ServerMessage =
   | { t: "challenge"; v: number; nonce: string }
-  /** `events`: signed member.removed events from revokes, for members who were offline then. */
-  | { t: "welcome"; v: number; you: string; now: number; peers: SignalingPeer[]; relay: boolean; features?: string[]; events?: unknown[] }
+  /**
+   * `events`: signed member.removed events from revokes, for members who were offline then.
+   * `knocking`: this key is at the door (approve) and `peers` is at most its inviter; a
+   * welcome without it follows once the room's admin admits the key.
+   */
+  | { t: "welcome"; v: number; you: string; now: number; peers: SignalingPeer[]; relay: boolean; features?: string[]; events?: unknown[]; knocking?: boolean }
   | { t: "peer-joined"; peer: SignalingPeer }
   | { t: "peer-left"; id: string }
   | { t: "signal"; from: string; env: SignedEnvelope }
@@ -275,7 +311,9 @@ export type ServerMessage =
   | { t: "invited"; tokenHash: string }
   | { t: "admitted"; ids: string[] }
   | { t: "revoked"; member: string }
-  | { t: "error"; code: SignalingErrorCode; message: string; serverProtocol?: number; to?: string; member?: string; revoked?: boolean; event?: unknown }
+  | { t: "denied"; member: string }
+  /** `declined`: this key was knocking, and the room's admin declined it. */
+  | { t: "error"; code: SignalingErrorCode; message: string; serverProtocol?: number; to?: string; member?: string; revoked?: boolean; declined?: boolean; event?: unknown }
   | { t: "pong" };
 
 /** WebSocket close codes the signaling server uses (4000–4999 are the application's). */

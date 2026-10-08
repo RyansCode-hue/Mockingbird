@@ -9,9 +9,9 @@ import { TeamCore } from "../src/main/team/transport";
 import { TeamService } from "../src/main/team/service";
 import { DEFAULT_SETTINGS } from "../src/shared/types";
 import { WebRtcWire, type PeerHostBridge } from "../src/main/team/webrtc";
-import { until } from "../src/main/team/loopback";
+import { acceptJoins, until } from "../src/main/team/loopback";
 import { startLocalSignaling, type LocalSignaling } from "../signaling/src/local/server";
-import { sdpFingerprint, signalPayload, TEAM_PROTOCOL, type SignedEnvelope } from "../src/shared/team/protocol";
+import { formatFingerprint, sdpFingerprint, signalPayload, TEAM_PROTOCOL, type SignedEnvelope } from "../src/shared/team/protocol";
 import { FINGERPRINT_MISMATCH, type HostCommand, type HostEvent } from "../src/shared/team/peerHost";
 
 /**
@@ -126,11 +126,13 @@ function member(name: string, net: FakeNet, dir: string, relayOnly = false) {
   return { name, identity, store, host, wire, team, logs };
 }
 
-async function roomOverSignaling(signal: LocalSignaling, relayOnly = false) {
+/** Ryan shares a room and Nick joins it with a code; Ryan, its admin, accepts him (unless `accept` is false). */
+async function roomOverSignaling(signal: LocalSignaling, relayOnly = false, accept = true) {
   const dir = tempDir("wire");
   const net = new FakeNet();
   const ryan = member("Ryan", net, dir, relayOnly);
   const nick = member("Nick", net, dir, relayOnly);
+  if (accept) acceptJoins(ryan.team);
   const room = ryan.team.createRoom({ name: "#5110 Donor entities", groupKey: "5110", signalingUrl: signal.url });
   // the inviter's app is online when it hands over a code
   await until(() => ryan.team.status().rooms[0]?.signaling === "online", "Ryan's signaling", 5000);
@@ -360,8 +362,69 @@ describe("sharing a group with a signaling Worker that limits who creates rooms"
     expect(shared.warning).toBeUndefined();
     const nick = service("Nick", tempDir("nick"), net, signal.url);
     nick.s.join(shared.invite);
+    acceptJoins(ryan.s.transport as TeamCore);
     await until(() => nick.s.status().rooms.length === 1 && nick.s.status().rooms[0].online.length === 1, "Nick to join and connect", 10_000);
     expect(nick.s.status().rooms[0].members.map((m) => m.name)).toEqual(["Ryan", "Nick"]);
     await expect(nick.s.shareGroup("5200", "Nick's own")).rejects.toThrow(/isn't allowed to create rooms on this signaling Worker/);
+  });
+});
+
+describe("joining needs the room's admin, over the wire and the local Worker", () => {
+  it("accept: the joiner waits at the door — given nothing of the room — then joins and connects once the admin accepts", async () => {
+    const signal = await startLocalSignaling({ log: () => undefined });
+    servers.push(signal);
+    const { ryan, nick, roomId } = await roomOverSignaling(signal, false, false);
+    await until(() => nick.team.status().pending[0]?.state === "approval", "Nick to wait for Ryan", 8000);
+    expect(nick.team.status().pending[0]).toMatchObject({ roomId, admin: "Ryan" });
+    expect(nick.team.signalingState(roomId)).toMatchObject({ signaling: "online", knocking: true });
+    expect(await signal.room(roomId)!.knockingIds()).toEqual([nick.identity.id]);
+    expect(await signal.room(roomId)!.memberIds()).toEqual([ryan.identity.id]);
+    expect(nick.team.room(roomId)).toBeUndefined();
+    expect(nick.store.get(roomId)).toBeUndefined();
+    expect(nick.host.commands.some((c) => c.op === "open")).toBe(false);
+    expect(ryan.team.status().rooms[0].requests).toEqual([
+      expect.objectContaining({ role: "admin", state: "waiting", id: nick.identity.id, name: "Nick", fingerprint: formatFingerprint(nick.identity.id), inviterName: "Ryan", adminName: "Ryan" }),
+    ]);
+    expect(ryan.team.status().rooms[0].workerApprove).toBe(true);
+    await ryan.team.answerJoin(roomId, nick.identity.id, true);
+    await until(() => !!nick.team.room(roomId) && ryan.team.presence(roomId).length === 1 && nick.team.presence(roomId).length === 1, "Nick in and connected", 10_000);
+    expect(await signal.room(roomId)!.memberIds()).toEqual([ryan.identity.id, nick.identity.id]);
+    expect(nick.team.room(roomId)!.members.map((m) => [m.name, m.acceptedBy])).toEqual([
+      ["Ryan", undefined],
+      ["Nick", ryan.identity.id],
+    ]);
+  });
+
+  it("decline: the joiner is told, dropped at the door, and never gets the room", async () => {
+    const signal = await startLocalSignaling({ log: () => undefined });
+    servers.push(signal);
+    const { ryan, nick, roomId } = await roomOverSignaling(signal, false, false);
+    await until(() => ryan.team.status().rooms[0]?.requests?.length === 1 && nick.team.status().pending[0]?.state === "approval", "Ryan to be asked", 8000);
+    const r = await ryan.team.answerJoin(roomId, nick.identity.id, false);
+    expect(r).toMatchObject({ name: "Nick", accepted: false, worker: { ok: true } });
+    await until(() => nick.team.status().pending[0]?.state === "declined", "Nick to hear", 8000);
+    expect(nick.team.status().pending[0].reason).toMatch(/Ryan declined your request to join #5110 Donor entities/);
+    expect(await signal.room(roomId)!.knockingIds()).toEqual([]);
+    expect(await signal.room(roomId)!.memberIds()).toEqual([ryan.identity.id]);
+    await until(() => signal.online(roomId).join() === ryan.identity.id, "Nick's knock to be closed", 5000);
+    expect(nick.team.room(roomId)).toBeUndefined();
+    expect(nick.store.get(roomId)).toBeUndefined();
+    expect(nick.host.commands.some((c) => c.op === "open")).toBe(false);
+    expect(ryan.team.status().rooms[0].requests).toEqual([]);
+  });
+
+  it("an older Worker lets the joiner connect to it, but the apps still wait for the admin, and declining says to redeploy it", async () => {
+    const signal = await startLocalSignaling({ log: () => undefined, features: ["revoke"] });
+    servers.push(signal);
+    const { ryan, nick, roomId } = await roomOverSignaling(signal, false, false);
+    await until(() => ryan.team.status().rooms[0]?.requests?.length === 1 && nick.team.status().pending[0]?.state === "approval", "Ryan to be asked", 8000);
+    expect(ryan.team.status().rooms[0].workerApprove).toBe(false);
+    expect(await signal.room(roomId)!.memberIds()).toContain(nick.identity.id); // the old Worker let him in
+    expect(nick.team.room(roomId)).toBeUndefined();
+    expect(nick.host.commands.some((c) => c.op === "open")).toBe(false);
+    const r = await ryan.team.answerJoin(roomId, nick.identity.id, false);
+    expect(r.worker).toMatchObject({ ok: false, reason: "unsupported", message: expect.stringContaining("cd signaling && npx wrangler deploy") });
+    await until(() => nick.team.status().pending[0]?.state === "declined", "Nick to hear", 8000);
+    expect(nick.team.room(roomId)).toBeUndefined();
   });
 });

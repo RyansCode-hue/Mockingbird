@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir } from "./helpers";
-import { appE2E, e2eSignaling, launchApp, mainLog, quitApp, root, routes, untilTrue, type AppInstance } from "./e2e/appInstance";
+import { acceptInWindow, appE2E, e2eSignaling, launchApp, mainLog, quitApp, root, routes, untilTrue, type AppInstance } from "./e2e/appInstance";
 import type { LivePanesState } from "../src/shared/team/livePanes";
 import type { TakeoverPlan, TakeoverView } from "../src/shared/team/takeover";
 import type { PlanView } from "../src/shared/team/plan";
@@ -92,6 +92,7 @@ async function connect(signal: { url: string; real: boolean; creatorHome?: strin
   expect(share.error).toBeUndefined();
   await untilTrue("Ryan's signaling", async () => (await ryan.status()).rooms[0]?.signaling === "online");
   await nick.evaluate(`window.mb.teamJoin(${JSON.stringify(share.invite)})`);
+  await acceptInWindow(ryan, nick, share.roomId);
   await untilTrue("both connected", async () => (await ryan.status()).rooms[0]?.online.length === 1 && (await nick.status()).rooms[0]?.online.length === 1, 90_000);
   const paths = await routes(ryan, nick);
   if (signal.real) console.log(`[e2e] connected through ${signal.url}: Ryan's link ${paths[0]}, Nick's ${paths[1]}`);

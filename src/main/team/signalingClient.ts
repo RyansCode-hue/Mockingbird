@@ -20,7 +20,8 @@ import {
  */
 
 export type SignalingEvent =
-  | { t: "online"; peers: SignalingPeer[]; relay: boolean }
+  /** `knocking`: this install is a joiner at the door (it can only talk to its inviter); "online" again once admitted. */
+  | { t: "online"; peers: SignalingPeer[]; relay: boolean; knocking?: boolean }
   | { t: "offline"; reason: string }
   | { t: "peer-joined"; peer: SignalingPeer }
   | { t: "peer-left"; id: string }
@@ -36,6 +37,9 @@ export type RevokeAnswer = { ok: true } | { ok: false; reason: "unsupported" | "
 
 export const OLD_WORKER_REVOKE =
   "The signaling Worker is older and can't cut members off — update it (cd signaling && npx wrangler deploy) to also cut them off at the Worker";
+
+export const OLD_WORKER_APPROVE =
+  "The signaling Worker is older and lets anyone with a code connect before you accept them (they still get nothing of the room) — update it (cd signaling && npx wrangler deploy) to also hold joiners at the door";
 
 export interface SignalingClientOptions {
   url: string;
@@ -57,14 +61,17 @@ export class SignalingClient {
   state: "connecting" | "online" | "offline" | "stopped" = "offline";
   /** Why the server refused this install (set until it's let in), and that refusal's code. */
   problem: string | null = null;
-  problemCode: "protocol" | "not-member" | "revoked" | "creation-refused" | "bad-url" | null = null;
-  /** Members connected to the room right now (not this install). */
+  problemCode: "protocol" | "not-member" | "revoked" | "declined" | "creation-refused" | "bad-url" | null = null;
+  /** Members connected to the room right now (not this install); joiners at the door are flagged `knocking`. */
   readonly peers = new Map<string, SignalingPeer>();
   relay = false;
   /** What the server announced it can do beyond the protocol (from its welcome); null until welcomed. */
   features: Set<string> | null = null;
-  /** Revokes sent, waiting for the server's answer, by member. */
+  /** This install is a joiner at the door: the server lets it talk to its inviter only, until the room's admin admits it. */
+  knocking = false;
+  /** Revokes and denies sent, waiting for the server's answer, by member. */
   private revokes = new Map<string, { resolve: (a: RevokeAnswer) => void; timer: ReturnType<typeof setTimeout> }[]>();
+  private denies = new Map<string, { resolve: (a: RevokeAnswer) => void; timer: ReturnType<typeof setTimeout> }[]>();
   private ws: WebSocket | null = null;
   private attempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -99,9 +106,40 @@ export class SignalingClient {
     this.clearTimers();
     this.peers.clear();
     this.settleRevokes(null, { ok: false, reason: "failed", message: "the signaling connection was closed before the server answered" });
+    this.settleDenies(null, { ok: false, reason: "failed", message: "the signaling connection was closed before the server answered" });
     const ws = this.ws;
     this.ws = null;
     ws?.close(1000, "stopped");
+  }
+
+  /**
+   * Ask the server to drop a joiner knocking at the door (the room's admin
+   * declined it). Waits for the connection (up to `timeoutMs`), and for the
+   * answer. Never rejects.
+   */
+  async deny(member: string, timeoutMs = 10_000): Promise<RevokeAnswer> {
+    const until = Date.now() + timeoutMs;
+    while (this.state !== "online" && this.state !== "stopped" && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+    if (this.state !== "online") return { ok: false, reason: "offline", message: this.problem ? `the signaling server refused this install: ${this.problem}` : "the signaling server couldn't be reached" };
+    if (!this.features?.has("approve")) return { ok: false, reason: "unsupported", message: OLD_WORKER_APPROVE };
+    return new Promise<RevokeAnswer>((resolve) => {
+      const timer = setTimeout(() => this.settleDenies(member, { ok: false, reason: "failed", message: "the signaling server didn't answer" }), Math.max(1000, until - Date.now()));
+      timer.unref?.();
+      this.denies.set(member, [...(this.denies.get(member) ?? []), { resolve, timer }]);
+      if (!this.send({ t: "deny", member })) this.settleDenies(member, { ok: false, reason: "offline", message: "the signaling connection dropped" });
+    });
+  }
+
+  /** Answer the denies waiting for `member` (null: all of them). */
+  private settleDenies(member: string | null, answer: RevokeAnswer): void {
+    for (const [m, waiting] of [...this.denies]) {
+      if (member !== null && m !== member) continue;
+      this.denies.delete(m);
+      for (const w of waiting) {
+        clearTimeout(w.timer);
+        w.resolve(answer);
+      }
+    }
   }
 
   /**
@@ -211,15 +249,19 @@ export class SignalingClient {
         for (const p of msg.peers) this.peers.set(p.id, p);
         this.relay = msg.relay;
         this.features = new Set(Array.isArray(msg.features) ? msg.features.filter((f): f is string => typeof f === "string") : []);
+        this.knocking = msg.knocking === true;
         this.state = "online";
         this.problem = this.problemCode = null;
         this.attempt = 0;
         this.startKeepAlive(ws);
-        this.o.onEvent({ t: "online", peers: msg.peers, relay: msg.relay });
+        this.o.onEvent({ t: "online", peers: msg.peers, relay: msg.relay, ...(this.knocking ? { knocking: true } : {}) });
         if (Array.isArray(msg.events) && msg.events.length) this.o.onEvent({ t: "room-events", events: msg.events });
         return;
       case "revoked":
         if (typeof msg.member === "string") this.settleRevokes(msg.member, { ok: true });
+        return;
+      case "denied":
+        if (typeof msg.member === "string") this.settleDenies(msg.member, { ok: true });
         return;
       case "peer-joined":
         this.peers.set(msg.peer.id, msg.peer);
@@ -262,6 +304,14 @@ export class SignalingClient {
           if (msg.event !== undefined) this.o.onEvent({ t: "room-events", events: [msg.event] });
           return;
         }
+        if (msg.code === "not-member" && msg.declined) {
+          // the inviter says so too (join-rejected); this is the server's side of it
+          this.problem = "The room's admin declined this join";
+          this.problemCode = "declined";
+          this.retryAfter = 10 * 60_000;
+          this.o.log(`signaling ${this.o.roomId}: ${this.problem}`);
+          return;
+        }
         if (msg.code === "not-member") {
           // with a join key, the likely reason is that the inviter's Mockingbird hasn't registered the code yet
           this.problem = this.o.join
@@ -274,11 +324,17 @@ export class SignalingClient {
         }
         if (msg.code === "forbidden" && typeof msg.member === "string") {
           this.settleRevokes(msg.member, { ok: false, reason: "refused", message: `the signaling Worker refused: ${msg.message}` });
+          this.settleDenies(msg.member, { ok: false, reason: "refused", message: `the signaling Worker refused: ${msg.message}` });
           return;
         }
         if (msg.code === "bad-message" && /^unknown message revoke\b/.test(msg.message)) {
           this.features?.delete("revoke");
           this.settleRevokes(null, { ok: false, reason: "unsupported", message: OLD_WORKER_REVOKE });
+          return;
+        }
+        if (msg.code === "bad-message" && /^unknown message deny\b/.test(msg.message)) {
+          this.features?.delete("approve");
+          this.settleDenies(null, { ok: false, reason: "unsupported", message: OLD_WORKER_APPROVE });
           return;
         }
         if (msg.code === "replaced") return;
@@ -334,7 +390,9 @@ export class SignalingClient {
       }
     }
     this.peers.clear();
+    this.knocking = false;
     this.settleRevokes(null, { ok: false, reason: "offline", message: `the signaling connection dropped before the server answered (${reason})` });
+    this.settleDenies(null, { ok: false, reason: "offline", message: `the signaling connection dropped before the server answered (${reason})` });
     if (this.state !== "stopped") this.state = "offline";
     this.o.onEvent({ t: "offline", reason });
   }

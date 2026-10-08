@@ -70,7 +70,7 @@ describe("who's in a room: leaving and removal in the room log", () => {
     const [ryan, nick, sam] = [newId("ryan"), newId("nick"), newId("sam")];
     const { log } = newRoom(ryan);
     add(log, ryan, nick, "Nick");
-    add(log, nick, sam, "Sam"); // any member may invite
+    add(log, nick, sam, "Sam"); // a room from before joins needed accepting: any member's add counts
     log.create(sam, "member.removed", { member: nick.id }); // not the admin: nothing
     expect(roomAdmin(log.state!)).toBe(ryan.id);
     log.create(ryan, "member.removed", { member: ryan.id, reason: "left" });
@@ -103,7 +103,7 @@ describe("who's in a room: leaving and removal in the room log", () => {
       expect(names(s)).toEqual(["Ryan"]);
       expect(s.former).toMatchObject([{ id: nick.id, name: "Nicholas", removedBy: ryan.id }]);
       expect(s.ext.chat?.entries.filter((e) => e.kind === "message")).toEqual([]);
-      expect(s.ext.chat?.entries.filter((e) => e.kind === "member")).toMatchObject([{ author: ryan.id, member: nick.id, change: "removed" }]);
+      expect(s.ext.chat?.entries.filter((e) => e.kind === "member" && e.change === "removed")).toMatchObject([{ author: ryan.id, member: nick.id, change: "removed" }]);
     }
     expect(JSON.stringify(states[1])).toBe(JSON.stringify(states[0]));
     expect(JSON.stringify(states[2])).toBe(JSON.stringify(states[0]));
@@ -332,11 +332,19 @@ function recorder() {
   return { calls, parts };
 }
 
+/** The room's admin accepts the next request to join, as Accept in its prompt would. */
+async function acceptNext(admin: TeamService, roomId: string) {
+  const asked = () => admin.status().rooms.find((r) => r.id === roomId)?.requests?.find((q) => q.role === "admin" && q.state === "waiting");
+  await until(() => !!asked(), "the admin to be asked");
+  return admin.answerJoin(roomId, asked()!.id, true);
+}
+
 async function sharedPair(net: LoopbackNetwork, o: { ryan?: RoomCleanup[]; nick?: RoomCleanup[] } = {}) {
   const ryan = service(net, "Ryan", { cleanup: o.ryan });
   const nick = service(net, "Nick", { cleanup: o.nick });
   const { invite, roomId } = await ryan.s.shareGroup("5110", "#5110 Donor entities");
   nick.s.join(invite);
+  await acceptNext(ryan.s, roomId);
   await until(() => nick.s.status().rooms.length === 1, "the join");
   await until(() => ryan.s.status().rooms[0]?.online.length === 1, "them to connect");
   return { ryan, nick, roomId };

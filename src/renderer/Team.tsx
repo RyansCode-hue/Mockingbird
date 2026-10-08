@@ -5,6 +5,7 @@ import { CopyToast, useCopyNote } from "./copyNote";
 import { isErr, type Settings } from "../shared/types";
 import { allowCreatorsCommand } from "../shared/team/protocol";
 import type { LeaveOutcome, PeerStatus, RemoveOutcome, TeamNotice, TeamRoomSummary, TeamStatus } from "../shared/team/types";
+import { OLD_WORKER_APPROVE, pendingJoinText, RoomJoinRequests } from "./team/JoinRequests";
 
 /**
  * Team rooms in the window (stage 1): Settings → Team, sharing a group as a
@@ -149,11 +150,30 @@ export function InviteCode({ invite, warning }: { invite: string; warning?: stri
   );
 }
 
+/** Who lets a code's holder in: the room's admin (this install, or the teammate it's sent to for approval). */
+function AdminAccepts({ room, self }: { room: TeamRoomSummary; self?: string }) {
+  const admin = room.members.find((m) => m.id === room.admin);
+  return (
+    <>
+      <div className="hint">
+        {admin?.self
+          ? "You're the room's admin: when they use it, Mockingbird asks you to accept them."
+          : `When they use it, it's sent to ${admin?.name ?? "the room's admin"} (the room's admin) for approval.`}
+      </div>
+      {room.workerApprove === false && <div className="hint warn">{OLD_WORKER_APPROVE}</div>}
+      <RoomJoinRequests room={room} self={self} />
+    </>
+  );
+}
+
 /** Share a group as a room: shows a one-time invite code to send a teammate. */
 export function ShareRoomDialog({ groupKey, title, onClose }: { groupKey: string; title: string; onClose: () => void }) {
   const [code, setCode] = useState<{ roomId: string; invite: string; warning?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const status = useTeamStatus();
+  const st = status && !isErr(status) ? status : null;
+  const room = code ? st?.rooms.find((r) => r.id === code.roomId) : undefined;
   useEffect(() => {
     setError(null);
     window.mb.teamShareGroup(groupKey, title).then((r: { roomId: string; invite: string; warning?: string } | { error: string }) => (isErr(r) ? setError(r.error) : setCode(r)));
@@ -173,6 +193,7 @@ export function ShareRoomDialog({ groupKey, title, onClose }: { groupKey: string
       {error && <ShareError error={error} />}
       {!code && !error && <div className="hint">Creating the room and checking with the signaling server…</div>}
       {code && <InviteCode invite={code.invite} warning={code.warning} />}
+      {room && <AdminAccepts room={room} self={st?.self?.id} />}
       <div className="row">
         {error && (
           <button className="outline" onClick={() => setAttempt((n) => n + 1)}>
@@ -217,14 +238,9 @@ export function JoinRoomDialog({ onClose }: { onClose: () => void }) {
           <textarea className="team-code" autoFocus placeholder="MBR1-…" value={text} onChange={(e) => setText(e.target.value)} />
         </>
       )}
-      {joining && !joined && (
-        <div className="hint">
-          {pending?.state === "rejected"
-            ? `Couldn't join ${joining.name}: ${pending.reason}`
-            : pending?.state === "syncing"
-              ? `Accepted — copying ${joining.name}…`
-              : `Waiting for the inviter's Mockingbird to accept (it has to be open)…`}
-        </div>
+      {joining && !joined && pending && <div className={pending.state === "declined" || pending.state === "rejected" ? "err" : "hint"}>{pendingJoinText(pending)}</div>}
+      {joining && !joined && pending?.state === "approval" && (
+        <div className="hint">The room's admin lets people in. They may ask you to read out your fingerprint (Settings → Team) to check it's you.</div>
       )}
       {joined && <div className="set-note ok">Joined {joined.name}. It's in the sidebar as {joined.groupKey}.</div>}
       {error && <div className="err">{error}</div>}
@@ -576,10 +592,11 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
             </button>
           </SetRow>
           <RoomMembers room={r} onRemove={(member) => setRemoving({ room: r, member })} />
+          <RoomJoinRequests room={r} self={st?.self?.id} />
         </div>
       ))}
       {st?.pending.map((p) => (
-        <SetRow key={p.roomId} title={`${p.name} (joining)`} note={p.state === "rejected" ? `Refused: ${p.reason}` : p.state === "syncing" ? "Accepted — copying the room" : "Waiting for the inviter's Mockingbird to accept"}>
+        <SetRow key={p.roomId} title={`${p.name} (joining)`} note={pendingJoinText(p)}>
           <button
             className="outline"
             onClick={async () => {
@@ -587,7 +604,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
               if (isErr(r)) setCheck({ ok: false, msg: `Couldn't cancel: ${r.error}` });
             }}
           >
-            {p.state === "rejected" ? "Dismiss" : "Cancel"}
+            {p.state === "rejected" || p.state === "declined" ? "Dismiss" : "Cancel"}
           </button>
         </SetRow>
       ))}

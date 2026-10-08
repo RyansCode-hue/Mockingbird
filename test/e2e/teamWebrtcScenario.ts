@@ -6,7 +6,7 @@ import { loadIdentity } from "../../src/main/team/identity";
 import { RoomStore } from "../../src/main/team/rooms";
 import { TeamCore } from "../../src/main/team/transport";
 import { WebRtcWire } from "../../src/main/team/webrtc";
-import { until } from "../../src/main/team/loopback";
+import { acceptJoins, until } from "../../src/main/team/loopback";
 import { startLocalSignaling } from "../../signaling/src/local/server";
 import { signalPayload, type SignedEnvelope } from "../../src/shared/team/protocol";
 
@@ -55,6 +55,7 @@ async function run(): Promise<void> {
   };
   const ryan = member("Ryan");
   const nick = member("Nick");
+  acceptJoins(ryan.team); // Ryan, the room's admin, accepts Nick's join
   const both = (roomId: string) => ryan.team.presence(roomId).length === 1 && nick.team.presence(roomId).length === 1;
   let roomId = "";
 

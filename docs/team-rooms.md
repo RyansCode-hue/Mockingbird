@@ -39,7 +39,8 @@ should stop more members joining later.
   could replace WebRTC later without the rest changing.
 - **What the room log holds** (each event signed by its author; only a
   session's owner changes its records): `room.created`, `member.added`,
-  `member.renamed`, `member.removed` (leaving and removal, below);
+  `member.renamed`, `member.removed` (leaving and removal, below),
+  `room.approval`, `join.declined` (joining, below);
   `session.upsert` / `session.removed` (room sessions);
   `session.backup`, `session.takenOver`, `session.backupDropped` (take-over);
   `chat.message`, `chat.update`, `chat.assistant` (team room); `plan.package`,
@@ -52,13 +53,14 @@ should stop more members joining later.
 ## Rooms
 
 - **A room is a shared top-level group** (e.g. "#5110 Donor entities"). It's
-  created on one laptop, and teammates join with an **invite code** the
-  creator hands over (room id, signaling URL, a one-time join token, and the
-  creator's key fingerprint). Joining records the joiner's public key as a
-  member; after that, members reconnect by key.
+  created on one laptop, and teammates join with an **invite code** a member
+  hands over (room id, signaling URL, a one-time join token, and the
+  inviter's key fingerprint), once the room's **admin** accepts them
+  (Joining, below). Joining records the joiner's public key as a member; after
+  that, members reconnect by key.
 - Being in a room is the permission. Members can do anything in it — invite
-  others included — except remove someone else, which is the room's **admin**'s
-  (below). Leave room for viewer/driver roles later.
+  others included — except let someone in or remove someone else, which are
+  the room's **admin**'s (below). Leave room for viewer/driver roles later.
 - **Every member keeps a full copy of the room's state**: members, sessions,
   chat, board, presence. It's an append-only event log, ordered by Lamport time
   and merged on reconnect. The room keeps working for whoever's online when the
@@ -68,6 +70,123 @@ should stop more members joining later.
   event carrying one is refused.
 - The sidebar shows the room as a group with a shared badge and the initials of
   who's connected right now. Sessions outside rooms are never visible to anyone.
+
+## Joining
+
+Decided with Ryan, 2026-10-08: joins have to be accepted, by the room's
+admin only — its creator, or the longest-standing member once the creator
+has left (`roomAdmin`). Before this, a valid code let anyone in at once: the
+inviter's Mockingbird checked the code and added them, and the signaling
+Worker admitted their key as soon as the join key matched.
+
+- **Codes stay open to any member** (the UX is unchanged): Share/Invite…
+  makes a one-time code, valid 7 days. The dialog says who will accept: "You're
+  the room's admin…" or "it's sent to Ryan (the room's admin) for approval".
+- **The request.** The joiner proves to the inviter (the key the code names)
+  that it holds the code (an HMAC keyed by the token). The inviter's
+  Mockingbird checks it and takes the code — it works once, whatever the admin
+  says — then:
+  - **the inviter is the admin:** its Mockingbird asks it (below);
+  - **otherwise:** it passes the request on to the admin's Mockingbird over
+    the room's peer-to-peer channel (`room.joinRequest`), signed by the
+    inviter: the joiner's id, key, name and fingerprint, which invite (its
+    token hash), and when it expires. If the admin is offline it's held (on
+    disk, `join-requests.json` in the room's folder) and passed on when the
+    admin connects. An admin on an older Mockingbird can't take it: the
+    inviter's Settings → Team says it needs an update.
+  The inviter tells the joiner whom it waits for (`join-pending`): the
+  joiner's Join a room… and Settings → Team say **"Waiting for Ryan to
+  accept"**; an inviter who isn't the admin sees **"Sent to Ryan for
+  approval"** (Share/Invite…, and Settings → Team under the room).
+- **The admin is asked:** a desktop notification and a prompt, **"Nick wants
+  to join #5101"**, with Nick's fingerprint (as Settings → Team shows
+  fingerprints) to check with Nick another way — it's what his Settings → Team
+  shows as this Mockingbird's fingerprint — and who invited him: **Accept**,
+  **Decline**, or **Later**. Requests wait in Settings → Team under the room
+  ("Asking to join"), so a missed prompt can be answered later.
+- **Accept** is the admin's `member.added` (carrying the inviter); **decline**
+  is the admin's `join.declined`, and the Worker drops the joiner at its door
+  (`deny`). Both reach the inviter in the room log — at once, or when it's
+  next online — and the inviter tells the joiner (`join-accepted`, or
+  `join-rejected` saying "Ryan declined your request to join #5101"). The
+  joiner keeps trusting only the key its code names: rather than also taking
+  the admin's word, which it couldn't check until it had the room's log, it
+  hears the outcome from the inviter, who has the request anyway (to pass it
+  on). The log still decides: the inviter can't make anyone a member, only the
+  admin's `member.added` counts. A joiner that can't be reached when the
+  inviter learns the answer hears it the next time it asks (it asks again
+  every minute while it waits, and whenever the inviter comes online).
+- **Declined:** the joiner is told and gets nothing of the room — no log, no
+  connection to any member (members' Mockingbirds refuse non-members, and the
+  joiner only connects to its inviter once accepted). The code stays used: a
+  declined key needs a new code to ask again.
+- **Expiry:** a request expires with its code (7 days at most). The admin's
+  list drops it and Accept refuses it; the joiner, still waiting, is told "The
+  code expired before Ryan accepted — ask for a new one".
+- **Everyone** sees the join in the chat — "Ryan accepted Nick" ("Nick
+  joined" for joins from before this) — and members other than the admin who
+  accepted and the joiner get a notification, "Nick joined #5101".
+- **The room log's rule** (`mayAddMember`, next to `roomAdmin` in
+  `src/main/team/rooms.ts`): a `member.added` counts only if its author is the
+  admin at that point in the room's order — except for rooms from before
+  this. Today's logs hold `member.added` events written by whichever member's
+  code was used, so the members those added must stay members. That's kept by
+  **position**: a room needs accepting from a point in its order — its
+  `room.created` for a room created now (`approval: true`), else its admin's
+  first `room.approval`, which the admin's Mockingbird publishes once it has
+  this (on start, or on becoming admin). Before that point any member's add
+  counts, as it did; after it only the admin's. Every member places events in
+  the same order, so every member reduces the same membership, whatever order
+  they arrive in. Position rather than a version in the event: a version an
+  older (or uncooperative) Mockingbird simply leaves out would keep its adds
+  counting forever; a point in the log doesn't move. Adds that don't count are
+  kept and passed on, like a non-admin's removal.
+- **The signaling Worker's door** (`approve`). A hello with a valid join key
+  no longer makes the key a member: it **knocks**. At the door it can only
+  exchange the join handshake (`join`, `join-pending`, `join-accepted`,
+  `join-rejected`) with members — no WebRTC negotiation, no TURN credentials,
+  no invites, admits or revokes, and its welcome lists no member but its
+  inviter (when connected), with no removals; members see it flagged as
+  knocking. The knock expires with the invite. It becomes a member only when
+  the admin, as the Worker knows it (the creator it learned from the salt,
+  else the member it admitted earliest; see revoke), sends `admit` for its key
+  — the admin's Mockingbird admits everyone its log counts, so accepting does
+  it — and is welcomed again as a member. **Only the admin's admit adds
+  keys**: a member's admit of a key that isn't a member is ignored (and
+  logged). Re-admitting existing members needs nothing: they're already
+  members, and a Worker that lost its storage lost its creator record too, so
+  it has no known admin — and a room with no known admin (from before revoke,
+  its creator not seen since) takes any member's admit, as before, so it
+  can't lock everyone out. Every member's Mockingbird keeps admitting the
+  members its log counts; since only the admin's `member.added` counts, a
+  Worker whose admin differs from the app's (after the creator left) still
+  gets the right keys from whoever it sees as admin. **Decline** is `deny
+  { member }` from the admin: the knock and its connections go (told
+  `declined`), and the invite stays used.
+- **Compatibility.** `SIGNALING_PROTOCOL` stays 1: the Worker announces
+  `features: ["revoke", "approve"]` in its welcome and `/health`. Against an
+  older Worker the joiner is a member at the Worker at once (presence, TURN),
+  but approval still happens in the apps — nothing of the room reaches the
+  joiner until the admin accepts — and Mockingbird says "Update it (cd
+  signaling && npx wrangler deploy) to also hold joiners at the door" in the
+  prompt, under the room, and when a decline can't drop them there. Older
+  apps: a joiner on an older Mockingbird ignores `join-pending` and simply
+  waits; an inviter on an older Mockingbird still adds joiners itself, which
+  counts only in a room that doesn't need accepting yet (its admin hasn't
+  switched it).
+- **Limits.**
+  - The room log trusts each author's Lamport time, as removal does: an
+    uncooperative member's Mockingbird could backdate an add before a room's
+    `room.approval`. Rooms created now need accepting from their first event,
+    so there's nothing before it to backdate into.
+  - The joiner hears the outcome from its inviter: accepted while the inviter
+    is offline, the joiner waits until the inviter is back (the admin can
+    still see it's accepted).
+  - If the admin who holds a request leaves before answering, the request
+    goes with their copy of the room; the inviter passes its own on again to
+    the next admin, but a code the old admin made itself has to be sent again.
+  - A joiner who cancels doesn't withdraw the request: the admin can still
+    accept it until it expires (the joiner just doesn't come in).
 
 ## Leaving and removing members
 
@@ -85,14 +204,13 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 - **After a removal** the member is a *former* member (`state.former`, so their
   name still shows on what they wrote): what they did before still counts,
   anything they write after — written before they heard, or by a Mockingbird
-  that doesn't cooperate — changes nothing, including invites they accept.
+  that doesn't cooperate — changes nothing, including invites they hand out.
   Members' transports refuse their frames, requests and streams as any
-  non-member's. A later `member.added` (a new invite from any member) brings
-  them back, as the newest member.
-- **Invites stay open to any member**, as before. Restricting them to the
-  admin was considered (a review flagged "any member can add members") and
-  left for now: in a room of a few people who trust each other it would only
-  get in the way. Revisit with roles.
+  non-member's. A later `member.added` (a new code, from any member, that the
+  admin accepts) brings them back, as the newest member.
+- **Codes stay open to any member**; letting someone in is the admin's
+  (Joining, above). A review flagged "any member can add members": that's now
+  closed by the admin accepting, without taking codes away from members.
 - **Leave room…** (Settings → Team per room, or the Team tab's ⋯): the leave is
   published and sent to the teammates connected now, who confirm they have it;
   then the signaling Worker cuts this install's key off; then everything of the
@@ -146,7 +264,7 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   closes its connections (passing the signed removal on), drops the invites it
   made, refuses its TURN requests and any other message (membership is checked
   on every message), and refuses its hellos with the removal attached — until
-  a new invite's join key brings it back. A member's `admit` (keeping the
+  a new invite's join key brings it to the door again (Joining). A member's `admit` (keeping the
   Worker in step with its log) can't bring a revoked key back; only the
   admin's can. The Worker hands the newest removals to members in their
   welcome, so a member who was offline when someone left hears of it even if
@@ -178,10 +296,6 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   - Someone who leaves while nobody else is online is told nothing back; the
     others hear it from the Worker's welcome (an older Worker: they see them as
     an offline member until the admin removes them).
-  - Someone removed and invited back by a member other than the admin can be
-    cut off at the Worker again if the admin's Mockingbird reconnects before it
-    has the new `member.added`; the admin's next admit lets them back in once
-    it has.
   - Leaving waits for the cleanup, including deleting backups on origin (each
     push has its own timeout): with an unreachable origin the dialog takes a
     while, then lists what's left there.
@@ -389,7 +503,7 @@ A chat thread in each room, for people and agents:
 
 ## Not in this release
 
-- Roles/permissions beyond "member" and the admin who can remove members.
+- Roles/permissions beyond "member" and the admin who lets people in and removes them.
 - Other transports (Tailscale, a self-hosted relay): designed for, not built.
 - Running sessions on an always-on shared host.
 
@@ -411,6 +525,18 @@ A chat thread in each room, for people and agents:
   start; the Worker's revoke (self, admin, refused, a room from before revoke,
   admin succession, re-admission, stale admits) and the app's client against
   a new and an older local Worker.
+- Joining (`test/teamJoinApproval.test.ts`, the signaling and wire tests):
+  `mayAddMember` — the admin's add counts, a member's doesn't, a room from
+  before keeps the adds before its admin's switch, in any delivery order;
+  over the loopback, the inviter as admin (Accept, Decline, the code used
+  up, a new code asking again), an inviter who isn't the admin (passed on,
+  the admin offline until later, the answer relayed after the inviter was
+  away), expiry, an admin on an older Mockingbird, a member's own add letting
+  nobody in, the notifications, an older Worker; the Worker's door (knocking:
+  no TURN, invites, admits or member list, only the handshake; expiry; the
+  admin's admit promotes, a member's is ignored; deny; a room with no known
+  admin; a Worker from before) and the real wire and client against the
+  local Worker for accept, decline and an older Worker.
 - Codex's room sandbox against the installed binary, without a model:
   `codex sandbox` runs probes under the exact `-c` settings a room launch
   passes (through the pane's shell quoting), with a throwaway `CODEX_HOME`
@@ -427,7 +553,8 @@ A chat thread in each room, for people and agents:
   `auth.json`. Skipped under CI and without Codex 0.138+.
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
-  (`MB_E2E_APP=1`): create room, join by code, live pane, remote typing,
+  (`MB_E2E_APP=1`): create room, join by code (the admin accepting from its
+  prompt, again after removing the joiner), live pane, remote typing,
   chat, board claim, a backed-up turn, a hand-over from the owner's prompt
   (their agent stopped, the taker continuing), take-over with the owner quit,
   and the owner's app stopping its copy when it starts again. Notifications,

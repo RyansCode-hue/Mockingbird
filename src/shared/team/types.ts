@@ -22,8 +22,10 @@ export interface RoomMember {
   /** Ed25519 public key, raw 32 bytes, base64url. */
   publicKey: string;
   joinedAt: number;
-  /** Who admitted this member; null for the room's creator. */
+  /** Whose invite code this member used (the author of their member.added before joins needed accepting); null for the room's creator. */
   invitedBy: MemberId | null;
+  /** The admin who accepted them, in a room whose joins need accepting. */
+  acceptedBy?: MemberId;
 }
 
 /** Someone who was a member: left, or was removed by the room's admin. Kept so their history still has a name. */
@@ -39,8 +41,14 @@ export interface FormerMember extends RoomMember {
  * stages add theirs (see the note at the top of this file).
  */
 export interface RoomEventBodies {
-  "room.created": { name: string; groupKey: string; publicKey: string; creatorName: string; salt: string };
-  "member.added": { id: MemberId; name: string; publicKey: string };
+  /** `approval`: joins need the admin's acceptance from the start (rooms created before it say so with room.approval). */
+  "room.created": { name: string; groupKey: string; publicKey: string; creatorName: string; salt: string; approval?: true };
+  /** The admin accepting a join (`inviter`: whose code it was); before joins needed accepting, the inviter's own add. */
+  "member.added": { id: MemberId; name: string; publicKey: string; inviter?: MemberId };
+  /** From here in the room's order, only the admin's member.added counts (see mayAddMember). */
+  "room.approval": Record<string, never>;
+  /** The admin declined a join request: the inviter tells the joiner. Changes no state. */
+  "join.declined": { id: MemberId; invite: string; inviter: MemberId };
   "member.renamed": { name: string };
   /** A member leaves (`member` is the author), or the room's admin removes them. */
   "member.removed": { member: MemberId; reason?: "left" | "removed" };
@@ -76,6 +84,8 @@ export interface RoomState {
   members: RoomMember[];
   /** Who left or was removed, newest last (absent in states reduced before removal existed). */
   former?: FormerMember[];
+  /** Joins need the admin's acceptance from here in the room's order: only the admin's member.added counts (absent: any member's, as before). */
+  joinApproval?: true;
   /** Filled by other stages' reducers. */
   ext: Partial<RoomExtensions>;
   /** Highest Lamport time applied. */
@@ -123,6 +133,35 @@ export interface TeamRoomSummary {
   problem?: string;
   /** The signaling Worker can cut a removed member off: false when it's older and needs redeploying, absent until it has answered. */
   workerRevoke?: boolean;
+  /** The signaling Worker holds joiners at the door until the admin accepts: false when it's older and needs redeploying, absent until it has answered. */
+  workerApprove?: boolean;
+  /** Join requests this install answers (as the room's admin) or passed on (as the inviter), newest last. */
+  requests?: JoinRequestSummary[];
+}
+
+/** Someone asking to join a room, as the admin (who accepts or declines) and the inviter (who passed it on) see it. */
+export interface JoinRequestSummary {
+  roomId: RoomId;
+  /** The joiner's member id: the fingerprint of their key. */
+  id: MemberId;
+  name: string;
+  /** Their fingerprint as Settings → Team shows it ("a1b2 c3d4 …"), to compare out of band. */
+  fingerprint: string;
+  inviter: MemberId;
+  inviterName: string;
+  /** The room's admin, who answers. */
+  admin: MemberId | null;
+  adminName: string;
+  /** admin: this install answers it · inviter: this install passed it on to the admin. */
+  role: "admin" | "inviter";
+  /**
+   * waiting: the admin hasn't answered (for the inviter: the admin has it) · forwarding: the admin
+   * hasn't been reached yet (offline, or needs an update: see problem) · accepted / declined
+   */
+  state: "waiting" | "forwarding" | "accepted" | "declined";
+  problem?: string;
+  at: number;
+  expiresAt: number;
 }
 
 /** A room code pasted here and not yet completed. */
@@ -130,10 +169,24 @@ export interface PendingJoinSummary {
   roomId: RoomId;
   name: string;
   inviter: MemberId;
-  /** waiting: for the inviter to come online and accept · syncing: accepted, copying the room · rejected: see reason */
-  state: "waiting" | "syncing" | "rejected";
+  /**
+   * waiting: for the inviter to come online · approval: the inviter passed it on, waiting for the
+   * room's admin to accept · syncing: accepted, copying the room · declined: the admin said no ·
+   * rejected: see reason
+   */
+  state: "waiting" | "approval" | "syncing" | "declined" | "rejected";
+  /** The room's admin, by name, once the inviter said who answers. */
+  admin?: string;
   reason?: string;
   since: number;
+}
+
+/** What answering a join request did, for the prompt that answered it. */
+export interface JoinAnswerOutcome {
+  name: string;
+  accepted: boolean;
+  /** Why the signaling Worker didn't drop a declined joiner at the door, when it didn't. */
+  worker: string | null;
 }
 
 /** This install left a room, or was removed from one: shown until dismissed. */
