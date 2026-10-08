@@ -347,6 +347,13 @@ Nothing queued.
 
 ### Later
 
+- **Team room artifacts** — once rooms have been used between two laptops.
+  Files and screenshots, notes, repo file references and links, kept in the
+  room (copied peer to peer, checked by hash, 25 MB a file), listed in a
+  collapsible "Artifacts" section of the Team tab, `#`-mentioned in chat as
+  chips, opened in a viewer dialog (PDFs in Quick Look). Room agents and
+  @assistant read them through a tool; secret-named ones stay unreadable to
+  agents.
 - **Signed + notarized builds.** Updating is covered by the in-app Update
   (pull, build, restart). What's left needs an Apple Developer ID: no
   right-click→Open for new users, and updates that install in the background.
