@@ -69,6 +69,8 @@ import { ROOMS_DIR } from "./team/rooms";
 import { LivePanes } from "./team/livePanes";
 import { stopTeamRooms } from "./team/shutdown";
 import { isRemotePaneId } from "../shared/team/livePanes";
+import { guardNavigation } from "./navigation";
+import { externalUrlAllowed } from "../shared/links";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -82,6 +84,7 @@ function logError(context: string, err: unknown): string {
 }
 process.on("uncaughtException", (e) => logError("uncaughtException", e));
 process.on("unhandledRejection", (e) => logError("unhandledRejection", e));
+guardNavigation(app, shell, (msg) => void logError("navigation", msg));
 
 // One instance per user: a second copy would overwrite ~/.mockingbird/state.json
 // and take over the agent-messaging socket from the first. Opening the app again
@@ -1598,6 +1601,6 @@ handle("dialog:pick", async (opts) => {
 
 handle("shell:open", async (url) => {
   // external links only — the dashboard's "open in browser"
-  if (typeof url !== "string" || !/^https:\/\//.test(url)) throw new Error(`Only https links open in the browser (got ${String(url).slice(0, 80)})`);
+  if (typeof url !== "string" || !externalUrlAllowed(url)) throw new Error(`Only https links open in the browser (got ${String(url).slice(0, 80)})`);
   await shell.openExternal(url);
 });
