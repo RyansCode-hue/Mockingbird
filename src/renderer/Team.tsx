@@ -156,7 +156,7 @@ export function ShareRoomDialog({ groupKey, title, onClose }: { groupKey: string
           <label>Invite code</label>
           <textarea className="team-code" readOnly value={code.invite} onFocus={(e) => e.currentTarget.select()} />
           {code.warning && <div className="err">{code.warning}</div>}
-          <div className="hint">Works once, for 7 days. Your teammate pastes it into Join room (the sidebar's ⇲, or ⌘K). Your Mockingbird must be open for them to join.</div>
+          <div className="hint">Works once, for 7 days. Your teammate pastes it into Join a room… (in the Team tab, New/Import Session → Connected, or ⌘K). Your Mockingbird must be open for them to join.</div>
         </>
       )}
       <div className="row" style={{ position: "relative" }}>

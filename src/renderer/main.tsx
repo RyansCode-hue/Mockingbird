@@ -1606,7 +1606,7 @@ function App() {
           </>
         )}
         <button className="primary" onClick={() => setModal("new")}>
-          New session <span className="kbd">⌘N</span>
+          New/Import Session <span className="kbd">⌘N</span>
         </button>
       </div>
 
@@ -1806,7 +1806,7 @@ function App() {
             />
           )}
           {/* team rooms: team chat */}
-          {sideView === "room" && <RoomChatPanel status={teamStatus} activeGroup={activeGroup} visible={!sideCollapsed} onNewSession={newSessionIn} />}
+          {sideView === "room" && <RoomChatPanel status={teamStatus} activeGroup={activeGroup} visible={!sideCollapsed} onNewSession={newSessionIn} onJoinRoom={() => setJoinDlg(true)} />}
           {sideView === "sessions" && (
           <div className="scroll">
             <div className="filter-row">
@@ -1816,9 +1816,6 @@ function App() {
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
               />
-              <button className="icon" title="Join a team room with a code a teammate sent you" onClick={() => setJoinDlg(true)}>
-                ⇲
-              </button>
             </div>
             {/* team rooms: live panes */}
             <LiveProblems state={roomLive.state} />
@@ -2751,6 +2748,10 @@ function App() {
           existingGroups={groupKeys}
           rooms={teamRooms}
           roomRepos={roomRepoNames(sessions, teamRooms)}
+          onJoinRoom={() => {
+            setModal(null);
+            setJoinDlg(true);
+          }}
           initialLaunch={newLaunch}
           initialGroup={newGroup}
           presets={presets}

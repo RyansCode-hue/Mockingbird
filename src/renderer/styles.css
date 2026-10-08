@@ -1763,6 +1763,8 @@ button.chip { border: none; cursor: pointer; }
 .ns-people { display: inline-flex; gap: 3px; flex-shrink: 0; }
 .ns-people .team-initials.off { background: var(--fill-subtle); color: var(--text-4); }
 .ns-note { font: 400 10px/1.5 var(--ui); color: var(--text-3); margin-top: 8px; }
+.ns-join { font: 400 10.5px var(--ui); color: var(--text-3); margin-top: 6px; }
+.ns-note button.link, .ns-join button.link { font-size: inherit; }
 .ns-chosen { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-pane); }
 .pick-list.ns-list { max-height: 200px; }
 .ns-tag { margin-left: auto; font: 500 9px var(--ui); color: var(--teal-text); border: 1px solid color-mix(in srgb, var(--teal) 45%, transparent); border-radius: 4px; padding: 0 5px; line-height: 14px; flex-shrink: 0; }
@@ -1775,6 +1777,11 @@ button.chip { border: none; cursor: pointer; }
 .ns-foot button.primary.cta { min-width: 150px; padding: 6px 20px; }
 button.ns-ghost { padding: 5px 4px; color: var(--text-3); flex-shrink: 0; }
 button.ns-ghost:hover { background: none; color: var(--text-1); }
+.seg.ns-mode { display: inline-flex; padding: 2px; }
+.seg.ns-mode button { padding: 3px 10px; font: 500 10.5px var(--ui); }
+.ns-agent { flex-shrink: 0; font: 500 11px var(--ui); color: var(--text-1); padding: 6px 11px; border-radius: 5px; background: var(--fill-subtle); }
+.ns-chosen .age { font: 400 9.5px var(--mono); color: var(--text-4); flex-shrink: 0; }
+.ns-chosen .ts-snip { display: none; }
 /* pane rail: the branch's pull request */
 .rail .cell .v.pr-approved, .rail .cell .v.pr-merged { color: var(--teal-text); }
 .rail .cell .v.pr-changes { color: var(--red); }
@@ -1964,6 +1971,9 @@ button.plan-toast-body:hover { background: none; color: var(--text-1-warm); }
 .rc { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .rc-head { display: flex; flex-direction: column; gap: 6px; padding: 0 10px 8px; border-bottom: 1px solid var(--line-med); }
 .rc-name { font: 600 11.5px var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rc-top .rc-name, .rc-top .rc-pick { flex: 1; min-width: 0; }
+button.rc-join { margin-top: 10px; }
 .rc-pick { width: 100%; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 5px; padding: 3px 6px; font: 600 11px var(--ui); }
 .rc-sub { display: flex; align-items: flex-start; gap: 8px; }
 .rc-members { display: flex; flex-wrap: wrap; gap: 4px 8px; flex: 1; min-width: 0; }

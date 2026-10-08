@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { localTops, repoChoices, roomRepoNames, seedWhere, workspacesOf } from "../src/renderer/newSessionModel";
+import { localTops, repoChoices, repoOfFolder, roomRepoNames, seedWhere, workspacesOf } from "../src/renderer/newSessionModel";
 import type { RepoEntry, SessionInfo } from "../src/shared/types";
 import type { TeamRoomSummary } from "../src/shared/team/types";
 
@@ -56,5 +56,25 @@ describe("repos a connected session is offered first", () => {
     ]);
     expect(repoChoices(repos, "ATH", ["client-portal"]).map((c) => c.repo.name)).toEqual(["pathlight"]);
     expect(repoChoices(repos, "", [], 2)).toHaveLength(2);
+  });
+});
+
+describe("the repo an imported conversation belongs to", () => {
+  const repos = [{ name: "backoffice", path: "/Users/me/Code/backoffice", root: "/Users/me/Code" }, { name: "web", path: "/Users/me/Code/backoffice/web", root: "/Users/me/Code" }];
+
+  it("is the repo its folder is, or is in — the innermost one", () => {
+    expect(repoOfFolder(repos, "/Users/me/Code/backoffice")).toEqual({ repo: repos[0], worktree: null });
+    expect(repoOfFolder(repos, "/Users/me/Code/backoffice/src/api")).toEqual({ repo: repos[0], worktree: null });
+    expect(repoOfFolder(repos, "/Users/me/Code/backoffice/web/app")).toEqual({ repo: repos[1], worktree: null });
+  });
+
+  it("is the repo a Mockingbird worktree was cut from, with the worktree's folder", () => {
+    expect(repoOfFolder(repos, "/Users/me/Code/worktrees/backoffice/5101-orgDropdowns")).toEqual({ repo: repos[0], worktree: "5101-orgDropdowns" });
+  });
+
+  it("is none for a folder outside every repo, or a prefix that isn't a folder of it", () => {
+    expect(repoOfFolder(repos, "/Users/me/Code/backoffice-old")).toBeNull();
+    expect(repoOfFolder(repos, "/Users/me/notes")).toBeNull();
+    expect(repoOfFolder(repos, "/Users/me/Code/worktrees/gone/x")).toBeNull();
   });
 });

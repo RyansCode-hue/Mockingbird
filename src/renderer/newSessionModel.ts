@@ -48,3 +48,16 @@ export function repoChoices(repos: readonly RepoEntry[], query: string, suggeste
   const rest = matching.filter((r) => !suggested.includes(r.name));
   return [...first.map((repo) => ({ repo, suggested: true })), ...rest.map((repo) => ({ repo, suggested: false }))].slice(0, limit);
 }
+
+/**
+ * The repo a conversation's folder belongs to: the repo itself or a folder in
+ * it, or a Mockingbird worktree (<parent>/worktrees/<repo>/<branch>, named
+ * `worktree`) of a repo by that folder name; null when it's in neither.
+ */
+export function repoOfFolder(repos: readonly RepoEntry[], cwd: string): { repo: RepoEntry; worktree: string | null } | null {
+  const inside = repos.filter((r) => cwd === r.path || cwd.startsWith(`${r.path}/`)).sort((a, b) => b.path.length - a.path.length)[0];
+  if (inside) return { repo: inside, worktree: null };
+  const m = /\/worktrees\/([^/]+)\/([^/]+)/.exec(cwd);
+  const repo = m ? repos.find((r) => r.name === m[1]) : undefined;
+  return repo && m ? { repo, worktree: m[2] } : null;
+}

@@ -653,7 +653,25 @@ const api: Record<string, (...a: any[]) => any> = {
   rollupWrite: async () => later({ file: "/Users/you/Code/WorkTracker/session-digests/rollup-week-of-preview.md", markdown: "# Weekly rollup — preview\n\n## Summary\n- Active time: 12h 40m across 21 conversations (Claude 11h, Codex 1h 40m)\n\n## Tickets\n\n### #5101 Org dropdowns remember the last org — now: Local testing\n- Time: 6h 10m (Mon 2h, Tue 3h, Wed 1h 10m)\n" }, 500),
 
   // search, updates, setup
-  searchTranscripts: async () => ({ hits: [], conversations: 128, files: 131, indexing: null, lastSync: now, problem: null }),
+  // a few conversations to find (any age), so a search shows hits; \u0001…\u0002 mark the match
+  searchTranscripts: async (q: string) => {
+    const words = q.trim().toLowerCase();
+    const all = [
+      { id: "c-old-1", agent: "claude", cwd: "/Users/you/Code/worktrees/backoffice/5098-donorExport", title: "Donor export times out on big orgs", text: "the donor export query does a full scan — add an index on org_id", open: { how: "resume" } },
+      { id: "c-old-2", agent: "codex", cwd: "/Users/you/Code/backoffice", title: "Org picker remembers nothing", text: "store the last org per user and preselect it in the org picker", open: { how: "resume" } },
+      { id: "c-old-3", agent: "claude", cwd: "/Users/you/Code/client-portal", title: "Portal login loop", text: "MSAL redirect loops when the org cookie is missing", open: { how: "pane", sessionId: "s5" } },
+    ];
+    const hits = words
+      ? all
+          .filter((c) => `${c.title} ${c.text}`.toLowerCase().includes(words))
+          .map((c, i) => {
+            const at = c.text.toLowerCase().indexOf(words);
+            const snippet = at < 0 ? c.text : `${c.text.slice(0, at)}\u0001${c.text.slice(at, at + words.length)}\u0002${c.text.slice(at + words.length)}`;
+            return { id: c.id, agent: c.agent, cwd: c.cwd, title: c.title, started: now - (i + 3) * 86_400_000, updated: now - (i + 2) * 86_400_000, model: null, snippet, at: now - (i + 2) * 86_400_000, kind: "message", open: c.open };
+          })
+      : [];
+    return { hits, conversations: 128, files: 131, indexing: null, lastSync: now, problem: null };
+  },
   updateCheck: async () => later({ latest: "1.3.1", current: "1.3.0", newer: true, url: "https://github.com/", source: "branch" }, 600),
   updateStatus: async () => ({ state: "idle", done: [], log: [] }),
   updateOutcome: async () => null,
@@ -932,6 +950,18 @@ if (params.get("new") === "room") setTimeout(() => (document.querySelector('butt
 else if (params.has("new")) {
   setTimeout(() => emit("onUiCommand", "new-session"), 300);
   if (params.get("new") === "connected") setTimeout(() => (document.querySelector(".ns-where button:last-child") as HTMLElement | null)?.click(), 700);
+  // ?new=import switches it to Import; ?new=import-pick also picks the first conversation
+  if (params.get("new")?.startsWith("import")) setTimeout(() => (document.querySelector(".ns-mode button:last-child") as HTMLElement | null)?.click(), 700);
+  if (params.get("new") === "import-pick") setTimeout(() => (document.querySelector(".ns-list .item:not(.blocked)") as HTMLElement | null)?.click(), 1100);
+  // ?new=import&find=<words> types a search into Import
+  if (params.get("find")) {
+    setTimeout(() => {
+      const input = document.querySelector(".ns-body input[type=text]") as HTMLInputElement | null;
+      if (!input) return;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, params.get("find"));
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, 1100);
+  }
 }
 if (params.has("reset")) {
   params.delete("reset");

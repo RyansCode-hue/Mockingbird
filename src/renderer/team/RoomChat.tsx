@@ -96,18 +96,21 @@ export function useRoomChatOpen(open: () => void): void {
 
 /**
  * The side bar view: the chat of the room picked, or of the shared group on
- * screen. `onNewSession` opens New session in a room's group.
+ * screen. `onNewSession` opens New session in a room's group; `onJoinRoom`
+ * opens Join a room, for a teammate's invite code.
  */
 export function RoomChatPanel({
   status,
   activeGroup,
   visible,
   onNewSession,
+  onJoinRoom,
 }: {
   status: TeamStatus | { error: string } | null;
   activeGroup: string | null;
   visible: boolean;
   onNewSession: (groupKey: string) => void;
+  onJoinRoom: () => void;
 }) {
   const choice = picked.use();
   const groupRoom = activeGroup ? roomOfGroup(status, activeGroup) : undefined;
@@ -122,12 +125,17 @@ export function RoomChatPanel({
   if (!room) {
     return (
       <div className="rc-empty">
-        No team rooms yet. Share a group from its row in the Sessions view (⇪), or join a teammate's room with a code (⇲). Each room has a chat here: what teammates say, what
-        their agents are up to, and an @assistant.
+        No team rooms yet. Share a group from its row in the Sessions view (⇪), or join a teammate's room with the invite code they sent you. Each room has a chat here: what
+        teammates say, what their agents are up to, and an @assistant.
+        <div>
+          <button className="outline rc-join" onClick={onJoinRoom}>
+            Join a room…
+          </button>
+        </div>
       </div>
     );
   }
-  return <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} onNewSession={onNewSession} />;
+  return <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} onNewSession={onNewSession} onJoinRoom={onJoinRoom} />;
 }
 
 const when = (ms: number) => {
@@ -147,12 +155,14 @@ function RoomChat({
   selfName,
   visible,
   onNewSession,
+  onJoinRoom,
 }: {
   room: TeamRoomSummary;
   rooms: TeamRoomSummary[];
   selfName: string;
   visible: boolean;
   onNewSession: (groupKey: string) => void;
+  onJoinRoom: () => void;
 }) {
   const [view, setView] = useState<RoomChatView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -228,19 +238,24 @@ function RoomChat({
   return (
     <div className="rc">
       <div className="rc-head">
-        {rooms.length > 1 ? (
-          <select className="rc-pick" value={room.id} onChange={(e) => pickRoom(e.target.value)} title="Which room's chat to show">
-            {rooms.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="rc-name" title={room.name}>
-            {room.name}
-          </span>
-        )}
+        <div className="rc-top">
+          {rooms.length > 1 ? (
+            <select className="rc-pick" value={room.id} onChange={(e) => pickRoom(e.target.value)} title="Which room's chat to show">
+              {rooms.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="rc-name" title={room.name}>
+              {room.name}
+            </span>
+          )}
+          <button className="rc-new-session" title="Join a teammate's room with the invite code they sent you" onClick={onJoinRoom}>
+            Join a room…
+          </button>
+        </div>
         <div className="rc-sub">
           <div className="rc-members">
             {room.members.map((m) => {

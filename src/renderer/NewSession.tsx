@@ -12,7 +12,7 @@ import { usePersisted, writePref, readPref } from "./prefs";
 import { COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
 import { useAction } from "./useAction";
 import { initialsOf } from "./Team";
-import { localTops, repoChoices, seedWhere, workspacesOf } from "./newSessionModel";
+import { localTops, repoChoices, repoOfFolder, seedWhere, workspacesOf } from "./newSessionModel";
 import type { TeamRoomSummary } from "../shared/team/types";
 
 /** Starting sessions: New session (⌘N) and Import. */
@@ -25,9 +25,11 @@ export function NewSessionModal({
   roomRepos = {},
   initialLaunch,
   initialGroup,
+  initialMode,
   presets,
   onStartPreset,
   onSavePreset,
+  onJoinRoom,
   onClose,
   onCreated,
 }: {
@@ -38,15 +40,31 @@ export function NewSessionModal({
   roomRepos?: Record<string, string[]>;
   initialLaunch?: LaunchKind;
   initialGroup?: string; // "5038" or "5038/backend" — a workspace path adds a tab there; a room's group starts it connected
+  /** New starts a fresh session; Import resumes a conversation from this Mac. */
+  initialMode?: "new" | "import";
   presets: SessionPreset[];
   onStartPreset: (p: SessionPreset) => void;
   /** Save what's filled in as a preset (opens the preset editor). */
   onSavePreset: (draft: SessionPreset) => void;
+  /** Join a teammate's room with an invite code (closes this dialog for Join a room). */
+  onJoinRoom?: () => void;
   onClose: () => void;
   onCreated: (s: SessionInfo) => void;
 }) {
   const [launch, setLaunch] = useState<LaunchKind>(initialLaunch ?? "claude");
   const isAgent = launch !== "shell";
+  // Import resumes a Claude or Codex conversation from this Mac (cmux, a
+  // terminal, anywhere) in the folder it ran in, with its agent; where it goes
+  // (a group, a room) is chosen here as for a new one
+  const [mode, setMode] = useState<"new" | "import">(initialMode ?? "new");
+  const importing = mode === "import";
+  const [iq, setIq] = useState("");
+  const { rows: convRows, error: convError } = useConversations(iq, importing);
+  const [conv, setConv] = useState<ImportRow | null>(null);
+  const pickConv = (c: ImportRow) => {
+    setConv(c);
+    setLaunch(c.agent);
+  };
   const agentLabel = AGENT_NAME[launch === "codex" ? "codex" : "claude"];
   // model/effort ride the agent's command line; the last choice is remembered
   // per agent because people tend to have a working default for each
@@ -79,6 +97,8 @@ export function NewSessionModal({
   const [connected, setConnected] = useState(seed.connected);
   const [roomKey, setRoomKey] = useState(seed.connected ? seed.top : rooms[0]?.groupKey ?? "");
   const room = connected ? rooms.find((r) => r.groupKey === roomKey) ?? null : null;
+  // Connected with no room to start in: Start waits for one (or for Local)
+  const noRoom = connected && !room;
   const [grpSel, setGrpSel] = useState(() => (seed.connected || !seed.top ? "" : tops.includes(seed.top) ? seed.top : "__new"));
   const [grpNew, setGrpNew] = useState(() => (!seed.connected && seed.top && !tops.includes(seed.top) ? seed.top : ""));
   const top = room ? room.groupKey : grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
@@ -166,11 +186,39 @@ export function NewSessionModal({
 
   const branch = ticketId && ticketTitle ? slugBranch(ticketId, ticketTitle) : "";
   const showTicket = ticketOpen || !!ticketId;
+  const convRepo = conv ? repoOfFolder(repos, conv.cwd) : null;
+
+  // a closed Mockingbird session is restored as it was; any other conversation
+  // starts in its own folder (a ticket's branch or a new worktree would move it
+  // away from where its agent finds it)
+  const resume = async () => {
+    if (!conv) return setError("Pick a conversation to resume.");
+    if (noRoom && !conv.restore) return setError("Pick a team room, or switch Where to Local.");
+    const c = conv;
+    const info = await run("resume", async () =>
+      c.restore
+        ? ((await window.mb.relaunchSession(c.restore)) ?? { error: "That closed session is no longer saved." })
+        : window.mb.createSession({
+            repoPath: c.cwd,
+            useWorktree: false,
+            resumeSessionId: c.id,
+            agent: c.agent,
+            title: c.title.slice(0, 80),
+            taskGroup: group || undefined,
+            ...(effModel ? { model: effModel } : {}),
+            ...(effEffort ? { effort: effEffort } : {}),
+          })
+    );
+    if (isErr(info)) return;
+    onCreated(info);
+  };
 
   // one session per click: a second click while this one is being made would
   // create another session (and worktree)
   const create = async () => {
     if (isBusy()) return;
+    if (importing) return resume();
+    if (noRoom) return setError("Pick a team room, or switch Where to Local.");
     const t = allTickets.find((x) => String(x.id) === ticketSel);
     const info = await run("create", () =>
       window.mb.createSession({
@@ -201,8 +249,13 @@ export function NewSessionModal({
     : launch === "shell"
       ? "home folder"
       : `plain ${agentLabel} chat, no repo`;
-  const place = room ? `connected · ${groupKey(room.groupKey, effSub)}` : group ? `in ${group}` : ticketId ? `in ${ticketIdOf(ticketId)}` : "";
-  const summary = [folder, place].filter(Boolean).join(" · ");
+  const place = room ? `connected · ${groupKey(room.groupKey, effSub)}` : group ? `in ${group}` : !importing && ticketId ? `in ${ticketIdOf(ticketId)}` : "";
+  const convFolder = conv ? (convRepo ? `${convRepo.repo.name}${convRepo.worktree ? ` · worktree ${convRepo.worktree}` : ""}` : tildePath(conv.cwd)) : "";
+  const summary = importing
+    ? conv
+      ? [`resumes “${conv.title.length > 40 ? `${conv.title.slice(0, 40)}…` : conv.title}”`, convFolder, conv.restore ? "back in its group" : place].filter(Boolean).join(" · ")
+      : "pick a conversation to resume"
+    : [folder, place].filter(Boolean).join(" · ");
 
   const modelPick =
     launch === "codex" ? (
@@ -276,7 +329,15 @@ export function NewSessionModal({
     >
       <div className="ns-head">
         <h3>New session</h3>
-        {presets.length > 0 && (
+        <span className="seg ns-mode">
+          <button className={!importing ? "on" : ""} onClick={() => setMode("new")}>
+            New
+          </button>
+          <button className={importing ? "on" : ""} onClick={() => setMode("import")} title="Resume a Claude or Codex conversation from this Mac — cmux, a terminal, anywhere — in its own folder">
+            Import
+          </button>
+        </span>
+        {!importing && presets.length > 0 && (
           <div className="preset-chips">
             <span className="pl-dim">Presets</span>
             {presets.map((p) => (
@@ -289,278 +350,379 @@ export function NewSessionModal({
       </div>
 
       <div className="ns-body">
-        <section className="ns-sec">
-          <div className="ns-k">Run</div>
-          <div>
-            <div className="ns-line">
-              <span className="seg ns-launch">
-                <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>{AGENT_NAME.claude}</button>
-                <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">{AGENT_NAME.codex}</button>
-                <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
-              </span>
-              {modelPick}
-            </div>
-            {customModel && <div className="ns-line ns-gap">{customModel}</div>}
-            {isAgent && catalogError && <div className="wi-note">Couldn't read the CLI's model list ({catalogError}) — Default and Other model id still work.</div>}
-          </div>
-        </section>
-
-        <section className="ns-sec">
-          <div className="ns-k">Where</div>
-          <div>
-            <span className="seg ns-where">
-              <button className={!connected ? "on" : ""} onClick={() => (setConnected(false), resetWorkspace())}>Local</button>
-              <button
-                className={connected ? "on" : ""}
-                disabled={!rooms.length}
-                title={rooms.length ? "A session in a team room: teammates see it live and can type into it" : "Share a group (⇪ on its header) or join a team room (⇲) to start connected sessions"}
-                onClick={() => (setConnected(true), resetWorkspace())}
-              >
-                Connected{rooms.length ? ` · ${rooms.length}` : ""}
-              </button>
-            </span>
-            {connected ? (
-              <>
-                <div className="ns-rooms" role="radiogroup">
-                  {rooms.map((r) => {
-                    const online = r.members.filter((m) => r.online.includes(m.id));
-                    return (
-                      <button
-                        key={r.id}
-                        role="radio"
-                        aria-checked={r.groupKey === roomKey}
-                        className={`ns-room ${r.groupKey === roomKey ? "sel" : ""}`}
-                        onClick={() => (setRoomKey(r.groupKey), resetWorkspace())}
-                      >
-                        <span className="meta">
-                          <span className="t">{r.name}</span>
-                          <span className="s">
-                            group {r.groupKey}
-                            {(roomRepos[r.groupKey] ?? []).length ? ` · ${(roomRepos[r.groupKey] ?? []).join(", ")}` : ""}
-                          </span>
-                        </span>
-                        <span className="ns-people" title={online.length ? `Connected now: ${online.map((m) => m.name).join(", ")}` : "No teammate connected right now"}>
-                          {r.members
-                            .filter((m) => !m.self)
-                            .map((m) => (
-                              <span key={m.id} className={`team-initials ${r.online.includes(m.id) ? "" : "off"}`}>
-                                {initialsOf(m.name)}
-                              </span>
-                            ))}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} />
-                <div className="ns-note">Teammates in the room see this session live and can type into it. Its agent can't read .env files, keys or logins, and can't push.</div>
-              </>
-            ) : (
-              <div className="ns-line ns-gap">
-                <div className="grow">
-                  <Pick
-                    value={grpSel}
-                    title="Group"
-                    onChange={(e) => {
-                      setGrpSel(e.target.value);
-                      resetWorkspace();
+        {importing && (
+          <section className="ns-sec">
+            <div className="ns-k">Find</div>
+            <div>
+              {conv ? (
+                <>
+                  <div className="ns-chosen">
+                    <ConversationLine c={conv} />
+                    <button className="outline" onClick={() => setConv(null)}>
+                      Change
+                    </button>
+                  </div>
+                  {conv.restore && <div className="ns-note">A closed Mockingbird session: it's restored as it was, in its own group.</div>}
+                </>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    autoFocus
+                    placeholder="search every Claude and Codex conversation — words, files, commands"
+                    value={iq}
+                    onChange={(e) => setIq(e.target.value)}
+                    onKeyDown={(e) => {
+                      const first = convRows?.find((c) => !c.blocked);
+                      if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && first) pickConv(first);
                     }}
-                  >
-                    <option value="">{ticketId ? `group: auto — ticket ${ticketIdOf(ticketId)}` : "no group"}</option>
-                    {tops.map((t) => (
-                      <option key={t} value={t}>
-                        group: {t}
-                      </option>
-                    ))}
-                    <option value="__new">new group…</option>
-                  </Pick>
-                  {grpSel === "__new" && <input type="text" autoFocus placeholder="group name" value={grpNew} onChange={(e) => setGrpNew(e.target.value)} />}
-                </div>
-                <div className="grow">
-                  <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} disabled={!top} inline />
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="ns-sec">
-          <div className="ns-k">Repo</div>
-          <div>
-            {sel ? (
-              <div className="ns-chosen">
-                <span className="meta">
-                  <span className="t">{sel.name}</span>
-                  <span className="s">{tildePath(sel.path)}</span>
-                </span>
-                <button className="outline" onClick={() => (pickRepo(null), setQ(""))}>Change</button>
-              </div>
-            ) : (
-              <>
-                <input
-                  type="text"
-                  autoFocus
-                  placeholder={launch === "shell" ? "search repos — or leave empty for your home folder" : `search repos — or leave empty for a plain ${agentLabel} chat`}
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && choices[0]) pickRepo(choices[0].repo);
-                  }}
-                />
-                {choices.length > 0 && (
+                  />
                   <div className="pick-list ns-list">
-                    {choices.map(({ repo, suggested: own }) => (
-                      <div key={repo.path} className="item" onClick={() => pickRepo(repo)}>
-                        <div className="meta">
-                          <div className="t">{repo.name}</div>
-                          <div className="s">{tildePath(repo.path)}</div>
-                        </div>
-                        {own && <span className="ns-tag">in this room</span>}
+                    {convRows?.map((c) => (
+                      <div
+                        key={c.id}
+                        className={`item ${c.blocked ? "blocked" : ""}`}
+                        title={c.blocked ? `Can't import: ${c.blocked}` : c.restore ? "Restores the closed Mockingbird session that ran this" : undefined}
+                        onClick={() => !c.blocked && pickConv(c)}
+                      >
+                        <ConversationLine c={c} />
                       </div>
                     ))}
+                    <ConversationsPending rows={convRows} q={iq} failed={!!convError} />
                   </div>
-                )}
-              </>
-            )}
-            {sel && (
-              <>
-                <div className="check-line">
-                  <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} id="wt" />
-                  <label htmlFor="wt" className="ns-check">
-                    Isolated worktree
-                    <span className="wi-note">
-                      {" "}
-                      {useWorktree
-                        ? `worktrees/${sel.name}/${branch || "<branch>"} — its own folder, safe beside other sessions`
-                        : branch
-                          ? `off — switches the repo checkout to ${branch}`
-                          : "off — runs in the repo checkout on its current branch"}
-                    </span>
-                  </label>
-                </div>
-                {branch && branchInfo && branchInfo.branches.length > 0 && (
-                  <Pick value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} style={{ marginTop: 8 }} title="The base is fetched fresh from origin before the new branch is cut">
-                    <option value="">base: current HEAD</option>
-                    {branchInfo.branches.map((b) => (
-                      <option key={b} value={b}>
-                        base: origin/{b}
-                      </option>
-                    ))}
-                  </Pick>
-                )}
-                {branch && branchError && <div className="wi-note">{branchError} — the branch is cut from the current HEAD</div>}
-              </>
-            )}
-          </div>
-        </section>
-
-        <section className="ns-sec">
-          <div className="ns-k">Ticket</div>
-          <div>
-            <div className="ns-line">
-              <span className="ns-ticket-sum">
-                {ticketId ? `#${ticketIdOf(ticketId)}${ticketTitle ? ` · ${ticketTitle}` : ""}` : <span className="pl-dim">none</span>}
-              </span>
-              {!ticketId && (
-                <button className="link" onClick={() => setTicketOpen(!ticketOpen)}>
-                  {ticketOpen ? "Hide" : "Attach a ticket"}
-                </button>
-              )}
-              {ticketId && (
-                <button
-                  className="link"
-                  onClick={() => {
-                    setTicketId("");
-                    setTicketTitle("");
-                    setTicketSel("");
-                  }}
-                >
-                  Clear
-                </button>
+                  {convError && <div className="err">{convError}</div>}
+                </>
               )}
             </div>
-            {showTicket && (
-              <>
+          </section>
+        )}
+
+        {(!importing || conv) && (
+          <section className="ns-sec">
+            <div className="ns-k">Run</div>
+            <div>
+              <div className="ns-line">
+                {importing && conv ? (
+                  <span className="ns-agent" title="A conversation resumes with the agent that had it">
+                    {AGENT_NAME[conv.agent]}
+                  </span>
+                ) : (
+                  <span className="seg ns-launch">
+                    <button className={launch === "claude" ? "on" : ""} onClick={() => setLaunch("claude")}>{AGENT_NAME.claude}</button>
+                    <button className={launch === "codex" ? "on" : ""} onClick={() => setLaunch("codex")} title="OpenAI Codex CLI — signs in with your ChatGPT subscription">{AGENT_NAME.codex}</button>
+                    <button className={launch === "shell" ? "on" : ""} onClick={() => setLaunch("shell")}>Terminal</button>
+                  </span>
+                )}
+                {modelPick}
+              </div>
+              {customModel && <div className="ns-line ns-gap">{customModel}</div>}
+              {isAgent && catalogError && <div className="wi-note">Couldn't read the CLI's model list ({catalogError}) — Default and Other model id still work.</div>}
+            </div>
+          </section>
+        )}
+
+        {!conv?.restore && (
+          <section className="ns-sec">
+            <div className="ns-k">Where</div>
+            <div>
+              <span className="seg ns-where">
+                <button className={!connected ? "on" : ""} onClick={() => (setConnected(false), resetWorkspace())}>Local</button>
+                <button
+                  className={connected ? "on" : ""}
+                  title="A session in a team room: teammates see it live and can type into it"
+                  onClick={() => (setConnected(true), resetWorkspace())}
+                >
+                  Connected{rooms.length ? ` · ${rooms.length}` : ""}
+                </button>
+              </span>
+              {connected && !rooms.length ? (
+                <div className="ns-note">
+                  You're not in a team room yet. Share a group (⇪ on its header in the sidebar), or{" "}
+                  {onJoinRoom ? (
+                    <button className="link" onClick={onJoinRoom}>
+                      join a room with an invite code…
+                    </button>
+                  ) : (
+                    "join one with an invite code (⌘K → Join a team room)."
+                  )}
+                </div>
+              ) : connected ? (
+                <>
+                  <div className="ns-rooms" role="radiogroup">
+                    {rooms.map((r) => {
+                      const online = r.members.filter((m) => r.online.includes(m.id));
+                      return (
+                        <button
+                          key={r.id}
+                          role="radio"
+                          aria-checked={r.groupKey === roomKey}
+                          className={`ns-room ${r.groupKey === roomKey ? "sel" : ""}`}
+                          onClick={() => (setRoomKey(r.groupKey), resetWorkspace())}
+                        >
+                          <span className="meta">
+                            <span className="t">{r.name}</span>
+                            <span className="s">
+                              group {r.groupKey}
+                              {(roomRepos[r.groupKey] ?? []).length ? ` · ${(roomRepos[r.groupKey] ?? []).join(", ")}` : ""}
+                            </span>
+                          </span>
+                          <span className="ns-people" title={online.length ? `Connected now: ${online.map((m) => m.name).join(", ")}` : "No teammate connected right now"}>
+                            {r.members
+                              .filter((m) => !m.self)
+                              .map((m) => (
+                                <span key={m.id} className={`team-initials ${r.online.includes(m.id) ? "" : "off"}`}>
+                                  {initialsOf(m.name)}
+                                </span>
+                              ))}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {onJoinRoom && (
+                    <div className="ns-join">
+                      Have an invite code?{" "}
+                      <button className="link" onClick={onJoinRoom}>
+                        Join a room…
+                      </button>
+                    </div>
+                  )}
+                  <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} />
+                  <div className="ns-note">
+                    Teammates in the room see this session live{importing ? ", its earlier conversation included as it shows on screen," : ""} and can type into it. Its agent can't read .env files, keys or logins, and can't push.
+                  </div>
+                </>
+              ) : (
                 <div className="ns-line ns-gap">
-                  <Pick
-                    style={{ flex: "0 0 34%" }}
-                    value={who}
-                    onChange={(e) => {
-                      setWhoPick(e.target.value);
-                      setTicketSel(""); // the old pick may not belong to this person
+                  <div className="grow">
+                    <Pick
+                      value={grpSel}
+                      title="Group"
+                      onChange={(e) => {
+                        setGrpSel(e.target.value);
+                        resetWorkspace();
+                      }}
+                    >
+                      <option value="">{ticketId ? `group: auto — ticket ${ticketIdOf(ticketId)}` : "no group"}</option>
+                      {tops.map((t) => (
+                        <option key={t} value={t}>
+                          group: {t}
+                        </option>
+                      ))}
+                      <option value="__new">new group…</option>
+                    </Pick>
+                    {grpSel === "__new" && <input type="text" autoFocus placeholder="group name" value={grpNew} onChange={(e) => setGrpNew(e.target.value)} />}
+                  </div>
+                  <div className="grow">
+                    <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} disabled={!top} inline />
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {importing ? (
+          conv && (
+            <section className="ns-sec">
+              <div className="ns-k">Repo</div>
+              <div>
+                <div className="ns-chosen">
+                  <span className="meta">
+                    <span className="t">
+                      {convRepo ? convRepo.repo.name : "not in a repo"}
+                      {convRepo?.worktree && <span className="pl-dim"> · worktree {convRepo.worktree}</span>}
+                    </span>
+                    <span className="s">{tildePath(conv.cwd)}</span>
+                  </span>
+                </div>
+                <div className="ns-note">It resumes in the folder it ran in, so its agent finds the conversation.</div>
+              </div>
+            </section>
+          )
+        ) : (
+          <section className="ns-sec">
+            <div className="ns-k">Repo</div>
+            <div>
+              {sel ? (
+                <div className="ns-chosen">
+                  <span className="meta">
+                    <span className="t">{sel.name}</span>
+                    <span className="s">{tildePath(sel.path)}</span>
+                  </span>
+                  <button className="outline" onClick={() => (pickRepo(null), setQ(""))}>Change</button>
+                </div>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    autoFocus
+                    placeholder={launch === "shell" ? "search repos — or leave empty for your home folder" : `search repos — or leave empty for a plain ${agentLabel} chat`}
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && choices[0]) pickRepo(choices[0].repo);
                     }}
-                    disabled={adoDown || !allTickets.length}
-                    title="Whose tickets to choose from"
-                  >
-                    <option value="*">Anyone</option>
-                    {people.map((p) => (
-                      <option key={p} value={p}>
-                        {p}
-                      </option>
-                    ))}
-                  </Pick>
-                  <Pick style={{ flex: 1 }} value={ticketSel} onChange={(e) => pickTicket(e.target.value)} disabled={adoDown || pickable.length === 0} title="Azure DevOps tickets">
-                    <option value="">{adoDown ? "board unavailable — type it below" : ado.items === null ? "loading the board…" : pickable.length ? "pick from the board…" : "nothing in the working columns"}</option>
-                    {columns.map((c) => (
-                      <optgroup key={c.state} label={c.state}>
-                        {c.items.map((t) => (
-                          <option key={t.id} value={String(t.id)}>
-                            #{t.id} · {t.title}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </Pick>
-                </div>
-                {ado.error && <div className="wi-note">{adoDown ? `Azure DevOps: ${ado.error}` : ado.error}</div>}
-                <div className="ns-line ns-gap">
-                  <input type="text" style={{ flex: 1 }} placeholder="ticket #, e.g. 5038" value={ticketId} onChange={(e) => setTicketId(e.target.value)} />
-                  <input type="text" style={{ flex: 2 }} placeholder="name, e.g. filterOrgsByFoundation" value={ticketTitle} onChange={(e) => setTicketTitle(e.target.value)} />
-                </div>
-                {ticketSel && isAgent && (
+                  />
+                  {choices.length > 0 && (
+                    <div className="pick-list ns-list">
+                      {choices.map(({ repo, suggested: own }) => (
+                        <div key={repo.path} className="item" onClick={() => pickRepo(repo)}>
+                          <div className="meta">
+                            <div className="t">{repo.name}</div>
+                            <div className="s">{tildePath(repo.path)}</div>
+                          </div>
+                          {own && <span className="ns-tag">in this room</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              {sel && (
+                <>
                   <div className="check-line">
-                    <input type="checkbox" checked={sendTicket} onChange={(e) => setSendTicket(e.target.checked)} id="ntk" />
-                    <label htmlFor="ntk" className="ns-check">
-                      send the ticket's title and description to {agentLabel}
+                    <input type="checkbox" checked={useWorktree} onChange={(e) => setUseWorktree(e.target.checked)} id="wt" />
+                    <label htmlFor="wt" className="ns-check">
+                      Isolated worktree
+                      <span className="wi-note">
+                        {" "}
+                        {useWorktree
+                          ? `worktrees/${sel.name}/${branch || "<branch>"} — its own folder, safe beside other sessions`
+                          : branch
+                            ? `off — switches the repo checkout to ${branch}`
+                            : "off — runs in the repo checkout on its current branch"}
+                      </span>
                     </label>
                   </div>
+                  {branch && branchInfo && branchInfo.branches.length > 0 && (
+                    <Pick value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)} style={{ marginTop: 8 }} title="The base is fetched fresh from origin before the new branch is cut">
+                      <option value="">base: current HEAD</option>
+                      {branchInfo.branches.map((b) => (
+                        <option key={b} value={b}>
+                          base: origin/{b}
+                        </option>
+                      ))}
+                    </Pick>
+                  )}
+                  {branch && branchError && <div className="wi-note">{branchError} — the branch is cut from the current HEAD</div>}
+                </>
+              )}
+            </div>
+          </section>
+        )}
+
+        {!importing && (
+          <section className="ns-sec">
+            <div className="ns-k">Ticket</div>
+            <div>
+              <div className="ns-line">
+                <span className="ns-ticket-sum">
+                  {ticketId ? `#${ticketIdOf(ticketId)}${ticketTitle ? ` · ${ticketTitle}` : ""}` : <span className="pl-dim">none</span>}
+                </span>
+                {!ticketId && (
+                  <button className="link" onClick={() => setTicketOpen(!ticketOpen)}>
+                    {ticketOpen ? "Hide" : "Attach a ticket"}
+                  </button>
                 )}
-              </>
-            )}
-          </div>
-        </section>
+                {ticketId && (
+                  <button
+                    className="link"
+                    onClick={() => {
+                      setTicketId("");
+                      setTicketTitle("");
+                      setTicketSel("");
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {showTicket && (
+                <>
+                  <div className="ns-line ns-gap">
+                    <Pick
+                      style={{ flex: "0 0 34%" }}
+                      value={who}
+                      onChange={(e) => {
+                        setWhoPick(e.target.value);
+                        setTicketSel(""); // the old pick may not belong to this person
+                      }}
+                      disabled={adoDown || !allTickets.length}
+                      title="Whose tickets to choose from"
+                    >
+                      <option value="*">Anyone</option>
+                      {people.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </Pick>
+                    <Pick style={{ flex: 1 }} value={ticketSel} onChange={(e) => pickTicket(e.target.value)} disabled={adoDown || pickable.length === 0} title="Azure DevOps tickets">
+                      <option value="">{adoDown ? "board unavailable — type it below" : ado.items === null ? "loading the board…" : pickable.length ? "pick from the board…" : "nothing in the working columns"}</option>
+                      {columns.map((c) => (
+                        <optgroup key={c.state} label={c.state}>
+                          {c.items.map((t) => (
+                            <option key={t.id} value={String(t.id)}>
+                              #{t.id} · {t.title}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </Pick>
+                  </div>
+                  {ado.error && <div className="wi-note">{adoDown ? `Azure DevOps: ${ado.error}` : ado.error}</div>}
+                  <div className="ns-line ns-gap">
+                    <input type="text" style={{ flex: 1 }} placeholder="ticket #, e.g. 5038" value={ticketId} onChange={(e) => setTicketId(e.target.value)} />
+                    <input type="text" style={{ flex: 2 }} placeholder="name, e.g. filterOrgsByFoundation" value={ticketTitle} onChange={(e) => setTicketTitle(e.target.value)} />
+                  </div>
+                  {ticketSel && isAgent && (
+                    <div className="check-line">
+                      <input type="checkbox" checked={sendTicket} onChange={(e) => setSendTicket(e.target.checked)} id="ntk" />
+                      <label htmlFor="ntk" className="ns-check">
+                        send the ticket's title and description to {agentLabel}
+                      </label>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </section>
+        )}
         {error && <div className="err">{error}</div>}
       </div>
 
       <div className="ns-foot">
-        <button
-          className="ns-ghost"
-          data-tip="Keep this setup as a one-click preset (no ticket: presets are for recurring sessions)"
-          onClick={() =>
-            onSavePreset({
-              id: newPresetId(),
-              name: "",
-              launch,
-              repoPath: sel?.path ?? null,
-              // a new branch per run, cut from the same base; otherwise the checkout as it is
-              branch: sel && useWorktree && baseBranch ? { mode: "new", pattern: "session-{date}-{time}", base: baseBranch } : { mode: "checkout" },
-              useWorktree: !!sel && useWorktree,
-              ...(group ? { group } : {}),
-              ...(isAgent && effModel ? { model: effModel } : {}),
-              ...(isAgent && effEffort ? { effort: effEffort } : {}),
-            })
-          }
-        >
-          Save as preset…
-        </button>
+        {!importing && (
+          <button
+            className="ns-ghost"
+            data-tip="Keep this setup as a one-click preset (no ticket: presets are for recurring sessions)"
+            onClick={() =>
+              onSavePreset({
+                id: newPresetId(),
+                name: "",
+                launch,
+                repoPath: sel?.path ?? null,
+                // a new branch per run, cut from the same base; otherwise the checkout as it is
+                branch: sel && useWorktree && baseBranch ? { mode: "new", pattern: "session-{date}-{time}", base: baseBranch } : { mode: "checkout" },
+                useWorktree: !!sel && useWorktree,
+                ...(group ? { group } : {}),
+                ...(isAgent && effModel ? { model: effModel } : {}),
+                ...(isAgent && effEffort ? { effort: effEffort } : {}),
+              })
+            }
+          >
+            Save as preset…
+          </button>
+        )}
         <span className="ns-sum" title={summary}>
           {summary}
         </span>
         <button className="outline" onClick={onClose}>
           Cancel
         </button>
-        <button className="primary cta" disabled={!!busy} onClick={create} data-tip="⌘↵">
-          {busy ? "Starting…" : launch === "shell" ? "Open terminal" : `Start ${agentLabel}`}
+        <button className="primary cta" disabled={!!busy || (importing && !conv) || (noRoom && !conv?.restore)} onClick={create} data-tip="⌘↵">
+          {busy ? "Starting…" : importing ? (conv?.restore ? "Restore session" : `Resume ${conv ? AGENT_NAME[conv.agent] : ""}`.trim()) : launch === "shell" ? "Open terminal" : `Start ${agentLabel}`}
         </button>
       </div>
     </Modal>
@@ -616,31 +778,26 @@ interface ImportRow {
   restore?: string;
 }
 
-export function ImportModal({
-  onClose,
-  onOpened,
-  onDone,
-}: {
-  onClose: () => void;
-  onOpened: (opened: SessionInfo[]) => void;
-  onDone: () => void;
-}) {
+/**
+ * Claude and Codex conversations on this Mac to import: the recent ones, or —
+ * once `q` has text — every one that mentions it, any age (the transcript
+ * index). Nothing is read until `enabled`. null while loading.
+ */
+function useConversations(q: string, enabled = true): { rows: ImportRow[] | null; error: string } {
   const [convos, setConvos] = useState<ImportableConversation[] | null>(null);
-  const [q, setQ] = useState("");
   const [hits, setHits] = useState<ImportRow[] | null>(null);
-  const [sel, setSel] = useState<Map<string, ImportRow>>(new Map());
-  const { busy, run, error, setError } = useAction();
+  const [error, setError] = useState("");
 
   useEffect(() => {
+    if (!enabled || convos) return;
     window.mb.listImportable().then((r: ImportableConversation[] | { error: string }) => {
       if (isErr(r)) setError(r.error);
       else setConvos(r);
     });
-  }, []);
+  }, [enabled]);
 
-  // typing searches every Claude and Codex conversation on this Mac (the transcript index), any age
   useEffect(() => {
-    if (!q.trim()) return setHits(null);
+    if (!enabled || !q.trim()) return setHits(null);
     let live = true;
     const t = setTimeout(async () => {
       const r = await window.mb.searchTranscripts(q);
@@ -664,9 +821,62 @@ export function ImportModal({
       live = false;
       clearTimeout(t);
     };
-  }, [q]);
+  }, [q, enabled]);
 
-  const rows: ImportRow[] | null = hits ?? (convos ? convos.map((c) => ({ id: c.sessionId, agent: c.agent ?? ("claude" as AgentKind), cwd: c.cwd, title: c.title, at: c.mtimeMs })) : null);
+  const rows = hits ?? (convos ? convos.map((c) => ({ id: c.sessionId, agent: c.agent ?? ("claude" as AgentKind), cwd: c.cwd, title: c.title, at: c.mtimeMs })) : null);
+  return { rows, error };
+}
+
+/** One conversation in an import list: its title (and agent), folder, matched words and age. */
+function ConversationLine({ c }: { c: ImportRow }) {
+  return (
+    <>
+      <div className="meta">
+        <div className="t">
+          {c.title}
+          {c.agent === "codex" && <span className="ts-agent codex">codex</span>}
+        </div>
+        <div className="s">
+          {tildePath(c.cwd)}
+          {c.blocked ? ` · ${c.blocked}` : c.restore ? " · restores your closed session" : ""}
+        </div>
+        {c.snippet && (
+          <div className="ts-snip">
+            <Snippet text={c.snippet} />
+          </div>
+        )}
+      </div>
+      <span className="age">{agoShort(c.at)}</span>
+    </>
+  );
+}
+
+/** An import list's placeholder row while it loads, or when nothing matches. */
+function ConversationsPending({ rows, q, failed }: { rows: ImportRow[] | null; q: string; failed: boolean }) {
+  const text = rows === null ? (failed ? null : q.trim() ? "searching…" : "scanning ~/.claude/projects…") : rows.length === 0 ? (q.trim() ? "No conversation mentions that." : "No recent conversations.") : null;
+  return text ? (
+    <div className="item">
+      <div className="meta">
+        <div className="s">{text}</div>
+      </div>
+    </div>
+  ) : null;
+}
+
+export function ImportModal({
+  onClose,
+  onOpened,
+  onDone,
+}: {
+  onClose: () => void;
+  onOpened: (opened: SessionInfo[]) => void;
+  onDone: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const { rows, error: listError } = useConversations(q);
+  const [sel, setSel] = useState<Map<string, ImportRow>>(new Map());
+  const { busy, run, error: runError, setError } = useAction();
+  const error = runError || listError;
 
   const toggle = (r: ImportRow) =>
     setSel((p) => {
@@ -722,30 +932,10 @@ export function ImportModal({
             onClick={() => !c.blocked && toggle(c)}
           >
             <input type="checkbox" checked={sel.has(c.id)} disabled={!!c.blocked} readOnly />
-            <div className="meta">
-              <div className="t">
-                {c.title}
-                {c.agent === "codex" && <span className="ts-agent codex">codex</span>}
-              </div>
-              <div className="s">
-                {tildePath(c.cwd)}
-                {c.blocked ? ` · ${c.blocked}` : c.restore ? " · restores your closed session" : ""}
-              </div>
-              {c.snippet && (
-                <div className="ts-snip">
-                  <Snippet text={c.snippet} />
-                </div>
-              )}
-            </div>
-            <span className="age">{agoShort(c.at)}</span>
+            <ConversationLine c={c} />
           </div>
         ))}
-        {rows === null && !error && (
-          <div className="item"><div className="meta"><div className="s">{q.trim() ? "searching…" : "scanning ~/.claude/projects…"}</div></div></div>
-        )}
-        {rows?.length === 0 && (
-          <div className="item"><div className="meta"><div className="s">{q.trim() ? "No conversation mentions that." : "No recent conversations."}</div></div></div>
-        )}
+        <ConversationsPending rows={rows} q={q} failed={!!error} />
       </div>
       {error && <div className="err">{error}</div>}
       <div className="row">
