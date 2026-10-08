@@ -4,7 +4,7 @@ import { SetRow } from "./SetRow";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { isErr, type Settings } from "../shared/types";
 import { allowCreatorsCommand } from "../shared/team/protocol";
-import type { PeerStatus, TeamRoomSummary, TeamStatus } from "../shared/team/types";
+import type { LeaveOutcome, PeerStatus, RemoveOutcome, TeamNotice, TeamRoomSummary, TeamStatus } from "../shared/team/types";
 
 /**
  * Team rooms in the window (stage 1): Settings → Team, sharing a group as a
@@ -254,6 +254,233 @@ export function JoinRoomDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ---- leaving and removing --------------------------------------------------------------------
+
+const OLD_WORKER = "Your signaling Worker is older and can't cut members off: update it (cd signaling && npx wrangler deploy) to also cut them off at the Worker.";
+
+/** Who the admin is, in words: the creator, or the longest-standing member once the creator has left. */
+export function adminLine(room: TeamRoomSummary): string {
+  const admin = room.members.find((m) => m.id === room.admin);
+  const role = room.admin && room.admin === room.creator ? "its creator" : "its longest-standing member, since the creator left";
+  if (!admin) return "Nobody can remove members of this room.";
+  return admin.self ? `You're this room's admin (${role}): you can remove members.` : `${admin.name} is this room's admin (${role}) and can remove members.`;
+}
+
+/** Leave a room: what happens on each side, then what did. */
+export function LeaveRoomDialog({ room, onClose }: { room: TeamRoomSummary; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<LeaveOutcome | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const others = room.members.filter((m) => !m.self);
+  const names = others.map((m) => m.name).join(", ");
+  // leaving as the admin hands it on: to the creator if still here, else the longest-standing member
+  const isAdmin = room.members.some((m) => m.self && m.id === room.admin);
+  const nextAdmin = isAdmin ? (others.find((m) => m.id === room.creator) ?? others[0]) : undefined;
+  const leave = async () => {
+    setBusy(true);
+    setError(null);
+    const r: LeaveOutcome | { error: string } = await window.mb.teamLeaveRoom(room.id);
+    setBusy(false);
+    if (isErr(r)) setError(r.error);
+    else setDone(r);
+  };
+  if (done) {
+    return (
+      <Modal className="modal team-dlg" onClose={onClose}>
+        <h3>You left {done.roomName}</h3>
+        <div className="sub-h">It's deleted from this Mac. Group {room.groupKey} stays as an ordinary group; its sessions keep running, no longer shared.</div>
+        <ul className="team-effects">
+          {done.told.length > 0 && <li>{done.told.join(", ")} heard it.</li>}
+          {done.notTold.length > 0 && <li>{done.notTold.join(", ")} weren't connected: they hear it from a teammate, or from the signaling Worker, when they're next online.</li>}
+          {done.worker && <li className="warn">{done.worker}</li>}
+        </ul>
+        {done.problems.length > 0 && (
+          <>
+            <div className="set-row-title">Not cleaned up</div>
+            <ul className="team-effects">
+              {done.problems.map((p) => (
+                <li key={p} className="warn">
+                  {p}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        <div className="row">
+          <button className="primary" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+  return (
+    <Modal className="modal team-dlg" onClose={busy ? undefined : onClose}>
+      <h3>Leave {room.name}?</h3>
+      <div className="sub-h">Coming back takes a new invite code from someone still in the room.</div>
+      <ul className="team-effects">
+        <li>
+          <b>On this Mac</b> the room is deleted: its log and chat, the plan copies in your worktrees, the conversations and snapshots teammates sent, and your sessions'
+          backups (on origin too). Group {room.groupKey} stays as an ordinary group, and its sessions keep running — no longer shared.
+        </li>
+        <li>
+          {others.length ? (
+            <>
+              <b>{names}</b> {others.length === 1 ? "sees" : "see"} you leave: your sessions disappear from {others.length === 1 ? "their" : "each"} Mockingbird and the chat says you
+              left. {others.length === 1 ? "Their copy of the room stays." : "Their copies of the room stay."}
+              {nextAdmin && ` ${nextAdmin.name} becomes the admin, who can remove members.`}
+            </>
+          ) : (
+            <>You're the room's last member: nobody else has it.</>
+          )}
+        </li>
+        <li>
+          <b>The signaling Worker</b> cuts your key off: no more connections, invites or relay for this room.
+        </li>
+        {room.workerRevoke === false && <li className="warn">{OLD_WORKER}</li>}
+      </ul>
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        <button className="outline" disabled={busy} onClick={onClose}>
+          Cancel
+        </button>
+        <button className="outline danger-btn" disabled={busy} onClick={leave}>
+          {busy ? "Leaving…" : "Leave room"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Remove a teammate from a room (its admin only): what happens on each side, then what did. */
+export function RemoveMemberDialog({ room, member, onClose }: { room: TeamRoomSummary; member: { id: string; name: string }; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<RemoveOutcome | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const remove = async () => {
+    setBusy(true);
+    setError(null);
+    const r: RemoveOutcome | { error: string } = await window.mb.teamRemoveMember(room.id, member.id);
+    setBusy(false);
+    if (isErr(r)) setError(r.error);
+    else setDone(r);
+  };
+  const others = room.members.filter((m) => !m.self && m.id !== member.id).map((m) => m.name);
+  if (done) {
+    return (
+      <Modal className="modal team-dlg" onClose={onClose}>
+        <h3>
+          {done.name} is out of {room.name}
+        </h3>
+        <ul className="team-effects">
+          <li>{done.delivered ? `${done.name}'s Mockingbird heard it and deletes the room there.` : `${done.name} wasn't connected: their Mockingbird deletes the room when it's next online.`}</li>
+          <li className={done.worker ? "warn" : undefined}>{done.worker ?? `The signaling Worker cut ${done.name} off.`}</li>
+        </ul>
+        {error && <div className="err">{error}</div>}
+        <div className="row">
+          {done.worker && (
+            <button className="outline" disabled={busy} onClick={remove}>
+              {busy ? "Asking…" : "Ask the Worker again"}
+            </button>
+          )}
+          <button className="primary" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+  return (
+    <Modal className="modal team-dlg" onClose={busy ? undefined : onClose}>
+      <h3>
+        Remove {member.name} from {room.name}?
+      </h3>
+      <div className="sub-h">They can come back only with a new invite code.</div>
+      <ul className="team-effects">
+        <li>
+          <b>On {member.name}'s Mac</b> Mockingbird deletes the room once it hears — now if they're connected, else when they're next online — and their group stays as an
+          ordinary one, its sessions running. A Mockingbird that's older, or doesn't cooperate, can't be made to delete anything: what cuts them off is the Worker.
+        </li>
+        <li>
+          <b>{others.length ? `You and ${others.join(", ")}` : "You"}</b>: {member.name}'s sessions leave the room, and the conversations and snapshots of them copied here are
+          deleted. The chat says you removed them; commits and their Co-authored-by trailers stay.
+        </li>
+        <li>
+          <b>The signaling Worker</b> cuts their key off: their connections, the invites they made and relay access for this room.
+        </li>
+        {room.workerRevoke === false && <li className="warn">{OLD_WORKER}</li>}
+      </ul>
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        <button className="outline" disabled={busy} onClick={onClose}>
+          Cancel
+        </button>
+        <button className="outline danger-btn" disabled={busy} onClick={remove}>
+          {busy ? "Removing…" : `Remove ${member.name}`}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Rooms this install left or was removed from, with what couldn't be cleaned up, until dismissed. */
+export function TeamNotices({ notices }: { notices: TeamNotice[] | undefined }) {
+  if (!notices?.length) return null;
+  return (
+    <div className="team-notices">
+      {notices.map((n) => (
+        <div key={n.id} className={`team-notice ${n.problems.length || n.worker ? "warn" : ""}`}>
+          <div className="team-notice-text">
+            <b>{n.kind === "removed" ? `${n.by ?? "A teammate"} removed you from ${n.roomName}` : `You left ${n.roomName}`}</b>
+            {n.problems.length || n.worker ? (
+              <ul>
+                {n.problems.map((p) => (
+                  <li key={p}>{p}</li>
+                ))}
+                {n.worker && <li>{n.worker}</li>}
+              </ul>
+            ) : (
+              <div>It's deleted from this Mac; its group and sessions stay, as local ones.</div>
+            )}
+          </div>
+          <button className="link" onClick={() => window.mb.teamDismissNotice(n.id)}>
+            Dismiss
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** A room's members in Settings → Team: who's the admin, and Remove… for the admin. */
+function RoomMembers({ room, onRemove }: { room: TeamRoomSummary; onRemove: (m: { id: string; name: string }) => void }) {
+  const isAdmin = room.members.some((m) => m.self && m.id === room.admin);
+  return (
+    <div className="team-members">
+      {room.members.map((m) => (
+        <div key={m.id} className="team-member">
+          <span className="team-initials">{initialsOf(m.name)}</span>
+          <span className="team-member-name">
+            {m.name}
+            {m.self ? " (you)" : ""}
+          </span>
+          {m.id === room.admin && <span className="team-admin" title={adminLine(room)}>admin</span>}
+          {room.online.includes(m.id) && <span className="team-link direct">connected</span>}
+          {isAdmin && !m.self && (
+            <button className="link danger" onClick={() => onRemove(m)}>
+              Remove…
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="set-row-note">
+        {adminLine(room)}
+        {room.former?.length ? ` Left: ${room.former.map((f) => f.name).join(", ")}.` : ""}
+      </div>
+    </div>
+  );
+}
+
 /** Settings → Team. */
 export function TeamSection({ settings, onChange }: { settings: Settings; onChange: (patch: Partial<Settings>) => void }) {
   const status = useTeamStatus();
@@ -261,6 +488,8 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
   const [url, setUrl] = useState(settings.signalingUrl ?? "");
   const [check, setCheck] = useState<{ ok: boolean; msg: string } | null>(null);
   const [dialog, setDialog] = useState<"join" | { groupKey: string; title: string } | null>(null);
+  const [leaving, setLeaving] = useState<TeamRoomSummary | null>(null);
+  const [removing, setRemoving] = useState<{ room: TeamRoomSummary; member: { id: string; name: string } } | null>(null);
   const [note, copy] = useCopyNote();
   const st = status && !isErr(status) ? status : null;
 
@@ -271,12 +500,13 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
   const checkUrl = async () => {
     saveUrl();
     setCheck({ ok: true, msg: "Checking…" });
-    const r: { protocol: number; relay: boolean; creators: number | "any"; problem: string | null } | { error: string } = await window.mb.teamCheckSignaling(url.trim());
+    const r: { protocol: number; relay: boolean; creators: number | "any"; revoke?: boolean; problem: string | null } | { error: string } = await window.mb.teamCheckSignaling(url.trim());
     if (isErr(r)) setCheck({ ok: false, msg: r.error });
     else if (r.problem) setCheck({ ok: false, msg: r.problem });
     else {
       const creators = r.creators === "any" ? "anyone can create rooms (local test server)" : `${r.creators} room creator${r.creators === 1 ? "" : "s"} allowed`;
-      setCheck({ ok: true, msg: `Reachable · protocol ${r.protocol} · ${creators} · ${r.relay ? "TURN relay configured" : "no TURN relay (set its secrets for strict networks)"}` });
+      const revoke = r.revoke === false ? " · can't cut off removed members yet: redeploy it (cd signaling && npx wrangler deploy)" : "";
+      setCheck({ ok: true, msg: `Reachable · protocol ${r.protocol} · ${creators} · ${r.relay ? "TURN relay configured" : "no TURN relay (set its secrets for strict networks)"}${revoke}` });
     }
   };
 
@@ -289,6 +519,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
       </p>
       {status && isErr(status) && <div className="err">Couldn't read the team status: {status.error}</div>}
       {st?.error && <div className="err">{st.error}</div>}
+      <TeamNotices notices={st?.notices} />
       <SetRow title="Your name" note="What teammates see next to your sessions and messages">
         <input
           type="text"
@@ -335,15 +566,17 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
 
       <div className="set-sub">Rooms</div>
       {st?.rooms.map((r) => (
-        <SetRow
-          key={r.id}
-          title={r.name}
-          note={`Group ${r.groupKey} · ${r.members.map((m) => (m.self ? `${m.name} (you)` : m.name)).join(", ")} · signaling ${r.signaling}${r.problem ? ` — ${r.problem}` : ""}`}
-        >
-          <button className="outline" onClick={() => setDialog({ groupKey: r.groupKey, title: r.name })}>
-            Invite…
-          </button>
-        </SetRow>
+        <div key={r.id} className="team-room">
+          <SetRow title={r.name} note={`Group ${r.groupKey} · signaling ${r.signaling}${r.problem ? ` — ${r.problem}` : ""}`}>
+            <button className="outline" onClick={() => setDialog({ groupKey: r.groupKey, title: r.name })}>
+              Invite…
+            </button>
+            <button className="outline" onClick={() => setLeaving(r)}>
+              Leave room…
+            </button>
+          </SetRow>
+          <RoomMembers room={r} onRemove={(member) => setRemoving({ room: r, member })} />
+        </div>
       ))}
       {st?.pending.map((p) => (
         <SetRow key={p.roomId} title={`${p.name} (joining)`} note={p.state === "rejected" ? `Refused: ${p.reason}` : p.state === "syncing" ? "Accepted — copying the room" : "Waiting for the inviter's Mockingbird to accept"}>
@@ -370,6 +603,8 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
       ))}
       {dialog === "join" && <JoinRoomDialog onClose={() => setDialog(null)} />}
       {dialog && dialog !== "join" && <ShareRoomDialog groupKey={dialog.groupKey} title={dialog.title} onClose={() => setDialog(null)} />}
+      {leaving && <LeaveRoomDialog room={leaving} onClose={() => setLeaving(null)} />}
+      {removing && <RemoveMemberDialog room={removing.room} member={removing.member} onClose={() => setRemoving(null)} />}
     </>
   );
 }
