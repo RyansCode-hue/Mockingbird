@@ -212,6 +212,28 @@ describe("the plan service", () => {
     await until(() => fs.existsSync(path.join(wtB, ".mockingbird", "plan.md")) && fs.readFileSync(path.join(wtB, ".mockingbird", "plan.md"), "utf8").includes("in progress"), "the new worktree's copy");
   });
 
+  it("takes the copies out of the worktrees when this install leaves the room, and stops syncing it — the plan branch stays the team's", async () => {
+    const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("t") });
+    const [ryan, nick] = members;
+    const { bare, clones } = origin(["ryan", "nick"]);
+    const r = service(ryan, roomId, clones.ryan, () => []);
+    const n = service(nick, roomId, clones.nick, () => []);
+    r.svc.apply(roomId, { kind: "repo", origin: bare, name: "backoffice" });
+    r.svc.apply(roomId, { kind: "create", title: "Donor API", paths: ["src/api"] });
+    const nickPlan = path.join(clones.nick, ".mockingbird", "plan.md");
+    await until(() => fs.existsSync(nickPlan), "Nick's copy");
+    await n.svc.idle();
+    await nick.team.leave(roomId);
+    expect(await n.svc.roomLeft(roomId)).toEqual([]);
+    expect(fs.existsSync(nickPlan)).toBe(false);
+    expect(fs.existsSync(path.join(clones.nick, ".mockingbird"))).toBe(false);
+    expect(() => n.svc.view(roomId)).toThrow();
+    expect(git(bare, "show", "mockingbird/plan:plan.md")).toContain("Donor API");
+    // Ryan's copy carries on
+    await r.svc.idle();
+    expect(fs.existsSync(path.join(clones.ryan, ".mockingbird", "plan.md"))).toBe(true);
+  });
+
   it("moves the copies when the plan moves to another repo, and never writes over a repo's own .mockingbird/", async () => {
     const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("t") });
     const [ryan] = members;

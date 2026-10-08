@@ -1,7 +1,7 @@
 import * as path from "path";
 import { readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { TEAM_DIR } from "./identity";
-import { defineEventType } from "./rooms";
+import { defineEventType, onMemberRemoved } from "./rooms";
 import type { Team, Unsubscribe } from "./transport";
 import { MEMBER_ID_RE } from "../../shared/team/protocol";
 import {
@@ -100,6 +100,11 @@ defineEventType("chat.update", {
   reduce(state, e) {
     append(chatOf(state), { id: e.id, kind: "update", author: e.author, lamport: e.lamport, at: e.at, text: "", items: e.body.items });
   },
+});
+
+// the room's chat says who left, or whom the admin removed
+onMemberRemoved("chat", (state, member, e) => {
+  append(chatOf(state), { id: e.id, kind: "member", author: e.author, lamport: e.lamport, at: e.at, text: "", member, change: member === e.author ? "left" : "removed" });
 });
 
 // ---- the chat on this install ---------------------------------------------------------------------
@@ -231,6 +236,24 @@ export class TeamChat {
   /** The room the window shows right now (its mentions don't notify while the window has focus). */
   setViewing(roomId: RoomId | null): void {
     this.viewing = roomId;
+  }
+
+  /** This install left the room: its read marks and gathering mentions go. Returns what couldn't be cleaned up. */
+  roomLeft(roomId: RoomId): string[] {
+    this.mentionQueue.delete(roomId);
+    if (this.viewing === roomId) this.viewing = null;
+    if (!(roomId in this.marks)) return [];
+    const { [roomId]: _gone, ...rest } = this.marks;
+    try {
+      writeFileAtomic(this.file, JSON.stringify(rest));
+      this.marks = rest;
+    } catch (err) {
+      const why = (err as Error).message;
+      this.d.log(`forgetting the read marks of a room this install left failed: ${why}`);
+      return [`The room's chat read marks couldn't be removed from ${this.file}: ${why}`];
+    }
+    this.changed("*");
+    return [];
   }
 
   private need(roomId: RoomId): { team: Team; room: RoomState } {

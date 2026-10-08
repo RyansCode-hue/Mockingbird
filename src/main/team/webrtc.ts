@@ -1,9 +1,9 @@
 import { randomNonce, verifySignature, fingerprintOf, type Identity } from "./identity";
 import { SignalingClient, type SignalingEvent } from "./signalingClient";
-import type { IntroType, PeerWire, RoomSignalingState, WireHandler, WireRoom } from "./transport";
+import type { IntroType, PeerWire, RevokeOutcome, RoomSignalingState, WireHandler, WireRoom } from "./transport";
 import { envelopeProblem, INTRO_TYPES, PUBLIC_KEY_RE, ReplayGuard, sdpFingerprint, signalPayload, TEAM_PROTOCOL, type IceServer, type SignalType, type SignedEnvelope, type UnsignedEnvelope } from "../../shared/team/protocol";
 import { FINGERPRINT_MISMATCH, type HostCommand, type HostEvent, type IceCandidate, type Route } from "../../shared/team/peerHost";
-import type { MemberId, PeerLinkState, RoomId } from "../../shared/team/types";
+import type { MemberId, PeerLinkState, RoomEvent, RoomId } from "../../shared/team/types";
 
 /**
  * The WebRTC wire: teammates connected peer to peer, introduced by each
@@ -179,6 +179,13 @@ export class WebRtcWire implements PeerWire {
     return [...this.peers.values()].filter((p) => p.up).map((p) => p.id);
   }
 
+  revoke(roomId: RoomId, member: MemberId, event: RoomEvent | null, timeoutMs?: number): Promise<RevokeOutcome> {
+    const room = this.rooms.get(roomId);
+    if (!room) return Promise.resolve({ ok: false, reason: "offline", message: "this install isn't connecting to the room's signaling server" });
+    room.registered.add(`revoke:${member}`); // asked now: the admin's catch-up needn't ask again on this connection
+    return room.client.revoke(member, event, timeoutMs);
+  }
+
   async introduce(roomId: RoomId, to: MemberId, type: IntroType, body: unknown): Promise<void> {
     const room = this.rooms.get(roomId);
     if (!room || room.client.state !== "online") throw new Error("not connected to the room's signaling server yet");
@@ -203,7 +210,12 @@ export class WebRtcWire implements PeerWire {
     const out = new Map<RoomId, RoomSignalingState>();
     for (const [id, r] of this.rooms) {
       const st = r.client.state === "stopped" ? "offline" : r.client.state;
-      out.set(id, { signaling: st, ...(r.client.problem ? { problem: r.client.problem } : {}), ...(r.client.problemCode ? { code: r.client.problemCode } : {}) });
+      out.set(id, {
+        signaling: st,
+        ...(r.client.problem ? { problem: r.client.problem } : {}),
+        ...(r.client.problemCode ? { code: r.client.problemCode } : {}),
+        ...(r.client.features ? { revoke: r.client.features.has("revoke") } : {}),
+      });
     }
     return out;
   }
@@ -375,6 +387,9 @@ export class WebRtcWire implements PeerWire {
       case "turn":
         this.onIce(e);
         return;
+      case "room-events":
+        this.handler?.roomEvents(room.spec.roomId, e.events);
+        return;
       case "refused":
         if (e.code !== "peer-offline") this.o.log(`signaling ${room.spec.roomId}: ${e.code}: ${e.message}`);
         return;
@@ -405,6 +420,16 @@ export class WebRtcWire implements PeerWire {
     }
     const admit = room.spec.admit.filter((k) => PUBLIC_KEY_RE.test(k)).sort().join(",");
     if (admit && admit !== room.admitted && room.client.send({ t: "admit", publicKeys: admit.split(",") })) room.admitted = admit;
+    // the room's admin keeps former members cut off: a revoke that failed or predates the server's support is made again
+    if (!room.client.features?.has("revoke")) return;
+    for (const r of room.spec.revoke ?? []) {
+      const k = `revoke:${r.member}`;
+      if (room.registered.has(k)) continue;
+      room.registered.add(k);
+      void room.client.revoke(r.member, r.event).then((a) => {
+        if (!a.ok && a.reason !== "offline") this.o.log(`signaling ${room.spec.roomId}: keeping ${r.member.slice(0, 8)} cut off: ${a.message}`);
+      });
+    }
   }
 
   private sign(room: Room, to: MemberId, type: SignalType, body: unknown): SignedEnvelope {

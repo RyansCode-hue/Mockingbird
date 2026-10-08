@@ -5,7 +5,7 @@ import { loadIdentity, randomToken, roomIdFor, signalingJoinKey, signalingTokenH
 import { DailyCounter, SignalingRoom, mintTurnCredentials, turnDailyLimit, DEFAULT_TURN_DAILY_LIMIT, type ConnState, type RoomSocket, type RoomLimits, type TurnQuota } from "../signaling/src/room";
 import { healthBody } from "../signaling/src/config";
 import { startLocalSignaling } from "../signaling/src/local/server";
-import { allowCreatorsCommand, CLOSE, formatFingerprint, helloPayload, parseAllowedCreators, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, signalingSocketUrl, TEAM_PROTOCOL, type ServerMessage } from "../src/shared/team/protocol";
+import { allowCreatorsCommand, CLOSE, formatFingerprint, helloPayload, parseAllowedCreators, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, signalingSocketUrl, TEAM_PROTOCOL, type ServerMessage, type SignalingFeature } from "../src/shared/team/protocol";
 
 const newId = (name: string) => loadIdentity(path.join(tempDir(name), "team"));
 
@@ -43,6 +43,8 @@ function harness(
     /** Who may create rooms; default: the harness's creator. */
     allowed?: (creatorId: string) => readonly string[] | undefined;
     turnQuota?: TurnQuota;
+    /** Default all; [] plays a Worker deployed before revoke. */
+    features?: readonly SignalingFeature[];
   } = {}
 ) {
   const creator = newId("creator");
@@ -64,6 +66,7 @@ function harness(
       limits: o.limits,
       allowedCreators: allowed,
       turnQuota: o.turnQuota,
+      features: o.features,
       log: (m) => logs.push(m),
     });
   let room = make();
@@ -237,11 +240,11 @@ describe("signaling room: who may create rooms (ALLOWED_CREATORS)", () => {
 });
 
 describe("the Worker's /health", () => {
-  it("says how many may create rooms and whether TURN is set, never who", () => {
+  it("says how many may create rooms, whether TURN is set and what it can do, never who", () => {
     const a = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
-    expect(healthBody({})).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: false, creators: 0 });
+    expect(healthBody({})).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: false, creators: 0, features: ["revoke"] });
     const h = healthBody({ ALLOWED_CREATORS: `${formatFingerprint(a)}, ${"b".repeat(32)}, typo`, TURN_KEY_ID: "k", TURN_KEY_API_TOKEN: "t" });
-    expect(h).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: true, creators: 2, creatorsInvalid: 1 });
+    expect(h).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: true, creators: 2, creatorsInvalid: 1, features: ["revoke"] });
     expect(JSON.stringify(h)).not.toContain("a1b2");
   });
 });
@@ -289,6 +292,142 @@ describe("signaling room: relay and presence", () => {
     await h.say(n, { t: "signal", to: h.creator.id, env: { from: nick.id } });
     expect(c.last("signal")).toMatchObject({ from: nick.id });
     expect(await h.room.memberIds()).toEqual([h.creator.id, nick.id]);
+  });
+});
+
+describe("signaling room: revoke (leaving and removal)", () => {
+  /** The creator, plus members admitted one after another (each a millisecond later than the one before). */
+  async function room(extra: string[], o: { features?: readonly SignalingFeature[] } = {}) {
+    let now = 1_000_000;
+    const h = harness({ now: () => now, features: o.features });
+    const c = await h.connect(h.creator, { create: h.salt });
+    const ids: Identity[] = [];
+    const socks: FakeSocket[] = [];
+    for (const name of extra) {
+      now += 1;
+      const id = newId(name);
+      await h.say(c, { t: "admit", publicKeys: [id.publicKey] });
+      ids.push(id);
+      socks.push(await h.connect(id));
+    }
+    return { h, c, ids, socks, inAnHour: () => now + 3_600_000 };
+  }
+  const removal = (member: string) => ({ type: "member.removed", body: { member }, sig: "signed by the remover's app" });
+
+  it("announces what it can do, and lets a member cut itself off when it leaves", async () => {
+    const { h, c, ids, socks } = await room(["nick"]);
+    expect(c.last("welcome")).toMatchObject({ features: ["revoke"] });
+    const [nick] = ids;
+    const [n] = socks;
+    await h.say(n, { t: "revoke", member: nick.id, event: removal(nick.id) });
+    expect(n.last("revoked")).toEqual({ t: "revoked", member: nick.id });
+    expect(n.closed?.code).toBe(CLOSE.notMember);
+    expect(c.last("peer-left")).toEqual({ t: "peer-left", id: nick.id });
+    expect(await h.room.memberIds()).toEqual([h.creator.id]);
+    // back by key alone: refused, and told why with the removal itself
+    const again = await h.connect(nick);
+    expect(again.last("error")).toMatchObject({ code: "not-member", revoked: true, event: removal(nick.id) });
+    expect(again.closed?.code).toBe(CLOSE.notMember);
+    // members who connect later get it in their welcome
+    const late = await h.connect(h.creator, { create: h.salt });
+    expect(late.last("welcome")?.events).toEqual([removal(nick.id)]);
+  });
+
+  it("lets the admin (the creator) cut someone off: connections, invites, TURN and hellos go", async () => {
+    const { h, c, ids, socks, inAnHour } = await room(["nick", "sam"]);
+    const [nick] = ids;
+    const [n, s] = socks;
+    const token = randomToken();
+    await h.say(n, { t: "invite", tokenHash: signalingTokenHash(token), expiresAt: inAnHour() });
+    expect(n.last("invited")).toBeTruthy();
+    await h.say(c, { t: "revoke", member: nick.id, event: removal(nick.id) });
+    expect(c.last("revoked")).toEqual({ t: "revoked", member: nick.id });
+    expect(n.last("error")).toMatchObject({ code: "not-member", revoked: true, event: removal(nick.id) });
+    expect(n.closed?.code).toBe(CLOSE.notMember);
+    expect(s.last("peer-left")).toEqual({ t: "peer-left", id: nick.id });
+    // the invite Nick made no longer lets anyone in
+    const newcomer = await h.connect(newId("newcomer"), { join: signalingJoinKey(token) });
+    expect(newcomer.closed?.code).toBe(CLOSE.notMember);
+    // a connection of his that's somehow still open gets nothing more: no relay credentials, no signals
+    n.closed = null;
+    await h.say(n, { t: "turn" });
+    expect(n.last("turn")).toBeUndefined();
+    expect(n.last("error")).toMatchObject({ code: "not-member" });
+    expect(h.logs.some((l) => /refused a turn from .* isn't a member any more/.test(l))).toBe(true);
+  });
+
+  it("refuses a revoke of someone else from anyone but the admin, and says so", async () => {
+    const { h, ids, socks } = await room(["nick", "sam"]);
+    const [, sam] = ids;
+    const [n] = socks;
+    await h.say(n, { t: "revoke", member: sam.id });
+    expect(n.last("error")).toMatchObject({ code: "forbidden", member: sam.id });
+    expect(n.last("error")?.message).toMatch(/only the room's admin/);
+    expect(await h.room.memberIds()).toContain(sam.id);
+    expect(h.logs.some((l) => /refused .*'s revoke of/.test(l))).toBe(true);
+  });
+
+  it("hands the admin on to the member admitted earliest once the creator has left", async () => {
+    const { h, c, ids, socks } = await room(["nick", "sam"]);
+    const [nick, sam] = ids;
+    const [n, s] = socks;
+    await h.say(c, { t: "revoke", member: h.creator.id });
+    await h.say(s, { t: "revoke", member: nick.id });
+    expect(s.last("error")).toMatchObject({ code: "forbidden" });
+    await h.say(n, { t: "revoke", member: sam.id });
+    expect(n.last("revoked")).toEqual({ t: "revoked", member: sam.id });
+    expect(await h.room.memberIds()).toEqual([nick.id]);
+  });
+
+  it("in a room from before revoke, only leaving works until the creator says hello again", async () => {
+    const { h, c, ids, socks } = await room(["nick", "sam"]);
+    const [, sam] = ids;
+    const [n, s] = socks;
+    // what a room created before this change keeps: no creator
+    const rec = h.storage.get("room") as any;
+    delete rec.creator;
+    h.storage.set("room", rec);
+    h.rehydrate();
+    await h.say(c, { t: "revoke", member: sam.id });
+    expect(c.last("error")).toMatchObject({ code: "forbidden", member: sam.id });
+    expect(c.last("error")?.message).toMatch(/doesn't know the room's creator/);
+    await h.say(s, { t: "revoke", member: sam.id }); // leaving still works
+    expect(s.last("revoked")).toEqual({ t: "revoked", member: sam.id });
+    // the creator's next hello proves the salt again: the room knows its admin from then on
+    const c2 = await h.connect(h.creator, { create: h.salt });
+    await h.say(c2, { t: "revoke", member: ids[0].id });
+    expect(c2.last("revoked")).toEqual({ t: "revoked", member: ids[0].id });
+    void n;
+  });
+
+  it("brings a revoked key back only through a new invite (or the admin), never a member's stale admit", async () => {
+    const { h, c, ids, socks, inAnHour } = await room(["nick", "sam"]);
+    const [nick] = ids;
+    const [, s] = socks;
+    await h.say(c, { t: "revoke", member: nick.id, event: removal(nick.id) });
+    // Sam hasn't heard yet: his admit of the room log's members leaves Nick out
+    await h.say(s, { t: "admit", publicKeys: [nick.publicKey] });
+    expect(s.last("admitted")).toEqual({ t: "admitted", ids: [] });
+    expect((await h.connect(nick)).closed?.code).toBe(CLOSE.notMember);
+    // a new invite: in again, and no longer passed on as removed
+    const token = randomToken();
+    await h.say(c, { t: "invite", tokenHash: signalingTokenHash(token), expiresAt: inAnHour() });
+    const back = await h.connect(nick, { join: signalingJoinKey(token) });
+    expect(back.last("welcome")).toMatchObject({ you: nick.id });
+    expect(back.last("welcome")?.events).toBeUndefined();
+    expect((await h.connect(nick)).last("welcome")).toBeTruthy();
+    // the admin can admit a revoked key itself
+    await h.say(c, { t: "revoke", member: nick.id });
+    await h.say(c, { t: "admit", publicKeys: [nick.publicKey] });
+    expect(c.last("admitted")).toEqual({ t: "admitted", ids: [nick.id] });
+  });
+
+  it("a Worker from before revoke doesn't know the message", async () => {
+    const { h, c, ids } = await room(["nick"], { features: [] });
+    expect(c.last("welcome")?.features).toBeUndefined();
+    await h.say(c, { t: "revoke", member: ids[0].id });
+    expect(c.last("error")).toMatchObject({ code: "bad-message", message: "unknown message revoke" });
+    expect(await h.room.memberIds()).toContain(ids[0].id);
   });
 });
 

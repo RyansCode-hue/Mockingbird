@@ -146,13 +146,18 @@ const meters: Meters = {
 const ME = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
 const NICK = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
 const SAM = "5a5a5a5a6b6b6b6b7c7c7c7c8d8d8d8d";
+// removed from 5101 by you (team rooms: leaving and removing)
+const ALEX = "9e9e9e9e8d8d8d8d7c7c7c7c6b6b6b6b";
 const SIGNAL = "https://mockingbird-signaling.you.workers.dev";
+const teamQuery = new URLSearchParams(location.search);
+// ?oldWorker: the signaling Worker predates revoke, so removals can't cut anyone off there
+const workerRevoke = !teamQuery.has("oldWorker");
 const team: TeamStatus = {
   self: { id: ME, name: "You", fingerprint: ME.replace(/(.{4})(?=.)/g, "$1 ") },
   signalingUrl: SIGNAL,
   rooms: [
-    { id: "R5101aaaaaaaaaaaaaaaaa", name: "#5101 Org dropdowns remember the last org", groupKey: "5101", members: [{ id: ME, name: "You", self: true }, { id: NICK, name: "Nick Smith", self: false }, { id: SAM, name: "Sam", self: false }], online: [NICK], signalingUrl: SIGNAL, signaling: "online" },
-    { id: "R5110bbbbbbbbbbbbbbbbb", name: "#5110 Donor entities", groupKey: "5110", members: [{ id: NICK, name: "Nick Smith", self: false }, { id: ME, name: "You", self: true }], online: [NICK], signalingUrl: SIGNAL, signaling: "online" },
+    { id: "R5101aaaaaaaaaaaaaaaaa", name: "#5101 Org dropdowns remember the last org", groupKey: "5101", members: [{ id: ME, name: "You", self: true }, { id: NICK, name: "Nick Smith", self: false }, { id: SAM, name: "Sam", self: false }], admin: ME, creator: ME, former: [{ id: ALEX, name: "Alex" }], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke },
+    { id: "R5110bbbbbbbbbbbbbbbbb", name: "#5110 Donor entities", groupKey: "5110", members: [{ id: NICK, name: "Nick Smith", self: false }, { id: ME, name: "You", self: true }], admin: NICK, creator: NICK, former: [], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke },
   ],
   pending: [],
   peers: [
@@ -160,6 +165,10 @@ const team: TeamStatus = {
     { id: SAM, name: "Sam", state: "offline", since: now - 3 * 60 * min },
   ],
   problems: [],
+  // ?notice: Nick removed you from a room, and its backup couldn't be deleted from origin
+  notices: teamQuery.has("notice")
+    ? [{ id: "n1", roomId: "R5099ccccccccccccccccc", roomName: "#5099 Gift aid export", kind: "removed", by: "Nick Smith", at: now - 4 * min, problems: ["The backup of “Gift aid CSV” couldn't be deleted from origin (refs/mockingbird/rooms/R5099ccccccccccccccccc/s9): remote: Permission denied"] }]
+    : [],
 };
 // team rooms: plan board — 5101's board is kept in backoffice and has a package in every column; 5110 has none yet and no repo
 const pkg = (id: string, over: Partial<WorkPackage>): WorkPackage => ({ id, title: id, description: "", owner: null, status: "open", statusNote: "", paths: [], provides: "", uses: "", tests: "", createdBy: ME, createdAt: now - 5 * 60 * min, updatedBy: ME, updatedAt: now - 60 * min, ...over });
@@ -223,6 +232,7 @@ const chats: Record<string, ChatEntry[]> = {
     chatEntry({ kind: "assistant", author: NICK, at: now - 11 * min, replyTo: "c5", state: "answer", text: "Two things:\n- **API**: `GET /api/users/me/last-org` is in; the PUT still needs a test (the *API tests* session is on it).\n- **UI**: Nick's dropdown tests wait on a Bash permission.\nOnce both are green, open the PR against `dev`." }),
     chatEntry({ kind: "update", author: ME, at: now - 6 * min, items: [{ session: "s2", title: "API: last org per user", kind: "waiting", detail: "Claude needs your permission to use Bash", at: now - 6 * min }] }),
     chatEntry({ kind: "message", author: SAM, at: now - 3 * min, text: "Heads up: `dev` moved this morning — rebase before the PR. Notes: https://dev.azure.com/acme/Backoffice/_wiki/rebase", mentions: [] }),
+    chatEntry({ kind: "member", author: ME, at: now - 2 * min, member: ALEX, change: "removed" }),
   ],
   // 5110: an assistant turn that failed, and one still thinking
   R5110bbbbbbbbbbbbbbbbb: (() => {
@@ -723,6 +733,35 @@ const api: Record<string, (...a: any[]) => any> = {
     team.pending = team.pending.filter((p) => p.roomId !== roomId);
     teamChanged();
   },
+  // team rooms: leaving and removing — the room or member goes from the fixture; nothing is deleted
+  teamLeaveRoom: async (roomId: string) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    if (!room) return err("You're not in that room");
+    const others = room.members.filter((m) => !m.self);
+    team.rooms = team.rooms.filter((r) => r.id !== roomId);
+    teamChanged();
+    const worker = workerRevoke ? null : "Your signaling Worker is older and doesn't know how to cut members off. Update your signaling Worker (cd signaling && npx wrangler deploy) to also cut this Mockingbird off at the Worker.";
+    return later({ roomName: room.name, told: others.filter((m) => room.online.includes(m.id)).map((m) => m.name), notTold: others.filter((m) => !room.online.includes(m.id)).map((m) => m.name), worker, problems: [] }, 700);
+  },
+  teamRemoveMember: async (roomId: string, memberId: string) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    const member = room?.members.find((m) => m.id === memberId) ?? room?.former?.find((m) => m.id === memberId);
+    if (!room || !member) return err("They aren't in that room");
+    if (room.admin !== ME) return err("Only the room's admin can remove members");
+    if (room.members.some((m) => m.id === memberId)) {
+      room.members = room.members.filter((m) => m.id !== memberId);
+      room.former = [...(room.former ?? []), { id: member.id, name: member.name }];
+      (chats[roomId] ??= []).push(chatEntry({ kind: "member", author: ME, at: Date.now(), member: memberId, change: "removed" }));
+      teamChanged();
+      chatChanged(roomId);
+    }
+    const worker = workerRevoke ? null : "Your signaling Worker is older and doesn't know how to cut members off. Update your signaling Worker (cd signaling && npx wrangler deploy) to also cut them off at the Worker.";
+    return later({ name: member.name, delivered: room.online.includes(memberId), worker }, 600);
+  },
+  teamDismissNotice: async (id: string) => {
+    team.notices = (team.notices ?? []).filter((n) => n.id !== id);
+    teamChanged();
+  },
   teamCheckSignaling: async () => later({ protocol: 1, relay: true, creators: 2, problem: null }, 400),
 
   // team rooms: plan board — changes apply to the fixture board; nothing reaches git
@@ -942,6 +981,19 @@ if (params.has("plan") || params.has("planWarning")) {
       const hit = { roomId: "R5101aaaaaaaaaaaaaaaaa", room: "#5101 Org dropdowns remember the last org", pkg: "p-api0last", title: "Last-org API", status: "in-progress", owner: { id: NICK, name: "Nick Smith" }, pattern: "src/api/orgs/" };
       emit("onPlanWarning", { at: Date.now(), sessionId: "s1", sessionTitle: "Org dropdowns remember the last org", decision: "deny", tool: "Edit", conflicts: [{ file: "src/api/orgs/last.py", root: WT("5101-orgDropdowns"), hits: [hit] }] });
     }
+  }, 100);
+}
+// team rooms: leaving and removing — ?teamDialog=leave opens Settings → Team's first Leave room…, =remove its first
+// Remove…; ?chatMenu opens the room chat's ⋯ menu (=leave: and picks Leave room…)
+if (params.has("teamDialog") || params.has("chatMenu")) {
+  let tries = 0;
+  const open = setInterval(() => {
+    const want = params.has("chatMenu") ? "button.rc-more" : params.get("teamDialog") === "remove" ? ".team-member button.link.danger" : ".team-room .set-row-ctl button:last-child";
+    const button = document.querySelector(want) as HTMLElement | null;
+    if (!button && ++tries < 50) return;
+    clearInterval(open);
+    button?.click();
+    if (params.get("chatMenu") === "leave") setTimeout(() => (document.querySelector(".mb-menu [role=menuitem], .mb-menu button") as HTMLElement | null)?.click(), 200);
   }, 100);
 }
 // team rooms: ?norooms — this Mac is in no team room yet; ?nosignal — no signaling URL is set, so no new rooms

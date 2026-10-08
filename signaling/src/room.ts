@@ -3,10 +3,12 @@ import {
   formatFingerprint,
   fromBase64Url,
   helloPayload,
+  MAX_REVOKE_EVENT,
   MAX_SIGNALING_MESSAGE,
   MEMBER_ID_RE,
   PUBLIC_KEY_RE,
   roomIdInput,
+  SIGNALING_FEATURES,
   SIGNALING_PROTOCOL,
   SIGNATURE_RE,
   toBase64Url,
@@ -17,6 +19,7 @@ import {
   type IceServer,
   type ServerMessage,
   type SignalingErrorCode,
+  type SignalingFeature,
   type SignalingPeer,
 } from "../../src/shared/team/protocol";
 
@@ -39,6 +42,16 @@ import {
  * from an invite, once. Members can also admit keys they already trust (their
  * room log's members), which keeps the server's list in step after it lost
  * its storage.
+ *
+ * Getting out (revoke): a member cuts itself off when it leaves; the room's
+ * admin cuts off someone it removed. The admin is the creator while a member
+ * (its id is stored once its hello proves the salt), else the member admitted
+ * earliest here — the app's rule (rooms.ts roomAdmin) as far as the server
+ * can know it. A revoked key loses its connections, its invites and TURN; its
+ * hellos are refused (with the signed removal, so its app learns of it) until
+ * a new invite brings it back, and members can't re-admit it — only the
+ * admin can. A room whose creator never said hello since this was deployed
+ * has no known admin: only leaving works there.
  *
  * State survives the Durable Object hibernating: the member list and invites
  * live in storage, each connection's own state in its attachment (save()).
@@ -154,6 +167,8 @@ export interface RoomDeps {
   turnQuota?: TurnQuota | null;
   log?: (msg: string) => void;
   limits?: Partial<RoomLimits>;
+  /** The SIGNALING_FEATURES served (default all; tests pass fewer to play a Worker deployed before them). */
+  features?: readonly SignalingFeature[];
 }
 
 export interface TurnQuota {
@@ -206,6 +221,28 @@ export function turnDailyLimit(value: string | undefined): number {
 interface RoomRecord {
   members: Record<string, { publicKey: string; addedAt: number }>;
   invites: Record<string, { expiresAt: number; by: string; usedAt?: number }>;
+  /** The room's creator, once its hello proved the salt (absent in rooms created before revoke, until then). */
+  creator?: string;
+  /** Keys cut off, with the signed removal to pass on. */
+  revoked?: Record<string, { at: number; by: string; event?: unknown }>;
+}
+
+/** Revocations a room remembers (the oldest go first); the newest are handed to members in the welcome. */
+const MAX_REVOKED = 100;
+const WELCOME_EVENTS = 20;
+
+/**
+ * Who may revoke other members, as this server knows the room: its creator
+ * while a member, else the member admitted earliest (ties: the lower id).
+ * Null when the creator isn't known (a room created before revoke whose
+ * creator hasn't said hello since) or nobody is left.
+ */
+export function signalingAdmin(rec: { creator?: string; members: Record<string, { addedAt: number }> }): string | null {
+  if (!rec.creator) return null;
+  if (rec.members[rec.creator]) return rec.creator;
+  let best: [string, number] | null = null;
+  for (const [id, m] of Object.entries(rec.members)) if (!best || m.addedAt < best[1] || (m.addedAt === best[1] && id < best[0])) best = [id, m.addedAt];
+  return best?.[0] ?? null;
 }
 
 export const TURN_API = "https://rtc.live.cloudflare.com/v1/turn/keys";
@@ -216,12 +253,14 @@ export class SignalingRoom {
   private readonly now: () => number;
   private readonly limits: RoomLimits;
   private readonly log: (msg: string) => void;
+  private readonly features: readonly SignalingFeature[];
 
   constructor(private deps: RoomDeps) {
     this.crypto = deps.crypto ?? webCrypto;
     this.now = deps.now ?? Date.now;
     this.limits = { ...DEFAULT_LIMITS, ...deps.limits };
     this.log = deps.log ?? ((m) => console.log(m));
+    this.features = deps.features ?? SIGNALING_FEATURES;
   }
 
   /** A new connection: it's challenged to prove its key. */
@@ -254,6 +293,11 @@ export class SignalingRoom {
       return this.hello(sock, state, msg);
     }
     const me = state.member;
+    // membership is checked on every message: a connection whose key was revoked meanwhile gets nothing more (TURN included)
+    if (!(await this.load()).members[me.id]) {
+      this.log(`room ${this.deps.roomId}: refused a ${String(msg.t).slice(0, 20)} from ${me.id}, who isn't a member any more`);
+      return this.fail(sock, "not-member", "this key isn't a member of the room any more", CLOSE.notMember);
+    }
     switch (msg.t) {
       case "hello":
         return this.error(sock, "bad-message", "already said hello");
@@ -262,9 +306,12 @@ export class SignalingRoom {
       case "invite":
         return this.invite(sock, me, msg);
       case "admit":
-        return this.admit(sock, msg);
+        return this.admit(sock, me, msg);
       case "turn":
         return this.turn(sock, state);
+      case "revoke":
+        if (this.features.includes("revoke")) return this.revoke(sock, me, msg);
+        return this.error(sock, "bad-message", "unknown message revoke");
       default:
         return this.error(sock, "bad-message", `unknown message ${String((msg as { t: unknown }).t).slice(0, 20)}`);
     }
@@ -309,19 +356,23 @@ export class SignalingRoom {
     const now = this.now();
     let changed = false;
     let admitted = !!rec.members[id];
-    if (!admitted && msg.create) {
-      const rid = toBase64Url(await this.crypto.sha256(utf8(roomIdInput(msg.publicKey, msg.create)))).slice(0, 22);
-      if (rid === this.deps.roomId) {
-        const allowed = this.deps.allowedCreators ?? [];
-        if (allowed !== "any" && !allowed.includes(id)) {
-          const message = allowed.length
-            ? `This key (${formatFingerprint(id)}) isn't allowed to create rooms on this signaling Worker — add its fingerprint to ALLOWED_CREATORS`
-            : `This signaling Worker doesn't allow new rooms yet — add your fingerprint (${formatFingerprint(id)}) to ALLOWED_CREATORS`;
-          this.log(`room ${this.deps.roomId}: refused to create it for ${id} (not in ALLOWED_CREATORS)`);
-          return this.fail(sock, "creation-refused", message, CLOSE.creationRefused);
-        }
-        admitted = changed = true;
+    // the creator proves itself with the salt its room id was made from (also on later hellos, so a room from before revoke learns its creator)
+    const isCreator = !!msg.create && toBase64Url(await this.crypto.sha256(utf8(roomIdInput(msg.publicKey, msg.create)))).slice(0, 22) === this.deps.roomId;
+    const revoked = rec.revoked?.[id];
+    if (!admitted && isCreator && !revoked) {
+      const allowed = this.deps.allowedCreators ?? [];
+      if (allowed !== "any" && !allowed.includes(id)) {
+        const message = allowed.length
+          ? `This key (${formatFingerprint(id)}) isn't allowed to create rooms on this signaling Worker — add its fingerprint to ALLOWED_CREATORS`
+          : `This signaling Worker doesn't allow new rooms yet — add your fingerprint (${formatFingerprint(id)}) to ALLOWED_CREATORS`;
+        this.log(`room ${this.deps.roomId}: refused to create it for ${id} (not in ALLOWED_CREATORS)`);
+        return this.fail(sock, "creation-refused", message, CLOSE.creationRefused);
       }
+      admitted = changed = true;
+    }
+    if (isCreator && this.features.includes("revoke") && rec.creator !== id && (admitted || !revoked)) {
+      rec.creator = id;
+      changed = true;
     }
     if (!admitted && msg.join) {
       const hash = toBase64Url(await this.crypto.sha256(utf8(msg.join)));
@@ -329,7 +380,15 @@ export class SignalingRoom {
       if (invite && !invite.usedAt && invite.expiresAt > now) {
         invite.usedAt = now;
         admitted = changed = true;
+        // a new invite brings a revoked key back
+        if (revoked) delete rec.revoked![id];
       }
+    }
+    if (!admitted && revoked) {
+      if (changed) await this.save();
+      this.log(`room ${this.deps.roomId}: refused ${id} (revoked by ${revoked.by})`);
+      this.send(sock, { t: "error", code: "not-member", message: "this key was removed from the room", revoked: true, ...(revoked.event !== undefined ? { event: revoked.event } : {}) });
+      return sock.close(CLOSE.notMember, "not-member");
     }
     if (!admitted) {
       this.log(`room ${this.deps.roomId}: refused ${id} (not a member, no valid join key)`);
@@ -351,7 +410,18 @@ export class SignalingRoom {
     const peers: SignalingPeer[] = this.members()
       .filter((s) => s.cid !== sock.cid && s.state()!.member!.id !== id)
       .map((s) => ({ id: s.state()!.member!.id, team: s.state()!.member!.team }));
-    this.send(sock, { t: "welcome", v: SIGNALING_PROTOCOL, you: id, now, peers, relay: !!this.deps.turn });
+    const welcome: ServerMessage = { t: "welcome", v: SIGNALING_PROTOCOL, you: id, now, peers, relay: !!this.deps.turn };
+    if (this.features.length) {
+      welcome.features = [...this.features];
+      // removals members who were offline then haven't heard of: each app checks the signed event itself
+      const events = Object.values(rec.revoked ?? {})
+        .filter((r) => r.event !== undefined)
+        .sort((a, b) => a.at - b.at)
+        .slice(-WELCOME_EVENTS)
+        .map((r) => r.event);
+      if (events.length) welcome.events = events;
+    }
+    this.send(sock, welcome);
     this.broadcast(sock.cid, { t: "peer-joined", peer: { id, team: msg.team } }, id);
     this.closeStale(now);
   }
@@ -379,15 +449,25 @@ export class SignalingRoom {
     this.send(sock, { t: "invited", tokenHash: msg.tokenHash });
   }
 
-  private async admit(sock: RoomSocket, msg: Extract<ClientMessage, { t: "admit" }>): Promise<void> {
+  private async admit(sock: RoomSocket, me: NonNullable<ConnState["member"]>, msg: Extract<ClientMessage, { t: "admit" }>): Promise<void> {
     if (!Array.isArray(msg.publicKeys) || msg.publicKeys.length > 64 || msg.publicKeys.some((k) => typeof k !== "string" || !PUBLIC_KEY_RE.test(k))) {
       return this.error(sock, "bad-message", "malformed admit");
     }
     const rec = await this.load();
     const ids: string[] = [];
     let changed = false;
+    // a member who hasn't heard of a removal yet would admit the key again: only the admin brings a revoked key back
+    const admin = signalingAdmin(rec) === me.id;
     for (const k of msg.publicKeys) {
       const id = toHex(await this.crypto.sha256(fromBase64Url(k))).slice(0, 32);
+      if (rec.revoked?.[id]) {
+        if (!admin) {
+          this.log(`room ${this.deps.roomId}: ${me.id} admitted ${id}, which was revoked; kept out`);
+          continue;
+        }
+        delete rec.revoked[id];
+        changed = true;
+      }
       ids.push(id);
       if (!rec.members[id]) {
         rec.members[id] = { publicKey: k, addedAt: this.now() };
@@ -396,6 +476,58 @@ export class SignalingRoom {
     }
     if (changed) await this.save();
     this.send(sock, { t: "admitted", ids });
+  }
+
+  /**
+   * Cut a member off: itself (leaving), or anyone from the room's admin. Its
+   * key, connections and invites go, its hellos are refused from now on, and
+   * the signed removal it carries is passed on (to it, and to members in
+   * their welcome). Revoking someone who isn't a member is harmless: the
+   * removal is recorded all the same, so their next hello hears of it.
+   */
+  private async revoke(sock: RoomSocket, me: NonNullable<ConnState["member"]>, msg: Extract<ClientMessage, { t: "revoke" }>): Promise<void> {
+    if (typeof msg.member !== "string" || !MEMBER_ID_RE.test(msg.member)) return this.error(sock, "bad-message", "malformed revoke");
+    let event: unknown;
+    if (msg.event !== undefined) {
+      let size = Infinity;
+      try {
+        size = JSON.stringify(msg.event).length;
+      } catch {
+        // not JSON: refused below
+      }
+      if (size > MAX_REVOKE_EVENT) return this.error(sock, "bad-message", `a revoke's event is limited to ${MAX_REVOKE_EVENT} bytes`);
+      event = msg.event;
+    }
+    const rec = await this.load();
+    const target = msg.member;
+    if (target !== me.id) {
+      const admin = signalingAdmin(rec);
+      if (admin !== me.id) {
+        const why = !rec.creator
+          ? "this signaling server doesn't know the room's creator yet (a room from before removal existed, whose creator hasn't connected since): only leaving works here"
+          : `only the room's admin can remove members, and this server sees ${admin ?? "nobody"} as the admin`;
+        this.log(`room ${this.deps.roomId}: refused ${me.id}'s revoke of ${target}: ${why}`);
+        return this.send(sock, { t: "error", code: "forbidden", message: why, member: target });
+      }
+    }
+    delete rec.members[target];
+    for (const [hash, inv] of Object.entries(rec.invites)) if (inv.by === target) delete rec.invites[hash];
+    rec.revoked ??= {};
+    rec.revoked[target] = { at: this.now(), by: me.id, ...(event !== undefined ? { event } : {}) };
+    const all = Object.entries(rec.revoked).sort(([, a], [, b]) => a.at - b.at);
+    for (const [id] of all.slice(0, Math.max(0, all.length - MAX_REVOKED))) delete rec.revoked[id];
+    await this.save();
+    this.log(`room ${this.deps.roomId}: ${me.id} revoked ${target}${target === me.id ? " (left)" : ""}`);
+    this.send(sock, { t: "revoked", member: target });
+    // their connections close, with the removal passed on; the others hear they're gone
+    let had = false;
+    for (const s of this.members()) {
+      if (s.state()?.member?.id !== target) continue;
+      had = true;
+      if (s.cid !== sock.cid) this.send(s, { t: "error", code: "not-member", message: "this key was removed from the room", revoked: true, ...(event !== undefined ? { event } : {}) });
+      s.close(CLOSE.notMember, "revoked");
+    }
+    if (had) this.broadcast("", { t: "peer-left", id: target }, target);
   }
 
   private async turn(sock: RoomSocket, state: ConnState): Promise<void> {

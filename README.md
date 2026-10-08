@@ -74,7 +74,9 @@ loopback (`src/main/team/loopback.ts`) with real session managers and real git
 (a local bare origin and clones): live panes, the Co-authored-by hooks, chat,
 the plan board, backups and take-over with the owner online (Hand over, Keep,
 no answer, dropping offline mid-request), away or restarted, the old copy
-stopping, its unsent changes sent and applied, and Take it back.
+stopping, its unsent changes sent and applied, and Take it back; leaving and
+removal (who may remove whom, what each Mac deletes, the Worker's revoke, and
+an older Worker).
 `test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer
 hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
 `test/teamLiveApp.e2e.test.ts` run two real Mockingbird instances in throwaway
@@ -298,6 +300,16 @@ agreed direction, **Later** is worth doing once the foundations settle.
     starts the session in it, then shows the invite code; Join a room… — in the
     Team tab, New/Import Session → Connected, or ⌘K — takes a teammate's code);
     every member keeps its signed, ordered event log and merges it on reconnect.
+  - **Leaving and removing:** **Leave room…** (Settings → Team, or the Team
+    tab's ⋯) tells the teammates online, has the signaling Worker cut your key
+    off, and deletes the room from your Mac — its folder, chat read marks,
+    mutes, plan copies, hidden refs and your backups on origin; the group stays
+    as an ordinary one, its sessions running. The room's admin — its creator,
+    or the longest-standing member once the creator has left — can
+    **Remove…** a teammate: every Mockingbird drops them and forgets what it
+    had of their sessions, theirs deletes the room when it hears, and the
+    Worker cuts them off (an older Worker says to redeploy it). Coming back
+    takes a new invite; what couldn't be cleaned up is listed in a notice.
   - **Sessions:** a session in a shared group is one row and one pane on every
     member's Mockingbird, tagged with its owner's initials; shared groups sit
     under **Connected Sessions** in the sidebar. Start one from a shared

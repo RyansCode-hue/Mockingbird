@@ -254,6 +254,62 @@ describe("the WebRTC wire over the local signaling server", () => {
   });
 });
 
+describe("leaving and removal over the wire and the local Worker", () => {
+  async function connected(o: { features?: [] } = {}) {
+    const signal = await startLocalSignaling({ log: () => undefined, ...o });
+    servers.push(signal);
+    const r = await roomOverSignaling(signal);
+    await until(() => !!r.nick.team.room(r.roomId), "Nick to have the room", 8000);
+    await until(() => r.ryan.team.presence(r.roomId).length === 1 && r.nick.team.presence(r.roomId).length === 1, "both connected", 8000);
+    return { signal, ...r };
+  }
+
+  it("the admin removes a connected member: their Mockingbird hears it, and the Worker cuts their key off", async () => {
+    const { signal, ryan, nick, roomId } = await connected();
+    expect(ryan.team.status().rooms[0].workerRevoke).toBe(true);
+    const left: (string | null)[] = [];
+    nick.team.onLeft((id, info) => {
+      left.push(info.by);
+      nick.team.forget(id);
+    });
+    const r = await ryan.team.removeMember(roomId, nick.identity.id);
+    expect(r).toMatchObject({ delivered: true, revoke: { ok: true } });
+    await until(() => left.length === 1, "Nick to hear of it");
+    expect(left).toEqual([ryan.identity.id]);
+    expect(await signal.room(roomId)!.memberIds()).toEqual([ryan.identity.id]);
+    await until(() => signal.online(roomId).join() === ryan.identity.id, "Nick's signaling connection to go", 5000);
+  });
+
+  it("a member removed while their Mockingbird was closed hears it from the Worker, which refuses them with the signed removal", async () => {
+    const { ryan, nick, roomId, net } = await connected();
+    const dir = path.dirname(path.dirname(path.dirname(nick.store.dir)));
+    nick.team.close(); // Nick quits: his peer host goes, and with it the connection
+    teams.splice(teams.indexOf(nick.team), 1);
+    nick.host.command({ op: "close", peer: ryan.identity.id, reason: "quit" });
+    await until(() => ryan.team.presence(roomId).length === 0, "Nick to drop", 5000);
+    const r = await ryan.team.removeMember(roomId, nick.identity.id);
+    expect(r).toMatchObject({ delivered: false, revoke: { ok: true } });
+    // Nick starts again: his hello is refused, and the removal it carries is checked and applied
+    const again = member("Nick", net, dir);
+    expect(again.team.room(roomId)).toBeDefined();
+    const left: (string | null)[] = [];
+    again.team.onLeft((_id, info) => left.push(info.by));
+    await until(() => left.length === 1, "Nick to hear of his removal", 8000);
+    expect(left).toEqual([ryan.identity.id]);
+    expect(again.team.room(roomId)).toBeUndefined();
+    expect(again.logs.some((l) => /removed from the room/.test(l))).toBe(true);
+  });
+
+  it("against a Worker from before revoke: the removal still applies peer to peer, and the app says to update the Worker", async () => {
+    const { ryan, nick, roomId } = await connected({ features: [] });
+    expect(ryan.team.status().rooms[0].workerRevoke).toBe(false);
+    const r = await ryan.team.removeMember(roomId, nick.identity.id);
+    expect(r.delivered).toBe(true);
+    expect(r.revoke).toMatchObject({ ok: false, reason: "unsupported", message: expect.stringContaining("cd signaling && npx wrangler deploy") });
+    await until(() => !nick.team.room(roomId), "Nick to drop the room");
+  });
+});
+
 describe("sharing a group with a signaling Worker that limits who creates rooms", () => {
   const stops: (() => void)[] = [];
   afterEach(() => stops.splice(0).forEach((f) => f()));

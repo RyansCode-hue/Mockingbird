@@ -53,7 +53,7 @@ import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, Pr
 import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
-import { TeamService } from "./team/service";
+import { TeamService, type RoomCleanup } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
 // team rooms: plan board (importing it registers the board's room events, before any room log loads)
 import { PlanService } from "./team/planService";
@@ -110,12 +110,22 @@ const toWindow = (channel: string, ...args: unknown[]) => appWindow()?.webConten
 
 // Team rooms (docs/team-rooms.md): identity, rooms and the WebRTC transport
 configureWebRtc(app);
-const team = new TeamService({
+const team: TeamService = new TeamService({
   settings: () => store.settings,
   localGroups: () => [...new Set([...sessions.list(), ...store.state.sessions].map((s) => topOfKey(s.taskGroup ?? "ungrouped")))],
   emit: (status) => toWindow("team:changed", status),
   log: logError,
   assetsDir: __dirname,
+  // what each stage kept of a room this install left or was removed from goes, then the room's folder
+  cleanup: (): RoomCleanup[] => [
+    { what: "the room's live panes", roomLeft: (room, groupKey) => livePanes.roomLeft(room, groupKey) },
+    { what: "the room chat's read marks", roomLeft: (room) => teamRoom.chat.roomLeft(room.id) },
+    { what: "the plan copies", roomLeft: (room) => teamPlan.roomLeft(room.id) },
+    { what: "the room's backups and hidden refs", roomLeft: (room) => takeover?.roomLeft(room) ?? [] },
+  ],
+  notify: (title, body) => {
+    if (shouldNotify({ settings: store.settings, kind: "other", now: new Date() })) new Notification({ title, body }).show();
+  },
 });
 
 // team rooms: plan board — the board in git and in the room repo's worktrees, claims, teammates' branches
@@ -413,6 +423,8 @@ app.whenReady().then(() => {
   void pruneBackups();
   setInterval(pruneBackups, 86_400_000).unref();
   livePanes.start(); // team rooms: live panes
+  // team rooms: a room left or removed from whose cleanup didn't finish (Mockingbird quit) is cleaned up now
+  void team.finishLeftRooms().catch((err) => logError("team: finishing rooms left before", err));
   powerMonitor.on("resume", () => team.wake());
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   void lookUpBins();
@@ -862,6 +874,9 @@ handle("team:share", (groupKey, title) => team.shareGroup(String(groupKey ?? "")
 handle("team:invite", (roomId) => ({ invite: team.createInvite(String(roomId)) }));
 handle("team:join", (code) => team.join(String(code ?? "")));
 handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
+handle("team:leaveRoom", (roomId) => team.leaveRoom(String(roomId)));
+handle("team:removeMember", (roomId, memberId) => team.removeMember(String(roomId), String(memberId)));
+handle("team:dismissNotice", (id) => team.dismissNotice(String(id)));
 handle("team:checkSignaling", (url) => TeamService.checkSignaling(String(url ?? "")));
 // team rooms: plan board
 handle("plan:get", (roomId) => teamPlan.view(String(roomId)));

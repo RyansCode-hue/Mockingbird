@@ -288,6 +288,11 @@ const api = {
   teamCreateInvite: (roomId: string) => ipcRenderer.invoke("team:invite", roomId),
   teamJoin: (code: string) => ipcRenderer.invoke("team:join", code),
   teamCancelJoin: (roomId: string) => ipcRenderer.invoke("team:cancelJoin", roomId),
+  /** Leave a room: teammates hear it, the Worker cuts this install off, and the room is deleted here (LeaveOutcome). */
+  teamLeaveRoom: (roomId: string) => ipcRenderer.invoke("team:leaveRoom", roomId),
+  /** Remove a teammate from a room (its admin only): RemoveOutcome. Again for someone removed: the Worker is asked again. */
+  teamRemoveMember: (roomId: string, memberId: string) => ipcRenderer.invoke("team:removeMember", roomId, memberId),
+  teamDismissNotice: (id: string) => ipcRenderer.invoke("team:dismissNotice", id),
   teamCheckSignaling: (url: string) => ipcRenderer.invoke("team:checkSignaling", url),
   onTeamChanged: (cb: (status: unknown) => void) => {
     const h = (_e: unknown, s: unknown) => cb(s);

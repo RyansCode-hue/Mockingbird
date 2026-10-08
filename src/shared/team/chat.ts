@@ -57,7 +57,8 @@ declare module "./types" {
 export interface ChatEntry {
   /** The event this entry is (for the assistant: its latest event). */
   id: string;
-  kind: "message" | "assistant" | "update";
+  /** member: someone left the room, or the admin removed them (the author removed `member`). */
+  kind: "message" | "assistant" | "update" | "member";
   author: MemberId;
   lamport: number;
   /** Author's wall clock, ms: display only. */
@@ -68,6 +69,15 @@ export interface ChatEntry {
   replyTo?: string;
   state?: AssistantState;
   items?: AgentUpdate[];
+  /** Member entries: who's gone, and whether they left or were removed. */
+  member?: MemberId;
+  change?: "left" | "removed";
+}
+
+/** A member entry as a line: "Nick left" / "Ryan removed Nick". */
+export function memberLine(e: ChatEntry, nameOf: (id: MemberId) => string): string {
+  const who = nameOf(e.member ?? e.author);
+  return e.change === "removed" ? `${nameOf(e.author)} removed ${who}` : `${who} left`;
 }
 
 export interface ChatState {

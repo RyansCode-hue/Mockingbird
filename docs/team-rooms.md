@@ -39,7 +39,8 @@ should stop more members joining later.
   could replace WebRTC later without the rest changing.
 - **What the room log holds** (each event signed by its author; only a
   session's owner changes its records): `room.created`, `member.added`,
-  `member.renamed`; `session.upsert` / `session.removed` (room sessions);
+  `member.renamed`, `member.removed` (leaving and removal, below);
+  `session.upsert` / `session.removed` (room sessions);
   `session.backup`, `session.takenOver`, `session.backupDropped` (take-over);
   `chat.message`, `chat.update`, `chat.assistant` (team room); `plan.package`,
   `plan.claim`, `plan.status`, `plan.remove`, `plan.repo`, `plan.branches`
@@ -55,8 +56,9 @@ should stop more members joining later.
   creator hands over (room id, signaling URL, a one-time join token, and the
   creator's key fingerprint). Joining records the joiner's public key as a
   member; after that, members reconnect by key.
-- Being in a room is the permission. Members can do anything in it. There are
-  no roles yet; leave room for viewer/driver roles later.
+- Being in a room is the permission. Members can do anything in it — invite
+  others included — except remove someone else, which is the room's **admin**'s
+  (below). Leave room for viewer/driver roles later.
 - **Every member keeps a full copy of the room's state**: members, sessions,
   chat, board, presence. It's an append-only event log, ordered by Lamport time
   and merged on reconnect. The room keeps working for whoever's online when the
@@ -66,6 +68,123 @@ should stop more members joining later.
   event carrying one is refused.
 - The sidebar shows the room as a group with a shared badge and the initials of
   who's connected right now. Sessions outside rooms are never visible to anyone.
+
+## Leaving and removing members
+
+Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
+— or that you're removed from — is deleted from your Mac.
+
+- **Who's in the room** is decided by the room log, the same on every member:
+  an event counts only if its author is a member at that point in the room's
+  order. `member.removed { member, reason }` takes someone out: a member may
+  remove themselves (they **leave**); only the room's **admin** removes someone
+  else. The admin is the room's creator while a member, else the
+  longest-standing member (the earliest `member.added`, in room order, of those
+  still in it) — `roomAdmin` in `src/main/team/rooms.ts`. A removal by anyone
+  else is kept in the log but changes nothing.
+- **After a removal** the member is a *former* member (`state.former`, so their
+  name still shows on what they wrote): what they did before still counts,
+  anything they write after — written before they heard, or by a Mockingbird
+  that doesn't cooperate — changes nothing, including invites they accept.
+  Members' transports refuse their frames, requests and streams as any
+  non-member's. A later `member.added` (a new invite from any member) brings
+  them back, as the newest member.
+- **Invites stay open to any member**, as before. Restricting them to the
+  admin was considered (a review flagged "any member can add members") and
+  left for now: in a room of a few people who trust each other it would only
+  get in the way. Revisit with roles.
+- **Leave room…** (Settings → Team per room, or the Team tab's ⋯): the leave is
+  published and sent to the teammates connected now, who confirm they have it;
+  then the signaling Worker cuts this install's key off; then everything of the
+  room on this Mac is deleted (below). A failure before publishing changes
+  nothing; after it, the rest still runs and what didn't work is shown. Leaving
+  as the last member deletes the room the same way.
+- **Remove…** (Settings → Team, per teammate, shown to the admin only, saying
+  who the admin is and why): the removal is published and sent to everyone
+  connected, the removed member included (kept connected a moment so it gets
+  through, and confirmed), then the Worker cuts them off. Removing someone
+  already removed asks the Worker again — the dialog offers it when the Worker
+  didn't. The confirm dialogs say what happens on each side.
+- **On the Mac that left, or was removed** (as soon as its Mockingbird applies
+  the removal: at once, from a teammate it still shares a connection with, or
+  from the Worker when its hello is refused): it stops taking part — no
+  connection, live panes, chat, plan or take-over for the room — and deletes:
+  - the room's folder `~/.mockingbird/team/rooms/<roomId>/` entirely: log,
+    snapshot, settings, invites, take-over records, teammates' conversations
+    and received patches;
+  - its entries in `chat-read.json` and `live-muted.json`, and a pending join;
+  - the plan copies in its worktrees (`.mockingbird/plan.md`, `claims.json`,
+    `agent-context.md`; rewritten without the room where another room still
+    uses the repository) and its sessions' co-author lists;
+  - hidden refs `refs/mockingbird/{rooms,rooms-origin,rooms-left,rooms-sent}/<roomId>/*`
+    in every repository Mockingbird knows;
+  - its own backups on origin (`git push origin :<ref>`, with a lease), best
+    effort: what fails is listed, not hidden.
+  The group stays as an ordinary local group; its sessions keep running, no
+  longer room sessions (no streaming, typing in, backups or trailers). A
+  notice says "You left #5101" or "Ryan removed you from #5101" (a removal
+  also as a desktop notification), listing anything that couldn't be cleaned
+  up. A cleanup cut short — Mockingbird quitting, a folder that couldn't be
+  deleted — runs again on the next start.
+- **On the remaining members' Macs**, when they apply a removal: the member's
+  sessions leave the room (`ext.sessions`, so their panes go) and their backups
+  count as deleted (nobody can take those sessions over); each Mac forgets what
+  it got from them — their snapshots in its clone, conversations, records,
+  changes they sent, a pending request to hand over — and the mutes of their
+  panes; the chat says "Ryan removed Nick" or "Nick left". Commits and their
+  Co-authored-by trailers, plan-board history and the `mockingbird/plan`
+  branch stay; so do the packages they claimed, under their name, until a
+  member changes them.
+- **The Worker's side (revoke).** `revoke { member, event }` on the signaling
+  connection: allowed for oneself, and for someone else from the room's admin
+  as the Worker knows it. The Worker stores the creator's id once its hello
+  proves the salt the room id was made from (at creation, and on a later hello
+  for a room created before this — so an older room learns its admin the next
+  time its creator connects; until then only leaving works there, and refused
+  revokes are logged). After the creator leaves, the Worker's admin is the
+  member it admitted earliest. On a revoke it deletes the key from the room,
+  closes its connections (passing the signed removal on), drops the invites it
+  made, refuses its TURN requests and any other message (membership is checked
+  on every message), and refuses its hellos with the removal attached — until
+  a new invite's join key brings it back. A member's `admit` (keeping the
+  Worker in step with its log) can't bring a revoked key back; only the
+  admin's can. The Worker hands the newest removals to members in their
+  welcome, so a member who was offline when someone left hears of it even if
+  nobody else is online. It can't make up or alter a removal: each app checks
+  the event's signature and places it in its own log like any other.
+  The admin's Mockingbird also revokes every former member on each connection
+  to the Worker, so a revoke that failed (or happened while the Worker was
+  older) is made once the Worker can.
+- **Compatibility.** `SIGNALING_PROTOCOL` stays 1: a Worker announces what it
+  can do in its welcome (`features: ["revoke"]`, also in `/health`). Against an
+  older Worker the removal still applies peer to peer, and Mockingbird says
+  "Update your signaling Worker (cd signaling && npx wrangler deploy) to also
+  cut them off at the Worker" (Settings → Team's dialogs warn before, too).
+- **Limits.**
+  - Removal can't force a machine to delete anything: a Mockingbird older than
+    this, or one that doesn't cooperate, keeps its copy of the room. What cuts
+    it off is the Worker — and peers refusing it.
+  - The Worker only knows when it admitted each key, not the room log's order:
+    after the creator has left, its admin can differ from the app's (two joins
+    racing through different inviters, or the Worker having lost its storage
+    and re-admitted everyone at once). Then it refuses the revoke and the app
+    says so; the removal still applies peer to peer.
+  - A member removed while offline whose copy of the room is too old to check
+    the removal (the remover joined after they last synced) can't apply it;
+    they see the Worker's refusal on the room and can leave by hand.
+  - With an older Worker, a member removed while offline only hears of it from
+    a teammate they still share another room with; otherwise their room stays
+    until they leave it.
+  - Someone who leaves while nobody else is online is told nothing back; the
+    others hear it from the Worker's welcome (an older Worker: they see them as
+    an offline member until the admin removes them).
+  - Someone removed and invited back by a member other than the admin can be
+    cut off at the Worker again if the admin's Mockingbird reconnects before it
+    has the new `member.added`; the admin's next admit lets them back in once
+    it has.
+  - Leaving waits for the cleanup, including deleting backups on origin (each
+    push has its own timeout): with an unreachable origin the dialog takes a
+    while, then lists what's left there.
 
 ## Sessions in a room
 
@@ -270,7 +389,7 @@ A chat thread in each room, for people and agents:
 
 ## Not in this release
 
-- Roles/permissions beyond "member".
+- Roles/permissions beyond "member" and the admin who can remove members.
 - Other transports (Tailscale, a self-hosted relay): designed for, not built.
 - Running sessions on an always-on shared host.
 
@@ -280,6 +399,18 @@ A chat thread in each room, for people and agents:
   invite codes, snapshot/ref naming, transcript placement, claims matching, and
   the secret deny list. The Worker's room logic is a plain module, tested
   directly and also served by a local signaling server for tests.
+- Leaving and removal (`test/teamMembership.test.ts`, and the take-over, live
+  panes, plan and signaling tests): who may remove whom, the admin after the
+  creator leaves, a removed member's later events changing nothing whatever
+  order events arrive in, coming back with a new invite; over the loopback,
+  removal of a connected and an offline member, leaving with and without
+  anyone online, an older Worker (peer to peer, the message to update it, the
+  admin's catch-up once it's updated); what each Mac deletes (the room's
+  folder, read marks, mutes, plan copies, hidden refs, backups on origin —
+  and a failure there reported), a cleanup cut short finished on the next
+  start; the Worker's revoke (self, admin, refused, a room from before revoke,
+  admin succession, re-admission, stale admits) and the app's client against
+  a new and an older local Worker.
 - Codex's room sandbox against the installed binary, without a model:
   `codex sandbox` runs probes under the exact `-c` settings a room launch
   passes (through the pane's shell quoting), with a throwaway `CODEX_HOME`

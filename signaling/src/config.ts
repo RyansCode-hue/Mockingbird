@@ -1,4 +1,4 @@
-import { parseAllowedCreators, SIGNALING_PROTOCOL, type SignalingHealth } from "../../src/shared/team/protocol";
+import { parseAllowedCreators, SIGNALING_FEATURES, SIGNALING_PROTOCOL, type SignalingHealth } from "../../src/shared/team/protocol";
 import { turnDailyLimit } from "./room";
 
 /**
@@ -34,5 +34,6 @@ export function healthBody(env: WorkerConfigEnv): SignalingHealth {
     relay: !!c.turn,
     creators: c.allowedCreators.length,
     ...(c.invalidCreators.length ? { creatorsInvalid: c.invalidCreators.length } : {}),
+    features: [...SIGNALING_FEATURES],
   };
 }

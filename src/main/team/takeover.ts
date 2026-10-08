@@ -2,7 +2,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { defineEventType } from "./rooms";
+import { defineEventType, onMemberRemoved } from "./rooms";
 import type { RoomSessionSource } from "./roomSessions";
 import { TeamError, type RequestContext, type Team, type Unsubscribe } from "./transport";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
@@ -21,6 +21,7 @@ import {
   DROP_REASONS,
   HANDOVER_TURN_MS,
   ORIGIN_COPY_ROOT,
+  ROOM_REF_ROOT,
   roomBackupRef,
   SESSION_ID_RE,
   STALE_BACKUP_MS,
@@ -221,6 +222,14 @@ defineEventType("session.takenOver", {
     if (!s || s.takenOver || s.dropped || s.owner !== b.from || e.author === b.from) return;
     s.takenOver = { by: e.author, at: e.at, newSessionId: b.newSessionId, snapshot: b.snapshot, conversation: b.conversation };
   },
+});
+
+// a member who left or was removed deletes their own backups; nobody can take those sessions over any more
+onMemberRemoved("takeover", (state, member, e) => {
+  for (const s of Object.values(state.ext.takeover?.sessions ?? {})) {
+    if (s.owner !== member || s.takenOver || s.dropped) continue;
+    s.dropped = { at: e.at, by: e.author, reason: "left-room" };
+  }
 });
 
 // ---- the seams ------------------------------------------------------------------------------
@@ -435,6 +444,7 @@ export class TakeoverService {
       t.onEvent("session.backup", () => this.changed()),
       t.onEvent("session.takenOver", (e, room) => this.onTakenOver(e, room)),
       t.onEvent("session.backupDropped", (e, room) => this.onDropped(e, room)),
+      t.onEvent("member.removed", (e, room) => this.onMemberRemoved(e, room)),
       t.onPresence((roomId, online) => this.onPresence(roomId, online))
     );
     // take-overs this install already knows of (heard before it last quit, or kept in the room log): their copies stay stopped
@@ -666,6 +676,82 @@ export class TakeoverService {
         this.cleanupFailed(room.id, e.body.sessionId, s.session.title, err);
       })
     );
+  }
+
+  /**
+   * A teammate left the room or was removed: this Mac forgets what it got
+   * from their sessions — snapshots in its clone, conversations, records —
+   * and the changes and requests they sent. (The room marked their backups
+   * deleted; deleting them on origin is theirs.)
+   */
+  private onMemberRemoved(e: RoomEvent<"member.removed">, room: RoomState): void {
+    const member = e.body.member;
+    if (member === this.d.team.self.id || room.members.some((m) => m.id === member)) return; // this install's own leave is roomLeft's; a refused removal changed nothing
+    for (const b of Object.values(room.ext.takeover?.sessions ?? {})) {
+      if (b.owner !== member || b.dropped?.reason !== "left-room") continue;
+      this.track(this.forgetLocal(room.id, b.sessionId).catch((err) => void this.cleanupFailed(room.id, b.sessionId, b.session.title, err)));
+    }
+    for (const [id, r] of Object.entries(this.local(room.id).received)) {
+      if (r.from === member) this.track(this.dropReceived(room.id, id).catch((err) => void this.d.log(`team: forgetting the changes ${r.title} got from a member who left`, err)));
+    }
+    for (const a of this.incoming.values()) if (a.roomId === room.id && a.from === member) a.decide("gone");
+    this.changed();
+  }
+
+  /**
+   * This install left the room (or was removed): its own backups go from
+   * origin (best effort: what fails is returned, not hidden), every hidden ref
+   * of the room goes from the repositories this Mac knows (backups, copies
+   * from teammates and origin, what left copies kept and sent), and so does
+   * what this service held. The room's folder — records, conversations,
+   * received patches — is deleted by the caller afterwards. Resolves with
+   * what couldn't be cleaned up.
+   */
+  async roomLeft(room: RoomState): Promise<string[]> {
+    const problems: string[] = [];
+    const local = this.local(room.id);
+    const owned = Object.entries(local.own);
+    // a push under way would bring the ref back (later turns aren't backed up: the session isn't the room's any more)
+    for (const [sessionId] of owned) await this.backups.get(sessionId)?.done;
+    for (const [sessionId, rec] of owned) {
+      const ref = roomBackupRef(room.id, sessionId);
+      if (!fs.existsSync(rec.repo)) {
+        if (rec.pushed) problems.push(`The backup of “${rec.title}” may still be on origin (${ref}): its repository ${rec.repo} isn't on this Mac any more`);
+        continue;
+      }
+      try {
+        const there = (await git(rec.repo, ["ls-remote", "origin", ref], { timeoutMs: this.d.fetchTimeoutMs ?? 30_000 })).split("\t")[0];
+        if (there) await git(rec.repo, ["push", "--no-verify", "--quiet", `--force-with-lease=${ref}:${there}`, "origin", `:${ref}`], { timeoutMs: this.d.pushTimeoutMs ?? 60_000 });
+      } catch (err) {
+        const why = withoutCredentials(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim().slice(0, 300);
+        this.d.log(`team: deleting the backup of session ${sessionId} from origin after leaving the room`, why);
+        problems.push(`The backup of “${rec.title}” couldn't be deleted from origin (${ref}): ${why}`);
+      }
+    }
+    const repos = new Set([...this.d.repos(), ...owned.map(([, r]) => r.repo), ...Object.values(local.mirrored).map((r) => r.repo), ...Object.values(local.left).map((r) => r.repo)]);
+    for (const repo of repos) {
+      if (!fs.existsSync(repo)) continue;
+      try {
+        const refs = (await git(repo, ["for-each-ref", "--format=%(refname)", ...[ROOM_REF_ROOT, ORIGIN_COPY_ROOT, LEFT_ROOT, SENT_ROOT].map((root) => `${root}/${room.id}/`)])).split("\n").filter(Boolean);
+        for (const r of refs) await git(repo, ["update-ref", "-d", r]);
+      } catch (err) {
+        const why = withoutCredentials(err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim().slice(0, 300);
+        this.d.log(`team: deleting the room's hidden refs in ${repo}`, why);
+        problems.push(`The room's hidden refs in ${repo} couldn't be deleted: ${why}`);
+      }
+    }
+    for (const a of this.incoming.values()) if (a.roomId === room.id) a.decide("gone");
+    const sessions = new Set([...owned.map(([id]) => id), ...Object.keys(local.mirrored), ...Object.keys(local.left), ...Object.values(local.received).map((r) => r.sessionId)]);
+    for (const m of [this.unbacked, this.cleanupProblems]) for (const [k, v] of m) if (v.roomId === room.id) m.delete(k);
+    for (const id of sessions) {
+      this.problems.delete(id);
+      this.unsent.delete(id);
+      this.lastPublished.delete(id);
+    }
+    this.locals.delete(room.id);
+    this.presence.delete(room.id);
+    this.changed();
+    return problems;
   }
 
   /** Set origin's backup ref, only if it still holds what this install last put there. */
@@ -1457,6 +1543,7 @@ export class TakeoverService {
       const online = new Set(this.d.team.presence(room.id));
       const mirrored = this.local(room.id).mirrored;
       for (const b of Object.values(room.ext.takeover?.sessions ?? {})) {
+        if (!room.members.some((m) => m.id === b.owner)) continue; // its owner left the room: it's gone with them
         const self = b.owner === this.d.team.self.id;
         const m = mirrored[b.sessionId];
         const meta = self ? null : this.transcriptMeta(room.id, b.sessionId);
@@ -1522,6 +1609,7 @@ export class TakeoverService {
     if (!b) throw new Error("No backup of that session has reached this Mac yet");
     if (b.owner === this.d.team.self.id) throw new Error("That's your own session");
     if (b.takenOver) throw new Error(`${this.nameOf(roomId, b.takenOver.by)} already took that session over`);
+    if (b.dropped?.reason === "left-room") throw new Error(`${this.nameOf(roomId, b.owner)} left the room: their sessions can't be taken over`);
     if (b.dropped) throw new Error("Its backup was deleted: the session was closed, its work merged, or it sat idle");
     return b;
   }
@@ -1599,7 +1687,8 @@ export class TakeoverService {
   }
 
   private nameOf(roomId: RoomId, id: MemberId): string {
-    return this.d.team.room(roomId)?.members.find((m) => m.id === id)?.name || "a teammate";
+    const room = this.d.team.room(roomId);
+    return (room?.members.find((m) => m.id === id) ?? room?.former?.find((m) => m.id === id))?.name || "a teammate";
   }
 
   private coalesce(jobs: Map<string, Job>, key: string, run: () => Promise<void>): Promise<void> {

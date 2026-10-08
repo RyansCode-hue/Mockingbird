@@ -114,6 +114,8 @@ export class PlanService {
   private fetched = new Map<RoomId, { at: number; problem?: string }>();
   private emitTimers = new Map<RoomId, ReturnType<typeof setTimeout>>();
   private stopped = false;
+  /** While a left room's copies are cleaned up: what couldn't be. */
+  private copyProblems: string[] | null = null;
 
   constructor(private d: PlanServiceDeps) {
     this.t = { ...DEFAULT_TIMING, ...(d.timing ?? {}) };
@@ -172,6 +174,34 @@ export class PlanService {
     for (const g of this.git.values()) if (g.timer) clearTimeout(g.timer);
     for (const t of this.emitTimers.values()) clearTimeout(t);
     if (active === this) active = null;
+  }
+
+  /**
+   * This install left the room: its board stops syncing here, and the
+   * worktrees' copies are rewritten without it (removed, with the ignore
+   * entry kept, where no other room uses the repository). The plan branch on
+   * origin stays: it's the team's. Resolves with what couldn't be cleaned up.
+   */
+  async roomLeft(roomId: RoomId): Promise<string[]> {
+    const g = this.git.get(roomId);
+    if (g?.timer) clearTimeout(g.timer);
+    this.git.delete(roomId);
+    this.teammates.delete(roomId);
+    this.fetched.delete(roomId);
+    const t = this.emitTimers.get(roomId);
+    if (t) clearTimeout(t);
+    this.emitTimers.delete(roomId);
+    const problems: string[] = [];
+    this.copyProblems = problems;
+    try {
+      if (this.copyRun) await this.copyRun; // a run under way may have started before the room went
+      this.refreshCopies();
+      while (this.copyRun) await this.copyRun;
+    } finally {
+      this.copyProblems = null;
+    }
+    this.d.overlapsChanged?.();
+    return problems;
   }
 
   /** Every sync and copy write in flight, done (tests; quitting). */
@@ -506,6 +536,7 @@ export class PlanService {
         failed.add(clone);
         const why = this.d.log(`team plan: writing the plan into ${clone}'s worktrees`, err);
         for (const r of rooms) problems.set(r.id, `Couldn't write the plan into ${clone}'s worktrees: ${why}`);
+        this.copyProblems?.push(`The plan copies in ${clone}'s worktrees couldn't be rewritten: ${why}`);
       }
     }
     // a clone that failed keeps its copies as they were: removing them would turn the claims check off there
@@ -518,7 +549,8 @@ export class PlanService {
       try {
         removePlanCopy(wt);
       } catch (err) {
-        this.d.log(`team plan: removing the stale plan copy in ${wt}`, err);
+        const why = this.d.log(`team plan: removing the stale plan copy in ${wt}`, err);
+        this.copyProblems?.push(`The plan copy in ${wt} couldn't be removed: ${why}`);
       }
     }
     const listOf = (m: Map<string, string>) => [...m].sort(([a], [b]) => (a < b ? -1 : 1));

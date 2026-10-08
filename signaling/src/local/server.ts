@@ -2,7 +2,7 @@ import * as crypto from "crypto";
 import * as http from "http";
 import { acceptWebSocket, type WsConnection } from "./wsServer";
 import { DailyCounter, DEFAULT_TURN_DAILY_LIMIT, SignalingRoom, type ConnState, type RoomLimits, type TurnConfig } from "../room";
-import { ROOM_ID_RE, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, type IceServer, type ServerMessage, type SignalingHealth, type SignedEnvelope } from "../../../src/shared/team/protocol";
+import { ROOM_ID_RE, SIGNALING_FEATURES, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, type IceServer, type ServerMessage, type SignalingFeature, type SignalingHealth, type SignedEnvelope } from "../../../src/shared/team/protocol";
 
 /**
  * The signaling Worker's room logic served from Node, for tests and for two
@@ -28,6 +28,8 @@ export interface LocalSignalingOptions {
   limits?: Partial<RoomLimits>;
   tamper?: Tamper | null;
   log?: (msg: string) => void;
+  /** SIGNALING_FEATURES served (default all; [] plays a Worker deployed before any). */
+  features?: readonly SignalingFeature[];
 }
 
 export interface LocalSignaling {
@@ -72,6 +74,7 @@ export async function startLocalSignaling(opts: LocalSignalingOptions = {}): Pro
         turnQuota,
         fetch: opts.fetch,
         limits: opts.limits,
+        features: opts.features,
         log,
       });
       r = { room, conns };
@@ -104,7 +107,7 @@ export async function startLocalSignaling(opts: LocalSignalingOptions = {}): Pro
   const server = http.createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
     if (path === "/" || path === "/health") {
-      const health: SignalingHealth = { service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: !!opts.turn, creators: allowedCreators === "any" ? "any" : allowedCreators.length, local: true };
+      const health: SignalingHealth = { service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: !!opts.turn, creators: allowedCreators === "any" ? "any" : allowedCreators.length, local: true, features: [...(opts.features ?? SIGNALING_FEATURES)] };
       res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(health));
       return;
     }

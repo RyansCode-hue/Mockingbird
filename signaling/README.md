@@ -77,12 +77,15 @@ Past it, members get STUN only until midnight UTC and the Worker logs it
 
 `npx wrangler deploy` again after the Worker's code changes. Its protocol
 version is in `/health`; Mockingbird says when the Worker needs redeploying.
+Features added without a protocol change are listed there too (`features`):
+a Worker deployed before `revoke` still works, but can't cut off a member who
+left or was removed — Mockingbird says to redeploy it when that matters.
 
 ## What's here
 
 - `src/room.ts` — the room logic: membership, the creator allowlist, join
-  tokens, relay, presence, TURN credentials and their daily budget, rate
-  limits. Plain TypeScript, no Cloudflare APIs: unit tested in the app's Vitest
+  tokens, revoking members (oneself, or by the room's admin), relay, presence,
+  TURN credentials and their daily budget, rate limits. Plain TypeScript, no Cloudflare APIs: unit tested in the app's Vitest
   suite (`test/teamSignaling.test.ts`).
 - `src/config.ts` — the Worker's secrets and vars, and `/health`.
 - `src/worker.ts` — the Worker and Durable Objects around them.

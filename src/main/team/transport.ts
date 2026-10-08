@@ -2,7 +2,7 @@ import { decodeInvite, encodeInvite, PUBLIC_KEY_RE, TEAM_PROTOCOL, type SignalTy
 import type { MemberId, PeerLinkState, PeerStatus, PendingJoinSummary, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState, TeamRoomSummary, TeamStatus } from "../../shared/team/types";
 import { encodeFrame, MAX_STREAM_CHUNK, Reassembler, splitText, type StreamFrame, type TeamFrame } from "./frames";
 import { fingerprintOf, joinProof, randomToken, roomIdFor, sameSecret, signalingJoinKey, signalingTokenHash, type Identity } from "./identity";
-import type { PendingJoin, RoomLog, RoomStore, StoredInvite } from "./rooms";
+import { roomAdmin, type PendingJoin, type RoomLog, type RoomStore, type StoredInvite } from "./rooms";
 
 /**
  * The team transport: what every stage after the foundation uses to share a
@@ -27,6 +27,15 @@ import type { PendingJoin, RoomLog, RoomStore, StoredInvite } from "./rooms";
  *
  * Room membership is the only permission: events, requests and streams from
  * anyone who isn't a member of the room they name are refused.
+ *
+ * Leaving and removal (member.removed): the event goes to the room's
+ * connected members — and to the member removed — before this install stops
+ * talking to them, then the signaling server is asked to cut the key off
+ * (revoke). A member removed while offline hears of it from a teammate they
+ * still share a connection with, or from the signaling server when its hello
+ * is refused; members offline when someone left hear of it from the others,
+ * or from the server's welcome. onLeft tells the app when this install's own
+ * membership ended, so it can delete what it kept of the room.
  */
 
 export type Unsubscribe = () => void;
@@ -99,7 +108,23 @@ export interface WireRoom {
   join?: string;
   /** Invites to register with the signaling server. */
   invites: { tokenHash: string; expiresAt: number }[];
+  /**
+   * Former members to cut off at the signaling server, each with its signed
+   * removal (the room's admin keeps the server in step: a revoke that failed
+   * before, or happened while the server was older, is made again).
+   */
+  revoke?: { member: MemberId; event: RoomEvent | null }[];
 }
+
+/** What the signaling server said to a revoke. */
+export type RevokeOutcome =
+  | { ok: true }
+  | {
+      ok: false;
+      /** unsupported: a Worker deployed before revoke · refused: it won't (not the admin as it sees it) · offline: not reached · failed: no answer */
+      reason: "unsupported" | "refused" | "offline" | "failed";
+      message: string;
+    };
 
 export interface WireHandler {
   /** A reliable-channel message from a connected peer. */
@@ -114,6 +139,8 @@ export interface WireHandler {
   intro(roomId: RoomId, from: MemberId, type: IntroType, body: any): void;
   /** Members reachable for introductions in a room changed. */
   reachable(roomId: RoomId, ids: MemberId[]): void;
+  /** Signed room events the signaling server passed on (removals from revokes): checked like any event before they count. */
+  roomEvents(roomId: RoomId, events: unknown[]): void;
   /** Link or signaling states changed (for the window). */
   changed(): void;
 }
@@ -131,6 +158,8 @@ export interface PeerWire {
   connected(): MemberId[];
   /** Send a join introduction through the room's signaling. Rejects when `to` can't be reached there. */
   introduce(roomId: RoomId, to: MemberId, type: IntroType, body: unknown): Promise<void>;
+  /** Ask the room's signaling server to cut `member` off, passing `event` (their signed removal) on. Never rejects. */
+  revoke(roomId: RoomId, member: MemberId, event: RoomEvent | null, timeoutMs?: number): Promise<RevokeOutcome>;
   linkStates(): Map<MemberId, { state: PeerLinkState; detail?: string; since: number }>;
   roomStates(): Map<RoomId, RoomSignalingState>;
   problems(): string[];
@@ -143,8 +172,10 @@ export interface RoomSignalingState {
   signaling: "online" | "connecting" | "offline";
   /** Why the signaling server refused this install, until it lets it in. */
   problem?: string;
-  /** That refusal's kind: creation-refused (not on ALLOWED_CREATORS), not-member, protocol, bad-url. */
+  /** That refusal's kind: creation-refused (not on ALLOWED_CREATORS), not-member, revoked, protocol, bad-url. */
   code?: string;
+  /** The server can revoke (cut removed members off); absent until it has welcomed this install. */
+  revoke?: boolean;
 }
 
 // ---- the team ------------------------------------------------------------------------------
@@ -161,6 +192,8 @@ export interface TeamOptions {
   requestTimeoutMs?: number;
   /** How long invite codes stay valid. */
   inviteTtlMs?: number;
+  /** How long a member who left or was removed stays connected for what's in flight (default 10 s). */
+  departGraceMs?: number;
   log?: (msg: string) => void;
 }
 
@@ -173,6 +206,22 @@ interface PendingRequest {
 
 const key = (...parts: string[]) => parts.join("\n");
 
+/** The request a member answers with whether it holds a room event (not room-scoped: the asker may have just left). */
+const HAS_EVENT = "room.hasEvent";
+/** How long a member who left or was removed stays connected, unless the removal's confirmed sooner (TeamOptions.departGraceMs). */
+const DEPART_GRACE_MS = 10_000;
+/** How long after answering a leaving member's confirmation its connection stays, for the answer to get out. */
+const ANSWERED_GRACE_MS = 1_500;
+
+/** This install's membership of a room ended. */
+export interface LeftInfo {
+  /** Who removed this install; null when it left (on another of its windows, or a leave cut short by quitting). */
+  by: MemberId | null;
+  byName: string | null;
+  /** The room as it was reduced, this install now a former member. */
+  room: RoomState;
+}
+
 export class TeamCore implements Team {
   readonly self: { id: MemberId; publicKey: string };
   private readonly identity: Identity;
@@ -182,6 +231,7 @@ export class TeamCore implements Team {
   private readonly log: (msg: string) => void;
   private readonly requestTimeoutMs: number;
   private readonly inviteTtlMs: number;
+  private readonly departGraceMs: number;
 
   private eventHandlers = new Map<string, Set<(e: RoomEvent<any>, room: RoomState) => void>>();
   private requestHandlers = new Map<string, (params: any, ctx: RequestContext) => unknown>();
@@ -210,6 +260,19 @@ export class TeamCore implements Team {
   private changeQueued = false;
   private joinTimer: ReturnType<typeof setInterval>;
   private closed = false;
+  /** Rooms this install is leaving: the wire keeps them as they were until forget(), so the leave reaches teammates and the server. */
+  private leaving = new Map<RoomId, WireRoom>();
+  /** Members who just left or were removed, kept connected a little while: their removal, and the confirmations, still have to get through. */
+  private departing = new Map<RoomId, Map<MemberId, { publicKey: string; timer: ReturnType<typeof setTimeout> }>>();
+  /** Removals removeMember is making (room, member): it revokes them itself. */
+  private removing = new Set<string>();
+  /** A room this install was just removed from, kept on the wire as it was a moment: what's in flight (the confirmation) gets through. */
+  private lingering = new Map<RoomId, { spec: WireRoom; removal: string; timer: ReturnType<typeof setTimeout> }>();
+  /** What the wire was last told per room. */
+  private lastSpecs = new Map<RoomId, WireRoom>();
+  private leftHandlers = new Set<(roomId: RoomId, info: LeftInfo) => void>();
+  /** Rooms whose end of membership onLeft has reported. */
+  private leftReported = new Set<RoomId>();
 
   constructor(private o: TeamOptions) {
     this.identity = o.identity;
@@ -220,8 +283,18 @@ export class TeamCore implements Team {
     this.log = o.log ?? ((m) => console.log(`[team] ${m}`));
     this.requestTimeoutMs = o.requestTimeoutMs ?? 15_000;
     this.inviteTtlMs = o.inviteTtlMs ?? 7 * 24 * 3_600_000;
+    this.departGraceMs = o.departGraceMs ?? DEPART_GRACE_MS;
     this.joins = this.store.pendingJoins();
     for (const log of this.store.list()) this.watch(log);
+    // whether a teammate has an event yet: a leaving member asks before it deletes its copy of the room
+    this.requestHandlers.set(HAS_EVENT, (p, ctx) => {
+      const lingering = this.lingering.get(p?.roomId);
+      const has = typeof p?.roomId === "string" && typeof p?.id === "string" && (!!this.store.get(p.roomId)?.has(p.id) || lingering?.removal === p.id);
+      // the one who left (or removed this install) asked and is answered: the connection can go once the answer is out
+      if (has && this.departing.get(p.roomId)?.has(ctx.from)) setTimeout(() => this.endDeparture(p.roomId, ctx.from), ANSWERED_GRACE_MS).unref?.();
+      if (has && lingering?.removal === p.id) setTimeout(() => this.endLinger(p.roomId), ANSWERED_GRACE_MS).unref?.();
+      return { has };
+    });
     this.wire.setHandler(this.handler);
     this.syncWire();
     this.joinTimer = setInterval(() => this.retryJoins(), 15_000);
@@ -410,6 +483,199 @@ export class TeamCore implements Team {
     this.changedSoon();
   }
 
+  // ---- leaving and removing ---------------------------------------------------------------------
+
+  /** Who can remove members of a room this install is in (see roomAdmin). */
+  admin(roomId: RoomId): MemberId | null {
+    const room = this.room(roomId);
+    return room ? roomAdmin(room) : null;
+  }
+
+  /**
+   * Remove a teammate (the room's admin only). The removal is published and
+   * sent to them while they're still connected (each Mockingbird drops them
+   * from the room), then the signaling server cuts their key off. Someone
+   * already removed is only cut off at the server again: a revoke that
+   * failed can be retried this way. Throws before anything changed, never
+   * after: what didn't happen afterwards is in the answer.
+   */
+  async removeMember(roomId: RoomId, member: MemberId, o: { ackMs?: number; revokeMs?: number } = {}): Promise<{ delivered: boolean; revoke: RevokeOutcome; already: boolean }> {
+    const log = this.memberLog(roomId);
+    const state = log.state!;
+    if (member === this.self.id) throw new Error("To leave the room yourself, use Leave room");
+    const target = state.members.find((m) => m.id === member);
+    if (!target && !log.wasMember(member)) throw new Error(`${this.nameOf(member)} isn't in ${state.name}`);
+    const admin = roomAdmin(state);
+    if (admin !== this.self.id) throw new Error(`Only the room's admin (${admin ? this.nameOf(admin) : "nobody"}) can remove members: its creator, or the longest-standing member once the creator has left`);
+    let delivered = false;
+    let event: RoomEvent | null = log.removalOf(member);
+    let revoke: RevokeOutcome;
+    this.removing.add(key(roomId, member));
+    try {
+      if (target) {
+        const connected = this.hellos.has(member);
+        event = this.publish(roomId, "member.removed", { member, reason: "removed" }); // they stay connected a little while (applied)
+        this.flushOutbox();
+        if (connected) delivered = (await this.confirm([member], roomId, event.id, o.ackMs ?? 5_000)).length > 0;
+      }
+      revoke = await this.wire.revoke(roomId, member, event, o.revokeMs ?? 10_000);
+    } finally {
+      this.removing.delete(key(roomId, member));
+      this.endDeparture(roomId, member);
+    }
+    if (!revoke.ok) this.log(`the signaling server didn't cut ${this.nameOf(member)} off ${state.name}: ${revoke.message}`);
+    this.changedSoon();
+    return { delivered, revoke, already: !target };
+  }
+
+  /**
+   * Leave a room: the leave is published, sent to the teammates connected now
+   * (and confirmed by them), and this install's key is cut off at the
+   * signaling server. The room stays on this install, out of reach of
+   * anything but the leave, until forget(): the caller deletes what it kept
+   * of it first. Throws only before anything changed.
+   */
+  async leave(roomId: RoomId, o: { ackMs?: number; revokeMs?: number } = {}): Promise<{ told: MemberId[]; missed: MemberId[]; revoke: RevokeOutcome; room: RoomState }> {
+    const log = this.memberLog(roomId);
+    const spec = this.wireRoomOf(log);
+    const others = log.state!.members.filter((m) => m.id !== this.self.id).map((m) => m.id);
+    const online = this.presence(roomId);
+    if (spec) this.leaving.set(roomId, spec);
+    let e: RoomEvent;
+    try {
+      e = this.publish(roomId, "member.removed", { member: this.self.id, reason: "left" });
+    } catch (err) {
+      this.leaving.delete(roomId);
+      throw err;
+    }
+    this.flushOutbox();
+    const told = await this.confirm(online, roomId, e.id, o.ackMs ?? 5_000);
+    const revoke = spec ? await this.wire.revoke(roomId, this.self.id, e, o.revokeMs ?? 10_000) : ({ ok: false, reason: "offline", message: "this room has no signaling URL here" } as const);
+    if (!revoke.ok) this.log(`the signaling server didn't cut this install off ${log.state!.name}: ${revoke.message}`);
+    return { told, missed: others.filter((id) => !told.includes(id)), revoke, room: log.state! };
+  }
+
+  /**
+   * Delete a room this install is no longer in (it left, or was removed):
+   * its folder (log, snapshot, invites, settings and whatever other stages
+   * kept there) and any pending join, and stop connecting for it. Throws when
+   * the folder can't be deleted; it's tried again on the next start.
+   */
+  forget(roomId: RoomId): void {
+    const log = this.store.get(roomId);
+    if (log?.state && log.isMember(this.self.id)) throw new Error(`still a member of ${log.state.name}: leave it first`);
+    this.leaving.delete(roomId);
+    for (const d of this.departing.get(roomId)?.values() ?? []) clearTimeout(d.timer);
+    this.departing.delete(roomId);
+    // a room just removed from stays on the wire until its moment is up (an answer to the remover may still be on its way)
+    this.lastSpecs.delete(roomId);
+    this.leftReported.delete(roomId);
+    if (this.joins.some((j) => j.roomId === roomId)) {
+      this.joins = this.joins.filter((j) => j.roomId !== roomId);
+      this.store.savePendingJoins(this.joins);
+    }
+    try {
+      this.store.remove(roomId);
+    } finally {
+      this.syncWire();
+      this.changedSoon();
+    }
+  }
+
+  /** The local group a room on this install is shown as, member or not (until it's forgotten). */
+  localGroupOf(roomId: RoomId): string | null {
+    return this.store.get(roomId) ? (this.store.meta(roomId)?.groupKey ?? null) : null;
+  }
+
+  /** This install's membership of a room ended (removed by the admin, or left elsewhere). Not for leave(): its caller knows. */
+  onLeft(cb: (roomId: RoomId, info: LeftInfo) => void): Unsubscribe {
+    this.leftHandlers.add(cb);
+    return () => this.leftHandlers.delete(cb);
+  }
+
+  /** Rooms still on this install that it's no longer in (a leave or removal whose cleanup didn't finish, say before quitting). */
+  leftRooms(): { roomId: RoomId; info: LeftInfo }[] {
+    const out: { roomId: RoomId; info: LeftInfo }[] = [];
+    for (const log of this.store.list()) {
+      const info = this.endedHere(log);
+      if (info) out.push({ roomId: log.roomId, info });
+    }
+    return out;
+  }
+
+  /** How this install's membership of the room ended, when it has (and isn't being joined again, or left right now). */
+  private endedHere(log: RoomLog): LeftInfo | null {
+    const state = log.state;
+    if (!state || !log.wasMember(this.self.id) || this.leaving.has(log.roomId) || this.joins.some((j) => j.roomId === log.roomId)) return null;
+    const by = state.former?.find((f) => f.id === this.self.id)?.removedBy ?? null;
+    return { by, byName: by ? this.nameIn(state, by) : null, room: state };
+  }
+
+  /** Keep a member who just left or was removed connected for `ms` (their removal, and confirmations of it, still travel). */
+  private depart(roomId: RoomId, member: MemberId, publicKey: string, ms: number): void {
+    let room = this.departing.get(roomId);
+    if (!room) this.departing.set(roomId, (room = new Map()));
+    const before = room.get(member);
+    if (before) clearTimeout(before.timer);
+    const timer = setTimeout(() => this.endDeparture(roomId, member), ms);
+    timer.unref?.();
+    room.set(member, { publicKey, timer });
+  }
+
+  /** This install was removed from the room (by `removal`): the wire keeps it as it was a moment, until the remover's confirmation is answered. */
+  private linger(roomId: RoomId, removal: string): void {
+    const spec = this.lastSpecs.get(roomId);
+    if (!spec || this.lingering.has(roomId)) return;
+    const timer = setTimeout(() => this.endLinger(roomId), this.departGraceMs);
+    timer.unref?.();
+    this.lingering.set(roomId, { spec, removal, timer });
+  }
+
+  private endLinger(roomId: RoomId): void {
+    const l = this.lingering.get(roomId);
+    if (!l) return;
+    clearTimeout(l.timer);
+    this.lingering.delete(roomId);
+    this.syncWire();
+  }
+
+  private endDeparture(roomId: RoomId, member: MemberId): void {
+    const room = this.departing.get(roomId);
+    const d = room?.get(member);
+    if (!room || !d) return;
+    clearTimeout(d.timer);
+    room.delete(member);
+    if (!room.size) this.departing.delete(roomId);
+    this.syncWire();
+  }
+
+  /** Tell onLeft once a room's membership ended here. */
+  private checkLeft(log: RoomLog): void {
+    if (this.leftReported.has(log.roomId)) return;
+    const info = this.endedHere(log);
+    if (!info) return;
+    this.leftReported.add(log.roomId);
+    queueMicrotask(() => {
+      for (const h of this.leftHandlers) this.safely("a left-room handler", () => h(log.roomId, info));
+    });
+  }
+
+  /** Teammates among `peers` who confirm they hold event `id` (asked after it was sent: frames arrive in order). */
+  private async confirm(peers: MemberId[], roomId: RoomId, id: string, timeoutMs: number): Promise<MemberId[]> {
+    const answers = await Promise.all(
+      peers.map((p) =>
+        this.request<{ has?: boolean }>(p, HAS_EVENT, { roomId, id }, { timeoutMs }).then(
+          (r) => (r?.has ? p : null),
+          (err) => {
+            this.log(`${this.nameOf(p)} didn't confirm they have event ${id}: ${(err as Error).message}`);
+            return null;
+          }
+        )
+      )
+    );
+    return answers.filter((p): p is MemberId => !!p);
+  }
+
   /** Give up on a pasted code. */
   cancelJoin(roomId: RoomId): void {
     this.joins = this.joins.filter((j) => j.roomId !== roomId);
@@ -478,10 +744,14 @@ export class TeamCore implements Team {
         name: r.name,
         groupKey: meta?.groupKey ?? r.groupKey,
         members: r.members.map((m) => ({ id: m.id, name: m.name, self: m.id === this.self.id })),
+        admin: roomAdmin(r),
+        creator: r.creator,
+        former: (r.former ?? []).map((m) => ({ id: m.id, name: m.name })),
         online: this.presence(r.id),
         signalingUrl: meta?.signalingUrl ?? "",
         signaling: sig?.signaling ?? "offline",
         ...(sig?.problem ? { problem: sig.problem } : {}),
+        ...(sig?.revoke !== undefined ? { workerRevoke: sig.revoke } : {}),
       };
     });
     const pending: PendingJoinSummary[] = this.joins.map((j) => ({
@@ -498,6 +768,10 @@ export class TeamCore implements Team {
   close(): void {
     this.closed = true;
     clearInterval(this.joinTimer);
+    for (const room of this.departing.values()) for (const d of room.values()) clearTimeout(d.timer);
+    this.departing.clear();
+    for (const l of this.lingering.values()) clearTimeout(l.timer);
+    this.lingering.clear();
     for (const [id, r] of this.requests) {
       clearTimeout(r.timer);
       r.reject(new TeamError("closed", "the team transport closed"));
@@ -538,8 +812,32 @@ export class TeamCore implements Team {
     reachable: (roomId, ids) => {
       for (const j of this.joins) if (j.roomId === roomId && !j.inviterKey && !j.rejected && ids.includes(j.inviter)) this.sendJoin(j);
     },
+    roomEvents: (roomId, events) => this.onServerEvents(roomId, events),
     changed: () => this.changedSoon(),
   };
+
+  /**
+   * Removals the signaling server passed on (from revokes): signed by their
+   * author, so they're checked and placed in the room's order like any event —
+   * the server can drop them, never make one up. Only member.removed is taken.
+   */
+  private onServerEvents(roomId: RoomId, events: unknown[]): void {
+    const log = this.store.get(roomId);
+    if (!log?.state || !Array.isArray(events)) return;
+    for (const raw of events.slice(0, 50)) {
+      if (!raw || typeof raw !== "object" || (raw as RoomEvent).type !== "member.removed") {
+        this.log(`ignored an event the signaling server passed on for room ${roomId} that isn't a removal`);
+        continue;
+      }
+      try {
+        const r = log.add(raw as RoomEvent);
+        if (r.status === "rejected") this.log(`refused a removal the signaling server passed on for room ${roomId}: ${r.reason}`);
+        else if (r.status === "pending") this.log(`a removal the signaling server passed on for room ${roomId} is by someone this install doesn't know yet; it waits`);
+      } catch (err) {
+        this.log(`couldn't store a removal the signaling server passed on for room ${roomId}: ${(err as Error).message}`);
+      }
+    }
+  }
 
   private onFrame(peer: MemberId, text: string): void {
     let f: TeamFrame | null;
@@ -586,9 +884,27 @@ export class TeamCore implements Team {
     this.hellos.set(peer, { name: typeof f.name === "string" ? f.name.slice(0, 100) : "", rooms });
     if (!before.size) this.log(`${this.nameOf(peer)} is connected (${rooms.size} shared room${rooms.size === 1 ? "" : "s"})`);
     if (!this.helloSent.has(peer)) this.sendHello(peer);
-    for (const roomId of rooms) if (!before.has(roomId) && this.allowed(peer, roomId)) this.sendSync(peer, roomId);
+    for (const roomId of rooms) {
+      if (before.has(roomId)) continue;
+      if (this.allowed(peer, roomId)) this.sendSync(peer, roomId);
+      else this.tellRemoved(peer, roomId);
+    }
     this.presenceChanged();
     this.changedSoon();
+  }
+
+  /**
+   * A peer still lists a room it was removed from (it was offline then): it
+   * gets what decides membership up to its removal, enough to verify it there
+   * — nothing said after it.
+   */
+  private tellRemoved(peer: MemberId, roomId: RoomId): void {
+    const log = this.store.get(roomId);
+    if (!log || !this.room(roomId) || !log.wasMember(peer)) return;
+    const events = log.membershipUpTo(peer);
+    if (!events.length) return;
+    this.log(`${this.nameOf(peer)} still lists ${log.state!.name}, which they're no longer in: telling them`);
+    for (let i = 0; i < events.length; i += 200) this.sendFrame(peer, { k: "ev", roomId, events: events.slice(i, i + 200) });
   }
 
   private onEvents(peer: MemberId, roomId: RoomId, events: RoomEvent[]): void {
@@ -777,18 +1093,42 @@ export class TeamCore implements Team {
       this.flushQueued = true;
       queueMicrotask(() => this.flushOutbox());
     }
-    if (e.type === "member.added" || e.type === "room.created") this.syncWire();
+    if (e.type === "member.removed") {
+      // a teammate who's gone stays connected a moment, so what's in flight (their removal, its confirmation) gets through
+      const member = (e.body as RoomEventBodies["member.removed"])?.member;
+      const former = state?.former?.find((f) => f.id === member);
+      if (member !== this.self.id && former && !log.isMember(member) && this.hellos.has(member)) this.depart(log.roomId, member, former.publicKey, this.departGraceMs);
+      if (member === this.self.id && former && !this.leaving.has(log.roomId)) this.linger(log.roomId, e.id);
+    }
+    if (e.type === "member.added" || e.type === "room.created" || e.type === "member.removed") this.syncWire();
+    this.checkLeft(log);
     this.changedSoon();
   }
 
-  /** Pass newly applied events on to the room's connected members (but not back to where they came from). */
+  /**
+   * Pass newly applied events on to the room's connected members (but not
+   * back to where they came from). A removal also reaches the member removed
+   * (what happened up to it), and the leave of this install reaches the
+   * members it leaves behind.
+   */
   private flushOutbox(): void {
     this.flushQueued = false;
     const out = this.outbox;
     this.outbox = [];
     for (const roomId of new Set(out.map((o) => o.roomId))) {
-      for (const peer of this.presence(roomId)) {
-        const events = out.filter((o) => o.roomId === roomId && o.from !== peer).map((o) => o.event);
+      const batch = out.filter((o) => o.roomId === roomId);
+      const state = this.store.get(roomId)?.state;
+      const leaving = this.leaving.has(roomId);
+      for (const [peer, hello] of this.hellos) {
+        if (!hello.rooms.has(roomId)) continue;
+        let events: RoomEvent[];
+        if (this.allowed(peer, roomId) || (leaving && state?.members.some((m) => m.id === peer))) {
+          events = batch.filter((o) => o.from !== peer).map((o) => o.event);
+        } else {
+          const removal = batch.findIndex((o) => o.event.type === "member.removed" && (o.event.body as RoomEventBodies["member.removed"])?.member === peer);
+          if (removal < 0) continue;
+          events = batch.slice(0, removal + 1).filter((o) => o.from !== peer).map((o) => o.event);
+        }
         for (let i = 0; i < events.length; i += 200) this.sendFrame(peer, { k: "ev", roomId, events: events.slice(i, i + 200) });
       }
     }
@@ -841,29 +1181,51 @@ export class TeamCore implements Team {
   }
 
   /** Tell the wire which rooms to be in, and re-hello peers whose shared rooms changed. */
+  /**
+   * A room as the wire is told it: its members (and those just removed, until
+   * their removal reached them), the keys to admit and — from the room's
+   * admin — the former members to keep cut off at the signaling server.
+   */
+  private wireRoomOf(log: RoomLog): WireRoom | null {
+    const state = log.state;
+    if (!state) return null;
+    const meta = this.store.meta(log.roomId);
+    if (!meta) {
+      this.log(`room ${state.name} has no signaling URL on this install; it can't connect`);
+      return null;
+    }
+    const now = this.now();
+    const created = log.all().find((e) => e.type === "room.created") as RoomEvent<"room.created"> | undefined;
+    const invites: StoredInvite[] = this.store.invites(log.roomId);
+    const departing = [...(this.departing.get(log.roomId) ?? [])].filter(([id]) => !state.members.some((m) => m.id === id)).map(([id, d]) => ({ id, publicKey: d.publicKey }));
+    // (someone being removed right now is revoked by removeMember itself)
+    const revoke = roomAdmin(state) === this.self.id ? (state.former ?? []).filter((f) => !this.removing.has(key(log.roomId, f.id))).map((f) => ({ member: f.id, event: log.removalOf(f.id) })) : [];
+    return {
+      roomId: log.roomId,
+      url: meta.signalingUrl,
+      members: [...state.members.map((m) => ({ id: m.id, publicKey: m.publicKey })), ...departing],
+      admit: state.members.map((m) => m.publicKey),
+      ...(state.creator === this.self.id && created ? { create: created.body.salt } : {}),
+      invites: invites.filter((i) => !i.usedAt && i.expiresAt > now).map((i) => ({ tokenHash: i.tokenHash, expiresAt: i.expiresAt })),
+      ...(revoke.length ? { revoke } : {}),
+    };
+  }
+
   private syncWire(): void {
     if (this.closed) return;
-    const now = this.now();
     const rooms: WireRoom[] = [];
     const pendingIds = new Set(this.joins.map((j) => j.roomId));
+    // rooms being left, or just removed from, stay as they were a while: the leave (or its confirmation) still has to get through
+    for (const [roomId, spec] of [...this.leaving, ...[...this.lingering].map(([id, l]): [RoomId, WireRoom] => [id, l.spec])]) {
+      if (!pendingIds.has(roomId) && !rooms.some((r) => r.roomId === roomId)) rooms.push(spec);
+    }
     for (const log of this.store.list()) {
-      const state = log.state;
-      if (!state || !log.isMember(this.self.id) || pendingIds.has(log.roomId)) continue;
-      const meta = this.store.meta(log.roomId);
-      if (!meta) {
-        this.log(`room ${state.name} has no signaling URL on this install; it can't connect`);
-        continue;
-      }
-      const created = log.all().find((e) => e.type === "room.created") as RoomEvent<"room.created"> | undefined;
-      const invites: StoredInvite[] = this.store.invites(log.roomId);
-      rooms.push({
-        roomId: log.roomId,
-        url: meta.signalingUrl,
-        members: state.members.map((m) => ({ id: m.id, publicKey: m.publicKey })),
-        admit: state.members.map((m) => m.publicKey),
-        ...(state.creator === this.self.id && created ? { create: created.body.salt } : {}),
-        invites: invites.filter((i) => !i.usedAt && i.expiresAt > now).map((i) => ({ tokenHash: i.tokenHash, expiresAt: i.expiresAt })),
-      });
+      if (rooms.some((r) => r.roomId === log.roomId)) continue;
+      if (!log.state || !log.isMember(this.self.id) || pendingIds.has(log.roomId)) continue;
+      const spec = this.wireRoomOf(log);
+      if (!spec) continue;
+      rooms.push(spec);
+      this.lastSpecs.set(log.roomId, spec);
     }
     for (const j of this.joins) {
       if (j.rejected) continue;
@@ -905,10 +1267,14 @@ export class TeamCore implements Team {
 
   private nameOf(id: MemberId): string {
     for (const r of this.rooms()) {
-      const m = r.members.find((x) => x.id === id);
+      const m = r.members.find((x) => x.id === id) ?? r.former?.find((x) => x.id === id);
       if (m) return m.name;
     }
     return this.hellos.get(id)?.name || id.slice(0, 8);
+  }
+
+  private nameIn(room: RoomState, id: MemberId): string {
+    return (room.members.find((m) => m.id === id) ?? room.former?.find((m) => m.id === id))?.name || this.nameOf(id);
   }
 
   private safely(what: string, fn: () => void): void {

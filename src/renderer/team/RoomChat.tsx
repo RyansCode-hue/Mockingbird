@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createIpcStore, loadInto } from "../ipcStore";
 import { readPref, writePref } from "../prefs";
-import { initialsOf, roomOfGroup } from "../Team";
+import { initialsOf, LeaveRoomDialog, roomOfGroup, TeamNotices } from "../Team";
+import { MenuButton } from "../Menu";
 import { chatSegments, type ChatSegment } from "./chatText";
 import { isErr } from "../../shared/types";
-import { ASSISTANT_MENTION, countsAsUnread, isRead, mentionHandle, mentionsOf, updateLine, type AgentUpdate, type ChatEntry, type ChatUnread, type RoomChatView } from "../../shared/team/chat";
+import { ASSISTANT_MENTION, countsAsUnread, isRead, memberLine, mentionHandle, mentionsOf, updateLine, type AgentUpdate, type ChatEntry, type ChatUnread, type RoomChatView } from "../../shared/team/chat";
 import type { TeamRoomSummary, TeamStatus } from "../../shared/team/types";
 
 /**
@@ -122,20 +123,33 @@ export function RoomChatPanel({
   if (isErr(status)) return <div className="rc-empty err">Couldn't read the team status: {status.error}</div>;
   const rooms = status.rooms;
   const room = rooms.find((r) => r.id === choice) ?? groupRoom ?? rooms[0];
+  const notices = status.notices?.length ? (
+    <div className="rc-notices">
+      <TeamNotices notices={status.notices} />
+    </div>
+  ) : null;
   if (!room) {
     return (
-      <div className="rc-empty">
-        No team rooms yet. Share a group from its row in the Sessions view (⇪), or join a teammate's room with the invite code they sent you. Each room has a chat here: what
-        teammates say, what their agents are up to, and an @assistant.
-        <div>
-          <button className="outline rc-join" onClick={onJoinRoom}>
-            Join a room…
-          </button>
+      <>
+        {notices}
+        <div className="rc-empty">
+          No team rooms yet. Share a group from its row in the Sessions view (⇪), or join a teammate's room with the invite code they sent you. Each room has a chat here: what
+          teammates say, what their agents are up to, and an @assistant.
+          <div>
+            <button className="outline rc-join" onClick={onJoinRoom}>
+              Join a room…
+            </button>
+          </div>
         </div>
-      </div>
+      </>
     );
   }
-  return <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} onNewSession={onNewSession} onJoinRoom={onJoinRoom} />;
+  return (
+    <>
+      {notices}
+      <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} onNewSession={onNewSession} onJoinRoom={onJoinRoom} />
+    </>
+  );
 }
 
 const when = (ms: number) => {
@@ -173,10 +187,12 @@ function RoomChat({
   const [newFrom, setNewFrom] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  const [leaving, setLeaving] = useState(false);
   const nameOf = useMemo(() => {
-    const names = new Map(room.members.map((m) => [m.id, m.self ? "You" : m.name]));
+    // people who left still wrote what they wrote
+    const names = new Map([...(room.former ?? []).map((m): [string, string] => [m.id, m.name]), ...room.members.map((m): [string, string] => [m.id, m.self ? "You" : m.name])]);
     return (id: string) => names.get(id) ?? "A teammate";
-  }, [room.members]);
+  }, [room.members, room.former]);
 
   const load = useCallback(() => {
     window.mb.teamChatView(room.id).then((r: RoomChatView | { error: string }) => {
@@ -255,6 +271,12 @@ function RoomChat({
           <button className="rc-new-session" title="Join a teammate's room with the invite code they sent you" onClick={onJoinRoom}>
             Join a room…
           </button>
+          <MenuButton
+            className="rc-new-session rc-more"
+            label="⋯"
+            title="More for this room"
+            items={[{ key: "leave", label: "Leave room…", onPick: () => setLeaving(true) }]}
+          />
         </div>
         <div className="rc-sub">
           <div className="rc-members">
@@ -297,6 +319,7 @@ function RoomChat({
         <span>{others.length === 0 ? "Invite a teammate to talk here" : online.length ? `${online.map((m) => mentionHandle(m.name)).join(", ")} connected` : "Nobody else is connected — they'll get it when they're back"}</span>
         <span>⏎ send · ⇧⏎ new line</span>
       </div>
+      {leaving && <LeaveRoomDialog room={room} onClose={() => setLeaving(false)} />}
     </div>
   );
 }
@@ -331,6 +354,14 @@ function Entry({
             <span className="rc-upd-text">{updateLine(u)}</span>
           </div>
         ))}
+      </div>
+    );
+  }
+  if (e.kind === "member") {
+    return (
+      <div className="rc-member-note">
+        <span>{memberLine(e, nameOf)}</span>
+        <span className="rc-when">{when(e.at)}</span>
       </div>
     );
   }

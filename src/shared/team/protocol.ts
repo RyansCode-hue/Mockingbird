@@ -85,6 +85,8 @@ export interface SignalingHealth {
   /** ALLOWED_CREATORS entries that aren't fingerprints. */
   creatorsInvalid?: number;
   local?: boolean;
+  /** SIGNALING_FEATURES it has (absent: a Worker deployed before any). */
+  features?: string[];
 }
 
 // ---- encoding --------------------------------------------------------------------
@@ -223,36 +225,57 @@ export interface SignalingPeer {
   team: number;
 }
 
+/**
+ * What a signaling server can do beyond SIGNALING_PROTOCOL, announced in its
+ * welcome (a Worker deployed before a feature announces none of it):
+ *   revoke  cut a member off: their key, connections, invites and TURN go,
+ *           and their next hello is refused with the removal passed on.
+ */
+export const SIGNALING_FEATURES = ["revoke"] as const;
+export type SignalingFeature = (typeof SIGNALING_FEATURES)[number];
+/** The largest signed room event a revoke carries for the server to pass on. */
+export const MAX_REVOKE_EVENT = 8 * 1024;
+
 export type ClientMessage =
   | { t: "hello"; v: number; team: number; publicKey: string; sig: string; join?: string; create?: string }
   | { t: "invite"; tokenHash: string; expiresAt: number }
   | { t: "admit"; publicKeys: string[] }
   | { t: "signal"; to: string; env: SignedEnvelope }
   | { t: "turn" }
+  /**
+   * Cut `member` off the room: allowed for oneself (leaving), and for another
+   * member from the room's admin as the server knows it. `event` is the signed
+   * member.removed room event, passed on to the member and to members who
+   * connect later (the server can't forge or alter one: each app checks it).
+   */
+  | { t: "revoke"; member: string; event?: unknown }
   | { t: "ping" };
 
 export type SignalingErrorCode =
   | "protocol" // the hello's SIGNALING_PROTOCOL isn't the server's
   | "bad-message"
-  | "not-member" // neither a member, the room's creator, nor holding a valid join token
+  | "not-member" // neither a member, the room's creator, nor holding a valid join token (with `revoked`: cut off by a revoke)
   | "creation-refused" // a new room, from a key not on the Worker's ALLOWED_CREATORS
   | "not-ready" // a message before the hello was accepted
   | "room-full"
   | "rate" // too many messages
   | "too-big"
   | "peer-offline" // a signal to a member who isn't connected
+  | "forbidden" // a revoke the sender may not make (`member` names whom)
   | "replaced"; // the same member connected again; this connection is closed
 
 export type ServerMessage =
   | { t: "challenge"; v: number; nonce: string }
-  | { t: "welcome"; v: number; you: string; now: number; peers: SignalingPeer[]; relay: boolean }
+  /** `events`: signed member.removed events from revokes, for members who were offline then. */
+  | { t: "welcome"; v: number; you: string; now: number; peers: SignalingPeer[]; relay: boolean; features?: string[]; events?: unknown[] }
   | { t: "peer-joined"; peer: SignalingPeer }
   | { t: "peer-left"; id: string }
   | { t: "signal"; from: string; env: SignedEnvelope }
   | { t: "turn"; iceServers: IceServer[]; ttl: number; relay: boolean; error?: string }
   | { t: "invited"; tokenHash: string }
   | { t: "admitted"; ids: string[] }
-  | { t: "error"; code: SignalingErrorCode; message: string; serverProtocol?: number; to?: string }
+  | { t: "revoked"; member: string }
+  | { t: "error"; code: SignalingErrorCode; message: string; serverProtocol?: number; to?: string; member?: string; revoked?: boolean; event?: unknown }
   | { t: "pong" };
 
 /** WebSocket close codes the signaling server uses (4000–4999 are the application's). */
