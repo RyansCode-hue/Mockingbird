@@ -31,9 +31,9 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("both connected", async () => (await ryan.status()).rooms[0]?.online.length === 1 && (await nick.status()).rooms[0]?.online.length === 1, 60_000);
         const [r, n] = [await ryan.status(), await nick.status()];
         // on one Mac through the local server the path is direct; through a Worker it may be relayed
-        const path = signal.real ? expect.stringMatching(/^(direct|turn)$/) : "direct";
-        expect(r.peers).toEqual([expect.objectContaining({ name: "Nick", state: path })]);
-        expect(n.peers).toEqual([expect.objectContaining({ name: "Ryan", state: path })]);
+        const route = signal.real ? expect.stringMatching(/^(direct|turn)$/) : "direct";
+        expect(r.peers).toEqual([expect.objectContaining({ name: "Nick", state: route })]);
+        expect(n.peers).toEqual([expect.objectContaining({ name: "Ryan", state: route })]);
         if (signal.real) console.log(`[e2e] connected through ${signal.url}: Ryan→Nick ${(await routes(ryan, nick)).join(", Nick→Ryan ")}`);
         expect(n.rooms[0]).toMatchObject({ name: "#5110 Donor entities", groupKey: "5110", members: [{ name: "Ryan" }, { name: "Nick", self: true }] });
         // the sidebar: the room is a group with the shared badge and the teammate's initials
