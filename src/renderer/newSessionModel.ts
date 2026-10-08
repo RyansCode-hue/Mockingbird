@@ -1,11 +1,56 @@
-import { splitGroupKey, topOfKey, type RepoEntry, type SessionInfo } from "../shared/types";
+import { isShareableGroup, sanitizeSegment, splitGroupKey, topOfKey, type RepoEntry, type SessionInfo } from "../shared/types";
 import type { TeamRoomSummary } from "../shared/team/types";
 
 /**
  * The New session dialog's choices that don't need React: where a session
- * goes (a local group, or a team room's shared group — a connected session)
- * and which repos to offer first.
+ * goes (a local group, a team room's shared group — a connected session — or
+ * a new room) and which repos to offer first.
  */
+
+/** A team room + New room makes: the group it shares and the room's name. */
+export interface NewRoom {
+  key: string;
+  title: string;
+}
+
+/**
+ * The group a new room shares, and the room's name, from the name typed for
+ * it. A leading ticket number keys the group by the ticket, as a ticket's
+ * sessions are grouped, and names the room as the sidebar titles that group:
+ * "5120 Donor search" → group 5120, room "#5120 Donor search". Any other name
+ * is both the group's and the room's ("Spike"). A number run into a word
+ * ("2026-planning") isn't a ticket. Null when nothing is typed.
+ */
+export function newRoomOf(name: string): NewRoom | null {
+  const n = name.trim().replace(/\s+/g, " ");
+  if (!n) return null;
+  const ticket = /^#?(\d+)(?:\s*[:·–—]\s*|\s+-\s+|\s+|$)/.exec(n);
+  if (ticket) {
+    const rest = n.slice(ticket[0].length);
+    return { key: ticket[1], title: rest ? `#${ticket[1]} ${rest}` : `#${ticket[1]}` };
+  }
+  const key = sanitizeSegment(n);
+  return { key, title: key };
+}
+
+/** What Start does with the name typed for + New room. */
+export type NewRoomPlan =
+  | { kind: "unnamed" }
+  /** The sidebar's ungrouped or assistant bucket: never shared. */
+  | { kind: "reserved"; key: string }
+  /** The group is a room already: the session starts there rather than in a second one. */
+  | { kind: "existing"; key: string; room: TeamRoomSummary }
+  /** A new room; sharing a group this Mac already has (`localGroup`) puts its sessions in the room too. */
+  | ({ kind: "create"; localGroup: boolean } & NewRoom);
+
+export function newRoomPlan(name: string, rooms: readonly TeamRoomSummary[], existingGroups: readonly string[]): NewRoomPlan {
+  const nr = newRoomOf(name);
+  if (!nr) return { kind: "unnamed" };
+  if (!isShareableGroup(nr.key)) return { kind: "reserved", key: nr.key };
+  const room = rooms.find((r) => r.groupKey === nr.key);
+  if (room) return { kind: "existing", key: nr.key, room };
+  return { kind: "create", ...nr, localGroup: localTops(existingGroups, rooms).includes(nr.key) };
+}
 
 /** Where a seeded group key ("5101" or "5101/api") starts the dialog: a team room's group is a connected session. */
 export function seedWhere(initialGroup: string | undefined, rooms: readonly TeamRoomSummary[]): { connected: boolean; top: string; sub: string } {

@@ -294,15 +294,17 @@ agreed direction, **Later** is worth doing once the foundations settle.
     (`signaling/`, deployed once; only fingerprints in its `ALLOWED_CREATORS`
     create rooms) with Cloudflare TURN as the fallback relay. Every connection
     detail is signed and each certificate pinned. A room is a shared group (⇪
-    shares; Join a room… — in the Team tab, New/Import Session → Connected, or
-    ⌘K — takes a teammate's code); every member keeps its signed, ordered event
-    log and merges it on reconnect.
+    shares one; New/Import Session → Connected → **+ New room** makes one and
+    starts the session in it, then shows the invite code; Join a room… — in the
+    Team tab, New/Import Session → Connected, or ⌘K — takes a teammate's code);
+    every member keeps its signed, ordered event log and merges it on reconnect.
   - **Sessions:** a session in a shared group is one row and one pane on every
     member's Mockingbird, tagged with its owner's initials; shared groups sit
     under **Connected Sessions** in the sidebar. Start one from a shared
     group's **+**, **New session** in the Team room view, or New session →
     Where → **Connected** (it lists your rooms, who's online, and offers the
-    repo the room works in). It streams to
+    repo the room works in; **+ New room** shares a new group first, keyed by
+    a leading ticket number: "5120 Donor search" is group 5120). It streams to
     whoever shows it, anyone can type into it, initials show who's looking,
     Follow mirrors a teammate's grid, and everyone hears when it waits. Room
     sessions start knowing the room's plan and unable to read secret files:

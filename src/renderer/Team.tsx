@@ -117,20 +117,47 @@ export function AllowCreatorStep({ id }: { id: string }) {
   );
 }
 
+/** Why sharing a group as a room failed; a Worker that refuses new rooms from this key gets the one command that fixes it. */
+export function ShareError({ error }: { error: string }) {
+  const status = useTeamStatus();
+  const self = status && !isErr(status) ? status.self : null;
+  if (!/ALLOWED_CREATORS/.test(error)) return <div className="err">{error}</div>;
+  return (
+    <>
+      <div className="err">The signaling Worker refused to create this room: it only lets fingerprints on its ALLOWED_CREATORS list create rooms.</div>
+      {self && <AllowCreatorStep id={self.id} />}
+    </>
+  );
+}
+
+/** A room's one-time invite code to send a teammate: the code, Copy, how it's used, and any warning about it. */
+export function InviteCode({ invite, warning }: { invite: string; warning?: string }) {
+  const [note, copy] = useCopyNote();
+  return (
+    <>
+      <label>Invite code</label>
+      <div className="team-invite">
+        <textarea className="team-code" readOnly value={invite} onFocus={(e) => e.currentTarget.select()} />
+        <button className="primary" onClick={() => copy(invite, "the invite code")}>
+          Copy
+        </button>
+        <CopyToast note={note} failed="Couldn't copy" />
+      </div>
+      {warning && <div className="err">{warning}</div>}
+      <div className="hint">Works once, for 7 days. Your teammate pastes it into Join a room… (in the Team tab, New/Import Session → Connected, or ⌘K). Your Mockingbird must be open for them to join.</div>
+    </>
+  );
+}
+
 /** Share a group as a room: shows a one-time invite code to send a teammate. */
 export function ShareRoomDialog({ groupKey, title, onClose }: { groupKey: string; title: string; onClose: () => void }) {
-  const status = useTeamStatus();
   const [code, setCode] = useState<{ roomId: string; invite: string; warning?: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [note, copy] = useCopyNote();
   useEffect(() => {
     setError(null);
     window.mb.teamShareGroup(groupKey, title).then((r: { roomId: string; invite: string; warning?: string } | { error: string }) => (isErr(r) ? setError(r.error) : setCode(r)));
   }, [groupKey, title, attempt]);
-  // the Worker refused to create the room: the fix is one command on it
-  const self = status && !isErr(status) ? status.self : null;
-  const notAllowed = !!error && /ALLOWED_CREATORS/.test(error);
   const fresh = async () => {
     if (!code) return;
     const r: { invite: string } | { error: string } = await window.mb.teamCreateInvite(code.roomId);
@@ -143,23 +170,10 @@ export function ShareRoomDialog({ groupKey, title, onClose }: { groupKey: string
       <div className="sub-h">
         Teammates who join see this group as a shared room. Sessions outside rooms are never visible to anyone.
       </div>
-      {error && !notAllowed && <div className="err">{error}</div>}
-      {notAllowed && (
-        <>
-          <div className="err">The signaling Worker refused to create this room: it only lets fingerprints on its ALLOWED_CREATORS list create rooms.</div>
-          {self && <AllowCreatorStep id={self.id} />}
-        </>
-      )}
+      {error && <ShareError error={error} />}
       {!code && !error && <div className="hint">Creating the room and checking with the signaling server…</div>}
-      {code && (
-        <>
-          <label>Invite code</label>
-          <textarea className="team-code" readOnly value={code.invite} onFocus={(e) => e.currentTarget.select()} />
-          {code.warning && <div className="err">{code.warning}</div>}
-          <div className="hint">Works once, for 7 days. Your teammate pastes it into Join a room… (in the Team tab, New/Import Session → Connected, or ⌘K). Your Mockingbird must be open for them to join.</div>
-        </>
-      )}
-      <div className="row" style={{ position: "relative" }}>
+      {code && <InviteCode invite={code.invite} warning={code.warning} />}
+      <div className="row">
         {error && (
           <button className="outline" onClick={() => setAttempt((n) => n + 1)}>
             Try again
@@ -173,12 +187,6 @@ export function ShareRoomDialog({ groupKey, title, onClose }: { groupKey: string
         <button className="outline" onClick={onClose}>
           Close
         </button>
-        {code && (
-          <button className="primary" onClick={() => copy(code.invite, "the invite code")}>
-            Copy code
-          </button>
-        )}
-        <CopyToast note={note} failed="Couldn't copy" />
       </div>
     </Modal>
   );

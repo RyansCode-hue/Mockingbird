@@ -11,18 +11,25 @@ import { Modal } from "./Modal";
 import { usePersisted, writePref, readPref } from "./prefs";
 import { COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
 import { useAction } from "./useAction";
-import { initialsOf } from "./Team";
-import { localTops, repoChoices, repoOfFolder, seedWhere, workspacesOf } from "./newSessionModel";
+import { initialsOf, InviteCode, ShareError } from "./Team";
+import { localTops, newRoomOf, newRoomPlan, repoChoices, repoOfFolder, seedWhere, workspacesOf, type NewRoom } from "./newSessionModel";
 import type { TeamRoomSummary } from "../shared/team/types";
 
 /** Starting sessions: New session (⌘N) and Import. */
 
 export type LaunchKind = AgentKind | "shell";
 
+/** The + New room row's key in the room list. */
+const NEW_ROOM = "__new";
+
+/** A room + New room made, with its first invite code. */
+type MadeRoom = NewRoom & { roomId: string; invite: string; warning?: string };
+
 export function NewSessionModal({
   existingGroups,
   rooms = [],
   roomRepos = {},
+  signalingUrl,
   initialLaunch,
   initialGroup,
   initialMode,
@@ -38,6 +45,8 @@ export function NewSessionModal({
   rooms?: TeamRoomSummary[];
   /** The repos each room's sessions work in, by folder name (roomRepoNames), offered first. */
   roomRepos?: Record<string, string[]>;
+  /** The signaling Worker new rooms are made through (Settings → Team): "" when unset, undefined while unknown. */
+  signalingUrl?: string;
   initialLaunch?: LaunchKind;
   initialGroup?: string; // "5038" or "5038/backend" — a workspace path adds a tab there; a room's group starts it connected
   /** New starts a fresh session; Import resumes a conversation from this Mac. */
@@ -89,19 +98,42 @@ export function NewSessionModal({
   const effEffort = launch === "codex" ? codexEffort : effort;
 
   // Where it goes: a local group (or none), or a team room's group — a
-  // connected session, which teammates see live. Group and Workspace are two
-  // selectors ("workspace" = what the path syntax calls a sub-group); a seeded
-  // name that doesn't exist yet lands in the matching "new …" input instead.
+  // connected session, which teammates see live — or a new room. Group and
+  // Workspace are two selectors ("workspace" = what the path syntax calls a
+  // sub-group); a seeded name that doesn't exist yet lands in the matching
+  // "new …" input instead.
   const seed = seedWhere(initialGroup, rooms);
   const tops = useMemo(() => localTops(existingGroups, rooms), [existingGroups, rooms]);
   const [connected, setConnected] = useState(seed.connected);
-  const [roomKey, setRoomKey] = useState(seed.connected ? seed.top : rooms[0]?.groupKey ?? "");
-  const room = connected ? rooms.find((r) => r.groupKey === roomKey) ?? null : null;
-  // Connected with no room to start in: Start waits for one (or for Local)
-  const noRoom = connected && !room;
+  // with no room to pick, Connected starts on + New room
+  const [roomKey, setRoomKey] = useState(seed.connected ? seed.top : rooms[0]?.groupKey ?? NEW_ROOM);
+  const [roomName, setRoomName] = useState("");
+  // a closed Mockingbird session is restored into its own group: Where doesn't apply
+  const restoring = importing && !!conv?.restore;
+  const intoNewRoom = connected && roomKey === NEW_ROOM && !restoring;
+  const plan = newRoomPlan(roomName, rooms, existingGroups);
+  // + New room naming a group that's a room already starts in that room
+  const room = !connected ? null : roomKey === NEW_ROOM ? (plan.kind === "existing" ? plan.room : null) : rooms.find((r) => r.groupKey === roomKey) ?? null;
+  // the room Start makes before starting the session in it
+  const newRoom = intoNewRoom && plan.kind === "create" ? plan : null;
+  const noSignaling = !!newRoom && signalingUrl !== undefined && !signalingUrl.trim();
+  // why Start can't go where Where says yet ("" when it can)
+  const whereBlock = !connected
+    ? ""
+    : roomKey === NEW_ROOM
+      ? plan.kind === "unnamed"
+        ? "Name the new room, or pick a room you're in."
+        : plan.kind === "reserved"
+          ? `“${plan.key}” can't be shared — name the room something else.`
+          : noSignaling
+            ? "New rooms need your signaling Worker: set its URL in Settings → Team."
+            : ""
+      : room
+        ? ""
+        : "Pick a team room, or switch Where to Local.";
   const [grpSel, setGrpSel] = useState(() => (seed.connected || !seed.top ? "" : tops.includes(seed.top) ? seed.top : "__new"));
   const [grpNew, setGrpNew] = useState(() => (!seed.connected && seed.top && !tops.includes(seed.top) ? seed.top : ""));
-  const top = room ? room.groupKey : grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
+  const top = room ? room.groupKey : newRoom ? newRoom.key : connected ? "" : grpSel === "__new" ? sanitizeSegment(grpNew) : grpSel;
   const subs = top ? workspacesOf(existingGroups, top) : [];
   const [wsSel, setWsSel] = useState(() => (!seed.sub ? "" : workspacesOf(existingGroups, seed.top).includes(seed.sub) ? seed.sub : "__new"));
   const [wsNew, setWsNew] = useState(() => (seed.sub && !workspacesOf(existingGroups, seed.top).includes(seed.sub) ? seed.sub : ""));
@@ -188,14 +220,42 @@ export function NewSessionModal({
   const showTicket = ticketOpen || !!ticketId;
   const convRepo = conv ? repoOfFolder(repos, conv.cwd) : null;
 
+  // + New room's room once made: starting the session again after a failure
+  // reuses it, so one Start never shares the group twice
+  const made = useRef<MadeRoom | null>(null);
+  // a session started in a room made here: the room's invite code shows before the dialog closes
+  const [done, setDone] = useState<{ info: SessionInfo; room: MadeRoom } | null>(null);
+
+  /**
+   * Start a session with `start`. For + New room the group is shared first,
+   * so the session launches as one of the room's — a room session's
+   * protections are set at launch — and the invite code shows once it runs.
+   */
+  const startIn = async (what: string, start: () => Promise<SessionInfo | { error: string }>) => {
+    const r = await run(what, async () => {
+      let madeHere = intoNewRoom && plan.kind !== "unnamed" && made.current?.key === plan.key ? made.current : null;
+      if (newRoom && !madeHere) {
+        const shared = await run("share", () => window.mb.teamShareGroup(newRoom.key, newRoom.title));
+        if (isErr(shared)) return shared;
+        madeHere = made.current = { key: newRoom.key, title: newRoom.title, roomId: shared.roomId, invite: shared.invite, ...(shared.warning ? { warning: shared.warning } : {}) };
+      }
+      const info = await start();
+      if (isErr(info)) return madeHere ? { error: `${madeHere.title} is a team room now, but the session didn't start: ${info.error}` } : info;
+      return { info, room: madeHere };
+    });
+    if (isErr(r)) return;
+    if (r.room) setDone({ info: r.info, room: r.room });
+    else onCreated(r.info);
+  };
+
   // a closed Mockingbird session is restored as it was; any other conversation
   // starts in its own folder (a ticket's branch or a new worktree would move it
   // away from where its agent finds it)
   const resume = async () => {
     if (!conv) return setError("Pick a conversation to resume.");
-    if (noRoom && !conv.restore) return setError("Pick a team room, or switch Where to Local.");
+    if (whereBlock && !conv.restore) return setError(whereBlock);
     const c = conv;
-    const info = await run("resume", async () =>
+    await startIn("resume", async () =>
       c.restore
         ? ((await window.mb.relaunchSession(c.restore)) ?? { error: "That closed session is no longer saved." })
         : window.mb.createSession({
@@ -209,8 +269,6 @@ export function NewSessionModal({
             ...(effEffort ? { effort: effEffort } : {}),
           })
     );
-    if (isErr(info)) return;
-    onCreated(info);
   };
 
   // one session per click: a second click while this one is being made would
@@ -218,9 +276,9 @@ export function NewSessionModal({
   const create = async () => {
     if (isBusy()) return;
     if (importing) return resume();
-    if (noRoom) return setError("Pick a team room, or switch Where to Local.");
+    if (whereBlock) return setError(whereBlock);
     const t = allTickets.find((x) => String(x.id) === ticketSel);
-    const info = await run("create", () =>
+    await startIn("create", () =>
       window.mb.createSession({
         repoPath: sel?.path ?? null,
         ticketId: ticketId || undefined,
@@ -235,8 +293,6 @@ export function NewSessionModal({
         initialPrompt: isAgent && t && sendTicket ? ticketKickoffPrompt(t.id, t.title, t.description) : undefined,
       })
     );
-    if (isErr(info)) return;
-    onCreated(info);
   };
 
   // what Start will do, in a line
@@ -249,7 +305,17 @@ export function NewSessionModal({
     : launch === "shell"
       ? "home folder"
       : `plain ${agentLabel} chat, no repo`;
-  const place = room ? `connected · ${groupKey(room.groupKey, effSub)}` : group ? `in ${group}` : !importing && ticketId ? `in ${ticketIdOf(ticketId)}` : "";
+  const place = room
+    ? `connected · ${groupKey(room.groupKey, effSub)}`
+    : newRoom
+      ? `new room ${groupKey(newRoom.key, effSub)}`
+      : intoNewRoom
+        ? "name the new room"
+        : group
+          ? `in ${group}`
+          : !importing && ticketId
+            ? `in ${ticketIdOf(ticketId)}`
+            : "";
   const convFolder = conv ? (convRepo ? `${convRepo.repo.name}${convRepo.worktree ? ` · worktree ${convRepo.worktree}` : ""}` : tildePath(conv.cwd)) : "";
   const summary = importing
     ? conv
@@ -315,6 +381,46 @@ export function NewSessionModal({
     ) : launch === "claude" && model === "__custom" ? (
       <input type="text" placeholder="model id, e.g. claude-sonnet-5-5" value={modelCustom} onChange={(e) => setModelCustom(e.target.value)} />
     ) : null;
+
+  // the session runs in the room made for it: what's left is inviting the teammate
+  if (done)
+    return (
+      <Modal
+        className="modal ns"
+        onClose={() => onCreated(done.info)}
+        closeOnBackdrop={false}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            onCreated(done.info);
+          }
+        }}
+      >
+        <div className="ns-head">
+          <h3>Room created</h3>
+        </div>
+        <div className="ns-body">
+          <section className="ns-sec">
+            <div className="ns-k">Room</div>
+            <div>
+              <div className="ns-made">
+                <span className="t">{done.room.title}</span>
+                <span className="s">
+                  group {done.room.key} · {done.info.shell ? "a terminal" : AGENT_NAME[done.info.agent ?? "claude"]} is starting in it
+                </span>
+              </div>
+              <InviteCode invite={done.room.invite} warning={done.room.warning} />
+            </div>
+          </section>
+        </div>
+        <div className="ns-foot">
+          <span className="ns-sum">send the code to the teammate joining you</span>
+          <button className="outline" onClick={() => onCreated(done.info)} data-tip="⌘↵">
+            Done
+          </button>
+        </div>
+      </Modal>
+    );
 
   return (
     <Modal
@@ -421,7 +527,7 @@ export function NewSessionModal({
           </section>
         )}
 
-        {!conv?.restore && (
+        {!restoring && (
           <section className="ns-sec">
             <div className="ns-k">Where</div>
             <div>
@@ -435,18 +541,7 @@ export function NewSessionModal({
                   Connected{rooms.length ? ` · ${rooms.length}` : ""}
                 </button>
               </span>
-              {connected && !rooms.length ? (
-                <div className="ns-note">
-                  You're not in a team room yet. Share a group (⇪ on its header in the sidebar), or{" "}
-                  {onJoinRoom ? (
-                    <button className="link" onClick={onJoinRoom}>
-                      join a room with an invite code…
-                    </button>
-                  ) : (
-                    "join one with an invite code (⌘K → Join a team room)."
-                  )}
-                </div>
-              ) : connected ? (
+              {connected ? (
                 <>
                   <div className="ns-rooms" role="radiogroup">
                     {rooms.map((r) => {
@@ -478,7 +573,55 @@ export function NewSessionModal({
                         </button>
                       );
                     })}
+                    {roomKey === NEW_ROOM ? (
+                      <div role="radio" aria-checked className="ns-room ns-newroom sel">
+                        <span className="ns-newroom-k">+ New room</span>
+                        <span className="meta">
+                          <input
+                            type="text"
+                            autoFocus
+                            maxLength={120}
+                            placeholder="5120 Donor search"
+                            title="A leading ticket number groups the room by ticket, as the ticket's sessions are"
+                            value={roomName}
+                            onChange={(e) => {
+                              if (newRoomOf(e.target.value)?.key !== newRoomOf(roomName)?.key) resetWorkspace();
+                              setRoomName(e.target.value);
+                            }}
+                          />
+                          <span className="s">
+                            {plan.kind === "unnamed"
+                              ? "a leading ticket number groups it by ticket"
+                              : plan.kind === "create" && plan.title !== plan.key
+                                ? `group ${plan.key} · room “${plan.title}”`
+                                : `group ${plan.key}`}
+                          </span>
+                        </span>
+                      </div>
+                    ) : (
+                      <button role="radio" aria-checked={false} className="ns-room ns-newroom" onClick={() => (setRoomKey(NEW_ROOM), resetWorkspace())}>
+                        <span className="meta">
+                          <span className="t">+ New room</span>
+                          <span className="s">share a new group with a teammate</span>
+                        </span>
+                      </button>
+                    )}
                   </div>
+                  {roomKey === NEW_ROOM && noSignaling && <div className="ns-note warn">New rooms are made through your signaling Worker: set its URL in Settings → Team first.</div>}
+                  {roomKey === NEW_ROOM && plan.kind === "create" && plan.localGroup && (
+                    <div className="ns-note warn">
+                      This Mac already has a group {plan.key}: sharing it as a room puts its sessions there too, where teammates see them live.
+                    </div>
+                  )}
+                  {roomKey === NEW_ROOM && plan.kind === "existing" && (
+                    <div className="ns-note">
+                      You're already in {plan.room.name} (group {plan.key}): Start puts the session there rather than making a second room.{" "}
+                      <button className="link" onClick={() => (setRoomKey(plan.key), setRoomName(""))}>
+                        Select it
+                      </button>
+                    </div>
+                  )}
+                  {roomKey === NEW_ROOM && plan.kind === "reserved" && <div className="ns-note warn">“{plan.key}” is the sidebar's own group and can't be shared — name the room something else.</div>}
                   {onJoinRoom && (
                     <div className="ns-join">
                       Have an invite code?{" "}
@@ -689,7 +832,7 @@ export function NewSessionModal({
             </div>
           </section>
         )}
-        {error && <div className="err">{error}</div>}
+        {error && (intoNewRoom ? <ShareError error={error} /> : <div className="err">{error}</div>)}
       </div>
 
       <div className="ns-foot">
@@ -721,8 +864,8 @@ export function NewSessionModal({
         <button className="outline" onClick={onClose}>
           Cancel
         </button>
-        <button className="primary cta" disabled={!!busy || (importing && !conv) || (noRoom && !conv?.restore)} onClick={create} data-tip="⌘↵">
-          {busy ? "Starting…" : importing ? (conv?.restore ? "Restore session" : `Resume ${conv ? AGENT_NAME[conv.agent] : ""}`.trim()) : launch === "shell" ? "Open terminal" : `Start ${agentLabel}`}
+        <button className="primary cta" disabled={!!busy || (importing && !conv) || (!!whereBlock && !restoring)} onClick={create} data-tip="⌘↵">
+          {busy === "share" ? "Creating the room…" : busy ? "Starting…" : importing ? (conv?.restore ? "Restore session" : `Resume ${conv ? AGENT_NAME[conv.agent] : ""}`.trim()) : launch === "shell" ? "Open terminal" : `Start ${agentLabel}`}
         </button>
       </div>
     </Modal>

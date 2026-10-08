@@ -2748,6 +2748,7 @@ function App() {
           existingGroups={groupKeys}
           rooms={teamRooms}
           roomRepos={roomRepoNames(sessions, teamRooms)}
+          signalingUrl={teamStatus && !isErr(teamStatus) ? teamStatus.signalingUrl : undefined}
           onJoinRoom={() => {
             setModal(null);
             setJoinDlg(true);

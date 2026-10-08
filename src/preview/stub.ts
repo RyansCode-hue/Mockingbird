@@ -944,24 +944,39 @@ if (params.has("plan") || params.has("planWarning")) {
     }
   }, 100);
 }
+// team rooms: ?norooms — this Mac is in no team room yet; ?nosignal — no signaling URL is set, so no new rooms
+if (params.has("norooms")) team.rooms = [];
+if (params.has("nosignal")) {
+  team.signalingUrl = "";
+  settings = { ...settings, signalingUrl: "" };
+}
+const click = (selector: string) => (document.querySelector(selector) as HTMLElement | null)?.click();
+/** Type into an input as a person would, so React sees the change. */
+const typeInto = (selector: string, text: string) => {
+  const input = document.querySelector(selector) as HTMLInputElement | null;
+  if (!input) return;
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+};
 // ?new opens New session, as ⌘N does; ?new=connected switches it to the first team room;
 // ?new=room opens it from the first shared group's + instead
-if (params.get("new") === "room") setTimeout(() => (document.querySelector('button[title^="New connected session"]') as HTMLElement | null)?.click(), 500);
+if (params.get("new") === "room") setTimeout(() => click('button[title^="New connected session"]'), 500);
 else if (params.has("new")) {
   setTimeout(() => emit("onUiCommand", "new-session"), 300);
-  if (params.get("new") === "connected") setTimeout(() => (document.querySelector(".ns-where button:last-child") as HTMLElement | null)?.click(), 700);
-  // ?new=import switches it to Import; ?new=import-pick also picks the first conversation
-  if (params.get("new")?.startsWith("import")) setTimeout(() => (document.querySelector(".ns-mode button:last-child") as HTMLElement | null)?.click(), 700);
-  if (params.get("new") === "import-pick") setTimeout(() => (document.querySelector(".ns-list .item:not(.blocked)") as HTMLElement | null)?.click(), 1100);
-  // ?new=import&find=<words> types a search into Import
-  if (params.get("find")) {
-    setTimeout(() => {
-      const input = document.querySelector(".ns-body input[type=text]") as HTMLInputElement | null;
-      if (!input) return;
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, params.get("find"));
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    }, 1100);
+  if (params.get("new") === "connected") setTimeout(() => click(".ns-where button:last-child"), 700);
+  // ?new=newroom picks + New room under Connected and names it (?name=, default "5120 Donor search");
+  // ?new=newroom-start also presses Start, for the invite code
+  if (params.get("new")?.startsWith("newroom")) {
+    setTimeout(() => click(".ns-where button:last-child"), 700);
+    setTimeout(() => click("button.ns-newroom"), 900);
+    setTimeout(() => typeInto(".ns-newroom input", params.get("name") ?? "5120 Donor search"), 1100);
+    if (params.get("new") === "newroom-start") setTimeout(() => click(".ns-foot button.cta"), 1400);
   }
+  // ?new=import switches it to Import; ?new=import-pick also picks the first conversation
+  if (params.get("new")?.startsWith("import")) setTimeout(() => click(".ns-mode button:last-child"), 700);
+  if (params.get("new") === "import-pick") setTimeout(() => click(".ns-list .item:not(.blocked)"), 1100);
+  // ?new=import&find=<words> types a search into Import
+  if (params.get("find")) setTimeout(() => typeInto(".ns-body input[type=text]", params.get("find")!), 1100);
 }
 if (params.has("reset")) {
   params.delete("reset");

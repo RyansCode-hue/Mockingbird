@@ -6,7 +6,7 @@ import { RoomStore } from "./rooms";
 import { TeamCore, type PeerWire, type Team } from "./transport";
 import { WebRtcWire } from "./webrtc";
 import { allowCreatorsCommand, formatFingerprint, SIGNALING_PROTOCOL, type SignalingHealth } from "../../shared/team/protocol";
-import type { Settings } from "../../shared/types";
+import { isShareableGroup, type Settings } from "../../shared/types";
 import type { RoomState, TeamStatus } from "../../shared/team/types";
 
 /**
@@ -82,7 +82,7 @@ export class TeamService {
    */
   async shareGroup(groupKey: string, title: string, waitMs = 10_000): Promise<{ roomId: string; invite: string; warning?: string }> {
     const core = this.need();
-    if (!groupKey || groupKey === "ungrouped" || groupKey === "assistant") throw new Error("Only a named group can be shared — name it first");
+    if (!isShareableGroup(groupKey)) throw new Error("Only a named group can be shared — name it first");
     const existing = core.roomForGroup(groupKey);
     const room = existing ?? core.createRoom({ name: title || groupKey, groupKey, signalingUrl: (this.d.settings().signalingUrl ?? "").trim() });
     if (existing && core.signalingState(room.id)?.problem) core.wake(room.id); // shared again after fixing the Worker: ask it now

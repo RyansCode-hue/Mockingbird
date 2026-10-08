@@ -1762,7 +1762,16 @@ button.chip { border: none; cursor: pointer; }
 .ns-room .s, .ns-chosen .s { font: 400 9.5px var(--mono); color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ns-people { display: inline-flex; gap: 3px; flex-shrink: 0; }
 .ns-people .team-initials.off { background: var(--fill-subtle); color: var(--text-4); }
+/* + New room: the last row of the room list; picked, it takes the new room's name */
+.ns-newroom .t, .ns-newroom-k { color: var(--teal-text); }
+.ns-newroom-k { font: 500 11.5px var(--ui); flex-shrink: 0; align-self: flex-start; padding-top: 6px; }
+.modal .ns-newroom input[type=text] { padding: 4px 8px; }
+.ns-newroom.sel .meta { gap: 4px; }
+.ns-made { display: flex; flex-direction: column; gap: 2px; padding-top: 6px; }
+.ns-made .t { font: 500 11.5px var(--ui); color: var(--text-1); }
+.ns-made .s { font: 400 9.5px var(--mono); color: var(--text-4); }
 .ns-note { font: 400 10px/1.5 var(--ui); color: var(--text-3); margin-top: 8px; }
+.ns-note.warn { color: var(--amber-text); }
 .ns-join { font: 400 10.5px var(--ui); color: var(--text-3); margin-top: 6px; }
 .ns-note button.link, .ns-join button.link { font-size: inherit; }
 .ns-chosen { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-pane); }
@@ -1884,6 +1893,9 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .connected-label .cl-online::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--teal); }
 .modal.team-dlg { width: 480px; }
 .modal textarea.team-code { min-height: 84px; word-break: break-all; }
+.team-invite { position: relative; display: flex; align-items: flex-start; gap: 8px; }
+.team-invite textarea.team-code { flex: 1; min-width: 0; }
+.team-invite > button { flex-shrink: 0; }
 .set-body input[type=text].team-input { width: 220px; }
 .set-body input[type=text].team-input.wide { width: 300px; }
 .team-fp { font: 400 10.5px var(--mono); color: var(--text-2); margin-right: 8px; }

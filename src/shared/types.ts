@@ -126,6 +126,11 @@ export function groupKey(top: string, sub?: string | null): string {
   return s ? `${t}/${s}` : t;
 }
 
+/** A top-level group that can be shared as a team room: a named one, not the sidebar's ungrouped or assistant bucket. */
+export function isShareableGroup(key: string): boolean {
+  return !!key && key !== "ungrouped" && key !== "assistant";
+}
+
 /** Top-level group of a group key ("5038/backend" → "5038"). */
 export function topOfKey(key: string): string {
   return splitGroupKey(key).top;

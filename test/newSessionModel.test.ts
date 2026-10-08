@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { localTops, repoChoices, repoOfFolder, roomRepoNames, seedWhere, workspacesOf } from "../src/renderer/newSessionModel";
+import { localTops, newRoomOf, newRoomPlan, repoChoices, repoOfFolder, roomRepoNames, seedWhere, workspacesOf } from "../src/renderer/newSessionModel";
 import type { RepoEntry, SessionInfo } from "../src/shared/types";
 import type { TeamRoomSummary } from "../src/shared/team/types";
 
@@ -31,6 +31,54 @@ describe("the groups a session can join", () => {
     expect(workspacesOf(groups, "5102")).toEqual(["ui"]);
     expect(workspacesOf(groups, "5101")).toEqual(["api"]);
     expect(workspacesOf(groups, "spike")).toEqual([]);
+  });
+});
+
+describe("a new room's group and name", () => {
+  it("keys the group by a leading ticket number and names the room as the sidebar titles a ticket's group", () => {
+    expect(newRoomOf("5120 Donor search")).toEqual({ key: "5120", title: "#5120 Donor search" });
+    expect(newRoomOf("  #5120   Donor  search ")).toEqual({ key: "5120", title: "#5120 Donor search" });
+    expect(newRoomOf("5120: Donor search")).toEqual({ key: "5120", title: "#5120 Donor search" });
+    expect(newRoomOf("5120 - Donor search")).toEqual({ key: "5120", title: "#5120 Donor search" });
+    expect(newRoomOf("5120 — Donor search")).toEqual({ key: "5120", title: "#5120 Donor search" });
+    expect(newRoomOf("5120")).toEqual({ key: "5120", title: "#5120" });
+    expect(newRoomOf("#5120")).toEqual({ key: "5120", title: "#5120" });
+  });
+
+  it("uses any other name for both, as one group segment", () => {
+    expect(newRoomOf("Spike")).toEqual({ key: "Spike", title: "Spike" });
+    expect(newRoomOf("Donor search spike")).toEqual({ key: "Donor search spike", title: "Donor search spike" });
+    expect(newRoomOf("api/v2")).toEqual({ key: "api-v2", title: "api-v2" });
+    expect(newRoomOf("2026-planning")).toEqual({ key: "2026-planning", title: "2026-planning" });
+    expect(newRoomOf("5120abc")).toEqual({ key: "5120abc", title: "5120abc" });
+  });
+
+  it("is nothing until a name is typed", () => {
+    expect(newRoomOf("")).toBeNull();
+    expect(newRoomOf("   ")).toBeNull();
+  });
+});
+
+describe("what Start does with + New room", () => {
+  it("makes a room for a group that isn't one yet, saying when this Mac already has the group", () => {
+    expect(newRoomPlan("5120 Donor search", rooms, groups)).toEqual({ kind: "create", key: "5120", title: "#5120 Donor search", localGroup: false });
+    expect(newRoomPlan("5102 Pathways", rooms, groups)).toEqual({ kind: "create", key: "5102", title: "#5102 Pathways", localGroup: true });
+    expect(newRoomPlan("spike", rooms, groups)).toMatchObject({ kind: "create", localGroup: true });
+  });
+
+  it("starts in the room a group already is instead of making a second", () => {
+    expect(newRoomPlan("5101 anything", rooms, groups)).toEqual({ kind: "existing", key: "5101", room: rooms[0] });
+  });
+
+  it("treats a joined room shown beside a private group of its name as separate from that group", () => {
+    const joined = [{ ...room("5110"), groupKey: "5110 (team)" }];
+    expect(newRoomPlan("5110", joined, ["5110", "5110 (team)"])).toMatchObject({ kind: "create", key: "5110", localGroup: true });
+  });
+
+  it("never shares the sidebar's own buckets, and waits for a name", () => {
+    expect(newRoomPlan("ungrouped", rooms, groups)).toEqual({ kind: "reserved", key: "ungrouped" });
+    expect(newRoomPlan("assistant", rooms, groups)).toEqual({ kind: "reserved", key: "assistant" });
+    expect(newRoomPlan(" ", rooms, groups)).toEqual({ kind: "unnamed" });
   });
 });
 

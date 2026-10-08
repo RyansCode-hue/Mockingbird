@@ -3,7 +3,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRepo, tempDir } from "./helpers";
-import { loopbackMember, loopbackRoom, until, type LoopbackMember, type LoopbackNetwork } from "../src/main/team/loopback";
+import { loopbackMember, loopbackRoom, until, LoopbackNetwork, type LoopbackMember } from "../src/main/team/loopback";
+import { TeamService } from "../src/main/team/service";
+import type { TeamCore } from "../src/main/team/transport";
 import { SessionManager } from "../src/main/sessions";
 import { LivePanes, type LivePanesDeps } from "../src/main/team/livePanes";
 import { onTurnEnded, isRoomSession, originIdentity, roomOfSession, setRoomSessionLookup, validateRecord, type TurnEnded } from "../src/main/team/roomSessions";
@@ -401,6 +403,30 @@ describe("room session launch", () => {
     const term = await ryan.start({ shell: true, agent: undefined });
     expect(ryan.sessions.guardsOf(term.id)).toEqual({ secrets: false, coauthors: true });
     expect(ptyOf(term.id).env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
+  });
+
+  it("launches a session as a room session as soon as sharing its group has answered", async () => {
+    const dir = tempDir("live-share");
+    const net = new LoopbackNetwork();
+    const service = new TeamService({
+      settings: () => ({ ...DEFAULT_SETTINGS, signalingUrl: "http://loopback.invalid" }),
+      localGroups: () => [],
+      emit: () => {},
+      log: (_c, e) => String(e),
+      assetsDir: "/nonexistent",
+      dir: path.join(dir, "Ryan", "team"),
+      wire: (identity) => net.wire(identity.id),
+    });
+    service.start();
+    const ryan = side({ name: "Ryan", team: service.transport as TeamCore } as LoopbackMember, dir);
+    // the rooms are read before the share, as an open window would have
+    const before = await ryan.start({ taskGroup: "5120" });
+    expect(ryan.sessions.guardsOf(before.id)).toBeNull();
+    await service.shareGroup("5120", "#5120 Donor search");
+    const s = await ryan.start({ taskGroup: "5120" });
+    expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
+    expect(ptyOf(s.id).args.join(" ")).toContain("--disallowedTools");
+    service.stop();
   });
 
   it("starts Codex under the room's permission profile once its version is known to hold it, and tells it about the sandbox", async () => {
