@@ -546,6 +546,20 @@ app.on("will-quit", () => {
   sessions.saveScrollback(true);
   stopTeam();
 });
+// panes' ptys end before Node is torn down (SessionManager.shutdown); by
+// will-quit nothing can cancel the quit, so open panes aren't ended for nothing
+let ptysEnded = false;
+app.on("will-quit", (e) => {
+  if (ptysEnded) return;
+  e.preventDefault();
+  sessions
+    .shutdown()
+    .catch((err) => logError("sessions:shutdown on quit", err))
+    .finally(() => {
+      ptysEnded = true;
+      app.quit();
+    });
+});
 
 // team rooms stop once, whichever comes first (the window closing, or quitting): see stopTeamRooms for the order
 let teamStopped = false;

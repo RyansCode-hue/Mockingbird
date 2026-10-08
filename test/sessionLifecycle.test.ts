@@ -4,20 +4,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { tempDir } from "./helpers";
 
 /** Every pty the manager starts: what it was asked to run, what was written to it, and a way to end it. */
-type FakePty = { args: string[]; writes: string[]; killed: boolean; emit(d: string): void; exit(code: number): void };
+type FakePty = { args: string[]; writes: string[]; killed: boolean; signals: string[]; emit(d: string): void; exit(code: number): void };
 const ptys: FakePty[] = [];
 vi.mock("node-pty", () => ({
   spawn: (_file: string, args: string[]) => {
     let onData: (d: string) => void = () => {};
     let onExit: (e: { exitCode: number }) => void = () => {};
-    const p: FakePty = { args, writes: [], killed: false, emit: (d) => onData(d), exit: (exitCode) => onExit({ exitCode }) };
+    const p: FakePty = { args, writes: [], killed: false, signals: [], emit: (d) => onData(d), exit: (exitCode) => onExit({ exitCode }) };
     ptys.push(p);
     return {
       onData: (cb: any) => ((onData = cb), { dispose() {} }),
       onExit: (cb: any) => ((onExit = cb), { dispose() {} }),
       write: (d: string) => p.writes.push(d.replace(/\x1b\[20[01]~/g, "|")),
       resize() {},
-      kill: () => (p.killed = true),
+      kill: (signal?: string) => {
+        p.killed = true;
+        p.signals.push(signal ?? "SIGHUP");
+      },
       pid: 1,
     };
   },
@@ -70,6 +73,41 @@ describe("closing a pane", () => {
     expect(ptys.at(-1)!.killed).toBe(true);
     expect(m.list().map((x) => x.id)).not.toContain(s.id);
     expect(errors).toHaveBeenCalled();
+  });
+});
+
+describe("quitting the app", () => {
+  it("ends every pty, closed panes' too, and waits for them all to exit, leaving each pane's saved state as it was", async () => {
+    const { m, store } = await manager();
+    const a = await m.create(agentPane);
+    const b = await m.create({ ...agentPane, title: "b" });
+    const closed = await m.create({ ...agentPane, title: "closed" });
+    m.kill(closed.id, false); // signalled, but its pty hasn't exited yet
+    const [pa, pb, pc] = ptys.slice(-3);
+    const before = JSON.stringify(store.state.sessions);
+    let finished = false;
+    const quit = m.shutdown(60_000).then(() => (finished = true));
+    expect([pa, pb, pc].map((p) => p.signals.at(-1))).toEqual(["SIGHUP", "SIGHUP", "SIGHUP"]);
+    pa.emit("output after the signal\r\n");
+    pa.exit(129);
+    pc.exit(129);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(finished).toBe(false); // b's exit is still to come
+    pb.exit(129);
+    await quit;
+    expect(JSON.stringify(store.state.sessions)).toBe(before);
+    expect(m.list().find((x) => x.id === a.id)?.status).not.toBe("dead");
+    expect(m.list().find((x) => x.id === b.id)?.status).not.toBe("dead");
+  });
+
+  it("kills a pty that outlives the grace period, and says when one still hasn't exited", async () => {
+    const { m } = await manager();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await m.create(agentPane);
+    const p = ptys.at(-1)!;
+    await m.shutdown(20);
+    expect(p.signals).toEqual(["SIGHUP", "SIGKILL"]);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("1 pty(s) still running"))).toBe(true);
   });
 });
 

@@ -108,6 +108,10 @@ interface LiveSession {
 
 export class SessionManager {
   private live = new Map<string, LiveSession>();
+  /** Every pty that hasn't exited yet, closed panes' included, with its exit: quitting waits for them (shutdown). */
+  private running = new Map<pty.IPty, Promise<void>>();
+  /** Set by shutdown: ptys ending now are the app quitting, which leaves each pane's saved state as it was. */
+  private quitting = false;
   /** Messages a pane closed to resume hadn't been given yet; its relaunch delivers them. */
   private undelivered = new Map<string, Queued[]>();
   /** Each pane's scrollback is kept here, so a relaunched pane shows its earlier output. */
@@ -320,6 +324,8 @@ export class SessionManager {
           `If it isn't found, set its full path in Settings → ${agentLabel(req.agent).toLowerCase()} binary.`
       );
     }
+    let exited!: () => void;
+    this.running.set(proc, new Promise<void>((resolve) => (exited = resolve)));
 
     const info: SessionInfo = {
       id,
@@ -392,7 +398,7 @@ export class SessionManager {
     // both callbacks outlive kill(): ignore them once this pty is no longer the
     // live session for that id, or a dying pty marks its replacement dead
     proc.onData((data) => {
-      if (this.live.get(info.id) !== sess) return;
+      if (this.quitting || this.live.get(info.id) !== sess) return;
       sess.buffer = (sess.buffer + data).slice(-BUFFER_MAX);
       sess.total += data.length;
       sess.lastOutput = Date.now();
@@ -405,7 +411,9 @@ export class SessionManager {
       this.tell("output", this.outputListeners, info.id, data, sess.total, sess.epoch);
     });
     proc.onExit(({ exitCode }) => {
-      if (this.live.get(info.id) !== sess) return;
+      this.running.delete(proc);
+      exited();
+      if (this.quitting || this.live.get(info.id) !== sess) return;
       info.exitCode = exitCode;
       this.setStatus(info.id, "dead");
     });
@@ -496,6 +504,35 @@ export class SessionManager {
   private dropScrollback(id: string): void {
     this.debriefScrollback.delete(id);
     fs.rmSync(this.scrollbackFile(id), { force: true });
+  }
+
+  /**
+   * Ends every pty before the app quits, and waits for them to exit. A pty
+   * still running when Electron tears Node down exits during that teardown,
+   * and node-pty's exit callback, which can no longer call into JS, aborts the
+   * app. Each pane's saved status and scrollback stay as they were, so its
+   * session resumes on the next launch just as if the app had simply closed.
+   */
+  async shutdown(graceMs = 3000): Promise<void> {
+    this.quitting = true;
+    const signal = (sig?: string) => {
+      for (const p of this.running.keys()) {
+        try {
+          p.kill(sig);
+        } catch (err) {
+          console.warn(`[sessions] couldn't signal pty ${p.pid} while quitting: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+    };
+    const allExitWithin = (ms: number) => {
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), ms)));
+      return Promise.race([Promise.all(this.running.values()).then(() => true), late]).finally(() => clearTimeout(timer));
+    };
+    signal(); // SIGHUP, as the terminal closing would send
+    if (await allExitWithin(graceMs)) return;
+    signal("SIGKILL");
+    if (!(await allExitWithin(1000))) console.warn(`[sessions] ${this.running.size} pty(s) still running as the app quits`);
   }
 
   /** Write every pane's scrollback that changed since it was last written (and all of them when quitting). */
