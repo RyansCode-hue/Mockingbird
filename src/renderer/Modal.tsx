@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { useEscape } from "./useEscape";
 
 /**
@@ -12,12 +12,15 @@ export function Modal({
   className = "modal",
   onClose,
   closeOnBackdrop = true,
+  onKeyDown,
   children,
 }: {
   /** The dialog box's classes ("modal close-dlg"). */
   className?: string;
   onClose?: () => void;
   closeOnBackdrop?: boolean;
+  /** Keys pressed anywhere in the dialog (a ⌘↵ shortcut for its main action). */
+  onKeyDown?: (e: KeyboardEvent<HTMLDivElement>) => void;
   children: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -33,7 +36,7 @@ export function Modal({
   }, []);
   return (
     <div className="modal-back" onMouseDown={closeOnBackdrop ? () => onClose?.() : undefined}>
-      <div ref={box} className={className} tabIndex={-1} onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={box} className={className} tabIndex={-1} onKeyDown={onKeyDown} onMouseDown={(e) => e.stopPropagation()}>
         {children}
       </div>
     </div>

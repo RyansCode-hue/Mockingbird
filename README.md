@@ -297,7 +297,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
     shares, ⇲ joins with a code); every member keeps its signed, ordered event
     log and merges it on reconnect.
   - **Sessions:** a session in a shared group is one row and one pane on every
-    member's Mockingbird, tagged with its owner's initials. It streams to
+    member's Mockingbird, tagged with its owner's initials. Start one with New
+    session → Where → **Connected** (it lists your rooms, who's online, and
+    offers the repo the room works in). It streams to
     whoever shows it, anyone can type into it, initials show who's looking,
     Follow mirrors a teammate's grid, and everyone hears when it waits. Room
     sessions start knowing the room's plan and unable to read secret files:

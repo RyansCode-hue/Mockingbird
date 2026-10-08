@@ -920,6 +920,11 @@ if (params.has("plan") || params.has("planWarning")) {
     }
   }, 100);
 }
+// ?new opens New session, as ⌘N does; ?new=connected switches it to the first team room
+if (params.has("new")) {
+  setTimeout(() => emit("onUiCommand", "new-session"), 300);
+  if (params.get("new") === "connected") setTimeout(() => (document.querySelector(".ns-where button:last-child") as HTMLElement | null)?.click(), 700);
+}
 if (params.has("reset")) {
   params.delete("reset");
   history.replaceState(null, "", `${location.pathname}${params.size ? `?${params}` : ""}`);

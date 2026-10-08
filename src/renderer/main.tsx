@@ -94,6 +94,7 @@ import { backupOf, type LeftCopy, type ReceivedChanges, type RoomSessionBackupVi
 // team rooms: live panes
 import { FollowControls, LiveProblems, RoomRowTag, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
+import { roomRepoNames } from "./newSessionModel";
 import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { usePersisted, readPref, writePref } from "./prefs";
@@ -286,6 +287,7 @@ function App() {
   const [groupDlg, setGroupDlg] = useState<SessionInfo | null>(null);
   // team rooms: which groups are shared, and the share / join dialogs
   const teamStatus = useTeamStatus();
+  const teamRooms = useMemo(() => (teamStatus && !isErr(teamStatus) ? teamStatus.rooms : []), [teamStatus]);
   const [shareDlg, setShareDlg] = useState<{ key: string; title: string } | null>(null);
   const [joinDlg, setJoinDlg] = useState(false);
   // team rooms: plan board — the room whose board is open
@@ -2730,6 +2732,8 @@ function App() {
       {modal === "new" && (
         <NewSessionModal
           existingGroups={groupKeys}
+          rooms={teamRooms}
+          roomRepos={roomRepoNames(sessions, teamRooms)}
           initialLaunch={newLaunch}
           initialGroup={newGroup}
           presets={presets}

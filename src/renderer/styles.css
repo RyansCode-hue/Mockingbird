@@ -1727,6 +1727,51 @@ button.chip { border: none; cursor: pointer; }
 /* New session: presets start in one click */
 .preset-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; }
 .preset-chips button { padding: 3px 10px; font-size: 11px; }
+
+/* ---- New session: sections in a label column; a summary of what Start does in the footer ---- */
+.modal.ns { width: 640px; padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.ns-head { display: flex; align-items: center; gap: 12px; padding: 15px 20px 11px; border-bottom: 1px solid var(--line-soft); }
+.ns-head h3 { margin: 0; }
+.ns-head .preset-chips { margin: 0 0 0 auto; }
+.ns-body { padding: 0 20px; overflow-y: auto; min-height: 0; }
+.ns-sec { display: grid; grid-template-columns: 62px minmax(0, 1fr); column-gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--line-soft); }
+.ns-sec:last-of-type { border-bottom: none; }
+.ns-k { font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); padding-top: 8px; }
+.ns-line { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.ns-line > .grow { flex: 1; min-width: 0; }
+.ns-gap { margin-top: 8px; }
+.modal .ns-sec input[type=text] + input[type=text], .modal .ns-sec .mb-select + input[type=text] { margin-top: 0; }
+.ns-sec .grow > input[type=text], .ns-gap > input[type=text] { margin-top: 6px; }
+.ns-line > input[type=text] { margin-top: 0; }
+.seg.ns-launch, .seg.ns-where { display: inline-flex; flex-shrink: 0; padding: 3px; }
+.seg.ns-launch button, .seg.ns-where button { padding: 5px 11px; font: 500 11px var(--ui); }
+.modal .mb-select.ns-model { flex: 1; min-width: 0; }
+.modal .mb-select.ns-effort { flex: 0 0 150px; }
+.ns-rooms { display: flex; flex-direction: column; margin-top: 8px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
+.ns-room {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: none; border-radius: 0;
+  border-bottom: 1px solid var(--line-soft); text-align: left; width: 100%;
+}
+.ns-room:last-child { border-bottom: none; }
+.ns-room.sel { background: var(--fill-selected); box-shadow: inset 2px 0 0 var(--teal); }
+.ns-room .meta, .ns-chosen .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.ns-room .t, .ns-chosen .t { font: 500 11.5px var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ns-room .s, .ns-chosen .s { font: 400 9.5px var(--mono); color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ns-people { display: inline-flex; gap: 3px; flex-shrink: 0; }
+.ns-people .team-initials.off { background: var(--fill-subtle); color: var(--text-4); }
+.ns-note { font: 400 10px/1.5 var(--ui); color: var(--text-3); margin-top: 8px; }
+.ns-chosen { display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-pane); }
+.pick-list.ns-list { max-height: 200px; }
+.ns-tag { margin-left: auto; font: 500 9px var(--ui); color: var(--teal-text); border: 1px solid color-mix(in srgb, var(--teal) 45%, transparent); border-radius: 4px; padding: 0 5px; line-height: 14px; flex-shrink: 0; }
+.modal label.ns-check { display: inline; margin: 0; font: 400 11px var(--ui); letter-spacing: 0; text-transform: none; color: var(--text-1); }
+.ns-ticket-sum { font: 400 11px var(--mono); color: var(--text-2); padding: 7px 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ns-ticket-sum + .link { margin-left: auto; }
+.ns-body .err { margin: 0 0 12px; }
+.ns-foot { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line-soft); background: var(--bg-chrome); }
+.ns-foot .ns-sum { flex: 1; min-width: 0; font: 400 10px var(--mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.ns-foot button.primary.cta { min-width: 150px; padding: 6px 20px; }
+button.ns-ghost { padding: 5px 4px; color: var(--text-3); flex-shrink: 0; }
+button.ns-ghost:hover { background: none; color: var(--text-1); }
 /* pane rail: the branch's pull request */
 .rail .cell .v.pr-approved, .rail .cell .v.pr-merged { color: var(--teal-text); }
 .rail .cell .v.pr-changes { color: var(--red); }
