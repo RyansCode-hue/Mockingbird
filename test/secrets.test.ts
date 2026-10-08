@@ -4,34 +4,7 @@ import { describe, expect, it } from "vitest";
 import { knownSecretFiles, roomSecretReads, SECRET_FILE_GLOBS, SECRET_READS, secretPathspecs } from "../src/main/secrets";
 import { snapshotCommit } from "../src/main/snapshots";
 import { git, makeRepo, tempDir, write } from "./helpers";
-
-/** Secret files as they turn up in repositories, at the top and deeper. */
-const SECRETS = [
-  ".env",
-  ".env.local",
-  "api/.env.production",
-  "config/dev.env",
-  "certs/server.pem",
-  "certs/server.key",
-  "certs/client.pfx",
-  "certs/client.p12",
-  "credentials.json",
-  "gcp/credentials.json",
-  "secrets.json",
-  "Functions/local.settings.json",
-  "ado.pat",
-  "tools/ado_pat.txt",
-  "tools/azure-pat.txt",
-  "pat.txt",
-];
-/** Files that look close but are ordinary work: a backup must carry them. */
-const ORDINARY = ["src/env.ts", "src/keys.ts", "docs/compatibility.txt", "patterns.txt", "src/credentials.ts", "settings.json", "README.md"];
-
-function workTracker(patFile: string): string {
-  const wt = tempDir("worktracker");
-  fs.writeFileSync(path.join(wt, "config.json"), JSON.stringify({ azureDevOps: { orgUrl: "https://dev.azure.com/acme", project: "P", patFile } }));
-  return wt;
-}
+import { ORDINARY, SECRETS, workTracker } from "./secretFixtures";
 
 describe("the secret file list", () => {
   it("is where Claude's deny rules come from: relative, anywhere on disk, home credentials and the ADO PAT file", () => {

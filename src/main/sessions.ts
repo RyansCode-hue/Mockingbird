@@ -66,7 +66,9 @@ export interface RoomLaunch {
   env: Record<string, string>;
   /** Claude permission rules denying file reads (--disallowedTools). */
   denyReads: string[];
-  /** What the agent starts knowing about the room (its plan board); null for a terminal, or when it couldn't be read. */
+  /** Codex -c settings that run it in the room's sandbox (codexRoomSandbox.ts). */
+  codexPermissions: string[];
+  /** What the agent starts knowing about the room (its plan board, and Codex its sandbox); null for a terminal, or when there's nothing. */
   instructions: string | null;
   /** Mockingbird MCP tools the agent may call without asking (the plan board's). */
   allowTools: string[];
@@ -80,6 +82,10 @@ export interface LaunchTarget {
   group: string | null;
   /** null for a terminal. */
   agent: AgentKind | null;
+  /** The agent CLI's installed version, when it could be read. */
+  agentVersion: string | null;
+  /** The folder it starts in. */
+  cwd: string;
 }
 
 interface LiveSession {
@@ -109,6 +115,9 @@ export class SessionManager {
   private wc: WebContents | null = null;
   /** Each agent CLI's installed version, as last read; new panes record it (see AgentUpdateNotice). */
   agentVersions: Partial<Record<AgentKind, string>> = {};
+  /** Reads an agent CLI's installed version now; null when it can't be told (the app's `<bin> --version`). */
+  readVersion: ((kind: AgentKind) => Promise<string | null>) | null = null;
+  private versionReads = new Map<AgentKind, Promise<void>>();
 
   private resolvedBins = new Map<string, string>();
   /** Bumped by resetBinCache, so a lookup started before a Settings change can't cache the old binary. */
@@ -120,7 +129,7 @@ export class SessionManager {
   /** Teammates' sessions shown here (team rooms); their I/O is routed to their owners. */
   remote: RemotePanes | null = null;
   /** Extra launch settings for a session in a shared group (team rooms); null outside rooms. */
-  roomLaunch: ((target: LaunchTarget) => RoomLaunch | null) | null = null;
+  roomLaunch: ((target: LaunchTarget) => Promise<RoomLaunch | null>) | null = null;
   /** Why a session mustn't run again here (a teammate continues it: team rooms' take-over), or null when it may. */
   relaunchGuard: ((id: string) => string | null) | null = null;
   private watchers = new Set<() => void>();
@@ -262,11 +271,15 @@ export class SessionManager {
     const shellArgs = ["-il"];
     let claudeArgs: string[] = shellArgs;
     const id = req.reuseId ?? randomUUID().slice(0, 8);
-    // a session in a room's shared group starts with the room's protections
+    // a session in a room's shared group starts with the room's protections,
+    // which for Codex depend on its version
     const group = req.taskGroup ?? req.ticketId ?? null;
-    const room = req.debrief ? null : this.roomLaunch?.({ id, group, agent: req.shell ? null : req.agent ?? "claude" }) ?? null;
+    const targetAgent = req.shell ? null : req.agent ?? "claude";
+    const agentVersion = targetAgent && group && this.roomLaunch && !req.debrief ? await this.versionOf(targetAgent) : null;
+    const room = req.debrief ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, agentVersion, cwd })) ?? null);
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
+      ...(room?.codexPermissions.length ? { codexPermissions: room.codexPermissions } : {}),
       ...(room?.instructions ? { instructions: room.instructions } : {}),
       ...(room?.allowTools.length ? { allowTools: room.allowTools } : {}),
     };
@@ -564,6 +577,24 @@ export class SessionManager {
     }
     if (changed) this.emitChanged();
     return changed;
+  }
+
+  /** An agent CLI's installed version: as last read, else read now (one read at a time per agent). */
+  async versionOf(kind: AgentKind): Promise<string | null> {
+    if (!this.agentVersions[kind] && this.readVersion) {
+      let read = this.versionReads.get(kind);
+      if (!read) {
+        read = this.readVersion(kind)
+          .then((v) => {
+            if (v) this.setAgentVersions({ [kind]: v });
+          })
+          .catch((err) => console.warn(`[sessions] couldn't read the ${agentLabel(kind)} CLI's version: ${(err as Error).message}`))
+          .finally(() => this.versionReads.delete(kind));
+        this.versionReads.set(kind, read);
+      }
+      await read;
+    }
+    return this.agentVersions[kind] ?? null;
   }
 
   /** Read the installed versions; panes started before a version was known take the first one read. */

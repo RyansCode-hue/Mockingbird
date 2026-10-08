@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { checkUpdateWith, isNewer, repoFromPackage, type UpdateDeps } from "../src/main/updates";
+import { checkUpdateWith, repoFromPackage, type UpdateDeps } from "../src/main/updates";
+import { isNewer } from "../src/shared/versions";
 
 /** A fake GitHub: path → [status, body]; records whether calls carried a token. */
 function github(routes: Record<string, [number, unknown]>) {

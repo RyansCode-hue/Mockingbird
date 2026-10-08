@@ -11,9 +11,9 @@ export function tempDir(name: string): string {
   return fs.mkdtempSync(path.join(os.homedir(), `${name}-`));
 }
 
-/** A git repo on `main` with the given files committed. */
-export function makeRepo(files: Record<string, string> = { "README.md": "hello\n" }, name = "repo"): string {
-  const dir = path.join(tempDir("code"), name);
+/** A git repo on `main` with the given files committed, in `parent` (a fresh temp folder by default). */
+export function makeRepo(files: Record<string, string> = { "README.md": "hello\n" }, name = "repo", parent = tempDir("code")): string {
+  const dir = path.join(parent, name);
   fs.mkdirSync(dir, { recursive: true });
   execFileSync("git", ["-c", "init.defaultBranch=main", "init", "-q", dir]);
   write(dir, files);

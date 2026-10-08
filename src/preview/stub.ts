@@ -52,7 +52,7 @@ const session = (id: string, over: Partial<SessionInfo>): SessionInfo => ({
 let sessions: SessionInfo[] = [
   session("s1", { title: "#5101 — Org dropdowns remember the last org", ticketId: "5101", ticketTitle: "Org dropdowns remember the last org", taskGroup: "5101", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "working", model: "opus" }),
   session("s2", { title: "API: last org per user", ticketId: "5101", ticketTitle: "API: last org per user", taskGroup: "5101/api", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: now - 4 * min }),
-  session("s3", { title: "API tests", taskGroup: "5101/api", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), agent: "codex", status: "idle" }),
+  session("s3", { title: "API tests", taskGroup: "5101/api", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), agent: "codex", agentVersion: "0.131.0", status: "idle" }),
   session("s4", { title: "test runner", taskGroup: "5101", shell: true, agent: undefined, status: "idle" }),
   session("s8", { title: "Release notes for #5101", taskGroup: "5101", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "idle" }),
   session("s5", { title: "#5102 — Pathways quick view freezes", ticketId: "5102", ticketTitle: "Pathways quick view freezes", taskGroup: "5102", branch: "5102-quickViewFreeze", cwd: WT("5102-quickViewFreeze"), status: "idle" }),
@@ -367,8 +367,9 @@ const takeoverChanged = () => emit("onTeamTakeoverChanged", JSON.parse(JSON.stri
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
 
 // team rooms: live panes — Nick's session in the shared 5101 room, shown here as a copy;
-// he has your s1 open and is in it. 5101's own sessions are room sessions: the terminal
-// and the Codex one run without the secret deny rules, and say so.
+// he has your s1 open and is in it. 5101's own sessions are room sessions: the terminal,
+// and the Codex one on a Codex too old for the room's permission profile, run without
+// the secret deny rules, and say so.
 const ROOM_5101 = "R5101aaaaaaaaaaaaaaaaa";
 const NICK_PANE = remotePaneId(NICK, "n1");
 const SAM_PANE = remotePaneId(SAM, "m1");

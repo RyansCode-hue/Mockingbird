@@ -7,7 +7,8 @@ import { isMissing } from "./fileOps";
  * Secret files by name, at any depth: env files, keys and certificates, and
  * the usual credential, PAT and local-settings files. The one list every
  * secret guard is built from: Claude's deny-read rules (SECRET_READS,
- * roomSecretReads) and what a room backup leaves out (secretPathspecs).
+ * roomSecretReads), Codex's room sandbox (codexRoomSandbox.ts) and what a
+ * room backup leaves out (secretPathspecs).
  */
 export const SECRET_FILE_GLOBS: readonly string[] = [
   ".env",
@@ -34,7 +35,7 @@ export const SECRET_FILE_GLOBS: readonly string[] = [
 export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 
 /** Credentials outside any repository, and this install's own team keys and invite tokens. */
-const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**"];
+export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**"];
 
 /**
  * Secret files at known places on this Mac: the Azure DevOps PAT file
@@ -61,8 +62,11 @@ export function roomSecretReads(workTrackerPath: string): { rules: string[]; pro
   const known = knownSecretFiles(workTrackerPath);
   // "//" starts an absolute path in a permission rule
   const rules = [...SECRET_READS, ...anywhere, ...HOME_SECRETS.map((p) => `Read(${p})`), ...known.files.map((f) => `Read(/${f})`)];
-  return { rules, problem: known.problem && `${known.problem} — so it isn't denied by path` };
+  return { rules, problem: notDeniedByPath(known.problem) };
 }
+
+/** A knownSecretFiles problem as a deny list reports it. */
+export const notDeniedByPath = (problem: string | null) => problem && `${problem} — so it isn't denied by path`;
 
 /**
  * Git pathspecs (for `git add` run at `top`) that leave secret files out:
