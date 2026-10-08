@@ -3,7 +3,7 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 import { loadIdentity, randomToken, roomIdFor, type Identity } from "../src/main/team/identity";
-import { compareEvents, defineEventType, eventIdOf, eventPayload, reduceRoom, RoomLog, RoomStore } from "../src/main/team/rooms";
+import { compareEvents, defineEventType, eventIdOf, eventPayload, LAMPORT_LEAP, reduceRoom, RoomLog, RoomStore } from "../src/main/team/rooms";
 import type { RoomEvent } from "../src/shared/team/types";
 
 // a stage's own event type, declared the way later stages do
@@ -143,6 +143,43 @@ describe("a room's event log", () => {
     expect(a.summary()).toEqual(b.summary());
     expect(a.differingAuthors(b.summary())).toEqual([]);
     expect(a.state).toEqual(b.state);
+  });
+
+  it("refuses an event whose Lamport time leaps far past the log's, so no event can leave the room without a next time", () => {
+    const ryan = newId("ryan");
+    const nick = newId("nick");
+    const { log, roomId } = newRoom(ryan);
+    log.create(ryan, "member.added", { id: nick.id, name: "Nick", publicKey: nick.publicKey });
+    expect(log.add(signed(nick, roomId, "test.note", { text: "the end of time" }, Number.MAX_SAFE_INTEGER))).toMatchObject({ status: "rejected", reason: expect.stringMatching(/Lamport time/) });
+    expect(log.add(signed(nick, roomId, "test.note", { text: "just past" }, 2 + LAMPORT_LEAP + 1))).toMatchObject({ status: "rejected" });
+    const next = log.create(ryan, "test.note", { text: "still going" });
+    expect(next.lamport).toBe(3);
+    expect(log.add(signed(nick, roomId, "test.note", { text: "as far as allowed" }, 3 + LAMPORT_LEAP))).toEqual({ status: "added" });
+    expect(log.create(nick, "test.note", { text: "and on" }).lamport).toBe(4 + LAMPORT_LEAP);
+    expect(log.state!.ext.notes).toEqual(["still going", "as far as allowed", "and on"]);
+  });
+
+  it("catches up past a refused leap: the rest of the batch goes in, and the next exchange brings the refused events", () => {
+    const ryan = newId("ryan");
+    const nick = newId("nick");
+    const { log: a, roomId } = newRoom(ryan);
+    a.create(ryan, "member.added", { id: nick.id, name: "Nick", publicKey: nick.publicKey });
+    a.create(ryan, "test.note", { text: "r1" });
+    expect(a.add(signed(nick, roomId, "test.note", { text: "n1" }, 3 + LAMPORT_LEAP))).toEqual({ status: "added" });
+    a.create(ryan, "test.note", { text: "r2" });
+    a.create(ryan, "test.note", { text: "r3" });
+    // a log that has nothing yet gets each author's events in turn, Ryan's first: his last two are too far past its clock until Nick's arrive
+    const b = new RoomLog(roomId, path.join(tempDir("b"), roomId));
+    const exchange = () => {
+      for (const author of [ryan.id, nick.id]) for (const e of a.missingFor(author, b.idsBy(author))) b.add(e);
+    };
+    exchange();
+    expect(b.idsBy(ryan.id)).toHaveLength(3);
+    expect(b.idsBy(nick.id)).toHaveLength(1);
+    exchange();
+    expect(b.summary()).toEqual(a.summary());
+    expect(b.state).toEqual(a.state);
+    expect(b.state!.ext.notes).toEqual(["r1", "n1", "r2", "r3"]);
   });
 
   it("keeps event types it doesn't know (a newer Mockingbird's) without applying them", () => {

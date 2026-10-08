@@ -32,6 +32,18 @@ export const MAX_EVENT_BODY = 256 * 1024;
 const MAX_PENDING = 2000;
 const SNAPSHOT_EVERY = 100;
 
+/**
+ * How far past a log's clock (its largest Lamport time) an event's time may
+ * be. Every event's time becomes every member's clock, and the next event
+ * needs one more than that: an event at Number.MAX_SAFE_INTEGER would leave
+ * the room unable to take another. An event's time is one more than the
+ * largest its author had seen, so it is never more than the room's event
+ * count past any member's clock, whatever order events arrive in: a room
+ * under a million events never has one refused. Refused, a leap moves no
+ * clock; pushing one to the limit by leaps that pass takes ~9e9 events.
+ */
+export const LAMPORT_LEAP = 1_000_000;
+
 // ---- event types --------------------------------------------------------------------
 
 export interface EventDef<B> {
@@ -298,6 +310,7 @@ export class RoomLog {
     } catch (err) {
       return { status: "rejected", reason: `malformed ${e.type}: ${(err as Error).message}` };
     }
+    if (e.lamport > this.clock + LAMPORT_LEAP) return { status: "rejected", reason: `its Lamport time ${e.lamport} is more than ${LAMPORT_LEAP} past this room's ${this.clock}` };
     this.store(e);
     this.retryPending();
     return { status: "added" };

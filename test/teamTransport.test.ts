@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 import { LoopbackNetwork, loopbackMember, loopbackRoom, until } from "../src/main/team/loopback";
 import { TeamCore, TeamError } from "../src/main/team/transport";
-import { defineEventType, RoomStore } from "../src/main/team/rooms";
+import { defineEventType, eventIdOf, eventPayload, RoomStore } from "../src/main/team/rooms";
 import { MAX_STREAM_CHUNK } from "../src/main/team/frames";
 import { encodeInvite, decodeInvite, TEAM_PROTOCOL } from "../src/shared/team/protocol";
 import type { RoomEvent } from "../src/shared/team/types";
@@ -206,6 +206,39 @@ describe("the team transport over the loopback", () => {
     (ryan.team as any).handler.frame("e".repeat(32), JSON.stringify({ k: "ev", roomId, events: [] }));
     expect(ryan.logs.join("\n")).toMatch(/before its hello/);
     expect(ryan.team.room(roomId)!.events).toBe(before);
+  });
+
+  it("refuses an event at the end of Lamport time, so a member can't freeze the room, and says so", async () => {
+    const { members, roomId } = await loopbackRoom(["Ryan", "Nick", "Sam"], { dir: tempDir("t") });
+    const [ryan, nick, sam] = members;
+    // a tampered Mockingbird on Nick's laptop sends Ryan a signed event no next one could follow
+    const u = { roomId, type: "chat.test", body: { text: "frozen" }, author: nick.id, lamport: Number.MAX_SAFE_INTEGER, at: Date.now() };
+    const payload = eventPayload(u);
+    (ryan.team as any).handler.frame(nick.id, JSON.stringify({ k: "ev", roomId, events: [{ ...u, id: eventIdOf(payload), sig: nick.identity.sign(payload) }] }));
+    // everyone can still publish, and everyone hears it
+    ryan.team.publish(roomId, "chat.test", { text: "from Ryan" });
+    sam.team.publish(roomId, "chat.test", { text: "from Sam" });
+    expect(ryan.logs.join("\n")).toMatch(/refused event \S+ \(chat\.test\) in room \S+ from Nick: its Lamport time/);
+    for (const m of members) await until(() => m.team.room(roomId)!.ext.chatTest?.length === 2, `${m.name} to hear both`);
+    for (const m of members) expect(m.team.room(roomId)!.ext.chatTest).not.toContain("frozen");
+    expect(ryan.team.room(roomId)!.lamport).toBeLessThan(100);
+    expect(nick.team.room(roomId)).toEqual(ryan.team.room(roomId));
+  });
+
+  it("catches a member up on a long history, whoever wrote it, in any order it arrives", async () => {
+    const net = new LoopbackNetwork();
+    const { members, roomId } = await loopbackRoom(["Ryan", "Nick", "Sam"], { dir: tempDir("t"), net });
+    const [ryan, nick, sam] = members;
+    net.setOnline(sam.id, false);
+    await until(() => ryan.team.presence(roomId).length === 1, "Sam to leave");
+    for (let i = 0; i < 300; i++) (i % 3 ? ryan : nick).team.publish(roomId, "chat.test", { text: `m${i}` });
+    await until(() => nick.team.room(roomId)!.ext.chatTest?.length === 300, "Nick to hear Ryan's");
+    net.setOnline(sam.id, true);
+    await until(() => sam.team.room(roomId)!.ext.chatTest?.length === 300, "Sam to catch up", 10_000);
+    sam.team.publish(roomId, "chat.test", { text: "back" });
+    await until(() => ryan.team.room(roomId)!.ext.chatTest?.at(-1) === "back", "Ryan to hear Sam");
+    expect(sam.team.room(roomId)).toEqual(ryan.team.room(roomId));
+    expect(sam.logs.join("\n")).not.toMatch(/refused/);
   });
 
   it("shows a teammate on another protocol as needing an update", async () => {
