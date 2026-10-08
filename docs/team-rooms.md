@@ -175,6 +175,13 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   - Someone who leaves while nobody else is online is told nothing back; the
     others hear it from the Worker's welcome (an older Worker: they see them as
     an offline member until the admin removes them).
+  - Someone removed and invited back by a member other than the admin can be
+    cut off at the Worker again if the admin's Mockingbird reconnects before it
+    has the new `member.added`; the admin's next admit lets them back in once
+    it has.
+  - Leaving waits for the cleanup, including deleting backups on origin (each
+    push has its own timeout): with an unreachable origin the dialog takes a
+    while, then lists what's left there.
 
 ## Sessions in a room
 
