@@ -60,7 +60,10 @@ should stop more members joining later.
 - **Every member keeps a full copy of the room's state**: members, sessions,
   chat, board, presence. It's an append-only event log, ordered by Lamport time
   and merged on reconnect. The room keeps working for whoever's online when the
-  creator's laptop is off.
+  creator's laptop is off. An event whose Lamport time is more than a million
+  past a member's is refused, so no event can leave the room unable to take
+  the next. Origin URLs go into the log without any user name or token, and an
+  event carrying one is refused.
 - The sidebar shows the room as a group with a shared badge and the initials of
   who's connected right now. Sessions outside rooms are never visible to anyone.
 
@@ -221,7 +224,8 @@ on their laptop under their own account.
   count from there.
 - **Who can see a backup:** while a session is backed up, anyone with read
   access to the repository can fetch its work in progress from the hidden ref
-  (secrets — `.env*`, keys, certificates, credential files — are never in it).
+  (secrets — `.env*`, keys, certificates, credential files — are never in it,
+  staged or not; one already committed stays as the branch's commit has it).
   The conversation is never there.
 - **Backups don't pile up.** Only a session's current owner deletes its hidden
   ref (and members then delete their copies): when the owner forgets the
