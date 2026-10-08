@@ -5,7 +5,7 @@ import { fetchOrigin, originKey, publishPlan, pushedBranchFiles, type PlanRender
 import { TEAM_DIR } from "./identity";
 import type { Team, Unsubscribe } from "./transport";
 import { readJsonOrSetAside, writeFileAtomic } from "../fileOps";
-import { BASE_NAMES, originUrl } from "../git";
+import { BASE_NAMES, originUrl, publicUrl } from "../git";
 import { mainCheckout } from "../runProfile";
 import type { TeammateChanges } from "../conflicts";
 import type { ClaimEvent } from "../hooks";
@@ -219,7 +219,7 @@ export class PlanService {
     for (const repo of [...new Set([...inRoom, ...this.d.knownRepos()])]) {
       const o = await this.origin(repo);
       if (!o.url || out.some((c) => c.path === o.main)) continue;
-      out.push({ path: o.main, name: path.basename(o.main), origin: o.url, inRoom: inRoom.has(repo) });
+      out.push({ path: o.main, name: path.basename(o.main), origin: publicUrl(o.url), inRoom: inRoom.has(repo) });
     }
     return out.sort((a, b) => Number(b.inRoom) - Number(a.inRoom) || a.name.localeCompare(b.name));
   }
@@ -559,10 +559,12 @@ export class PlanService {
       }
       const mine = room.ext.memberBranches?.[team.self.id];
       const next = [...branches].sort();
-      if (mine && mine.origin === repo.origin && mine.branches.join("\n") === next.join("\n")) continue;
+      // a repo chosen before origins were checked for credentials can still carry them
+      const origin = publicUrl(repo.origin);
+      if (mine && mine.origin === origin && mine.branches.join("\n") === next.join("\n")) continue;
       if (!mine && !next.length) continue;
       try {
-        team.publish(room.id, "plan.branches", { origin: repo.origin, branches: next });
+        team.publish(room.id, "plan.branches", { origin, branches: next });
       } catch (err) {
         this.d.log(`team plan: announcing your branches in room ${room.name}`, err);
       }

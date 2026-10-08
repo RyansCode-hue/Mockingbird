@@ -175,6 +175,9 @@ export function publicUrl(url: string): string {
   return url.trim().replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");
 }
 
+/** Whether a remote URL carries a user name or password: what publicUrl takes out. */
+export const hasCredentials = (url: string): boolean => publicUrl(url) !== url.trim();
+
 /** Text from git (an error) with any credentials in the URLs it quotes taken out. */
 export function withoutCredentials(text: string): string {
   return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^@/\s'"]*@/gi, "$1");

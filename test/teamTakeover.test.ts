@@ -724,6 +724,16 @@ describe("take-over pieces", () => {
     expect(withoutCredentials("fatal: unable to access 'https://ryan:ghp_secret@github.com/acme/app.git/'")).not.toContain("ghp_secret");
   });
 
+  it("refuses a backup record carrying credentials, in its origin URL or its push error", async () => {
+    const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("team") });
+    const [ryan] = members;
+    const descriptor = { title: "t", agent: "claude", branch: "feature-x", originUrl: "https://github.com/acme/app.git", cwd: "/w", conversationId: null };
+    const body = { sessionId: "s1", sha: "a".repeat(40), takenAt: 1, push: { ok: true, at: 1 }, session: descriptor, transcriptBytes: null };
+    expect(() => ryan.team.publish(roomId, "session.backup", { ...body, session: { ...descriptor, originUrl: "https://ryan:ghp_secret@github.com/acme/app.git" } } as never)).toThrow(/credentials/);
+    expect(() => ryan.team.publish(roomId, "session.backup", { ...body, push: { ok: false, at: 1, error: "fatal: unable to access 'https://ryan:ghp_secret@github.com/acme/app.git/'" } } as never)).toThrow(/credentials/);
+    expect(() => ryan.team.publish(roomId, "session.backup", body as never)).not.toThrow();
+  });
+
   it("moves a transcript's working directory, folders inside it too, and drops a line cut short", () => {
     const claude = [{ cwd: "/a/wt", x: 1 }, { cwd: "/a/wt/sub" }, { cwd: "/elsewhere" }].map((l) => JSON.stringify(l)).join("\n") + "\n" + '{"cwd":"/a/wt","cut';
     expect(rebaseTranscript(claude, "claude", ["/a/wt"], "/b/wt")).toBe(['{"cwd":"/b/wt","x":1}', '{"cwd":"/b/wt/sub"}', '{"cwd":"/elsewhere"}', ""].join("\n"));

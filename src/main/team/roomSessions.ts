@@ -1,4 +1,5 @@
 import { defineEventType } from "./rooms";
+import { hasCredentials } from "../git";
 import { AGENT_KINDS, splitGroupKey, type SessionInfo, type SessionStatus, type WorktreeStateInfo } from "../../shared/types";
 import { roomSessionKey, type RoomGitState, type RoomSessionRecord } from "../../shared/team/livePanes";
 import type { MemberId, RoomId } from "../../shared/team/types";
@@ -52,6 +53,7 @@ export function validateRecord(b: unknown): asserts b is RoomSessionRecord {
   time(r.waitingSince, "waitingSince", true);
   text(r.branch, "branch", 300, true);
   text(r.repo, "repo", 500, true);
+  if (typeof r.repo === "string" && hasCredentials(r.repo)) throw new Error("repo must not carry credentials");
   text(r.repoName, "repoName", 200, true);
   text(r.ticketId, "ticketId", 100, true);
   text(r.ticketTitle, "ticketTitle", 300, true);
