@@ -42,6 +42,7 @@ should stop more members joining later.
   `member.renamed`, `member.removed` (leaving and removal, below);
   `session.upsert` / `session.removed` (room sessions);
   `session.backup`, `session.takenOver`, `session.backupDropped` (take-over);
+  `room.settings` (the admin's: backups to origin);
   `chat.message`, `chat.update`, `chat.assistant` (team room); `plan.package`,
   `plan.claim`, `plan.status`, `plan.remove`, `plan.repo`, `plan.branches`
   (plan board). Terminal output, views and typing are streams and requests
@@ -57,8 +58,8 @@ should stop more members joining later.
   creator's key fingerprint). Joining records the joiner's public key as a
   member; after that, members reconnect by key.
 - Being in a room is the permission. Members can do anything in it — invite
-  others included — except remove someone else, which is the room's **admin**'s
-  (below). Leave room for viewer/driver roles later.
+  others included — except remove someone else and choose whether backups go
+  to origin, which are the room's **admin**'s (below, and "Take-over"). Leave room for viewer/driver roles later.
 - **Every member keeps a full copy of the room's state**: members, sessions,
   chat, board, presence. It's an append-only event log, ordered by Lamport time
   and merged on reconnect. The room keeps working for whoever's online when the
@@ -118,8 +119,9 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
     uses the repository) and its sessions' co-author lists;
   - hidden refs `refs/mockingbird/{rooms,rooms-origin,rooms-left,rooms-sent}/<roomId>/*`
     in every repository Mockingbird knows;
-  - its own backups on origin (`git push origin :<ref>`, with a lease), best
-    effort: what fails is listed, not hidden.
+  - any backups it pushed to origin (`git push origin :<ref>`, with a lease;
+    only in a room that backs up there, or where it did before), best effort:
+    what fails is listed, not hidden.
   The group stays as an ordinary local group; its sessions keep running, no
   longer room sessions (no streaming, typing in, backups or trailers). A
   notice says "You left #5101" or "Ryan removed you from #5101" (a removal
@@ -182,9 +184,9 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
     cut off at the Worker again if the admin's Mockingbird reconnects before it
     has the new `member.added`; the admin's next admit lets them back in once
     it has.
-  - Leaving waits for the cleanup, including deleting backups on origin (each
-    push has its own timeout): with an unreachable origin the dialog takes a
-    while, then lists what's left there.
+  - Leaving waits for the cleanup, including deleting any backups on origin
+    (each push has its own timeout): with an unreachable origin the dialog
+    takes a while, then lists what's left there.
 
 ## Sessions in a room
 
@@ -284,23 +286,39 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 When the owner is away, a member clicks **Take over** and the session continues
 on their laptop under their own account.
 
-- **Work:** while members are connected, each room session's uncommitted work
-  mirrors peer to peer. After every agent turn (the agent going from working
-  or waiting to idle, or exiting: the same turns Co-authored-by counts),
-  Mockingbird also snapshots the worktree, the same way Undo turn does, and
-  pushes it to a hidden ref `refs/mockingbird/rooms/<room>/<session>` on
-  origin. That's the backup when the owner's laptop is off. Each session's
-  sidebar row and pane header show how fresh its backup is ("backed up 2 min
-  ago", or a warning when a push failed); a teammate's also offers **Take
-  over**, prominent while its owner is offline.
+- **Work:** after every agent turn (the agent going from working or waiting
+  to idle, or exiting: the same turns Co-authored-by counts), Mockingbird
+  snapshots the worktree, the same way Undo turn does, under a hidden ref
+  `refs/mockingbird/rooms/<room>/<session>`, and copies it peer to peer into
+  each connected teammate's clone under the same ref (a teammate who connects
+  later gets it then). That copy is the backup a teammate takes over from.
+  Each session's sidebar row and pane header say where its backup is: the
+  owner's "copied to Nick 2m ago" (or "no teammate has a copy yet"), a
+  teammate's "copied here 2m ago", "copied here 1h ago · newer on Ryan's
+  laptop" or "no copy here · only on Ryan's laptop". A teammate's row also
+  offers **Take over**, prominent while its owner is offline.
+- **Off GitHub by default, GitHub opt-in** (decided with Ryan, 2026-10-08:
+  "Peer to peer, GitHub opt-in"). Backups never reach origin unless the
+  room's admin turns on **Also back up to GitHub** (below). Then each snapshot
+  is also pushed to that hidden ref on origin, so a session can be taken over
+  while its owner's laptop is off even by a teammate who wasn't connected
+  when its turns ended — and the rows say "backed up 2m ago", or warn when a
+  push failed.
 - **Conversation:** the transcript syncs **peer to peer only, never to GitHub**.
   Take-over places it where the taker's CLI resumes it (Claude's
   `~/.claude/projects/<slug>/<id>.jsonl` for the taker's checkout path, or
   Codex's rollout). If the newest transcript never reached the taker, the agent
   resumes from a handoff summary instead (the existing handoff digest), and says so.
 - Take-over creates the session's branch/worktree on the taker's laptop from
-  the newest snapshot it has (peer copy or hidden ref, whichever is newer). It
-  says which snapshot it used. The taker's new session is the room's from then
+  the newest snapshot it has: the peer copy in its clone, or — in a room that
+  backs up to origin — origin's hidden ref, whichever is newer (a room kept
+  peer to peer never fetches from origin, and keeps no `rooms-origin` copy).
+  The dialog says which snapshot it uses and how old it is; kept peer to peer
+  with the owner offline, it says plainly that this is the newest copy that
+  reached this Mac and that newer work may be on the owner's laptop (turns
+  since the two were last connected). With no copy here at all, Take over is
+  refused, saying so: it can be taken over once the owner is back online
+  (and asked), or once the admin turns on backups to origin. The taker's new session is the room's from then
   on. The original owner's copy leaves the room: their Mockingbird removes its
   record, stops streaming it, refuses teammates' typing into it and stops
   backing it up, as soon as it learns of the take-over — at once, or when it's
@@ -341,17 +359,74 @@ on their laptop under their own account.
   `git apply --3way` by hand. A line in the room's chat says it was sent. What
   was sent is remembered (`refs/mockingbird/rooms-sent/…`), so later edits
   count from there.
-- **Who can see a backup:** while a session is backed up, anyone with read
-  access to the repository can fetch its work in progress from the hidden ref
-  (secrets — `.env*`, keys, certificates, credential files — are never in it,
-  staged or not; one already committed stays as the branch's commit has it).
-  The conversation is never there.
-- **Backups don't pile up.** Only a session's current owner deletes its hidden
-  ref (and members then delete their copies): when the owner forgets the
-  session, when all its work is merged into the base branch, after 14 days
-  without a turn (pruned on start and daily), and — for a taken-over session —
-  once the taker's own first backup has landed. A deletion that fails is shown
-  and retried.
+- **Who can see a backup:** kept peer to peer, only the room's members whose
+  Mockingbird got a copy. Backed up to origin, anyone with read access to the
+  repository can fetch its work in progress from the hidden ref. Either way
+  secrets — `.env*`, keys, certificates, credential files — are never in it,
+  staged or not (one already committed stays as the branch's commit has it),
+  and the conversation is never in git.
+- **Backups don't pile up.** Only a session's current owner deletes its backup
+  — its hidden ref here, and on origin where it pushed one — and members then
+  delete their copies: when the owner forgets the session, when all its work
+  is merged into the base branch, after 14 days without a turn (pruned on
+  start and daily), and — for a taken-over session — once the taker's own
+  first backup has been taken (and, in a room backing up to origin, pushed).
+  A deletion that fails is shown and retried.
+
+### Also back up to GitHub (the admin's opt-in)
+
+- **Settings → Team, per room:** a switch, "Also back up to GitHub" (or the
+  remote's name: Azure DevOps, GitLab, a host, or "origin" when the room's
+  repositories differ). Its note says what it does — after each turn, every
+  member's room sessions' snapshot (uncommitted and untracked files, never
+  secrets) also goes to a hidden ref on the remote, where anyone with read
+  access to the repository can fetch it, so a teammate can take over while
+  the owner's laptop is off — who the admin is, and who last changed it.
+  Turning it on asks first, with that warning; turning it off doesn't.
+- **The admin's alone.** It's a replicated room setting: `room.settings
+  { backupsToOrigin }`, signed like every event, reduced on every member. Only
+  the room's admin at that point in the room's order (`roomAdmin`) changes
+  anything; anyone else's event is kept in the log and changes nothing, and
+  the switch is disabled for them, naming the admin. A room with no settings
+  event — every room made before this — is off.
+- **On:** each owner pushes its sessions' newest snapshots at once (not only
+  after the next turn), then after every turn, with a lease, as before — but
+  now through the repository's own pre-push hook (no `--no-verify`), so a
+  secret scanner sees each push first. A hook that refuses one (or chokes on
+  a hidden ref) fails the push, and the session shows "backup failed: …" with
+  the hook's message; the copy to teammates still goes. Deleting a ref skips
+  the hook: a deletion pushes no content, and a hook that refuses hidden refs
+  mustn't leave a backup on origin for good.
+- **Off again:** each owner deletes from origin every backup ref it pushed for
+  the room (`git push origin :<ref>`, with a lease) and pushes no more. A
+  deletion that fails shows on the room (Settings → Team's warnings, "backup
+  not deleted from origin") and is retried on the next prune (start and
+  daily). Teammates stop reading origin for take-overs at once.
+- **Rooms from before the setting** are off: their old backups read as pushed
+  (their events say nothing of it), and each owner's Mockingbird deletes what
+  it pushed from origin on its first start after updating.
+- **Mixed versions.** A backup kept off origin still carries a push outcome —
+  `{ ok: false, error: "not on origin: this room keeps backups peer to peer" }`
+  — with `toOrigin: false`, so a Mockingbird from before the setting accepts
+  the event and shows that as why it isn't on origin. An older Mockingbird
+  ignores `room.settings` and keeps pushing its own sessions' backups until
+  it's updated.
+
+### What's stored where
+
+- **The owner's Mac:** the newest snapshot of each of its room sessions under
+  `refs/mockingbird/rooms/<room>/<session>` in the session's repository, and
+  `~/.mockingbird/team/rooms/<room>/takeover.json` (what it last snapshotted,
+  and what it pushed to origin, if anything).
+- **Each teammate's Mac:** the copy sent peer to peer under the same ref in
+  its clone (found by origin URL), the conversation under
+  `~/.mockingbird/team/rooms/<room>/transcripts/<session>/`, and — only in a
+  room backing up to origin, while taking over — what it read from origin
+  under `refs/mockingbird/rooms-origin/<room>/<session>`.
+- **Origin:** nothing, unless the room's admin turned on backups to origin;
+  then each session's newest snapshot under
+  `refs/mockingbird/rooms/<room>/<session>` (never a branch, never fetched by
+  default). The conversation is never there.
 
 ## Team room
 
@@ -389,7 +464,8 @@ A chat thread in each room, for people and agents:
 
 ## Not in this release
 
-- Roles/permissions beyond "member" and the admin who can remove members.
+- Roles/permissions beyond "member" and the admin who can remove members and
+  turn on backups to origin.
 - Other transports (Tailscale, a self-hosted relay): designed for, not built.
 - Running sessions on an always-on shared host.
 
@@ -411,6 +487,17 @@ A chat thread in each room, for people and agents:
   start; the Worker's revoke (self, admin, refused, a room from before revoke,
   admin succession, re-admission, stale admits) and the app's client against
   a new and an older local Worker.
+- Where backups go (`test/teamTakeover.test.ts`, `test/teamTakenOver.test.ts`):
+  a room left as it starts never pushes or fetches `refs/mockingbird/*` on
+  origin (asserted on the bare origin), copies each snapshot peer to peer,
+  and takes over and hands over from that copy; the dialog's age and "newer
+  on their laptop", and the refusal with no copy here; only the admin's
+  `room.settings` counts (a member's is refused locally and ignored by every
+  reducer; after the creator leaves, the next admin's counts); turned on, the
+  owners push at once, through a pre-push hook that can refuse (shown as a
+  failed backup); turned off, each owner deletes what it pushed (a failure
+  shown and retried by the prune); a room from before the setting behaves as
+  off, its owner deleting its old backups from origin on start.
 - Codex's room sandbox against the installed binary, without a model:
   `codex sandbox` runs probes under the exact `-c` settings a room launch
   passes (through the pane's shell quoting), with a throwaway `CODEX_HOME`
@@ -428,8 +515,9 @@ A chat thread in each room, for people and agents:
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
   (`MB_E2E_APP=1`): create room, join by code, live pane, remote typing,
-  chat, board claim, a backed-up turn, a hand-over from the owner's prompt
-  (their agent stopped, the taker continuing), take-over with the owner quit,
+  chat, board claim, a turn backed up peer to peer (nothing on origin), a
+  hand-over from the owner's prompt (their agent stopped, the taker
+  continuing), take-over from the peer copy with the owner quit,
   and the owner's app stopping its copy when it starts again. Notifications,
   the cross-machine message, the claim warning, Keep / no answer / dropping
   offline mid-request, unsent changes sent and applied, and Take it back are

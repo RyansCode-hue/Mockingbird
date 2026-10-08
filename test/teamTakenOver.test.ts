@@ -134,10 +134,15 @@ function app(m: LoopbackMember, clone: string, takeoverOpts: Partial<TakeoverDep
   return { m, sessions, logs, takenOver, chat, asks, viewChanges, claudeProjects, startLive };
 }
 
-async function setup(takeoverOpts: Partial<TakeoverDeps> = {}) {
+/** Ryan's room session with Nick; the room backs up to origin (its admin, Ryan, turned that on) unless `backupsToOrigin: false` keeps it peer to peer, as every room starts. */
+async function setup(takeoverOpts: Partial<TakeoverDeps> = {}, o: { backupsToOrigin?: boolean } = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("team") });
   const [ryanM, nickM] = members;
+  if (o.backupsToOrigin !== false) {
+    ryanM.team.publish(roomId, "room.settings", { backupsToOrigin: true });
+    await until(() => nickM.team.room(roomId)?.ext.settings?.backupsToOrigin === true, "Nick to hear the room backs up to origin");
+  }
   const ryan = app(ryanM, r.ryanClone, takeoverOpts);
   const nick = app(nickM, r.nickClone, takeoverOpts);
   const ryanRun = ryan.startLive();
@@ -178,7 +183,7 @@ describe("a room session's backup in the window", () => {
     const view = (owner: string, sessionId: string, roomId = "R1") => ({ roomId, owner, sessionId }) as any;
     const ryan = "a".repeat(32);
     const nick = "b".repeat(32);
-    const v = { sessions: [view(ryan, "s1"), view(nick, "s1"), view(nick, "s2", "R2")], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [] };
+    const v = { sessions: [view(ryan, "s1"), view(nick, "s1"), view(nick, "s2", "R2")], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [] };
     // Nick's s1 shows here as remotePaneId(nick, "s1"); its tag still names s1
     expect(backupOf(v, { roomId: "R1", sessionId: "s1", owner: nick })).toBe(v.sessions[1]);
     expect(backupOf(v, { roomId: "R1", sessionId: "s1", owner: ryan })).toBe(v.sessions[0]);
@@ -460,6 +465,24 @@ describe("asking a connected owner first", () => {
     // Ryan's copy: continued on Nick's laptop, nothing Nick lacks
     await until(() => !!t.ryanRun.tk.view().left.find((l) => l.sessionId === t.s.id)?.unsent, "Ryan's copy counted");
     expect(t.ryanRun.tk.view().left[0]).toMatchObject({ byName: "Nick", unsent: { files: [] } });
+  });
+
+  it("hands over peer to peer in a room that keeps backups off origin: nothing reaches origin", async () => {
+    const t = await setup({}, { backupsToOrigin: false });
+    turn(t.ryan.sessions, t.s.id);
+    await until(() => !!t.nickRun.tk.view().sessions.find((v) => v.sessionId === t.s.id)?.peerCopy, "a first copy at Nick's", 15_000);
+    await t.ryanRun.tk.settled();
+    write(t.wt, { "src/since.ts": "after the copy Nick has\n" });
+    const taking = t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
+    await until(() => t.ryanRun.tk.view().asks.length === 1, "Ryan to be asked");
+    t.ryanRun.tk.answerAsk(t.ryanRun.tk.view().asks[0].askId, "handover");
+    const r = await taking;
+    // the hand-over's own snapshot, sent straight to Nick: the work since his copy included
+    expect(r.snapshot).toMatchObject({ sha: backupIn(t.ryanM, t.roomId, t.s.id)!.latest.sha, source: "peer" });
+    expect(fs.readFileSync(path.join(r.cwd, "src/since.ts"), "utf8")).toBe("after the copy Nick has\n");
+    expect(statusOf(t.ryan.sessions, t.s.id)).toBe("dead");
+    expect(sh(t.bare, "for-each-ref", "refs/mockingbird")).toBe("");
+    expect(sh(t.nickClone, "for-each-ref", "refs/mockingbird/rooms-origin")).toBe("");
   });
 
   it("keeps it: the taker is told, the owner's agent runs on, nothing is taken over", async () => {

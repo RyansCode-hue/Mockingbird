@@ -73,8 +73,9 @@ export function BackupFreshness({ view }: { view: RoomSessionBackupView }) {
   const f = backupFreshness(view, now);
   const tip = [
     `Newest snapshot ${short(view.latest.sha)}, taken ${ago(view.latest.takenAt, now)}`,
-    view.pushed ? `On origin: ${short(view.pushed.sha)}, pushed ${ago(view.pushed.at, now)}` : "Not on origin yet",
-    !view.self && view.peerCopy ? `Copied to this Mac: ${short(view.peerCopy.sha)}` : "",
+    !view.toOrigin ? "Kept off origin: this room's backups go peer to peer" : view.pushed ? `On origin: ${short(view.pushed.sha)}, pushed ${ago(view.pushed.at, now)}` : "Not on origin yet",
+    view.self && view.heldBy.length ? `Copied to ${view.heldBy.join(", ")}` : "",
+    !view.self && view.peerCopy ? `Copied to this Mac: ${short(view.peerCopy.sha)}, taken ${ago(view.peerCopy.takenAt, now)}` : "",
     view.problem ?? "",
   ]
     .filter(Boolean)
@@ -227,7 +228,7 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
           : `${view.ownerName} is offline. Their copy stops when their Mockingbird is back, and keeps its files.`}{" "}
         The session continues on this Mac under your account, in a worktree of your clone on its branch.
       </div>
-      {plan === null && <div className="fp-note">Checking this Mac and origin…</div>}
+      {plan === null && <div className="fp-note">{view.toOrigin ? "Checking this Mac and origin…" : "Checking what reached this Mac…"}</div>}
       {isErr(plan) && <div className="err">{plan.error}</div>}
       {p && (
         <dl className="tk-facts">
@@ -248,11 +249,30 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
                     Older: {short(p.other.sha)} from {from(p.other.source)}, {ago(p.other.takenAt, now)}
                   </div>
                 )}
-                {p.latestMissing && <div className="warn">A newer snapshot is only on {p.ownerName}'s laptop: work from its last turns isn't here.</div>}
+                {p.latestMissing ? (
+                  <div className="warn">A newer snapshot is only on {p.ownerName}'s laptop: work from its last turns isn't here.</div>
+                ) : (
+                  !p.toOrigin &&
+                  !online && (
+                    <div className="tk-p2p">
+                      It's the newest copy that reached this Mac, {ago(p.snapshot.takenAt, now)}. {p.ownerName}'s laptop may have newer work: this room keeps backups peer to
+                      peer, so turns since you were last connected aren't here.
+                    </div>
+                  )
+                )}
                 {p.snapshot.skipped.length > 0 && <div className="tk-quiet">Too big to carry: {p.snapshot.skipped.join(", ")}</div>}
               </>
             ) : p.clone ? (
-              <span className="warn">None reached this Mac or origin — the work is only on {p.ownerName}'s laptop.</span>
+              p.toOrigin ? (
+                <span className="warn">None reached this Mac or origin — the work is only on {p.ownerName}'s laptop.</span>
+              ) : (
+                <span className="warn">
+                  No copy has reached this Mac yet — this room keeps backups peer to peer,{" "}
+                  {online
+                    ? `and ${p.ownerName}'s laptop hasn't sent one: it comes after their next turn.`
+                    : `and ${p.ownerName}'s laptop hasn't sent one while you were both connected. It can be taken over once ${p.ownerName} is back online.`}
+                </span>
+              )
             ) : (
               <span className="tk-quiet">Chosen once your clone is known.</span>
             )}

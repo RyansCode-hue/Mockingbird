@@ -349,6 +349,8 @@ const api = {
   teamTakeoverReceivedPatch: (roomId: string, id: string) => ipcRenderer.invoke("team:takeoverReceivedPatch", roomId, id),
   teamTakeoverApplyReceived: (roomId: string, id: string) => ipcRenderer.invoke("team:takeoverApplyReceived", roomId, id),
   teamTakeoverDismissReceived: (roomId: string, id: string) => ipcRenderer.invoke("team:takeoverDismissReceived", roomId, id),
+  /** Turn a room's backups to origin on or off (its admin only; off by default: peer to peer). */
+  teamSetBackupsToOrigin: (roomId: string, on: boolean) => ipcRenderer.invoke("team:setBackupsToOrigin", roomId, on),
   onTeamTakeoverChanged: (cb: (view: unknown) => void) => {
     const h = (_e: unknown, v: unknown) => cb(v);
     ipcRenderer.on("team:takeoverChanged", h);

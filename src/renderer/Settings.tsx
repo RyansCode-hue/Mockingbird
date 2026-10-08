@@ -11,6 +11,7 @@ import { readPref, writePref } from "./prefs";
 import { settled } from "./settled";
 import { useAction } from "./useAction";
 import { SetRow } from "./SetRow";
+import { Toggle } from "./Toggle";
 import { TeamSection } from "./Team";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
@@ -385,14 +386,6 @@ const SETTINGS_SECTIONS = [
 ] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
 
-
-function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <button className={`toggle ${on ? "on" : ""}`} role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)}>
-      <span />
-    </button>
-  );
-}
 
 export function SettingsView({
   sessions,

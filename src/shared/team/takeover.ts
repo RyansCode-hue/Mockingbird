@@ -8,14 +8,16 @@ import { ago } from "../format";
  * src/main/team/takeover.ts.
  *
  * After every agent turn the owner's Mockingbird snapshots the session's
- * worktree as a commit on top of its branch's commit, pushes it to the hidden
- * ref `refs/mockingbird/rooms/<room>/<session>` on origin, copies it peer to
- * peer into connected teammates' clones under the same ref, and sends them the
- * conversation's new lines. A `session.backup` event records each snapshot and
- * how its push went; `session.takenOver` records that a teammate continued the
- * session on their own laptop; `session.backupDropped` that its current owner
- * deleted the backup (members then delete their copies). While a backup
- * exists, anyone who can read the repository can fetch that work in progress.
+ * worktree as a commit on top of its branch's commit, keeps it under the
+ * hidden ref `refs/mockingbird/rooms/<room>/<session>`, copies it peer to peer
+ * into connected teammates' clones under the same ref, and sends them the
+ * conversation's new lines. Only when the room's admin turned on backups to
+ * origin (`room.settings`; off by default) is the ref pushed to origin too,
+ * where anyone who can read the repository can fetch that work in progress.
+ * A `session.backup` event records each snapshot and, for a room backing up
+ * to origin, how its push went; `session.takenOver` records that a teammate
+ * continued the session on their own laptop; `session.backupDropped` that its
+ * current owner deleted the backup (members then delete their copies).
  */
 
 /** What a teammate needs to continue a room session on their own laptop; sent with every backup. */
@@ -57,9 +59,15 @@ export interface RoomSessionBackup {
   session: RoomSessionDescriptor;
   /** The newest snapshot (the worktree after the owner's last turn). */
   latest: { sha: string; takenAt: number };
-  /** How pushing the newest snapshot to origin went. */
+  /**
+   * Whether the newest snapshot went to origin as well as peer to peer: the
+   * room's setting when it was taken. Backups from before the setting existed
+   * were always pushed.
+   */
+  toOrigin: boolean;
+  /** How pushing the newest snapshot to origin went (meaningless while `toOrigin` is false). */
   push: PushOutcome & { sha: string };
-  /** The newest snapshot origin holds; null until a push succeeded. */
+  /** The newest snapshot origin holds; null until a push succeeded, and once the room keeps backups off origin. */
   pushed: { sha: string; takenAt: number; at: number } | null;
   /** The transcript's size when the newest snapshot was taken: a complete copy has at least this much. */
   transcriptBytes: number | null;
@@ -85,6 +93,31 @@ export interface TakeoverRoomState {
   sessions: Record<string, RoomSessionBackup>;
 }
 
+/**
+ * A room's settings, as its admin last set them (room.settings: anyone
+ * else's change nothing). A room without any has every setting off.
+ */
+export interface RoomSettings {
+  /**
+   * Snapshots also go to a hidden ref on origin after each turn, so a teammate
+   * can take a session over while its owner's laptop is off — and anyone with
+   * read access to the repository can fetch them. Off: peer to peer only.
+   */
+  backupsToOrigin: boolean;
+  /** Who last changed them, and when (their clock: display only). */
+  by: MemberId;
+  at: number;
+}
+
+/** Whether a room's backups go to origin as well as peer to peer: only once its admin turned that on. */
+export const backupsToOrigin = (room: { ext: { settings?: RoomSettings } } | null | undefined): boolean => room?.ext.settings?.backupsToOrigin === true;
+
+/**
+ * What a backup kept off origin carries as its push outcome. Mockingbirds
+ * from before the setting require one: they show this as why it isn't there.
+ */
+export const NOT_PUSHED = "not on origin: this room keeps backups peer to peer";
+
 declare module "./types" {
   interface RoomEventBodies {
     "session.backup": {
@@ -92,7 +125,10 @@ declare module "./types" {
       /** The snapshot commit: the worktree as the turn left it, on top of the branch's commit. */
       sha: string;
       takenAt: number;
+      /** How the push to origin went; with `toOrigin: false`, `{ ok: false, error: NOT_PUSHED }`. */
       push: PushOutcome;
+      /** false: the room keeps backups peer to peer, so this one wasn't pushed. Absent from backups made before the setting existed (always pushed). */
+      toOrigin?: boolean;
       session: RoomSessionDescriptor;
       transcriptBytes: number | null;
     };
@@ -107,9 +143,12 @@ declare module "./types" {
     };
     /** The session's current owner deleted its backup ref on origin: members delete their copies. */
     "session.backupDropped": { sessionId: string; reason: DropReason };
+    /** The room's admin changed its settings: each one named is set, the rest stay. */
+    "room.settings": { backupsToOrigin?: boolean };
   }
   interface RoomExtensions {
     takeover: TakeoverRoomState;
+    settings: RoomSettings;
   }
 }
 
@@ -124,14 +163,33 @@ export interface RoomSessionBackupView extends RoomSessionBackup {
   takenOverByName: string | null;
   /** The newest snapshot copied into this Mac's clone peer to peer. */
   peerCopy: { sha: string; takenAt: number } | null;
+  /** This install's session: the teammates whose clones hold its newest snapshot, by name, as heard since Mockingbird started. */
+  heldBy: string[];
   /** The conversation copied to this Mac: bytes held, of the size last announced (null: unknown). */
   transcript: { have: number; of: number | null } | null;
   /** Something on this side went wrong (sending to teammates, or storing what they sent). */
   problem: string | null;
 }
 
+/** A room's backup setting as Settings → Team shows it. */
+export interface RoomBackupSetting {
+  roomId: RoomId;
+  /** Snapshots also go to origin (RoomSettings.backupsToOrigin). */
+  toOrigin: boolean;
+  /** Who last changed it (`self`: this install), and when; null while nobody has (off). */
+  changed: { byName: string; self: boolean; at: number } | null;
+  /** The room's admin, by name: the only one who can change it. */
+  adminName: string | null;
+  /** This install is the room's admin. */
+  canChange: boolean;
+  /** Where backups would go, for the switch's label: "GitHub", "Azure DevOps", a host name, or "origin" when the room's repositories differ or none is known. */
+  remote: string;
+}
+
 export interface TakeoverView {
   sessions: RoomSessionBackupView[];
+  /** Each room's backup setting. */
+  rooms: RoomBackupSetting[];
   /** This install's room sessions that couldn't be backed up at all (no origin, not a repository…). */
   unbacked: { roomId: RoomId; sessionId: string; title: string; problem: string }[];
   /** Backups this install should have deleted and couldn't (retried on the next prune). */
@@ -274,6 +332,8 @@ export interface TakeoverPlan {
   snapshot: { sha: string; takenAt: number; source: SnapshotSource; skipped: string[] } | null;
   /** The other copy, when there is one, for comparison. */
   other: { sha: string; takenAt: number; source: SnapshotSource } | null;
+  /** The room backs up to origin, so origin's backup was considered too; false: only what reached this Mac peer to peer. */
+  toOrigin: boolean;
   /** Reading origin's backup failed (offline, no access): only the peer copy was considered. */
   originProblem: string | null;
   /** The newest snapshot announced is newer than any available here. */
@@ -293,7 +353,7 @@ export interface TakeoverResult {
 
 // ---- refs -------------------------------------------------------------------------------
 
-/** Room backups, on origin and in members' clones. Never fetched by default (origin's refspec is refs/heads/*). */
+/** Room backups, in members' clones (and on origin when the room backs up there). Never fetched by default (origin's refspec is refs/heads/*). */
 export const ROOM_REF_ROOT = "refs/mockingbird/rooms";
 /** Where a taker's clone keeps what it read from origin's backup ref, apart from the peer copy. */
 export const ORIGIN_COPY_ROOT = "refs/mockingbird/rooms-origin";
@@ -336,6 +396,8 @@ export interface Freshness {
 /**
  * How fresh a room session's backup is, in a few words: "backed up 2m ago",
  * "backup failed: …", "latest only on Nick's laptop", or who took it over.
+ * A backup kept off origin says where its copies are: "copied to Nick 2m ago",
+ * "copied here 2m ago · newer on Ryan's laptop".
  */
 export function backupFreshness(v: RoomSessionBackupView, now = Date.now()): Freshness {
   if (v.takenOver) {
@@ -344,10 +406,42 @@ export function backupFreshness(v: RoomSessionBackupView, now = Date.now()): Fre
   }
   if (v.dropped) return { tone: "muted", text: `backup deleted ${ago(v.dropped.at, now)}: ${DROPPED_BECAUSE[v.dropped.reason]}` };
   const here = !!v.peerCopy && v.peerCopy.takenAt >= v.latest.takenAt;
+  if (!v.toOrigin) {
+    if (v.self) {
+      return v.heldBy.length
+        ? { tone: "ok", text: `copied to ${v.heldBy.join(", ")} ${ago(v.latest.takenAt, now)}` }
+        : { tone: "muted", text: `snapshot ${ago(v.latest.takenAt, now)} · no teammate has a copy yet` };
+    }
+    if (here) return { tone: "ok", text: `copied here ${ago(v.peerCopy!.takenAt, now)}` };
+    if (v.peerCopy) return { tone: "warn", text: `copied here ${ago(v.peerCopy.takenAt, now)} · newer on ${v.ownerName}'s laptop` };
+    return { tone: "warn", text: `no copy here · only on ${v.ownerName}'s laptop` };
+  }
   if (v.push.ok && v.push.sha === v.latest.sha && v.pushed) return { tone: "ok", text: `backed up ${ago(v.pushed.at, now)}` };
   const failed = v.push.ok ? "" : `backup failed: ${v.push.error}`;
   if (v.self) return { tone: "warn", text: failed || "not backed up yet" };
   // where the newest work is matters most to a teammate: it leads, ahead of a long push error
   const where = here ? `latest copied here ${ago(v.peerCopy!.takenAt, now)}` : `latest only on ${v.ownerName}'s laptop`;
   return { tone: here ? "ok" : "warn", text: [where, failed].filter(Boolean).join(" · ") };
+}
+
+/**
+ * What the switch for backups to origin calls the remote, from the origin URLs
+ * a room's repositories have: "GitHub", "Azure DevOps", "GitLab", "Bitbucket",
+ * another host's name, or "origin" when they differ or none is known.
+ */
+export function remoteLabel(urls: string[]): string {
+  const labels = new Set(urls.map(hostLabel).filter((l): l is string => !!l));
+  return labels.size === 1 ? [...labels][0] : "origin";
+}
+
+function hostLabel(url: string): string | null {
+  const u = url.trim();
+  if (u.startsWith("/") || u.startsWith("~") || /^file:/i.test(u)) return null; // a repository on disk has no host
+  const host = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^@/]+@)?([^/:]+)[:/]/i.exec(u)?.[1]?.toLowerCase();
+  if (!host) return null;
+  if (host === "github.com" || host === "www.github.com") return "GitHub";
+  if (/(^|\.)dev\.azure\.com$|\.visualstudio\.com$/.test(host)) return "Azure DevOps";
+  if (host === "gitlab.com") return "GitLab";
+  if (host === "bitbucket.org") return "Bitbucket";
+  return host;
 }

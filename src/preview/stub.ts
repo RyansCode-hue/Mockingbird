@@ -17,7 +17,7 @@ import type { PlanChange, PlanOp, PlanView, WorkPackage } from "../shared/team/p
 // team rooms: team chat
 import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../shared/team/chat";
 // team rooms: take-over
-import type { RoomSessionBackupView, TakeoverPlan, TakeoverView } from "../shared/team/takeover";
+import { NOT_PUSHED, type RoomSessionBackupView, type TakeoverPlan, type TakeoverView } from "../shared/team/takeover";
 // team rooms: live panes
 import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
 
@@ -250,34 +250,43 @@ const chatView = (roomId: string) => {
   return { roomId, self: ME, joinedAt: chatJoined, entries, read: chatRead[roomId] ?? {}, ...unreadCounts(entries, ME, chatRead[roomId], chatJoined) };
 };
 const chatChanged = (roomId: string) => emit("onTeamChatChanged", roomId);
-// team rooms: take-over — Nick's session backed up; Sam (offline) couldn't push, but his newest snapshot was copied here; one of yours taken over by Nick
+// team rooms: take-over — 5101 backs up to origin (you turned it on as its admin): Nick's session backed up; Sam (offline) couldn't push, but his newest
+// snapshot was copied here. 5110 keeps backups peer to peer (the default; Nick is its admin): one of yours taken over by Nick.
+// ?p2p: 5101 keeps its backups peer to peer too — Sam's copy here is older than his last turn
+const p2p = teamQuery.has("p2p");
 const takeoverView: TakeoverView = (() => {
   const sha = (c: string) => c.repeat(40).slice(0, 40);
-  const base = (o: Partial<RoomSessionBackupView> & Pick<RoomSessionBackupView, "sessionId" | "owner" | "ownerName">): RoomSessionBackupView => ({
-    roomId: "R5101aaaaaaaaaaaaaaaaa",
-    session: { title: "", agent: "claude", branch: "5101-orgDropdowns", originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", cwd: "/Users/nick/Code/worktrees/backoffice/5101-orgDropdowns", conversationId: "c0ffee00-0000-4000-8000-000000000001" },
-    latest: { sha: sha("a1"), takenAt: now - 2 * min },
-    push: { ok: true, at: now - 2 * min, sha: sha("a1") },
-    pushed: { sha: sha("a1"), takenAt: now - 2 * min, at: now - 2 * min },
-    transcriptBytes: 412_000,
-    takenOver: null,
-    dropped: null,
-    ownerOnline: true,
-    self: false,
-    takenOverByName: null,
-    peerCopy: { sha: sha("a1"), takenAt: now - 2 * min },
-    transcript: { have: 412_000, of: 412_000 },
-    problem: null,
-    ...o,
-  });
+  const base = (o: Partial<RoomSessionBackupView> & Pick<RoomSessionBackupView, "sessionId" | "owner" | "ownerName">): RoomSessionBackupView => {
+    const v: RoomSessionBackupView = {
+      roomId: "R5101aaaaaaaaaaaaaaaaa",
+      session: { title: "", agent: "claude", branch: "5101-orgDropdowns", originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", cwd: "/Users/nick/Code/worktrees/backoffice/5101-orgDropdowns", conversationId: "c0ffee00-0000-4000-8000-000000000001" },
+      latest: { sha: sha("a1"), takenAt: now - 2 * min },
+      toOrigin: true,
+      push: { ok: true, at: now - 2 * min, sha: sha("a1") },
+      pushed: { sha: sha("a1"), takenAt: now - 2 * min, at: now - 2 * min },
+      transcriptBytes: 412_000,
+      takenOver: null,
+      dropped: null,
+      ownerOnline: true,
+      self: false,
+      takenOverByName: null,
+      peerCopy: { sha: sha("a1"), takenAt: now - 2 * min },
+      heldBy: [],
+      transcript: { have: 412_000, of: 412_000 },
+      problem: null,
+      ...o,
+    };
+    // a room that keeps backups peer to peer pushes nothing: its sessions say where their copies are
+    return v.roomId === "R5110bbbbbbbbbbbbbbbbb" || p2p ? { ...v, toOrigin: false, push: { ok: false, at: v.latest.takenAt, error: NOT_PUSHED, sha: v.latest.sha }, pushed: null } : v;
+  };
   const mine = (o: Partial<RoomSessionBackupView> & Pick<RoomSessionBackupView, "sessionId">) =>
     base({ owner: ME, ownerName: "You", self: true, peerCopy: null, transcript: null, session: { ...base({ sessionId: "", owner: ME, ownerName: "" }).session, cwd: WT("5101-orgDropdowns") }, ...o });
   return {
     sessions: [
       base({ sessionId: "n1", owner: NICK, ownerName: "Nick Smith", session: { ...base({ sessionId: "", owner: NICK, ownerName: "" }).session, title: "Donor export: CSV writer", branch: "5101-csvExport" } }),
-      mine({ sessionId: "s1", latest: { sha: sha("e5"), takenAt: now - 1 * min }, push: { ok: true, at: now - 1 * min, sha: sha("e5") }, pushed: { sha: sha("e5"), takenAt: now - 1 * min, at: now - 1 * min } }),
+      mine({ sessionId: "s1", latest: { sha: sha("e5"), takenAt: now - 1 * min }, push: { ok: true, at: now - 1 * min, sha: sha("e5") }, pushed: { sha: sha("e5"), takenAt: now - 1 * min, at: now - 1 * min }, heldBy: ["Nick Smith"] }),
       mine({ sessionId: "s2", latest: { sha: sha("f6"), takenAt: now - 5 * min }, push: { ok: false, at: now - 5 * min, error: "fatal: unable to access origin: Could not resolve host", sha: sha("f6") }, pushed: { sha: sha("e5"), takenAt: now - 40 * min, at: now - 40 * min } }),
-      base({ roomId: "R5110bbbbbbbbbbbbbbbbb", sessionId: "n7", owner: NICK, ownerName: "Nick Smith", session: { ...base({ sessionId: "", owner: NICK, ownerName: "" }).session, title: "Donor entity model", branch: "5110-donor-entities" }, latest: { sha: sha("d5"), takenAt: now - 3 * min }, push: { ok: true, at: now - 3 * min, sha: sha("d5") }, pushed: { sha: sha("d5"), takenAt: now - 3 * min, at: now - 3 * min }, peerCopy: { sha: sha("d5"), takenAt: now - 3 * min } }),
+      base({ roomId: "R5110bbbbbbbbbbbbbbbbb", sessionId: "n7", owner: NICK, ownerName: "Nick Smith", session: { ...base({ sessionId: "", owner: NICK, ownerName: "" }).session, title: "Donor entity model", branch: "5110-donor-entities", originUrl: "git@github.com:acme/donors.git" }, latest: { sha: sha("d5"), takenAt: now - 3 * min }, peerCopy: { sha: sha("d5"), takenAt: now - 3 * min } }),
       base({
         sessionId: "m1",
         owner: SAM,
@@ -287,7 +296,7 @@ const takeoverView: TakeoverView = (() => {
         latest: { sha: sha("b2"), takenAt: now - 4 * min },
         push: { ok: false, at: now - 4 * min, error: "remote: TF401027: You need the Git 'ForcePush' permission", sha: sha("b2") },
         pushed: { sha: sha("c3"), takenAt: now - 31 * min, at: now - 31 * min },
-        peerCopy: { sha: sha("b2"), takenAt: now - 4 * min },
+        peerCopy: p2p ? { sha: sha("c3"), takenAt: now - 31 * min } : { sha: sha("b2"), takenAt: now - 4 * min },
         transcriptBytes: 980_000,
         transcript: { have: 640_000, of: 980_000 },
       }),
@@ -303,6 +312,10 @@ const takeoverView: TakeoverView = (() => {
         peerCopy: null,
         transcript: null,
       }),
+    ],
+    rooms: [
+      { roomId: "R5101aaaaaaaaaaaaaaaaa", toOrigin: !p2p, changed: { byName: "You", self: true, at: now - 3 * 24 * 60 * min }, adminName: "You", canChange: true, remote: "Azure DevOps" },
+      { roomId: "R5110bbbbbbbbbbbbbbbbb", toOrigin: false, changed: null, adminName: "Nick Smith", canChange: false, remote: "GitHub" },
     ],
     unbacked: [],
     cleanup: [{ roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "s0", title: "Spike: org cache", problem: "remote: TF401027: You need the Git 'ForcePush' permission to delete the backup" }],
@@ -370,8 +383,13 @@ index 0000000..5d1e2f3
 +- [ ] Screenshots updated
 `;
 const takeoverPlans: Record<string, TakeoverPlan> = {
-  n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: "origin", skipped: [] }, other: null, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 } },
-  m1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 } },
+  n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: p2p ? "peer" : "origin", skipped: [] }, other: null, toOrigin: !p2p, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 } },
+  // ?p2p: only the copy that reached this Mac half an hour ago, a turn behind Sam's laptop
+  m1: p2p
+    ? { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: true, conversation: { kind: "partial", have: 640_000, of: 980_000 } }
+    : { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, toOrigin: true, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 } },
+  // 5110 keeps backups peer to peer: what Nick's laptop sent while connected
+  n7: { roomId: "R5110bbbbbbbbbbbbbbbbb", sessionId: "n7", title: "Donor entity model", agent: "claude", branch: "5110-donor-entities", ownerName: "Nick Smith", ownerOnline: true, originUrl: "git@github.com:acme/donors.git", clone: REPO, snapshot: { sha: "d5".repeat(20), takenAt: now - 3 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 } },
 };
 const takeoverChanged = () => emit("onTeamTakeoverChanged", JSON.parse(JSON.stringify(takeoverView)));
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
@@ -856,6 +874,16 @@ const api: Record<string, (...a: any[]) => any> = {
 
   // team rooms: take-over — plans and the take-over are simulated; nothing is copied or launched
   teamTakeover: async () => JSON.parse(JSON.stringify(takeoverView)),
+  teamSetBackupsToOrigin: async (roomId: string, on: boolean) => {
+    const r = takeoverView.rooms.find((x) => x.roomId === roomId);
+    if (!r) return err("You're not in that room");
+    if (!r.canChange) return err(`Only the room's admin (${r.adminName}) can change where its backups go`);
+    r.toOrigin = on;
+    r.changed = { byName: "You", self: true, at: Date.now() };
+    for (const s of takeoverView.sessions) if (s.roomId === roomId) s.toOrigin = on;
+    takeoverChanged();
+    return later(null, 400);
+  },
   teamTakeoverPlan: async (_roomId: string, sessionId: string) => (takeoverPlans[sessionId] ? later(takeoverPlans[sessionId], 500) : err("No backup of that session has reached this Mac yet")),
   teamTakeOver: async (_roomId: string, sessionId: string) => {
     const s = takeoverView.sessions.find((x) => x.sessionId === sessionId);

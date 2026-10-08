@@ -167,15 +167,18 @@ describe("team rooms between two Mockingbird instances", () => {
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(s.id)}, "add the donor notes\\r")`);
         await untilTrue("the turn", async () => (await buffer(ryan, s.id)).includes("did: add the donor notes"));
         await untilTrue(
-          "the backup on origin, its snapshot and conversation at Nick's",
+          "the backup's snapshot and conversation at Nick's",
           async () => {
             const b = (await takeovers(nick)).sessions.find((v) => v.sessionId === s.id && v.owner === ryanId);
-            return !!b?.pushed && !!b.peerCopy && (b.transcript?.have ?? 0) > 0;
+            return !!b?.peerCopy && (b.transcript?.have ?? 0) > 0;
           },
           60_000
         );
-        expect(git(r.bare, "for-each-ref", "--format=%(refname)", "refs/mockingbird/rooms")).toContain(`/${s.id}`);
-        await untilTrue("the freshness on Nick's row", async () => /^backed up/.test(await nick.evaluate<string>(`${row("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
+        // a room keeps its backups peer to peer unless its admin turns on backups to origin: nothing reaches origin
+        expect((await takeovers(nick)).sessions.find((v) => v.sessionId === s.id)).toMatchObject({ toOrigin: false, pushed: null });
+        expect(git(r.bare, "for-each-ref", "--format=%(refname)", "refs/mockingbird")).toBe("");
+        await untilTrue("the freshness on Nick's row", async () => /^copied here/.test(await nick.evaluate<string>(`${row("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
+        await untilTrue("the freshness on Ryan's row", async () => /^copied to Nick/.test(await ryan.evaluate<string>(`${row("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
         expect(await nick.evaluate<boolean>(`!!${row("Donor entities")}?.querySelector(".tk-btn")`)).toBe(true);
 
         // ---- Ryan online: Nick asks for another of his sessions, Ryan hands it over from his prompt
@@ -190,7 +193,7 @@ describe("team rooms between two Mockingbird instances", () => {
           "the export's backup and conversation at Nick's",
           async () => {
             const b = (await takeovers(nick)).sessions.find((v) => v.sessionId === ex.id && v.owner === ryanId);
-            return !!b?.pushed && !!b.peerCopy && (b.transcript?.have ?? 0) > 0;
+            return !!b?.peerCopy && (b.transcript?.have ?? 0) > 0;
           },
           60_000
         );
@@ -224,14 +227,15 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("Ryan offline at Nick's", async () => (await nick.status()).rooms[0]?.online.length === 0, 60_000);
         await untilTrue("Take over, prominent", async () => nick.evaluate<boolean>(`!!${row("Donor entities")}?.querySelector(".tk-btn.primary")`));
         const plan = await nick.evaluate<TakeoverPlan>(`window.mb.teamTakeoverPlan(${JSON.stringify(roomId)}, ${JSON.stringify(s.id)}, null)`);
-        expect(plan).toMatchObject({ ownerOnline: false, branch: "5110-donors", conversation: { kind: "full" }, latestMissing: false });
+        expect(plan).toMatchObject({ ownerOnline: false, branch: "5110-donors", conversation: { kind: "full" }, latestMissing: false, toOrigin: false, snapshot: { source: "peer" } });
         expect(fs.realpathSync(plan.clone!)).toBe(fs.realpathSync(r.nick.clone));
         await nick.evaluate(`${row("Donor entities")}.querySelector(".tk-btn").click()`);
         await untilTrue("the dialog's plan", async () => nick.evaluate<boolean>(`(() => { const b = [...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Take over"); return !!b && !b.disabled; })()`));
         await nick.evaluate(`[...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Take over").click()`);
         await untilTrue("the take-over done", async () => /Running here now/.test(await nick.evaluate<string>(`document.querySelector(".tk-dlg")?.textContent ?? ""`)), 60_000);
         const view = (await takeovers(nick)).sessions.find((v) => v.sessionId === s.id)!;
-        expect(view.takenOver).toMatchObject({ by: nickId, conversation: "full" });
+        expect(view.takenOver).toMatchObject({ by: nickId, conversation: "full", snapshot: { source: "peer" } });
+        expect(git(r.bare, "for-each-ref", "--format=%(refname)", "refs/mockingbird")).toBe("");
         const mine = (await nick.evaluate<{ id: string; cwd: string; branch: string | null; taskGroup: string | null }[]>("window.mb.listSessions()")).find((x) => x.id === view.takenOver!.newSessionId)!;
         // the work in a worktree of Nick's clone, on the session's branch, the conversation resumed
         expect(mine).toMatchObject({ branch: "5110-donors", taskGroup: "5110" });
