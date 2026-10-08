@@ -337,8 +337,8 @@ export function LeaveRoomDialog({ room, onClose }: { room: TeamRoomSummary; onCl
       <div className="sub-h">Coming back takes a new invite code from someone still in the room.</div>
       <ul className="team-effects">
         <li>
-          <b>On this Mac</b> the room is deleted: its log and chat, the plan copies in your worktrees, the conversations and snapshots teammates sent, and your sessions'
-          backups, and any it pushed to origin. Group {room.groupKey} stays as an ordinary group, and its sessions keep running — no longer shared.
+          <b>On this Mac</b> the room is deleted: its log and chat, the plan copies in your worktrees, the conversations and snapshots teammates sent, and
+          your sessions' backups, including any pushed to origin. Group {room.groupKey} stays as an ordinary group, and its sessions keep running — no longer shared.
         </li>
         <li>
           {others.length ? (
