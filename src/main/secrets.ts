@@ -7,8 +7,8 @@ import { isMissing } from "./fileOps";
  * Secret files by name, at any depth: env files, keys and certificates, and
  * the usual credential, PAT and local-settings files. The one list every
  * secret guard is built from: Claude's deny-read rules (SECRET_READS,
- * roomSecretReads), Codex's room permission profile (codexRoomPermissions)
- * and what a room backup leaves out (secretPathspecs).
+ * roomSecretReads), Codex's room sandbox (codexRoomSandbox.ts) and what a
+ * room backup leaves out (secretPathspecs).
  */
 export const SECRET_FILE_GLOBS: readonly string[] = [
   ".env",
@@ -35,7 +35,7 @@ export const SECRET_FILE_GLOBS: readonly string[] = [
 export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 
 /** Credentials outside any repository, and this install's own team keys and invite tokens. */
-const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**"];
+export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**"];
 
 /**
  * Secret files at known places on this Mac: the Azure DevOps PAT file
@@ -65,63 +65,8 @@ export function roomSecretReads(workTrackerPath: string): { rules: string[]; pro
   return { rules, problem: notDeniedByPath(known.problem) };
 }
 
-const notDeniedByPath = (problem: string | null) => problem && `${problem} — so it isn't denied by path`;
-
-/**
- * SECRET_FILE_GLOBS that also match files tools need: CA certificate bundles
- * (/etc/ssl/cert.pem, certifi's cacert.pem). Codex's sandbox hides a denied
- * file from every command, so denied across the disk these would break TLS;
- * Codex denies them only inside the session's folders. (Claude's rules gate
- * its own file tools, so they deny every pattern everywhere.)
- */
-const CERT_BUNDLE_GLOBS: ReadonlySet<string> = new Set(["*.pem"]);
-
-/** The permission profile a Codex room session runs under, defined per launch by codexRoomPermissions. */
-export const CODEX_ROOM_PROFILE = "mockingbird-room";
-
-/**
- * The -c settings a Codex team room session starts with, leaving
- * ~/.codex/config.toml alone: CODEX_ROOM_PROFILE extends Codex's :workspace
- * sandbox (writes only in the session's folders and temp folders, .git and
- * .codex read-only) and denies SECRET_FILE_GLOBS in those folders and, but for
- * certificate bundles, anywhere on disk, plus the credential folders in home
- * and the known secret files (knownSecretFiles). Codex never runs a command
- * outside the sandbox while it denies reads, even once approved, so the
- * profile turns the network on: an approval can't. `problem` as in
- * roomSecretReads.
- */
-export function codexRoomPermissions(workTrackerPath: string): { config: string[]; problem: string | null } {
-  const known = knownSecretFiles(workTrackerPath);
-  // keys are TOML strings; a JSON string is a valid one
-  const deny = (paths: readonly string[]) => paths.map((p) => `${JSON.stringify(p)}="deny"`);
-  const filesystem = [
-    `":workspace_roots"={${deny(SECRET_FILE_GLOBS.map((g) => `**/${g}`)).join(", ")}}`,
-    ...deny(SECRET_FILE_GLOBS.filter((g) => !CERT_BUNDLE_GLOBS.has(g)).map((g) => `/**/${g}`)),
-    ...deny(HOME_SECRETS.map((p) => p.replace(/\/\*\*$/, ""))),
-    ...deny(known.files.map((f) => path.resolve(f))),
-  ];
-  const profile = [
-    `description=${JSON.stringify("Mockingbird team room: secret files unreadable")}`,
-    `extends=":workspace"`,
-    `network={enabled=true}`,
-    `filesystem={${filesystem.join(", ")}}`,
-  ];
-  return {
-    // -c splits its key on every dot, so the patterns go in as an inline table
-    config: [`default_permissions=${JSON.stringify(CODEX_ROOM_PROFILE)}`, `permissions.${CODEX_ROOM_PROFILE}={${profile.join(", ")}}`],
-    problem: notDeniedByPath(known.problem),
-  };
-}
-
-/**
- * What a Codex room session is told about its sandbox, so it doesn't ask for
- * approvals that can't help.
- */
-export const CODEX_ROOM_SANDBOX_NOTE =
-  "This Mockingbird team room session runs every command in the room's sandbox, and approving a command doesn't lift it: " +
-  "secret files (.env files, keys, certificates, credential files) can't be read, and nothing outside this folder and temp folders can be written — " +
-  "git metadata included, so git commands that write (commit, fetch, pull, push) fail here. " +
-  "Don't request escalation for these; tell the user what to run instead (as a `!` command in this pane, or from Mockingbird's Source Control).";
+/** A knownSecretFiles problem as a deny list reports it. */
+export const notDeniedByPath = (problem: string | null) => problem && `${problem} — so it isn't denied by path`;
 
 /**
  * Git pathspecs (for `git add` run at `top`) that leave secret files out:

@@ -12,7 +12,7 @@ export interface LaunchContext {
   mcp?: McpLaunch;
   /** Claude permission rules denying file reads (a team room session's secrets), as --disallowedTools. */
   denyReads?: string[];
-  /** Codex -c settings running it under a permission profile that denies reading secrets (a team room session's). */
+  /** Codex -c settings that run it in a team room's sandbox (codexRoomSandbox.ts). */
   codexPermissions?: string[];
   /**
    * Instructions the agent starts with on top of its own (a team room's plan

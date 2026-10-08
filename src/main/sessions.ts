@@ -66,7 +66,7 @@ export interface RoomLaunch {
   env: Record<string, string>;
   /** Claude permission rules denying file reads (--disallowedTools). */
   denyReads: string[];
-  /** Codex -c settings for a permission profile denying secret reads. */
+  /** Codex -c settings that run it in the room's sandbox (codexRoomSandbox.ts). */
   codexPermissions: string[];
   /** What the agent starts knowing about the room (its plan board, and Codex its sandbox); null for a terminal, or when there's nothing. */
   instructions: string | null;
@@ -84,6 +84,8 @@ export interface LaunchTarget {
   agent: AgentKind | null;
   /** The agent CLI's installed version, when it could be read. */
   agentVersion: string | null;
+  /** The folder it starts in. */
+  cwd: string;
 }
 
 interface LiveSession {
@@ -127,7 +129,7 @@ export class SessionManager {
   /** Teammates' sessions shown here (team rooms); their I/O is routed to their owners. */
   remote: RemotePanes | null = null;
   /** Extra launch settings for a session in a shared group (team rooms); null outside rooms. */
-  roomLaunch: ((target: LaunchTarget) => RoomLaunch | null) | null = null;
+  roomLaunch: ((target: LaunchTarget) => Promise<RoomLaunch | null>) | null = null;
   private watchers = new Set<() => void>();
   private outputListeners = new Set<(id: string, data: string, end: number, epoch: string) => void>();
   private statusListeners = new Set<(info: SessionInfo, before: SessionStatus) => void>();
@@ -272,7 +274,7 @@ export class SessionManager {
     const group = req.taskGroup ?? req.ticketId ?? null;
     const targetAgent = req.shell ? null : req.agent ?? "claude";
     const agentVersion = targetAgent && group && this.roomLaunch && !req.debrief ? await this.versionOf(targetAgent) : null;
-    const room = req.debrief ? null : this.roomLaunch?.({ id, group, agent: targetAgent, agentVersion }) ?? null;
+    const room = req.debrief ? null : ((await this.roomLaunch?.({ id, group, agent: targetAgent, agentVersion, cwd })) ?? null);
     const roomCtx: LaunchContext = {
       ...(room?.denyReads.length ? { denyReads: room.denyReads } : {}),
       ...(room?.codexPermissions.length ? { codexPermissions: room.codexPermissions } : {}),

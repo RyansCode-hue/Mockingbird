@@ -83,33 +83,56 @@ should stop more members joining later.
   reads of `.env*` files and the known secret paths (the ADO PAT file,
   `*.pem`, `*.key`, `credentials.json`…), the same mechanism the run-setup
   drafter uses. One list of secret file patterns (`src/main/secrets.ts`)
-  makes those rules, Codex's room permission profile (below) and what backups
-  leave out, so nothing in it is ever sent over the connection or pushed.
-  Teammates swap `.env` files by hand.
-- **Codex room sessions** (Codex 0.138 or later) start under a permission
-  profile, `mockingbird-room`, defined and selected entirely by `-c` settings
-  on that launch (`default_permissions` and an inline
+  makes those rules, Codex's room sandbox (below) and what backups leave out,
+  so nothing in it is ever sent over the connection or pushed. Teammates swap
+  `.env` files by hand.
+- **Codex room sessions** (Codex 0.138 or later) run in the room's sandbox:
+  a permission profile, `mockingbird-room` (`src/main/codexRoomSandbox.ts`),
+  defined and selected entirely by `-c` settings on that launch
+  (`default_permissions`, `features.network_proxy` and an inline
   `permissions.mockingbird-room` table: `-c` splits its key on every dot, so
-  the glob keys go inside the value). `~/.codex/config.toml` is never touched,
+  path keys go inside the value). `~/.codex/config.toml` is never touched,
   sessions outside rooms are unaffected, and settings from the command line
-  outrank `sandbox_mode` in any config file. The profile extends Codex's
-  `:workspace` sandbox (writes only in the session's folders and temp folders,
-  `.git` and `.codex` read-only), turns the network on, and denies the secret
-  patterns inside the session's folders and, except `*.pem`, anywhere on disk,
-  plus `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`,
-  `~/.mockingbird/team` and the ADO PAT file. `*.pem` is denied only in the
-  session's folders because system and Python CA bundles are `.pem` files and
-  every TLS client reads them.
-  - Codex enforces it with the macOS sandbox on every command it runs —
-    `cat`, `cp`, `ln`, a symlink — and on its own file reads (`apply_patch`,
-    images). While a profile denies reads, Codex never runs a command outside
-    the sandbox, even once approved, so approvals can't open a secret and
-    can't grant anything else either. That's why the profile turns the
-    network on, and why git commands that write (commit, fetch, pull, push)
-    and installs that write to caches in home fail in a Codex room session:
-    the session is told so at launch and leaves those to the user (a `!`
-    command in the pane, which Codex runs outside its sandbox, or Source
-    Control). Approvals otherwise follow the user's own Codex settings.
+  outrank `sandbox_mode` in any config file. Codex enforces it with the macOS
+  sandbox on every command it runs — `cat`, `cp`, `ln`, a symlink — and on its
+  own file reads (`apply_patch`, images). While a profile denies reads, Codex
+  never runs a command outside the sandbox, even once approved, so the
+  profile is everything the session can do:
+  - **Reads:** everything but the secret patterns — inside the session's
+    folders, and anywhere on disk except `*.pem` (system and Python CA bundles
+    are `.pem` files every TLS client reads) — and the logins that could push
+    or sign in as the user: `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc`,
+    `~/.git-credentials`, `~/.config/git/credentials`, the login keychain
+    (`~/Library/Keychains`: git's osxkeychain helper and gh's token),
+    Codex's own `auth.json` (the CLI reads it itself, outside the sandbox),
+    `~/.mockingbird/team` and the ADO PAT file. Mockingbird's co-author hooks
+    inside that team folder stay readable, so commits get their trailers.
+  - **Writes:** the session's folders and temp folders (Codex's `:workspace`);
+    the repository's git data — the common git folder and a worktree's own —
+    so commits, branches, stashes and fetches work; and package caches in
+    home: `~/.npm`, `~/.cache`, `~/Library/Caches` (pip, go-build, Yarn 1),
+    Yarn Berry's and pnpm's stores, `~/go/pkg`, NuGet's packages and HTTP
+    cache, Cargo's registry. A cache whose parent folder doesn't exist yet
+    can't be created from inside (a toolchain's first run happens outside).
+    Inside the git folder, what git would later run code from or follow when
+    Mockingbird or the user runs git outside the sandbox stays read-only:
+    `config` (fsmonitor, aliases, credential helpers), `hooks`, `modules`,
+    other worktrees, and this worktree's `config.worktree`, `commondir` and
+    `gitdir`. So `git config`, `git remote add` and new upstream tracking
+    fail. Nothing on `PATH` (`~/.local/bin`, `~/go/bin`, `~/.cargo/bin`) is
+    writable.
+  - **Network:** on, through Codex's network proxy, for any domain and local
+    services (`allow_local_binding`). Without the proxy the sandbox lets
+    commands open Unix sockets and connect anywhere directly: an SSH agent
+    could sign a push, a Docker daemon could mount any folder. Through it,
+    only TCP via the proxy (and to localhost) gets out; tools that ignore
+    `HTTPS_PROXY`, and Docker, don't work in a Codex room session.
+  - **Pushing can't work from the agent:** a remote outside the session's
+    folders can't be written, and every login a push needs is unreadable or
+    unreachable. The session is told at launch that commits work and pushes
+    are the user's (Source Control, or a `!` command in the pane, which Codex
+    runs outside its sandbox). Approvals otherwise follow the user's own
+    Codex settings.
   - Older Codex releases lack parts of this (`-c` settings outranking a
     config file's `sandbox_mode`, `extends`, `:workspace_roots`, denied reads
     that hold through approvals), so a Codex older than 0.138 starts its room
@@ -216,12 +239,20 @@ A chat thread in each room, for people and agents:
   invite codes, snapshot/ref naming, transcript placement, claims matching, and
   the secret deny list. The Worker's room logic is a plain module, tested
   directly and also served by a local signaling server for tests.
-- Codex's room profile against the installed binary, without a model:
-  `codex sandbox` runs a probe under the exact `-c` settings a room launch
-  passes (through the pane's shell quoting), over a throwaway `CODEX_HOME`,
-  and every secret file — in the repository, another folder, home and the PAT
-  file — is unreadable while ordinary files and `/etc/ssl/cert.pem` stay
-  readable (skipped under CI and without Codex 0.138+).
+- Codex's room sandbox against the installed binary, without a model:
+  `codex sandbox` runs probes under the exact `-c` settings a room launch
+  passes (through the pane's shell quoting), with a throwaway `CODEX_HOME`
+  and a HOME outside the temp folders (`out/sandbox-tests/`, since temp
+  folders are writable to every command). Every secret file and login — in
+  the repository, another folder, home, the keychain folder, Codex's
+  `auth.json`, the PAT file — is unreadable while ordinary files,
+  `/etc/ssl/cert.pem` and the co-author hooks stay readable. In a worktree,
+  `git commit` (with its Co-authored-by trailer), `stash`, `branch` and
+  `fetch` work, so do `npm install` (its cache), cache writes and a local
+  service; pushing (to a file remote and over ssh), `git config`, writing a
+  hook or the worktree's `commondir`, writing home or a `PATH` folder fail,
+  and no SSH agent is reachable. The Codex CLI still reads its own
+  `auth.json`. Skipped under CI and without Codex 0.138+.
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
   (`MB_E2E_APP=1`): create room, join by code, live pane, remote typing,

@@ -1,14 +1,15 @@
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { tempDir } from "./helpers";
+import { makeRepo, tempDir } from "./helpers";
 import { loopbackMember, loopbackRoom, until, type LoopbackMember, type LoopbackNetwork } from "../src/main/team/loopback";
 import { SessionManager } from "../src/main/sessions";
 import { LivePanes, type LivePanesDeps } from "../src/main/team/livePanes";
 import { onTurnEnded, isRoomSession, originIdentity, roomOfSession, setRoomSessionLookup, validateRecord, type TurnEnded } from "../src/main/team/roomSessions";
 import { DEFAULT_SETTINGS, type NewSessionRequest, type Settings } from "../src/shared/types";
 import { CODEX_ROOM_GUARD_SINCE, decodePtyChunk, encodePtyChunk, remotePaneId, type RoomSessionRecord } from "../src/shared/team/livePanes";
-import { CODEX_ROOM_PROFILE } from "../src/main/secrets";
+import { CODEX_ROOM_PROFILE } from "../src/main/codexRoomSandbox";
 import { PlanService } from "../src/main/team/planService";
 import { claudeToolName } from "../src/main/messaging";
 import { PLAN_CONTEXT_ENV, PLAN_TOOL } from "../src/shared/team/plan";
@@ -417,13 +418,20 @@ describe("room session launch", () => {
       expect(cmd).toContain(`'-c' 'default_permissions="${CODEX_ROOM_PROFILE}"'`);
       expect(cmd).toContain(`"**/.env"="deny"`);
       expect(cmd).toContain(JSON.stringify(path.join(ryan.settings.workTrackerPath, "secrets/ado.pat")));
-      expect(cmd).toContain("git commands that write (commit, fetch, pull, push) fail here");
+      expect(cmd).toContain("so commits, branches and stashes work");
       expect(cmd).not.toContain("--disallowedTools");
       // the board couldn't be read here, so the SessionStart hook still adds it
       expect(ptyOf(s.id).env[PLAN_CONTEXT_ENV]).toBeUndefined();
       expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: true, coauthors: true });
       expect(ryan.sessions.list().find((x) => x.id === s.id)?.agentVersion).toBe(CODEX_ROOM_GUARD_SINCE);
     }
+    // in a repository, its git data is writable (commits) but not its config; co-author hooks stay readable
+    const repo = makeRepo();
+    const inRepo = ptyOf((await ryan.start({ agent: "codex", cwd: repo })).id).args.join(" ");
+    const common = execFileSync("git", ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
+    expect(inRepo).toContain(`${JSON.stringify(common)}="write"`);
+    expect(inRepo).toContain(`${JSON.stringify(path.join(common, "config"))}="read"`);
+    expect(inRepo).toMatch(/githooks"="read"/);
     // outside the room, Codex runs as configured
     const outside = await ryan.start({ agent: "codex", taskGroup: "private" });
     expect(ptyOf(outside.id).args.join(" ")).not.toContain("default_permissions");
@@ -435,7 +443,7 @@ describe("room session launch", () => {
     ryan.sessions.setAgentVersions({ codex: "0.137.9" });
     const s = await ryan.start({ agent: "codex" });
     expect(ptyOf(s.id).args.join(" ")).not.toContain("default_permissions");
-    expect(ptyOf(s.id).args.join(" ")).not.toContain("git commands that write");
+    expect(ptyOf(s.id).args.join(" ")).not.toContain("so commits, branches and stashes work");
     expect(ryan.sessions.guardsOf(s.id)).toEqual({ secrets: false, coauthors: true });
     await until(() => !!remoteOf(nick, s.id), "the record");
     expect(remoteOf(nick, s.id)!.room!.guards).toEqual({ secrets: false, coauthors: true });
