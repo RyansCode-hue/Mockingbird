@@ -1,5 +1,6 @@
 import { defineEventType } from "./rooms";
 import type { Team } from "./transport";
+import { hasCredentials, publicUrl } from "../git";
 import { MEMBER_ID_RE } from "../../shared/team/protocol";
 import {
   emptyPlan,
@@ -35,6 +36,11 @@ function fail(why: string): never {
 const isObj = (b: unknown): b is Record<string, unknown> => !!b && typeof b === "object" && !Array.isArray(b);
 const text = (v: unknown, what: string, max: number, min = 0) => {
   if (typeof v !== "string" || v.length > max || v.trim().length < min) fail(`${what} must be text of ${min}–${max} characters`);
+};
+/** An origin URL as every member keeps it in the log: never with a user name or token in it. */
+const originText = (v: unknown) => {
+  text(v, "origin", LIMITS.origin, 1);
+  if (hasCredentials(v as string)) fail("origin must not carry credentials");
 };
 const optText = (b: Record<string, unknown>, key: string, max: number, min = 0) => {
   if (b[key] !== undefined) text(b[key], key, max, min);
@@ -220,7 +226,7 @@ defineEventType("plan.remove", {
 defineEventType("plan.repo", {
   validate(b) {
     if (!isObj(b)) fail("no body");
-    text(b.origin, "origin", LIMITS.origin, 1);
+    originText(b.origin);
     text(b.name, "name", LIMITS.title, 1);
   },
   reduce(state, e) {
@@ -234,7 +240,7 @@ defineEventType("plan.repo", {
 defineEventType("plan.branches", {
   validate(b) {
     if (!isObj(b)) fail("no body");
-    text(b.origin, "origin", LIMITS.origin, 1);
+    originText(b.origin);
     if (!Array.isArray(b.branches) || b.branches.length > LIMITS.branches) fail(`branches must be a list of at most ${LIMITS.branches}`);
     for (const n of b.branches as unknown[]) if (typeof n !== "string" || n.length > LIMITS.branch || !BRANCH_RE.test(n)) fail(`bad branch name ${JSON.stringify(n)}`);
   },
@@ -316,7 +322,7 @@ export function applyPlanOp(team: Team, roomId: RoomId, op: PlanOp, via?: string
     case "remove":
       return { event: team.publish(roomId, "plan.remove", { id: need(op.id).id, ...v }), pkg: op.id };
     case "repo": {
-      const origin = String(op.origin ?? "").trim();
+      const origin = publicUrl(String(op.origin ?? ""));
       const name = String(op.name ?? "").trim();
       if (!origin || !name) throw new Error("Choose a repository with an origin remote");
       return { event: team.publish(roomId, "plan.repo", { origin, name }), pkg: null };

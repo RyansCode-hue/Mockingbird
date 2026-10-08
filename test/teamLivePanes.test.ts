@@ -155,6 +155,8 @@ describe("room sessions in the room log", () => {
     expect(() => validateRecord({ ...ok, status: "gone" })).toThrow(/status/);
     expect(() => validateRecord({ ...ok, cols: 1e9 })).toThrow(/cols/);
     expect(() => validateRecord({ ...ok, git: { branch: 1 } })).toThrow(/git/);
+    expect(() => validateRecord({ ...ok, repo: "https://ryan:ghp_secret@github.com/acme/backoffice.git" })).toThrow(/credentials/);
+    expect(() => validateRecord({ ...ok, repo: "git@github.com:acme/backoffice.git" })).not.toThrow();
   });
 
   it("keeps room sessions through the owner's restart: closed, then live again under the same pane", async () => {

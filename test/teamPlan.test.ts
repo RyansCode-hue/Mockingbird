@@ -1,7 +1,10 @@
+import * as fs from "fs";
+import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 import { loopbackRoom, until } from "../src/main/team/loopback";
 import { applyPlanOp, opFromTool, planOfRoom } from "../src/main/team/board";
+import { eventIdOf, eventPayload } from "../src/main/team/rooms";
 import {
   ACTIVE_STATUSES,
   claimConflicts,
@@ -95,6 +98,29 @@ describe("the plan board's events", () => {
     expect(() => ryan.team.publish(roomId, "plan.status", { id: pkg!, status: "finished" as PackageStatus })).toThrow(/bad status/);
     expect(() => ryan.team.publish(roomId, "plan.package", { id: "nope", title: "x" })).toThrow(/bad package id/);
     expect(() => ryan.team.publish(roomId, "plan.branches", { origin: "x", branches: ["a b"] })).toThrow(/bad branch name/);
+  });
+
+  it("keeps a token in the repo's origin URL out of the room log, and refuses an event that carries one", async () => {
+    const { members, roomId } = await room();
+    const [ryan, nick] = members;
+    const tokened = "https://user:TOKEN@dev.azure.com/org/proj/_git/repo";
+    const { event } = applyPlanOp(ryan.team, roomId, { kind: "repo", origin: tokened, name: "repo" });
+    expect(event.body).toEqual({ origin: "https://dev.azure.com/org/proj/_git/repo", name: "repo" });
+    await until(() => !!planOfRoom(nick.team.room(roomId)!).repo, "Nick to see the repo");
+    expect(planOfRoom(nick.team.room(roomId)!).repo!.origin).toBe("https://dev.azure.com/org/proj/_git/repo");
+    // nor can anyone put one there: not this install, not a teammate's
+    expect(() => ryan.team.publish(roomId, "plan.repo", { origin: tokened, name: "repo" })).toThrow(/credentials/);
+    expect(() => ryan.team.publish(roomId, "plan.branches", { origin: "https://TOKEN@github.com/acme/app.git", branches: [] })).toThrow(/credentials/);
+    for (const [type, body] of [
+      ["plan.repo", { origin: tokened, name: "repo" }],
+      ["plan.branches", { origin: tokened, branches: ["main"] }],
+    ] as const) {
+      const u = { roomId, type, body, author: nick.id, lamport: ryan.team.room(roomId)!.lamport + 1, at: Date.now() };
+      const payload = eventPayload(u);
+      (ryan.team as any).handler.frame(nick.id, JSON.stringify({ k: "ev", roomId, events: [{ ...u, id: eventIdOf(payload), sig: nick.identity.sign(payload) }] }));
+    }
+    expect(ryan.logs.filter((l) => /refused event .* from Nick: malformed plan\.(repo|branches): origin must not carry credentials/.test(l))).toHaveLength(2);
+    for (const m of members) expect(fs.readFileSync(path.join(m.store.get(roomId)!.dir, "log.jsonl"), "utf8")).not.toContain("TOKEN");
   });
 
   it("maps the agents' tool arguments to board changes, and says what's missing", () => {

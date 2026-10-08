@@ -36,12 +36,29 @@ describe("the secret file list", () => {
     const repo = makeRepo({ "README.md": "hi\n" });
     write(repo, Object.fromEntries([...SECRETS, ...ORDINARY.filter((f) => f !== "README.md"), "tools/WorkTracker/my-token.txt"].map((f) => [f, `${f}\n`])));
     const patFile = path.join(repo, "tools/WorkTracker/my-token.txt"); // the PAT file WorkTracker's config names, inside this repository
-    const snap = await snapshotCommit(repo, "backup", { exclude: secretPathspecs(repo, [patFile, "/elsewhere/ado.pat"]) });
-    const tree = git(repo, "ls-tree", "-r", "--name-only", snap!.sha).split("\n");
-    for (const f of SECRETS) expect(tree, f).not.toContain(f);
-    expect(tree).not.toContain("tools/WorkTracker/my-token.txt");
-    for (const f of ORDINARY) expect(tree, f).toContain(f);
+    const secrets = secretPathspecs(repo, [patFile, "/elsewhere/ado.pat"]);
+    const leftOut = (tree: string[]) => {
+      for (const f of SECRETS) expect(tree, f).not.toContain(f);
+      expect(tree).not.toContain("tools/WorkTracker/my-token.txt");
+      for (const f of ORDINARY) expect(tree, f).toContain(f);
+    };
+    leftOut(git(repo, "ls-tree", "-r", "--name-only", (await snapshotCommit(repo, "backup", { secrets }))!.sha).split("\n"));
+    // staged, they still stay out
+    git(repo, "add", "-A");
+    leftOut(git(repo, "ls-tree", "-r", "--name-only", (await snapshotCommit(repo, "backup", { secrets }))!.sha).split("\n"));
     // a known file outside the repository adds nothing
     expect(secretPathspecs(repo, ["/elsewhere/ado.pat"])).toHaveLength(SECRET_FILE_GLOBS.length);
+  });
+
+  it("stays out of a backup staged before the repository's first commit", async () => {
+    const repo = path.join(tempDir("code"), "fresh");
+    fs.mkdirSync(repo);
+    git(repo, "init", "-q");
+    write(repo, { ".env": "TOKEN=x\n", "src/app.ts": "app\n" });
+    git(repo, "add", "-A");
+    const snap = await snapshotCommit(repo, "backup", { secrets: secretPathspecs(repo) });
+    expect(snap!.parent).toBeNull();
+    expect(git(repo, "ls-tree", "-r", "--name-only", snap!.sha).split("\n")).toEqual(["src/app.ts"]);
+    expect(git(repo, "status", "--porcelain").split("\n")).toEqual(["A  .env", "A  src/app.ts"]);
   });
 });

@@ -1,5 +1,7 @@
-import { Terminal, type ITerminalOptions } from "@xterm/xterm";
+import { Terminal, type ILinkHandler, type ITerminalOptions } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { externalUrlAllowed } from "../shared/links";
+import { openLink } from "./uiUtil";
 
 /** A terminal kept for the life of the window, so leaving and coming back keeps its scrollback. */
 export interface CachedTerm {
@@ -45,9 +47,22 @@ export function applyTermTheme(light: boolean): void {
   for (const l of termThemeListeners) l(theme);
 }
 
+/**
+ * Links in a terminal's output (OSC 8: a teammate's session's too) open in the
+ * browser, never in the app: https only, and only once the address they
+ * really go to has been shown and agreed to, since the text on screen can say
+ * anything.
+ */
+export const termLinkHandler: ILinkHandler = {
+  activate(_event, url) {
+    if (!externalUrlAllowed(url)) return void alert(`Only https links open in the browser (got ${url.slice(0, 200)})`);
+    if (confirm(`Open this link in your browser?\n\n${url}`)) void openLink(url);
+  },
+};
+
 /** A terminal in the app's terminal font and current theme, with its fit addon loaded. */
 export function makeTerm(options: ITerminalOptions): { term: Terminal; fit: FitAddon } {
-  const term = new Terminal({ fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace', theme: currentTermTheme(), ...options });
+  const term = new Terminal({ fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace', theme: currentTermTheme(), linkHandler: termLinkHandler, ...options });
   const fit = new FitAddon();
   term.loadAddon(fit);
   return { term, fit };

@@ -5,7 +5,7 @@ import * as path from "path";
 import { defineEventType } from "./rooms";
 import type { RoomSessionSource } from "./roomSessions";
 import { TeamError, type RequestContext, type Team, type Unsubscribe } from "./transport";
-import { branchesOf, currentBranch, git, gitBytes, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
+import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
 import { secretPathspecs } from "../secrets";
@@ -148,6 +148,7 @@ function checkDescriptor(d: any): void {
   agentOf(d.agent);
   if (d.branch !== null) text(d.branch, "branch", 250, 1);
   text(d.originUrl, "originUrl", 500, 1);
+  if (hasCredentials(d.originUrl)) throw new Error("originUrl must not carry credentials");
   text(d.cwd, "cwd", 1000, 1);
   if (d.conversationId !== null && (typeof d.conversationId !== "string" || !CONV_ID_RE.test(d.conversationId))) throw new Error("bad conversation id");
 }
@@ -161,6 +162,7 @@ defineEventType("session.backup", {
     if (!b.push || typeof b.push.ok !== "boolean") throw new Error("no push outcome");
     time(b.push.at, "push.at");
     if (!b.push.ok) text(b.push.error, "push.error", 500);
+    if (!b.push.ok && withoutCredentials(b.push.error) !== b.push.error) throw new Error("push.error must not carry credentials");
     checkDescriptor(b.session);
     if (b.transcriptBytes !== null && (!Number.isSafeInteger(b.transcriptBytes) || b.transcriptBytes < 0)) throw new Error("bad transcript size");
   },
@@ -498,7 +500,7 @@ export class TakeoverService {
     const ref = roomBackupRef(roomId, s.id);
     const prev = this.local(roomId).own[s.id];
     const takenAt = this.now();
-    const snap = await snapshotCommit(top, `${snapshotSubject(s.id)}\n\ntaken-at: ${takenAt}`, { exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
+    const snap = await snapshotCommit(top, `${snapshotSubject(s.id)}\n\ntaken-at: ${takenAt}`, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
     if (!snap) throw new Error(`${s.cwd} isn't in a git repository`);
     // nothing changed since the last turn: keep that snapshot, with nothing new to send or push
     const same = !!prev && prev.tree === snap.tree && prev.parent === snap.parent && (await hasCommits(top, [prev.sha])).length === 1;
@@ -972,7 +974,7 @@ export class TakeoverService {
         if (!top) throw new Error(`${rec.cwd} isn't in a git repository any more`);
         const base = rec.sent?.sha ?? rec.base;
         if (!(await hasCommits(top, [base])).length) throw new Error(`the snapshot ${by} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told`);
-        const now = await worktreeTree(top, { exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []) });
+        const now = await worktreeTree(top, { secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []), base });
         const files = await changedFiles(top, `${base}^{tree}`, now!.tree);
         this.unsent.set(sessionId, { files: files.map((f) => f.path), checkedAt: this.now() });
       } catch (err) {
@@ -1011,7 +1013,7 @@ export class TakeoverService {
       if (!(await hasCommits(top, [base])).length) throw new Error(`The snapshot ${name} continued from (${base.slice(0, 8)}) isn't in this clone, so what they lack can't be told`);
       const me = this.nameOf(roomId, this.d.team.self.id);
       const commit = await worktreeCommitOn(top, base, `Mockingbird: ${me}'s changes to “${rec.title}” after ${name} continued it\n\nfrom-session: ${sessionId}`, {
-        exclude: secretPathspecs(top, this.d.secretFiles?.() ?? []),
+        secrets: secretPathspecs(top, this.d.secretFiles?.() ?? []),
       });
       const files = await changedFiles(top, base, commit.sha);
       if (!files.length) throw new Error(`Nothing to send: ${name} has everything in this copy`);

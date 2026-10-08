@@ -266,6 +266,25 @@ describe("the plan service", () => {
     expect(r.svc.view(roomId)).toMatchObject({ teammates: [{ name: "Nick", branch: "nick-donor" }], fetchedAt: expect.any(Number) });
   });
 
+  it("never publishes a token from a clone's origin URL: not in the repo choices, the repo, or the branches it announces", async () => {
+    const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("t") });
+    const [ryan, nick] = members;
+    const { clones } = origin(["ryan"]);
+    // a closed local port: the plan's pushes and fetches fail at once, without leaving this Mac
+    const tokened = "https://user:TOKEN@127.0.0.1:9/org/proj/_git/repo";
+    git(clones.ryan, "remote", "set-url", "origin", tokened);
+    git(clones.ryan, "checkout", "-q", "-b", "ryan-feature");
+    const r = service(ryan, roomId, clones.ryan, () => [session("r1", { repoPath: clones.ryan, cwd: clones.ryan, branch: "ryan-feature" })]);
+    expect((await r.svc.repoChoices(roomId)).map((c) => c.origin)).toEqual(["https://127.0.0.1:9/org/proj/_git/repo"]);
+    r.svc.apply(roomId, { kind: "repo", origin: tokened, name: "repo" });
+    await until(() => nick.team.room(roomId)!.ext.memberBranches?.[ryan.id]?.branches.join() === "ryan-feature", "Ryan's branch to be announced");
+    expect(nick.team.room(roomId)!.ext.memberBranches?.[ryan.id]?.origin).toBe("https://127.0.0.1:9/org/proj/_git/repo");
+    for (const m of members) {
+      expect(JSON.stringify(m.team.room(roomId))).not.toContain("TOKEN");
+      expect(fs.readFileSync(path.join(m.store.get(roomId)!.dir, "log.jsonl"), "utf8")).not.toContain("TOKEN");
+    }
+  });
+
   it("lets an agent in the room change the board through its tool, attributed to its session, and gives launches the room's instructions", async () => {
     const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("t") });
     const [ryan, nick] = members;

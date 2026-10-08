@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // xterm's fit addon looks for a browser global as it loads
 vi.hoisted(() => {
@@ -6,7 +6,7 @@ vi.hoisted(() => {
 });
 
 import { Terminal } from "@xterm/xterm";
-import { dataPump, replay, type CachedTerm } from "../src/renderer/cachedTerm";
+import { dataPump, makeTerm, replay, termLinkHandler, type CachedTerm } from "../src/renderer/cachedTerm";
 
 const parsed = (term: Terminal) => new Promise<void>((r) => term.write("", r));
 const screen = (term: Terminal) => {
@@ -73,5 +73,47 @@ describe("cached terminal replay", () => {
     await parsed(term);
     expect(e.ready).toBe(true);
     expect(screen(term)).toEqual(["[earlier output couldn't be loaded: gone]", "live"]);
+  });
+});
+
+describe("links in terminal output", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function browser(answer: boolean) {
+    const opened: string[] = [];
+    const asked: string[] = [];
+    const alerts: string[] = [];
+    vi.stubGlobal("window", { mb: { openExternal: async (url: string) => void opened.push(url) } });
+    vi.stubGlobal("confirm", (msg: string) => (asked.push(msg), answer));
+    vi.stubGlobal("alert", (msg: string) => void alerts.push(msg));
+    return { opened, asked, alerts };
+  }
+  const click = async (url: string) => {
+    termLinkHandler.activate(new Event("click") as MouseEvent, url, { start: { x: 1, y: 1 }, end: { x: 1, y: 1 } });
+    await new Promise((r) => setTimeout(r, 0));
+  };
+
+  it("open in the browser, never the app, once the real address has been shown and agreed to", async () => {
+    const yes = browser(true);
+    await click("https://evil.example/login");
+    expect(yes.asked).toEqual([expect.stringContaining("https://evil.example/login")]);
+    expect(yes.opened).toEqual(["https://evil.example/login"]);
+    const no = browser(false);
+    await click("https://evil.example/login");
+    expect(no.opened).toEqual([]);
+  });
+
+  it("go nowhere unless they're https, and say so", async () => {
+    const b = browser(true);
+    for (const url of ["http://evil.example", "file:///etc/passwd", "javascript:alert(1)"]) await click(url);
+    expect(b.asked).toEqual([]);
+    expect(b.opened).toEqual([]);
+    expect(b.alerts).toHaveLength(3);
+    expect(b.alerts[0]).toMatch(/Only https links open in the browser/);
+  });
+
+  it("is every app terminal's handler", () => {
+    vi.stubGlobal("document", { documentElement: { dataset: {} } });
+    expect(makeTerm({}).term.options.linkHandler).toBe(termLinkHandler);
   });
 });

@@ -1,4 +1,4 @@
-import { git, originUrl, parseRemote } from "../git";
+import { git, originUrl, parseRemote, publicUrl } from "../git";
 import { baseRef } from "../files";
 import { PLAN_BRANCH } from "../../shared/team/plan";
 
@@ -48,8 +48,7 @@ export function originKey(url: string): string {
   const r = parseRemote(url);
   if (r?.provider === "github") return `github:${r.owner}/${r.repo}`.toLowerCase();
   if (r?.provider === "ado") return `ado:${r.base}/${r.project}/${r.repo}`.toLowerCase();
-  return url
-    .trim()
+  return publicUrl(url)
     .replace(/\/+$/, "")
     .replace(/\.git$/i, "")
     .toLowerCase();

@@ -161,6 +161,14 @@ const refIn = (repo: string, ref: string) => {
     return null;
   }
 };
+const hasObject = (repo: string, obj: string) => {
+  try {
+    execFileSync("git", ["cat-file", "-e", obj], { cwd: repo, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+};
 const rejectPushes = (bare: string, on: boolean) => {
   const hook = path.join(bare, "hooks", "pre-receive");
   if (on) fs.writeFileSync(hook, "#!/bin/sh\necho 'backups are switched off here' >&2\nexit 1\n", { mode: 0o755 });
@@ -194,6 +202,30 @@ describe("room session backups", () => {
     await until(() => backupIn(t.nickM, t.roomId)?.latest.sha === sha, "Nick to hear of the backup");
     // nothing on the branch, the index or the history moved
     expect(sh(t.wt, "status", "--porcelain")).toContain("A  src/staged.ts");
+  });
+
+  it("never takes a secret's staged or edited version: a committed one stays as HEAD has it, a staged-only one stays out", async () => {
+    const t = await setup();
+    write(t.wt, { "config/app.env": "PUBLIC_URL=https://example.test\n" });
+    git(t.wt, "add", "config/app.env");
+    git(t.wt, "commit", "-q", "-m", "app config", "--", "config/app.env");
+    write(t.wt, { "config/app.env": "TOKEN=edited-in\n" });
+    git(t.wt, "add", ".env", "config/app.env");
+    const leaks = [sh(t.wt, "hash-object", ".env"), sh(t.wt, "hash-object", "config/app.env")];
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const sha = backupIn(t.ryanM, t.roomId)!.latest.sha;
+    expect(refIn(t.bare, roomBackupRef(t.roomId, "s1"))).toBe(sha);
+    expect(refIn(t.nickClone, roomBackupRef(t.roomId, "s1"))).toBe(sha);
+    expect(sh(t.bare, "ls-tree", "-r", "--name-only", sha).split("\n")).not.toContain(".env");
+    expect(sh(t.bare, "show", `${sha}:config/app.env`)).toBe("PUBLIC_URL=https://example.test");
+    // neither the push to origin nor the bundle sent to Nick carries the staged contents
+    for (const obj of leaks) {
+      expect(hasObject(t.bare, obj), `origin has ${obj}`).toBe(false);
+      expect(hasObject(t.nickClone, obj), `Nick's clone has ${obj}`).toBe(false);
+    }
+    // the index is still Ryan's to commit from
+    expect(sh(t.wt, "status", "--porcelain").split("\n")).toEqual(expect.arrayContaining(["A  .env", "M  config/app.env"]));
   });
 
   it("keeps the last snapshot when a turn changed nothing, and pushes again with a lease when files change", async () => {
@@ -690,6 +722,16 @@ describe("take-over pieces", () => {
     expect(repoIdentity("/srv/git/app.git/")).toBe("/srv/git/app.git".replace(/\.git$/, ""));
     expect(publicUrl("https://ryan:ghp_secret@github.com/acme/app.git")).toBe("https://github.com/acme/app.git");
     expect(withoutCredentials("fatal: unable to access 'https://ryan:ghp_secret@github.com/acme/app.git/'")).not.toContain("ghp_secret");
+  });
+
+  it("refuses a backup record carrying credentials, in its origin URL or its push error", async () => {
+    const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("team") });
+    const [ryan] = members;
+    const descriptor = { title: "t", agent: "claude", branch: "feature-x", originUrl: "https://github.com/acme/app.git", cwd: "/w", conversationId: null };
+    const body = { sessionId: "s1", sha: "a".repeat(40), takenAt: 1, push: { ok: true, at: 1 }, session: descriptor, transcriptBytes: null };
+    expect(() => ryan.team.publish(roomId, "session.backup", { ...body, session: { ...descriptor, originUrl: "https://ryan:ghp_secret@github.com/acme/app.git" } } as never)).toThrow(/credentials/);
+    expect(() => ryan.team.publish(roomId, "session.backup", { ...body, push: { ok: false, at: 1, error: "fatal: unable to access 'https://ryan:ghp_secret@github.com/acme/app.git/'" } } as never)).toThrow(/credentials/);
+    expect(() => ryan.team.publish(roomId, "session.backup", body as never)).not.toThrow();
   });
 
   it("moves a transcript's working directory, folders inside it too, and drops a line cut short", () => {
