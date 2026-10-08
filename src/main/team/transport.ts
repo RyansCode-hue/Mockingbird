@@ -1,8 +1,8 @@
-import { decodeInvite, encodeInvite, PUBLIC_KEY_RE, TEAM_PROTOCOL, type SignalType } from "../../shared/team/protocol";
-import type { MemberId, PeerLinkState, PeerStatus, PendingJoinSummary, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState, TeamRoomSummary, TeamStatus } from "../../shared/team/types";
+import { decodeInvite, encodeInvite, formatFingerprint, joinRequestPayload, MEMBER_ID_RE, PUBLIC_KEY_RE, SIGNATURE_RE, TEAM_PROTOCOL, TOKEN_RE, type JoinRequestFields, type SignalType } from "../../shared/team/protocol";
+import type { JoinRequestSummary, MemberId, PeerLinkState, PeerStatus, PendingJoinSummary, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState, TeamRoomSummary, TeamStatus } from "../../shared/team/types";
 import { encodeFrame, MAX_STREAM_CHUNK, Reassembler, splitText, type StreamFrame, type TeamFrame } from "./frames";
-import { fingerprintOf, joinProof, randomToken, roomIdFor, sameSecret, signalingJoinKey, signalingTokenHash, type Identity } from "./identity";
-import { roomAdmin, type PendingJoin, type RoomLog, type RoomStore, type StoredInvite } from "./rooms";
+import { fingerprintOf, joinProof, randomToken, roomIdFor, sameSecret, signalingJoinKey, signalingTokenHash, verifySignature, type Identity } from "./identity";
+import { roomAdmin, type JoinRequestRecord, type PendingJoin, type RoomLog, type RoomStore, type StoredInvite } from "./rooms";
 
 /**
  * The team transport: what every stage after the foundation uses to share a
@@ -36,6 +36,19 @@ import { roomAdmin, type PendingJoin, type RoomLog, type RoomStore, type StoredI
  * is refused; members offline when someone left hear of it from the others,
  * or from the server's welcome. onLeft tells the app when this install's own
  * membership ended, so it can delete what it kept of the room.
+ *
+ * Joining: the joiner proves to the inviter (the member whose code it holds)
+ * that it has the code, and the room's admin accepts or declines. The
+ * inviter checks the proof, takes the code (it works once), and tells the
+ * joiner whom it waits for (join-pending); when the inviter isn't the admin
+ * it passes the request on, signed, to the admin's Mockingbird — held, and
+ * passed on once the admin is connected. Accepting is the admin's
+ * member.added (only the admin's counts: rooms.ts mayAddMember); declining
+ * is the admin's join.declined, and the signaling server drops the joiner at
+ * the door (deny). Either reaches the inviter in the room log, and the
+ * inviter tells the joiner (join-accepted / join-rejected): the joiner only
+ * ever trusts the key its code names. onJoinRequest tells the app when the
+ * admin has a request to answer (answerJoin).
  */
 
 export type Unsubscribe = () => void;
@@ -92,7 +105,7 @@ export interface Team {
 
 // ---- the wire: how a transport connects members ---------------------------------------
 
-export type IntroType = Extract<SignalType, "join" | "join-accepted" | "join-rejected">;
+export type IntroType = Extract<SignalType, "join" | "join-pending" | "join-accepted" | "join-rejected">;
 
 /** A room as the wire sees it: where to signal, whose connection details to accept, what to register. */
 export interface WireRoom {
@@ -160,6 +173,8 @@ export interface PeerWire {
   introduce(roomId: RoomId, to: MemberId, type: IntroType, body: unknown): Promise<void>;
   /** Ask the room's signaling server to cut `member` off, passing `event` (their signed removal) on. Never rejects. */
   revoke(roomId: RoomId, member: MemberId, event: RoomEvent | null, timeoutMs?: number): Promise<RevokeOutcome>;
+  /** Ask the room's signaling server to drop a joiner knocking at the door (the admin declined it). Never rejects. */
+  deny(roomId: RoomId, member: MemberId, timeoutMs?: number): Promise<RevokeOutcome>;
   linkStates(): Map<MemberId, { state: PeerLinkState; detail?: string; since: number }>;
   roomStates(): Map<RoomId, RoomSignalingState>;
   problems(): string[];
@@ -176,6 +191,10 @@ export interface RoomSignalingState {
   code?: string;
   /** The server can revoke (cut removed members off); absent until it has welcomed this install. */
   revoke?: boolean;
+  /** The server holds joiners at the door until the admin admits them; absent until it has welcomed this install. */
+  approve?: boolean;
+  /** This install is a joiner at the door: it can only talk to its inviter until the admin admits it. */
+  knocking?: boolean;
 }
 
 // ---- the team ------------------------------------------------------------------------------
@@ -212,6 +231,14 @@ const HAS_EVENT = "room.hasEvent";
 const DEPART_GRACE_MS = 10_000;
 /** How long after answering a leaving member's confirmation its connection stays, for the answer to get out. */
 const ANSWERED_GRACE_MS = 1_500;
+/** The request an inviter passes a join request on to the room's admin with (room-scoped). */
+const JOIN_REQUEST = "room.joinRequest";
+/** Invites live at most this long (the signaling server's limit too): a request can't outlive one. */
+const MAX_INVITE_MS = 7 * 24 * 3_600_000;
+/** Decided or expired join requests are kept this long (the inviter's dialog shows how it went), then dropped. */
+const REQUEST_KEEP_MS = 24 * 3_600_000;
+/** A joiner waiting for the admin asks the inviter again this often (every this many join retries). */
+const WAITING_RETRY_EVERY = 4;
 
 /** This install's membership of a room ended. */
 export interface LeftInfo {
@@ -273,6 +300,10 @@ export class TeamCore implements Team {
   private leftHandlers = new Set<(roomId: RoomId, info: LeftInfo) => void>();
   /** Rooms whose end of membership onLeft has reported. */
   private leftReported = new Set<RoomId>();
+  private joinRequestHandlers = new Set<(r: JoinRequestSummary) => void>();
+  /** Join requests being passed on to the admin right now (room, joiner): one at a time. */
+  private forwarding = new Set<string>();
+  private joinTicks = 0;
 
   constructor(private o: TeamOptions) {
     this.identity = o.identity;
@@ -295,7 +326,10 @@ export class TeamCore implements Team {
       if (has && lingering?.removal === p.id) setTimeout(() => this.endLinger(p.roomId), ANSWERED_GRACE_MS).unref?.();
       return { has };
     });
+    this.requestHandlers.set(JOIN_REQUEST, (p, ctx) => this.onForwardedRequest(p, ctx));
     this.wire.setHandler(this.handler);
+    // rooms from before joins needed accepting switch over once their admin's Mockingbird has this
+    for (const log of this.store.list()) this.ensureApproval(log);
     this.syncWire();
     this.joinTimer = setInterval(() => this.retryJoins(), 15_000);
     this.joinTimer.unref?.();
@@ -436,7 +470,7 @@ export class TeamCore implements Team {
     const log = this.store.open(roomId);
     this.watch(log);
     this.store.setMeta(roomId, { signalingUrl: spec.signalingUrl, groupKey: spec.groupKey });
-    log.create(this.identity, "room.created", { name: spec.name, groupKey: spec.groupKey, publicKey: this.self.publicKey, creatorName: this.o.name(), salt }, this.now());
+    log.create(this.identity, "room.created", { name: spec.name, groupKey: spec.groupKey, publicKey: this.self.publicKey, creatorName: this.o.name(), salt, approval: true }, this.now());
     this.syncWire();
     return log.state!;
   }
@@ -684,6 +718,223 @@ export class TeamCore implements Team {
     this.changedSoon();
   }
 
+  // ---- join requests: the admin accepts or declines -----------------------------------------------
+
+  /** The room's admin has a new join request to answer (on this install). */
+  onJoinRequest(cb: (r: JoinRequestSummary) => void): Unsubscribe {
+    this.joinRequestHandlers.add(cb);
+    return () => this.joinRequestHandlers.delete(cb);
+  }
+
+  /**
+   * Accept or decline someone's request to join (the room's admin only).
+   * Accepting adds them (member.added); declining tells the inviter
+   * (join.declined), who tells the joiner, and the signaling server drops
+   * them at the door. Throws before anything changed; `worker` says when the
+   * server couldn't drop a declined joiner.
+   */
+  async answerJoin(roomId: RoomId, joiner: MemberId, accept: boolean, o: { denyMs?: number } = {}): Promise<{ name: string; accepted: boolean; worker: RevokeOutcome | null }> {
+    const log = this.memberLog(roomId);
+    const state = log.state!;
+    const admin = roomAdmin(state);
+    if (admin !== this.self.id) throw new Error(`Only the room's admin (${admin ? this.nameOf(admin) : "nobody"}) can accept or decline joins`);
+    const requests = this.store.joinRequests(roomId);
+    const r = requests.filter((x) => x.id === joiner && !x.decision).at(-1);
+    if (!r) {
+      if (log.isMember(joiner)) return { name: this.nameOf(joiner), accepted: true, worker: null };
+      throw new Error(`Nobody with that key is asking to join ${state.name}`);
+    }
+    if (r.expiresAt <= this.now()) throw new Error(`${r.name}'s request expired with the code they used: they need a new one`);
+    this.ensureApproval(log, true);
+    // decided before it's published: what the log tells the inviter (maybe this install) finds it answered
+    r.decision = accept ? "accepted" : "declined";
+    r.decidedAt = this.now();
+    this.store.saveJoinRequests(roomId, requests);
+    let worker: RevokeOutcome | null = null;
+    if (accept) {
+      if (!log.isMember(joiner)) this.publish(roomId, "member.added", { id: r.id, name: r.name, publicKey: r.publicKey, inviter: r.inviter });
+      this.log(`accepted ${r.name} (${r.id}) into ${state.name}`);
+    } else {
+      this.publish(roomId, "join.declined", { id: r.id, invite: r.invite, inviter: r.inviter });
+      this.log(`declined ${r.name}'s (${r.id}) request to join ${state.name}`);
+      worker = await this.wire.deny(roomId, joiner, o.denyMs ?? 10_000);
+      if (!worker.ok) this.log(`the signaling server didn't drop ${r.name} at the door of ${state.name}: ${worker.message}`);
+    }
+    this.changedSoon();
+    return { name: r.name, accepted: accept, worker };
+  }
+
+  /**
+   * From here in the room's order joins need the admin's acceptance: a room
+   * created before that switches over with its admin's room.approval (later
+   * in a microtask, unless `now`: publishing inside an applied event would
+   * re-enter the log).
+   */
+  private ensureApproval(log: RoomLog, now = false): void {
+    const run = () => {
+      const state = log.state;
+      if (this.closed || !state || state.joinApproval || roomAdmin(state) !== this.self.id || !log.isMember(this.self.id) || this.leaving.has(log.roomId)) return;
+      try {
+        this.publish(log.roomId, "room.approval", {});
+        this.log(`joins of ${state.name} need accepting from now on`);
+      } catch (err) {
+        this.log(`couldn't switch ${state.name} to accepting joins: ${(err as Error).message}`);
+      }
+    };
+    if (now) run();
+    else queueMicrotask(run);
+  }
+
+  /** A forwarded or own request, as the window shows it. */
+  private requestSummary(state: RoomState, r: JoinRequestRecord): JoinRequestSummary {
+    const admin = roomAdmin(state);
+    const role = admin === this.self.id ? "admin" : "inviter";
+    const state_: JoinRequestSummary["state"] = r.decision ?? (role === "inviter" && r.forwardedTo !== admin ? "forwarding" : "waiting");
+    return {
+      roomId: state.id,
+      id: r.id,
+      name: r.name,
+      fingerprint: formatFingerprint(r.id),
+      inviter: r.inviter,
+      inviterName: this.nameIn(state, r.inviter),
+      admin,
+      adminName: admin ? this.nameIn(state, admin) : "nobody",
+      role,
+      state: state_,
+      ...(r.problem && !r.decision ? { problem: r.problem } : {}),
+      at: r.at,
+      expiresAt: r.expiresAt,
+    };
+  }
+
+  /** The requests the window shows for a room: the admin's to answer; the inviter's passed on (and how they went, for a day). */
+  private requestsOf(state: RoomState): JoinRequestSummary[] {
+    const now = this.now();
+    const admin = roomAdmin(state);
+    return this.store
+      .joinRequests(state.id)
+      .filter((r) => (admin === this.self.id ? !r.decision && r.expiresAt > now && !state.members.some((m) => m.id === r.id) : r.inviter === this.self.id && (r.decision ? (r.decidedAt ?? 0) > now - REQUEST_KEEP_MS : r.expiresAt > now)))
+      .map((r) => this.requestSummary(state, r));
+  }
+
+  /** Keep a request this install answers, or passes on: the admin is told of a new one. Returns false when it was already held. */
+  private holdRequest(roomId: RoomId, r: JoinRequestRecord): boolean {
+    const requests = this.store.joinRequests(roomId);
+    if (requests.some((x) => x.id === r.id && x.invite === r.invite)) return false;
+    this.store.saveJoinRequests(roomId, [...requests, r]);
+    const state = this.room(roomId);
+    if (state && roomAdmin(state) === this.self.id) {
+      const summary = this.requestSummary(state, r);
+      for (const h of this.joinRequestHandlers) this.safely("a join-request handler", () => h(summary));
+    }
+    this.changedSoon();
+    return true;
+  }
+
+  /**
+   * The admin's side of a request an inviter passed on: checked (the
+   * inviter's signature, the joiner's key, the expiry) and held for the
+   * admin to answer. Answers whether it was decided already.
+   */
+  private onForwardedRequest(p: any, ctx: RequestContext): { received: true; decision?: "accepted" | "declined" } {
+    if (!ctx.roomId) throw new Error("a join request names its room");
+    const log = this.memberLog(ctx.roomId);
+    const state = log.state!;
+    if (roomAdmin(state) !== this.self.id) throw new Error(`this Mockingbird isn't ${state.name}'s admin`);
+    const r = joinRequestOf(p, ctx.roomId);
+    if (!r) throw new Error("a malformed join request");
+    if (r.inviter !== ctx.from) throw new Error("a join request is passed on by its inviter");
+    const key = log.memberKey(ctx.from);
+    if (!key || !verifySignature(key, joinRequestPayload(r), r.sig)) throw new Error("the join request isn't signed by its inviter");
+    const now = this.now();
+    if (r.expiresAt <= now) throw new Error("the join request expired with its code");
+    if (r.expiresAt - r.at > MAX_INVITE_MS + 60_000) throw new Error("a join request can't outlive a 7-day code");
+    if (log.isMember(r.id)) return { received: true, decision: "accepted" };
+    const held = this.store.joinRequests(ctx.roomId).find((x) => x.id === r.id && x.invite === r.invite);
+    if (held) return { received: true, ...(held.decision ? { decision: held.decision } : {}) };
+    this.holdRequest(ctx.roomId, { ...r, forwardedTo: this.self.id });
+    this.log(`${this.nameOf(ctx.from)} passed on ${r.name}'s (${r.id}) request to join ${state.name}`);
+    return { received: true };
+  }
+
+  /** Pass the requests this install took as the inviter on to the room's admin, when the admin's Mockingbird is connected and doesn't have them yet. */
+  private forwardRequests(roomId: RoomId): void {
+    const state = this.room(roomId);
+    if (!state) return;
+    const admin = roomAdmin(state);
+    if (!admin || admin === this.self.id || !this.hellos.has(admin) || !this.allowed(admin, roomId)) return;
+    const now = this.now();
+    for (const r of this.store.joinRequests(roomId)) {
+      const k = key(roomId, r.id, r.invite);
+      if (r.inviter !== this.self.id || r.decision || r.expiresAt <= now || r.forwardedTo === admin || this.forwarding.has(k) || state.members.some((m) => m.id === r.id)) continue;
+      this.forwarding.add(k);
+      const { decision: _d, decidedAt: _t, forwardedTo: _f, problem: _p, ...fields } = r;
+      this.request<{ received?: boolean }>(admin, JOIN_REQUEST, fields, { roomId })
+        .then(
+          (answer) => {
+            if (!answer?.received) throw new Error("the admin's Mockingbird didn't take it");
+            this.updateRequest(roomId, r, { forwardedTo: admin, problem: undefined });
+            this.log(`passed ${r.name}'s request to join ${state.name} on to ${this.nameOf(admin)}`);
+          },
+          (err: TeamError) => {
+            // an admin on an older Mockingbird can't take requests: said, and asked again when it reconnects
+            const problem = err.code === "no-handler" ? `${this.nameOf(admin)}'s Mockingbird needs an update to accept joins` : undefined;
+            if (problem) this.updateRequest(roomId, r, { problem });
+            this.log(`couldn't pass ${r.name}'s request to join ${state.name} on to ${this.nameOf(admin)}: ${err.message}`);
+          }
+        )
+        .catch((err) => this.log(`passing on ${r.name}'s request to join ${state.name} failed: ${(err as Error).message}`))
+        .finally(() => this.forwarding.delete(k));
+    }
+  }
+
+  private updateRequest(roomId: RoomId, r: JoinRequestRecord, patch: Partial<JoinRequestRecord>): void {
+    if (!this.store.get(roomId)) return;
+    const requests = this.store.joinRequests(roomId);
+    const i = requests.findIndex((x) => x.id === r.id && x.invite === r.invite);
+    if (i < 0) return;
+    requests[i] = { ...requests[i], ...patch };
+    for (const k of Object.keys(patch) as (keyof JoinRequestRecord)[]) if (patch[k] === undefined) delete requests[i][k];
+    this.store.saveJoinRequests(roomId, requests);
+    this.changedSoon();
+  }
+
+  /**
+   * The admin decided a request this install took as the inviter (seen in
+   * the room log): the joiner is told — let in, or declined. The joiner asks
+   * again while it waits, so one that can't be reached now hears it then.
+   */
+  private relayDecision(log: RoomLog, joiner: MemberId, decision: "accepted" | "declined", by: MemberId): void {
+    const state = log.state;
+    if (!state || !log.isMember(this.self.id)) return;
+    const requests = this.store.joinRequests(log.roomId);
+    const mine = requests.filter((r) => r.inviter === this.self.id && r.id === joiner);
+    if (!mine.length) return;
+    let changed = false;
+    for (const r of mine) {
+      if (r.decision === decision) continue;
+      r.decision = decision;
+      r.decidedAt = this.now();
+      changed = true;
+    }
+    if (changed) this.store.saveJoinRequests(log.roomId, requests);
+    const extra = decision === "accepted" ? { roomName: state.name } : { reason: `${this.nameIn(state, by)} declined your request to join ${state.name}`, declined: true };
+    this.wire
+      .introduce(log.roomId, joiner, decision === "accepted" ? "join-accepted" : "join-rejected", { publicKey: this.self.publicKey, name: this.o.name(), ...extra })
+      .catch((err) => this.log(`couldn't tell ${mine[0].name} yet that ${this.nameIn(state, by)} ${decision} them (they hear it when they ask again): ${(err as Error).message}`));
+    this.changedSoon();
+  }
+
+  /** Drop requests decided or expired over a day ago. */
+  private pruneRequests(): void {
+    const now = this.now();
+    for (const room of this.rooms()) {
+      const requests = this.store.joinRequests(room.id);
+      const keep = requests.filter((r) => (r.decision ? (r.decidedAt ?? 0) > now - REQUEST_KEEP_MS : r.expiresAt > now - REQUEST_KEEP_MS));
+      if (keep.length !== requests.length) this.store.saveJoinRequests(room.id, keep);
+    }
+  }
+
   /** Show a room as another local group (the group was renamed here). */
   bindGroup(roomId: RoomId, groupKey: string): void {
     const meta = this.store.meta(roomId);
@@ -752,13 +1003,16 @@ export class TeamCore implements Team {
         signaling: sig?.signaling ?? "offline",
         ...(sig?.problem ? { problem: sig.problem } : {}),
         ...(sig?.revoke !== undefined ? { workerRevoke: sig.revoke } : {}),
+        ...(sig?.approve !== undefined ? { workerApprove: sig.approve } : {}),
+        requests: this.requestsOf(r),
       };
     });
     const pending: PendingJoinSummary[] = this.joins.map((j) => ({
       roomId: j.roomId,
       name: j.name,
       inviter: j.inviter,
-      state: j.rejected ? "rejected" : j.inviterKey ? "syncing" : "waiting",
+      state: j.rejected ? (j.declined ? "declined" : "rejected") : j.inviterKey ? "syncing" : j.admin ? "approval" : "waiting",
+      ...(j.adminName ? { admin: j.adminName } : {}),
       ...(j.rejected ? { reason: j.rejected } : {}),
       since: j.since,
     }));
@@ -886,8 +1140,10 @@ export class TeamCore implements Team {
     if (!this.helloSent.has(peer)) this.sendHello(peer);
     for (const roomId of rooms) {
       if (before.has(roomId)) continue;
-      if (this.allowed(peer, roomId)) this.sendSync(peer, roomId);
-      else this.tellRemoved(peer, roomId);
+      if (this.allowed(peer, roomId)) {
+        this.sendSync(peer, roomId);
+        this.forwardRequests(roomId); // join requests held for the admin, now it's here
+      } else this.tellRemoved(peer, roomId);
     }
     this.presenceChanged();
     this.changedSoon();
@@ -1007,23 +1263,61 @@ export class TeamCore implements Team {
   }
 
   private retryJoins(): void {
-    for (const j of this.joins) if (!j.inviterKey && !j.rejected) this.sendJoin(j);
+    const tick = this.joinTicks++;
+    const now = this.now();
+    let ended = false;
+    const signaling = this.wire.roomStates();
+    for (const j of this.joins) {
+      if (j.inviterKey || j.rejected) continue;
+      if (signaling.get(j.roomId)?.code === "declined") {
+        // the signaling server dropped this install at the door: the admin declined (the inviter says so too, when it can reach it)
+        j.rejected = `${j.adminName ?? "The room's admin"} declined your request to join ${j.name}`;
+        j.declined = true;
+        ended = true;
+        this.log(`joining ${j.name}: ${j.rejected}`);
+        continue;
+      }
+      if (j.expiresAt && j.expiresAt <= now) {
+        j.rejected = `The code expired before ${j.adminName ?? "the room's admin"} accepted — ask for a new one`;
+        ended = true;
+        this.log(`joining ${j.name}: ${j.rejected}`);
+        continue;
+      }
+      // waiting for the admin: ask the inviter now and then, which also hears an answer it couldn't send
+      if (!j.admin || tick % WAITING_RETRY_EVERY === 0) this.sendJoin(j);
+    }
+    if (ended) {
+      this.store.savePendingJoins(this.joins);
+      this.syncWire();
+      this.changedSoon();
+    }
+    for (const room of this.rooms()) this.forwardRequests(room.id);
+    if (tick % 40 === 0) this.safely("pruning join requests", () => this.pruneRequests());
   }
 
   private onIntro(roomId: RoomId, from: MemberId, type: IntroType, body: any): void {
     if (!body || typeof body.publicKey !== "string" || !PUBLIC_KEY_RE.test(body.publicKey) || fingerprintOf(body.publicKey) !== from) {
       return this.log(`dropped a ${type} for room ${roomId} whose key isn't its sender's`);
     }
-    if (type === "join") return this.onJoinRequest(roomId, from, body);
+    if (type === "join") return this.onJoinIntro(roomId, from, body);
     const j = this.joins.find((x) => x.roomId === roomId);
     if (!j || j.inviter !== from) return this.log(`dropped a ${type} for room ${roomId} from ${from}, who isn't the inviter of a pending join`);
-    if (type === "join-accepted") {
+    if (type === "join-pending") {
+      if (j.inviterKey || j.rejected) return;
+      const admin = typeof body.admin === "string" && MEMBER_ID_RE.test(body.admin) ? body.admin : undefined;
+      const adminName = typeof body.adminName === "string" && body.adminName.trim() ? body.adminName.trim().slice(0, 100) : undefined;
+      const expiresAt = typeof body.expiresAt === "number" && Number.isFinite(body.expiresAt) ? body.expiresAt : undefined;
+      if (j.admin === admin && j.adminName === adminName && j.expiresAt === expiresAt) return;
+      Object.assign(j, { admin, adminName, expiresAt });
+      this.log(`joining ${j.name}: waiting for ${adminName ?? "the room's admin"} to accept`);
+    } else if (type === "join-accepted") {
       if (j.inviterKey) return;
       j.inviterKey = body.publicKey;
       j.rejected = undefined;
-      this.log(`${typeof body.name === "string" ? body.name : from} accepted the join of ${j.name}; copying the room`);
+      this.log(`${typeof body.name === "string" ? body.name : from} let this install into ${j.name}; copying the room`);
     } else {
       j.rejected = typeof body.reason === "string" ? body.reason.slice(0, 300) : "The inviter refused the code";
+      j.declined = body.declined === true || undefined;
       this.log(`joining ${j.name} was refused: ${j.rejected}`);
     }
     this.store.savePendingJoins(this.joins);
@@ -1031,19 +1325,26 @@ export class TeamCore implements Team {
     this.changedSoon();
   }
 
-  private onJoinRequest(roomId: RoomId, from: MemberId, body: { publicKey: string; name?: unknown; proof?: unknown }): void {
+  /**
+   * Someone asks to join with a code this install made: the proof is
+   * checked, the code is taken (it works once, whatever the admin says), and
+   * the request goes to the room's admin — this install, or passed on. The
+   * joiner hears whom it waits for, and later how it went.
+   */
+  private onJoinIntro(roomId: RoomId, from: MemberId, body: { publicKey: string; name?: unknown; proof?: unknown }): void {
     const log = this.store.get(roomId);
     if (!log?.state || !log.isMember(this.self.id)) return this.log(`dropped a join request for room ${roomId}, which isn't on this install`);
+    const state = log.state;
     const reply = (type: IntroType, extra: Record<string, unknown>) =>
       this.wire.introduce(roomId, from, type, { publicKey: this.self.publicKey, name: this.o.name(), ...extra }).catch((err) => this.log(`couldn't answer ${from}'s join request: ${(err as Error).message}`));
-    if (log.isMember(from)) return void reply("join-accepted", { roomName: log.state.name });
+    if (log.isMember(from)) return void reply("join-accepted", { roomName: state.name });
     const proof = typeof body.proof === "string" ? body.proof : "";
     const now = this.now();
     const invites = this.store.invites(roomId);
     const match = invites.find((i) => sameSecret(joinProof(i.token, roomId, body.publicKey), proof));
-    const refuse = (reason: string) => {
-      this.log(`refused ${from}'s request to join ${log.state!.name}: ${reason}`);
-      void reply("join-rejected", { reason });
+    const refuse = (reason: string, extra: Record<string, unknown> = {}) => {
+      this.log(`refused ${from}'s request to join ${state.name}: ${reason}`);
+      void reply("join-rejected", { reason, ...extra });
     };
     if (!match) return refuse("That room code isn't valid for this room — ask for a new one");
     if (match.usedAt && match.usedBy !== from) return refuse("That room code was already used — ask for a new one");
@@ -1053,11 +1354,22 @@ export class TeamCore implements Team {
       match.usedBy = from;
       this.store.saveInvites(roomId, invites);
     }
-    const name = typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 100) : "teammate";
-    this.publish(roomId, "member.added", { id: from, name, publicKey: body.publicKey });
-    this.log(`${name} (${from}) joined ${log.state.name}`);
-    this.syncWire();
-    void reply("join-accepted", { roomName: log.state.name });
+    const admin = roomAdmin(state);
+    const adminName = admin ? this.nameIn(state, admin) : "the room's admin";
+    let r = this.store.joinRequests(roomId).find((x) => x.id === from && x.invite === match.tokenHash);
+    if (!r) {
+      const name = typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 100) : "teammate";
+      const fields: JoinRequestFields = { roomId, id: from, publicKey: body.publicKey, name, inviter: this.self.id, invite: match.tokenHash, at: now, expiresAt: Math.min(match.expiresAt, now + MAX_INVITE_MS) };
+      r = { ...fields, sig: this.identity.sign(joinRequestPayload(fields)) };
+      this.holdRequest(roomId, r);
+      this.log(`${name} (${from}) asks to join ${state.name}${admin === this.self.id ? "" : `: passing it on to ${adminName}`}`);
+    }
+    if (r.decision === "declined") return refuse(`${adminName} declined your request to join ${state.name}`, { declined: true });
+    // let in once with this code, and not a member now (removed since): it's used
+    if (r.decision === "accepted") return refuse("That room code was already used — ask for a new one");
+    if (r.expiresAt <= now) return refuse(`The code expired before ${adminName} accepted — ask for a new one`);
+    this.forwardRequests(roomId);
+    void reply("join-pending", { admin, adminName, expiresAt: r.expiresAt });
   }
 
   /** A pending join whose room has arrived with this install as a member is done. */
@@ -1099,6 +1411,16 @@ export class TeamCore implements Team {
       const former = state?.former?.find((f) => f.id === member);
       if (member !== this.self.id && former && !log.isMember(member) && this.hellos.has(member)) this.depart(log.roomId, member, former.publicKey, this.departGraceMs);
       if (member === this.self.id && former && !this.leaving.has(log.roomId)) this.linger(log.roomId, e.id);
+      this.ensureApproval(log); // this install may be the admin now
+    }
+    // the admin decided a join this install took as the inviter: the joiner hears it from here
+    if (e.type === "member.added") {
+      const added = (e.body as RoomEventBodies["member.added"])?.id;
+      if (added && log.isMember(added)) this.relayDecision(log, added, "accepted", e.author);
+    }
+    if (e.type === "join.declined" && state && roomAdmin(state) === e.author) {
+      const b = e.body as RoomEventBodies["join.declined"];
+      if (b?.inviter === this.self.id && !log.isMember(b.id)) this.relayDecision(log, b.id, "declined", e.author);
     }
     if (e.type === "member.added" || e.type === "room.created" || e.type === "member.removed") this.syncWire();
     this.checkLeft(log);
@@ -1284,5 +1606,33 @@ export class TeamCore implements Team {
       this.log(`${what} failed: ${(err as Error).stack ?? err}`);
     }
   }
+}
+
+/** A forwarded join request's fields, when every one is the right shape and its key is its id's; else null. */
+function joinRequestOf(p: unknown, roomId: RoomId): JoinRequestRecord | null {
+  if (!p || typeof p !== "object") return null;
+  const x = p as Record<string, unknown>;
+  const ok =
+    x.roomId === roomId &&
+    typeof x.id === "string" &&
+    MEMBER_ID_RE.test(x.id) &&
+    typeof x.publicKey === "string" &&
+    PUBLIC_KEY_RE.test(x.publicKey) &&
+    fingerprintOf(x.publicKey) === x.id &&
+    typeof x.name === "string" &&
+    x.name.trim().length > 0 &&
+    x.name.length <= 100 &&
+    typeof x.inviter === "string" &&
+    MEMBER_ID_RE.test(x.inviter) &&
+    typeof x.invite === "string" &&
+    TOKEN_RE.test(x.invite) &&
+    typeof x.at === "number" &&
+    Number.isFinite(x.at) &&
+    typeof x.expiresAt === "number" &&
+    Number.isFinite(x.expiresAt) &&
+    typeof x.sig === "string" &&
+    SIGNATURE_RE.test(x.sig);
+  if (!ok) return null;
+  return { roomId, id: x.id as string, publicKey: x.publicKey as string, name: x.name as string, inviter: x.inviter as string, invite: x.invite as string, at: x.at as number, expiresAt: x.expiresAt as number, sig: x.sig as string };
 }
 

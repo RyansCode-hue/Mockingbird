@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
-import { LoopbackNetwork, loopbackMember, loopbackRoom, until } from "../src/main/team/loopback";
+import { acceptJoins, LoopbackNetwork, loopbackMember, loopbackRoom, until } from "../src/main/team/loopback";
 import { TeamCore, TeamError } from "../src/main/team/transport";
 import { defineEventType, eventIdOf, eventPayload, RoomStore } from "../src/main/team/rooms";
 import { MAX_STREAM_CHUNK } from "../src/main/team/frames";
@@ -150,6 +150,7 @@ describe("the team transport over the loopback", () => {
     const net = new LoopbackNetwork();
     let now = Date.now();
     const ryan = loopbackMember(net, "Ryan", dir, { now: () => now });
+    acceptJoins(ryan.team);
     const room = ryan.team.createRoom({ name: "5110", groupKey: "5110", signalingUrl: "http://loopback.invalid" });
     const code = ryan.team.createInvite(room.id);
     // a code with the right room but a made-up token
@@ -185,6 +186,7 @@ describe("the team transport over the loopback", () => {
     const dir = tempDir("t");
     const net = new LoopbackNetwork();
     const ryan = loopbackMember(net, "Ryan", dir);
+    acceptJoins(ryan.team);
     const room = ryan.team.createRoom({ name: "5110", groupKey: "5110", signalingUrl: "http://loopback.invalid" });
     const code = ryan.team.createInvite(room.id);
     net.setOnline(ryan.id, false);

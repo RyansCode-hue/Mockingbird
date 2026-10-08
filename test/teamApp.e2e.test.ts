@@ -2,7 +2,7 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { appE2E, e2eSignaling, launchApp, mainLog, quitApp, root, routes, untilTrue } from "./e2e/appInstance";
+import { acceptInWindow, appE2E, e2eSignaling, launchApp, mainLog, quitApp, root, routes, untilTrue } from "./e2e/appInstance";
 
 /**
  * Two real Mockingbird instances (this checkout's build) on one Mac, each with
@@ -28,6 +28,8 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("Ryan's signaling", async () => (await ryan.status()).rooms[0]?.signaling === "online");
         const join = await nick.evaluate<{ roomId: string; error?: string }>(`window.mb.teamJoin(${JSON.stringify(share.invite)})`);
         expect(join).toMatchObject({ roomId: share.roomId });
+        // Nick waits at the door until Ryan, the room's admin, accepts him from the prompt in his window
+        await acceptInWindow(ryan, nick, share.roomId);
         await untilTrue("both connected", async () => (await ryan.status()).rooms[0]?.online.length === 1 && (await nick.status()).rooms[0]?.online.length === 1, 60_000);
         const [r, n] = [await ryan.status(), await nick.status()];
         // on one Mac through the local server the path is direct; through a Worker it may be relayed
@@ -54,6 +56,7 @@ describe("team rooms between two Mockingbird instances", () => {
         // back with a new code; then Nick leaves himself
         const again = await ryan.evaluate<{ invite: string }>(`window.mb.teamCreateInvite(${JSON.stringify(share.roomId)})`);
         await nick.evaluate(`window.mb.teamJoin(${JSON.stringify(again.invite)})`);
+        await acceptInWindow(ryan, nick, share.roomId);
         await untilTrue("Nick back, and both connected", async () => (await nick.status()).rooms[0]?.online.length === 1 && (await ryan.status()).rooms[0]?.online.length === 1, 60_000);
         const left = await nick.evaluate<{ told: string[]; worker: string | null; problems: string[]; error?: string }>(`window.mb.teamLeaveRoom(${JSON.stringify(share.roomId)})`);
         expect(left).toMatchObject({ told: ["Ryan"], problems: [] });

@@ -150,14 +150,27 @@ const SAM = "5a5a5a5a6b6b6b6b7c7c7c7c8d8d8d8d";
 const ALEX = "9e9e9e9e8d8d8d8d7c7c7c7c6b6b6b6b";
 const SIGNAL = "https://mockingbird-signaling.you.workers.dev";
 const teamQuery = new URLSearchParams(location.search);
-// ?oldWorker: the signaling Worker predates revoke, so removals can't cut anyone off there
+// ?oldWorker: the signaling Worker predates revoke and approve, so removals can't cut anyone off there, and joiners aren't held at its door
 const workerRevoke = !teamQuery.has("oldWorker");
+const workerApprove = !teamQuery.has("oldWorker");
+// ?joinRequest: Lee asks to join 5101 with Sam's code (you're its admin: the prompt shows); you passed Kim's request
+// to 5110 on to its admin, Nick. ?joinRequest=later also presses Later, leaving Lee's in Settings → Team.
+const LEE = "3c3c3c3c4d4d4d4d5e5e5e5e6f6f6f6f";
+const KIM = "7a7a7a7a8b8b8b8b9c9c9c9cadadadad";
+const fp = (id: string) => id.replace(/(.{4})(?=.)/g, "$1 ");
+const asks = teamQuery.has("joinRequest");
 const team: TeamStatus = {
-  self: { id: ME, name: "You", fingerprint: ME.replace(/(.{4})(?=.)/g, "$1 ") },
+  self: { id: ME, name: "You", fingerprint: fp(ME) },
   signalingUrl: SIGNAL,
   rooms: [
-    { id: "R5101aaaaaaaaaaaaaaaaa", name: "#5101 Org dropdowns remember the last org", groupKey: "5101", members: [{ id: ME, name: "You", self: true }, { id: NICK, name: "Nick Smith", self: false }, { id: SAM, name: "Sam", self: false }], admin: ME, creator: ME, former: [{ id: ALEX, name: "Alex" }], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke },
-    { id: "R5110bbbbbbbbbbbbbbbbb", name: "#5110 Donor entities", groupKey: "5110", members: [{ id: NICK, name: "Nick Smith", self: false }, { id: ME, name: "You", self: true }], admin: NICK, creator: NICK, former: [], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke },
+    {
+      id: "R5101aaaaaaaaaaaaaaaaa", name: "#5101 Org dropdowns remember the last org", groupKey: "5101", members: [{ id: ME, name: "You", self: true }, { id: NICK, name: "Nick Smith", self: false }, { id: SAM, name: "Sam", self: false }], admin: ME, creator: ME, former: [{ id: ALEX, name: "Alex" }], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke, workerApprove,
+      requests: asks ? [{ roomId: "R5101aaaaaaaaaaaaaaaaa", id: LEE, name: "Lee Park", fingerprint: fp(LEE), inviter: SAM, inviterName: "Sam", admin: ME, adminName: "You", role: "admin", state: "waiting", at: now - 3 * min, expiresAt: now + 6 * 24 * 60 * min }] : [],
+    },
+    {
+      id: "R5110bbbbbbbbbbbbbbbbb", name: "#5110 Donor entities", groupKey: "5110", members: [{ id: NICK, name: "Nick Smith", self: false }, { id: ME, name: "You", self: true }], admin: NICK, creator: NICK, former: [], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke, workerApprove,
+      requests: asks ? [{ roomId: "R5110bbbbbbbbbbbbbbbbb", id: KIM, name: "Kim", fingerprint: fp(KIM), inviter: ME, inviterName: "You", admin: NICK, adminName: "Nick Smith", role: "inviter", state: "waiting", at: now - 12 * min, expiresAt: now + 5 * 24 * 60 * min }] : [],
+    },
   ],
   pending: [],
   peers: [
@@ -731,21 +744,45 @@ const api: Record<string, (...a: any[]) => any> = {
     return later({ roomId: room.id, invite: inviteCode(room.id) }, 300);
   },
   teamCreateInvite: async (roomId: string) => ({ invite: inviteCode(roomId) }),
+  // the inviter passes it on to the room's admin (Sam), who accepts after a moment;
+  // ?joining=wait: Sam doesn't answer · ?joining=declined: Sam declines
   teamJoin: async (code: string) => {
     if (!/^MBR1-/.test(code.trim())) return err("That isn't a Mockingbird room code — it starts with MBR1-");
     const roomId = "Rjoinedddddddddddddddd";
+    const outcome = teamQuery.get("joining");
+    const set = (patch: Partial<TeamStatus["pending"][number]>) => {
+      team.pending = team.pending.map((p) => (p.roomId === roomId ? { ...p, ...patch } : p));
+      teamChanged();
+    };
     team.pending.push({ roomId, name: "#5120 Gift aid", inviter: SAM, state: "waiting", since: Date.now() });
     teamChanged();
-    setTimeout(() => {
-      team.pending = team.pending.map((p) => (p.roomId === roomId ? { ...p, state: "syncing" } : p));
-      teamChanged();
-    }, 1200);
+    setTimeout(() => set({ state: "approval", admin: "Sam" }), 500);
+    if (outcome === "wait") return { roomId, name: "#5120 Gift aid" };
+    if (outcome === "declined") {
+      setTimeout(() => set({ state: "declined", reason: "Sam declined your request to join #5120 Gift aid" }), 1500);
+      return { roomId, name: "#5120 Gift aid" };
+    }
+    setTimeout(() => set({ state: "syncing" }), 2500);
     setTimeout(() => {
       team.pending = team.pending.filter((p) => p.roomId !== roomId);
-      team.rooms.push({ id: roomId, name: "#5120 Gift aid", groupKey: "5120", members: [{ id: SAM, name: "Sam", self: false }, { id: ME, name: "You", self: true }], online: [SAM], signalingUrl: SIGNAL, signaling: "online" });
+      team.rooms.push({ id: roomId, name: "#5120 Gift aid", groupKey: "5120", members: [{ id: SAM, name: "Sam", self: false }, { id: ME, name: "You", self: true }], admin: SAM, creator: SAM, online: [SAM], signalingUrl: SIGNAL, signaling: "online", workerApprove });
       teamChanged();
-    }, 2400);
+    }, 3500);
     return { roomId, name: "#5120 Gift aid" };
+  },
+  teamAnswerJoin: async (roomId: string, joinerId: string, accept: boolean) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    const r = room?.requests?.find((q) => q.id === joinerId && q.role === "admin");
+    if (!room || !r) return err("Nobody with that key is asking to join");
+    room.requests = room.requests!.filter((q) => q !== r);
+    if (accept) {
+      room.members = [...room.members, { id: r.id, name: r.name, self: false }];
+      (chats[roomId] ??= []).push(chatEntry({ kind: "member", author: ME, at: Date.now(), member: r.id, change: "accepted" }));
+      chatChanged(roomId);
+    }
+    teamChanged();
+    const worker = accept || workerApprove ? null : `Your signaling Worker is older: it let ${r.name} connect before you answered (they got nothing of the room). Update it (cd signaling && npx wrangler deploy) to also hold joiners at the door.`;
+    return later({ name: r.name, accepted: accept, worker }, 500);
   },
   teamCancelJoin: async (roomId: string) => {
     team.pending = team.pending.filter((p) => p.roomId !== roomId);
@@ -1057,6 +1094,19 @@ else if (params.has("new")) {
   if (params.get("new") === "import-pick") setTimeout(() => click(".ns-list .item:not(.blocked)"), 1100);
   // ?new=import&find=<words> types a search into Import
   if (params.get("find")) setTimeout(() => typeInto(".ns-body input[type=text]", params.get("find")!), 1100);
+}
+// team rooms: ?joinRequest=later puts the admin's join prompt off (Later), leaving the request in Settings → Team
+if (params.get("joinRequest") === "later") setTimeout(() => click('.join-ask button[title^="Answer later"]'), 600);
+// ?joining (with ?section=team) pastes a code into Join a room… and presses Join: the joiner's side (see teamJoin)
+if (params.has("joining")) {
+  setTimeout(() => click(".set-actions button.outline.strong"), 500);
+  setTimeout(() => {
+    const area = document.querySelector(".team-dlg textarea.team-code") as HTMLTextAreaElement | null;
+    if (!area) return;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(area, inviteCode("Rjoinedddddddddddddddd"));
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+  }, 700);
+  setTimeout(() => click(".team-dlg .row button.primary"), 900);
 }
 if (params.has("reset")) {
   params.delete("reset");

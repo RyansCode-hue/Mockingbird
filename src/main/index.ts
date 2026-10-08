@@ -876,6 +876,7 @@ handle("team:join", (code) => team.join(String(code ?? "")));
 handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
 handle("team:leaveRoom", (roomId) => team.leaveRoom(String(roomId)));
 handle("team:removeMember", (roomId, memberId) => team.removeMember(String(roomId), String(memberId)));
+handle("team:answerJoin", (roomId, joinerId, accept) => team.answerJoin(String(roomId), String(joinerId), accept === true));
 handle("team:dismissNotice", (id) => team.dismissNotice(String(id)));
 handle("team:checkSignaling", (url) => TeamService.checkSignaling(String(url ?? "")));
 // team rooms: plan board

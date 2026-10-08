@@ -2,7 +2,7 @@ import * as path from "path";
 import { loadIdentity, type Identity } from "./identity";
 import { RoomStore } from "./rooms";
 import { TeamCore, type IntroType, type PeerWire, type RevokeOutcome, type RoomSignalingState, type TeamOptions, type WireHandler, type WireRoom } from "./transport";
-import { OLD_WORKER_REVOKE } from "./signalingClient";
+import { OLD_WORKER_APPROVE, OLD_WORKER_REVOKE } from "./signalingClient";
 import type { MemberId, PeerLinkState, RoomEvent, RoomId } from "../../shared/team/types";
 
 /**
@@ -20,7 +20,8 @@ import type { MemberId, PeerLinkState, RoomEvent, RoomId } from "../../shared/te
  * told of its removal (the event revoke carried) when it's online with the
  * room, so is every member once (the welcome's events), and it can't be
  * introduced in the room again until it joins with a new code. `workerRevoke`
- * false plays a Worker deployed before revoke.
+ * false plays a Worker deployed before revoke; `workerApprove` false one
+ * deployed before joiners waited at the door (deny is then unsupported).
  */
 
 const pair = (a: MemberId, b: MemberId) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -34,6 +35,10 @@ export class LoopbackNetwork {
   private reachableSent = new Map<string, string>();
   /** The signaling server knows revoke (false: one deployed before it). */
   workerRevoke = true;
+  /** The signaling server holds joiners at the door, and drops one the admin declines (false: one deployed before it). */
+  workerApprove = true;
+  /** Joiners dropped at the door (deny), in order (for assertions). */
+  readonly denied: { roomId: RoomId; by: MemberId; member: MemberId }[] = [];
   /** Per room, members cut off and the removal their revoke carried. */
   readonly revoked = new Map<RoomId, Map<MemberId, RoomEvent | null>>();
   /** Revokes made, in order (for assertions). */
@@ -53,6 +58,14 @@ export class LoopbackNetwork {
     room.set(member, event);
     this.revokes.push({ roomId, by, member });
     this.reconcile();
+    return { ok: true };
+  }
+
+  /** What a deny does at the signaling server: the joiner is dropped at the door. */
+  deny(roomId: RoomId, by: MemberId, member: MemberId): RevokeOutcome {
+    if (!this.online(by)) return { ok: false, reason: "offline", message: "the signaling server couldn't be reached" };
+    if (!this.workerApprove) return { ok: false, reason: "unsupported", message: OLD_WORKER_APPROVE };
+    this.denied.push({ roomId, by, member });
     return { ok: true };
   }
 
@@ -207,6 +220,11 @@ export class LoopbackWire implements PeerWire {
     return this.net.revoke(roomId, this.self, member, event);
   }
 
+  async deny(roomId: RoomId, member: MemberId): Promise<RevokeOutcome> {
+    if (!this.rooms.some((r) => r.roomId === roomId)) return { ok: false, reason: "offline", message: "this install isn't connecting to the room's signaling server" };
+    return this.net.deny(roomId, this.self, member);
+  }
+
   send(peer: MemberId, text: string): boolean {
     if (!this.net.isLinked(this.self, peer)) return false;
     this.net.later(() => {
@@ -248,8 +266,8 @@ export class LoopbackWire implements PeerWire {
     return new Map(
       this.rooms.map((r): [RoomId, RoomSignalingState] =>
         this.net.isRevoked(r.roomId, this.self)
-          ? [r.roomId, { signaling: "offline", problem: "The signaling server says this install was removed from the room", code: "revoked", revoke: this.net.workerRevoke }]
-          : [r.roomId, { signaling: this.net.online(this.self) ? "online" : "offline", revoke: this.net.workerRevoke }]
+          ? [r.roomId, { signaling: "offline", problem: "The signaling server says this install was removed from the room", code: "revoked", revoke: this.net.workerRevoke, approve: this.net.workerApprove }]
+          : [r.roomId, { signaling: this.net.online(this.self) ? "online" : "offline", revoke: this.net.workerRevoke, approve: this.net.workerApprove }]
       )
     );
   }
@@ -305,14 +323,25 @@ export async function until(cond: () => boolean, what = "the condition", timeout
 }
 
 /**
- * A room shared by several loopback members: the first creates it, the rest
- * join with invite codes. Resolves once every member has every other as a
- * member and connected.
+ * Have a room's admin accept every join request it gets, as someone clicking
+ * Accept at once would: for tests about what comes after joining.
+ */
+export function acceptJoins(team: TeamCore): () => void {
+  return team.onJoinRequest((r) => {
+    setTimeout(() => void team.answerJoin(r.roomId, r.id, true).catch((err) => console.error(`[loopback] accepting ${r.name} failed: ${(err as Error).message}`)), 0);
+  });
+}
+
+/**
+ * A room shared by several loopback members: the first creates it (and, as
+ * its admin, accepts every join), the rest join with invite codes. Resolves
+ * once every member has every other as a member and connected.
  */
 export async function loopbackRoom(names: string[], opts: { dir: string; groupKey?: string; net?: LoopbackNetwork; team?: Partial<TeamOptions> }) {
   const net = opts.net ?? new LoopbackNetwork();
   const members = names.map((n) => loopbackMember(net, n, opts.dir, opts.team));
   const [creator, ...rest] = members;
+  acceptJoins(creator.team);
   const groupKey = opts.groupKey ?? "5110";
   const room = creator.team.createRoom({ name: groupKey, groupKey, signalingUrl: "http://loopback.invalid" });
   for (const m of rest) m.team.join(creator.team.createInvite(room.id));

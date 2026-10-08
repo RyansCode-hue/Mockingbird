@@ -57,7 +57,7 @@ declare module "./types" {
 export interface ChatEntry {
   /** The event this entry is (for the assistant: its latest event). */
   id: string;
-  /** member: someone left the room, or the admin removed them (the author removed `member`). */
+  /** member: someone joined (the author accepted or added `member`), left, or the admin removed them (the author removed `member`). */
   kind: "message" | "assistant" | "update" | "member";
   author: MemberId;
   lamport: number;
@@ -69,15 +69,27 @@ export interface ChatEntry {
   replyTo?: string;
   state?: AssistantState;
   items?: AgentUpdate[];
-  /** Member entries: who's gone, and whether they left or were removed. */
+  /**
+   * Member entries: who came or went. accepted: the admin let them in · joined: they joined with
+   * a code, before joins needed accepting · left · removed: by the admin.
+   */
   member?: MemberId;
-  change?: "left" | "removed";
+  change?: "left" | "removed" | "accepted" | "joined";
 }
 
-/** A member entry as a line: "Nick left" / "Ryan removed Nick". */
+/** A member entry as a line: "Nick left" / "Ryan removed Nick" / "Ryan accepted Nick" / "Nick joined". */
 export function memberLine(e: ChatEntry, nameOf: (id: MemberId) => string): string {
   const who = nameOf(e.member ?? e.author);
-  return e.change === "removed" ? `${nameOf(e.author)} removed ${who}` : `${who} left`;
+  switch (e.change) {
+    case "removed":
+      return `${nameOf(e.author)} removed ${who}`;
+    case "accepted":
+      return `${nameOf(e.author)} accepted ${who}`;
+    case "joined":
+      return `${who} joined`;
+    default:
+      return `${who} left`;
+  }
 }
 
 export interface ChatState {

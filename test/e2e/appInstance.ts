@@ -110,6 +110,24 @@ export async function untilTrue(what: string, cond: () => Promise<boolean>, ms =
   }
 }
 
+/**
+ * A joiner waits for the room's admin — at the signaling Worker's door too,
+ * when it knows how — and the admin's window asks: its prompt shows the
+ * joiner's fingerprint, and Accept lets them in.
+ */
+export async function acceptInWindow(admin: AppInstance, joiner: AppInstance, roomId: string): Promise<void> {
+  await untilTrue(`${joiner.name} to wait for ${admin.name}`, async () => (await joiner.status()).pending[0]?.state === "approval", 60_000);
+  const joinerId = (await joiner.status()).self!.id;
+  const prompt = (q: string) => admin.evaluate<string>(`document.querySelector(${JSON.stringify(`.join-ask ${q}`)})?.textContent ?? ""`);
+  await untilTrue(`${admin.name}'s join prompt`, async () => (await prompt("h3")).startsWith(`${joiner.name} wants to join`), 30_000);
+  const fingerprint = await prompt(".join-fp .team-fp");
+  if (fingerprint !== joinerId.replace(/(.{4})(?=.)/g, "$1 ")) throw new Error(`the prompt shows fingerprint ${fingerprint}, not ${joiner.name}'s`);
+  const asked = (await admin.status()).rooms.find((r) => r.id === roomId)?.requests ?? [];
+  if (!asked.some((r) => r.role === "admin" && r.id === joinerId)) throw new Error(`${admin.name}'s status lists no request from ${joiner.name}`);
+  await admin.evaluate(`document.querySelector(".join-ask .row button.primary").click()`);
+  await untilTrue("the prompt to go once accepted", async () => !(await admin.evaluate<boolean>(`!!document.querySelector(".join-ask")`)), 30_000);
+}
+
 export async function quitApp(child: ChildProcess) {
   if (child.exitCode !== null) return;
   const exited = new Promise((r) => child.once("exit", r));

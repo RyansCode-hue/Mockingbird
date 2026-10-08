@@ -79,12 +79,15 @@ Past it, members get STUN only until midnight UTC and the Worker logs it
 version is in `/health`; Mockingbird says when the Worker needs redeploying.
 Features added without a protocol change are listed there too (`features`):
 a Worker deployed before `revoke` still works, but can't cut off a member who
-left or was removed — Mockingbird says to redeploy it when that matters.
+left or was removed; one deployed before `approve` lets someone with a code
+connect to it before the room's admin accepts them (the apps still give them
+nothing of the room) — Mockingbird says to redeploy it when that matters.
 
 ## What's here
 
 - `src/room.ts` — the room logic: membership, the creator allowlist, join
-  tokens, revoking members (oneself, or by the room's admin), relay, presence,
+  tokens and the door joiners wait at until the room's admin admits (or
+  denies) them, revoking members (oneself, or by the room's admin), relay, presence,
   TURN credentials and their daily budget, rate limits. Plain TypeScript, no Cloudflare APIs: unit tested in the app's Vitest
   suite (`test/teamSignaling.test.ts`).
 - `src/config.ts` — the Worker's secrets and vars, and `/health`.

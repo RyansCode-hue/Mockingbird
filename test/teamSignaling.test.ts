@@ -128,7 +128,7 @@ describe("signaling room: who gets in", () => {
     expect(old.closed?.code).toBe(CLOSE.protocol);
   });
 
-  it("admits a joiner once with an invite's join key, and never sees the token", async () => {
+  it("lets a joiner knock once with an invite's join key, never sees the token, and lets it in on the admin's admit", async () => {
     const h = harness();
     const c = await h.connect(h.creator, { create: h.salt });
     const token = randomToken();
@@ -137,14 +137,28 @@ describe("signaling room: who gets in", () => {
     expect(JSON.stringify([...h.storage.values()])).not.toContain(token);
     const nick = newId("nick");
     const n = await h.connect(nick, { join: signalingJoinKey(token) });
-    expect(n.last("welcome")).toMatchObject({ you: nick.id, peers: [{ id: h.creator.id, team: TEAM_PROTOCOL }] });
-    expect(c.last("peer-joined")).toEqual({ t: "peer-joined", peer: { id: nick.id, team: TEAM_PROTOCOL } });
+    expect(n.last("welcome")).toMatchObject({ you: nick.id, peers: [{ id: h.creator.id, team: TEAM_PROTOCOL }], knocking: true, relay: false });
+    expect(c.last("peer-joined")).toEqual({ t: "peer-joined", peer: { id: nick.id, team: TEAM_PROTOCOL, knocking: true } });
+    expect(await h.room.memberIds()).toEqual([h.creator.id]);
+    expect(await h.room.knockingIds()).toEqual([nick.id]);
     // the same key can't let anyone else in
     const sam = await h.connect(newId("sam"), { join: signalingJoinKey(token) });
     expect(sam.closed?.code).toBe(CLOSE.notMember);
-    // Nick is a member now: he reconnects by key alone
+    // Nick's app reconnects while he waits: still at the door
+    const waiting = await h.connect(nick, { join: signalingJoinKey(token) });
+    expect(waiting.last("welcome")?.knocking).toBe(true);
+    // the admin (the creator) admits him: welcomed again, as a member
+    await h.say(c, { t: "admit", publicKeys: [nick.publicKey] });
+    expect(c.last("admitted")).toEqual({ t: "admitted", ids: [nick.id] });
+    expect(waiting.last("welcome")).toMatchObject({ you: nick.id, peers: [{ id: h.creator.id, team: TEAM_PROTOCOL }] });
+    expect(waiting.last("welcome")?.knocking).toBeUndefined();
+    expect(c.last("peer-joined")).toEqual({ t: "peer-joined", peer: { id: nick.id, team: TEAM_PROTOCOL } });
+    expect(await h.room.memberIds()).toEqual([h.creator.id, nick.id]);
+    expect(await h.room.knockingIds()).toEqual([]);
+    // a member now: he reconnects by key alone
     const again = await h.connect(nick);
-    expect(again.last("welcome")).toBeTruthy();
+    expect(again.last("welcome")).toMatchObject({ you: nick.id });
+    expect(again.last("welcome")?.knocking).toBeUndefined();
   });
 
   it("refuses an expired invite, and invites from non-members", async () => {
@@ -220,9 +234,11 @@ describe("signaling room: who may create rooms (ALLOWED_CREATORS)", () => {
     h.setAllowed([]);
     const nick = newId("nick"); // never on the list
     const n = await h.connect(nick, { join: signalingJoinKey(token) });
-    expect(n.last("welcome")).toMatchObject({ you: nick.id });
-    expect((await h.connect(h.creator, { create: h.salt })).last("welcome")).toBeTruthy(); // a member, by key
-    expect((await h.connect(nick)).last("welcome")).toBeTruthy();
+    expect(n.last("welcome")).toMatchObject({ you: nick.id, knocking: true });
+    const c2 = await h.connect(h.creator, { create: h.salt }); // a member, by key
+    expect(c2.last("welcome")).toBeTruthy();
+    await h.say(c2, { t: "admit", publicKeys: [nick.publicKey] });
+    expect((await h.connect(nick)).last("welcome")).toMatchObject({ you: nick.id });
   });
 
   it("reads fingerprints as Settings shows them: grouped, comma- or space-separated; reports the rest", () => {
@@ -242,9 +258,9 @@ describe("signaling room: who may create rooms (ALLOWED_CREATORS)", () => {
 describe("the Worker's /health", () => {
   it("says how many may create rooms, whether TURN is set and what it can do, never who", () => {
     const a = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
-    expect(healthBody({})).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: false, creators: 0, features: ["revoke"] });
+    expect(healthBody({})).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: false, creators: 0, features: ["revoke", "approve"] });
     const h = healthBody({ ALLOWED_CREATORS: `${formatFingerprint(a)}, ${"b".repeat(32)}, typo`, TURN_KEY_ID: "k", TURN_KEY_API_TOKEN: "t" });
-    expect(h).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: true, creators: 2, creatorsInvalid: 1, features: ["revoke"] });
+    expect(h).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: true, creators: 2, creatorsInvalid: 1, features: ["revoke", "approve"] });
     expect(JSON.stringify(h)).not.toContain("a1b2");
   });
 });
@@ -316,7 +332,7 @@ describe("signaling room: revoke (leaving and removal)", () => {
 
   it("announces what it can do, and lets a member cut itself off when it leaves", async () => {
     const { h, c, ids, socks } = await room(["nick"]);
-    expect(c.last("welcome")).toMatchObject({ features: ["revoke"] });
+    expect(c.last("welcome")).toMatchObject({ features: ["revoke", "approve"] });
     const [nick] = ids;
     const [n] = socks;
     await h.say(n, { t: "revoke", member: nick.id, event: removal(nick.id) });
@@ -409,12 +425,17 @@ describe("signaling room: revoke (leaving and removal)", () => {
     await h.say(s, { t: "admit", publicKeys: [nick.publicKey] });
     expect(s.last("admitted")).toEqual({ t: "admitted", ids: [] });
     expect((await h.connect(nick)).closed?.code).toBe(CLOSE.notMember);
-    // a new invite: in again, and no longer passed on as removed
+    // a new invite: at the door again (told nothing of the room, its removal included), in once the admin admits it
     const token = randomToken();
     await h.say(c, { t: "invite", tokenHash: signalingTokenHash(token), expiresAt: inAnHour() });
     const back = await h.connect(nick, { join: signalingJoinKey(token) });
-    expect(back.last("welcome")).toMatchObject({ you: nick.id });
+    expect(back.last("welcome")).toMatchObject({ you: nick.id, knocking: true });
     expect(back.last("welcome")?.events).toBeUndefined();
+    await h.say(s, { t: "admit", publicKeys: [nick.publicKey] }); // Sam isn't the admin
+    expect(back.last("welcome")?.knocking).toBe(true);
+    await h.say(c, { t: "admit", publicKeys: [nick.publicKey] });
+    expect(back.last("welcome")).toMatchObject({ you: nick.id });
+    expect(back.last("welcome")?.knocking).toBeUndefined();
     expect((await h.connect(nick)).last("welcome")).toBeTruthy();
     // the admin can admit a revoked key itself
     await h.say(c, { t: "revoke", member: nick.id });
@@ -428,6 +449,145 @@ describe("signaling room: revoke (leaving and removal)", () => {
     await h.say(c, { t: "revoke", member: ids[0].id });
     expect(c.last("error")).toMatchObject({ code: "bad-message", message: "unknown message revoke" });
     expect(await h.room.memberIds()).toContain(ids[0].id);
+  });
+});
+
+describe("signaling room: joiners at the door (approve)", () => {
+  /** The creator (the admin), Nick and Sam as members, and Lee knocking with an invite Nick made. */
+  async function door(o: { features?: readonly SignalingFeature[] } = {}) {
+    let now = 1_000_000;
+    const h = harness({ now: () => now, features: o.features });
+    const c = await h.connect(h.creator, { create: h.salt });
+    const [nick, sam, lee] = [newId("nick"), newId("sam"), newId("lee")];
+    await h.say(c, { t: "admit", publicKeys: [nick.publicKey, sam.publicKey] });
+    const n = await h.connect(nick);
+    const s = await h.connect(sam);
+    const token = randomToken();
+    await h.say(n, { t: "invite", tokenHash: signalingTokenHash(token), expiresAt: now + 3_600_000 });
+    const l = await h.connect(lee, { join: signalingJoinKey(token) });
+    return { h, c, n, s, l, nick, sam, lee, token, later: (ms: number) => (now += ms) };
+  }
+  const signal = (from: Identity, to: Identity, type: string) => ({ t: "signal", to: to.id, env: { from: from.id, to: to.id, type, body: {} } });
+
+  it("a joiner at the door sees only its inviter, gets no TURN, invites, admits or revokes, and exchanges only the join handshake", async () => {
+    const { h, c, n, s, l, nick, sam, lee, token } = await door();
+    expect(l.last("welcome")).toEqual({ t: "welcome", v: SIGNALING_PROTOCOL, you: lee.id, now: expect.any(Number), peers: [{ id: nick.id, team: TEAM_PROTOCOL }], relay: false, features: ["revoke", "approve"], knocking: true });
+    // members see it at the door
+    for (const m of [c, n, s]) expect(m.last("peer-joined")).toEqual({ t: "peer-joined", peer: { id: lee.id, team: TEAM_PROTOCOL, knocking: true } });
+    // only the handshake goes through
+    for (const msg of [{ t: "turn" }, { t: "invite", tokenHash: signalingTokenHash(randomToken()), expiresAt: 2_000_000 }, { t: "admit", publicKeys: [lee.publicKey] }, { t: "revoke", member: nick.id }, { t: "deny", member: lee.id }]) {
+      l.sent = [];
+      await h.say(l, msg);
+      expect(l.sent).toEqual([{ t: "error", code: "knocking", message: expect.stringMatching(/waiting for the room's admin/) }]);
+    }
+    expect(l.last("turn")).toBeUndefined();
+    await h.say(l, signal(lee, nick, "join"));
+    expect(n.last("signal")).toMatchObject({ from: lee.id, env: { type: "join" } });
+    await h.say(n, signal(nick, lee, "join-pending"));
+    expect(l.last("signal")).toMatchObject({ from: nick.id, env: { type: "join-pending" } });
+    l.sent = [];
+    await h.say(l, signal(lee, nick, "offer"));
+    await h.say(n, signal(nick, lee, "offer"));
+    expect(l.sent).toEqual([{ t: "error", code: "knocking", message: expect.any(String), to: nick.id }]);
+    expect(n.last("error")).toMatchObject({ code: "knocking", to: lee.id });
+    expect(n.sent.filter((m) => m.t === "signal" && m.env.type === "offer")).toEqual([]);
+    // presence: it hears of its inviter only
+    l.sent = [];
+    s.closed = { code: 1000, reason: "bye" };
+    h.room.close(s);
+    expect(l.sent).toEqual([]);
+    n.closed = { code: 1000, reason: "bye" };
+    h.room.close(n);
+    expect(l.sent).toEqual([{ t: "peer-left", id: nick.id }]);
+    // it's not a member, and the invite it used is used
+    expect(await h.room.memberIds()).toEqual([h.creator.id, nick.id, sam.id]);
+    const other = await h.connect(newId("other"), { join: signalingJoinKey(token) });
+    expect(other.closed?.code).toBe(CLOSE.notMember);
+  });
+
+  it("the admin's admit lets it in; a member's admit is ignored", async () => {
+    const { h, c, n, s, l, lee } = await door();
+    await h.say(n, { t: "admit", publicKeys: [lee.publicKey] });
+    expect(n.last("admitted")).toEqual({ t: "admitted", ids: [] });
+    expect(h.logs.some((l) => /ignored .*'s admit of .*: only the room's admin .* adds keys; it waits at the door/.test(l))).toBe(true);
+    expect(await h.room.knockingIds()).toEqual([lee.id]);
+    expect(l.last("welcome")?.knocking).toBe(true);
+    await h.say(c, { t: "admit", publicKeys: [lee.publicKey] });
+    expect(c.last("admitted")).toEqual({ t: "admitted", ids: [lee.id] });
+    // welcomed again, as members are: everyone connected
+    expect(l.last("welcome")?.knocking).toBeUndefined();
+    expect(l.last("welcome")?.peers.map((p) => p.id).sort()).toEqual([h.creator.id, ...[n, s].map((x) => x.state()!.member!.id)].sort());
+    expect(s.last("peer-joined")).toEqual({ t: "peer-joined", peer: { id: lee.id, team: TEAM_PROTOCOL } });
+    // a member now: relay credentials, and the rest
+    await h.say(l, { t: "turn" });
+    expect(l.last("turn")).toBeTruthy();
+    expect(await h.room.memberIds()).toContain(lee.id);
+  });
+
+  it("the admin declines: deny drops it at the door, its code stays used, and only a new code brings it back", async () => {
+    const { h, c, n, l, lee, nick } = await door();
+    await h.say(n, { t: "deny", member: lee.id });
+    expect(n.last("error")).toMatchObject({ code: "forbidden", member: lee.id });
+    await h.say(c, { t: "deny", member: nick.id });
+    expect(c.last("error")).toMatchObject({ code: "forbidden", member: nick.id, message: expect.stringMatching(/a member, not at the door/) });
+    await h.say(c, { t: "deny", member: lee.id });
+    expect(c.last("denied")).toEqual({ t: "denied", member: lee.id });
+    expect(l.last("error")).toEqual({ t: "error", code: "not-member", message: "the room's admin declined this join", declined: true });
+    expect(l.closed?.code).toBe(CLOSE.notMember);
+    expect(n.last("peer-left")).toEqual({ t: "peer-left", id: lee.id });
+    expect(await h.room.knockingIds()).toEqual([]);
+    const fresh = randomToken();
+    await h.say(c, { t: "invite", tokenHash: signalingTokenHash(fresh), expiresAt: 2_000_000 });
+    const back = await h.connect(lee, { join: signalingJoinKey(fresh) });
+    expect(back.last("welcome")?.knocking).toBe(true);
+  });
+
+  it("a declined key's old code doesn't get it to the door again", async () => {
+    const { h, c, lee, token } = await door();
+    await h.say(c, { t: "deny", member: lee.id });
+    const again = await h.connect(lee, { join: signalingJoinKey(token) });
+    expect(again.last("error")).toMatchObject({ code: "not-member" });
+    expect(again.closed?.code).toBe(CLOSE.notMember);
+  });
+
+  it("the knock expires with the invite", async () => {
+    const { h, l, lee, token, later } = await door();
+    later(3_600_001);
+    l.sent = [];
+    await h.say(l, signal(lee, lee, "join"));
+    expect(l.last("error")).toMatchObject({ code: "not-member", message: expect.stringMatching(/invite expired before the room's admin accepted/) });
+    expect(l.closed?.code).toBe(CLOSE.notMember);
+    expect(await h.room.knockingIds()).toEqual([]);
+    const again = await h.connect(lee, { join: signalingJoinKey(token) });
+    expect(again.closed?.code).toBe(CLOSE.notMember);
+  });
+
+  it("an open knock past its invite's expiry is closed when the next connection says hello", async () => {
+    const { h, l, later } = await door();
+    later(3_600_001);
+    await h.connect(h.creator, { create: h.salt });
+    expect(l.last("error")).toMatchObject({ code: "not-member", message: expect.stringMatching(/invite expired/) });
+    expect(l.closed?.code).toBe(CLOSE.notMember);
+  });
+
+  it("a room whose admin the server doesn't know takes any member's admit, as before", async () => {
+    const { h, s, l, lee } = await door();
+    const rec = h.storage.get("room") as any;
+    delete rec.creator;
+    h.storage.set("room", rec);
+    h.rehydrate();
+    await h.say(s, { t: "admit", publicKeys: [lee.publicKey] });
+    expect(s.last("admitted")).toEqual({ t: "admitted", ids: [lee.id] });
+    expect(l.last("welcome")?.knocking).toBeUndefined();
+  });
+
+  it("a Worker from before approve lets a join key straight in, and doesn't know deny", async () => {
+    const { h, c, l, lee } = await door({ features: ["revoke"] });
+    expect(l.last("welcome")).toMatchObject({ you: lee.id, features: ["revoke"] });
+    expect(l.last("welcome")?.knocking).toBeUndefined();
+    expect(await h.room.memberIds()).toContain(lee.id);
+    await h.say(c, { t: "deny", member: lee.id });
+    expect(c.last("error")).toMatchObject({ code: "bad-message", message: "unknown message deny" });
   });
 });
 
