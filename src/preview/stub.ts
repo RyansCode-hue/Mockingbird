@@ -11,7 +11,7 @@
  * the query can also pick the screen (see the end of this file).
  */
 import type { AdoBoard, AdoWorkItem, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
-import { DEFAULT_SETTINGS } from "../shared/types";
+import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import type { TeamStatus } from "../shared/team/types";
 import type { PlanChange, PlanOp, PlanView, WorkPackage } from "../shared/team/plan"; // team rooms: plan board
 // team rooms: team chat
@@ -511,6 +511,12 @@ const api: Record<string, (...a: any[]) => any> = {
     sessions = [...sessions, s];
     buffers[id] = `${C.dim}(UI preview: a new session would start here)${C.reset}\r\n> `;
     sessionsChanged();
+    // team rooms: a session started in a room's group is one of that room's sessions, as main tags it
+    const room = s.taskGroup ? team.rooms.find((r) => r.groupKey === splitGroupKey(s.taskGroup!).top) : undefined;
+    if (room) {
+      live.own[id] = roomTag({ roomId: room.id, sessionId: id });
+      emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+    }
     return s;
   },
   relaunchSession: async (id: string) => {

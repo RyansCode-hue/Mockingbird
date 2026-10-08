@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { reachesBroadcast, cellKeyFor, frontOf, inReadingOrder, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, worktreeGone, type GridCell } from "../src/renderer/appModel";
+import { reachesBroadcast, cellKeyFor, frontOf, groupChoices, inReadingOrder, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, sessionOutline, worktreeGone, type GridCell, type OutlineEntry } from "../src/renderer/appModel";
 import { keysOf, leaf, split } from "../src/renderer/layoutTree";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
@@ -140,5 +140,44 @@ describe("the control room's delivery list", () => {
       shell: "skipped",
       debrief: "skipped",
     });
+  });
+});
+
+describe("the Sessions outline", () => {
+  // a row as the sidebar draws it: a group header with its sessions (* when it's a room), or the Connected Sessions divider
+  const rows = (outline: OutlineEntry<SessionInfo>[]) => outline.map((e) => (e.kind === "connected" ? "--connected--" : `${e.key}${e.shared ? "*" : ""}:${e.list.map((s) => s.id).join(",")}`));
+  const sessions = [
+    session("r1", { taskGroup: "5101" }),
+    session("l1", { taskGroup: "5102" }),
+    session("u1", { taskGroup: null }),
+    session("r2", { taskGroup: "5101/api" }),
+    session("l2", { taskGroup: "5038/backend" }),
+    session("l3", { taskGroup: "5102" }),
+  ];
+
+  it("puts this Mac's groups first and the rooms' after the divider, each half in first-appearance order", () => {
+    expect(rows(sessionOutline(sessions, ["5110", "5101"], false))).toEqual(["5102:l1,l3", "ungrouped:u1", "5038:l2", "--connected--", "5101*:r1,r2", "5110*:"]);
+  });
+  it("has no divider when no group is a room", () => {
+    expect(rows(sessionOutline(sessions, [], false))).toEqual(["5101:r1,r2", "5102:l1,l3", "ungrouped:u1", "5038:l2"]);
+    expect(sessionOutline([], [], false)).toEqual([]);
+  });
+  it("shows a joined room with no session here as a group, under the divider even when it's the only one", () => {
+    expect(rows(sessionOutline([], ["5110"], false))).toEqual(["--connected--", "5110*:"]);
+  });
+  it("while filtering shows only groups with a match, and the divider only when a room has one", () => {
+    const matching = (ids: string[]) => sessions.filter((s) => ids.includes(s.id));
+    expect(rows(sessionOutline(matching(["l1", "r2"]), ["5110", "5101"], true))).toEqual(["5102:l1", "--connected--", "5101*:r2"]);
+    expect(rows(sessionOutline(matching(["l1"]), ["5110", "5101"], true))).toEqual(["5102:l1"]);
+    expect(rows(sessionOutline(matching(["r1"]), ["5110", "5101"], true))).toEqual(["--connected--", "5101*:r1"]);
+    expect(sessionOutline([], ["5110"], true)).toEqual([]);
+  });
+});
+
+describe("the groups New Session offers", () => {
+  it("are every session's group and every joined room's, once each, never the debriefs' assistant group", () => {
+    const sessions = [session("a", { taskGroup: "5101" }), session("b", { taskGroup: "5101/api" }), session("c", { taskGroup: null }), session("d", { taskGroup: "assistant" }), session("e", { taskGroup: "5101" })];
+    expect(groupChoices(sessions, ["5110", "5101"])).toEqual(["5101", "5101/api", "5110"]);
+    expect(groupChoices([], ["5110"])).toEqual(["5110"]);
   });
 });

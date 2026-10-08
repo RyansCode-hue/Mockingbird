@@ -94,8 +94,21 @@ export function useRoomChatOpen(open: () => void): void {
   );
 }
 
-/** The side bar view: the chat of the room picked, or of the shared group on screen. */
-export function RoomChatPanel({ status, activeGroup, visible }: { status: TeamStatus | { error: string } | null; activeGroup: string | null; visible: boolean }) {
+/**
+ * The side bar view: the chat of the room picked, or of the shared group on
+ * screen. `onNewSession` opens New session in a room's group.
+ */
+export function RoomChatPanel({
+  status,
+  activeGroup,
+  visible,
+  onNewSession,
+}: {
+  status: TeamStatus | { error: string } | null;
+  activeGroup: string | null;
+  visible: boolean;
+  onNewSession: (groupKey: string) => void;
+}) {
   const choice = picked.use();
   const groupRoom = activeGroup ? roomOfGroup(status, activeGroup) : undefined;
   // switching the grid to a shared group shows its room
@@ -114,7 +127,7 @@ export function RoomChatPanel({ status, activeGroup, visible }: { status: TeamSt
       </div>
     );
   }
-  return <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} />;
+  return <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} onNewSession={onNewSession} />;
 }
 
 const when = (ms: number) => {
@@ -128,7 +141,19 @@ const when = (ms: number) => {
 const THINKING_STALE_MS = 5 * 60_000;
 const DOT_OF: Record<AgentUpdate["kind"], string> = { started: "working", finished: "idle", waiting: "waiting", ended: "dead", takeover: "rc-dot", board: "rc-dot" };
 
-function RoomChat({ room, rooms, selfName, visible }: { room: TeamRoomSummary; rooms: TeamRoomSummary[]; selfName: string; visible: boolean }) {
+function RoomChat({
+  room,
+  rooms,
+  selfName,
+  visible,
+  onNewSession,
+}: {
+  room: TeamRoomSummary;
+  rooms: TeamRoomSummary[];
+  selfName: string;
+  visible: boolean;
+  onNewSession: (groupKey: string) => void;
+}) {
   const [view, setView] = useState<RoomChatView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -216,16 +241,23 @@ function RoomChat({ room, rooms, selfName, visible }: { room: TeamRoomSummary; r
             {room.name}
           </span>
         )}
-        <div className="rc-members">
-          {room.members.map((m) => {
-            const on = m.self || room.online.includes(m.id);
-            return (
-              <span key={m.id} className={`rc-member ${on ? "on" : ""}`} title={`${m.name}${m.self ? " (you)" : on ? " · connected" : " · offline"}`}>
-                <span className="rc-initials">{initialsOf(m.name)}</span>
-                {m.self ? "you" : mentionHandle(m.name)}
-              </span>
-            );
-          })}
+        <div className="rc-sub">
+          <div className="rc-members">
+            {room.members.map((m) => {
+              const on = m.self || room.online.includes(m.id);
+              return (
+                <span key={m.id} className={`rc-member ${on ? "on" : ""}`} title={`${m.name}${m.self ? " (you)" : on ? " · connected" : " · offline"}`}>
+                  <span className="rc-initials">{initialsOf(m.name)}</span>
+                  {m.self ? "you" : mentionHandle(m.name)}
+                </span>
+              );
+            })}
+          </div>
+          {room.groupKey && (
+            <button className="rc-new-session" title={`New connected session in ${room.name} — teammates see it`} onClick={() => onNewSession(room.groupKey)}>
+              + New session
+            </button>
+          )}
         </div>
       </div>
       <div
