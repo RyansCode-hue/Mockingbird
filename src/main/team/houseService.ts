@@ -41,6 +41,7 @@ import {
 } from "../../shared/team/house";
 import type { RoomSessionState } from "../../shared/team/livePanes";
 import { topOfKey, type SessionInfo } from "../../shared/types";
+import { fenced } from "../../shared/team/agentText";
 import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/types";
 
 /**
@@ -178,10 +179,6 @@ export function houseToolCall(sessionId: string, op: string, args: Record<string
   return active.toolCall(sessionId, op, args);
 }
 
-const oneLine = (s: string, max: number) => {
-  const t = s.replace(/\s+/g, " ").replace(/</g, "‹").replace(/>/g, "›").trim();
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
-};
 const nameMatches = (member: string, house: string) => {
   const a = member.trim().toLowerCase();
   const b = house.trim().toLowerCase();
@@ -429,7 +426,7 @@ export class HouseService {
   private notConnected(room: RoomState): string | null {
     const project = houseOfRoom(room).project;
     if (!project || this.consented(room.id, project)) return null;
-    return `Your user hasn't connected the House for this room: their Mockingbird asks before using their ${project} builder token for room ${oneLine(room.name, 80)}, and they haven't allowed it${this.consentOf(room.id, project) === false ? " (they chose Not now)" : " yet"}. Until they do, the House tools can't be used here — tell them, if the board matters to your task (it's on the room's ▦).`;
+    return `Your user hasn't connected the House for this room: their Mockingbird asks before using their ${project} builder token for room ${fenced(room.name, 80)}, and they haven't allowed it${this.consentOf(room.id, project) === false ? " (they chose Not now)" : " yet"}. Until they do, the House tools can't be used here — tell them, if the board matters to your task (it's on the room's ▦).`;
   }
 
   /** The board dialog opened (or closed): an open board keeps the House read about once a minute. */
@@ -551,7 +548,7 @@ export class HouseService {
       teammates: room.members.filter((m) => m.id !== this.need().self.id).map((m) => m.name),
       project: h.project,
       board: this.summary(roomId),
-      problem: this.notConnected(room) ?? (conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? oneLine(conn.message, 600) : null),
+      problem: this.notConnected(room) ?? (conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? fenced(conn.message, 600) : null),
     });
   }
 
@@ -567,7 +564,7 @@ export class HouseService {
       await c.run;
     }
     const conn = c.connection;
-    const problem = conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? `(The House couldn't be read on this laptop: ${oneLine(conn.message, 600)})` : null;
+    const problem = conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? `(The House couldn't be read on this laptop: ${fenced(conn.message, 600)})` : null;
     return [`Project ${project}.`, problem, this.summary(roomId)].filter(Boolean).join("\n");
   }
 
@@ -610,7 +607,7 @@ export class HouseService {
   private writeFailed(roomId: RoomId, via: string, o: HouseToolOp, message: string): void {
     const what =
       o.tool === "create"
-        ? `create a ticket ("${oneLine(o.title, 80)}")`
+        ? `create a ticket ("${fenced(o.title, 80)}")`
         : o.tool === "claim"
           ? `claim #${o.n}`
           : o.tool === "release"
@@ -620,7 +617,7 @@ export class HouseService {
               : o.tool;
     this.d.log(`team House board: ${via} couldn't ${what} in room ${roomId}`, message);
     const c = this.cache(roomId);
-    c.writeProblems = [...c.writeProblems, { at: Date.now(), text: `${oneLine(via, 80)} couldn't ${what}: ${oneLine(message, 300)}` }].slice(-WRITE_PROBLEMS_KEPT);
+    c.writeProblems = [...c.writeProblems, { at: Date.now(), text: `${fenced(via, 80)} couldn't ${what}: ${fenced(message, 300)}` }].slice(-WRITE_PROBLEMS_KEPT);
     this.emitSoon(roomId);
   }
 
@@ -694,7 +691,7 @@ export class HouseService {
     if (!BRANCH_RE.test(branch)) throw new Error(`${JSON.stringify(branch)} isn't a branch name git would take`);
     const detail = await this.withClient(roomId, (client) => client.claim(n, branch));
     await this.afterWrite(roomId, n, detail, "claimed", via, true);
-    return { message: `Claimed #${n} on ${oneLine(branch, 250)}. Your teammates see it on the room's board.`, n };
+    return { message: `Claimed #${n} on ${fenced(branch, 250)}. Your teammates see it on the room's board.`, n };
   }
 
   private async release(roomId: RoomId, n: number, via?: string): Promise<{ message: string; n: number }> {
@@ -735,7 +732,7 @@ export class HouseService {
     });
     await this.afterWrite(roomId, n, detail, kind as NudgeChange, via, false);
     const what = kind === "status" ? `Moved #${n} to ${statusLabel(status!)}` : kind === "question" ? `Asked the question on #${n}` : kind === "note" ? `Added the note to #${n}` : `Posted progress on #${n}${status ? ` (now ${statusLabel(status)})` : ""}`;
-    if (tagsProblem) return { message: `${what}, but it couldn't be tagged ${NEEDS_HUMAN}: ${oneLine(tagsProblem, 600)}`, n };
+    if (tagsProblem) return { message: `${what}, but it couldn't be tagged ${NEEDS_HUMAN}: ${fenced(tagsProblem, 600)}`, n };
     return { message: kind === "question" ? `${what} and handed it to a person (${NEEDS_HUMAN}).` : `${what}.`, n };
   }
 
@@ -758,7 +755,7 @@ export class HouseService {
     team.publish(roomId, "house.track", { n: created.n });
     await this.afterWrite(roomId, created.n, created, "created", via, false);
     this.refresh(roomId); // the backlog again, for the new ticket's place in the House's order
-    return { message: `Created #${created.n} "${oneLine(created.title, 120)}" (${oneLine(statusLabel(created.status), 40)}) and added it to the room's board.${tagsProblem ? ` Its tags couldn't be set: ${oneLine(tagsProblem, 600)}` : ""}`, n: created.n };
+    return { message: `Created #${created.n} "${fenced(created.title, 120)}" (${fenced(statusLabel(created.status), 40)}) and added it to the room's board.${tagsProblem ? ` Its tags couldn't be set: ${fenced(tagsProblem, 600)}` : ""}`, n: created.n };
   }
 
   /** After a write: keep what the House answered, tell teammates to read it again, and (claims) put it on the board. */
@@ -781,7 +778,7 @@ export class HouseService {
   private async withClient<T>(roomId: RoomId, fn: (client: HouseClient) => Promise<T>): Promise<T> {
     const room = this.room(roomId);
     const project = this.projectOf(room);
-    if (!this.consented(roomId, project)) throw new Error(`Your ${project} builder token isn't connected for room ${oneLine(room.name, 80)}: allow it on the room's board first`);
+    if (!this.consented(roomId, project)) throw new Error(`Your ${project} builder token isn't connected for room ${fenced(room.name, 80)}: allow it on the room's board first`);
     const env: HouseEnv = readHouseEnv(project, { home: this.d.home, allowHttpLoopback: this.d.allowHttpLoopback });
     try {
       return await fn(new HouseClient(env, { fetch: this.d.fetch, timeoutMs: this.t.timeoutMs }));
@@ -1012,20 +1009,20 @@ export class HouseService {
     const inOpen = new Set(open);
     const line = (n: number) => {
       const t = c.tickets.get(n);
-      if (!t) return `- #${n} (couldn't be read${c.problems.has(n) ? `: ${oneLine(c.problems.get(n)!, 120)}` : ""})`;
+      if (!t) return `- #${n} (couldn't be read${c.problems.has(n) ? `: ${fenced(c.problems.get(n)!, 120)}` : ""})`;
       const owner = this.ownerOf(room, t);
       // the House's and teammates' text stays on its own line, so none of it can close the fence
-      const status = oneLine(statusLabel(t.status), 40);
-      const name = owner ? oneLine(owner.name, 60) : "";
-      const who = owner ? `${owner.self ? `${name} (your user)` : name} · ${status}${t.claim?.branch ? ` (branch ${oneLine(t.claim.branch, 120)})` : ""}` : isOpenStatus(t.status) ? `unclaimed · ${status}` : status;
+      const status = fenced(statusLabel(t.status), 40);
+      const name = owner ? fenced(owner.name, 60) : "";
+      const who = owner ? `${owner.self ? `${name} (your user)` : name} · ${status}${t.claim?.branch ? ` (branch ${fenced(t.claim.branch, 120)})` : ""}` : isOpenStatus(t.status) ? `unclaimed · ${status}` : status;
       const marks = [
-        t.priority && `${oneLine(t.priority, 20)} priority`,
+        t.priority && `${fenced(t.priority, 20)} priority`,
         ...t.tags.filter((x) => x === NEEDS_AGENT || x === NEEDS_HUMAN),
         t.blockedBy.length && `blocked by ${t.blockedBy.map((b) => `#${b}`).join(", ")}`,
-        t.waiting && `waiting on ${t.waiting.on ? oneLine(t.waiting.on, 60) : "someone"}`,
+        t.waiting && `waiting on ${t.waiting.on ? fenced(t.waiting.on, 60) : "someone"}`,
         inOpen.has(n) && tracked.has(n) && "added by the room",
       ].filter(Boolean);
-      return `- #${n} ${oneLine(t.title, 120)} — ${[who, ...marks].join(" · ")}`;
+      return `- #${n} ${fenced(t.title, 120)} — ${[who, ...marks].join(" · ")}`;
     };
     const others = [...tracked].filter((n) => !inOpen.has(n));
     const section = (head: string, ns: number[], empty: string) => [head, ...(ns.length ? ns.slice(0, SUMMARY_ROWS).map(line) : [empty]), ...(ns.length > SUMMARY_ROWS ? [`- … and ${ns.length - SUMMARY_ROWS} more (${HOUSE_TOOLS.list} lists them)`] : [])];
@@ -1051,7 +1048,7 @@ export class HouseService {
     }
     if (by) {
       const m = room.members.find((x) => nameMatches(x.name, by));
-      return m ? { name: m.name, member: m.id, self: m.id === self } : { name: oneLine(by, 60), member: null, self: false };
+      return m ? { name: m.name, member: m.id, self: m.id === self } : { name: fenced(by, 60), member: null, self: false };
     }
     return { name: "Someone", member: null, self: false };
   }
@@ -1226,7 +1223,7 @@ export class HouseService {
       const branches = this.teammates.filter((x) => x.roomId === room.id && x.key === key && x.branch === b && x.files.length);
       for (const member of [...new Set(branches.map((x) => x.member))]) {
         const files = [...new Set(branches.filter((x) => x.member === member).flatMap((x) => x.files))].sort();
-        tickets.push({ n: t.n, title: oneLine(t.title, 120), status: oneLine(t.status, 40), owner: { id: member, name: oneLine(this.nameOf(room, member), 60) }, branch: b, files });
+        tickets.push({ n: t.n, title: fenced(t.title, 120), status: fenced(t.status, 40), owner: { id: member, name: fenced(this.nameOf(room, member), 60) }, branch: b, files });
       }
     }
     return { roomId: room.id, room: room.name, tickets };
@@ -1264,7 +1261,13 @@ export class HouseService {
             written.set(wt, clone);
             continue;
           }
-          writeRoomCopy(wt, { claims: `${JSON.stringify(claimsFile(rooms.map((r) => this.claimsRoom(r, key, branch)), team.self.id), null, 2)}\n`, context: `${context}\n` });
+          try {
+            writeRoomCopy(wt, { claims: `${JSON.stringify(claimsFile(rooms.map((r) => this.claimsRoom(r, key, branch)), team.self.id), null, 2)}\n`, context: `${context}\n` });
+          } catch (err) {
+            // one worktree refusing (a link where the room's folder goes) leaves the clone's other worktrees updated
+            const why = this.d.log(`team House board: writing the room's claims into ${wt}`, err);
+            for (const r of rooms) problems.set(r.id, `Couldn't write the room's claims into ${wt}: ${why}`);
+          }
           written.set(wt, clone);
         }
       } catch (err) {

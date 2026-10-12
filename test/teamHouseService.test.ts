@@ -627,6 +627,38 @@ describe("claims from claimed tickets", () => {
     expect(await r.svc.roomLeft(roomId)).toEqual([]);
     for (const wt of [clones.ryan, wtA, wtSame]) expect(fs.existsSync(path.join(wt, ".mockingbird"))).toBe(false);
   });
+
+  it("writes nothing through a worktree whose room folder is a link, and still writes the claims into the clone's other worktrees", async () => {
+    const h = await house();
+    const { bare, clones } = origin(["ryan", "nick"]);
+    git(clones.nick, "checkout", "-q", "-b", "5110-donorApi");
+    write(clones.nick, { "src/api/x.ts": "nick's x\n" });
+    git(clones.nick, "commit", "-qam", "nick");
+    git(clones.nick, "push", "-q", "origin", "5110-donorApi");
+    // the main checkout, listed before its worktrees, has .mockingbird pointing outside it
+    const outside = path.join(path.dirname(clones.ryan), "outside");
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(clones.ryan, ".mockingbird"));
+    const wtA = path.join(path.dirname(clones.ryan), "ryan-a");
+    git(clones.ryan, "worktree", "add", "-q", "-b", "ryan-feature", wtA);
+    h.item(141, { title: "Last-org API", status: "in_progress", assignee: "Nick Smith", branch: "5110-donorApi" });
+
+    const ryanS = session("r1", { title: "ryan-a", repoPath: clones.ryan, cwd: wtA, branch: "ryan-feature" });
+    const { ryan, nick, roomId, r } = await pair(h, { ryan: { knownRepos: () => [clones.ryan], sessions: () => [ryanS] }, nick: { knownRepos: () => [clones.nick] } });
+    nick.team.publish(roomId, "session.upsert", record("n1", "5110-donorApi", bare));
+    ryan.team.publish(roomId, "session.upsert", record("r1", "ryan-feature", bare));
+
+    await until(() => {
+      try {
+        return claimsIn(wtA).rooms[0]?.tickets.length === 1;
+      } catch {
+        return false;
+      }
+    }, "the worktree beside the linked one to hold Nick's claim");
+    await until(() => /^Couldn't write the room's claims into \S*\/ryan: /.test(r.svc.view(roomId).copiesProblem ?? ""), "the refused worktree on the board");
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(r.logs.some((l) => /^team House board: writing the room's claims into \S*\/ryan: /.test(l))).toBe(true);
+  });
 });
 
 describe("teammates' branches", () => {

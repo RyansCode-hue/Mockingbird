@@ -24,6 +24,12 @@ export function quoted(s: unknown, max = 200): string {
   return JSON.stringify(oneLine(s, max)).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
 }
 
+/** `s` on one line with `<` and `>` as ‹ ›, for text inside a <fence>: it can't close the fence or open one of its own. Past `max` characters it ends in "…". */
+export function fenced(s: unknown, max = 200): string {
+  const t = oneLine(s, Infinity).replace(/</g, "‹").replace(/>/g, "›");
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
 /** Plain words: letters and digits, with spaces and . _ ' @ / - between them. */
 const PLAIN_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._'@/-]*$/u;
 
