@@ -80,8 +80,12 @@ interface Want {
 }
 
 class Cancelled extends Error {}
-/** A member sent something that isn't the file: tried last from then on. */
-class BadPeer extends Error {}
+/** A member sent something that isn't the file: tried last from then on (`blame`: how strongly). */
+class BadPeer extends Error {
+  constructor(message: string, readonly blame = 5) {
+    super(message);
+  }
+}
 
 const key = (roomId: RoomId, sha: string) => `${roomId}\n${sha}`;
 
@@ -385,7 +389,7 @@ export class ArtifactFetcher {
         if (err instanceof Cancelled || w.cancelled) return;
         problem = this.problemOf(w.roomId, peer, err);
         this.d.log(`room file ${w.name} (${w.sha.slice(0, 12)}) from ${this.d.nameOf(w.roomId, peer)}: ${problem}`);
-        this.failures.set(peer, (this.failures.get(peer) ?? 0) + (err instanceof BadPeer ? 5 : 1));
+        this.failures.set(peer, (this.failures.get(peer) ?? 0) + (err instanceof BadPeer ? err.blame : 1));
         if (err instanceof TeamError && err.code === "remote") this.haves.get(w.roomId)?.get(peer)?.has.delete(w.sha);
       }
     }
@@ -436,6 +440,7 @@ export class ArtifactFetcher {
     this.d.changed(w.roomId);
     this.d.log(`fetching room file ${w.name} (${w.sha.slice(0, 12)}, ${w.size} bytes) from ${this.d.nameOf(w.roomId, peer)}${offset ? `, resuming at ${offset} bytes` : ""}`);
     if (w.size === 0) store.appendPartial(w.sha, Buffer.alloc(0));
+    const resumed = offset > 0;
     let next = offset;
     const inFlight: { at: number; length: number; data: Promise<Buffer> }[] = [];
     try {
@@ -460,11 +465,20 @@ export class ArtifactFetcher {
           next = offset;
         }
       }
+    } catch (err) {
+      // what this member sent so far is suspect too
+      if (err instanceof BadPeer) store.dropPartial(w.sha);
+      throw err;
     } finally {
       inFlight.length = 0;
     }
     if (w.cancelled || this.stopped) throw new Cancelled();
-    if (!(await store.completePartial(w.sha, w.name))) throw new BadPeer(`what ${this.d.nameOf(w.roomId, peer)} sent doesn't match the file's hash; it was thrown away`);
+    if (await store.completePartial(w.sha, w.name)) return;
+    const name = this.d.nameOf(w.roomId, peer);
+    // a download resumed from an earlier one may hold another member's bytes: this one isn't blamed as hard
+    throw resumed
+      ? new BadPeer(`the file put together from what ${name} sent and an earlier partial download doesn't match its hash; it was thrown away`, 1)
+      : new BadPeer(`what ${name} sent doesn't match the file's hash; it was thrown away`);
   }
 
   private async chunk(w: Want, peer: MemberId, offset: number, length: number): Promise<Buffer> {

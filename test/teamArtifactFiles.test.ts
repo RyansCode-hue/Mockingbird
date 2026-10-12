@@ -87,6 +87,24 @@ describe("room files between members", () => {
     expect(nick.logs.some((l) => /from Sam/.test(l))).toBe(true);
   });
 
+  it("refuse pieces that weren't asked for, keeping nothing of them", async () => {
+    const { roomId, sides: [ryan, nick], dir } = await sides(["Ryan", "Nick"]);
+    const serve = handlers(ryan).get("artifact.chunk")!;
+    let served = 0;
+    handlers(ryan).set("artifact.chunk", (p, ctx) => {
+      const r = serve(p, ctx) as { offset: number };
+      return ++served >= 2 ? { ...r, offset: r.offset + 1 } : r;
+    });
+    const { added } = await ryan.arts.addFiles(roomId, [randomFile(path.join(dir, "src"), "big.bin", 300_000)]);
+    const id = added[0].id;
+    await eventually(async () => (await summaryOf(nick, roomId, id))?.local?.state === "failed", "Nick's download to fail");
+    expect((await summaryOf(nick, roomId, id)).local).toEqual({ state: "failed", problem: "Ryan sent a piece that wasn't asked for" });
+    expect(fs.existsSync(path.join(nick.m.store.dir, roomId, "artifacts", "partial", fileRec(nick, roomId, id).sha256))).toBe(false);
+    handlers(ryan).set("artifact.chunk", serve);
+    await nick.arts.download(roomId, id);
+    await until(() => !!blobOf(nick, roomId, id), "a good copy on retry");
+  });
+
   it("resume a download cut short from what arrived", async () => {
     const { roomId, net, sides: [ryan, nick], dir } = await sides(["Ryan", "Nick"]);
     const serve = handlers(ryan).get("artifact.chunk")!;
