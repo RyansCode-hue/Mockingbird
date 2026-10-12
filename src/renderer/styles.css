@@ -1124,6 +1124,11 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .usage-sec + .usage-sec { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 .usage-head { font: 500 11.5px var(--ui); color: var(--text-3); margin-bottom: 8px; }
 .usage-empty { font: 400 11px var(--ui); color: var(--text-4); }
+.usage-empty.bad { color: var(--red); }
+.usage-ctx .usage-row { margin-bottom: 6px; }
+.usage-ctx .usage-empty { margin-top: 3px; white-space: normal; overflow-wrap: anywhere; }
+.usage-ctx .usage-foot { display: flex; gap: 4px; white-space: nowrap; }
+.usage-ctx-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .usage-row { margin-bottom: 9px; }
 .usage-line { display: flex; align-items: baseline; gap: 8px; }
 .usage-label { font: 500 12px var(--ui); color: var(--text-1); flex: 1; }

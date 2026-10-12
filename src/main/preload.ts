@@ -168,6 +168,7 @@ const api = {
   filesDiff: (id: string, rel: string, scope: string, untracked: boolean) =>
     ipcRenderer.invoke("files:diff", id, rel, scope, untracked),
   usageGet: () => ipcRenderer.invoke("usage:get"),
+  contextWindow: (sessionId: string) => ipcRenderer.invoke("usage:context", sessionId),
   onUsageChanged: (cb: (u: unknown) => void) => {
     const h = (_e: unknown, u: unknown) => cb(u);
     ipcRenderer.on("usage:changed", h);

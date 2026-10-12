@@ -799,6 +799,16 @@ export interface AgentUsage {
   at: number; // epoch ms of the report
 }
 
+/**
+ * How full one session's context window is, as its agent last reported it.
+ * "none": nothing to show, and `why` says so plainly; "error": the report
+ * couldn't be read (the main process logged it).
+ */
+export type ContextWindow =
+  | { state: "reading"; agent: AgentKind; tokens: number; window: number; at: number }
+  | { state: "none"; why: string }
+  | { state: "error"; why: string };
+
 export interface UsageReport {
   claude: AgentUsage | null;
   codex: AgentUsage | null;
