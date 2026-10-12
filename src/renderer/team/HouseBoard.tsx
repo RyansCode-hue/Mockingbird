@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Modal } from "../Modal";
 import { Select } from "../Menu";
+import { KanbanIcon } from "../Icons";
 import { useAction } from "../useAction";
 import { ago, plural } from "../../shared/format";
 import { isErr } from "../../shared/types";
@@ -483,7 +484,9 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
   if (!view || isErr(view)) {
     return (
       <Modal className="modal house-modal" onClose={onClose}>
-        <h3>Radley House</h3>
+        <h3>
+          <KanbanIcon /> Radley House
+        </h3>
         {view ? <div className="err">Couldn't read the board: {view.error}</div> : <div className="hint">Reading the board…</div>}
         <div className="row">
           <button className="outline" onClick={onClose}>
@@ -514,7 +517,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
     <Modal className="modal house-modal" onClose={onClose} closeOnBackdrop={!adding}>
       <div className="house-head">
         <h3 title={view.envFile ? `Read and written with your own token, from ${view.envFile}` : undefined}>
-          Radley House · {view.project ?? "no project"}
+          <KanbanIcon /> Radley House · {view.project ?? "no project"}
           {view.isAdmin && view.project && !renaming && (
             <button className="link house-change" title="Connect the room to another House project" onClick={() => setRenaming(true)}>
               change

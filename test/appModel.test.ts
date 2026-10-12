@@ -144,8 +144,8 @@ describe("the control room's delivery list", () => {
 });
 
 describe("the Sessions outline", () => {
-  // a row as the sidebar draws it: a group header with its sessions (* when it's a room), or the Connected Sessions divider
-  const rows = (outline: OutlineEntry<SessionInfo>[]) => outline.map((e) => (e.kind === "connected" ? "--connected--" : `${e.key}${e.shared ? "*" : ""}:${e.list.map((s) => s.id).join(",")}`));
+  // a row as the sidebar draws it: a group header with its sessions, or the Connected sessions line
+  const rows = (outline: OutlineEntry<SessionInfo>[]) => outline.map((e) => (e.kind === "connected" ? "--connected--" : `${e.key}:${e.list.map((s) => s.id).join(",")}`));
   const sessions = [
     session("r1", { taskGroup: "5101" }),
     session("l1", { taskGroup: "5102" }),
@@ -155,21 +155,21 @@ describe("the Sessions outline", () => {
     session("l3", { taskGroup: "5102" }),
   ];
 
-  it("puts this Mac's groups first and the rooms' after the divider, each half in first-appearance order", () => {
-    expect(rows(sessionOutline(sessions, ["5110", "5101"], false))).toEqual(["5102:l1,l3", "ungrouped:u1", "5038:l2", "--connected--", "5101*:r1,r2", "5110*:"]);
+  it("lists this Mac's groups in first-appearance order, and one line for the rooms instead of their groups", () => {
+    expect(rows(sessionOutline(sessions, ["5110", "5101"], false))).toEqual(["5102:l1,l3", "ungrouped:u1", "5038:l2", "--connected--"]);
   });
-  it("has no divider when no group is a room", () => {
+  it("has no rooms line when no group is a room", () => {
     expect(rows(sessionOutline(sessions, [], false))).toEqual(["5101:r1,r2", "5102:l1,l3", "ungrouped:u1", "5038:l2"]);
     expect(sessionOutline([], [], false)).toEqual([]);
   });
-  it("shows a joined room with no session here as a group, under the divider even when it's the only one", () => {
-    expect(rows(sessionOutline([], ["5110"], false))).toEqual(["--connected--", "5110*:"]);
+  it("shows the rooms line for a joined room with no session here", () => {
+    expect(rows(sessionOutline([], ["5110"], false))).toEqual(["--connected--"]);
   });
-  it("while filtering shows only groups with a match, and the divider only when a room has one", () => {
+  it("while filtering shows only groups with a match, and the rooms line only when a room's session matches", () => {
     const matching = (ids: string[]) => sessions.filter((s) => ids.includes(s.id));
-    expect(rows(sessionOutline(matching(["l1", "r2"]), ["5110", "5101"], true))).toEqual(["5102:l1", "--connected--", "5101*:r2"]);
+    expect(rows(sessionOutline(matching(["l1", "r2"]), ["5110", "5101"], true))).toEqual(["5102:l1", "--connected--"]);
     expect(rows(sessionOutline(matching(["l1"]), ["5110", "5101"], true))).toEqual(["5102:l1"]);
-    expect(rows(sessionOutline(matching(["r1"]), ["5110", "5101"], true))).toEqual(["--connected--", "5101*:r1"]);
+    expect(rows(sessionOutline(matching(["r1"]), ["5110", "5101"], true))).toEqual(["--connected--"]);
     expect(sessionOutline([], ["5110"], true)).toEqual([]);
   });
 });

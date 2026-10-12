@@ -16,6 +16,8 @@ import {
   type TakeoverView,
 } from "../../shared/team/takeover";
 import type { TeamRoomSummary } from "../../shared/team/types";
+import type { Action } from "../ContextMenu";
+import { TakeOverIcon } from "../Icons";
 
 /**
  * Take-over in the window (docs/team-rooms.md): how fresh each room session's
@@ -113,6 +115,33 @@ export function TakeOverButton({ view, onOpen, asking }: { view: RoomSessionBack
       Take over
     </button>
   );
+}
+
+/**
+ * Take over as a labelled action (a room session's row and its right-click
+ * menu): offered when TakeOverButton would be, disabled while asking.
+ */
+export function takeOverAction(view: RoomSessionBackupView | null, onOpen: (view: RoomSessionBackupView) => void, asking?: OutgoingAsk | null): Action | null {
+  if (!view || view.self || view.takenOver || view.dropped) return null;
+  if (asking) {
+    return {
+      key: "takeover",
+      label: asking.state === "asking" ? "Asking…" : "Handing…",
+      menuLabel: asking.state === "asking" ? `Asking ${asking.ownerName} to hand it over…` : `${asking.ownerName} is handing it over…`,
+      icon: <TakeOverIcon />,
+      disabled: true,
+      onPick: () => {},
+    };
+  }
+  return {
+    key: "takeover",
+    label: "Take over",
+    menuLabel: "Take over…",
+    icon: <TakeOverIcon />,
+    primary: !view.ownerOnline,
+    title: view.ownerOnline ? `Ask ${view.ownerName} to hand this session over to your Mac (they're connected)` : `${view.ownerName} is offline — continue this session on your Mac`,
+    onPick: () => onOpen(view),
+  };
 }
 
 /**

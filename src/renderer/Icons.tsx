@@ -214,3 +214,171 @@ export const LockIcon = () => (
     <path d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7" />
   </Icon>
 );
+
+/** A board with three columns of cards (Tabler's layout-kanban, a column wider): a room's House board. */
+export const KanbanIcon = () => (
+  <Icon>
+    <path d="M1.75 2.5h3.5M6.25 2.5h3.5M10.75 2.5h3.5" />
+    <rect x="1.75" y="4.5" width="3.5" height="9" rx="1" />
+    <rect x="6.25" y="4.5" width="3.5" height="5.5" rx="1" />
+    <rect x="10.75" y="4.5" width="3.5" height="7.25" rx="1" />
+  </Icon>
+);
+
+/** A plus: add or start something new. */
+export const PlusIcon = () => (
+  <Icon>
+    <path d="M8 3v10M3 8h10" />
+  </Icon>
+);
+
+/** An arrow curling back: undo. */
+export const UndoIcon = () => (
+  <Icon>
+    <path d="M5.5 3.75 2.75 6.5 5.5 9.25" />
+    <path d="M2.75 6.5h6.5a3.75 3.75 0 0 1 0 7.5H7.5" />
+  </Icon>
+);
+
+/** Two arrows passing: hand the task to the other agent. */
+export const HandoffIcon = () => (
+  <Icon>
+    <path d="M2.5 5.5h10M10 3l2.5 2.5L10 8" />
+    <path d="M13.5 10.5h-10M6 8l-2.5 2.5L6 13" />
+  </Icon>
+);
+
+/** Four corners pointing out: fill the grid. */
+export const ExpandIcon = () => (
+  <Icon>
+    <path d="M2.75 6V2.75H6M10 2.75h3.25V6M13.25 10v3.25H10M6 13.25H2.75V10" />
+  </Icon>
+);
+
+/** Four corners pointing in: back to the grid. */
+export const ShrinkIcon = () => (
+  <Icon>
+    <path d="M6 2.75V6H2.75M13.25 6H10V2.75M10 13.25V10h3.25M2.75 10H6v3.25" />
+  </Icon>
+);
+
+/** A bar: hide (it keeps running). */
+export const MinusIcon = () => (
+  <Icon>
+    <path d="M3.5 8h9" />
+  </Icon>
+);
+
+/** A cross: close. */
+export const CloseIcon = () => (
+  <Icon>
+    <path d="M4 4l8 8M12 4l-8 8" />
+  </Icon>
+);
+
+/** A pencil: rename. */
+export const PencilIcon = () => (
+  <Icon>
+    <path d="M10.25 2.75l3 3-7.5 7.5-3.5.5.5-3.5z" />
+    <path d="M8.75 4.25l3 3" />
+  </Icon>
+);
+
+/** An arrow into a folder: move to a group. */
+export const MoveIcon = () => (
+  <Icon>
+    <path d="M2 6.5V4.25A1.25 1.25 0 0 1 3.25 3h3l1.5 1.75h5A1.25 1.25 0 0 1 14 6v6a1.25 1.25 0 0 1-1.25 1.25H8" />
+    <path d="M1.75 10.5h5M5 8.5l2 2-2 2" />
+  </Icon>
+);
+
+/** Three dots: more actions. */
+export const MoreIcon = () => (
+  <Icon>
+    <circle cx="3.5" cy="8" r=".6" />
+    <circle cx="8" cy="8" r=".6" />
+    <circle cx="12.5" cy="8" r=".6" />
+  </Icon>
+);
+
+/** An arrow into a laptop: continue a teammate's session on this Mac. */
+export const TakeOverIcon = () => (
+  <Icon>
+    <path d="M3.25 10.75V5a1 1 0 0 1 1-1h7.5a1 1 0 0 1 1 1v5.75" />
+    <path d="M1.75 12.75h12.5" />
+    <path d="M8 1.25v6M6 5.25l2 2 2-2" />
+  </Icon>
+);
+
+/** Arrows around a frame: redraw the screen. */
+export const RepaintIcon = () => (
+  <Icon>
+    <path d="M13 8a5 5 0 0 1-8.54 3.54M3 8a5 5 0 0 1 8.54-3.54" />
+    <path d="M11.75 2.25v2.5h-2.5M4.25 13.75v-2.5h2.5" />
+  </Icon>
+);
+
+/** A speech bubble with lines: a room's chat. */
+export const ChatIcon = () => (
+  <Icon>
+    <path d="M2.25 3.75a1.5 1.5 0 0 1 1.5-1.5h8.5a1.5 1.5 0 0 1 1.5 1.5v5.5a1.5 1.5 0 0 1-1.5 1.5H7.25l-3 2.5v-2.5h-.5a1.5 1.5 0 0 1-1.5-1.5z" />
+    <path d="M5.25 5.75h5.5M5.25 7.75h3.5" />
+  </Icon>
+);
+
+/** A person with a plus: invite a teammate. */
+export const InviteIcon = () => (
+  <Icon>
+    <circle cx="6.5" cy="5.25" r="2.5" />
+    <path d="M1.75 13.5a4.75 4.75 0 0 1 9.5 0" />
+    <path d="M12.75 5.5v4M10.75 7.5h4" />
+  </Icon>
+);
+
+/** A speech bubble with a question: ask for a status report. */
+export const AskIcon = () => (
+  <Icon>
+    <path d="M2.25 3.75a1.5 1.5 0 0 1 1.5-1.5h8.5a1.5 1.5 0 0 1 1.5 1.5v5.5a1.5 1.5 0 0 1-1.5 1.5H7.25l-3 2.5v-2.5h-.5a1.5 1.5 0 0 1-1.5-1.5z" />
+    <path d="M6.6 5a1.45 1.45 0 1 1 1.9 1.4c-.35.15-.5.4-.5.75v.2M8 9h.01" />
+  </Icon>
+);
+
+/** An arrow up out of a tray: share a group as a room. */
+export const ShareIcon = () => (
+  <Icon>
+    <path d="M8 10V2.5M5.25 5.25 8 2.5l2.75 2.75" />
+    <path d="M3 9.25v3a1.25 1.25 0 0 0 1.25 1.25h7.5A1.25 1.25 0 0 0 13 12.25v-3" />
+  </Icon>
+);
+
+/** A grid of four squares: show in the grid. */
+export const GridIcon = () => (
+  <Icon>
+    <rect x="2.25" y="2.25" width="4.75" height="4.75" rx="1" />
+    <rect x="9" y="2.25" width="4.75" height="4.75" rx="1" />
+    <rect x="2.25" y="9" width="4.75" height="4.75" rx="1" />
+    <rect x="9" y="9" width="4.75" height="4.75" rx="1" />
+  </Icon>
+);
+
+/** An arrow pointing left: back. */
+export const BackIcon = () => (
+  <Icon>
+    <path d="M9.5 3.5 5 8l4.5 4.5" />
+  </Icon>
+);
+
+/** A hash: mention a room artifact in a message. */
+export const HashIcon = () => (
+  <Icon>
+    <path d="M6.25 2.5 5 13.5M11 2.5 9.75 13.5M2.75 6h11M2.25 10h11" />
+  </Icon>
+);
+
+/** An arrow down onto a tray: download. */
+export const DownloadIcon = () => (
+  <Icon>
+    <path d="M8 2.5V10M5.25 7.25 8 10l2.75-2.75" />
+    <path d="M3 9.25v3a1.25 1.25 0 0 0 1.25 1.25h7.5A1.25 1.25 0 0 0 13 12.25v-3" />
+  </Icon>
+);
