@@ -1,5 +1,7 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
+import { execFile } from "child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
 import { builderHome, fakeHouse, type FakeHouse } from "./fakeHouse";
@@ -7,6 +9,7 @@ import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopb
 import { houseOfRoom } from "../src/main/team/board";
 import { HouseService, roomAgentContext, type HouseServiceDeps } from "../src/main/team/houseService";
 import { recordFor } from "../src/main/team/roomSessions";
+import { installHooks } from "../src/main/hooks";
 import { RoomStore } from "../src/main/team/rooms";
 import { claimConflicts, type ClaimsFile, type ClaimWarningNotice } from "../src/shared/team/claims";
 import type { HouseView } from "../src/shared/team/house";
@@ -280,6 +283,15 @@ function origin(names: string[]) {
 const record = (id: string, branch: string, repo: string) => recordFor(session(id, { branch }), { live: true, repo, cols: 80, rows: 24, guards: { secrets: true, coauthors: true }, git: null });
 const claimsIn = (wt: string) => JSON.parse(fs.readFileSync(path.join(wt, ".mockingbird", "claims.json"), "utf8")) as ClaimsFile;
 
+/** Claude Code's PreToolUse for an Edit of `file` in `cwd`, through the installed hook script: what it answers. */
+function editHook(cwd: string, file: string): Promise<string> {
+  const payload = { session_id: "conv-house", cwd, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: path.join(cwd, file), old_string: "x", new_string: "y" } };
+  return new Promise((resolve, reject) => {
+    const child = execFile(path.join(os.homedir(), ".mockingbird", "hook.sh"), ["PreToolUse"], { cwd, env: { ...process.env, MOCKINGBIRD_SESSION: "r1" } }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    child.stdin!.end(JSON.stringify(payload));
+  });
+}
+
 describe("claims from claimed tickets", () => {
   it("makes the files a teammate's sessions changed on a claimed ticket's branch theirs, in every worktree here but one on that branch", async () => {
     const h = await house();
@@ -322,6 +334,14 @@ describe("claims from claimed tickets", () => {
     }
     expect(fs.existsSync(path.join(wtA, ".mockingbird", "plan.md"))).toBe(false);
     expect(r.svc.teammateChanges()).toEqual([{ roomId, member: nick.id, name: "Nick", branch: "5110-donorApi", repo: expect.any(String), files: ["src/api/x.ts"] }]);
+
+    // Ryan's agent editing that file: held back once, then let through with a reminder; its own files never
+    installHooks(null);
+    const first = JSON.parse(await editHook(wtA, "src/api/x.ts"));
+    expect(first.hookSpecificOutput).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: expect.stringContaining('src/api/x.ts has been changing on Nick\'s ticket #141 "Last-org API" (branch 5110-donorApi, in progress)') });
+    expect(JSON.parse(await editHook(wtA, "src/api/x.ts")).hookSpecificOutput.additionalContext).toMatch(/^Reminder from Mockingbird: src\/api\/x\.ts has been changing on Nick's ticket #141/);
+    expect(await editHook(wtA, "src/ui/y.ts")).toBe("");
+    expect(await editHook(wtSame, "src/api/x.ts")).toBe("");
 
     // the claims check's warnings: a notice for the window, and a notification for a held-back edit
     const hit = mine.rooms[0].tickets[0];
