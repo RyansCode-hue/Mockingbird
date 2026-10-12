@@ -470,6 +470,41 @@ describe("room session launch", () => {
     expect(ptyOf(term.id).env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
   });
 
+  it("runs room sessions inline, so teammates' copies hold their history; sessions outside rooms run as set up", async () => {
+    const { ryan } = await pair();
+    const INLINE_ENV = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN";
+    const CODEX_INLINE = `'-c' 'tui.alternate_screen="never"'`;
+    const claude = await ryan.start();
+    expect(ptyOf(claude.id).env[INLINE_ENV]).toBe("1");
+    expect(ptyOf((await ryan.start({ agent: "codex" })).id).args.join(" ")).toContain(CODEX_INLINE);
+    // resumed: by id, and in a terminal that had Codex running in it
+    const resumed = ptyOf((await ryan.start({ agent: "codex", resumeSessionId: "019a-conv" })).id).args.join(" ");
+    expect(resumed).toContain("'resume' '019a-conv'");
+    expect(resumed).toContain(CODEX_INLINE);
+    const term = ptyOf((await ryan.start({ shell: true, agent: undefined, shellResume: { agent: "codex", id: "019a-conv" } })).id);
+    expect(term.args.join(" ")).toContain("'resume' '019a-conv'");
+    expect(term.args.join(" ")).toContain(CODEX_INLINE);
+    // a claude started by hand in a room's terminal runs inline too
+    expect(term.env[INLINE_ENV]).toBe("1");
+    // a restart of one that joined while running brings it inline
+    expect(ryan.live.state().own[claude.id].inlineOnStart).toBe(true);
+    // outside rooms, nothing changes
+    expect(ptyOf((await ryan.start({ taskGroup: "private" })).id).env[INLINE_ENV]).toBeUndefined();
+    expect(ptyOf((await ryan.start({ agent: "codex", taskGroup: "private" })).id).args.join(" ")).not.toContain("alternate_screen");
+  });
+
+  it("leaves room sessions as their agent is set up when this Mac's person turns inline off", async () => {
+    const { ryan } = await pair();
+    ryan.settings.roomSessionsInline = false;
+    const claude = await ryan.start();
+    expect(ptyOf(claude.id).env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBeUndefined();
+    expect(ptyOf((await ryan.start({ agent: "codex" })).id).args.join(" ")).not.toContain("alternate_screen");
+    expect(ptyOf((await ryan.start({ shell: true, agent: undefined })).id).env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBeUndefined();
+    // the room's other rules still apply
+    expect(ptyOf(claude.id).args.join(" ")).toContain("--disallowedTools");
+    expect(ryan.live.state().own[claude.id].inlineOnStart).toBe(false);
+  });
+
   it("launches a session as a room session as soon as sharing its group has answered", async () => {
     const dir = tempDir("live-share");
     const net = new LoopbackNetwork();

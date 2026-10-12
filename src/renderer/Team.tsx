@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Modal } from "./Modal";
 import { SetRow } from "./SetRow";
+import { Toggle } from "./Toggle";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { RoomBackupsSetting } from "./team/RoomBackups";
 import { isErr, type Settings } from "../shared/types";
@@ -572,6 +573,16 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
         </span>
       </SetRow>
       {st?.self && <AllowCreatorStep id={st.self.id} />}
+      <SetRow
+        title="Room sessions run inline"
+        note="So teammates can scroll them: Claude Code and Codex print on the terminal's normal screen, and teammates' copies keep the history to scroll through on their own. Full screen keeps it inside the agent, so a copy shows one screen of it. Inline, your room sessions go without the full-screen views: Claude Code's flicker-free renderer, clicking in it, copy on select and Focus view, and Codex's full-screen transcript. Applies to room sessions as they start or restart."
+      >
+        <Toggle
+          label="Room sessions run inline so teammates can scroll them"
+          on={settings.roomSessionsInline !== false}
+          onChange={(v) => onChange({ roomSessionsInline: v })}
+        />
+      </SetRow>
 
       <div className="set-sub">Teammates</div>
       {st && !st.peers.length && <div className="set-note">No teammates yet. Share a group from its row in the sidebar (⇪), or join a room with a code.</div>}

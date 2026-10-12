@@ -274,6 +274,13 @@ export interface Settings {
   teamName?: string;
   /** Team rooms: the signaling Worker's URL (signaling/README.md); new rooms use it, invite codes carry it. */
   signalingUrl?: string;
+  /**
+   * Team rooms: this Mac's room sessions run Claude Code and Codex inline, on
+   * the terminal's normal screen, so teammates' copies hold their history and
+   * scroll it (default on). Off: they run as the agent is set up, which may be
+   * full screen.
+   */
+  roomSessionsInline?: boolean;
 }
 
 export interface QuietHours {

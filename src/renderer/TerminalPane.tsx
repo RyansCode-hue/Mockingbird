@@ -225,7 +225,7 @@ export function shortReason(reason: string | null): string {
  * the room's permission profile, or a session that joined the room while
  * running.
  */
-function GuardChip({ session, guards, onRestart }: { session: SessionInfo; guards: { secrets: boolean; coauthors: boolean }; onRestart?: () => void }) {
+function GuardChip({ session, guards, inline, onRestart }: { session: SessionInfo; guards: { secrets: boolean; coauthors: boolean }; inline?: boolean; onRestart?: () => void }) {
   if (guards.secrets && guards.coauthors) return null;
   if (guards.secrets) {
     return (
@@ -256,7 +256,7 @@ function GuardChip({ session, guards, onRestart }: { session: SessionInfo; guard
   return (
     <button
       className="chip warn"
-      title="This session joined the room while it was running, so it started without the room's rules: it can read .env files and keys, teammates see what it prints, and its commits don't credit teammates who type into it. Click to restart it with them (its conversation resumes)."
+      title={`This session joined the room while it was running, so it started without the room's rules: it can read .env files and keys, teammates see what it prints, and its commits don't credit teammates who type into it.${inline ? " It also keeps the screen it started with: if that's full screen, teammates see one screen of it and can't scroll its history." : ""} Click to restart it with them (its conversation resumes${inline ? ", inline" : ""}).`}
       onClick={(e) => {
         e.stopPropagation();
         onRestart?.();
@@ -908,7 +908,7 @@ export function TerminalPane({
         {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
         {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
         {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row or ⌘K)">muted</span>}
-        {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} onRestart={onRestart} />}
+        {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <span className="controls">
           {!dead && (

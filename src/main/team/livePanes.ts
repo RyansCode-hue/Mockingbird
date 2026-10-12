@@ -8,6 +8,7 @@ import { roomSecretReads } from "../secrets";
 import { CODEX_ROOM_SANDBOX_NOTE, codexHomeOf, codexRoomPermissions, roomGitDirs, type RoomGitDirs } from "../codexRoomSandbox";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
 import { isTermReply, isViewControl } from "../../shared/termInput";
+import { CLAUDE_INLINE_ENV } from "../agents";
 import {
   codexGuardsSecrets,
   decodePtyChunk,
@@ -338,8 +339,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   /**
    * What a session starting in a shared group gets: secret reads denied
    * (Claude's rules; a Codex new enough runs in the room's sandbox and is
-   * told about it), its commits credit teammates, and an agent starts knowing
-   * the room's plan board, with its tool allowed.
+   * told about it), its commits credit teammates, an agent starts knowing
+   * the room's plan board, with its tool allowed, and — unless this Mac's
+   * person turned it off — it runs inline, so teammates' copies hold its
+   * history and scroll it themselves (a full-screen agent keeps its history
+   * inside itself: a copy would show one screen of it).
    */
   async roomLaunch(target: LaunchTarget): Promise<RoomLaunch | null> {
     const roomId = target.group ? this.roomForGroup(splitGroupKey(target.group).top) : null;
@@ -377,13 +381,20 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         this.d.log(`team: the plan board for session ${target.id}'s launch`, err);
       }
     }
+    const inline = this.d.settings().roomSessionsInline !== false;
     return {
-      // PLAN_CONTEXT_ENV: the board itself is in the launch, so the SessionStart hook adds nothing
-      env: { ...(this.hooksReady ? hooksEnv(this.d.hooksDir ?? HOOKS_DIR) : {}), ...(instructions ? { [PLAN_CONTEXT_ENV]: "1" } : {}) },
+      env: {
+        ...(this.hooksReady ? hooksEnv(this.d.hooksDir ?? HOOKS_DIR) : {}),
+        // the board itself is in the launch, so the SessionStart hook adds nothing
+        ...(instructions ? { [PLAN_CONTEXT_ENV]: "1" } : {}),
+        // every room pty, terminals too: a claude started by hand in one runs inline as well
+        ...(inline ? CLAUDE_INLINE_ENV : {}),
+      },
       denyReads,
       codexPermissions,
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
       allowTools: target.agent === "claude" ? [PLAN_TOOL] : [],
+      inline,
       guards: { secrets: target.agent === "claude" || codexGuarded, coauthors: this.hooksReady },
     };
   }
@@ -1010,6 +1021,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
 
   // ---- the window -----------------------------------------------------------------------------------
 
+  /** Settings changed: the window's room sessions say whether a restart brings them inline. */
+  settingsChanged(before: Settings, after: Settings): void {
+    if ((before.roomSessionsInline !== false) !== (after.roomSessionsInline !== false)) this.changed();
+  }
+
   private changed(): void {
     if (this.changeTimer) return;
     this.changeTimer = setTimeout(() => {
@@ -1132,6 +1148,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         repo: pub?.repo ?? null,
         repoName: pub?.repoName ?? null,
         guards: this.d.sessions.guardsOf(s.id) ?? NO_GUARDS,
+        inlineOnStart: this.d.settings().roomSessionsInline !== false,
         ...(taken ? { takenOver: { by: taken.by, byName: memberNameIn(team, roomId, taken.by), at: taken.at } } : {}),
       };
     }

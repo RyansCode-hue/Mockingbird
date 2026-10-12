@@ -72,6 +72,8 @@ export interface RoomLaunch {
   instructions: string | null;
   /** Mockingbird MCP tools the agent may call without asking (the plan board's). */
   allowTools: string[];
+  /** Codex runs inline (Claude's switch is in env): teammates' copies hold its history. */
+  inline: boolean;
   guards: { secrets: boolean; coauthors: boolean };
 }
 
@@ -286,6 +288,7 @@ export class SessionManager {
       ...(room?.codexPermissions.length ? { codexPermissions: room.codexPermissions } : {}),
       ...(room?.instructions ? { instructions: room.instructions } : {}),
       ...(room?.allowTools.length ? { allowTools: room.allowTools } : {}),
+      ...(room?.inline ? { inline: true } : {}),
     };
     const commandFor = (a: AgentAdapter, r: NewSessionRequest, ctx: LaunchContext) => [this.resolveBin(a), ...a.launchArgs(r, ctx)].map(quote).join(" ");
     if (!req.shell) {
