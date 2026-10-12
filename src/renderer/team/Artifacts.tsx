@@ -452,7 +452,7 @@ export function ArtifactShelf({
                 <span className="art-pick-title">{s.title}</span>
                 <span className="art-quiet">
                   {baseName(s.cwd)}
-                  {s.branch ? ` · ${s.branch}` : ""}
+                  {s.branch && s.branch !== baseName(s.cwd) ? ` · ${s.branch}` : ""}
                 </span>
               </button>
             ))}
@@ -591,7 +591,7 @@ function NewNoteDialog({ roomId, ctx, onClose, onAdded }: { roomId: string; ctx:
         <WritePreview preview={preview} setPreview={setPreview} />
       </div>
       <div className="art-body art-v-edit">
-        <NoteBody text={text} setText={setText} preview={preview} ctx={ctx} />
+        <NoteBody text={text} setText={setText} preview={preview} ctx={ctx} autoFocus={false} />
       </div>
       {error && <div className="err">{error}</div>}
       <div className="row">

@@ -2141,7 +2141,8 @@ button.art-toggle .ico { margin: 0; }
 .art-line button.link { flex-shrink: 0; font-size: 10px; }
 .art-empty { padding: 4px 0 2px; font: 400 10.5px/1.5 var(--ui); color: var(--text-4); }
 .team-notices.art-notices { margin: 6px 0 2px; }
-.art-notices .team-notice { font: 400 10.5px/1.45 var(--ui); }
+.art-notices .team-notice { gap: 8px; padding: 5px 7px; font: 400 10.5px/1.45 var(--ui); }
+.art-notices .team-notice button.link { font-size: 10px; }
 .art-k-note { color: var(--m-2) !important; }
 .art-k-repo { color: var(--m-3) !important; }
 .art-k-link { color: var(--teal-text) !important; }
@@ -2159,9 +2160,12 @@ button.rc-artifact:hover { border-color: var(--line-btn-hover); background: var(
 /* files dragged over the Team tab */
 .art-drop {
   position: absolute; inset: 6px; z-index: 20; display: grid; place-items: center; pointer-events: none;
-  border: 1.5px dashed var(--teal); border-radius: 9px; background: color-mix(in srgb, var(--bg-sidebar) 86%, var(--teal));
+  border: 1.5px dashed var(--teal); border-radius: 9px; background: color-mix(in srgb, var(--bg-sidebar) 70%, transparent);
 }
-.art-drop > div { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 0 16px; text-align: center; }
+.art-drop > div {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 0 14px; padding: 12px 16px; text-align: center;
+  border-radius: 8px; background: var(--bg-pane-header); box-shadow: 0 0 0 1px color-mix(in srgb, var(--teal) 45%, transparent), 0 8px 24px rgba(0, 0, 0, .25);
+}
 .art-drop b { font: 600 12.5px var(--ui); color: var(--text-1); }
 .art-drop span { font: 400 10.5px var(--ui); color: var(--text-3); }
 /* the viewer */
@@ -2201,7 +2205,7 @@ button.rc-artifact:hover { border-color: var(--line-btn-hover); background: var(
 .art-gut { position: sticky; left: 0; flex-shrink: 0; width: 48px; padding-right: 12px; text-align: right; color: var(--text-4); background: var(--bg-pane); user-select: none; }
 .art-ln.mark .art-gut { background: color-mix(in srgb, var(--teal) 14%, var(--bg-pane)); color: var(--teal-text); }
 .art-lt { padding-right: 14px; }
-.art-csv { overflow: auto; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-pane); user-select: text; }
+.art-csv { width: fit-content; max-width: 100%; overflow: auto; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg-pane); user-select: text; }
 .art-csv table { border-collapse: collapse; font: 400 11px/1.45 var(--mono); color: var(--text-2); }
 .art-csv th { position: sticky; top: 0; background: var(--bg-pane-header); color: var(--text-1); font-weight: 600; text-align: left; }
 .art-csv th, .art-csv td { padding: 4px 10px; border-bottom: 1px solid var(--line-soft); border-right: 1px solid var(--line-soft); white-space: pre-wrap; max-width: 320px; vertical-align: top; }

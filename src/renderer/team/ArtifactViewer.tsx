@@ -51,13 +51,13 @@ export function WritePreview({ preview, setPreview }: { preview: boolean; setPre
 }
 
 /** A note's text being written, or its preview. */
-export function NoteBody({ text, setText, preview, ctx }: { text: string; setText: (t: string) => void; preview: boolean; ctx?: InlineContext }) {
+export function NoteBody({ text, setText, preview, ctx, autoFocus = true }: { text: string; setText: (t: string) => void; preview: boolean; ctx?: InlineContext; autoFocus?: boolean }) {
   return preview ? (
     <div className="art-scroll">{text.trim() ? <MarkdownView className="art-md" text={text} ctx={ctx} /> : <div className="art-quiet">Nothing written yet.</div>}</div>
   ) : (
     <textarea
       className="art-note-text"
-      autoFocus
+      autoFocus={autoFocus}
       spellCheck
       value={text}
       placeholder="Markdown: # headings, **bold**, - lists, ``` code, | tables |, [links](https://…)"
@@ -69,7 +69,7 @@ export function NoteBody({ text, setText, preview, ctx }: { text: string; setTex
 /** Lines of text with their numbers; `mark` highlights a range and scrolls it into view. */
 function NumberedText({ text, mark }: { text: string; mark?: [number, number] | null }) {
   const MAX_LINES = 20_000;
-  const lines = useMemo(() => text.split("\n"), [text]);
+  const lines = useMemo(() => text.replace(/\n$/, "").split("\n"), [text]);
   const first = useRef<HTMLDivElement>(null);
   useEffect(() => first.current?.scrollIntoView({ block: "center" }), [text, mark?.[0]]);
   const marked = (n: number) => !!mark && n >= mark[0] && n <= mark[1];
