@@ -1605,7 +1605,7 @@ function App() {
     return (
       <div
         key={s.id}
-        className={`sess-item ${idx >= 0 ? "shown" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""} ${s.muted ? "muted" : ""} ${isRemote(s) ? "remote" : ""}`}
+        className={`sess-item ${idx >= 0 ? "shown" : ""} ${focused === s.id ? "focused" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""} ${s.muted ? "muted" : ""} ${isRemote(s) ? "remote" : ""}`}
         tabIndex={0}
         onClick={() => (idx >= 0 ? hide(s.id) : showSession(s))}
         onKeyDown={(e) => {
@@ -2073,7 +2073,7 @@ function App() {
                     }}
                   />
                 );
-              const { key, list } = entry;
+              const { key, list, shared } = entry;
               return (
               <div key={key}>
                 {(
@@ -2115,10 +2115,12 @@ function App() {
                       <ChevronIcon open={!collapsed.has(key)} />
                     </span>
                     <span className="txt">{groupTitle(key, list)}</span>
+                    {/* team rooms: your sessions here; teammates' are in the Team view */}
+                    {shared && <span className="gl-shared" title="A team room's group: your sessions in it are listed here, and the whole room — teammates' sessions too — in the Team view">Shared room</span>}
                     {key !== "ungrouped" && key !== "assistant" && (
                       <button
                         className="glbtn"
-                        title="Share this group as a team room"
+                        title={shared ? "Invite a teammate to this shared room" : "Share this group as a team room"}
                         onClick={(e) => {
                           e.stopPropagation();
                           cancelClick();
@@ -2131,7 +2133,13 @@ function App() {
                     {key !== "assistant" && (
                       <button
                         className="glbtn"
-                        title={key === "ungrouped" ? "New session (no group)" : `New session in ${groupTitle(key, list)}`}
+                        title={
+                          key === "ungrouped"
+                            ? "New session (no group)"
+                            : shared
+                              ? `New connected session in ${groupTitle(key, list)} — teammates see it`
+                              : `New session in ${groupTitle(key, list)}`
+                        }
                         onClick={(e) => {
                           e.stopPropagation();
                           cancelClick();

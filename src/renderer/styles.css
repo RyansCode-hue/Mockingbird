@@ -2411,16 +2411,20 @@ button.lbtn:focus-visible { outline: 1px solid var(--line-focus); outline-offset
 .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) > :not(.on) { display: none; }
 .sess-item:not(:hover):not(:focus-within):has(.sr-acts .lbtn.on) { padding-right: 44px; }
 
-/* the Team view: a room's rows show their actions on a line of their own, always */
+/* the Team view: a room's rows show their actions on a line of their own while hovered, focused from the
+   keyboard, or selected (the pane you're in); resting rows are just their two lines of words */
 .room-sess-body .sess-item { flex-wrap: wrap; align-items: flex-start; row-gap: 3px; }
 .room-sess-body .sess-item > .dot { margin-top: 5px; }
 .room-sess-body .sess-item .name { flex: 1 1 0; }
 .room-sess-body .sess-item .sr-acts,
-.room-sess-body .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) {
+.room-sess-body .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) { display: none; }
+.room-sess-body .sess-item:not(:hover):not(:focus-within):has(.sr-acts .lbtn.on) { padding-right: 8px; }
+.room-sess-body .sess-item:is(:hover, :focus-within, .focused) .sr-acts {
   position: static; transform: none; display: inline-flex; flex-basis: 100%; padding: 0 0 0 9px; margin-left: 4px; background: none;
 }
-.room-sess-body .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) > * { display: inline-flex; }
-.room-sess-body .sess-item:not(:hover):not(:focus-within):has(.sr-acts .lbtn.on) { padding-right: 8px; }
+.room-sess-body .sess-item:is(:hover, :focus-within, .focused) .sr-acts > * { display: inline-flex; }
+/* a room's group in the Sessions list */
+.group-label .gl-shared { flex-shrink: 0; font: 500 9.5px var(--ui); color: var(--teal-text); }
 
 /* ---- the Sessions view's line for the team rooms ---- */
 button.connected-line {

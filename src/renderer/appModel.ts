@@ -102,27 +102,29 @@ export function reachesBroadcast(s: Pick<SessionInfo, "status" | "shell" | "debr
   return !(s.status === "dead" || s.shell || s.debrief);
 }
 
-/** A row of the Sessions outline: a top-level group of this Mac's with its sessions, or the one line standing for the team rooms. */
-export type OutlineGroup<T> = { kind: "group"; key: string; list: T[] };
+/** A row of the Sessions outline: a top-level group with this Mac's sessions in it (`shared` when it's a team room's), or the one line standing for the team rooms. */
+export type OutlineGroup<T> = { kind: "group"; key: string; list: T[]; shared: boolean };
 export type OutlineEntry<T> = OutlineGroup<T> | { kind: "connected" };
 
 /**
- * The Sessions outline's top-level rows: this Mac's own groups in
- * first-appearance order, then one "connected" line when there are team
- * rooms. The rooms' groups (`roomGroups`) and their sessions live in the Team
- * view, which the line opens. While `filtering`, only groups with a matching
- * session show, and the line only when a room's session matches.
+ * The Sessions outline's top-level rows: the groups holding this Mac's own
+ * sessions, a team room's group included, in first-appearance order; then
+ * one "connected" line when there are team rooms. Teammates' sessions
+ * (`room.remote`) aren't listed here: they live in the Team view, with each
+ * room's whole group, which the line opens. While `filtering`, only groups
+ * with a matching session show, and the line only when a room's session
+ * matches.
  */
-export function sessionOutline<T extends Pick<SessionInfo, "taskGroup">>(visible: readonly T[], roomGroups: readonly string[], filtering: boolean): OutlineEntry<T>[] {
+export function sessionOutline<T extends Pick<SessionInfo, "taskGroup" | "room">>(visible: readonly T[], roomGroups: readonly string[], filtering: boolean): OutlineEntry<T>[] {
   const rooms = new Set(roomGroups);
   const byKey = new Map<string, T[]>();
   let inRooms = 0;
   for (const s of visible) {
     const key = topOfKey(s.taskGroup ?? "ungrouped");
     if (rooms.has(key)) inRooms++;
-    else byKey.set(key, [...(byKey.get(key) ?? []), s]);
+    if (!s.room?.remote) byKey.set(key, [...(byKey.get(key) ?? []), s]);
   }
-  const own = [...byKey].map(([key, list]): OutlineGroup<T> => ({ kind: "group", key, list }));
+  const own = [...byKey].map(([key, list]): OutlineGroup<T> => ({ kind: "group", key, list, shared: rooms.has(key) }));
   return rooms.size && (!filtering || inRooms) ? [...own, { kind: "connected" }] : own;
 }
 

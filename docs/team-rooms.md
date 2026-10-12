@@ -91,9 +91,10 @@ should stop more members joining later.
   malformed parameters) still say why.
 - The **Team room** view lists the rooms, each with its presence in words
   ("Shared room · Nick online"), its sessions — yours and teammates' — and its
-  chat; the Sessions view keeps one **Connected sessions** line ("Connected
-  sessions · 4", who's online) that opens it: on the only room, or on the room
-  list. Sessions outside rooms are never visible to anyone.
+  chat. The Sessions view lists your own sessions in a room's group (marked
+  "Shared room") but not teammates', and one **Connected sessions** line
+  ("Connected sessions · 4", who's online) that opens the Team room view: on
+  the only room, or on the room list. Sessions outside rooms are never visible to anyone.
 
 ## Joining
 
