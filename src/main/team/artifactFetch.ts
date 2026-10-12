@@ -342,7 +342,12 @@ export class ArtifactFetcher {
       if (!w.eager && !w.priority) continue;
       if (w.nextAt > now) continue;
       const k = key(w.roomId, w.sha);
-      const run = this.run(w).finally(() => {
+      const run = this.run(w)
+        .catch((err) => {
+          this.d.log(`fetching room file ${w.name} (${w.sha.slice(0, 12)}) failed: ${(err as Error).stack ?? err}`);
+          this.setback(w, "failed", `couldn't be fetched: ${(err as Error).message}`);
+        })
+        .finally(() => {
         this.active.delete(k);
         this.pump();
       });
