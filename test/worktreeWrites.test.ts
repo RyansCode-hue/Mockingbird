@@ -3,8 +3,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir } from "./helpers";
-import { items, sides, type Side } from "./artifactSides";
-import { until } from "../src/main/team/loopback";
+import { items, sideFor, sides, type Side } from "./artifactSides";
+import { loopbackRoom, until } from "../src/main/team/loopback";
 import { Messaging } from "../src/main/messaging";
 import { excludePlanDir, removeRoomCopy, writeRoomCopy } from "../src/main/team/claims";
 import { writeGeneratedInside } from "../src/main/fileOps";
@@ -128,6 +128,15 @@ describe("agents' copies of room artifacts", () => {
     expect(tree(home.dir)).toEqual([".zshrc"]);
   });
 
+  it("that can't be made are logged here too, not only told to the agent", async () => {
+    const { nick, open } = await setup();
+    const home = outsideFile();
+    const plain = tempDir("plain");
+    fs.symlinkSync(home.dir, path.join(plain, ".mockingbird"));
+    expect((await open("s1", plain)).error).toMatch(/symbolic link/);
+    expect(nick.logs.join("\n")).toMatch(/room artifacts: read_room_artifact for session s1: .*\.mockingbird is a symbolic link/);
+  });
+
   it("aren't written where the repository committed .mockingbird as a link", async () => {
     const { dir, open } = await setup();
     const home = outsideFile();
@@ -158,5 +167,22 @@ describe("agents' copies of room artifacts", () => {
     await until(() => nick.logs.some((l) => /cleaning up: .*symbolic link/.test(l)), "the cleanup to refuse the link");
     expect(fs.readFileSync(path.join(home.dir, "artifacts", id, "keep.txt"), "utf8")).toBe("mine\n");
     expect((await nick.arts.list(roomId)).problems.join("\n")).toMatch(/couldn't be cleaned up: .*symbolic link/);
+  });
+
+  it("listed without a room are deleted at start, and entries naming no folder are logged", async () => {
+    const dir = tempDir("artifacts");
+    const { members } = await loopbackRoom(["Ryan"], { dir });
+    const id = "A".repeat(22);
+    const orphan = path.join(tempDir("wt"), ".mockingbird", "artifacts", id);
+    fs.mkdirSync(orphan, { recursive: true });
+    fs.writeFileSync(path.join(orphan, "shot.png"), "x");
+    const listFile = path.join(dir, "Ryan", "artifact-copies.json");
+    fs.mkdirSync(path.dirname(listFile), { recursive: true });
+    fs.writeFileSync(listFile, JSON.stringify([{ id, dir: orphan }, 5, { roomId: "r" }]));
+    const ryan = sideFor(members[0], dir);
+    expect(fs.existsSync(orphan)).toBe(false);
+    expect(ryan.logs.join("\n")).toMatch(/1 entries in .* name no room; their copies are deleted now/);
+    expect(ryan.logs.join("\n")).toMatch(/2 entries in .* name no copy's folder and were dropped: 5; \{"roomId":"r"\}/);
+    expect(JSON.parse(fs.readFileSync(listFile, "utf8"))).toEqual([]);
   });
 });

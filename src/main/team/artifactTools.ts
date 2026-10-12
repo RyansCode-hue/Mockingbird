@@ -82,6 +82,7 @@ export async function artifactToolCall(session: SessionInfo, op: string, args: R
     if (op === ARTIFACT_TOOL.read) return await readFor(arts, roomId, session, args);
     return { error: `Unknown tool: ${op}` };
   } catch (err) {
+    arts.report(`room artifacts: ${op} for session ${session.id}`, err);
     return { error: (err as Error).message };
   }
 }

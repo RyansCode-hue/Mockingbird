@@ -116,8 +116,42 @@ export class TeamArtifacts {
     this.copiesFile = d.copiesFile ?? path.join(TEAM_DIR, "artifact-copies.json");
     this.now = d.now ?? Date.now;
     this.repos = new RepoRefs({ sessions: d.sessions, knownRepos: d.knownRepos, log: d.log });
+    this.copies = this.loadCopies();
+  }
+
+  /**
+   * The agents' copies list. An entry that names a copy's folder but not its
+   * room can't be matched to an artifact again: its copy is deleted now. An
+   * entry without a folder can't be cleaned up at all. Either way it's
+   * logged, never dropped silently.
+   */
+  private loadCopies(): AgentCopy[] {
     const v = readJsonOrSetAside(this.copiesFile, [], "the room artifacts' agent copies");
-    this.copies = Array.isArray(v) ? (v as AgentCopy[]).filter((c) => c && typeof c.roomId === "string" && typeof c.id === "string" && typeof c.dir === "string") : [];
+    if (!Array.isArray(v)) {
+      this.d.log("room artifacts: the agents' copies list", `${this.copiesFile} isn't a list; the copies it named aren't tracked any more`);
+      return [];
+    }
+    const good: AgentCopy[] = [];
+    const orphans: AgentCopy[] = [];
+    const lost: string[] = [];
+    for (const c of v as Partial<AgentCopy>[]) {
+      if (c && typeof c.roomId === "string" && typeof c.id === "string" && typeof c.dir === "string") good.push(c as AgentCopy);
+      else if (c && typeof c.id === "string" && typeof c.dir === "string") orphans.push({ roomId: "", id: c.id, dir: c.dir });
+      else lost.push(JSON.stringify(c)?.slice(0, 200) ?? String(c));
+    }
+    if (lost.length) this.d.log("room artifacts: the agents' copies list", `${lost.length} entries in ${this.copiesFile} name no copy's folder and were dropped: ${lost.join("; ")}`);
+    if (!orphans.length) {
+      try {
+        if (lost.length) writeFileAtomic(this.copiesFile, JSON.stringify(good, null, 2));
+      } catch (err) {
+        this.d.log(`room artifacts: saving ${this.copiesFile}`, err);
+      }
+      return good;
+    }
+    this.d.log("room artifacts: the agents' copies list", `${orphans.length} entries in ${this.copiesFile} name no room; their copies are deleted now: ${orphans.map((c) => c.dir).join(", ")}`);
+    this.copies = [...good, ...orphans];
+    for (const p of this.dropCopies((c) => c.roomId === "")) this.d.log("room artifacts: cleaning up", p);
+    return this.copies;
   }
 
   start(team: Team): void {
@@ -541,6 +575,11 @@ export class TeamArtifacts {
     if (warning) this.d.log(`room artifacts: an agent's copy of ${a.name}`, warning);
     this.problem(roomId, `quarantine-agent ${a.id}`, warning);
     return file;
+  }
+
+  /** Log a failure the agents' tools or @assistant met (this install's log); returns the message logged. */
+  report(context: string, err: unknown): string {
+    return this.d.log(context, err);
   }
 
   nameOf(roomId: RoomId, id: MemberId): string {
