@@ -250,13 +250,14 @@ export class TeamArtifacts {
   }
 
   /** Add a file that has no path on disk (a pasted screenshot, an image dragged from a browser). */
-  async addBytes(roomId: RoomId, rawName: string, bytes: Uint8Array, confirmSecret = false): Promise<AddFilesResult> {
+  async addBytes(roomId: RoomId, rawName: string, bytes: Uint8Array | ArrayBuffer, confirmSecret = false): Promise<AddFilesResult> {
     this.need(roomId);
     const name = cleanName(String(rawName ?? ""), "pasted");
     const out: AddFilesResult = { added: [], refused: [] };
     try {
-      if (!(bytes instanceof Uint8Array)) throw new Error("No bytes to add");
-      await this.addIngested(roomId, name, { bytes }, confirmSecret, out);
+      const data = bytes instanceof Uint8Array ? bytes : bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null;
+      if (!data) throw new Error("No bytes to add");
+      await this.addIngested(roomId, name, { bytes: data }, confirmSecret, out);
     } catch (err) {
       out.refused.push({ name, reason: (err as Error).message });
       this.d.log(`room artifacts: ${name} wasn't added`, err);
@@ -433,6 +434,7 @@ export class TeamArtifacts {
     } else throw new Error("Only files and notes are saved as files");
     const warning = await quarantine(dest);
     if (warning) this.d.log("room artifacts: Save as", warning);
+    this.problem(roomId, `save ${a.id}`, warning);
     return warning;
   }
 

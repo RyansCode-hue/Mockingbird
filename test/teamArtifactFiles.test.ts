@@ -1,8 +1,10 @@
+import { execFileSync } from "child_process";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { until } from "../src/main/team/loopback";
+import { artifactViewer } from "../src/main/team/artifactViewer";
 import { blobOf, eventually, fileRec, items, randomFile, sides, summaryOf, type Side } from "./artifactSides";
 
 const handlers = (s: Side) => (s.m.team as any).requestHandlers as Map<string, (p: any, ctx: any) => unknown>;
@@ -148,6 +150,64 @@ describe("room files between members", () => {
     expect(await nick.arts.read(roomId, big.added[0].id)).toMatchObject({ view: "missing" });
     await until(() => !!blobOf(nick, roomId, big.added[0].id), "the big one, once opened");
     expect(await nick.arts.read(roomId, big.added[0].id)).toMatchObject({ view: "binary", size: 5000 });
+  });
+});
+
+describe("leaving a room", () => {
+  it("deletes its files and agents' copies here; what the leaver added stays with the others", async () => {
+    const { roomId, sides: [ryan, nick], dir } = await sides(["Ryan", "Nick"]);
+    const theirs = await nick.arts.addFiles(roomId, [randomFile(path.join(dir, "src"), "nick.png", 300)]);
+    const mine = await ryan.arts.addFiles(roomId, [randomFile(path.join(dir, "src"), "ryan.png", 300)]);
+    await until(() => !!blobOf(nick, roomId, mine.added[0].id) && !!blobOf(ryan, roomId, theirs.added[0].id), "both to have both");
+    const agentDir = path.join(dir, "nick-wt", ".mockingbird", "artifacts", mine.added[0].id);
+    await nick.arts.copyForAgent(roomId, fileRec(nick, roomId, mine.added[0].id), agentDir, "ryan.png");
+    await nick.m.team.leave(roomId, { ackMs: 500, revokeMs: 500 });
+    expect(await nick.arts.roomLeft(roomId)).toEqual([]);
+    nick.m.team.forget(roomId);
+    expect(fs.existsSync(agentDir)).toBe(false);
+    expect(fs.existsSync(path.join(nick.m.store.dir, roomId))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, "Nick", "artifact-copies.json"), "utf8"))).toEqual([]);
+    await until(() => ryan.m.team.room(roomId)!.members.length === 1, "Ryan to see Nick leave");
+    expect(await summaryOf(ryan, roomId, theirs.added[0].id)).toMatchObject({ name: "nick.png", addedByName: "Nick", local: { state: "present" } });
+  });
+});
+
+describe("Quick Look, Reveal and Save as", () => {
+  it("act on copies main makes: read-only and quarantined for viewing, marked as downloaded when saved", async () => {
+    const { roomId, sides: [ryan], dir } = await sides(["Ryan"]);
+    const shown: string[][] = [];
+    let saveTo: string | null = path.join(dir, "out", "saved.pdf");
+    fs.mkdirSync(path.dirname(saveTo), { recursive: true });
+    const ui = artifactViewer(ryan.arts, {
+      previewFile: (p, name) => shown.push(["preview", p, name]),
+      showItemInFolder: (p) => shown.push(["reveal", p]),
+      saveDialog: async (name) => (shown.push(["save", name]), saveTo),
+      openFilesDialog: async () => null,
+    });
+    const pdf = await ryan.arts.addBytes(roomId, "Q3 report", new Uint8Array(Buffer.from("%PDF-1.7\nhello")));
+    const id = pdf.added[0].id;
+    expect(await ryan.arts.read(roomId, id)).toEqual({ view: "pdf", mime: "application/pdf", size: 14 });
+    await ui.quickLook(roomId, id);
+    await ui.reveal(roomId, id);
+    const copy = path.join(ryan.m.store.dir, roomId, "artifacts", "view", id, "Q3 report.pdf");
+    expect(shown).toEqual([
+      ["preview", copy, "Q3 report"],
+      ["reveal", copy],
+    ]);
+    expect(fs.statSync(copy).mode & 0o777).toBe(0o444);
+    expect(await ui.saveAs(roomId, id)).toEqual({ path: saveTo });
+    expect(shown.at(-1)).toEqual(["save", "Q3 report"]);
+    expect(fs.readFileSync(saveTo, "utf8")).toBe("%PDF-1.7\nhello");
+    if (process.platform === "darwin") {
+      for (const f of [copy, saveTo]) expect(execFileSync("xattr", ["-p", "com.apple.quarantine", f], { encoding: "utf8" })).toMatch(/;Mockingbird;/);
+    }
+    saveTo = null;
+    expect(await ui.saveAs(roomId, id)).toBeNull();
+    const note = ryan.arts.addNote(roomId, "Spec", "text");
+    await expect(ui.quickLook(roomId, note.id)).rejects.toThrow(/Only files/);
+    saveTo = path.join(dir, "out", "spec.md");
+    await ui.saveAs(roomId, note.id);
+    expect(fs.readFileSync(saveTo, "utf8")).toBe("text");
   });
 });
 

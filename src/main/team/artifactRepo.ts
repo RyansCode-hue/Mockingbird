@@ -81,7 +81,7 @@ export class RepoRefs {
     const rel = checkRepoPath(path.relative(realTop, abs).split(path.sep).join("/"));
     let lines: [number, number] | undefined;
     if (req.lines) {
-      const [a, b] = req.lines;
+      const [a, b] = Array.isArray(req.lines) ? req.lines : [NaN, NaN];
       if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || a < 1 || b < a || b > 10_000_000) throw new Error("Lines run from the first to the last, starting at 1");
       lines = [a, b];
     }
@@ -94,7 +94,7 @@ export class RepoRefs {
     const warnings: string[] = [];
     if (await git(realTop, ["diff", "--name-only", commit, "--", rel])) warnings.push(`${rel} has uncommitted changes: the reference is HEAD ${short(commit)}, without them`);
     if (!(await git(realTop, ["branch", "-r", "--contains", commit]))) warnings.push(`${short(commit)} isn't on any remote branch: teammates can't see it until you push`);
-    const name = (req.name ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 200) || repoRefName(rel, lines);
+    const name = String(req.name ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 200) || repoRefName(rel, lines);
     return { body: { kind: "repo", name, origin, path: rel, commit, ...(lines ? { lines } : {}) }, warnings };
   }
 

@@ -68,6 +68,10 @@ import { ROOMS_DIR } from "./team/rooms";
 // team rooms: live panes
 import { LivePanes } from "./team/livePanes";
 import { stopTeamRooms } from "./team/shutdown";
+// team rooms: artifacts (importing it registers the artifacts' room events, before any room log loads)
+import { TeamArtifacts } from "./team/artifacts";
+import { assistantArtifacts } from "./team/artifactTools";
+import { artifactViewer } from "./team/artifactViewer";
 import { isRemotePaneId } from "../shared/team/livePanes";
 import { guardNavigation } from "./navigation";
 import { externalUrlAllowed } from "../shared/links";
@@ -121,6 +125,7 @@ const team: TeamService = new TeamService({
     { what: "the room's live panes", roomLeft: (room, groupKey) => livePanes.roomLeft(room, groupKey) },
     { what: "the room chat's read marks", roomLeft: (room) => teamRoom.chat.roomLeft(room.id) },
     { what: "the plan copies", roomLeft: (room) => teamPlan.roomLeft(room.id) },
+    { what: "the room's artifacts and agents' copies of them", roomLeft: (room) => teamArtifacts.roomLeft(room.id) },
     { what: "the room's backups and hidden refs", roomLeft: (room) => takeover?.roomLeft(room) ?? [] },
   ],
   notify: (title, body) => {
@@ -128,21 +133,49 @@ const team: TeamService = new TeamService({
   },
 });
 
+// Folders that may be clones of a room's repo: sessions' repos, and the repo index (read again every 5 minutes)
+let roomRepoIndex = { at: 0, repos: [] as string[] };
+function knownRoomRepos(): string[] {
+  if (Date.now() - roomRepoIndex.at > 5 * 60_000) roomRepoIndex = { at: Date.now(), repos: indexRepos(store.settings.repoRoots).map((r) => r.path) };
+  const used = [...sessions.list(), ...store.state.sessions].map((s) => s.repoPath).filter((p): p is string => !!p);
+  return [...new Set([...used, ...roomRepoIndex.repos])];
+}
+
 // team rooms: plan board — the board in git and in the room repo's worktrees, claims, teammates' branches
-let planRepoIndex = { at: 0, repos: [] as string[] };
 const teamPlan = new PlanService({
   roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
   sessions: () => sessions.list(),
-  knownRepos: () => {
-    if (Date.now() - planRepoIndex.at > 5 * 60_000) planRepoIndex = { at: Date.now(), repos: indexRepos(store.settings.repoRoots).map((r) => r.path) };
-    const used = [...sessions.list(), ...store.state.sessions].map((s) => s.repoPath).filter((p): p is string => !!p);
-    return [...new Set([...used, ...planRepoIndex.repos])];
-  },
+  knownRepos: knownRoomRepos,
   emit: toWindow,
   log: logError,
   notify: (title, body, sessionId) => (sessionId ? notifySession(sessionId, title, body) : new Notification({ title, body }).show()),
   overlapsChanged: () => overlapsSoon(),
   author: () => ({ name: (store.settings.teamName ?? "").trim() || os.userInfo().username }),
+});
+// team rooms: artifacts — files, notes, repo references and links kept in a room;
+// files copied peer to peer by hash, read by room agents through their tools
+const teamArtifacts = new TeamArtifacts({
+  sessions: () => sessions.list(),
+  knownRepos: knownRoomRepos,
+  roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
+  secretFiles: () => knownSecretFiles(store.settings.workTrackerPath).files,
+  emit: (roomId) => toWindow("artifacts:changed", roomId),
+  log: logError,
+});
+const artifactUi = artifactViewer(teamArtifacts, {
+  previewFile: (file, name) => appWindow()?.previewFile(file, name || undefined),
+  showItemInFolder: (file) => shell.showItemInFolder(file),
+  saveDialog: async (defaultName) => {
+    const win = appWindow();
+    const r = win ? await dialog.showSaveDialog(win, { defaultPath: defaultName }) : await dialog.showSaveDialog({ defaultPath: defaultName });
+    return r.canceled || !r.filePath ? null : r.filePath;
+  },
+  openFilesDialog: async () => {
+    const win = appWindow();
+    const opts = { title: "Add to the room", buttonLabel: "Add", properties: ["openFile", "multiSelections"] as ("openFile" | "multiSelections")[] };
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    return r.canceled || !r.filePaths.length ? null : r.filePaths;
+  },
 });
 // team rooms: take-over — room sessions back up after each turn; a teammate can
 // continue one on their laptop. Room sessions and their turn ends are the live
@@ -417,6 +450,7 @@ app.whenReady().then(() => {
   createWindow();
   team.start();
   if (team.transport) teamPlan.start(team.transport); // team rooms: plan board
+  if (team.transport) teamArtifacts.start(team.transport); // team rooms: artifacts
   // team rooms: take-over — unneeded backups are pruned now and daily
   takeover = startTakeover();
   const pruneBackups = () => takeover?.prune().catch((err) => logError("team: pruning room backups", err));
@@ -581,7 +615,7 @@ let teamStopped = false;
 function stopTeam(): void {
   if (teamStopped) return;
   teamStopped = true;
-  stopTeamRooms({ livePanes, chat: teamRoom, plan: teamPlan, takeover: () => takeover, team }, logError);
+  stopTeamRooms({ livePanes, chat: teamRoom, plan: teamPlan, artifacts: teamArtifacts, takeover: () => takeover, team }, logError);
 }
 
 app.on("window-all-closed", () => {
@@ -884,6 +918,24 @@ handle("plan:get", (roomId) => teamPlan.view(String(roomId)));
 handle("plan:apply", (roomId, op) => teamPlan.apply(String(roomId), op));
 handle("plan:repos", (roomId) => teamPlan.repoChoices(String(roomId)));
 handle("plan:sync", (roomId) => teamPlan.syncNow(String(roomId)));
+// team rooms: artifacts (src/shared/team/artifacts.ts); Quick Look, Reveal and Save as act on paths main makes
+handle("artifacts:list", (roomId) => teamArtifacts.list(String(roomId)));
+handle("artifacts:pickFiles", () => artifactUi.pickFiles());
+handle("artifacts:addFiles", (roomId, paths, confirmSecret) => teamArtifacts.addFiles(String(roomId), Array.isArray(paths) ? paths.map(String) : [], confirmSecret === true));
+handle("artifacts:addBytes", (roomId, name, bytes, confirmSecret) => teamArtifacts.addBytes(String(roomId), String(name ?? ""), bytes, confirmSecret === true));
+handle("artifacts:addNote", (roomId, name, text) => teamArtifacts.addNote(String(roomId), String(name ?? ""), String(text ?? "")));
+handle("artifacts:addRepo", (roomId, req) => teamArtifacts.addRepo(String(roomId), req ?? {}));
+handle("artifacts:addLink", (roomId, url, title) => teamArtifacts.addLink(String(roomId), String(url ?? ""), String(title ?? "")));
+handle("artifacts:rename", (roomId, id, name) => teamArtifacts.rename(String(roomId), String(id), String(name ?? "")));
+handle("artifacts:remove", (roomId, id) => teamArtifacts.remove(String(roomId), String(id)));
+handle("artifacts:saveNote", (roomId, id, text, base, mode) => teamArtifacts.saveNote(String(roomId), String(id), String(text ?? ""), String(base ?? ""), mode));
+handle("artifacts:read", (roomId, id) => teamArtifacts.read(String(roomId), String(id)));
+handle("artifacts:download", (roomId, id) => teamArtifacts.download(String(roomId), String(id)));
+handle("artifacts:resolveRepo", (roomId, id, preferSessionId) => teamArtifacts.resolveRepo(String(roomId), String(id), preferSessionId ? String(preferSessionId) : null));
+handle("artifacts:quickLook", (roomId, id) => artifactUi.quickLook(String(roomId), String(id)));
+handle("artifacts:reveal", (roomId, id) => artifactUi.reveal(String(roomId), String(id)));
+handle("artifacts:saveAs", (roomId, id) => artifactUi.saveAs(String(roomId), String(id)));
+handle("artifacts:dismissNotice", (roomId, noticeId) => teamArtifacts.dismissNotice(String(roomId), String(noticeId)));
 // team rooms: team chat — each room's chat, its agent updates, the @assistant
 // (on this laptop, under this user's account), and agent messaging across laptops
 const teamRoom = new TeamRoom({
@@ -909,6 +961,8 @@ const teamRoom = new TeamRoom({
   },
   windowFocused: () => !!appWindow()?.isFocused(),
   log: (msg) => void logError("team chat", msg),
+  // the room's artifacts, the ones the question names first (secret ones withheld)
+  artifacts: (roomId, question) => assistantArtifacts(roomId, question.body.artifacts ?? []),
 });
 handle("teamChat:view", (roomId) => teamRoom.chat.view(String(roomId)));
 handle("teamChat:post", (roomId, text) => teamRoom.chat.post(String(roomId), String(text ?? "")));
