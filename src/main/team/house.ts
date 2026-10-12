@@ -221,7 +221,7 @@ export class HouseClient {
       });
     } catch (err) {
       const e = err as Error & { cause?: { code?: string; message?: string } };
-      if (e.name === "TimeoutError" || e.name === "AbortError") throw new HouseError(`The House (${where}) didn't answer within ${Math.round(this.timeoutMs / 1000)} s`, null);
+      if (e.name === "TimeoutError" || e.name === "AbortError") throw new HouseError(`The House (${where}) didn't answer within ${this.timeoutMs / 1000} s`, null);
       const cause = e.cause?.code ?? e.cause?.message ?? e.message;
       throw new HouseError(this.clean(`Couldn't reach the House at ${where}: ${cause}`), null);
     }

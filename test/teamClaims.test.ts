@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
 import { installHooks, watchEvents, type ClaimEvent } from "../src/main/hooks";
 import { CLAIMS_CHECK_SCRIPT, CLAIMS_LOG, CLAIMS_WARNED_DIR, pruneWarned } from "../src/main/team/claims";
-import { claimsFile, PLAN_CONTEXT_ENV, type ClaimsFile } from "../src/shared/team/plan";
+import { claimsFile, ROOM_CONTEXT_ENV, type ClaimsFile } from "../src/shared/team/claims";
 
 const mb = path.join(os.homedir(), ".mockingbird");
 const eventsDir = path.join(mb, "events");
@@ -15,9 +15,9 @@ const claudeSettings = path.join(os.homedir(), ".claude", "settings.json");
 const NICK = "b".repeat(32);
 const ME = "a".repeat(32);
 
-/** A checkout whose read-only plan copy says Nick has src/api and I have src/ui. */
+/** A checkout whose read-only claims say Nick's ticket #141 has been changing src/api/x.ts, and my #143 src/ui/y.ts. */
 function roomCheckout(claims?: ClaimsFile | string): string {
-  const repo = makeRepo({ "src/api/x.ts": "x\n", "src/ui/y.ts": "y\n" });
+  const repo = makeRepo({ "src/api/x.ts": "x\n", "src/api/z.ts": "z\n", "src/ui/y.ts": "y\n" });
   const file =
     claims ??
     claimsFile(
@@ -25,10 +25,9 @@ function roomCheckout(claims?: ClaimsFile | string): string {
         {
           roomId: "R".repeat(22),
           room: "#5110 Donor entities",
-          updatedAt: "",
-          packages: [
-            { id: "p-api1", title: "Donor API", status: "in-progress", owner: { id: NICK, name: "Nick" }, paths: ["src/api"] },
-            { id: "p-ui01", title: "Donor UI", status: "claimed", owner: { id: ME, name: "Me" }, paths: ["src/ui"] },
+          tickets: [
+            { n: 141, title: "Donor API", status: "in_progress", owner: { id: NICK, name: "Nick" }, branch: "5110-donorApi", files: ["src/api/x.ts"] },
+            { n: 143, title: "Donor UI", status: "review", owner: { id: ME, name: "Me" }, branch: "5110-donorUi", files: ["src/ui/y.ts"] },
           ],
         },
       ],
@@ -88,12 +87,13 @@ describe("the claims check in the agents' PreToolUse hook", () => {
     const repo = roomCheckout();
     const first = JSON.parse(await runHook("PreToolUse", claudeEdit(repo, "src/api/x.ts"), repo));
     expect(first.hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" });
-    expect(first.hookSpecificOutput.permissionDecisionReason).toMatch(/src\/api\/x\.ts is owned by Nick's package "Donor API" \(p-api1, in progress\)/);
-    expect(first.systemMessage).toMatch(/^Mockingbird: src\/api\/x\.ts is owned by Nick's package/);
+    expect(first.hookSpecificOutput.permissionDecisionReason).toContain('src/api/x.ts has been changing on Nick\'s ticket #141 "Donor API" (branch 5110-donorApi, in progress)');
+    expect(first.hookSpecificOutput.permissionDecisionReason).toContain("read_house_ticket");
+    expect(first.systemMessage).toMatch(/^Mockingbird: src\/api\/x\.ts has been changing on Nick's ticket #141/);
 
     const again = JSON.parse(await runHook("PreToolUse", claudeEdit(repo, "src/api/x.ts"), repo));
     expect(again.hookSpecificOutput.permissionDecision).toBeUndefined();
-    expect(again.hookSpecificOutput.additionalContext).toMatch(/^Reminder from Mockingbird: src\/api\/x\.ts is owned by Nick's/);
+    expect(again.hookSpecificOutput.additionalContext).toMatch(/^Reminder from Mockingbird: src\/api\/x\.ts has been changing on Nick's ticket #141/);
     expect(again.systemMessage).toBeUndefined();
 
     // another conversation is warned afresh
@@ -103,19 +103,20 @@ describe("the claims check in the agents' PreToolUse hook", () => {
     // the app hears each one, and still gets the PreToolUse status event
     const warnings = events("ClaimWarning");
     expect(warnings.map((w) => w.payload.decision).sort()).toEqual(["context", "deny", "deny"]);
-    expect(warnings[0]).toMatchObject({ pane: "p1", payload: { tool: "Edit", conflicts: [{ file: "src/api/x.ts", hits: [{ pkg: "p-api1", owner: { name: "Nick" } }] }] } });
+    expect(warnings[0]).toMatchObject({ pane: "p1", payload: { tool: "Edit", conflicts: [{ file: "src/api/x.ts", hits: [{ n: 141, branch: "5110-donorApi", owner: { name: "Nick" } }] }] } });
     expect(events("PreToolUse")).toHaveLength(3);
   });
 
-  it("says nothing for my own claims, unclaimed files, tools that don't edit, and checkouts without a plan", async () => {
+  it("says nothing for my own claims, files no teammate's ticket changed (even next to one), tools that don't edit, and checkouts outside a room", async () => {
     const repo = roomCheckout();
     expect(await runHook("PreToolUse", claudeEdit(repo, "src/ui/y.ts"), repo)).toBe("");
+    expect(await runHook("PreToolUse", claudeEdit(repo, "src/api/z.ts"), repo)).toBe("");
     expect(await runHook("PreToolUse", claudeEdit(repo, "README.md"), repo)).toBe("");
     expect(await runHook("PreToolUse", { ...claudeEdit(repo, "src/api/x.ts"), tool_name: "Bash", tool_input: { command: "echo > src/api/x.ts" } }, repo)).toBe("");
     const plain = makeRepo();
     expect(await runHook("PreToolUse", claudeEdit(plain, "src/api/x.ts"), plain)).toBe("");
     expect(events("ClaimWarning")).toEqual([]);
-    expect(events("PreToolUse")).toHaveLength(4);
+    expect(events("PreToolUse")).toHaveLength(5);
   });
 
   it("checks Codex's apply_patch the same way", async () => {
@@ -125,7 +126,7 @@ describe("the claims check in the agents' PreToolUse hook", () => {
       await runHook("PreToolUse", { session_id: "codex-1", transcript_path: "/Users/x/.codex/sessions/r.jsonl", cwd: repo, hook_event_name: "PreToolUse", turn_id: "t1", tool_name: "apply_patch", tool_use_id: "call_1", tool_input: { command: patch } }, repo)
     );
     expect(out.hookSpecificOutput).toMatchObject({ hookEventName: "PreToolUse", permissionDecision: "deny" });
-    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("Nick's package");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("Nick's ticket #141");
   });
 
   it("forgets old conversations' warnings, so a long-gone conversation's markers don't pile up", async () => {
@@ -148,7 +149,7 @@ describe("the claims check in the agents' PreToolUse hook", () => {
     expect(events("PreToolUse")).toHaveLength(1);
   });
 
-  it("routes the check's events to the plan, without touching a pane's status", async () => {
+  it("routes the check's events to the room's board, without touching a pane's status", async () => {
     fs.rmSync(eventsDir, { recursive: true, force: true });
     const seen: ClaimEvent[] = [];
     const statuses: string[] = [];
@@ -165,12 +166,12 @@ describe("the claims check in the agents' PreToolUse hook", () => {
 });
 
 describe("the SessionStart hook", () => {
-  it("gives an agent in a room's checkout the plan's instructions, and leaves no status event", async () => {
+  it("gives an agent in a room's checkout the room's instructions, and leaves no status event", async () => {
     const repo = roomCheckout();
     fs.mkdirSync(path.join(repo, "src", "deep"), { recursive: true });
     const start = { session_id: "c1", cwd: repo, hook_event_name: "SessionStart", source: "startup" };
     expect(await runHook("SessionStart", start, path.join(repo, "src", "deep"))).toBe("You're working in a Mockingbird team room.\n");
-    expect(await runHook("SessionStart", start, repo, { [PLAN_CONTEXT_ENV]: "1" })).toBe("");
+    expect(await runHook("SessionStart", start, repo, { [ROOM_CONTEXT_ENV]: "1" })).toBe("");
     expect(await runHook("SessionStart", start, makeRepo())).toBe("");
     expect(fs.existsSync(eventsDir) ? events("SessionStart") : []).toEqual([]);
   });
