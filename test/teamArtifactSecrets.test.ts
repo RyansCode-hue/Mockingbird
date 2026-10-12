@@ -1,3 +1,6 @@
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { until } from "../src/main/team/loopback";
 import { items, sides } from "./artifactSides";
@@ -27,6 +30,49 @@ describe("a copy of a note agents may not read", () => {
     const spec = ryan.arts.addNote(roomId, "Spec", "plain");
     const plain = ryan.arts.saveNote(roomId, spec.id, "plainer", spec.id, "copy") as { copy: string };
     expect(ryan.arts.blockedReason(roomId, items(ryan.m.team.room(roomId)).find((a) => a.id === plain.copy)!)).toBeNull();
+  });
+});
+
+describe("a file from one of this Mac's credential stores", () => {
+  it("is added only once the person confirms, and never read by agents", async () => {
+    const { roomId, sides: [ryan, nick], dir } = await sides(["Ryan", "Nick"]);
+    const home = os.homedir();
+    const files = {
+      aws: path.join(home, ".aws", "credentials"),
+      netrc: path.join(home, ".netrc"),
+      gh: path.join(home, ".config", "gh", "hosts.yml"),
+      gitCreds: path.join(home, ".git-credentials"),
+      house: path.join(home, ".config", "radley-house", "notes.txt"),
+    };
+    for (const f of Object.values(files)) {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, `secret in ${path.basename(f)}\n`);
+    }
+    // a link elsewhere to one is the same file
+    const link = path.join(dir, "aws-creds.txt");
+    fs.symlinkSync(files.aws, link);
+    const first = await ryan.arts.addFiles(roomId, [...Object.values(files), link]);
+    expect(first.added).toEqual([]);
+    expect(first.refused.map((r) => [r.name, r.needsConfirm, r.reason.replace(/\. Teammates.*/, "")])).toEqual([
+      ["credentials", "secret", "credentials is one of this Mac's credential files (~/.aws/**)"],
+      [".netrc", "secret", ".netrc is one of this Mac's credential files (~/.netrc)"],
+      ["hosts.yml", "secret", "hosts.yml is one of this Mac's credential files (~/.config/gh/**)"],
+      [".git-credentials", "secret", ".git-credentials is one of this Mac's credential files (~/.git-credentials)"],
+      ["notes.txt", "secret", "notes.txt is one of this Mac's credential files (~/.config/radley-house/**)"],
+      ["aws-creds.txt", "secret", "aws-creds.txt is one of this Mac's credential files (~/.aws/**)"],
+    ]);
+    const added = await ryan.arts.addFiles(roomId, [files.aws], true);
+    expect(added.added).toHaveLength(1);
+    const id = added.added[0].id;
+    ryan.arts.rename(roomId, id, "harmless.txt");
+    await until(() => items(nick.m.team.room(roomId)).find((a) => a.id === id)?.name === "harmless.txt", "Nick to have it, renamed");
+    const rec = items(nick.m.team.room(roomId)).find((a) => a.id === id)!;
+    expect(rec).toMatchObject({ kind: "file", wasSecret: true });
+    expect(nick.arts.blockedReason(roomId, rec)).toMatch(/came from a credential store: agents never read it/);
+    // an ordinary file next to them isn't asked about
+    const plain = path.join(home, "plain.txt");
+    fs.writeFileSync(plain, "hello\n");
+    expect((await ryan.arts.addFiles(roomId, [plain])).added).toHaveLength(1);
   });
 });
 

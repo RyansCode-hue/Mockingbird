@@ -9,7 +9,7 @@ import { ROOMS_DIR } from "./rooms";
 import { roomOfSession } from "./roomSessions";
 import type { Team, Unsubscribe } from "./transport";
 import { dirInside, isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
-import { isSecretFileName } from "../secrets";
+import { homeSecretPlace, isSecretFileName } from "../secrets";
 import {
   AGENT_ARTIFACTS_DIR,
   ARTIFACT_ID_RE,
@@ -243,7 +243,7 @@ export class TeamArtifacts {
       const name = cleanName(path.basename(String(p ?? "")), "file");
       try {
         const { real } = checkAddable(String(p), { never: this.d.neverAdd ?? [TEAM_DIR, this.roomsDir], secretFiles: this.d.secretFiles() });
-        await this.addIngested(roomId, name, { file: real }, confirmSecret, out);
+        await this.addIngested(roomId, name, { file: real }, confirmSecret, out, homeSecretPlace(real));
       } catch (err) {
         out.refused.push({ name, reason: (err as Error).message });
       }
@@ -268,10 +268,17 @@ export class TeamArtifacts {
     return out;
   }
 
-  private async addIngested(roomId: RoomId, name: string, source: { file: string } | { bytes: Uint8Array }, confirmSecret: boolean, out: AddFilesResult): Promise<void> {
+  /** `credentials`: the credential store the file is in (homeSecretPlace), if any: asked about, and kept from agents for good. */
+  private async addIngested(roomId: RoomId, name: string, source: { file: string } | { bytes: Uint8Array }, confirmSecret: boolean, out: AddFilesResult, credentials: string | null = null): Promise<void> {
     const { team, room } = this.need(roomId);
     const ing = await this.store(roomId).ingest(source, name);
-    const secret = isSecretFileName(name) ? `${name} is named like a secret file` : ing.sniff.privateKey ? `${name} holds a private key` : null;
+    const secret = isSecretFileName(name)
+      ? `${name} is named like a secret file`
+      : credentials
+        ? `${name} is one of this Mac's credential files (${credentials})`
+        : ing.sniff.privateKey
+          ? `${name} holds a private key`
+          : null;
     if (secret && !confirmSecret) {
       ing.drop();
       out.refused.push({ name, reason: `${secret}. Teammates get a copy; room agents never read it.`, needsConfirm: "secret" });
@@ -282,7 +289,7 @@ export class TeamArtifacts {
     const same = this.files(roomId).find((f) => f.sha256 === ing.sha256);
     if (same) warnings.push(`The same file is already in ${room.name} as ${same.name}`);
     try {
-      const e = team.publish(roomId, "artifact.add", { kind: "file", name, size: ing.size, sha256: ing.sha256, mime: ing.sniff.mime });
+      const e = team.publish(roomId, "artifact.add", { kind: "file", name, size: ing.size, sha256: ing.sha256, mime: ing.sniff.mime, ...(credentials ? { wasSecret: true as const } : {}) });
       out.added.push({ id: e.id, name, warnings });
     } catch (err) {
       this.gcSoon(roomId);
@@ -473,7 +480,7 @@ export class TeamArtifacts {
    */
   blockedReason(roomId: RoomId, a: ArtifactRecord): string | null {
     if (isSecretFileName(a.name)) return `Its name is a secret file's (${a.name}): agents never read it`;
-    if (a.wasSecret) return "It was named like a secret file: agents never read it, whatever it's called now";
+    if (a.wasSecret) return "It was named like a secret file, or came from a credential store: agents never read it, whatever it's called now";
     if (a.kind === "repo" && isSecretFileName(path.posix.basename(a.path))) return `It points at a secret file (${path.posix.basename(a.path)}): agents never read it`;
     if (a.kind === "file" && this.store(roomId).knownSniff(a.sha256, a.name)?.privateKey) return "It holds a private key: agents never read it";
     if (a.kind === "note" && holdsPrivateKey(a.text)) return "It holds a private key: agents never read it";
