@@ -28,6 +28,7 @@ import {
   openBacklog,
   statusLabel,
   type HouseConnection,
+  type HouseConsentAsk,
   type HouseEventKind,
   type HouseOwner,
   type HouseRow,
@@ -75,6 +76,8 @@ export interface HouseServiceDeps {
   overlapsChanged?: () => void;
   /** Where the worktrees holding a copy are remembered (default ~/.mockingbird/team/plan-copies.json). */
   copiesFile?: string;
+  /** Where this member's answers to "use your token for this room's project?" are kept (default ~/.mockingbird/team/house-consent.json). */
+  consentFile?: string;
   /** Whose ~/.config/radley-house the env files are read from (default: this user's home). */
   home?: string;
   /** Tests: a fake House on this Mac over plain http. */
@@ -190,10 +193,19 @@ export class HouseService {
   private repeatNotices = new Map<string, number>();
   private emitTimers = new Map<RoomId, ReturnType<typeof setTimeout>>();
   private stopped = false;
+  /**
+   * This member's answers, per room and House project: whether their builder
+   * token may be used for it. Kept on this Mac only, never in the room log.
+   */
+  private consents: Record<RoomId, Record<string, { allow: boolean; at: number }>> = {};
+  private consentFile: string;
+  /** Rooms whose consent question was already put to the window this run, by room and project. */
+  private asked = new Set<string>();
 
   constructor(private d: HouseServiceDeps) {
     this.t = { ...DEFAULT_TIMING, ...(d.timing ?? {}) };
     this.copiesFile = d.copiesFile ?? path.join(TEAM_DIR, "plan-copies.json");
+    this.consentFile = d.consentFile ?? path.join(TEAM_DIR, "house-consent.json");
   }
 
   start(team: Team): void {
@@ -201,6 +213,16 @@ export class HouseService {
     active = this;
     const v = readJsonOrSetAside(this.copiesFile, [], "the room copies' list");
     for (const e of Array.isArray(v) ? v : []) if (Array.isArray(e) && typeof e[0] === "string" && typeof e[1] === "string") this.copies.set(e[0], e[1]);
+    const answers = readJsonOrSetAside(this.consentFile, {}, "the House token answers");
+    if (answers && typeof answers === "object" && !Array.isArray(answers)) {
+      for (const [roomId, byProject] of Object.entries(answers as Record<string, unknown>)) {
+        if (!byProject || typeof byProject !== "object") continue;
+        for (const [project, a] of Object.entries(byProject as Record<string, unknown>)) {
+          const x = a as { allow?: unknown; at?: unknown };
+          if (HOUSE_PROJECT_RE.test(project) && typeof x?.allow === "boolean") (this.consents[roomId] ??= {})[project] = { allow: x.allow, at: Number(x.at) || 0 };
+        }
+      }
+    }
     this.offs.push(
       team.onEvent("*", (e, room) => this.onEvent(e, room)),
       team.onRoomsChanged(() => {
@@ -242,6 +264,14 @@ export class HouseService {
    */
   async roomLeft(roomId: RoomId): Promise<string[]> {
     this.caches.delete(roomId);
+    if (this.consents[roomId]) {
+      delete this.consents[roomId];
+      try {
+        writeFileAtomic(this.consentFile, `${JSON.stringify(this.consents, null, 2)}\n`, 0o600);
+      } catch (err) {
+        this.d.log(`team House board: forgetting the token answers for left room ${roomId}`, err);
+      }
+    }
     this.copyProblems.delete(roomId);
     this.teammates = this.teammates.filter((t) => t.roomId !== roomId);
     const timer = this.emitTimers.get(roomId);
@@ -298,7 +328,7 @@ export class HouseService {
       admin: admin ? this.nameOf(room, admin) : null,
       isAdmin: admin === team.self.id,
       envFile: h.project ? `~/${houseEnvFile(h.project)}` : null,
-      connection: h.project ? c.connection : { state: "unset" },
+      connection: !h.project ? { state: "unset" } : !this.consented(roomId, h.project) ? { state: "consent", declined: this.consentOf(roomId, h.project) === false } : c.connection,
       // a room's ticket that's open shows once, in the backlog's order with who added it; "added" holds the rest
       open: c.order ? open.map((n) => row(n, addedBy.get(n))) : null,
       added: h.tracked.filter((t) => !inOpen.has(t.n)).map((t) => row(t.n, t.by)),
@@ -308,6 +338,68 @@ export class HouseService {
       ...(copiesProblem ? { copiesProblem } : {}),
       ...(this.fetchProblem && this.teammates.some((t) => t.roomId === roomId) ? { fetchProblem: this.fetchProblem } : {}),
     };
+  }
+
+  /**
+   * This member's answer to "use your <project> builder token for this
+   * room?", for the room's current project: kept on this Mac, and asked again
+   * when the room's admin points it at another project.
+   */
+  consent(roomId: RoomId, allow: boolean): HouseView {
+    const room = this.room(roomId);
+    const project = this.projectOf(room);
+    this.setConsent(roomId, project, allow);
+    const c = this.cache(roomId);
+    if (allow) {
+      c.connection = { state: "pending" };
+      this.refresh(roomId);
+    } else {
+      this.forgetTickets(c);
+    }
+    this.refreshCopies();
+    this.emitSoon(roomId);
+    return this.view(roomId);
+  }
+
+  /** The rooms whose House project this member hasn't answered for: what the window asks. */
+  pendingConsents(): HouseConsentAsk[] {
+    const team = this.team;
+    if (!team) return [];
+    return team.rooms().flatMap((room) => {
+      const project = houseOfRoom(room).project;
+      if (!project || this.consentOf(room.id, project) !== null) return [];
+      const admin = roomAdmin(room);
+      return [{ roomId: room.id, room: room.name, project, admin: admin ? this.nameOf(room, admin) : null }];
+    });
+  }
+
+  private consentOf(roomId: RoomId, project: string): boolean | null {
+    return this.consents[roomId]?.[project]?.allow ?? null;
+  }
+
+  private consented(roomId: RoomId, project: string): boolean {
+    return this.consentOf(roomId, project) === true;
+  }
+
+  private setConsent(roomId: RoomId, project: string, allow: boolean): void {
+    (this.consents[roomId] ??= {})[project] = { allow, at: Date.now() };
+    writeFileAtomic(this.consentFile, `${JSON.stringify(this.consents, null, 2)}\n`, 0o600);
+  }
+
+  /** Put the question to the window once per room and project this run (the board asks it too). */
+  private askConsent(room: RoomState): void {
+    const project = houseOfRoom(room).project;
+    if (!project || this.consentOf(room.id, project) !== null || this.asked.has(`${room.id}\n${project}`)) return;
+    this.asked.add(`${room.id}\n${project}`);
+    const admin = roomAdmin(room);
+    this.d.emit("house:consent", { roomId: room.id, room: room.name, project, admin: admin ? this.nameOf(room, admin) : null } satisfies HouseConsentAsk);
+  }
+
+  /** Why nothing uses this member's token for the room, for an agent; null once they allowed it. */
+  private notConnected(room: RoomState): string | null {
+    const project = houseOfRoom(room).project;
+    if (!project || this.consented(room.id, project)) return null;
+    return `Your user hasn't connected the House for this room: their Mockingbird asks before using their ${project} builder token for room ${oneLine(room.name, 80)}, and they haven't allowed it${this.consentOf(room.id, project) === false ? " (they chose Not now)" : " yet"}. Until they do, the House tools can't be used here — tell them, if the board matters to your task (it's on the room's ▦).`;
   }
 
   /** The board dialog opened (or closed): an open board keeps the House read about once a minute. */
@@ -368,6 +460,8 @@ export class HouseService {
         if (admin !== team.self.id) throw new Error(`Only the room's admin${admin ? ` (${this.nameOf(room, admin)})` : ""} chooses its House project`);
         const project = w.project === null ? null : String(w.project).trim();
         if (project !== null && !HOUSE_PROJECT_RE.test(project)) throw new Error(`${JSON.stringify(project)} isn't a House project name (letters, digits, ".", "_" and "-", as in ~/.config/radley-house/<project>.env)`);
+        // the admin choosing a project here is their answer for their own token; every other member is asked
+        if (project) this.setConsent(roomId, project, true);
         team.publish(roomId, "house.project", { project });
         return { message: project ? `The room works in ${project} now` : "The room isn't connected to a House project any more" };
       }
@@ -419,7 +513,7 @@ export class HouseService {
       teammates: room.members.filter((m) => m.id !== this.need().self.id).map((m) => m.name),
       project: h.project,
       board: this.summary(roomId),
-      problem: conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? conn.message : null,
+      problem: this.notConnected(room) ?? (conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? conn.message : null),
     });
   }
 
@@ -428,6 +522,7 @@ export class HouseService {
     const room = this.room(roomId);
     const project = houseOfRoom(room).project;
     if (!project) return null;
+    if (!this.consented(roomId, project)) return `Project ${project}.\n(This laptop's member hasn't connected their ${project} builder token for the room, so the board isn't read here.)`;
     const c = this.cache(roomId);
     if (Date.now() - c.fetchedAt > this.t.pollMs) {
       this.refresh(roomId);
@@ -443,6 +538,8 @@ export class HouseService {
     if (!s) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
     const roomId = this.roomOf(s);
     if (!roomId) return { error: "This session isn't in a shared team room, so it has no House board." };
+    const notConnected = this.notConnected(this.room(roomId));
+    if (notConnected) return { error: notConnected };
     const writes = HOUSE_WRITE_TOOLS.includes(op);
     // a write reaches here once the agent's own permission prompt let it through; a Codex that may not ask is refused
     if (writes && s.agent === "codex" && !codexAsksBeforeTools(s.agentVersion)) {
@@ -620,7 +717,9 @@ export class HouseService {
 
   /** Run `fn` with this member's client for the room's project; every error's message is scrubbed of the token. */
   private async withClient<T>(roomId: RoomId, fn: (client: HouseClient) => Promise<T>): Promise<T> {
-    const project = this.projectOf(this.room(roomId));
+    const room = this.room(roomId);
+    const project = this.projectOf(room);
+    if (!this.consented(roomId, project)) throw new Error(`Your ${project} builder token isn't connected for room ${oneLine(room.name, 80)}: allow it on the room's board first`);
     const env: HouseEnv = readHouseEnv(project, { home: this.d.home, allowHttpLoopback: this.d.allowHttpLoopback });
     try {
       return await fn(new HouseClient(env, { fetch: this.d.fetch, timeoutMs: this.t.timeoutMs }));
@@ -658,6 +757,13 @@ export class HouseService {
     if (!h.project) {
       c.connection = { state: "unset" };
       this.forgetTickets(c);
+      return;
+    }
+    if (!this.consented(roomId, h.project)) {
+      // not even the env file is read until this member allows their token for the room
+      c.connection = { state: "consent", declined: this.consentOf(roomId, h.project) === false };
+      this.forgetTickets(c);
+      this.askConsent(room);
       return;
     }
     let env: HouseEnv;
@@ -702,6 +808,9 @@ export class HouseService {
 
   /** Read one ticket again (a teammate's nudge, a write that didn't answer with the ticket). */
   private async refreshTicket(roomId: RoomId, n: number): Promise<void> {
+    const room = this.team?.room(roomId);
+    const project = room ? houseOfRoom(room).project : null;
+    if (!project || !this.consented(roomId, project)) return;
     try {
       const detail = await this.withClient(roomId, (client) => client.ticket(n));
       this.remember(roomId, detail);
@@ -1092,6 +1201,7 @@ export class HouseService {
       c.fetchedAt = 0;
       this.refresh(room.id);
       this.refreshCopies();
+      this.askConsent(room);
     } else if (e.type === "house.track" && isTicketNumber(n)) {
       if (!this.cache(room.id).tickets.has(n)) void this.refreshTicket(room.id, n);
       this.refreshCopies();

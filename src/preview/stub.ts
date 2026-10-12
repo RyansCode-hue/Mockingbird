@@ -188,7 +188,9 @@ const team: TeamStatus = {
 };
 // team rooms: the House board — 5101 works in atticus-backoffice: its backlog in the House's order (high priority
 // first), a ticket in every status, both handoff tags, a blocked and a waiting one, and five the room added (two of
-// them closed, so outside the open backlog); 5110 has no project yet. ?houseMissing: no token here for 5101's project
+// them closed, so outside the open backlog); 5110 has no project yet. ?houseMissing: no token here for 5101's project.
+// ?houseConsent: Nick (5101's admin) connected it, and you haven't allowed your token for it yet (=declined: you chose
+// Not now); the window asks too
 const houseClaim = (by: string, branch: string): HouseTicket["claim"] => ({ by, branch, at: null });
 const houseTicket = (n: number, title: string, status: string, priority: string, claim: HouseTicket["claim"] = null, over: Partial<HouseTicket> = {}): HouseTicket => ({ n, title, status, priority, kind: "engineering", tags: [], claim, blockedBy: [], waiting: null, ...over });
 const houseTickets: Record<number, HouseTicket> = {
@@ -253,7 +255,8 @@ const houseDetail = (n: number): HouseTicketDetail => ({
 });
 const houseOwner = (t: HouseTicket): HouseOwner | null => (t.claim && isOpenStatus(t.status) ? { name: t.claim.by === "You" ? "You" : t.claim.by ?? "Someone", member: t.claim.by === "You" ? ME : t.claim.by === "Sam" ? SAM : NICK, self: t.claim.by === "You" } : null);
 const houseRow = (n: number, addedBy?: string): HouseRow => ({ n, ticket: houseTickets[n] ?? null, owner: houseTickets[n] ? houseOwner(houseTickets[n]) : null, ...(addedBy ? { addedBy } : {}) });
-const houseRooms: Record<string, { project: string | null; added: { n: number; by: string }[]; isAdmin: boolean; admin: string }> = {
+const houseConsentQuery = teamQuery.get("houseConsent");
+const houseRooms: Record<string, { project: string | null; added: { n: number; by: string }[]; isAdmin: boolean; admin: string; consent?: "pending" | "declined" }> = {
   R5101aaaaaaaaaaaaaaaaa: {
     project: "atticus-backoffice",
     added: [
@@ -263,14 +266,16 @@ const houseRooms: Record<string, { project: string | null; added: { n: number; b
       { n: 151, by: "You" },
       { n: 138, by: "Nick Smith" },
     ],
-    isAdmin: true,
-    admin: "You",
+    isAdmin: houseConsentQuery === null,
+    admin: houseConsentQuery === null ? "You" : "Nick Smith",
+    ...(houseConsentQuery !== null ? { consent: houseConsentQuery === "declined" ? ("declined" as const) : ("pending" as const) } : {}),
   },
   R5110bbbbbbbbbbbbbbbbb: { project: null, added: [], isAdmin: true, admin: "You" },
 };
 const houseView = (roomId: string): HouseView => {
   const r = houseRooms[roomId];
-  const missing = teamQuery.has("houseMissing") && !!r.project;
+  const consent = !!r.project && !!r.consent;
+  const missing = (teamQuery.has("houseMissing") && !!r.project) || consent;
   return {
     roomId,
     room: team.rooms.find((x) => x.id === roomId)?.name ?? roomId,
@@ -280,7 +285,9 @@ const houseView = (roomId: string): HouseView => {
     envFile: r.project ? `~/.config/radley-house/${r.project}.env` : null,
     connection: !r.project
       ? { state: "unset" }
-      : missing
+      : consent
+        ? { state: "consent", declined: r.consent === "declined" }
+        : missing
         ? { state: "missing", file: `~/.config/radley-house/${r.project}.env`, message: `There's no ~/.config/radley-house/${r.project}.env on this Mac. ${HOUSE_TOKEN_HOW} Save it there (mode 600) as HOUSE_API_URL, HOUSE_PROJECT_ID and HOUSE_BUILD_TOKEN.` }
         : { state: "ok" },
     open: r.project && !missing ? houseOpen().map((n) => houseRow(n, r.added.find((a) => a.n === n)?.by)) : null,
@@ -1080,6 +1087,17 @@ const api: Record<string, (...a: any[]) => any> = {
     return later({ message: "Saved to the House" }, 250);
   },
   houseOpen: async () => later(undefined, 50),
+  houseConsent: async (roomId: string, allow: boolean) => {
+    const r = houseRooms[roomId];
+    if (!r?.project) return err(`Room ${roomId} isn't connected to a House project`);
+    r.consent = allow ? undefined : "declined";
+    emit("onHouseChanged", houseView(roomId));
+    return later(houseView(roomId), 150);
+  },
+  housePendingConsents: async () =>
+    Object.entries(houseRooms)
+      .filter(([, r]) => r.project && r.consent === "pending")
+      .map(([roomId, r]) => ({ roomId, room: team.rooms.find((x) => x.id === roomId)?.name ?? roomId, project: r.project!, admin: r.admin })),
   // team rooms: team chat — posting works; @assistant thinks, then answers
   teamChatView: async (roomId: string) => (team.rooms.some((r) => r.id === roomId) ? chatView(roomId) : err("You're not in that room")),
   teamChatUnread: async () => Object.fromEntries(team.rooms.map((r) => [r.id, (({ unread, mentions }) => ({ unread, mentions }))(chatView(r.id))])),

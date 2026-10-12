@@ -2059,6 +2059,12 @@ button.house-row-main:hover { background: var(--fill-subtle); color: var(--text-
 button.house-toast-body { flex: 1; min-width: 0; text-align: left; border: none; background: none; padding: 0; font: 400 11px/1.45 var(--ui); color: var(--text-1); white-space: normal; }
 button.house-toast-body:hover { background: none; color: var(--text-1-warm); }
 .house-toast .link { flex-shrink: 0; }
+/* asking for this member's House token in a room: stays until answered */
+.house-toast.consent { flex-wrap: wrap; align-items: center; gap: 6px; border-color: color-mix(in srgb, var(--teal) 50%, transparent); }
+.house-toast.consent .house-toast-body { flex: 1 1 100%; font: 400 11px/1.45 var(--ui); color: var(--text-2); }
+.house-toast.consent .house-toast-body b { color: var(--text-1); font-weight: 600; }
+.house-toast.consent .err { color: var(--red); }
+.house-note.house-consent { border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
 @media (max-width: 600px) {
   .house-claim { padding-left: 6px; }
   .house-pri, .house-mark.added, .house-mark.waiting { display: none; }

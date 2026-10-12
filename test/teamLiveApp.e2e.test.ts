@@ -219,6 +219,12 @@ describe("team rooms between two Mockingbird instances", () => {
         // ---- the House board: Ryan (the admin) connects the project, Nick claims #141 with his own token, Ryan's board shows it
         const rid = JSON.stringify(roomId);
         expect(await ryan.evaluate(`window.mb.houseWrite(${rid}, { kind: "project", project: "atticus-backoffice" })`)).not.toHaveProperty("error");
+        // Nick's Mockingbird asks before using his token for the room, and reads nothing with it until he allows it
+        await untilTrue("Nick to be asked for his token", async () => (await nick.evaluate<{ roomId: string }[]>(`window.mb.housePendingConsents()`)).some((a) => a.roomId === roomId));
+        await untilTrue("the consent toast at Nick's", async () => /Use your atticus-backoffice builder token for room/.test(await nick.evaluate<string>(`document.querySelector(".house-toast.consent")?.textContent ?? ""`)));
+        expect((await nick.evaluate<HouseView>(`window.mb.houseRefresh(${rid})`)).connection).toEqual({ state: "consent", declined: false });
+        expect(house.requests.filter((x) => x.token === "tok-nick-e2e")).toEqual([]);
+        await nick.evaluate(`[...document.querySelectorAll(".house-toast.consent button")].find((b) => b.textContent === "Allow").click()`);
         await untilTrue("the open backlog on Nick's board", async () => ((await nick.evaluate<HouseView>(`window.mb.houseRefresh(${rid})`)).open ?? []).some((x) => x.n === 141 && x.ticket?.title === "Donor entities"));
         expect((await nick.evaluate<HouseView>(`window.mb.houseGet(${rid})`)).open?.map((x) => x.n)).toEqual([141]); // #140 is done
         expect(await nick.evaluate(`window.mb.houseWrite(${rid}, { kind: "claim", n: 141, branch: "5110-donors" })`)).not.toHaveProperty("error");
@@ -234,7 +240,9 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(s.error).toBeUndefined();
         await untilTrue("the agent to start", async () => (await buffer(ryan, s.id)).includes("fake-claude started"), 20_000);
         expect(await buffer(ryan, s.id)).toMatch(/--append-system-prompt/); // the room's House board, carried in the launch
-        expect(await buffer(ryan, s.id)).toContain("mcp__mockingbird__claim_house_ticket");
+        // the House's reads are pre-allowed; its writes are left to Claude's permission prompt in the pane
+        expect(await buffer(ryan, s.id)).toContain("mcp__mockingbird__list_house_tickets");
+        expect(await buffer(ryan, s.id)).not.toContain("mcp__mockingbird__claim_house_ticket");
         expect(await buffer(ryan, s.id)).toContain("mcp__mockingbird__read_room_artifact");
         expect(await buffer(ryan, s.id)).toContain("(inline=1)"); // a room session runs inline, so Nick's copy holds its history
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(s.id)}, "add the donor notes\\r")`);

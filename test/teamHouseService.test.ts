@@ -61,6 +61,7 @@ function service(m: LoopbackMember, roomId: string, o: { home: string; sessions?
     notify: (title, body) => out.notes.push(`${title}: ${body}`),
     overlapsChanged: () => out.overlaps++,
     copiesFile: path.join(tempDir("copies"), "copies.json"),
+    consentFile: path.join(tempDir("consent"), "house-consent.json"),
     home,
     allowHttpLoopback: true,
     ...extra,
@@ -71,8 +72,12 @@ function service(m: LoopbackMember, roomId: string, o: { home: string; sessions?
   return Object.assign(out, { svc });
 }
 
-/** Ryan (the room's admin) and Nick, each with their own builder token, in a room working in PROJECT. */
-async function pair(h: FakeHouse, o: { ryan?: Partial<Parameters<typeof service>[2]>; nick?: Partial<Parameters<typeof service>[2]>; project?: boolean } = {}) {
+/**
+ * Ryan (the room's admin) and Nick, each with their own builder token, in a
+ * room working in PROJECT — Ryan chose it, and Nick allowed his token for it
+ * (unless `consent: false`).
+ */
+async function pair(h: FakeHouse, o: { ryan?: Partial<Parameters<typeof service>[2]>; nick?: Partial<Parameters<typeof service>[2]>; project?: boolean; consent?: boolean } = {}) {
   const { members, roomId, net } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("t") });
   const [ryan, nick] = members;
   const r = service(ryan, roomId, { home: builderHome(PROJECT, h, RYAN_T), ...o.ryan });
@@ -80,6 +85,7 @@ async function pair(h: FakeHouse, o: { ryan?: Partial<Parameters<typeof service>
   if (o.project !== false) {
     await r.svc.write(roomId, { kind: "project", project: PROJECT });
     await until(() => houseOfRoom(nick.team.room(roomId)!).project === PROJECT, "Nick to have the project");
+    if (o.consent !== false) n.svc.consent(roomId, true);
     await r.svc.idle();
     await n.svc.idle();
   }
@@ -382,6 +388,58 @@ describe("the room's board events", () => {
     await r.svc.write(roomId, { kind: "project", project: null });
     await until(() => n.svc.view(roomId).connection.state === "unset", "Nick to see the room disconnected");
     expect(await n.svc.toolCall("x", "list_house_tickets", {})).toEqual({ error: expect.stringMatching(/not known/) });
+  });
+
+  it("asks each member once per room and project before using their token, and until they allow it reads nothing with it", async () => {
+    const h = await house();
+    const consentFile = path.join(tempDir("nick-consent"), "house-consent.json");
+    const nickS = session("n1", { branch: "5110-n" });
+    const { ryan, nick, roomId, r, n } = await pair(h, { consent: false, nick: { consentFile, sessions: () => [nickS] } });
+    // the admin chose the project here: that's his answer for his own token
+    expect(r.svc.view(roomId).connection).toEqual({ state: "ok" });
+    expect(r.emitted.some(([ch]) => ch === "house:consent")).toBe(false);
+    // Nick is asked, and nothing reads his env file or calls the House with his token meanwhile
+    await until(() => n.emitted.some(([ch]) => ch === "house:consent"), "Nick to be asked");
+    expect(n.emitted.filter(([ch]) => ch === "house:consent").map(([, a]) => a)).toEqual([{ roomId, room: "5110", project: PROJECT, admin: "Ryan" }]);
+    expect(n.svc.pendingConsents()).toEqual([{ roomId, room: "5110", project: PROJECT, admin: "Ryan" }]);
+    n.svc.watch(roomId, true);
+    await n.svc.refreshNow(roomId);
+    expect(n.svc.view(roomId)).toMatchObject({ connection: { state: "consent", declined: false }, open: null });
+    expect(await n.svc.ticket(roomId, 141)).toEqual({ error: expect.stringMatching(/^Your atticus-backoffice builder token isn't connected for room 5110/) });
+    await expect(n.svc.write(roomId, { kind: "claim", n: 141, branch: "5110-n" })).rejects.toThrow(/builder token isn't connected/);
+    expect(await n.svc.toolCall("n1", "list_house_tickets", {})).toEqual({ error: expect.stringMatching(/^Your user hasn't connected the House for this room: their Mockingbird asks before using their atticus-backoffice builder token/) });
+    expect(n.svc.agentContext(roomId)).toMatch(/Your user hasn't connected the House for this room/);
+    expect(await n.svc.boardSummary(roomId)).toMatch(/hasn't connected their atticus-backoffice builder token/);
+    // a teammate's write nudges Nick's Mockingbird, which still reads nothing
+    await r.svc.write(roomId, { kind: "claim", n: 141, branch: "5110-r" });
+    await until(() => nick.team.room(roomId)!.events === ryan.team.room(roomId)!.events, "the nudge to reach Nick");
+    await n.svc.idle();
+    expect(h.by(NICK_T)).toEqual([]);
+
+    // Not now: kept on this Mac (not in the room log), and not asked again by a later run
+    expect(n.svc.consent(roomId, false).connection).toEqual({ state: "consent", declined: true });
+    expect(JSON.parse(fs.readFileSync(consentFile, "utf8"))).toEqual({ [roomId]: { [PROJECT]: { allow: false, at: expect.any(Number) } } });
+    const later = service(nick, roomId, { home: builderHome(PROJECT, h, NICK_T), consentFile });
+    expect(later.svc.pendingConsents()).toEqual([]);
+    expect(later.svc.view(roomId).connection).toEqual({ state: "consent", declined: true });
+    later.svc.stop();
+    const log = fs.readFileSync(path.join(nick.store.get(roomId)!.dir, "log.jsonl"), "utf8");
+    expect(log).not.toMatch(/consent|"allow"/);
+    expect(h.by(NICK_T)).toEqual([]);
+
+    // Allow: the board reads with Nick's own token
+    n.svc.consent(roomId, true);
+    await n.svc.idle();
+    expect(n.svc.view(roomId).connection).toEqual({ state: "ok" });
+    expect(h.by(NICK_T)).toContain("GET work-items");
+    expect(result(await n.svc.toolCall("n1", "read_house_ticket", { n: 141 }))).toMatchObject({ n: 141 });
+
+    // the admin points the room at another project: Nick is asked again before his token for it is used
+    const asked = n.emitted.filter(([ch]) => ch === "house:consent").length;
+    await r.svc.write(roomId, { kind: "project", project: "other-project" });
+    await until(() => n.emitted.filter(([ch]) => ch === "house:consent").length === asked + 1, "Nick to be asked about the new project");
+    expect(n.svc.view(roomId).connection).toEqual({ state: "consent", declined: false });
+    expect(n.svc.pendingConsents()).toEqual([{ roomId, room: "5110", project: "other-project", admin: "Ryan" }]);
   });
 
   it("says what to do on a Mac without the env file, and stays empty there, while the teammate's board works", async () => {

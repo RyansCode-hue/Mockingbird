@@ -186,6 +186,12 @@ declare module "./types" {
 export type HouseConnection =
   /** The room's admin hasn't chosen a project. */
   | { state: "unset" }
+  /**
+   * This member hasn't allowed their builder token for the room's project
+   * (`declined`: they said Not now): nothing reads their env file or calls the
+   * House for this room until they do. Asked once per room and project.
+   */
+  | { state: "consent"; declined: boolean }
   /** This builder's env file is missing, or doesn't hold what's needed. */
   | { state: "missing" | "bad"; file: string; message: string }
   /** Not read yet. */
@@ -239,6 +245,15 @@ export interface HouseView {
   copiesProblem?: string;
   /** Why teammates' branches couldn't be fetched (their claimed files may be out of date). */
   fetchProblem?: string;
+}
+
+/** A room whose House project this member hasn't answered for yet: "Use your <project> builder token for room <room>?" */
+export interface HouseConsentAsk {
+  roomId: RoomId;
+  room: string;
+  project: string;
+  /** Who connected the room to it (its admin), by name. */
+  admin: string | null;
 }
 
 /** One ticket in the dialog: the House's detail and where it is on the board, or why it couldn't be read. */

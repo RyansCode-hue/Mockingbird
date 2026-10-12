@@ -19,6 +19,7 @@ import {
   type BuilderStatus,
   type HouseEventKind,
   type HouseRow,
+  type HouseConsentAsk,
   type HouseTicket,
   type HouseTicketView,
   type HouseView,
@@ -83,6 +84,31 @@ function ProjectLine({ view, act, onCancel }: { view: HouseView; act: (what: str
         {onCancel && (
           <button className="outline" onClick={onCancel}>
             Cancel
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** "Use your <project> builder token for room <room>?": nothing here reads the House for the room until this member allows it. */
+function ConsentNote({ view, onAnswer }: { view: HouseView; onAnswer: (allow: boolean) => void }) {
+  if (view.connection.state !== "consent" || !view.project) return null;
+  const declined = view.connection.declined;
+  return (
+    <div className="house-note house-consent">
+      <b>Connect your {view.project} token</b>
+      <span>
+        {view.isAdmin ? "This room" : `${view.admin ?? "The room's admin"} connected this room`} works in Radley House project <code>{view.project}</code>. Use your {view.project} builder token, from <code>{view.envFile}</code>, for room {view.room}? Mockingbird then reads and writes the House for this room as you — from this board, and from your agents once you approve each write in their pane.
+        {declined ? " You chose Not now: nothing on this Mac uses your token for this room." : " Until you allow it, nothing on this Mac reads your token or calls the House for this room."}
+      </span>
+      <div className="house-inline">
+        <button className="primary" onClick={() => onAnswer(true)}>
+          Allow
+        </button>
+        {!declined && (
+          <button className="outline" onClick={() => onAnswer(false)}>
+            Not now
           </button>
         )}
       </div>
@@ -491,7 +517,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
         <span className="house-dim" title="The board is read again about once a minute while it's open">
           {view.refreshing ? "reading…" : view.fetchedAt ? `read ${ago(view.fetchedAt)}` : ""}
         </span>
-        {view.project && (
+        {view.project && view.connection.state !== "consent" && (
           <button className="outline" disabled={view.refreshing} onClick={() => void run("refresh", () => window.mb.houseRefresh(roomId))}>
             Refresh
           </button>
@@ -504,11 +530,12 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
         The House is the system of record: claims, notes and new tickets are written there with your own builder token, from here or by your agents. A file a teammate's sessions have changed on a ticket they claimed is theirs — an agent editing it is held back once and warned.
       </div>
       {(renaming || !view.project) && <ProjectLine view={view} act={act} onCancel={view.project ? () => setRenaming(false) : undefined} />}
+      <ConsentNote view={view} onAnswer={(allow) => void run("consent", () => window.mb.houseConsent(roomId, allow))} />
       {view.project && <ConnectionNote view={view} />}
       {view.copiesProblem && <div className="house-note bad">{view.copiesProblem}</div>}
       {adding && <AddTicket act={act} onDone={() => setAdding(false)} />}
       {error && <div className="fp-note err">{error}</div>}
-      {view.project && view.connection.state !== "missing" && view.connection.state !== "bad" && (
+      {view.project && view.connection.state !== "missing" && view.connection.state !== "bad" && view.connection.state !== "consent" && (
         <>
           <Section
             title="Open backlog"
@@ -554,9 +581,42 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
 
 const NOTICE_MS = 15_000;
 
+/** The rooms whose House project this member hasn't answered for: asked here until they answer (the board asks too). */
+function useConsentAsks(): [(HouseConsentAsk & { problem?: string })[], (ask: HouseConsentAsk, allow: boolean | null) => void] {
+  const [asks, setAsks] = useState<(HouseConsentAsk & { problem?: string })[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const add = (a: HouseConsentAsk) => setAsks((list) => [...list.filter((x) => x.roomId !== a.roomId), a]);
+    window.mb.housePendingConsents().then((list: HouseConsentAsk[] | Err) => {
+      if (!alive) return;
+      if (isErr(list)) console.error("[mockingbird] couldn't read which rooms ask for your House token:", list.error);
+      else list.forEach(add);
+    });
+    const off = window.mb.onHouseConsent((a: HouseConsentAsk) => add(a));
+    // answered on the board, or the room's project changed: this ask is done
+    const offView = window.mb.onHouseChanged((v: HouseView) => {
+      if (v.connection.state !== "consent" || v.connection.declined) setAsks((list) => list.filter((x) => x.roomId !== v.roomId));
+    });
+    return () => {
+      alive = false;
+      off();
+      offView();
+    };
+  }, []);
+  const answer = (ask: HouseConsentAsk, allow: boolean | null) => {
+    if (allow === null) return setAsks((list) => list.filter((x) => x.roomId !== ask.roomId));
+    void window.mb.houseConsent(ask.roomId, allow).then((r: HouseView | Err) => {
+      if (isErr(r)) setAsks((list) => list.map((x) => (x.roomId === ask.roomId ? { ...x, problem: r.error } : x)));
+      else setAsks((list) => list.filter((x) => x.roomId !== ask.roomId));
+    });
+  };
+  return [asks, answer];
+}
+
 /** Claim warnings as they happen: which agent touched which teammate's ticket. Click one to go to its session. */
 export function HouseWarnings({ onJump, onOpenBoard }: { onJump: (sessionId: string) => void; onOpenBoard: (roomId: string) => void }) {
   const [notices, setNotices] = useState<(ClaimWarningNotice & { key: number })[]>([]);
+  const [asks, answer] = useConsentAsks();
   useEffect(
     () =>
       window.mb.onHouseWarning((n: ClaimWarningNotice) => {
@@ -566,9 +626,26 @@ export function HouseWarnings({ onJump, onOpenBoard }: { onJump: (sessionId: str
       }),
     []
   );
-  if (!notices.length) return null;
+  if (!notices.length && !asks.length) return null;
   return (
     <div className="house-toasts" role="status">
+      {asks.map((a) => (
+        <div key={`consent-${a.roomId}`} className="house-toast consent">
+          <span className="house-toast-body">
+            <b>Use your {a.project} builder token for room {a.room}?</b> {a.admin ? `${a.admin} connected the room` : "The room is connected"} to Radley House project {a.project}. Nothing here reads your token or calls the House for this room until you allow it.
+            {a.problem && <span className="err"> {a.problem}</span>}
+          </span>
+          <button className="primary" onClick={() => answer(a, true)}>
+            Allow
+          </button>
+          <button className="outline" onClick={() => answer(a, false)}>
+            Not now
+          </button>
+          <button className="link" onClick={() => onOpenBoard(a.roomId)}>
+            Board
+          </button>
+        </div>
+      ))}
       {notices.map((n) => {
         const c = n.conflicts[0];
         const hit = c?.hits[0];

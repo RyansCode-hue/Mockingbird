@@ -312,6 +312,15 @@ const api = {
   houseWrite: (roomId: string, w: unknown) => ipcRenderer.invoke("house:write", roomId, w),
   /** Open the ticket in the House's web UI. */
   houseOpen: (roomId: string, n: number) => ipcRenderer.invoke("house:open", roomId, n),
+  /** This member's answer to "use your builder token for this room's project?" (kept on this Mac). Answers the board. */
+  houseConsent: (roomId: string, allow: boolean) => ipcRenderer.invoke("house:consent", roomId, allow),
+  /** The rooms whose House project this member hasn't answered for (HouseConsentAsk[]). */
+  housePendingConsents: () => ipcRenderer.invoke("house:pendingConsents"),
+  onHouseConsent: (cb: (ask: unknown) => void) => {
+    const h = (_e: unknown, a: unknown) => cb(a);
+    ipcRenderer.on("house:consent", h);
+    return () => ipcRenderer.removeListener("house:consent", h);
+  },
   onHouseChanged: (cb: (view: unknown) => void) => {
     const h = (_e: unknown, v: unknown) => cb(v);
     ipcRenderer.on("house:changed", h);

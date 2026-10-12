@@ -920,6 +920,8 @@ handle("house:watch", (roomId, open) => teamHouse.watch(String(roomId), open ===
 handle("house:refresh", (roomId) => teamHouse.refreshNow(String(roomId)));
 handle("house:ticket", (roomId, n) => teamHouse.ticket(String(roomId), Number(n)));
 handle("house:write", (roomId, w) => teamHouse.write(String(roomId), w));
+handle("house:consent", (roomId, allow) => teamHouse.consent(String(roomId), allow === true));
+handle("house:pendingConsents", () => teamHouse.pendingConsents());
 handle("house:open", async (roomId, n) => {
   const url = await teamHouse.webUrl(String(roomId), Number(n));
   if (!externalUrlAllowed(url)) throw new Error(`The House's address isn't an https link (${url.slice(0, 80)})`);
