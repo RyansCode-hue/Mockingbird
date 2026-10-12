@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { expandHome } from "./store";
 import { isMissing } from "./fileOps";
+import { HOUSE_CONFIG_DIR } from "../shared/team/house";
 
 /**
  * Secret files by name, at any depth: env files, keys and certificates, and
@@ -49,6 +50,26 @@ export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 
 /** Credentials outside any repository, and this install's own team keys and invite tokens. */
 export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**"];
+
+/** Credential stores in home: HOME_SECRETS, and the folder of the House's env files (each member's builder token). */
+const HOME_SECRET_PLACES = [...HOME_SECRETS, `~/${HOUSE_CONFIG_DIR}/**`];
+
+/**
+ * Which of this Mac's credential stores (HOME_SECRET_PLACES, "~/.aws/**")
+ * `file` is in, by its real path; null when none. A room artifact added from
+ * one is asked about first and stays unreadable to agents.
+ */
+export function homeSecretPlace(file: string): string | null {
+  const real = realpathOr(file);
+  for (const place of HOME_SECRET_PLACES) {
+    const isDir = place.endsWith("/**");
+    const at = realpathOr(expandHome(isDir ? place.slice(0, -3) : place));
+    const rel = path.relative(at, real);
+    const within = rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+    if (isDir ? within : rel === "") return place;
+  }
+  return null;
+}
 
 /**
  * Secret files at known places on this Mac: the Azure DevOps PAT file

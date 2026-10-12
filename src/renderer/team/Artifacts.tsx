@@ -13,6 +13,7 @@ import {
   type ArtifactSummary,
   type RepoResolution,
   type RoomArtifactsView,
+  type SecretConfirm,
 } from "../../shared/team/artifacts";
 import { usePersisted } from "../prefs";
 import { MenuButton } from "../Menu";
@@ -21,7 +22,7 @@ import { RenameDialog } from "../Dialogs";
 import { QuickOpen } from "../QuickOpen";
 import { ChevronIcon, LockIcon } from "../Icons";
 import { settled } from "../settled";
-import { addedLine, artifactMeta, parseLines, repoDefaultName, repoSessionsFor, transferLine } from "./artifactModel";
+import { addedLine, artifactMeta, parseLines, REMOVE_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "./artifactModel";
 import type { InlineContext } from "./markdownView";
 import { ArtifactGlyph, ArtifactViewer, NoteBody, WritePreview } from "./ArtifactViewer";
 
@@ -421,7 +422,7 @@ export function ArtifactShelf({
       {removing && (
         <Modal className="modal close-dlg" onClose={() => setRemoving(null)}>
           <h3>Remove “{removing.name}”?</h3>
-          <div className="sub-h">It's removed for everyone in the room, and each teammate's copy is deleted. Messages that named it say “(removed)”.</div>
+          <div className="sub-h">{REMOVE_ARTIFACT_NOTE}</div>
           <div className="row">
             <button className="outline" onClick={() => setRemoving(null)}>
               Cancel
@@ -561,12 +562,13 @@ function NewNoteDialog({ roomId, ctx, onClose, onAdded }: { roomId: string; ctx:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ok = !!name.trim() && text.length <= MAX_NOTE_TEXT && !busy;
-  const add = async () => {
+  const add = async (confirmSecret = false): Promise<void> => {
     if (!ok) return;
     setBusy(true);
-    const r = await settled<ArtifactAdded | { error: string }>(window.mb.artifactsAddNote(roomId, name.trim(), text));
+    const r = await settled<ArtifactAdded | SecretConfirm | { error: string }>(window.mb.artifactsAddNote(roomId, name.trim(), text, confirmSecret));
     setBusy(false);
     if (isErr(r)) return setError(failed("Not added", r.error));
+    if ("needsConfirm" in r) return window.confirm(`${r.reason}. Add “${name.trim()}” anyway?`) ? add(true) : undefined;
     onAdded(r);
   };
   return (
@@ -600,7 +602,7 @@ function NewNoteDialog({ roomId, ctx, onClose, onAdded }: { roomId: string; ctx:
         <button className="outline" onClick={onClose}>
           Cancel
         </button>
-        <button className="primary" disabled={!ok} onClick={add}>
+        <button className="primary" disabled={!ok} onClick={() => add()}>
           Add note <span className="kbd">⌘↵</span>
         </button>
       </div>

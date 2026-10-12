@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { clampAnswer } from "./chat";
+import { named, quoted } from "../../shared/team/agentText";
 import { memberLine, updateLine, type ChatEntry } from "../../shared/team/chat";
 import type { MemberId, RoomEvent, RoomEventBodies, RoomId, RoomState } from "../../shared/team/types";
 
@@ -100,7 +101,11 @@ export class RoomAssistant {
   }
 }
 
-const nameIn = (room: RoomState, id: MemberId) => (room.members.find((m) => m.id === id) ?? room.former?.find((m) => m.id === id))?.name ?? "a teammate";
+/** A member's name as the assistant reads it: on one line, quoted unless it's plain words (agentText.ts). */
+const nameIn = (room: RoomState, id: MemberId) => {
+  const m = room.members.find((x) => x.id === id) ?? room.former?.find((x) => x.id === id);
+  return m ? named(m.name) : "a teammate";
+};
 
 const clock = (ms: number) => {
   const d = new Date(ms);
@@ -126,7 +131,7 @@ export function assistantPrompt(o: { room: RoomState; question: RoomEvent<"chat.
     .filter((l): l is string => !!l)
     .slice(-CHAT_LINES);
   const parts = [
-    `You are the assistant in a Mockingbird team room: teammates (${o.room.members.map((m) => m.name).join(", ")}) and their coding agents work together on "${o.room.name}". ` +
+    `You are the assistant in a Mockingbird team room: teammates (${o.room.members.map((m) => named(m.name)).join(", ")}) and their coding agents work together on ${quoted(o.room.name)}.` +
       `${asker} asked you something in the room's chat. Answer it for the whole room: short, direct, plain text with light markdown (**bold**, \`code\`, lists). ` +
       `You can't run tools, read files or reach the sessions; everything you know is below. If you'd need more, say what and where to look.`,
     `## The question, from ${asker}\n${o.question.body.text}`,

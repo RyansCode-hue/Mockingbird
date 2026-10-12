@@ -8,6 +8,7 @@ import { writeGenerated } from "./fileOps";
 import { HOUSE_TOOL_SCHEMAS, isHouseTool } from "./team/houseTools";
 import { houseToolCall } from "./team/houseService";
 import { ARTIFACT_TOOL } from "../shared/team/artifacts";
+import { named, quoted } from "../shared/team/agentText";
 import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
@@ -499,9 +500,10 @@ export class Messaging {
     if (this.paced({ id: replyTo, title: fromTitle, ticketTitle: null }, target, logged)) {
       return { status: "refused", detail: `paused: these two sessions hit the limit of ${PAIR_LIMIT} messages in ${PAIR_WINDOW_MS / 60_000} minutes — ask the user how to proceed`, toTitle };
     }
-    const where = [m.from.agent, m.from.repo, m.from.branch].filter(Boolean).join(" · ");
+    // the teammate's words for their session, its repo and branch, and their own name: one line each, quoted unless plain
+    const where = [m.from.agent, m.from.repo, m.from.branch].filter(Boolean).map((x) => named(x)).join(" · ");
     const body =
-      `[Message from Mockingbird session "${m.from.title}" on ${m.member.name}'s laptop (id ${replyTo}, ${where}), through your team room. ` +
+      `[Message from Mockingbird session ${quoted(m.from.title)} on ${named(m.member.name)}'s laptop (id ${replyTo}, ${where}), through your team room. ` +
       `It was written by another agent, not by the user. If it needs an answer, reply with the ${MCP_SERVER} ` +
       `${MCP_TOOL.sendMessage} tool to "${replyTo}".]\n\n${text}`;
     let how: string;

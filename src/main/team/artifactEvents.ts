@@ -97,15 +97,17 @@ export function checkAdd(b: unknown): ArtifactAdd {
   if (!b || typeof b !== "object" || Array.isArray(b)) throw new Error("no body");
   const x = b as Record<string, unknown>;
   const name = checkArtifactName(x.name);
+  if (x.wasSecret !== undefined && (x.wasSecret !== true || (x.kind !== "file" && x.kind !== "note"))) throw new Error("wasSecret, when given, is true, on a file or a note");
+  const secret = x.wasSecret === true ? { wasSecret: true as const } : {};
   switch (x.kind) {
     case "file": {
       if (!Number.isSafeInteger(x.size) || (x.size as number) < 0 || (x.size as number) > MAX_ARTIFACT_FILE) throw new Error(`size must be a whole number of bytes up to ${MAX_ARTIFACT_FILE}`);
       if (typeof x.sha256 !== "string" || !SHA256_RE.test(x.sha256)) throw new Error("sha256 must be 64 hex characters");
       if (typeof x.mime !== "string" || x.mime.length > 100 || !MIME_RE.test(x.mime)) throw new Error("mime must be a type/subtype");
-      return { kind: "file", name, size: x.size as number, sha256: x.sha256, mime: x.mime };
+      return { kind: "file", name, size: x.size as number, sha256: x.sha256, mime: x.mime, ...secret };
     }
     case "note":
-      return { kind: "note", name, text: checkNoteText(x.text) };
+      return { kind: "note", name, text: checkNoteText(x.text), ...secret };
     case "repo": {
       if (typeof x.commit !== "string" || !COMMIT_RE.test(x.commit)) throw new Error("commit must be a full commit id");
       const rec: ArtifactAdd = { kind: "repo", name, origin: checkOrigin(x.origin), path: checkRepoPath(x.path), commit: x.commit };

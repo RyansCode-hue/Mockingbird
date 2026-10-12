@@ -2,6 +2,7 @@ import { decodeInvite, encodeInvite, formatFingerprint, joinRequestPayload, MEMB
 import type { JoinRequestSummary, MemberId, PeerLinkState, PeerStatus, PendingJoinSummary, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState, TeamRoomSummary, TeamStatus } from "../../shared/team/types";
 import { encodeFrame, MAX_STREAM_CHUNK, Reassembler, splitText, type StreamFrame, type TeamFrame } from "./frames";
 import { fingerprintOf, joinProof, randomToken, roomIdFor, sameSecret, signalingJoinKey, signalingTokenHash, verifySignature, type Identity } from "./identity";
+import { oneLine } from "../../shared/team/agentText";
 import { roomAdmin, type JoinRequestRecord, type PendingJoin, type RoomLog, type RoomStore, type StoredInvite } from "./rooms";
 
 /**
@@ -83,6 +84,17 @@ export class TeamError extends Error {
     super(message);
   }
 }
+
+/**
+ * A request handler's refusal written for the teammate who asked: its message
+ * goes back to them as it is. Anything else a handler throws reaches them as
+ * PEER_FAILED, its message (which may name this Mac's folders) only in this
+ * install's log.
+ */
+export class PeerError extends Error {}
+
+/** What a teammate is told when answering their request failed for a reason that stays on this Mac. */
+export const PEER_FAILED = "it failed on their Mockingbird (the reason is in its log)";
 
 export interface Team {
   readonly self: { id: MemberId; publicKey: string };
@@ -470,7 +482,7 @@ export class TeamCore implements Team {
     const log = this.store.open(roomId);
     this.watch(log);
     this.store.setMeta(roomId, { signalingUrl: spec.signalingUrl, groupKey: spec.groupKey });
-    log.create(this.identity, "room.created", { name: spec.name, groupKey: spec.groupKey, publicKey: this.self.publicKey, creatorName: this.o.name(), salt, approval: true }, this.now());
+    log.create(this.identity, "room.created", { name: oneLine(spec.name, 200), groupKey: spec.groupKey, publicKey: this.self.publicKey, creatorName: oneLine(this.o.name(), 100), salt, approval: true }, this.now());
     this.syncWire();
     return log.state!;
   }
@@ -752,7 +764,8 @@ export class TeamCore implements Team {
     this.store.saveJoinRequests(roomId, requests);
     let worker: RevokeOutcome | null = null;
     if (accept) {
-      if (!log.isMember(joiner)) this.publish(roomId, "member.added", { id: r.id, name: r.name, publicKey: r.publicKey, inviter: r.inviter });
+      // one line: a request passed on by an older Mockingbird may carry a name that member.added now refuses
+      if (!log.isMember(joiner)) this.publish(roomId, "member.added", { id: r.id, name: oneLine(r.name, 100), publicKey: r.publicKey, inviter: r.inviter });
       this.log(`accepted ${r.name} (${r.id}) into ${state.name}`);
     } else {
       this.publish(roomId, "join.declined", { id: r.id, invite: r.invite, inviter: r.inviter });
@@ -977,10 +990,10 @@ export class TeamCore implements Team {
 
   /** This install's display name changed: every room hears it. */
   nameChanged(): void {
-    const name = this.o.name().trim();
+    const name = oneLine(this.o.name(), 100);
     if (!name) return;
     for (const room of this.rooms()) {
-      if (room.members.find((m) => m.id === this.self.id)?.name !== name) this.publish(room.id, "member.renamed", { name: name.slice(0, 100) });
+      if (room.members.find((m) => m.id === this.self.id)?.name !== name) this.publish(room.id, "member.renamed", { name });
     }
   }
 
@@ -1215,7 +1228,7 @@ export class TeamCore implements Team {
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       this.log(`answering ${f.method} for ${this.nameOf(peer)} failed: ${why}`);
-      answer({ ok: false, code: "remote", error: why });
+      answer({ ok: false, code: "remote", error: err instanceof PeerError ? why : PEER_FAILED });
     }
   }
 
@@ -1358,7 +1371,7 @@ export class TeamCore implements Team {
     const adminName = admin ? this.nameIn(state, admin) : "the room's admin";
     let r = this.store.joinRequests(roomId).find((x) => x.id === from && x.invite === match.tokenHash);
     if (!r) {
-      const name = typeof body.name === "string" && body.name.trim() ? body.name.trim().slice(0, 100) : "teammate";
+      const name = oneLine(typeof body.name === "string" ? body.name : "", 100) || "teammate";
       const fields: JoinRequestFields = { roomId, id: from, publicKey: body.publicKey, name, inviter: this.self.id, invite: match.tokenHash, at: now, expiresAt: Math.min(match.expiresAt, now + MAX_INVITE_MS) };
       r = { ...fields, sig: this.identity.sign(joinRequestPayload(fields)) };
       this.holdRequest(roomId, r);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 import { acceptJoins, LoopbackNetwork, loopbackMember, loopbackRoom, until } from "../src/main/team/loopback";
-import { TeamCore, TeamError } from "../src/main/team/transport";
+import { PEER_FAILED, PeerError, TeamCore, TeamError } from "../src/main/team/transport";
 import { defineEventType, eventIdOf, eventPayload, RoomStore } from "../src/main/team/rooms";
 import { MAX_STREAM_CHUNK } from "../src/main/team/frames";
 import { encodeInvite, decodeInvite, TEAM_PROTOCOL } from "../src/shared/team/protocol";
@@ -89,15 +89,20 @@ describe("the team transport over the loopback", () => {
     const [ryan, nick] = members;
     nick.team.onRequest("transcript", (params, ctx) => ({ asked: params.session, by: ctx.from, room: ctx.roomId, text: "y".repeat(200_000) }));
     nick.team.onRequest("boom", () => {
-      throw new Error("disk full");
+      throw new Error("disk full at /Users/nick/.mockingbird/team/rooms");
+    });
+    nick.team.onRequest("refuse", () => {
+      throw new PeerError("that session isn't in this room");
     });
     nick.team.onRequest("never", () => new Promise(() => undefined));
     const r = await ryan.team.request<{ asked: string; by: string; room: string; text: string }>(nick.id, "transcript", { session: "s1" }, { roomId });
     expect(r).toMatchObject({ asked: "s1", by: ryan.id, room: roomId });
     expect(r.text).toHaveLength(200_000); // bigger than one message: sent in parts
     await expect(ryan.team.request(nick.id, "nothing")).rejects.toMatchObject({ code: "no-handler" });
-    await expect(ryan.team.request(nick.id, "boom")).rejects.toMatchObject({ code: "remote", message: "disk full" });
-    expect(nick.logs.join("\n")).toMatch(/answering boom for Ryan failed: disk full/);
+    // what went wrong stays on Nick's Mac (it may name his folders); a refusal written for Ryan reaches him
+    await expect(ryan.team.request(nick.id, "boom")).rejects.toMatchObject({ code: "remote", message: PEER_FAILED });
+    expect(nick.logs.join("\n")).toMatch(/answering boom for Ryan failed: disk full at \/Users\/nick/);
+    await expect(ryan.team.request(nick.id, "refuse")).rejects.toMatchObject({ code: "remote", message: "that session isn't in this room" });
     await expect(ryan.team.request(nick.id, "never", null, { timeoutMs: 50 })).rejects.toMatchObject({ code: "timeout" });
     const pending = ryan.team.request(nick.id, "never", null, { timeoutMs: 5000 });
     net.setOnline(nick.id, false);

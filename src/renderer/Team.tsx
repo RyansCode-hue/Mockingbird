@@ -575,7 +575,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
       {st?.self && <AllowCreatorStep id={st.self.id} />}
       <SetRow
         title="Room sessions run inline"
-        note="So teammates can scroll them: Claude Code and Codex print on the terminal's normal screen, and teammates' copies keep the history to scroll through on their own. Full screen keeps it inside the agent, so a copy shows one screen of it. Inline, your room sessions go without the full-screen views: Claude Code's flicker-free renderer, clicking in it, copy on select and Focus view, and Codex's full-screen transcript. Applies to room sessions as they start or restart."
+        note="So teammates can scroll them: Claude Code and Codex print on the terminal's normal screen, and teammates' copies keep the history to scroll through on their own. Full screen keeps it inside the agent, so a copy shows one screen of it. Inline, your room sessions go without the full-screen views: Claude Code's flicker-free renderer, clicking in it, copy on select and Focus view, and Codex's full-screen transcript. Inline also hands teammates everything a session's terminal keeps, as far back as it goes, not just the screen you see: whatever it ever printed (a secret an agent showed, say) is in their scrollback too. Applies to room sessions as they start or restart."
       >
         <Toggle
           label="Room sessions run inline so teammates can scroll them"

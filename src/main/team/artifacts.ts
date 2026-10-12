@@ -2,14 +2,14 @@ import * as fs from "fs";
 import * as path from "path";
 import { artifactItems, checkArtifactName, checkLinkUrl, checkNoteText } from "./artifactEvents";
 import { ArtifactFetcher, type FetchTiming } from "./artifactFetch";
-import { RepoRefs } from "./artifactRepo";
-import { ArtifactStore, checkAddable, formatBytes, quarantine, type Sniff } from "./artifactStore";
+import { RepoRefs, type FetchPolicy } from "./artifactRepo";
+import { ArtifactStore, checkAddable, formatBytes, holdsPrivateKey, inside, quarantine, type Sniff } from "./artifactStore";
 import { TEAM_DIR } from "./identity";
 import { ROOMS_DIR } from "./rooms";
 import { roomOfSession } from "./roomSessions";
 import type { Team, Unsubscribe } from "./transport";
-import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
-import { isSecretFileName } from "../secrets";
+import { dirInside, isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
+import { homeSecretPlace, isSecretFileName } from "../secrets";
 import {
   AGENT_ARTIFACTS_DIR,
   ARTIFACT_ID_RE,
@@ -27,6 +27,7 @@ import {
   type RoomArtifactsView,
   type SaveNoteMode,
   type SaveNoteResult,
+  type SecretConfirm,
 } from "../../shared/team/artifacts";
 import type { SessionInfo } from "../../shared/types";
 import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/types";
@@ -91,6 +92,7 @@ export const runningArtifacts = (): TeamArtifacts | null => active;
 
 const cleanName = (name: string, fallback: string) => name.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200).trim() || fallback;
 const normalizeText = (text: string) => String(text ?? "").replace(/\r\n?/g, "\n");
+const KEY_IN_NOTE: SecretConfirm = { needsConfirm: "secret", reason: "It holds a private key. Everyone in the room gets a copy; room agents never read it" };
 
 export class TeamArtifacts {
   readonly repos: RepoRefs;
@@ -114,8 +116,42 @@ export class TeamArtifacts {
     this.copiesFile = d.copiesFile ?? path.join(TEAM_DIR, "artifact-copies.json");
     this.now = d.now ?? Date.now;
     this.repos = new RepoRefs({ sessions: d.sessions, knownRepos: d.knownRepos, log: d.log });
+    this.copies = this.loadCopies();
+  }
+
+  /**
+   * The agents' copies list. An entry that names a copy's folder but not its
+   * room can't be matched to an artifact again: its copy is deleted now. An
+   * entry without a folder can't be cleaned up at all. Either way it's
+   * logged, never dropped silently.
+   */
+  private loadCopies(): AgentCopy[] {
     const v = readJsonOrSetAside(this.copiesFile, [], "the room artifacts' agent copies");
-    this.copies = Array.isArray(v) ? (v as AgentCopy[]).filter((c) => c && typeof c.roomId === "string" && typeof c.id === "string" && typeof c.dir === "string") : [];
+    if (!Array.isArray(v)) {
+      this.d.log("room artifacts: the agents' copies list", `${this.copiesFile} isn't a list; the copies it named aren't tracked any more`);
+      return [];
+    }
+    const good: AgentCopy[] = [];
+    const orphans: AgentCopy[] = [];
+    const lost: string[] = [];
+    for (const c of v as Partial<AgentCopy>[]) {
+      if (c && typeof c.roomId === "string" && typeof c.id === "string" && typeof c.dir === "string") good.push(c as AgentCopy);
+      else if (c && typeof c.id === "string" && typeof c.dir === "string") orphans.push({ roomId: "", id: c.id, dir: c.dir });
+      else lost.push(JSON.stringify(c)?.slice(0, 200) ?? String(c));
+    }
+    if (lost.length) this.d.log("room artifacts: the agents' copies list", `${lost.length} entries in ${this.copiesFile} name no copy's folder and were dropped: ${lost.join("; ")}`);
+    if (!orphans.length) {
+      try {
+        if (lost.length) writeFileAtomic(this.copiesFile, JSON.stringify(good, null, 2));
+      } catch (err) {
+        this.d.log(`room artifacts: saving ${this.copiesFile}`, err);
+      }
+      return good;
+    }
+    this.d.log("room artifacts: the agents' copies list", `${orphans.length} entries in ${this.copiesFile} name no room; their copies are deleted now: ${orphans.map((c) => c.dir).join(", ")}`);
+    this.copies = [...good, ...orphans];
+    for (const p of this.dropCopies((c) => c.roomId === "")) this.d.log("room artifacts: cleaning up", p);
+    return this.copies;
   }
 
   start(team: Team): void {
@@ -241,7 +277,7 @@ export class TeamArtifacts {
       const name = cleanName(path.basename(String(p ?? "")), "file");
       try {
         const { real } = checkAddable(String(p), { never: this.d.neverAdd ?? [TEAM_DIR, this.roomsDir], secretFiles: this.d.secretFiles() });
-        await this.addIngested(roomId, name, { file: real }, confirmSecret, out);
+        await this.addIngested(roomId, name, { file: real }, confirmSecret, out, homeSecretPlace(real));
       } catch (err) {
         out.refused.push({ name, reason: (err as Error).message });
       }
@@ -266,10 +302,17 @@ export class TeamArtifacts {
     return out;
   }
 
-  private async addIngested(roomId: RoomId, name: string, source: { file: string } | { bytes: Uint8Array }, confirmSecret: boolean, out: AddFilesResult): Promise<void> {
+  /** `credentials`: the credential store the file is in (homeSecretPlace), if any: asked about, and kept from agents for good. */
+  private async addIngested(roomId: RoomId, name: string, source: { file: string } | { bytes: Uint8Array }, confirmSecret: boolean, out: AddFilesResult, credentials: string | null = null): Promise<void> {
     const { team, room } = this.need(roomId);
     const ing = await this.store(roomId).ingest(source, name);
-    const secret = isSecretFileName(name) ? `${name} is named like a secret file` : ing.sniff.privateKey ? `${name} holds a private key` : null;
+    const secret = isSecretFileName(name)
+      ? `${name} is named like a secret file`
+      : credentials
+        ? `${name} is one of this Mac's credential files (${credentials})`
+        : ing.sniff.privateKey
+          ? `${name} holds a private key`
+          : null;
     if (secret && !confirmSecret) {
       ing.drop();
       out.refused.push({ name, reason: `${secret}. Teammates get a copy; room agents never read it.`, needsConfirm: "secret" });
@@ -280,7 +323,7 @@ export class TeamArtifacts {
     const same = this.files(roomId).find((f) => f.sha256 === ing.sha256);
     if (same) warnings.push(`The same file is already in ${room.name} as ${same.name}`);
     try {
-      const e = team.publish(roomId, "artifact.add", { kind: "file", name, size: ing.size, sha256: ing.sha256, mime: ing.sniff.mime });
+      const e = team.publish(roomId, "artifact.add", { kind: "file", name, size: ing.size, sha256: ing.sha256, mime: ing.sniff.mime, ...(credentials ? { wasSecret: true as const } : {}) });
       out.added.push({ id: e.id, name, warnings });
     } catch (err) {
       this.gcSoon(roomId);
@@ -288,11 +331,18 @@ export class TeamArtifacts {
     }
   }
 
-  addNote(roomId: RoomId, rawName: string, rawText: string): ArtifactAdded {
+  /** The window's New note: one whose text holds a private key is added only once the person confirms (`confirmSecret`), as a file is. */
+  newNote(roomId: RoomId, rawName: string, rawText: string, confirmSecret = false): ArtifactAdded | SecretConfirm {
+    if (!confirmSecret && holdsPrivateKey(normalizeText(rawText))) return KEY_IN_NOTE;
+    return this.addNote(roomId, rawName, rawText);
+  }
+
+  /** Add a note. `wasSecret`: it's a copy of one agents may not read, and stays so whatever it's called. */
+  addNote(roomId: RoomId, rawName: string, rawText: string, o: { wasSecret?: boolean } = {}): ArtifactAdded {
     const { team } = this.need(roomId);
     const name = checkArtifactName(cleanName(String(rawName ?? ""), "Note"));
     const text = this.noteText(rawText);
-    const e = team.publish(roomId, "artifact.add", { kind: "note", name, text });
+    const e = team.publish(roomId, "artifact.add", { kind: "note", name, text, ...(o.wasSecret ? { wasSecret: true as const } : {}) });
     return { id: e.id, name, warnings: [] };
   }
 
@@ -339,14 +389,18 @@ export class TeamArtifacts {
    * Save a note's new text. "save" from a revision someone else's edit
    * replaced publishes nothing and says whose edit it was (the editor offers
    * to overwrite it, or to keep this text as a copy); "overwrite" replaces
-   * whatever is current; "copy" adds the text as a new note.
+   * whatever is current; "copy" adds the text as a new note. A text that
+   * brings in a private key is saved only once the person confirms
+   * (`confirmSecret`).
    */
-  saveNote(roomId: RoomId, id: string, rawText: string, base: string, mode: SaveNoteMode): SaveNoteResult {
+  saveNote(roomId: RoomId, id: string, rawText: string, base: string, mode: SaveNoteMode, confirmSecret = false): SaveNoteResult {
     const { team, room } = this.need(roomId);
     const a = this.item(roomId, id);
     if (a.kind !== "note") throw new Error("Only notes are edited here");
     const text = this.noteText(rawText);
-    if (mode === "copy") return { copy: this.addNote(roomId, `${a.name.slice(0, 190)} (copy)`, text).id };
+    const asks = !confirmSecret && holdsPrivateKey(text) && (mode === "copy" || !holdsPrivateKey(a.text));
+    if (asks && !(mode === "save" && a.rev !== base)) return KEY_IN_NOTE;
+    if (mode === "copy") return { copy: this.addNote(roomId, `${a.name.slice(0, 190)} (copy)`, text, { wasSecret: !!a.wasSecret || isSecretFileName(a.name) }).id };
     if (mode !== "save" && mode !== "overwrite") throw new Error(`Unknown save: ${mode}`);
     if (mode === "save" && a.rev !== base) return { stale: { rev: a.rev, byName: this.nameOf(room.id, a.updatedBy ?? a.addedBy), at: a.updatedAt ?? a.addedAt } };
     if (text === a.text) return { rev: a.rev };
@@ -396,10 +450,11 @@ export class TeamArtifacts {
     return null;
   }
 
-  async resolveRepo(roomId: RoomId, id: string, preferSessionId: string | null): Promise<RepoResolution> {
+  /** Where a repo reference opens here. `fetch`: whether a commit that isn't here is fetched (FetchPolicy; the window's default, "always"). */
+  async resolveRepo(roomId: RoomId, id: string, preferSessionId: string | null, fetch: FetchPolicy = "always"): Promise<RepoResolution> {
     const a = this.item(roomId, id);
     if (a.kind !== "repo") throw new Error("That isn't a repo reference");
-    return this.repos.resolve(a, { prefer: preferSessionId, groupKey: this.d.roomGroups().find((r) => r.roomId === roomId)?.groupKey ?? null });
+    return this.repos.resolve(a, { prefer: preferSessionId, groupKey: this.d.roomGroups().find((r) => r.roomId === roomId)?.groupKey ?? null, fetch });
   }
 
   /** A read-only, quarantined copy of a file artifact (for Quick Look and Reveal in Finder): a path this process made. */
@@ -456,13 +511,14 @@ export class TeamArtifacts {
   /**
    * Why agents may not read an artifact, or null: named like a secret file
    * now or ever (renaming doesn't make it readable), a repo reference to one,
-   * or a file holding a private key.
+   * or a file or a note holding a private key.
    */
   blockedReason(roomId: RoomId, a: ArtifactRecord): string | null {
     if (isSecretFileName(a.name)) return `Its name is a secret file's (${a.name}): agents never read it`;
-    if (a.wasSecret) return "It was named like a secret file: agents never read it, whatever it's called now";
+    if (a.wasSecret) return "It was named like a secret file, or came from a credential store: agents never read it, whatever it's called now";
     if (a.kind === "repo" && isSecretFileName(path.posix.basename(a.path))) return `It points at a secret file (${path.posix.basename(a.path)}): agents never read it`;
     if (a.kind === "file" && this.store(roomId).knownSniff(a.sha256, a.name)?.privateKey) return "It holds a private key: agents never read it";
+    if (a.kind === "note" && holdsPrivateKey(a.text)) return "It holds a private key: agents never read it";
     return null;
   }
 
@@ -492,21 +548,38 @@ export class TeamArtifacts {
   }
 
   /**
-   * Copy a file artifact into `dir` for an agent (a clone, read-only),
-   * replacing an earlier copy there, and remember it so it's deleted when the
-   * artifact goes or becomes secret.
+   * Copy a file artifact for an agent into `<root>/.mockingbird/artifacts/<id>/`
+   * (a clone, read-only, quarantined, its folders owner-only), replacing an
+   * earlier copy there, and remember it so it's deleted when the artifact goes
+   * or becomes secret. `root` is the session's folder, which the agent writes:
+   * a .mockingbird or artifacts there that is a symbolic link is refused, and
+   * the copy's folder must stay inside the folder's real path.
    */
-  async copyForAgent(roomId: RoomId, a: FileRecord, dir: string, fileName: string): Promise<string> {
-    if (!ARTIFACT_ID_RE.test(a.id) || path.basename(dir) !== a.id || !dir.endsWith(path.join(AGENT_ARTIFACTS_DIR, a.id))) throw new Error("not an agent copy folder");
+  async copyForAgent(roomId: RoomId, a: FileRecord, root: string, fileName: string): Promise<string> {
+    if (!ARTIFACT_ID_RE.test(a.id)) throw new Error("not an artifact id");
+    const parent = dirInside(root, AGENT_ARTIFACTS_DIR, 0o700)!;
+    const dir = path.join(parent, a.id);
     const file = path.join(dir, fileName);
     if (path.dirname(file) !== dir) throw new Error("the artifact's name can't be a file name");
+    // an earlier copy, whatever it now is: a link is removed, never followed
     fs.rmSync(dir, { recursive: true, force: true });
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { mode: 0o700 });
+    if (!inside(fs.realpathSync(root), fs.realpathSync(dir))) throw new Error(`${dir} isn't inside ${root}`);
     this.copies = [...this.copies.filter((c) => !(c.dir === dir)), { roomId, id: a.id, dir }];
     writeFileAtomic(this.copiesFile, JSON.stringify(this.copies, null, 2));
-    fs.copyFileSync(this.store(roomId).blobPath(a.sha256), file, fs.constants.COPYFILE_FICLONE);
+    fs.copyFileSync(this.store(roomId).blobPath(a.sha256), file, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
+    // marked before it's made read-only: setting an attribute needs write permission
+    fs.chmodSync(file, 0o644);
+    const warning = await quarantine(file);
     fs.chmodSync(file, 0o444);
+    if (warning) this.d.log(`room artifacts: an agent's copy of ${a.name}`, warning);
+    this.problem(roomId, `quarantine-agent ${a.id}`, warning);
     return file;
+  }
+
+  /** Log a failure the agents' tools or @assistant met (this install's log); returns the message logged. */
+  report(context: string, err: unknown): string {
+    return this.d.log(context, err);
   }
 
   nameOf(roomId: RoomId, id: MemberId): string {
@@ -631,7 +704,9 @@ export class TeamArtifacts {
         continue;
       }
       try {
-        fs.rmSync(c.dir, { recursive: true, force: true });
+        // the folders above it are the agent's: a link there is refused (dirInside throws), never followed
+        const root = path.resolve(c.dir, "..", "..", "..");
+        if (dirInside(root, AGENT_ARTIFACTS_DIR)) fs.rmSync(c.dir, { recursive: true, force: true });
       } catch (err) {
         if (!isMissing(err)) {
           problems.push(`${c.dir} couldn't be deleted: ${(err as Error).message}`);

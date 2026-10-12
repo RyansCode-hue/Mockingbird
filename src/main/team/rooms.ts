@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { fingerprintOf, roomIdFor, TEAM_DIR, verifySignature, type Identity } from "./identity";
+import { CONTROL_CHARS_RE } from "../../shared/team/agentText";
 import { canonicalJson, MEMBER_ID_RE, PUBLIC_KEY_RE, ROOM_ID_RE, SIGNATURE_RE, toBase64Url, TOKEN_RE, type JoinRequestFields } from "../../shared/team/protocol";
 import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState } from "../../shared/team/types";
 
@@ -132,12 +133,26 @@ const str = (v: unknown, what: string, max: number, min = 0): string => {
   return v;
 };
 
+/**
+ * A member's or a room's name: what str checks, on one line. Names go into
+ * what agents read, so a newline in one could pass for Mockingbird's own
+ * lines. Validation runs only on events being added (this install's, or a
+ * peer's arriving), never on a log being loaded, so a room whose stored
+ * events hold such a name from before still loads; what agents are given
+ * one-lines and quotes names wherever they came from (shared/team/agentText.ts).
+ */
+const nameStr = (v: unknown, what: string, max: number, min = 0): string => {
+  str(v, what, max, min);
+  if (CONTROL_CHARS_RE.test(v as string)) throw new Error(`${what} has control characters (a line break?)`);
+  return v as string;
+};
+
 defineEventType("room.created", {
   validate(b: any) {
     if (!b || typeof b !== "object") throw new Error("no body");
-    str(b.name, "name", 200, 1);
+    nameStr(b.name, "name", 200, 1);
     str(b.groupKey, "groupKey", 200, 1);
-    str(b.creatorName, "creatorName", 100);
+    nameStr(b.creatorName, "creatorName", 100);
     if (typeof b.publicKey !== "string" || !PUBLIC_KEY_RE.test(b.publicKey)) throw new Error("bad creator key");
     if (typeof b.salt !== "string" || !TOKEN_RE.test(b.salt)) throw new Error("bad salt");
     if (b.approval !== undefined && b.approval !== true) throw new Error("bad approval");
@@ -151,7 +166,7 @@ defineEventType("member.added", {
   validate(b: any) {
     if (!b || typeof b !== "object") throw new Error("no body");
     if (typeof b.id !== "string" || !MEMBER_ID_RE.test(b.id)) throw new Error("bad member id");
-    str(b.name, "name", 100);
+    nameStr(b.name, "name", 100);
     if (typeof b.publicKey !== "string" || !PUBLIC_KEY_RE.test(b.publicKey) || fingerprintOf(b.publicKey) !== b.id) throw new Error("the member's key doesn't match its id");
     if (b.inviter !== undefined && (typeof b.inviter !== "string" || !MEMBER_ID_RE.test(b.inviter))) throw new Error("bad inviter");
   },
@@ -211,7 +226,7 @@ defineEventType("member.removed", {
 
 defineEventType("member.renamed", {
   validate(b: any) {
-    str(b?.name, "name", 100, 1);
+    nameStr(b?.name, "name", 100, 1);
   },
   reduce(state, e) {
     const m = state.members.find((x) => x.id === e.author);

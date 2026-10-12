@@ -1,11 +1,12 @@
 import * as fs from "fs";
 import * as path from "path";
 import { git } from "../git";
-import { isMissing, writeFileAtomic, writeGenerated } from "../fileOps";
+import { appendNoFollow, dirInside, isMissing, readRegularFile, removeInside, writeGenerated, writeGeneratedInside } from "../fileOps";
 import { MB_DIR } from "../store";
 import { ARTIFACT_TOOL } from "../../shared/team/artifacts";
 import { AGENT_CONTEXT_FILE, CLAIMS_FILE, claimConflicts, claimHookResponse, editedPaths, LEGACY_PLAN_FILE, PLAN_DIR, ROOM_CONTEXT_ENV } from "../../shared/team/claims";
 import { HOUSE_TOOLS, NEEDS_AGENT } from "../../shared/team/house";
+import { named, quoted } from "../../shared/team/agentText";
 
 /**
  * The room's read-only files in its repositories' worktrees, and the check an
@@ -63,23 +64,22 @@ export function excludePlanDir(repo: string): Promise<void> {
 /**
  * Add `line` to the exclude file of the repository `cwd` is in (shared by all
  * its worktrees), once (`same`: lines that already do it). Where `cwd` tracks
- * files under `dir` (relative to it), nothing is written and it throws:
- * Mockingbird's files there would overwrite them.
+ * anything at the top folder of `dir` (relative to it) — files under it, or
+ * the folder itself committed as a symbolic link, which `git ls-files -- dir`
+ * alone doesn't list — nothing is written and it throws: Mockingbird's files
+ * there would overwrite them, or land wherever the link points.
  */
 export async function excludeInRepo(cwd: string, o: { dir: string; line: string; same?: string[]; comment: string; what: string }): Promise<void> {
-  const tracked = await git(cwd, ["ls-files", "--", o.dir]);
-  if (tracked) throw new Error(`${cwd} tracks files under ${o.dir}/ (${tracked.split("\n")[0]}…); Mockingbird won't write ${o.what} over them`);
-  const file = path.resolve(cwd, await git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]));
-  let text = "";
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (err) {
-    if (!isMissing(err)) throw err;
-  }
+  const top = o.dir.split("/")[0];
+  const tracked = await git(cwd, ["ls-files", "--", top]);
+  if (tracked) throw new Error(`${cwd} tracks files under ${top}/ (${tracked.split("\n")[0]}…); Mockingbird won't write ${o.what} over them`);
+  // joined here, not `--git-path info/exclude`: git answers that with a link's target
+  const file = path.join(path.resolve(cwd, await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])), "info", "exclude");
+  const text = readRegularFile(file)?.text ?? "";
   const done = [o.line, ...(o.same ?? [])];
   if (text.split("\n").some((l) => done.includes(l.trim()))) return;
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, `${text && !text.endsWith("\n") ? "\n" : ""}# ${o.comment}\n${o.line}\n`);
+  appendNoFollow(file, `${text && !text.endsWith("\n") ? "\n" : ""}# ${o.comment}\n${o.line}\n`);
 }
 
 export interface RoomCopy {
@@ -90,7 +90,9 @@ export interface RoomCopy {
 /**
  * Write a worktree's copy, read-only (each file is replaced whole, so a
  * reader never sees half of one), and take out the work-package board's
- * plan.md where it's still there. Returns whether anything changed.
+ * plan.md where it's still there. Returns whether anything changed. The
+ * worktree is the agents' to write: a .mockingbird, or a file in it, that is
+ * a symbolic link is refused (it throws), never written through.
  */
 export function writeRoomCopy(worktree: string, copy: RoomCopy): boolean {
   let changed = false;
@@ -98,20 +100,19 @@ export function writeRoomCopy(worktree: string, copy: RoomCopy): boolean {
     [CLAIMS_FILE, copy.claims],
     [AGENT_CONTEXT_FILE, copy.context],
   ] as const) {
-    if (writeGenerated(path.join(worktree, rel), content, 0o444)) changed = true;
+    if (writeGeneratedInside(worktree, rel, content, 0o444)) changed = true;
   }
-  if (fs.existsSync(path.join(worktree, LEGACY_PLAN_FILE))) {
-    fs.rmSync(path.join(worktree, LEGACY_PLAN_FILE), { force: true });
-    changed = true;
-  }
+  if (removeInside(worktree, LEGACY_PLAN_FILE)) changed = true;
   return changed;
 }
 
-/** Remove a worktree's copy (its repo is no longer any room's). */
+/** Remove a worktree's copy (its repo is no longer any room's). A linked .mockingbird is refused, never followed. */
 export function removeRoomCopy(worktree: string): void {
-  for (const rel of [CLAIMS_FILE, AGENT_CONTEXT_FILE, LEGACY_PLAN_FILE]) fs.rmSync(path.join(worktree, rel), { force: true });
+  for (const rel of [CLAIMS_FILE, AGENT_CONTEXT_FILE, LEGACY_PLAN_FILE]) removeInside(worktree, rel);
+  const dir = dirInside(worktree, PLAN_DIR);
+  if (!dir) return;
   try {
-    fs.rmdirSync(path.join(worktree, PLAN_DIR));
+    fs.rmdirSync(dir);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== "ENOENT" && code !== "ENOTEMPTY") throw err;
@@ -139,10 +140,10 @@ export interface RoomContext {
  * come from teammates and the House, not from the user).
  */
 export function agentContextText(room: RoomContext): string {
-  const mates = room.teammates.length ? room.teammates.join(", ") : "your teammates";
+  const mates = room.teammates.length ? room.teammates.map((m) => named(m)).join(", ") : "your teammates";
   const t = HOUSE_TOOLS;
   const out = [
-    `This repository is part of a Mockingbird team room, "${room.name}", shared with ${mates}. The room's work is tracked as Radley House tickets${room.project ? ` (project ${room.project})` : ""}: the House is the system of record, and what you change through Mockingbird is changed with your user's own builder token.`,
+    `This repository is part of a Mockingbird team room, ${quoted(room.name)}, shared with ${mates}. The room's work is tracked as Radley House tickets${room.project ? ` (project ${room.project})` : ""}: the House is the system of record, and what you change through Mockingbird is changed with your user's own builder token.`,
     "",
     `- Use the mockingbird MCP tools: ${t.list} (the room's board: the open backlog — every ticket not done or dropped, high priority first — and the tickets the room added; tag ${NEEDS_AGENT} lists the work handed back to an agent), ${t.read} (details and history — read it before resuming a ticket), ${t.spec} (the requirements document), ${t.create}, ${t.claim} (claim before you start; it defaults to your session's branch), ${t.release}, and ${t.event} (progress, a status change, a question for a person, or a note).`,
     "- A ticket a teammate claimed belongs to their sessions on its branch. Mockingbird holds back the first edit of a file those sessions have been changing and says whose ticket it is; check with your user before going on. Repeating the edit goes through.",

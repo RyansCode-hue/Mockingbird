@@ -39,10 +39,16 @@ export const ARTIFACT_TOOL = { list: "list_room_artifacts", read: "read_room_art
 /** Where a room agent finds a copy of an artifact it read (inside its own folder, git-excluded). */
 export const AGENT_ARTIFACTS_DIR = ".mockingbird/artifacts";
 
-/** What `artifact.add` records, by kind. A file's `mime` is the adder's sniff: advisory only. */
+/**
+ * What `artifact.add` records, by kind. A file's `mime` is the adder's sniff:
+ * advisory only. `wasSecret` is set on a file added from one of the adder's
+ * credential stores (~/.aws, ~/.netrc…) and on a copy of a note agents may
+ * not read (Save as copy), so it stays unreadable to them whatever it's
+ * called; the reducer keeps it, and it can only ever add that restriction.
+ */
 export type ArtifactAdd =
-  | { kind: "file"; name: string; size: number; sha256: string; mime: string }
-  | { kind: "note"; name: string; text: string }
+  | { kind: "file"; name: string; size: number; sha256: string; mime: string; wasSecret?: true }
+  | { kind: "note"; name: string; text: string; wasSecret?: true }
   | { kind: "repo"; name: string; origin: string; path: string; commit: string; lines?: [number, number] }
   | { kind: "link"; name: string; url: string };
 
@@ -191,7 +197,12 @@ export interface AddFilesResult {
 }
 
 export type SaveNoteMode = "save" | "overwrite" | "copy";
-export type SaveNoteResult = { rev: string } | { copy: string } | { stale: { rev: string; byName: string; at: number } };
+/** A note not added or saved yet: its text holds a private key, so the person is asked, and it's sent again with confirmSecret. */
+export interface SecretConfirm {
+  needsConfirm: "secret";
+  reason: string;
+}
+export type SaveNoteResult = { rev: string } | { copy: string } | { stale: { rev: string; byName: string; at: number } } | SecretConfirm;
 
 // ---- references in chat ----
 

@@ -1,6 +1,6 @@
 import * as path from "path";
 import { parseRemoteId, type Messaging, type RemoteAgents, type RemoteSendResult, type RoomSessionInfo, type SenderInfo, type TeammateSessions } from "../messaging";
-import { TeamError, type Team, type Unsubscribe } from "./transport";
+import { PeerError, TeamError, type Team, type Unsubscribe } from "./transport";
 import { topOfKey, type SessionInfo } from "../../shared/types";
 import type { MemberId, RoomId } from "../../shared/team/types";
 
@@ -63,14 +63,14 @@ export class AgentBridge implements RemoteAgents {
     this.messaging = messaging;
     this.offs.push(
       team.onRequest(AGENT_REQUESTS.list, (_params, ctx) => {
-        if (!ctx.roomId) throw new Error("name the room whose sessions to list");
+        if (!ctx.roomId) throw new PeerError("name the room whose sessions to list");
         return { sessions: this.localSessions(ctx.roomId).map(describe) };
       }),
       team.onRequest(AGENT_REQUESTS.send, (p, ctx) => {
-        if (!ctx.roomId) throw new Error("name the room the message goes through");
+        if (!ctx.roomId) throw new PeerError("name the room the message goes through");
         const roomId = ctx.roomId;
         const from = senderOf(p?.from);
-        if (!from || typeof p.to !== "string" || typeof p.text !== "string") throw new Error("malformed agent message");
+        if (!from || typeof p.to !== "string" || typeof p.text !== "string") throw new PeerError("malformed agent message");
         const member = { id: ctx.from, name: this.nameOf(roomId, ctx.from) };
         return this.messaging!.receiveRemote({ member, from, to: p.to, text: p.text }, (s) => this.roomOf(s) === roomId);
       })

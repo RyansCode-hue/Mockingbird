@@ -101,6 +101,133 @@ export function writeGenerated(file: string, content: string, mode?: number): bo
   return true;
 }
 
+// ---- files inside folders agents write -----------------------------------------------------------
+//
+// A worktree or a session's folder is the agent's to write: it can turn a
+// folder on the way to one of Mockingbird's files there, or the file itself,
+// into a symbolic link to somewhere else (~/.zshrc). So inside such a `root`,
+// nothing is resolved or followed: each folder under `root` is checked with
+// lstat (a link, or something that isn't a folder, is refused), a file is
+// read only when it is a regular file, and it is written as a new file beside
+// its name (O_EXCL | O_NOFOLLOW) then renamed over it — a rename replaces a
+// name, never a link's target. `root` itself is trusted: it is the worktree or
+// session folder Mockingbird chose. Node has no openat, so a folder swapped
+// for a link between the check and the write isn't caught; one already there
+// always is.
+
+const { O_RDONLY, O_WRONLY, O_CREAT, O_EXCL, O_APPEND, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+
+const linkRefused = (p: string, root: string) => new Error(`${p} is a symbolic link: Mockingbird doesn't write through links inside ${root}`);
+
+/**
+ * The folder `relDir` under `root`, every step of it a real folder; missing
+ * steps are made with `createMode` when it's given, else the answer is null.
+ * Throws when a step is a link or not a folder.
+ */
+export function dirInside(root: string, relDir: string, createMode?: number): string | null {
+  let dir = root;
+  for (const seg of relDir.split(/[\\/]+/)) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") throw new Error(`${relDir} leaves ${root}`);
+    dir = path.join(dir, seg);
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(dir);
+    } catch (err) {
+      if (!isMissing(err)) throw err;
+      if (createMode === undefined) return null;
+      try {
+        fs.mkdirSync(dir, { mode: createMode });
+      } catch (mkErr) {
+        if ((mkErr as NodeJS.ErrnoException).code !== "EEXIST") throw mkErr;
+      }
+      st = fs.lstatSync(dir);
+    }
+    if (st.isSymbolicLink()) throw linkRefused(dir, root);
+    if (!st.isDirectory()) throw new Error(`${dir} isn't a folder`);
+  }
+  return dir;
+}
+
+/** A regular file's text and mode, never through a link; null when there's no file. Throws for a link or anything else. */
+export function readRegularFile(file: string, root = path.dirname(file)): { text: string; mode: number } | null {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(file);
+  } catch (err) {
+    if (isMissing(err)) return null;
+    throw err;
+  }
+  if (st.isSymbolicLink()) throw linkRefused(file, root);
+  if (!st.isFile()) throw new Error(`${file} isn't a regular file`);
+  // O_NONBLOCK: a FIFO swapped in after the lstat can't stall the read
+  const fd = fs.openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+  try {
+    const now = fs.fstatSync(fd);
+    if (!now.isFile()) throw new Error(`${file} isn't a regular file`);
+    return { text: fs.readFileSync(fd, "utf8"), mode: now.mode & 0o7777 };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * writeGenerated for a file inside a folder agents write (see above): `rel`
+ * under `root`, rewritten only when its content or mode differs, its folders
+ * made (`dirMode`) where missing. Returns whether it was written.
+ */
+export function writeGeneratedInside(root: string, rel: string, content: string, mode?: number, dirMode = 0o777): boolean {
+  const dir = dirInside(root, path.dirname(rel), dirMode)!;
+  const file = path.join(dir, path.basename(rel));
+  const current = readRegularFile(file, root);
+  if (current && current.text === content && (mode === undefined || (current.mode & 0o777) === mode)) return false;
+  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`);
+  try {
+    const fd = fs.openSync(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600);
+    try {
+      fs.writeSync(fd, content);
+      fs.fchmodSync(fd, mode ?? current?.mode ?? 0o644);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  return true;
+}
+
+/** Remove the file (or link — never its target) `rel` under `root`, its folders checked. Returns whether there was one. */
+export function removeInside(root: string, rel: string): boolean {
+  const dir = dirInside(root, path.dirname(rel));
+  if (!dir) return false;
+  const file = path.join(dir, path.basename(rel));
+  try {
+    if (fs.lstatSync(file).isDirectory()) throw new Error(`${file} is a folder`);
+    fs.unlinkSync(file);
+    return true;
+  } catch (err) {
+    if (isMissing(err)) return false;
+    throw err;
+  }
+}
+
+/** Append to a file that may sit where agents write (.git/info/exclude): never through a link, its folder checked. */
+export function appendNoFollow(file: string, text: string): void {
+  const parent = path.dirname(file);
+  const st = fs.lstatSync(parent);
+  if (st.isSymbolicLink()) throw linkRefused(parent, path.dirname(parent));
+  if (!st.isDirectory()) throw new Error(`${parent} isn't a folder`);
+  const fd = fs.openSync(file, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o644);
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error(`${file} isn't a regular file`);
+    fs.writeSync(fd, text);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /**
  * Up to `bytes` of a file's text, from its start or from its end — all of it
  * when the file is smaller. The line the window cuts is the caller's to drop.

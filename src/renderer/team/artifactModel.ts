@@ -126,6 +126,17 @@ export const repoDefaultName = (path: string, lines: [number, number] | null) =>
 /** The images the viewer shows inline: what main's content sniff names, nothing else. */
 export const INLINE_IMAGE_MIME = /^image\/(png|jpeg|gif|webp|bmp|svg\+xml)$/;
 
+/**
+ * What removing an artifact does and doesn't do, said before it's removed:
+ * the room log is append-only and every member keeps all of it, so a note's
+ * text (each saved revision) and every name stay there and reach later
+ * joiners; only files' bytes are deleted, on the members who had them.
+ */
+export const REMOVE_ARTIFACT_NOTE =
+  "It's removed for everyone in the room: each member's copy of a file is deleted, agents' copies too, and messages that named it say “(removed)”. " +
+  "It isn't taken back: every member's room log keeps its name and, for a note, every saved text, and passes them on to anyone who joins later; " +
+  "a copy someone saved with Save as… stays theirs. Any member can remove, rename or edit any artifact.";
+
 export interface CsvTable {
   rows: string[][];
   /** Rows or columns past the limits, not shown. */

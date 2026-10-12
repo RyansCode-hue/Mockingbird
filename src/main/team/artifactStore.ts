@@ -26,6 +26,9 @@ export const MAX_INLINE_PIXELS = 50_000_000;
 const HEAD_BYTES = 1024 * 1024;
 const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
 
+/** Whether text (a note's) holds a PEM private key, as file sniffing finds one. */
+export const holdsPrivateKey = (text: string): boolean => PRIVATE_KEY_RE.test(text);
+
 /** What a file is, from its content: how the viewer may show it, and whether it holds a private key. */
 export interface Sniff {
   view: ArtifactView;
