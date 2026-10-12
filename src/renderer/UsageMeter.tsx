@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { tokenBreakdown } from "./TerminalPane";
-import { resetText, pctNow, headlineOf } from "./usageFormat";
+import { resetText, pctNow, headlineOf, contextLine, contextPct, contextTarget } from "./usageFormat";
 import { Popover } from "./Popover";
-import { AGENT_NAME, formatTokens, totalTokens, type UsageReport, type Meters } from "../shared/types";
+import { AGENT_NAME, formatTokens, isErr, totalTokens, type ContextWindow, type SessionInfo, type UsageReport, type Meters } from "../shared/types";
 import { fmtElapsed } from "../shared/format";
 import { usePersisted } from "./prefs";
 
@@ -10,11 +10,68 @@ import { usePersisted } from "./prefs";
 
 type UsageShow = "claude" | "codex" | "both";
 
+const CONTEXT_POLL_MS = 2000;
+
+/** The focused session's context window, re-read while the popover is open. */
+function ContextRow({ session }: { session: SessionInfo | null }) {
+  const target = contextTarget(session);
+  const id = "id" in target ? target.id : null;
+  const [cw, setCw] = useState<{ id: string; v: ContextWindow } | null>(null);
+  useEffect(() => {
+    if (!id) return;
+    let live = true;
+    const read = () =>
+      window.mb.contextWindow(id).then(
+        (r: ContextWindow | { error: string }) => {
+          if (!live) return;
+          if (isErr(r)) console.warn(`context window of ${id}: ${r.error}`);
+          setCw({ id, v: isErr(r) ? { state: "error", why: `Couldn't read it: ${r.error}` } : r });
+        },
+        (err: unknown) => {
+          console.warn(`context window of ${id}:`, err);
+          if (live) setCw({ id, v: { state: "error", why: `Couldn't read it: ${(err as Error)?.message ?? err}` } });
+        }
+      );
+    void read();
+    const t = setInterval(read, CONTEXT_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [id]);
+  const v: ContextWindow = "why" in target ? { state: "none", why: target.why } : cw?.id === id ? cw.v : { state: "none", why: "Reading…" };
+  const pct = v.state === "reading" ? contextPct(v.tokens, v.window) : 0;
+  return (
+    <div className="usage-sec usage-ctx">
+      <div className="usage-row">
+        <div className="usage-line">
+          <span className="usage-label">Context window</span>
+          {v.state === "reading" && <span className="usage-pct">{contextLine(v.tokens, v.window)}</span>}
+        </div>
+        {v.state === "reading" ? (
+          <div className="usage-bar">
+            <span className={pct >= 90 ? "hot" : ""} style={{ width: `${pct}%` }} />
+          </div>
+        ) : (
+          <div className={`usage-empty${v.state === "error" ? " bad" : ""}`}>{v.why}</div>
+        )}
+      </div>
+      {v.state === "reading" && session && (
+        <div className="usage-foot" title={session.title}>
+          <span className="usage-ctx-title">{session.title}</span>
+          <span>· {AGENT_NAME[v.agent]} · reported {fmtElapsed(v.at)} ago</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Plan usage in the status bar — Claude, Codex, or both — with a popover of
- * every limit. Both agents report account-wide numbers from their sessions.
+ * every limit, under the focused session's context window. Both agents report
+ * account-wide numbers from their sessions.
  */
-export function UsageMeter({ usage, meters }: { usage: UsageReport | null; meters: Meters | null }) {
+export function UsageMeter({ usage, meters, focused }: { usage: UsageReport | null; meters: Meters | null; focused: SessionInfo | null }) {
   const [show, setShow] = usePersisted<UsageShow>("mb.usageShow", "both");
   const [open, setOpen] = useState(false);
   // resets pass while the app sits open with no session reporting
@@ -56,6 +113,7 @@ export function UsageMeter({ usage, meters }: { usage: UsageReport | null; meter
       </span>
       {open && (
         <Popover className="usage-pop" onClose={() => setOpen(false)}>
+          <ContextRow session={focused} />
           {shown.map(({ a, u }) => (
             <div key={a} className="usage-sec">
               <div className="usage-head">

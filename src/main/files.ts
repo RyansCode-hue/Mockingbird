@@ -1,4 +1,4 @@
-import { branchesOf, git, MAX_DIFF_BYTES, pickDefaultBase } from "./git";
+import { baseCandidates, branchesOf, git, MAX_DIFF_BYTES } from "./git";
 import * as fs from "fs";
 import { applyTextEdits, type LspTextEdit } from "../shared/textEdits";
 import { lineBreakOf, splitBom } from "../shared/editorText";
@@ -98,28 +98,55 @@ export async function applyFileEdits(root: string, rel: string, edits: LspTextEd
   return writeFile(root, rel, (bom ? "\ufeff" : "") + next, stat.mtimeMs);
 }
 
-// The base branch changes rarely; resolving it per poll would re-list every ref
-// every few seconds.
+// The base branches change rarely; resolving them per poll would re-list every
+// ref every few seconds.
 const BASE_TTL_MS = 5 * 60_000;
-const baseCache = new Map<string, { name: string | null; at: number }>();
+const baseCache = new Map<string, { names: string[]; at: number }>();
+/** Per folder, the base picked for the HEAD and base tips it was picked against. */
+const pickCache = new Map<string, { key: string; ref: string }>();
 
-async function defaultBaseOf(root: string): Promise<string | null> {
+async function baseNamesOf(root: string): Promise<string[]> {
   const hit = baseCache.get(root);
-  if (hit && Date.now() - hit.at < BASE_TTL_MS) return hit.name;
+  if (hit && Date.now() - hit.at < BASE_TTL_MS) return hit.names;
   const { local, origin } = await branchesOf(root);
-  const name = pickDefaultBase([...local, ...origin]);
-  baseCache.set(root, { name, at: Date.now() });
-  return name;
+  const names = baseCandidates([...local, ...origin]);
+  baseCache.set(root, { names, at: Date.now() });
+  return names;
 }
 
-/** The base branch as a ref git can read — origin/dev when the remote has it, else the local one; null when there's none. */
+/**
+ * The base branch HEAD's work is measured against, as a ref git can read
+ * (origin/<name> when the remote has it, else the local one); null when the
+ * repository has none. With several (dev and UAT), the one HEAD forked from
+ * last: the fewest commits on HEAD it lacks, ties going to the usual order.
+ * Measured against an older base, every commit the newer one gained since
+ * reads as the branch's own work.
+ */
 export async function baseRef(root: string): Promise<string | null> {
-  const name = await defaultBaseOf(root);
-  if (!name) return null;
-  for (const ref of [`origin/${name}`, name]) {
-    if (await git(root, ["rev-parse", "--verify", "-q", ref], { okCodes: [0, 1] })) return ref; // 1: no such ref
-  }
-  return null;
+  const names = await baseNamesOf(root);
+  if (!names.length) return null;
+  const full = (n: string) => [`refs/remotes/origin/${n}`, `refs/heads/${n}`];
+  const tips = new Map(
+    (await git(root, ["for-each-ref", "--format=%(refname) %(objectname)", ...names.flatMap(full)]))
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => l.split(" ") as [string, string])
+  );
+  const refs = names.flatMap((n) => {
+    const r = full(n).find((x) => tips.has(x));
+    return r ? [{ ref: r.startsWith("refs/remotes/") ? `origin/${n}` : n, sha: tips.get(r)! }] : [];
+  });
+  if (refs.length <= 1) return refs[0]?.ref ?? null;
+  const head = await git(root, ["rev-parse", "--verify", "-q", "HEAD"], { okCodes: [0, 1] });
+  if (!head) return refs[0].ref; // no commits yet
+  const key = [head, ...refs.map((r) => `${r.ref}=${r.sha}`)].join(" ");
+  const hit = pickCache.get(root);
+  if (hit?.key === key) return hit.ref;
+  const ahead = await Promise.all(refs.map(async (r) => Number(await git(root, ["rev-list", "--count", `${r.sha}..${head}`]))));
+  let best = 0;
+  for (let i = 1; i < refs.length; i++) if (ahead[i] < ahead[best]) best = i;
+  pickCache.set(root, { key, ref: refs[best].ref });
+  return refs[best].ref;
 }
 
 /** The commit a "branch" scope compares against: where HEAD forked from the repo's base branch. */

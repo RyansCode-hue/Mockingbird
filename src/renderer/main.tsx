@@ -2506,7 +2506,7 @@ function App() {
             </span>
           );
         })}
-        <UsageMeter usage={usage} meters={meters} />
+        <UsageMeter usage={usage} meters={meters} focused={sessions.find((s) => s.id === focused) ?? null} />
         <span className="right">
           {readError && (
             <span className="update-note bad" title={readError}>

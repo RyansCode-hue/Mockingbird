@@ -10,7 +10,7 @@
  * scripted checks. Add `?reset` to the URL to start from the fixtures again;
  * the query can also pick the screen (see the end of this file).
  */
-import type { AdoBoard, AdoWorkItem, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
+import type { AdoBoard, AdoWorkItem, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import type { TeamStatus } from "../shared/team/types";
 // team rooms: the House board
@@ -140,6 +140,12 @@ const pipelines: Record<string, TicketPipeline> = {
 const usage: UsageReport = {
   claude: { agent: "claude", plan: "Max", at: now - 2 * min, limits: [{ label: "5-hour limit", window: "5h", usedPct: 38, resetsAt: now + 2.5 * 60 * min }, { label: "Weekly · all models", window: "week", usedPct: 61, resetsAt: now + 3 * 24 * 60 * min }] },
   codex: { agent: "codex", plan: "Plus", at: now - 20 * min, limits: [{ label: "5-hour limit", window: "5h", usedPct: 9, resetsAt: now + 4 * 60 * min }] },
+};
+// each session's context window; ?ctx=error answers every read with a failure
+const contexts: Record<string, ContextWindow> = {
+  s1: { state: "reading", agent: "claude", tokens: 275_612, window: 1_000_000, at: now - 4_000 },
+  s2: { state: "reading", agent: "claude", tokens: 183_400, window: 200_000, at: now - 40_000 },
+  s3: { state: "reading", agent: "codex", tokens: 64_210, window: 272_000, at: now - 3 * min },
 };
 const tokens = (input: number, output: number, cacheRead: number) => ({ input, output, cacheRead, cacheWrite: Math.round(input / 3), replies: 40 });
 const meters: Meters = {
@@ -628,13 +634,13 @@ index 0000000..5d1e2f3
 +- [ ] Screenshots updated
 `;
 const takeoverPlans: Record<string, TakeoverPlan> = {
-  n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: p2p ? "peer" : "origin", skipped: [] }, other: null, toOrigin: !p2p, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 } },
+  n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: p2p ? "peer" : "origin", skipped: [] }, other: null, toOrigin: !p2p, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 }, resumesOwn: false },
   // ?p2p: only the copy that reached this Mac half an hour ago, a turn behind Sam's laptop
   m1: p2p
-    ? { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: true, conversation: { kind: "partial", have: 640_000, of: 980_000 } }
-    : { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, toOrigin: true, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 } },
+    ? { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: true, conversation: { kind: "partial", have: 640_000, of: 980_000 }, resumesOwn: false }
+    : { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, toOrigin: true, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 }, resumesOwn: false },
   // 5110 keeps backups peer to peer: what Nick's laptop sent while connected
-  n7: { roomId: "R5110bbbbbbbbbbbbbbbbb", sessionId: "n7", title: "Donor entity model", agent: "claude", branch: "5110-donor-entities", ownerName: "Nick Smith", ownerOnline: true, originUrl: "git@github.com:acme/donors.git", clone: REPO, snapshot: { sha: "d5".repeat(20), takenAt: now - 3 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 } },
+  n7: { roomId: "R5110bbbbbbbbbbbbbbbbb", sessionId: "n7", title: "Donor entity model", agent: "claude", branch: "5110-donor-entities", ownerName: "Nick Smith", ownerOnline: true, originUrl: "git@github.com:acme/donors.git", clone: REPO, snapshot: { sha: "d5".repeat(20), takenAt: now - 3 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 }, resumesOwn: false },
 };
 const takeoverChanged = () => emit("onTeamTakeoverChanged", JSON.parse(JSON.stringify(takeoverView)));
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
@@ -813,6 +819,10 @@ const api: Record<string, (...a: any[]) => any> = {
     settings = { ...settings, ...patch }; // main merges what it's sent
   },
   usageGet: async () => usage,
+  contextWindow: async (id: string): Promise<ContextWindow | { error: string }> =>
+    new URLSearchParams(location.search).get("ctx") === "error"
+      ? { error: `EACCES: permission denied, open '/Users/you/.mockingbird/context/${id}.json'` }
+      : (contexts[id] ?? { state: "none", why: "No reply yet in this conversation" }),
   metersGet: async () => meters,
   worktreeState: async (cwd: string) =>
     cwd.includes("5101") ? { dirty: true, dirtyFiles: 2, branch: "5101-orgDropdowns", upstream: "origin/5101-orgDropdowns", ahead: 1, behind: 0, insertions: 18, deletions: 3 } : { dirty: false, dirtyFiles: 0, branch: "dev", upstream: "origin/dev", ahead: 0, behind: 2, insertions: 0, deletions: 0 },
@@ -1472,6 +1482,14 @@ if (params.has("nosignal")) {
   settings = { ...settings, signalingUrl: "" };
 }
 const click = (selector: string) => (document.querySelector(selector) as HTMLElement | null)?.click();
+// ?usagePop opens the status bar's plan-usage popover; =N first focuses the Nth pane on screen
+if (params.has("usagePop")) {
+  setTimeout(() => {
+    const n = Number(params.get("usagePop")) || 0;
+    if (n) document.querySelectorAll(".pane")[n - 1]?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    setTimeout(() => click(".statusbar .usage"), 200);
+  }, 600);
+}
 /** Type into an input as a person would, so React sees the change. */
 const typeInto = (selector: string, text: string) => {
   const input = document.querySelector(selector) as HTMLInputElement | null;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { overlapChips } from "../src/renderer/overlapChips";
+import { localOverlapTitle, overlapChips, TITLE_FILES } from "../src/renderer/overlapChips";
 import type { FileOverlap } from "../src/shared/types";
 
 const NICK = "n".repeat(32);
@@ -20,6 +20,17 @@ describe("a pane's overlap chips", () => {
     expect(teammates).toHaveLength(1);
     expect(teammates[0].label).toBe("Nick's branch also changes x.ts +2");
     expect(teammates[0].title).toMatch(/^Nick's pushed branches change/);
+  });
+
+  it("names a dozen files per branch in a tooltip and counts the rest", () => {
+    const many = Array.from({ length: 533 }, (_, i) => `src/f${i}.ts`);
+    const title = localOverlapTitle([{ ...local, files: many }]);
+    expect(title).toContain(`  src/f${TITLE_FILES - 1}.ts`);
+    expect(title).not.toContain(`src/f${TITLE_FILES}.ts`);
+    expect(title).toContain(`… and ${533 - TITLE_FILES} more`);
+    expect(title.split("\n").length).toBeLessThan(TITLE_FILES + 10);
+    const { teammates } = overlapChips([nick("big", many)]);
+    expect(teammates[0].title).toContain(`… and ${533 - TITLE_FILES} more`);
   });
 
   it("has nothing for a pane without overlaps", () => {

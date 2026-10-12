@@ -14,4 +14,13 @@ describe("the stylesheet", () => {
       expect(css).toContain(`.seat-dot.c-${n}`);
     }
   });
+
+  it("lets the status bar's popovers open upward out of it", () => {
+    // plan usage and the session counts open above the bar: a bar that clips its y axis hides them whole
+    const decls = [...css.matchAll(/^\.statusbar\s*\{([^}]*)\}/gm)].map((m) => m[1]).join(";");
+    const overflow = (prop: string) => [...decls.matchAll(new RegExp(`(?:^|[;\\s])${prop}\\s*:\\s*([^;]+)`, "g"))].map((m) => m[1].trim());
+    expect(decls).not.toBe("");
+    for (const v of overflow("overflow")) expect(v.split(/\s+/).at(-1)).toBe("visible");
+    for (const v of overflow("overflow-y")) expect(v).toBe("visible");
+  });
 });

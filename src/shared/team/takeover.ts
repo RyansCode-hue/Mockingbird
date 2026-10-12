@@ -32,6 +32,8 @@ export interface RoomSessionDescriptor {
   cwd: string;
   /** The agent conversation the session runs (its transcript's id), when known. */
   conversationId: string | null;
+  /** The session's ticket, for the taker's brief. Absent from backups by Mockingbirds before it. */
+  ticketId?: string | null;
 }
 
 export type PushOutcome = { ok: true; at: number } | { ok: false; at: number; error: string };
@@ -338,7 +340,10 @@ export interface TakeoverPlan {
   originProblem: string | null;
   /** The newest snapshot announced is newer than any available here. */
   latestMissing: boolean;
+  /** How much of the owner's conversation reached this Mac: the brief is built from it, and it's saved in the worktree. */
   conversation: { kind: "full"; bytes: number } | { kind: "partial"; have: number; of: number } | { kind: "none" };
+  /** It was this Mac's own session (taken back): this Mac's own conversation resumes, the brief telling it what the teammate did. Otherwise a new conversation starts from the brief. */
+  resumesOwn: boolean;
 }
 
 export interface TakeoverResult {

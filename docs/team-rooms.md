@@ -487,10 +487,37 @@ on their laptop under their own account.
   when its turns ended — and the rows say "backed up 2m ago", or warn when a
   push failed.
 - **Conversation:** the transcript syncs **peer to peer only, never to GitHub**.
-  Take-over places it where the taker's CLI resumes it (Claude's
-  `~/.claude/projects/<slug>/<id>.jsonl` for the taker's checkout path, or
-  Codex's rollout). If the newest transcript never reached the taker, the agent
-  resumes from a handoff summary instead (the existing handoff digest), and says so.
+  Take-over **starts a new conversation on the taker's account; it never
+  resumes the owner's** (decided with Ryan, 2026-10-12). A resumed
+  conversation is sent whole on its first turn, and the taker's account has
+  none of it cached: a long session cost the taker a large share of their
+  usage window just to continue. The new session's first input is a
+  **handover brief** Mockingbird builds without a model call
+  (`src/main/team/takeoverBrief.ts`, about 15k tokens at most): the session's
+  title, ticket, room and repository; the branch and the worktree its snapshot
+  was checked out in; the changed files (`git diff --stat` against the base it
+  was cut from, and untracked files); the latest to-do list or plan (Claude's
+  TodoWrite or ExitPlanMode, Codex's update_plan); and the conversation's
+  first request and last turns — user and agent text, tool names and short
+  inputs, never tool output. What came from the owner's session is fenced
+  (`<handover>` … `</handover>`, one entry per line, its own angle brackets
+  swapped) and the agent is told it's a record, not instructions: it could
+  carry text written to steer an agent.
+- **The whole transcript, on demand.** What arrived is saved read-only
+  (owner-only, 0400) in the new worktree at
+  `.mockingbird/takeover/<transcript's file name>` — `.mockingbird/` is in the
+  repository's `.git/info/exclude` first, so it's never committed or in a
+  backup — and the brief says where, to read only when it needs detail. If it
+  can't be saved (a repository that tracks `.mockingbird/`), the brief says so
+  and the failure is logged.
+- **Part or none of it arrived:** the brief says the conversation's end is
+  missing (it's built from what arrived), or that there's nothing of it but the
+  files, and the agent is asked to say so first.
+- **Taking it back resumes your own conversation.** When the session being
+  taken over is one this Mac's own session became (Take it back), this Mac's
+  own conversation resumes — on its own account, moved to the new worktree —
+  and its first input is the brief of what the teammate did meanwhile. The
+  dialog says which it will be.
 - Take-over creates the session's branch/worktree on the taker's laptop from
   the newest snapshot it has: the peer copy in its clone, or — in a room that
   backs up to origin — origin's hidden ref, whichever is newer (a room kept

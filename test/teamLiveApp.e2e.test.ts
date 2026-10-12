@@ -38,7 +38,8 @@ const convOf = (sessionId: string) => `e2e-${sessionId}`;
  * Claude Code's stand-in: says how it was started, then runs a "turn" for each
  * line typed into it — the hook events Mockingbird reads (as hook.sh leaves
  * them), a line in notes.txt and one in its conversation's transcript. Started
- * with --resume, it carries on that conversation.
+ * with --resume, it carries on that conversation. A pasted message (a
+ * take-over's brief) is read whole and runs no turn.
  */
 const FAKE_CLAUDE = `#!/bin/bash
 conv="e2e-$MOCKINGBIRD_SESSION"
@@ -56,8 +57,16 @@ emit() {
   printf '{"event":"%s","ts":%s,"pane":"%s","payload":{"session_id":"%s","cwd":"%s","transcript_path":"%s","prompt":"%s"}}\\n' "$1" "$(date +%s)" "$MOCKINGBIRD_SESSION" "$conv" "$cwd" "$transcript" "$2" > "$tmp"
   mv -f "$tmp" "$events/$(date +%s)-\${tmp##*.}.json"
 }
+paste=
 while IFS= read -r line; do
+  # a pasted message (a take-over's brief) is read whole and runs no turn
+  if [[ "$line" == *$'\\e[200~'* ]]; then paste=1; fi
+  if [ -n "$paste" ]; then
+    if [[ "$line" == *$'\\e[201~'* ]]; then paste=; echo "fake-claude got a brief"; fi
+    continue
+  fi
   line=\${line//[^A-Za-z0-9 -]/}
+  [ -z "$line" ] && continue
   emit UserPromptSubmit "$line"
   printf '{"type":"user","sessionId":"%s","cwd":"%s","message":{"role":"user","content":"%s"}}\\n' "$conv" "$cwd" "$line" >> "$transcript"
   echo "$line" >> notes.txt
@@ -295,7 +304,10 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(exView.takenOver).toMatchObject({ by: nickId, conversation: "full", snapshot: { sha: exView.latest.sha } });
         const nickEx = (await nick.evaluate<{ id: string; cwd: string }[]>("window.mb.listSessions()")).find((x) => x.id === exView.takenOver!.newSessionId)!;
         expect(fs.readFileSync(path.join(nickEx.cwd, "notes.txt"), "utf8")).toBe("write the gift export\n");
-        await untilTrue("Nick's export agent resumed", async () => (await buffer(nick, nickEx.id)).includes(`fake-claude started: --resume ${convOf(ex.id)}`), 20_000);
+        // a new conversation on Nick's account, briefed; Ryan's whole conversation saved in the worktree for reference
+        await untilTrue("Nick's export agent briefed", async () => (await buffer(nick, nickEx.id)).includes("fake-claude got a brief"), 30_000);
+        expect(await buffer(nick, nickEx.id)).not.toContain("--resume");
+        expect(fs.existsSync(path.join(nickEx.cwd, ".mockingbird", "takeover", `${convOf(ex.id)}.jsonl`))).toBe(true);
         await untilTrue("Ryan's row: continued on Nick's laptop", async () =>
           /continued on Nick's laptop/.test(await ryan.evaluate<string>(`[...document.querySelectorAll(".sess-item")].filter((x) => x.textContent.includes("Gift export")).map((x) => x.textContent).join("|")`))
         );
@@ -318,11 +330,12 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(view.takenOver).toMatchObject({ by: nickId, conversation: "full", snapshot: { source: "peer" } });
         expect(git(r.bare, "for-each-ref", "--format=%(refname)", "refs/mockingbird")).toBe("");
         const mine = (await nick.evaluate<{ id: string; cwd: string; branch: string | null; taskGroup: string | null }[]>("window.mb.listSessions()")).find((x) => x.id === view.takenOver!.newSessionId)!;
-        // the work in a worktree of Nick's clone, on the session's branch, the conversation resumed
+        // the work in a worktree of Nick's clone, on the session's branch, a new conversation briefed from Ryan's
         expect(mine).toMatchObject({ branch: "5110-donors", taskGroup: "5110" });
         expect(fs.readFileSync(path.join(mine.cwd, "notes.txt"), "utf8")).toBe("add the donor notes\n");
         expect(git(mine.cwd, "rev-parse", "--show-toplevel")).not.toBe(fs.realpathSync(r.nick.clone));
-        await untilTrue("the resumed agent", async () => (await buffer(nick, mine.id)).includes(`fake-claude started: --resume ${convOf(s.id)}`), 20_000);
+        await untilTrue("the briefed agent", async () => (await buffer(nick, mine.id)).includes("fake-claude got a brief"), 30_000);
+        expect(await buffer(nick, mine.id)).not.toContain("--resume");
         // the room's session is Nick's now; Ryan's copy no longer shows
         expect((await live(nick)).own[mine.id]).toMatchObject({ roomId, remote: false });
         expect((await live(nick)).remote.some((x) => x.room?.sessionId === s.id)).toBe(false);

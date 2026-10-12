@@ -133,7 +133,8 @@ function files(root: string): Record<string, string> {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
       const rel = path.relative(root, p);
-      if (e.name === ".git" || rel.endsWith(".log") || e.name === ".env" || e.name.endsWith(".pem")) continue;
+      // .mockingbird is Mockingbird's own, git-excluded: a take-over saves the conversation there
+      if (e.name === ".git" || e.name === ".mockingbird" || rel.endsWith(".log") || e.name === ".env" || e.name.endsWith(".pem")) continue;
       if (e.isDirectory()) walk(p);
       else out[rel] = fs.readFileSync(p, "utf8");
     }
@@ -409,7 +410,7 @@ describe("the conversation's copy", () => {
 });
 
 describe("taking over", () => {
-  it("continues the session on the teammate's laptop with the owner offline: the work exactly, the conversation resumed", async () => {
+  it("continues the session on the teammate's laptop with the owner offline: the work exactly, a new conversation from a brief", async () => {
     const t = await setup();
     await t.ryan.svc.turnEnded("s1");
     await t.ryan.svc.settled();
@@ -432,18 +433,31 @@ describe("taking over", () => {
     expect(fs.existsSync(path.join(r.cwd, ".env"))).toBe(false); // teammates swap secrets by hand
     expect(sh(r.cwd, "status", "--porcelain")).toMatch(/\?\? notes\//);
 
-    // the conversation where Claude resumes it in the new worktree, its working directory moved
-    const placed = path.join(claudeProjectDir(realpathOr(r.cwd), t.nick.claudeProjects), `${CONV}.jsonl`);
-    const lines = fs.readFileSync(placed, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines.map((l) => l.cwd)).toEqual([realpathOr(r.cwd), realpathOr(r.cwd)]);
-    expect(lines[0].message.content).toBe("Add the donor entity");
+    // Ryan's conversation isn't resumed on Nick's account: nothing placed where Claude would resume it
+    expect(fs.existsSync(path.join(claudeProjectDir(realpathOr(r.cwd), t.nick.claudeProjects), `${CONV}.jsonl`))).toBe(false);
+    // it's saved whole in the worktree, read-only and owner-only, where git never sees it
+    const saved = path.join(r.cwd, ".mockingbird", "takeover", `${CONV}.jsonl`);
+    expect(fs.readFileSync(saved, "utf8")).toBe(fs.readFileSync(t.transcript, "utf8"));
+    expect(fs.statSync(saved).mode & 0o777).toBe(0o400);
+    expect(fs.statSync(path.dirname(saved)).mode & 0o777).toBe(0o700);
+    expect(sh(r.cwd, "status", "--porcelain")).not.toContain(".mockingbird");
+    expect(sh(r.cwd, "check-ignore", ".mockingbird/takeover")).toBe(".mockingbird/takeover");
 
-    // the session: resumed under Nick's account, in the worktree, in the room's group
-    expect(t.nick.launched).toEqual([
-      { repoPath: t.nickClone, cwd: r.cwd, branchName: "feature-x", useWorktree: false, agent: "claude", title: "Donor entities", taskGroup: "5110", resumeSessionId: CONV },
-    ]);
-    const args = agentFor("claude").launchArgs(t.nick.launched[0], {});
-    expect(args.slice(0, 2)).toEqual(["--resume", CONV]);
+    // the session: a new conversation under Nick's account, in the worktree, in the room's group, its first input the brief
+    const { initialPrompt, ...req } = t.nick.launched[0];
+    expect(t.nick.launched).toHaveLength(1);
+    expect(req).toEqual({ repoPath: t.nickClone, cwd: r.cwd, branchName: "feature-x", useWorktree: false, agent: "claude", title: "Donor entities", taskGroup: "5110" });
+    expect(agentFor("claude").launchArgs(t.nick.launched[0], {})).not.toContain("--resume");
+    expect(initialPrompt).toMatch(/^You're continuing "Donor entities", a Claude session Ryan was running on their laptop\. Nick took it over on this one: you're a new session on Nick's account/);
+    expect(initialPrompt).toContain("Branch: feature-x");
+    expect(initialPrompt).toContain(r.cwd);
+    expect(initialPrompt).toContain("USER: Add the donor entity");
+    expect(initialPrompt).toContain("AGENT: Added src/b.ts and started on a.ts");
+    // the changed files against the base: the branch's commit and the work on top, new files too
+    expect(initialPrompt).toMatch(/## Changed files \(against origin\/main\)/);
+    for (const f of ["src/a.ts", "src/b.ts", "src/gone.ts", "src/staged.ts (new, untracked)", "notes/todo.md (new, untracked)"]) expect(initialPrompt).toContain(f);
+    expect(initialPrompt).toContain(`${saved}`);
+    expect(initialPrompt).toMatch(/read it only when you need detail this brief leaves out/);
 
     // the room records it; Ryan sees it when he's back, and his copy stops backing up
     expect(backupIn(t.nickM, t.roomId)!.takenOver).toMatchObject({ by: t.nickM.id, newSessionId: "new1", conversation: "full", snapshot: { sha: plan.snapshot!.sha } });
@@ -491,7 +505,7 @@ describe("taking over", () => {
     expect(fs.readFileSync(path.join(r.cwd, "src/a.ts"), "utf8")).toBe("turn 3\n");
   });
 
-  it("resumes from the handoff digest when the conversation's end never arrived, and says so", async () => {
+  it("briefs from what arrived when the conversation's end never did, and says so", async () => {
     const t = await setup();
     await t.ryan.svc.turnEnded("s1");
     await t.ryan.svc.settled();
@@ -507,10 +521,13 @@ describe("taking over", () => {
     expect(r.conversation).toBe("digest");
     const req = t.nick.launched[0];
     expect(req.resumeSessionId).toBeUndefined();
-    expect(req.initialPrompt).toMatch(/Only part of that session's conversation reached this laptop/);
+    expect(req.initialPrompt).toMatch(/Only part of Ryan's conversation reached this laptop: its most recent turns are missing/);
     expect(req.initialPrompt).toContain("USER: Add the donor entity");
-    expect(req.initialPrompt).toMatch(/First tell Nick in one line that you're working from a partial conversation/);
+    expect(req.initialPrompt).not.toContain("AGENT: Added src/b.ts");
+    expect(req.initialPrompt).toMatch(/and that you're working from a partial conversation/);
     expect(req.initialPrompt).toContain("Branch: feature-x");
+    expect(req.initialPrompt).toMatch(/What arrived of Ryan's conversation .* is in /);
+    expect(fs.readFileSync(path.join(r.cwd, ".mockingbird", "takeover", `${CONV}.jsonl`), "utf8")).toBe(firstLine);
     expect(fs.existsSync(path.join(claudeProjectDir(realpathOr(r.cwd), t.nick.claudeProjects), `${CONV}.jsonl`))).toBe(false);
     expect(backupIn(t.nickM, t.roomId)!.takenOver).toMatchObject({ conversation: "digest" });
   });
@@ -525,11 +542,14 @@ describe("taking over", () => {
     expect(plan).toMatchObject({ snapshot: { source: "origin" }, other: null, conversation: { kind: "none" } });
     const r = await t.nick.svc.takeOver(t.roomId, "s1");
     expect(r.conversation).toBe("none");
-    expect(t.nick.launched[0].initialPrompt).toMatch(/conversation didn't reach this laptop, so you're starting without it/);
+    expect(t.nick.launched[0].initialPrompt).toMatch(/Ryan's conversation didn't reach this laptop, so there's nothing of it below: only the files/);
+    expect(t.nick.launched[0].initialPrompt).toMatch(/and that you're working from the files alone/);
+    expect(t.nick.launched[0].resumeSessionId).toBeUndefined();
+    expect(fs.existsSync(path.join(r.cwd, ".mockingbird", "takeover"))).toBe(false);
     expect(files(r.cwd)).toEqual(files(t.wt));
   });
 
-  it("takes over a Codex session: the rollout in its date folder, its working directory moved, resumed by id", async () => {
+  it("takes over a Codex session as a new Codex conversation: the brief its prompt, the rollout saved in the worktree", async () => {
     const t = await setup();
     const name = `rollout-2026-10-07T09-30-00-${CODEX_CONV}.jsonl`;
     const rollout = codexRolloutPath(name, t.ryan.codexSessions);
@@ -551,13 +571,16 @@ describe("taking over", () => {
     await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
     const r = await t.nick.svc.takeOver(t.roomId, "s1");
     expect(r.conversation).toBe("full");
-    const placed = codexRolloutPath(name, t.nick.codexSessions);
-    expect(placed).toBe(path.join(t.nick.codexSessions, "2026", "10", "07", name));
-    const lines = fs.readFileSync(placed, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines[0].payload.cwd).toBe(realpathOr(r.cwd));
-    expect(lines[1].payload.cwd).toBe(realpathOr(r.cwd));
-    expect(t.nick.launched[0]).toMatchObject({ agent: "codex", resumeSessionId: CODEX_CONV });
-    expect(agentFor("codex").launchArgs(t.nick.launched[0], {}).slice(0, 2)).toEqual(["resume", CODEX_CONV]);
+    expect(fs.existsSync(codexRolloutPath(name, t.nick.codexSessions))).toBe(false);
+    expect(fs.readFileSync(path.join(r.cwd, ".mockingbird", "takeover", name), "utf8")).toBe(fs.readFileSync(rollout, "utf8"));
+    const req = t.nick.launched[0];
+    expect(req).toMatchObject({ agent: "codex" });
+    expect(req.resumeSessionId).toBeUndefined();
+    expect(req.initialPrompt).toMatch(/^You're continuing "Donor entities", a Codex session Ryan was running/);
+    expect(req.initialPrompt).toContain("USER: Add the donor entity");
+    const args = agentFor("codex").launchArgs(req, {});
+    expect(args).not.toContain("resume");
+    expect(args.slice(-2)).toEqual(["--", req.initialPrompt]);
   });
 
   it("asks for the clone when none among the repositories matches origin, and checks the one chosen", async () => {

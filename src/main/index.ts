@@ -16,7 +16,7 @@ import { DebugManager } from "./dap/session";
 import { debugTargetFor } from "./dap/targets";
 import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
-import { readUsage, watchUsage, setClaudePlan } from "./usage";
+import { readUsage, watchUsage, setClaudePlan, readContextWindow } from "./usage";
 import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef, inside } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
@@ -49,7 +49,7 @@ import { checkForUpdate, updateRepo } from "./updates";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
-import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
+import type { AgentKind, BroadcastRequest, ContextWindow, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
 import { claudeRunner, freeForResume } from "./claudeBackground";
@@ -828,6 +828,10 @@ handle("claudemd:save", (p, content) => {
 });
 
 handle("usage:get", () => readUsage());
+handle("usage:context", (id: string): ContextWindow => {
+  const s = sessions.list().find((x) => x.id === id);
+  return s ? readContextWindow(s) : { state: "none", why: "This session isn't running" };
+});
 handle("hooks:installed", async () => hooksInstalled(await installedBin("codex")));
 handle("hooks:install", async () => installHooks(await installedBin("codex")));
 handle("app:version", () => app.getVersion());

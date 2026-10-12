@@ -10,10 +10,13 @@ import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktre
 import { parseNameStatus } from "../files";
 import { secretPathspecs } from "../secrets";
 import { worktreeAt } from "../worktrees";
-import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, codexRolloutPath, realpathOr } from "../agentFiles";
+import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, realpathOr } from "../agentFiles";
 import { rebaseTranscript } from "../transcripts";
-import { repoState, takeoverKickoff, transcriptDigest, transcriptLines } from "../handoff";
-import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
+import { transcriptLines } from "../handoff";
+import { TAKEOVER_TRANSCRIPT_DIR, takeoverBrief } from "./takeoverBrief";
+import { excludePlanDir } from "./claims";
+import { baseRef } from "../files";
+import { isMissing, readJsonOrSetAside, writeFileAtomic, writeGeneratedInside } from "../fileOps";
 import { MEMBER_ID_RE } from "../../shared/team/protocol";
 import {
   ASK_MS,
@@ -72,10 +75,13 @@ import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/t
  * Taker side, on Take over: their clone (found by origin URL), a new worktree
  * on the session's branch at the snapshot's parent with the snapshot's files
  * on top (uncommitted work and untracked files exactly), the newest snapshot of
- * the peer copy (and origin's, in a room backing up there), the transcript
- * placed where the taker's CLI resumes it (or, when it didn't all arrive, a
- * kickoff built from the handoff digest that says so), the session launched,
- * and `session.takenOver` published.
+ * the peer copy (and origin's, in a room backing up there), a new session
+ * launched on the taker's account with a brief as its first input
+ * (takeoverBrief.ts; never a resume of the owner's conversation) and the
+ * transcript that arrived saved in the worktree's .mockingbird for reference,
+ * and `session.takenOver` published. Taking back a session that was this
+ * Mac's resumes this Mac's own conversation instead, briefed on the
+ * teammate's turns.
  *
  * Owner online: the taker asks first (takeover.ask). The owner is prompted
  * (Hand over / Keep, kept after ASK_MS unanswered); handing over lets the
@@ -160,6 +166,7 @@ function checkDescriptor(d: any): void {
   if (hasCredentials(d.originUrl)) throw new Error("originUrl must not carry credentials");
   text(d.cwd, "cwd", 1000, 1);
   if (d.conversationId !== null && (typeof d.conversationId !== "string" || !CONV_ID_RE.test(d.conversationId))) throw new Error("bad conversation id");
+  if (d.ticketId !== undefined && d.ticketId !== null) text(d.ticketId, "ticketId", 100, 1);
 }
 
 defineEventType("session.backup", {
@@ -569,6 +576,7 @@ export class TakeoverService {
       originUrl: publicUrl(url),
       cwd: s.cwd,
       conversationId: conv?.id ?? null,
+      ...(s.ticketId ? { ticketId: s.ticketId.slice(0, 100) } : {}),
     };
     const body = { sessionId: s.id, sha: rec.sha, takenAt: rec.takenAt, push, ...(toOrigin ? {} : { toOrigin: false }), session, transcriptBytes: file ? (await fs.promises.stat(file)).size : null };
     // a turn that changed nothing anyone records isn't a new event
@@ -1520,6 +1528,7 @@ export class TakeoverService {
       ownerOnline: this.d.team.presence(roomId).includes(b.owner),
       originUrl: b.session.originUrl,
       conversation: this.conversationPlan(roomId, b),
+      resumesOwn: this.resumesOwn(roomId, b),
       toOrigin: backupsToOrigin(this.d.team.room(roomId)),
     };
     if (!clone) return { ...base, clone: null, snapshot: null, other: null, originProblem: null, latestMissing: true };
@@ -1570,7 +1579,7 @@ export class TakeoverService {
       if (!base) throw new Error("The snapshot has no parent commit (the repository had no commits yet), so there's no branch to continue");
       const wt = await worktreeAt(clone, b.session.branch, base);
       await checkoutSnapshotFiles(wt.path, snap.sha);
-      const carried = await this.carryConversation(roomId, b, plan, wt.path);
+      const carried = await this.startFrom(roomId, b, plan, wt, snap);
       const req: NewSessionRequest = {
         repoPath: clone,
         cwd: wt.path,
@@ -1643,34 +1652,99 @@ export class TakeoverService {
     return current && have >= of && meta.agent === b.session.agent ? { kind: "full", bytes: have } : { kind: "partial", have, of };
   }
 
-  private async carryConversation(roomId: RoomId, b: RoomSessionBackup, plan: TakeoverPlan, cwd: string): Promise<{ req: Partial<NewSessionRequest>; carried: ConversationCarried }> {
+  /**
+   * How the continued session starts. A teammate's session starts a new
+   * conversation on this Mac's account from a brief (takeoverBrief.ts) — never
+   * by resuming theirs, which would send the whole of it, uncached on this
+   * account, with the first turn — and the transcript that arrived is saved in
+   * the worktree for the agent to read when it needs detail. A session that
+   * was this Mac's own (taken back) resumes this Mac's own conversation,
+   * moved to the new worktree, with the brief of the teammate's turns as its
+   * first input.
+   */
+  private async startFrom(roomId: RoomId, b: RoomSessionBackup, plan: TakeoverPlan, wt: { path: string; branch: string | null }, snap: { sha: string; takenAt: number }): Promise<{ req: Partial<NewSessionRequest>; carried: ConversationCarried }> {
     const meta = this.transcriptMeta(roomId, b.sessionId);
-    const file = meta ? path.join(this.transcriptDir(roomId, b.sessionId), meta.file) : null;
-    if (plan.conversation.kind === "full" && meta && file) {
-      // the CLI started in the new worktree sees its real path: that's the one it looks under and records
-      const to = realpathOr(cwd);
-      const moved = rebaseTranscript(await fs.promises.readFile(file, "utf8"), meta.agent, [...new Set([b.session.cwd, meta.ownerCwd])], to);
-      const dest = meta.agent === "codex" ? codexRolloutPath(meta.file, this.codexSessions) : path.join(claudeProjectDir(to, this.claudeProjects), `${meta.conversationId}.jsonl`);
-      // a longer copy already here is this conversation carried on on this Mac: resume that one
-      if (fileSizeSync(dest) <= Buffer.byteLength(moved)) {
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        writeFileAtomic(dest, moved, 0o600);
-      } else this.d.log(`team: taking over session ${b.sessionId}`, `${dest} already holds a longer copy of the conversation; resuming it`);
-      return { req: { resumeSessionId: meta.conversationId }, carried: "full" };
-    }
-    const lines = file && meta && fileSizeSync(file) ? await transcriptLines(file) : [];
-    const digest = lines.length ? transcriptDigest(lines, meta!.agent, meta!.conversationId) : "";
-    const room = this.d.team.room(roomId);
-    const initialPrompt = takeoverKickoff({
+    const file = meta && plan.conversation.kind !== "none" ? path.join(this.transcriptDir(roomId, b.sessionId), meta.file) : null;
+    const conversation = plan.conversation.kind === "full" ? "full" : plan.conversation.kind === "partial" ? "partial" : "none";
+    const lines = file ? await transcriptLines(file) : [];
+    const transcript = file ? await this.saveTranscriptIn(wt.path, file, meta!.file, b.sessionId) : null;
+    const own = await this.resumeOwn(roomId, b, wt.path);
+    let base = await baseRef(wt.path);
+    const fork = base ? await git(wt.path, ["merge-base", "HEAD", base], { okCodes: [0, 1] }) : "";
+    if (!fork) base = null;
+    const stat = await git(wt.path, ["diff", "--stat=160", fork || "HEAD"]);
+    const untracked = await git(wt.path, ["ls-files", "--others", "--exclude-standard"]);
+    const initialPrompt = takeoverBrief({
+      mode: own ? "return" : "fresh",
       owner: this.nameOf(roomId, b.owner),
-      taker: room ? this.nameOf(roomId, this.d.team.self.id) : "a teammate",
+      taker: this.nameOf(roomId, this.d.team.self.id),
       agent: b.session.agent,
       title: b.session.title,
-      digest,
-      repo: await repoState(cwd),
-      partial: !!digest,
+      ticketId: b.session.ticketId ?? null,
+      room: this.d.team.room(roomId)?.name ?? roomId,
+      repo: b.session.originUrl,
+      branch: wt.branch,
+      worktree: wt.path,
+      snapshot: snap,
+      base,
+      changes: [...untracked.split("\n").filter(Boolean).map((f) => `${f} (new, untracked)`), ...stat.split("\n").filter(Boolean)],
+      conversation,
+      lines,
+      conversationId: meta?.conversationId ?? null,
+      transcript,
     });
-    return { req: { initialPrompt }, carried: digest ? "digest" : "none" };
+    return { req: { initialPrompt, ...(own ? { resumeSessionId: own } : {}) }, carried: conversation === "full" ? "full" : conversation === "partial" ? "digest" : "none" };
+  }
+
+  /**
+   * The transcript that arrived, saved read-only in the worktree's .mockingbird
+   * (git-excluded first, so it's never committed or in a backup) for the agent
+   * to read on demand. A failure is logged and the brief says so.
+   */
+  private async saveTranscriptIn(worktree: string, file: string, name: string, sessionId: string): Promise<{ path: string; bytes: number } | { error: string }> {
+    try {
+      await excludePlanDir(worktree);
+      const text = await fs.promises.readFile(file, "utf8");
+      const rel = `${TAKEOVER_TRANSCRIPT_DIR}/${name}`;
+      writeGeneratedInside(worktree, rel, text, 0o400, 0o700);
+      return { path: path.join(worktree, rel), bytes: Buffer.byteLength(text) };
+    } catch (err) {
+      this.d.log(`team: saving session ${sessionId}'s conversation in ${worktree}`, err);
+      return { error: (err as Error).message };
+    }
+  }
+
+  /** This Mac's own session that became `b` (it's being taken back): its own conversation, moved to `worktree` for its CLI to resume. The conversation id, or null. */
+  private async resumeOwn(roomId: RoomId, b: RoomSessionBackup, worktree: string): Promise<string | null> {
+    const mine = this.ownPredecessor(roomId, b);
+    if (!mine) return null;
+    const { agent, conversationId: id, cwd } = mine.session;
+    const src = this.ownTranscript(agent, id!, cwd);
+    if (!src) {
+      this.d.log(`team: taking back session ${b.sessionId}`, `this Mac's own conversation ${id} wasn't found, so it starts from the brief`);
+      return null;
+    }
+    // the CLI started in the new worktree sees its real path: that's the one it looks under and records
+    const to = realpathOr(worktree);
+    const moved = rebaseTranscript(await fs.promises.readFile(src, "utf8"), agent, [...new Set([cwd, realpathOr(cwd)])], to);
+    // a Codex rollout is found by id wherever it is: moved in place (its old copy never runs again)
+    const dest = agent === "codex" ? src : path.join(claudeProjectDir(to, this.claudeProjects), `${id}.jsonl`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    writeFileAtomic(dest, moved, 0o600);
+    return id;
+  }
+
+  /** Whether taking `b` over resumes this Mac's own conversation (see resumeOwn). */
+  private resumesOwn(roomId: RoomId, b: RoomSessionBackup): boolean {
+    const mine = this.ownPredecessor(roomId, b);
+    return !!mine && !!this.ownTranscript(mine.session.agent, mine.session.conversationId!, mine.session.cwd);
+  }
+
+  /** The session of this Mac's that a teammate continued as `b`, when it ran the same agent and its conversation is known. */
+  private ownPredecessor(roomId: RoomId, b: RoomSessionBackup): RoomSessionBackup | null {
+    const self = this.d.team.self.id;
+    const all = Object.values(this.d.team.room(roomId)?.ext.takeover?.sessions ?? {});
+    return all.find((e) => e.owner === self && e.takenOver?.newSessionId === b.sessionId && e.takenOver.by === b.owner && e.session.agent === b.session.agent && !!e.session.conversationId) ?? null;
   }
 
   // ---- the window's view ----------------------------------------------------------------------

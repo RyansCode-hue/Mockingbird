@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { changedFiles, overlaps, type WorktreeChanges } from "../src/main/conflicts";
+import { baseRef } from "../src/main/files";
 import { git, makeRepo, tempDir, write } from "./helpers";
 
 const wt = (sessionId: string, repo: string, cwd: string, files: string[]): WorktreeChanges => ({ sessionId, title: sessionId, branch: `b-${sessionId}`, repo, cwd, files });
@@ -41,6 +42,37 @@ describe("a worktree's changed files", () => {
     const o = overlaps([{ sessionId: "A", title: "A", cwd: a, ...ca }, { sessionId: "B", title: "B", cwd: b, ...cb }]);
     expect(o.A[0].files).toEqual(["src/x.ts"]);
     expect(o.B[0]).toMatchObject({ other: "A", otherBranch: "5101-a", files: ["src/x.ts"] });
+  });
+
+  it("measures a branch cut from UAT against UAT, not an older dev: two such worktrees share only what they changed", async () => {
+    const upstream = makeRepo({ "src/x.ts": "x\n", "src/y.ts": "y\n" }, "upstream");
+    git(upstream, "branch", "dev");
+    git(upstream, "checkout", "-q", "-b", "UAT");
+    // UAT moves on past dev: work dev doesn't have yet
+    for (const f of ["a", "b", "c"]) {
+      write(upstream, { [`src/uat-${f}.ts`]: `${f}\n` });
+      git(upstream, "add", "-A");
+      git(upstream, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", f);
+    }
+    const clone = path.join(tempDir("clone"), "repo");
+    git(path.dirname(clone), "clone", "-q", upstream, clone);
+    const a = path.join(path.dirname(clone), "wt-a");
+    const b = path.join(path.dirname(clone), "wt-b");
+    git(clone, "worktree", "add", "-q", "-b", "feature/1-a", a, "origin/UAT");
+    git(clone, "worktree", "add", "-q", "-b", "feature/2-b", b, "origin/UAT");
+    write(a, { "src/x.ts": "a's x\n" });
+    write(b, { "src/y.ts": "b's y\n" });
+
+    expect(await baseRef(a)).toBe("origin/UAT");
+    const ca = await changedFiles(a);
+    const cb = await changedFiles(b);
+    expect(ca.files).toEqual(["src/x.ts"]);
+    expect(cb.files).toEqual(["src/y.ts"]);
+    expect(overlaps([{ sessionId: "A", title: "A", cwd: a, ...ca }, { sessionId: "B", title: "B", cwd: b, ...cb }])).toEqual({});
+    // a branch cut from dev is still measured against dev
+    const c = path.join(path.dirname(clone), "wt-c");
+    git(clone, "worktree", "add", "-q", "-b", "feature/3-c", c, "origin/dev");
+    expect(await baseRef(c)).toBe("origin/dev");
   });
 
   it("fails when the branch can't be compared with its base, rather than claim it changed nothing", async () => {

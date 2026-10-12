@@ -11,6 +11,7 @@ describe("pickDefaultBase", () => {
     expect(pickDefaultBase(["main", "dev", "feature/x"])).toBe("dev");
     expect(pickDefaultBase(["master", "uat"])).toBe("uat");
     expect(pickDefaultBase(["feature/x"])).toBeNull();
+    expect(pickDefaultBase(["main", "UAT"])).toBe("UAT"); // by name, whatever its case
   });
   it("lists local and origin branches once each, without origin/HEAD", async () => {
     const origin = makeRepo({ "a.txt": "1" }, "origin");
