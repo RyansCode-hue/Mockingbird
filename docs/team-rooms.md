@@ -704,7 +704,9 @@ lines) in the room's repository, and links — for people and agents alike.
 
 Decided with Ryan, 2026-10-12: the room's board mirrors the project's
 **Radley House** tickets instead of a hand-made plan. The House is the system
-of record; the room keeps only what the House doesn't.
+of record; the room keeps only what the House doesn't. Once the live check
+had read the real House the same day, Ryan decided the board leads with the
+House's **open backlog**.
 
 - **Which project:** the room's admin chooses it on the board (`house.project`,
   admin-only like `room.settings`: anyone else's is refused locally and
@@ -722,25 +724,55 @@ of record; the room keeps only what the House doesn't.
   `HOUSE_API_URL/api/projects/<id>/external/…`, never follow a redirect, and
   time out after 15 s. Errors carry the House's own message.
 - **What the board shows** (▦ on a shared group, or "House board" in the
-  palette): "Radley House · <project>" with **+ Add ticket**, then **Current
-  slice · <name>** (the tickets the House's frozen spec, `GET spec`, names)
-  and **Added by the room** (`house.track` / `house.untrack`, by number, any
-  member). Each row is `#<n>`, the title, and "<person> · <status>" when
-  claimed or **Claim** (on a branch: one of your room sessions', or
-  `feature/<n>-<slug>`). A row opens the ticket: its detail, acceptance and
-  history, Claim / Release, a comment, progress, status change or question,
-  and **Open in the House**. + Add ticket puts an existing ticket on the
-  board, or creates one in the House (it starts parked) and adds it.
+  palette): "Radley House · <project>" with **+ Add ticket**, then:
+  - **Open backlog** — every ticket whose status isn't `done` or `dropped`,
+    in the House's own order (`GET work-items` lists priority-sorted, high to
+    low). Its **Needs an agent** filter keeps the tickets tagged
+    `needs-agent` (handed back to an agent), with their count.
+  - **Added by the room** — the room's own tickets (`house.track` /
+    `house.untrack`, by number, any member) that the open backlog doesn't
+    hold: closed ones, or ones the House's list left out.
+
+  A ticket shows once. The room's ticket that is open stays in the backlog,
+  in the House's order, with an **added** mark ("Nick added it"), rather than
+  being pulled out: the backlog stays complete and its order means something,
+  and the second section holds only what the backlog can't show — a ticket
+  the room tracked keeps its place on the board after staff close it.
+
+  Each row is `#<n>`, the priority (high, medium, low, investigate), the
+  title, its marks — `needs-human` (an agent is blocked on a question for a
+  person) and `needs-agent`, "blocked by #122" (`blocked_by`), "waiting on …"
+  (`waiting_on`), "added" — then "<person> · <status>" when claimed or the
+  status and **Claim** (on a branch: one of your room sessions', or
+  `feature/<n>-<slug>`; not offered on a closed ticket). Statuses read as the
+  House's flow, human-readably: parked → ready → in progress → review →
+  validating → done, or dropped. A row opens the ticket: its detail,
+  acceptance, blockers (each opens that ticket) and history, Claim / Release,
+  a comment, progress, status change or question, and **Open in the House**.
+  History entries are the House's `{at, actor, event, note?, to_status?}`: a
+  status change, which has a `to_status` and no note, reads "Ryan · status →
+  review"; others read "Nick · progress" with the note below. + Add ticket
+  puts an existing ticket on the board, or creates one in the House (it
+  starts parked) and adds it.
+- **The spec is the requirements document.** `GET spec` answers the frozen
+  spec (`title`, `frozen_at`, `sections` …), not a ticket list, so the board
+  doesn't read it; agents read it with `get_house_spec`. (The board's first
+  version took a "current slice" of tickets from it, and found none.)
 - **Who has a ticket:** the room member whose room sessions are on the claim's
   branch, else the member whose name matches the House's claimant, else the
   House's name for them.
-- **Reading:** each member's Mockingbird reads the backlog (`GET work-items`),
-  the spec, and any board ticket the backlog didn't include, about once a
+- **Reading:** each member's Mockingbird reads the backlog (`GET work-items`)
+  and any of the room's tickets the backlog didn't include, about once a
   minute while the board is open or one of its room sessions runs, when the
   admin changes the project, and when a teammate's write nudges it
   (`house.nudge {n}`, published after every write so others read that ticket
-  again at once). Titles, claims and statuses are never copied into the room
-  log; the chat's agent updates say only "Ryan claimed #143".
+  again at once; a new ticket's nudge reads the whole list, for its place in
+  the House's order). A ticket is read as the House answers it: `number`,
+  `status`, `priority`, `tags`, the claim from `assignee` + `branch`,
+  `blocked_by`, `waiting_on` and `history` (other field names the House
+  might use are still looked for). Titles, claims and statuses are never
+  copied into the room log; the chat's agent updates say only "Ryan claimed
+  #143".
 - **Writing** (from the board or an agent, as that member): claim
   (`POST …/claim {branch}`), release, progress and status changes
   (`POST …/events {event: "progress", note, status?, reference?}`), a
@@ -749,19 +781,23 @@ of record; the room keeps only what the House doesn't.
   (`POST work-items`, then `PATCH {tags}` if it has any). Only staff close a
   ticket as done or dropped; the board never offers it.
 - **Agents** in a room get the mockingbird MCP tools `list_house_tickets`
-  (the board, the slice, the room's tickets, or the whole backlog by tag),
-  `read_house_ticket` (with history), `create_house_ticket` (also added to
-  the board), `claim_house_ticket` (on the session's branch unless given one;
-  a session on a base branch is asked for one), `release_house_ticket`,
-  `post_house_ticket_event` (progress, status, question, note) and
-  `get_house_spec`, pre-allowed for Claude (Codex approves the server's tools
-  itself). A call acts as the session's owner, through the Mockingbird that
-  runs the session, so a teammate's agent never uses your token. An agent
-  started in a room gets a short summary of the slice and the room's claims
-  in its launch, fenced and labelled as data from the House and teammates,
-  not instructions; otherwise the SessionStart hook adds the same from the
-  worktree's `.mockingbird/agent-context.md`. @assistant gets the same
-  summary.
+  (no filter: the board — the open backlog, then the room's tickets outside
+  it; `filter`: `open`, `tracked` (the room's own) or `all` (everything the
+  House lists, closed included, read now); `tag` narrows any, e.g.
+  `needs-agent`), `read_house_ticket` (with history), `create_house_ticket`
+  (also added to the board), `claim_house_ticket` (on the session's branch
+  unless given one; a session on a base branch is asked for one),
+  `release_house_ticket`, `post_house_ticket_event` (progress, status,
+  question, note) and `get_house_spec` (the requirements document),
+  pre-allowed for Claude (Codex approves the server's tools itself). A call
+  acts as the session's owner, through the Mockingbird that runs the session,
+  so a teammate's agent never uses your token. An agent started in a room
+  gets a short summary of the board in its launch — the open backlog (up to
+  40 tickets, each with its claim, status, priority, handoff tag, blockers and
+  whether the room added it), then the room's other tickets — fenced and
+  labelled as data from the House and teammates, not instructions; otherwise
+  the SessionStart hook adds the same from the worktree's
+  `.mockingbird/agent-context.md`. @assistant gets the same summary.
 - **Claims and warnings:** a ticket claimed on a branch owns the files the
   claimant's room sessions on that branch have changed — as their pushed
   branch shows it, fetched from origin into a clone here and compared with the
@@ -822,19 +858,30 @@ of record; the room keeps only what the House doesn't.
   off, its owner deleting its old backups from origin on start.
 - The House board (`test/teamHouse.test.ts`, `test/teamHouseService.test.ts`,
   `test/teamClaims.test.ts`), against a fake House on this Mac (nothing calls
-  the real one): the env file (a non-https URL, credentials in it, a missing
-  or placeholder token, a file others can read — the token in no message);
-  every route with the right method, path, body and token; the House's
-  errors, a timeout, a redirect never followed; every agent tool, each
-  member's calls made with their own token and the House deciding what they
-  may do; `house.track` and nudges reaching the other member, who reads with
-  their own token; polling only while the board is open or a room session
-  runs; only the admin's project counting; a Mac without the env file; claims
-  from a claimed ticket's branch and its pushed files, not in a worktree on
-  that branch, gone once released; tokens and House titles never in a view,
-  log line or the room log; old `plan.*` logs and snapshots still loading.
-  `test/houseLive.test.ts` reads the real House (GETs only) when run by hand
-  with `MB_HOUSE_LIVE=1`; never in CI.
+  the real one; it answers with the real House's fields and order): the env
+  file (a non-https URL, credentials in it, a missing or placeholder token, a
+  file others can read — the token in no message); every route with the
+  right method, path, body and token; the House's errors, a timeout, a
+  redirect never followed; real-shaped work items and history entries read,
+  a status change rendered "status → review"; the open backlog leaving out
+  done and dropped in the House's order, the needs-agent filter, each
+  ticket shown once (the room's open ones marked in the backlog, the rest
+  under Added by the room); every agent tool and its filters, each member's
+  calls made with their own token and the House deciding what they may do;
+  the agents' context and @assistant's summary listing the open backlog;
+  `house.track` and nudges reaching the other member, who reads with their
+  own token (a new ticket's nudge reading the list again); polling only while
+  the board is open or a room session runs; only the admin's project
+  counting; a Mac without the env file; claims from a claimed ticket's branch
+  and its pushed files, not in a worktree on that branch, gone once released;
+  tokens and House titles never in a view, log line or the room log; old
+  `plan.*` logs and snapshots still loading. `test/houseLive.test.ts` runs
+  `test/houseCheck.ts` against the real House (GETs only) when run by hand
+  with `MB_HOUSE_LIVE=1`, never in CI: the open backlog non-empty when the
+  House has open tickets, every status and priority known, histories
+  rendered — printing only field names, counts and enum values. The same
+  check runs against the fake House in the suite, which proves it reads only
+  and prints no title, name, note or branch.
 - Joining (`test/teamJoinApproval.test.ts`, the signaling and wire tests):
   `mayAddMember` — the admin's add counts, a member's doesn't, a room from
   before keeps the adds before its admin's switch, in any delivery order;

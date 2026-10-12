@@ -394,9 +394,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
     prompt, and anything named like a secret (or holding a private key) stays
     unreadable to agents.
   - **Radley House board** (▦): the room's House project (its admin's
-    choice) — the current frozen slice and the tickets the room adds, who has
-    each, a ticket's history; claim, release, comment, post progress or a
-    question, create tickets. The House is the system of record: each member's
+    choice) — the open backlog (every ticket not done or dropped, in the
+    House's priority order, with a "Needs an agent" filter; `needs-human`,
+    blocked and waiting tickets marked), then the room's own tickets outside
+    it, each shown once; who has each, a ticket's history ("Ryan · status →
+    review"); claim, release, comment, post progress or a question, create
+    tickets. The House is the system of record: each member's
     Mockingbird reads and writes it with their own builder token
     (`~/.config/radley-house/<project>.env`), which never leaves the main
     process. Agents use the `*_house_ticket` tools. The files a teammate's
