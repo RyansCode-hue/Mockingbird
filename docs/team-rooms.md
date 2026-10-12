@@ -2,8 +2,8 @@
 
 Live co-presence between two (later more) Mockingbirds: share a group as a
 room, see and type into each other's sessions, talk in a team room with your
-agents, claim work on a shared plan board, and take over a teammate's session
-when they're away.
+agents, keep files, notes, repo references and links in it, claim work on a
+shared plan board, and take over a teammate's session when they're away.
 
 Decided with Ryan, 2026-10-07 (connection changed from Tailscale to WebRTC the same day). Built for Ryan and Nick first; nothing here
 should stop more members joining later.
@@ -46,10 +46,12 @@ should stop more members joining later.
   `room.settings` (the admin's: backups to origin);
   `chat.message`, `chat.update`, `chat.assistant` (team room); `plan.package`,
   `plan.claim`, `plan.status`, `plan.remove`, `plan.repo`, `plan.branches`
-  (plan board). Terminal output, views and typing are streams and requests
-  between connected members, never stored; so are take-over's copies and
-  questions (`takeover.have`, `.snapshot`, `.transcript`, `.ask`, `.progress`,
-  `.changes`).
+  (plan board); `artifact.add`, `artifact.update`, `artifact.remove`
+  (artifacts' records — never a file's bytes). Terminal output, views and
+  typing are streams and requests between connected members, never stored;
+  so are take-over's copies and questions (`takeover.have`, `.snapshot`,
+  `.transcript`, `.ask`, `.progress`, `.changes`) and artifacts' files
+  (`artifact.have`, `.chunk`).
 
 ## Rooms
 
@@ -230,8 +232,11 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   from the Worker when its hello is refused): it stops taking part — no
   connection, live panes, chat, plan or take-over for the room — and deletes:
   - the room's folder `~/.mockingbird/team/rooms/<roomId>/` entirely: log,
-    snapshot, settings, invites, take-over records, teammates' conversations
-    and received patches;
+    snapshot, settings, invites, take-over records, teammates' conversations,
+    received patches and the room's artifact files (their downloads stopped
+    first);
+  - the copies of room artifacts agents were given in their folders
+    (`.mockingbird/artifacts/<id>/`);
   - its entries in `chat-read.json` and `live-muted.json`, and a pending join;
   - the plan copies in its worktrees (`.mockingbird/plan.md`, `claims.json`,
     `agent-context.md`; rewritten without the room where another room still
@@ -326,7 +331,8 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   drafter uses. One list of secret file patterns (`src/main/secrets.ts`)
   makes those rules, Codex's room sandbox (below) and what backups leave out,
   so nothing in it is ever sent over the connection or pushed. Teammates swap
-  `.env` files by hand.
+  `.env` files by hand. The same list decides which room artifacts agents
+  may not read (Artifacts, below).
 - **Codex room sessions** (Codex 0.138 or later) run in the room's sandbox:
   a permission profile, `mockingbird-room` (`src/main/codexRoomSandbox.ts`),
   defined and selected entirely by `-c` settings on that launch
@@ -552,8 +558,114 @@ A chat thread in each room, for people and agents:
 - **Agents across machines:** Mockingbird's agent messaging (`send_message`,
   `list_sessions`) reaches room sessions on the other laptop through the room.
 - **@assistant:** a member @-mentions the assistant. It runs on **the asker's
-  laptop under their account**, reads the room (chat, board, session list) and
-  the repo's docs, and posts its answer to the room.
+  laptop under their account**, reads the room (chat, board, session list,
+  artifacts) and the repo's docs, and posts its answer to the room.
+
+## Artifacts
+
+Decided with Ryan, 2026-10-12: a room keeps what its members share besides
+chat — files and screenshots, notes anyone edits, references to a file (and
+lines) in the room's repository, and links — for people and agents alike.
+
+- **Four kinds.** A **file** (a screenshot pasted or dropped, a PDF, a log, at
+  most 25 MB); a **note** (markdown, edited by anyone); a **repo file
+  reference** (a file, optionally lines, at a commit, in a repository known by
+  its origin — it opens in Mockingbird's file viewer in your own clone); a
+  **link** (https only, with a title; Azure DevOps work items and pull
+  requests are recognised: "ADO #5110", "PR #45").
+- **In the room log**, as `artifact.add` (its event id is the artifact's id),
+  `artifact.update` (a rename, a note's new text) and `artifact.remove`. Each
+  is checked strictly before it's stored — a name of 1–200 characters without
+  control characters; a file's size and SHA-256; a note's text up to 60,000
+  characters; a repo reference's origin without credentials, a relative path
+  without `..`, a full commit id; an https link without a user name — and a
+  room keeps at most 500. A member who leaves takes nothing with them: what
+  they added stays the room's.
+- **A file's bytes never go in the log.** Each member fetches them from a
+  teammate who has them, by hash (`artifact.have`, then `artifact.chunk`, half
+  a megabyte at a time), and keeps them only once the whole file's SHA-256
+  matches the record. Members answer only for live files of the room asked
+  about whose checked copy they hold, and only to that room's members. A file
+  comes from whoever added it when they're connected, else from any connected
+  member that has it; a download cut short resumes from what arrived, from
+  whoever has it; a copy that doesn't match its hash is thrown away, the
+  member who sent it tried last from then on, and the next one asked. Newest
+  files first, files someone opened (or an agent asked for) ahead of the rest;
+  up to 1 GB of a room's files come without being asked, older ones beyond
+  that when opened. Rounds that fail wait 10 s, 30 s, 2 minutes, then 5
+  minutes, and start over when a member connects. Each file's row says where
+  it stands: downloading from Nick (how far), "Nick added it and is offline;
+  no connected teammate has it yet", or why it failed ("Nick's Mockingbird
+  needs an update to share files").
+- **Stored** in the room's folder, `~/.mockingbird/team/rooms/<room>/artifacts/`
+  (owner-only): `blobs/<sha256>` (read-only, checked: the only files ever
+  served), `partial/<sha256>` (a download in progress), `tmp/` (a file being
+  added; cleared on start), `view/<id>/<name>` (read-only, quarantined copies
+  for Quick Look, Reveal in Finder and Save as). What no live artifact uses is
+  deleted (on removal, on start). Leaving the room deletes all of it with the
+  room's folder, after stopping its downloads.
+- **Shown by content, never by name.** Mockingbird looks at a file's bytes:
+  PNG, JPEG, GIF, WebP, BMP and SVG are images (SVG only ever through an
+  image element; an image over 50 megapixels goes to Quick Look), PDFs open in
+  macOS Quick Look, UTF-8 text without NULs is text (markdown or CSV by its
+  extension) — HTML is text; anything else is a file to Quick Look, Reveal or
+  Save as. Nothing is ever opened with its default app or run; Quick Look,
+  Reveal and Save as act, on a click, on paths Mockingbird made itself, and a
+  saved file is quarantined like a download.
+- **Adding** (the Team tab's Artifacts section, drag and drop, pasting a
+  screenshot) refuses folders, anything that isn't a regular file, files over
+  25 MB, anything in Mockingbird's team folder and the ADO PAT file, naming
+  each file and why. A file named like a secret (the secret file list:
+  `.env*`, `*.pem`, `*.key`, credentials…) or holding a private key is added
+  only when asked again: teammates get a copy; agents never read it.
+- **Notes edited together.** Saves are explicit. An edit saved from a
+  revision someone else's edit replaced doesn't overwrite it: the editor says
+  "Nick edited this while you were editing" and offers Overwrite, Save mine as
+  a copy, or Reload. When the two edits crossed while apart (offline, a
+  partition), every member keeps both — the one first in the room's order as
+  the note, the other beside it as "Spec (Ryan's edit)" — and its author is
+  told: "Your edit of 'Spec' crossed Nick's; yours is kept as 'Spec (Ryan's
+  edit)'".
+- **Repo file references** are made from a session's folder, at its HEAD:
+  only for a committed file ("commit it first"), with a warning when the file
+  has uncommitted changes (the reference is HEAD, without them) and when HEAD
+  isn't on any remote branch ("teammates can't see abc1234 until you push").
+  On a teammate's Mac it opens in a clone of the same origin — in a live
+  session's folder there (the focused one first, then the room's), or as the
+  file was at that commit, read-only with the lines highlighted — fetching
+  once when the commit isn't there yet. It says when the file changed since,
+  or why it can't open: "No clone of github.com/acme/backoffice on this Mac",
+  "Commit abc1234 isn't in your clone — not pushed yet?".
+- **In chat:** `#` in the composer completes an artifact's name, sent as
+  `#[name](artifact:<id>)` and shown as a chip (its current name, or
+  "(removed)"). A message carries the ids of the live artifacts it names
+  (`artifacts` in `chat.message`; older Mockingbirds leave it out).
+- **Agents** read them through two Mockingbird MCP tools, pre-allowed for
+  Claude room sessions: `list_room_artifacts` (id, kind, name, who and when,
+  size and type, url, repo origin/path/commit/lines, and whether it's
+  readable) and `read_room_artifact`: a note, link or text file comes back as
+  text, a repo reference as its lines at the commit (and whether the file
+  changed since), an image, PDF or other file as a read-only copy in the
+  session's folder, `.mockingbird/artifacts/<id>/` — excluded from git at any
+  depth (`**/.mockingbird/artifacts/` in the repository's exclude file;
+  a repository that tracks that folder gets nothing written), deleted when the
+  artifact goes, becomes secret, or the room is left. A file not here yet is
+  fetched first (up to 30 s). Everything is labelled as a teammate's content,
+  not the user's instructions. Room agents start knowing the tools and the
+  `#[name](artifact:<id>)` form. **@assistant** gets them in its prompt: the
+  list, then what the question names, notes, text files and repo excerpts
+  within a budget.
+- **Secrets:** agents never reach the store — it's under
+  `~/.mockingbird/team`, which Claude's deny rules and Codex's room sandbox
+  keep unreadable — only copies the tool makes after checking. An artifact is
+  withheld from agents (listed as not readable, saying why) when its name is
+  on the secret file list, or ever was (renaming `.env` to `env.txt` doesn't
+  make it readable), when a repo reference points at such a file, or when a
+  file holds a private key.
+- **Compatibility.** `TEAM_PROTOCOL` stays 1: everything is new events and
+  requests. An older Mockingbird keeps the events without showing them, and
+  answers file requests with no handler, shown as "Nick's Mockingbird needs an
+  update to share files".
 
 ## Plan and claims board
 
@@ -625,6 +737,31 @@ A chat thread in each room, for people and agents:
   admin's admit promotes, a member's is ignored; deny; a room with no known
   admin; a Worker from before) and the real wire and client against the
   local Worker for accept, decline and an older Worker.
+- Artifacts (`test/teamArtifacts.test.ts`, `teamArtifactStore`,
+  `teamArtifactFiles`, `teamArtifactAgents`): every malformed or oversized
+  event refused; add, rename, edit, remove and anything after a removal the
+  same on every member; the room's limit; a secret name staying secret through
+  renames; edits crossing across a partition giving identical state on both
+  sides, a copy, and the notice to its author only; a stale save, Overwrite
+  and Save as a copy. Sniffing (HTML named .png is text, SVG, huge images,
+  private keys across chunks) and adds refused (folders, symlinks to folders,
+  over 25 MB, the team folder, the PAT file). Over the loopback: a file
+  reaching a teammate byte-identical in full-size chunks; from a third member
+  when the adder is offline; waiting while nobody connected has it; an older
+  Mockingbird ("needs an update"); a corrupted copy refused and logged and the
+  next member used; a download cut short resumed from its partial; chunk and
+  have requests refused for another room's, a removed or a non-member's file;
+  removal deleting the files and agents' copies on both sides; files beyond
+  the eager budget fetched once opened; leaving deleting the room's files and
+  agents' copies while what the leaver added stays. Repo references against
+  a bare origin and two clones (warnings, untracked refused, found by origin,
+  opened in a session's folder, changed since, no clone, a commit not pushed
+  until it is); the agents' tools through Messaging (text inline, an image
+  copied into a subfolder's `.mockingbird/artifacts/` git-ignored and fetched
+  first, a repository tracking that folder refused, secrets and private keys
+  withheld, a session outside a room refused); @assistant's section (named
+  ones first, secrets withheld) through a question asked in the chat; Quick
+  Look, Reveal and Save as on copies main made, quarantined.
 - Codex's room sandbox against the installed binary, without a model:
   `codex sandbox` runs probes under the exact `-c` settings a room launch
   passes (through the pane's shell quoting), with a throwaway `CODEX_HOME`
