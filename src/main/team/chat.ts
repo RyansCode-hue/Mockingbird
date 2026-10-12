@@ -20,6 +20,7 @@ import {
   type ReadMarks,
   type RoomChatView,
 } from "../../shared/team/chat";
+import { ARTIFACT_ID_RE, MAX_ARTIFACT_REFS, parseArtifactRefs } from "../../shared/team/artifacts";
 import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/types";
 
 /**
@@ -63,9 +64,14 @@ defineEventType("chat.message", {
     text(b.text, "text", MAX_CHAT_TEXT, 1);
     if (!Array.isArray(b.mentions) || b.mentions.length > 50) throw new Error("mentions must be a list");
     for (const m of b.mentions) if (m !== ASSISTANT_MENTION && (typeof m !== "string" || !MEMBER_ID_RE.test(m))) throw new Error("a mention isn't a member or the assistant");
+    if (b.artifacts !== undefined) {
+      if (!Array.isArray(b.artifacts) || b.artifacts.length > MAX_ARTIFACT_REFS) throw new Error(`artifacts must be a list of up to ${MAX_ARTIFACT_REFS}`);
+      for (const id of b.artifacts) if (typeof id !== "string" || !ARTIFACT_ID_RE.test(id)) throw new Error("an artifact reference isn't an artifact id");
+    }
   },
   reduce(state, e) {
-    append(chatOf(state), { id: e.id, kind: "message", author: e.author, lamport: e.lamport, at: e.at, text: e.body.text, mentions: e.body.mentions });
+    const artifacts = e.body.artifacts?.length ? { artifacts: [...e.body.artifacts] } : {};
+    append(chatOf(state), { id: e.id, kind: "message", author: e.author, lamport: e.lamport, at: e.at, text: e.body.text, mentions: e.body.mentions, ...artifacts });
   },
 });
 
@@ -207,7 +213,10 @@ export class TeamChat {
     const body = raw.trim();
     if (!body) throw new Error("The message is empty");
     if (body.length > MAX_CHAT_TEXT) throw new Error(`The message is ${body.length} characters; the limit is ${MAX_CHAT_TEXT}`);
-    const e = team.publish(roomId, "chat.message", { text: body, mentions: parseMentions(body, room.members) });
+    // the artifacts it names that are in the room now (a chip for a removed one says so)
+    const live = new Set((room.ext.artifacts?.items ?? []).map((a) => a.id));
+    const artifacts = parseArtifactRefs(body).filter((id) => live.has(id));
+    const e = team.publish(roomId, "chat.message", { text: body, mentions: parseMentions(body, room.members), ...(artifacts.length ? { artifacts } : {}) });
     this.markRead(roomId);
     if (e.body.mentions.includes(ASSISTANT_MENTION)) {
       if (!this.d.askAssistant) {
