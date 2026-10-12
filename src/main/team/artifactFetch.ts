@@ -212,12 +212,20 @@ export class ArtifactFetcher {
     this.pump();
   }
 
-  /** This install isn't in the room any more: its downloads stop (and are waited for, so nothing writes into a folder being deleted). */
-  async roomLeft(roomId: RoomId): Promise<void> {
+  /**
+   * This install isn't in the room any more: its downloads stop. A piece
+   * already on its way is waited for a moment; the store is closed first,
+   * so nothing written after that lands in a folder being deleted.
+   */
+  async roomLeft(roomId: RoomId, waitMs = 2_000): Promise<void> {
     for (const w of [...this.wants.values()]) if (w.roomId === roomId) this.finish(w);
     this.haves.delete(roomId);
     this.online.delete(roomId);
-    await Promise.all([...this.active].filter(([k]) => k.startsWith(`${roomId}\n`)).map(([, p]) => p));
+    const running = [...this.active].filter(([k]) => k.startsWith(`${roomId}\n`)).map(([, p]) => p);
+    if (!running.length) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([Promise.all(running), new Promise((r) => (timer = setTimeout(r, waitMs)))]);
+    clearTimeout(timer);
   }
 
   // ---- serving ------------------------------------------------------------------------------------

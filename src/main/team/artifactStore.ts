@@ -213,6 +213,7 @@ export interface Ingested {
 export class ArtifactStore {
   readonly dir: string;
   private sniffs: Record<string, Sniff> | null = null;
+  private closed = false;
 
   constructor(roomDir: string) {
     this.dir = path.join(roomDir, "artifacts");
@@ -222,8 +223,18 @@ export class ArtifactStore {
     return path.join(this.dir, name);
   }
 
+  /** This install left the room: nothing writes here again (a download finishing late can't bring back a folder being deleted). */
+  close(): void {
+    this.closed = true;
+  }
+
+  private writable(): void {
+    if (this.closed) throw new Error("this Mac isn't in the room any more");
+  }
+
   /** The store's folders, owner-only. */
   ensure(): void {
+    this.writable();
     for (const d of [this.dir, this.sub("blobs"), this.sub("partial"), this.sub("tmp"), this.sub("view")]) fs.mkdirSync(d, { recursive: true, mode: 0o700 });
   }
 
@@ -301,6 +312,7 @@ export class ArtifactStore {
       size: done.size,
       sniff,
       keep: () => {
+        this.writable();
         const blob = this.blobPath(done.sha256);
         if (this.blobSize(done.sha256) === done.size) fs.rmSync(tmp, { force: true });
         else {
@@ -338,6 +350,7 @@ export class ArtifactStore {
       this.dropPartial(sha);
       return false;
     }
+    this.writable();
     fs.chmodSync(file, 0o400);
     fs.renameSync(file, this.blobPath(sha));
     this.rememberSniff(sha, sniffContent(done, name));
@@ -385,6 +398,7 @@ export class ArtifactStore {
   private rememberSniff(sha: string, s: Sniff): void {
     const all = this.loadSniffs();
     all[sha] = s;
+    if (this.closed) return;
     writeFileAtomic(path.join(this.dir, "sniff.json"), JSON.stringify(all));
   }
 
@@ -406,6 +420,7 @@ export class ArtifactStore {
    * quarantined. Returns its path, and a warning when quarantining failed.
    */
   async viewCopy(id: string, sha: string, name: string, sniff: Sniff): Promise<{ path: string; warning: string | null }> {
+    this.writable();
     if (!ARTIFACT_ID_RE.test(id)) throw new Error("not an artifact id");
     const folder = path.join(this.sub("view"), id);
     const file = path.join(folder, safeArtifactFileName(name, copyExtension(sniff)));

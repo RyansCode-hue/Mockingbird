@@ -166,6 +166,7 @@ export class TeamArtifacts {
 
   /** This install isn't in the room any more: downloads stop, agents' copies go (the store goes with the room's folder). */
   async roomLeft(roomId: RoomId): Promise<string[]> {
+    this.stores.get(roomId)?.close();
     await this.fetcher?.roomLeft(roomId);
     const t = this.gcTimers.get(roomId);
     if (t) clearTimeout(t);

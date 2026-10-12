@@ -153,6 +153,20 @@ describe("adding a file", () => {
     expect(fs.existsSync(path.join(store.dir, "view", id))).toBe(false);
   });
 
+  it("writes nothing once the room is left, so a late download can't bring its folder back", async () => {
+    const room = tempDir("room");
+    const store = new ArtifactStore(room);
+    const data = Buffer.from("late bytes");
+    store.appendPartial(sha(data), data);
+    const pending = await store.ingest({ bytes: new Uint8Array(Buffer.from("added")) }, "a.txt");
+    store.close();
+    fs.rmSync(room, { recursive: true, force: true });
+    expect(() => store.appendPartial(sha(data), data)).toThrow(/isn't in the room/);
+    expect(() => pending.keep()).toThrow(/isn't in the room/);
+    await expect(store.completePartial(sha(data), "f.txt")).rejects.toThrow();
+    expect(fs.existsSync(room)).toBe(false);
+  });
+
   it("tells inside from outside", () => {
     expect(inside("/a/b", "/a/b/c")).toBe(true);
     expect(inside("/a/b", "/a/b")).toBe(true);
