@@ -312,6 +312,17 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 - **Live panes:** a room session's terminal streams to every member. Its
   scrollback is replayed on join, then live output follows. Remote panes render
   like local ones (status, waiting reason, git chips from the owner's side).
+- **Scrolling is your own:** in a teammate's pane the wheel, trackpad,
+  scrollbar and PageUp/PageDown scroll only your copy — what it has received
+  and the scrollback fetched on open — and stay put while output arrives. The
+  copy's terminal is never given mouse tracking (selection there is native),
+  and the wheel never reaches xterm, which would otherwise send the owner's
+  program mouse reports or, on the alternate screen, arrow keys. A full-screen
+  program (Claude Code's fullscreen view, Codex, `less`) keeps its history
+  itself, so its copy shows one screen with nothing to scroll; scrolling it
+  says so instead. As a backstop the owner drops a teammate's input that is
+  only mouse reports or PageUp/PageDown (logged once a minute in
+  `pty-audit.log`); typing, paste, Ctrl-C and arrow keys go through.
 - **Typing:** any member can type into any room session, at the same time, like
   plain tmux. No lock.
 - **Notifications:** when an agent in a room is waiting on input, every member

@@ -143,6 +143,51 @@ describe("team rooms between two Mockingbird instances", () => {
         expect((await live(ryan)).own[sh.id]).toMatchObject({ cols: 120, rows: 32 });
         expect(fs.readFileSync(path.join(ryan.home, ".mockingbird", "pty-audit.log"), "utf8")).toMatch(/remote-input session=\S+ from="Nick"/);
 
+        // ---- Nick scrolls his copy of Ryan's shell; nothing reaches Ryan's, even while Ryan's program asks for the mouse.
+        // cat -v shows whatever arrives: a mouse report or an arrow key as ^[[…
+        const term = `window.__mbTerms.get(${JSON.stringify(paneId)}).term`;
+        const copyView = () => nick.evaluate<{ viewportY: number; baseY: number; type: string }>(`(() => { const b = ${term}.buffer.active; return { viewportY: b.viewportY, baseY: b.baseY, type: b.type }; })()`);
+        const wheel = async (deltaY: number) => {
+          const at = await nick.evaluate<{ x: number; y: number }>(`(() => { const r = ${term}.element.querySelector(".xterm-screen").getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+          for (let i = 0; i < 3; i++) await nick.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: at.x, y: at.y, deltaX: 0, deltaY });
+        };
+        const key = async (k: { key: string; code: string; keyCode: number; ctrl?: boolean }) => {
+          await nick.evaluate(`${term}.focus()`);
+          for (const type of ["keyDown", "keyUp"]) await nick.send("Input.dispatchKeyEvent", { type, key: k.key, code: k.code, windowsVirtualKeyCode: k.keyCode, modifiers: k.ctrl ? 2 : 0 });
+        };
+        await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "echo scroll-start; seq 1 200; printf '\\\\033[?1000h\\\\033[?1002h\\\\033[?1006h'; cat -v\\r")`);
+        await untilTrue("the history in Nick's pane", async () => (await screenOf(nick, paneId)).includes("\n200"));
+        await new Promise((res) => setTimeout(res, 500)); // the mouse request reaches Nick's copy
+        await wheel(-120);
+        await untilTrue("Nick's copy scrolled up", async () => {
+          const v = await copyView();
+          return v.type === "normal" && v.viewportY < v.baseY - 5;
+        });
+        const scrolledTo = (await copyView()).viewportY;
+        // Ryan's output keeps coming: Nick's copy stays where he scrolled to
+        await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "ryan-typing\\r")`);
+        await untilTrue("Ryan's output in Nick's copy", async () => (await screenOf(nick, paneId)).includes("ryan-typing"));
+        expect((await copyView()).viewportY).toBe(scrolledTo);
+        // full screen: nothing here to scroll, and Nick is told why
+        await key({ key: "c", code: "KeyC", keyCode: 67, ctrl: true });
+        await untilTrue("Nick's Ctrl-C ending Ryan's cat", async () => /\^C/.test(await buffer(ryan, sh.id)));
+        await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "printf '\\\\033[?1049h'; cat -v\\r")`);
+        await untilTrue("Nick's copy on the alternate screen", async () => (await copyView()).type === "alternate");
+        await wheel(-120);
+        await wheel(120);
+        await key({ key: "PageUp", code: "PageUp", keyCode: 33 });
+        await key({ key: "PageDown", code: "PageDown", keyCode: 34 });
+        await untilTrue("the full-screen note", async () => /Ryan's session is full screen/.test(await nick.evaluate<string>(`document.querySelector(".scroll-toast")?.textContent ?? ""`)));
+        // Nick's typing still arrives, after everything above: none of the scrolling did
+        await nick.send("Input.insertText", { text: "scroll-done" });
+        await key({ key: "Enter", code: "Enter", keyCode: 13 });
+        await untilTrue("Nick's typing after scrolling", async () => (await buffer(ryan, sh.id)).includes("scroll-done"));
+        const sinceStart = (await buffer(ryan, sh.id)).split("scroll-start").at(-1)!;
+        expect(sinceStart).not.toMatch(/\^\[\[<|\^\[\[[AB56]|\^\[O[AB]|\x1b\[</);
+        await key({ key: "c", code: "KeyC", keyCode: 67, ctrl: true });
+        await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "printf '\\\\033[?1049l\\\\033[?1000l\\\\033[?1002l\\\\033[?1006l'\\r")`);
+        await untilTrue("Nick's copy back on the normal screen", async () => (await copyView()).type === "normal");
+
         // ---- the team chat: Nick's message reaches Ryan
         expect(await nick.evaluate(`window.mb.teamChatPost(${JSON.stringify(roomId)}, "morning, taking the export")`)).not.toHaveProperty("error");
         await untilTrue("Nick's message at Ryan's", async () =>
