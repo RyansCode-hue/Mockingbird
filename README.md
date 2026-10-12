@@ -337,8 +337,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
     a leading ticket number: "5120 Donor search" is group 5120). It streams to
     whoever shows it, anyone can type into it, initials show who's looking,
     Follow mirrors a teammate's grid, and everyone hears when it waits.
-    Scrolling a teammate's session scrolls only your copy (a full-screen
-    Claude Code or Codex has one screen to show, and says so). Room
+    Scrolling a teammate's session scrolls only your copy: room sessions run
+    Claude Code and Codex inline, so their history is in every copy's
+    scrollback (Settings → Team turns that off per Mac). Room
     sessions start knowing the room's plan and unable to read secret files:
     Claude through permission rules, Codex (0.138+) through a sandbox set by
     `-c` on that launch alone, enforced on every command it runs: it commits,
