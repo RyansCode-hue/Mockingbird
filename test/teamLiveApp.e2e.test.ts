@@ -84,6 +84,17 @@ const screenOf = (a: AppInstance, id: string) =>
   a.evaluate<string>(`(() => { const e = window.__mbTerms?.get(${JSON.stringify(id)}); if (!e) return ""; const b = e.term.buffer.active; const out = []; for (let i = 0; i < b.length; i++) out.push(b.getLine(i)?.translateToString(true) ?? ""); return out.join("\\n"); })()`);
 /** A sidebar row's text and controls, by its session's title. */
 const row = (title: string) => `[...document.querySelectorAll(".sess-item")].find((r) => r.textContent.includes(${JSON.stringify(title)}))`;
+/**
+ * A teammate's session row, as a person finds it: teammates' sessions are in
+ * the Team room view, opened from the Sessions view's Connected sessions line
+ * (with one room, straight on it). Opens the view when it isn't showing.
+ */
+const teamRow = (title: string) =>
+  `(() => { if (!document.querySelector(".room-sess-body")) document.querySelector(".connected-line")?.click(); return [...document.querySelectorAll(".room-sess-body .sess-item")].find((r) => r.textContent.includes(${JSON.stringify(title)})); })()`;
+/** The words under a room session's name: whose it is, whether it runs, who's looking. */
+const whoLine = (title: string) => `(${teamRow(title)}?.querySelector(".br.who")?.textContent ?? "")`;
+/** A row's Take over button (shown on hover or focus; clicking it works either way). */
+const takeOverOf = (title: string) => `${teamRow(title)}?.querySelector('.lbtn[data-action="takeover"]')`;
 
 /** A bare origin and each laptop's clone of it, in a folder its Mockingbird indexes. */
 function repos() {
@@ -149,8 +160,9 @@ describe("team rooms between two Mockingbird instances", () => {
           paneId = (await live(nick)).remote.find((x) => x.room?.sessionId === sh.id)?.id ?? "";
           return !!paneId;
         });
-        await untilTrue("Nick's sidebar row", async () => nick.evaluate<boolean>(`${row("shared shell")}?.querySelector(".team-owner")?.textContent === "R"`));
-        await nick.evaluate(`${row("shared shell")}.click()`);
+        // Nick finds it in the Team room view; its row names Ryan as the owner
+        await untilTrue("Nick's room row", async () => /^Ryan's session · live/.test(await nick.evaluate<string>(whoLine("shared shell"))));
+        await nick.evaluate(`${teamRow("shared shell")}.click()`);
         await untilTrue("the scrollback in Nick's pane", async () => (await screenOf(nick, paneId)).includes("ready-42"));
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "echo live-$((50+5))\\r")`);
         await untilTrue("live output in Nick's pane", async () => (await screenOf(nick, paneId)).includes("live-55"));
@@ -267,9 +279,9 @@ describe("team rooms between two Mockingbird instances", () => {
         // a room keeps its backups peer to peer unless its admin turns on backups to origin: nothing reaches origin
         expect((await takeovers(nick)).sessions.find((v) => v.sessionId === s.id)).toMatchObject({ toOrigin: false, pushed: null });
         expect(git(r.bare, "for-each-ref", "--format=%(refname)", "refs/mockingbird")).toBe("");
-        await untilTrue("the freshness on Nick's row", async () => /^copied here/.test(await nick.evaluate<string>(`${row("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
+        await untilTrue("the freshness on Nick's row", async () => /^copied here/.test(await nick.evaluate<string>(`${teamRow("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
         await untilTrue("the freshness on Ryan's row", async () => /^copied to Nick/.test(await ryan.evaluate<string>(`${row("Donor entities")}?.querySelector(".tk-fresh")?.textContent ?? ""`)));
-        expect(await nick.evaluate<boolean>(`!!${row("Donor entities")}?.querySelector(".tk-btn")`)).toBe(true);
+        expect(await nick.evaluate<boolean>(`!!${takeOverOf("Donor entities")}`)).toBe(true);
 
         // ---- Ryan online: Nick asks for another of his sessions, Ryan hands it over from his prompt
         const ex = await ryan.evaluate<{ id: string; cwd: string; error?: string }>(
@@ -287,8 +299,8 @@ describe("team rooms between two Mockingbird instances", () => {
           },
           60_000
         );
-        await untilTrue("Take over on Nick's export row", async () => nick.evaluate<boolean>(`!!${row("Gift export")}?.querySelector(".tk-btn")`));
-        await nick.evaluate(`${row("Gift export")}.querySelector(".tk-btn").click()`);
+        await untilTrue("Take over on Nick's export row", async () => nick.evaluate<boolean>(`!!${takeOverOf("Gift export")}`));
+        await nick.evaluate(`${takeOverOf("Gift export")}.click()`);
         const askButton = `[...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Ask Ryan")`;
         await untilTrue("Ask Ryan in Nick's dialog", async () => nick.evaluate<boolean>(`(() => { const b = ${askButton}; return !!b && !b.disabled; })()`));
         await nick.evaluate(`${askButton}.click()`);
@@ -318,11 +330,12 @@ describe("team rooms between two Mockingbird instances", () => {
         ryan.close();
         await quitApp(ryan.child);
         await untilTrue("Ryan offline at Nick's", async () => (await nick.status()).rooms[0]?.online.length === 0, 60_000);
-        await untilTrue("Take over, prominent", async () => nick.evaluate<boolean>(`!!${row("Donor entities")}?.querySelector(".tk-btn.primary")`));
+        await untilTrue("Take over, prominent", async () => nick.evaluate<boolean>(`!!${takeOverOf("Donor entities")}?.classList.contains("primary")`));
+        expect(await nick.evaluate<string>(whoLine("Donor entities"))).toMatch(/^Ryan's session · offline/);
         const plan = await nick.evaluate<TakeoverPlan>(`window.mb.teamTakeoverPlan(${JSON.stringify(roomId)}, ${JSON.stringify(s.id)}, null)`);
         expect(plan).toMatchObject({ ownerOnline: false, branch: "5110-donors", conversation: { kind: "full" }, latestMissing: false, toOrigin: false, snapshot: { source: "peer" } });
         expect(fs.realpathSync(plan.clone!)).toBe(fs.realpathSync(r.nick.clone));
-        await nick.evaluate(`${row("Donor entities")}.querySelector(".tk-btn").click()`);
+        await nick.evaluate(`${takeOverOf("Donor entities")}.click()`);
         await untilTrue("the dialog's plan", async () => nick.evaluate<boolean>(`(() => { const b = [...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Take over"); return !!b && !b.disabled; })()`));
         await nick.evaluate(`[...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Take over").click()`);
         await untilTrue("the take-over done", async () => /Running here now/.test(await nick.evaluate<string>(`document.querySelector(".tk-dlg")?.textContent ?? ""`)), 60_000);
@@ -339,7 +352,7 @@ describe("team rooms between two Mockingbird instances", () => {
         // the room's session is Nick's now; Ryan's copy no longer shows
         expect((await live(nick)).own[mine.id]).toMatchObject({ roomId, remote: false });
         expect((await live(nick)).remote.some((x) => x.room?.sessionId === s.id)).toBe(false);
-        await untilTrue("the old row gone from Nick's sidebar", async () => !(await nick.evaluate<boolean>(`[...document.querySelectorAll(".sess-item")].some((x) => x.textContent.includes("Donor entities") && x.querySelector(".team-owner")?.textContent === "R")`)));
+        await untilTrue("the old row gone from Nick's Team room view", async () => !(await nick.evaluate<boolean>(`[...document.querySelectorAll(".sess-item")].some((x) => x.textContent.includes("Donor entities") && /^Ryan's session/.test(x.querySelector(".br.who")?.textContent ?? ""))`)));
 
         // ---- Ryan's Mockingbird starts again, and runs his session again at once (as an update restart brings
         // open sessions back), before the room has caught up: his copy stops as soon as it hears
