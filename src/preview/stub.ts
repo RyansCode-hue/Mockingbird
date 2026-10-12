@@ -54,7 +54,7 @@ const session = (id: string, over: Partial<SessionInfo>): SessionInfo => ({
 
 let sessions: SessionInfo[] = [
   session("s1", { title: "#5101 — Org dropdowns remember the last org", ticketId: "5101", ticketTitle: "Org dropdowns remember the last org", taskGroup: "5101", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "working", model: "opus" }),
-  session("s2", { title: "API: last org per user", ticketId: "5101", ticketTitle: "API: last org per user", taskGroup: "5101/api", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: now - 4 * min }),
+  session("s2", { title: "API: last org per user", ticketId: "5101", ticketTitle: "API: last org per user", taskGroup: "5101/api", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "waiting", waitingReason: new URLSearchParams(location.search).has("houseApproval") ? "Claude needs your permission to use mockingbird - claim_house_ticket (MCP)" : "Claude needs your permission to use Bash", waitingSince: now - 4 * min }),
   session("s3", { title: "API tests", taskGroup: "5101/api", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), agent: "codex", agentVersion: "0.131.0", status: "idle" }),
   session("s4", { title: "test runner", taskGroup: "5101", shell: true, agent: undefined, status: "idle" }),
   session("s8", { title: "Release notes for #5101", taskGroup: "5101", branch: "5101-orgDropdowns", cwd: WT("5101-orgDropdowns"), status: "idle" }),
@@ -70,6 +70,12 @@ const C = { dim: "\x1b[2m", reset: "\x1b[0m", bold: "\x1b[1m", amber: "\x1b[38;5
 const buffers: Record<string, string> = {
   s1: `${C.bold}> Make the org dropdown remember the last org each user picked${C.reset}\r\n\r\n${C.teal}⏺${C.reset} I'll store the choice per user and preselect it.\r\n\r\n${C.teal}⏺${C.reset} Update(src/org/Dropdown.tsx)\r\n  ⎿  Updated with 12 additions and 3 removals\r\n\r\n${C.amber}✻${C.reset} Writing the API change… ${C.dim}(42s · esc to interrupt)${C.reset}\r\n`,
   s2: `${C.bold}> Add GET/PUT /api/users/me/last-org${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Bash(pytest tests/api/test_orgs.py)\r\n\r\n  Do you want to proceed?\r\n  ${C.bold}❯ 1. Yes${C.reset}\r\n    2. No, and tell Claude what to do differently\r\n`,
+  // ?houseApproval: the agent asks before a House write (Claude Code's own prompt, as this fixture draws it)
+  ...(new URLSearchParams(location.search).has("houseApproval")
+    ? {
+        s2: `${C.bold}> Pick up the next needs-agent ticket on the board${C.reset}\r\n\r\n${C.teal}⏺${C.reset} #146 "Donor export skips archived donors" is unclaimed and tagged needs-agent; claiming it first.\r\n\r\n${C.teal}⏺${C.reset} mockingbird - claim_house_ticket (MCP)(n: 146, branch: "feature/146-donor-export-skips-archived")\r\n\r\n  Do you want to proceed?\r\n  ${C.bold}❯ 1. Yes${C.reset}\r\n    2. No, and tell Claude what to do differently ${C.dim}(esc)${C.reset}\r\n`,
+      }
+    : {}),
   s3: `${C.dim}codex${C.reset}\r\n› Write tests for the last-org endpoint\r\n\r\n• Added tests/api/test_last_org.py (4 tests)\r\n• All passing\r\n\r\n› `,
   s4: `you@mac backoffice % npm test -- --watch\r\n\r\n ${C.green}✓${C.reset} src/org/Dropdown.test.tsx (6)\r\n ${C.green}✓${C.reset} src/org/lastOrg.test.ts (3)\r\n\r\n Test Files  2 passed (2)\r\n      Tests  9 passed (9)\r\n`,
   s8: `${C.bold}> Draft the release note for the last-org dropdown${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Org pickers now open on the org you used last.\r\n`,
@@ -190,7 +196,8 @@ const team: TeamStatus = {
 // first), a ticket in every status, both handoff tags, a blocked and a waiting one, and five the room added (two of
 // them closed, so outside the open backlog); 5110 has no project yet. ?houseMissing: no token here for 5101's project.
 // ?houseConsent: Nick (5101's admin) connected it, and you haven't allowed your token for it yet (=declined: you chose
-// Not now); the window asks too
+// Not now); the window asks too. ?houseProblems: the board's problem lines (schema drift, an agent's failed write,
+// a teammate's branch that couldn't be fetched or read, a worktree whose claims weren't updated)
 const houseClaim = (by: string, branch: string): HouseTicket["claim"] => ({ by, branch, at: null });
 const houseTicket = (n: number, title: string, status: string, priority: string, claim: HouseTicket["claim"] = null, over: Partial<HouseTicket> = {}): HouseTicket => ({ n, title, status, priority, kind: "engineering", tags: [], claim, blockedBy: [], waiting: null, ...over });
 const houseTickets: Record<number, HouseTicket> = {
@@ -295,6 +302,17 @@ const houseView = (roomId: string): HouseView => {
     fetchedAt: r.project && !missing ? now - 40_000 : 0,
     refreshing: false,
     branches: roomId === "R5101aaaaaaaaaaaaaaaaa" ? ["5101-orgDropdowns"] : [],
+    ...(teamQuery.has("houseProblems") && r.project && !missing
+      ? {
+          drift: "The House's answer doesn't have the fields Mockingbird reads: its work items no longer have assignee (or another claim field), so every ticket shows as unclaimed and claims aren't enforced. Its API may have changed — tell whoever looks after Mockingbird.",
+          writeProblems: [{ at: now - 3 * min, text: "Org dropdowns remember the last org couldn't claim #152: The House answered 409: #152 is already claimed by Nick Smith" }],
+          branchProblems: [
+            `Teammates' branches couldn't be fetched into ${REPO}, so their claimed files may be out of date: fatal: unable to access 'https://github.com/acme/backoffice.git/': Could not resolve host: github.com`,
+            "Nick Smith's branch 5101-lastOrgApi wasn't read, so its files aren't claimed here: 5101-lastOrgApi isn't on origin (not pushed yet)",
+          ],
+          copiesProblem: `${WT("5101-orgDropdowns")}'s branch couldn't be read, so the room's claims there weren't updated: fatal: not a git repository`,
+        }
+      : {}),
   };
 };
 let houseNext = 160;
@@ -1406,7 +1424,7 @@ if (params.has("shot")) {
 // team rooms: the House board — ?house=1 opens the first shared group's board (2: the second); ?houseTicket=141 opens
 // that ticket on it, ?houseClaim=142 starts claiming it, ?houseAdd (=new) opens + Add ticket; ?houseWarning adds a claim
 // warning; ?houseAgent turns on the open backlog's "Needs an agent" filter
-if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent"].some((k) => params.has(k))) {
+if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent", "houseProblems"].some((k) => params.has(k))) {
   let tries = 0;
   const open = setInterval(() => {
     const n = Number(params.get("house")) || 1;

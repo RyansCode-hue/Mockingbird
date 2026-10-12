@@ -99,7 +99,7 @@ function ConsentNote({ view, onAnswer }: { view: HouseView; onAnswer: (allow: bo
     <div className="house-note house-consent">
       <b>Connect your {view.project} token</b>
       <span>
-        {view.isAdmin ? "This room" : `${view.admin ?? "The room's admin"} connected this room`} works in Radley House project <code>{view.project}</code>. Use your {view.project} builder token, from <code>{view.envFile}</code>, for room {view.room}? Mockingbird then reads and writes the House for this room as you — from this board, and from your agents once you approve each write in their pane.
+        {view.isAdmin ? "This room works in" : `${view.admin ?? "The room's admin"} connected this room to`} Radley House project <code>{view.project}</code>. Use your {view.project} builder token (from <code>{view.envFile}</code>) for this room? Mockingbird then reads and writes the House for this room as you — from this board, and from your agents once you approve each write in their pane.
         {declined ? " You chose Not now: nothing on this Mac uses your token for this room." : " Until you allow it, nothing on this Mac reads your token or calls the House for this room."}
       </span>
       <div className="house-inline">
@@ -539,6 +539,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
       {(renaming || !view.project) && <ProjectLine view={view} act={act} onCancel={view.project ? () => setRenaming(false) : undefined} />}
       <ConsentNote view={view} onAnswer={(allow) => void run("consent", () => window.mb.houseConsent(roomId, allow))} />
       {view.project && <ConnectionNote view={view} />}
+      {view.drift && <div className="house-note warn">{view.drift}</div>}
       {view.copiesProblem && <div className="house-note bad">{view.copiesProblem}</div>}
       {adding && <AddTicket act={act} onDone={() => setAdding(false)} />}
       {error && <div className="fp-note err">{error}</div>}
@@ -575,7 +576,6 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
           )}
         </>
       )}
-      {view.drift && <div className="house-problem">{view.drift}</div>}
       {view.writeProblems?.map((p) => (
         <div key={`${p.at}-${p.text}`} className="house-problem">
           <span className="house-when">{ago(p.at)}</span>
