@@ -137,7 +137,7 @@ describe("the House client", () => {
     const c = client(h);
     await expect(c.ticket(999)).rejects.toThrow("The House answered 404: No work item #999 in this project (token [build token])");
     const stale = new HouseClient({ ...c.env, token: `${TOKEN}-old` });
-    const err = await stale.list().catch((e: Error) => e);
+    const err = (await stale.list().catch((e: Error) => e)) as Error;
     expect(err.message).toMatch(/^The House answered 401: Invalid build token .*your build token is stale or isn't for this project\. Each builder needs their own token/);
     expect(err.message).not.toContain(TOKEN);
     await expect(c.event(1000, { event: "nope", note: "x" })).rejects.toThrow(/404/);
@@ -161,7 +161,7 @@ describe("the House client", () => {
       const to = `http://127.0.0.1:${(other.address() as AddressInfo).port}/steal`;
       const c = client(h);
       const env = { ...c.env, apiUrl: `${h.url}/redirect?to=${encodeURIComponent(to)}&x=` };
-      const err = await new HouseClient(env).list().catch((e: Error) => e);
+      const err = (await new HouseClient(env).list().catch((e: Error) => e)) as Error;
       expect(err).toBeInstanceOf(Error);
       expect(err.message).not.toContain(TOKEN);
       expect(seen).toEqual([]);

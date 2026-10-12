@@ -1047,7 +1047,7 @@ if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning"].some((k) 
     const ticket = params.get("houseTicket") ?? params.get("houseClaim");
     let boardTries = 0;
     const board = setInterval(() => {
-      const r = ticket ? ([...document.querySelectorAll(".house-row-main")].find((x) => x.querySelector(".house-n")?.textContent === `#${ticket}`) as HTMLElement | undefined) : document.querySelector(".house-modal");
+      const r = ticket ? ([...document.querySelectorAll(".house-row-main")].find((x) => x.querySelector(".house-n")?.textContent === `#${ticket}`) as HTMLElement | undefined) : (document.querySelector(".house-modal") as HTMLElement | null) ?? undefined;
       if (!r && ++boardTries < 50) return;
       clearInterval(board);
       if (params.has("houseTicket")) r?.click();

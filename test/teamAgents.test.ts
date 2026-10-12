@@ -45,6 +45,7 @@ function side(m: LoopbackMember, sessions: SessionInfo[], dir: string, opts: { l
     sessions: () => s.sessions,
     roomGroups: () => m.team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
     ask: async () => "unused",
+    houseBoard: async () => null,
     chatChanged: () => {},
     notify: () => {},
     windowFocused: () => false,

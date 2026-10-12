@@ -22,6 +22,7 @@ describe("team rooms stopping with the app", () => {
       sessions: () => sessions,
       roomGroups: () => [{ roomId, groupKey: "5110" }],
       ask: async () => "unused",
+      houseBoard: async () => null,
       chatChanged: () => {},
       notify: () => {},
       windowFocused: () => false,
@@ -38,17 +39,17 @@ describe("team rooms stopping with the app", () => {
       {
         livePanes: part("live panes"),
         chat: part("chat", () => room.stop()),
-        plan: part("plan", () => {
-          throw new Error("plan stop failed");
+        house: part("house", () => {
+          throw new Error("house stop failed");
         }),
         takeover: () => part("take-over"),
         team: part("team", () => ryan.team.close()),
       },
       (c, e) => logs.push(`${c}: ${(e as Error).message}`)
     );
-    expect(order).toEqual(["live panes", "chat", "plan", "take-over", "team"]);
+    expect(order).toEqual(["live panes", "chat", "house", "take-over", "team"]);
     // the update went into the room log (teammates get it on the next sync), nothing failed to post
     expect(ryan.store.get(roomId)!.all().some((e) => e.type === "chat.update" && e.author === ryan.id)).toBe(true);
-    expect(logs.filter((l) => /failed/.test(l))).toEqual(["team: stopping the plan board: plan stop failed"]);
+    expect(logs.filter((l) => /failed/.test(l))).toEqual(["team: stopping the House board: house stop failed"]);
   });
 });
