@@ -219,12 +219,7 @@ export class HouseClient {
       const cause = e.cause?.code ?? e.cause?.message ?? e.message;
       throw new HouseError(this.clean(`Couldn't reach the House at ${where}: ${cause}`));
     }
-    const length = Number(res.headers.get("content-length") ?? 0);
-    if (length > MAX_RESPONSE) throw new HouseError(`The House's answer is ${length} bytes; Mockingbird reads at most ${MAX_RESPONSE}`);
-    const text = await res.text().catch((err: Error) => {
-      throw new HouseError(this.clean(`The House's answer couldn't be read: ${err.message}`));
-    });
-    if (text.length > MAX_RESPONSE) throw new HouseError(`The House's answer is longer than ${MAX_RESPONSE} characters`);
+    const text = await this.body(res);
     let parsed: unknown = null;
     let json = true;
     try {
@@ -241,6 +236,37 @@ export class HouseClient {
     }
     if (!json) throw new HouseError(this.clean(`The House's answer to ${method} ${rel.split("?")[0]} isn't JSON: ${text.trim().slice(0, 200)}`));
     return parsed;
+  }
+
+  /**
+   * The answer's text, read as it arrives and refused once it passes
+   * MAX_RESPONSE bytes: a chunked answer has no length to check up front.
+   */
+  private async body(res: Response): Promise<string> {
+    const length = Number(res.headers.get("content-length") ?? 0);
+    const tooLong = () => new HouseError(`The House's answer is longer than ${MAX_RESPONSE} bytes; Mockingbird reads at most that much`);
+    if (length > MAX_RESPONSE) throw tooLong();
+    if (!res.body) return "";
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await reader.read();
+      } catch (err) {
+        throw new HouseError(this.clean(`The House's answer couldn't be read: ${(err as Error).message}`));
+      }
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MAX_RESPONSE) {
+        // the answer is refused either way; a stream that won't stop cleanly changes nothing
+        reader.cancel().catch(() => undefined);
+        throw tooLong();
+      }
+      chunks.push(next.value);
+    }
+    return Buffer.concat(chunks).toString("utf8");
   }
 
   private clean(s: string): string {

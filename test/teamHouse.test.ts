@@ -152,6 +152,43 @@ describe("the House client", () => {
     await expect(c.event(1000, { event: "nope", note: "x" })).rejects.toThrow(/404/);
   });
 
+  it("stops reading a chunked answer once it passes the size cap, rather than reading it whole first", async () => {
+    const env = { apiUrl: "https://house.example.invalid", projectId: "p-1", token: TOKEN, file: "~/x.env" };
+    const chunk = new Uint8Array(64 * 1024).fill(0x20);
+    let pulled = 0;
+    // an answer with no length that never ends
+    const endless = async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(c) {
+            pulled += chunk.byteLength;
+            c.enqueue(chunk);
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    const err = (await new HouseClient(env, { fetch: endless as typeof fetch, timeoutMs: 20_000 }).list().catch((e: Error) => e)) as Error;
+    expect(err.message).toBe("The House's answer is longer than 5242880 bytes; Mockingbird reads at most that much");
+    expect(pulled).toBeLessThan(5 * 1024 * 1024 + 4 * chunk.byteLength);
+    // a declared length past the cap is refused before any of it is read
+    pulled = 0;
+    const declared = async () => new Response("[]", { headers: { "content-length": String(6 * 1024 * 1024) } });
+    await expect(new HouseClient(env, { fetch: declared as typeof fetch }).list()).rejects.toThrow(/longer than 5242880 bytes/);
+    // and an answer under the cap reads as before, multi-byte text intact across chunks
+    const split = async () => {
+      const bytes = Buffer.from(JSON.stringify([{ number: 7, title: "Café ✓", status: "ready" }]));
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            for (let i = 0; i < bytes.length; i += 5) c.enqueue(bytes.subarray(i, i + 5));
+            c.close();
+          },
+        })
+      );
+    };
+    expect((await new HouseClient(env, { fetch: split as typeof fetch }).list())[0].title).toBe("Café ✓");
+  }, 30_000);
+
   it("gives up on a House that doesn't answer in time", async () => {
     const h = await house();
     h.state.delayMs = 400;
