@@ -181,3 +181,36 @@ export const UpdateIcon = () => (
     <path d="M13 2.5v2.75h-2.75" />
   </Icon>
 );
+
+/** A page with lines and a pencil: a room note anyone in the room edits. */
+export const NoteIcon = () => (
+  <Icon>
+    <path d="M10.5 13.25h-6a1 1 0 0 1-1-1v-9.5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1V7" />
+    <path d="M5.5 5h5M5.5 7.25h4M5.5 9.5h2" />
+    <path d="M9.25 13.5l.4-1.6 3.1-3.1a.85.85 0 0 1 1.2 1.2l-3.1 3.1z" />
+  </Icon>
+);
+
+/** Two chain links: a link to a page. */
+export const LinkIcon = () => (
+  <Icon>
+    <path d="M6.75 9.25a2.5 2.5 0 0 0 3.55.05l2-2a2.5 2.5 0 0 0-3.55-3.55l-.75.75" />
+    <path d="M9.25 6.75a2.5 2.5 0 0 0-3.55-.05l-2 2a2.5 2.5 0 0 0 3.55 3.55l.75-.75" />
+  </Icon>
+);
+
+/** Angle brackets on a page: a file in a repo, at a commit. */
+export const RepoFileIcon = () => (
+  <Icon>
+    <path d="M4.25 1.75h4.5l3 3v8.5a1 1 0 0 1-1 1h-6.5a1 1 0 0 1-1-1v-10.5a1 1 0 0 1 1-1z" />
+    <path d="M6.5 8.25 5.25 9.5l1.25 1.25M9.5 8.25l1.25 1.25L9.5 10.75" />
+  </Icon>
+);
+
+/** A padlock: agents can't read this. */
+export const LockIcon = () => (
+  <Icon>
+    <rect x="3.5" y="7" width="9" height="6.5" rx="1.25" />
+    <path d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7" />
+  </Icon>
+);

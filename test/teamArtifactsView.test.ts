@@ -1,3 +1,4 @@
+import { readFileSync } from "fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -109,6 +110,16 @@ describe("room notes and markdown files", () => {
     // a line too long to parse safely is shown as it is
     const long = "*a ".repeat(3000);
     expect(inlineSegments(`**b**\n${long}`)).toEqual([{ t: "bold", s: "b" }, { t: "text", s: `\n${long}` }]);
+  });
+});
+
+describe("the window's content security policy", () => {
+  it("shows images only from this app and the blob: URLs the viewer makes — nothing remote, no data: URLs", () => {
+    const html = readFileSync(new URL("../src/renderer/index.html", import.meta.url), "utf8");
+    const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)![1];
+    const directives = Object.fromEntries(csp.split(";").map((d) => d.trim().split(/\s+/)).map(([k, ...v]) => [k, v]));
+    expect(directives["img-src"]).toEqual(["'self'", "blob:"]);
+    expect(directives["default-src"]).toEqual(["'self'"]);
   });
 });
 

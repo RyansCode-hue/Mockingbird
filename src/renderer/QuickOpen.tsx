@@ -31,10 +31,13 @@ export function QuickOpen({
   session,
   onClose,
   onOpen,
+  placeholder,
 }: {
   session: SessionInfo | null;
   onClose: () => void;
   onOpen: (path: string, line: number | null) => void;
+  /** What the box asks for, when it picks a file for something other than opening it. */
+  placeholder?: string;
 }) {
   const [q, setQ] = useState("");
   useEscape(onClose);
@@ -72,7 +75,7 @@ export function QuickOpen({
           <span className="prompt">⌘P</span>
           <input
             autoFocus
-            placeholder={session ? `Go to a file in ${baseName(session.cwd)} — name:line jumps to a line` : "Focus a session first"}
+            placeholder={session ? placeholder ?? `Go to a file in ${baseName(session.cwd)} — name:line jumps to a line` : "Focus a session first"}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {

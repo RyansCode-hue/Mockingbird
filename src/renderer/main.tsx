@@ -1483,6 +1483,11 @@ function App() {
     const reveal = { line: frame.line, at: Date.now() };
     setEditor((e) => openTab(e, { sessionId: s.id, root: s.cwd, path: frame.path!.slice(s.cwd.length + 1), mode: "file", reveal }, new Set(dirtyKeys())));
   };
+  /** A room's repo file, in the editor of the session main found it in (team rooms: artifacts). */
+  const openRepoFile = (o: { sessionId: string; root: string; path: string; line: number | null }) => {
+    const reveal = o.line ? { line: o.line, at: Date.now() } : undefined;
+    setEditor((e) => openTab(e, { sessionId: o.sessionId, root: o.root, path: o.path, mode: "file", reveal }, new Set(dirtyKeys())));
+  };
   const openFrameRef = useRef(openFrame);
   openFrameRef.current = openFrame;
   // where the debugger stops, the editor opens, with the debug controls beside it
@@ -1818,7 +1823,18 @@ function App() {
             />
           )}
           {/* team rooms: team chat */}
-          {sideView === "room" && <RoomChatPanel status={teamStatus} activeGroup={activeGroup} visible={!sideCollapsed} onNewSession={newSessionIn} onJoinRoom={() => setJoinDlg(true)} />}
+          {sideView === "room" && (
+            <RoomChatPanel
+              status={teamStatus}
+              activeGroup={activeGroup}
+              visible={!sideCollapsed}
+              onNewSession={newSessionIn}
+              onJoinRoom={() => setJoinDlg(true)}
+              sessions={ownSessions}
+              focusedSessionId={focusedSession?.id ?? null}
+              onOpenRepoFile={openRepoFile}
+            />
+          )}
           {sideView === "sessions" && (
           <div className="scroll">
             <div className="filter-row">
