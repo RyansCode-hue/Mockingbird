@@ -6,7 +6,7 @@ vi.hoisted(() => {
 });
 
 import { Terminal } from "@xterm/xterm";
-import { dataPump, makeTerm, replay, termLinkHandler, type CachedTerm } from "../src/renderer/cachedTerm";
+import { attachTerm, dataPump, makeTerm, replay, syncViewport, termLinkHandler, type CachedTerm } from "../src/renderer/cachedTerm";
 
 const parsed = (term: Terminal) => new Promise<void>((r) => term.write("", r));
 const screen = (term: Terminal) => {
@@ -73,6 +73,57 @@ describe("cached terminal replay", () => {
     await parsed(term);
     expect(e.ready).toBe(true);
     expect(screen(term)).toEqual(["[earlier output couldn't be loaded: gone]", "live"]);
+  });
+});
+
+/**
+ * A cached terminal as a pane shows it, scrolled to `viewportY` with 18px rows. Holders behave as
+ * the browser does: an element put into one comes back with its viewport scrolled to 0.
+ */
+function shownTerm(viewportY: number) {
+  const viewport = { scrollTop: 0 };
+  const element = { parentElement: null as unknown, isConnected: false, querySelector: (sel: string) => (sel === ".xterm-viewport" ? viewport : null) };
+  const term = {
+    element: undefined as typeof element | undefined,
+    buffer: { active: { viewportY } },
+    open(holder: ReturnType<typeof holderOf>) {
+      term.element = element;
+      holder.appendChild(element);
+    },
+    _core: { _renderService: { dimensions: { css: { cell: { width: 7, height: 18 } } } } },
+  };
+  const holderOf = (connected = true) => {
+    const h = {
+      appendChild(el: typeof element) {
+        el.parentElement = h;
+        el.isConnected = connected;
+        viewport.scrollTop = 0;
+      },
+    };
+    return h;
+  };
+  const attach = (h: ReturnType<typeof holderOf>) => attachTerm(term as unknown as Terminal, h as unknown as HTMLElement);
+  return { term, viewport, holderOf, attach };
+}
+
+describe("a cached terminal shown in a pane again", () => {
+  it("keeps the view it had: its viewport's offset follows the buffer, so the next scroll moves from there, not from the top", () => {
+    const { term, viewport, holderOf, attach } = shownTerm(7995);
+    attach(holderOf()); // first shown
+    expect(viewport.scrollTop).toBe(7995 * 18);
+    attach(holderOf()); // its tab switched away and back
+    expect(term.element?.isConnected).toBe(true);
+    expect(viewport.scrollTop).toBe(7995 * 18);
+  });
+
+  it("leaves an offset within half a row alone, and a terminal out of the page untouched", () => {
+    const { term, viewport, holderOf, attach } = shownTerm(100);
+    attach(holderOf());
+    viewport.scrollTop = 100 * 18 + 5; // mid-scroll on a trackpad
+    syncViewport(term as unknown as Terminal);
+    expect(viewport.scrollTop).toBe(100 * 18 + 5);
+    attach(holderOf(false));
+    expect(viewport.scrollTop).toBe(0);
   });
 });
 

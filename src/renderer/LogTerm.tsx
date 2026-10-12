@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { FitAddon } from "@xterm/addon-fit";
-import { dataPump, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
+import { attachTerm, dataPump, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { classifyTermInput } from "./inputGuard";
 
 interface Entry extends CachedTerm {
@@ -49,8 +49,7 @@ export function LogTerm({ id }: { id: string }) {
     ensurePump();
     const e = entryFor(id);
     const el = host.current!;
-    if (e.term.element) el.appendChild(e.term.element);
-    else e.term.open(el);
+    attachTerm(e.term, el);
     trackUserInput(e);
     return followSize(e, el, (cols, rows) => window.mb.runResize(id, cols, rows));
   }, [id]);
