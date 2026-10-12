@@ -1,4 +1,6 @@
+import { readFileSync } from "fs";
 import { describe, expect, it } from "vitest";
+import { TAB_LABELS } from "../src/renderer/tabs";
 import {
   accessFlags,
   accessOf,
@@ -167,5 +169,22 @@ describe("always-allowed kinds", () => {
   it("read as the command, or the tool and where", () => {
     expect(kindLabel("Bash: docker exec")).toBe("docker exec");
     expect(kindLabel("WebFetch: docs.python.org")).toBe("WebFetch in docs.python.org");
+  });
+});
+
+describe("Council's name", () => {
+  it("is what the tab says, while the tab's id stays the saved one", () => {
+    expect(TAB_LABELS.collaborate).toBe("Council");
+  });
+
+  it("is never called a room in what people or models read: rooms are team rooms", () => {
+    // prose only: comments, and identifiers like `room.title` or `collab-room-row`, aren't shown
+    const prose = /\b(?:a|the|this|that|new|delete|from|in) rooms?\b|\brooms?(?:'s)? (?:list|details|files?)\b|\bRoom stopped\b/i;
+    for (const file of ["src/renderer/Council.tsx", "src/renderer/CollabModels.tsx", "src/renderer/collabView.ts", "src/main/collab.ts"]) {
+      const code = readFileSync(file, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|\s)\/\/ .*$/gm, "$1");
+      expect(code.match(prose)?.[0] ?? null, file).toBeNull();
+    }
   });
 });

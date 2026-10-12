@@ -66,7 +66,7 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
   };
 
   const remove = (p: CollabParticipant) => {
-    if (!window.confirm(`Remove ${p.label} from the room? Its past messages stay.`)) return;
+    if (!window.confirm(`Remove ${p.label} from the council? Its past messages stay.`)) return;
     apply(specs.filter((s) => s.key !== p.key));
   };
 
@@ -174,8 +174,8 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
                   <button className="icon" disabled={i === 0} title="Speak earlier" onClick={() => apply(moveSeat(specs, p.key, seated[i - 1].key))}>↑</button>
                   <button className="icon" disabled={i === seated.length - 1} title="Speak later" onClick={() => apply(moveSeat(specs, p.key, seated[i + 1].key))}>↓</button>
                   <span className="spacer" />
-                  <button className="link danger" disabled={seated.length <= 1} title={seated.length <= 1 ? "A room needs at least one model" : undefined} onClick={() => remove(p)}>
-                    Remove from room
+                  <button className="link danger" disabled={seated.length <= 1} title={seated.length <= 1 ? "A council needs at least one model" : undefined} onClick={() => remove(p)}>
+                    Remove from council
                   </button>
                 </div>
               </div>

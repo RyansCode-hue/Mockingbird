@@ -148,7 +148,7 @@ describe("what each model is told", () => {
     c.send(room.id, "Keep it under 50 lines please");
     await vi.waitFor(() => expect(room.round).toBe(2));
     const gptSecond = prompts.filter((p) => p.key === "gpt6")[1].prompt;
-    expect(gptSecond).toMatch(/^In the room: Claude Opus 5.5, Claude Fable 5.1\. There's no repository/);
+    expect(gptSecond).toMatch(/^In the council: Claude Opus 5.5, Claude Fable 5.1\. There's no repository/);
     expect(gptSecond).toMatch(/\n\nNew since your last turn:/);
     expect(gptSecond).toMatch(/\[Claude Opus 5.5\]/);
     expect(gptSecond).toMatch(/\[User\]\nKeep it under 50 lines please/);
@@ -194,7 +194,7 @@ describe("plans and implementation", () => {
     c.approve(room.id, room.messages.find((m) => m.speaker === "opus")!.id);
     await c.implement(room.id, "gpt6");
     expect(startSession).toHaveBeenCalledWith(
-      expect.objectContaining({ repoPath: "/code/app", useWorktree: true, branchName: "collab-csv-export-v2", baseBranch: "dev", agent: "codex", model: "gpt-6-astra", taskGroup: "Collaborate" })
+      expect.objectContaining({ repoPath: "/code/app", useWorktree: true, branchName: "collab-csv-export-v2", baseBranch: "dev", agent: "codex", model: "gpt-6-astra", taskGroup: "Council" })
     );
     expect(startSession.mock.calls.at(-1)![0].initialPrompt).toMatch(/approved by the user\.\n\nopus thoughts$/);
     expect(room.implementedIn).toBe("sess1");
@@ -239,7 +239,7 @@ describe("seats: adding, removing, effort and code access", () => {
     const room = make({ mode: "step" });
     await c.run(room.id);
     c.setParticipants(room.id, asSpecs(room).filter((s) => s.key !== "opus"));
-    expect(room.messages.at(-1)!.text).toBe("Claude Opus 5.5 left the room.");
+    expect(room.messages.at(-1)!.text).toBe("Claude Opus 5.5 left the council.");
     await c.run(room.id);
     expect(said(room)).toEqual(["1:gpt6", "1:opus", "1:fable", "2:gpt6", "2:fable"]);
     expect(seat(room, "opus")).toMatchObject({ removed: true, label: "Claude Opus 5.5" });
@@ -273,7 +273,7 @@ describe("seats: adding, removing, effort and code access", () => {
     expect(cwds.gpt6).toBe("/code/app");
     expect(cwds.opus).not.toBe("/code/app");
     expect(prompts.opus).toMatch(/you can't read it yourself\. When something depends on the code, call the ask_code_reader tool: GPT-6 Astra looks it up/);
-    expect(prompts.gpt6).toMatch(/In the room: Claude Opus 5.5\. You can read the repository/);
+    expect(prompts.gpt6).toMatch(/In the council: Claude Opus 5.5\. You can read the repository/);
     c.setParticipants(room.id, room.participants.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: null, readsCode: true })));
     expect(room.messages.at(-1)!.text).toBe("Claude Opus 5.5 can now read the code.");
   });
@@ -367,7 +367,7 @@ describe("asking the code reader", () => {
     const r = await c.handleRoomRequest(room.id, "fable", "ask_code_reader", { question: "q6" });
     expect(r).toEqual({ error: expect.stringMatching(/4 questions this turn/) });
     c.setParticipants(room.id, room.participants.map((p) => ({ key: p.key, label: p.label, agent: p.agent, model: p.model, effort: null, readsCode: false })));
-    await expect(c.askCodeReader(room.id, "fable", "q")).rejects.toThrow(/Nobody in this room can read the code/);
+    await expect(c.askCodeReader(room.id, "fable", "q")).rejects.toThrow(/Nobody in this council can read the code/);
     expect(await c.handleRoomRequest(room.id, "fable", "rm_rf", {})).toEqual({ error: "Unknown tool: rm_rf" });
   });
   it("the tool reaches the CLIs as Mockingbird's MCP server, pre-approved", () => {
@@ -475,7 +475,7 @@ describe("models that run commands", () => {
     expect(seen[0].prompt).not.toMatch(/write files there/); // Codex writes with its shell
     expect(seen[2].prompt).not.toMatch(/write files/);
     expect(buildPrompt(room, { ...room.participants[1], runsCommands: true })).toMatch(/your file tools to read and to write files there/);
-    expect(seen[1].prompt).toMatch(/In the room: GPT-6 Astra \(reads the code, runs commands\), Claude Fable 5.1\./);
+    expect(seen[1].prompt).toMatch(/In the council: GPT-6 Astra \(reads the code, runs commands\), Claude Fable 5.1\./);
 
     // the copy is reused from turn to turn — work a model did there (installs, builds) survives
     fs.writeFileSync(path.join(copy, "built.txt"), "x");
@@ -657,7 +657,7 @@ describe("asking the user's permission", () => {
       const a = c.requestPermission(room.id, "opus", bash("docker ps"));
       const b = c.requestPermission(room.id, "opus", bash("docker images"));
       c.stop(room.id);
-      expect(await a).toMatchObject({ behavior: "deny", message: expect.stringMatching(/^Room stopped — denied/) });
+      expect(await a).toMatchObject({ behavior: "deny", message: expect.stringMatching(/^Council stopped — denied/) });
       await b;
       const late = c.requestPermission(room.id, "opus", bash("docker ps"));
       vi.advanceTimersByTime(DEFAULT_ASK_TIMEOUT_MIN * 60_000);

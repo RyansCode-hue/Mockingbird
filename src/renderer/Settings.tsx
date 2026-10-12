@@ -536,7 +536,7 @@ export function SettingsView({
                 <button className={theme === "light" ? "on" : ""} onClick={() => onTheme("light")}>Light</button>
               </span>
             </SetRow>
-            <SetRow title="Tabs" note="Turned-off tabs leave the top bar and the command palette. A notification or search result can still open one; WorkTracker debriefs and Collaborate rooms keep running.">
+            <SetRow title="Tabs" note="Turned-off tabs leave the top bar and the command palette. A notification or search result can still open one; WorkTracker debriefs and Council discussions keep running.">
               <span className="tab-toggles">
                 {OPTIONAL_TABS.map((t) => {
                   const hidden = s.hiddenTabs ?? [];

@@ -7,7 +7,7 @@ import { tildePath } from "../shared/paths";
 const OPEN_LABEL: Record<TranscriptHit["open"]["how"], string> = {
   pane: "go to pane",
   previous: "restore session",
-  room: "open room",
+  room: "open council",
   resume: "open as session",
 };
 

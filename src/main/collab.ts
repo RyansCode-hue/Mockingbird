@@ -65,10 +65,10 @@ function rosterLine(room: CollabRoom, p: CollabParticipant): string {
         }. Don't change anything: nothing is edited until the user approves a plan. MCP and app tools are switched off in this discussion.`
       : codeReaderFor(room, p.key)
       ? `There's a repository, but you can't read it yourself. When something depends on the code, call the ${MCP_TOOL.askCodeReader} tool: ${codeReaderFor(room, p.key)!.label} looks it up and the answer comes back within your turn.`
-      : "There's a repository, but nobody in the room can read it right now.";
+      : "There's a repository, but nobody in the council can read it right now.";
   const role = (o: CollabParticipant) =>
     !room.repoPath ? "" : o.runsCommands ? ` (reads the code, runs commands${o.usesDocker ? ", uses Docker" : ""})` : o.readsCode ? " (reads the code)" : "";
-  return `In the room: ${others.map((o) => o.label + role(o)).join(", ") || "only you"}. ${access}`;
+  return `In the council: ${others.map((o) => o.label + role(o)).join(", ") || "only you"}. ${access}`;
 }
 
 /** One model turn. Throws when the CLI fails; the room records it and moves on. */
@@ -252,7 +252,7 @@ export class CollabRooms {
 
   get(id: string): CollabRoom {
     const room = this.rooms.get(id);
-    if (!room) throw new Error("That room no longer exists");
+    if (!room) throw new Error("That council no longer exists");
     return room;
   }
 
@@ -320,12 +320,12 @@ export class CollabRooms {
   setParticipants(id: string, specs: CollabParticipantSpec[]): CollabRoom {
     const room = this.get(id);
     const kept = new Set(specs.filter((s) => s.key).map((s) => s.key));
-    if (specs.length < 1) throw new Error("A room needs at least one model");
+    if (specs.length < 1) throw new Error("A council needs at least one model");
     const notes: string[] = [];
     for (const p of room.participants) {
       if (p.removed || kept.has(p.key)) continue;
       p.removed = true;
-      notes.push(`${p.label} left the room.`);
+      notes.push(`${p.label} left the council.`);
     }
     for (const s of specs) {
       const p = s.key ? room.participants.find((x) => x.key === s.key) : undefined;
@@ -425,7 +425,7 @@ export class CollabRooms {
   }
 
   stop(id: string): void {
-    for (const r of this.rooms.get(id)?.pending ?? []) this.waiting.get(r.id)?.("deny", "Room stopped — denied");
+    for (const r of this.rooms.get(id)?.pending ?? []) this.waiting.get(r.id)?.("deny", "Council stopped — denied");
     this.aborts.get(id)?.abort();
   }
 
@@ -440,7 +440,7 @@ export class CollabRooms {
     const seat = room.participants.find((p) => p.key === seatKey && !p.removed);
     const tool = String(args.tool_name ?? "");
     const input = (args.input && typeof args.input === "object" ? args.input : {}) as Record<string, unknown>;
-    if (!seat) return { behavior: "deny", message: "You're no longer in this room." };
+    if (!seat) return { behavior: "deny", message: "You're no longer in this council." };
     const kind = permissionKind(tool, input);
     if (kind && room.allowKinds?.includes(kind)) return { behavior: "allow", updatedInput: input };
     const req: CollabPermissionRequest = {
@@ -488,7 +488,7 @@ export class CollabRooms {
       if (!req.kind) throw new Error("That kind of call can't be always allowed; allow it once instead.");
       if (!room.allowKinds?.includes(req.kind)) (room.allowKinds ??= []).push(req.kind);
     }
-    settle(decision === "deny" ? "deny" : "allow", decision === "deny" ? "You denied" : decision === "always" ? `You allowed (and always allow ${req.kind} in this room)` : "You allowed");
+    settle(decision === "deny" ? "deny" : "allow", decision === "deny" ? "You denied" : decision === "always" ? `You allowed (and always allow ${req.kind} in this council)` : "You allowed");
     return room;
   }
 
@@ -539,7 +539,7 @@ export class CollabRooms {
         room.round = roundNo;
         rounds++;
         if (failed === seats.length) {
-          this.note(room, "Every model failed this round, so the room stopped. Check the errors above.");
+          this.note(room, "Every model failed this round, so the discussion stopped. Check the errors above.");
           break;
         }
         if (room.mode === "consensus" && agreed === seats.length) {
@@ -606,12 +606,12 @@ export class CollabRooms {
   async askCodeReader(roomId: string, askerKey: string, question: string): Promise<string> {
     const room = this.get(roomId);
     const asker = active(room).find((p) => p.key === askerKey);
-    if (!asker) throw new Error("You're no longer in this room.");
+    if (!asker) throw new Error("You're no longer in this council.");
     const q = question.trim();
     if (!q) throw new Error("The question is empty.");
     if (q.length > MAX_QUESTION) throw new Error(`The question is ${q.length} characters; keep it under ${MAX_QUESTION}.`);
     const reader = codeReaderFor(room, askerKey);
-    if (!reader) throw new Error("Nobody in this room can read the code right now.");
+    if (!reader) throw new Error("Nobody in this council can read the code right now.");
     const roundNo = room.round + 1;
     const countKey = `${room.id}.${askerKey}.${roundNo}`;
     const asked = this.lookups.get(countKey) ?? 0;
@@ -654,7 +654,7 @@ export class CollabRooms {
     const room = this.get(id);
     if (room.running) throw new Error("Wait for the current round to finish, or stop it");
     const p = active(room).find((x) => x.key === key);
-    if (!p) throw new Error("That model isn't in this room");
+    if (!p) throw new Error("That model isn't in this council");
     const ac = new AbortController();
     this.aborts.set(id, ac);
     room.running = true;
@@ -687,11 +687,11 @@ export class CollabRooms {
   async implement(id: string, key: string): Promise<SessionInfo> {
     const room = this.get(id);
     if (!room.plan?.approved) throw new Error("Approve a plan first");
-    if (!room.repoPath) throw new Error("This room has no repository to implement in");
+    if (!room.repoPath) throw new Error("This council has no repository to implement in");
     // one implementing session per room: a second would start on the same branch
     if (room.implementedIn || this.implementing.has(id)) throw new Error("The plan is already being implemented — open the implementing session");
     const m = active(room).find((x) => x.key === key);
-    if (!m) throw new Error("That model isn't in this room");
+    if (!m) throw new Error("That model isn't in this council");
     const slug = room.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || room.id;
     this.implementing.add(id);
     try {
@@ -703,11 +703,11 @@ export class CollabRooms {
         agent: m.agent,
         model: m.model,
         ...(m.effort ? { effort: m.effort } : {}),
-        taskGroup: "Collaborate",
-        title: `Collab — ${room.title}`,
+        taskGroup: "Council",
+        title: `Council — ${room.title}`,
         initialPrompt:
           `Implement this plan. It was worked out by ${active(room).map((p) => p.label).join(", ")} ` +
-          `in a Mockingbird Collaborate room and approved by the user.\n\n${room.plan.text}`,
+          `in a Mockingbird Council discussion and approved by the user.\n\n${room.plan.text}`,
       });
       room.implementedIn = info.id;
       this.note(room, `${m.label} is implementing the plan in a new session on branch collab-${slug}.`);
@@ -733,7 +733,7 @@ export class CollabRooms {
       const made = await makeTestCopy(room.repoPath, dest);
       if (this.rooms.get(room.id) !== room) {
         fs.rmSync(dest, { recursive: true, force: true });
-        throw new Error("The room was deleted");
+        throw new Error("The council was deleted");
       }
       room.workspacePath = dest;
       this.note(room, `Made a test copy of ${path.basename(room.repoPath)} (${made}) for the models that run commands. Changes there never reach your code.`);

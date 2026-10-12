@@ -4,6 +4,6 @@ export const TAB_LABELS: Record<Tab, string> = {
   sessions: "Sessions",
   dashboard: "Dashboard",
   worktracker: "WorkTracker",
-  collaborate: "Collaborate",
+  collaborate: "Council",
   settings: "Settings",
 };

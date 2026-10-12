@@ -58,7 +58,7 @@ const ROOM_TOOLS = [
   {
     name: ${JSON.stringify(MCP_TOOL.askCodeReader)},
     description:
-      "You can't read this discussion's repository yourself; this asks the model in the room that can. " +
+      "You can't read this discussion's repository yourself; this asks the model in the council that can. " +
       "It searches and reads the code to answer your question, and its answer comes back here within your turn. " +
       "Ask a specific, self-contained question (what to look for, which part of the system), e.g. " +
       "\"How does the donor export build its query, and which file is it in?\" Each turn allows a few questions.",
@@ -71,7 +71,7 @@ const ROOM_TOOLS = [
   },
   {
     name: ${JSON.stringify(MCP_TOOL.approvePermission)},
-    description: "Asks the user, in the Mockingbird room, to allow or deny a tool call. Called by Claude Code itself, not by the model.",
+    description: "Asks the user, in the Mockingbird council, to allow or deny a tool call. Called by Claude Code itself, not by the model.",
     inputSchema: {
       type: "object",
       properties: { tool_name: { type: "string" }, input: { type: "object" }, tool_use_id: { type: "string" } },
@@ -333,7 +333,7 @@ export class Messaging {
   private async dispatch(req: { op?: string; from?: string; args?: Record<string, unknown> }): Promise<Reply> {
     const m = /^collab-([^.]+)\.(.+)$/.exec(req.from ?? "");
     if (!m) return this.handle(req);
-    if (!this.roomHandler) return { error: "Collaborate isn't ready yet — try again in a moment." };
+    if (!this.roomHandler) return { error: "Council isn't ready yet — try again in a moment." };
     return this.roomHandler(m[1], m[2], String(req.op ?? ""), req.args ?? {});
   }
 

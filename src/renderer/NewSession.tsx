@@ -915,7 +915,7 @@ interface ImportRow {
   title: string;
   at: number;
   snippet?: string;
-  /** Search hits that are already open, or belong to a Collaborate room, aren't imported again. */
+  /** Search hits that are already open, or belong to a Council model, aren't imported again. */
   blocked?: string;
   /** A closed Mockingbird session that resumes this conversation — restored rather than duplicated. */
   restore?: string;
@@ -952,10 +952,10 @@ function useConversations(q: string, enabled = true): { rows: ImportRow[] | null
           id: h.id,
           agent: h.agent,
           cwd: h.cwd,
-          title: h.open.how === "room" ? `${h.open.roomTitle} (Collaborate)` : h.title,
+          title: h.open.how === "room" ? `${h.open.roomTitle} (Council)` : h.title,
           at: h.updated,
           snippet: h.snippet,
-          ...(h.open.how === "pane" ? { blocked: "already open" } : h.open.how === "room" ? { blocked: "in a Collaborate room" } : {}),
+          ...(h.open.how === "pane" ? { blocked: "already open" } : h.open.how === "room" ? { blocked: "in a Council discussion" } : {}),
           ...(h.open.how === "previous" ? { restore: h.open.sessionId } : {}),
         }))
       );
