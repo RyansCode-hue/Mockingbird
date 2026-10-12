@@ -7,7 +7,7 @@ import { SessionInfo } from "../shared/types";
 import { readJsonFile, writeFileAtomic, writeGenerated } from "./fileOps";
 import { CLAUDE_SETTINGS, CODEX_DIR } from "./agentFiles";
 import { hookShellLines, writeClaimsCheck } from "./team/claims";
-import type { ClaimWarning } from "../shared/team/plan";
+import type { ClaimWarning } from "../shared/team/claims";
 
 const EVENTS_DIR = path.join(MB_DIR, "events");
 /** Where hook scripts from older builds append; still read, for one that runs on after an upgrade. */
@@ -17,8 +17,8 @@ const POLL_MS = 500;
 
 // PreToolUse clears "waiting" the moment an approved tool starts running —
 // without it, a permission approval stays amber until the whole turn finishes.
-// It also checks edits against a team room's plan claims, and SessionStart
-// hands an agent in a room's repo the plan's instructions (see team/claims.ts).
+// It also checks edits against a team room's claims, and SessionStart hands an
+// agent in a room's repo the room's instructions (see team/claims.ts).
 const HOOK_EVENTS = ["Stop", "Notification", "UserPromptSubmit", "PreToolUse", "SessionStart"] as const;
 
 // Codex uses the same hook format in its own file. It has no Notification event:
@@ -80,28 +80,28 @@ function wired(file: string, events: readonly string[]): boolean {
 // file, and the app never reads an event that is still being written.
 // SessionStart leaves no event (it isn't a status); it only answers the agent.
 //
-// Team plan claims: an edit of a file a teammate's package owns is answered
+// Team room claims: an edit of a file a teammate's claimed ticket owns is answered
 // with the same JSON by both CLIs. The first such edit of a file in a
 // conversation is denied, with the reason for the agent (Claude Code and Codex
 // both give a deny's reason to the model, before anything is written) and a
 // systemMessage for the user; repeating it goes through the normal permission
-// flow with a reminder (additionalContext). That is the plan's "warned, and
+// flow with a reminder (additionalContext). That is the claims' "warned, and
 // you can still proceed": "allow" would skip permission prompts the user would
 // otherwise see, and its reason reaches only a debug log; "ask" shows its
 // reason to the user but not the agent, and Codex doesn't support it (the hook
 // fails and the edit runs); additionalContext alone reaches Claude only next
 // to the tool's result, after the edit has landed.
-const PLAN = hookShellLines();
+const ROOM = hookShellLines();
 const SCRIPT = `#!/bin/bash
 # Mockingbird hook — leaves each agent hook event in a file for the app to read,
-# hands agents in a team room's repo the plan, and checks their edits against its claims.
-${PLAN.functions}
-${PLAN.sessionStart}
+# hands agents in a team room's repo the room's instructions, and checks their edits against its claims.
+${ROOM.functions}
+${ROOM.sessionStart}
 dir="${EVENTS_DIR}"
 mkdir -p "$dir"
 tmp=$(mktemp "$dir/.tmp.XXXXXXXX") || exit 0
 if { printf '{"event":"%s","ts":%s,"pane":"%s","payload":' "$1" "$(date +%s)" "\${MOCKINGBIRD_SESSION:-}"; cat; printf '}\\n'; } > "$tmp"; then
-${PLAN.preToolUse}
+${ROOM.preToolUse}
   mv -f "$tmp" "$dir/$(date +%s)-\${tmp##*.}.json" || rm -f "$tmp"
 else
   rm -f "$tmp"
@@ -222,7 +222,7 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
  * Read hook events as they arrive — a file each in ~/.mockingbird/events,
  * taken oldest first and deleted once read — and route them to the session
  * manager. Only events written after this starts count. Returns a function
- * that stops watching. `onClaim` hears the team plan's claim warnings.
+ * that stops watching. `onClaim` hears team rooms' claim warnings.
  */
 export function watchEvents(sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler, onClaim?: ClaimHandler): () => void {
   const handle = (raw: string, source: string) => {

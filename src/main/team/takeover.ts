@@ -1742,8 +1742,7 @@ export class TakeoverService {
     const s = room.ext.settings;
     const urls = [
       ...Object.values(room.ext.takeover?.sessions ?? {}).map((b) => b.session.originUrl),
-      ...(room.ext.plan?.repo ? [room.ext.plan.repo.origin] : []),
-      ...Object.values(room.ext.memberBranches ?? {}).map((b) => b.origin),
+      ...Object.values(room.ext.sessions ?? {}).flatMap((r) => (r.repo ? [r.repo] : [])),
     ];
     return {
       roomId: room.id,

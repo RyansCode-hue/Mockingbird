@@ -301,20 +301,26 @@ const api = {
     ipcRenderer.on("team:changed", h);
     return () => ipcRenderer.removeListener("team:changed", h);
   },
-  // team rooms: plan board
-  planGet: (roomId: string) => ipcRenderer.invoke("plan:get", roomId),
-  planApply: (roomId: string, op: unknown) => ipcRenderer.invoke("plan:apply", roomId, op),
-  planRepos: (roomId: string) => ipcRenderer.invoke("plan:repos", roomId),
-  planSync: (roomId: string) => ipcRenderer.invoke("plan:sync", roomId),
-  onPlanChanged: (cb: (view: unknown) => void) => {
+  // team rooms: the Radley House board
+  houseGet: (roomId: string) => ipcRenderer.invoke("house:get", roomId),
+  /** The board dialog opened (true) or closed: an open board keeps the House read. Answers the board (HouseView). */
+  houseWatch: (roomId: string, open: boolean) => ipcRenderer.invoke("house:watch", roomId, open),
+  houseRefresh: (roomId: string) => ipcRenderer.invoke("house:refresh", roomId),
+  /** One ticket with its history (HouseTicketView). */
+  houseTicket: (roomId: string, n: number) => ipcRenderer.invoke("house:ticket", roomId, n),
+  /** A change (HouseWrite) made in the House as this member, or to the room's board. */
+  houseWrite: (roomId: string, w: unknown) => ipcRenderer.invoke("house:write", roomId, w),
+  /** Open the ticket in the House's web UI. */
+  houseOpen: (roomId: string, n: number) => ipcRenderer.invoke("house:open", roomId, n),
+  onHouseChanged: (cb: (view: unknown) => void) => {
     const h = (_e: unknown, v: unknown) => cb(v);
-    ipcRenderer.on("plan:changed", h);
-    return () => ipcRenderer.removeListener("plan:changed", h);
+    ipcRenderer.on("house:changed", h);
+    return () => ipcRenderer.removeListener("house:changed", h);
   },
-  onPlanWarning: (cb: (notice: unknown) => void) => {
+  onHouseWarning: (cb: (notice: unknown) => void) => {
     const h = (_e: unknown, n: unknown) => cb(n);
-    ipcRenderer.on("plan:warning", h);
-    return () => ipcRenderer.removeListener("plan:warning", h);
+    ipcRenderer.on("house:warning", h);
+    return () => ipcRenderer.removeListener("house:warning", h);
   },
   // team rooms: team chat
   teamChatView: (roomId: string) => ipcRenderer.invoke("teamChat:view", roomId),

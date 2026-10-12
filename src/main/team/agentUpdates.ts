@@ -1,7 +1,7 @@
 import { MAX_UPDATE_ITEMS, type AgentUpdate } from "../../shared/team/chat";
 import type { SessionInfo, SessionStatus } from "../../shared/types";
 import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/types";
-import { describeChange } from "../../shared/team/plan";
+import { isTicketNumber, type NudgeChange } from "../../shared/team/house";
 import "../../shared/team/takeover"; // the take-over state the feed reads (type only)
 
 /**
@@ -10,9 +10,10 @@ import "../../shared/team/takeover"; // the take-over state the feed reads (type
  *
  *   - a room session on this install started or finished a turn, is waiting
  *     on input (with the reason), or ended;
- *   - a room session was taken over (TAKEOVER_EVENT), or the room's board
- *     changed (BOARD_EVENTS): posted by the install that
- *     published that event, so the room hears it once.
+ *   - a room session was taken over (TAKEOVER_EVENT), or a member wrote to
+ *     a House ticket (its house.nudge: "Ryan claimed #143", never the
+ *     House's title or text): posted by the install that published that
+ *     event, so the room hears it once.
  *
  * Updates gather per room for GROUP_MS, keeping each session's latest state,
  * and a room gets at most one update post per MIN_GAP_MS.
@@ -20,8 +21,16 @@ import "../../shared/team/takeover"; // the take-over state the feed reads (type
 
 /** The take-over event's type (stage 3 publishes it). Expected body: { sessionId, title?, from? (previous owner's member id) }. */
 export const TAKEOVER_EVENT = "session.takenOver";
-/** Board changes worth a line in the room; plan.repo and plan.branches are bookkeeping. */
-export const BOARD_EVENTS: ReadonlySet<string> = new Set(["plan.package", "plan.claim", "plan.status", "plan.remove"]);
+/** How a House write reads in the room: "Ryan claimed #143". */
+const NUDGE_VERB: Record<NudgeChange, string> = {
+  created: "created",
+  claimed: "claimed",
+  released: "released",
+  progress: "posted progress on",
+  status: "changed the status of",
+  question: "asked a person a question on",
+  note: "commented on",
+};
 
 const GROUP_MS = 10_000;
 const MIN_GAP_MS = 30_000;
@@ -107,15 +116,13 @@ export class AgentUpdateFeed {
         detail: `${name(e.author) ?? "a teammate"} took it over${from ? ` from ${from}` : ""}`,
         at: this.now(),
       });
-    } else if (BOARD_EVENTS.has(e.type)) {
-      // the reducer has just recorded this change last in the board's history
-      const change = room.ext.plan?.changes.at(-1);
-      if (!change) return;
+    } else if (e.type === "house.nudge" && isTicketNumber(body.n) && typeof body.change === "string" && body.change in NUDGE_VERB) {
+      const via = pick("via");
       this.add(room.id, `e:${e.id}`, {
         session: "",
         title: "",
         kind: "board",
-        detail: describeChange(change, (id) => name(id) ?? "a teammate"),
+        detail: `${name(e.author) ?? "a teammate"}${via ? ` (agent: ${via})` : ""} ${NUDGE_VERB[body.change as NudgeChange]} #${body.n}`,
         at: this.now(),
       });
     }
