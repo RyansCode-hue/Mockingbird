@@ -30,6 +30,7 @@ vi.mock("node-pty", () => ({
 const ptyOf = (id: string) => ptys.filter((p) => p.env.MOCKINGBIRD_SESSION === id).at(-1)!;
 
 const CONV = "7f3c2a10-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+const NICK_CONV = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
 const FAST = { publishMs: 40, batchMs: 1, heartbeatMs: 100, viewTtlMs: 3000, leaseMs: 3000, resyncMs: 30, gitMs: 60_000 };
 const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -227,10 +228,10 @@ describe("take-over over live panes", () => {
     expect(r.conversation).toBe("full");
     expect(fs.readFileSync(path.join(r.cwd, "src/a.ts"), "utf8")).toBe("export const a = 42; // edited\n");
     expect(fs.existsSync(path.join(r.cwd, ".env"))).toBe(false);
-    // it runs on Nick's Mac, in the room's group, resuming the conversation
+    // it runs on Nick's Mac, in the room's group, as a new conversation started from a brief
     const mine = t.nick.sessions.list().find((x) => x.id === r.sessionId)!;
     expect(mine).toMatchObject({ cwd: r.cwd, taskGroup: "5110" });
-    expect(ptyOf(r.sessionId).args.join(" ")).toContain(`'--resume' '${CONV}'`);
+    expect(ptyOf(r.sessionId).args.join(" ")).not.toContain("--resume");
     // Nick's own session is the room's now; Ryan's stale record (he can't remove it while away) isn't shown
     await until(() => !!recordIn(t.nickM, t.roomId, t.nickM.id, r.sessionId), "Nick's session in the room");
     expect(recordIn(t.nickM, t.roomId, t.ryanM.id, t.s.id)).toBeTruthy();
@@ -403,13 +404,18 @@ describe("the copy a take-over leaves behind", () => {
     const r = await t.nickRun.tk.takeOver(t.roomId, t.s.id, null);
     t.net.setOnline(t.ryanM.id, true);
     await until(() => statusOf(t.ryan.sessions, t.s.id) === "dead", "Ryan's copy to stop");
-    // Nick works on: a turn, backed up — now it can be taken back
+    // Nick works on, in a conversation of his own (it started from the brief): a turn, backed up — now it can be taken back
     write(r.cwd, { "src/nick.ts": "by nick\n" });
-    t.nick.sessions.statusFromHook({ paneId: r.sessionId, status: "working", conversationId: CONV, agent: "claude" });
+    const nickFile = path.join(claudeProjectDir(fs.realpathSync(r.cwd), t.nick.claudeProjects), `${NICK_CONV}.jsonl`);
+    fs.mkdirSync(path.dirname(nickFile), { recursive: true });
+    fs.writeFileSync(nickFile, [{ type: "user", message: { role: "user", content: "Carry on with the export" } }, { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Wrote src/nick.ts" }] } }].map((l) => `${JSON.stringify({ ...l, sessionId: NICK_CONV, cwd: r.cwd })}\n`).join(""));
+    t.nick.sessions.statusFromHook({ paneId: r.sessionId, status: "working", conversationId: NICK_CONV, agent: "claude" });
     t.nick.sessions.statusFromHook({ paneId: r.sessionId, status: "idle" });
     const left = () => t.ryanRun.tk.view().left.find((l) => l.sessionId === t.s.id);
     await until(() => !!left()?.takeBack, "Take it back to be offered", 15_000);
     await until(() => !!t.ryanRun.tk.view().sessions.find((v) => v.sessionId === r.sessionId)?.peerCopy, "Nick's snapshot at Ryan's", 15_000);
+    await until(() => !!t.ryanRun.tk.view().sessions.find((v) => v.sessionId === r.sessionId)?.transcript?.have, "Nick's conversation at Ryan's", 15_000);
+    expect(await t.ryanRun.tk.plan(t.roomId, r.sessionId)).toMatchObject({ resumesOwn: true, conversation: { kind: "full" } });
     // Nick is connected: he's asked, and hands over
     const back = t.ryanRun.tk.takeOver(t.roomId, r.sessionId, null);
     await until(() => t.nick.asks.length === 1, "Nick to be asked");
@@ -419,6 +425,13 @@ describe("the copy a take-over leaves behind", () => {
     expect(statusOf(t.nick.sessions, r.sessionId)).toBe("dead");
     expect(fs.readFileSync(path.join(mine.cwd, "src/nick.ts"), "utf8")).toBe("by nick\n");
     expect(statusOf(t.ryan.sessions, mine.sessionId)).toBe("working"); // the new copy runs here
+    // on Ryan's account it resumes Ryan's own conversation, not Nick's, and is told first what Nick did
+    expect(ptyOf(mine.sessionId).args.join(" ")).toContain(`'--resume' '${CONV}'`);
+    expect(fs.readFileSync(path.join(mine.cwd, ".mockingbird", "takeover", `${NICK_CONV}.jsonl`), "utf8")).toBe(fs.readFileSync(nickFile, "utf8"));
+    await until(() => ptyOf(mine.sessionId).writes.join("").includes("Ryan took this session back from Nick"), "the brief of Nick's turns", 15_000);
+    const brief = ptyOf(mine.sessionId).writes.join("");
+    expect(brief).toContain("AGENT: Wrote src/nick.ts");
+    expect(brief).toContain("src/nick.ts (new, untracked)");
     // Ryan's old copy now says it continues here; Nick's says it continues on Ryan's laptop
     expect(left()).toMatchObject({ now: { self: true, sessionId: mine.sessionId }, takeBack: false });
     await until(() => !!t.nickRun.tk.view().left.some((l) => l.sessionId === r.sessionId && l.now.owner === t.ryanM.id), "Nick's copy to know");
@@ -429,7 +442,7 @@ describe("the copy a take-over leaves behind", () => {
     await until(() => fs.existsSync(copy), "the taken-back conversation at Nick's", 15_000);
     await t.ryanRun.tk.settled();
     expect(JSON.parse(fs.readFileSync(copy, "utf8").split("\n")[0]).cwd).toBe(fs.realpathSync(mine.cwd));
-  });
+  }, 60_000); // the brief is typed in 6s after the agent starts
 });
 
 describe("asking a connected owner first", () => {

@@ -279,13 +279,21 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
           </dd>
           <dt>Conversation</dt>
           <dd>
-            {p.conversation.kind === "full" && <>The whole conversation ({fileSize(p.conversation.bytes)}) — {AGENT_NAME[p.agent]} resumes where it left off.</>}
+            {p.resumesOwn ? (
+              <>Your own conversation resumes here, told first what {p.ownerName} did on their laptop. </>
+            ) : (
+              <>
+                A new {AGENT_NAME[p.agent]} session on your account, starting from a handover brief (the task, its plan, the changed files and the last turns) rather than re-reading the whole
+                conversation.{" "}
+              </>
+            )}
+            {p.conversation.kind === "full" && <>{p.ownerName}'s whole conversation ({fileSize(p.conversation.bytes)}) is saved in the worktree for it to read when it needs detail.</>}
             {p.conversation.kind === "partial" && (
               <span className="warn">
-                Only {fileSize(p.conversation.have)} of {fileSize(p.conversation.of)} reached this Mac. {AGENT_NAME[p.agent]} starts from a summary of that and says so.
+                Only {fileSize(p.conversation.have)} of {fileSize(p.conversation.of)} of {p.ownerName}'s conversation reached this Mac: the brief says its end is missing.
               </span>
             )}
-            {p.conversation.kind === "none" && <span className="warn">It didn't reach this Mac. {AGENT_NAME[p.agent]} starts from the files alone and says so.</span>}
+            {p.conversation.kind === "none" && <span className="warn">{p.ownerName}'s conversation didn't reach this Mac: the brief has only the files, and says so.</span>}
           </dd>
           <dt>Branch</dt>
           <dd>{p.branch ?? "(detached)"}</dd>

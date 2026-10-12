@@ -366,8 +366,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
     Rows and panes say where each backup is ("copied to Nick 2m ago",
     "backed up 2m ago"). **Take over** continues a teammate's session on your
     laptop from the newest snapshot that reached you (saying how old it is,
-    and that newer work may be on their laptop), on its branch, resuming the
-    conversation (or a summary of what arrived). A connected owner is asked first (**Hand
+    and that newer work may be on their laptop), on its branch, as a new
+    conversation on your account that starts from a handover brief (the task,
+    its plan, the changed files and the last turns, built without a model
+    call) rather than re-reading theirs, with their whole transcript saved in
+    the worktree's git-excluded `.mockingbird/takeover/` for it to read when it
+    needs detail; taking your own session back resumes your own conversation,
+    briefed on what they did. A connected owner is asked first (**Hand
     over** / **Keep**, kept after 2 minutes unanswered): handing over lets their
     turn finish, sends that exact backup straight to you and stops their agent.
     An owner who was away stops their copy as soon as their Mockingbird is back
