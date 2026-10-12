@@ -276,14 +276,15 @@ export function ArtifactViewer({
     setPreview(false);
     setStale(null);
   };
-  const save = async (mode: SaveNoteMode) => {
+  const save = async (mode: SaveNoteMode, confirmSecret = false): Promise<void> => {
     if (!editing || !item || saving) return;
     setSaving(true);
     // overwriting replaces the revision on screen now; saving checks against the one the edit started from
     const base = mode === "overwrite" ? item.rev ?? editing.base : editing.base;
-    const r = await settled<SaveNoteResult | { error: string }>(window.mb.artifactsSaveNote(roomId, item.id, editing.text, base, mode));
+    const r = await settled<SaveNoteResult | { error: string }>(window.mb.artifactsSaveNote(roomId, item.id, editing.text, base, mode, confirmSecret));
     setSaving(false);
     if (isErr(r)) return setStatus({ text: `Not saved: ${r.error}`, error: true });
+    if ("needsConfirm" in r) return window.confirm(`${r.reason}. Save it anyway?`) ? save(mode, true) : undefined;
     if ("stale" in r) return setStale({ byName: r.stale.byName });
     setEditing(null);
     setStale(null);

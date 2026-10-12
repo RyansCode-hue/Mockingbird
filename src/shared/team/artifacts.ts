@@ -196,7 +196,12 @@ export interface AddFilesResult {
 }
 
 export type SaveNoteMode = "save" | "overwrite" | "copy";
-export type SaveNoteResult = { rev: string } | { copy: string } | { stale: { rev: string; byName: string; at: number } };
+/** A note not added or saved yet: its text holds a private key, so the person is asked, and it's sent again with confirmSecret. */
+export interface SecretConfirm {
+  needsConfirm: "secret";
+  reason: string;
+}
+export type SaveNoteResult = { rev: string } | { copy: string } | { stale: { rev: string; byName: string; at: number } } | SecretConfirm;
 
 // ---- references in chat ----
 

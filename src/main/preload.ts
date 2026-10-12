@@ -378,12 +378,12 @@ const api = {
   artifactsAddFiles: (roomId: string, paths: string[], confirmSecret?: boolean) => ipcRenderer.invoke("artifacts:addFiles", roomId, paths, confirmSecret),
   /** A file without a path on disk (a pasted screenshot, a dropped image from a browser). */
   artifactsAddBytes: (roomId: string, name: string, bytes: Uint8Array, confirmSecret?: boolean) => ipcRenderer.invoke("artifacts:addBytes", roomId, name, bytes, confirmSecret),
-  artifactsAddNote: (roomId: string, name: string, text: string) => ipcRenderer.invoke("artifacts:addNote", roomId, name, text),
+  artifactsAddNote: (roomId: string, name: string, text: string, confirmSecret?: boolean) => ipcRenderer.invoke("artifacts:addNote", roomId, name, text, confirmSecret),
   artifactsAddRepo: (roomId: string, req: unknown) => ipcRenderer.invoke("artifacts:addRepo", roomId, req),
   artifactsAddLink: (roomId: string, url: string, title: string) => ipcRenderer.invoke("artifacts:addLink", roomId, url, title),
   artifactsRename: (roomId: string, id: string, name: string) => ipcRenderer.invoke("artifacts:rename", roomId, id, name),
   artifactsRemove: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:remove", roomId, id),
-  artifactsSaveNote: (roomId: string, id: string, text: string, base: string, mode: "save" | "overwrite" | "copy") => ipcRenderer.invoke("artifacts:saveNote", roomId, id, text, base, mode),
+  artifactsSaveNote: (roomId: string, id: string, text: string, base: string, mode: "save" | "overwrite" | "copy", confirmSecret?: boolean) => ipcRenderer.invoke("artifacts:saveNote", roomId, id, text, base, mode, confirmSecret),
   artifactsRead: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:read", roomId, id),
   /** Fetch a file now (it jumps the queue), or retry one that failed. */
   artifactsDownload: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:download", roomId, id),

@@ -3,7 +3,7 @@ import * as path from "path";
 import { artifactItems, checkArtifactName, checkLinkUrl, checkNoteText } from "./artifactEvents";
 import { ArtifactFetcher, type FetchTiming } from "./artifactFetch";
 import { RepoRefs } from "./artifactRepo";
-import { ArtifactStore, checkAddable, formatBytes, inside, quarantine, type Sniff } from "./artifactStore";
+import { ArtifactStore, checkAddable, formatBytes, holdsPrivateKey, inside, quarantine, type Sniff } from "./artifactStore";
 import { TEAM_DIR } from "./identity";
 import { ROOMS_DIR } from "./rooms";
 import { roomOfSession } from "./roomSessions";
@@ -27,6 +27,7 @@ import {
   type RoomArtifactsView,
   type SaveNoteMode,
   type SaveNoteResult,
+  type SecretConfirm,
 } from "../../shared/team/artifacts";
 import type { SessionInfo } from "../../shared/types";
 import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/types";
@@ -91,6 +92,7 @@ export const runningArtifacts = (): TeamArtifacts | null => active;
 
 const cleanName = (name: string, fallback: string) => name.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200).trim() || fallback;
 const normalizeText = (text: string) => String(text ?? "").replace(/\r\n?/g, "\n");
+const KEY_IN_NOTE: SecretConfirm = { needsConfirm: "secret", reason: "It holds a private key. Everyone in the room gets a copy; room agents never read it" };
 
 export class TeamArtifacts {
   readonly repos: RepoRefs;
@@ -288,6 +290,12 @@ export class TeamArtifacts {
     }
   }
 
+  /** The window's New note: one whose text holds a private key is added only once the person confirms (`confirmSecret`), as a file is. */
+  newNote(roomId: RoomId, rawName: string, rawText: string, confirmSecret = false): ArtifactAdded | SecretConfirm {
+    if (!confirmSecret && holdsPrivateKey(normalizeText(rawText))) return KEY_IN_NOTE;
+    return this.addNote(roomId, rawName, rawText);
+  }
+
   /** Add a note. `wasSecret`: it's a copy of one agents may not read, and stays so whatever it's called. */
   addNote(roomId: RoomId, rawName: string, rawText: string, o: { wasSecret?: boolean } = {}): ArtifactAdded {
     const { team } = this.need(roomId);
@@ -340,13 +348,17 @@ export class TeamArtifacts {
    * Save a note's new text. "save" from a revision someone else's edit
    * replaced publishes nothing and says whose edit it was (the editor offers
    * to overwrite it, or to keep this text as a copy); "overwrite" replaces
-   * whatever is current; "copy" adds the text as a new note.
+   * whatever is current; "copy" adds the text as a new note. A text that
+   * brings in a private key is saved only once the person confirms
+   * (`confirmSecret`).
    */
-  saveNote(roomId: RoomId, id: string, rawText: string, base: string, mode: SaveNoteMode): SaveNoteResult {
+  saveNote(roomId: RoomId, id: string, rawText: string, base: string, mode: SaveNoteMode, confirmSecret = false): SaveNoteResult {
     const { team, room } = this.need(roomId);
     const a = this.item(roomId, id);
     if (a.kind !== "note") throw new Error("Only notes are edited here");
     const text = this.noteText(rawText);
+    const asks = !confirmSecret && holdsPrivateKey(text) && (mode === "copy" || !holdsPrivateKey(a.text));
+    if (asks && !(mode === "save" && a.rev !== base)) return KEY_IN_NOTE;
     if (mode === "copy") return { copy: this.addNote(roomId, `${a.name.slice(0, 190)} (copy)`, text, { wasSecret: !!a.wasSecret || isSecretFileName(a.name) }).id };
     if (mode !== "save" && mode !== "overwrite") throw new Error(`Unknown save: ${mode}`);
     if (mode === "save" && a.rev !== base) return { stale: { rev: a.rev, byName: this.nameOf(room.id, a.updatedBy ?? a.addedBy), at: a.updatedAt ?? a.addedAt } };
@@ -457,13 +469,14 @@ export class TeamArtifacts {
   /**
    * Why agents may not read an artifact, or null: named like a secret file
    * now or ever (renaming doesn't make it readable), a repo reference to one,
-   * or a file holding a private key.
+   * or a file or a note holding a private key.
    */
   blockedReason(roomId: RoomId, a: ArtifactRecord): string | null {
     if (isSecretFileName(a.name)) return `Its name is a secret file's (${a.name}): agents never read it`;
     if (a.wasSecret) return "It was named like a secret file: agents never read it, whatever it's called now";
     if (a.kind === "repo" && isSecretFileName(path.posix.basename(a.path))) return `It points at a secret file (${path.posix.basename(a.path)}): agents never read it`;
     if (a.kind === "file" && this.store(roomId).knownSniff(a.sha256, a.name)?.privateKey) return "It holds a private key: agents never read it";
+    if (a.kind === "note" && holdsPrivateKey(a.text)) return "It holds a private key: agents never read it";
     return null;
   }
 
