@@ -3,7 +3,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MarkdownView, inlineSegments, markdownBlocks } from "../src/renderer/team/markdownView";
-import { artifactCompletions, artifactMeta, mentionLabel, parseCsv, parseLines, repoDefaultName, repoSessionsFor, transferLine } from "../src/renderer/team/artifactModel";
+import { artifactCompletions, artifactMeta, mentionLabel, parseCsv, parseLines, REMOVE_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "../src/renderer/team/artifactModel";
+import { TeamSection } from "../src/renderer/Team";
+import type { Settings } from "../src/shared/types";
 import { artifactRef, type ArtifactSummary } from "../src/shared/team/artifacts";
 
 const ME = "me";
@@ -200,5 +202,17 @@ describe("the repo file form", () => {
     // the focused one has no repo: the room group's, with its workspaces, that do
     expect(repoSessionsFor(sessions, "d", "5101").map((x) => x.id)).toEqual(["a", "b"]);
     expect(repoSessionsFor(sessions, null, null)).toEqual([]);
+  });
+});
+
+describe("what removing an artifact and inline room sessions are said to do", () => {
+  it("says removal doesn't take back what the room log keeps, and that anyone can remove", () => {
+    expect(REMOVE_ARTIFACT_NOTE).toMatch(/isn't taken back: every member's room log keeps its name and, for a note, every saved text, and passes them on to anyone who joins later/);
+    expect(REMOVE_ARTIFACT_NOTE).toMatch(/Any member can remove, rename or edit any artifact/);
+  });
+
+  it("says inline room sessions hand teammates everything the terminal keeps", () => {
+    const html = renderToStaticMarkup(createElement(TeamSection, { settings: {} as Settings, onChange: () => {} }));
+    expect(html).toContain("Inline also hands teammates everything a session&#x27;s terminal keeps");
   });
 });
