@@ -27,7 +27,8 @@ import {
  * fields its external API answers with (number, status, priority, tags,
  * assignee + branch, blocked_by, waiting_on, history entries of
  * { at, actor, event, note?, to_status? }) first, then other likely names,
- * and anything missing reads as empty rather than failing the board.
+ * and anything missing reads as empty rather than failing the board — driftOf
+ * says on the board when a list answer lacks a field Mockingbird reads.
  */
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
@@ -157,10 +158,16 @@ export class HouseClient {
 
   /** The backlog in the House's order, high priority first, closed tickets included (optionally one tag's). */
   async list(tag?: string): Promise<HouseTicket[]> {
-    const raw = await this.call("GET", `work-items${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`);
-    return listOf(raw)
-      .map(ticketOf)
-      .filter((t): t is HouseTicket => !!t);
+    return (await this.listChecked(tag)).tickets;
+  }
+
+  /** The backlog, and what of the fields Mockingbird reads its answer no longer has (driftOf). */
+  async listChecked(tag?: string): Promise<{ tickets: HouseTicket[]; drift: string | null }> {
+    const raw = listOf(await this.call("GET", `work-items${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`));
+    return {
+      tickets: raw.map(ticketOf).filter((t): t is HouseTicket => !!t),
+      drift: driftOf(raw),
+    };
   }
 
   /** One ticket, with its history. */
@@ -353,6 +360,28 @@ function claimOf(o: Record<string, unknown>): HouseClaim | null {
   if (c === null && !by && CLAIMANT_KEYS.some((k) => k in o)) return null;
   if (c === null && !by && !branch && !at && o.claimed !== true) return null;
   return { by, branch, at };
+}
+
+/**
+ * What a list answer lacks of the fields Mockingbird reads, said for the
+ * board; null when every work item has them. Missing fields read as empty
+ * (a ticket with no claimant field as unclaimed), so a House that renamed
+ * one would otherwise look like a board where nobody has claimed anything.
+ */
+export function driftOf(items: unknown[]): string | null {
+  const objs = items.filter(isObj).map((o) => unwrap(o) ?? o);
+  const lacking = (has: (o: Record<string, unknown>) => boolean) => objs.filter((o) => !has(o)).length;
+  const problems: string[] = [];
+  const unnumbered = items.length - objs.filter((o) => intOf(o.number ?? o.n ?? o.ticket_number) !== null).length;
+  if (unnumbered) problems.push(`${unnumbered} of its ${items.length} work items have no ticket number, so they're left off the board`);
+  const fields: [string, (o: Record<string, unknown>) => boolean][] = [
+    ["status", (o) => "status" in o],
+    ["title", (o) => "title" in o],
+    ["assignee (or another claim field)", (o) => isObj(o.claim) || "claimed" in o || CLAIMANT_KEYS.some((k) => k in o)],
+  ];
+  const missing = fields.filter(([, has]) => objs.length > 0 && lacking(has) === objs.length).map(([name]) => name);
+  if (missing.length) problems.push(`its work items no longer have ${missing.join(", ")}, so ${missing.some((m) => m.startsWith("assignee")) ? "every ticket shows as unclaimed and claims aren't enforced" : "those read as unknown"}`);
+  return problems.length ? `The House's answer doesn't have the fields Mockingbird reads: ${problems.join("; ")}. Its API may have changed — tell whoever looks after Mockingbird.` : null;
 }
 
 /** Ticket numbers it waits on: numbers, "#123", or objects with a number. */

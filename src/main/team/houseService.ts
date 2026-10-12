@@ -117,6 +117,8 @@ const WARNED_TTL_MS = 14 * 24 * 3_600_000;
 const BASES = new Set([...BASE_NAMES.dev, ...BASE_NAMES.main].map((b) => b.toLowerCase()));
 const isBase = (branch: string) => BASES.has(branch.toLowerCase());
 const SUMMARY_ROWS = 40;
+/** How many of the agents' failed House writes the board keeps. */
+const WRITE_PROBLEMS_KEPT = 5;
 const SPEC_LIMIT = 60_000;
 const HISTORY_SHOWN = 40;
 const HISTORY_TEXT = 2_000;
@@ -134,6 +136,10 @@ interface RoomCache {
   again: boolean;
   /** Board dialogs open on it. */
   watchers: number;
+  /** What the House's last list answer lacked of the fields Mockingbird reads (house.ts driftOf). */
+  drift: string | null;
+  /** This member's agents' House writes that failed lately, newest last. */
+  writeProblems: { at: number; text: string }[];
   /** Teammates' nudges waiting to be read: tickets, or the whole board. */
   nudged: { tickets: Set<number>; list: boolean; timer: ReturnType<typeof setTimeout> | null; lastRun: number; lastList: number };
 }
@@ -352,6 +358,8 @@ export class HouseService {
       branches: this.branchesOf(roomId),
       ...(copiesProblem ? { copiesProblem } : {}),
       ...(this.branchProblems.get(roomId)?.length ? { branchProblems: this.branchProblems.get(roomId) } : {}),
+      ...(c.drift && h.project ? { drift: c.drift } : {}),
+      ...(c.writeProblems.length ? { writeProblems: c.writeProblems } : {}),
     };
   }
 
@@ -450,17 +458,25 @@ export class HouseService {
    * Where a ticket opens in the House: the page the House names for it when
    * that's on the House's own address, else the project's work item path.
    */
-  async webUrl(roomId: RoomId, n: number): Promise<string> {
+  async webUrl(roomId: RoomId, n: number): Promise<{ url: string; problem?: string }> {
     if (!isTicketNumber(n)) throw new Error(`${n} isn't a ticket number`);
     return this.withClient(roomId, async (client) => {
       const fallback = `${client.env.apiUrl}/projects/${encodeURIComponent(client.env.projectId)}/work-items/${n}`;
-      const detail = await client.ticket(n).catch(() => null);
-      if (!detail?.url) return fallback;
+      let detail: HouseTicketDetail;
+      try {
+        detail = await client.ticket(n);
+      } catch (err) {
+        // the project's path still opens the ticket; the window says why it isn't the House's own link
+        const why = this.d.log(`team House board: reading #${n}'s page in the House`, scrub((err as Error).message, client.env.token));
+        return { url: fallback, problem: `The House's own link for #${n} couldn't be read, so this opened the project's ticket path: ${why}` };
+      }
+      if (!detail.url) return { url: fallback };
       try {
         const u = new URL(detail.url, client.env.apiUrl);
-        return u.origin === new URL(client.env.apiUrl).origin && u.protocol === "https:" ? u.toString() : fallback;
+        if (u.origin === new URL(client.env.apiUrl).origin && u.protocol === "https:") return { url: u.toString() };
+        return { url: fallback, problem: `The House's link for #${n} isn't on its own https address, so this opened the project's ticket path` };
       } catch {
-        return fallback;
+        return { url: fallback, problem: `The House's link for #${n} isn't a URL, so this opened the project's ticket path` };
       }
     });
   }
@@ -573,8 +589,28 @@ export class HouseService {
       if (writes) this.d.log(`team House board: ${via}'s write in room ${this.room(roomId).name}, approved in its pane`, typeof result === "string" ? result : op);
       return { result };
     } catch (err) {
-      return { error: (err as Error).message };
+      const message = (err as Error).message;
+      if (writes) this.writeFailed(roomId, via, o, message);
+      return { error: message };
     }
+  }
+
+  /** An agent's House write failed: besides the agent, the log and this member's board say so. */
+  private writeFailed(roomId: RoomId, via: string, o: HouseToolOp, message: string): void {
+    const what =
+      o.tool === "create"
+        ? `create a ticket ("${oneLine(o.title, 80)}")`
+        : o.tool === "claim"
+          ? `claim #${o.n}`
+          : o.tool === "release"
+            ? `release #${o.n}`
+            : o.tool === "event"
+              ? `post ${o.kind === "note" ? "a note" : o.kind === "question" ? "a question" : o.kind === "status" ? "a status change" : "progress"} on #${o.n}`
+              : o.tool;
+    this.d.log(`team House board: ${via} couldn't ${what} in room ${roomId}`, message);
+    const c = this.cache(roomId);
+    c.writeProblems = [...c.writeProblems, { at: Date.now(), text: `${oneLine(via, 80)} couldn't ${what}: ${oneLine(message, 300)}` }].slice(-WRITE_PROBLEMS_KEPT);
+    this.emitSoon(roomId);
   }
 
   /** A warning the claims check gave an agent (or its failure): the window shows it, and a held-back edit notifies. */
@@ -752,7 +788,11 @@ export class HouseService {
       return;
     }
     c.run = this.readBoard(roomId)
-      .catch((err) => void this.d.log(`team House board: reading room ${roomId}'s board`, err))
+      .catch((err) => {
+        // the board says so rather than keeping what it said before the failure
+        this.d.log(`team House board: reading room ${roomId}'s board`, err);
+        c.connection = { state: "error", message: (err as Error)?.message ?? String(err) };
+      })
       .finally(() => {
         c.run = null;
         this.emitSoon(roomId);
@@ -792,14 +832,25 @@ export class HouseService {
     }
     const client = new HouseClient(env, { fetch: this.d.fetch, timeoutMs: this.t.timeoutMs });
     const clean = (err: unknown) => scrub((err as Error)?.message ?? String(err), env.token);
-    let list: HouseTicket[];
     try {
-      list = await client.list();
+      await this.readBoardWith(roomId, room, h.project, client, clean);
+    } catch (err) {
+      throw new Error(clean(err));
+    }
+  }
+
+  private async readBoardWith(roomId: RoomId, room: RoomState, project: string, client: HouseClient, clean: (err: unknown) => string): Promise<void> {
+    const c = this.cache(roomId);
+    let list: HouseTicket[];
+    let drift: string | null;
+    try {
+      ({ tickets: list, drift } = await client.listChecked());
     } catch (err) {
       c.connection = { state: "error", message: clean(err) };
-      this.d.log(`team House board: reading ${h.project}'s tickets for room ${room.name}`, c.connection.message);
+      this.d.log(`team House board: reading ${project}'s tickets for room ${room.name}`, c.connection.message);
       return;
     }
+    if (drift && drift !== c.drift) this.d.log(`team House board: ${project}'s answer for room ${room.name}`, drift);
     const tickets = new Map(list.map((t) => [t.n, t]));
     const problems = new Map<number, string>();
     const latest = houseOfRoom(this.team?.room(roomId) ?? room);
@@ -812,8 +863,9 @@ export class HouseService {
       }
     }
     for (const n of missing.slice(MAX_SINGLE_READS)) problems.set(n, "not read yet (too many board tickets outside the backlog list)");
-    if (houseOfRoom(this.team?.room(roomId) ?? room).project !== h.project) return; // the admin switched projects meanwhile: the next read is for that one
+    if (houseOfRoom(this.team?.room(roomId) ?? room).project !== project) return; // the admin switched projects meanwhile: the next read is for that one
     c.connection = { state: "ok" };
+    c.drift = drift;
     c.order = list.map((t) => t.n);
     c.tickets = tickets;
     c.problems = problems;
@@ -847,6 +899,7 @@ export class HouseService {
   }
 
   private forgetTickets(c: RoomCache): void {
+    c.drift = null;
     c.order = null;
     c.tickets = new Map();
     c.problems = new Map();
@@ -1190,7 +1243,16 @@ export class HouseService {
         await excludePlanDir(clone);
         const context = rooms.map((r) => this.agentContext(r.id)).join("\n\n---\n\n");
         for (const wt of await worktreesOf(clone)) {
-          const branch = await currentBranch(wt).catch(() => null);
+          let branch: string | null;
+          try {
+            branch = await currentBranch(wt); // null: a detached HEAD, on no ticket's branch
+          } catch (err) {
+            // without its branch, a ticket claimed on that branch would read as a teammate's here: its copy stays as it was
+            const why = this.d.log(`team House board: reading ${wt}'s branch for its claims`, err);
+            for (const r of rooms) problems.set(r.id, `${wt}'s branch couldn't be read, so the room's claims there weren't updated: ${why}`);
+            written.set(wt, clone);
+            continue;
+          }
           writeRoomCopy(wt, { claims: `${JSON.stringify(claimsFile(rooms.map((r) => this.claimsRoom(r, key, branch)), team.self.id), null, 2)}\n`, context: `${context}\n` });
           written.set(wt, clone);
         }
@@ -1325,7 +1387,7 @@ export class HouseService {
 
   private cache(roomId: RoomId): RoomCache {
     let c = this.caches.get(roomId);
-    if (!c) this.caches.set(roomId, (c = { connection: { state: "pending" }, order: null, tickets: new Map(), problems: new Map(), fetchedAt: 0, run: null, again: false, watchers: 0, nudged: { tickets: new Set(), list: false, timer: null, lastRun: 0, lastList: 0 } }));
+    if (!c) this.caches.set(roomId, (c = { connection: { state: "pending" }, order: null, tickets: new Map(), problems: new Map(), fetchedAt: 0, run: null, again: false, watchers: 0, drift: null, writeProblems: [], nudged: { tickets: new Set(), list: false, timer: null, lastRun: 0, lastList: 0 } }));
     return c;
   }
 

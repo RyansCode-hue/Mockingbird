@@ -328,6 +328,7 @@ function TicketDetail({ roomId, n, view, onBack, onOpen }: { roomId: string; n: 
   const [kind, setKind] = useState<HouseEventKind>("note");
   const [status, setStatus] = useState<BuilderStatus | "">("");
   const [text, setText] = useState("");
+  const [openNote, setOpenNote] = useState("");
   const load = () => window.mb.houseTicket(roomId, n).then((v: HouseTicketView) => setT(v));
   useEffect(() => {
     void load();
@@ -370,11 +371,17 @@ function TicketDetail({ roomId, n, view, onBack, onOpen }: { roomId: string; n: 
         ))}
         {d.waiting && <span className="chip amber">{d.waiting.on ? `waiting on ${d.waiting.on}` : "waiting"}</span>}
         <span className="house-meta-r">
-          <button className="link" onClick={() => void run("open", () => window.mb.houseOpen(roomId, n))}>
+          <button
+            className="link"
+            onClick={() =>
+              void run("open", () => window.mb.houseOpen(roomId, n)).then((r: { note?: string } | Err | undefined) => setOpenNote(r && !isErr(r) && r.note ? r.note : ""))
+            }
+          >
             Open in the House ↗
           </button>
         </span>
       </div>
+      {openNote && <div className="house-problem">{openNote}</div>}
       {d.detail.trim() && <div className="house-text">{d.detail}</div>}
       {d.acceptance.trim() && (
         <div className="house-text">
@@ -568,6 +575,13 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
           )}
         </>
       )}
+      {view.drift && <div className="house-problem">{view.drift}</div>}
+      {view.writeProblems?.map((p) => (
+        <div key={`${p.at}-${p.text}`} className="house-problem">
+          <span className="house-when">{ago(p.at)}</span>
+          {p.text}
+        </div>
+      ))}
       {view.branchProblems?.map((p) => (
         <div key={p} className="house-problem">
           {p}

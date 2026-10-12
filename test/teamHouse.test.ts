@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 import { builderHome, fakeHouse, PROJECT_ID, type FakeHouse } from "./fakeHouse";
 import { houseCheck } from "./houseCheck";
-import { detailOf, HouseClient, HouseSetupError, parseEnvText, readHouseEnv, scrub, ticketOf } from "../src/main/team/house";
+import { detailOf, driftOf, HouseClient, HouseSetupError, parseEnvText, readHouseEnv, scrub, ticketOf } from "../src/main/team/house";
 import { HOUSE_TOOL_SCHEMAS, houseToolOp, isHouseTool } from "../src/main/team/houseTools";
 import { branchFor, historyWhat, HOUSE_STATUSES, HOUSE_TOOL_NAMES, isOpenStatus, needsAgent, openBacklog, statusLabel } from "../src/shared/team/house";
 
@@ -309,6 +309,17 @@ describe("reading what the House answers", () => {
     expect(ticketOf({ number: 4, title: "D" })!.claim).toBeNull();
     expect(ticketOf({ work_item: { number: "5", title: "E", tags: [{ name: "needs-human" }] } })).toMatchObject({ n: 5, tags: ["needs-human"], status: "unknown" });
     expect(ticketOf({ title: "no number" })).toBeNull();
+  });
+
+  it("says when the House's list lacks the fields it reads, rather than reading every ticket as unclaimed", () => {
+    expect(driftOf([realItem(), realItem({ number: 142, assignee: null, branch: null })])).toBeNull();
+    expect(driftOf([realItem({ claim: { by: "Nick" } })].map(({ assignee: _a, ...x }) => x))).toBeNull();
+    const renamed = [realItem(), realItem({ number: 142 })].map(({ assignee, status, ...x }) => ({ ...x, owner: assignee, state: status }));
+    expect(driftOf(renamed)).toBe(
+      "The House's answer doesn't have the fields Mockingbird reads: its work items no longer have status, assignee (or another claim field), so every ticket shows as unclaimed and claims aren't enforced. Its API may have changed — tell whoever looks after Mockingbird."
+    );
+    expect(driftOf([realItem(), { ...realItem(), number: undefined, id: "x" }])).toMatch(/: 1 of its 2 work items have no ticket number, so they're left off the board\./);
+    expect(driftOf([])).toBeNull();
   });
 
   it("reads a ticket's history under the other names the House may use", () => {

@@ -4,7 +4,7 @@ import * as path from "path";
 import { execFile } from "child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
-import { builderHome, fakeHouse, type FakeHouse } from "./fakeHouse";
+import { builderHome, fakeHouse, PROJECT_ID, type FakeHouse } from "./fakeHouse";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { houseOfRoom } from "../src/main/team/board";
 import { HouseService, roomAgentContext, type HouseServiceDeps } from "../src/main/team/houseService";
@@ -662,6 +662,93 @@ describe("teammates' branches", () => {
     nick.team.publish(roomId, "session.upsert", record("n3", "5110-third", bare));
     await until(() => !!r.svc.view(roomId).branchProblems?.some((p) => /^Teammates' branches couldn't be fetched into \S*\/ryan, so their claimed files may be out of date: /.test(p)), "the fetch failure on the board");
     expect(r.logs.some((l) => /^team House board: fetching teammates' branches into \S*\/ryan: /.test(l))).toBe(true);
+  }, 20_000);
+});
+
+describe("what goes wrong is said, not swallowed", () => {
+  it("an agent's failed House write: the agent hears it, and the log and the owner's board say it too", async () => {
+    const h = await house();
+    const { roomId, r } = await pair(h, { ryan: { sessions: () => [session("s1", { title: "Export API", branch: "5110-export" })] } });
+    expect(await r.svc.toolCall("s1", "claim_house_ticket", { n: 999 })).toEqual({ error: expect.stringMatching(/^The House answered 404/) });
+    expect(await r.svc.toolCall("s1", "post_house_ticket_event", { n: 998, kind: "note", text: "hi" })).toEqual({ error: expect.stringMatching(/404/) });
+    await until(() => (r.svc.view(roomId).writeProblems ?? []).length === 2, "the failures on the board");
+    expect(r.svc.view(roomId).writeProblems!.map((p) => p.text)).toEqual([
+      expect.stringMatching(/^Export API couldn't claim #999: The House answered 404/),
+      expect.stringMatching(/^Export API couldn't post a note on #998: The House answered 404/),
+    ]);
+    expect(r.logs.filter((l) => /^team House board: Export API couldn't (claim #999|post a note on #998) in room /.test(l))).toHaveLength(2);
+    // a read that fails is only the agent's to hear
+    expect(await r.svc.toolCall("s1", "read_house_ticket", { n: 997 })).toEqual({ error: expect.stringMatching(/404/) });
+    expect(r.svc.view(roomId).writeProblems).toHaveLength(2);
+  });
+
+  it("a ticket whose House page can't be read opens at the project's path, and says why", async () => {
+    const h = await house();
+    const { roomId, r } = await pair(h);
+    expect(await r.svc.webUrl(roomId, 999)).toEqual({ url: `${h.url}/projects/${PROJECT_ID}/work-items/999`, problem: expect.stringMatching(/^The House's own link for #999 couldn't be read, so this opened the project's ticket path: .*404/) });
+    expect(r.logs.some((l) => l.startsWith("team House board: reading #999's page in the House"))).toBe(true);
+    expect(await r.svc.webUrl(roomId, 141)).toEqual({ url: `${h.url}/projects/${PROJECT_ID}/work-items/141` });
+  });
+
+  it("a board read that fails unexpectedly puts the board in its error state instead of keeping the last one", async () => {
+    const h = await house();
+    const { roomId, r } = await pair(h);
+    expect(r.svc.view(roomId).connection).toEqual({ state: "ok" });
+    (r.svc as unknown as { readBoard: () => Promise<void> }).readBoard = async () => {
+      throw new Error("the board's read blew up");
+    };
+    expect((await r.svc.refreshNow(roomId)).connection).toEqual({ state: "error", message: "the board's read blew up" });
+    expect(r.logs.some((l) => /reading room .*'s board: the board's read blew up/.test(l))).toBe(true);
+  });
+
+  it("a House answer without the claim fields Mockingbird reads is a warning on the board, not a board of unclaimed tickets", async () => {
+    const h = await house();
+    const { roomId, r } = await pair(h);
+    expect(r.svc.view(roomId)).not.toHaveProperty("drift");
+    for (const it of h.items.values()) {
+      const x = it as unknown as Record<string, unknown>;
+      x.owner = x.assignee;
+      delete x.assignee;
+      delete x.branch;
+    }
+    const v = await r.svc.refreshNow(roomId);
+    expect(v.drift).toMatch(/^The House's answer doesn't have the fields Mockingbird reads: its work items no longer have assignee \(or another claim field\), so every ticket shows as unclaimed and claims aren't enforced\./);
+    expect(r.logs.filter((l) => l.includes("doesn't have the fields Mockingbird reads"))).toHaveLength(1);
+  });
+
+  it("a worktree whose branch can't be read keeps its claims as they were, and the board says why", async () => {
+    const h = await house();
+    const { bare, clones } = origin(["ryan", "nick"]);
+    git(clones.nick, "checkout", "-q", "-b", "5110-donorApi");
+    write(clones.nick, { "src/api/x.ts": "nick's x\n" });
+    git(clones.nick, "commit", "-qam", "nick");
+    git(clones.nick, "push", "-q", "origin", "5110-donorApi");
+    git(clones.ryan, "fetch", "-q", "origin");
+    // Ryan's worktree on Nick's branch: Nick's ticket there is Nick's work here, so it's left out of that copy
+    const wtSame = path.join(path.dirname(clones.ryan), "ryan-on-nicks");
+    git(clones.ryan, "worktree", "add", "-q", "-b", "5110-donorApi", wtSame, "origin/5110-donorApi");
+    h.item(141, { title: "Last-org API", status: "in_progress", assignee: "Nick Smith", branch: "5110-donorApi" });
+    const ryanS = session("r1", { repoPath: clones.ryan, cwd: clones.ryan, branch: "main" });
+    const { ryan, nick, roomId, r } = await pair(h, { ryan: { knownRepos: () => [clones.ryan], sessions: () => [ryanS] } });
+    nick.team.publish(roomId, "session.upsert", record("n1", "5110-donorApi", bare));
+    ryan.team.publish(roomId, "session.upsert", record("r1", "main", bare));
+    await until(() => {
+      try {
+        return claimsIn(clones.ryan).rooms[0]?.tickets.length === 1 && claimsIn(wtSame).rooms.length === 1;
+      } catch {
+        return false;
+      }
+    }, "the claims in Ryan's worktrees");
+    expect(claimsIn(wtSame).rooms[0].tickets).toEqual([]);
+    // the worktree's branch can no longer be read
+    const head = path.join(git(clones.ryan, "rev-parse", "--git-common-dir"), "worktrees", "ryan-on-nicks", "HEAD");
+    fs.writeFileSync(path.resolve(clones.ryan, head), "not a ref\n");
+    h.items.get(141)!.title = "Last-org API v2";
+    await r.svc.refreshNow(roomId);
+    await until(() => /ryan-on-nicks's branch couldn't be read, so the room's claims there weren't updated/.test(r.svc.view(roomId).copiesProblem ?? ""), "the problem on the board");
+    expect(claimsIn(wtSame).rooms[0].tickets).toEqual([]);
+    expect(claimsIn(clones.ryan).rooms[0].tickets[0].title).toBe("Last-org API v2");
+    expect(r.logs.some((l) => /^team House board: reading \S*ryan-on-nicks's branch for its claims/.test(l))).toBe(true);
   }, 20_000);
 });
 

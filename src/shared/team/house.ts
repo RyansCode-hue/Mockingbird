@@ -248,6 +248,10 @@ export interface HouseView {
    * claimed files may be out of date or missing), one line each.
    */
   branchProblems?: string[];
+  /** The House's answer lacks fields Mockingbird reads (its API may have changed): claims may show as unclaimed. */
+  drift?: string;
+  /** This member's agents' House writes that failed lately (each agent was told too), newest last. */
+  writeProblems?: { at: number; text: string }[];
 }
 
 /** A room whose House project this member hasn't answered for yet: "Use your <project> builder token for room <room>?" */

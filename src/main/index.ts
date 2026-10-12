@@ -923,9 +923,10 @@ handle("house:write", (roomId, w) => teamHouse.write(String(roomId), w));
 handle("house:consent", (roomId, allow) => teamHouse.consent(String(roomId), allow === true));
 handle("house:pendingConsents", () => teamHouse.pendingConsents());
 handle("house:open", async (roomId, n) => {
-  const url = await teamHouse.webUrl(String(roomId), Number(n));
+  const { url, problem } = await teamHouse.webUrl(String(roomId), Number(n));
   if (!externalUrlAllowed(url)) throw new Error(`The House's address isn't an https link (${url.slice(0, 80)})`);
   await shell.openExternal(url);
+  return problem ? { note: problem } : {};
 });
 // team rooms: artifacts (src/shared/team/artifacts.ts); Quick Look, Reveal and Save as act on paths main makes
 handle("artifacts:list", (roomId) => teamArtifacts.list(String(roomId)));
