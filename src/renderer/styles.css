@@ -1875,8 +1875,10 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 /* weekly rollup */
 .rollup-dlg { width: 760px; }
 .rollup-md { margin: 10px 0 6px; max-height: 56vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--bg-pane); font: 400 11px/1.55 var(--mono); color: var(--text-2); white-space: pre-wrap; }
-/* a narrow window cuts the status bar off at its end rather than wrapping each item onto two lines */
-.statusbar { overflow: hidden; }
+/* a narrow window cuts the status bar off at its end rather than wrapping each item onto two lines.
+   Only sideways: its popovers (plan usage, the session counts) open upward out of it, and
+   overflow: hidden would clip them away entirely while their backdrop still takes the next click */
+.statusbar { overflow-x: clip; overflow-y: visible; }
 .statusbar > * { white-space: nowrap; flex-shrink: 0; }
 .statusbar > .sb-update { flex-shrink: 1; }
 /* the folder cell clips its name, never its Files button (after the cell's own inline-flex rule) */
