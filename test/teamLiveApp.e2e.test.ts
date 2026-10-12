@@ -6,7 +6,8 @@ import { git, makeRepo, tempDir } from "./helpers";
 import { acceptInWindow, appE2E, e2eSignaling, launchApp, mainLog, quitApp, root, routes, untilTrue, type AppInstance } from "./e2e/appInstance";
 import type { LivePanesState } from "../src/shared/team/livePanes";
 import type { TakeoverPlan, TakeoverView } from "../src/shared/team/takeover";
-import type { PlanView } from "../src/shared/team/plan";
+import type { HouseView } from "../src/shared/team/house";
+import { builderHome, fakeHouse } from "./fakeHouse";
 import type { RoomChatView as ChatView } from "../src/shared/team/chat";
 
 /**
@@ -14,7 +15,8 @@ import type { RoomChatView as ChatView } from "../src/shared/team/chat";
  * and userData, real WebRTC), through the local signaling server or the
  * deployed Worker at MB_E2E_SIGNALING_URL. Ryan shares a group; Nick joins.
  * Live panes (a shared terminal Nick watches and types into), the team chat,
- * the plan board, a room session's backup after an agent turn, Nick asking
+ * the Radley House board (against a fake House over https on this Mac, each
+ * member with their own token), a room session's backup after an agent turn, Nick asking
  * for a session while Ryan is connected and Ryan handing it over from his
  * prompt (his agent stops, Nick's continues), and Nick taking one over once
  * Ryan's Mockingbird has quit — then Ryan's coming back to it, his copy
@@ -102,7 +104,7 @@ async function connect(signal: { url: string; real: boolean; creatorHome?: strin
 
 describe("team rooms between two Mockingbird instances", () => {
   it.skipIf(!appE2E)(
-    "live panes, chat, the plan board, a backed-up turn, a hand-over from the owner's prompt, and a take-over while the owner is away",
+    "live panes, chat, the House board, a backed-up turn, a hand-over from the owner's prompt, and a take-over while the owner is away",
     async () => {
       execFileSync(process.execPath, ["esbuild.mjs"], { cwd: root, stdio: "ignore" });
       const signal = await e2eSignaling();
@@ -110,8 +112,18 @@ describe("team rooms between two Mockingbird instances", () => {
       const stub = path.join(tempDir("bin"), "claude");
       fs.writeFileSync(stub, FAKE_CLAUDE, { mode: 0o755 });
       const settings = (code: string) => ({ claudeBin: stub, repoRoots: [code] });
-      let ryan = await launchApp("Ryan", signal.url, { home: signal.creatorHome, settings: settings(r.ryan.dir) });
-      const nick = await launchApp("Nick", signal.url, { settings: settings(r.nick.dir) });
+      // the House: https with a certificate made for this run, trusted by the apps through NODE_EXTRA_CA_CERTS
+      const tls = tempDir("house-tls");
+      execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", path.join(tls, "key.pem"), "-out", path.join(tls, "cert.pem"), "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
+      const house = await fakeHouse({ "tok-ryan-e2e": "Ryan", "tok-nick-e2e": "Nick" }, { tls: { key: fs.readFileSync(path.join(tls, "key.pem"), "utf8"), cert: fs.readFileSync(path.join(tls, "cert.pem"), "utf8") } });
+      house.item(141, { title: "Donor entities", status: "ready" });
+      house.state.spec.slice.work_items = [141];
+      const houseEnv = { NODE_EXTRA_CA_CERTS: path.join(tls, "cert.pem") };
+      const ryanHome = signal.creatorHome ?? tempDir("ryan");
+      builderHome("atticus-backoffice", house, "tok-ryan-e2e", "", ryanHome);
+      const nickHome = builderHome("atticus-backoffice", house, "tok-nick-e2e", "", tempDir("nick"));
+      let ryan = await launchApp("Ryan", signal.url, { home: ryanHome, settings: settings(r.ryan.dir), env: houseEnv });
+      const nick = await launchApp("Nick", signal.url, { home: nickHome, settings: settings(r.nick.dir), env: houseEnv });
       try {
         const { roomId } = await connect(signal, ryan, nick);
         const nickId = (await nick.status()).self!.id;
@@ -149,14 +161,15 @@ describe("team rooms between two Mockingbird instances", () => {
           (await ryan.evaluate<ChatView>(`window.mb.teamChatView(${JSON.stringify(roomId)})`)).entries.some((e) => e.kind === "message" && e.text === "morning, taking the export" && e.author === nickId)
         );
 
-        // ---- the plan board: Ryan proposes a package, Nick claims it, Ryan sees whose it is
-        const created = await ryan.evaluate<{ pkg: string }>(`window.mb.planApply(${JSON.stringify(roomId)}, { kind: "create", title: "Donor export", paths: ["src/export/"] })`);
-        expect(created.pkg).toMatch(/^p-/);
-        await untilTrue("the package at Nick's", async () => (await nick.evaluate<PlanView>(`window.mb.planGet(${JSON.stringify(roomId)})`)).plan.packages.some((p) => p.id === created.pkg));
-        expect(await nick.evaluate(`window.mb.planApply(${JSON.stringify(roomId)}, { kind: "claim", id: ${JSON.stringify(created.pkg)} })`)).not.toHaveProperty("error");
-        await untilTrue("Nick's claim at Ryan's", async () =>
-          (await ryan.evaluate<PlanView>(`window.mb.planGet(${JSON.stringify(roomId)})`)).plan.packages.find((p) => p.id === created.pkg)?.owner === nickId
-        );
+        // ---- the House board: Ryan (the admin) connects the project, Nick claims #141 with his own token, Ryan's board shows it
+        const rid = JSON.stringify(roomId);
+        expect(await ryan.evaluate(`window.mb.houseWrite(${rid}, { kind: "project", project: "atticus-backoffice" })`)).not.toHaveProperty("error");
+        await untilTrue("the slice on Nick's board", async () => ((await nick.evaluate<HouseView>(`window.mb.houseRefresh(${rid})`)).slice?.rows ?? []).some((x) => x.n === 141 && x.ticket?.title === "Donor entities"));
+        expect(await nick.evaluate(`window.mb.houseWrite(${rid}, { kind: "claim", n: 141, branch: "5110-donors" })`)).not.toHaveProperty("error");
+        await untilTrue("Nick's claim on Ryan's board", async () => (await ryan.evaluate<HouseView>(`window.mb.houseGet(${rid})`)).slice?.rows.find((x) => x.n === 141)?.owner?.name === "Nick");
+        expect(house.requests.filter((x) => x.path.endsWith("/work-items/141/claim")).map((x) => x.token)).toEqual(["tok-nick-e2e"]);
+        expect(house.requests.every((x) => x.token === "tok-ryan-e2e" || x.token === "tok-nick-e2e")).toBe(true);
+        expect(JSON.stringify(await nick.evaluate(`window.mb.houseGet(${rid})`))).not.toContain("tok-nick-e2e");
 
         // ---- an agent session of Ryan's in the room: a turn ends, it's backed up, Nick sees how fresh
         const s = await ryan.evaluate<{ id: string; cwd: string; error?: string }>(
@@ -164,7 +177,8 @@ describe("team rooms between two Mockingbird instances", () => {
         );
         expect(s.error).toBeUndefined();
         await untilTrue("the agent to start", async () => (await buffer(ryan, s.id)).includes("fake-claude started"), 20_000);
-        expect(await buffer(ryan, s.id)).toMatch(/--append-system-prompt/); // the room's plan, carried in the launch
+        expect(await buffer(ryan, s.id)).toMatch(/--append-system-prompt/); // the room's House board, carried in the launch
+        expect(await buffer(ryan, s.id)).toContain("mcp__mockingbird__claim_house_ticket");
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(s.id)}, "add the donor notes\\r")`);
         await untilTrue("the turn", async () => (await buffer(ryan, s.id)).includes("did: add the donor notes"));
         await untilTrue(
@@ -250,7 +264,7 @@ describe("team rooms between two Mockingbird instances", () => {
 
         // ---- Ryan's Mockingbird starts again, and runs his session again at once (as an update restart brings
         // open sessions back), before the room has caught up: his copy stops as soon as it hears
-        ryan = await launchApp("Ryan", signal.url, { home: ryan.home, keepState: true });
+        ryan = await launchApp("Ryan", signal.url, { home: ryan.home, keepState: true, env: houseEnv });
         const relaunched = await ryan.evaluate<{ id?: string; error?: string }>(`window.mb.relaunchSession(${JSON.stringify(s.id)})`);
         if (relaunched.error) expect(relaunched.error).toMatch(/continues on Nick's laptop/); // the room had caught up first
         console.log(`[e2e] Ryan's copy at start: ${relaunched.error ? "refused to run (the room had caught up)" : "running again, until the room catches up"}`);
@@ -277,6 +291,7 @@ describe("team rooms between two Mockingbird instances", () => {
         nick.close();
         await Promise.all([quitApp(ryan.child), quitApp(nick.child)]);
         await signal.close();
+        await house.close();
       }
     },
     360_000

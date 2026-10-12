@@ -1,5 +1,6 @@
 import * as fs from "fs";
 import * as http from "http";
+import * as https from "https";
 import * as path from "path";
 import type { AddressInfo } from "net";
 import { tempDir } from "./helpers";
@@ -35,7 +36,8 @@ export interface FakeRequest {
 
 export const PROJECT_ID = "c0ffee00-1111-2222-3333-444455556666";
 
-export async function fakeHouse(builders: Record<string, string>) {
+/** `tls`: serve https with this key and certificate (the app itself only talks https). */
+export async function fakeHouse(builders: Record<string, string>, o: { tls?: { key: string; cert: string } } = {}) {
   const items = new Map<number, FakeItem>();
   const requests: FakeRequest[] = [];
   const state = {
@@ -54,7 +56,7 @@ export async function fakeHouse(builders: Record<string, string>) {
     return it;
   };
 
-  const server = http.createServer((req, res) => {
+  const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
     let raw = "";
     req.on("data", (d) => (raw += d));
     req.on("end", () => {
@@ -140,9 +142,10 @@ export async function fakeHouse(builders: Record<string, string>) {
       }
       return fail(405, "Method not allowed");
     });
-  });
+  };
+  const server = o.tls ? https.createServer(o.tls, handler) : http.createServer(handler);
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const url = `${o.tls ? "https" : "http"}://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
     url,
     items,
@@ -158,8 +161,7 @@ export async function fakeHouse(builders: Record<string, string>) {
 export type FakeHouse = Awaited<ReturnType<typeof fakeHouse>>;
 
 /** A builder's home with their env file for `project` (mode 600), as the House's setup page tells them to keep it. */
-export function builderHome(project: string, house: { url: string }, token: string, extra = ""): string {
-  const home = tempDir("home");
+export function builderHome(project: string, house: { url: string }, token: string, extra = "", home = tempDir("home")): string {
   const dir = path.join(home, ".config", "radley-house");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${project}.env`);
