@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { isErr, splitGroupKey, type SessionInfo } from "../../shared/types";
+import { isErr, type SessionInfo } from "../../shared/types";
 import { plural } from "../../shared/format";
 import { baseName } from "../../shared/paths";
 import type { TeamRoomSummary } from "../../shared/team/types";
@@ -21,7 +21,7 @@ import { RenameDialog } from "../Dialogs";
 import { QuickOpen } from "../QuickOpen";
 import { ChevronIcon, LockIcon } from "../Icons";
 import { settled } from "../settled";
-import { addedLine, artifactMeta, parseLines, repoDefaultName, transferLine } from "./artifactModel";
+import { addedLine, artifactMeta, parseLines, repoDefaultName, repoSessionsFor, transferLine } from "./artifactModel";
 import type { InlineContext } from "./markdownView";
 import { ArtifactGlyph, ArtifactViewer, NoteBody, WritePreview } from "./ArtifactViewer";
 
@@ -121,7 +121,14 @@ export function useArtifactActions(roomId: string) {
         all.refused.push({ name, reason: `over the ${MAX_ARTIFACT_FILE / 1024 / 1024} MB limit` });
         continue;
       }
-      const bytes = new Uint8Array(await f.arrayBuffer());
+      const bytes = await f.arrayBuffer().then(
+        (b) => new Uint8Array(b),
+        (e: unknown) => {
+          all.refused.push({ name, reason: `couldn't be read: ${e instanceof Error ? e.message : String(e)}` });
+          return null;
+        }
+      );
+      if (!bytes) continue;
       bytesOf.set(name, bytes);
       const r = await settled<AddFilesResult | { error: string }>(window.mb.artifactsAddBytes(roomId, name, bytes));
       if (isErr(r)) all.refused.push({ name, reason: r.error });
@@ -246,14 +253,6 @@ export function ArtifactChip({ item, label, onOpen }: { item: ArtifactSummary | 
       <span className="rc-artifact-name">{item.name}</span>
     </button>
   );
-}
-
-/** The sessions a repo file can be picked from: the focused one when it's in a repo, else the room group's. */
-export function repoSessionsFor(sessions: SessionInfo[], focusedSessionId: string | null, groupKey: string | null | undefined): SessionInfo[] {
-  const inRepo = (s: SessionInfo) => !!s.repoPath && s.kind !== "assistant";
-  const focused = sessions.find((s) => s.id === focusedSessionId);
-  if (focused && inRepo(focused)) return [focused];
-  return sessions.filter((s) => inRepo(s) && !!groupKey && !!s.taskGroup && splitGroupKey(s.taskGroup).top === groupKey);
 }
 
 type Adding =
@@ -415,7 +414,7 @@ export function ArtifactShelf({
           onSave={async (name) => {
             const id = renaming.id;
             setRenaming(null);
-            await call("rename it", () => window.mb.artifactsRename(room.id, id, name.slice(0, MAX_ARTIFACT_NAME)));
+            await call("rename it", () => window.mb.artifactsRename(room.id, id, name));
           }}
         />
       )}
@@ -565,7 +564,7 @@ function NewNoteDialog({ roomId, ctx, onClose, onAdded }: { roomId: string; ctx:
   const add = async () => {
     if (!ok) return;
     setBusy(true);
-    const r = await settled<ArtifactAdded | { error: string }>(window.mb.artifactsAddNote(roomId, name.trim().slice(0, MAX_ARTIFACT_NAME), text));
+    const r = await settled<ArtifactAdded | { error: string }>(window.mb.artifactsAddNote(roomId, name.trim(), text));
     setBusy(false);
     if (isErr(r)) return setError(failed("Not added", r.error));
     onAdded(r);
@@ -620,7 +619,7 @@ function LinkDialog({ roomId, onClose, onAdded }: { roomId: string; onClose: () 
   const add = async () => {
     if (!ok) return;
     setBusy(true);
-    const r = await settled(window.mb.artifactsAddLink(roomId, url.trim(), title.trim().slice(0, MAX_ARTIFACT_NAME)));
+    const r = await settled(window.mb.artifactsAddLink(roomId, url.trim(), title.trim()));
     setBusy(false);
     if (isErr(r)) return setError(failed("Not added", r.error));
     onAdded();
@@ -693,7 +692,7 @@ function RepoFormDialog({
   const add = async () => {
     if (!ok || "error" in parsed) return;
     setBusy(true);
-    const r = await settled<ArtifactAdded | { error: string }>(window.mb.artifactsAddRepo(roomId, { sessionId: session.id, path, lines: parsed.lines, name: name.trim().slice(0, MAX_ARTIFACT_NAME) }));
+    const r = await settled<ArtifactAdded | { error: string }>(window.mb.artifactsAddRepo(roomId, { sessionId: session.id, path, lines: parsed.lines, name: name.trim() }));
     setBusy(false);
     if (isErr(r)) return setError(failed("Not added", r.error));
     onAdded(r);

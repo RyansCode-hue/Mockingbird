@@ -1,6 +1,7 @@
 import { ago, fileSize } from "../../shared/format";
 import { baseName } from "../../shared/paths";
-import { artifactRef, type ArtifactKind, type ArtifactSummary } from "../../shared/team/artifacts";
+import { splitGroupKey, type SessionInfo } from "../../shared/types";
+import { artifactRef, type ArtifactSummary } from "../../shared/team/artifacts";
 
 /**
  * The Team tab's room artifacts as text: each row's meta line, a file's
@@ -8,7 +9,13 @@ import { artifactRef, type ArtifactKind, type ArtifactSummary } from "../../shar
  * repo-reference form's line range. Pure, so it's tested without a window.
  */
 
-export const KIND_LABEL: Record<ArtifactKind, string> = { file: "File", note: "Note", repo: "Repo file", link: "Link" };
+/** The sessions a repo file can be picked from: the focused one when it's in a repo, else the room group's that are. */
+export function repoSessionsFor<S extends Pick<SessionInfo, "id" | "repoPath" | "kind" | "taskGroup">>(sessions: S[], focusedSessionId: string | null, groupKey: string | null | undefined): S[] {
+  const inRepo = (s: S) => !!s.repoPath && s.kind !== "assistant";
+  const focused = sessions.find((s) => s.id === focusedSessionId);
+  if (focused && inRepo(focused)) return [focused];
+  return sessions.filter((s) => inRepo(s) && !!groupKey && !!s.taskGroup && splitGroupKey(s.taskGroup).top === groupKey);
+}
 
 /** "12–40", or "12" for one line. */
 export const lineRange = (lines: readonly [number, number]) => (lines[0] === lines[1] ? `${lines[0]}` : `${lines[0]}–${lines[1]}`);

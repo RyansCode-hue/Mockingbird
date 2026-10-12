@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { isErr } from "../../shared/types";
 import { fileSize } from "../../shared/format";
 import { externalUrlAllowed } from "../../shared/links";
@@ -10,7 +10,7 @@ import { FileGlyph } from "../FilePanel";
 import { LinkIcon, LockIcon, NoteIcon, RepoFileIcon } from "../Icons";
 import { settled } from "../settled";
 import { openLink } from "../uiUtil";
-import { INLINE_IMAGE_MIME, addedLine, artifactMeta, lineRange, parseCsv, repoTarget, transferLine } from "./artifactModel";
+import { INLINE_IMAGE_MIME, addedLine, artifactMeta, parseCsv, repoTarget, transferLine } from "./artifactModel";
 import { MarkdownView, type InlineContext } from "./markdownView";
 
 /**

@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MarkdownView, inlineSegments, markdownBlocks } from "../src/renderer/team/markdownView";
-import { artifactCompletions, artifactMeta, mentionLabel, parseCsv, parseLines, repoDefaultName, transferLine } from "../src/renderer/team/artifactModel";
+import { artifactCompletions, artifactMeta, mentionLabel, parseCsv, parseLines, repoDefaultName, repoSessionsFor, transferLine } from "../src/renderer/team/artifactModel";
 import { artifactRef, type ArtifactSummary } from "../src/shared/team/artifacts";
 
 const ME = "me";
@@ -191,5 +191,14 @@ describe("the repo file form", () => {
     expect(parseLines("twelve")).toHaveProperty("error");
     expect(repoDefaultName("src/org/Dropdown.tsx", [12, 40])).toBe("Dropdown.tsx:12–40");
     expect(repoDefaultName("src/org/Dropdown.tsx", null)).toBe("Dropdown.tsx");
+  });
+
+  it("picks from the focused session when it's in a repo, else the room group's sessions in one", () => {
+    const s = (id: string, over: { repoPath?: string | null; kind?: "work" | "assistant"; taskGroup?: string | null } = {}) => ({ id, repoPath: "/r", kind: "work" as const, taskGroup: "5101", ...over });
+    const sessions = [s("a"), s("b", { taskGroup: "5101/api" }), s("c", { taskGroup: "5102" }), s("d", { repoPath: null }), s("e", { kind: "assistant" })];
+    expect(repoSessionsFor(sessions, "c", "5101").map((x) => x.id)).toEqual(["c"]);
+    // the focused one has no repo: the room group's, with its workspaces, that do
+    expect(repoSessionsFor(sessions, "d", "5101").map((x) => x.id)).toEqual(["a", "b"]);
+    expect(repoSessionsFor(sessions, null, null)).toEqual([]);
   });
 });
