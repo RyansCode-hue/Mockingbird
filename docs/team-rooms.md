@@ -718,11 +718,26 @@ House's **open backlog**.
   one other users can read, a non-https `HOUSE_API_URL` or a missing token
   shows on the board with what to do; the board stays empty there and the
   agents' tools answer the same.
+- **Each member allows their own token, once per room and project** (Ryan's
+  decision after the security audit, 2026-10-12). The admin picks the project,
+  but nothing reads a member's env file or calls the House with their token
+  for the room until that member says yes: "Use your <project> builder token
+  for room <name>?" — **Allow** / **Not now**, on a toast that stays until it's
+  answered and on the board, which shows **Connect your <project> token**
+  meanwhile. The answer is kept on this Mac per room and project
+  (`~/.mockingbird/team/house-consent.json`, never in the room log) and asked
+  again when the admin points the room at another project; leaving the room
+  forgets it. The admin choosing a project on their own board is their
+  answer. Until a member allows it, polls and teammates' nudges read nothing
+  there, and their agents' House tools answer that their user hasn't
+  connected the House for this room.
 - **The token stays in the main process.** Every House call is made there,
   with the acting member's own token: never sent to the window, an agent, the
   room log or a log line, and scrubbed from every error. Requests go only to
   `HOUSE_API_URL/api/projects/<id>/external/…`, never follow a redirect, and
-  time out after 15 s. Errors carry the House's own message.
+  time out after 15 s. An answer is read as it streams and refused past 5 MB
+  (a chunked one too). Errors carry the House's own message, on one line
+  with no angle brackets (agents get errors as tool answers).
 - **What the board shows** (▦ on a shared group, or "House board" in the
   palette): "Radley House · <project>" with **+ Add ticket**, then:
   - **Open backlog** — every ticket whose status isn't `done` or `dropped`,
@@ -766,13 +781,20 @@ House's **open backlog**.
   minute while the board is open or one of its room sessions runs, when the
   admin changes the project, and when a teammate's write nudges it
   (`house.nudge {n}`, published after every write so others read that ticket
-  again at once; a new ticket's nudge reads the whole list, for its place in
-  the House's order). A ticket is read as the House answers it: `number`,
-  `status`, `priority`, `tags`, the claim from `assignee` + `branch`,
-  `blocked_by`, `waiting_on` and `history` (other field names the House
-  might use are still looked for). Titles, claims and statuses are never
-  copied into the room log; the chat's agent updates say only "Ryan claimed
-  #143".
+  again; a new ticket's nudge reads the whole list, for its place in the
+  House's order). A nudge is read only for a ticket on the board (the open
+  backlog as last read, or one the room added), so a teammate can't make your
+  token read any number they like; and per room at most one go every 3 s,
+  the nudges in between gathered — a go of more than five tickets, or a new
+  ticket, reads the whole board instead, at most once every 30 s. A ticket is
+  read as the House answers it: `number`, `status`, `priority`, `tags`, the
+  claim from `assignee` + `branch`, `blocked_by`, `waiting_on` and `history`
+  (other field names the House might use are still looked for). When the
+  list's work items lack one of the fields read (no claim field at all,
+  `status`, `title`, or a number), the board warns that the House's API may
+  have changed, rather than showing every ticket as unclaimed. Titles, claims
+  and statuses are never copied into the room log; the chat's agent updates
+  say only "Ryan claimed #143", or "Ryan's agent (Export API) claimed #143".
 - **Writing** (from the board or an agent, as that member): claim
   (`POST …/claim {branch}`), release, progress and status changes
   (`POST …/events {event: "progress", note, status?, reference?}`), a
@@ -788,23 +810,57 @@ House's **open backlog**.
   (also added to the board), `claim_house_ticket` (on the session's branch
   unless given one; a session on a base branch is asked for one),
   `release_house_ticket`, `post_house_ticket_event` (progress, status,
-  question, note) and `get_house_spec` (the requirements document),
-  pre-allowed for Claude (Codex approves the server's tools itself). A call
+  question, note) and `get_house_spec` (the requirements document). A call
   acts as the session's owner, through the Mockingbird that runs the session,
   so a teammate's agent never uses your token. An agent started in a room
   gets a short summary of the board in its launch — the open backlog (up to
   40 tickets, each with its claim, status, priority, handoff tag, blockers and
   whether the room added it), then the room's other tickets — fenced and
-  labelled as data from the House and teammates, not instructions; otherwise
-  the SessionStart hook adds the same from the worktree's
-  `.mockingbird/agent-context.md`. @assistant gets the same summary.
+  labelled as data from the House and teammates, not instructions; every
+  House- or teammate-sourced string in it is on one line with `<` and `>`
+  swapped out, so nothing can close the fence. Otherwise the SessionStart
+  hook adds the same from the worktree's `.mockingbird/agent-context.md`.
+  @assistant gets the same summary.
+- **An agent's writes wait for its owner's OK in its pane** (Ryan's decision
+  after the security audit, 2026-10-12: a prompt-injected agent could
+  otherwise claim, release, comment on or create any ticket with its owner's
+  token). The reads — `list_house_tickets`, `read_house_ticket`,
+  `get_house_spec` — run without asking. Every call of `create_house_ticket`,
+  `claim_house_ticket`, `release_house_ticket` and `post_house_ticket_event`
+  asks first, with the agent's own permission prompt in that session's pane:
+  - **Claude:** a room session's launch pre-allows only the read tools (and
+    the room artifacts' two), and Mockingbird's MCP server marks each write
+    tool `_meta["anthropic/requiresUserInteraction"]`, so Claude Code prompts
+    on every call — in auto, acceptEdits and bypassPermissions modes too,
+    with no "don't ask again", whatever allow rules say. In `dontAsk` mode
+    it refuses the call instead.
+  - **Codex:** every session's launch sets
+    `mcp_servers.mockingbird.tools.<write tool>.approval_mode="prompt"` (the
+    rest of the server's tools stay pre-approved). "prompt" asks on every
+    call (it offers no approve-for-the-session); with `approval_policy =
+    "never"` Codex refuses the call. Codex honours per-tool `approval_mode`
+    from 0.138 (checked: 0.156.1 validates it, with values auto, prompt,
+    writes, approve); a Codex session older than that, or whose version
+    Mockingbird couldn't read, has its House writes refused by Mockingbird,
+    with what to do instead.
+
+  Writes made from the board itself need no extra prompt. Every approved
+  write is logged and shows in the room's chat ("Ryan's agent (Export API)
+  claimed #143"); one that fails is logged and listed on the owner's board
+  besides the agent being told.
 - **Claims and warnings:** a ticket claimed on a branch owns the files the
   claimant's room sessions on that branch have changed — as their pushed
   branch shows it, fetched from origin into a clone here and compared with the
-  repo's base. No paths are entered by hand. Mockingbird writes them to
+  repo's base. Only a clone that this Mac's own live sessions in the room work
+  in is fetched into (`git fetch --prune` every 5 minutes, and on a
+  teammate's nudge at most every 30 s), never another clone of the same
+  repository. A fetch that fails, or a teammate's branch that can't be read
+  (not pushed yet, no base branch), is a line on the board. No paths are
+  entered by hand. Mockingbird writes them to
   `.mockingbird/claims.json` in every worktree of the room's repositories
   (git-ignored, read-only; a worktree on that same branch leaves the ticket
-  out). An agent's first edit of one of those files in a conversation is held
+  out; a worktree whose branch can't be read keeps its last copy, and the
+  board says why). An agent's first edit of one of those files in a conversation is held
   back with the reason ("src/api/x.ts has been changing on Nick's ticket #141
   …"), and so are you told ("Nick's ticket #141 has been changing this
   file"); repeating the edit goes through with a reminder.
@@ -874,8 +930,18 @@ House's **open backlog**.
   the board is open or a room session runs; only the admin's project
   counting; a Mac without the env file; claims from a claimed ticket's branch
   and its pushed files, not in a worktree on that branch, gone once released;
-  tokens and House titles never in a view, log line or the room log; old
-  `plan.*` logs and snapshots still loading. `test/houseLive.test.ts` runs
+  tokens and House titles never in a view, log line or the room log; each
+  member asked once per room and project before their token is used, with
+  nothing read meanwhile and the answer kept locally; the write tools asking
+  in the pane (Claude's launch pre-allowing only the reads, the MCP server
+  marking the writes, Codex's per-tool `approval_mode="prompt"`, an old or
+  unknown Codex's writes refused); nudges read only for board tickets and
+  rate-limited per room; a chunked answer cut off past 5 MB; the fenced
+  board and the House's error text kept on one line; teammates' branches
+  fetched only into a clone this Mac's room sessions use, failures on the
+  board; failed agent writes, an unreadable ticket page, a failed board
+  read, schema drift and an unreadable worktree branch all logged and shown;
+  old `plan.*` logs and snapshots still loading. `test/houseLive.test.ts` runs
   `test/houseCheck.ts` against the real House (GETs only) when run by hand
   with `MB_HOUSE_LIVE=1`, never in CI: the open backlog non-empty when the
   House has open tickets, every status and priority known, histories

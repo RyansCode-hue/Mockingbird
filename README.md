@@ -402,7 +402,11 @@ agreed direction, **Later** is worth doing once the foundations settle.
     tickets. The House is the system of record: each member's
     Mockingbird reads and writes it with their own builder token
     (`~/.config/radley-house/<project>.env`), which never leaves the main
-    process. Agents use the `*_house_ticket` tools. The files a teammate's
+    process — and only once that member has allowed it for the room ("Use
+    your <project> builder token for room <name>?", asked once per room and
+    project). Agents use the `*_house_ticket` tools: reads run on their own,
+    and every write (create, claim, release, post) waits for its owner's OK
+    in the agent's own permission prompt in the pane. The files a teammate's
     sessions changed on a ticket they claimed are theirs: an agent's first edit
     of one is held back once with a warning ("Nick's ticket #141 has been
     changing this file"); a teammate's pushed branch that changes your files
