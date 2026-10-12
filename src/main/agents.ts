@@ -42,6 +42,17 @@ export interface LaunchContext {
 export const CLAUDE_INLINE_ENV = { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1" } as const;
 
 /**
+ * Claude Code's switch for its agent view: `claude agents`, `--bg`,
+ * `/background`, ← at an empty prompt, and the daemon that runs background
+ * sessions. A conversation moved to the background leaves its pane for a
+ * worker of that daemon, outside Mockingbird: quitting ends only the pane,
+ * the worker keeps the conversation (and the Mockingbird tools and room
+ * settings it started with), and resuming the pane then collides with it.
+ * Every Claude Mockingbird starts runs with it off.
+ */
+export const CLAUDE_NO_BACKGROUND_ENV = { CLAUDE_CODE_DISABLE_AGENT_VIEW: "1" } as const;
+
+/**
  * Codex's switch to inline mode (what --no-alt-screen sets); it outranks
  * `tui.fullscreen_transcript`. A setting rather than the flag: a Codex that
  * predates it ignores an unknown setting, but refuses to start on an unknown flag.
@@ -53,6 +64,8 @@ export interface AgentAdapter {
   /** The Settings field holding this agent's binary name or path. */
   binSetting: keyof Pick<Settings, "claudeBin" | "codexBin">;
   launchArgs(req: NewSessionRequest, ctx: LaunchContext): string[];
+  /** Environment the pty running this agent gets on top of the pane's. */
+  launchEnv: Readonly<Record<string, string>>;
   /**
    * Whether a resume would find a conversation in this cwd. Both CLIs exit (or
    * open a picker) when asked to resume nothing, so such a session starts fresh.
@@ -66,6 +79,7 @@ export interface AgentAdapter {
 
 const claude: AgentAdapter = {
   binSetting: "claudeBin",
+  launchEnv: CLAUDE_NO_BACKGROUND_ENV,
   promptInArgs: false,
   launchArgs(req, ctx) {
     const args: string[] = [];
@@ -148,6 +162,7 @@ function codexCwds(): Set<string> {
 
 const codex: AgentAdapter = {
   binSetting: "codexBin",
+  launchEnv: {},
   promptInArgs: true,
   launchArgs(req, ctx) {
     const args: string[] = [];

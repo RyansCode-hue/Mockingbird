@@ -1,6 +1,8 @@
 import { spawn } from "child_process";
 import * as fs from "fs";
 import * as net from "net";
+import * as os from "os";
+import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Messaging, mcpLaunch } from "../src/main/messaging";
 import type { SessionInfo } from "../src/shared/types";
@@ -187,6 +189,39 @@ describe("MCP server script", () => {
     };
     expect(await list("approve_permission")).toEqual(["approve_permission"]);
     expect(await list("ask_code_reader,approve_permission")).toEqual(["ask_code_reader", "approve_permission"]);
+  });
+  it("outlives the app restarting: calls while it's down say so, and calls after reach the new app", async () => {
+    const appSock = path.join(os.homedir(), "restart.sock");
+    /** The app, as far as the MCP server can tell: whatever answers on the socket. */
+    const startApp = (n: number) =>
+      new Promise<net.Server>((resolve) => {
+        fs.rmSync(appSock, { force: true }); // as Messaging.start clears a previous run's socket
+        const server = net.createServer({ allowHalfOpen: true }, (c) => c.on("data", () => {}).on("end", () => c.end(JSON.stringify({ result: `app run ${n}` }))));
+        server.listen(appSock, () => resolve(server));
+      });
+    const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SOCK: appSock } });
+    let out = "";
+    p.stdout.on("data", (d) => (out += d));
+    let exited = false;
+    p.on("exit", () => (exited = true));
+    const call = async (id: number) => {
+      p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "list_sessions", arguments: {} } }) + "\n");
+      for (let i = 0; i < 100 && !out.includes(`"id":${id},`); i++) await new Promise((r) => setTimeout(r, 20));
+      const line = out.trim().split("\n").map((l) => JSON.parse(l)).find((m) => m.id === id);
+      return line?.result.content[0].text as string | undefined;
+    };
+    try {
+      const first = await startApp(1);
+      expect(await call(1)).toBe("app run 1");
+      await new Promise((r) => first.close(r)); // the app quits
+      expect(await call(2)).toMatch(/Mockingbird is not reachable/);
+      const second = await startApp(2); // and comes back
+      expect(await call(3)).toBe("app run 2");
+      await new Promise((r) => second.close(r));
+      expect(exited).toBe(false);
+    } finally {
+      p.kill();
+    }
   });
   it("explains itself when the app isn't running", async () => {
     const p = spawn(process.execPath, launch.args, { env: { ...process.env, ...launch.env, MOCKINGBIRD_SOCK: "/tmp/mb-no-such.sock" } });
