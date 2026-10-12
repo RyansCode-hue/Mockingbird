@@ -26,6 +26,11 @@ export const isTicketNumber = (n: unknown): n is number => Number.isSafeInteger(
 /** Statuses a builder's token may set (only staff close a ticket as done or dropped). */
 export const BUILDER_STATUSES = ["parked", "ready", "in_progress", "review", "validating"] as const;
 export type BuilderStatus = (typeof BUILDER_STATUSES)[number];
+/** A ticket's statuses in the House's flow: parked → ready → in progress → review → validating → done, or dropped. */
+export const HOUSE_STATUSES = [...BUILDER_STATUSES, "done", "dropped"] as const;
+/** The statuses only staff set; a ticket in any other is open. */
+export const CLOSED_STATUSES: readonly string[] = ["done", "dropped"];
+export const isOpenStatus = (status: string): boolean => !CLOSED_STATUSES.includes(status);
 export const HOUSE_PRIORITIES = ["high", "medium", "low", "investigate"] as const;
 
 /** What post_house_ticket_event (and the ticket dialog) can add to a ticket's history. */
@@ -36,6 +41,7 @@ export type HouseEventKind = (typeof HOUSE_EVENT_KINDS)[number];
 export const NEEDS_HUMAN = "needs-human";
 export const NEEDS_AGENT = "needs-agent";
 
+/** "in_progress" → "in progress". */
 export const statusLabel = (s: string): string => s.replace(/_/g, " ");
 
 /** The House's tools on the Mockingbird MCP server, for agents in a room. */
@@ -68,14 +74,19 @@ export interface HouseTicket {
   kind: string | null;
   tags: string[];
   claim: HouseClaim | null;
+  /** Tickets of this project it waits on, by number. */
+  blockedBy: number[];
+  /** Whom or what it waits on (the House's waiting_on), when it does; `on` is null when the House doesn't name it. */
+  waiting: { on: string | null } | null;
 }
 
 export interface HouseHistoryEntry {
-  /** progress, question, note, claim… as the House names it. */
+  /** The House's event: progress, question, claimed, status_changed… */
   kind: string;
   text: string;
   by: string | null;
   at: string | null;
+  /** The status it moved the ticket to (the House's to_status). */
   status: string | null;
   reference: string | null;
 }
@@ -85,17 +96,27 @@ export interface HouseTicketDetail extends HouseTicket {
   url: string | null;
   detail: string;
   acceptance: string;
-  blockedBy: number[];
   history: HouseHistoryEntry[];
 }
 
-/** The current frozen slice, from the House's spec. */
-export interface HouseSlice {
-  name: string | null;
-  numbers: number[];
-  /** Whether the spec named its tickets at all (false: only the room's own tickets can show). */
-  listsTickets: boolean;
+/** A history entry after who wrote it: "status → review" for a status change, "claimed → in progress", "question". */
+export function historyWhat(e: Pick<HouseHistoryEntry, "kind" | "status">): string {
+  const kind = statusLabel(e.kind).trim();
+  if (!e.status) return kind || "note";
+  const to = `→ ${statusLabel(e.status)}`;
+  return !kind || /status/i.test(kind) ? `status ${to}` : `${kind} ${to}`;
 }
+
+/** The open backlog: of the tickets the House listed (in its order, high priority first), those not done or dropped. */
+export function openBacklog(order: readonly number[], ticket: (n: number) => HouseTicket | undefined): number[] {
+  return order.filter((n) => {
+    const t = ticket(n);
+    return !!t && isOpenStatus(t.status);
+  });
+}
+
+/** Handed back to an agent: what the board's "Needs an agent" filter keeps. */
+export const needsAgent = (t: HouseTicket | null | undefined): boolean => !!t?.tags.includes(NEEDS_AGENT);
 
 // ---- the room log ---------------------------------------------------------------------------
 
@@ -170,7 +191,7 @@ export interface HouseRow {
   ticket: HouseTicket | null;
   owner: HouseOwner | null;
   problem?: string;
-  /** For the room's own tickets: who added it. */
+  /** A ticket the room added (in the open backlog too): who added it. */
   addedBy?: string;
 }
 
@@ -184,9 +205,13 @@ export interface HouseView {
   /** The env file this Mac reads for the project (`~/…`). */
   envFile: string | null;
   connection: HouseConnection;
-  /** Null until the spec has been read (or when it couldn't be: problem). */
-  slice: { name: string | null; listsTickets: boolean; rows: HouseRow[] } | null;
-  sliceProblem?: string;
+  /**
+   * The open backlog: every ticket not done or dropped, in the House's order
+   * (high priority first). The room's own tickets among them carry addedBy.
+   * Null until the House has been listed.
+   */
+  open: HouseRow[] | null;
+  /** The room's tickets the open backlog doesn't hold (closed ones, ones the House didn't list): each ticket shows once. */
   added: HouseRow[];
   /** When the House was last read (0: never). */
   fetchedAt: number;
@@ -199,8 +224,8 @@ export interface HouseView {
   fetchProblem?: string;
 }
 
-/** One ticket in the dialog: the House's detail, or why it couldn't be read. */
-export type HouseTicketView = { detail: HouseTicketDetail; owner: HouseOwner | null; onBoard: "slice" | "added" | null } | { error: string };
+/** One ticket in the dialog: the House's detail and where it is on the board, or why it couldn't be read. */
+export type HouseTicketView = { detail: HouseTicketDetail; owner: HouseOwner | null; open: boolean; tracked: boolean } | { error: string };
 
 /** What the window asks to write. */
 export type HouseWrite =

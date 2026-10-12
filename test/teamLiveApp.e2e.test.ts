@@ -117,7 +117,7 @@ describe("team rooms between two Mockingbird instances", () => {
       execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", path.join(tls, "key.pem"), "-out", path.join(tls, "cert.pem"), "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
       const house = await fakeHouse({ "tok-ryan-e2e": "Ryan", "tok-nick-e2e": "Nick" }, { tls: { key: fs.readFileSync(path.join(tls, "key.pem"), "utf8"), cert: fs.readFileSync(path.join(tls, "cert.pem"), "utf8") } });
       house.item(141, { title: "Donor entities", status: "ready" });
-      house.state.spec.slice.work_items = [141];
+      house.item(140, { title: "Donor list endpoint", status: "done", priority: "high" });
       const houseEnv = { NODE_EXTRA_CA_CERTS: path.join(tls, "cert.pem") };
       const ryanHome = signal.creatorHome ?? tempDir("ryan");
       builderHome("atticus-backoffice", house, "tok-ryan-e2e", "", ryanHome);
@@ -219,9 +219,10 @@ describe("team rooms between two Mockingbird instances", () => {
         // ---- the House board: Ryan (the admin) connects the project, Nick claims #141 with his own token, Ryan's board shows it
         const rid = JSON.stringify(roomId);
         expect(await ryan.evaluate(`window.mb.houseWrite(${rid}, { kind: "project", project: "atticus-backoffice" })`)).not.toHaveProperty("error");
-        await untilTrue("the slice on Nick's board", async () => ((await nick.evaluate<HouseView>(`window.mb.houseRefresh(${rid})`)).slice?.rows ?? []).some((x) => x.n === 141 && x.ticket?.title === "Donor entities"));
+        await untilTrue("the open backlog on Nick's board", async () => ((await nick.evaluate<HouseView>(`window.mb.houseRefresh(${rid})`)).open ?? []).some((x) => x.n === 141 && x.ticket?.title === "Donor entities"));
+        expect((await nick.evaluate<HouseView>(`window.mb.houseGet(${rid})`)).open?.map((x) => x.n)).toEqual([141]); // #140 is done
         expect(await nick.evaluate(`window.mb.houseWrite(${rid}, { kind: "claim", n: 141, branch: "5110-donors" })`)).not.toHaveProperty("error");
-        await untilTrue("Nick's claim on Ryan's board", async () => (await ryan.evaluate<HouseView>(`window.mb.houseGet(${rid})`)).slice?.rows.find((x) => x.n === 141)?.owner?.name === "Nick");
+        await untilTrue("Nick's claim on Ryan's board", async () => (await ryan.evaluate<HouseView>(`window.mb.houseGet(${rid})`)).open?.find((x) => x.n === 141)?.owner?.name === "Nick");
         expect(house.requests.filter((x) => x.path.endsWith("/work-items/141/claim")).map((x) => x.token)).toEqual(["tok-nick-e2e"]);
         expect(house.requests.every((x) => x.token === "tok-ryan-e2e" || x.token === "tok-nick-e2e")).toBe(true);
         expect(JSON.stringify(await nick.evaluate(`window.mb.houseGet(${rid})`))).not.toContain("tok-nick-e2e");

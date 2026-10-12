@@ -9,7 +9,6 @@ import {
   isTicketNumber,
   type HouseClaim,
   type HouseHistoryEntry,
-  type HouseSlice,
   type HouseTicket,
   type HouseTicketDetail,
 } from "../../shared/team/house";
@@ -24,9 +23,11 @@ import {
  * with the token in X-Build-Token, never follow a redirect (a redirect would
  * carry the header to wherever it points), and time out.
  *
- * What the House answers is read defensively (ticketOf, detailOf, sliceOf):
- * fields it may name differently are looked for under each likely name, and
- * anything missing reads as empty rather than failing the board.
+ * What the House answers is read defensively (ticketOf, detailOf): the
+ * fields its external API answers with (number, status, priority, tags,
+ * assignee + branch, blocked_by, waiting_on, history entries of
+ * { at, actor, event, note?, to_status? }) first, then other likely names,
+ * and anything missing reads as empty rather than failing the board.
  */
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
@@ -154,7 +155,7 @@ export class HouseClient {
     return `${this.env.apiUrl}/api/projects/${encodeURIComponent(this.env.projectId)}/external`;
   }
 
-  /** The backlog, high priority first (optionally one tag's). */
+  /** The backlog in the House's order, high priority first, closed tickets included (optionally one tag's). */
   async list(tag?: string): Promise<HouseTicket[]> {
     const raw = await this.call("GET", `work-items${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`);
     return listOf(raw)
@@ -194,7 +195,7 @@ export class HouseClient {
     return detailOf(await this.call("PATCH", `work-items/${num(n)}`, body));
   }
 
-  /** The current frozen spec, as the House gives it. */
+  /** The current frozen spec — the project's requirements document, not a ticket list — as the House gives it. */
   spec(): Promise<unknown> {
     return this.call("GET", "spec");
   }
@@ -305,12 +306,12 @@ function unwrap(raw: unknown): Record<string, unknown> | null {
   return raw;
 }
 
-const CLAIMANT_KEYS = ["claimed_by", "claimant", "claimed_by_name", "assignee"];
+const CLAIMANT_KEYS = ["assignee", "claimed_by", "claimant", "claimed_by_name"];
 
 /**
- * Who has the ticket: a `claim` object, or claimant / branch fields on the
- * ticket itself. A claimant field that's present but empty means unclaimed,
- * whatever branch the ticket still names.
+ * Who has the ticket: the House's assignee and branch, or a `claim` object,
+ * or other claimant fields. A claimant field that's present but empty means
+ * unclaimed, whatever branch the ticket still names.
  */
 function claimOf(o: Record<string, unknown>): HouseClaim | null {
   const c = isObj(o.claim) ? o.claim : isObj(o.claimed) ? o.claimed : null;
@@ -320,6 +321,22 @@ function claimOf(o: Record<string, unknown>): HouseClaim | null {
   if (c === null && !by && CLAIMANT_KEYS.some((k) => k in o)) return null;
   if (c === null && !by && !branch && !at && o.claimed !== true) return null;
   return { by, branch, at };
+}
+
+/** Ticket numbers it waits on: numbers, "#123", or objects with a number. */
+function numbersOf(v: unknown): number[] {
+  if (!Array.isArray(v)) return [];
+  const out = v.map((x) => (isObj(x) ? intOf(first(x, ["number", "n"])) : intOf(x))).filter((x): x is number => x !== null);
+  return [...new Set(out)];
+}
+
+/** What waiting_on names: a string, or an object naming whom or what. Null, {} or an object of empty values: not waiting. */
+function waitingOf(v: unknown): HouseTicket["waiting"] {
+  if (typeof v === "string") return v.trim() ? { on: v.trim() } : null;
+  if (!isObj(v)) return null;
+  const named = personOf(first(v, ["label", "name", "who", "party", "on", "kind", "type", "reason", "note", "detail", "summary"]));
+  if (named) return { on: named };
+  return Object.values(v).some((x) => x !== null && x !== undefined && x !== "" && x !== false) ? { on: null } : null;
 }
 
 /** A ticket from a list or a single answer; null when it has no number. */
@@ -335,19 +352,24 @@ export function ticketOf(raw: unknown): HouseTicket | null {
     kind: str(o.kind).trim() || null,
     tags: Array.isArray(o.tags) ? o.tags.map((t) => (isObj(t) ? str(t.name ?? t.label) : str(t))).filter(Boolean) : [],
     claim: claimOf(o),
+    blockedBy: numbersOf(o.blocked_by ?? o.blockedBy),
+    waiting: waitingOf(o.waiting_on ?? o.waitingOn),
   };
 }
 
 function historyOf(raw: unknown): HouseHistoryEntry[] {
   if (!Array.isArray(raw)) return [];
-  return raw.filter(isObj).map((e) => ({
-    kind: str(first(e, ["event", "kind", "type", "action"])).trim() || "note",
-    text: str(first(e, ["note", "text", "body", "message", "comment", "summary", "detail"])),
-    by: personOf(first(e, ["by", "author", "actor", "builder", "user", "who"])),
-    at: str(first(e, ["at", "created_at", "timestamp", "time", "date"])).trim() || null,
-    status: str(e.status).trim() || null,
-    reference: str(e.reference).trim() || null,
-  }));
+  return raw.filter(isObj).map((e) => {
+    const status = str(first(e, ["to_status", "status", "new_status"])).trim() || null;
+    return {
+      kind: str(first(e, ["event", "kind", "type", "action"])).trim() || (status ? "status" : "note"),
+      text: str(first(e, ["note", "text", "body", "message", "comment", "summary", "detail"])),
+      by: personOf(first(e, ["actor", "by", "author", "builder", "user", "who"])),
+      at: str(first(e, ["at", "created_at", "timestamp", "time", "date"])).trim() || null,
+      status,
+      reference: str(e.reference).trim() || null,
+    };
+  });
 }
 
 /** A ticket with its detail and history; null when the answer isn't one. */
@@ -360,42 +382,6 @@ export function detailOf(raw: unknown): HouseTicketDetail | null {
     url: str(first(o, ["web_url", "html_url", "url", "link"])).trim() || null,
     detail: str(first(o, ["detail", "description", "body"])),
     acceptance: str(o.acceptance),
-    blockedBy: Array.isArray(o.blocked_by) ? o.blocked_by.map(intOf).filter((x): x is number => x !== null) : [],
     history: historyOf(o.history ?? o.events),
   };
-}
-
-const TICKET_KEYS = /^(work_?items|workItems|tickets)$/i;
-
-/**
- * The current frozen slice from the spec: its name, and the tickets it names
- * — numbers (or "#123", or objects with a number) in a work_items / tickets
- * list anywhere in the spec. A spec that names none says so (listsTickets).
- */
-export function sliceOf(spec: unknown): HouseSlice {
-  const root = isObj(spec) ? spec : {};
-  const slice = isObj(root.slice) ? root.slice : isObj(root.frozen_slice) ? root.frozen_slice : isObj(root.current_slice) ? root.current_slice : null;
-  const name = str(first(slice, ["name", "title", "label", "version"]) ?? first(root, ["slice_name", "slice", "name", "title", "version"])).trim() || null;
-  const numbers: number[] = [];
-  let listsTickets = false;
-  const seen = new Set<unknown>();
-  const walk = (v: unknown, depth: number) => {
-    if (depth > 6 || !v || typeof v !== "object" || seen.has(v)) return;
-    seen.add(v);
-    if (Array.isArray(v)) {
-      for (const x of v) walk(x, depth + 1);
-      return;
-    }
-    for (const [k, x] of Object.entries(v)) {
-      if (TICKET_KEYS.test(k) && Array.isArray(x)) {
-        listsTickets = true;
-        for (const item of x) {
-          const n = isObj(item) ? intOf(item.number ?? item.n) : intOf(item);
-          if (n !== null && !numbers.includes(n)) numbers.push(n);
-        }
-      } else walk(x, depth + 1);
-    }
-  };
-  walk(spec, 0);
-  return { name, numbers, listsTickets };
 }

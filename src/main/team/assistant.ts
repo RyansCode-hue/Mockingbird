@@ -29,7 +29,7 @@ export interface AssistantDeps {
   sessions: (roomId: RoomId) => Promise<string[]>;
   /** A checkout of the room's repository on this laptop, if one of its sessions has one. */
   repoDir: (roomId: RoomId) => string | null;
-  /** The room's House board as this laptop reads it (the slice, the room's tickets, who has what); null without a project. */
+  /** The room's House board as this laptop reads it (the open backlog, the room's tickets, who has what); null without a project. */
   board: (roomId: RoomId) => Promise<string | null>;
   publish: (roomId: RoomId, body: RoomEventBodies["chat.assistant"]) => void;
   log: (msg: string) => void;

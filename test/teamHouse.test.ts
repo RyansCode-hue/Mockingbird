@@ -5,9 +5,10 @@ import type { AddressInfo } from "net";
 import { afterEach, describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 import { builderHome, fakeHouse, PROJECT_ID, type FakeHouse } from "./fakeHouse";
-import { detailOf, HouseClient, HouseSetupError, parseEnvText, readHouseEnv, scrub, sliceOf, ticketOf } from "../src/main/team/house";
-import { houseToolOp, isHouseTool } from "../src/main/team/houseTools";
-import { branchFor, HOUSE_TOOL_NAMES } from "../src/shared/team/house";
+import { houseCheck } from "./houseCheck";
+import { detailOf, HouseClient, HouseSetupError, parseEnvText, readHouseEnv, scrub, ticketOf } from "../src/main/team/house";
+import { HOUSE_TOOL_SCHEMAS, houseToolOp, isHouseTool } from "../src/main/team/houseTools";
+import { branchFor, historyWhat, HOUSE_STATUSES, HOUSE_TOOL_NAMES, isOpenStatus, needsAgent, openBacklog, statusLabel } from "../src/shared/team/house";
 
 const TOKEN = "hb_live_RYAN_0123456789abcdef";
 const PROJECT = "atticus-backoffice";
@@ -97,11 +98,17 @@ describe("the House client", () => {
   it("calls each route under the project's external API with the builder's token, and reads the answers", async () => {
     const h = await house();
     h.item(141, { title: "Last-org API", status: "ready", tags: ["needs-agent"] });
-    h.state.spec.slice.work_items = [141];
+    h.item(139, { title: "Org list paginates", status: "done", priority: "high" });
+    h.item(140, { title: "Spike", priority: "investigate", blocked_by: [139] });
     const c = client(h);
-    expect((await c.list()).map((t) => [t.n, t.title, t.claim])).toEqual([[141, "Last-org API", null]]);
-    expect(await c.list("needs-agent")).toHaveLength(1);
-    expect(sliceOf(await c.spec())).toEqual({ name: "Slice 3 — org memory", numbers: [141], listsTickets: true });
+    // the House's order (priority, high to low), closed tickets included
+    expect((await c.list()).map((t) => [t.n, t.title, t.status, t.claim, t.blockedBy])).toEqual([
+      [139, "Org list paginates", "done", null, []],
+      [141, "Last-org API", "ready", null, []],
+      [140, "Spike", "parked", null, [139]],
+    ]);
+    expect((await c.list("needs-agent")).map((t) => t.n)).toEqual([141]);
+    expect(await c.spec()).toMatchObject({ spec_version_id: "v3", sections: [{ title: "Org memory" }] });
     const created = await c.create({ title: "Export skips archived donors", detail: "Context", acceptance: "A test" });
     expect(created).toMatchObject({ n: 142, title: "Export skips archived donors", status: "parked", detail: "Context", acceptance: "A test" });
     expect((await c.claim(141, "feature/141-last-org"))?.claim).toEqual({ by: "Ryan Ellerbroek", branch: "feature/141-last-org", at: null });
@@ -109,11 +116,13 @@ describe("the House client", () => {
     await c.patch(141, { note: "A comment" });
     const t = await c.ticket(141);
     expect(t.status).toBe("review");
-    expect(t.history.map((e) => [e.kind, e.text, e.by])).toEqual([
-      ["claim", "Claimed on feature/141-last-org", "Ryan Ellerbroek"],
-      ["progress", "API done", "Ryan Ellerbroek"],
-      ["comment", "A comment", "Ryan Ellerbroek"],
+    expect(t.history.map((e) => [e.kind, e.text, e.by, e.status, historyWhat(e)])).toEqual([
+      ["claimed", "", "Ryan Ellerbroek", "in_progress", "claimed → in progress"],
+      ["progress", "API done", "Ryan Ellerbroek", null, "progress"],
+      ["status_changed", "", "Ryan Ellerbroek", "review", "status → review"],
+      ["comment", "A comment", "Ryan Ellerbroek", null, "comment"],
     ]);
+    expect(t.history[1].reference).toBe("https://example.invalid/pull/1");
     expect((await c.release(141))?.claim).toBeNull();
     expect(h.requests.every((r) => r.token === TOKEN)).toBe(true);
     expect(h.by(TOKEN)).toEqual([
@@ -171,7 +180,82 @@ describe("the House client", () => {
   });
 });
 
+/** A work item as the real House's external API answers it (the live check's field names; made-up values). */
+const realItem = (over: Record<string, unknown> = {}) => ({
+  id: "3f1c0d9e-0000-4000-8000-000000000141",
+  number: 141,
+  project_id: "p-1",
+  title: "Last-org API",
+  detail: "Store it per user",
+  acceptance: "A test",
+  kind: "engineering",
+  status: "in_progress",
+  priority: "high",
+  domain: null,
+  tags: ["needs-human"],
+  blocked_by: [122],
+  waiting_on: null,
+  assignee: "Nick Smith",
+  branch: "feature/141-last-org",
+  source_ref: null,
+  history: [
+    { at: "2026-10-12T09:00:00Z", actor: "Ryan Ellerbroek", event: "created", to_status: "parked" },
+    { at: "2026-10-12T09:05:00Z", actor: "Ryan Ellerbroek", event: "status_changed", to_status: "ready" },
+    { at: "2026-10-12T10:00:00Z", actor: "Nick Smith", event: "progress", note: "GET works" },
+    { at: "2026-10-12T11:00:00Z", actor: "Nick Smith", to_status: "review" },
+  ],
+  created_by: "Ryan Ellerbroek",
+  created_at: "2026-10-12T09:00:00Z",
+  updated_at: "2026-10-12T11:00:00Z",
+  ...over,
+});
+
 describe("reading what the House answers", () => {
+  it("reads the real House's work items: number, status and priority, tags, the claim from assignee + branch, blocked_by and waiting_on", () => {
+    expect(ticketOf(realItem())).toEqual({
+      n: 141,
+      title: "Last-org API",
+      status: "in_progress",
+      priority: "high",
+      kind: "engineering",
+      tags: ["needs-human"],
+      claim: { by: "Nick Smith", branch: "feature/141-last-org", at: null },
+      blockedBy: [122],
+      waiting: null,
+    });
+    // unclaimed: an empty or null assignee, whatever branch is left
+    expect(ticketOf(realItem({ assignee: "", branch: "feature/141-old" }))!.claim).toBeNull();
+    expect(ticketOf(realItem({ assignee: null, branch: null }))!.claim).toBeNull();
+    // waiting_on: an object naming whom (or not), a string; null or {} isn't waiting
+    expect(ticketOf(realItem({ waiting_on: { party: "client", since: "2026-10-01" } }))!.waiting).toEqual({ on: "client" });
+    expect(ticketOf(realItem({ waiting_on: { since: "2026-10-01" } }))!.waiting).toEqual({ on: null });
+    expect(ticketOf(realItem({ waiting_on: "the client's legal team" }))!.waiting).toEqual({ on: "the client's legal team" });
+    expect(ticketOf(realItem({ waiting_on: {} }))!.waiting).toBeNull();
+    expect(ticketOf(realItem({ blocked_by: [122, { number: 123 }, "#124", "x", 122] }))!.blockedBy).toEqual([122, 123, 124]);
+  });
+
+  it("reads the real House's history entries — { at, actor, event, note?, to_status? } — and says a status change as 'status → review'", () => {
+    const d = detailOf(realItem())!;
+    expect(d.history).toEqual([
+      { kind: "created", text: "", by: "Ryan Ellerbroek", at: "2026-10-12T09:00:00Z", status: "parked", reference: null },
+      { kind: "status_changed", text: "", by: "Ryan Ellerbroek", at: "2026-10-12T09:05:00Z", status: "ready", reference: null },
+      { kind: "progress", text: "GET works", by: "Nick Smith", at: "2026-10-12T10:00:00Z", status: null, reference: null },
+      { kind: "status", text: "", by: "Nick Smith", at: "2026-10-12T11:00:00Z", status: "review", reference: null },
+    ]);
+    expect(d.history.map((e) => `${e.by} · ${historyWhat(e)}`)).toEqual(["Ryan Ellerbroek · created → parked", "Ryan Ellerbroek · status → ready", "Nick Smith · progress", "Nick Smith · status → review"]);
+    expect(historyWhat({ kind: "question", status: null })).toBe("question");
+    expect(historyWhat({ kind: "claimed", status: "in_progress" })).toBe("claimed → in progress");
+  });
+
+  it("says every House status human-readably, and keeps done and dropped out of the open backlog, in the House's order", () => {
+    expect(HOUSE_STATUSES.map(statusLabel)).toEqual(["parked", "ready", "in progress", "review", "validating", "done", "dropped"]);
+    expect(HOUSE_STATUSES.filter(isOpenStatus)).toEqual(["parked", "ready", "in_progress", "review", "validating"]);
+    const t = (n: number, status: string, tags: string[] = []) => ticketOf(realItem({ number: n, status, tags }))!;
+    const tickets = new Map([t(9, "done"), t(3, "ready", ["needs-agent"]), t(7, "dropped"), t(1, "validating"), t(5, "review", ["needs-human"])].map((x) => [x.n, x]));
+    expect(openBacklog([9, 3, 7, 1, 5, 4], (n) => tickets.get(n))).toEqual([3, 1, 5]); // 4 wasn't read: not shown
+    expect([...tickets.values()].filter(needsAgent).map((x) => x.n)).toEqual([3]);
+  });
+
   it("finds a claim however the House names it, and reads a present-but-empty claimant as unclaimed", () => {
     expect(ticketOf({ number: 1, title: "A", status: "in_progress", claim: { by: { name: "Nick Smith" }, branch: "f/1", at: "2026-10-12T10:00:00Z" } })!.claim).toEqual({ by: "Nick Smith", branch: "f/1", at: "2026-10-12T10:00:00Z" });
     expect(ticketOf({ number: 2, title: "B", claimed_by: "Ryan", branch: "f/2" })!.claim).toEqual({ by: "Ryan", branch: "f/2", at: null });
@@ -181,16 +265,32 @@ describe("reading what the House answers", () => {
     expect(ticketOf({ title: "no number" })).toBeNull();
   });
 
-  it("reads a ticket's history under the names the House may use", () => {
-    const d = detailOf({ number: 9, title: "T", description: "why", history: [{ type: "question", text: "which org?", author: { email: "s@example.invalid" }, created_at: "2026-10-12" }], blocked_by: [8, "#7", "x"] });
-    expect(d).toMatchObject({ n: 9, detail: "why", blockedBy: [8, 7], history: [{ kind: "question", text: "which org?", by: "s@example.invalid", at: "2026-10-12", status: null, reference: null }] });
+  it("reads a ticket's history under the other names the House may use", () => {
+    const d = detailOf({ number: 9, title: "T", description: "why", history: [{ type: "question", text: "which org?", author: { email: "s@example.invalid" }, created_at: "2026-10-12", status: "review" }], blocked_by: [8, "#7", "x"] });
+    expect(d).toMatchObject({ n: 9, detail: "why", blockedBy: [8, 7], history: [{ kind: "question", text: "which org?", by: "s@example.invalid", at: "2026-10-12", status: "review", reference: null }] });
   });
+});
 
-  it("finds the slice's name and tickets wherever the spec lists them, and says when it lists none", () => {
-    expect(sliceOf({ slice: { title: "Slice 4", tickets: [{ number: 12 }, "#13", 12] } })).toEqual({ name: "Slice 4", numbers: [12, 13], listsTickets: true });
-    expect(sliceOf({ name: "Spec v3", sections: [{ title: "Exports", workItems: [21, { n: 22 }] }] })).toEqual({ name: "Spec v3", numbers: [21, 22], listsTickets: true });
-    expect(sliceOf({ version: 3, sections: [{ requirements: [{ number: 7, title: "a requirement, not a ticket" }] }] })).toEqual({ name: "3", numbers: [], listsTickets: false });
-    expect(sliceOf(null)).toEqual({ name: null, numbers: [], listsTickets: false });
+describe("the live check (test/houseLive.test.ts), against the fake House", () => {
+  it("reads only, passes on real-shaped data, and logs field names, counts and enum values — no titles, names, notes or branches", async () => {
+    const h = await house();
+    h.item(141, { title: "Secret title one", status: "in_progress", priority: "high", assignee: "Nick Smith", branch: "feature/141-secret-branch", tags: ["needs-human"], blocked_by: [139] });
+    h.item(139, { title: "Secret title two", status: "done", priority: "high" });
+    h.item(142, { title: "Secret title three", status: "ready", tags: ["needs-agent"], waiting_on: { party: "secret-party" } });
+    h.item(145, { title: "Secret title four", priority: "investigate" });
+    h.items.get(141)!.history.push(
+      { at: "2026-10-12T09:00:00Z", actor: "Ryan Ellerbroek", event: "created", to_status: "parked" },
+      { at: "2026-10-12T10:00:00Z", actor: "Nick Smith", event: "progress", note: "A secret note" },
+      { at: "2026-10-12T11:00:00Z", actor: "Nick Smith", event: "status_changed", to_status: "in_progress" }
+    );
+    const lines: string[] = [];
+    await houseCheck(new HouseClient(readHouseEnv(PROJECT, { home: builderHome(PROJECT, h, TOKEN), allowHttpLoopback: true })), (l) => lines.push(l));
+    expect(h.requests.every((r) => r.method === "GET")).toBe(true);
+    const out = lines.join("\n");
+    expect(out).toContain("open backlog: 3 of 4; needs-agent 1, needs-human 1, blocked 1, waiting 1");
+    expect(out).toContain("the open backlog's priorities in the House's order: high×1, medium×1, investigate×1");
+    expect(out).toContain('rendered: {"created → parked":1,"progress":1,"status → in progress":1}');
+    for (const secret of ["Secret", "Nick", "Ryan", "secret-branch", "secret-party", "A secret note", TOKEN, "wi-141"]) expect(out).not.toContain(secret);
   });
 });
 
@@ -205,7 +305,16 @@ describe("the agents' House tools", () => {
     expect(houseToolOp("read_house_ticket", { n: "#143" })).toEqual({ tool: "read", n: 143 });
     expect(houseToolOp("post_house_ticket_event", { n: 1, kind: "status", text: "done", status: "review" })).toEqual({ tool: "event", n: 1, kind: "status", text: "done", status: "review" });
     expect(() => houseToolOp("read_house_ticket", { n: 0 })).toThrow(/ticket number/);
-    expect(() => houseToolOp("list_house_tickets", { filter: "mine" })).toThrow(/slice, tracked, all/);
+    // the board's filters: the open backlog, the room's own, or everything listed; a tag narrows any
+    expect(houseToolOp("list_house_tickets", { filter: "open", tag: "needs-agent" })).toEqual({ tool: "list", filter: "open", tag: "needs-agent" });
+    expect(houseToolOp("list_house_tickets", { filter: "tracked" })).toEqual({ tool: "list", filter: "tracked" });
+    expect(houseToolOp("list_house_tickets", { filter: "all" })).toEqual({ tool: "list", filter: "all" });
+    expect(() => houseToolOp("list_house_tickets", { filter: "slice" })).toThrow("filter is one of open, tracked, all (or none, for the whole board)");
+    expect(() => houseToolOp("list_house_tickets", { filter: "mine" })).toThrow(/filter is one of open, tracked, all/);
+    const list = HOUSE_TOOL_SCHEMAS.find((s) => s.name === "list_house_tickets")!;
+    expect(list.inputSchema.properties.filter.enum).toEqual(["open", "tracked", "all"]);
+    expect(list.description).toMatch(/open backlog \(every ticket not done or dropped, high priority first\)/);
+    expect(JSON.stringify(HOUSE_TOOL_SCHEMAS)).not.toMatch(/slice/i);
     expect(() => houseToolOp("post_house_ticket_event", { n: 1, kind: "status", text: "x" })).toThrow(/needs status/);
     expect(() => houseToolOp("post_house_ticket_event", { n: 1, kind: "status", text: "x", status: "done" })).toThrow(/only staff close/);
     expect(() => houseToolOp("post_house_ticket_event", { n: 1, kind: "shout", text: "x" })).toThrow(/kind is one of/);

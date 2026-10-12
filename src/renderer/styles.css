@@ -1984,8 +1984,33 @@ button.link.house-change { margin-left: 8px; font-size: 10.5px; }
 .house-inline.end { justify-content: flex-end; }
 .modal .house-inline input[type=text] { flex: 1; min-width: 0; padding: 4px 8px; font-size: 11px; }
 .house-section { margin-top: 12px; }
-.house-section-h { font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); padding: 0 2px 5px; display: flex; gap: 6px; border-bottom: 1px solid var(--line-soft); margin-top: 12px; }
+.house-section-h { font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); padding: 0 2px 5px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line-soft); margin-top: 12px; min-height: 22px; }
 .house-cnt { color: var(--text-3); }
+.house-section-hint { font: 400 10px var(--ui); letter-spacing: 0; text-transform: none; color: var(--text-4); }
+.house-section-hint::before { content: "·"; margin-right: 6px; }
+.house-section-tools { margin-left: auto; display: inline-flex; gap: 6px; }
+.modal button.house-filter {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 10px; border: 1px solid var(--line-med);
+  background: transparent; font: 500 10px var(--ui); letter-spacing: 0; text-transform: none; color: var(--text-3);
+}
+.modal button.house-filter:hover { color: var(--text-1); border-color: var(--line-btn-hover); background: var(--fill-subtle); }
+.modal button.house-filter.on { background: var(--chip-on-bg); border-color: var(--chip-on-bg); color: var(--chip-on-fg); }
+.house-filter.on .house-cnt { color: inherit; opacity: .7; }
+/* priorities in the House's order: a fixed column so titles line up */
+.house-pri { flex-shrink: 0; width: 56px; font: 400 10px var(--ui); color: var(--text-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.house-pri.p-high { color: var(--red); font-weight: 500; }
+.house-pri.p-medium { color: var(--text-3); }
+.house-pri.p-investigate { color: var(--m-2); }
+.house-mark {
+  flex-shrink: 0; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 500 9.5px var(--ui); padding: 2px 6px; border-radius: 4px; color: var(--text-3); background: var(--fill-subtle);
+}
+.house-mark.human { color: var(--amber-text); background: var(--fill-waiting); }
+.house-mark.agent { color: var(--teal-text); background: color-mix(in srgb, var(--teal) 14%, transparent); }
+.house-mark.blocked { color: var(--red); background: color-mix(in srgb, var(--red) 11%, transparent); }
+.house-mark.waiting { color: var(--amber-text-dim); }
+.house-mark.added { background: transparent; box-shadow: inset 0 0 0 1px var(--line-med); font-weight: 400; }
+.modal button.link.house-blocker { font-size: 10px; color: var(--red); }
 .house-empty { font: 400 10.5px/1.5 var(--ui); color: var(--text-4); padding: 8px 4px; }
 .house-row { border-bottom: 1px solid var(--line-soft); }
 .house-row.mine { box-shadow: inset 2px 0 0 var(--teal); }
@@ -2002,7 +2027,7 @@ button.house-row-main:hover { background: var(--fill-subtle); color: var(--text-
 .house-chip-wrap { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .house-status { font: 400 10px var(--ui); color: var(--text-4); white-space: nowrap; }
 .modal button.house-claim-btn { padding: 2px 10px; font-size: 10px; }
-.house-claim { padding: 0 6px 8px 54px; }
+.house-claim { padding: 0 6px 8px 120px; }
 .house-add { border: 1px solid var(--line-med); border-radius: 7px; padding: 10px 12px; margin-bottom: 6px; background: var(--bg-pane); }
 .house-add label:first-of-type { margin-top: 8px; }
 .house-tabs { display: inline-flex; gap: 2px; margin-bottom: 8px; padding: 2px; border-radius: 6px; background: var(--fill-subtle); }
@@ -2036,6 +2061,7 @@ button.house-toast-body:hover { background: none; color: var(--text-1-warm); }
 .house-toast .link { flex-shrink: 0; }
 @media (max-width: 600px) {
   .house-claim { padding-left: 6px; }
+  .house-pri, .house-mark.added, .house-mark.waiting { display: none; }
 }
 /* ---- team rooms: team chat ---- */
 .rc { flex: 1; min-height: 0; display: flex; flex-direction: column; }

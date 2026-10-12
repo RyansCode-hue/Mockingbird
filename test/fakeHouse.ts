@@ -11,21 +11,50 @@ import { tempDir } from "./helpers";
  * frozen spec, answers the routes Mockingbird calls the way the House's docs
  * and CLI describe them, and records every request with the token it carried.
  * Builders are known by token; another token is a 401.
+ *
+ * Its answers have the real House's fields (as the live check read them):
+ * work items with id, number, assignee + branch, blocked_by, waiting_on…,
+ * listed priority-sorted high to low with closed ones included; history
+ * entries of { at, actor, event, note?, to_status? }, a status change being
+ * its own entry with a to_status and no note; and a spec that is the frozen
+ * requirements document, not a ticket list.
  */
 
+export interface FakeHistoryEntry {
+  at: string;
+  actor: string;
+  event: string;
+  note?: string;
+  to_status?: string;
+  reference?: string;
+}
+
 export interface FakeItem {
+  id: string;
   number: number;
+  project_id: string;
   title: string;
-  status: string;
-  priority: string;
-  kind: string;
-  tags: string[];
   detail: string;
   acceptance: string;
-  claimed_by: string | null;
+  kind: string;
+  status: string;
+  priority: string;
+  domain: Record<string, unknown> | null;
+  tags: string[];
+  blocked_by: number[];
+  waiting_on: Record<string, unknown> | null;
+  assignee: string | null;
   branch: string | null;
-  history: { event: string; note: string; by: string; at: string; status?: string; reference?: string }[];
+  source_ref: Record<string, unknown> | null;
+  history: FakeHistoryEntry[];
+  created_by: string;
+  created_at: string;
+  updated_at: string;
 }
+
+/** The order GET work-items lists in: priority, high to low; then by number. */
+const PRIORITY_RANK: Record<string, number> = { high: 0, medium: 1, low: 2, investigate: 3 };
+const houseOrder = (a: FakeItem, b: FakeItem) => (PRIORITY_RANK[a.priority] ?? 9) - (PRIORITY_RANK[b.priority] ?? 9) || a.number - b.number;
 
 export interface FakeRequest {
   method: string;
@@ -42,7 +71,7 @@ export async function fakeHouse(builders: Record<string, string>, o: { tls?: { k
   const requests: FakeRequest[] = [];
   const state = {
     next: 100,
-    spec: { slice: { name: "Slice 3 — org memory", work_items: [] as number[] }, sections: [{ title: "Org memory", requirements: [{ id: "R1", number: 7, title: "Remember the org" }] }] } as any,
+    spec: { project_id: PROJECT_ID, spec_version_id: "v3", title: "Org memory", frozen_at: "2026-10-01T09:00:00Z", sections: [{ title: "Org memory", requirements: [{ id: "R1", number: 7, title: "Remember the org" }] }] } as any,
     /** Answer every request this much later (timeouts). */
     delayMs: 0,
     /** Put the caller's token in error messages, as a careless server might. */
@@ -50,10 +79,41 @@ export async function fakeHouse(builders: Record<string, string>, o: { tls?: { k
   };
   const at = () => new Date().toISOString();
   const item = (n: number, over: Partial<FakeItem> = {}): FakeItem => {
-    const it: FakeItem = { number: n, title: `Ticket ${n}`, status: "parked", priority: "medium", kind: "engineering", tags: [], detail: "", acceptance: "", claimed_by: null, branch: null, history: [], ...over };
+    const it: FakeItem = {
+      id: `wi-${n}-0000-0000`,
+      number: n,
+      project_id: PROJECT_ID,
+      title: `Ticket ${n}`,
+      detail: "",
+      acceptance: "",
+      kind: "engineering",
+      status: "parked",
+      priority: "medium",
+      domain: null,
+      tags: [],
+      blocked_by: [],
+      waiting_on: null,
+      assignee: null,
+      branch: null,
+      source_ref: null,
+      history: [],
+      created_by: "staff",
+      created_at: at(),
+      updated_at: at(),
+      ...over,
+    };
     items.set(n, it);
     state.next = Math.max(state.next, n + 1);
     return it;
+  };
+  /** A history entry; a status that changes is an entry of its own, with no note. */
+  const record = (it: FakeItem, actor: string, event: string, o: { note?: string; reference?: string; status?: string } = {}) => {
+    if (event !== "status_changed") it.history.push({ at: at(), actor, event, ...(o.note ? { note: o.note } : {}), ...(o.reference ? { reference: o.reference } : {}) });
+    if (o.status && o.status !== it.status) {
+      it.status = o.status;
+      it.history.push({ at: at(), actor, event: "status_changed", to_status: o.status });
+    }
+    it.updated_at = at();
   };
 
   const handler = (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -91,12 +151,12 @@ export async function fakeHouse(builders: Record<string, string>, o: { tls?: { k
       if (parts.length === 1) {
         if (method === "GET") {
           const tag = url.searchParams.get("tag");
-          return send(200, [...items.values()].filter((i) => !tag || i.tags.includes(tag)).map(({ history: _h, ...rest }) => rest));
+          return send(200, [...items.values()].filter((i) => !tag || i.tags.includes(tag)).sort(houseOrder));
         }
         if (method === "POST") {
           if (!body?.title) return fail(422, "title is required");
-          const it = item(state.next, { title: body.title, detail: body.detail ?? "", acceptance: body.acceptance ?? "", kind: body.kind ?? "engineering", priority: body.priority ?? "medium" });
-          it.history.push({ event: "created", note: "", by: builder, at: at() });
+          const it = item(state.next, { title: body.title, detail: body.detail ?? "", acceptance: body.acceptance ?? "", kind: body.kind ?? "engineering", priority: body.priority ?? "medium", created_by: builder });
+          it.history.push({ at: at(), actor: builder, event: "created", to_status: "parked" });
           return send(201, it);
         }
       }
@@ -111,32 +171,30 @@ export async function fakeHouse(builders: Record<string, string>, o: { tls?: { k
             it.tags = body.tags;
           }
           for (const k of ["title", "detail", "acceptance", "priority"] as const) if (typeof body?.[k] === "string") it[k] = body[k];
-          if (typeof body?.note === "string") it.history.push({ event: "comment", note: body.note, by: builder, at: at() });
+          if (typeof body?.note === "string") record(it, builder, "comment", { note: body.note });
           return send(200, it);
         }
       }
       if (parts.length === 3 && method === "POST") {
         if (parts[2] === "claim") {
-          if (it.claimed_by && it.claimed_by !== builder) return fail(409, `Already claimed by ${it.claimed_by}`);
-          it.claimed_by = builder;
+          if (it.assignee && it.assignee !== builder) return fail(409, `Already claimed by ${it.assignee}`);
+          it.assignee = builder;
           it.branch = body?.branch ?? null;
           it.status = "in_progress";
-          it.history.push({ event: "claim", note: `Claimed${it.branch ? ` on ${it.branch}` : ""}`, by: builder, at: at(), status: "in_progress" });
+          it.history.push({ at: at(), actor: builder, event: "claimed", to_status: "in_progress" });
           return send(200, it);
         }
         if (parts[2] === "release") {
-          if (it.claimed_by !== builder) return fail(403, "Only the claimant releases a claim");
-          it.claimed_by = null;
+          if (it.assignee !== builder) return fail(403, "Only the claimant releases a claim");
+          it.assignee = null;
           it.branch = null;
-          it.status = "ready";
-          it.history.push({ event: "release", note: "", by: builder, at: at() });
+          record(it, builder, "released", { status: "ready" });
           return send(200, it);
         }
         if (parts[2] === "events") {
           if (!["progress", "question"].includes(body?.event)) return fail(422, `Unknown event ${body?.event}`);
           if (body.status && ["done", "dropped"].includes(body.status)) return fail(403, "Only staff close a work item");
-          if (body.status) it.status = body.status;
-          it.history.push({ event: body.event, note: body.note, by: builder, at: at(), ...(body.status ? { status: body.status } : {}), ...(body.reference ? { reference: body.reference } : {}) });
+          record(it, builder, body.event, { note: body.note, reference: body.reference, status: body.status });
           return send(201, it);
         }
       }

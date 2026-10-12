@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Modal } from "../Modal";
 import { Select } from "../Menu";
 import { useAction } from "../useAction";
@@ -7,12 +7,19 @@ import { isErr } from "../../shared/types";
 import {
   branchFor,
   BUILDER_STATUSES,
+  historyWhat,
   HOUSE_EVENT_KINDS,
+  HOUSE_PRIORITIES,
+  isOpenStatus,
+  NEEDS_AGENT,
+  NEEDS_HUMAN,
+  needsAgent,
   ownerChip,
   statusLabel,
   type BuilderStatus,
   type HouseEventKind,
   type HouseRow,
+  type HouseTicket,
   type HouseTicketView,
   type HouseView,
   type HouseWrite,
@@ -21,10 +28,11 @@ import type { ClaimWarningNotice } from "../../shared/team/claims";
 
 /**
  * A shared room's Radley House board (docs/team-rooms.md, "Radley House
- * board"): the House's current slice and the tickets the room added, who has
- * each, and a ticket's detail and history with its actions. The House is the
- * system of record; everything here is read and written by the main process
- * with this member's own builder token.
+ * board"): the House's open backlog in its own order, with a "Needs an
+ * agent" filter, then the room's tickets outside it — who has each — and a
+ * ticket's detail and history with its actions. The House is the system of
+ * record; everything here is read and written by the main process with this
+ * member's own builder token.
  */
 
 type Err = { error: string };
@@ -57,7 +65,7 @@ const KIND_LABEL: Record<HouseEventKind, string> = { note: "Comment", progress: 
 function ProjectLine({ view, act, onCancel }: { view: HouseView; act: (what: string, w: HouseWrite) => Promise<unknown>; onCancel?: () => void }) {
   const [name, setName] = useState(view.project ?? "");
   if (!view.isAdmin) {
-    return <div className="house-note warn">The room's admin{view.admin ? ` (${view.admin})` : ""} hasn't connected a Radley House project yet. Once they do, the board shows the House's current slice and the tickets the room adds.</div>;
+    return <div className="house-note warn">The room's admin{view.admin ? ` (${view.admin})` : ""} hasn't connected a Radley House project yet. Once they do, the board shows the House's open backlog and the tickets the room adds.</div>;
   }
   const connect = () => {
     if (name.trim() && name.trim() !== view.project) void act("project", { kind: "project", project: name.trim() }).then((r) => !isErr(r as Err) && onCancel?.());
@@ -171,7 +179,47 @@ function ClaimForm({ n, title, branches, busy, onClaim, onCancel }: { n: number;
   );
 }
 
-function Row({ row, view, onOpen, act, busy }: { row: HouseRow; view: HouseView; onOpen: () => void; act: (what: string, w: HouseWrite) => Promise<unknown>; busy: boolean }) {
+/** A priority as the House names it, coloured when it's one the board knows. */
+function Priority({ p }: { p: string | null }) {
+  const known = !!p && (HOUSE_PRIORITIES as readonly string[]).includes(p);
+  return <span className={`house-pri ${known ? `p-${p}` : ""}`}>{p ?? ""}</span>;
+}
+
+/** What a row says besides its title: the handoff tags, what holds it up, and (in the open backlog) that the room added it. */
+function Marks({ t, addedBy }: { t: HouseTicket; addedBy?: string }) {
+  const blocked = t.blockedBy.map((b) => `#${b}`).join(", ");
+  return (
+    <>
+      {t.tags.includes(NEEDS_HUMAN) && (
+        <span className="house-mark human" title="An agent is blocked on a question for a person">
+          {NEEDS_HUMAN}
+        </span>
+      )}
+      {t.tags.includes(NEEDS_AGENT) && (
+        <span className="house-mark agent" title="Handed back to an agent">
+          {NEEDS_AGENT}
+        </span>
+      )}
+      {blocked && (
+        <span className="house-mark blocked" title={`Blocked by ${blocked}`}>
+          blocked by {t.blockedBy.length > 2 ? `#${t.blockedBy[0]} +${t.blockedBy.length - 1}` : blocked}
+        </span>
+      )}
+      {t.waiting && (
+        <span className="house-mark waiting" title={t.waiting.on ? `Waiting on ${t.waiting.on}` : "Waiting"}>
+          {t.waiting.on ? `waiting on ${t.waiting.on}` : "waiting"}
+        </span>
+      )}
+      {addedBy && (
+        <span className="house-mark added" title={`${addedBy} added it to the room's tickets: it stays on the board once it's done or dropped`}>
+          added
+        </span>
+      )}
+    </>
+  );
+}
+
+function Row({ row, view, marked, onOpen, act, busy }: { row: HouseRow; view: HouseView; marked: boolean; onOpen: () => void; act: (what: string, w: HouseWrite) => Promise<unknown>; busy: boolean }) {
   const [claiming, setClaiming] = useState(false);
   const t = row.ticket;
   const readOnly = view.connection.state !== "ok";
@@ -179,7 +227,9 @@ function Row({ row, view, onOpen, act, busy }: { row: HouseRow; view: HouseView;
     <div className={`house-row ${row.owner?.self ? "mine" : ""}`}>
       <button className="house-row-main" onClick={onOpen} title={row.problem ?? (row.addedBy ? `Added by ${row.addedBy}` : undefined)}>
         <span className="house-n">#{row.n}</span>
+        <Priority p={t?.priority ?? null} />
         <span className={`house-title ${t ? "" : "house-dim"}`}>{t ? t.title : row.problem ? `couldn't be read: ${row.problem}` : "not read yet"}</span>
+        {t && <Marks t={t} addedBy={marked ? row.addedBy : undefined} />}
         {t && row.owner ? (
           <span className={`house-chip claimed ${row.owner.self ? "mine" : ""}`} title={t.claim?.branch ? `on ${t.claim.branch}` : undefined}>
             {ownerChip(row.owner, t.status)}
@@ -187,7 +237,7 @@ function Row({ row, view, onOpen, act, busy }: { row: HouseRow; view: HouseView;
         ) : t && !claiming ? (
           <span className="house-chip-wrap">
             <span className="house-status">{statusLabel(t.status)}</span>
-            {!readOnly && (
+            {!readOnly && isOpenStatus(t.status) && (
               <button
                 className="outline house-claim-btn"
                 onClick={(e) => {
@@ -206,14 +256,38 @@ function Row({ row, view, onOpen, act, busy }: { row: HouseRow; view: HouseView;
   );
 }
 
-function Section({ title, rows, empty, ...rest }: { title: string; rows: HouseRow[]; empty: string; view: HouseView; onOpen: (n: number) => void; act: (what: string, w: HouseWrite) => Promise<unknown>; busy: boolean }) {
+function Section({
+  title,
+  count,
+  hint,
+  tools,
+  rows,
+  empty,
+  marked = false,
+  ...rest
+}: {
+  title: string;
+  count?: string;
+  hint?: string;
+  tools?: ReactNode;
+  rows: HouseRow[];
+  empty: string;
+  /** Mark the room's own tickets among the rows ("added"). */
+  marked?: boolean;
+  view: HouseView;
+  onOpen: (n: number) => void;
+  act: (what: string, w: HouseWrite) => Promise<unknown>;
+  busy: boolean;
+}) {
   return (
     <div className="house-section">
       <div className="house-section-h">
-        {title} <span className="house-cnt">{rows.length}</span>
+        {title} <span className="house-cnt">{count ?? rows.length}</span>
+        {hint && <span className="house-section-hint">{hint}</span>}
+        {tools && <span className="house-section-tools">{tools}</span>}
       </div>
       {rows.map((r) => (
-        <Row key={r.n} row={r} view={rest.view} onOpen={() => rest.onOpen(r.n)} act={rest.act} busy={rest.busy} />
+        <Row key={r.n} row={r} view={rest.view} marked={marked} onOpen={() => rest.onOpen(r.n)} act={rest.act} busy={rest.busy} />
       ))}
       {!rows.length && <div className="house-empty">{empty}</div>}
     </div>
@@ -221,7 +295,7 @@ function Section({ title, rows, empty, ...rest }: { title: string; rows: HouseRo
 }
 
 /** One ticket: its detail and history, claim or release, a note, and the House's own page. */
-function TicketDetail({ roomId, n, view, onBack }: { roomId: string; n: number; view: HouseView; onBack: () => void }) {
+function TicketDetail({ roomId, n, view, onBack, onOpen }: { roomId: string; n: number; view: HouseView; onBack: () => void; onOpen: (n: number) => void }) {
   const [t, setT] = useState<HouseTicketView | null>(null);
   const { run, doing, error } = useAction();
   const [claiming, setClaiming] = useState(false);
@@ -259,10 +333,16 @@ function TicketDetail({ roomId, n, view, onBack }: { roomId: string; n: number; 
         {d.priority && <span className="chip">{d.priority} priority</span>}
         {d.kind && <span className="chip">{d.kind}</span>}
         {d.tags.map((tag) => (
-          <span key={tag} className={`chip ${tag === "needs-human" ? "amber" : ""}`}>
+          <span key={tag} className={`chip ${tag === NEEDS_HUMAN ? "amber" : tag === NEEDS_AGENT ? "teal" : ""}`}>
             {tag}
           </span>
         ))}
+        {d.blockedBy.map((b) => (
+          <button key={b} className="link house-blocker" title={`Open #${b}`} onClick={() => onOpen(b)}>
+            blocked by #{b}
+          </button>
+        ))}
+        {d.waiting && <span className="chip amber">{d.waiting.on ? `waiting on ${d.waiting.on}` : "waiting"}</span>}
         <span className="house-meta-r">
           <button className="link" onClick={() => void run("open", () => window.mb.houseOpen(roomId, n))}>
             Open in the House ↗
@@ -277,7 +357,7 @@ function TicketDetail({ roomId, n, view, onBack }: { roomId: string; n: number; 
       )}
       {!readOnly && (
         <div className="house-acts">
-          {!t.owner && !claiming && (
+          {!t.owner && !claiming && isOpenStatus(d.status) && (
             <button className="primary" onClick={() => setClaiming(true)}>
               Claim
             </button>
@@ -288,14 +368,23 @@ function TicketDetail({ roomId, n, view, onBack }: { roomId: string; n: number; 
               Release
             </button>
           )}
-          {t.onBoard === "added" && (
+          {t.tracked && t.open && (
+            <button className="link" title="It stays in the open backlog, without the room's mark" onClick={() => void write("untrack", { kind: "untrack", n })}>
+              Remove from the room's tickets
+            </button>
+          )}
+          {t.tracked && !t.open && (
             <button className="link" title="Take it off this room's board; it stays in the House" onClick={() => void write("untrack", { kind: "untrack", n }).then((r) => !isErr(r) && onBack())}>
               Remove from the board
             </button>
           )}
-          {!t.onBoard && (
-            <button className="link" onClick={() => void write("track", { kind: "track", n })}>
-              Add to the board
+          {!t.tracked && (
+            <button
+              className="link"
+              title={t.open ? "Marks it as the room's in the open backlog; it stays on the board once it's done or dropped" : "Shows it under Added by the room"}
+              onClick={() => void write("track", { kind: "track", n })}
+            >
+              {t.open ? "Add to the room's tickets" : "Add to the board"}
             </button>
           )}
         </div>
@@ -340,7 +429,7 @@ function TicketDetail({ roomId, n, view, onBack }: { roomId: string; n: number; 
         {[...d.history].reverse().map((e, i) => (
           <div key={i} className={`house-event k-${e.kind}`}>
             <span className="house-when">{e.at ? (Number.isNaN(Date.parse(e.at)) ? e.at : ago(Date.parse(e.at))) : ""}</span>
-            <b>{e.by ?? "someone"}</b> <span className="house-dim">{e.kind}{e.status ? ` → ${statusLabel(e.status)}` : ""}</span>
+            <b>{e.by ?? "someone"}</b> <span className="house-dim">· {historyWhat(e)}</span>
             {e.text && <div className="house-event-text">{e.text}</div>}
             {e.reference && <div className="house-dim">{e.reference}</div>}
           </div>
@@ -356,6 +445,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   const [renaming, setRenaming] = useState(false);
+  const [agentOnly, setAgentOnly] = useState(false);
   const act = (what: string, w: HouseWrite) => run(what, () => window.mb.houseWrite(roomId, w));
   if (!view || isErr(view)) {
     return (
@@ -373,7 +463,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
   if (open !== null) {
     return (
       <Modal className="modal house-modal" onClose={onClose}>
-        <TicketDetail roomId={roomId} n={open} view={view} onBack={() => setOpen(null)} />
+        <TicketDetail key={open} roomId={roomId} n={open} view={view} onBack={() => setOpen(null)} onOpen={setOpen} />
         <div className="row">
           <button className="outline" onClick={onClose}>
             Close
@@ -383,7 +473,10 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
     );
   }
   const connected = view.connection.state === "ok";
-  const sliceTitle = `Current slice${view.slice?.name ? ` · ${view.slice.name}` : ""}`;
+  const backlog = view.open ?? [];
+  const forAgents = backlog.filter((r) => needsAgent(r.ticket));
+  const shown = agentOnly ? forAgents : backlog;
+  const openEmpty = !view.open ? (connected ? "Reading the House…" : "—") : agentOnly ? `No open ticket is tagged ${NEEDS_AGENT}: nothing has been handed back to an agent.` : "Nothing open: every ticket in the House is done or dropped.";
   return (
     <Modal className="modal house-modal" onClose={onClose} closeOnBackdrop={!adding}>
       <div className="house-head">
@@ -418,15 +511,34 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
       {view.project && view.connection.state !== "missing" && view.connection.state !== "bad" && (
         <>
           <Section
-            title={sliceTitle}
-            rows={view.slice?.rows ?? []}
-            empty={view.sliceProblem ? `The House's spec couldn't be read: ${view.sliceProblem}` : !view.slice ? (connected ? "Reading the spec…" : "—") : view.slice.listsTickets ? "The slice has no tickets." : "The House's spec doesn't name tickets for this slice; add the ones the room works on."}
+            title="Open backlog"
+            count={agentOnly ? `${shown.length} of ${backlog.length}` : undefined}
+            hint="high priority first"
+            tools={
+              <button className={`house-filter ${agentOnly ? "on" : ""}`} aria-pressed={agentOnly} title={`Only the tickets tagged ${NEEDS_AGENT}: handed back to an agent`} onClick={() => setAgentOnly(!agentOnly)}>
+                Needs an agent <span className="house-cnt">{forAgents.length}</span>
+              </button>
+            }
+            rows={shown}
+            empty={openEmpty}
+            marked
             view={view}
             onOpen={setOpen}
             act={act}
             busy={!!busy}
           />
-          <Section title="Added by the room" rows={view.added} empty={connected ? "None yet — + Add ticket puts one here by number, or creates one." : "—"} view={view} onOpen={setOpen} act={act} busy={!!busy} />
+          {!agentOnly && (
+            <Section
+              title="Added by the room"
+              hint="outside the open backlog"
+              rows={view.added}
+              empty={connected ? "None — the room's open tickets are marked “added” in the backlog. + Add ticket adds one by number, or creates one." : "—"}
+              view={view}
+              onOpen={setOpen}
+              act={act}
+              busy={!!busy}
+            />
+          )}
         </>
       )}
       {view.fetchProblem && <div className="house-dim">Teammates' branches couldn't be fetched, so their claimed files may be out of date: {view.fetchProblem}</div>}

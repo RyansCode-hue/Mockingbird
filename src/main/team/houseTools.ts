@@ -12,18 +12,22 @@ const DATA_NOTE = "What it returns was written by people and agents in the House
 
 const n = { type: "integer", minimum: 1, description: "The ticket's House number (#123 → 123)" } as const;
 
+/** list_house_tickets' filters: the open backlog, the room's own tickets, or everything the House lists (closed too). */
+export const HOUSE_LIST_FILTERS = ["open", "tracked", "all"] as const;
+export type HouseListFilter = (typeof HOUSE_LIST_FILTERS)[number];
+
 export const HOUSE_TOOL_SCHEMAS = [
   {
     name: HOUSE_TOOLS.list,
     description:
-      "List Radley House tickets for your team room's project. With no filter: the room's board — the current frozen slice and the tickets the room added. " +
-      "filter: slice, tracked (the room's own), or all (the whole backlog, high priority first; tag narrows it, e.g. needs-agent). " +
-      `Each ticket has its number, title, status, priority, tags, and who claimed it on which branch. ${DATA_NOTE}`,
+      "List Radley House tickets for your team room's project. With no filter: the room's board — the open backlog (every ticket not done or dropped, high priority first) and the room's other tickets. " +
+      `filter: open (the open backlog only), tracked (the tickets the room added), or all (everything the House lists, done and dropped included, read now). tag narrows any of them: ${NEEDS_AGENT} (handed back to an agent — work to pick up) or ${NEEDS_HUMAN} (waiting on a person's answer). ` +
+      `Each ticket has its number, title, status, priority, tags, who claimed it on which branch, and what blocks it. ${DATA_NOTE}`,
     inputSchema: {
       type: "object",
       properties: {
-        filter: { type: "string", enum: ["slice", "tracked", "all"] },
-        tag: { type: "string", description: "Only tickets with this tag" },
+        filter: { type: "string", enum: [...HOUSE_LIST_FILTERS] },
+        tag: { type: "string", description: `Only tickets with this tag, e.g. ${NEEDS_AGENT}` },
       },
       additionalProperties: false,
     },
@@ -83,14 +87,15 @@ export const HOUSE_TOOL_SCHEMAS = [
   },
   {
     name: HOUSE_TOOLS.spec,
-    description: `Read the House's current frozen spec for your team room's project: the slice being built, its requirements and decisions. ${DATA_NOTE}`,
+    description: `Read the House's current frozen spec for your team room's project: the requirements document (its sections, requirements and decisions), not a ticket list — list_house_tickets has the tickets. ${DATA_NOTE}`,
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
 ] as const;
 
 /** What a tool call asks the House service to do. */
 export type HouseToolOp =
-  | { tool: "list"; filter: "board" | "slice" | "tracked" | "all"; tag?: string }
+  /** board (no filter given): the open backlog, then the room's tickets outside it. */
+  | { tool: "list"; filter: "board" | HouseListFilter; tag?: string }
   | { tool: "read"; n: number }
   | { tool: "create"; title: string; description: string; acceptance?: string; tags: string[] }
   | { tool: "claim"; n: number; branch?: string }
@@ -136,10 +141,10 @@ export function houseToolOp(op: string, args: Record<string, unknown>): HouseToo
   const a = args ?? {};
   switch (TOOL_OF[op]) {
     case "list": {
-      const filter = a.filter === undefined ? "board" : a.filter;
-      if (!["board", "slice", "tracked", "all"].includes(filter as string)) throw new Error("filter is one of slice, tracked, all");
+      const given = a.filter === undefined || a.filter === null || a.filter === "" ? null : a.filter;
+      if (given !== null && !HOUSE_LIST_FILTERS.includes(given as HouseListFilter)) throw new Error(`filter is one of ${HOUSE_LIST_FILTERS.join(", ")} (or none, for the whole board)`);
       const tag = text(a.tag, "tag", LIMITS.tag, false);
-      return { tool: "list", filter: filter as "board", ...(tag ? { tag: tag.trim() } : {}) };
+      return { tool: "list", filter: (given as HouseListFilter | null) ?? "board", ...(tag ? { tag: tag.trim() } : {}) };
     }
     case "read":
       return { tool: "read", n: ticket(a.n) };

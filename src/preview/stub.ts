@@ -14,7 +14,7 @@ import type { AdoBoard, AdoWorkItem, GraphCommit, Meters, SessionInfo, Settings,
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import type { TeamStatus } from "../shared/team/types";
 // team rooms: the House board
-import { HOUSE_TOKEN_HOW, type HouseHistoryEntry, type HouseOwner, type HouseRow, type HouseTicket, type HouseTicketDetail, type HouseTicketView, type HouseView, type HouseWrite } from "../shared/team/house";
+import { HOUSE_TOKEN_HOW, isOpenStatus, openBacklog, type HouseHistoryEntry, type HouseOwner, type HouseRow, type HouseTicket, type HouseTicketDetail, type HouseTicketView, type HouseView, type HouseWrite } from "../shared/team/house";
 // team rooms: team chat
 import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../shared/team/chat";
 // team rooms: take-over
@@ -186,45 +186,87 @@ const team: TeamStatus = {
     ? [{ id: "n1", roomId: "R5099ccccccccccccccccc", roomName: "#5099 Gift aid export", kind: "removed", by: "Nick Smith", at: now - 4 * min, problems: ["The backup of “Gift aid CSV” couldn't be deleted from origin (refs/mockingbird/rooms/R5099ccccccccccccccccc/s9): remote: Permission denied"] }]
     : [],
 };
-// team rooms: the House board — 5101 works in atticus-backoffice (a slice with a ticket in every state, and two the
-// room added); 5110 has no project yet. ?houseMissing: this Mac has no token for 5101's project
-const houseTicket = (n: number, title: string, status: string, claim: HouseTicket["claim"] = null, over: Partial<HouseTicket> = {}): HouseTicket => ({ n, title, status, priority: "medium", kind: "engineering", tags: [], claim, ...over });
+// team rooms: the House board — 5101 works in atticus-backoffice: its backlog in the House's order (high priority
+// first), a ticket in every status, both handoff tags, a blocked and a waiting one, and five the room added (two of
+// them closed, so outside the open backlog); 5110 has no project yet. ?houseMissing: no token here for 5101's project
+const houseClaim = (by: string, branch: string): HouseTicket["claim"] => ({ by, branch, at: null });
+const houseTicket = (n: number, title: string, status: string, priority: string, claim: HouseTicket["claim"] = null, over: Partial<HouseTicket> = {}): HouseTicket => ({ n, title, status, priority, kind: "engineering", tags: [], claim, blockedBy: [], waiting: null, ...over });
 const houseTickets: Record<number, HouseTicket> = {
-  141: houseTicket(141, "Last-org API: GET/PUT /api/users/me/last-org", "in_progress", { by: "Nick Smith", branch: "5101-lastOrgApi", at: null }, { priority: "high" }),
-  142: houseTicket(142, "Backfill each user's last org from the audit log", "ready"),
-  143: houseTicket(143, "Org dropdown remembers the last org", "review", { by: "You", branch: "5101-orgDropdowns", at: null }),
-  144: houseTicket(144, "Release notes and help article", "in_progress", { by: "Sam", branch: "5101-releaseNotes", at: null }, { tags: ["needs-human"], priority: "low" }),
-  145: houseTicket(145, "Spike: per-tenant defaults", "parked", null, { kind: "investigation", priority: "investigate" }),
-  150: houseTicket(150, "Org switcher flickers on slow connections", "parked"),
-  151: houseTicket(151, "Dropdown keyboard navigation", "in_progress", { by: "You", branch: "5101-orgDropdowns", at: null }),
+  141: houseTicket(141, "Last-org API: GET/PUT /api/users/me/last-org", "in_progress", "high", houseClaim("Nick Smith", "5101-lastOrgApi")),
+  146: houseTicket(146, "Donor export skips archived donors", "ready", "high", null, { tags: ["needs-agent"] }),
+  143: houseTicket(143, "Org dropdown remembers the last org", "review", "high", houseClaim("You", "5101-orgDropdowns")),
+  152: houseTicket(152, "Gift aid CSV totals per tax year", "validating", "high", houseClaim("Nick Smith", "feature/152-gift-aid-totals")),
+  142: houseTicket(142, "Backfill each user's last org from the audit log", "ready", "medium", null, { blockedBy: [141] }),
+  144: houseTicket(144, "Release notes and help article", "in_progress", "medium", houseClaim("Sam", "5101-releaseNotes"), { tags: ["needs-human"] }),
+  147: houseTicket(147, "How long audit rows are kept", "parked", "medium", null, { kind: "decision", waiting: { on: "the client" } }),
+  148: houseTicket(148, "Org switcher lists archived orgs", "ready", "medium", null, { tags: ["needs-agent", "orgs"] }),
+  151: houseTicket(151, "Dropdown keyboard navigation", "in_progress", "medium", houseClaim("You", "5101-orgDropdowns")),
+  139: houseTicket(139, "Org list endpoint paginates", "done", "medium"),
+  149: houseTicket(149, "Tidy the org switcher's empty state", "ready", "low"),
+  150: houseTicket(150, "Org switcher flickers on slow connections", "parked", "low"),
+  138: houseTicket(138, "Org picker in the top bar", "dropped", "low", null, { kind: "idea" }),
+  145: houseTicket(145, "Spike: per-tenant defaults", "parked", "investigate", null, { kind: "investigation" }),
 };
+/** GET work-items' order: priority-sorted, high to low, closed tickets included. */
+const houseOrder = [141, 146, 143, 152, 142, 144, 147, 148, 151, 139, 149, 150, 138, 145];
+const houseOpen = () => openBacklog(houseOrder, (n) => houseTickets[n]);
 // team rooms: artifacts — their ids (the fixtures are further down)
 const artId = (s: string) => s.padEnd(22, "0");
 const ART = {
   spec: artId("Aspec"), copy: artId("Aspeccopy"), shot: artId("Ashot"), csv: artId("Acsv"), pdf: artId("Apdf"), repo: artId("Arepo"), link: artId("Alink"),
   env: artId("Aenv"), har: artId("Ahar"), mov: artId("Amov"), key: artId("Akey"), dump: artId("Adump"), log: artId("Alog"), gone: artId("Agone"),
 };
+// history as the House records it: { at, actor, event, note?, to_status? } — a status change has a to_status and no note
+const houseEvent = (kind: string, by: string, minsAgo: number, over: Partial<HouseHistoryEntry> = {}): HouseHistoryEntry => ({ kind, text: "", by, at: new Date(now - minsAgo * min).toISOString(), status: null, reference: null, ...over });
 const houseHistory: Record<number, HouseHistoryEntry[]> = {
   141: [
-    { kind: "created", text: "", by: "Ryan", at: new Date(now - 26 * 60 * min).toISOString(), status: "parked", reference: null },
-    { kind: "claim", text: "Claimed on 5101-lastOrgApi", by: "Nick Smith", at: new Date(now - 4 * 60 * min).toISOString(), status: "in_progress", reference: null },
-    { kind: "progress", text: "GET works; PUT validates the org belongs to the user. Tests in tests/api/test_orgs.py.", by: "Nick Smith", at: new Date(now - 40 * min).toISOString(), status: null, reference: "https://github.com/acme/backoffice/pull/412" },
+    houseEvent("created", "Ryan", 26 * 60, { status: "parked" }),
+    houseEvent("status_changed", "Ryan", 25 * 60, { status: "ready" }),
+    houseEvent("claimed", "Nick Smith", 4 * 60, { status: "in_progress" }),
+    houseEvent("progress", "Nick Smith", 40, { text: "GET works; PUT validates the org belongs to the user. Tests in tests/api/test_orgs.py.", reference: "https://github.com/acme/backoffice/pull/412" }),
   ],
-  144: [{ kind: "question", text: "Should the help article mention the per-tenant default, or wait for the spike?", by: "Sam", at: new Date(now - 70 * min).toISOString(), status: null, reference: null }],
+  143: [
+    houseEvent("created", "Ryan", 30 * 60, { status: "parked" }),
+    houseEvent("claimed", "You", 5 * 60, { status: "in_progress" }),
+    houseEvent("progress", "You", 50, { text: "The dropdown reads the last org on load and writes it on change; covered by the org picker tests.", reference: "https://github.com/acme/backoffice/pull/415" }),
+    houseEvent("status_changed", "You", 48, { status: "review" }),
+  ],
+  144: [houseEvent("claimed", "Sam", 3 * 60, { status: "in_progress" }), houseEvent("question", "Sam", 70, { text: "Should the help article mention the per-tenant default, or wait for the spike?" })],
+  146: [
+    houseEvent("created", "Nick Smith", 2 * 24 * 60, { status: "parked" }),
+    houseEvent("question", "Ryan", 6 * 60, { text: "Should archived donors be left out of the yearly totals too, or only the rows?" }),
+    houseEvent("answered", "Priya (staff)", 90, { text: "Out of both: archived donors don't appear anywhere in the export." }),
+    houseEvent("status_changed", "Priya (staff)", 89, { status: "ready" }),
+  ],
 };
 const houseDetail = (n: number): HouseTicketDetail => ({
   ...houseTickets[n],
   url: null,
-  detail: n === 141 ? "Store the last org a user picked per user, server side, so every device opens on it.\n\nThe dropdown (#143) reads it on load and writes it on change." : "",
-  acceptance: n === 141 ? "GET returns the org last PUT by that user; PUT with an org the user can't see is a 403." : "",
-  blockedBy: [],
+  detail:
+    n === 141
+      ? "Store the last org a user picked per user, server side, so every device opens on it.\n\nThe dropdown (#143) reads it on load and writes it on change."
+      : n === 146
+        ? "The donor export includes archived donors' rows and counts them in the totals."
+        : "",
+  acceptance: n === 141 ? "GET returns the org last PUT by that user; PUT with an org the user can't see is a 403." : n === 146 ? "An export test with an archived donor: no row, not in the totals." : "",
   history: houseHistory[n] ?? [],
 });
-const houseOwner = (t: HouseTicket): HouseOwner | null => (t.claim ? { name: t.claim.by === "You" ? "You" : t.claim.by ?? "Someone", member: t.claim.by === "You" ? ME : t.claim.by === "Sam" ? SAM : NICK, self: t.claim.by === "You" } : null);
+const houseOwner = (t: HouseTicket): HouseOwner | null => (t.claim && isOpenStatus(t.status) ? { name: t.claim.by === "You" ? "You" : t.claim.by ?? "Someone", member: t.claim.by === "You" ? ME : t.claim.by === "Sam" ? SAM : NICK, self: t.claim.by === "You" } : null);
 const houseRow = (n: number, addedBy?: string): HouseRow => ({ n, ticket: houseTickets[n] ?? null, owner: houseTickets[n] ? houseOwner(houseTickets[n]) : null, ...(addedBy ? { addedBy } : {}) });
-const houseRooms: Record<string, { project: string | null; slice: number[]; added: { n: number; by: string }[]; isAdmin: boolean; admin: string }> = {
-  R5101aaaaaaaaaaaaaaaaa: { project: "atticus-backoffice", slice: [141, 142, 143, 144, 145], added: [{ n: 150, by: "Nick Smith" }, { n: 151, by: "You" }], isAdmin: true, admin: "You" },
-  R5110bbbbbbbbbbbbbbbbb: { project: null, slice: [], added: [], isAdmin: true, admin: "You" },
+const houseRooms: Record<string, { project: string | null; added: { n: number; by: string }[]; isAdmin: boolean; admin: string }> = {
+  R5101aaaaaaaaaaaaaaaaa: {
+    project: "atticus-backoffice",
+    added: [
+      { n: 139, by: "You" },
+      { n: 142, by: "Nick Smith" },
+      { n: 150, by: "Nick Smith" },
+      { n: 151, by: "You" },
+      { n: 138, by: "Nick Smith" },
+    ],
+    isAdmin: true,
+    admin: "You",
+  },
+  R5110bbbbbbbbbbbbbbbbb: { project: null, added: [], isAdmin: true, admin: "You" },
 };
 const houseView = (roomId: string): HouseView => {
   const r = houseRooms[roomId];
@@ -241,8 +283,8 @@ const houseView = (roomId: string): HouseView => {
       : missing
         ? { state: "missing", file: `~/.config/radley-house/${r.project}.env`, message: `There's no ~/.config/radley-house/${r.project}.env on this Mac. ${HOUSE_TOKEN_HOW} Save it there (mode 600) as HOUSE_API_URL, HOUSE_PROJECT_ID and HOUSE_BUILD_TOKEN.` }
         : { state: "ok" },
-    slice: r.project && !missing ? { name: "Slice 3 — org memory", listsTickets: true, rows: r.slice.map((n) => houseRow(n)) } : null,
-    added: missing ? [] : r.added.filter((a) => !r.slice.includes(a.n)).map((a) => houseRow(a.n, a.by)),
+    open: r.project && !missing ? houseOpen().map((n) => houseRow(n, r.added.find((a) => a.n === n)?.by)) : null,
+    added: missing ? [] : r.added.filter((a) => !houseOpen().includes(a.n)).map((a) => houseRow(a.n, a.by)),
     fetchedAt: r.project && !missing ? now - 40_000 : 0,
     refreshing: false,
     branches: roomId === "R5101aaaaaaaaaaaaaaaaa" ? ["5101-orgDropdowns"] : [],
@@ -989,7 +1031,7 @@ const api: Record<string, (...a: any[]) => any> = {
   houseTicket: async (roomId: string, n: number): Promise<HouseTicketView> => {
     const r = houseRooms[roomId];
     if (!houseTickets[n]) return later({ error: `The House answered 404: no work item #${n} in this project` }, 200);
-    return later({ detail: houseDetail(n), owner: houseOwner(houseTickets[n]), onBoard: r?.slice.includes(n) ? "slice" : r?.added.some((a) => a.n === n) ? "added" : null }, 200);
+    return later({ detail: houseDetail(n), owner: houseOwner(houseTickets[n]), open: houseOpen().includes(n), tracked: !!r?.added.some((a) => a.n === n) }, 200);
   },
   houseWrite: async (roomId: string, w: HouseWrite) => {
     const r = houseRooms[roomId];
@@ -1009,22 +1051,28 @@ const api: Record<string, (...a: any[]) => any> = {
         break;
       case "claim":
         houseTickets[w.n] = { ...houseTickets[w.n], status: "in_progress", claim: { by: "You", branch: w.branch, at } };
-        log(w.n, { kind: "claim", text: `Claimed on ${w.branch}`, status: "in_progress" });
+        log(w.n, { kind: "claimed", text: "", status: "in_progress" });
         break;
       case "release":
         houseTickets[w.n] = { ...houseTickets[w.n], status: "ready", claim: null };
-        log(w.n, { kind: "release", text: "" });
+        log(w.n, { kind: "released", text: "", status: "ready" });
         break;
       case "event":
-        if (w.status) houseTickets[w.n] = { ...houseTickets[w.n], status: w.status };
         if (w.event === "question") houseTickets[w.n] = { ...houseTickets[w.n], tags: [...houseTickets[w.n].tags.filter((t) => t !== "needs-agent" && t !== "needs-human"), "needs-human"] };
-        log(w.n, { kind: w.event === "status" ? "progress" : w.event, text: w.text, status: w.status ?? null });
+        log(w.n, { kind: w.event === "note" ? "comment" : w.event === "status" ? "progress" : w.event, text: w.text });
+        if (w.status && w.status !== houseTickets[w.n].status) {
+          houseTickets[w.n] = { ...houseTickets[w.n], status: w.status };
+          log(w.n, { kind: "status_changed", text: "", status: w.status });
+        }
         break;
       case "create": {
         const n = houseNext++;
-        houseTickets[n] = houseTicket(n, w.title, "parked");
+        houseTickets[n] = houseTicket(n, w.title, "parked", "medium");
+        // the House lists it with the other medium-priority tickets
+        const place = houseOrder.findIndex((x) => houseTickets[x].priority === "low" || houseTickets[x].priority === "investigate");
+        houseOrder.splice(place < 0 ? houseOrder.length : place, 0, n);
         r.added.push({ n, by: "You" });
-        log(n, { kind: "created", text: w.description, status: "parked" });
+        log(n, { kind: "created", text: "", status: "parked" });
         break;
       }
     }
@@ -1338,8 +1386,9 @@ if (params.has("shot")) {
   document.head.appendChild(still);
 }
 // team rooms: the House board — ?house=1 opens the first shared group's board (2: the second); ?houseTicket=141 opens
-// that ticket on it, ?houseClaim=142 starts claiming it, ?houseAdd (=new) opens + Add ticket; ?houseWarning adds a claim warning
-if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning"].some((k) => params.has(k))) {
+// that ticket on it, ?houseClaim=142 starts claiming it, ?houseAdd (=new) opens + Add ticket; ?houseWarning adds a claim
+// warning; ?houseAgent turns on the open backlog's "Needs an agent" filter
+if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent"].some((k) => params.has(k))) {
   let tries = 0;
   const open = setInterval(() => {
     const n = Number(params.get("house")) || 1;
@@ -1353,6 +1402,7 @@ if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning"].some((k) 
       const r = ticket ? ([...document.querySelectorAll(".house-row-main")].find((x) => x.querySelector(".house-n")?.textContent === `#${ticket}`) as HTMLElement | undefined) : (document.querySelector(".house-modal") as HTMLElement | null) ?? undefined;
       if (!r && ++boardTries < 50) return;
       clearInterval(board);
+      if (params.has("houseAgent")) (document.querySelector(".house-filter") as HTMLElement | null)?.click();
       if (params.has("houseTicket")) r?.click();
       if (params.has("houseClaim")) (r?.querySelector(".house-claim-btn") as HTMLElement | null)?.click();
       if (params.has("houseAdd")) {
