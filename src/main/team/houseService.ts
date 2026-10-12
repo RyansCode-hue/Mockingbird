@@ -95,9 +95,15 @@ interface Timing {
   fetchMs: number;
   /** A House request's limit. */
   timeoutMs: number;
+  /** Teammates' nudges are read at most this often per room, those in between gathered into one go. */
+  nudgeGapMs: number;
+  /** A teammate's nudge reads the whole board (a new ticket, or more than NUDGE_READS tickets at once) at most this often per room. */
+  nudgeListGapMs: number;
 }
 
-const DEFAULT_TIMING: Timing = { pollMs: 60_000, sessionsMs: 5_000, fetchMs: 5 * 60_000, timeoutMs: 15_000 };
+const DEFAULT_TIMING: Timing = { pollMs: 60_000, sessionsMs: 5_000, fetchMs: 5 * 60_000, timeoutMs: 15_000, nudgeGapMs: 3_000, nudgeListGapMs: 30_000 };
+/** A go of teammates' nudges reads at most this many tickets one by one; more read the whole board instead. */
+const NUDGE_READS = 5;
 /** Opening the board reads the House again when what it has is older than this. */
 const FRESH_MS = 10_000;
 /** Board tickets the backlog list didn't include are read one by one, up to this many a refresh. */
@@ -128,6 +134,8 @@ interface RoomCache {
   again: boolean;
   /** Board dialogs open on it. */
   watchers: number;
+  /** Teammates' nudges waiting to be read: tickets, or the whole board. */
+  nudged: { tickets: Set<number>; list: boolean; timer: ReturnType<typeof setTimeout> | null; lastRun: number; lastList: number };
 }
 
 /** A teammate's branch here: pushed to origin, fetched into a clone, and what it changes. */
@@ -254,6 +262,7 @@ export class HouseService {
     for (const off of this.offs) off();
     for (const t of this.timers) clearInterval(t);
     for (const t of this.emitTimers.values()) clearTimeout(t);
+    for (const c of this.caches.values()) if (c.nudged.timer) clearTimeout(c.nudged.timer);
     if (active === this) active = null;
   }
 
@@ -263,6 +272,8 @@ export class HouseService {
    * repository). Resolves with what couldn't be cleaned up.
    */
   async roomLeft(roomId: RoomId): Promise<string[]> {
+    const left = this.caches.get(roomId)?.nudged.timer;
+    if (left) clearTimeout(left);
     this.caches.delete(roomId);
     if (this.consents[roomId]) {
       delete this.consents[roomId];
@@ -1203,19 +1214,67 @@ export class HouseService {
       this.refreshCopies();
       this.askConsent(room);
     } else if (e.type === "house.track" && isTicketNumber(n)) {
-      if (!this.cache(room.id).tickets.has(n)) void this.refreshTicket(room.id, n);
+      if (!this.cache(room.id).tickets.has(n)) {
+        if (e.author === this.need().self.id) void this.refreshTicket(room.id, n);
+        else this.nudged(room.id, n, false);
+      }
       this.refreshCopies();
     } else if (e.type === "house.untrack") {
       this.refreshCopies();
     } else if (e.type === "house.nudge" && e.author !== this.need().self.id && isTicketNumber(n)) {
+      // only the board's tickets are read again: a nudge can't make this member's token read any ticket
+      if (!this.onBoard(room, n)) return;
       // a new ticket takes a place in the backlog's order, which only the list gives
-      if ((e.body as { change?: unknown }).change === "created") this.refresh(room.id);
-      else void this.refreshTicket(room.id, n);
+      this.nudged(room.id, n, (e.body as { change?: unknown }).change === "created");
       if (Date.now() - this.lastNudgeFetch > NUDGE_FETCH_MS) {
         this.lastNudgeFetch = Date.now();
         this.refreshTeammates(true);
       }
     }
+  }
+
+  /** Whether ticket `n` is on the room's board: in the open backlog as last read, or added by the room. */
+  private onBoard(room: RoomState, n: number): boolean {
+    return houseOfRoom(room).tracked.some((t) => t.n === n) || this.inOpen(room.id, n);
+  }
+
+  /**
+   * A teammate's nudge (or their adding a ticket): read it again, rate-limited
+   * per room — at most one go every nudgeGapMs, gathering the nudges in
+   * between; a go of more than NUDGE_READS tickets, or a new ticket, reads the
+   * whole board instead, at most once every nudgeListGapMs.
+   */
+  private nudged(roomId: RoomId, n: number, list: boolean): void {
+    const q = this.cache(roomId).nudged;
+    if (list) q.list = true;
+    else q.tickets.add(n);
+    this.drainSoon(roomId);
+  }
+
+  private drainSoon(roomId: RoomId): void {
+    const q = this.cache(roomId).nudged;
+    if (q.timer || this.stopped) return;
+    const whole = q.list || q.tickets.size > NUDGE_READS;
+    const at = Math.max(q.lastRun + this.t.nudgeGapMs, whole ? q.lastList + this.t.nudgeListGapMs : 0);
+    q.timer = setTimeout(() => {
+      q.timer = null;
+      if (this.stopped || !this.team?.room(roomId)) return;
+      const now = Date.now();
+      const wholeNow = q.list || q.tickets.size > NUDGE_READS;
+      if (wholeNow && now < q.lastList + this.t.nudgeListGapMs) return this.drainSoon(roomId);
+      q.lastRun = now;
+      if (wholeNow) {
+        q.lastList = now;
+        q.list = false;
+        q.tickets.clear();
+        this.refresh(roomId);
+        return;
+      }
+      const tickets = [...q.tickets];
+      q.tickets.clear();
+      for (const t of tickets) void this.refreshTicket(roomId, t);
+    }, Math.max(0, at - Date.now()));
+    q.timer.unref?.();
   }
 
   private emitSoon(roomId: RoomId): void {
@@ -1236,7 +1295,7 @@ export class HouseService {
 
   private cache(roomId: RoomId): RoomCache {
     let c = this.caches.get(roomId);
-    if (!c) this.caches.set(roomId, (c = { connection: { state: "pending" }, order: null, tickets: new Map(), problems: new Map(), fetchedAt: 0, run: null, again: false, watchers: 0 }));
+    if (!c) this.caches.set(roomId, (c = { connection: { state: "pending" }, order: null, tickets: new Map(), problems: new Map(), fetchedAt: 0, run: null, again: false, watchers: 0, nudged: { tickets: new Set(), list: false, timer: null, lastRun: 0, lastList: 0 } }));
     return c;
   }
 

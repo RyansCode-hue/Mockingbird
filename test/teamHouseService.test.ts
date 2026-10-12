@@ -65,7 +65,7 @@ function service(m: LoopbackMember, roomId: string, o: { home: string; sessions?
     home,
     allowHttpLoopback: true,
     ...extra,
-    timing: { pollMs: 60_000, sessionsMs: 30, fetchMs: 60_000, timeoutMs: 3000, ...extra.timing },
+    timing: { pollMs: 60_000, sessionsMs: 30, fetchMs: 60_000, timeoutMs: 3000, nudgeGapMs: 20, nudgeListGapMs: 50, ...extra.timing },
   });
   svc.start(m.team);
   services.push(svc);
@@ -373,6 +373,34 @@ describe("the room's board events", () => {
     await n.svc.idle();
     expect(n.svc.view(roomId).open!.map((x) => x.n)).toEqual([146, 141, 142, 151, 150]);
   });
+
+  it("reads teammates' nudges rate-limited per room, and only for tickets on the board", async () => {
+    const h = await house();
+    const { ryan, nick, roomId, n } = await pair(h, { nick: { timing: { nudgeGapMs: 600, nudgeListGapMs: 3_000 } } });
+    const reads = (what: string) => h.by(NICK_T).filter((x) => x === what).length;
+    const synced = () => until(() => nick.team.room(roomId)!.events === ryan.team.room(roomId)!.events, "the nudges to reach Nick");
+    const lists = reads("GET work-items");
+    // a ticket that isn't on the board (done, and not the room's) is never read on a nudge, nor one the House doesn't have
+    for (const x of [139, 138, 999]) ryan.team.publish(roomId, "house.nudge", { n: x, change: "note" });
+    await synced();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(h.by(NICK_T).filter((x) => /work-items\/(139|138|999)$/.test(x))).toEqual([]);
+    // a burst on one ticket: one read at once, one more for the rest after the gap
+    for (let i = 0; i < 12; i++) ryan.team.publish(roomId, "house.nudge", { n: 141, change: "progress" });
+    await synced();
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect(reads("GET work-items/141")).toBeGreaterThanOrEqual(1);
+    expect(reads("GET work-items/141")).toBeLessThanOrEqual(2);
+    // many tickets at once, or new ones, read the whole board instead — at most once per list gap
+    const before = h.by(NICK_T).length;
+    for (const x of [146, 141, 142, 150, 146, 141, 142, 150]) ryan.team.publish(roomId, "house.nudge", { n: x, change: "note" });
+    for (let i = 0; i < 6; i++) ryan.team.publish(roomId, "house.nudge", { n: 146, change: "created" });
+    await synced();
+    await new Promise((r) => setTimeout(r, 1_000));
+    await n.svc.idle();
+    expect(reads("GET work-items") - lists).toBe(1);
+    expect(h.by(NICK_T).length - before).toBeLessThanOrEqual(3);
+  }, 15_000);
 
   it("lets only the room's admin choose the House project; anyone else's choice changes nothing", async () => {
     const h = await house();
