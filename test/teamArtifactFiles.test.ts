@@ -153,7 +153,8 @@ describe("room files between members", () => {
     await until(() => !!blobOf(nick, roomId, id), "Nick to have it");
     const rec = fileRec(nick, roomId, id);
     const agentDir = path.join(dir, "wt", ".mockingbird", "artifacts", id);
-    expect(fs.existsSync(await nick.arts.copyForAgent(roomId, rec, agentDir, "shot.png"))).toBe(true);
+    fs.mkdirSync(path.join(dir, "wt"), { recursive: true });
+    expect(fs.existsSync(await nick.arts.copyForAgent(roomId, rec, path.join(dir, "wt"), "shot.png"))).toBe(true);
     const blob = (s: Side) => path.join(s.m.store.dir, roomId, "artifacts", "blobs", rec.sha256);
     ryan.arts.remove(roomId, id);
     await until(() => items(nick.m.team.room(roomId)).length === 0, "Nick to see the removal");
@@ -180,7 +181,8 @@ describe("leaving a room", () => {
     const mine = await ryan.arts.addFiles(roomId, [randomFile(path.join(dir, "src"), "ryan.png", 300)]);
     await until(() => !!blobOf(nick, roomId, mine.added[0].id) && !!blobOf(ryan, roomId, theirs.added[0].id), "both to have both");
     const agentDir = path.join(dir, "nick-wt", ".mockingbird", "artifacts", mine.added[0].id);
-    await nick.arts.copyForAgent(roomId, fileRec(nick, roomId, mine.added[0].id), agentDir, "ryan.png");
+    fs.mkdirSync(path.join(dir, "nick-wt"), { recursive: true });
+    await nick.arts.copyForAgent(roomId, fileRec(nick, roomId, mine.added[0].id), path.join(dir, "nick-wt"), "ryan.png");
     await nick.m.team.leave(roomId, { ackMs: 500, revokeMs: 500 });
     expect(await nick.arts.roomLeft(roomId)).toEqual([]);
     nick.m.team.forget(roomId);
