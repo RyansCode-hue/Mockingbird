@@ -5,18 +5,20 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { until } from "../src/main/team/loopback";
 import { artifactViewer } from "../src/main/team/artifactViewer";
+import { ARTIFACT_CHUNK } from "../src/shared/team/artifacts";
 import { blobOf, eventually, fileRec, items, randomFile, sides, summaryOf, type Side } from "./artifactSides";
 
 const handlers = (s: Side) => (s.m.team as any).requestHandlers as Map<string, (p: any, ctx: any) => unknown>;
 
 describe("room files between members", () => {
   it("reach a teammate byte-identical, hash-checked, and show as present", async () => {
-    const { roomId, sides: [ryan, nick], dir } = await sides(["Ryan", "Nick"]);
-    const src = randomFile(path.join(dir, "src"), "dump.bin", 300_000);
+    // full-size chunks: each answer crosses the wire in many parts
+    const { roomId, sides: [ryan, nick], dir } = await sides(["Ryan", "Nick"], { timing: { chunkBytes: ARTIFACT_CHUNK } });
+    const src = randomFile(path.join(dir, "src"), "dump.bin", 1_300_000);
     const { added, refused } = await ryan.arts.addFiles(roomId, [src]);
     expect(refused).toEqual([]);
     const id = added[0].id;
-    expect(await summaryOf(ryan, roomId, id)).toMatchObject({ kind: "file", name: "dump.bin", size: 300_000, local: { state: "present", view: "binary" }, addedByName: "Ryan", agentsBlocked: null });
+    expect(await summaryOf(ryan, roomId, id)).toMatchObject({ kind: "file", name: "dump.bin", size: 1_300_000, local: { state: "present", view: "binary" }, addedByName: "Ryan", agentsBlocked: null });
     await until(() => !!blobOf(nick, roomId, id), "Nick to have the file");
     expect(blobOf(nick, roomId, id)!.equals(fs.readFileSync(src))).toBe(true);
     expect(await summaryOf(nick, roomId, id)).toMatchObject({ local: { state: "present", view: "binary" } });

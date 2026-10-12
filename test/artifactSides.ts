@@ -4,6 +4,7 @@ import * as path from "path";
 import { tempDir } from "./helpers";
 import { loopbackRoom, type LoopbackMember } from "../src/main/team/loopback";
 import { TeamArtifacts } from "../src/main/team/artifacts";
+import type { FetchTiming } from "../src/main/team/artifactFetch";
 import type { ArtifactRecord, ArtifactSummary } from "../src/shared/team/artifacts";
 import type { SessionInfo } from "../src/shared/types";
 import type { RoomState } from "../src/shared/team/types";
@@ -23,7 +24,12 @@ export interface Side {
 /** Retries and asks fast enough for tests; small chunks so a 1 MB file takes many. */
 export const TIMING = { retryMs: [30, 60], haveGapMs: 20, chunkBytes: 64 * 1024 };
 
-export function sideFor(m: LoopbackMember, dir: string, o: { eagerBytes?: number } = {}): Side {
+export interface SideOptions {
+  eagerBytes?: number;
+  timing?: Partial<FetchTiming>;
+}
+
+export function sideFor(m: LoopbackMember, dir: string, o: SideOptions = {}): Side {
   const side = { m, logs: [], emitted: [], sessions: [], repos: [], rooms: new Map() } as unknown as Side;
   side.arts = new TeamArtifacts({
     sessions: () => side.sessions,
@@ -40,14 +46,14 @@ export function sideFor(m: LoopbackMember, dir: string, o: { eagerBytes?: number
     roomsDir: m.store.dir,
     copiesFile: path.join(dir, m.name, "artifact-copies.json"),
     neverAdd: [m.store.dir],
-    fetchTiming: TIMING,
+    fetchTiming: { ...TIMING, ...(o.timing ?? {}) },
     eagerBytes: o.eagerBytes,
   });
   side.arts.start(m.team);
   return side;
 }
 
-export async function sides(names: string[], o: { eagerBytes?: number } = {}) {
+export async function sides(names: string[], o: SideOptions = {}) {
   const dir = tempDir("artifacts");
   const r = await loopbackRoom(names, { dir });
   return { ...r, dir, sides: r.members.map((m) => sideFor(m, dir, o)) };
