@@ -74,10 +74,10 @@ function ProjectLine({ view, act, onCancel }: { view: HouseView; act: (what: str
   return (
     <div className="house-note">
       <span>
-        Which House project does this room work in? Each member's Mockingbird reads its own <code>~/.config/radley-house/&lt;project&gt;.env</code> with that member's token.
+        Which House project does this room work in? Type the name of your env file without <code>.env</code> — for <code>~/.config/radley-house/atticus-backoffice.env</code>, type <code>atticus-backoffice</code>. Not the project ID or your token: each member's Mockingbird reads those from their own file of that name.
       </span>
       <div className="house-inline">
-        <input type="text" autoFocus value={name} placeholder="atticus-backoffice" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && connect()} />
+        <input type="text" autoFocus value={name} placeholder="e.g. atticus-backoffice" aria-label="Env file name" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && connect()} />
         <button className="primary" disabled={!name.trim() || name.trim() === view.project} onClick={connect}>
           Connect
         </button>
