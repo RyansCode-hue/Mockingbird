@@ -7,7 +7,7 @@ import { roomWaitingNotice, shouldNotify } from "../notifications";
 import { roomSecretReads } from "../secrets";
 import { CODEX_ROOM_SANDBOX_NOTE, codexHomeOf, codexRoomPermissions, roomGitDirs, type RoomGitDirs } from "../codexRoomSandbox";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
-import { isMouseReports, isTermReply } from "../../shared/termInput";
+import { isTermReply, isViewControl } from "../../shared/termInput";
 import {
   codexGuardsSecrets,
   decodePtyChunk,
@@ -49,7 +49,8 @@ import { TeamError, type Team, type TeamStream } from "./transport";
  * Its pty output is streamed on "pty:<id>" while a connected teammate shows
  * it — their view says so (or they just asked for its scrollback). A
  * teammate's keystrokes arrive as pty.input requests and are written into the
- * pty; the terminal's automatic answers never are.
+ * pty; the terminal's automatic answers never are, nor mouse reports and
+ * PageUp/PageDown, which would move the owner's view.
  *
  * Viewer side: a teammate's session is a pane here (remotePaneId). Its
  * scrollback comes by pty.scrollback; live output follows on the stream, each
@@ -169,6 +170,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   private batches = new Map<string, { roomId: RoomId; epoch: string; pos: number; data: string; timer: ReturnType<typeof setTimeout> | null }>();
   private streams = new Map<string, TeamStream>();
   private dropping = new Set<string>();
+  /** When a teammate's mouse or paging input to a session was last written to the audit log, per `${sessionId}\n${member}`. */
+  private viewInputAudited = new Map<string, number>();
 
   // viewer side
   private remotes = new Map<string, Remote>();
@@ -609,12 +612,20 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       this.d.audit(`dropped-remote-reply session=${s.id} from=${JSON.stringify(name)} bytes=${JSON.stringify(data.slice(0, 300))}`);
       return { ok: true };
     }
+    if (isViewControl(data)) {
+      // The owner's view is theirs: a teammate's wheel, clicks and PageUp/PageDown move only the teammate's copy (a
+      // current Mockingbird never sends them). An older one sends a stream of wheel reports, so this is logged once a minute.
+      const key = `${s.id}\n${from}`;
+      if (this.now() - (this.viewInputAudited.get(key) ?? -Infinity) >= 60_000) {
+        this.viewInputAudited.set(key, this.now());
+        this.d.audit(`dropped-remote-view-input session=${s.id} from=${JSON.stringify(name)} bytes=${JSON.stringify(data.slice(0, 300))}`);
+      }
+      return { ok: true };
+    }
     if (/[\r\x03]/.test(data)) this.d.audit(`remote-input session=${s.id} from=${JSON.stringify(name)} bytes=${JSON.stringify(data.slice(-300))}`);
     this.d.sessions.write(s.id, data);
-    if (!isMouseReports(data)) {
-      const email = typeof p.email === "string" ? p.email.slice(0, 200) : null;
-      this.coauthors.typed(s.id, { id: from, name, email }, s.status, !s.shell);
-    }
+    const email = typeof p.email === "string" ? p.email.slice(0, 200) : null;
+    this.coauthors.typed(s.id, { id: from, name, email }, s.status, !s.shell);
     return { ok: true };
   }
 

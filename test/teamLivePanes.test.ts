@@ -283,6 +283,37 @@ describe("typing into a teammate's session", () => {
     expect(ptyOf(own.id).writes).toEqual([]);
   });
 
+  it("never lets a teammate's wheel, clicks or PageUp/PageDown move the owner's view; their typing still arrives", async () => {
+    let clock = 1_000_000;
+    const { ryan, nick } = await pair({ now: () => clock });
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    const tick = () => new Promise((r) => setImmediate(r)); // each write its own pty.input
+    // what an older Mockingbird's pane sends while its terminal tracks the mouse, and its paging keys
+    for (const d of ["\x1b[<64;40;12M\x1b[<64;40;12M", "\x1b[<65;40;12M", "\x1b[<0;3;4M\x1b[<0;3;4m", "\x1b[5~", "\x1b[6~"]) {
+      nick.sessions.write(paneId, d);
+      await tick();
+    }
+    // typing, Ctrl-C, arrow keys and a bracketed paste holding a report-shaped text are typing
+    const typed = ["fix it\r", "\x03", "\x1b[A\x1b[A", "\x1b[200~\x1b[<64;1;1M\x1b[201~", "done\r"];
+    for (const d of typed) {
+      nick.sessions.write(paneId, d);
+      await tick();
+    }
+    await until(() => ptyOf(s.id).writes.join("").endsWith("done\r"), "the typing");
+    expect(ptyOf(s.id).writes).toEqual(typed);
+    // dropped on purpose and said so in the audit log, once a minute per teammate rather than per notch
+    expect(ryan.audits.filter((l) => l.startsWith(`dropped-remote-view-input session=${s.id} from="Nick"`))).toHaveLength(1);
+    clock += 60_000;
+    nick.sessions.write(paneId, "\x1b[<64;40;12M");
+    await tick();
+    nick.sessions.write(paneId, "x");
+    await until(() => ptyOf(s.id).writes.at(-1) === "x", "the next keystroke");
+    expect(ryan.audits.filter((l) => l.startsWith(`dropped-remote-view-input session=${s.id}`))).toHaveLength(2);
+    expect(ptyOf(s.id).writes).toEqual([...typed, "x"]);
+  });
+
   it("says when the owner can't be reached", async () => {
     const { ryan, nick, net } = await pair();
     const s = await ryan.start();
