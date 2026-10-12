@@ -44,6 +44,33 @@ describe("team rooms between two Mockingbird instances", () => {
         // the hidden peer host never became the app's window
         expect(await ryan.evaluate<string>("document.title")).toBe("Mockingbird");
 
+        // artifacts: a note and a file Ryan adds reach Nick over the real connection, the file
+        // byte-identical; a message naming the note shows as a chip in Nick's Team room
+        const png = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489", "hex"), Buffer.alloc(4096, 7)]);
+        const pngPath = path.join(ryan.home, "mock.png");
+        fs.writeFileSync(pngPath, png);
+        const rid = JSON.stringify(share.roomId);
+        const note = await ryan.evaluate<{ id: string; error?: string }>(`window.mb.artifactsAddNote(${rid}, "API spec", "# API\\nGET /api/donors/:id")`);
+        expect(note.error).toBeUndefined();
+        const added = await ryan.evaluate<{ added: { id: string }[]; refused: unknown[]; error?: string }>(`window.mb.artifactsAddFiles(${rid}, [${JSON.stringify(pngPath)}])`);
+        expect(added).toMatchObject({ refused: [] });
+        const fileId = added.added[0].id;
+        await untilTrue(
+          "Nick's copy of Ryan's file and note",
+          async () => {
+            const v = await nick.evaluate<{ items: { id: string; local?: { state: string } }[] }>(`window.mb.artifactsList(${rid})`);
+            return v.items.some((i) => i.id === fileId && i.local?.state === "present") && v.items.some((i) => i.id === note.id);
+          },
+          60_000
+        );
+        const got = await nick.evaluate<{ view: string; bytes: number[] }>(`window.mb.artifactsRead(${rid}, ${JSON.stringify(fileId)}).then((c) => ({ view: c.view, bytes: Array.from(c.bytes ?? []) }))`);
+        expect(got.view).toBe("image");
+        expect(Buffer.from(got.bytes).equals(png)).toBe(true);
+        expect(await nick.evaluate<{ view: string; text: string }>(`window.mb.artifactsRead(${rid}, ${JSON.stringify(note.id)})`)).toMatchObject({ view: "note", text: "# API\nGET /api/donors/:id" });
+        await ryan.evaluate(`window.mb.teamChatPost(${rid}, ${JSON.stringify(`Spec is in #[API spec](artifact:${note.id})`)})`);
+        await nick.evaluate(`document.querySelector('.ab-btn[aria-label="Team room"]')?.click()`);
+        await untilTrue("the note's chip in Nick's Team room", async () => (await nick.evaluate<string>(`[...document.querySelectorAll(".rc-artifact")].map((b) => b.textContent).join("|")`)).includes("API spec"), 30_000);
+
         // Ryan (the creator, so the admin) removes Nick: Nick's app deletes the room, his group stays a local one
         const roomDir = path.join(nick.home, ".mockingbird", "team", "rooms", share.roomId);
         expect(fs.existsSync(roomDir)).toBe(true);
