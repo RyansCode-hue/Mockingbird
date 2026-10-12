@@ -19,7 +19,8 @@ import type { JoinAnswerOutcome, LeaveOutcome, RemoveOutcome, RoomEvent, RoomId,
  *
  * Leaving a room (or being removed from one) ends with nothing of it left on
  * this Mac: each stage that kept something of the room is a RoomCleanup and
- * forgets it (live panes, chat, plan copies, backups and hidden refs), then
+ * forgets it (live panes, chat, the room's files in worktrees, artifacts,
+ * backups and hidden refs), then
  * the room's folder goes. The group stays, as an ordinary local group whose
  * sessions keep running. What couldn't be cleaned up is listed in a notice;
  * a room whose folder couldn't be deleted is cleaned up again on the next start.
@@ -27,7 +28,7 @@ import type { JoinAnswerOutcome, LeaveOutcome, RemoveOutcome, RoomEvent, RoomId,
 
 /** A stage that keeps something of a room, told when this install isn't in it any more. */
 export interface RoomCleanup {
-  /** What it keeps, for a notice when it fails ("the plan copies"). */
+  /** What it keeps, for a notice when it fails ("the room's artifacts and agents' copies of them"). */
   what: string;
   /** Forget the room. Resolves with what couldn't be cleaned up (one sentence each), or rejects. */
   roomLeft(room: RoomState, groupKey: string | null): Promise<string[]> | string[];

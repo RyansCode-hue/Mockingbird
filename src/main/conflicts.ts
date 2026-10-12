@@ -55,7 +55,7 @@ export function overlaps(list: WorktreeChanges[]): Record<string, FileOverlap[]>
 
 /** A team room member's pushed branch, as fetched into a local clone, and the files it changes against its base. */
 export interface TeammateChanges {
-  /** The room whose plan board announced the branch. */
+  /** The room of the teammate's session on the branch. */
   roomId: string;
   member: string;
   name: string;

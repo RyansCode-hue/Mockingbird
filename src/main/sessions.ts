@@ -68,9 +68,9 @@ export interface RoomLaunch {
   denyReads: string[];
   /** Codex -c settings that run it in the room's sandbox (codexRoomSandbox.ts). */
   codexPermissions: string[];
-  /** What the agent starts knowing about the room (its plan board, and Codex its sandbox); null for a terminal, or when there's nothing. */
+  /** What the agent starts knowing about the room (its House board and artifact tools, and Codex its sandbox); null for a terminal, or when there's nothing. */
   instructions: string | null;
-  /** Mockingbird MCP tools the agent may call without asking (the plan board's). */
+  /** Mockingbird MCP tools the agent may call without asking (the House board's and the room artifacts'). */
   allowTools: string[];
   /** Codex runs inline (Claude's switch is in env): teammates' copies hold its history. */
   inline: boolean;

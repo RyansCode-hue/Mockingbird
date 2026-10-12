@@ -15,8 +15,8 @@ export interface LaunchContext {
   /** Codex -c settings that run it in a team room's sandbox (codexRoomSandbox.ts). */
   codexPermissions?: string[];
   /**
-   * Instructions the agent starts with on top of its own (a team room's plan
-   * board, and Codex's room sandbox): Claude's --append-system-prompt,
+   * Instructions the agent starts with on top of its own (a team room's House
+   * board and artifact tools, and Codex's room sandbox): Claude's --append-system-prompt,
    * Codex's developer_instructions.
    */
   instructions?: string;
