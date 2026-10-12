@@ -146,6 +146,7 @@ function knownRoomRepos(): string[] {
 const teamHouse = new HouseService({
   roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
   sessions: () => sessions.list(),
+  roomGuards: (id) => sessions.guardsOf(id),
   knownRepos: knownRoomRepos,
   emit: toWindow,
   log: logError,

@@ -842,7 +842,10 @@ House's **open backlog**.
     from 0.138 (checked: 0.156.1 validates it, with values auto, prompt,
     writes, approve); a Codex session older than that, or whose version
     Mockingbird couldn't read, has its House writes refused by Mockingbird,
-    with what to do instead.
+    with what to do instead. So does a Codex session that joined the room
+    while running: outside the room's permission profile, a Codex set to
+    `approval_policy = "never"` with full disk access approves a tool set
+    to ask; restarted in the room, it runs under the profile.
 
   Writes made from the board itself need no extra prompt. Every approved
   write is logged and shows in the room's chat ("Ryan's agent (Export API)
