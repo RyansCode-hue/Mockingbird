@@ -32,6 +32,9 @@ export function RenameDialog({
         value={v}
         onChange={(e) => setV(e.target.value)}
         onKeyDown={(e) => {
+          // handled here: once the dialog closes, focus goes back to its opener, and an Enter left to
+          // run its course would press that button and open the dialog again
+          if (e.key === "Enter") e.preventDefault();
           if (e.key === "Enter" && v.trim()) onSave(v.trim());
         }}
       />

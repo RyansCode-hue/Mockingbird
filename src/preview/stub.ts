@@ -20,6 +20,8 @@ import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../
 import { NOT_PUSHED, type RoomSessionBackupView, type TakeoverPlan, type TakeoverView } from "../shared/team/takeover";
 // team rooms: live panes
 import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
+// team rooms: artifacts
+import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -229,6 +231,12 @@ const plans: Record<string, PlanView> = {
     fetchedAt: 0,
   },
 };
+// team rooms: artifacts — their ids (the fixtures are further down)
+const artId = (s: string) => s.padEnd(22, "0");
+const ART = {
+  spec: artId("Aspec"), copy: artId("Aspeccopy"), shot: artId("Ashot"), csv: artId("Acsv"), pdf: artId("Apdf"), repo: artId("Arepo"), link: artId("Alink"),
+  env: artId("Aenv"), har: artId("Ahar"), mov: artId("Amov"), key: artId("Akey"), dump: artId("Adump"), log: artId("Alog"), gone: artId("Agone"),
+};
 // team rooms: team chat — 5101's chat has a mention of you, agent updates, an assistant answer and one unread message from Sam
 let lamport = 0;
 const chatEntry = (over: Partial<ChatEntry> & Pick<ChatEntry, "kind" | "author" | "at">): ChatEntry => ({ id: `c${++lamport}`, lamport, text: "", ...over });
@@ -246,6 +254,15 @@ const chats: Record<string, ChatEntry[]> = {
     chatEntry({ kind: "update", author: ME, at: now - 6 * min, items: [{ session: "s2", title: "API: last org per user", kind: "waiting", detail: "Claude needs your permission to use Bash", at: now - 6 * min }] }),
     chatEntry({ kind: "message", author: SAM, at: now - 3 * min, text: "Heads up: `dev` moved this morning — rebase before the PR. Notes: https://dev.azure.com/acme/Backoffice/_wiki/rebase", mentions: [] }),
     chatEntry({ kind: "member", author: ME, at: now - 2 * min, member: ALEX, change: "removed" }),
+    // team rooms: artifacts — a message naming two artifacts, and one since removed
+    chatEntry({
+      kind: "message",
+      author: NICK,
+      at: now - 90_000,
+      text: `Spec's in ${artifactRef(ART.spec, "Last-org spec")} and the mock is ${artifactRef(ART.shot, "dropdown.png")} — ignore ${artifactRef(ART.gone, "old-mock.png")}, it's superseded.`,
+      mentions: [],
+      artifacts: [ART.spec, ART.shot, ART.gone],
+    }),
   ],
   // 5110: an assistant turn that failed, and one still thinking
   R5110bbbbbbbbbbbbbbbbb: (() => {
@@ -263,6 +280,142 @@ const chatView = (roomId: string) => {
   return { roomId, self: ME, joinedAt: chatJoined, entries, read: chatRead[roomId] ?? {}, ...unreadCounts(entries, ME, chatRead[roomId], chatJoined) };
 };
 const chatChanged = (roomId: string) => emit("onTeamChatChanged", roomId);
+// team rooms: artifacts — 5101 has one of every kind and every transfer state: a note Sam edited (and the copy your crossing edit
+// became), a screenshot, a CSV, a PDF, a repo file changed since, an ADO link, a secret-named file, and files downloading,
+// waiting on an offline teammate, failed, fetched on demand and queued. 5110 has none yet.
+const specText = `# Last-org spec
+
+Each user's org pickers open on the **org they used last**, on every page that has one.
+
+## API
+- \`GET /api/users/me/last-org\` → \`{ orgId }\` (404 when there's none yet)
+- \`PUT /api/users/me/last-org\` with \`{ orgId }\`; 403 when the user isn't in that org
+
+## UI
+1. Preselect the last org; fall back to the first
+2. Save the choice on change, not on submit
+- [x] Remembers within a session
+- [ ] Remembers across devices (needs the API)
+
+> Out of scope: per-tenant defaults — see the spike.
+
+| Page | Picker | Done |
+| --- | --- | :-: |
+| Gifts | Org | ✓ |
+| Pathways | Org + tag | |
+
+The mock: ${artifactRef(ART.shot, "dropdown.png")} · ticket: [ADO #5101](https://dev.azure.com/acme/Backoffice/_workitems/edit/5101)
+`;
+const artTexts: Record<string, string> = {
+  [ART.spec]: specText,
+  [ART.copy]: specText.replace("Save the choice on change, not on submit", "Save the choice on change, debounced 500 ms"),
+  [ART.csv]: 'org_id,name,members,last_used\n42,"Acme Foundation",318,2026-10-11\n7,"Bright Futures, Inc.",54,2026-10-09\n19,Cedar Grove Trust,121,2026-09-30\n23,"Delta ""Arts"" Council",12,\n',
+  [ART.env]: "DATABASE_URL=postgres://staging-db.internal/backoffice\nFEATURE_LAST_ORG=1\nSENTRY_DSN=(in the vault)\n",
+};
+const KB = 1024;
+const art = (over: Partial<ArtifactSummary> & Pick<ArtifactSummary, "id" | "kind" | "name" | "addedBy" | "addedAt">): ArtifactSummary => ({
+  addedByName: over.addedBy === ME ? "You" : over.addedBy === NICK ? "Nick Smith" : "Sam",
+  agentsBlocked: null,
+  ...over,
+});
+const present = (view: ArtifactView, mime: string): ArtifactLocal => ({ state: "present", view, mime });
+const artifactRooms: Record<string, RoomArtifactsView> = {
+  R5101aaaaaaaaaaaaaaaaa: {
+    roomId: "R5101aaaaaaaaaaaaaaaaa",
+    self: ME,
+    items: [
+      art({ id: ART.spec, kind: "note", name: "Last-org spec", addedBy: NICK, addedAt: now - 3 * 60 * min, updatedByName: "Sam", updatedAt: now - 25 * min, rev: "r-spec-2", chars: specText.length }),
+      art({ id: ART.copy, kind: "note", name: "Last-org spec (your edit)", addedBy: ME, addedAt: now - 24 * min, rev: "r-copy-1", chars: artTexts[ART.copy].length, conflictOf: ART.spec }),
+      art({ id: ART.shot, kind: "file", name: "dropdown.png", addedBy: NICK, addedAt: now - 2 * 60 * min, size: 48 * KB, local: present("image", "image/png") }),
+      art({ id: ART.csv, kind: "file", name: "orgs-export.csv", addedBy: SAM, addedAt: now - 5 * 60 * min, size: artTexts[ART.csv].length, local: present("csv", "text/csv") }),
+      art({ id: ART.pdf, kind: "file", name: "Org picker review.pdf", addedBy: ME, addedAt: now - 26 * 60 * min, size: 1_240 * KB, local: present("pdf", "application/pdf") }),
+      art({ id: ART.repo, kind: "repo", name: "Dropdown.tsx:1–3", addedBy: ME, addedAt: now - 40 * min, origin: "https://github.com/acme/backoffice", path: "src/org/Dropdown.tsx", commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", lines: [1, 3] }),
+      art({ id: ART.link, kind: "link", name: "Export donors to CSV", addedBy: NICK, addedAt: now - 4 * 60 * min, url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5110", host: "dev.azure.com", label: "ADO #5110" }),
+      art({ id: ART.env, kind: "file", name: ".env.staging", addedBy: SAM, addedAt: now - 60 * min, size: artTexts[ART.env].length, local: present("text", "text/plain"), agentsBlocked: "it's named like a secret (.env.staging)" }),
+      art({ id: ART.har, kind: "file", name: "last-org-api.har", addedBy: NICK, addedAt: now - 10 * min, size: 6_350 * KB, local: { state: "downloading", received: 2_540 * KB, from: "Nick Smith" } }),
+      art({ id: ART.mov, kind: "file", name: "picker-walkthrough.mov", addedBy: SAM, addedAt: now - 3 * 60 * min, size: 21_400 * KB, local: { state: "waiting", problem: "Sam added it and is offline; no connected teammate has it yet" } }),
+      art({ id: ART.key, kind: "file", name: "Q4 roadmap.key", addedBy: NICK, addedAt: now - 28 * 60 * min, size: 8_800 * KB, local: { state: "failed", problem: "Nick's Mockingbird needs an update to share files" } }),
+      art({ id: ART.dump, kind: "file", name: "db-sample.sql.gz", addedBy: SAM, addedAt: now - 2 * 24 * 60 * min, size: 24_600 * KB, local: { state: "on-demand" } }),
+      art({ id: ART.log, kind: "file", name: "api-errors.log", addedBy: NICK, addedAt: now - min, size: 380 * KB, local: { state: "queued" } }),
+    ],
+    notices: [{ id: "an1", at: now - 24 * min, text: "Your edit of “Last-org spec” crossed Sam's; yours is kept as “Last-org spec (your edit)”.", artifact: ART.copy }],
+    problems: [],
+  },
+  R5110bbbbbbbbbbbbbbbbb: { roomId: "R5110bbbbbbbbbbbbbbbbb", self: ME, items: [], notices: [], problems: [] },
+};
+const artBytes: Record<string, Uint8Array> = {};
+const artifactsChanged = (roomId: string) => emit("onArtifactsChanged", roomId);
+const artifactRoom = (roomId: string) => artifactRooms[roomId] ?? (team.rooms.some((r) => r.id === roomId) ? (artifactRooms[roomId] = { roomId, self: ME, items: [], notices: [], problems: [] }) : null);
+const artifactOf = (roomId: string, id: string) => artifactRoom(roomId)?.items.find((a) => a.id === id);
+let artSeq = 0;
+const newArtId = () => `Anew${++artSeq}`.padEnd(22, "x");
+const SECRET_NAME = /^\.env(\..*)?$|\.pem$|\.key$|^id_(rsa|ed25519)$/i;
+/** What main's sniff would call a file, by its name here (the preview has no bytes to sniff). */
+const sniffByName = (name: string): ArtifactLocal => {
+  const ext = name.toLowerCase().split(".").pop() ?? "";
+  if (["png", "jpg", "jpeg", "gif", "webp"].includes(ext)) return present("image", `image/${ext === "jpg" ? "jpeg" : ext}`);
+  if (ext === "pdf") return present("pdf", "application/pdf");
+  if (ext === "csv") return present("csv", "text/csv");
+  if (ext === "md") return present("markdown", "text/markdown");
+  if (["txt", "log", "json", "ts", "tsx", "py"].includes(ext)) return present("text", "text/plain");
+  return present("binary", "application/octet-stream");
+};
+/** A fake screenshot of the org dropdown, drawn once: the viewer gets real PNG bytes. */
+let mockPng: Promise<Uint8Array> | null = null;
+const mockScreenshot = () =>
+  (mockPng ??= new Promise<Uint8Array>((resolve, reject) => {
+    const c = document.createElement("canvas");
+    c.width = 720;
+    c.height = 440;
+    const g = c.getContext("2d")!;
+    const box = (x: number, y: number, w: number, h: number, fill: string, stroke?: string) => {
+      g.fillStyle = fill;
+      g.beginPath();
+      g.roundRect(x, y, w, h, 8);
+      g.fill();
+      if (stroke) {
+        g.strokeStyle = stroke;
+        g.stroke();
+      }
+    };
+    const text = (s: string, x: number, y: number, font: string, color: string) => {
+      g.font = font;
+      g.fillStyle = color;
+      g.fillText(s, x, y);
+    };
+    g.fillStyle = "#e9e5db";
+    g.fillRect(0, 0, 720, 440);
+    box(36, 28, 648, 384, "#fbf9f5", "#d8d2c4");
+    g.fillStyle = "#efebe2";
+    g.fillRect(37, 29, 646, 34);
+    ["#cf6a5a", "#e0a34a", "#8fb573"].forEach((col, i) => box(52 + i * 18, 40, 11, 11, col));
+    text("Gifts · New gift", 300, 51, "600 13px Helvetica", "#4f4a3f");
+    text("Organization", 76, 104, "600 12px Helvetica", "#7b7466");
+    box(76, 114, 300, 38, "#ffffff", "#1c8576");
+    text("Acme Foundation", 90, 138, "14px Helvetica", "#2b2820");
+    text("▾", 352, 138, "14px Helvetica", "#7b7466");
+    box(76, 158, 300, 170, "#ffffff", "#d8d2c4");
+    box(80, 162, 292, 38, "#e3f1ee");
+    text("Acme Foundation", 92, 186, "14px Helvetica", "#2b2820");
+    text("last used", 300, 186, "11px Helvetica", "#1d7a6c");
+    ["Bright Futures, Inc.", "Cedar Grove Trust", "Delta Arts Council"].forEach((o, i) => text(o, 92, 228 + i * 38, "14px Helvetica", "#4f4a3f"));
+    box(420, 114, 230, 92, "#f6ead2");
+    text("Opens on the org", 438, 146, "600 14px Helvetica", "#8a6520");
+    text("you used last", 438, 168, "600 14px Helvetica", "#8a6520");
+    text("(per user, all pages)", 438, 190, "12px Helvetica", "#97824f");
+    c.toBlob((b) => (b ? b.arrayBuffer().then((ab) => resolve(new Uint8Array(ab))) : reject(new Error("The canvas made no PNG"))), "image/png");
+  }));
+/** A transfer that runs to the end, as main's fetcher would. */
+const runDownload = (roomId: string, a: ArtifactSummary) => {
+  a.local = { state: "downloading", received: a.local?.state === "downloading" ? a.local.received : 0, from: a.addedByName };
+  artifactsChanged(roomId);
+  const step = setInterval(() => {
+    if (a.local?.state !== "downloading") return clearInterval(step);
+    const received = Math.min(a.size ?? 0, a.local.received + (a.size ?? 0) / 8);
+    a.local = received >= (a.size ?? 0) ? sniffByName(a.name) : { ...a.local, received };
+    artifactsChanged(roomId);
+  }, 400);
+};
 // team rooms: take-over — 5101 backs up to origin (you turned it on as its admin): Nick's session backed up; Sam (offline) couldn't push, but his newest
 // snapshot was copied here. 5110 keeps backups peer to peer (the default; Nick is its admin): one of yours taken over by Nick.
 // ?p2p: 5101 keeps its backups peer to peer too — Sam's copy here is older than his last turn
@@ -894,6 +1047,9 @@ const api: Record<string, (...a: any[]) => any> = {
     if (!room) return err("You're not in that room");
     if (!text.trim()) return err("The message is empty");
     const message = chatEntry({ kind: "message", author: ME, at: Date.now(), text: text.trim(), mentions: parseMentions(text, room.members) });
+    // team rooms: artifacts — the live ones it names, as main records them
+    const named = parseArtifactRefs(text).filter((id) => artifactOf(roomId, id));
+    if (named.length) message.artifacts = named;
     (chats[roomId] ??= []).push(message);
     chatChanged(roomId);
     if (message.mentions!.includes("assistant")) {
@@ -907,6 +1063,148 @@ const api: Record<string, (...a: any[]) => any> = {
       }, 1500);
     }
     return { id: message.id };
+  },
+
+  // team rooms: artifacts — adds, edits and transfers apply to the fixtures; Quick Look, Reveal and Save as only log
+  artifactsList: async (roomId: string) => (artifactRoom(roomId) ? clone(artifactRoom(roomId)) : err("You're not in that room")),
+  artifactsPickFiles: async () => later(["/Users/you/Desktop/org-picker-v2.png", "/Users/you/Desktop/.env.local"], 200),
+  artifactsAddFiles: async (roomId: string, paths: string[], confirmSecret?: boolean) => {
+    const room = artifactRoom(roomId);
+    if (!room) return err("You're not in that room");
+    const added: { id: string; name: string; warnings: string[] }[] = [];
+    const refused: { name: string; reason: string; needsConfirm?: "secret" }[] = [];
+    for (const p of paths) {
+      const name = p.slice(p.lastIndexOf("/") + 1);
+      if (SECRET_NAME.test(name) && !confirmSecret) {
+        refused.push({ name, reason: "named like a secret", needsConfirm: "secret" });
+        continue;
+      }
+      const id = newArtId();
+      room.items.push(art({ id, kind: "file", name, addedBy: ME, addedAt: Date.now(), size: 96 * KB, local: sniffByName(name), agentsBlocked: SECRET_NAME.test(name) ? `it's named like a secret (${name})` : null }));
+      if (!name.endsWith(".png")) artTexts[id] = `${name}: added in the UI preview — nothing was read from disk.\n`;
+      added.push({ id, name, warnings: [] });
+    }
+    artifactsChanged(roomId);
+    return later({ added, refused }, 250);
+  },
+  artifactsAddBytes: async (roomId: string, name: string, bytes: Uint8Array, confirmSecret?: boolean) => {
+    const room = artifactRoom(roomId);
+    if (!room) return err("You're not in that room");
+    if (SECRET_NAME.test(name) && !confirmSecret) return { added: [], refused: [{ name, reason: "named like a secret", needsConfirm: "secret" }] };
+    const id = newArtId();
+    artBytes[id] = bytes;
+    room.items.push(art({ id, kind: "file", name, addedBy: ME, addedAt: Date.now(), size: bytes.length, local: sniffByName(name) }));
+    artifactsChanged(roomId);
+    return { added: [{ id, name, warnings: [] }], refused: [] };
+  },
+  artifactsAddNote: async (roomId: string, name: string, text: string) => {
+    const room = artifactRoom(roomId);
+    if (!room) return err("You're not in that room");
+    const id = newArtId();
+    artTexts[id] = text;
+    room.items.push(art({ id, kind: "note", name, addedBy: ME, addedAt: Date.now(), rev: id, chars: text.length }));
+    artifactsChanged(roomId);
+    return { id, name, warnings: [] };
+  },
+  artifactsAddRepo: async (roomId: string, req: { sessionId: string; path: string; lines?: [number, number] | null; name?: string }) => {
+    const room = artifactRoom(roomId);
+    const s = byId(req.sessionId);
+    if (!room || !s) return err(!room ? "You're not in that room" : "That session has ended");
+    if (!(req.path in files)) return err(`${req.path} isn't tracked by git — commit it first`);
+    const id = newArtId();
+    const name = req.name ?? req.path.slice(req.path.lastIndexOf("/") + 1);
+    room.items.push(art({ id, kind: "repo", name, addedBy: ME, addedAt: Date.now(), origin: "https://github.com/acme/backoffice", path: req.path, commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", lines: req.lines ?? undefined }));
+    artifactsChanged(roomId);
+    const warnings = files[req.path] !== headFiles[req.path] ? [`${req.path} has uncommitted changes — the reference is HEAD a1b2c3d`] : [];
+    return later({ id, name, warnings: [...warnings, "teammates can't see a1b2c3d until you push"] }, 200);
+  },
+  artifactsAddLink: async (roomId: string, url: string, title: string) => {
+    const room = artifactRoom(roomId);
+    const l = linkLabel(url);
+    if (!room || !l) return err(!room ? "You're not in that room" : "Only https links");
+    const id = newArtId();
+    room.items.push(art({ id, kind: "link", name: title, addedBy: ME, addedAt: Date.now(), url, host: l.host, label: l.label ?? undefined }));
+    artifactsChanged(roomId);
+    return { id, name: title, warnings: [] };
+  },
+  artifactsRename: async (roomId: string, id: string, name: string) => {
+    const a = artifactOf(roomId, id);
+    if (!a) return err("That artifact was removed");
+    a.name = name;
+    if (SECRET_NAME.test(name)) a.agentsBlocked = `it was named like a secret (${name})`;
+    artifactsChanged(roomId);
+    return null;
+  },
+  artifactsRemove: async (roomId: string, id: string) => {
+    const room = artifactRoom(roomId);
+    if (!room?.items.some((a) => a.id === id)) return err("That artifact was removed");
+    room.items = room.items.filter((a) => a.id !== id);
+    artifactsChanged(roomId);
+    return null;
+  },
+  artifactsSaveNote: async (roomId: string, id: string, text: string, base: string, mode: "save" | "overwrite" | "copy") => {
+    const room = artifactRoom(roomId);
+    const a = artifactOf(roomId, id);
+    if (!room || !a || a.kind !== "note") return err("That note was removed");
+    if (mode === "copy") {
+      const copy = newArtId();
+      artTexts[copy] = text;
+      room.items.push(art({ id: copy, kind: "note", name: `${a.name} (copy)`, addedBy: ME, addedAt: Date.now(), rev: copy, chars: text.length }));
+      artifactsChanged(roomId);
+      return { copy };
+    }
+    if (mode === "save" && base !== a.rev) return { stale: { rev: a.rev!, byName: a.updatedByName ?? a.addedByName, at: a.updatedAt ?? a.addedAt } };
+    artTexts[id] = text;
+    Object.assign(a, { rev: `r${Date.now()}`, chars: text.length, updatedByName: "You", updatedAt: Date.now() });
+    artifactsChanged(roomId);
+    return { rev: a.rev };
+  },
+  artifactsRead: async (roomId: string, id: string): Promise<ArtifactContent | { error: string }> => {
+    const a = artifactOf(roomId, id);
+    if (!a) return err("That artifact was removed");
+    if (a.kind === "note") return { view: "note", text: artTexts[id] ?? "", rev: a.rev! };
+    if (a.kind === "link") return { view: "link", url: a.url! };
+    if (a.kind === "repo") return err("A repo file is resolved, not read");
+    if (a.local?.state !== "present") return { view: "missing", local: a.local! };
+    const { view, mime } = a.local;
+    if (view === "image") return { view, mime, bytes: artBytes[id] ?? (await mockScreenshot()) };
+    if (view === "pdf" || view === "binary") return { view, mime, size: a.size ?? 0 };
+    return { view, text: artTexts[id] ?? "", truncated: false };
+  },
+  artifactsDownload: async (roomId: string, id: string) => {
+    const a = artifactOf(roomId, id);
+    if (!a || a.kind !== "file") return err("That file was removed");
+    if (a.local?.state !== "present") runDownload(roomId, a);
+    return null;
+  },
+  artifactsResolveRepo: async (roomId: string, id: string) => {
+    const a = artifactOf(roomId, id);
+    if (!a || a.kind !== "repo") return err("That repo file was removed");
+    const s1 = byId("s1")!;
+    return later(
+      {
+        origin: a.origin!,
+        path: a.path!,
+        commit: a.commit!,
+        lines: a.lines ?? null,
+        clone: REPO,
+        open: { sessionId: s1.id, root: s1.cwd, path: a.path!, line: a.lines?.[0] ?? null },
+        commitPresent: true,
+        changedSince: files[a.path!] !== headFiles[a.path!],
+        atCommit: a.path! in headFiles ? { text: headFiles[a.path!], truncated: false } : null,
+        problem: a.path! in headFiles ? null : `${a.path} isn't in a1b2c3d in your clone`,
+      },
+      300
+    );
+  },
+  artifactsQuickLook: async (_roomId: string, id: string) => console.info(`[preview] would open ${id} in Quick Look`) ?? null,
+  artifactsReveal: async (_roomId: string, id: string) => console.info(`[preview] would reveal ${id} in Finder`) ?? null,
+  artifactsSaveAs: async (roomId: string, id: string) => ({ path: `/Users/you/Downloads/${artifactOf(roomId, id)?.name ?? id}` }),
+  artifactsDismissNotice: async (roomId: string, noticeId: string) => {
+    const room = artifactRoom(roomId);
+    if (room) room.notices = room.notices.filter((n) => n.id !== noticeId);
+    artifactsChanged(roomId);
+    return null;
   },
 
   // team rooms: take-over — plans and the take-over are simulated; nothing is copied or launched
@@ -1108,6 +1406,75 @@ if (params.has("joining")) {
   }, 700);
   setTimeout(() => click(".team-dlg .row button.primary"), 900);
 }
+// team rooms: artifacts (with view=room) — ?artifact=<n|name> opens the viewer for the nth row, or the row of that name;
+// ?artifactEdit edits the note opened (=stale: and Sam saves an edit of it meanwhile); ?artifactAdd opens + Add (=note,
+// =link, =repo picks that); ?artifactDrop holds a file over the Team tab; ?composer=<text> types into the message box
+// (%23spec: the # completion); ?artifactsClosed starts with the section collapsed
+const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) => {
+  const t = setInterval(() => {
+    const el = document.querySelector(selector) as HTMLElement | null;
+    if (!el && --tries > 0) return;
+    clearInterval(t);
+    if (el) then(el);
+  }, 100);
+};
+const typeArea = (area: HTMLTextAreaElement, text: string) => {
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(area, text);
+  area.dispatchEvent(new Event("input", { bubbles: true }));
+  area.focus();
+  area.setSelectionRange(text.length, text.length);
+};
+const buttonNamed = (scope: string, text: string) => [...document.querySelectorAll<HTMLButtonElement>(`${scope} button`)].find((b) => b.textContent?.trim().startsWith(text));
+if (params.has("artifactsClosed")) set("mb.roomArtifacts.open", false);
+const openArtifact = params.get("artifact");
+if (openArtifact) {
+  waitFor(".art-row", () => {
+    const rows = [...document.querySelectorAll<HTMLElement>(".art-row")];
+    const row = /^\d+$/.test(openArtifact) ? rows[Number(openArtifact) - 1] : rows.find((r) => r.querySelector(".art-name")?.textContent === openArtifact);
+    row?.click();
+    if (!params.has("artifactEdit")) return;
+    setTimeout(() => {
+      buttonNamed(".art-head-acts", "Edit")?.click();
+      setTimeout(() => {
+        const area = document.querySelector(".art-note-text") as HTMLTextAreaElement | null;
+        if (area) typeArea(area, `${area.value}- [ ] Debounce the save (500 ms)\n`);
+        if (params.get("artifactEdit") !== "stale") return;
+        const spec = artifactOf("R5101aaaaaaaaaaaaaaaaa", ART.spec)!;
+        artTexts[ART.spec] = artTexts[ART.spec].replace("fall back to the first", "fall back to the user's home org");
+        Object.assign(spec, { rev: "r-spec-3", updatedByName: "Sam", updatedAt: Date.now() });
+        artifactsChanged("R5101aaaaaaaaaaaaaaaaa");
+      }, 400);
+    }, 500);
+  });
+}
+const addWhat = params.get("artifactAdd");
+// headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")))) {
+  window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
+}
+if (params.has("artifactAdd")) {
+  // after the chat has loaded and scrolled to its end: a scroll closes an open menu
+  waitFor('button[title^="Share a file"]', (b) =>
+    setTimeout(() => {
+      b.click();
+      const item = { note: "Note", link: "Link", repo: "Repo file" }[addWhat ?? ""];
+      if (!item) return;
+      setTimeout(() => {
+        buttonNamed(".mb-menu", item)?.click();
+        if (addWhat === "link") setTimeout(() => typeInto(".art-link-dlg input[type=text]", "https://github.com/acme/backoffice/pull/45"), 200);
+      }, 200);
+    }, 800)
+  );
+}
+if (params.has("artifactDrop")) {
+  waitFor(".rc", (el) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(["preview"], "org-picker-v2.png", { type: "image/png" }));
+    el.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: dt }));
+  });
+}
+const composerText = params.get("composer");
+if (composerText) waitFor(".rc-bar textarea", (el) => setTimeout(() => typeArea(el as HTMLTextAreaElement, composerText), 300));
 if (params.has("reset")) {
   params.delete("reset");
   history.replaceState(null, "", `${location.pathname}${params.size ? `?${params}` : ""}`);

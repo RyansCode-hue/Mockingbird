@@ -48,3 +48,7 @@ export function fmtElapsed(fromMs: number, seconds = false, now = Date.now()): s
 
 /** "1 file", "3 files". */
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** "312 bytes", "48 KB", "2.4 MB". */
+export const fileSize = (n: number) =>
+  n < 1024 ? plural(n, "byte") : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;

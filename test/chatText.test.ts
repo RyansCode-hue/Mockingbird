@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { chatSegments } from "../src/renderer/team/chatText";
+import { artifactRef } from "../src/shared/team/artifacts";
 
 const members = [{ name: "Nick Smith" }, { name: "Ryan" }];
 
@@ -31,7 +32,7 @@ describe("chat text", () => {
       { t: "mention", s: "@assistant", me: false, assistant: true },
       { t: "mention", s: "@ryan", me: true, assistant: false },
     ]);
-    expect(segs.map((s) => s.s).join("")).toBe("@Nick and @assistant, ping @ryan. Mail nick@example.com or @nobody");
+    expect(segs.map((s) => ("s" in s ? s.s : "")).join("")).toBe("@Nick and @assistant, ping @ryan. Mail nick@example.com or @nobody");
   });
 
   it("finds https links without their trailing punctuation", () => {
@@ -41,5 +42,31 @@ describe("chat text", () => {
       { t: "text", s: "." },
     ]);
     expect(chatSegments("not http://example.com", members, "Ryan")).toEqual([{ t: "text", s: "not http://example.com" }]);
+  });
+
+  it("finds room artifacts named as #[name](artifact:id), whatever their name holds", () => {
+    const spec = "AAAAAAAAAAAAAAAAAAAAAA";
+    const shot = "BBBBBBBBBBBBBBBBBBBBB_";
+    expect(chatSegments(`read ${artifactRef(spec, "API spec")} first`, members, "Ryan")).toEqual([
+      { t: "text", s: "read " },
+      { t: "artifact", id: spec, name: "API spec" },
+      { t: "text", s: " first" },
+    ]);
+    // a name with markdown, a link or a handle in it is still just the reference's label
+    expect(chatSegments(`${artifactRef(shot, "**v2** @Nick https://x.io")}.`, members, "Ryan")).toEqual([
+      { t: "artifact", id: shot, name: "**v2** @Nick https://x.io" },
+      { t: "text", s: "." },
+    ]);
+    // an id of the wrong shape isn't a reference
+    expect(chatSegments("#[spec](artifact:short)", members, "Ryan")).toEqual([{ t: "text", s: "#[spec](artifact:short)" }]);
+    // inside code it's code
+    const ref = artifactRef(spec, "spec");
+    expect(chatSegments(`\`${ref}\` and ${ref}\n\`\`\`\n${ref}\n\`\`\``, members, "Ryan")).toEqual([
+      { t: "code", s: ref },
+      { t: "text", s: " and " },
+      { t: "artifact", id: spec, name: "spec" },
+      { t: "text", s: "\n" },
+      { t: "block", s: ref },
+    ]);
   });
 });

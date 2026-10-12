@@ -27,7 +27,7 @@ const STATUS_TITLE: Record<GitChange["status"], string> = {
 const SLIDE_MS = 200;
 
 /** A file's type badge, or a plain file icon for types without one. */
-function FileGlyph({ path }: { path: string }) {
+export function FileGlyph({ path }: { path: string }) {
   const b = fileBadge(path);
   if (!b) return <span className="fp-glyph plain"><FileIcon /></span>;
   return (

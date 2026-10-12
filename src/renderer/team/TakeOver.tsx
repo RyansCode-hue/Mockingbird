@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Modal } from "../Modal";
 import { settled } from "../settled";
-import { ago, plural } from "../../shared/format";
+import { ago, fileSize, plural } from "../../shared/format";
 import { AGENT_NAME, isErr } from "../../shared/types";
 import {
   backupFreshness,
@@ -65,7 +65,6 @@ function useNow(ms = 30_000): number {
 }
 
 const short = (sha: string) => sha.slice(0, 8);
-const size = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 
 /** "backed up 2m ago", "backup failed: …", "latest only on Nick's laptop", or who took it over. */
 export function BackupFreshness({ view }: { view: RoomSessionBackupView }) {
@@ -280,10 +279,10 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
           </dd>
           <dt>Conversation</dt>
           <dd>
-            {p.conversation.kind === "full" && <>The whole conversation ({size(p.conversation.bytes)}) — {AGENT_NAME[p.agent]} resumes where it left off.</>}
+            {p.conversation.kind === "full" && <>The whole conversation ({fileSize(p.conversation.bytes)}) — {AGENT_NAME[p.agent]} resumes where it left off.</>}
             {p.conversation.kind === "partial" && (
               <span className="warn">
-                Only {size(p.conversation.have)} of {size(p.conversation.of)} reached this Mac. {AGENT_NAME[p.agent]} starts from a summary of that and says so.
+                Only {fileSize(p.conversation.have)} of {fileSize(p.conversation.of)} reached this Mac. {AGENT_NAME[p.agent]} starts from a summary of that and says so.
               </span>
             )}
             {p.conversation.kind === "none" && <span className="warn">It didn't reach this Mac. {AGENT_NAME[p.agent]} starts from the files alone and says so.</span>}

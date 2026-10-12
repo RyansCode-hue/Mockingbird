@@ -3,15 +3,21 @@ import { createIpcStore, loadInto } from "../ipcStore";
 import { readPref, writePref } from "../prefs";
 import { initialsOf, LeaveRoomDialog, roomOfGroup, TeamNotices } from "../Team";
 import { MenuButton } from "../Menu";
-import { chatSegments, type ChatSegment } from "./chatText";
-import { isErr } from "../../shared/types";
+import { chatSegments } from "./chatText";
+import { renderSegment, type InlineContext } from "./markdownView";
+import { ArtifactChip, ArtifactShelf, useArtifactActions, useArtifacts, useFileDrop } from "./Artifacts";
+import { ARTIFACT_TRIGGER, artifactCompletions, artifactMeta, mentionLabel } from "./artifactModel";
+import { ArtifactGlyph } from "./ArtifactViewer";
+import { isErr, type SessionInfo } from "../../shared/types";
+import { encodeArtifactPicks, type ArtifactSummary, type RepoResolution } from "../../shared/team/artifacts";
 import { ASSISTANT_MENTION, countsAsUnread, isRead, memberLine, mentionHandle, mentionsOf, updateLine, type AgentUpdate, type ChatEntry, type ChatUnread, type RoomChatView } from "../../shared/team/chat";
 import type { TeamRoomSummary, TeamStatus } from "../../shared/team/types";
 
 /**
  * The team room in the window (docs/team-rooms.md → Team room): a side bar
  * view with each shared room's chat — members, agents' updates and the
- * @assistant — plus its activity bar badge and the group bar's chip.
+ * @assistant — and its artifacts (Artifacts.tsx), plus its activity bar
+ * badge and the group bar's chip.
  */
 
 /** Unread entries and mentions per room, kept current. */
@@ -95,6 +101,15 @@ export function useRoomChatOpen(open: () => void): void {
   );
 }
 
+/** What the room's artifacts need from the window: this Mac's sessions, for repo files. */
+export interface RoomArtifactProps {
+  /** This Mac's sessions (not teammates'): a repo file is picked from one, and opens in one. */
+  sessions: SessionInfo[];
+  focusedSessionId: string | null;
+  /** Open a repo file in the editor, from a session whose folder is in a clone of its repo. */
+  onOpenRepoFile: (open: NonNullable<RepoResolution["open"]>) => void;
+}
+
 /**
  * The side bar view: the chat of the room picked, or of the shared group on
  * screen. `onNewSession` opens New session in a room's group; `onJoinRoom`
@@ -106,13 +121,14 @@ export function RoomChatPanel({
   visible,
   onNewSession,
   onJoinRoom,
+  ...artifactProps
 }: {
   status: TeamStatus | { error: string } | null;
   activeGroup: string | null;
   visible: boolean;
   onNewSession: (groupKey: string) => void;
   onJoinRoom: () => void;
-}) {
+} & RoomArtifactProps) {
   const choice = picked.use();
   const groupRoom = activeGroup ? roomOfGroup(status, activeGroup) : undefined;
   // switching the grid to a shared group shows its room
@@ -147,7 +163,7 @@ export function RoomChatPanel({
   return (
     <>
       {notices}
-      <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} onNewSession={onNewSession} onJoinRoom={onJoinRoom} />
+      <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} onNewSession={onNewSession} onJoinRoom={onJoinRoom} {...artifactProps} />
     </>
   );
 }
@@ -163,6 +179,9 @@ const when = (ms: number) => {
 const THINKING_STALE_MS = 5 * 60_000;
 const DOT_OF: Record<AgentUpdate["kind"], string> = { started: "working", finished: "idle", waiting: "waiting", ended: "dead", takeover: "rc-dot", board: "rc-dot" };
 
+/** References to the room's artifacts in chat text: chips with each one's current name. */
+const ArtifactRefs = React.createContext<InlineContext>({});
+
 function RoomChat({
   room,
   rooms,
@@ -170,6 +189,9 @@ function RoomChat({
   visible,
   onNewSession,
   onJoinRoom,
+  sessions,
+  focusedSessionId,
+  onOpenRepoFile,
 }: {
   room: TeamRoomSummary;
   rooms: TeamRoomSummary[];
@@ -177,7 +199,7 @@ function RoomChat({
   visible: boolean;
   onNewSession: (groupKey: string) => void;
   onJoinRoom: () => void;
-}) {
+} & RoomArtifactProps) {
   const [view, setView] = useState<RoomChatView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -188,6 +210,42 @@ function RoomChat({
   const listRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const [leaving, setLeaving] = useState(false);
+  const arts = useArtifacts(room.id);
+  const actions = useArtifactActions(room.id);
+  const artifacts = arts.view?.items ?? [];
+  const [viewing, setViewing] = useState<string | null>(null);
+  // the composer's #[name] picks, sent as #[name](artifact:id)
+  const picks = useRef(new Map<string, string>());
+  const input = useRef<HTMLTextAreaElement>(null);
+  const drop = useFileDrop((files) => void actions.addFiles(files));
+  const refs = useMemo<InlineContext>(
+    () => ({
+      // until the room's artifacts are read, a reference is only its label: not "(removed)", which it may not be
+      artifact: (id, label, key) =>
+        arts.view ? (
+          <ArtifactChip key={key} item={artifacts.find((a) => a.id === id)} label={label} onOpen={setViewing} />
+        ) : (
+          <span key={key} className="rc-artifact gone unread" title={arts.error ?? "Reading the room's artifacts…"}>
+            {label}
+          </span>
+        ),
+    }),
+    [arts.view, arts.error]
+  );
+  /** Put #[name] into the message box at the caret, remembering which artifact it means. */
+  const mention = (a: Pick<ArtifactSummary, "id" | "name">) => {
+    const label = mentionLabel(a.name);
+    picks.current.set(label, a.id);
+    const el = input.current;
+    const at = el ? el.selectionStart ?? draft.length : draft.length;
+    const before = draft.slice(0, at);
+    const insert = `${before && !/\s$/.test(before) ? " " : ""}#[${label}] `;
+    setDraft(before + insert + draft.slice(at));
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(at + insert.length, at + insert.length);
+    });
+  };
   const nameOf = useMemo(() => {
     // people who left still wrote what they wrote
     const names = new Map([...(room.former ?? []).map((m): [string, string] => [m.id, m.name]), ...room.members.map((m): [string, string] => [m.id, m.self ? "You" : m.name])]);
@@ -234,7 +292,7 @@ function RoomChat({
   }, [view?.entries.length, view?.entries.at(-1)?.id]);
 
   const send = async () => {
-    const text = draft.trim();
+    const text = encodeArtifactPicks(draft.trim(), picks.current, artifacts);
     if (!text || sending) return;
     setSending(true);
     const r = await window.mb.teamChatPost(room.id, text);
@@ -242,6 +300,7 @@ function RoomChat({
     if (isErr(r)) return setError(`Not sent: ${r.error}`);
     setError(null);
     setDraft("");
+    picks.current.clear();
     setNewFrom(null);
     atBottom.current = true;
     load();
@@ -252,7 +311,7 @@ function RoomChat({
   const entries = view?.entries ?? [];
 
   return (
-    <div className="rc">
+    <div className="rc" {...drop.handlers}>
       <div className="rc-head">
         <div className="rc-top">
           {rooms.length > 1 ? (
@@ -297,6 +356,19 @@ function RoomChat({
           )}
         </div>
       </div>
+      <ArtifactShelf
+        room={room}
+        self={arts.view?.self ?? view?.self ?? ""}
+        arts={arts}
+        actions={actions}
+        viewing={viewing}
+        setViewing={setViewing}
+        onMention={mention}
+        ctx={refs}
+        sessions={sessions}
+        focusedSessionId={focusedSessionId}
+        onOpenRepoFile={onOpenRepoFile}
+      />
       <div
         className="rc-list"
         ref={listRef}
@@ -306,20 +378,42 @@ function RoomChat({
         }}
       >
         {view && !entries.length && <div className="rc-empty">Nothing said yet. Messages reach teammates now, or when they're next online; @{mentionHandle(others[0]?.name ?? "name")} mentions someone, @assistant asks the assistant.</div>}
-        {entries.map((e, i) => (
-          <React.Fragment key={e.id}>
-            {e.id === newFrom && <div className="rc-new">new</div>}
-            <Entry e={e} prev={entries[i - 1]} entries={entries} nameOf={nameOf} members={room.members} selfName={selfName} self={view!.self} />
-          </React.Fragment>
-        ))}
+        <ArtifactRefs.Provider value={refs}>
+          {entries.map((e, i) => (
+            <React.Fragment key={e.id}>
+              {e.id === newFrom && <div className="rc-new">new</div>}
+              <Entry e={e} prev={entries[i - 1]} entries={entries} nameOf={nameOf} members={room.members} selfName={selfName} self={view!.self} />
+            </React.Fragment>
+          ))}
+        </ArtifactRefs.Provider>
       </div>
       {error && <div className="err rc-err">{error}</div>}
-      <Composer room={room} draft={draft} setDraft={setDraft} send={send} sending={sending} />
+      <Composer
+        room={room}
+        draft={draft}
+        setDraft={setDraft}
+        send={send}
+        sending={sending}
+        inputRef={input}
+        self={arts.view?.self ?? view?.self ?? ""}
+        artifacts={artifacts}
+        rememberPick={(label, id) => picks.current.set(label, id)}
+        onPasteFiles={actions.addFiles}
+      />
       <div className="rc-hint">
         <span>{others.length === 0 ? "Invite a teammate to talk here" : online.length ? `${online.map((m) => mentionHandle(m.name)).join(", ")} connected` : "Nobody else is connected — they'll get it when they're back"}</span>
         <span>⏎ send · ⇧⏎ new line</span>
       </div>
       {leaving && <LeaveRoomDialog room={room} onClose={() => setLeaving(false)} />}
+      {drop.over && (
+        <div className="art-drop">
+          <div>
+            <b>Drop to share with the room</b>
+            <span>Every member gets a copy · 25 MB a file at most</span>
+          </div>
+        </div>
+      )}
+      {actions.dialog}
     </div>
   );
 }
@@ -406,48 +500,63 @@ function Entry({
 
 function ChatText({ text, members, selfName }: { text: string; members: { name: string }[]; selfName: string }) {
   const segs = useMemo(() => chatSegments(text, members, selfName), [text, members, selfName]);
-  return <div className="rc-text">{segs.map(renderSegment)}</div>;
+  const refs = React.useContext(ArtifactRefs);
+  return <div className="rc-text">{segs.map((s, i) => renderSegment(s, i, refs))}</div>;
 }
 
-function renderSegment(s: ChatSegment, i: number): React.ReactNode {
-  switch (s.t) {
-    case "text":
-      return <React.Fragment key={i}>{s.s}</React.Fragment>;
-    case "code":
-      return <code key={i}>{s.s}</code>;
-    case "block":
-      return <pre key={i}>{s.s}</pre>;
-    case "bold":
-      return <strong key={i}>{s.s}</strong>;
-    case "em":
-      return <em key={i}>{s.s}</em>;
-    case "link":
-      return (
-        <a
-          key={i}
-          href={s.s}
-          onClick={(ev) => {
-            ev.preventDefault();
-            window.mb.openExternal(s.s).then((r: unknown) => isErr(r) && alert(`Couldn't open ${s.s}: ${r.error}`));
-          }}
-        >
-          {s.s}
-        </a>
-      );
-    case "mention":
-      return (
-        <span key={i} className={`rc-mention ${s.me ? "me" : ""} ${s.assistant ? "assistant" : ""}`}>
-          {s.s}
-        </span>
-      );
-  }
+/** A pasted screenshot's name: the clipboard calls every image "image.png". */
+const pastedName = (f: File, n: number) => {
+  if (f.name && f.name !== "image.png") return f.name;
+  const d = new Date();
+  const p = (x: number) => String(x).padStart(2, "0");
+  const ext = f.type === "image/jpeg" ? "jpg" : f.type.replace(/^image\//, "").replace(/\W.*$/, "") || "png";
+  return `Screenshot ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} at ${p(d.getHours())}.${p(d.getMinutes())}.${p(d.getSeconds())}${n ? ` (${n + 1})` : ""}.${ext}`;
+};
+
+interface Suggestion {
+  key: string;
+  head: React.ReactNode;
+  label: string;
+  /** The text the partial word becomes. */
+  insert: string;
+  onPick?: () => void;
 }
 
-/** The message box, with @-completion of members and the assistant. */
-function Composer({ room, draft, setDraft, send, sending }: { room: TeamRoomSummary; draft: string; setDraft: (s: string) => void; send: () => void; sending: boolean }) {
-  const ref = useRef<HTMLTextAreaElement>(null);
+/**
+ * The message box, with @-completion of members and the assistant, and
+ * #-completion of the room's artifacts (shown only when one matches, so a
+ * ticket number like #5110 still sends on Enter). A pasted image is added
+ * to the room's artifacts and named in the message.
+ */
+function Composer({
+  room,
+  draft,
+  setDraft,
+  send,
+  sending,
+  inputRef,
+  self,
+  artifacts,
+  rememberPick,
+  onPasteFiles,
+}: {
+  room: TeamRoomSummary;
+  draft: string;
+  setDraft: React.Dispatch<React.SetStateAction<string>>;
+  send: () => void;
+  sending: boolean;
+  inputRef: React.RefObject<HTMLTextAreaElement>;
+  self: string;
+  artifacts: ArtifactSummary[];
+  /** A #[label] in the draft means this artifact. */
+  rememberPick: (label: string, id: string) => void;
+  onPasteFiles: (files: File[]) => Promise<{ id: string; name: string }[]>;
+}) {
+  const ref = inputRef;
   const [caret, setCaret] = useState(0);
   const [pick, setPick] = useState(0);
+  // the text before the caret when Esc closed the list: it stays closed until that changes
+  const [dismissed, setDismissed] = useState<string | null>(null);
   const handles = useMemo(
     () => [
       { handle: ASSISTANT_MENTION, label: "assistant — answers here, run on your laptop" },
@@ -455,34 +564,76 @@ function Composer({ room, draft, setDraft, send, sending }: { room: TeamRoomSumm
     ],
     [room.members, room.online]
   );
-  const partial = /(^|\s)@([\w.-]*)$/.exec(draft.slice(0, caret));
-  const suggestions = partial ? handles.filter((h) => h.handle.toLowerCase().startsWith(partial[2].toLowerCase())) : [];
-  const complete = (handle: string) => {
+  const head = draft.slice(0, caret);
+  const at = /(^|\s)@([\w.-]*)$/.exec(head);
+  const hash = at ? null : ARTIFACT_TRIGGER.exec(head);
+  const partial = at ?? hash;
+  const suggestions: Suggestion[] = at
+    ? handles
+        .filter((h) => h.handle.toLowerCase().startsWith(at[2].toLowerCase()))
+        .map((h) => ({ key: h.handle, head: <b>@{h.handle}</b>, label: h.label, insert: `@${h.handle} ` }))
+    : hash
+      ? artifactCompletions(hash[2], artifacts).map((a) => {
+          const label = mentionLabel(a.name);
+          return {
+            key: a.id,
+            head: (
+              <>
+                <ArtifactGlyph a={a} />
+                <b>{a.name}</b>
+              </>
+            ),
+            label: artifactMeta(a, self),
+            insert: `#[${label}] `,
+            onPick: () => rememberPick(label, a.id),
+          };
+        })
+      : [];
+  const shown = suggestions.length > 0 && dismissed !== head;
+  const complete = (s: Suggestion) => {
     if (!partial) return;
     const start = caret - partial[2].length - 1;
-    const next = `${draft.slice(0, start)}@${handle} ${draft.slice(caret)}`;
-    setDraft(next);
-    const at = start + handle.length + 2;
-    setCaret(at);
-    requestAnimationFrame(() => ref.current?.setSelectionRange(at, at));
+    s.onPick?.();
+    setDraft(`${draft.slice(0, start)}${s.insert}${draft.slice(caret)}`);
+    const to = start + s.insert.length;
+    setCaret(to);
+    requestAnimationFrame(() => ref.current?.setSelectionRange(to, to));
+  };
+  const paste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = [...e.clipboardData.files].filter((f) => f.type.startsWith("image/"));
+    if (!images.length) return;
+    e.preventDefault();
+    const where = e.currentTarget.selectionStart ?? draft.length;
+    const added = await onPasteFiles(images.map((f, n) => new File([f], pastedName(f, n), { type: f.type })));
+    if (!added.length) return;
+    const refs = added.map((a) => {
+      const label = mentionLabel(a.name);
+      rememberPick(label, a.id);
+      return `#[${label}]`;
+    });
+    setDraft((d) => {
+      const before = d.slice(0, Math.min(where, d.length));
+      return `${before}${before && !/\s$/.test(before) ? " " : ""}${refs.join(" ")} ${d.slice(Math.min(where, d.length))}`;
+    });
+    ref.current?.focus();
   };
   return (
     <div className="rc-bar">
-      {suggestions.length > 0 && (
+      {shown && (
         <div className="rc-suggest" role="listbox">
-          {suggestions.map((h, i) => (
+          {suggestions.map((s, i) => (
             <div
-              key={h.handle}
+              key={s.key}
               role="option"
               aria-selected={i === pick % suggestions.length}
-              className={`rc-sug ${i === pick % suggestions.length ? "on" : ""}`}
+              className={`rc-sug ${hash ? "art" : ""} ${i === pick % suggestions.length ? "on" : ""}`}
               onMouseDown={(e) => {
                 e.preventDefault();
-                complete(h.handle);
+                complete(s);
               }}
             >
-              <b>@{h.handle}</b>
-              <span>{h.label}</span>
+              {s.head}
+              <span>{s.label}</span>
             </div>
           ))}
         </div>
@@ -491,20 +642,24 @@ function Composer({ room, draft, setDraft, send, sending }: { room: TeamRoomSumm
         ref={ref}
         rows={2}
         value={draft}
-        placeholder="Message the room — @ to mention, @assistant to ask"
+        placeholder="Message the room — @ to mention, # for an artifact"
         onChange={(e) => {
           setDraft(e.target.value);
           setCaret(e.target.selectionStart ?? e.target.value.length);
           setPick(0);
         }}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+        onPaste={paste}
         onKeyDown={(e) => {
-          if (suggestions.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+          if (shown && e.key === "Escape") {
+            e.preventDefault();
+            setDismissed(head);
+          } else if (shown && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
             e.preventDefault();
             setPick((p) => (p + (e.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);
-          } else if (suggestions.length && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+          } else if (shown && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
             e.preventDefault();
-            complete(suggestions[pick % suggestions.length].handle);
+            complete(suggestions[pick % suggestions.length]);
           } else if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             send();
