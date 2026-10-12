@@ -2064,6 +2064,8 @@ button.house-toast-body:hover { background: none; color: var(--text-1-warm); }
 .house-toast.consent .house-toast-body { flex: 1 1 100%; font: 400 11px/1.45 var(--ui); color: var(--text-2); }
 .house-toast.consent .house-toast-body b { color: var(--text-1); font-weight: 600; }
 .house-toast.consent .err { color: var(--red); }
+/* what the board couldn't do on this Mac: one line each, under the tickets */
+.house-problem { font: 400 11px/1.45 var(--ui); color: var(--amber-text); padding: 3px 0 3px 10px; border-left: 2px solid color-mix(in srgb, var(--amber) 55%, transparent); margin: 4px 0; overflow-wrap: anywhere; }
 .house-note.house-consent { border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
 @media (max-width: 600px) {
   .house-claim { padding-left: 6px; }

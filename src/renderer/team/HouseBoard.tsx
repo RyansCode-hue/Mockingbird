@@ -568,7 +568,11 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
           )}
         </>
       )}
-      {view.fetchProblem && <div className="house-dim">Teammates' branches couldn't be fetched, so their claimed files may be out of date: {view.fetchProblem}</div>}
+      {view.branchProblems?.map((p) => (
+        <div key={p} className="house-problem">
+          {p}
+        </div>
+      ))}
       <div className="row">
         {busy && <span className="foot-hint house-dim">{doing("refresh") ? "Reading the House…" : "Saving to the House…"}</span>}
         <button className="outline" onClick={onClose}>

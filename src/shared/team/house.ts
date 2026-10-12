@@ -243,8 +243,11 @@ export interface HouseView {
   branches: string[];
   /** Why the room's claims couldn't be written into a repository's worktrees (agents there aren't warned). */
   copiesProblem?: string;
-  /** Why teammates' branches couldn't be fetched (their claimed files may be out of date). */
-  fetchProblem?: string;
+  /**
+   * Teammates' branches that couldn't be fetched or read on this Mac (their
+   * claimed files may be out of date or missing), one line each.
+   */
+  branchProblems?: string[];
 }
 
 /** A room whose House project this member hasn't answered for yet: "Use your <project> builder token for room <room>?" */

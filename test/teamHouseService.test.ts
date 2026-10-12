@@ -550,7 +550,8 @@ describe("claims from claimed tickets", () => {
     git(clones.ryan, "worktree", "add", "-q", "-b", "5110-donorApi", wtSame, "origin/5110-donorApi");
     h.item(141, { title: "Last-org API", status: "in_progress", assignee: "Nick Smith", branch: "5110-donorApi" });
 
-    const { ryan, nick, roomId, r } = await pair(h, { ryan: { knownRepos: () => [clones.ryan] }, nick: { knownRepos: () => [clones.nick] } });
+    const ryanS = session("r1", { title: "ryan-a", repoPath: clones.ryan, cwd: wtA, branch: "ryan-feature" });
+    const { ryan, nick, roomId, r } = await pair(h, { ryan: { knownRepos: () => [clones.ryan], sessions: () => [ryanS] }, nick: { knownRepos: () => [clones.nick] } });
     nick.team.publish(roomId, "session.upsert", record("n1", "5110-donorApi", bare));
     ryan.team.publish(roomId, "session.upsert", record("r1", "ryan-feature", bare));
 
@@ -602,6 +603,46 @@ describe("claims from claimed tickets", () => {
     expect(await r.svc.roomLeft(roomId)).toEqual([]);
     for (const wt of [clones.ryan, wtA, wtSame]) expect(fs.existsSync(path.join(wt, ".mockingbird"))).toBe(false);
   });
+});
+
+describe("teammates' branches", () => {
+  it("are fetched only into a clone this Mac's own room sessions work in, and a fetch or read that fails shows on the board", async () => {
+    const h = await house();
+    const { bare, clones } = origin(["ryan", "spare", "nick"]);
+    git(clones.nick, "checkout", "-q", "-b", "5110-donorApi");
+    write(clones.nick, { "src/api/x.ts": "nick's x\n" });
+    git(clones.nick, "commit", "-qam", "nick");
+    git(clones.nick, "push", "-q", "origin", "5110-donorApi");
+    h.item(141, { title: "Last-org API", status: "in_progress", assignee: "Nick Smith", branch: "5110-donorApi" });
+    let live: SessionInfo[] = [];
+    // both of Ryan's clones are known here (the repo index), but no session of his in the room works in either yet
+    const { ryan, nick, roomId, r } = await pair(h, { ryan: { knownRepos: () => [clones.spare, clones.ryan], sessions: () => live } });
+    nick.team.publish(roomId, "session.upsert", record("n1", "5110-donorApi", bare));
+    nick.team.publish(roomId, "session.upsert", record("n2", "5110-notPushed", bare));
+    await until(() => houseOfRoom(ryan.team.room(roomId)!).project === PROJECT && Object.keys(ryan.team.room(roomId)!.ext.sessions ?? {}).length === 2, "Ryan to see Nick's sessions");
+    await new Promise((res) => setTimeout(res, 300));
+    await r.svc.idle();
+    const fetched = (clone: string) => git(clone, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/5110-donorApi") !== "";
+    expect(fetched(clones.ryan)).toBe(false);
+    expect(fetched(clones.spare)).toBe(false);
+    expect(r.svc.teammateChanges()).toEqual([]);
+
+    // a session of Ryan's in the room, in one clone: that clone is fetched, the other never
+    live = [session("r1", { repoPath: clones.ryan, cwd: clones.ryan, branch: "ryan-feature" })];
+    ryan.team.publish(roomId, "session.upsert", record("r1", "ryan-feature", bare));
+    await until(() => r.svc.teammateChanges().length === 1, "Nick's branch read in Ryan's clone");
+    expect(r.svc.teammateChanges()).toEqual([{ roomId, member: nick.id, name: "Nick", branch: "5110-donorApi", repo: expect.stringMatching(/ryan$/), files: ["src/api/x.ts"] }]);
+    expect(fetched(clones.ryan)).toBe(true);
+    expect(fetched(clones.spare)).toBe(false);
+    // the branch that isn't on origin is said on the board, not dropped
+    await until(() => !!r.svc.view(roomId).branchProblems?.some((p) => /^Nick's branch 5110-notPushed wasn't read, so its files aren't claimed here: 5110-notPushed isn't on origin/.test(p)), "the unread branch on the board");
+
+    // origin can't be reached from Ryan's clone: the board says so
+    git(clones.ryan, "remote", "set-url", "origin", path.join(path.dirname(bare), "gone.git"));
+    nick.team.publish(roomId, "session.upsert", record("n3", "5110-third", bare));
+    await until(() => !!r.svc.view(roomId).branchProblems?.some((p) => /^Teammates' branches couldn't be fetched into \S*\/ryan, so their claimed files may be out of date: /.test(p)), "the fetch failure on the board");
+    expect(r.logs.some((l) => /^team House board: fetching teammates' branches into \S*\/ryan: /.test(l))).toBe(true);
+  }, 20_000);
 });
 
 describe("rooms from before the House board", () => {

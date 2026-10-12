@@ -196,7 +196,10 @@ export class HouseService {
   private teammates: TeammateBranch[] = [];
   private teammatesRun: Promise<void> | null = null;
   private teammatesAgain: boolean | null = null;
-  private fetchProblem: string | undefined;
+  /** Clones whose last fetch of teammates' branches failed, and why. */
+  private fetchProblems = new Map<string, string>();
+  /** Per room: teammates' branches that couldn't be fetched or read here (the board shows them). */
+  private branchProblems = new Map<RoomId, string[]>();
   private lastNudgeFetch = 0;
   private repeatNotices = new Map<string, number>();
   private emitTimers = new Map<RoomId, ReturnType<typeof setTimeout>>();
@@ -285,6 +288,7 @@ export class HouseService {
     }
     this.copyProblems.delete(roomId);
     this.teammates = this.teammates.filter((t) => t.roomId !== roomId);
+    this.branchProblems.delete(roomId);
     const timer = this.emitTimers.get(roomId);
     if (timer) clearTimeout(timer);
     this.emitTimers.delete(roomId);
@@ -347,7 +351,7 @@ export class HouseService {
       refreshing: !!c.run,
       branches: this.branchesOf(roomId),
       ...(copiesProblem ? { copiesProblem } : {}),
-      ...(this.fetchProblem && this.teammates.some((t) => t.roomId === roomId) ? { fetchProblem: this.fetchProblem } : {}),
+      ...(this.branchProblems.get(roomId)?.length ? { branchProblems: this.branchProblems.get(roomId) } : {}),
     };
   }
 
@@ -1069,39 +1073,63 @@ export class HouseService {
         if (!wanted.some((w) => w.roomId === room.id && w.member === r.owner && w.branch === r.branch && w.key === key)) wanted.push({ roomId: room.id, member: r.owner, name: this.nameOf(room, r.owner), branch: r.branch, key });
       }
     }
+    // only a clone this Mac's own sessions in the room work in is fetched into and read — never any other
+    // clone of the same repository that a teammate's session record happens to name
+    const clones = await this.roomClones();
     const out: TeammateBranch[] = [];
-    const fetchedClones = new Set<string>();
-    let problem: string | undefined;
-    for (const key of [...new Set(wanted.map((w) => w.key))]) {
-      const clone = (await this.clonesOf(key))[0];
-      if (!clone) continue;
-      if (fetch && !fetchedClones.has(clone)) {
-        fetchedClones.add(clone);
+    const files = new Map<string, { files: string[]; problem?: string }>();
+    const problems = new Map<RoomId, string[]>();
+    const note = (roomId: RoomId, text: string) => {
+      const list = problems.get(roomId) ?? [];
+      if (!list.includes(text)) problems.set(roomId, [...list, text]);
+    };
+    if (fetch) {
+      const now = new Set(wanted.flatMap((w) => clones.get(`${w.roomId}\t${w.key}`) ?? []));
+      for (const clone of now) {
         try {
           await fetchOrigin(clone);
+          this.fetchProblems.delete(clone);
         } catch (err) {
-          problem = this.d.log(`team House board: fetching teammates' branches into ${clone}`, err);
+          this.fetchProblems.set(clone, this.d.log(`team House board: fetching teammates' branches into ${clone}`, err));
         }
       }
-      const files = new Map<string, { files: string[]; problem?: string }>();
-      for (const w of wanted.filter((x) => x.key === key)) {
-        if (!files.has(w.branch)) {
-          const r = await pushedBranchFiles(clone, w.branch).catch((err: Error) => ({ problem: err.message }));
-          files.set(w.branch, "problem" in r ? { files: [], problem: r.problem } : { files: r.files });
-        }
-        const f = files.get(w.branch)!;
-        out.push({ roomId: w.roomId, member: w.member, name: w.name, branch: w.branch, key, repo: clone, files: f.files, ...(f.problem ? { problem: f.problem } : {}) });
+      for (const clone of [...this.fetchProblems.keys()]) if (!now.has(clone)) this.fetchProblems.delete(clone);
+    }
+    for (const w of wanted) {
+      const clone = clones.get(`${w.roomId}\t${w.key}`);
+      if (!clone) continue;
+      const fetchProblem = this.fetchProblems.get(clone);
+      if (fetchProblem) note(w.roomId, `Teammates' branches couldn't be fetched into ${clone}, so their claimed files may be out of date: ${fetchProblem}`);
+      const at = `${clone}\t${w.branch}`;
+      if (!files.has(at)) {
+        const r = await pushedBranchFiles(clone, w.branch).catch((err: Error) => ({ problem: this.d.log(`team House board: reading ${w.branch}'s files in ${clone}`, err) }));
+        files.set(at, "problem" in r ? { files: [], problem: r.problem } : { files: r.files });
       }
+      const f = files.get(at)!;
+      if (f.problem) note(w.roomId, `${w.name}'s branch ${w.branch} wasn't read, so its files aren't claimed here: ${f.problem}`);
+      out.push({ roomId: w.roomId, member: w.member, name: w.name, branch: w.branch, key: w.key, repo: clone, files: f.files, ...(f.problem ? { problem: f.problem } : {}) });
     }
-    if (fetch && this.fetchProblem !== problem) {
-      this.fetchProblem = problem;
-      for (const r of team.rooms()) this.emitSoon(r.id);
-    }
+    const shown = JSON.stringify([...this.branchProblems].sort());
+    this.branchProblems = problems;
+    if (JSON.stringify([...problems].sort()) !== shown) for (const r of team.rooms()) this.emitSoon(r.id);
     const before = JSON.stringify(this.teammates);
     this.teammates = out;
     if (JSON.stringify(out) === before) return;
     this.d.overlapsChanged?.();
     this.refreshCopies();
+  }
+
+  /** The clones this Mac's live sessions in each room work in, by room and origin (`<roomId>\t<origin key>` → main checkout). */
+  private async roomClones(): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    for (const s of this.d.sessions()) {
+      if (s.status === "dead" || s.shell || !s.repoPath) continue;
+      const roomId = this.roomOf(s);
+      if (!roomId) continue;
+      const o = await this.origin(s.repoPath);
+      if (o.key && !out.has(`${roomId}\t${o.key}`)) out.set(`${roomId}\t${o.key}`, o.main);
+    }
+    return out;
   }
 
   /** Rewrite every room repository's worktree copies (one pass at a time; a request during one runs another after). */
