@@ -10,6 +10,7 @@ import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
 import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneScroll";
 import { isViewControl } from "../shared/termInput";
+import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
 import { dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
@@ -413,11 +414,7 @@ export function TerminalPane({
     let alive = true;
     window.mb.sessionBuffer(session.id).then((buf: string) => {
       if (!alive) return;
-      const text = (buf || "")
-        .replace(/\x1b\[[0-9;?<>=]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\|\x1b[()=>][A-Za-z0-9]?|\x1b[78]|\r/g, "")
-        .split("\n")
-        .map((l) => l.trimEnd())
-        .filter((l) => l.trim().length > 0);
+      const text = terminalLines(buf || "").filter((l) => l.trim().length > 0);
       setExitTail(text.slice(-12).join("\n"));
     });
     return () => {
