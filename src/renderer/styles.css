@@ -2157,6 +2157,7 @@ button.rc-artifact:hover { border-color: var(--line-btn-hover); background: var(
 .rc-artifact .fp-glyph.plain .ico { width: 12px; height: 12px; }
 .rc-artifact-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .rc-artifact.gone { padding-left: 5px; border-style: dashed; color: var(--text-4); font-style: italic; }
+.rc-artifact.gone.unread { font-style: normal; color: var(--text-3); }
 /* files dragged over the Team tab */
 .art-drop {
   position: absolute; inset: 6px; z-index: 20; display: grid; place-items: center; pointer-events: none;

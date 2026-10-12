@@ -219,8 +219,18 @@ function RoomChat({
   const input = useRef<HTMLTextAreaElement>(null);
   const drop = useFileDrop((files) => void actions.addFiles(files));
   const refs = useMemo<InlineContext>(
-    () => ({ artifact: (id, label, key) => <ArtifactChip key={key} item={artifacts.find((a) => a.id === id)} label={label} onOpen={setViewing} /> }),
-    [artifacts]
+    () => ({
+      // until the room's artifacts are read, a reference is only its label: not "(removed)", which it may not be
+      artifact: (id, label, key) =>
+        arts.view ? (
+          <ArtifactChip key={key} item={artifacts.find((a) => a.id === id)} label={label} onOpen={setViewing} />
+        ) : (
+          <span key={key} className="rc-artifact gone unread" title={arts.error ?? "Reading the room's artifacts…"}>
+            {label}
+          </span>
+        ),
+    }),
+    [arts.view, arts.error]
   );
   /** Put #[name] into the message box at the caret, remembering which artifact it means. */
   const mention = (a: Pick<ArtifactSummary, "id" | "name">) => {
@@ -399,7 +409,7 @@ function RoomChat({
         <div className="art-drop">
           <div>
             <b>Drop to share with the room</b>
-            <span>Every member gets a copy · up to 25 MB a file</span>
+            <span>Every member gets a copy · 25 MB a file at most</span>
           </div>
         </div>
       )}
