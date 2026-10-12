@@ -52,6 +52,7 @@ import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
+import { claudeRunner, freeForResume } from "./claudeBackground";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 import { TeamService, type RoomCleanup } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
@@ -215,6 +216,12 @@ function startTakeover(): TakeoverService | null {
 const titleOfSession = (id: string) => [...sessions.list(), ...sessions.resumable()].find((s) => s.id === id)?.title ?? "a room session";
 // a session a teammate continues never runs here again (team rooms: take-over)
 sessions.relaunchGuard = (id) => takeover?.relaunchRefusal(id) ?? null;
+// a Claude conversation a relaunch resumes may be running in Claude Code's background, outside its pane
+sessions.freeConversation = async (conv) => {
+  if (conv.agent !== "claude") return null;
+  const bin = await installedBin("claude");
+  return bin ? freeForResume(claudeRunner(bin, paneEnv()), conv.id) : null;
+};
 const needTakeover = (): TakeoverService => {
   if (!takeover) throw new Error("Team rooms haven't started — see Settings → Team");
   return takeover;

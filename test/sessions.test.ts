@@ -238,31 +238,31 @@ describe("relaunch after an app restart", () => {
     fs.writeFileSync(path.join(dir, `${id}.jsonl`), "{}\n");
   };
   const saved = (over: object) => ({ id: "x1", title: "Weekly Routine", repoPath: null, cwd: "/Users/me", branch: null, taskGroup: "Tasks", extraDirs: [], ...over });
-  const relaunchReq = (over: object) => {
+  const relaunchReq = async (over: object) => {
     const { m } = manager([saved(over)]);
     const create = vi.fn(() => ({}) as any);
     (m as any).create = create;
-    m.relaunch("x1");
+    await m.relaunch("x1");
     return (create.mock.calls as any[])[0][0];
   };
 
-  it("brings a terminal back with the agent conversation that was running in it", () => {
+  it("brings a terminal back with the agent conversation that was running in it", async () => {
     transcript("routine-conv");
-    const req = relaunchReq({ shell: true, conversation: { agent: "claude", id: "routine-conv" } });
+    const req = await relaunchReq({ shell: true, conversation: { agent: "claude", id: "routine-conv" } });
     expect(req).toMatchObject({ shell: true, shellResume: { agent: "claude", id: "routine-conv" } });
   });
-  it("brings a plain terminal back plain", () => {
-    const req = relaunchReq({ shell: true });
+  it("brings a plain terminal back plain", async () => {
+    const req = await relaunchReq({ shell: true });
     expect(req.shell).toBe(true);
     expect(req.shellResume).toBeUndefined();
   });
-  it("resumes an agent session's exact conversation instead of the folder's most recent", () => {
+  it("resumes an agent session's exact conversation instead of the folder's most recent", async () => {
     transcript("exact-conv");
-    const req = relaunchReq({ agent: "claude", conversation: { agent: "claude", id: "exact-conv" } });
+    const req = await relaunchReq({ agent: "claude", conversation: { agent: "claude", id: "exact-conv" } });
     expect(req).toMatchObject({ resumeSessionId: "exact-conv", resume: false });
   });
-  it("falls back to the folder's most recent when the recorded conversation is gone", () => {
-    const req = relaunchReq({ agent: "claude", conversation: { agent: "claude", id: "deleted-conv" } });
+  it("falls back to the folder's most recent when the recorded conversation is gone", async () => {
+    const req = await relaunchReq({ agent: "claude", conversation: { agent: "claude", id: "deleted-conv" } });
     expect(req.resumeSessionId).toBeUndefined();
     expect(req.shellResume).toBeUndefined();
   });

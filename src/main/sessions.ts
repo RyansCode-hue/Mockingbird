@@ -31,6 +31,9 @@ export function restartDivider(at: Date, earlier: string): string {
   return `${entered > left ? "\x1b[?1049l" : ""}\r\n\x1b[?25h\x1b[0m\x1b[2m── restarted ${when} · earlier output above ──\x1b[0m\r\n\r\n`;
 }
 
+/** Something Mockingbird did while starting a pane that its user should know about, as the pane shows it above the agent's output. */
+export const paneNotice = (text: string): string => `\x1b[0m\x1b[33m${text.replace(/\r?\n/g, "\r\n")}\x1b[0m\r\n\r\n`;
+
 /**
  * The app's environment minus any Claude Code session markers. When Mockingbird
  * is started from inside a Claude Code session, those markers (CLAUDECODE,
@@ -138,6 +141,13 @@ export class SessionManager {
   roomLaunch: ((target: LaunchTarget) => Promise<RoomLaunch | null>) | null = null;
   /** Why a session mustn't run again here (a teammate continues it: team rooms' take-over), or null when it may. */
   relaunchGuard: ((id: string) => string | null) | null = null;
+  /**
+   * Makes a conversation free for a relaunch to resume, when the agent's own
+   * background sessions hold it (claudeBackground.ts). Returns what the pane
+   * should say about it, or null when there was nothing to do; throws when it
+   * can't be freed.
+   */
+  freeConversation: ((conversation: { agent: AgentKind; id: string }) => Promise<string | null>) | null = null;
   private watchers = new Set<() => void>();
   private outputListeners = new Set<(id: string, data: string, end: number, epoch: string) => void>();
   private statusListeners = new Set<(info: SessionInfo, before: SessionStatus) => void>();
@@ -234,7 +244,8 @@ export class SessionManager {
     return this.store.state.sessions.filter((s) => !liveIds.has(s.id));
   }
 
-  async create(req: NewSessionRequest): Promise<SessionInfo> {
+  /** Start a pane. `notice` is shown in it above the agent's output (see paneNotice). */
+  async create(req: NewSessionRequest, opts: { notice?: string } = {}): Promise<SessionInfo> {
     const settings = this.store.settings;
     let cwd: string;
     let branch: string | null = null;
@@ -301,6 +312,8 @@ export class SessionManager {
       const a = agentFor(req.shellResume.agent);
       claudeArgs = ["-ilc", `${commandFor(a, { ...req, shell: false, resumeSessionId: req.shellResume.id }, roomCtx)}; exec /bin/zsh -il`];
     }
+    // the agent this pty runs: an agent pane's, or the one a terminal brings back
+    const runs = req.shell ? req.shellResume?.agent : req.agent ?? "claude";
     let proc: pty.IPty;
     try {
       proc = pty.spawn("/bin/zsh", claudeArgs, {
@@ -315,6 +328,7 @@ export class SessionManager {
           // starts by hand inside a terminal pane — so every hook event names
           // its pane exactly; a folder alone is ambiguous (see statusFromHook)
           MOCKINGBIRD_SESSION: id,
+          ...(runs ? agentFor(runs).launchEnv : {}),
           // debriefs get PAT auth for the az DevOps CLI (AZURE_DEVOPS_EXT_PAT)
           // so ticket/PR queries work without az login or an MCP server
           ...(req.debrief ? adoEnv(this.store) : {}),
@@ -377,10 +391,11 @@ export class SessionManager {
     const earlier = req.reuseId ? this.readScrollback(req.reuseId) : "";
     const owed = [...(prior?.queued ?? []), ...(this.undelivered.get(info.id) ?? [])];
     this.undelivered.delete(info.id);
+    const lead = (earlier ? earlier + restartDivider(new Date(), earlier) : "") + (opts.notice ? paneNotice(opts.notice) : "");
     const sess: LiveSession = {
       info,
       proc,
-      buffer: earlier ? (earlier + restartDivider(new Date(), earlier)).slice(-BUFFER_MAX) : "",
+      buffer: lead.slice(-BUFFER_MAX),
       queued: owed,
       lastInput: 0,
       draft: false,
@@ -677,6 +692,10 @@ export class SessionManager {
     const conv = old.conversation && agentFor(old.conversation.agent).conversationExists(old.conversation.id) ? old.conversation : null;
     const sameAgent = conv && conv.agent === (old.agent ?? "claude");
     const resume = !old.shell && !sameAgent && agentFor(old.agent).hasConversation(old.cwd);
+    // the conversation resumed by id, which something outside the pane may be running
+    const resuming = old.shell || sameAgent ? conv : null;
+    const notice = (resuming && (await this.freeConversation?.(resuming))) || undefined;
+    if (notice) console.warn(`[sessions] ${id}: ${notice}`);
     const info = await this.create({
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
@@ -697,7 +716,7 @@ export class SessionManager {
       model: old.model ?? undefined,
       effort: old.effort ?? undefined,
       agent: old.agent,
-    });
+    }, { notice });
     // a muted pane stays muted through restarts
     if (old.muted) {
       info.muted = true;
