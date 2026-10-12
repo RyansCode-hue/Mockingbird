@@ -283,8 +283,8 @@ function TicketDetail({ roomId, n, view, onBack }: { roomId: string; n: number; 
             </button>
           )}
           {claiming && <ClaimForm n={n} title={d.title} branches={view.branches} busy={doing("claim")} onCancel={() => setClaiming(false)} onClaim={(branch) => void write("claim", { kind: "claim", n, branch }).then((r) => !isErr(r) && setClaiming(false))} />}
-          {t.owner && (
-            <button className="outline" disabled={doing("release")} title={t.owner.self ? "Give it back, so someone else can pick it up" : `The House decides whether you can release ${t.owner.name}'s claim`} onClick={() => void write("release", { kind: "release", n })}>
+          {t.owner?.self && (
+            <button className="outline" disabled={doing("release")} title="Give it back, so someone else can pick it up" onClick={() => void write("release", { kind: "release", n })}>
               Release
             </button>
           )}
@@ -415,7 +415,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
       {view.copiesProblem && <div className="house-note bad">{view.copiesProblem}</div>}
       {adding && <AddTicket act={act} onDone={() => setAdding(false)} />}
       {error && <div className="fp-note err">{error}</div>}
-      {view.project && (
+      {view.project && view.connection.state !== "missing" && view.connection.state !== "bad" && (
         <>
           <Section
             title={sliceTitle}
@@ -432,7 +432,6 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
       {view.fetchProblem && <div className="house-dim">Teammates' branches couldn't be fetched, so their claimed files may be out of date: {view.fetchProblem}</div>}
       <div className="row">
         {busy && <span className="foot-hint house-dim">{doing("refresh") ? "Reading the House…" : "Saving to the House…"}</span>}
-        {!busy && view.branches.length > 0 && <span className="foot-hint house-dim">Your sessions here: {plural(view.branches.length, "branch")}</span>}
         <button className="outline" onClick={onClose}>
           Close
         </button>

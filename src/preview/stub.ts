@@ -233,7 +233,7 @@ const houseView = (roomId: string): HouseView => {
       : missing
         ? { state: "missing", file: `~/.config/radley-house/${r.project}.env`, message: `There's no ~/.config/radley-house/${r.project}.env on this Mac. ${HOUSE_TOKEN_HOW} Save it there (mode 600) as HOUSE_API_URL, HOUSE_PROJECT_ID and HOUSE_BUILD_TOKEN.` }
         : { state: "ok" },
-    slice: r.project && !missing ? { name: "Slice 3 · Org memory", listsTickets: true, rows: r.slice.map((n) => houseRow(n)) } : null,
+    slice: r.project && !missing ? { name: "Slice 3 — org memory", listsTickets: true, rows: r.slice.map((n) => houseRow(n)) } : null,
     added: missing ? [] : r.added.filter((a) => !r.slice.includes(a.n)).map((a) => houseRow(a.n, a.by)),
     fetchedAt: r.project && !missing ? now - 40_000 : 0,
     refreshing: false,
@@ -1035,24 +1035,28 @@ if (params.has("shot")) {
   document.head.appendChild(still);
 }
 // team rooms: the House board — ?house=1 opens the first shared group's board (2: the second); ?houseTicket=141 opens
-// that ticket on it; ?houseWarning adds a claim warning
-if (params.has("house") || params.has("houseTicket") || params.has("houseWarning")) {
+// that ticket on it, ?houseClaim=142 starts claiming it, ?houseAdd (=new) opens + Add ticket; ?houseWarning adds a claim warning
+if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning"].some((k) => params.has(k))) {
   let tries = 0;
   const open = setInterval(() => {
     const n = Number(params.get("house")) || 1;
     const button = document.querySelectorAll('button[title^="House board"]')[n - 1] as HTMLElement | undefined;
     if (!button && ++tries < 50) return;
     clearInterval(open);
-    if (params.has("house") || params.has("houseTicket")) button?.click();
-    if (params.has("houseTicket")) {
-      let rowTries = 0;
-      const row = setInterval(() => {
-        const r = [...document.querySelectorAll(".house-row-main")].find((x) => x.querySelector(".house-n")?.textContent === `#${params.get("houseTicket")}`) as HTMLElement | undefined;
-        if (!r && ++rowTries < 50) return;
-        clearInterval(row);
-        r?.click();
-      }, 100);
-    }
+    if (!params.has("houseWarning") || params.has("house")) button?.click();
+    const ticket = params.get("houseTicket") ?? params.get("houseClaim");
+    let boardTries = 0;
+    const board = setInterval(() => {
+      const r = ticket ? ([...document.querySelectorAll(".house-row-main")].find((x) => x.querySelector(".house-n")?.textContent === `#${ticket}`) as HTMLElement | undefined) : document.querySelector(".house-modal");
+      if (!r && ++boardTries < 50) return;
+      clearInterval(board);
+      if (params.has("houseTicket")) r?.click();
+      if (params.has("houseClaim")) (r?.querySelector(".house-claim-btn") as HTMLElement | null)?.click();
+      if (params.has("houseAdd")) {
+        ([...document.querySelectorAll(".house-head button")].find((x) => x.textContent === "+ Add ticket") as HTMLElement | undefined)?.click();
+        if (params.get("houseAdd") === "new") setTimeout(() => ([...document.querySelectorAll(".house-tabs button")].find((x) => x.textContent === "New ticket") as HTMLElement | undefined)?.click(), 50);
+      }
+    }, 100);
     if (params.has("houseWarning")) {
       const hit = { roomId: "R5101aaaaaaaaaaaaaaaaa", room: "#5101 Org dropdowns remember the last org", n: 141, title: "Last-org API: GET/PUT /api/users/me/last-org", status: "in_progress", owner: { id: NICK, name: "Nick Smith" }, branch: "5101-lastOrgApi" };
       emit("onHouseWarning", { at: Date.now(), sessionId: "s1", sessionTitle: "Org dropdowns remember the last org", decision: "deny", tool: "Edit", conflicts: [{ file: "src/api/orgs/last.py", root: WT("5101-orgDropdowns"), hits: [hit] }] });

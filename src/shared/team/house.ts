@@ -219,6 +219,7 @@ export const ownerChip = (owner: HouseOwner, status: string): string => `${owner
 export function branchFor(n: number, title: string): string {
   const slug = title
     .toLowerCase()
+    .replace(/['’]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .split("-")
