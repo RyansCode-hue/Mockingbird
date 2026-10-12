@@ -15,7 +15,7 @@ import { CODEX_ROOM_PROFILE } from "../src/main/codexRoomSandbox";
 import { HouseService } from "../src/main/team/houseService";
 import { claudeToolName } from "../src/main/messaging";
 import { ROOM_CONTEXT_ENV } from "../src/shared/team/claims";
-import { HOUSE_TOOL_NAMES } from "../src/shared/team/house";
+import { HOUSE_READ_TOOLS, HOUSE_TOOL_NAMES, HOUSE_WRITE_TOOLS } from "../src/shared/team/house";
 import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
@@ -597,7 +597,7 @@ describe("room session launch", () => {
     expect(remoteOf(nick, s.id)!.room!.guards).toEqual({ secrets: false, coauthors: true });
   });
 
-  it("starts an agent knowing the room's House board, with its tools allowed (Claude) — so the SessionStart hook adds nothing", async () => {
+  it("starts an agent knowing the room's House board, its read tools allowed and its writes asking in the pane — so the SessionStart hook adds nothing", async () => {
     const { ryan, roomId } = await pair();
     const plan = new HouseService({
       roomGroups: () => [{ roomId, groupKey: "5110" }],
@@ -616,7 +616,11 @@ describe("room session launch", () => {
       const cmd = claude.args.join(" ");
       expect(cmd).toContain("--append-system-prompt");
       expect(cmd).toContain("Mockingbird team room");
-      for (const tool of HOUSE_TOOL_NAMES) expect(cmd).toContain(claudeToolName(tool));
+      // the House's reads run without asking; its writes are left to Claude's permission prompt in the pane
+      const allowed = /'--allowedTools' '([^']+)'/.exec(cmd)![1].split(",");
+      for (const tool of HOUSE_READ_TOOLS) expect(allowed).toContain(claudeToolName(tool));
+      for (const tool of HOUSE_WRITE_TOOLS) expect(cmd).not.toContain(claudeToolName(tool));
+      expect([...HOUSE_READ_TOOLS, ...HOUSE_WRITE_TOOLS].sort()).toEqual([...HOUSE_TOOL_NAMES].sort());
       expect(cmd).toContain("list_house_tickets (the room");
       // and the room artifacts' tools, which the context names too
       for (const tool of Object.values(ARTIFACT_TOOL)) expect(cmd).toContain(claudeToolName(tool));
@@ -624,6 +628,7 @@ describe("room session launch", () => {
       expect(claude.env[ROOM_CONTEXT_ENV]).toBe("1");
       const codex = ptyOf((await ryan.start({ agent: "codex" })).id);
       expect(codex.args.join(" ")).toContain(`'-c' 'developer_instructions="This repository is part of a Mockingbird team room`);
+      for (const tool of HOUSE_WRITE_TOOLS) expect(codex.args.join(" ")).toContain(`'-c' 'mcp_servers.mockingbird.tools.${tool}.approval_mode="prompt"'`);
       expect(codex.env[ROOM_CONTEXT_ENV]).toBe("1");
       const term = ptyOf((await ryan.start({ shell: true, agent: undefined })).id);
       expect(term.args.join(" ")).not.toContain("--append-system-prompt");

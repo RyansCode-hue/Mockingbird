@@ -4,7 +4,7 @@ import * as net from "net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Messaging, mcpLaunch } from "../src/main/messaging";
 import type { SessionInfo } from "../src/shared/types";
-import { HOUSE_TOOL_NAMES } from "../src/shared/team/house";
+import { HOUSE_READ_TOOLS, HOUSE_TOOL_NAMES, HOUSE_WRITE_TOOLS } from "../src/shared/team/house";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, title: id, ticketTitle: null, repoPath: `/code/${id}`, branch: `${id}-branch`, taskGroup: "5038/api", status: "idle", agent: "claude", cwd: `/w/${id}`, kind: "work", ...over }) as SessionInfo;
@@ -150,6 +150,13 @@ describe("MCP server script", () => {
     const byId = Object.fromEntries(out.trim().split("\n").map((l) => JSON.parse(l)).map((m) => [m.id, m]));
     expect(byId[1].result).toMatchObject({ protocolVersion: "2025-06-18", serverInfo: { name: "mockingbird" } });
     expect(byId[2].result.tools.map((t: any) => t.name)).toEqual(["list_sessions", "send_message", ...HOUSE_TOOL_NAMES, "list_room_artifacts", "read_room_artifact"]);
+    // the House's writes need a person's OK on every call (Claude Code, in any permission mode); its reads are read-only
+    const listed = Object.fromEntries(byId[2].result.tools.map((t: any) => [t.name, t]));
+    for (const tool of HOUSE_WRITE_TOOLS) expect(listed[tool]).toMatchObject({ _meta: { "anthropic/requiresUserInteraction": true }, annotations: { readOnlyHint: false } });
+    for (const tool of HOUSE_READ_TOOLS) {
+      expect(listed[tool].annotations).toEqual({ readOnlyHint: true });
+      expect(listed[tool]).not.toHaveProperty("_meta");
+    }
     expect(byId[3].result.isError).toBe(false);
     expect(JSON.parse(byId[3].result.content[0].text).you.id).toBe("front");
     expect(byId[4].result).toMatchObject({ isError: true, content: [{ text: "That is your own session." }] });

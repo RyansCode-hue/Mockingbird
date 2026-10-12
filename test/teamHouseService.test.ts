@@ -196,6 +196,22 @@ describe("the House board's tools for agents", () => {
     expect(rooms).not.toContain("Export skips archived donors");
   });
 
+  it("refuses House writes from a Codex that can't be relied on to ask its user first, reads still allowed", async () => {
+    const h = await house();
+    const old = session("c1", { agent: "codex", agentVersion: "0.131.0", branch: "5110-a" });
+    const unknown = session("c2", { agent: "codex", branch: "5110-b" });
+    const current = session("c3", { agent: "codex", agentVersion: "0.156.1", branch: "5110-c" });
+    const { r } = await pair(h, { ryan: { sessions: () => [old, unknown, current] } });
+    const before = h.by(RYAN_T).length;
+    expect(await r.svc.toolCall("c1", "claim_house_ticket", { n: 141 })).toEqual({ error: expect.stringMatching(/^Codex 0\.131\.0 is older than 0\.138\.0, so it can't be relied on to ask your user before each House write, and Mockingbird refuses them/) });
+    expect(await r.svc.toolCall("c2", "create_house_ticket", { title: "x", description: "y" })).toEqual({ error: expect.stringMatching(/^Mockingbird couldn't read this Codex's version/) });
+    expect(h.by(RYAN_T).slice(before).filter((x) => !x.startsWith("GET"))).toEqual([]);
+    expect(result(await r.svc.toolCall("c1", "read_house_ticket", { n: 141 }))).toMatchObject({ n: 141 });
+    expect(result(await r.svc.toolCall("c3", "claim_house_ticket", { n: 141 }))).toMatch(/^Claimed #141 on 5110-c\./);
+    // an approved write is in the log, by the session that made it
+    expect(r.logs.some((l) => /^team House board: c3's write in room 5110, approved in its pane: Claimed #141 on 5110-c/.test(l))).toBe(true);
+  });
+
   it("starts agents knowing the board, fenced as data, with the tools to use", async () => {
     const h = await house();
     Object.assign(h.items.get(141)!, { assignee: "Nick Smith", branch: "5110-donorApi", status: "in_progress" });

@@ -122,7 +122,8 @@ export class AgentUpdateFeed {
         session: "",
         title: "",
         kind: "board",
-        detail: `${name(e.author) ?? "a teammate"}${via ? ` (agent: ${via})` : ""} ${NUDGE_VERB[body.change as NudgeChange]} #${body.n}`,
+        // an agent's write was approved in its owner's pane: the room hears whose agent made it
+        detail: `${name(e.author) ?? "a teammate"}${via ? `'s agent (${via})` : ""} ${NUDGE_VERB[body.change as NudgeChange]} #${body.n}`,
         at: this.now(),
       });
     }

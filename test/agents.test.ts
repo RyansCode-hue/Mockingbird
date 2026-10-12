@@ -60,6 +60,13 @@ describe("Codex launch", () => {
     expect(args.join(" ")).not.toContain("tool_timeout_sec"); // only Collaborate's code reader needs minutes
     expect(args.slice(-2)).toEqual(["--", "Ticket #1\nline two"]);
   });
+  it("pre-approves the MCP server's tools but for the House's writes, which ask before every call", async () => {
+    const { HOUSE_READ_TOOLS, HOUSE_WRITE_TOOLS } = await import("../src/shared/team/house");
+    const args = agentFor("codex").launchArgs({ ...base }, { mcp });
+    for (const tool of HOUSE_WRITE_TOOLS) expect(args).toContain(`mcp_servers.mockingbird.tools.${tool}.approval_mode="prompt"`);
+    for (const tool of HOUSE_READ_TOOLS) expect(args.join(" ")).not.toContain(`tools.${tool}.`);
+    expect(args).toContain(`mcp_servers.mockingbird.default_tools_approval_mode="approve"`);
+  });
   it("passes a kickoff that starts with a dash as the prompt, not as options", () => {
     expect(agentFor("codex").launchArgs({ ...base, initialPrompt: "- run the tests" }, { mcp }).slice(-2)).toEqual(["--", "- run the tests"]);
     expect(agentFor("codex").launchArgs({ ...base }, { mcp })).not.toContain("--");

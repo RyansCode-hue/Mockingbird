@@ -35,7 +35,7 @@ import type { LaunchTarget, RemotePanes, RoomLaunch, SessionManager } from "../s
 import { MAX_STREAM_CHUNK, splitText } from "./frames";
 import { roomAgentContext } from "./houseService";
 import { ROOM_CONTEXT_ENV } from "../../shared/team/claims";
-import { HOUSE_TOOL_NAMES } from "../../shared/team/house";
+import { HOUSE_READ_TOOLS } from "../../shared/team/house";
 import { ARTIFACT_TOOL } from "../../shared/team/artifacts";
 import { TEAM_DIR } from "./identity";
 import { CoauthorTurns, COAUTHORS_DIR, ensureHooks, hooksEnv, HOOKS_DIR } from "./coauthors";
@@ -343,8 +343,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
    * What a session starting in a shared group gets: secret reads denied
    * (Claude's rules; a Codex new enough runs in the room's sandbox and is
    * told about it), its commits credit teammates, an agent starts knowing
-   * the room's House board, with its tools (and the room artifacts' two)
-   * allowed, and — unless this Mac's person turned it off — it runs inline,
+   * the room's House board, with its read tools (and the room artifacts' two)
+   * allowed — its writes ask in the pane — and, unless this Mac's person turned it off — it runs inline,
    * so teammates' copies hold its history and scroll it themselves (a
    * full-screen agent keeps its history inside itself: a copy would show one
    * screen of it).
@@ -397,7 +397,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       denyReads,
       codexPermissions,
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
-      allowTools: target.agent === "claude" ? [...HOUSE_TOOL_NAMES, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read] : [],
+      allowTools: target.agent === "claude" ? [...HOUSE_READ_TOOLS, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read] : [],
       inline,
       guards: { secrets: target.agent === "claude" || codexGuarded, coauthors: this.hooksReady },
     };

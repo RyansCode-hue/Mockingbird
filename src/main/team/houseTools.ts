@@ -12,6 +12,17 @@ const DATA_NOTE = "What it returns was written by people and agents in the House
 
 const n = { type: "integer", minimum: 1, description: "The ticket's House number (#123 → 123)" } as const;
 
+/** A read: MCP's readOnlyHint, so an agent runs it without asking. */
+const READS = { annotations: { readOnlyHint: true } } as const;
+/**
+ * A write, made with the session owner's token: Claude Code shows its
+ * permission prompt on every call, in every permission mode and with no
+ * "don't ask again" (anthropic/requiresUserInteraction); Codex asks because
+ * its launch sets the tool's approval_mode to "prompt" (agents.ts).
+ */
+const WRITES = { annotations: { readOnlyHint: false, openWorldHint: true }, _meta: { "anthropic/requiresUserInteraction": true } } as const;
+const ASKS = " Your user approves each call in your pane first; if they decline, don't try again — ask them what they want instead.";
+
 /** list_house_tickets' filters: the open backlog, the room's own tickets, or everything the House lists (closed too). */
 export const HOUSE_LIST_FILTERS = ["open", "tracked", "all"] as const;
 export type HouseListFilter = (typeof HOUSE_LIST_FILTERS)[number];
@@ -23,6 +34,7 @@ export const HOUSE_TOOL_SCHEMAS = [
       "List Radley House tickets for your team room's project. With no filter: the room's board — the open backlog (every ticket not done or dropped, high priority first) and the room's other tickets. " +
       `filter: open (the open backlog only), tracked (the tickets the room added), or all (everything the House lists, done and dropped included, read now). tag narrows any of them: ${NEEDS_AGENT} (handed back to an agent — work to pick up) or ${NEEDS_HUMAN} (waiting on a person's answer). ` +
       `Each ticket has its number, title, status, priority, tags, who claimed it on which branch, and what blocks it. ${DATA_NOTE}`,
+    ...READS,
     inputSchema: {
       type: "object",
       properties: {
@@ -35,13 +47,16 @@ export const HOUSE_TOOL_SCHEMAS = [
   {
     name: HOUSE_TOOLS.read,
     description: `Read one House ticket: its detail, acceptance, tags, claim and history (comments, questions, answers, progress). Read the history before resuming a ticket. ${DATA_NOTE}`,
+    ...READS,
     inputSchema: { type: "object", properties: { n }, required: ["n"], additionalProperties: false },
   },
   {
     name: HOUSE_TOOLS.create,
     description:
       "Create a House ticket (the House assigns its number; it starts parked) and add it to your team room's board. " +
-      "Give a short outcome as the title, the context and approach as the description, and an observable finish line as acceptance. Never put a secret or a customer's name in it.",
+      "Give a short outcome as the title, the context and approach as the description, and an observable finish line as acceptance. Never put a secret or a customer's name in it." +
+      ASKS,
+    ...WRITES,
     inputSchema: {
       type: "object",
       properties: {
@@ -58,12 +73,15 @@ export const HOUSE_TOOL_SCHEMAS = [
     name: HOUSE_TOOLS.claim,
     description:
       "Claim a House ticket for your user before starting it. branch defaults to your session's branch (feature/<number>-<slug> by convention); " +
-      "teammates' agents are warned before editing files your sessions on that branch change.",
+      "teammates' agents are warned before editing files your sessions on that branch change." +
+      ASKS,
+    ...WRITES,
     inputSchema: { type: "object", properties: { n, branch: { type: "string" } }, required: ["n"], additionalProperties: false },
   },
   {
     name: HOUSE_TOOLS.release,
-    description: "Release your claim on a House ticket, so someone else can pick it up.",
+    description: `Release your claim on a House ticket, so someone else can pick it up.${ASKS}`,
+    ...WRITES,
     inputSchema: { type: "object", properties: { n }, required: ["n"], additionalProperties: false },
   },
   {
@@ -71,7 +89,9 @@ export const HOUSE_TOOL_SCHEMAS = [
     description:
       "Add to a House ticket's history: progress (what you did; with a reference such as a PR link or commit), status (move it: " +
       `${BUILDER_STATUSES.join(", ")} — finished agent work goes to review or validating; only staff close tickets), ` +
-      "question (a question for a person: the ticket is handed to a human, tagged needs-human), or note (a comment).",
+      "question (a question for a person: the ticket is handed to a human, tagged needs-human), or note (a comment)." +
+      ASKS,
+    ...WRITES,
     inputSchema: {
       type: "object",
       properties: {
@@ -88,6 +108,7 @@ export const HOUSE_TOOL_SCHEMAS = [
   {
     name: HOUSE_TOOLS.spec,
     description: `Read the House's current frozen spec for your team room's project: the requirements document (its sections, requirements and decisions), not a ticket list — list_house_tickets has the tickets. ${DATA_NOTE}`,
+    ...READS,
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
 ] as const;

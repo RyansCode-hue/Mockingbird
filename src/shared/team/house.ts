@@ -11,6 +11,7 @@
  * both use it.
  */
 import type { MemberId, RoomId } from "./types";
+import { isNewer } from "../versions";
 
 /** A House project name: the env file `~/.config/radley-house/<project>.env` holds its coordinates and this builder's token. */
 export const HOUSE_PROJECT_RE = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -55,6 +56,22 @@ export const HOUSE_TOOLS = {
   spec: "get_house_spec",
 } as const;
 export const HOUSE_TOOL_NAMES: string[] = Object.values(HOUSE_TOOLS);
+/** The tools that only read the House: an agent calls them without asking. */
+export const HOUSE_READ_TOOLS: string[] = [HOUSE_TOOLS.list, HOUSE_TOOLS.read, HOUSE_TOOLS.spec];
+/**
+ * The tools that write to the House with the session owner's token: every
+ * call waits for the owner's OK in the session's own pane (Claude's and
+ * Codex's own permission prompt), whatever mode the agent runs in.
+ */
+export const HOUSE_WRITE_TOOLS: string[] = [HOUSE_TOOLS.create, HOUSE_TOOLS.claim, HOUSE_TOOLS.release, HOUSE_TOOLS.event];
+
+/**
+ * The first Codex release checked to ask before each call of an MCP tool set
+ * to `approval_mode = "prompt"` (mcp_servers.<server>.tools.<tool>); an older
+ * or unknown Codex can't be relied on to ask, so its House writes are refused.
+ */
+export const CODEX_TOOL_PROMPT_SINCE = "0.138.0";
+export const codexAsksBeforeTools = (version: string | null | undefined): boolean => !!version && !isNewer(version, CODEX_TOOL_PROMPT_SINCE);
 
 // ---- what the House says, as Mockingbird reads it ---------------------------------------
 

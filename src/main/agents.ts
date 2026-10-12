@@ -6,6 +6,7 @@ import { usageReporterArgs } from "./usage";
 import { MCP_SERVER, MCP_TOOL, claudeToolName, type McpLaunch } from "./messaging";
 import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
 import { readSlice } from "./fileOps";
+import { HOUSE_WRITE_TOOLS } from "../shared/team/house";
 
 export interface LaunchContext {
   /** The per-session Mockingbird MCP server that lets agents message each other; absent for an agent outside messaging. */
@@ -20,7 +21,10 @@ export interface LaunchContext {
    * Codex's developer_instructions.
    */
   instructions?: string;
-  /** More Mockingbird MCP tools the agent may call without asking (Claude; Codex approves all of the server's). */
+  /**
+   * More Mockingbird MCP tools the agent may call without asking (Claude;
+   * Codex approves all of the server's but the House's writes, codexMcpSettings).
+   */
   allowTools?: string[];
   /**
    * Run inline, on the terminal's normal screen, never full screen (a team
@@ -187,9 +191,12 @@ export function claudeMcpConfig(mcp: McpLaunch): string {
 }
 
 /**
- * Codex's -c settings for the Mockingbird MCP server, its tools pre-approved.
- * -c values are TOML; JSON strings, arrays and this flat table are valid TOML
- * too. `toolTimeoutSec` raises Codex's limit for a tool that can take minutes.
+ * Codex's -c settings for the Mockingbird MCP server: its tools pre-approved
+ * but for the House's writes, which ask before every call ("prompt" offers no
+ * approve-for-the-session; with approval_policy "never" Codex refuses the
+ * call instead). -c values are TOML; JSON strings, arrays and this flat
+ * table are valid TOML too. `toolTimeoutSec` raises Codex's limit for a tool
+ * that can take minutes.
  */
 export function codexMcpSettings(mcp: McpLaunch, opts: { toolTimeoutSec?: number } = {}): string[] {
   const key = `mcp_servers.${MCP_SERVER}`;
@@ -200,6 +207,7 @@ export function codexMcpSettings(mcp: McpLaunch, opts: { toolTimeoutSec?: number
     `${key}.env={${env}}`,
     `${key}.default_tools_approval_mode="approve"`,
     ...(opts.toolTimeoutSec ? [`${key}.tool_timeout_sec=${opts.toolTimeoutSec}`] : []),
+    ...HOUSE_WRITE_TOOLS.map((tool) => `${key}.tools.${tool}.approval_mode="prompt"`),
   ];
 }
 

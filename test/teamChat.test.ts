@@ -242,7 +242,7 @@ describe("agent updates", () => {
     });
     await until(() => texts(ryan, roomId).length === 3 && texts(nick, roomId).length === 3, "both updates");
     expect(texts(nick, roomId).slice(1).sort()).toEqual(
-      ["update:Ryan (agent: Export API) created #143|Ryan claimed #141", "update:a session — was taken over: Nick took it over from Ryan"].sort()
+      ["update:Ryan's agent (Export API) created #143|Ryan claimed #141", "update:a session — was taken over: Nick took it over from Ryan"].sort()
     );
     await new Promise((r) => setTimeout(r, 200));
     expect(texts(ryan, roomId)).toHaveLength(3);

@@ -15,8 +15,11 @@ import type { ClaimEvent } from "../hooks";
 import { claimsFile, type ClaimsFile, type ClaimWarningNotice } from "../../shared/team/claims";
 import {
   BRANCH_RE,
+  CODEX_TOOL_PROMPT_SINCE,
+  codexAsksBeforeTools,
   HOUSE_PROJECT_RE,
   HOUSE_TOOLS,
+  HOUSE_WRITE_TOOLS,
   houseEnvFile,
   isOpenStatus,
   isTicketNumber,
@@ -440,14 +443,23 @@ export class HouseService {
     if (!s) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
     const roomId = this.roomOf(s);
     if (!roomId) return { error: "This session isn't in a shared team room, so it has no House board." };
+    const writes = HOUSE_WRITE_TOOLS.includes(op);
+    // a write reaches here once the agent's own permission prompt let it through; a Codex that may not ask is refused
+    if (writes && s.agent === "codex" && !codexAsksBeforeTools(s.agentVersion)) {
+      const which = s.agentVersion ? `Codex ${s.agentVersion} is older than ${CODEX_TOOL_PROMPT_SINCE}` : "Mockingbird couldn't read this Codex's version";
+      return { error: `${which}, so it can't be relied on to ask your user before each House write, and Mockingbird refuses them. Tell your user: they can do it on the room's board (▦), or update Codex and restart this session.` };
+    }
     let o: HouseToolOp;
     try {
       o = houseToolOp(op, args);
     } catch (err) {
       return { error: (err as Error).message };
     }
+    const via = s.ticketTitle ?? s.title;
     try {
-      return { result: await this.runTool(roomId, s, o) };
+      const result = await this.runTool(roomId, s, o);
+      if (writes) this.d.log(`team House board: ${via}'s write in room ${this.room(roomId).name}, approved in its pane`, typeof result === "string" ? result : op);
+      return { result };
     } catch (err) {
       return { error: (err as Error).message };
     }
