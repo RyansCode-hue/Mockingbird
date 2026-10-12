@@ -34,6 +34,7 @@ import type { LaunchTarget, RemotePanes, RoomLaunch, SessionManager } from "../s
 import { MAX_STREAM_CHUNK, splitText } from "./frames";
 import { roomAgentContext } from "./planService";
 import { PLAN_CONTEXT_ENV, PLAN_TOOL } from "../../shared/team/plan";
+import { ARTIFACT_TOOL } from "../../shared/team/artifacts";
 import { TEAM_DIR } from "./identity";
 import { CoauthorTurns, COAUTHORS_DIR, ensureHooks, hooksEnv, HOOKS_DIR } from "./coauthors";
 import { gitOf, memberName, originIdentity, recordFor, setRoomSessionLookup, turnEnded, TurnFeed, type RoomSessionSource, type TurnEnded } from "./roomSessions";
@@ -336,7 +337,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
    * What a session starting in a shared group gets: secret reads denied
    * (Claude's rules; a Codex new enough runs in the room's sandbox and is
    * told about it), its commits credit teammates, and an agent starts knowing
-   * the room's plan board, with its tool allowed.
+   * the room's plan board, with its tool (and the room artifacts' two) allowed.
    */
   async roomLaunch(target: LaunchTarget): Promise<RoomLaunch | null> {
     const roomId = target.group ? this.roomForGroup(splitGroupKey(target.group).top) : null;
@@ -380,7 +381,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       denyReads,
       codexPermissions,
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
-      allowTools: target.agent === "claude" ? [PLAN_TOOL] : [],
+      allowTools: target.agent === "claude" ? [PLAN_TOOL, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read] : [],
       guards: { secrets: target.agent === "claude" || codexGuarded, coauthors: this.hooksReady },
     };
   }

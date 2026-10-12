@@ -5,7 +5,7 @@ import { TeamChat } from "./chat";
 import type { Team, Unsubscribe } from "./transport";
 import type { Messaging, RoomSessionInfo } from "../messaging";
 import type { SessionInfo } from "../../shared/types";
-import type { RoomId } from "../../shared/team/types";
+import type { RoomEvent, RoomId } from "../../shared/team/types";
 
 /**
  * The team room on this install: its chat, the agent updates posted to it,
@@ -23,6 +23,8 @@ export interface TeamRoomDeps {
   roomOf?: (sessionId: string) => RoomId | null;
   /** One headless turn of the user's own agent CLI (the assistant). */
   ask: (prompt: string) => Promise<string>;
+  /** The assistant prompt's room artifacts part (see AssistantDeps.artifacts). */
+  artifacts?: (roomId: RoomId, question: RoomEvent<"chat.message">) => Promise<string | null>;
   /** Tell the window a room's chat changed ("*": any room's may have). */
   chatChanged: (roomId: RoomId) => void;
   notify: (n: { roomId: RoomId; title: string; body: string }) => void;
@@ -60,6 +62,7 @@ export class TeamRoom {
       repoDir: (roomId) => this.bridge.localSessions(roomId).find((s) => s.repoPath)?.cwd ?? null,
       publish: (roomId, body) => this.need().publish(roomId, "chat.assistant", body),
       log: d.log,
+      artifacts: d.artifacts,
     });
     this.chat = new TeamChat({
       dir: d.dir,

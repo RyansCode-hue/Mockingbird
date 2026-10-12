@@ -11,7 +11,8 @@ import type { MemberId, RoomEvent, RoomEventBodies, RoomId, RoomState } from "..
  * message that mentions it runs it on that member's laptop, under their own
  * account, as one headless turn with no tools: everything it knows is in
  * the prompt — the room's recent chat, its board (when the repo has one),
- * its sessions on every laptop, and the repo's docs. It posts "thinking",
+ * its sessions on every laptop, the repo's docs, and the room's artifacts
+ * (the ones the question names first). It posts "thinking",
  * then its answer or the error, as `chat.assistant` events. Turns in one
  * room run one at a time.
  */
@@ -37,6 +38,8 @@ export interface AssistantDeps {
   repoDir: (roomId: RoomId) => string | null;
   publish: (roomId: RoomId, body: RoomEventBodies["chat.assistant"]) => void;
   log: (msg: string) => void;
+  /** The prompt's `## Room artifacts` part (artifactTools.ts assistantArtifacts); null when the room has none. */
+  artifacts?: (roomId: RoomId, question: RoomEvent<"chat.message">) => Promise<string | null>;
 }
 
 export class RoomAssistant {
@@ -89,12 +92,13 @@ export class RoomAssistant {
     if (!room) throw new Error("This install isn't in that room any more");
     const dir = this.d.repoDir(roomId);
     // a part that can't be read is named in the prompt, so the answer can say what it lacked
-    const [sessions, board, docs] = await Promise.all([
+    const [sessions, board, docs, artifacts] = await Promise.all([
       this.d.sessions(roomId).catch((err) => [`(the session list couldn't be read: ${(err as Error).message})`]),
       dir ? readBoard(dir).catch((err) => `(the board couldn't be read: ${(err as Error).message})`) : Promise.resolve(null),
       dir ? readDocs(dir).catch((err) => [{ name: "docs", text: `(the docs couldn't be read: ${(err as Error).message})` }]) : Promise.resolve([]),
+      this.d.artifacts ? this.d.artifacts(roomId, question).catch((err) => `## Room artifacts\n(the room's artifacts couldn't be read: ${(err as Error).message})`) : Promise.resolve(null),
     ]);
-    return assistantPrompt({ room, question, sessions, board, docs, hasRepo: !!dir });
+    return assistantPrompt({ room, question, sessions, board, docs, hasRepo: !!dir, artifacts });
   }
 }
 
@@ -115,7 +119,7 @@ export function chatLine(room: RoomState, e: ChatEntry): string | null {
 }
 
 /** The assistant's whole prompt. */
-export function assistantPrompt(o: { room: RoomState; question: RoomEvent<"chat.message">; sessions: string[]; board: string | null; docs: { name: string; text: string }[]; hasRepo: boolean }): string {
+export function assistantPrompt(o: { room: RoomState; question: RoomEvent<"chat.message">; sessions: string[]; board: string | null; docs: { name: string; text: string }[]; hasRepo: boolean; artifacts?: string | null }): string {
   const asker = nameIn(o.room, o.question.author);
   const entries = o.room.ext.chat?.entries ?? [];
   const before = entries.filter((e) => e.id !== o.question.id && (e.lamport < o.question.lamport || (e.lamport === o.question.lamport && e.author < o.question.author)));
@@ -134,6 +138,7 @@ export function assistantPrompt(o: { room: RoomState; question: RoomEvent<"chat.
   if (o.board) parts.push(`## The plan board (${BOARD_FILE})\n${o.board}`);
   if (o.docs.length) parts.push(`## The repository's docs\n${o.docs.map((d) => `### ${d.name}\n${d.text}`).join("\n\n")}`);
   else if (!o.hasRepo) parts.push("(No checkout of the room's repository is open on this laptop, so its docs and board aren't included.)");
+  if (o.artifacts) parts.push(o.artifacts);
   return parts.join("\n\n");
 }
 
