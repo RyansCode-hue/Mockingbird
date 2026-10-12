@@ -641,7 +641,7 @@ function LinkDialog({ roomId, onClose, onAdded }: { roomId: string; onClose: () 
           const l = linkLabel(next.trim());
           if (!titled) setTitle(l ? l.label ?? l.host : "");
         }}
-        onKeyDown={(e) => e.key === "Enter" && add()}
+        onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add())}
       />
       {url.trim() && !parsed && <div className="err">That isn't an https link.</div>}
       <label>Title</label>
@@ -653,7 +653,7 @@ function LinkDialog({ roomId, onClose, onAdded }: { roomId: string; onClose: () 
           setTitle(e.target.value);
           setTitled(true);
         }}
-        onKeyDown={(e) => e.key === "Enter" && add()}
+        onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add())}
       />
       {error && <div className="err">{error}</div>}
       <div className="row">
@@ -715,7 +715,7 @@ function RepoFormDialog({
           const p = parseLines(e.target.value);
           if (!named && !("error" in p)) setName(repoDefaultName(path, p.lines));
         }}
-        onKeyDown={(e) => e.key === "Enter" && add()}
+        onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add())}
       />
       {"error" in parsed && <div className="err">{parsed.error}</div>}
       <label>Name</label>
@@ -727,7 +727,7 @@ function RepoFormDialog({
           setName(e.target.value);
           setNamed(true);
         }}
-        onKeyDown={(e) => e.key === "Enter" && add()}
+        onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), add())}
       />
       {error && <div className="err">{error}</div>}
       <div className="row">
