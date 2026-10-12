@@ -72,8 +72,10 @@ server, `npm run team:signaling`), the event log, and the WebRTC wire against
 the local server. Everything above the transport runs over an in-process
 loopback (`src/main/team/loopback.ts`) with real session managers and real git
 (a local bare origin and clones): live panes, the Co-authored-by hooks, chat,
-the plan board, backups (peer to peer by default, never reaching origin; the
-admin's opt-in to origin, its pre-push hook, and turning it off again) and
+the Radley House board (against a fake House: each member's own token, claims
+from a claimed ticket's branch), backups (peer to peer by default, never
+reaching origin; the admin's opt-in to origin, its pre-push hook, and turning
+it off again) and
 take-over with the owner online (Hand over, Keep,
 no answer, dropping offline mid-request), away or restarted, the old copy
 stopping, its unsent changes sent and applied, and Take it back; leaving and
@@ -372,12 +374,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
     chat** chip) with @mentions, agents' updates (turns, waits, take-overs,
     board changes), `list_sessions` and `send_message` across laptops, and
     **@assistant**, answered on the asker's laptop.
-  - **Plan board** (▦): work packages with owned paths, contracts and tests,
-    claimed by members, kept on the `mockingbird/plan` branch and as a
-    read-only copy in every worktree. Agents change it with `update_team_plan`;
-    an agent's first edit of a file a teammate's package owns is held back once
-    with a warning; a teammate's pushed branch that changes your files shows on
-    the pane ("Nick's branch also changes …") and opens the board.
+  - **Radley House board** (▦): the room's House project (its admin's
+    choice) — the current frozen slice and the tickets the room adds, who has
+    each, a ticket's history; claim, release, comment, post progress or a
+    question, create tickets. The House is the system of record: each member's
+    Mockingbird reads and writes it with their own builder token
+    (`~/.config/radley-house/<project>.env`), which never leaves the main
+    process. Agents use the `*_house_ticket` tools. The files a teammate's
+    sessions changed on a ticket they claimed are theirs: an agent's first edit
+    of one is held back once with a warning ("Nick's ticket #141 has been
+    changing this file"); a teammate's pushed branch that changes your files
+    shows on the pane ("Nick's branch also changes …") and opens the board.
+    It replaced the work-package plan board (`mockingbird/plan` is no longer
+    pushed; old branches are left alone).
 
 ### Next
 
