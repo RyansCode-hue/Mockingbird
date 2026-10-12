@@ -3,12 +3,12 @@ import * as path from "path";
 import { artifactItems, checkArtifactName, checkLinkUrl, checkNoteText } from "./artifactEvents";
 import { ArtifactFetcher, type FetchTiming } from "./artifactFetch";
 import { RepoRefs } from "./artifactRepo";
-import { ArtifactStore, checkAddable, formatBytes, quarantine, type Sniff } from "./artifactStore";
+import { ArtifactStore, checkAddable, formatBytes, inside, quarantine, type Sniff } from "./artifactStore";
 import { TEAM_DIR } from "./identity";
 import { ROOMS_DIR } from "./rooms";
 import { roomOfSession } from "./roomSessions";
 import type { Team, Unsubscribe } from "./transport";
-import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
+import { dirInside, isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { isSecretFileName } from "../secrets";
 import {
   AGENT_ARTIFACTS_DIR,
@@ -492,20 +492,32 @@ export class TeamArtifacts {
   }
 
   /**
-   * Copy a file artifact into `dir` for an agent (a clone, read-only),
-   * replacing an earlier copy there, and remember it so it's deleted when the
-   * artifact goes or becomes secret.
+   * Copy a file artifact for an agent into `<root>/.mockingbird/artifacts/<id>/`
+   * (a clone, read-only, quarantined, its folders owner-only), replacing an
+   * earlier copy there, and remember it so it's deleted when the artifact goes
+   * or becomes secret. `root` is the session's folder, which the agent writes:
+   * a .mockingbird or artifacts there that is a symbolic link is refused, and
+   * the copy's folder must stay inside the folder's real path.
    */
-  async copyForAgent(roomId: RoomId, a: FileRecord, dir: string, fileName: string): Promise<string> {
-    if (!ARTIFACT_ID_RE.test(a.id) || path.basename(dir) !== a.id || !dir.endsWith(path.join(AGENT_ARTIFACTS_DIR, a.id))) throw new Error("not an agent copy folder");
+  async copyForAgent(roomId: RoomId, a: FileRecord, root: string, fileName: string): Promise<string> {
+    if (!ARTIFACT_ID_RE.test(a.id)) throw new Error("not an artifact id");
+    const parent = dirInside(root, AGENT_ARTIFACTS_DIR, 0o700)!;
+    const dir = path.join(parent, a.id);
     const file = path.join(dir, fileName);
     if (path.dirname(file) !== dir) throw new Error("the artifact's name can't be a file name");
+    // an earlier copy, whatever it now is: a link is removed, never followed
     fs.rmSync(dir, { recursive: true, force: true });
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { mode: 0o700 });
+    if (!inside(fs.realpathSync(root), fs.realpathSync(dir))) throw new Error(`${dir} isn't inside ${root}`);
     this.copies = [...this.copies.filter((c) => !(c.dir === dir)), { roomId, id: a.id, dir }];
     writeFileAtomic(this.copiesFile, JSON.stringify(this.copies, null, 2));
-    fs.copyFileSync(this.store(roomId).blobPath(a.sha256), file, fs.constants.COPYFILE_FICLONE);
+    fs.copyFileSync(this.store(roomId).blobPath(a.sha256), file, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
+    // marked before it's made read-only: setting an attribute needs write permission
+    fs.chmodSync(file, 0o644);
+    const warning = await quarantine(file);
     fs.chmodSync(file, 0o444);
+    if (warning) this.d.log(`room artifacts: an agent's copy of ${a.name}`, warning);
+    this.problem(roomId, `quarantine-agent ${a.id}`, warning);
     return file;
   }
 
@@ -631,7 +643,9 @@ export class TeamArtifacts {
         continue;
       }
       try {
-        fs.rmSync(c.dir, { recursive: true, force: true });
+        // the folders above it are the agent's: a link there is refused (dirInside throws), never followed
+        const root = path.resolve(c.dir, "..", "..", "..");
+        if (dirInside(root, AGENT_ARTIFACTS_DIR)) fs.rmSync(c.dir, { recursive: true, force: true });
       } catch (err) {
         if (!isMissing(err)) {
           problems.push(`${c.dir} couldn't be deleted: ${(err as Error).message}`);

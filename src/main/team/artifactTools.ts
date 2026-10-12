@@ -1,4 +1,3 @@
-import * as path from "path";
 import { isRepo } from "../git";
 import { runningArtifacts, type TeamArtifacts } from "./artifacts";
 import { copyExtension, formatBytes } from "./artifactStore";
@@ -150,9 +149,8 @@ async function readFor(arts: TeamArtifacts, roomId: RoomId, session: SessionInfo
     const { text, truncated } = arts.readText(roomId, a, INLINE_TEXT_MAX);
     return { result: `${head}\nA ${sniff.view === "text" ? "text" : sniff.view} file, ${formatBytes(a.size)}${truncated ? " (cut)" : ""}:\n\n${cut(text, max)}` };
   }
-  const dir = path.join(session.cwd, AGENT_ARTIFACTS_DIR, a.id);
   if (await isRepo(session.cwd)) await excludeInRepo(session.cwd, { dir: AGENT_ARTIFACTS_DIR, line: EXCLUDE_LINE, comment: "Mockingbird room artifacts: copies for agents, never committed", what: "room artifacts' copies" });
-  const file = await arts.copyForAgent(roomId, a, dir, safeArtifactFileName(a.name, copyExtension(sniff)));
+  const file = await arts.copyForAgent(roomId, a, session.cwd, safeArtifactFileName(a.name, copyExtension(sniff)));
   const what = sniff.view === "image" ? `an image (${sniff.mime}${sniff.width ? `, ${sniff.width}×${sniff.height}` : ""})` : sniff.view === "pdf" ? "a PDF" : sniff.view === "binary" ? `a binary file` : `a ${sniff.view} file`;
   const how = sniff.view === "image" ? ((session.agent ?? "claude") === "codex" ? "Look at it with view_image." : "Look at it with your Read tool.") : sniff.view === "pdf" ? "Read it with your Read tool." : sniff.view === "binary" ? "Inspect it with your tools; it isn't text." : "Read it with your file tools.";
   return { result: `${head}\n${what}, ${formatBytes(a.size)}, copied to ${file} (read-only). ${how}` };

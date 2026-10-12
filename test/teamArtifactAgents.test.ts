@@ -150,7 +150,7 @@ describe("room agents' artifact tools", () => {
     const tracked = makeRepo({ ".mockingbird/artifacts/keep.txt": "mine\n" }, "tracked", path.join(dir, "nick-code"));
     nick.sessions.push(session("s2", { cwd: tracked, repoPath: tracked }));
     nick.rooms.set("s2", roomId);
-    expect((await messagingFor(nick)("s2", "read_room_artifact", { id })).error).toMatch(/tracks files under \.mockingbird\/artifacts/);
+    expect((await messagingFor(nick)("s2", "read_room_artifact", { id })).error).toMatch(/tracks files under \.mockingbird\/ \(\.mockingbird\/artifacts\/keep\.txt…\)/);
     // removing it deletes the copy
     ryan.arts.remove(roomId, id);
     await until(() => !fs.existsSync(path.dirname(copy)), "the copy to go");
