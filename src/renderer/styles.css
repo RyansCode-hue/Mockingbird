@@ -2370,7 +2370,11 @@ button.tk-small { padding: 0 6px; font-size: 10px; margin-left: 4px; }
 .chip.warn { color: var(--amber-text); background: var(--fill-waiting); flex-shrink: 0; }
 button.chip.warn { border: 0; cursor: pointer; }
 /* rendered at its owner's terminal size: the font fits it to the pane, past that the pane scrolls */
-.term-holder.fixed { overflow: auto; }
+.term-holder.fixed { overflow: auto; display: flex; flex-direction: column; }
+/* a teammate's copy is drawn at its owner's size: where the pane is taller, the owner's screen sits at the
+   bottom, prompt last, as on their side. An auto margin (not justify-content) keeps a copy taller than the
+   pane scrollable from its top. */
+.term-holder.fixed > .terminal { flex: none; margin-top: auto; }
 .team-pane-note {
   margin: 0 8px 8px; padding: 5px 7px; border-radius: 4px; flex-shrink: 0;
   background: var(--fill-subtle); font: 500 10px var(--ui); color: var(--text-2);

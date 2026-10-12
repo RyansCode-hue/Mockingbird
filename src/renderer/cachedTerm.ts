@@ -118,6 +118,34 @@ export function fitFixed(e: { term: Terminal }, holder: HTMLElement | null, size
   }
 }
 
+/**
+ * Put a cached terminal in a pane's holder: opened there the first time, moved
+ * there when another pane (a tab switched back to, a group shown again) shows it.
+ */
+export function attachTerm(term: Terminal, holder: HTMLElement | null): void {
+  if (!holder) return;
+  if (!term.element) term.open(holder);
+  else if (term.element.parentElement !== holder) holder.appendChild(term.element);
+  syncViewport(term);
+}
+
+/**
+ * Put the viewport's scroll offset back where the buffer is scrolled to. An
+ * element taken out of the page (its pane unmounted, its holder display:none)
+ * comes back scrolled to 0, and xterm doesn't notice until its buffer grows —
+ * never, once the scrollback is full. Meanwhile it shows the right rows, but
+ * the next wheel or scrollbar move is read against that 0 and jumps the view
+ * to the top of the history.
+ */
+export function syncViewport(term: Terminal): void {
+  const viewport = term.element?.querySelector<HTMLElement>(".xterm-viewport");
+  const cell = cellOf(term);
+  if (!viewport || !cell || !term.element?.isConnected) return;
+  const want = term.buffer.active.viewportY * cell.height;
+  // xterm's scroll handler reads the row back from this offset, rounding: within half a row it already agrees
+  if (Math.abs(viewport.scrollTop - want) >= cell.height / 2) viewport.scrollTop = want;
+}
+
 /** xterm's cell size in CSS pixels, for its current font (not public API: null when it isn't there). */
 function cellOf(term: Terminal): { width: number; height: number } | null {
   const cell = (term as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { width: number; height: number } } } } } })._core?._renderService?.dimensions?.css?.cell;
@@ -133,7 +161,11 @@ export function followFixedSize(e: { term: Terminal }, holder: HTMLElement | nul
   refit();
   // the terminal font may still be loading: its proportions decide the fit
   void document.fonts?.ready.then(refit);
-  const ro = new ResizeObserver(refit);
+  // a holder shown again after display:none comes back scrolled to 0 (syncViewport)
+  const ro = new ResizeObserver(() => {
+    refit();
+    syncViewport(e.term);
+  });
   if (holder) ro.observe(holder);
   return { stop: () => ro.disconnect(), refit };
 }
@@ -142,7 +174,11 @@ export function followFixedSize(e: { term: Terminal }, holder: HTMLElement | nul
 export function followSize(e: { term: Terminal; fit: FitAddon }, holder: HTMLElement | null, resize: (cols: number, rows: number) => void): () => void {
   const fit = () => fitTerm(e, resize);
   fit();
-  const ro = new ResizeObserver(fit);
+  // a holder shown again after display:none comes back scrolled to 0 (syncViewport)
+  const ro = new ResizeObserver(() => {
+    fit();
+    syncViewport(e.term);
+  });
   if (holder) ro.observe(holder);
   return () => ro.disconnect();
 }

@@ -23,4 +23,14 @@ describe("the stylesheet", () => {
     for (const v of overflow("overflow")) expect(v.split(/\s+/).at(-1)).toBe("visible");
     for (const v of overflow("overflow-y")) expect(v).toBe("visible");
   });
+
+  it("puts a teammate's copy at the bottom of a pane taller than its owner's screen, still scrollable from its top", () => {
+    const rule = (sel: string) => css.match(new RegExp(`^${sel.replace(/[.>]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`, "m"))?.[1] ?? "";
+    expect(rule(".term-holder.fixed")).toMatch(/display:\s*flex/);
+    expect(rule(".term-holder.fixed")).toMatch(/flex-direction:\s*column/);
+    expect(rule(".term-holder.fixed")).toMatch(/overflow:\s*auto/);
+    // an auto margin, not justify-content: flex-end, which would cut off the top of a copy taller than the pane
+    expect(rule(".term-holder.fixed > .terminal")).toMatch(/margin-top:\s*auto/);
+    expect(rule(".term-holder.fixed")).not.toMatch(/justify-content/);
+  });
 });

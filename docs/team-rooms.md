@@ -333,6 +333,9 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 - **Live panes:** a room session's terminal streams to every member. Its
   scrollback is replayed on join, then live output follows. Remote panes render
   like local ones (status, waiting reason, git chips from the owner's side).
+  A copy is drawn at its owner's terminal size, which a teammate never
+  changes: its font shrinks to fit the pane, and where the pane is taller
+  than that, the owner's screen sits at the bottom, prompt last.
 - **Scrolling is your own:** in a teammate's pane the wheel, trackpad,
   scrollbar and PageUp/PageDown scroll only your copy — what it has received
   and the scrollback fetched on open — and stay put while output arrives, also

@@ -12,7 +12,7 @@ import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneS
 import { isViewControl } from "../shared/termInput";
 import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
-import { dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
+import { attachTerm, dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
@@ -589,8 +589,7 @@ export function TerminalPane({
     entry.onPanel = onPanel;
     entry.onFullScreen = flashFullScreen;
     onPanel(entry.wantsMouse ? findPanelClose(term) : null);
-    if (holder.current && !term.element) term.open(holder.current);
-    else if (holder.current && term.element && term.element.parentElement !== holder.current) holder.current.appendChild(term.element);
+    attachTerm(term, holder.current);
     trackUserInput(entry);
     let stopFollowing: () => void;
     if (remoteEntry) {
