@@ -835,7 +835,7 @@ const api: Record<string, (...a: any[]) => any> = {
   houseTicket: async (roomId: string, n: number): Promise<HouseTicketView> => {
     const r = houseRooms[roomId];
     if (!houseTickets[n]) return later({ error: `The House answered 404: no work item #${n} in this project` }, 200);
-    return later({ detail: houseDetail(n), owner: houseOwner(houseTickets[n]), onBoard: r?.slice.includes(n) ? "slice" : r?.added.some((a) => a.n === n) ? "added" : null, mine: houseTickets[n].claim?.by === "You" }, 200);
+    return later({ detail: houseDetail(n), owner: houseOwner(houseTickets[n]), onBoard: r?.slice.includes(n) ? "slice" : r?.added.some((a) => a.n === n) ? "added" : null }, 200);
   },
   houseWrite: async (roomId: string, w: HouseWrite) => {
     const r = houseRooms[roomId];

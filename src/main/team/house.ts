@@ -52,14 +52,7 @@ export class HouseSetupError extends Error {
 }
 
 /** A House request that failed, with the House's own message (never the token). */
-export class HouseError extends Error {
-  constructor(
-    message: string,
-    readonly status: number | null
-  ) {
-    super(message);
-  }
-}
+export class HouseError extends Error {}
 
 /** The env file for `project` under `home`. */
 export function houseEnvPath(project: string, home = os.homedir()): string {
@@ -172,14 +165,14 @@ export class HouseClient {
   /** One ticket, with its history. */
   async ticket(n: number): Promise<HouseTicketDetail> {
     const t = detailOf(await this.call("GET", `work-items/${num(n)}`));
-    if (!t) throw new HouseError(`The House's answer for #${n} isn't a ticket`, null);
+    if (!t) throw new HouseError(`The House's answer for #${n} isn't a ticket`);
     return t;
   }
 
   /** A new ticket; the House assigns its number. */
   async create(body: { title: string; detail?: string; acceptance?: string; kind?: string; priority?: string }): Promise<HouseTicketDetail> {
     const t = detailOf(await this.call("POST", "work-items", { kind: "engineering", priority: "medium", ...body }));
-    if (!t) throw new HouseError("The House created the ticket but its answer doesn't say which number it got", null);
+    if (!t) throw new HouseError("The House created the ticket but its answer doesn't say which number it got");
     return t;
   }
 
@@ -221,16 +214,16 @@ export class HouseClient {
       });
     } catch (err) {
       const e = err as Error & { cause?: { code?: string; message?: string } };
-      if (e.name === "TimeoutError" || e.name === "AbortError") throw new HouseError(`The House (${where}) didn't answer within ${this.timeoutMs / 1000} s`, null);
+      if (e.name === "TimeoutError" || e.name === "AbortError") throw new HouseError(`The House (${where}) didn't answer within ${this.timeoutMs / 1000} s`);
       const cause = e.cause?.code ?? e.cause?.message ?? e.message;
-      throw new HouseError(this.clean(`Couldn't reach the House at ${where}: ${cause}`), null);
+      throw new HouseError(this.clean(`Couldn't reach the House at ${where}: ${cause}`));
     }
     const length = Number(res.headers.get("content-length") ?? 0);
-    if (length > MAX_RESPONSE) throw new HouseError(`The House's answer is ${length} bytes; Mockingbird reads at most ${MAX_RESPONSE}`, res.status);
+    if (length > MAX_RESPONSE) throw new HouseError(`The House's answer is ${length} bytes; Mockingbird reads at most ${MAX_RESPONSE}`);
     const text = await res.text().catch((err: Error) => {
-      throw new HouseError(this.clean(`The House's answer couldn't be read: ${err.message}`), res.status);
+      throw new HouseError(this.clean(`The House's answer couldn't be read: ${err.message}`));
     });
-    if (text.length > MAX_RESPONSE) throw new HouseError(`The House's answer is longer than ${MAX_RESPONSE} characters`, res.status);
+    if (text.length > MAX_RESPONSE) throw new HouseError(`The House's answer is longer than ${MAX_RESPONSE} characters`);
     let parsed: unknown = null;
     let json = true;
     try {
@@ -243,9 +236,9 @@ export class HouseClient {
       // 403 is also the House refusing an action (closing a ticket, someone else's claim): the token hint only when it's about the token
       const aboutToken = res.status === 401 || (res.status === 403 && (!said || /token/i.test(said)));
       const hint = aboutToken ? ` — your build token is stale or isn't for this project. ${HOUSE_TOKEN_HOW}` : "";
-      throw new HouseError(this.clean(`The House answered ${res.status}${said ? `: ${said}` : ""}${hint}`), res.status);
+      throw new HouseError(this.clean(`The House answered ${res.status}${said ? `: ${said}` : ""}${hint}`));
     }
-    if (!json) throw new HouseError(this.clean(`The House's answer to ${method} ${rel.split("?")[0]} isn't JSON: ${text.trim().slice(0, 200)}`), res.status);
+    if (!json) throw new HouseError(this.clean(`The House's answer to ${method} ${rel.split("?")[0]} isn't JSON: ${text.trim().slice(0, 200)}`));
     return parsed;
   }
 
@@ -255,7 +248,7 @@ export class HouseClient {
 }
 
 function num(n: number): number {
-  if (!isTicketNumber(n)) throw new HouseError(`${JSON.stringify(n)} isn't a ticket number`, null);
+  if (!isTicketNumber(n)) throw new HouseError(`${JSON.stringify(n)} isn't a ticket number`);
   return n;
 }
 

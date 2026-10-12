@@ -200,7 +200,7 @@ export interface HouseView {
 }
 
 /** One ticket in the dialog: the House's detail, or why it couldn't be read. */
-export type HouseTicketView = { detail: HouseTicketDetail; owner: HouseOwner | null; onBoard: "slice" | "added" | null; mine: boolean } | { error: string };
+export type HouseTicketView = { detail: HouseTicketDetail; owner: HouseOwner | null; onBoard: "slice" | "added" | null } | { error: string };
 
 /** What the window asks to write. */
 export type HouseWrite =

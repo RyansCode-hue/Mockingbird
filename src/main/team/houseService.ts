@@ -110,8 +110,6 @@ const HISTORY_SHOWN = 40;
 const HISTORY_TEXT = 2_000;
 
 interface RoomCache {
-  /** The project these were read for. */
-  project: string | null;
   connection: HouseConnection;
   slice: HouseSlice | null;
   sliceProblem?: string;
@@ -331,7 +329,7 @@ export class HouseService {
       const owner = this.ownerOf(room, detail);
       const c = this.cache(roomId);
       const onBoard = c.slice?.numbers.includes(n) ? "slice" : houseOfRoom(room).tracked.some((t) => t.n === n) ? "added" : null;
-      return { detail, owner, onBoard, mine: !!owner?.self };
+      return { detail, owner, onBoard };
     } catch (err) {
       return { error: (err as Error).message };
     }
@@ -688,7 +686,6 @@ export class HouseService {
     }
     for (const n of missing.slice(MAX_SINGLE_READS)) problems.set(n, "not read yet (too many board tickets outside the backlog list)");
     if (houseOfRoom(this.team?.room(roomId) ?? room).project !== h.project) return; // the admin switched projects meanwhile: the next read is for that one
-    c.project = h.project;
     c.connection = { state: "ok" };
     c.slice = slice ?? c.slice;
     c.sliceProblem = sliceProblem;
@@ -1096,7 +1093,7 @@ export class HouseService {
 
   private cache(roomId: RoomId): RoomCache {
     let c = this.caches.get(roomId);
-    if (!c) this.caches.set(roomId, (c = { project: null, connection: { state: "pending" }, slice: null, tickets: new Map(), problems: new Map(), fetchedAt: 0, run: null, again: false, watchers: 0 }));
+    if (!c) this.caches.set(roomId, (c = { connection: { state: "pending" }, slice: null, tickets: new Map(), problems: new Map(), fetchedAt: 0, run: null, again: false, watchers: 0 }));
     return c;
   }
 

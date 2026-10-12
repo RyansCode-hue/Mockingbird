@@ -387,7 +387,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
   return (
     <Modal className="modal house-modal" onClose={onClose} closeOnBackdrop={!adding}>
       <div className="house-head">
-        <h3>
+        <h3 title={view.envFile ? `Read and written with your own token, from ${view.envFile}` : undefined}>
           Radley House · {view.project ?? "no project"}
           {view.isAdmin && view.project && !renaming && (
             <button className="link house-change" title="Connect the room to another House project" onClick={() => setRenaming(true)}>
