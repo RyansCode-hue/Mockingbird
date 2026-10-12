@@ -129,17 +129,27 @@ export function editedPaths(tool: string, input: any, cwd: string): string[] {
  * changing is held back (deny) in a conversation, with the reason for the
  * agent and a warning line for the user; repeating it goes through the normal
  * permission flow with a reminder (additionalContext). See src/main/hooks.ts
- * for why. Ticket titles come from the House: they're quoted, on one line.
+ * for why. Ticket titles and statuses come from the House, owners' names and
+ * branches from teammates: each is on one line, titles quoted, the rest
+ * quoted unless they're plain words (agentText.ts quoted and named, repeated
+ * here).
  *
  * Self-contained: the hook script embeds its source.
  */
 export function claimHookResponse(conflicts: { file: string; hits: ClaimHit[] }[], first: boolean): object {
-  const quote = (s: string) => JSON.stringify(String(s).replace(/\s+/g, " ").slice(0, 120));
+  const line = (s: string) =>
+    String(s)
+      .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\s]+/g, " ")
+      .trim()
+      .slice(0, 120)
+      .trim();
+  const quote = (s: string) => JSON.stringify(line(s)).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
+  const named = (s: string) => (/^[\p{L}\p{N}][\p{L}\p{N} ._'@/-]*$/u.test(line(s)) ? line(s) : quote(s));
   const lines = conflicts.map((c) => {
-    const who = c.hits.map((h) => `${h.owner.name}'s ticket #${h.n} ${quote(h.title)} (branch ${h.branch}, ${String(h.status).replace(/_/g, " ")})`).join(" and ");
+    const who = c.hits.map((h) => `${named(h.owner.name)}'s ticket #${Number(h.n)} ${quote(h.title)} (branch ${named(h.branch)}, ${named(String(h.status).replace(/_/g, " "))})`).join(" and ");
     return `${c.file} has been changing on ${who}`;
   });
-  const owners = [...new Set(conflicts.flatMap((c) => c.hits.map((h) => h.owner.name)))].join(" and ");
+  const owners = [...new Set(conflicts.flatMap((c) => c.hits.map((h) => named(h.owner.name))))].join(" and ");
   if (first) {
     return {
       hookSpecificOutput: {

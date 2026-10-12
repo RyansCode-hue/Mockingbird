@@ -6,6 +6,7 @@ import { RoomStore } from "./rooms";
 import { TeamCore, type LeftInfo, type PeerWire, type RevokeOutcome, type Team } from "./transport";
 import { WebRtcWire } from "./webrtc";
 import { allowCreatorsCommand, formatFingerprint, SIGNALING_PROTOCOL, type SignalingHealth } from "../../shared/team/protocol";
+import { oneLine } from "../../shared/team/agentText";
 import { isShareableGroup, type Settings } from "../../shared/types";
 import type { JoinAnswerOutcome, LeaveOutcome, RemoveOutcome, RoomEvent, RoomId, RoomState, TeamNotice, TeamStatus } from "../../shared/team/types";
 
@@ -330,8 +331,8 @@ export class TeamService {
   }
 
   private displayName(): string {
-    const name = (this.d.settings().teamName ?? "").trim();
-    if (name) return name.slice(0, 100);
+    const name = oneLine(this.d.settings().teamName, 100);
+    if (name) return name;
     try {
       return os.userInfo().username;
     } catch (err) {
