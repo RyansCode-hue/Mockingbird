@@ -42,7 +42,7 @@ const FAKE_CLAUDE = `#!/bin/bash
 conv="e2e-$MOCKINGBIRD_SESSION"
 if [ "$1" = "--resume" ]; then conv="$2"; fi
 if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code stand-in)"; exit 0; fi
-echo "fake-claude started: $*"
+echo "fake-claude started: $* (inline=\${CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN:-no})"
 cwd=$(pwd -P)
 dir="$HOME/.claude/projects/$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"
 mkdir -p "$dir"
@@ -168,6 +168,16 @@ describe("team rooms between two Mockingbird instances", () => {
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "ryan-typing\\r")`);
         await untilTrue("Ryan's output in Nick's copy", async () => (await screenOf(nick, paneId)).includes("ryan-typing"));
         expect((await copyView()).viewportY).toBe(scrolledTo);
+        // redrawn from Ryan's scrollback (Repaint, or a gap in the stream), it stays there too
+        const topRow = () => nick.evaluate<string>(`(() => { const b = ${term}.buffer.active; return b.getLine(b.viewportY)?.translateToString(true) ?? ""; })()`);
+        const top = await topRow();
+        await nick.evaluate(`(() => { const core = ${term}._core; const reset = core.reset.bind(core); window.__redraws = 0; core.reset = () => (window.__redraws++, reset()); })()`);
+        await nick.evaluate(`window.mb.teamPaneResync(${JSON.stringify(paneId)})`);
+        await untilTrue("the redraw", async () => (await nick.evaluate<number>("window.__redraws")) > 0);
+        await untilTrue("Nick's copy where he had it", async () => {
+          const v = await copyView();
+          return v.viewportY < v.baseY && (await topRow()) === top;
+        });
         // full screen: nothing here to scroll, and Nick is told why
         await key({ key: "c", code: "KeyC", keyCode: 67, ctrl: true });
         await untilTrue("Nick's Ctrl-C ending Ryan's cat", async () => /\^C/.test(await buffer(ryan, sh.id)));
@@ -210,6 +220,7 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(s.error).toBeUndefined();
         await untilTrue("the agent to start", async () => (await buffer(ryan, s.id)).includes("fake-claude started"), 20_000);
         expect(await buffer(ryan, s.id)).toMatch(/--append-system-prompt/); // the room's plan, carried in the launch
+        expect(await buffer(ryan, s.id)).toContain("(inline=1)"); // a room session runs inline, so Nick's copy holds its history
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(s.id)}, "add the donor notes\\r")`);
         await untilTrue("the turn", async () => (await buffer(ryan, s.id)).includes("did: add the donor notes"));
         await untilTrue(

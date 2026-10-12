@@ -8,7 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
-import { pageKey, scrollCopy, wheelLines } from "./paneScroll";
+import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneScroll";
 import { isViewControl } from "../shared/termInput";
 import { useFolderRefresh } from "./folderWatch";
 import { dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
@@ -84,6 +84,8 @@ function flushHold(e: TermEntry): void {
 }
 
 function pumpWrite(e: TermEntry, data: string): void {
+  // a teammate's copy redrawn from its owner's scrollback starts with a reset: keep a scrolled-up view where it was
+  const keep = e.mousePolicy === "remote" && data.startsWith("\x1bc") ? viewAnchor(e.term) : null;
   const chunk = stripMouseEnables(e, data);
   if (!chunk) return;
   // park only while the drag is in progress — once released the text is
@@ -100,7 +102,11 @@ function pumpWrite(e: TermEntry, data: string): void {
     return;
   }
   if (e.hold) flushHold(e);
-  e.term.write(chunk);
+  if (!keep) return void e.term.write(chunk);
+  e.term.write(chunk, () => {
+    const y = anchorLine(e.term, keep);
+    if (y !== null) e.term.scrollToLine(y);
+  });
 }
 
 /**

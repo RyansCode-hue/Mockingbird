@@ -7,7 +7,8 @@ import type { Terminal } from "@xterm/xterm";
  * the mouse, and arrow keys on the alternate screen, which a full-screen
  * program (Claude Code's fullscreen view, Codex, less, vim) scrolls by. So
  * there the wheel and PageUp/PageDown never reach xterm; the pane scrolls its
- * copy itself (TerminalPane.tsx).
+ * copy itself (TerminalPane.tsx). A copy redrawn from its owner's scrollback
+ * keeps the viewer where they had scrolled to (viewAnchor, anchorLine).
  */
 
 /** Whole lines a wheel event scrolls, carrying the remainder: trackpads send many tiny pixel deltas. */
@@ -34,6 +35,54 @@ export function pageKey(ev: { key: string; ctrlKey: boolean }): -1 | 0 | 1 {
  */
 export function hasOwnHistory(term: Pick<Terminal, "buffer" | "options">): boolean {
   return term.buffer.active.type === "normal" && (term.options.scrollback ?? 0) > 0;
+}
+
+/** Where a scrolled-up view is: its top rows' text, and how far above the bottom it sits. */
+export interface ViewAnchor {
+  rows: string[];
+  fromBottom: number;
+}
+
+type Buf = { type: string; viewportY: number; baseY: number; length: number; getLine(y: number): { translateToString(trim?: boolean): string } | undefined };
+const rowAt = (b: Buf, y: number) => b.getLine(y)?.translateToString(true) ?? "";
+const ANCHOR_TEXT_ROWS = 3;
+
+/**
+ * Note where a teammate's pane is scrolled to before its copy is redrawn from
+ * the owner's scrollback (a gap in its stream, Repaint, its owner back): the
+ * redraw starts from a reset, which would leave the view at the bottom. Null
+ * when it's at the bottom already, or on the alternate screen.
+ */
+export function viewAnchor(term: { buffer: { active: Buf }; rows: number }): ViewAnchor | null {
+  const b = term.buffer.active;
+  if (b.type !== "normal" || b.viewportY >= b.baseY) return null;
+  // enough rows to hold a few with text: blank rows alone match anywhere
+  const rows: string[] = [];
+  let withText = 0;
+  for (let y = b.viewportY; y < Math.min(b.length, b.viewportY + term.rows) && withText < ANCHOR_TEXT_ROWS; y++) {
+    const r = rowAt(b, y);
+    rows.push(r);
+    if (r.trim()) withText++;
+  }
+  return withText ? { rows, fromBottom: b.baseY - b.viewportY } : null;
+}
+
+/**
+ * The line to show at the top of a redrawn copy so the view stays where it
+ * was: where the anchor's rows are now, nearest the distance from the bottom
+ * they had (output may have arrived meanwhile). Null when they're gone — the
+ * program itself reset the screen.
+ */
+export function anchorLine(term: { buffer: { active: Buf } }, a: ViewAnchor): number | null {
+  const b = term.buffer.active;
+  if (b.type !== "normal") return null;
+  const at = (y: number) => a.rows.every((r, i) => rowAt(b, y + i) === r);
+  const expected = Math.max(0, Math.min(b.baseY, b.baseY - a.fromBottom));
+  for (let d = 0; expected - d >= 0 || expected + d <= b.baseY; d++) {
+    if (expected - d >= 0 && at(expected - d)) return expected - d;
+    if (d && expected + d <= b.baseY && at(expected + d)) return expected + d;
+  }
+  return null;
 }
 
 /**

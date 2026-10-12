@@ -131,6 +131,7 @@ interface PaneSync {
   lastFetch: number;
   /** The window has a terminal for it (it asked for its scrollback). */
   attached: boolean;
+  /** The window shows it; showing it again after a spell hidden fetches its scrollback again. */
   watched: boolean;
   problem?: string;
   resyncTimer?: ReturnType<typeof setTimeout>;
@@ -692,7 +693,9 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const r = this.remotes.get(id);
     if (!r) return "";
     const p = this.pane(id);
-    p.attached = true;
+    // its terminal asks as it opens on screen, often before the window's view says the pane is shown:
+    // that view must not count as showing it again, which would redraw it from a second fetch
+    p.attached = p.watched = true;
     if (!r.rec.live || !this.online(r)) {
       const who = memberNameIn(this.team(), r.roomId, r.rec.owner);
       const note = r.rec.live ? `${who}'s Mockingbird is offline` : `${who} closed this session`;

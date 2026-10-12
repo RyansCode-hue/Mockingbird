@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { mousePolicyFor, stripMouseEnables } from "../src/renderer/mouseModes";
-import { hasOwnHistory, pageKey, scrollCopy, wheelLines } from "../src/renderer/paneScroll";
+import { anchorLine, hasOwnHistory, pageKey, scrollCopy, viewAnchor, wheelLines } from "../src/renderer/paneScroll";
 
 // A teammate's session (team rooms) is a copy of its owner's terminal: whatever
 // the copy's terminal sends is typed into the owner's session.
@@ -100,6 +100,46 @@ describe("scrolling a teammate's pane", () => {
     expect(pageKey(key("PageUp", true))).toBe(0);
     expect(pageKey(key("ArrowUp"))).toBe(0);
     expect(pageKey(key("a"))).toBe(0);
+  });
+});
+
+describe("a teammate's pane redrawn from its owner's scrollback", () => {
+  const rowOf = (term: Terminal, y: number) => term.buffer.active.getLine(y)?.translateToString(true) ?? "";
+  it("finds where the viewer had scrolled to, though output arrived meanwhile", async () => {
+    const { term } = await copyOf("remote", lines(60));
+    userScroll(term, -20);
+    const top = rowOf(term, term.buffer.active.viewportY);
+    const a = viewAnchor(term)!;
+    expect(a).not.toBeNull();
+    await parsed(term, `\x1bc${lines(66)}`); // the redraw: the same history and the lines it missed
+    expect(term.buffer.active.viewportY).toBe(term.buffer.active.baseY); // where a reset leaves it
+    const y = anchorLine(term, a)!;
+    expect(rowOf(term, y)).toBe(top);
+    expect(y).toBeLessThan(term.buffer.active.baseY - 20);
+  });
+
+  it("has nothing to keep at the bottom, or on the alternate screen", async () => {
+    expect(viewAnchor((await copyOf("remote", lines(60))).term)).toBeNull();
+    const { term } = await copyOf("remote", lines(60), "\x1b[?1049h", "frame");
+    expect(viewAnchor(term)).toBeNull();
+  });
+
+  it("lets go when the rows are gone (the program reset the screen itself)", async () => {
+    const { term } = await copyOf("remote", lines(60));
+    userScroll(term, -20);
+    const a = viewAnchor(term)!;
+    await parsed(term, `\x1bc${lines(40, 1000)}`);
+    expect(anchorLine(term, a)).toBeNull();
+  });
+
+  it("anchors on rows with text, not on blank ones that match anywhere", async () => {
+    const { term } = await copyOf("remote", lines(30), "\r\n".repeat(15), lines(30, 31));
+    userScroll(term, -38); // the top of the view in the blank stretch
+    const a = viewAnchor(term)!;
+    expect(a.rows.filter((r) => r.trim()).length).toBeGreaterThan(0);
+    const top = term.buffer.active.viewportY;
+    await parsed(term, `\x1bc${lines(30)}${"\r\n".repeat(15)}${lines(32, 31)}`);
+    expect(anchorLine(term, a)).toBe(top);
   });
 });
 

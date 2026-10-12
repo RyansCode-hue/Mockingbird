@@ -209,6 +209,26 @@ describe("live panes", () => {
     expect(streamed.length).toBe(n);
   });
 
+  it("redraws a pane shown again after a spell hidden, and never one that stayed on screen", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    // the pane's terminal asks for the scrollback as it opens, before the window's view says it's shown
+    await nick.sessions.paneBuffer(paneId);
+    nick.live.setView({ shown: [paneId], focused: null });
+    ptyOf(s.id).emit("live\r\n");
+    await until(() => nick.shown(paneId) === "live\r\n", "live output");
+    // still shown, now focused: a redraw would throw away where the viewer had scrolled to
+    nick.live.setView({ shown: [paneId], focused: paneId });
+    await new Promise((r) => setTimeout(r, FAST.resyncMs * 4));
+    expect(nick.shown(paneId)).toBe("live\r\n");
+    // hidden, then shown again: it may have missed output, so it's redrawn from the scrollback
+    nick.live.setView({ shown: [], focused: null });
+    nick.live.setView({ shown: [paneId], focused: paneId });
+    await until(() => nick.shown(paneId).endsWith("\x1bclive\r\n"), "the redraw");
+  });
+
   it("catches up from the scrollback after a gap in the stream", async () => {
     const { ryan, nick, net } = await pair();
     const s = await ryan.start();
