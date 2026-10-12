@@ -12,4 +12,6 @@ process.env.HOME = home;
 process.env.GIT_AUTHOR_NAME = process.env.GIT_COMMITTER_NAME = "Mockingbird Test";
 process.env.GIT_AUTHOR_EMAIL = process.env.GIT_COMMITTER_EMAIL = "test@example.invalid";
 
-afterAll(() => fs.rmSync(home, { recursive: true, force: true }));
+// a process a test started can still be writing here as it exits (a language
+// server's own tsserver child, say): removal retries while the folder empties
+afterAll(() => fs.rmSync(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
