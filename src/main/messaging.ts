@@ -8,6 +8,8 @@ import { writeGenerated } from "./fileOps";
 import { PLAN_TOOL } from "../shared/team/plan";
 import { PLAN_TOOL_SCHEMA } from "./team/claims";
 import { planToolCall } from "./team/planService";
+import { ARTIFACT_TOOL } from "../shared/team/artifacts";
+import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
@@ -111,6 +113,7 @@ const SESSION_TOOLS = [
     },
   },
   ${JSON.stringify(PLAN_TOOL_SCHEMA)},
+  ${ARTIFACT_TOOL_SCHEMAS.map((t) => JSON.stringify(t)).join(",\n  ")},
 ];
 
 function ask(req) {
@@ -341,6 +344,8 @@ export class Messaging {
 
     // team rooms: plan board — it answers "not in a team room" for sessions outside one
     if (req.op === PLAN_TOOL) return planToolCall(me.id, req.args ?? {});
+    // team rooms: artifacts — likewise, outside a room it says there are none
+    if (req.op === ARTIFACT_TOOL.list || req.op === ARTIFACT_TOOL.read) return artifactToolCall(me, req.op, req.args ?? {});
 
     if (req.op === MCP_TOOL.listSessions) {
       const others: Record<string, unknown>[] = live

@@ -15,6 +15,7 @@ import { CODEX_ROOM_PROFILE } from "../src/main/codexRoomSandbox";
 import { PlanService } from "../src/main/team/planService";
 import { claudeToolName } from "../src/main/messaging";
 import { PLAN_CONTEXT_ENV, PLAN_TOOL } from "../src/shared/team/plan";
+import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; emit(d: string): void; exit(code: number): void };
@@ -529,6 +530,8 @@ describe("room session launch", () => {
       expect(cmd).toContain("--append-system-prompt");
       expect(cmd).toContain("Mockingbird team room");
       expect(cmd).toContain(claudeToolName(PLAN_TOOL));
+      // and the room artifacts' tools
+      for (const tool of Object.values(ARTIFACT_TOOL)) expect(cmd).toContain(claudeToolName(tool));
       expect(claude.env[PLAN_CONTEXT_ENV]).toBe("1");
       const codex = ptyOf((await ryan.start({ agent: "codex" })).id);
       expect(codex.args.join(" ")).toContain(`'-c' 'developer_instructions="This repository is part of a Mockingbird team room`);
@@ -539,6 +542,7 @@ describe("room session launch", () => {
       const outside = ptyOf((await ryan.start({ taskGroup: "private" })).id);
       expect(outside.args.join(" ")).not.toContain("--append-system-prompt");
       expect(outside.args.join(" ")).not.toContain(claudeToolName(PLAN_TOOL));
+      expect(outside.args.join(" ")).not.toContain(claudeToolName(ARTIFACT_TOOL.read));
       expect(outside.env[PLAN_CONTEXT_ENV]).toBeUndefined();
     } finally {
       plan.stop();

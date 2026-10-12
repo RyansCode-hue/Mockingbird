@@ -72,7 +72,10 @@ server, `npm run team:signaling`), the event log, and the WebRTC wire against
 the local server. Everything above the transport runs over an in-process
 loopback (`src/main/team/loopback.ts`) with real session managers and real git
 (a local bare origin and clones): live panes, the Co-authored-by hooks, chat,
-the plan board, backups (peer to peer by default, never reaching origin; the
+the plan board, artifacts (files between members by hash — from whoever has
+them, resumed, a corrupted copy refused — notes crossing across a partition,
+repo references in a teammate's clone, the agents' tools and secrets withheld),
+backups (peer to peer by default, never reaching origin; the
 admin's opt-in to origin, its pre-push hook, and turning it off again) and
 take-over with the owner online (Hand over, Keep,
 no answer, dropping offline mid-request), away or restarted, the old copy
@@ -372,6 +375,17 @@ agreed direction, **Later** is worth doing once the foundations settle.
     chat** chip) with @mentions, agents' updates (turns, waits, take-overs,
     board changes), `list_sessions` and `send_message` across laptops, and
     **@assistant**, answered on the asker's laptop.
+  - **Artifacts:** files and screenshots, notes anyone edits, repo file
+    references (a file and lines at a commit, opened in your own clone) and
+    links, kept in the room — in the Team tab's Artifacts section (+ Add, drag
+    and drop, paste), `#`-mentioned in chat as chips, opened in a viewer (PDFs
+    and other files in Quick Look; nothing is ever run). Files go peer to peer
+    by hash, never through git or the log, checked before they're kept, 25 MB
+    each; notes that crossed an edit are kept as a copy, not lost. Room agents
+    read them with `list_room_artifacts` / `read_room_artifact` (images and
+    PDFs as a git-ignored copy in their folder), @assistant sees them in its
+    prompt, and anything named like a secret (or holding a private key) stays
+    unreadable to agents.
   - **Plan board** (▦): work packages with owned paths, contracts and tests,
     claimed by members, kept on the `mockingbird/plan` branch and as a
     read-only copy in every worktree. Agents change it with `update_team_plan`;
@@ -385,13 +399,6 @@ Nothing queued.
 
 ### Later
 
-- **Team room artifacts** — once rooms have been used between two laptops.
-  Files and screenshots, notes, repo file references and links, kept in the
-  room (copied peer to peer, checked by hash, 25 MB a file), listed in a
-  collapsible "Artifacts" section of the Team tab, `#`-mentioned in chat as
-  chips, opened in a viewer dialog (PDFs in Quick Look). Room agents and
-  @assistant read them through a tool; secret-named ones stay unreadable to
-  agents.
 - **Signed + notarized builds.** Updating is covered by the in-app Update
   (pull, build, restart). What's left needs an Apple Developer ID: no
   right-click→Open for new users, and updates that install in the background.

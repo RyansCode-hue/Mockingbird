@@ -7,8 +7,9 @@ import { isMissing } from "./fileOps";
  * Secret files by name, at any depth: env files, keys and certificates, and
  * the usual credential, PAT and local-settings files. The one list every
  * secret guard is built from: Claude's deny-read rules (SECRET_READS,
- * roomSecretReads), Codex's room sandbox (codexRoomSandbox.ts) and what a
- * room backup leaves out (secretPathspecs).
+ * roomSecretReads), Codex's room sandbox (codexRoomSandbox.ts), what a
+ * room backup leaves out (secretPathspecs) and the room artifacts agents
+ * may not read (isSecretFileName).
  */
 export const SECRET_FILE_GLOBS: readonly string[] = [
   ".env",
@@ -26,6 +27,18 @@ export const SECRET_FILE_GLOBS: readonly string[] = [
   "secrets.json",
   "local.settings.json",
 ];
+
+const SECRET_NAME_RES = SECRET_FILE_GLOBS.map((g) => new RegExp(`^${g.replace(/[.+^${}()|[\]\\?]/g, "\\$&").replace(/\*/g, ".*")}$`, "i"));
+
+/**
+ * Whether a file's name (its last path segment; any case) is one of
+ * SECRET_FILE_GLOBS: what room artifacts keep from agents and ask about
+ * before adding.
+ */
+export function isSecretFileName(name: string): boolean {
+  const base = name.trim().split(/[/\\]/).pop() ?? "";
+  return !!base && SECRET_NAME_RES.some((re) => re.test(base));
+}
 
 /**
  * SECRET_FILE_GLOBS as Claude permission rules (--disallowedTools), relative
