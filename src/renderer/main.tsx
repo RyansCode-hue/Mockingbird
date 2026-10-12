@@ -9,7 +9,7 @@ import { QuickOpen } from "./QuickOpen";
 import { EMPTY_EDITOR, closeTab, openTab, tabKey, updateTab } from "./editorTabs";
 import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
-import { CollaborateView } from "./Collaborate";
+import { CouncilView } from "./Council";
 import { UpdatePanel } from "./UpdatePanel";
 import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, useDrag } from "./drag";
 import { activeGroupOf, layoutToRemember, pruneToGroup, switchTo } from "./gridModel";
@@ -356,11 +356,11 @@ function App() {
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
   }, []);
-  // Collaborate models waiting on an approval, per room — badged on the tab wherever you are
+  // Council models waiting on an approval, per council — badged on the tab wherever you are
   const [roomAsks, setRoomAsks] = useState<Record<string, number>>({});
   useEffect(() => {
     window.mb.collabList().then(
-      unlessError("the Collaborate rooms", (rooms: CollabRoom[]) => setRoomAsks(Object.fromEntries(rooms.map((r) => [r.id, r.pending?.length ?? 0]))))
+      unlessError("the councils", (rooms: CollabRoom[]) => setRoomAsks(Object.fromEntries(rooms.map((r) => [r.id, r.pending?.length ?? 0]))))
     );
     return window.mb.onCollabChanged((r: CollabRoom) => setRoomAsks((p) => ({ ...p, [r.id]: r.pending?.length ?? 0 })));
   }, []);
@@ -1658,7 +1658,7 @@ function App() {
           />
         )}
         {tab === "collaborate" && (
-          <CollaborateView
+          <CouncilView
             focusRoom={focusRoom}
             onOpenSession={async (id) => {
               setTab("sessions");
@@ -2616,7 +2616,7 @@ function App() {
                   { label: "4pm wrap-up", run: () => runDebrief("wrapUp") },
                 ]
               : []),
-            ...(shownTab("collaborate") ? [{ label: "Collaborate — rooms", run: () => setTab("collaborate") }] : []),
+            ...(shownTab("collaborate") ? [{ label: "Council — model discussions", run: () => setTab("collaborate") }] : []),
             ...(focusedSession
               ? [
                   {

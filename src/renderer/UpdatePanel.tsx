@@ -64,7 +64,7 @@ export function UpdatePanel({
       {state === "ready" && (
         <div className="upd-ready">
           {progress.version} is built. Restarting closes Mockingbird for a few seconds; your sessions come back and resume their
-          conversations. A Collaborate turn in progress is lost.
+          conversations. A Council turn in progress is lost.
         </div>
       )}
       {state === "installing" && <div className="upd-ready">Restarting into {progress.version}…</div>}

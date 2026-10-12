@@ -34,8 +34,8 @@ const MODES: { id: CollabMode; label: string; note: string }[] = [
 ];
 const nextMode = (m: CollabMode): CollabMode => MODES[(MODES.findIndex((x) => x.id === m) + 1) % MODES.length].id;
 
-/** Rooms where several models discuss an idea; edits only happen after the user approves a plan. */
-export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (sessionId: string) => void; focusRoom?: { id: string; n: number } | null }) {
+/** Councils: several models discuss an idea with the user; edits only happen after the user approves a plan. */
+export function CouncilView({ onOpenSession, focusRoom }: { onOpenSession: (sessionId: string) => void; focusRoom?: { id: string; n: number } | null }) {
   const [rooms, setRooms] = useState<CollabRoom[]>([]);
   const [catalog, setCatalog] = useState<Catalog>({ presets: [], efforts: { claude: [], codex: [] } });
   const [selected, setSelected] = useState<string | "new" | null>(null);
@@ -67,13 +67,13 @@ export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (
     <div className="collab">
       <aside className={`collab-rooms ${railOpen ? "" : "rail"}`}>
         <div className="collab-rail-top">
-          <button className="icon" title={railOpen ? "Collapse the room list" : "Show the room list"} onClick={() => setRailOpen(!railOpen)}>
+          <button className="icon" title={railOpen ? "Collapse the council list" : "Show the council list"} onClick={() => setRailOpen(!railOpen)}>
             ☰
           </button>
           {railOpen ? (
-            <button className="primary collab-new" onClick={() => setSelected("new")}>New room</button>
+            <button className="primary collab-new" onClick={() => setSelected("new")}>New council</button>
           ) : (
-            <button className={`icon collab-rail-new ${selected === "new" ? "on" : ""}`} title="New room" onClick={() => setSelected("new")}>+</button>
+            <button className={`icon collab-rail-new ${selected === "new" ? "on" : ""}`} title="New council" onClick={() => setSelected("new")}>+</button>
           )}
         </div>
         {rooms.map((r) =>
@@ -106,7 +106,7 @@ export function CollaborateView({ onOpenSession, focusRoom }: { onOpenSession: (
         {error && <div className="err">{error}</div>}
         {unreadable.length > 0 && (
           <div className="err" title={unreadable.map((p) => `${p.file}: ${p.error}`).join("\n")}>
-            {unreadable.length === 1 ? "A room's file couldn't be read" : `${unreadable.length} room files couldn't be read`} and {unreadable.length === 1 ? "isn't" : "aren't"} listed:{" "}
+            {unreadable.length === 1 ? "A council's file couldn't be read" : `${unreadable.length} council files couldn't be read`} and {unreadable.length === 1 ? "isn't" : "aren't"} listed:{" "}
             {unreadable.map((p) => `${p.file} (${p.error})`).join("; ")}
           </div>
         )}
@@ -157,7 +157,7 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
   };
   return (
     <div className="collab-new-room">
-      <h2>New room</h2>
+      <h2>New council</h2>
       <p className="set-lede">
         Pick the models, describe the idea, and they'll discuss it in turns. They can read a repo for context, but nothing is
         changed until you approve a plan — then one model implements it in a normal session on a new branch.
@@ -260,7 +260,7 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
             <button className={view === "thread" ? "on" : ""} onClick={() => setView("thread")}>Thread</button>
             <button className={view === "rounds" ? "on" : ""} onClick={() => setView("rounds")}>Rounds</button>
           </span>
-          <button className={`icon collab-panel-toggle ${inspector ? "on" : ""}`} title={inspector ? "Hide room details" : "Show room details"} onClick={() => setInspector(!inspector)}>
+          <button className={`icon collab-panel-toggle ${inspector ? "on" : ""}`} title={inspector ? "Hide council details" : "Show council details"} onClick={() => setInspector(!inspector)}>
             <PanelRightIcon open={inspector} />
           </button>
         </header>
@@ -673,9 +673,9 @@ function Inspector({
       <section className="ins-foot">
         <button
           className="outline danger-btn"
-          onClick={() => window.confirm(`Delete "${room.title}"?`) && call("delete", () => window.mb.collabDelete(room.id)).then((r) => !isErr(r) && onDeleted())}
+          onClick={() => window.confirm(`Delete the council "${room.title}"?`) && call("delete", () => window.mb.collabDelete(room.id)).then((r) => !isErr(r) && onDeleted())}
         >
-          Delete room
+          Delete council
         </button>
       </section>
     </aside>
@@ -747,7 +747,7 @@ function SeatEditor({
             </span>
             {hasRepo ? (
               <>
-                <label className="seat-code" title="May read the room's repository; models that can't, ask the first one that can">
+                <label className="seat-code" title="May read the council's repository; models that can't, ask the first one that can">
                   <input type="checkbox" checked={hasAccess(access, "read")} onChange={() => flip("read")} />
                   reads code
                 </label>
@@ -770,7 +770,7 @@ function SeatEditor({
               <button className="icon" disabled={i === 0} onClick={() => onChange(moveAt(seats, i, i - 1))} title="Speak earlier">↑</button>
               <button className="icon" disabled={i === seats.length - 1} onClick={() => onChange(moveAt(seats, i, i + 1))} title="Speak later">↓</button>
             </span>
-            <button className="icon danger" title="Remove from the room" onClick={() => onChange(seats.filter((_, j) => j !== i))}>✕</button>
+            <button className="icon danger" title="Remove from the council" onClick={() => onChange(seats.filter((_, j) => j !== i))}>✕</button>
           </div>
         );
       })}

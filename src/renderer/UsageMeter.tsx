@@ -135,7 +135,7 @@ export function UsageMeter({ usage, meters, focused }: { usage: UsageReport | nu
                           <span className="usage-label">{l.label}</span>
                           <span
                             className="usage-reset"
-                            title={l.note ? "Claude Code reports this window with a reply in a Claude pane; Collaborate turns don't report it" : undefined}
+                            title={l.note ? "Claude Code reports this window with a reply in a Claude pane; Council turns don't report it" : undefined}
                           >
                             {l.note ?? resetText(l.resetsAt, now)}
                           </span>

@@ -10,7 +10,7 @@
  * scripted checks. Add `?reset` to the URL to start from the fixtures again;
  * the query can also pick the screen (see the end of this file).
  */
-import type { AdoBoard, AdoWorkItem, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
+import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import type { TeamStatus } from "../shared/team/types";
 // team rooms: the House board
@@ -688,6 +688,40 @@ buffers[SAM_PANE] = `${C.dim}codex${C.reset}\r\n› Cover the last-org endpoint'
 buffers[remotePaneId(NICK, "n7")] = `${C.bold}> Carry on with the donor entity: add the gift aid flag${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Update(src/donors/entity.ts)\r\n`;
 buffers[NICK_PANE] = `${C.bold}> Write the donor CSV export (UTF-8 BOM, one row per gift)${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Write(src/donors/exportCsv.ts)\r\n  ⎿  Wrote 64 lines\r\n\r\n${C.amber}✻${C.reset} Running the export tests… ${C.dim}(18s · esc to interrupt)${C.reset}\r\n`;
 
+// ---- Council: a discussion two rounds in --------------------------------------
+
+const seat = (key: string, label: string, agent: "claude" | "codex", model: string, color: number, readsCode: boolean): CollabParticipant => ({
+  key, label, agent, model, color, readsCode, effort: null, conversationId: `conv-${key}`, lastSeen: 6,
+});
+const councils: CollabRoom[] = [
+  {
+    id: "k1",
+    title: "CSV export for the donor list",
+    brief: "We need a way to export the donor list to CSV from the backoffice. It has to respect the user's filters and handle 200k rows.",
+    repoPath: REPO,
+    participants: [seat("gpt6", "GPT-6 Astra", "codex", "gpt-6-astra", 0, true), seat("opus", "Claude Opus 5.5", "claude", "opus", 1, true), seat("fable", "Claude Fable 5.1", "claude", "fable", 2, false)],
+    messages: [
+      { id: "m0", speaker: "you", round: 0, at: now - 3_600_000, text: "We need a way to export the donor list to CSV from the backoffice. It has to respect the user's filters and handle 200k rows." },
+      { id: "m1", speaker: "gpt6", round: 1, at: now - 3_500_000, stance: "continue", text: "Stream it: the list query already takes the filter DTO, so page through it 5k rows at a time and write each page to the response." },
+      { id: "m2", speaker: "opus", round: 1, at: now - 3_400_000, stance: "continue", text: "Agree on streaming. For the largest orgs a background job that drops the file in blob storage avoids request timeouts." },
+      { id: "m3", speaker: "fable", round: 1, at: now - 3_300_000, stance: "continue", text: "Keep one path: always stream, and only add the job if real orgs time out." },
+      { id: "m4", speaker: "gpt6", round: 2, at: now - 3_200_000, stance: "agree", text: "Stream for everyone, measure the biggest org, add the job only if it times out." },
+      { id: "m5", speaker: "opus", round: 2, at: now - 3_100_000, stance: "agree", text: "That works. Plan: streaming endpoint behind the existing filter DTO, a timing check on the biggest org." },
+    ],
+    mode: "consensus",
+    maxRounds: 5,
+    round: 2,
+    running: false,
+    speaking: null,
+    plan: null,
+    implementedIn: null,
+    workspacePath: null,
+    pending: [],
+    allowKinds: [],
+    createdAt: now - 3_600_000,
+  },
+];
+
 // ---- event plumbing ------------------------------------------------------------
 
 const listeners: Record<string, Set<(...a: any[]) => void>> = {};
@@ -848,7 +882,7 @@ const api: Record<string, (...a: any[]) => any> = {
   runStates: async () => [],
   debugSessions: async () => [],
   debugBreakpoints: async () => ({ breakpoints: {} }),
-  collabList: async () => [],
+  collabList: async () => councils,
   collabModels: async () => {
     const presets = [
       { key: "opus", label: "Claude Opus", agent: "claude", model: "opus" },
@@ -941,6 +975,7 @@ const api: Record<string, (...a: any[]) => any> = {
       { id: "c-old-1", agent: "claude", cwd: "/Users/you/Code/worktrees/backoffice/5098-donorExport", title: "Donor export times out on big orgs", text: "the donor export query does a full scan — add an index on org_id", open: { how: "resume" } },
       { id: "c-old-2", agent: "codex", cwd: "/Users/you/Code/backoffice", title: "Org picker remembers nothing", text: "store the last org per user and preselect it in the org picker", open: { how: "resume" } },
       { id: "c-old-3", agent: "claude", cwd: "/Users/you/Code/client-portal", title: "Portal login loop", text: "MSAL redirect loops when the org cookie is missing", open: { how: "pane", sessionId: "s5" } },
+      { id: "c-old-4", agent: "codex", cwd: "/Users/you/Code/backoffice", title: "CSV export for the donor list", text: "stream the export in pages so a 200k-row org never holds it all in memory", open: { how: "room", roomId: "k1", roomTitle: "CSV export for the donor list" } },
     ];
     const hits = words
       ? all
@@ -1497,6 +1532,13 @@ const typeInto = (selector: string, text: string) => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 };
+// ?council opens the Council tab on its fixture discussion; ?council=list also unfolds the council list;
+// ?council=new opens the New council form
+if (params.has("council")) {
+  set("mb.tab", "collaborate");
+  set("mb.collab.rail", params.get("council") === "list");
+  if (params.get("council") === "new") setTimeout(() => click(".collab-rail-new"), 500);
+}
 // ?new opens New session, as ⌘N does; ?new=connected switches it to the first team room;
 // ?new=room opens it from the first shared group's + instead
 if (params.get("new") === "room") setTimeout(() => click('button[title^="New connected session"]'), 500);
