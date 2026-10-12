@@ -344,8 +344,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
     whoever shows it, anyone can type into it, initials show who's looking,
     Follow mirrors a teammate's grid, and everyone hears when it waits.
     Scrolling a teammate's session scrolls only your copy: room sessions run
-    Claude Code and Codex inline, so their history is in every copy's
-    scrollback (Settings → Team turns that off per Mac). Room
+    Claude Code and Codex inline, so their history — everything the terminal
+    keeps, not just the screen on view — is in every copy's scrollback
+    (Settings → Team turns that off per Mac). Room
     sessions start knowing the room's House board and artifact tools and
     unable to read secret files:
     Claude through permission rules, Codex (0.138+) through a sandbox set by
@@ -390,9 +391,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
     by hash, never through git or the log, checked before they're kept, 25 MB
     each; notes that crossed an edit are kept as a copy, not lost. Room agents
     read them with `list_room_artifacts` / `read_room_artifact` (images and
-    PDFs as a git-ignored copy in their folder), @assistant sees them in its
-    prompt, and anything named like a secret (or holding a private key) stays
-    unreadable to agents.
+    PDFs as a git-ignored, quarantined copy in their folder, never written
+    through a symbolic link there), @assistant sees them in its prompt —
+    names quoted, content fenced as a teammate's — and anything named like a
+    secret, from one of this Mac's credential stores (`~/.aws`, `~/.netrc`…)
+    or holding a private key (file or note) is asked about before it's added
+    and stays, like any copy of it, unreadable to agents. Removing an
+    artifact doesn't take it back: the room log keeps its name and every note
+    text, for later joiners too.
   - **Radley House board** (▦): the room's House project (its admin's
     choice) — the open backlog (every ticket not done or dropped, in the
     House's priority order, with a "Needs an agent" filter; `needs-human`,

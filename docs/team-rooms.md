@@ -74,6 +74,21 @@ should stop more members joining later.
   past a member's is refused, so no event can leave the room unable to take
   the next. Origin URLs go into the log without any user name or token, and an
   event carrying one is refused.
+- **Names are one line.** A room's name and a member's (`room.created`,
+  `member.added`, `member.renamed`) are refused with a control character in
+  them — a line break above all: names go into what agents read, where one
+  could pass for a line of Mockingbird's. Only events being added are checked,
+  never a log being loaded, so a room that stored such a name before still
+  loads; and whatever its source, every teammate- or House-sourced name an
+  agent reads (the room's instructions, the claims check, a teammate's agent
+  message, @assistant, the artifact tools) is on one line, quoted unless it's
+  plain words, with `<` and `>` escaped in quotes
+  (`src/shared/team/agentText.ts`).
+- **A failed request tells the teammate little.** When answering a
+  teammate's request fails, they're told only that it failed there ("the
+  reason is in its log"); the reason, which may name this Mac's folders, is
+  logged here. Refusals written for them (wrong room, not their session,
+  malformed parameters) still say why.
 - The sidebar shows the room as a group with a shared badge and the initials of
   who's connected right now. Sessions outside rooms are never visible to anyone.
 
@@ -342,9 +357,12 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   flag, since an older Codex ignores an unknown setting but refuses to start
   on an unknown flag. The owner gives up the full-screen views in room
   sessions (Claude Code's flicker-free renderer, clicking in it, copy on
-  select and Focus view; Codex's full-screen transcript). **Settings → Team →
-  Room sessions run inline** (on by default, per install) turns it off for
-  that Mac's room sessions. It applies as a session starts: one that joined
+  select and Focus view; Codex's full-screen transcript). Inline also means a
+  teammate's copy holds everything the session's terminal keeps, as far back
+  as it goes, not only the screen on view: whatever it printed (a secret an
+  agent showed, say) is in their scrollback too — the setting's note says so.
+  **Settings → Team → Room sessions run inline** (on by default, per install)
+  turns it off for that Mac's room sessions. It applies as a session starts: one that joined
   the room while running keeps its screen until restarted, which its "restart
   with the room's rules" chip offers. Anything still full screen (`less`,
   `vim`, a session started before this) shows one screen in a copy;
@@ -649,8 +667,14 @@ lines) in the room's repository, and links — for people and agents alike.
   screenshot) refuses folders, anything that isn't a regular file, files over
   25 MB, anything in Mockingbird's team folder and the ADO PAT file, naming
   each file and why. A file named like a secret (the secret file list:
-  `.env*`, `*.pem`, `*.key`, credentials…) or holding a private key is added
-  only when asked again: teammates get a copy; agents never read it.
+  `.env*`, `*.pem`, `*.key`, credentials…), holding a private key, or in one
+  of this Mac's credential stores by its real path (`~/.ssh`, `~/.aws`,
+  `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.config/radley-house`)
+  is added only when asked again: teammates get a copy; agents never read it.
+  A file from a credential store is marked so in its `artifact.add`
+  (`wasSecret`), so renaming it never makes it readable. A note whose text
+  holds a private key is asked about the same way when it's added, and when a
+  save (or Save as copy) brings one in.
 - **Notes edited together.** Saves are explicit. An edit saved from a
   revision someone else's edit replaced doesn't overwrite it: the editor says
   "Nick edited this while you were editing" and offers Overwrite, Save mine as
@@ -658,7 +682,18 @@ lines) in the room's repository, and links — for people and agents alike.
   partition), every member keeps both — the one first in the room's order as
   the note, the other beside it as "Spec (Ryan's edit)" — and its author is
   told: "Your edit of 'Spec' crossed Nick's; yours is kept as 'Spec (Ryan's
-  edit)'".
+  edit)'". A copy of a note agents may not read (Save mine as a copy, or a
+  crossed edit) stays unreadable to them: the copy's `artifact.add` carries
+  `wasSecret`, kept the same on every member, so ".env (copy)" renamed to
+  "notes" is still withheld.
+- **Removing doesn't take it back.** `artifact.remove` deletes a file's bytes
+  on every member and the copies agents were given, and chat chips say
+  "(removed)". But the room log is append-only and every member keeps all of
+  it: the artifact's name, and for a note every text ever saved, stay in each
+  member's log and reach anyone who joins later; a copy someone saved with
+  Save as… stays theirs. Any member can remove, rename or edit any artifact,
+  not only its author. The remove confirmation says so. (Nothing is
+  encrypted per artifact, so nothing can be shredded after the fact.)
 - **Repo file references** are made from a session's folder, at its HEAD:
   only for a committed file ("commit it first"), with a warning when the file
   has uncommitted changes (the reference is HEAD, without them) and when HEAD
@@ -666,7 +701,11 @@ lines) in the room's repository, and links — for people and agents alike.
   On a teammate's Mac it opens in a clone of the same origin — in a live
   session's folder there (the focused one first, then the room's), or as the
   file was at that commit, read-only with the lines highlighted — fetching
-  once when the commit isn't there yet. It says when the file changed since,
+  once when the commit isn't there yet (a person opening one always fetches;
+  an agent's read, or an @assistant question naming it, doesn't fetch again
+  within five minutes of a fetch that didn't bring that commit; the rest of
+  @assistant's excerpts never fetch, so a turn never waits on fetches for
+  references nobody asked about). It says when the file changed since,
   or why it can't open: "No clone of github.com/acme/backoffice on this Mac",
   "Commit abc1234 isn't in your clone — not pushed yet?".
 - **In chat:** `#` in the composer completes an artifact's name, sent as
@@ -676,25 +715,47 @@ lines) in the room's repository, and links — for people and agents alike.
 - **Agents** read them through two Mockingbird MCP tools, pre-allowed for
   Claude room sessions: `list_room_artifacts` (id, kind, name, who and when,
   size and type, url, repo origin/path/commit/lines, and whether it's
-  readable) and `read_room_artifact`: a note, link or text file comes back as
-  text, a repo reference as its lines at the commit (and whether the file
-  changed since), an image, PDF or other file as a read-only copy in the
-  session's folder, `.mockingbird/artifacts/<id>/` — excluded from git at any
-  depth (`**/.mockingbird/artifacts/` in the repository's exclude file;
-  a repository that tracks that folder gets nothing written), deleted when the
-  artifact goes, becomes secret, or the room is left. A file not here yet is
-  fetched first (up to 30 s). Everything is labelled as a teammate's content,
-  not the user's instructions. Room agents start knowing the tools and the
-  `#[name](artifact:<id>)` form. **@assistant** gets them in its prompt: the
-  list, then what the question names, notes, text files and repo excerpts
-  within a budget.
+  readable — a withheld one without its url or repo fields) and
+  `read_room_artifact`: a note, link or text file comes back as text, a repo
+  reference as its lines at the commit (and whether the file changed since),
+  an image, PDF or other file as a read-only, quarantined copy in the
+  session's folder, `.mockingbird/artifacts/<id>/` (folders owner-only) —
+  excluded from git at any depth (`**/.mockingbird/artifacts/` in the
+  repository's exclude file; a repository that tracks anything under
+  `.mockingbird/`, the folder itself committed as a symbolic link included,
+  gets nothing written), deleted when the artifact goes, becomes secret, or
+  the room is left. A file not here yet is fetched first (up to 30 s).
+  Everything is labelled as a teammate's content, not the user's
+  instructions: the artifact's name quoted, and what it holds between
+  `<room-artifact>` tags (the tag taken out of the content, so it can't end
+  the fence early). A tool call that fails is told to the agent and logged
+  here. Room agents start knowing the tools and the `#[name](artifact:<id>)`
+  form. **@assistant** gets them in its prompt the same way: the list (a
+  withheld link or reference without its url or path), then what the
+  question names, notes, text files and repo excerpts within a budget.
 - **Secrets:** agents never reach the store — it's under
   `~/.mockingbird/team`, which Claude's deny rules and Codex's room sandbox
   keep unreadable — only copies the tool makes after checking. An artifact is
   withheld from agents (listed as not readable, saying why) when its name is
   on the secret file list, or ever was (renaming `.env` to `env.txt` doesn't
-  make it readable), when a repo reference points at such a file, or when a
-  file holds a private key.
+  make it readable), when it came from a credential store or is a copy of a
+  withheld note (`wasSecret`), when a repo reference points at such a file,
+  or when a file or a note holds a private key.
+- **Writes into worktrees never follow links.** A worktree and a session's
+  folder are the agent's to write, so it could turn `.mockingbird` (or
+  `agent-context.md`, or the repository's `info/exclude`) into a symbolic
+  link to `~/.zshrc` and have Mockingbird write there. Every file Mockingbird
+  writes or deletes inside one — `claims.json`, `agent-context.md`, the old
+  `plan.md`, agents' artifact copies, the exclude line — goes through
+  `fileOps.ts`'s worktree helpers: each folder under the worktree is checked
+  with lstat and a link (or something that isn't a folder) is refused, a file
+  is read only when it's a regular file, and it's written as a new file
+  beside its name (`O_EXCL | O_NOFOLLOW`) then renamed over it, which
+  replaces the name, never a link's target. A refusal is shown: on the room's
+  board for the claims copy, to the agent and in the log for an artifact copy,
+  in the room's artifact problems for a copy's cleanup. Node has no `openat`,
+  so a folder swapped for a link between the check and the write isn't
+  caught; one already there always is.
 - **Compatibility.** `TEAM_PROTOCOL` stays 1: everything is new events and
   requests. An older Mockingbird keeps the events without showing them, and
   answers file requests with no handler, shown as "Nick's Mockingbird needs an
