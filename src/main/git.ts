@@ -106,9 +106,16 @@ export async function branchesOf(repo: string): Promise<{ local: string[]; origi
 /** The usual names of the branches work merges into, by team convention, each in the order it's preferred. */
 export const BASE_NAMES: Record<PrTarget, string[]> = { dev: ["dev", "develop", "development", "uat"], main: ["main", "master"] };
 
+/** The base branches among `branches`, as they're named there (UAT for uat), in the usual order: dev-like ones before main. */
+export function baseCandidates(branches: string[]): string[] {
+  const out: string[] = [];
+  for (const want of [...BASE_NAMES.dev, ...BASE_NAMES.main]) for (const b of branches) if (b.toLowerCase() === want && !out.includes(b)) out.push(b);
+  return out;
+}
+
 /** The integration branch new work usually starts from: a dev-like one before main. */
 export function pickDefaultBase(branches: string[]): string | null {
-  return [...BASE_NAMES.dev, ...BASE_NAMES.main].find((b) => branches.includes(b)) ?? null;
+  return baseCandidates(branches)[0] ?? null;
 }
 
 /** origin's URL, or null when the repository has no remote called origin. */

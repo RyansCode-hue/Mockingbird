@@ -13,7 +13,7 @@ import { isViewControl } from "../shared/termInput";
 import { useFolderRefresh } from "./folderWatch";
 import { dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
-import { overlapChips } from "./overlapChips";
+import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
 import type { RoomSessionBackupView } from "../shared/team/takeover";
 import { CODEX_ROOM_GUARD_SINCE, codexGuardsSecrets, isRemotePaneId } from "../shared/team/livePanes";
@@ -871,11 +871,7 @@ export function TerminalPane({
         {chips.local.length > 0 && density !== "min" && (
           <button
             className="chip overlap"
-            title={[
-              "Changed here and in another worktree of this repository — a merge conflict waiting to happen:",
-              ...chips.local.map((o) => `\n${o.otherTitle}${o.otherBranch ? ` (${o.otherBranch})` : ""}:\n${o.files.map((f) => `  ${f}`).join("\n")}`),
-              "\nClick to go to that session.",
-            ].join("\n")}
+            title={localOverlapTitle(chips.local)}
             onClick={(e) => {
               e.stopPropagation();
               onJump?.(chips.local[0].other);

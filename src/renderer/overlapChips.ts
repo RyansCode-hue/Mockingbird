@@ -13,7 +13,26 @@ export interface TeammateOverlapChip {
   title: string;
 }
 
+/** Files a chip's tooltip names per other branch; the rest are counted. */
+export const TITLE_FILES = 12;
+
 const base = (f: string) => f.split("/").pop() || f;
+
+/** Indented file lines for a tooltip, at most TITLE_FILES, then how many more. */
+function fileLines(files: string[]): string {
+  const shown = files.slice(0, TITLE_FILES).map((f) => `  ${f}`);
+  if (files.length > TITLE_FILES) shown.push(`  … and ${files.length - TITLE_FILES} more`);
+  return shown.join("\n");
+}
+
+/** The tooltip of the chip for this Mac's worktrees. */
+export function localOverlapTitle(local: FileOverlap[]): string {
+  return [
+    "Changed here and in another worktree of this repository — a merge conflict waiting to happen:",
+    ...local.map((o) => `\n${o.otherTitle}${o.otherBranch ? ` (${o.otherBranch})` : ""}:\n${fileLines(o.files)}`),
+    `\nClick to go to ${local.length > 1 ? "the first of those sessions" : "that session"}.`,
+  ].join("\n");
+}
 
 export function overlapChips(list: FileOverlap[] | undefined): { local: FileOverlap[]; teammates: TeammateOverlapChip[] } {
   const local: FileOverlap[] = [];
@@ -31,7 +50,7 @@ export function overlapChips(list: FileOverlap[] | undefined): { local: FileOver
   const teammates = [...byMember].map(([key, m]): TeammateOverlapChip => {
     const files = [...new Set([...m.branches.values()].flat())];
     const more = files.length > 1 ? ` +${files.length - 1}` : "";
-    const branches = [...m.branches].map(([b, fs]) => `${b}:\n${fs.map((f) => `  ${f}`).join("\n")}`);
+    const branches = [...m.branches].map(([b, fs]) => `${b}:\n${fileLines(fs)}`);
     return {
       key,
       roomId: m.roomId,
