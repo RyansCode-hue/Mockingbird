@@ -144,7 +144,7 @@ describe("agents' copies of room artifacts", () => {
     const repo = makeRepo({ "README.md": "hi\n" }, "wt", path.join(dir, "nick-code"));
     const r = await open("s1", repo);
     const copy = path.join(repo, ".mockingbird", "artifacts", id, "login screen.png");
-    expect(r.result).toContain(`copied to ${copy}`);
+    expect(r.result).toContain(`copied to ${JSON.stringify(copy)}`);
     for (const d of [".mockingbird", ".mockingbird/artifacts", `.mockingbird/artifacts/${id}`]) expect(fs.statSync(path.join(repo, d)).mode & 0o777).toBe(0o700);
     expect(fs.statSync(copy).mode & 0o777).toBe(0o444);
     expect(execFileSync("xattr", ["-p", "com.apple.quarantine", copy], { encoding: "utf8" })).toMatch(/^0081;[0-9a-f]+;Mockingbird;/);
