@@ -39,7 +39,8 @@ export type AssistantState = "thinking" | "answer" | "error";
 
 export interface ChatEventBodies {
   /** A member's message. `mentions` holds member ids and/or "assistant", resolved by the poster. */
-  "chat.message": { text: string; mentions: string[] };
+  /** `artifacts`: the room artifacts the text names as #[name](artifact:id), live when posted (absent from older apps). */
+  "chat.message": { text: string; mentions: string[]; artifacts?: string[] };
   /** The assistant's turn for the message `replyTo`, run on (and signed by) the asker's install. */
   "chat.assistant": { replyTo: string; state: AssistantState; text: string };
   /** A group of agent updates from the author's own room sessions (or its board changes). */
@@ -65,6 +66,8 @@ export interface ChatEntry {
   at: number;
   text: string;
   mentions?: string[];
+  /** Message entries: the room artifacts it names (parseArtifactRefs), when any. */
+  artifacts?: string[];
   /** Assistant entries: the message asked, and how far the answer got. */
   replyTo?: string;
   state?: AssistantState;

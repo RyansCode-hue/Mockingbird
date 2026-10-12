@@ -365,6 +365,33 @@ const api = {
   teamLiveView: (view: { shown: string[]; focused: string | null }) => ipcRenderer.send("team:liveView", view),
   /** Fetch a teammate's session's scrollback again and redraw its pane. */
   teamPaneResync: (id: string) => ipcRenderer.invoke("team:paneResync", id),
+  // team rooms: artifacts (src/shared/team/artifacts.ts); every call answers { error } on failure
+  artifactsList: (roomId: string) => ipcRenderer.invoke("artifacts:list", roomId),
+  /** A file picker for files to add; null when cancelled. */
+  artifactsPickFiles: () => ipcRenderer.invoke("artifacts:pickFiles"),
+  artifactsAddFiles: (roomId: string, paths: string[], confirmSecret?: boolean) => ipcRenderer.invoke("artifacts:addFiles", roomId, paths, confirmSecret),
+  /** A file without a path on disk (a pasted screenshot, a dropped image from a browser). */
+  artifactsAddBytes: (roomId: string, name: string, bytes: Uint8Array, confirmSecret?: boolean) => ipcRenderer.invoke("artifacts:addBytes", roomId, name, bytes, confirmSecret),
+  artifactsAddNote: (roomId: string, name: string, text: string) => ipcRenderer.invoke("artifacts:addNote", roomId, name, text),
+  artifactsAddRepo: (roomId: string, req: unknown) => ipcRenderer.invoke("artifacts:addRepo", roomId, req),
+  artifactsAddLink: (roomId: string, url: string, title: string) => ipcRenderer.invoke("artifacts:addLink", roomId, url, title),
+  artifactsRename: (roomId: string, id: string, name: string) => ipcRenderer.invoke("artifacts:rename", roomId, id, name),
+  artifactsRemove: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:remove", roomId, id),
+  artifactsSaveNote: (roomId: string, id: string, text: string, base: string, mode: "save" | "overwrite" | "copy") => ipcRenderer.invoke("artifacts:saveNote", roomId, id, text, base, mode),
+  artifactsRead: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:read", roomId, id),
+  /** Fetch a file now (it jumps the queue), or retry one that failed. */
+  artifactsDownload: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:download", roomId, id),
+  artifactsResolveRepo: (roomId: string, id: string, preferSessionId: string | null) => ipcRenderer.invoke("artifacts:resolveRepo", roomId, id, preferSessionId),
+  /** Quick Look, Reveal in Finder and Save as act on paths main builds itself. */
+  artifactsQuickLook: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:quickLook", roomId, id),
+  artifactsReveal: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:reveal", roomId, id),
+  artifactsSaveAs: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:saveAs", roomId, id),
+  artifactsDismissNotice: (roomId: string, noticeId: string) => ipcRenderer.invoke("artifacts:dismissNotice", roomId, noticeId),
+  onArtifactsChanged: (cb: (roomId: string) => void) => {
+    const h = (_e: unknown, roomId: string) => cb(roomId);
+    ipcRenderer.on("artifacts:changed", h);
+    return () => ipcRenderer.removeListener("artifacts:changed", h);
+  },
   onTeamLive: (cb: (state: unknown) => void) => {
     const h = (_e: unknown, s: unknown) => cb(s);
     ipcRenderer.on("team:liveChanged", h);
