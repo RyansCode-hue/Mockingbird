@@ -23,6 +23,8 @@ export interface TeamRoomDeps {
   roomOf?: (sessionId: string) => RoomId | null;
   /** One headless turn of the user's own agent CLI (the assistant). */
   ask: (prompt: string) => Promise<string>;
+  /** The room's Radley House board for the assistant (the House service's); null when the room has no project. */
+  houseBoard: (roomId: RoomId) => Promise<string | null>;
   /** The assistant prompt's room artifacts part (see AssistantDeps.artifacts). */
   artifacts?: (roomId: RoomId, question: RoomEvent<"chat.message">) => Promise<string | null>;
   /** Tell the window a room's chat changed ("*": any room's may have). */
@@ -60,6 +62,7 @@ export class TeamRoom {
       room: (roomId) => this.team?.room(roomId),
       sessions: (roomId) => this.sessionLines(roomId),
       repoDir: (roomId) => this.bridge.localSessions(roomId).find((s) => s.repoPath)?.cwd ?? null,
+      board: d.houseBoard,
       publish: (roomId, body) => this.need().publish(roomId, "chat.assistant", body),
       log: d.log,
       artifacts: d.artifacts,

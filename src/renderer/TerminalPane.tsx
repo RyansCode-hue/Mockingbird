@@ -326,7 +326,7 @@ export function TerminalPane({
   onUndoTurn,
   overlaps,
   onJump,
-  onOpenPlan,
+  onOpenBoard,
   backup,
   onTakeOver,
   leftCopy,
@@ -374,8 +374,8 @@ export function TerminalPane({
   /** Files another worktree of this repository has also changed. */
   overlaps?: FileOverlap[];
   onJump?: (sessionId: string) => void;
-  /** Open a team room's plan board (a teammate's branch overlaps this worktree). */
-  onOpenPlan?: (roomId: string) => void;
+  /** Open a team room's House board (a teammate's branch overlaps this worktree). */
+  onOpenBoard?: (roomId: string) => void;
   /** A room session's backup (team rooms), and taking a teammate's over. */
   backup?: RoomSessionBackupView | null;
   onTakeOver?: (view: RoomSessionBackupView) => void;
@@ -884,7 +884,7 @@ export function TerminalPane({
             ⚠ {overlapCount(chips.local)} overlap
           </button>
         )}
-        {/* team rooms: a teammate's pushed branch changes the same files — their package is on the plan board */}
+        {/* team rooms: a teammate's pushed branch changes the same files — the room's House board shows who has which ticket */}
         {density !== "min" &&
           chips.teammates.map((c) => (
             <button
@@ -893,7 +893,7 @@ export function TerminalPane({
               title={c.title}
               onClick={(e) => {
                 e.stopPropagation();
-                onOpenPlan?.(c.roomId);
+                onOpenBoard?.(c.roomId);
               }}
             >
               ⚠ {c.label}

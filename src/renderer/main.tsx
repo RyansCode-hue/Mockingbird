@@ -74,8 +74,8 @@ import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from 
 import { SettingsView, type SettingsSection } from "./Settings";
 import { ConnectedDivider, JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
 import { adminRequests, JoinRequestPrompt } from "./team/JoinRequests";
-// team rooms: plan board
-import { PlanBoardDialog, PlanWarnings } from "./team/PlanBoard";
+// team rooms: the Radley House board
+import { HouseBoardDialog, HouseWarnings } from "./team/HouseBoard";
 // team rooms: team chat
 import { RoomChatChip, RoomChatPanel, TeamRoomIcon, useRoomChatOpen } from "./team/RoomChat";
 // team rooms: take-over
@@ -302,8 +302,8 @@ function App() {
     if (!joinShown && joinAsk) setJoinShown(joinAsk);
   }, [joinShown, joinAsk]);
   const joinDone = useCallback(() => setJoinShown(null), []);
-  // team rooms: plan board — the room whose board is open
-  const [planDlg, setPlanDlg] = useState<string | null>(null);
+  // team rooms: the House board — the room whose board is open
+  const [boardDlg, setBoardDlg] = useState<string | null>(null);
   // group/workspace renames use a dialog: inline editing broke because the same
   // edit field rendered in two places (sidebar + workspace tab strip) and the
   // second mount stole focus from the first, instantly closing it. Sessions use
@@ -1895,15 +1895,15 @@ function App() {
                       const room = roomOfGroup(teamStatus, key);
                       return room ? <SharedBadge room={room} /> : null;
                     })()}
-                    {/* team rooms: plan board */}
+                    {/* team rooms: the House board */}
                     {roomOfGroup(teamStatus, key) && (
                       <button
                         className="glbtn"
-                        title="Plan board — work packages, who has what, and the files each owns"
+                        title="House board — the room's Radley House tickets and who has each"
                         onClick={(e) => {
                           e.stopPropagation();
                           cancelClick();
-                          setPlanDlg(roomOfGroup(teamStatus, key)!.id);
+                          setBoardDlg(roomOfGroup(teamStatus, key)!.id);
                         }}
                       >
                         ▦
@@ -2339,7 +2339,7 @@ function App() {
                     onUndoTurn={s.shell || !s.repoPath || isRemote(s) ? undefined : () => setUndoFor(s)}
                     overlaps={overlaps[s.id]}
                     onJump={jumpTo}
-                    onOpenPlan={setPlanDlg}
+                    onOpenBoard={setBoardDlg}
                     backup={backupFor(s)}
                     onTakeOver={setTakeOverFor}
                     leftCopy={(() => {
@@ -2605,9 +2605,9 @@ function App() {
                   },
                 ]
               : []),
-            // team rooms: plan board
+            // team rooms: the House board
             ...(activeGroup && roomOfGroup(teamStatus, activeGroup)
-              ? [{ label: `Plan board — ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))}`, run: () => setPlanDlg(roomOfGroup(teamStatus, activeGroup)!.id) }]
+              ? [{ label: `House board — ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))}`, run: () => setBoardDlg(roomOfGroup(teamStatus, activeGroup)!.id) }]
               : []),
             ...(shownTab("worktracker")
               ? [
@@ -2747,8 +2747,8 @@ function App() {
 
       {shareDlg && <ShareRoomDialog groupKey={shareDlg.key} title={shareDlg.title} onClose={() => setShareDlg(null)} />}
       {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
-      {/* team rooms: plan board */}
-      {planDlg && <PlanBoardDialog roomId={planDlg} onClose={() => setPlanDlg(null)} />}
+      {/* team rooms: the House board */}
+      {boardDlg && <HouseBoardDialog roomId={boardDlg} onClose={() => setBoardDlg(null)} />}
       {takeOverFor && (
         <TakeOverDialog
           view={takeOverFor}
@@ -2775,7 +2775,7 @@ function App() {
         />
       )}
       {reviewing && <ReceivedDialog received={tkView?.received.find((r) => r.id === reviewing.id) ?? reviewing} onClose={() => setReviewing(null)} />}
-      <PlanWarnings onJump={jumpTo} onOpenBoard={setPlanDlg} />
+      <HouseWarnings onJump={jumpTo} onOpenBoard={setBoardDlg} />
 
       {renameDlg && (
         <RenameDialog

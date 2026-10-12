@@ -33,8 +33,9 @@ import {
 import type { MemberId, RoomId, RoomState } from "../../shared/team/types";
 import type { LaunchTarget, RemotePanes, RoomLaunch, SessionManager } from "../sessions";
 import { MAX_STREAM_CHUNK, splitText } from "./frames";
-import { roomAgentContext } from "./planService";
-import { PLAN_CONTEXT_ENV, PLAN_TOOL } from "../../shared/team/plan";
+import { roomAgentContext } from "./houseService";
+import { ROOM_CONTEXT_ENV } from "../../shared/team/claims";
+import { HOUSE_TOOL_NAMES } from "../../shared/team/house";
 import { ARTIFACT_TOOL } from "../../shared/team/artifacts";
 import { TEAM_DIR } from "./identity";
 import { CoauthorTurns, COAUTHORS_DIR, ensureHooks, hooksEnv, HOOKS_DIR } from "./coauthors";
@@ -84,7 +85,7 @@ export interface LivePanesDeps {
   originOf?: (repoPath: string) => Promise<string | null>;
   /** This install's git email, for teammates' Co-authored-by trailers. */
   gitEmail?: () => Promise<string | null>;
-  /** What an agent in a room starts knowing about its plan board (default: the plan service's roomAgentContext). */
+  /** What an agent in a room starts knowing about its House board (default: the House service's roomAgentContext). */
   agentContext?: (roomId: RoomId) => string;
   /** Where per-person settings for teammates' sessions (mutes) are kept. */
   dir?: string;
@@ -342,7 +343,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
    * What a session starting in a shared group gets: secret reads denied
    * (Claude's rules; a Codex new enough runs in the room's sandbox and is
    * told about it), its commits credit teammates, an agent starts knowing
-   * the room's plan board, with its tool (and the room artifacts' two)
+   * the room's House board, with its tools (and the room artifacts' two)
    * allowed, and — unless this Mac's person turned it off — it runs inline,
    * so teammates' copies hold its history and scroll it themselves (a
    * full-screen agent keeps its history inside itself: a copy would show one
@@ -381,7 +382,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         instructions = (this.d.agentContext ?? roomAgentContext)(roomId);
       } catch (err) {
         // the SessionStart hook adds the board from the worktree's copy instead
-        this.d.log(`team: the plan board for session ${target.id}'s launch`, err);
+        this.d.log(`team: the House board for session ${target.id}'s launch`, err);
       }
     }
     const inline = this.d.settings().roomSessionsInline !== false;
@@ -389,14 +390,14 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       env: {
         ...(this.hooksReady ? hooksEnv(this.d.hooksDir ?? HOOKS_DIR) : {}),
         // the board itself is in the launch, so the SessionStart hook adds nothing
-        ...(instructions ? { [PLAN_CONTEXT_ENV]: "1" } : {}),
+        ...(instructions ? { [ROOM_CONTEXT_ENV]: "1" } : {}),
         // every room pty, terminals too: a claude started by hand in one runs inline as well
         ...(inline ? CLAUDE_INLINE_ENV : {}),
       },
       denyReads,
       codexPermissions,
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
-      allowTools: target.agent === "claude" ? [PLAN_TOOL, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read] : [],
+      allowTools: target.agent === "claude" ? [...HOUSE_TOOL_NAMES, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read] : [],
       inline,
       guards: { secrets: target.agent === "claude" || codexGuarded, coauthors: this.hooksReady },
     };

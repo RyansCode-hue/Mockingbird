@@ -7,11 +7,11 @@ const local: FileOverlap = { other: "s2", otherTitle: "Export API", otherBranch:
 const nick = (branch: string, files: string[]): FileOverlap => ({ other: `team:${NICK}:${branch}`, otherTitle: "Nick's pushed branch", otherBranch: branch, files, teammate: { id: NICK, name: "Nick", roomId: "R1" } });
 
 describe("a pane's overlap chips", () => {
-  it("words a teammate's pushed branch by name and file, and opens that room's plan board", () => {
+  it("words a teammate's pushed branch by name and file, and opens that room's House board", () => {
     const { local: mine, teammates } = overlapChips([local, nick("nick-donor", ["src/api/x.ts"])]);
     expect(mine).toEqual([local]);
     expect(teammates).toEqual([{ key: `R1\n${NICK}`, roomId: "R1", label: "Nick's branch also changes x.ts", title: expect.stringContaining("nick-donor:\n  src/api/x.ts") }]);
-    expect(teammates[0].title).toMatch(/plan board/);
+    expect(teammates[0].title).toMatch(/House board/);
   });
 
   it("puts one teammate's branches and files in one chip, counting the rest", () => {

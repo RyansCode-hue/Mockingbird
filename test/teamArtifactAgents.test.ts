@@ -180,7 +180,7 @@ describe("room agents' artifact tools", () => {
   });
 
   it("are pointed at in what room agents start with", () => {
-    const text = agentContextText({ name: "5110", teammates: ["Nick"] }, null);
+    const text = agentContextText({ name: "5110", teammates: ["Nick"], project: "atticus-backoffice", board: null, problem: null });
     expect(text).toContain("list_room_artifacts");
     expect(text).toContain("read_room_artifact");
     expect(text).toContain("#[name](artifact:<id>)");
@@ -214,6 +214,7 @@ describe("@assistant and the room's artifacts", () => {
       sessions: () => [],
       roomGroups: () => [],
       ask: async (prompt) => (asked.push(prompt), "ok"),
+      houseBoard: async () => null,
       artifacts: (id, q) => assistantArtifacts(id, q.body.artifacts ?? []),
       chatChanged: () => {},
       notify: () => {},

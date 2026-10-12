@@ -3,8 +3,8 @@ import type { FileOverlap } from "../shared/types";
 /**
  * A pane's overlap chips: one for the worktrees of this Mac (a click jumps to
  * that session), and one per teammate's pushed branch ("Nick's branch also
- * changes x.ts"; a click opens the room's plan board, where the branch is
- * listed with its package).
+ * changes x.ts"; a click opens the room's House board, which shows who has
+ * which ticket on which branch).
  */
 export interface TeammateOverlapChip {
   key: string;
@@ -36,7 +36,7 @@ export function overlapChips(list: FileOverlap[] | undefined): { local: FileOver
       key,
       roomId: m.roomId,
       label: `${m.name}'s branch also changes ${base(files[0] ?? "")}${more}`,
-      title: [`${m.name}'s pushed ${m.branches.size === 1 ? "branch changes" : "branches change"} files this worktree changes too — talk before one of you merges:`, ...branches.map((b) => `\n${b}`), "\nClick to open the room's plan board."].join("\n"),
+      title: [`${m.name}'s pushed ${m.branches.size === 1 ? "branch changes" : "branches change"} files this worktree changes too — talk before one of you merges:`, ...branches.map((b) => `\n${b}`), "\nClick to open the room's House board."].join("\n"),
     };
   });
   return { local, teammates };

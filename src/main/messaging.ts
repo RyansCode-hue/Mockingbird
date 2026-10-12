@@ -5,9 +5,8 @@ import { MB_DIR } from "./store";
 import type { SessionManager } from "./sessions";
 import { SessionInfo, topOfKey, type AgentKind, type AgentMessage, type SessionStatus } from "../shared/types";
 import { writeGenerated } from "./fileOps";
-import { PLAN_TOOL } from "../shared/team/plan";
-import { PLAN_TOOL_SCHEMA } from "./team/claims";
-import { planToolCall } from "./team/planService";
+import { HOUSE_TOOL_SCHEMAS, isHouseTool } from "./team/houseTools";
+import { houseToolCall } from "./team/houseService";
 import { ARTIFACT_TOOL } from "../shared/team/artifacts";
 import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
 
@@ -112,7 +111,7 @@ const SESSION_TOOLS = [
       additionalProperties: false,
     },
   },
-  ${JSON.stringify(PLAN_TOOL_SCHEMA)},
+  ...${JSON.stringify(HOUSE_TOOL_SCHEMAS)},
   ${ARTIFACT_TOOL_SCHEMAS.map((t) => JSON.stringify(t)).join(",\n  ")},
 ];
 
@@ -342,8 +341,8 @@ export class Messaging {
     const me = live.find((s) => s.id === req.from);
     if (!me) return { error: "Your session is not known to Mockingbird (it may have been restarted)." };
 
-    // team rooms: plan board — it answers "not in a team room" for sessions outside one
-    if (req.op === PLAN_TOOL) return planToolCall(me.id, req.args ?? {});
+    // team rooms: the House board — it answers "not in a team room" for sessions outside one
+    if (isHouseTool(req.op)) return houseToolCall(me.id, req.op!, req.args ?? {});
     // team rooms: artifacts — likewise, outside a room it says there are none
     if (req.op === ARTIFACT_TOOL.list || req.op === ARTIFACT_TOOL.read) return artifactToolCall(me, req.op, req.args ?? {});
 

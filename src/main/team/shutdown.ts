@@ -2,7 +2,7 @@
 export interface TeamRoomsParts {
   livePanes: { stop(): void };
   chat: { stop(): void };
-  plan: { stop(): void };
+  house: { stop(): void };
   artifacts: { stop(): void };
   takeover: () => { close(): void } | null;
   team: { stop(): void };
@@ -12,7 +12,7 @@ export interface TeamRoomsParts {
  * Stop team rooms when the window closes or the app quits: whatever speaks
  * through the team first, the transport last. The live panes send output
  * gathered for teammates; the chat posts the agent updates still gathering
- * (up to 30 s of them); then the plan board, room artifacts (downloads stop
+ * (up to 30 s of them); then the House board, room artifacts (downloads stop
  * where they are, resumed on the next start), take-over and the team stop.
  * Every part is stopped even when one before it fails (that's logged).
  */
@@ -20,7 +20,7 @@ export function stopTeamRooms(p: TeamRoomsParts, log: (context: string, err: unk
   const steps: [string, () => void][] = [
     ["live panes", () => p.livePanes.stop()],
     ["team chat", () => p.chat.stop()],
-    ["plan board", () => p.plan.stop()],
+    ["House board", () => p.house.stop()],
     ["room artifacts", () => p.artifacts.stop()],
     ["take-over", () => p.takeover()?.close()],
     ["team transport", () => p.team.stop()],

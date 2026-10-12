@@ -2,8 +2,9 @@
 
 Live co-presence between two (later more) Mockingbirds: share a group as a
 room, see and type into each other's sessions, talk in a team room with your
-agents, keep files, notes, repo references and links in it, claim work on a
-shared plan board, and take over a teammate's session when they're away.
+agents, keep files, notes, repo references and links in it, claim the
+project's Radley House tickets on a shared board, and take over a teammate's
+session when they're away.
 
 Decided with Ryan, 2026-10-07 (connection changed from Tailscale to WebRTC the same day). Built for Ryan and Nick first; nothing here
 should stop more members joining later.
@@ -44,14 +45,15 @@ should stop more members joining later.
   `session.upsert` / `session.removed` (room sessions);
   `session.backup`, `session.takenOver`, `session.backupDropped` (take-over);
   `room.settings` (the admin's: backups to origin);
-  `chat.message`, `chat.update`, `chat.assistant` (team room); `plan.package`,
-  `plan.claim`, `plan.status`, `plan.remove`, `plan.repo`, `plan.branches`
-  (plan board); `artifact.add`, `artifact.update`, `artifact.remove`
-  (artifacts' records — never a file's bytes). Terminal output, views and
-  typing are streams and requests between connected members, never stored;
-  so are take-over's copies and questions (`takeover.have`, `.snapshot`,
-  `.transcript`, `.ask`, `.progress`, `.changes`) and artifacts' files
-  (`artifact.have`, `.chunk`).
+  `chat.message`, `chat.update`, `chat.assistant` (team room); `house.project`
+  (the admin's), `house.track`, `house.untrack`, `house.nudge` (House board;
+  never the House's titles, claims or statuses); `artifact.add`,
+  `artifact.update`, `artifact.remove` (artifacts' records — never a file's
+  bytes). Older rooms' `plan.*` events are kept but change nothing. Terminal
+  output, views and typing are streams and requests between connected
+  members, never stored; so are take-over's copies and questions
+  (`takeover.have`, `.snapshot`, `.transcript`, `.ask`, `.progress`,
+  `.changes`) and artifacts' files (`artifact.have`, `.chunk`).
 
 ## Rooms
 
@@ -230,7 +232,7 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 - **On the Mac that left, or was removed** (as soon as its Mockingbird applies
   the removal: at once, from a teammate it still shares a connection with, or
   from the Worker when its hello is refused): it stops taking part — no
-  connection, live panes, chat, plan or take-over for the room — and deletes:
+  connection, live panes, chat, House board or take-over for the room — and deletes:
   - the room's folder `~/.mockingbird/team/rooms/<roomId>/` entirely: log,
     snapshot, settings, invites, take-over records, teammates' conversations,
     received patches and the room's artifact files (their downloads stopped
@@ -238,7 +240,7 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   - the copies of room artifacts agents were given in their folders
     (`.mockingbird/artifacts/<id>/`);
   - its entries in `chat-read.json` and `live-muted.json`, and a pending join;
-  - the plan copies in its worktrees (`.mockingbird/plan.md`, `claims.json`,
+  - the room's files in its worktrees (`.mockingbird/claims.json`,
     `agent-context.md`; rewritten without the room where another room still
     uses the repository) and its sessions' co-author lists;
   - hidden refs `refs/mockingbird/{rooms,rooms-origin,rooms-left,rooms-sent}/<roomId>/*`
@@ -258,9 +260,8 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   it got from them — their snapshots in its clone, conversations, records,
   changes they sent, a pending request to hand over — and the mutes of their
   panes; the chat says "Ryan removed Nick" or "Nick left". Commits and their
-  Co-authored-by trailers, plan-board history and the `mockingbird/plan`
-  branch stay; so do the packages they claimed, under their name, until a
-  member changes them.
+  Co-authored-by trailers stay; so do their claims in the House, which the
+  House alone changes.
 - **The Worker's side (revoke).** `revoke { member, event }` on the signaling
   connection: allowed for oneself, and for someone else from the room's admin
   as the Worker knows it. The Worker stores the creator's id once its hello
@@ -589,8 +590,9 @@ A chat thread in each room, for people and agents:
 - **Agents across machines:** Mockingbird's agent messaging (`send_message`,
   `list_sessions`) reaches room sessions on the other laptop through the room.
 - **@assistant:** a member @-mentions the assistant. It runs on **the asker's
-  laptop under their account**, reads the room (chat, board, session list,
-  artifacts) and the repo's docs, and posts its answer to the room.
+  laptop under their account**, reads the room (chat, the House board as the
+  asker's Mockingbird reads it, session list, artifacts) and the repo's docs,
+  and posts its answer to the room.
 
 ## Artifacts
 
@@ -698,27 +700,89 @@ lines) in the room's repository, and links — for people and agents alike.
   answers file requests with no handler, shown as "Nick's Mockingbird needs an
   update to share files".
 
-## Plan and claims board
+## Radley House board
 
-- Lives on its own branch, **`mockingbird/plan`**, as `plan.md` (plus a small
-  machine-readable claims block). Mockingbird commits and pushes each change and
-  syncs it live between members. Feature branches never touch it, so it never
-  conflicts.
-- Every worktree in a room gets a **read-only copy** at a git-ignored path, kept
-  current, plus agent instructions pointing at it. An agent started in a room
-  gets those instructions in its launch (Claude's appended system prompt,
-  Codex's developer instructions), with the tool pre-allowed for Claude;
-  otherwise the SessionStart hook adds them from the worktree's copy. Agents
-  propose changes through that Mockingbird tool (`update_team_plan`) rather
-  than editing it.
-- A work package lists what it owns (folders/files), what it provides and uses
-  (contracts), and how it's tested. It's claimed by a member.
-- **Claims + warnings:**
-  - Before an agent edits a file claimed by a teammate's package, it's warned
-    (hook/tool feedback), and so are you. You can still proceed.
-  - Mockingbird's overlap check extends across machines: files changed on a
-    teammate's pushed branches show on the pane as "Nick's branch also changes
-    <file>", and clicking it opens the room's plan board.
+Decided with Ryan, 2026-10-12: the room's board mirrors the project's
+**Radley House** tickets instead of a hand-made plan. The House is the system
+of record; the room keeps only what the House doesn't.
+
+- **Which project:** the room's admin chooses it on the board (`house.project`,
+  admin-only like `room.settings`: anyone else's is refused locally and
+  ignored by every reducer). It names the project, e.g. `atticus-backoffice`;
+  each member's Mockingbird reads its **own** `~/.config/radley-house/<project>.env`
+  (mode 600: `HOUSE_API_URL`, `HOUSE_PROJECT_ID`, `HOUSE_BUILD_TOKEN`, or the
+  House CLI's `EXTERNAL_BUILD_TOKEN`). Each builder mints their own token in
+  the House (the project's Overview → External build setup). A missing file,
+  one other users can read, a non-https `HOUSE_API_URL` or a missing token
+  shows on the board with what to do; the board stays empty there and the
+  agents' tools answer the same.
+- **The token stays in the main process.** Every House call is made there,
+  with the acting member's own token: never sent to the window, an agent, the
+  room log or a log line, and scrubbed from every error. Requests go only to
+  `HOUSE_API_URL/api/projects/<id>/external/…`, never follow a redirect, and
+  time out after 15 s. Errors carry the House's own message.
+- **What the board shows** (▦ on a shared group, or "House board" in the
+  palette): "Radley House · <project>" with **+ Add ticket**, then **Current
+  slice · <name>** (the tickets the House's frozen spec, `GET spec`, names)
+  and **Added by the room** (`house.track` / `house.untrack`, by number, any
+  member). Each row is `#<n>`, the title, and "<person> · <status>" when
+  claimed or **Claim** (on a branch: one of your room sessions', or
+  `feature/<n>-<slug>`). A row opens the ticket: its detail, acceptance and
+  history, Claim / Release, a comment, progress, status change or question,
+  and **Open in the House**. + Add ticket puts an existing ticket on the
+  board, or creates one in the House (it starts parked) and adds it.
+- **Who has a ticket:** the room member whose room sessions are on the claim's
+  branch, else the member whose name matches the House's claimant, else the
+  House's name for them.
+- **Reading:** each member's Mockingbird reads the backlog (`GET work-items`),
+  the spec, and any board ticket the backlog didn't include, about once a
+  minute while the board is open or one of its room sessions runs, when the
+  admin changes the project, and when a teammate's write nudges it
+  (`house.nudge {n}`, published after every write so others read that ticket
+  again at once). Titles, claims and statuses are never copied into the room
+  log; the chat's agent updates say only "Ryan claimed #143".
+- **Writing** (from the board or an agent, as that member): claim
+  (`POST …/claim {branch}`), release, progress and status changes
+  (`POST …/events {event: "progress", note, status?, reference?}`), a
+  question (`{event: "question"}`, then the handoff tags: `needs-human` on,
+  `needs-agent` off), a comment (`PATCH …/work-items/<n> {note}`), a new ticket
+  (`POST work-items`, then `PATCH {tags}` if it has any). Only staff close a
+  ticket as done or dropped; the board never offers it.
+- **Agents** in a room get the mockingbird MCP tools `list_house_tickets`
+  (the board, the slice, the room's tickets, or the whole backlog by tag),
+  `read_house_ticket` (with history), `create_house_ticket` (also added to
+  the board), `claim_house_ticket` (on the session's branch unless given one;
+  a session on a base branch is asked for one), `release_house_ticket`,
+  `post_house_ticket_event` (progress, status, question, note) and
+  `get_house_spec`, pre-allowed for Claude (Codex approves the server's tools
+  itself). A call acts as the session's owner, through the Mockingbird that
+  runs the session, so a teammate's agent never uses your token. An agent
+  started in a room gets a short summary of the slice and the room's claims
+  in its launch, fenced and labelled as data from the House and teammates,
+  not instructions; otherwise the SessionStart hook adds the same from the
+  worktree's `.mockingbird/agent-context.md`. @assistant gets the same
+  summary.
+- **Claims and warnings:** a ticket claimed on a branch owns the files the
+  claimant's room sessions on that branch have changed — as their pushed
+  branch shows it, fetched from origin into a clone here and compared with the
+  repo's base. No paths are entered by hand. Mockingbird writes them to
+  `.mockingbird/claims.json` in every worktree of the room's repositories
+  (git-ignored, read-only; a worktree on that same branch leaves the ticket
+  out). An agent's first edit of one of those files in a conversation is held
+  back with the reason ("src/api/x.ts has been changing on Nick's ticket #141
+  …"), and so are you told ("Nick's ticket #141 has been changing this
+  file"); repeating the edit goes through with a reminder.
+- **Overlaps across machines:** the same teammates' branches (every room
+  session's, not only claimed ones) feed the overlap check: files changed on
+  a teammate's pushed branch show on the pane as "Nick's branch also changes
+  <file>", and clicking it opens the room's board.
+- **Before the House board,** rooms had a work-package board (`plan.*`
+  events, `plan.md` on a `mockingbird/plan` branch). Old rooms' logs still
+  load: those events are kept and passed on but change nothing and aren't
+  shown. Mockingbird no longer commits or pushes `mockingbird/plan`; branches
+  already on origin are left alone (delete them by hand if you like), and a
+  worktree's old `.mockingbird/plan.md` is removed the next time its copy is
+  written.
 
 ## Not in this release
 
@@ -734,13 +798,13 @@ lines) in the room's repository, and links — for people and agents alike.
   the secret deny list. The Worker's room logic is a plain module, tested
   directly and also served by a local signaling server for tests.
 - Leaving and removal (`test/teamMembership.test.ts`, and the take-over, live
-  panes, plan and signaling tests): who may remove whom, the admin after the
+  panes, House board and signaling tests): who may remove whom, the admin after the
   creator leaves, a removed member's later events changing nothing whatever
   order events arrive in, coming back with a new invite; over the loopback,
   removal of a connected and an offline member, leaving with and without
   anyone online, an older Worker (peer to peer, the message to update it, the
   admin's catch-up once it's updated); what each Mac deletes (the room's
-  folder, read marks, mutes, plan copies, hidden refs, backups on origin —
+  folder, read marks, mutes, the room's worktree files, hidden refs, backups on origin —
   and a failure there reported), a cleanup cut short finished on the next
   start; the Worker's revoke (self, admin, refused, a room from before revoke,
   admin succession, re-admission, stale admits) and the app's client against
@@ -756,6 +820,21 @@ lines) in the room's repository, and links — for people and agents alike.
   failed backup); turned off, each owner deletes what it pushed (a failure
   shown and retried by the prune); a room from before the setting behaves as
   off, its owner deleting its old backups from origin on start.
+- The House board (`test/teamHouse.test.ts`, `test/teamHouseService.test.ts`,
+  `test/teamClaims.test.ts`), against a fake House on this Mac (nothing calls
+  the real one): the env file (a non-https URL, credentials in it, a missing
+  or placeholder token, a file others can read — the token in no message);
+  every route with the right method, path, body and token; the House's
+  errors, a timeout, a redirect never followed; every agent tool, each
+  member's calls made with their own token and the House deciding what they
+  may do; `house.track` and nudges reaching the other member, who reads with
+  their own token; polling only while the board is open or a room session
+  runs; only the admin's project counting; a Mac without the env file; claims
+  from a claimed ticket's branch and its pushed files, not in a worktree on
+  that branch, gone once released; tokens and House titles never in a view,
+  log line or the room log; old `plan.*` logs and snapshots still loading.
+  `test/houseLive.test.ts` reads the real House (GETs only) when run by hand
+  with `MB_HOUSE_LIVE=1`; never in CI.
 - Joining (`test/teamJoinApproval.test.ts`, the signaling and wire tests):
   `mayAddMember` — the admin's add counts, a member's doesn't, a room from
   before keeps the adds before its admin's switch, in any delivery order;
