@@ -317,6 +317,37 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 - **Live panes:** a room session's terminal streams to every member. Its
   scrollback is replayed on join, then live output follows. Remote panes render
   like local ones (status, waiting reason, git chips from the owner's side).
+- **Scrolling is your own:** in a teammate's pane the wheel, trackpad,
+  scrollbar and PageUp/PageDown scroll only your copy — what it has received
+  and the scrollback fetched on open — and stay put while output arrives, also
+  when the copy is redrawn from the owner's scrollback (a gap in its stream,
+  Repaint, the owner back online, the pane shown again after a spell hidden):
+  the view is found again by its rows' text. The
+  copy's terminal is never given mouse tracking (selection there is native),
+  and the wheel never reaches xterm, which would otherwise send the owner's
+  program mouse reports or, on the alternate screen, arrow keys. As a backstop
+  the owner drops a teammate's input that is only mouse reports or
+  PageUp/PageDown (logged once a minute in `pty-audit.log`); typing, paste,
+  Ctrl-C and arrow keys go through.
+- **Room sessions run inline:** a full-screen agent keeps its history inside
+  itself, so a copy of it would show one screen with nothing to scroll. Room
+  sessions therefore start on the normal screen, where their history lands in
+  the terminal's scrollback — the owner's and every copy's. Claude Code gets
+  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` in every room pty's environment
+  (it outranks a `tui: "fullscreen"` setting and `CLAUDE_CODE_NO_FLICKER`;
+  a `claude` started by hand in a room's terminal runs inline too). Codex gets
+  `-c tui.alternate_screen="never"` (what `--no-alt-screen` sets, outranking
+  `tui.fullscreen_transcript`), fresh or resumed: a setting rather than the
+  flag, since an older Codex ignores an unknown setting but refuses to start
+  on an unknown flag. The owner gives up the full-screen views in room
+  sessions (Claude Code's flicker-free renderer, clicking in it, copy on
+  select and Focus view; Codex's full-screen transcript). **Settings → Team →
+  Room sessions run inline** (on by default, per install) turns it off for
+  that Mac's room sessions. It applies as a session starts: one that joined
+  the room while running keeps its screen until restarted, which its "restart
+  with the room's rules" chip offers. Anything still full screen (`less`,
+  `vim`, a session started before this) shows one screen in a copy;
+  scrolling it says so instead.
 - **Typing:** any member can type into any room session, at the same time, like
   plain tmux. No lock.
 - **Notifications:** when an agent in a room is waiting on input, every member

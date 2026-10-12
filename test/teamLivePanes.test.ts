@@ -210,6 +210,26 @@ describe("live panes", () => {
     expect(streamed.length).toBe(n);
   });
 
+  it("redraws a pane shown again after a spell hidden, and never one that stayed on screen", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    // the pane's terminal asks for the scrollback as it opens, before the window's view says it's shown
+    await nick.sessions.paneBuffer(paneId);
+    nick.live.setView({ shown: [paneId], focused: null });
+    ptyOf(s.id).emit("live\r\n");
+    await until(() => nick.shown(paneId) === "live\r\n", "live output");
+    // still shown, now focused: a redraw would throw away where the viewer had scrolled to
+    nick.live.setView({ shown: [paneId], focused: paneId });
+    await new Promise((r) => setTimeout(r, FAST.resyncMs * 4));
+    expect(nick.shown(paneId)).toBe("live\r\n");
+    // hidden, then shown again: it may have missed output, so it's redrawn from the scrollback
+    nick.live.setView({ shown: [], focused: null });
+    nick.live.setView({ shown: [paneId], focused: paneId });
+    await until(() => nick.shown(paneId).endsWith("\x1bclive\r\n"), "the redraw");
+  });
+
   it("catches up from the scrollback after a gap in the stream", async () => {
     const { ryan, nick, net } = await pair();
     const s = await ryan.start();
@@ -282,6 +302,37 @@ describe("typing into a teammate's session", () => {
     const own = await ryan.start({ taskGroup: "private" });
     await expect(nick.m.team.request(ryan.m.id, "pty.input", { session: own.id, data: "rm -rf ~\r" }, { roomId: remoteOf(nick, s.id)!.room!.roomId })).rejects.toThrow(/isn't running in this room/);
     expect(ptyOf(own.id).writes).toEqual([]);
+  });
+
+  it("never lets a teammate's wheel, clicks or PageUp/PageDown move the owner's view; their typing still arrives", async () => {
+    let clock = 1_000_000;
+    const { ryan, nick } = await pair({ now: () => clock });
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    const tick = () => new Promise((r) => setImmediate(r)); // each write its own pty.input
+    // what an older Mockingbird's pane sends while its terminal tracks the mouse, and its paging keys
+    for (const d of ["\x1b[<64;40;12M\x1b[<64;40;12M", "\x1b[<65;40;12M", "\x1b[<0;3;4M\x1b[<0;3;4m", "\x1b[5~", "\x1b[6~"]) {
+      nick.sessions.write(paneId, d);
+      await tick();
+    }
+    // typing, Ctrl-C, arrow keys and a bracketed paste holding a report-shaped text are typing
+    const typed = ["fix it\r", "\x03", "\x1b[A\x1b[A", "\x1b[200~\x1b[<64;1;1M\x1b[201~", "done\r"];
+    for (const d of typed) {
+      nick.sessions.write(paneId, d);
+      await tick();
+    }
+    await until(() => ptyOf(s.id).writes.join("").endsWith("done\r"), "the typing");
+    expect(ptyOf(s.id).writes).toEqual(typed);
+    // dropped on purpose and said so in the audit log, once a minute per teammate rather than per notch
+    expect(ryan.audits.filter((l) => l.startsWith(`dropped-remote-view-input session=${s.id} from="Nick"`))).toHaveLength(1);
+    clock += 60_000;
+    nick.sessions.write(paneId, "\x1b[<64;40;12M");
+    await tick();
+    nick.sessions.write(paneId, "x");
+    await until(() => ptyOf(s.id).writes.at(-1) === "x", "the next keystroke");
+    expect(ryan.audits.filter((l) => l.startsWith(`dropped-remote-view-input session=${s.id}`))).toHaveLength(2);
+    expect(ptyOf(s.id).writes).toEqual([...typed, "x"]);
   });
 
   it("says when the owner can't be reached", async () => {
@@ -438,6 +489,41 @@ describe("room session launch", () => {
     const term = await ryan.start({ shell: true, agent: undefined });
     expect(ryan.sessions.guardsOf(term.id)).toEqual({ secrets: false, coauthors: true });
     expect(ptyOf(term.id).env.GIT_CONFIG_PARAMETERS).toContain("core.hooksPath=");
+  });
+
+  it("runs room sessions inline, so teammates' copies hold their history; sessions outside rooms run as set up", async () => {
+    const { ryan } = await pair();
+    const INLINE_ENV = "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN";
+    const CODEX_INLINE = `'-c' 'tui.alternate_screen="never"'`;
+    const claude = await ryan.start();
+    expect(ptyOf(claude.id).env[INLINE_ENV]).toBe("1");
+    expect(ptyOf((await ryan.start({ agent: "codex" })).id).args.join(" ")).toContain(CODEX_INLINE);
+    // resumed: by id, and in a terminal that had Codex running in it
+    const resumed = ptyOf((await ryan.start({ agent: "codex", resumeSessionId: "019a-conv" })).id).args.join(" ");
+    expect(resumed).toContain("'resume' '019a-conv'");
+    expect(resumed).toContain(CODEX_INLINE);
+    const term = ptyOf((await ryan.start({ shell: true, agent: undefined, shellResume: { agent: "codex", id: "019a-conv" } })).id);
+    expect(term.args.join(" ")).toContain("'resume' '019a-conv'");
+    expect(term.args.join(" ")).toContain(CODEX_INLINE);
+    // a claude started by hand in a room's terminal runs inline too
+    expect(term.env[INLINE_ENV]).toBe("1");
+    // a restart of one that joined while running brings it inline
+    expect(ryan.live.state().own[claude.id].inlineOnStart).toBe(true);
+    // outside rooms, nothing changes
+    expect(ptyOf((await ryan.start({ taskGroup: "private" })).id).env[INLINE_ENV]).toBeUndefined();
+    expect(ptyOf((await ryan.start({ agent: "codex", taskGroup: "private" })).id).args.join(" ")).not.toContain("alternate_screen");
+  });
+
+  it("leaves room sessions as their agent is set up when this Mac's person turns inline off", async () => {
+    const { ryan } = await pair();
+    ryan.settings.roomSessionsInline = false;
+    const claude = await ryan.start();
+    expect(ptyOf(claude.id).env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBeUndefined();
+    expect(ptyOf((await ryan.start({ agent: "codex" })).id).args.join(" ")).not.toContain("alternate_screen");
+    expect(ptyOf((await ryan.start({ shell: true, agent: undefined })).id).env.CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN).toBeUndefined();
+    // the room's other rules still apply
+    expect(ptyOf(claude.id).args.join(" ")).toContain("--disallowedTools");
+    expect(ryan.live.state().own[claude.id].inlineOnStart).toBe(false);
   });
 
   it("launches a session as a room session as soon as sharing its group has answered", async () => {

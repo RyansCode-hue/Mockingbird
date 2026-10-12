@@ -8,10 +8,15 @@ import type { AgentKind } from "../shared/types";
  *    presses, drags and releases; hover motion would only add traffic.
  *  - agent: nothing (other agent CLIs). With no mouse protocol active, xterm
  *    selects natively and the wheel handler answers on the CLI's behalf.
+ *  - remote: nothing, and the request isn't recorded (a teammate's session,
+ *    team rooms). The owner's terminal answers the program's mouse; a report
+ *    from this copy would scroll or click in the owner's view, so the wheel
+ *    and selection here only ever act on this copy.
  */
-export type MousePolicy = "shell" | "claude" | "agent";
+export type MousePolicy = "shell" | "claude" | "agent" | "remote";
 
-export function mousePolicyFor(s: { shell?: boolean; agent?: AgentKind }): MousePolicy {
+export function mousePolicyFor(s: { shell?: boolean; agent?: AgentKind }, remote = false): MousePolicy {
+  if (remote) return "remote";
   if (s.shell) return "shell";
   return (s.agent ?? "claude") === "claude" ? "claude" : "agent";
 }
@@ -30,6 +35,7 @@ const WITHHELD: Record<MousePolicy, ReadonlySet<string>> = {
   shell: new Set(),
   claude: new Set(["1003"]),
   agent: MOUSE_MODE_PARAMS,
+  remote: MOUSE_MODE_PARAMS,
 };
 // xterm.js keeps one tracking protocol, the last one set, and attaches its drag
 // listener only on a press. Setting a lower mode mid-gesture (1000 while 1002
@@ -69,7 +75,7 @@ export function stripMouseEnables(e: MouseModeState, data: string): string {
     }
     const params = list.split(";").map((p) => String(Number(p))); // xterm reads 01003 as 1003
     if (!params.some((p) => MOUSE_MODE_PARAMS.has(p))) return m;
-    e.wantsMouse = op === "h";
+    if (e.mousePolicy !== "remote") e.wantsMouse = op === "h";
     if (op === "l") {
       if (params.some((p) => TRACKING_RANK[p])) e.tracking = 0;
       return m;

@@ -1273,7 +1273,11 @@ const api: Record<string, (...a: any[]) => any> = {
   },
 
   // team rooms: live panes — Nick's session is a fixture; typing into it echoes like the others
-  teamLive: async () => JSON.parse(JSON.stringify(live)),
+  teamLive: async () => {
+    const state: LivePanesState = JSON.parse(JSON.stringify(live));
+    for (const tag of Object.values(state.own)) tag.inlineOnStart = settings.roomSessionsInline !== false; // as main answers
+    return state;
+  },
   teamLiveView: () => undefined,
   teamPaneResync: async (id: string) => emit("onSessionData", id, `\x1bc${buffers[id] ?? ""}`),
 };

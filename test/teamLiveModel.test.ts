@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { followPlan, mergeRoomSessions } from "../src/renderer/team/roomLiveModel";
 import { classifyTermInput, forwardTermInput } from "../src/renderer/inputGuard";
-import { isMouseReports, isTermReply } from "../src/shared/termInput";
+import { isTermReply, isViewControl } from "../src/shared/termInput";
 import type { SessionInfo } from "../src/shared/types";
 import type { LivePanesState, MemberView, RoomSessionTag } from "../src/shared/team/livePanes";
 
@@ -42,13 +42,57 @@ describe("input from a teammate's pane", () => {
     expect(forwardTermInput("reply", true)).toBe("drop");
     expect(forwardTermInput("reply", false)).toBe("send");
     expect(forwardTermInput("user", true)).toBe("send");
-    expect(forwardTermInput("mouse", true)).toBe("send");
     expect(forwardTermInput("unattributed", true)).toBe("audit");
   });
-  it("tells replies and mouse reports from typing", () => {
+  it("never forwards mouse reports, which would scroll or click in the owner's view; a local pane does", () => {
+    expect(forwardTermInput("mouse", true)).toBe("drop");
+    expect(forwardTermInput("mouse", false)).toBe("send");
+  });
+  it("tells replies from typing", () => {
     expect(isTermReply("\x1b]11;rgb:2020/1f1f/1c1c\x07")).toBe(true);
     expect(isTermReply("ls\r")).toBe(false);
-    expect(isMouseReports("\x1b[<64;1;1M\x1b[<64;1;1M")).toBe(true);
-    expect(isMouseReports("\x1b[<64;1;1Mx")).toBe(false);
+  });
+});
+
+describe("input that only moves a view", () => {
+  it("is mouse reports (wheel, clicks, drags) and PageUp/PageDown, one or more and nothing else", () => {
+    for (const d of [
+      "\x1b[<64;10;5M", // wheel up
+      "\x1b[<65;10;5M\x1b[<65;10;5M\x1b[<65;10;5M", // wheel down, several notches in one write
+      "\x1b[<80;10;5M", // wheel up with Ctrl
+      "\x1b[<0;12;7M\x1b[<0;12;7m", // a click: press and release
+      "\x1b[<32;14;9M", // drag motion
+      "\x1b[<64;812;403M", // pixel coordinates (mode 1016)
+      "\x1b[5~", // PageUp
+      "\x1b[6~\x1b[6~", // PageDown, key repeat gathered into one write
+      "\x1b[<64;10;5M\x1b[5~", // both
+    ]) {
+      expect(isViewControl(d), JSON.stringify(d)).toBe(true);
+    }
+  });
+  it("is never typing, a paste, Ctrl-C or the arrow keys", () => {
+    for (const d of [
+      "ls\r",
+      "\r",
+      "\x03", // Ctrl-C
+      "\x1b", // Escape
+      "\x1b\r", // Shift+Enter (newline in the prompt)
+      "\x1b[A", // Up: also what xterm's alternate-screen wheel sends, but a key first
+      "\x1b[B\x1b[B", // Down, repeated
+      "\x1bOA", // Up in application cursor mode
+      "[<64;1;1M", // typed text that looks like a report
+      "\x1b[200~\x1b[<64;1;1M\x1b[201~", // a bracketed paste holding one
+      "\x1b[200~\x1b[5~\x1b[201~",
+      "echo hi\x1b[<64;1;1M", // a report riding on typing
+      "\x1b[<64;1;1Mx",
+      "\x1b[5;5~", // Ctrl+PageUp: a key of its own
+      "\x1b[15~", // F5
+      "\x1b[<64;1M", // malformed
+      "\x1b[M #!", // X10 encoding: Escape then "[M" and any three characters could be typed
+      "\x1b[12;5R", // a cursor-position answer (dropped as one, not as this)
+      "",
+    ]) {
+      expect(isViewControl(d), JSON.stringify(d)).toBe(false);
+    }
   });
 });

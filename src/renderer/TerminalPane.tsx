@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
 import { beginDrag, dragging } from "./drag";
 import { PinIcon } from "./Icons";
@@ -8,6 +8,8 @@ import "@xterm/xterm/css/xterm.css";
 import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
+import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneScroll";
+import { isViewControl } from "../shared/termInput";
 import { useFolderRefresh } from "./folderWatch";
 import { dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
@@ -33,6 +35,8 @@ interface TermEntry extends CachedTerm, MouseModeState {
   fit: FitAddon;
   /** Told when the CLI's side-panel close glyph appears or goes, while a pane shows this terminal. */
   onPanel: ((cell: { col: number; row: number } | null) => void) | null;
+  /** A teammate's session: told when scrolling found no history here to move (its program is full screen), while a pane shows this terminal. */
+  onFullScreen: (() => void) | null;
   lastInput: number; // ms of the last real keystroke/paste/mouse press in this pane
   inputWired?: boolean; // DOM input listeners attached to xterm's textarea
   lastReply: string; // loop detector: the same answer repeating means the
@@ -80,6 +84,8 @@ function flushHold(e: TermEntry): void {
 }
 
 function pumpWrite(e: TermEntry, data: string): void {
+  // a teammate's copy redrawn from its owner's scrollback starts with a reset: keep a scrolled-up view where it was
+  const keep = e.mousePolicy === "remote" && data.startsWith("\x1bc") ? viewAnchor(e.term) : null;
   const chunk = stripMouseEnables(e, data);
   if (!chunk) return;
   // park only while the drag is in progress — once released the text is
@@ -96,7 +102,11 @@ function pumpWrite(e: TermEntry, data: string): void {
     return;
   }
   if (e.hold) flushHold(e);
-  e.term.write(chunk);
+  if (!keep) return void e.term.write(chunk);
+  e.term.write(chunk, () => {
+    const y = anchorLine(e.term, keep);
+    if (y !== null) e.term.scrollToLine(y);
+  });
 }
 
 /**
@@ -135,7 +145,10 @@ function clickCell(id: string, cell: { col: number; row: number }): void {
 
 /** The only path from the UI to a pty: silently no-ops until replay is done. */
 function writeSession(id: string, data: string): void {
-  if (terms.get(id)?.ready) window.mb.sessionWrite(id, data);
+  if (!terms.get(id)?.ready) return;
+  // a teammate's session: mouse reports and PageUp/PageDown would move its owner's view (paneScroll.ts)
+  if (isRemotePaneId(id) && isViewControl(data)) return void window.mb.auditWrite(id, "dropped-remote-view-input", data);
+  window.mb.sessionWrite(id, data);
 }
 
 // session output reaches every cached terminal, even while its pane is
@@ -218,7 +231,7 @@ export function shortReason(reason: string | null): string {
  * the room's permission profile, or a session that joined the room while
  * running.
  */
-function GuardChip({ session, guards, onRestart }: { session: SessionInfo; guards: { secrets: boolean; coauthors: boolean }; onRestart?: () => void }) {
+function GuardChip({ session, guards, inline, onRestart }: { session: SessionInfo; guards: { secrets: boolean; coauthors: boolean }; inline?: boolean; onRestart?: () => void }) {
   if (guards.secrets && guards.coauthors) return null;
   if (guards.secrets) {
     return (
@@ -249,7 +262,7 @@ function GuardChip({ session, guards, onRestart }: { session: SessionInfo; guard
   return (
     <button
       className="chip warn"
-      title="This session joined the room while it was running, so it started without the room's rules: it can read .env files and keys, teammates see what it prints, and its commits don't credit teammates who type into it. Click to restart it with them (its conversation resumes)."
+      title={`This session joined the room while it was running, so it started without the room's rules: it can read .env files and keys, teammates see what it prints, and its commits don't credit teammates who type into it.${inline ? " It also keeps the screen it started with: if that's full screen, teammates see one screen of it and can't scroll its history." : ""} Click to restart it with them (its conversation resumes${inline ? ", inline" : ""}).`}
       onClick={(e) => {
         e.stopPropagation();
         onRestart?.();
@@ -258,6 +271,24 @@ function GuardChip({ session, guards, onRestart }: { session: SessionInfo; guard
       secrets unguarded · restart
     </button>
   );
+}
+
+/** True until `ms` after the last flash. */
+function useFlash(ms: number): [boolean, () => void] {
+  const [on, setOn] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    []
+  );
+  const flash = useCallback(() => {
+    setOn(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setOn(false), ms);
+  }, [ms]);
+  return [on, flash];
 }
 
 /** Distinct files across a pane's overlaps. */
@@ -371,6 +402,7 @@ export function TerminalPane({
   densityNow.current = density;
   const [editTitle, setEditTitle] = useState<string | null>(null);
   const [copyNote, copy] = useCopyNote();
+  const [fullScreenNote, flashFullScreen] = useFlash(2500);
   const [panelClose, setPanelClose] = useState<{ col: number; row: number } | null>(null);
   const [exitTail, setExitTail] = useState<string | null>(null);
   useEffect(() => {
@@ -450,7 +482,7 @@ export function TerminalPane({
     if (!entry) {
       // a session id keeps its agent and shell flag through restarts, and a
       // resumed pane gets a fresh entry, so the policy is fixed per entry
-      const mousePolicy = mousePolicyFor(session);
+      const mousePolicy = mousePolicyFor(session, remoteEntry);
       const { term, fit } = makeTerm({
         fontSize: fontSizeFor(density),
         lineHeight: 1.4,
@@ -467,6 +499,7 @@ export function TerminalPane({
         replayed: false,
         ready: false,
         onPanel: null,
+        onFullScreen: null,
         lastInput: 0,
         lastReply: "",
         lastReplyCount: 0,
@@ -525,6 +558,13 @@ export function TerminalPane({
       // both Enter and Shift+Enter, so we translate to ESC+CR (what Option+Enter
       // sends), which the Claude CLI treats as "insert newline, don't submit".
       term.attachCustomKeyEventHandler((ev) => {
+        // a teammate's session: PageUp/PageDown page this copy, never the owner's view
+        const page = remoteEntry ? pageKey(ev) : 0;
+        if (page) {
+          ev.preventDefault();
+          if (ev.type === "keydown" && scrollCopy(term, page * Math.max(1, term.rows - 1)) === "full-screen") e.onFullScreen?.();
+          return false;
+        }
         if (ev.type === "keydown" || ev.type === "keypress") e.lastInput = Date.now();
         if (
           ev.type === "keydown" &&
@@ -550,6 +590,7 @@ export function TerminalPane({
     const onPanel = (found: { col: number; row: number } | null) =>
       setPanelClose((prev) => (prev?.col === found?.col && prev?.row === found?.row ? prev : found));
     entry.onPanel = onPanel;
+    entry.onFullScreen = flashFullScreen;
     onPanel(entry.wantsMouse ? findPanelClose(term) : null);
     if (holder.current && !term.element) term.open(holder.current);
     else if (holder.current && term.element && term.element.parentElement !== holder.current) holder.current.appendChild(term.element);
@@ -636,6 +677,19 @@ export function TerminalPane({
       }
     };
     const onWheel = (ev: WheelEvent) => {
+      if (remoteEntry) {
+        // a teammate's session: xterm never sees the wheel (paneScroll.ts), so it scrolls this copy and nothing reaches the owner
+        ev.stopPropagation();
+        const t = terms.get(session.id);
+        const screen = t?.term.element?.querySelector(".xterm-screen");
+        if (!t || !screen) return;
+        const r = screen.getBoundingClientRect();
+        const lines = wheelLines(t, ev, r.height / t.term.rows, r.height);
+        // full screen: no default kept, so a holder the owner's size overflows still scrolls
+        if (scrollCopy(t.term, lines) === "full-screen") return void t.onFullScreen?.();
+        ev.preventDefault();
+        return;
+      }
       stamp();
       const t = terms.get(session.id);
       if (!t?.ready) return;
@@ -658,17 +712,11 @@ export function TerminalPane({
       ev.preventDefault();
       ev.stopPropagation();
       const r = screen.getBoundingClientRect();
-      const cellH = r.height / t.term.rows;
       // trackpads stream dozens of tiny pixel deltas per second — emitting a
       // report per event scrolls wildly fast. Accumulate to whole lines (cell
-      // heights) and carry the remainder, the same conversion xterm applies to
-      // its own native mouse handling. deltaMode: 0=pixels, 1=lines, 2=pages.
-      const px = ev.deltaMode === 1 ? ev.deltaY * cellH : ev.deltaMode === 2 ? ev.deltaY * r.height : ev.deltaY;
-      if (Math.sign(px) !== Math.sign(t.wheelAcc)) t.wheelAcc = 0; // direction flip
-      t.wheelAcc += px;
-      const lines = Math.trunc(t.wheelAcc / cellH);
+      // heights), the same conversion xterm applies to its own native mouse handling.
+      const lines = wheelLines(t, ev, r.height / t.term.rows, r.height);
       if (!lines) return; // not a full line yet — swallowed, never arrow-key fallback
-      t.wheelAcc -= lines * cellH;
       const col = Math.min(t.term.cols, Math.max(1, Math.floor(((ev.clientX - r.left) / r.width) * t.term.cols) + 1));
       const row = Math.min(t.term.rows, Math.max(1, Math.floor(((ev.clientY - r.top) / r.height) * t.term.rows) + 1));
       const btn = lines < 0 ? 64 : 65;
@@ -694,6 +742,7 @@ export function TerminalPane({
         t.buttonHeld = false;
         flushHold(t); // never leave a hidden pane frozen
         if (t.onPanel === onPanel) t.onPanel = null;
+        if (t.onFullScreen === flashFullScreen) t.onFullScreen = null;
       }
     };
   }, [session.id, dead]);
@@ -865,7 +914,7 @@ export function TerminalPane({
         {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
         {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
         {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row or ⌘K)">muted</span>}
-        {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} onRestart={onRestart} />}
+        {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <span className="controls">
           {!dead && (
@@ -1101,6 +1150,7 @@ export function TerminalPane({
             }}
           />
           <CopyToast note={copyNote} failed="Couldn't copy selection" />
+          {remote && fullScreenNote && <span className="scroll-toast">{remote.ownerName}'s session is full screen: only they can scroll it</span>}
           {room?.takenOver && !remote && (
             <div className="team-pane-note" title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
               Continued on {room.takenOver.byName}'s laptop {ago(room.takenOver.at)} — this copy is stopping; its files stay as they are

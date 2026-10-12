@@ -890,6 +890,7 @@ handle("settings:set", (s) => {
   // a new claude or codex path applies without a restart
   if (binSettingsChanged(before, store.settings)) void lookUpBins(true);
   team.settingsChanged(before, store.settings);
+  livePanes.settingsChanged(before, store.settings);
   return store.settings;
 });
 handle("debrief:run", (kind) => runDebrief(kind, sessions, store));

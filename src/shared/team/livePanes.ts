@@ -137,6 +137,11 @@ export interface RoomSessionTag {
    * any more, and teammates can't type into it.
    */
   takenOver?: { by: MemberId; byName: string; at: number };
+  /**
+   * Own only: this install starts its room sessions inline (Settings → Team),
+   * so restarting one that joined the room while running brings it inline.
+   */
+  inlineOnStart?: boolean;
 }
 
 /** What a teammate is showing, in this window's session ids. */

@@ -22,7 +22,27 @@ export interface LaunchContext {
   instructions?: string;
   /** More Mockingbird MCP tools the agent may call without asking (Claude; Codex approves all of the server's). */
   allowTools?: string[];
+  /**
+   * Run inline, on the terminal's normal screen, never full screen (a team
+   * room's session, so teammates' copies hold its history). Claude takes it
+   * from its environment instead (CLAUDE_INLINE_ENV).
+   */
+  inline?: boolean;
 }
+
+/**
+ * Claude Code's switch to its classic main-screen renderer: it outranks a
+ * `tui: "fullscreen"` setting and CLAUDE_CODE_NO_FLICKER. In a pty's
+ * environment it also reaches a claude started by hand in a terminal.
+ */
+export const CLAUDE_INLINE_ENV = { CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: "1" } as const;
+
+/**
+ * Codex's switch to inline mode (what --no-alt-screen sets); it outranks
+ * `tui.fullscreen_transcript`. A setting rather than the flag: a Codex that
+ * predates it ignores an unknown setting, but refuses to start on an unknown flag.
+ */
+export const CODEX_INLINE_SETTING = 'tui.alternate_screen="never"';
 
 /** Everything that differs between the coding-agent CLIs a session can run. */
 export interface AgentAdapter {
@@ -135,6 +155,7 @@ const codex: AgentAdapter = {
     for (const d of req.extraDirs ?? []) args.push("--add-dir", expandHome(d));
     if (ctx.mcp) args.push(...codexMcpSettings(ctx.mcp).flatMap((c) => ["-c", c]));
     for (const c of ctx.codexPermissions ?? []) args.push("-c", c);
+    if (ctx.inline) args.push("-c", CODEX_INLINE_SETTING);
     // a JSON string is a valid TOML basic string
     if (ctx.instructions) args.push("-c", `developer_instructions=${JSON.stringify(ctx.instructions)}`);
     // positional, last, after "--": a prompt starting with "-" is not an option

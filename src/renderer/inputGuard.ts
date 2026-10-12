@@ -29,10 +29,12 @@ export function classifyTermInput(data: string, msSinceUserInput: number, mouseT
  * What a pane does with input from its terminal. A local pane forwards the
  * terminal's automatic answers to the program that asked. A teammate's
  * session (team rooms) never does: its owner's terminal answers, and an
- * answer arriving from here would land in the owner's prompt as typing.
+ * answer arriving from here would land in the owner's prompt as typing. Nor
+ * does it forward mouse reports, which would scroll or click in the owner's
+ * view (its terminal is never given mouse tracking: mouseModes.ts).
  */
 export function forwardTermInput(source: InputSource, remote: boolean): "send" | "drop" | "audit" {
-  if (source === "user" || source === "mouse") return "send";
+  if (source === "user") return "send";
   if (source === "unattributed") return "audit";
   return remote ? "drop" : "send";
 }

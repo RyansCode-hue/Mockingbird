@@ -7,7 +7,8 @@ import { roomWaitingNotice, shouldNotify } from "../notifications";
 import { roomSecretReads } from "../secrets";
 import { CODEX_ROOM_SANDBOX_NOTE, codexHomeOf, codexRoomPermissions, roomGitDirs, type RoomGitDirs } from "../codexRoomSandbox";
 import { splitGroupKey, topOfKey, type SessionInfo, type Settings, type WorktreeStateInfo } from "../../shared/types";
-import { isMouseReports, isTermReply } from "../../shared/termInput";
+import { isTermReply, isViewControl } from "../../shared/termInput";
+import { CLAUDE_INLINE_ENV } from "../agents";
 import {
   codexGuardsSecrets,
   decodePtyChunk,
@@ -50,7 +51,8 @@ import { TeamError, type Team, type TeamStream } from "./transport";
  * Its pty output is streamed on "pty:<id>" while a connected teammate shows
  * it — their view says so (or they just asked for its scrollback). A
  * teammate's keystrokes arrive as pty.input requests and are written into the
- * pty; the terminal's automatic answers never are.
+ * pty; the terminal's automatic answers never are, nor mouse reports and
+ * PageUp/PageDown, which would move the owner's view.
  *
  * Viewer side: a teammate's session is a pane here (remotePaneId). Its
  * scrollback comes by pty.scrollback; live output follows on the stream, each
@@ -130,6 +132,7 @@ interface PaneSync {
   lastFetch: number;
   /** The window has a terminal for it (it asked for its scrollback). */
   attached: boolean;
+  /** The window shows it; showing it again after a spell hidden fetches its scrollback again. */
   watched: boolean;
   problem?: string;
   resyncTimer?: ReturnType<typeof setTimeout>;
@@ -170,6 +173,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   private batches = new Map<string, { roomId: RoomId; epoch: string; pos: number; data: string; timer: ReturnType<typeof setTimeout> | null }>();
   private streams = new Map<string, TeamStream>();
   private dropping = new Set<string>();
+  /** When a teammate's mouse or paging input to a session was last written to the audit log, per `${sessionId}\n${member}`. */
+  private viewInputAudited = new Map<string, number>();
 
   // viewer side
   private remotes = new Map<string, Remote>();
@@ -336,8 +341,12 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   /**
    * What a session starting in a shared group gets: secret reads denied
    * (Claude's rules; a Codex new enough runs in the room's sandbox and is
-   * told about it), its commits credit teammates, and an agent starts knowing
-   * the room's plan board, with its tool (and the room artifacts' two) allowed.
+   * told about it), its commits credit teammates, an agent starts knowing
+   * the room's plan board, with its tool (and the room artifacts' two)
+   * allowed, and — unless this Mac's person turned it off — it runs inline,
+   * so teammates' copies hold its history and scroll it themselves (a
+   * full-screen agent keeps its history inside itself: a copy would show one
+   * screen of it).
    */
   async roomLaunch(target: LaunchTarget): Promise<RoomLaunch | null> {
     const roomId = target.group ? this.roomForGroup(splitGroupKey(target.group).top) : null;
@@ -375,13 +384,20 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         this.d.log(`team: the plan board for session ${target.id}'s launch`, err);
       }
     }
+    const inline = this.d.settings().roomSessionsInline !== false;
     return {
-      // PLAN_CONTEXT_ENV: the board itself is in the launch, so the SessionStart hook adds nothing
-      env: { ...(this.hooksReady ? hooksEnv(this.d.hooksDir ?? HOOKS_DIR) : {}), ...(instructions ? { [PLAN_CONTEXT_ENV]: "1" } : {}) },
+      env: {
+        ...(this.hooksReady ? hooksEnv(this.d.hooksDir ?? HOOKS_DIR) : {}),
+        // the board itself is in the launch, so the SessionStart hook adds nothing
+        ...(instructions ? { [PLAN_CONTEXT_ENV]: "1" } : {}),
+        // every room pty, terminals too: a claude started by hand in one runs inline as well
+        ...(inline ? CLAUDE_INLINE_ENV : {}),
+      },
       denyReads,
       codexPermissions,
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
       allowTools: target.agent === "claude" ? [PLAN_TOOL, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read] : [],
+      inline,
       guards: { secrets: target.agent === "claude" || codexGuarded, coauthors: this.hooksReady },
     };
   }
@@ -610,12 +626,20 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       this.d.audit(`dropped-remote-reply session=${s.id} from=${JSON.stringify(name)} bytes=${JSON.stringify(data.slice(0, 300))}`);
       return { ok: true };
     }
+    if (isViewControl(data)) {
+      // The owner's view is theirs: a teammate's wheel, clicks and PageUp/PageDown move only the teammate's copy (a
+      // current Mockingbird never sends them). An older one sends a stream of wheel reports, so this is logged once a minute.
+      const key = `${s.id}\n${from}`;
+      if (this.now() - (this.viewInputAudited.get(key) ?? -Infinity) >= 60_000) {
+        this.viewInputAudited.set(key, this.now());
+        this.d.audit(`dropped-remote-view-input session=${s.id} from=${JSON.stringify(name)} bytes=${JSON.stringify(data.slice(0, 300))}`);
+      }
+      return { ok: true };
+    }
     if (/[\r\x03]/.test(data)) this.d.audit(`remote-input session=${s.id} from=${JSON.stringify(name)} bytes=${JSON.stringify(data.slice(-300))}`);
     this.d.sessions.write(s.id, data);
-    if (!isMouseReports(data)) {
-      const email = typeof p.email === "string" ? p.email.slice(0, 200) : null;
-      this.coauthors.typed(s.id, { id: from, name, email }, s.status, !s.shell);
-    }
+    const email = typeof p.email === "string" ? p.email.slice(0, 200) : null;
+    this.coauthors.typed(s.id, { id: from, name, email }, s.status, !s.shell);
     return { ok: true };
   }
 
@@ -671,7 +695,9 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const r = this.remotes.get(id);
     if (!r) return "";
     const p = this.pane(id);
-    p.attached = true;
+    // its terminal asks as it opens on screen, often before the window's view says the pane is shown:
+    // that view must not count as showing it again, which would redraw it from a second fetch
+    p.attached = p.watched = true;
     if (!r.rec.live || !this.online(r)) {
       const who = memberNameIn(this.team(), r.roomId, r.rec.owner);
       const note = r.rec.live ? `${who}'s Mockingbird is offline` : `${who} closed this session`;
@@ -1000,6 +1026,11 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
 
   // ---- the window -----------------------------------------------------------------------------------
 
+  /** Settings changed: the window's room sessions say whether a restart brings them inline. */
+  settingsChanged(before: Settings, after: Settings): void {
+    if ((before.roomSessionsInline !== false) !== (after.roomSessionsInline !== false)) this.changed();
+  }
+
   private changed(): void {
     if (this.changeTimer) return;
     this.changeTimer = setTimeout(() => {
@@ -1122,6 +1153,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         repo: pub?.repo ?? null,
         repoName: pub?.repoName ?? null,
         guards: this.d.sessions.guardsOf(s.id) ?? NO_GUARDS,
+        inlineOnStart: this.d.settings().roomSessionsInline !== false,
         ...(taken ? { takenOver: { by: taken.by, byName: memberNameIn(team, roomId, taken.by), at: taken.at } } : {}),
       };
     }

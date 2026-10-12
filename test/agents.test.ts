@@ -77,6 +77,25 @@ describe("Codex launch", () => {
     expect(claude.join(" ")).not.toContain("default_permissions");
     expect(claude[claude.indexOf("--disallowedTools") + 1]).toBe("Read(**/.env)");
   });
+  it("runs inline when asked (a room session), fresh or resumed, as a setting before the prompt", () => {
+    const inline = ["-c", 'tui.alternate_screen="never"'];
+    const has = (args: string[]) => args.some((a, i) => a === inline[0] && args[i + 1] === inline[1]);
+    const fresh = agentFor("codex").launchArgs({ ...base, initialPrompt: "go" }, { mcp, inline: true });
+    expect(has(fresh)).toBe(true);
+    expect(fresh.slice(-2)).toEqual(["--", "go"]);
+    const byId = agentFor("codex").launchArgs({ ...base, resumeSessionId: "019a-conv" }, { mcp, inline: true });
+    expect(byId.slice(0, 2)).toEqual(["resume", "019a-conv"]);
+    expect(has(byId)).toBe(true);
+    const last = agentFor("codex").launchArgs({ ...base, resume: true }, { mcp, inline: true });
+    expect(last.slice(0, 2)).toEqual(["resume", "--last"]);
+    expect(has(last)).toBe(true);
+    // never the --no-alt-screen flag: a Codex that predates it refuses to start on an unknown flag
+    expect(fresh).not.toContain("--no-alt-screen");
+    // otherwise Codex runs as it's set up
+    expect(agentFor("codex").launchArgs({ ...base, initialPrompt: "go" }, { mcp }).join(" ")).not.toContain("alternate_screen");
+    // Claude's switch is in its environment, not its arguments
+    expect(agentFor("claude").launchArgs({ ...base }, { mcp, inline: true })).toEqual(agentFor("claude").launchArgs({ ...base }, { mcp }));
+  });
 });
 
 describe("conversationExists", () => {
