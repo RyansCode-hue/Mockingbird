@@ -105,7 +105,8 @@ export function checkAdd(b: unknown): ArtifactAdd {
       return { kind: "file", name, size: x.size as number, sha256: x.sha256, mime: x.mime };
     }
     case "note":
-      return { kind: "note", name, text: checkNoteText(x.text) };
+      if (x.wasSecret !== undefined && x.wasSecret !== true) throw new Error("wasSecret, when given, is true");
+      return { kind: "note", name, text: checkNoteText(x.text), ...(x.wasSecret === true ? { wasSecret: true as const } : {}) };
     case "repo": {
       if (typeof x.commit !== "string" || !COMMIT_RE.test(x.commit)) throw new Error("commit must be a full commit id");
       const rec: ArtifactAdd = { kind: "repo", name, origin: checkOrigin(x.origin), path: checkRepoPath(x.path), commit: x.commit };

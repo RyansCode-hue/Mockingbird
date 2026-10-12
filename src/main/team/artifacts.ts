@@ -288,11 +288,12 @@ export class TeamArtifacts {
     }
   }
 
-  addNote(roomId: RoomId, rawName: string, rawText: string): ArtifactAdded {
+  /** Add a note. `wasSecret`: it's a copy of one agents may not read, and stays so whatever it's called. */
+  addNote(roomId: RoomId, rawName: string, rawText: string, o: { wasSecret?: boolean } = {}): ArtifactAdded {
     const { team } = this.need(roomId);
     const name = checkArtifactName(cleanName(String(rawName ?? ""), "Note"));
     const text = this.noteText(rawText);
-    const e = team.publish(roomId, "artifact.add", { kind: "note", name, text });
+    const e = team.publish(roomId, "artifact.add", { kind: "note", name, text, ...(o.wasSecret ? { wasSecret: true as const } : {}) });
     return { id: e.id, name, warnings: [] };
   }
 
@@ -346,7 +347,7 @@ export class TeamArtifacts {
     const a = this.item(roomId, id);
     if (a.kind !== "note") throw new Error("Only notes are edited here");
     const text = this.noteText(rawText);
-    if (mode === "copy") return { copy: this.addNote(roomId, `${a.name.slice(0, 190)} (copy)`, text).id };
+    if (mode === "copy") return { copy: this.addNote(roomId, `${a.name.slice(0, 190)} (copy)`, text, { wasSecret: !!a.wasSecret || isSecretFileName(a.name) }).id };
     if (mode !== "save" && mode !== "overwrite") throw new Error(`Unknown save: ${mode}`);
     if (mode === "save" && a.rev !== base) return { stale: { rev: a.rev, byName: this.nameOf(room.id, a.updatedBy ?? a.addedBy), at: a.updatedAt ?? a.addedAt } };
     if (text === a.text) return { rev: a.rev };
