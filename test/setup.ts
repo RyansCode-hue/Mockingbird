@@ -14,4 +14,4 @@ process.env.GIT_AUTHOR_EMAIL = process.env.GIT_COMMITTER_EMAIL = "test@example.i
 
 // a process a test started can still be writing here as it exits (a language
 // server's own tsserver child, say): removal retries while the folder empties
-afterAll(() => fs.rmSync(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+afterAll(() => fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));

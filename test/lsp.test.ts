@@ -91,6 +91,8 @@ describe("asking about a file that has no ready server", () => {
 const FAKE_SERVER = String.raw`
 const fs = require("fs");
 const mode = fs.readFileSync("mode", "utf8").trim();
+// a helper process of its own, like typescript-language-server's tsserver
+if (mode === "child") fs.writeFileSync("child.pid", String(require("child_process").spawn("sleep", ["60"], { stdio: "ignore" }).pid));
 const send = (m) => {
   const b = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...m }));
   process.stdout.write("Content-Length: " + b.length + "\r\n\r\n");
@@ -201,6 +203,26 @@ describe("pulled problems", () => {
     expect(conns).toHaveLength(1);
     await m.stopAll();
     expect(conns.every((c: any) => c.isClosed)).toBe(true);
+  });
+
+  it("ends a server's helper processes with it, so none keep running after it stops", { timeout: 20_000 }, async () => {
+    const m = new LspManager({ dir, env: () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin" }), which: async () => null, node: process.execPath, onDiagnostics: () => {}, onStatus: () => {} });
+    const root = tempDir("lsp-child");
+    fs.writeFileSync(path.join(root, "mode"), "child");
+    expect(await m.open(root, path.join(root, "a.fake"), "fine")).toMatchObject({ state: "ready" });
+    const pid = Number(fs.readFileSync(path.join(root, "child.pid"), "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(alive()).toBe(true);
+    await m.stopAll();
+    for (let i = 0; i < 40 && alive(); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(alive()).toBe(false);
   });
 });
 

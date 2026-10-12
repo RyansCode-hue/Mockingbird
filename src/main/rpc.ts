@@ -159,6 +159,21 @@ export function killIfAlive(proc: ChildProcess): void {
 }
 
 /**
+ * End a process started in its own group and everything it started: a
+ * process whose helpers outlive it (a language server's tsserver) would
+ * otherwise keep running, and writing, after it's gone.
+ */
+export function endProcessGroup(proc: ChildProcess): void {
+  if (proc.pid === undefined) return;
+  try {
+    process.kill(-proc.pid, "SIGTERM");
+  } catch (err) {
+    // ESRCH: the group is already gone
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") killIfAlive(proc);
+  }
+}
+
+/**
  * Start a process that speaks a framed protocol on its stdio. The connection
  * closes when the process fails to start or exits, saying why (with the last
  * line of its stderr when it didn't exit cleanly); closing the connection
@@ -167,12 +182,12 @@ export function killIfAlive(proc: ChildProcess): void {
 export function spawnRpcProcess<C extends RpcConnection>(
   cmd: string,
   args: string[],
-  opts: { cwd: string; env: Record<string, string>; name: string },
+  opts: { cwd: string; env: Record<string, string>; name: string; /** Its own process group, ended whole when the connection closes. */ group?: boolean },
   connect: (input: Readable, output: Writable, onClose: () => void) => C
 ): { conn: C; stderr: () => string } {
-  const proc = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
+  const proc = spawn(cmd, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"], detached: !!opts.group });
   const stderr = stderrTail(proc);
-  const conn = connect(proc.stdout!, proc.stdin!, () => killIfAlive(proc));
+  const conn = connect(proc.stdout!, proc.stdin!, () => (opts.group ? endProcessGroup(proc) : killIfAlive(proc)));
   proc.on("error", (e) => conn.close(`${opts.name} didn't start: ${e.message}`));
   proc.on("exit", (code, signal) => {
     const tail = code || signal ? stderr().trim().split("\n").pop() : "";

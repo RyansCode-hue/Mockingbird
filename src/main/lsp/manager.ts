@@ -200,7 +200,7 @@ export class LspManager {
     const dotnet = spec.requires?.bin === "dotnet" ? await this.deps.which("dotnet") : null;
     const { cmd, args, env } = spec.command(dir, { node: this.deps.node, dotnet });
     this.deps.onStatus({ server: spec.id, root, state: "starting" });
-    const { conn } = spawnRpcProcess(cmd, args, { cwd: root, env: { ...this.deps.env(), ...(env ?? {}) }, name: `${spec.label} language server` }, (input, output, onClose) => new LspConnection(input, output, onClose));
+    const { conn } = spawnRpcProcess(cmd, args, { cwd: root, env: { ...this.deps.env(), ...(env ?? {}) }, name: `${spec.label} language server`, group: true }, (input, output, onClose) => new LspConnection(input, output, onClose));
     const watched = new WatchedFiles(root, (changes) => conn.notify("workspace/didChangeWatchedFiles", { changes }));
     const s: Server = { spec, root, conn, caps: {}, ready: Promise.resolve(), docs: new Map(), pulls: new Map(), latestPull: new Map(), idle: null, watched };
     conn.on("close", (reason: string) => {
