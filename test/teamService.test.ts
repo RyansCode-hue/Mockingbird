@@ -92,20 +92,6 @@ describe("the team service", () => {
     expect(roomOfGroup({ error: "x" }, "5110")).toBeUndefined();
   });
 
-  it("the Connected Sessions divider counts each connected teammate once, across rooms", async () => {
-    const { teammatesOnline } = await import("../src/renderer/Team");
-    const member = (id: string, name: string, self = false) => ({ id, name, self });
-    const room = (groupKey: string, online: string[]) => ({
-      id: `R${groupKey}`, name: groupKey, groupKey, signalingUrl: "", signaling: "online" as const, online,
-      members: [member("me", "Ryan", true), member("n", "Nick"), member("s", "Sam")],
-    });
-    const status = (rooms: ReturnType<typeof room>[]): TeamStatus => ({ self: null, signalingUrl: "", rooms, pending: [], peers: [], problems: [] });
-    expect(teammatesOnline(status([room("5101", ["n"]), room("5110", ["n", "s"])]))).toEqual([{ id: "n", name: "Nick" }, { id: "s", name: "Sam" }]);
-    expect(teammatesOnline(status([room("5101", [])]))).toEqual([]);
-    expect(teammatesOnline({ error: "x" })).toEqual([]);
-    expect(teammatesOnline(null)).toEqual([]);
-  });
-
   it("reports an unreadable identity instead of making a new one", async () => {
     const net = new LoopbackNetwork();
     const dir = path.join(tempDir("bad"), "team");

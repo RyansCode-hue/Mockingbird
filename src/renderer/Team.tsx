@@ -8,6 +8,9 @@ import { isErr, type Settings } from "../shared/types";
 import { allowCreatorsCommand } from "../shared/team/protocol";
 import type { LeaveOutcome, PeerStatus, RemoveOutcome, TeamNotice, TeamRoomSummary, TeamStatus } from "../shared/team/types";
 import { OLD_WORKER_APPROVE, pendingJoinText, RoomJoinRequests } from "./team/JoinRequests";
+import type { ConnectedSummary } from "./team/connectedModel";
+import { ChatIcon as TeamIcon } from "./Icons";
+import { plural } from "../shared/format";
 
 /**
  * Team rooms in the window (stage 1): Settings → Team, sharing a group as a
@@ -55,42 +58,28 @@ export function roomOfGroup(status: TeamStatus | { error: string } | null, group
   return status && !isErr(status) ? status.rooms.find((r) => r.groupKey === groupKey) : undefined;
 }
 
-/** A shared group's badge in the sidebar: "shared", and the initials of teammates connected right now. */
-export function SharedBadge({ room }: { room: TeamRoomSummary }) {
-  const online = room.members.filter((m) => room.online.includes(m.id));
-  const tip = `Shared room${online.length ? ` · connected: ${online.map((m) => m.name).join(", ")}` : " · no teammate connected"}${room.problem ? ` · ${room.problem}` : ""}`;
+/**
+ * The Sessions view's one line for the team rooms, where their groups used to
+ * be listed: how many of teammates' sessions run and who's online. It opens
+ * the Team view — the only room's, or the room list.
+ */
+export function ConnectedLine({ summary, onOpen }: { summary: ConnectedSummary; onOpen: () => void }) {
   return (
-    <span className="team-badge" title={tip}>
-      <span className={`team-shared ${room.problem ? "bad" : ""}`}>shared</span>
-      {online.map((m) => (
-        <span key={m.id} className="team-initials">
-          {initialsOf(m.name)}
-        </span>
-      ))}
-    </span>
-  );
-}
-
-/** Teammates connected to any room right now, once each. */
-export function teammatesOnline(status: TeamStatus | { error: string } | null): { id: string; name: string }[] {
-  if (!status || isErr(status)) return [];
-  const out = new Map<string, string>();
-  for (const r of status.rooms) for (const m of r.members) if (!m.self && r.online.includes(m.id)) out.set(m.id, m.name);
-  return [...out].map(([id, name]) => ({ id, name }));
-}
-
-/** The Sessions outline's divider above the groups shared as team rooms, with how many teammates are connected. */
-export function ConnectedDivider({ status }: { status: TeamStatus | { error: string } | null }) {
-  const online = teammatesOnline(status);
-  return (
-    <div className="connected-label" title="Groups shared as team rooms — their sessions show on every member's Mockingbird">
-      <span>Connected Sessions</span>
-      {online.length > 0 && (
-        <span className="cl-online" title={`Connected now: ${online.map((m) => m.name).join(", ")}`}>
-          {online.length} online
-        </span>
-      )}
-    </div>
+    <button
+      type="button"
+      className="connected-line"
+      title={`${plural(summary.live, "teammate's session")} running in ${plural(summary.rooms, "team room")}${summary.online.length ? ` · online: ${summary.online.join(", ")}` : ""} — open the Team view`}
+      onClick={onOpen}
+    >
+      <TeamIcon />
+      <span className="cl-text">
+        <span className="cl-title">{summary.title}</span>
+        <span className={`cl-sub ${summary.online.length ? "on" : ""}`}>{summary.sub}</span>
+      </span>
+      <span className="cl-go" aria-hidden="true">
+        ›
+      </span>
+    </button>
   );
 }
 

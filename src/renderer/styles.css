@@ -1664,12 +1664,10 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .usage-today .usage-label { color: var(--text-2); }
 .rail .cell.meter { margin-left: auto; border-right: none; border-left: 1px solid var(--line-soft); }
 /* pinned panes: the pin stays visible while pinned, in the pane header and the sidebar row */
-.pane-header .controls .pin.on { color: var(--teal); }
-.pane:not(:hover) .pane-header .controls:has(.pin.on) { display: flex; box-shadow: none; }
-.pane:not(:hover) .pane-header .controls:has(.pin.on) > :not(.pin) { display: none; }
-.pane:not(:hover) .pane-header:has(.pin.on) { padding-right: 36px; }
-.sess-item .pin .ico { vertical-align: -2px; }
-.sess-item.pinned .pin { display: inline-block; opacity: 1; color: var(--teal); }
+.pane-header .controls [data-action="pin"].on { color: var(--teal); }
+.pane:not(:hover) .pane-header .controls:has([data-action="pin"].on) { display: flex; box-shadow: none; }
+.pane:not(:hover) .pane-header .controls:has([data-action="pin"].on) > :not([data-action="pin"]) { display: none; }
+.pane:not(:hover) .pane-header:has([data-action="pin"].on) { padding-right: 46px; }
 /* a session dropped on a pane's header or a workspace's tab strip becomes a tab there */
 .pane-header[data-drop="into"], .ws-tabs[data-drop="into"] { border-radius: 6px 6px 0 0; }
 /* drag preview (GridPreview.tsx): while a session is dragged over the grid, the
@@ -1871,8 +1869,6 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 /* the group's name keeps its room; the bar's controls give way first */
 .groupbar .gb-name { flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .groupbar .flbl-info { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-/* notification controls */
-.sess-item .mute .ico { vertical-align: -2px; }
 .sess-item .mute.on { display: inline-block; opacity: 1; color: var(--text-3); }
 .quiet-hours { display: inline-flex; align-items: center; gap: 6px; font: 400 11px var(--ui); color: var(--text-3); }
 .quiet-hours input[type=time] { background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 11px var(--mono); }
@@ -1892,27 +1888,11 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .rail .cell.folder .v .mini { flex-shrink: 0; }
 
 /* ---- team rooms ---- */
-.team-badge { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
-.team-shared {
-  font: 500 9px var(--ui); letter-spacing: .3px; color: var(--teal-text);
-  border: 1px solid color-mix(in srgb, var(--teal) 45%, transparent); border-radius: 4px; padding: 0 4px; line-height: 13px;
-}
-.team-shared.bad { color: var(--amber-text); border-color: color-mix(in srgb, var(--amber) 45%, transparent); }
 .team-initials {
   display: inline-flex; align-items: center; justify-content: center; min-width: 15px; height: 15px; padding: 0 2px;
   border-radius: 8px; background: color-mix(in srgb, var(--teal) 28%, var(--bg-sidebar)); color: var(--text-1);
   font: 600 8.5px var(--ui); letter-spacing: 0;
 }
-/* the Sessions outline's divider above the shared groups, styled like the side bar's section titles */
-.connected-label {
-  display: flex; align-items: center; gap: 8px; margin: 18px 2px 0;
-  font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); white-space: nowrap;
-}
-.filter-row + .connected-label { margin-top: 10px; }
-.connected-label::after { content: ""; flex: 1; height: 1px; background: var(--line-med); min-width: 8px; order: 1; }
-.connected-label > span:first-child { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.connected-label .cl-online { order: 2; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; letter-spacing: .3px; text-transform: none; font-size: 9.5px; }
-.connected-label .cl-online::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--teal); }
 .modal.team-dlg { width: 480px; }
 .modal textarea.team-code { min-height: 84px; word-break: break-all; }
 .team-invite { position: relative; display: flex; align-items: flex-start; gap: 8px; }
@@ -2384,3 +2364,161 @@ button.chip.warn { border: 0; cursor: pointer; }
 .team-follow button.chip { border: 0; cursor: pointer; }
 .team-follow.on { color: var(--teal-text); }
 .team-live-problems { padding: 0 8px 6px; }
+
+/* ---- labelled icons: an icon over a short word, for every icon button in rows, headers and bars ---- */
+.lbar { display: inline-flex; align-items: center; gap: 1px; flex-shrink: 0; }
+button.lbtn {
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 30px; padding: 2px 4px; border: none; border-radius: 4px; background: transparent;
+  color: var(--text-3); font: 500 8.5px/1 var(--ui); letter-spacing: 0; text-transform: none; white-space: nowrap; cursor: pointer;
+}
+button.lbtn .ico { width: 13px; height: 13px; margin: 0; vertical-align: 0; flex-shrink: 0; }
+button.lbtn:hover { color: var(--text-1); background: var(--fill-selected); }
+button.lbtn.on { color: var(--teal-text); }
+button.lbtn.primary { color: var(--on-amber); background: var(--amber); }
+button.lbtn.primary:hover { filter: brightness(1.08); }
+button.lbtn.danger:hover { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+button.lbtn:disabled { opacity: .55; cursor: default; background: transparent; }
+button.lbtn:focus-visible { outline: 1px solid var(--line-focus); outline-offset: -1px; }
+
+/* a pane header's controls: labelled while the pane has room, icons alone in a very narrow one (the right-click menu has the words) */
+.pane-header { container-type: inline-size; }
+.pane-header .controls.lbar { gap: 0; padding-left: 12px; }
+.pane-header .controls button.lbtn { min-width: 28px; padding: 1px 3px; }
+@container (max-width: 320px) {
+  .pane-header .controls button.lbtn { min-width: 22px; padding: 3px 4px; }
+  .pane-header .controls button.lbtn .lbtn-t { display: none; }
+}
+
+/* ---- right-click menus ---- */
+.mb-menu.mb-ctx { min-width: 190px; outline: none; }
+.mb-menu.mb-ctx button { display: flex; align-items: center; gap: 8px; }
+.mb-menu.mb-ctx button.active { background: var(--fill-selected); color: var(--text-1); }
+.mb-menu.mb-ctx button:focus-visible { outline: none; }
+.mb-menu.mb-ctx button.danger { color: var(--red); }
+.mb-menu.mb-ctx button:disabled { opacity: .5; cursor: default; }
+.mb-menu.mb-ctx button[aria-checked="true"] .mb-ctx-ico { color: var(--teal-text); }
+.mb-ctx-ico { width: 14px; display: inline-flex; justify-content: center; color: var(--text-3); flex-shrink: 0; }
+.mb-ctx-ico .ico { margin: 0; vertical-align: 0; }
+.mb-ctx-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mb-ctx-sep { height: 1px; margin: 4px 6px; background: var(--line-soft); flex-shrink: 0; }
+
+/* ---- session rows: the name across the width, what it is under it, labelled actions ---- */
+.sess-item { position: relative; outline: none; }
+.sess-item:focus-visible { box-shadow: inset 0 0 0 1px var(--line-focus); }
+.sess-item .name .br.who { font: 400 10px var(--ui); color: var(--text-3); }
+.sess-item.remote .name .br.who { color: var(--teal-text); }
+.sess-item .sr-acts button { display: inline-flex; opacity: 1; }
+/* the Sessions view: the actions sit over the row's right end while it's hovered or focused, so the name keeps the width */
+.sess-item .sr-acts {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: none; padding-left: 14px; border-radius: 5px;
+  background: linear-gradient(to right, transparent, var(--bg-sidebar) 14px);
+}
+.sess-item:hover .sr-acts, .sess-item:focus-within .sr-acts { display: inline-flex; }
+.sess-item:hover .sr-acts { background: linear-gradient(to right, transparent, color-mix(in srgb, var(--fill-subtle), var(--bg-sidebar)) 14px); }
+/* pinned or muted: that button stays, with its word, while the row rests */
+.sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) { display: inline-flex; background: none; padding-left: 0; }
+.sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) > :not(.on) { display: none; }
+.sess-item:not(:hover):not(:focus-within):has(.sr-acts .lbtn.on) { padding-right: 44px; }
+
+/* the Team view: a room's rows show their actions on a line of their own while hovered, focused from the
+   keyboard, or selected (the pane you're in); resting rows are just their two lines of words */
+.room-sess-body .sess-item { flex-wrap: wrap; align-items: flex-start; row-gap: 3px; }
+.room-sess-body .sess-item > .dot { margin-top: 5px; }
+.room-sess-body .sess-item .name { flex: 1 1 0; }
+.room-sess-body .sess-item .sr-acts,
+.room-sess-body .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) { display: none; }
+.room-sess-body .sess-item:not(:hover):not(:focus-within):has(.sr-acts .lbtn.on) { padding-right: 8px; }
+.room-sess-body .sess-item:is(:hover, :focus-within, .focused) .sr-acts {
+  position: static; transform: none; display: inline-flex; flex-basis: 100%; padding: 0 0 0 9px; margin-left: 4px; background: none;
+}
+.room-sess-body .sess-item:is(:hover, :focus-within, .focused) .sr-acts > * { display: inline-flex; }
+/* a room's group in the Sessions list */
+.group-label .gl-shared { flex-shrink: 0; font: 500 9.5px var(--ui); color: var(--teal-text); }
+
+/* ---- the Sessions view's line for the team rooms ---- */
+button.connected-line {
+  display: flex; align-items: center; gap: 7px; width: 100%; margin: 14px 0 4px; padding: 7px 9px;
+  border: 1px solid var(--line-med); border-radius: 6px; background: var(--fill-subtle);
+  font: 500 11px var(--ui); color: var(--text-2); text-align: left;
+}
+button.connected-line:hover { color: var(--text-1); border-color: var(--line-btn-hover); background: var(--fill-selected); }
+.connected-line .ico { margin: 0; vertical-align: 0; color: var(--teal-text); flex-shrink: 0; }
+.connected-line .cl-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.connected-line .cl-title, .connected-line .cl-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connected-line .cl-sub { display: flex; align-items: center; gap: 5px; font: 400 10px var(--ui); color: var(--text-3); }
+.connected-line .cl-sub::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--idle); flex-shrink: 0; }
+.connected-line .cl-sub.on::before { background: var(--teal); }
+.connected-line .cl-go { color: var(--text-4); font-size: 14px; line-height: 1; flex-shrink: 0; }
+
+/* ---- the Team view: rooms, each with its sessions ---- */
+button.rc-back {
+  display: inline-flex; align-items: center; gap: 3px; align-self: flex-start; margin: 0 0 0 -4px; padding: 2px 5px 2px 2px;
+  border: none; border-radius: 4px; font: 500 10px var(--ui); color: var(--text-3); background: transparent;
+}
+button.rc-back:hover { color: var(--text-1); background: var(--fill-subtle); }
+button.rc-back .ico { margin: 0; vertical-align: 0; }
+.room-head { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 0; }
+.room-name { display: block; max-width: 100%; font: 600 12px/1.35 var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+button.room-name { border: none; padding: 0; background: none; cursor: pointer; }
+button.room-name:hover { color: var(--teal-text); background: none; }
+.room-presence { display: flex; align-items: center; gap: 5px; min-width: 0; font: 400 10.5px var(--ui); color: var(--text-3); }
+.room-presence::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--teal); flex-shrink: 0; }
+.room-presence.idle::before { background: var(--idle); }
+.room-presence.warn { color: var(--amber-text); }
+.room-presence.warn::before { background: var(--amber); }
+.room-acts { margin: 3px 0 0 -4px; }
+.room-sessions { padding: 4px 10px 6px; border-bottom: 1px solid var(--line-med); }
+.room-sess-body { max-height: 38vh; overflow-y: auto; margin: 2px -4px 0; padding: 0 4px; }
+.room-sess-body .group-label, .room-sess-body .tk-rows { margin-top: 4px; }
+.room-list { padding-top: 2px; }
+.room-list-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 4px;
+  font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4);
+}
+.room-list-head button { letter-spacing: 0; text-transform: none; }
+.room-card { padding: 10px 0 8px; border-bottom: 1px solid var(--line-soft); }
+.room-card:last-of-type { border-bottom: none; }
+.room-list .room-sessions { padding: 6px 0 0; border: none; }
+.room-list .room-sess-body { max-height: none; overflow: visible; }
+
+/* ---- the group bar: one style for its controls ---- */
+.groupbar { gap: 6px; min-width: 0; }
+.groupbar .gb-name { margin-right: 4px; }
+button.gb-btn, .groupbar button.chip.stage {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; margin: 0; padding: 0 8px; flex-shrink: 0;
+  border: 1px solid var(--line-btn); border-radius: 5px; background: transparent;
+  font: 500 10.5px var(--ui); color: var(--text-2); white-space: nowrap; cursor: pointer;
+}
+button.gb-btn:hover, .groupbar button.chip.stage:hover { border-color: var(--line-btn-hover); color: var(--text-1); background: var(--fill-subtle); }
+button.gb-btn .ico { margin: 0; vertical-align: 0; color: var(--text-3); }
+button.gb-btn:hover .ico { color: var(--text-1); }
+button.gb-btn.teal { color: var(--teal-text); border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
+.groupbar button.chip.stage { color: var(--teal-text); }
+.groupbar button.gb-btn.mb-select { width: auto; margin-right: 0; min-width: 0; flex-shrink: 1; max-width: 270px; }
+.groupbar .gb-btn .mb-select-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.groupbar .gb-btn .mb-select-caret { color: var(--text-4); }
+.groupbar .team-follow { gap: 6px; }
+.groupbar .team-follow.on .ico { margin: 0; vertical-align: 0; }
+.groupbar .gb-count { flex-shrink: 1; }
+
+/* a room artifact's actions sit over the row's right end while it's hovered or focused */
+.art-row .art-acts.lbar {
+  display: none; position: absolute; right: 2px; top: 2px; padding-left: 12px; border-radius: 5px;
+  background: linear-gradient(to right, transparent, var(--bg-sidebar) 12px);
+}
+.art-row:hover .art-acts.lbar, .art-row:focus-within .art-acts.lbar { display: inline-flex; }
+.art-row:hover .art-acts.lbar { background: linear-gradient(to right, transparent, color-mix(in srgb, var(--fill-subtle), var(--bg-sidebar)) 12px); }
+/* a narrow group bar: the count goes first, then the buttons' words (their icons and tooltips stay) */
+.groupbar { container-type: inline-size; }
+.groupbar .gb-n { padding: 0 4px; border-radius: 6px; font: 600 9.5px/14px var(--ui); background: color-mix(in srgb, var(--teal) 22%, transparent); color: var(--teal-text); }
+@container (max-width: 1120px) {
+  .groupbar .gb-count { display: none; }
+}
+@container (max-width: 960px) {
+  .groupbar .gb-t { display: none; }
+  .groupbar .gb-btn { padding: 0 6px; }
+  .groupbar .gb-name { max-width: 34%; }
+}
+.house-modal h3 > .ico { width: 15px; height: 15px; margin: 0 4px 0 0; vertical-align: -2.5px; color: var(--teal-text); }

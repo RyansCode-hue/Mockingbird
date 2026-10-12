@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
 import { beginDrag, dragging } from "./drag";
-import { PinIcon } from "./Icons";
+import { CloseIcon, ExpandIcon, HandoffIcon, MinusIcon, PanelRightIcon, PinIcon, PlusIcon, RepaintIcon, ShrinkIcon, UndoIcon } from "./Icons";
+import { ActionBar, tidyMenu, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -335,6 +336,7 @@ export function TerminalPane({
   onRestart,
   messages,
   onShowMessages,
+  menuExtras,
 }: {
   session: SessionInfo;
   focused: boolean;
@@ -389,6 +391,8 @@ export function TerminalPane({
   /** Agent messages this pane received and sent, and opening their log. */
   messages?: { in: number; out: number };
   onShowMessages?: () => void;
+  /** The session's own actions (rename, notifications, move, close…), after the pane's in its header's right-click menu. */
+  menuExtras?: MenuEntry[];
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const chips = useMemo(() => overlapChips(overlaps), [overlaps]);
@@ -772,6 +776,39 @@ export function TerminalPane({
     : "";
   const meta = fmtElapsed(session.createdAt);
 
+  // the header's labelled controls, and its right-click menu: the same actions, then the session's own
+  const headerMenu = useContextMenu(session.ticketTitle ?? session.title);
+  const controls = tidyMenu([
+    !dead && { key: "repaint", label: "Repaint", icon: <RepaintIcon />, title: "Repaint — clear glitched output and have the session redraw its screen", onPick: () => resyncTerm(session.id) },
+    !!panelClose && !dead && { key: "diff", label: "Hide diff", menuLabel: "Hide the diff panel", icon: <PanelRightIcon open />, title: "Hide the CLI's diff side panel (same as its × or /diff)", onPick: () => panelClose && clickCell(session.id, panelClose) },
+    !!onAddTab && !dead && !remote && { key: "tab", label: "Tab", menuLabel: "New tab…", icon: <PlusIcon />, title: "New tab — turn this pane into a workspace and open another session in it", onPick: () => onAddTab?.() },
+    !!onUndoTurn && { key: "undo", label: "Undo", menuLabel: "Undo a turn…", icon: <UndoIcon />, title: "Undo a turn — put the files back as they were before one of the agent's recent turns", onPick: () => onUndoTurn?.() },
+    !!onHandoff && !remote && {
+      key: "handoff",
+      label: AGENT_NAME[otherAgent(session.agent)],
+      menuLabel: `Continue in ${AGENT_NAME[otherAgent(session.agent)]}…`,
+      icon: <HandoffIcon />,
+      title: `Continue in ${AGENT_NAME[otherAgent(session.agent)]} — hand this task over with a summary of what's done and what's next`,
+      onPick: () => onHandoff?.(),
+    },
+    !!onPin && {
+      key: "pin",
+      label: pinned ? "Pinned" : "Pin",
+      menuLabel: pinned ? "Unpin" : "Pin to the screen",
+      icon: <PinIcon />,
+      pressed: !!pinned,
+      title: pinned ? "Unpin — this pane goes back to following its group" : "Pin — keep this pane on screen when you switch groups",
+      onPick: () => onPin?.(),
+    },
+    !!onZoom &&
+      (zoomed
+        ? { key: "zoom", label: "Grid", menuLabel: "Back to the grid", icon: <ShrinkIcon />, title: "Back to the grid (⌘E or esc)", onPick: () => onZoom?.() }
+        : { key: "zoom", label: "Full", menuLabel: "Fullscreen", icon: <ExpandIcon />, title: "Fullscreen — fill the whole grid with this pane (⌘E)", onPick: () => onZoom?.() }),
+    closeTitle
+      ? { key: "close", label: "Close", icon: <CloseIcon />, title: closeTitle, onPick: onClose }
+      : { key: "close", label: "Hide", menuLabel: "Hide from the grid", icon: <MinusIcon />, title: "Hide from grid (session keeps running)", onPick: onClose },
+  ]) as Action[];
+
   return (
     <div
       className={[
@@ -790,8 +827,9 @@ export function TerminalPane({
         className="pane-header"
         draggable={editTitle === null}
         onDragStart={(e) => beginDrag(e, "text/mb-session", session.id, `Moving ${session.ticketTitle ?? session.title}`, "pane")}
-        title="drag onto another pane's edge to put it beside that pane, onto its middle to swap, or onto its header to make it a tab there · double-click the name to rename"
+        title="drag onto another pane's edge to put it beside that pane, onto its middle to swap, or onto its header to make it a tab there · double-click the name to rename · right-click for more"
         data-drop={tabDrop?.cue}
+        {...headerMenu.bind(() => tidyMenu([...controls, "-", ...(menuExtras ?? [])]))}
         onDragOver={(e) => {
           if (!tabDrop || !dragging("text/mb-session")) return;
           e.stopPropagation();
@@ -908,93 +946,8 @@ export function TerminalPane({
         {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row or ⌘K)">muted</span>}
         {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
-        <span className="controls">
-          {!dead && (
-            <button
-              className="icon"
-              title="Repaint — clear glitched output and have the session redraw its screen"
-              onClick={(e) => {
-                e.stopPropagation();
-                resyncTerm(session.id);
-              }}
-            >
-              ⟳
-            </button>
-          )}
-          {panelClose && !dead && (
-            <button
-              className="icon"
-              title="Hide the CLI's diff side panel (same as its × or /diff)"
-              onClick={(e) => {
-                e.stopPropagation();
-                clickCell(session.id, panelClose);
-              }}
-            >
-              ⊟
-            </button>
-          )}
-          {onAddTab && !dead && !remote && (
-            <button
-              className="icon"
-              title="New tab — turn this pane into a workspace and open another session in it"
-              onClick={(e) => {
-                e.stopPropagation();
-                onAddTab();
-              }}
-            >
-              +
-            </button>
-          )}
-          {onUndoTurn && (
-            <button
-              className="icon"
-              title="Undo a turn — put the files back as they were before one of the agent's recent turns"
-              onClick={(e) => {
-                e.stopPropagation();
-                onUndoTurn();
-              }}
-            >
-              ↶
-            </button>
-          )}
-          {onHandoff && !remote && (
-            <button
-              className="icon"
-              title={`Continue in ${AGENT_NAME[otherAgent(session.agent)]} — hand this task over with a summary of what's done and what's next`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onHandoff();
-              }}
-            >
-              ⇄
-            </button>
-          )}
-          {onPin && (
-            <button
-              className={`icon pin ${pinned ? "on" : ""}`}
-              title={pinned ? "Unpin — this pane goes back to following its group" : "Pin — keep this pane on screen when you switch groups"}
-              aria-pressed={!!pinned}
-              onClick={(e) => {
-                e.stopPropagation();
-                onPin();
-              }}
-            >
-              <PinIcon />
-            </button>
-          )}
-          {onZoom && (
-            <button
-              className="icon"
-              onClick={onZoom}
-              title={zoomed ? "Back to the grid (⌘E or esc)" : "Fullscreen — fill the whole grid with this pane (⌘E)"}
-            >
-              ⛶
-            </button>
-          )}
-          <button className="icon" onClick={onClose} title={closeTitle ?? "Hide from grid (session keeps running)"}>
-            {closeTitle ? "✕" : "–"}
-          </button>
-        </span>
+        <ActionBar className="controls" actions={controls} />
+        {headerMenu.menu}
       </div>
 
       {density === "max" && !dead && (

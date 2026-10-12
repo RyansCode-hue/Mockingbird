@@ -17,6 +17,8 @@ import {
 } from "../../shared/team/artifacts";
 import { usePersisted } from "../prefs";
 import { MenuButton } from "../Menu";
+import { ActionBar, pickActions, tidyMenu, useContextMenu } from "../ContextMenu";
+import { CloseIcon, DownloadIcon, HashIcon, PencilIcon, ReadIcon } from "../Icons";
 import { Modal } from "../Modal";
 import { RenameDialog } from "../Dialogs";
 import { QuickOpen } from "../QuickOpen";
@@ -499,15 +501,25 @@ function ArtifactRow({
     e.stopPropagation();
     fn();
   };
+  const menu = useContextMenu(a.name);
+  const acts = tidyMenu([
+    { key: "open", label: "Open", icon: <ReadIcon />, onPick: onOpen },
+    { key: "mention", label: "Mention", menuLabel: "Mention in a message (#)", icon: <HashIcon />, title: "Mention it in a message (#)", onPick: onMention },
+    { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: onRename },
+    !!x?.action && { key: "download", label: x.action, icon: <DownloadIcon />, title: x.tip, onPick: onDownload },
+    "-",
+    { key: "remove", label: "Remove", menuLabel: "Remove for everyone…", icon: <CloseIcon />, danger: true, title: "Remove for everyone in the room", onPick: onRemove },
+  ]);
   return (
     <div
       className="art-row"
       role="button"
       tabIndex={0}
-      title={addedLine(a, self)}
+      title={`${addedLine(a, self)} · right-click for more`}
+      {...menu.bind(acts)}
       onClick={onOpen}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
+        if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
           e.preventDefault();
           onOpen();
         }
@@ -522,17 +534,7 @@ function ArtifactRow({
               <LockIcon />
             </span>
           )}
-          <span className="art-acts">
-            <button className="icon" title="Mention it in a message (#)" onClick={stop(onMention)}>
-              #
-            </button>
-            <button className="icon" title="Rename" onClick={stop(onRename)}>
-              ✎
-            </button>
-            <button className="icon danger" title="Remove for everyone in the room" onClick={stop(onRemove)}>
-              ✕
-            </button>
-          </span>
+          <ActionBar className="art-acts" actions={pickActions(acts, ["mention", "rename", "remove"])} />
         </div>
         <div className="art-meta">{artifactMeta(a, self)}</div>
         {x && (
@@ -551,6 +553,7 @@ function ArtifactRow({
           </div>
         )}
       </div>
+      {menu.menu}
     </div>
   );
 }

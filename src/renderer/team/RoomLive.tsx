@@ -4,6 +4,8 @@ import type { LivePanesState, MemberView, RoomSessionTag } from "../../shared/te
 import type { MemberId } from "../../shared/team/types";
 import { initialsOf } from "../Team";
 import { followPlan, mergeRoomSessions, sameList } from "./roomLiveModel";
+import { firstName } from "./connectedModel";
+import { ReadIcon } from "../Icons";
 
 /**
  * Team rooms in the window, stage 2 (live panes): teammates' room sessions
@@ -128,25 +130,16 @@ export function Lookers({ room }: { room: RoomSessionTag }) {
   );
 }
 
-/** A sidebar row's room marks: whose session it is, and who's looking at it. */
-export function RoomRowTag({ s }: { s: SessionInfo }) {
-  if (!s.room) return null;
-  return (
-    <>
-      <OwnerTag room={s.room} />
-      <Lookers room={s.room} />
-    </>
-  );
-}
-
 /** Following someone, or who can be followed, for the group bar. */
 export function FollowControls({ follow }: { follow: Follow }) {
   if (follow.leader) {
     const away = !follow.leader.view;
+    const who = firstName(follow.leader.name);
     return (
       <span className="team-follow on" title={`Your grid mirrors what ${follow.leader.name} shows. Changing your grid stops it.`}>
-        {away ? `Following ${follow.leader.name} — waiting for them to show a shared session` : `Following ${follow.leader.name}`}
-        <button className="chip" onClick={follow.stop}>
+        <ReadIcon />
+        {away ? `Following ${who} — waiting for a shared session` : `Following ${who}`}
+        <button className="gb-btn" onClick={follow.stop}>
           Stop
         </button>
       </span>
@@ -156,8 +149,9 @@ export function FollowControls({ follow }: { follow: Follow }) {
   return (
     <span className="team-follow">
       {follow.candidates.map((v) => (
-        <button key={v.member} className="chip" title={`Mirror ${v.name}'s grid: the shared sessions they show, and the one they're in`} onClick={() => follow.follow(v.member)}>
-          Follow {v.name}
+        <button key={v.member} className="gb-btn" title={`Mirror ${v.name}'s grid: the shared sessions they show, and the one they're in`} onClick={() => follow.follow(v.member)}>
+          <ReadIcon />
+          <span className="gb-t">Follow</span> {firstName(v.name)}
         </button>
       ))}
     </span>

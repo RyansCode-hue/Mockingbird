@@ -89,8 +89,12 @@ should stop more members joining later.
   reason is in its log"); the reason, which may name this Mac's folders, is
   logged here. Refusals written for them (wrong room, not their session,
   malformed parameters) still say why.
-- The sidebar shows the room as a group with a shared badge and the initials of
-  who's connected right now. Sessions outside rooms are never visible to anyone.
+- The **Team room** view lists the rooms, each with its presence in words
+  ("Shared room · Nick online"), its sessions — yours and teammates' — and its
+  chat. The Sessions view lists your own sessions in a room's group (marked
+  "Shared room") but not teammates', and one **Connected sessions** line
+  ("Connected sessions · 4", who's online) that opens the Team room view: on
+  the only room, or on the room list. Sessions outside rooms are never visible to anyone.
 
 ## Joining
 
@@ -232,7 +236,7 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 - **Codes stay open to any member**; letting someone in is the admin's
   (Joining, above). A review flagged "any member can add members": that's now
   closed by the admin accepting, without taking codes away from members.
-- **Leave room…** (Settings → Team per room, or the Team tab's ⋯): the leave is
+- **Leave room…** (Settings → Team per room, or a room's More / right-click menu in the Team tab): the leave is
   published and sent to the teammates connected now, who confirm they have it;
   then the signaling Worker cuts this install's key off; then everything of the
   room on this Mac is deleted (below). A failure before publishing changes
@@ -328,8 +332,10 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 
 - **Either member can start a session in the room.** It runs on the starter's
   laptop, in their clone of the repo (matched across laptops by the origin URL,
-  not the path), under their own Claude/Codex account. It shows for everyone,
-  tagged with the owner's initials.
+  not the path), under their own Claude/Codex account. It shows for everyone;
+  its row says whose it is, whether it runs and who's looking, in words
+  ("Nick's session · live · Sam is in it"). The pane header keeps the owner's
+  and lookers' initials, with tooltips.
 - **Live panes:** a room session's terminal streams to every member. Its
   scrollback is replayed on join, then live output follows. Remote panes render
   like local ones (status, waiting reason, git chips from the owner's side).
@@ -840,7 +846,8 @@ House's **open backlog**.
   time out after 15 s. An answer is read as it streams and refused past 5 MB
   (a chunked one too). Errors carry the House's own message, on one line
   with no angle brackets (agents get errors as tool answers).
-- **What the board shows** (▦ on a shared group, or "House board" in the
+- **What the board shows** (**Board**, with the kanban-board icon, on a room in
+  the Team room view and in a shared group's bar, or "House board" in the
   palette): "Radley House · <project>" with **+ Add ticket**, then:
   - **Open backlog** — every ticket whose status isn't `done` or `dropped`,
     in the House's own order (`GET work-items` lists priority-sorted, high to

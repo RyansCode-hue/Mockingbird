@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createIpcStore, loadInto } from "../ipcStore";
-import { readPref, writePref } from "../prefs";
+import { readPref, usePersisted, writePref } from "../prefs";
 import { initialsOf, LeaveRoomDialog, roomOfGroup, TeamNotices } from "../Team";
-import { MenuButton } from "../Menu";
+import { ActionBar, pickActions, tidyMenu, useContextMenu, type MenuEntry } from "../ContextMenu";
+import { BackIcon, ChatIcon, ChevronIcon, CloseIcon, GridIcon, InviteIcon, KanbanIcon, PlusIcon } from "../Icons";
+import { roomPresence } from "./connectedModel";
 import { chatSegments } from "./chatText";
 import { renderSegment, type InlineContext } from "./markdownView";
 import { ArtifactChip, ArtifactShelf, useArtifactActions, useArtifacts, useFileDrop } from "./Artifacts";
@@ -15,9 +17,10 @@ import type { TeamRoomSummary, TeamStatus } from "../../shared/team/types";
 
 /**
  * The team room in the window (docs/team-rooms.md → Team room): a side bar
- * view with each shared room's chat — members, agents' updates and the
- * @assistant — and its artifacts (Artifacts.tsx), plus its activity bar
- * badge and the group bar's chip.
+ * view with the rooms, each with its sessions — teammates' and this Mac's —
+ * and its chat — members, agents' updates and the @assistant — and its
+ * artifacts (Artifacts.tsx), plus its activity bar badge and the group bar's
+ * chip.
  */
 
 /** Unread entries and mentions per room, kept current. */
@@ -38,20 +41,26 @@ export function useChatUnread(): ChatUnread {
   return unreadStore.use();
 }
 
-/** The room the chat shows, remembered across restarts. */
+/** The room the view shows, remembered across restarts; LIST is the room list. */
 const PICK_KEY = "mb.roomChat.room";
+const LIST = "";
 const picked = createIpcStore<string | null>(readPref<string | null>(PICK_KEY, null), () => {});
 const pickRoom = (roomId: string) => {
   picked.set(roomId);
   writePref(PICK_KEY, roomId);
 };
 
-const ChatIcon = () => (
-  <svg className="ico" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="M2.25 3.75a1.5 1.5 0 0 1 1.5-1.5h8.5a1.5 1.5 0 0 1 1.5 1.5v5.5a1.5 1.5 0 0 1-1.5 1.5H7.25l-3 2.5v-2.5h-.5a1.5 1.5 0 0 1-1.5-1.5z" />
-    <path d="M5.25 5.75h5.5M5.25 7.75h3.5" />
-  </svg>
-);
+/** The shared group's room the grid showed when the Team view last looked (the view unmounts while hidden). */
+let lastGroupRoom: string | undefined;
+/** The view is being opened on a room or the list on purpose: the grid's group doesn't override it as it opens. */
+let pickedOnPurpose = false;
+let panelOpen = false;
+
+/** Open the Team view on a room (its sessions and chat), or on the room list (null), whatever group the grid shows. */
+export const openTeamView = (roomId: string | null) => {
+  pickRoom(roomId ?? LIST);
+  pickedOnPurpose = !panelOpen;
+};
 
 const sumUnread = (u: ChatUnread) => Object.values(u).reduce((acc, r) => ({ unread: acc.unread + r.unread, mentions: acc.mentions + r.mentions }), { unread: 0, mentions: 0 });
 
@@ -75,14 +84,16 @@ export function RoomChatChip({ room, onOpen }: { room: TeamRoomSummary; onOpen: 
   const u = useChatUnread()[room.id];
   return (
     <button
-      className={`chip ${u?.unread ? "teal" : ""}`}
+      className={`gb-btn ${u?.unread ? "teal" : ""}`}
       data-tip="The team room's chat — teammates, their agents' updates, and @assistant"
       onClick={() => {
-        pickRoom(room.id);
+        openTeamView(room.id);
         onOpen();
       }}
     >
-      Room chat{u?.unread ? ` · ${u.mentions ? `@${u.mentions}` : u.unread}` : ""}
+      <ChatIcon />
+      <span className="gb-t">Room chat</span>
+      {u?.unread ? <span className="gb-n">{u.mentions ? `@${u.mentions}` : u.unread}</span> : null}
     </button>
   );
 }
@@ -94,7 +105,7 @@ export function useRoomChatOpen(open: () => void): void {
   useEffect(
     () =>
       window.mb.onTeamChatOpen((roomId: string) => {
-        pickRoom(roomId);
+        openTeamView(roomId);
         ref.current();
       }),
     []
@@ -111,48 +122,157 @@ export interface RoomArtifactProps {
 }
 
 /**
- * The side bar view: the chat of the room picked, or of the shared group on
- * screen. `onNewSession` opens New session in a room's group; `onJoinRoom`
- * opens Join a room, for a teammate's invite code.
+ * What the Team view needs from the window to show a room's sessions and act
+ * on the room: the rows are the Sessions view's own (main.tsx), so they work
+ * the same in both places.
+ */
+export interface TeamViewHooks {
+  sessionCount: (groupKey: string) => number;
+  renderSessions: (groupKey: string) => React.ReactNode;
+  /** Show the room's sessions in the grid. */
+  onShowGroup: (groupKey: string) => void;
+  onOpenBoard: (roomId: string) => void;
+  /** Invite a teammate: a one-time code for the room. */
+  onInvite: (groupKey: string, title: string) => void;
+  /** New session in the room's group: teammates see it. */
+  onNewSession: (groupKey: string) => void;
+  /** Join a teammate's room with the invite code they sent. */
+  onJoinRoom: () => void;
+}
+
+/** A room's actions, for its header's buttons and its right-click menu. */
+function roomActions(room: TeamRoomSummary, hooks: TeamViewHooks, o: { onChat?: () => void; chatLabel?: string; onLeave: () => void }): MenuEntry[] {
+  return tidyMenu([
+    o.onChat && { key: "chat", label: o.chatLabel ?? "Chat", menuLabel: "Open the room's chat", icon: <ChatIcon />, title: "The room's chat: teammates, their agents' updates, @assistant", onPick: o.onChat },
+    !!room.groupKey && { key: "show", label: "Show", menuLabel: "Show its sessions in the grid", icon: <GridIcon />, onPick: () => hooks.onShowGroup(room.groupKey) },
+    { key: "board", label: "Board", menuLabel: "House board", icon: <KanbanIcon />, title: "House board — the room's Radley House tickets and who has each", onPick: () => hooks.onOpenBoard(room.id) },
+    !!room.groupKey && { key: "invite", label: "Invite", menuLabel: "Invite a teammate…", icon: <InviteIcon />, title: "A one-time invite code for a teammate", onPick: () => hooks.onInvite(room.groupKey, room.name) },
+    !!room.groupKey && { key: "new", label: "New", menuLabel: "New session in this room…", icon: <PlusIcon />, title: `New connected session in ${room.name} — teammates see it`, onPick: () => hooks.onNewSession(room.groupKey) },
+    "-",
+    { key: "join", label: "Join", menuLabel: "Join another room…", icon: <PlusIcon />, title: "Join a teammate's room with the invite code they sent you", onPick: hooks.onJoinRoom },
+    { key: "leave", label: "Leave", menuLabel: "Leave room…", icon: <CloseIcon />, danger: true, onPick: o.onLeave },
+  ]);
+}
+
+/** A room's name, its presence in words, and its labelled actions; right-click for all of them. */
+function RoomHead({ room, hooks, onChat, onLeave }: { room: TeamRoomSummary; hooks: TeamViewHooks; onChat?: () => void; onLeave: () => void }) {
+  const u = useChatUnread()[room.id];
+  const menu = useContextMenu(room.name);
+  const acts = roomActions(room, hooks, { onChat, chatLabel: u?.unread ? `Chat · ${u.mentions ? `@${u.mentions}` : u.unread}` : "Chat", onLeave });
+  return (
+    <div className="room-head" {...menu.bind(acts)}>
+      {onChat ? (
+        <button className="room-name" title={`Open ${room.name}: its sessions and chat`} onClick={onChat}>
+          {room.name}
+        </button>
+      ) : (
+        <span className="room-name" title={room.name}>
+          {room.name}
+        </span>
+      )}
+      <div className={`room-presence ${room.problem || room.signaling !== "online" ? "warn" : room.online.length ? "" : "idle"}`} title={room.problem}>
+        {roomPresence(room)}
+        {room.problem ? ` · ${room.problem}` : ""}
+      </div>
+      <ActionBar className="room-acts" actions={pickActions(acts, [onChat ? "chat" : "show", "board", "invite", "new"])} more={acts} label={room.name} />
+      {menu.menu}
+    </div>
+  );
+}
+
+/** A room's sessions (teammates' and this Mac's), under a header that folds them away. */
+function RoomSessions({ room, hooks, foldable }: { room: TeamRoomSummary; hooks: TeamViewHooks; foldable: boolean }) {
+  const [open, setOpen] = usePersisted("mb.roomSessions.open", true);
+  const n = hooks.sessionCount(room.groupKey);
+  const shown = !foldable || open;
+  return (
+    <div className="room-sessions">
+      {foldable && (
+        <button className="art-toggle room-sess-toggle" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? "Hide the room's sessions" : "Show the room's sessions"}>
+          <ChevronIcon open={open} />
+          Sessions · {n}
+        </button>
+      )}
+      {shown && (
+        <div className="room-sess-body">
+          {n ? hooks.renderSessions(room.groupKey) : <div className="art-empty">No sessions in this room yet. New starts one teammates see.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Every room, each with its sessions and a way into its chat. */
+function RoomList({ rooms, hooks }: { rooms: TeamRoomSummary[]; hooks: TeamViewHooks }) {
+  const [leaving, setLeaving] = useState<TeamRoomSummary | null>(null);
+  return (
+    <div className="scroll room-list">
+      <div className="room-list-head">
+        <span>{rooms.length} rooms</span>
+        <button className="rc-new-session" title="Join a teammate's room with the invite code they sent you" onClick={hooks.onJoinRoom}>
+          Join a room…
+        </button>
+      </div>
+      {rooms.map((r) => (
+        <div key={r.id} className="room-card">
+          <RoomHead room={r} hooks={hooks} onChat={() => pickRoom(r.id)} onLeave={() => setLeaving(r)} />
+          <RoomSessions room={r} hooks={hooks} foldable={false} />
+        </div>
+      ))}
+      {leaving && <LeaveRoomDialog room={leaving} onClose={() => setLeaving(null)} />}
+    </div>
+  );
+}
+
+/**
+ * The side bar view: the room list, or one room — its sessions, artifacts and
+ * chat. The room picked, or of the shared group on screen; with one room,
+ * always that one.
  */
 export function RoomChatPanel({
   status,
   activeGroup,
   visible,
-  onNewSession,
-  onJoinRoom,
+  hooks,
   ...artifactProps
 }: {
   status: TeamStatus | { error: string } | null;
   activeGroup: string | null;
   visible: boolean;
-  onNewSession: (groupKey: string) => void;
-  onJoinRoom: () => void;
+  hooks: TeamViewHooks;
 } & RoomArtifactProps) {
   const choice = picked.use();
   const groupRoom = activeGroup ? roomOfGroup(status, activeGroup) : undefined;
-  // switching the grid to a shared group shows its room
+  // switching the grid to a shared group shows its room — a switch, not every time the view opens, so the room list stays
   useEffect(() => {
-    if (groupRoom) pickRoom(groupRoom.id);
+    const purpose = pickedOnPurpose;
+    pickedOnPurpose = false;
+    if (groupRoom?.id === lastGroupRoom) return;
+    lastGroupRoom = groupRoom?.id;
+    if (groupRoom && !purpose) pickRoom(groupRoom.id);
   }, [groupRoom?.id]);
+  useEffect(() => {
+    panelOpen = true;
+    return () => void (panelOpen = false);
+  }, []);
   if (!status) return <div className="rc-empty">Loading…</div>;
   if (isErr(status)) return <div className="rc-empty err">Couldn't read the team status: {status.error}</div>;
   const rooms = status.rooms;
-  const room = rooms.find((r) => r.id === choice) ?? groupRoom ?? rooms[0];
+  const room = choice === LIST && rooms.length > 1 ? undefined : rooms.find((r) => r.id === choice) ?? groupRoom ?? rooms[0];
   const notices = status.notices?.length ? (
     <div className="rc-notices">
       <TeamNotices notices={status.notices} />
     </div>
   ) : null;
-  if (!room) {
+  if (!rooms.length) {
     return (
       <>
         {notices}
         <div className="rc-empty">
-          No team rooms yet. Share a group from its row in the Sessions view (⇪), or join a teammate's room with the invite code they sent you. Each room has a chat here: what
-          teammates say, what their agents are up to, and an @assistant.
+          No team rooms yet. Share a group from its header in the Sessions view (⇪), or join a teammate's room with the invite code they sent you. Each room shows here with
+          its sessions — yours and teammates' — and its chat: what teammates say, what their agents are up to, and an @assistant.
           <div>
-            <button className="outline rc-join" onClick={onJoinRoom}>
+            <button className="outline rc-join" onClick={hooks.onJoinRoom}>
               Join a room…
             </button>
           </div>
@@ -160,10 +280,18 @@ export function RoomChatPanel({
       </>
     );
   }
+  if (!room) {
+    return (
+      <>
+        {notices}
+        <RoomList rooms={rooms} hooks={hooks} />
+      </>
+    );
+  }
   return (
     <>
       {notices}
-      <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} onNewSession={onNewSession} onJoinRoom={onJoinRoom} {...artifactProps} />
+      <RoomChat key={room.id} room={room} rooms={rooms} selfName={status.self?.name ?? "you"} visible={visible} hooks={hooks} {...artifactProps} />
     </>
   );
 }
@@ -187,8 +315,7 @@ function RoomChat({
   rooms,
   selfName,
   visible,
-  onNewSession,
-  onJoinRoom,
+  hooks,
   sessions,
   focusedSessionId,
   onOpenRepoFile,
@@ -197,8 +324,7 @@ function RoomChat({
   rooms: TeamRoomSummary[];
   selfName: string;
   visible: boolean;
-  onNewSession: (groupKey: string) => void;
-  onJoinRoom: () => void;
+  hooks: TeamViewHooks;
 } & RoomArtifactProps) {
   const [view, setView] = useState<RoomChatView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -313,49 +439,26 @@ function RoomChat({
   return (
     <div className="rc" {...drop.handlers}>
       <div className="rc-head">
-        <div className="rc-top">
-          {rooms.length > 1 ? (
-            <select className="rc-pick" value={room.id} onChange={(e) => pickRoom(e.target.value)} title="Which room's chat to show">
-              {rooms.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span className="rc-name" title={room.name}>
-              {room.name}
-            </span>
-          )}
-          <button className="rc-new-session" title="Join a teammate's room with the invite code they sent you" onClick={onJoinRoom}>
-            Join a room…
+        {rooms.length > 1 && (
+          <button className="rc-back" title="Every room, each with its sessions" onClick={() => pickRoom(LIST)}>
+            <BackIcon />
+            All rooms · {rooms.length}
           </button>
-          <MenuButton
-            className="rc-new-session rc-more"
-            label="⋯"
-            title="More for this room"
-            items={[{ key: "leave", label: "Leave room…", onPick: () => setLeaving(true) }]}
-          />
-        </div>
-        <div className="rc-sub">
-          <div className="rc-members">
-            {room.members.map((m) => {
-              const on = m.self || room.online.includes(m.id);
-              return (
-                <span key={m.id} className={`rc-member ${on ? "on" : ""}`} title={`${m.name}${m.self ? " (you)" : on ? " · connected" : " · offline"}`}>
-                  <span className="rc-initials">{initialsOf(m.name)}</span>
-                  {m.self ? "you" : mentionHandle(m.name)}
-                </span>
-              );
-            })}
-          </div>
-          {room.groupKey && (
-            <button className="rc-new-session" title={`New connected session in ${room.name} — teammates see it`} onClick={() => onNewSession(room.groupKey)}>
-              + New session
-            </button>
-          )}
+        )}
+        <RoomHead room={room} hooks={hooks} onLeave={() => setLeaving(true)} />
+        <div className="rc-members">
+          {room.members.map((m) => {
+            const on = m.self || room.online.includes(m.id);
+            return (
+              <span key={m.id} className={`rc-member ${on ? "on" : ""}`} title={`${m.name}${m.self ? " (you)" : on ? " · connected" : " · offline"}`}>
+                <span className="rc-initials">{initialsOf(m.name)}</span>
+                {m.self ? "you" : mentionHandle(m.name)}
+              </span>
+            );
+          })}
         </div>
       </div>
+      <RoomSessions room={room} hooks={hooks} foldable />
       <ArtifactShelf
         room={room}
         self={arts.view?.self ?? view?.self ?? ""}

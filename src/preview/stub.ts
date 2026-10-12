@@ -1458,8 +1458,48 @@ if (section) {
 }
 if (theme === "light" || theme === "dark") set("mb.theme", theme);
 if (shown) set("mb.shown", shown.split(","));
-// team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared)
-if (params.get("chat")) set("mb.roomChat.room", params.get("chat"));
+// team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared);
+// ?chat=list shows the room list, each room with its sessions
+if (params.get("chat")) set("mb.roomChat.room", params.get("chat") === "list" ? "" : params.get("chat"));
+// the House board and New session in a room are opened from the Team view's rooms: it opens on the room list
+// (and, for ?chatMenu, on the first room) unless ?view says otherwise
+const houseKeys = ["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent", "houseProblems"];
+if (!view && (houseKeys.some((k) => params.has(k)) || params.get("new") === "room")) {
+  set("mb.sideView", "room");
+  if (!params.get("chat")) set("mb.roomChat.room", "");
+}
+if (!view && params.has("chatMenu")) {
+  set("mb.sideView", "room");
+  if (!params.get("chat")) set("mb.roomChat.room", "R5101aaaaaaaaaaaaaaaaa");
+}
+// ?ctx=row|pane|tab|artifact opens that element's right-click menu: the first teammate's session row in the Team
+// view (=row), the first pane's header, the first workspace tab, the first artifact (with view=room); ?ctxKeys
+// presses ↓ twice in it, from the keyboard
+// ?paneControls shows every pane header's controls as a hover does, and every session row's actions, for screenshots
+if (params.has("paneControls")) {
+  const show = document.createElement("style");
+  show.textContent = ".pane .pane-header .controls, .sess-item .sr-acts { display: inline-flex !important; }";
+  document.head.appendChild(show);
+}
+const ctxOn = params.get("ctx");
+if (ctxOn) {
+  if (!view) set("mb.sideView", "room");
+  if (!view && !params.get("chat")) set("mb.roomChat.room", ctxOn === "row" ? "" : "R5101aaaaaaaaaaaaaaaaa");
+  const target = { row: ".room-sess-body .sess-item.remote", pane: ".pane-header", tab: ".ws-tab", artifact: ".art-row" }[ctxOn] ?? ctxOn;
+  let tries = 0;
+  const t = setInterval(() => {
+    const el = document.querySelector(target) as HTMLElement | null;
+    if (!el && ++tries < 50) return;
+    clearInterval(t);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + Math.min(60, r.width / 2), clientY: r.top + r.height / 2 }));
+    if (params.has("ctxKeys"))
+      setTimeout(() => {
+        for (let i = 0; i < 2; i++) document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      }, 150);
+  }, 100);
+}
 // screenshots show the settled screen: no transition caught halfway (a theme switch fades colors)
 if (params.has("shot")) {
   const still = document.createElement("style");
@@ -1469,11 +1509,13 @@ if (params.has("shot")) {
 // team rooms: the House board — ?house=1 opens the first shared group's board (2: the second); ?houseTicket=141 opens
 // that ticket on it, ?houseClaim=142 starts claiming it, ?houseAdd (=new) opens + Add ticket; ?houseWarning adds a claim
 // warning; ?houseAgent turns on the open backlog's "Needs an agent" filter
-if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent", "houseProblems"].some((k) => params.has(k))) {
+if (houseKeys.some((k) => params.has(k))) {
   let tries = 0;
   const open = setInterval(() => {
     const n = Number(params.get("house")) || 1;
     const button = document.querySelectorAll('button[title^="House board"]')[n - 1] as HTMLElement | undefined;
+    // the Team view opened on the grid's shared room: its All rooms has every room's Board
+    if (!button) (document.querySelector("button.rc-back") as HTMLElement | null)?.click();
     if (!button && ++tries < 50) return;
     clearInterval(open);
     if (!params.has("houseWarning") || params.has("house")) button?.click();
@@ -1502,12 +1544,12 @@ if (["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAge
 if (params.has("teamDialog") || params.has("chatMenu")) {
   let tries = 0;
   const open = setInterval(() => {
-    const want = params.has("chatMenu") ? "button.rc-more" : params.get("teamDialog") === "remove" ? ".team-member button.link.danger" : ".team-room .set-row-ctl button:last-child";
+    const want = params.has("chatMenu") ? '.rc-head .room-head [data-action="more"]' : params.get("teamDialog") === "remove" ? ".team-member button.link.danger" : ".team-room .set-row-ctl button:last-child";
     const button = document.querySelector(want) as HTMLElement | null;
     if (!button && ++tries < 50) return;
     clearInterval(open);
     button?.click();
-    if (params.get("chatMenu") === "leave") setTimeout(() => (document.querySelector(".mb-menu [role=menuitem], .mb-menu button") as HTMLElement | null)?.click(), 200);
+    if (params.get("chatMenu") === "leave") setTimeout(() => ([...document.querySelectorAll(".mb-menu [role=menuitem]")].find((b) => b.textContent === "Leave room…") as HTMLElement | undefined)?.click(), 200);
   }, 100);
 }
 // team rooms: ?norooms — this Mac is in no team room yet; ?nosignal — no signaling URL is set, so no new rooms
@@ -1615,7 +1657,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx"))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {

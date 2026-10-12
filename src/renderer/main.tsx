@@ -51,7 +51,9 @@ import {
 import { GridPreview } from "./GridPreview";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
 import { cellKeyFor, cellKeyOf, frontOf, groupChoices, inReadingOrder, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
-import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon } from "./Icons";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon, MinusIcon, GridIcon, PencilIcon, MoveIcon, CloseIcon, KanbanIcon, AskIcon, PlusIcon } from "./Icons";
+import { ActionBar, pickActions, tidyMenu, useContextMenu, type MenuEntry } from "./ContextMenu";
+import { Select } from "./Menu";
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
 import { PipelineDialog, StageChip, usePipelines } from "./TicketPipeline";
@@ -72,12 +74,13 @@ import { UsageMeter } from "./UsageMeter";
 import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
-import { ConnectedDivider, JoinRoomDialog, ShareRoomDialog, SharedBadge, roomOfGroup, useTeamStatus } from "./Team";
+import { ConnectedLine, JoinRoomDialog, ShareRoomDialog, roomOfGroup, useTeamStatus } from "./Team";
 import { adminRequests, JoinRequestPrompt } from "./team/JoinRequests";
 // team rooms: the Radley House board
 import { HouseBoardDialog, HouseWarnings } from "./team/HouseBoard";
 // team rooms: team chat
-import { RoomChatChip, RoomChatPanel, TeamRoomIcon, useRoomChatOpen } from "./team/RoomChat";
+import { RoomChatChip, RoomChatPanel, TeamRoomIcon, openTeamView, useRoomChatOpen, type TeamViewHooks } from "./team/RoomChat";
+import { connectedSummary, roomRowLine } from "./team/connectedModel";
 // team rooms: take-over
 import {
   BackupFreshness,
@@ -87,13 +90,13 @@ import {
   ReceivedDialog,
   ReceivedNotice,
   RoomBackupWarnings,
-  TakeOverButton,
   TakeOverDialog,
+  takeOverAction,
   useTakeover,
 } from "./team/TakeOver";
 import { backupOf, type LeftCopy, type ReceivedChanges, type RoomSessionBackupView } from "../shared/team/takeover";
 // team rooms: live panes
-import { FollowControls, LiveProblems, RoomRowTag, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
+import { FollowControls, LiveProblems, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { roomRepoNames } from "./newSessionModel";
 import { ago, fmtElapsed, plural } from "../shared/format";
@@ -1553,6 +1556,217 @@ function App() {
     window.addEventListener("pointerup", up);
   };
 
+  // ---- session rows, in the Sessions view and (team rooms) the Team view ----
+  const rowMenu = useContextMenu("Session");
+
+  /** Everything a session's row, workspace tab and right-click menu offer, in menu order. */
+  const sessionActions = (s: SessionInfo): MenuEntry[] => {
+    const own = !isRemote(s);
+    const inGrid = shown.includes(s.id);
+    const pinned = pinnedSet.has(s.id);
+    const b = isRemote(s) ? backupFor(s) : null;
+    return tidyMenu([
+      inGrid
+        ? { key: "show", label: "Hide", menuLabel: "Hide from the grid", icon: <MinusIcon />, title: "Take its pane off the grid — the session keeps running", onPick: () => hide(s.id) }
+        : { key: "show", label: "Show", menuLabel: "Show in the grid", icon: <GridIcon />, onPick: () => showSession(s) },
+      "-",
+      // team rooms: take-over
+      takeOverAction(b, setTakeOverFor, b && tkView?.asking.find((a) => a.roomId === b.roomId && a.sessionId === b.sessionId)),
+      own && { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: () => setEditing({ key: s.id, value: titleOf(s) }) },
+      {
+        key: "notify",
+        label: s.muted ? "Muted" : "Notify",
+        menuLabel: s.muted ? "Unmute notifications" : "Mute notifications",
+        icon: s.muted ? <BellOffIcon /> : <BellIcon />,
+        pressed: !!s.muted,
+        title: s.muted ? "Notifications muted — click to hear from this session again" : "Notifies you when it needs you — click to mute",
+        onPick: () => toggleMute(s),
+      },
+      {
+        key: "pin",
+        label: pinned ? "Pinned" : "Pin",
+        menuLabel: pinned ? "Unpin" : "Pin to the screen",
+        icon: <PinIcon />,
+        pressed: pinned,
+        title: pinned ? "Unpin — the pane goes back to following its group" : "Pin — keep this pane on screen when you switch groups",
+        onPick: () => togglePin([s.id]),
+      },
+      own && { key: "move", label: "Move", menuLabel: "Move to group…", icon: <MoveIcon />, onPick: () => setGroupDlg(s) },
+      "-",
+      // a teammate's session is theirs to rename, move or close
+      own && { key: "close", label: "Close", menuLabel: "Close session…", icon: <CloseIcon />, danger: true, onPick: () => requestClose(s) },
+    ]);
+  };
+
+  /** A session's row: its name across the whole width, what it is underneath, then its labelled actions. */
+  const sessionRow = (s: SessionInfo) => {
+    const idx = shown.indexOf(s.id);
+    const acts = sessionActions(s);
+    return (
+      <div
+        key={s.id}
+        className={`sess-item ${idx >= 0 ? "shown" : ""} ${focused === s.id ? "focused" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""} ${s.muted ? "muted" : ""} ${isRemote(s) ? "remote" : ""}`}
+        tabIndex={0}
+        onClick={() => (idx >= 0 ? hide(s.id) : showSession(s))}
+        onKeyDown={(e) => {
+          if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            idx >= 0 ? hide(s.id) : showSession(s);
+          }
+        }}
+        title={`${s.cwd} — double-click name to rename · drag onto a group to move, or onto a pane to open it as a tab there · right-click for more`}
+        {...rowMenu.bind(() => acts)}
+        draggable
+        onDragStart={(e) => beginDrag(e, "text/mb-session", s.id, `Moving ${titleOf(s)}`, "sidebar")}
+        data-drop={cue(drag, `s:${s.id}`)}
+        onDragOver={(e) => {
+          const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
+          if (!srcS || srcS.id === s.id) return overTarget(e, null);
+          if (topOf(srcS) === topOf(s) && !subOf(s) && !subOf(srcS)) {
+            return overTarget(e, { key: `s:${s.id}`, outcome: `Put ${titleOf(srcS)} and ${titleOf(s)} in a new workspace` });
+          }
+          const where = subOf(s) ? `${groupTitle(topOf(s), [s])} / ${subOf(s)}` : groupTitle(topOf(s), [s]);
+          overTarget(e, (srcS.taskGroup ?? null) === (s.taskGroup ?? null) ? null : { key: `s:${s.id}`, outcome: `Move ${titleOf(srcS)} into ${where}` });
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const src = e.dataTransfer.getData("text/mb-session");
+          if (!src || src === s.id) return;
+          const srcS = sessions.find((x) => x.id === src);
+          // dropping one loose session onto another in the same group
+          // creates a workspace holding both (rename it right away)
+          if (srcS && topOf(srcS) === topOf(s) && !subOf(s) && !subOf(srcS)) {
+            addAsTab(srcS, s);
+          } else {
+            moveToGroup(src, s.taskGroup); // join this row's group/workspace
+          }
+        }}
+      >
+        <span className={`dot ${s.status}`} />
+        {editing?.key === s.id ? (
+          editInput
+        ) : (
+          <span
+            className="name"
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              if (!isRemote(s)) setEditing({ key: s.id, value: titleOf(s) });
+            }}
+          >
+            <span className="nm">{titleOf(s)}</span>
+            {/* team rooms: live panes — whose session it is and who's looking, in words */}
+            {s.room && <span className="br who">{roomRowLine(s.room)}</span>}
+            {(s.branch || s.agent === "codex") && (
+              <span className="br">
+                {s.agent === "codex" ? "codex · " : ""}
+                {s.branch && s.branch !== titleOf(s) ? s.branch : (s.repoPath ? baseName(s.repoPath) : "")}
+              </span>
+            )}
+            {/* team rooms: take-over — how fresh this room session's backup is; or, continued by a teammate, what's left of this copy */}
+            {(() => {
+              const l = leftFor(s);
+              if (l) return <LeftCopyLine left={l} onTakeBack={() => takeBack(l)} />;
+              const b = backupFor(s);
+              return b && <span className="br fresh"><BackupFreshness view={b} /></span>;
+            })()}
+            <ReceivedNotice received={receivedFor(s)} onReview={setReviewing} compact />
+          </span>
+        )}
+        <ActionBar className="sr-acts" actions={pickActions(acts, isRemote(s) ? ["takeover", "notify", "pin"] : ["notify", "pin", "close"])} more={acts} label={titleOf(s)} />
+      </div>
+    );
+  };
+
+  /** A top-level group's sessions: loose rows, then its workspaces' folders with theirs. */
+  const groupBody = (key: string, list: SessionInfo[]) => (
+    <>
+      {/* team rooms: take-over — what the session rows don't show (backups that failed outright or weren't deleted) */}
+      {(() => {
+        const room = roomOfGroup(teamStatus, key);
+        return room ? <RoomBackupWarnings room={room} view={takeoverView} /> : null;
+      })()}
+      {bySub(list).map(([sub, subList]) => {
+        const wsKey = `${key}/${sub}`;
+        const inGrid = subList.some((s) => shown.includes(s.id));
+        const open = !sub || (wsOpen[wsKey] ?? inGrid);
+        return (
+          <div key={sub || "_"} className={sub ? "ws-folder" : "loose-rows"}>
+            {sub && (
+              <div
+                className={`sub-label ${inGrid ? "in-grid" : ""}`}
+                title="click to show/minimize this workspace · ✎/double-click to rename · ✕ dissolves it (sessions stay) · drop a session to move it in"
+                onClick={() =>
+                  deferClick(() =>
+                    inGrid
+                      ? hideSessions(subList) // minimize the workspace
+                      : focusSub(key, subList)
+                  )
+                }
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  cancelClick();
+                  setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
+                }}
+                data-drop={cue(drag, `w:${wsKey}`)}
+                onDragOver={(e) => overTarget(e, intoGroupTarget(`w:${wsKey}`, wsKey, `${groupTitle(key, list)} / ${sub}`))}
+                onDrop={(e) => dropToGroup(e, wsKey)}
+              >
+                <span
+                  className="ws-chev"
+                  title={open ? "Hide sessions" : "Show sessions"}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setWsOpen((p) => ({ ...p, [wsKey]: !open }));
+                  }}
+                >
+                  <ChevronIcon open={open} />
+                </span>
+                <FolderIcon open={inGrid} />
+                <span className="txt">{sub}</span>
+                <StatusDots list={subList} />
+                <button
+                  title="Rename workspace"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    cancelClick();
+                    setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  className="danger"
+                  title="Dissolve this workspace — its sessions move up into the group"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    dissolveSub(key, subList);
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+            {open && subList.map(sessionRow)}
+          </div>
+        );
+      })}
+    </>
+  );
+
+  // team rooms: the Sessions view's line for them, and what the Team view needs to show each room's sessions
+  const connected = useMemo(() => connectedSummary(teamRooms, sessions), [teamRooms, sessions]);
+  const roomSessions = (groupKey: string) => workSessions.filter((s) => topOf(s) === groupKey);
+  const teamHooks: TeamViewHooks = {
+    sessionCount: (groupKey) => roomSessions(groupKey).length,
+    renderSessions: (groupKey) => groupBody(groupKey, roomSessions(groupKey)),
+    onShowGroup: (groupKey) => focusGroup(groupKey, roomSessions(groupKey)),
+    onOpenBoard: setBoardDlg,
+    onInvite: (groupKey, title) => setShareDlg({ key: groupKey, title }),
+    onNewSession: newSessionIn,
+    onJoinRoom: () => setJoinDlg(true),
+  };
+
   return (
     <div className="app">
       <div className="topbar">
@@ -1828,8 +2042,7 @@ function App() {
               status={teamStatus}
               activeGroup={activeGroup}
               visible={!sideCollapsed}
-              onNewSession={newSessionIn}
-              onJoinRoom={() => setJoinDlg(true)}
+              hooks={teamHooks}
               sessions={ownSessions}
               focusedSessionId={focusedSession?.id ?? null}
               onOpenRepoFile={openRepoFile}
@@ -1848,7 +2061,18 @@ function App() {
             {/* team rooms: live panes */}
             <LiveProblems state={roomLive.state} />
             {outline.map((entry) => {
-              if (entry.kind === "connected") return <ConnectedDivider key="connected" status={teamStatus} />;
+              // team rooms: their groups and sessions are in the Team view; this line opens it
+              if (entry.kind === "connected")
+                return (
+                  <ConnectedLine
+                    key="connected"
+                    summary={connected}
+                    onOpen={() => {
+                      openTeamView(connected.roomId);
+                      showView("room");
+                    }}
+                  />
+                );
               const { key, list, shared } = entry;
               return (
               <div key={key}>
@@ -1891,28 +2115,12 @@ function App() {
                       <ChevronIcon open={!collapsed.has(key)} />
                     </span>
                     <span className="txt">{groupTitle(key, list)}</span>
-                    {(() => {
-                      const room = roomOfGroup(teamStatus, key);
-                      return room ? <SharedBadge room={room} /> : null;
-                    })()}
-                    {/* team rooms: the House board */}
-                    {roomOfGroup(teamStatus, key) && (
-                      <button
-                        className="glbtn"
-                        title="House board — the room's Radley House tickets and who has each"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          cancelClick();
-                          setBoardDlg(roomOfGroup(teamStatus, key)!.id);
-                        }}
-                      >
-                        ▦
-                      </button>
-                    )}
+                    {/* team rooms: your sessions here; teammates' are in the Team view */}
+                    {shared && <span className="gl-shared" title="A team room's group: your sessions in it are listed here, and the whole room — teammates' sessions too — in the Team view">Shared room</span>}
                     {key !== "ungrouped" && key !== "assistant" && (
                       <button
                         className="glbtn"
-                        title={roomOfGroup(teamStatus, key) ? "Invite a teammate to this shared room" : "Share this group as a team room"}
+                        title={shared ? "Invite a teammate to this shared room" : "Share this group as a team room"}
                         onClick={(e) => {
                           e.stopPropagation();
                           cancelClick();
@@ -1943,203 +2151,7 @@ function App() {
                     )}
                   </div>
                 )}
-                {/* team rooms: take-over — what the session rows don't show (backups that failed outright or weren't deleted) */}
-                {!collapsed.has(key) && (() => {
-                  const room = roomOfGroup(teamStatus, key);
-                  return room ? <RoomBackupWarnings room={room} view={takeoverView} /> : null;
-                })()}
-                {!collapsed.has(key) && bySub(list).map(([sub, subList]) => {
-                  const wsKey = `${key}/${sub}`;
-                  const inGrid = subList.some((s) => shown.includes(s.id));
-                  const open = !sub || (wsOpen[wsKey] ?? inGrid);
-                  return (
-                  <div key={sub || "_"} className={sub ? "ws-folder" : "loose-rows"}>
-                    {sub && (
-                      <div
-                        className={`sub-label ${inGrid ? "in-grid" : ""}`}
-                        title="click to show/minimize this workspace · ✎/double-click to rename · ✕ dissolves it (sessions stay) · drop a session to move it in"
-                        onClick={() =>
-                          deferClick(() =>
-                            inGrid
-                              ? hideSessions(subList) // minimize the workspace
-                              : focusSub(key, subList)
-                          )
-                        }
-                        onDoubleClick={(e) => {
-                          e.stopPropagation();
-                          cancelClick();
-                          setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
-                        }}
-                        data-drop={cue(drag, `w:${wsKey}`)}
-                        onDragOver={(e) => overTarget(e, intoGroupTarget(`w:${wsKey}`, wsKey, `${groupTitle(key, list)} / ${sub}`))}
-                        onDrop={(e) => dropToGroup(e, wsKey)}
-                      >
-                        <span
-                          className="ws-chev"
-                          title={open ? "Hide sessions" : "Show sessions"}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setWsOpen((p) => ({ ...p, [wsKey]: !open }));
-                          }}
-                        >
-                          <ChevronIcon open={open} />
-                        </span>
-                        <FolderIcon open={inGrid} />
-                        <span className="txt">{sub}</span>
-                        <StatusDots list={subList} />
-                        <button
-                          title="Rename workspace"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            cancelClick();
-                            setRenameDlg({ kind: "sub", key: wsKey, initial: sub });
-                          }}
-                        >
-                          ✎
-                        </button>
-                        <button
-                          className="danger"
-                          title="Dissolve this workspace — its sessions move up into the group"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            dissolveSub(key, subList);
-                          }}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    )}
-                    {open && subList.map((s) => {
-                  const idx = shown.indexOf(s.id);
-                  return (
-                    <div
-                      key={s.id}
-                      className={`sess-item ${idx >= 0 ? "shown" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""}`}
-                      onClick={() => (idx >= 0 ? hide(s.id) : showSession(s))}
-                      title={`${s.cwd} — double-click name to rename · drag onto a group to move, or onto a pane to open it as a tab there`}
-                      draggable
-                      onDragStart={(e) => beginDrag(e, "text/mb-session", s.id, `Moving ${titleOf(s)}`, "sidebar")}
-                      data-drop={cue(drag, `s:${s.id}`)}
-                      onDragOver={(e) => {
-                        const srcS = sessions.find((x) => x.id === dragging("text/mb-session"));
-                        if (!srcS || srcS.id === s.id) return overTarget(e, null);
-                        if (topOf(srcS) === topOf(s) && !subOf(s) && !subOf(srcS)) {
-                          return overTarget(e, { key: `s:${s.id}`, outcome: `Put ${titleOf(srcS)} and ${titleOf(s)} in a new workspace` });
-                        }
-                        const where = subOf(s) ? `${groupTitle(topOf(s), [s])} / ${subOf(s)}` : groupTitle(topOf(s), [s]);
-                        overTarget(e, (srcS.taskGroup ?? null) === (s.taskGroup ?? null) ? null : { key: `s:${s.id}`, outcome: `Move ${titleOf(srcS)} into ${where}` });
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const src = e.dataTransfer.getData("text/mb-session");
-                        if (!src || src === s.id) return;
-                        const srcS = sessions.find((x) => x.id === src);
-                        // dropping one loose session onto another in the same group
-                        // creates a workspace holding both (rename it right away)
-                        if (srcS && topOf(srcS) === topOf(s) && !subOf(s) && !subOf(srcS)) {
-                          addAsTab(srcS, s);
-                        } else {
-                          moveToGroup(src, s.taskGroup); // join this row's group/workspace
-                        }
-                      }}
-                    >
-                      <span className={`dot ${s.status}`} />
-                      {editing?.key === s.id ? (
-                        editInput
-                      ) : (
-                        <span
-                          className="name"
-                          onDoubleClick={(e) => {
-                            e.stopPropagation();
-                            if (!isRemote(s)) setEditing({ key: s.id, value: titleOf(s) });
-                          }}
-                        >
-                          <span className="nm">{titleOf(s)}</span>
-                          {(s.branch || s.agent === "codex") && (
-                            <span className="br">
-                              {s.agent === "codex" ? "codex · " : ""}
-                              {s.branch && s.branch !== titleOf(s) ? s.branch : (s.repoPath ? baseName(s.repoPath) : "")}
-                            </span>
-                          )}
-                          {/* team rooms: take-over — how fresh this room session's backup is; or, continued by a teammate, what's left of this copy */}
-                          {(() => {
-                            const l = leftFor(s);
-                            if (l) return <LeftCopyLine left={l} onTakeBack={() => takeBack(l)} />;
-                            const b = backupFor(s);
-                            return b && <span className="br fresh"><BackupFreshness view={b} /></span>;
-                          })()}
-                          <ReceivedNotice received={receivedFor(s)} onReview={setReviewing} compact />
-                        </span>
-                      )}
-                      {/* team rooms: live panes — whose session it is, who's looking; a teammate's is theirs to rename, move or close */}
-                      <RoomRowTag s={s} />
-                      {(() => {
-                        const b = isRemote(s) ? backupFor(s) : null;
-                        return b && <TakeOverButton view={b} onOpen={setTakeOverFor} asking={tkView?.asking.find((a) => a.roomId === b.roomId && a.sessionId === b.sessionId)} />;
-                      })()}
-                      {!isRemote(s) && (
-                      <button
-                        title="Rename"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditing({ key: s.id, value: titleOf(s) });
-                        }}
-                      >
-                        ✎
-                      </button>
-                      )}
-                      <button
-                        className={`mute ${s.muted ? "on" : ""}`}
-                        title={s.muted ? "Notifications muted — click to hear from this session again" : "Mute this session's notifications"}
-                        aria-pressed={!!s.muted}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleMute(s);
-                        }}
-                      >
-                        {s.muted ? <BellOffIcon /> : <BellIcon />}
-                      </button>
-                      <button
-                        className={`pin ${pinnedSet.has(s.id) ? "on" : ""}`}
-                        title={pinnedSet.has(s.id) ? "Unpin — the pane goes back to following its group" : "Pin — keep this pane on screen when you switch groups"}
-                        aria-pressed={pinnedSet.has(s.id)}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          togglePin([s.id]);
-                        }}
-                      >
-                        <PinIcon />
-                      </button>
-                      {!isRemote(s) && (
-                      <>
-                      <button
-                        title="Move to group…"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setGroupDlg(s);
-                        }}
-                      >
-                        ⤷
-                      </button>
-                      <button
-                        className="danger"
-                        title="Close session"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          requestClose(s);
-                        }}
-                      >
-                        ✕
-                      </button>
-                      </>
-                      )}
-                    </div>
-                  );
-                })}
-                  </div>
-                  );
-                })}
+                {!collapsed.has(key) && groupBody(key, list)}
               </div>
               );
             })}
@@ -2217,34 +2229,45 @@ function App() {
                   (pipelines[activeGroup] ? (
                     <StageChip p={pipelines[activeGroup]} onClick={() => setPipelineFor(ticketOfGroup(activeGroup))} />
                   ) : (
-                    <button className="chip" data-tip="Ticket pipeline — track this ticket from coding to done" onClick={() => setPipelineFor(ticketOfGroup(activeGroup))}>
+                    <button className="gb-btn" data-tip="Ticket pipeline — track this ticket from coding to done" onClick={() => setPipelineFor(ticketOfGroup(activeGroup))}>
                       Pipeline
                     </button>
                   ))}
                 {/* team rooms: team chat */}
                 {(() => {
                   const room = roomOfGroup(teamStatus, activeGroup);
-                  return room ? <RoomChatChip room={room} onOpen={() => showView("room")} /> : null;
+                  return room ? (
+                    <>
+                      <RoomChatChip room={room} onOpen={() => showView("room")} />
+                      {/* team rooms: the House board */}
+                      <button className="gb-btn" data-tip="House board — the room's Radley House tickets and who has each" onClick={() => setBoardDlg(room.id)}>
+                        <KanbanIcon />
+                        <span className="gb-t">Board</span>
+                      </button>
+                    </>
+                  ) : null;
                 })()}
                 {/* team rooms: live panes */}
                 <FollowControls follow={follow} />
                 <span style={{ marginLeft: "auto" }} />
                 {statusNote && <span className="flbl-info">{statusNote}</span>}
-                <select
-                  className="gb-msg"
+                <Select
+                  className="gb-btn gb-msg"
                   value={msgModes[activeGroup] ?? ""}
                   title="How messages from other agents arrive in this group's sessions: sent as a prompt, or typed in and left for you to send"
-                  onChange={(e) => setMsgMode(activeGroup, e.target.value as MessageMode | "")}
-                >
-                  <option value="">Agent messages: {msgDefaultSend ? "auto-send" : "leave in prompt"} (default)</option>
-                  <option value="send">Agent messages: auto-send</option>
-                  <option value="prompt">Agent messages: leave in prompt</option>
-                </select>
-                <button className="chip" data-tip="Ask every agent session in this group for a three-line status report — each answers when its current turn ends" onClick={() => askGroupStatus(activeGroup)}>
-                  Ask for status
+                  onChange={(v) => setMsgMode(activeGroup, v as MessageMode | "")}
+                  options={[
+                    { value: "", label: `Agent messages: ${msgDefaultSend ? "Auto-send" : "Leave in prompt"} (default)`, description: "What Settings → Agents says, for every group" },
+                    { value: "send", label: "Agent messages: Auto-send", description: "Sent as a prompt as soon as it arrives" },
+                    { value: "prompt", label: "Agent messages: Leave in prompt", description: "Typed into the prompt; you press Enter" },
+                  ]}
+                />
+                <button className="gb-btn" data-tip="Ask every agent session in this group for a three-line status report — each answers when its current turn ends" onClick={() => askGroupStatus(activeGroup)}>
+                  <AskIcon />
+                  <span className="gb-t">Ask everyone for status</span>
                 </button>
-                <span className="flbl-info">
-                  {gridSessions.filter((s) => topOf(s) === activeGroup).length} of {topSessions.length} shown
+                <span className="flbl-info gb-count">
+                  Showing {gridSessions.filter((s) => topOf(s) === activeGroup).length} of {topSessions.length}
                   {(() => {
                     const visitors = gridSessions.filter((s) => topOf(s) !== activeGroup).length;
                     return visitors ? ` · ${visitors} pinned from other groups` : "";
@@ -2352,6 +2375,7 @@ function App() {
                       return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
                     })()}
                     onShowMessages={() => setMsgLogFor({ id: s.id, title: titleOf(s) })}
+                    menuExtras={sessionActions(s).filter((a) => a === "-" || (a.key !== "show" && a.key !== "pin"))}
                     onRestart={async () => {
                       const r = await window.mb.sessionRestart(s.id);
                       if (isErr(r)) alert(`Couldn't restart ${titleOf(s)}: ${r.error}`);
@@ -2405,6 +2429,24 @@ function App() {
                             setFocused(s.id);
                             setTimeout(() => focusTerm(s.id), 50);
                           }}
+                          {...rowMenu.bind(() =>
+                            tidyMenu([
+                              active.id !== s.id && {
+                                key: "front",
+                                label: "Open",
+                                menuLabel: "Open this tab",
+                                icon: <GridIcon />,
+                                onPick: () => {
+                                  setWsTabs((p) => ({ ...p, [key]: s.id }));
+                                  setFocused(s.id);
+                                  setTimeout(() => focusTerm(s.id), 50);
+                                },
+                              },
+                              { key: "newtab", label: "New tab", menuLabel: `New tab in “${cell.sub}”…`, icon: <PlusIcon />, onPick: () => newSessionIn(key) },
+                              "-",
+                              ...sessionActions(s).filter((a) => a === "-" || a.key !== "show"),
+                            ])
+                          )}
                         >
                           <span className={`dot sm ${s.status}`} />
                           <span className="t">{titleOf(s)}</span>
@@ -2749,6 +2791,7 @@ function App() {
       {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
       {/* team rooms: the House board */}
       {boardDlg && <HouseBoardDialog roomId={boardDlg} onClose={() => setBoardDlg(null)} />}
+      {rowMenu.menu}
       {takeOverFor && (
         <TakeOverDialog
           view={takeOverFor}

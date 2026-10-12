@@ -38,9 +38,9 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(n.peers).toEqual([expect.objectContaining({ name: "Ryan", state: route })]);
         if (signal.real) console.log(`[e2e] connected through ${signal.url}: Ryan→Nick ${(await routes(ryan, nick)).join(", Nick→Ryan ")}`);
         expect(n.rooms[0]).toMatchObject({ name: "#5110 Donor entities", groupKey: "5110", members: [{ name: "Ryan" }, { name: "Nick", self: true }] });
-        // the sidebar: the room is a group with the shared badge and the teammate's initials
-        await untilTrue("Nick's sidebar badge", async () => (await nick.evaluate<string>(`document.querySelector(".team-badge")?.textContent ?? ""`)) === "sharedR");
-        await untilTrue("Ryan's sidebar badge", async () => (await ryan.evaluate<string>(`document.querySelector(".team-badge")?.textContent ?? ""`)) === "sharedN");
+        // the Sessions view: one line for the rooms, naming the teammate online
+        await untilTrue("Nick's connected line", async () => (await nick.evaluate<string>(`document.querySelector(".connected-line")?.textContent ?? ""`)).includes("Ryan online"));
+        await untilTrue("Ryan's connected line", async () => (await ryan.evaluate<string>(`document.querySelector(".connected-line")?.textContent ?? ""`)).includes("Nick online"));
         // the hidden peer host never became the app's window
         expect(await ryan.evaluate<string>("document.title")).toBe("Mockingbird");
 

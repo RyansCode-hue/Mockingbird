@@ -102,30 +102,30 @@ export function reachesBroadcast(s: Pick<SessionInfo, "status" | "shell" | "debr
   return !(s.status === "dead" || s.shell || s.debrief);
 }
 
-/** A row of the Sessions outline: a top-level group with its sessions, or the divider above the team rooms' groups. */
+/** A row of the Sessions outline: a top-level group with this Mac's sessions in it (`shared` when it's a team room's), or the one line standing for the team rooms. */
 export type OutlineGroup<T> = { kind: "group"; key: string; list: T[]; shared: boolean };
 export type OutlineEntry<T> = OutlineGroup<T> | { kind: "connected" };
 
 /**
- * The Sessions outline's top-level rows. Groups keep first-appearance order
- * within each half: this Mac's own groups first, then — under one
- * "connected" divider, only when there are any — the groups shown as team
- * rooms (`roomGroups`). A joined room is a group even before any of its
- * sessions runs here, except while `filtering`, when only groups with a
- * matching session show.
+ * The Sessions outline's top-level rows: the groups holding this Mac's own
+ * sessions, a team room's group included, in first-appearance order; then
+ * one "connected" line when there are team rooms. Teammates' sessions
+ * (`room.remote`) aren't listed here: they live in the Team view, with each
+ * room's whole group, which the line opens. While `filtering`, only groups
+ * with a matching session show, and the line only when a room's session
+ * matches.
  */
-export function sessionOutline<T extends Pick<SessionInfo, "taskGroup">>(visible: readonly T[], roomGroups: readonly string[], filtering: boolean): OutlineEntry<T>[] {
+export function sessionOutline<T extends Pick<SessionInfo, "taskGroup" | "room">>(visible: readonly T[], roomGroups: readonly string[], filtering: boolean): OutlineEntry<T>[] {
+  const rooms = new Set(roomGroups);
   const byKey = new Map<string, T[]>();
+  let inRooms = 0;
   for (const s of visible) {
     const key = topOfKey(s.taskGroup ?? "ungrouped");
-    byKey.set(key, [...(byKey.get(key) ?? []), s]);
+    if (rooms.has(key)) inRooms++;
+    if (!s.room?.remote) byKey.set(key, [...(byKey.get(key) ?? []), s]);
   }
-  if (!filtering) for (const key of roomGroups) if (!byKey.has(key)) byKey.set(key, []);
-  const rooms = new Set(roomGroups);
-  const groups = [...byKey].map(([key, list]): OutlineGroup<T> => ({ kind: "group", key, list, shared: rooms.has(key) }));
-  const own = groups.filter((g) => !g.shared);
-  const connected = groups.filter((g) => g.shared);
-  return connected.length ? [...own, { kind: "connected" }, ...connected] : own;
+  const own = [...byKey].map(([key, list]): OutlineGroup<T> => ({ kind: "group", key, list, shared: rooms.has(key) }));
+  return rooms.size && (!filtering || inRooms) ? [...own, { kind: "connected" }] : own;
 }
 
 /** The groups New Session and the move dialog offer: every session's group and every joined room's, once each. */
