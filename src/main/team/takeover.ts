@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { defineEventType, onMemberRemoved, roomAdmin } from "./rooms";
 import type { RoomSessionSource } from "./roomSessions";
-import { TeamError, type RequestContext, type Team, type Unsubscribe } from "./transport";
+import { PeerError, TeamError, type RequestContext, type Team, type Unsubscribe } from "./transport";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
@@ -127,27 +127,27 @@ const RECEIVED_ID_RE = /^[0-9a-f]{12,64}$/;
 // ---- room events ------------------------------------------------------------------------
 
 const text = (v: unknown, what: string, max: number, min = 0): string => {
-  if (typeof v !== "string" || v.length > max || v.length < min) throw new Error(`${what} must be text of ${min}–${max} characters`);
+  if (typeof v !== "string" || v.length > max || v.length < min) throw new PeerError(`${what} must be text of ${min}–${max} characters`);
   return v;
 };
 const time = (v: unknown, what: string): number => {
-  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new Error(`${what} must be a time`);
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new PeerError(`${what} must be a time`);
   return v;
 };
 const sha = (v: unknown, what = "sha"): string => {
-  if (typeof v !== "string" || !SHA_RE.test(v)) throw new Error(`${what} must be a commit id`);
+  if (typeof v !== "string" || !SHA_RE.test(v)) throw new PeerError(`${what} must be a commit id`);
   return v;
 };
 const sessionIdOf = (v: unknown): string => {
-  if (typeof v !== "string" || !SESSION_ID_RE.test(v)) throw new Error("bad session id");
+  if (typeof v !== "string" || !SESSION_ID_RE.test(v)) throw new PeerError("bad session id");
   return v;
 };
 const agentOf = (v: unknown): AgentKind => {
-  if (v !== "claude" && v !== "codex") throw new Error("agent must be claude or codex");
+  if (v !== "claude" && v !== "codex") throw new PeerError("agent must be claude or codex");
   return v;
 };
 const sourceOf = (v: unknown): SnapshotSource => {
-  if (v !== "peer" && v !== "origin") throw new Error("source must be peer or origin");
+  if (v !== "peer" && v !== "origin") throw new PeerError("source must be peer or origin");
   return v;
 };
 
@@ -1048,11 +1048,11 @@ export class TakeoverService {
     const { roomId, sessionId } = this.requestFor(p, ctx);
     const url = text(p.originUrl, "originUrl", 500, 1);
     const clone = await this.cloneFor(url);
-    if (!clone) throw new Error(`there's no clone of ${url} on this Mac`);
+    if (!clone) throw new PeerError(`there's no clone of ${url} on this Mac`);
     const ref = roomBackupRef(roomId, sessionId);
     if (typeof p.bundle === "string" && p.bundle) {
       const bytes = Buffer.from(p.bundle, "base64");
-      if (bytes.length > MAX_BUNDLE) throw new Error(`a ${mb(bytes.length)} snapshot is over the ${mb(MAX_BUNDLE)} accepted`);
+      if (bytes.length > MAX_BUNDLE) throw new PeerError(`a ${mb(bytes.length)} snapshot is over the ${mb(MAX_BUNDLE)} accepted`);
       const tmp = path.join(os.tmpdir(), `mb-room-${crypto.randomBytes(6).toString("hex")}.bundle`);
       await fs.promises.writeFile(tmp, bytes, { mode: 0o600 });
       try {
@@ -1062,7 +1062,7 @@ export class TakeoverService {
       }
     } else {
       const want = sha(p.sha);
-      if (!(await hasCommits(clone, [want])).length) throw new Error(`snapshot ${want.slice(0, 8)} isn't in this Mac's clone`);
+      if (!(await hasCommits(clone, [want])).length) throw new PeerError(`snapshot ${want.slice(0, 8)} isn't in this Mac's clone`);
       await git(clone, ["update-ref", ref, want]);
     }
     const got = await git(clone, ["rev-parse", "--verify", ref]);
@@ -1076,11 +1076,11 @@ export class TakeoverService {
     const { roomId, sessionId } = this.requestFor(p, ctx);
     const agent = agentOf(p.agent);
     const conversationId = text(p.conversationId, "conversationId", 100, 1);
-    if (!CONV_ID_RE.test(conversationId)) throw new Error("bad conversation id");
+    if (!CONV_ID_RE.test(conversationId)) throw new PeerError("bad conversation id");
     const file = text(p.file, "file", 200, 1);
     const named = agent === "codex" ? ROLLOUT_NAME_RE.exec(file)?.[1] : file === `${conversationId}.jsonl` ? conversationId : null;
-    if (named !== conversationId) throw new Error(`${file} isn't conversation ${conversationId}'s transcript`);
-    if (!Number.isSafeInteger(p.offset) || p.offset < 0 || !Number.isSafeInteger(p.total) || p.total < 0) throw new Error("bad offset");
+    if (named !== conversationId) throw new PeerError(`${file} isn't conversation ${conversationId}'s transcript`);
+    if (!Number.isSafeInteger(p.offset) || p.offset < 0 || !Number.isSafeInteger(p.total) || p.total < 0) throw new PeerError("bad offset");
     const data = text(p.data, "data", Math.ceil(TRANSCRIPT_CHUNK / 3) * 4 + 4);
     const ownerCwd = text(p.ownerCwd, "ownerCwd", 1000, 1);
     const dir = this.transcriptDir(roomId, sessionId);
@@ -1100,13 +1100,13 @@ export class TakeoverService {
 
   /** A request's room and session, refused when it doesn't come from the session's owner. */
   private requestFor(p: any, ctx: RequestContext): { roomId: RoomId; sessionId: string } {
-    if (!p || typeof p !== "object") throw new Error("no parameters");
+    if (!p || typeof p !== "object") throw new PeerError("no parameters");
     // the transport checked membership of the room the request named: it must be this one
-    if (!ctx.roomId || p.roomId !== ctx.roomId) throw new Error("the request doesn't name its room");
+    if (!ctx.roomId || p.roomId !== ctx.roomId) throw new PeerError("the request doesn't name its room");
     const sessionId = sessionIdOf(p.sessionId);
     const known = this.d.team.room(ctx.roomId)?.ext.takeover?.sessions[sessionId];
-    if (known && known.owner !== ctx.from) throw new Error(`session ${sessionId} isn't ${this.nameOf(ctx.roomId, ctx.from)}'s`);
-    if (known?.takenOver) throw new Error(`session ${sessionId} was taken over`);
+    if (known && known.owner !== ctx.from) throw new PeerError(`session ${sessionId} isn't ${this.nameOf(ctx.roomId, ctx.from)}'s`);
+    if (known?.takenOver) throw new PeerError(`session ${sessionId} was taken over`);
     return { roomId: ctx.roomId, sessionId };
   }
 
@@ -1270,24 +1270,24 @@ export class TakeoverService {
 
   /** A teammate's changes from their copy of a session this install continues: kept as a patch to review and apply. */
   private async onChanges(p: any, ctx: RequestContext): Promise<{ id: string }> {
-    if (!p || typeof p !== "object") throw new Error("no parameters");
-    if (!ctx.roomId || p.roomId !== ctx.roomId) throw new Error("the request doesn't name its room");
+    if (!p || typeof p !== "object") throw new PeerError("no parameters");
+    if (!ctx.roomId || p.roomId !== ctx.roomId) throw new PeerError("the request doesn't name its room");
     const roomId = ctx.roomId;
     const fromSessionId = sessionIdOf(p.sessionId);
     const room = this.d.team.room(roomId);
     const entry = room?.ext.takeover?.sessions[fromSessionId];
-    if (!entry || entry.owner !== ctx.from || !entry.takenOver) throw new Error(`session ${fromSessionId} isn't a session of ${this.nameOf(roomId, ctx.from)}'s that was continued`);
+    if (!entry || entry.owner !== ctx.from || !entry.takenOver) throw new PeerError(`session ${fromSessionId} isn't a session of ${this.nameOf(roomId, ctx.from)}'s that was continued`);
     const now = continuation(room!.ext.takeover, fromSessionId);
-    if (now?.owner !== this.d.team.self.id) throw new Error(`session ${fromSessionId} doesn't continue on this Mac`);
-    if (!this.d.host.session(now.sessionId)) throw new Error(`the session that continues ${fromSessionId} isn't on this Mac any more`);
+    if (now?.owner !== this.d.team.self.id) throw new PeerError(`session ${fromSessionId} doesn't continue on this Mac`);
+    if (!this.d.host.session(now.sessionId)) throw new PeerError(`the session that continues ${fromSessionId} isn't on this Mac any more`);
     const title = text(p.title, "title", 300);
-    if (!Array.isArray(p.files) || !p.files.length || p.files.length > 10_000) throw new Error("files must be a list");
+    if (!Array.isArray(p.files) || !p.files.length || p.files.length > 10_000) throw new PeerError("files must be a list");
     const files: ChangedFile[] = p.files.map((f: any) => {
-      if (!f || typeof f.path !== "string" || !f.path || f.path.length > 1000 || !["added", "modified", "deleted"].includes(f.status)) throw new Error("a file isn't a changed file");
+      if (!f || typeof f.path !== "string" || !f.path || f.path.length > 1000 || !["added", "modified", "deleted"].includes(f.status)) throw new PeerError("a file isn't a changed file");
       return { path: f.path, status: f.status };
     });
     const patch = Buffer.from(text(p.patch, "patch", Math.ceil(MAX_BUNDLE / 3) * 4 + 4, 1), "base64");
-    if (!patch.length || patch.length > MAX_BUNDLE) throw new Error("the patch is empty or too big");
+    if (!patch.length || patch.length > MAX_BUNDLE) throw new PeerError("the patch is empty or too big");
     const id = crypto.randomBytes(8).toString("hex");
     const dir = path.join(this.d.roomsDir, roomId, "received");
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -1385,20 +1385,20 @@ export class TakeoverService {
    * app closing leave the session running here.
    */
   private async onAsk(p: any, ctx: RequestContext): Promise<AskAnswer> {
-    if (!p || typeof p !== "object") throw new Error("no parameters");
-    if (!ctx.roomId || p.roomId !== ctx.roomId) throw new Error("the request doesn't name its room");
+    if (!p || typeof p !== "object") throw new PeerError("no parameters");
+    if (!ctx.roomId || p.roomId !== ctx.roomId) throw new PeerError("the request doesn't name its room");
     const roomId = ctx.roomId;
     const sessionId = sessionIdOf(p.sessionId);
     const askId = text(p.askId, "askId", 64, 16);
-    if (!ASK_ID_RE.test(askId)) throw new Error("bad request id");
+    if (!ASK_ID_RE.test(askId)) throw new PeerError("bad request id");
     const entry = this.d.team.room(roomId)?.ext.takeover?.sessions[sessionId];
-    if (!entry || entry.owner !== this.d.team.self.id) throw new Error(`session ${sessionId} isn't this Mac's`);
-    if (entry.takenOver) throw new Error(`${this.nameOf(roomId, entry.takenOver.by)} already continues it`);
-    if (entry.dropped) throw new Error("its backup was deleted");
-    if (!this.d.host.session(sessionId) || this.d.host.roomOf(sessionId) !== roomId) throw new Error("that session isn't on this Mac any more");
-    if (this.incoming.has(askId)) throw new Error("that request is being answered already");
+    if (!entry || entry.owner !== this.d.team.self.id) throw new PeerError(`session ${sessionId} isn't this Mac's`);
+    if (entry.takenOver) throw new PeerError(`${this.nameOf(roomId, entry.takenOver.by)} already continues it`);
+    if (entry.dropped) throw new PeerError("its backup was deleted");
+    if (!this.d.host.session(sessionId) || this.d.host.roomOf(sessionId) !== roomId) throw new PeerError("that session isn't on this Mac any more");
+    if (this.incoming.has(askId)) throw new PeerError("that request is being answered already");
     const busy = [...this.incoming.values()].find((a) => a.sessionId === sessionId && a.state === "handing-over");
-    if (busy) throw new Error(`it's being handed over to ${busy.fromName}`);
+    if (busy) throw new PeerError(`it's being handed over to ${busy.fromName}`);
     const at = this.now();
     let decide!: (d: Decision) => void;
     const decided = new Promise<Decision>((resolve) => (decide = resolve));
@@ -1439,22 +1439,25 @@ export class TakeoverService {
   private async handOver(roomId: RoomId, sessionId: string, to: MemberId): Promise<AskAnswer> {
     const deadline = Date.now() + this.handoverTurnMs;
     while (this.d.host.session(sessionId)?.status === "working") {
-      if (this.closed) throw new Error("Mockingbird is quitting");
-      if (Date.now() > deadline) throw new Error(`its turn didn't finish within ${Math.round(this.handoverTurnMs / 60_000)} minutes, so it carries on here`);
+      if (this.closed) throw new PeerError("Mockingbird is quitting");
+      if (Date.now() > deadline) throw new PeerError(`its turn didn't finish within ${Math.round(this.handoverTurnMs / 60_000)} minutes, so it carries on here`);
       await new Promise((r) => setTimeout(r, 250));
     }
     await this.turnEnded(sessionId);
     const unbacked = this.unbacked.get(sessionId);
-    if (unbacked) throw new Error(`it couldn't be backed up: ${unbacked.problem}`);
+    if (unbacked) {
+      this.d.log(`team: handing session ${sessionId} over: it couldn't be backed up`, unbacked.problem);
+      throw new PeerError("it couldn't be backed up (the reason is in their Mockingbird's log)");
+    }
     const rec = this.local(roomId).own[sessionId];
-    if (!rec) throw new Error("it couldn't be backed up");
+    if (!rec) throw new PeerError("it couldn't be backed up");
     // a copy to them already under way finishes first; then make sure they hold exactly this snapshot and the whole conversation
     await this.mirrors.get(`${to}\n${sessionId}`)?.done;
     const delivered = await this.sendSnapshot(to, roomId, sessionId);
     await this.sendTranscript(to, roomId, sessionId);
     const toOrigin = backupsToOrigin(this.d.team.room(roomId));
     if (!delivered && (!toOrigin || rec.pushed !== rec.sha)) {
-      throw new Error(`${this.nameOf(roomId, to)} has no clone of the repository to copy it into, ${toOrigin ? "and origin's backup didn't take it" : "and this room keeps backups off origin"}`);
+      throw new PeerError(`${this.nameOf(roomId, to)} has no clone of the repository to copy it into, ${toOrigin ? "and origin's backup didn't take it" : "and this room keeps backups off origin"}`);
     }
     this.d.host.stop(sessionId);
     return { answer: "handed-over", sha: rec.sha, takenAt: rec.takenAt };
@@ -1462,10 +1465,10 @@ export class TakeoverService {
 
   /** The owner is handing over the session this install asked for. */
   private onProgress(p: any, ctx: RequestContext): { ok: true } {
-    if (!p || typeof p !== "object" || typeof p.askId !== "string") throw new Error("no request id");
+    if (!p || typeof p !== "object" || typeof p.askId !== "string") throw new PeerError("no request id");
     const out = this.outgoing.get(p.askId);
-    if (!out || out.owner !== ctx.from || out.roomId !== ctx.roomId) throw new Error("no such request");
-    if (p.state !== "handing-over") throw new Error("unknown state");
+    if (!out || out.owner !== ctx.from || out.roomId !== ctx.roomId) throw new PeerError("no such request");
+    if (p.state !== "handing-over") throw new PeerError("unknown state");
     out.state = "handing-over";
     this.changed();
     return { ok: true };

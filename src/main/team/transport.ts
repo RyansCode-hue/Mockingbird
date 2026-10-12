@@ -85,6 +85,17 @@ export class TeamError extends Error {
   }
 }
 
+/**
+ * A request handler's refusal written for the teammate who asked: its message
+ * goes back to them as it is. Anything else a handler throws reaches them as
+ * PEER_FAILED, its message (which may name this Mac's folders) only in this
+ * install's log.
+ */
+export class PeerError extends Error {}
+
+/** What a teammate is told when answering their request failed for a reason that stays on this Mac. */
+export const PEER_FAILED = "it failed on their Mockingbird (the reason is in its log)";
+
 export interface Team {
   readonly self: { id: MemberId; publicKey: string };
   /** Rooms this install is a member of. */
@@ -1217,7 +1228,7 @@ export class TeamCore implements Team {
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       this.log(`answering ${f.method} for ${this.nameOf(peer)} failed: ${why}`);
-      answer({ ok: false, code: "remote", error: why });
+      answer({ ok: false, code: "remote", error: err instanceof PeerError ? why : PEER_FAILED });
     }
   }
 

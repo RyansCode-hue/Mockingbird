@@ -1,4 +1,4 @@
-import { TeamError, type Team, type Unsubscribe } from "./transport";
+import { PeerError, TeamError, type Team, type Unsubscribe } from "./transport";
 import type { ArtifactStore } from "./artifactStore";
 import { ARTIFACT_CHUNK, ARTIFACT_METHODS, EAGER_ARTIFACT_BYTES, SHA256_RE, type ArtifactLocal, type ArtifactRecord } from "../../shared/team/artifacts";
 import type { MemberId, RoomId } from "../../shared/team/types";
@@ -235,8 +235,8 @@ export class ArtifactFetcher {
   // ---- serving ------------------------------------------------------------------------------------
 
   private liveSizes(roomId: RoomId | undefined): Map<string, Set<number>> {
-    if (!roomId) throw new Error("artifact requests are made for a room");
-    if (!this.d.team.room(roomId)) throw new Error("not in that room");
+    if (!roomId) throw new PeerError("artifact requests are made for a room");
+    if (!this.d.team.room(roomId)) throw new PeerError("not in that room");
     const out = new Map<string, Set<number>>();
     for (const f of this.d.files(roomId)) out.set(f.sha256, (out.get(f.sha256) ?? new Set()).add(f.size));
     return out;
@@ -244,7 +244,7 @@ export class ArtifactFetcher {
 
   private serveHave(p: any, roomId: RoomId | undefined): { have: string[] } {
     const live = this.liveSizes(roomId);
-    if (!p || !Array.isArray(p.sha256s) || p.sha256s.length > MAX_HAVE_ASK) throw new Error(`sha256s must be a list of up to ${MAX_HAVE_ASK}`);
+    if (!p || !Array.isArray(p.sha256s) || p.sha256s.length > MAX_HAVE_ASK) throw new PeerError(`sha256s must be a list of up to ${MAX_HAVE_ASK}`);
     const store = this.d.store(roomId!);
     const have = (p.sha256s as unknown[]).filter((s): s is string => typeof s === "string" && SHA256_RE.test(s) && !!live.get(s)?.has(store.blobSize(s) ?? -1));
     return { have: [...new Set(have)] };
@@ -253,15 +253,15 @@ export class ArtifactFetcher {
   private serveChunk(p: any, roomId: RoomId | undefined): { size: number; offset: number; data: string } {
     const live = this.liveSizes(roomId);
     const sha = p?.sha256;
-    if (typeof sha !== "string" || !SHA256_RE.test(sha)) throw new Error("sha256 must be 64 hex characters");
-    if (!Number.isSafeInteger(p.offset) || p.offset < 0) throw new Error("offset must be a whole number");
-    if (!Number.isSafeInteger(p.length) || p.length < 1 || p.length > MAX_CHUNK_REQUEST) throw new Error(`length must be 1–${MAX_CHUNK_REQUEST}`);
+    if (typeof sha !== "string" || !SHA256_RE.test(sha)) throw new PeerError("sha256 must be 64 hex characters");
+    if (!Number.isSafeInteger(p.offset) || p.offset < 0) throw new PeerError("offset must be a whole number");
+    if (!Number.isSafeInteger(p.length) || p.length < 1 || p.length > MAX_CHUNK_REQUEST) throw new PeerError(`length must be 1–${MAX_CHUNK_REQUEST}`);
     const sizes = live.get(sha);
-    if (!sizes) throw new Error("no such file in this room");
+    if (!sizes) throw new PeerError("no such file in this room");
     const store = this.d.store(roomId!);
     const size = store.blobSize(sha);
-    if (size === null || !sizes.has(size)) throw new Error("not here");
-    if (p.offset > size) throw new Error("offset past the end");
+    if (size === null || !sizes.has(size)) throw new PeerError("not here");
+    if (p.offset > size) throw new PeerError("offset past the end");
     const data = store.readBlob(sha, p.offset, Math.min(p.length, size - p.offset));
     return { size, offset: p.offset, data: data.toString("base64") };
   }

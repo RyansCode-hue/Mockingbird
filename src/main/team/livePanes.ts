@@ -40,7 +40,7 @@ import { ARTIFACT_TOOL } from "../../shared/team/artifacts";
 import { TEAM_DIR } from "./identity";
 import { CoauthorTurns, COAUTHORS_DIR, ensureHooks, hooksEnv, HOOKS_DIR } from "./coauthors";
 import { gitOf, memberName, originIdentity, recordFor, setRoomSessionLookup, turnEnded, TurnFeed, type RoomSessionSource, type TurnEnded } from "./roomSessions";
-import { TeamError, type Team, type TeamStream } from "./transport";
+import { PeerError, TeamError, type Team, type TeamStream } from "./transport";
 
 /**
  * Live panes (docs/team-rooms.md, "Sessions in a room"): this install's room
@@ -594,18 +594,18 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   /** The room session `session` of this install's, when `from` may see it in `roomId`. */
   private ownRoomSession(params: unknown, roomId: RoomId | undefined): SessionInfo {
     const id = (params as { session?: unknown })?.session;
-    if (typeof id !== "string" || !roomId) throw new Error("name a session and its room");
+    if (typeof id !== "string" || !roomId) throw new PeerError("name a session and its room");
     const s = this.d.sessions.list().find((x) => x.id === id);
     const taken = s && this.groupRoomOf(s) === roomId ? this.takenOverOwn(roomId, s.id) : null;
-    if (taken) throw new Error(`that session was taken over by ${memberNameIn(this.d.team(), roomId, taken.by)}: it runs on their Mac now`);
-    if (!s || this.roomOfInfo(s) !== roomId) throw new Error("that session isn't running in this room");
+    if (taken) throw new PeerError(`that session was taken over by ${memberNameIn(this.d.team(), roomId, taken.by)}: it runs on their Mac now`);
+    if (!s || this.roomOfInfo(s) !== roomId) throw new PeerError("that session isn't running in this room");
     return s;
   }
 
   private answerScrollback(params: unknown, from: MemberId, roomId: RoomId | undefined): PaneSnapshot {
     const s = this.ownRoomSession(params, roomId);
     const out = this.d.sessions.paneOutput(s.id);
-    if (!out) throw new Error("that session isn't running");
+    if (!out) throw new PeerError("that session isn't running");
     const leases = this.leases.get(s.id) ?? new Map<MemberId, number>();
     leases.set(from, this.now() + this.t.leaseMs);
     this.leases.set(s.id, leases);
@@ -618,7 +618,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   private answerInput(params: unknown, from: MemberId, roomId: RoomId | undefined): { ok: true } {
     const s = this.ownRoomSession(params, roomId);
     const p = params as { data?: unknown; email?: unknown };
-    if (typeof p.data !== "string" || !p.data || p.data.length > MAX_INPUT) throw new Error("typing must be text of up to 64 KB");
+    if (typeof p.data !== "string" || !p.data || p.data.length > MAX_INPUT) throw new PeerError("typing must be text of up to 64 KB");
     const room = this.d.team()?.room(roomId!);
     const name = room ? memberName(room.members, from) : from.slice(0, 8);
     const data = p.data;
