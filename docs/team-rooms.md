@@ -367,6 +367,17 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   with the room's rules" chip offers. Anything still full screen (`less`,
   `vim`, a session started before this) shows one screen in a copy;
   scrolling it says so instead.
+- **Room sessions stay in their panes:** every Claude Mockingbird starts has
+  Claude Code's agent view off (`CLAUDE_CODE_DISABLE_AGENT_VIEW=1`), so `←`
+  at an empty prompt or `/background` can't move a room session into Claude's
+  own background daemon. There it would run outside the room: no pane for
+  teammates' copies, a worker that outlives its owner quitting Mockingbird,
+  the launch flags Claude carries over (the denied reads, the Mockingbird
+  tools and the room's instructions) but the environment of whichever
+  terminal started Claude's daemon rather than the room pty's (its hooks,
+  inline rendering). Resuming a pane whose
+  conversation got there anyway stops the background copy first and says so
+  in the pane (not mid-turn: the resume says why and waits).
 - **Typing:** any member can type into any room session, at the same time, like
   plain tmux. No lock.
 - **Notifications:** when an agent in a room is waiting on input, every member
