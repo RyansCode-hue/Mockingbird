@@ -228,13 +228,13 @@ export class HouseClient {
       json = false;
     }
     if (!res.ok) {
-      const said = messageOf(parsed) ?? (json ? null : text.trim().slice(0, 300)) ?? res.statusText;
+      const said = flat(messageOf(parsed) ?? (json ? null : text.trim().slice(0, 300)) ?? res.statusText);
       // 403 is also the House refusing an action (closing a ticket, someone else's claim): the token hint only when it's about the token
       const aboutToken = res.status === 401 || (res.status === 403 && (!said || /token/i.test(said)));
       const hint = aboutToken ? ` — your build token is stale or isn't for this project. ${HOUSE_TOKEN_HOW}` : "";
       throw new HouseError(this.clean(`The House answered ${res.status}${said ? `: ${said}` : ""}${hint}`));
     }
-    if (!json) throw new HouseError(this.clean(`The House's answer to ${method} ${rel.split("?")[0]} isn't JSON: ${text.trim().slice(0, 200)}`));
+    if (!json) throw new HouseError(this.clean(`The House's answer to ${method} ${rel.split("?")[0]} isn't JSON: ${flat(text.trim().slice(0, 200))}`));
     return parsed;
   }
 
@@ -273,6 +273,12 @@ export class HouseClient {
     return scrub(s, this.env.token);
   }
 }
+
+/**
+ * The House's own words in an error, on one line with no angle brackets: an
+ * error reaches agents as a tool's answer, where it must read as data.
+ */
+const flat = (s: string): string => s.replace(/\s+/g, " ").replace(/</g, "‹").replace(/>/g, "›").trim();
 
 function num(n: number): number {
   if (!isTicketNumber(n)) throw new HouseError(`${JSON.stringify(n)} isn't a ticket number`);

@@ -528,7 +528,7 @@ export class HouseService {
       teammates: room.members.filter((m) => m.id !== this.need().self.id).map((m) => m.name),
       project: h.project,
       board: this.summary(roomId),
-      problem: this.notConnected(room) ?? (conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? conn.message : null),
+      problem: this.notConnected(room) ?? (conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? oneLine(conn.message, 600) : null),
     });
   }
 
@@ -544,7 +544,7 @@ export class HouseService {
       await c.run;
     }
     const conn = c.connection;
-    const problem = conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? `(The House couldn't be read on this laptop: ${conn.message})` : null;
+    const problem = conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? `(The House couldn't be read on this laptop: ${oneLine(conn.message, 600)})` : null;
     return [`Project ${project}.`, problem, this.summary(roomId)].filter(Boolean).join("\n");
   }
 
@@ -647,7 +647,7 @@ export class HouseService {
     if (!BRANCH_RE.test(branch)) throw new Error(`${JSON.stringify(branch)} isn't a branch name git would take`);
     const detail = await this.withClient(roomId, (client) => client.claim(n, branch));
     await this.afterWrite(roomId, n, detail, "claimed", via, true);
-    return { message: `Claimed #${n} on ${branch}. Your teammates see it on the room's board.`, n };
+    return { message: `Claimed #${n} on ${oneLine(branch, 250)}. Your teammates see it on the room's board.`, n };
   }
 
   private async release(roomId: RoomId, n: number, via?: string): Promise<{ message: string; n: number }> {
@@ -688,7 +688,7 @@ export class HouseService {
     });
     await this.afterWrite(roomId, n, detail, kind as NudgeChange, via, false);
     const what = kind === "status" ? `Moved #${n} to ${statusLabel(status!)}` : kind === "question" ? `Asked the question on #${n}` : kind === "note" ? `Added the note to #${n}` : `Posted progress on #${n}${status ? ` (now ${statusLabel(status)})` : ""}`;
-    if (tagsProblem) return { message: `${what}, but it couldn't be tagged ${NEEDS_HUMAN}: ${tagsProblem}`, n };
+    if (tagsProblem) return { message: `${what}, but it couldn't be tagged ${NEEDS_HUMAN}: ${oneLine(tagsProblem, 600)}`, n };
     return { message: kind === "question" ? `${what} and handed it to a person (${NEEDS_HUMAN}).` : `${what}.`, n };
   }
 
@@ -711,7 +711,7 @@ export class HouseService {
     team.publish(roomId, "house.track", { n: created.n });
     await this.afterWrite(roomId, created.n, created, "created", via, false);
     this.refresh(roomId); // the backlog again, for the new ticket's place in the House's order
-    return { message: `Created #${created.n} "${oneLine(created.title, 120)}" (${statusLabel(created.status)}) and added it to the room's board.${tagsProblem ? ` Its tags couldn't be set: ${tagsProblem}` : ""}`, n: created.n };
+    return { message: `Created #${created.n} "${oneLine(created.title, 120)}" (${oneLine(statusLabel(created.status), 40)}) and added it to the room's board.${tagsProblem ? ` Its tags couldn't be set: ${oneLine(tagsProblem, 600)}` : ""}`, n: created.n };
   }
 
   /** After a write: keep what the House answered, tell teammates to read it again, and (claims) put it on the board. */
@@ -950,8 +950,10 @@ export class HouseService {
       const t = c.tickets.get(n);
       if (!t) return `- #${n} (couldn't be read${c.problems.has(n) ? `: ${oneLine(c.problems.get(n)!, 120)}` : ""})`;
       const owner = this.ownerOf(room, t);
-      const status = statusLabel(t.status);
-      const who = owner ? `${owner.self ? `${owner.name} (your user)` : owner.name} · ${status}${t.claim?.branch ? ` (branch ${oneLine(t.claim.branch, 120)})` : ""}` : isOpenStatus(t.status) ? `unclaimed · ${status}` : status;
+      // the House's and teammates' text stays on its own line, so none of it can close the fence
+      const status = oneLine(statusLabel(t.status), 40);
+      const name = owner ? oneLine(owner.name, 60) : "";
+      const who = owner ? `${owner.self ? `${name} (your user)` : name} · ${status}${t.claim?.branch ? ` (branch ${oneLine(t.claim.branch, 120)})` : ""}` : isOpenStatus(t.status) ? `unclaimed · ${status}` : status;
       const marks = [
         t.priority && `${oneLine(t.priority, 20)} priority`,
         ...t.tags.filter((x) => x === NEEDS_AGENT || x === NEEDS_HUMAN),
@@ -1160,7 +1162,7 @@ export class HouseService {
       const branches = this.teammates.filter((x) => x.roomId === room.id && x.key === key && x.branch === b && x.files.length);
       for (const member of [...new Set(branches.map((x) => x.member))]) {
         const files = [...new Set(branches.filter((x) => x.member === member).flatMap((x) => x.files))].sort();
-        tickets.push({ n: t.n, title: oneLine(t.title, 120), status: t.status, owner: { id: member, name: this.nameOf(room, member) }, branch: b, files });
+        tickets.push({ n: t.n, title: oneLine(t.title, 120), status: oneLine(t.status, 40), owner: { id: member, name: oneLine(this.nameOf(room, member), 60) }, branch: b, files });
       }
     }
     return { roomId: room.id, room: room.name, tickets };
