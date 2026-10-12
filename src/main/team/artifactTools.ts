@@ -1,5 +1,6 @@
 import { isRepo } from "../git";
 import { runningArtifacts, type TeamArtifacts } from "./artifacts";
+import type { FetchPolicy } from "./artifactRepo";
 import { copyExtension, formatBytes } from "./artifactStore";
 import { excludeInRepo } from "./claims";
 import { named, quoted } from "../../shared/team/agentText";
@@ -136,7 +137,7 @@ async function readFor(arts: TeamArtifacts, roomId: RoomId, session: SessionInfo
     case "link":
       return { result: `${head}\nA link: ${JSON.stringify(a.url)}` };
     case "repo": {
-      const r = await arts.resolveRepo(roomId, a.id, session.id);
+      const r = await arts.resolveRepo(roomId, a.id, session.id, "unless-missed");
       if (!r.atCommit) return { error: `${quoted(a.path, MAX_REPO_PATH)} at ${short(a.commit)} can't be read here: ${r.problem ?? "unknown problem"}` };
       const all = r.atCommit.text.split("\n");
       const [from, to] = a.lines ? [a.lines[0], Math.min(a.lines[1], all.length)] : [1, all.length];
@@ -223,7 +224,8 @@ export async function assistantArtifacts(roomId: RoomId, refs: readonly string[]
     else if (a.kind === "link") body = `(a link: ${JSON.stringify(a.url)})`;
     else if (a.kind === "repo") {
       if (!isNamed && budget < REPO_MAX) continue;
-      body = await repoExcerpt(arts, roomId, a);
+      // only a reference the question names may wait on a fetch, and not again soon after one that didn't bring it
+      body = await repoExcerpt(arts, roomId, a, isNamed ? "unless-missed" : "never");
     } else {
       if (isNamed) await arts.ensureFile(roomId, a, ASSISTANT_WAIT_MS);
       const sniff = await arts.sniffOf(roomId, a);
@@ -250,9 +252,9 @@ export async function assistantArtifacts(roomId: RoomId, refs: readonly string[]
   ].join("\n\n");
 }
 
-async function repoExcerpt(arts: TeamArtifacts, roomId: RoomId, a: Extract<ArtifactRecord, { kind: "repo" }>): Promise<string> {
+async function repoExcerpt(arts: TeamArtifacts, roomId: RoomId, a: Extract<ArtifactRecord, { kind: "repo" }>, fetch: FetchPolicy): Promise<string> {
   try {
-    const r = await arts.resolveRepo(roomId, a.id, null);
+    const r = await arts.resolveRepo(roomId, a.id, null, fetch);
     if (!r.atCommit) return `(not readable here: ${r.problem ?? "unknown problem"})`;
     const all = r.atCommit.text.split("\n");
     const [from, to] = a.lines ? [a.lines[0], Math.min(a.lines[1], all.length)] : [1, all.length];

@@ -206,6 +206,32 @@ describe("@assistant and the room's artifacts", () => {
     expect(section).toContain('### "Other"\n<room-artifact>\nunrelated\n</room-artifact>');
   });
 
+  it("fetches only for a repo reference the question names, and not again soon after a fetch that didn't bring it", async () => {
+    const { roomId, sides: [ryan, nick] } = await sides(["Ryan", "Nick"]);
+    const { ryanRepo, nickRepo } = repos();
+    ryan.sessions.push(session("r1", { cwd: ryanRepo, repoPath: ryanRepo }));
+    write(ryanRepo, { "src/y.ts": "unpushed\n" });
+    git(ryanRepo, "add", "-A");
+    git(ryanRepo, "commit", "-qm", "not pushed");
+    const ref = await ryan.arts.addRepo(roomId, { sessionId: "r1", path: "src/y.ts" });
+    await until(() => items(nick.m.team.room(roomId)).length === 1, "Nick to have the reference");
+    nick.repos.push(nickRepo);
+    const fetched = path.join(nickRepo, ".git", "FETCH_HEAD");
+    fs.rmSync(fetched, { force: true });
+    // listed but not named: no fetch
+    expect(await assistantArtifacts(roomId, [])).toContain("(not readable here: Commit");
+    expect(fs.existsSync(fetched)).toBe(false);
+    // named: one fetch, then none for a while
+    await assistantArtifacts(roomId, [ref.id]);
+    expect(fs.existsSync(fetched)).toBe(true);
+    fs.rmSync(fetched);
+    expect(await assistantArtifacts(roomId, [ref.id])).toContain("(not readable here: Commit");
+    expect(fs.existsSync(fetched)).toBe(false);
+    // a person opening it still fetches
+    await nick.arts.resolveRepo(roomId, ref.id, null);
+    expect(fs.existsSync(fetched)).toBe(true);
+  });
+
   it("is in the prompt of a question naming an artifact, asked in the chat", async () => {
     const { roomId, sides: all } = await sides(["Ryan", "Nick"]);
     const nick = all[1];

@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { artifactItems, checkArtifactName, checkLinkUrl, checkNoteText } from "./artifactEvents";
 import { ArtifactFetcher, type FetchTiming } from "./artifactFetch";
-import { RepoRefs } from "./artifactRepo";
+import { RepoRefs, type FetchPolicy } from "./artifactRepo";
 import { ArtifactStore, checkAddable, formatBytes, holdsPrivateKey, inside, quarantine, type Sniff } from "./artifactStore";
 import { TEAM_DIR } from "./identity";
 import { ROOMS_DIR } from "./rooms";
@@ -416,10 +416,11 @@ export class TeamArtifacts {
     return null;
   }
 
-  async resolveRepo(roomId: RoomId, id: string, preferSessionId: string | null): Promise<RepoResolution> {
+  /** Where a repo reference opens here. `fetch`: whether a commit that isn't here is fetched (FetchPolicy; the window's default, "always"). */
+  async resolveRepo(roomId: RoomId, id: string, preferSessionId: string | null, fetch: FetchPolicy = "always"): Promise<RepoResolution> {
     const a = this.item(roomId, id);
     if (a.kind !== "repo") throw new Error("That isn't a repo reference");
-    return this.repos.resolve(a, { prefer: preferSessionId, groupKey: this.d.roomGroups().find((r) => r.roomId === roomId)?.groupKey ?? null });
+    return this.repos.resolve(a, { prefer: preferSessionId, groupKey: this.d.roomGroups().find((r) => r.roomId === roomId)?.groupKey ?? null, fetch });
   }
 
   /** A read-only, quarantined copy of a file artifact (for Quick Look and Reveal in Finder): a path this process made. */

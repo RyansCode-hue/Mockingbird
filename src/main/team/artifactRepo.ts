@@ -19,6 +19,16 @@ type RepoRecord = Extract<ArtifactRecord, { kind: "repo" }>;
 const AT_COMMIT_MAX = 1024 * 1024;
 const INDEX_TTL_MS = 5 * 60_000;
 const FETCH_CAP_MS = 20_000;
+/** How long a fetch that didn't bring a commit keeps "unless-missed" resolves of it from fetching again. */
+const MISS_TTL_MS = 5 * 60_000;
+
+/**
+ * Whether resolving a reference whose commit isn't here fetches: "always"
+ * (the window, when a person opens one), "unless-missed" (agents: not again
+ * for a while after a fetch that didn't bring it), "never" (what @assistant
+ * includes without the question naming it).
+ */
+export type FetchPolicy = "always" | "unless-missed" | "never";
 
 export interface RepoRefsDeps {
   sessions: () => SessionInfo[];
@@ -56,6 +66,8 @@ async function hasCommit(dir: string, c: string): Promise<boolean> {
 
 export class RepoRefs {
   private index: { at: number; byPath: Map<string, string | null> } = { at: 0, byPath: new Map() };
+  /** "<clone>\n<commit>" → when a fetch there last didn't bring the commit. */
+  private misses = new Map<string, number>();
 
   constructor(private d: RepoRefsDeps) {}
 
@@ -102,10 +114,10 @@ export class RepoRefs {
    * Where a reference opens on this Mac: a clone of its repository (by
    * origin), a live session's folder in it holding the file (`prefer` first,
    * then the room's group's sessions, then any), whether the commit is here
-   * (fetching once when it isn't), whether the file changed since, and the
-   * file as it was then.
+   * (fetching once when it isn't, as `o.fetch` allows), whether the file
+   * changed since, and the file as it was then.
    */
-  async resolve(rec: RepoRecord, o: { prefer: string | null; groupKey: string | null }): Promise<RepoResolution> {
+  async resolve(rec: RepoRecord, o: { prefer: string | null; groupKey: string | null; fetch?: FetchPolicy }): Promise<RepoResolution> {
     const lines = rec.lines ?? null;
     const out: RepoResolution = { origin: rec.origin, path: rec.path, commit: rec.commit, lines, clone: null, open: null, commitPresent: false, changedSince: null, atCommit: null, problem: null };
     const want = repoIdentity(rec.origin);
@@ -137,13 +149,19 @@ export class RepoRefs {
     }
     const dir = worktree ?? out.clone;
     out.commitPresent = await hasCommit(dir, rec.commit);
-    if (!out.commitPresent) {
+    const policy = o.fetch ?? "always";
+    const missKey = `${dir}\n${rec.commit}`;
+    const missedAt = this.misses.get(missKey);
+    const recentMiss = missedAt !== undefined && Date.now() - missedAt < MISS_TTL_MS;
+    if (!out.commitPresent && (policy === "always" || (policy === "unless-missed" && !recentMiss))) {
       try {
         await git(dir, ["fetch", "origin"], { timeoutMs: FETCH_CAP_MS });
       } catch (err) {
         this.d.log(`room artifacts: fetching ${want} for ${short(rec.commit)}`, err);
       }
       out.commitPresent = await hasCommit(dir, rec.commit);
+      if (out.commitPresent) this.misses.delete(missKey);
+      else this.misses.set(missKey, Date.now());
     }
     if (!out.commitPresent) {
       out.problem = `Commit ${short(rec.commit)} isn't in your clone — not pushed yet?`;
