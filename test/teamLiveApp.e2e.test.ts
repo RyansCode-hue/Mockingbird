@@ -95,6 +95,17 @@ const teamRow = (title: string) =>
 const whoLine = (title: string) => `(${teamRow(title)}?.querySelector(".br.who")?.textContent ?? "")`;
 /** A row's Take over button (shown on hover or focus; clicking it works either way). */
 const takeOverOf = (title: string) => `${teamRow(title)}?.querySelector('.lbtn[data-action="takeover"]')`;
+/** For a failure: the dialogs open in an instance's window, each with its title and buttons; or that it shows none, or can't be read (a closed connection never answers). */
+const dialogsOf = (a: AppInstance) =>
+  Promise.race([
+    a
+      .evaluate<string[]>(
+        `[...document.querySelectorAll(".modal")].map((m) => \`\${m.className}: \${m.querySelector("h3")?.textContent ?? ""} [\${[...m.querySelectorAll("button")].map((b) => b.textContent + (b.disabled ? " (disabled)" : "")).join(", ")}]\`)`
+      )
+      .then((d) => (d.length ? d.join("\n") : "(none)"))
+      .catch((err) => `(unreadable: ${(err as Error).message})`),
+    new Promise<string>((r) => setTimeout(() => r("(unreadable: no answer within 3 s)"), 3000)),
+  ]);
 
 /** A bare origin and each laptop's clone of it, in a folder its Mockingbird indexes. */
 function repos() {
@@ -377,7 +388,8 @@ describe("team rooms between two Mockingbird instances", () => {
         );
         expect((await takeovers(ryan)).left.map((l) => l.sessionId).sort()).toEqual([ex.id, s.id].sort());
       } catch (err) {
-        throw new Error(`${(err as Error).message}\n--- Ryan's log ---\n${mainLog(ryan).slice(-4000)}\n--- Nick's log ---\n${mainLog(nick).slice(-4000)}`);
+        const dialogs = `--- Ryan's dialogs ---\n${await dialogsOf(ryan)}\n--- Nick's dialogs ---\n${await dialogsOf(nick)}`;
+        throw new Error(`${(err as Error).message}\n${dialogs}\n--- Ryan's log ---\n${mainLog(ryan).slice(-4000)}\n--- Nick's log ---\n${mainLog(nick).slice(-4000)}`);
       } finally {
         ryan.close();
         nick.close();
