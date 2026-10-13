@@ -1,12 +1,14 @@
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { useEscape } from "./useEscape";
+import { usePresence } from "./motion";
 
 /**
  * A dialog over the app. A click on the backdrop, or Esc, closes it; without
  * `onClose` neither does (an update installing), and `closeOnBackdrop={false}`
  * keeps a stray click from losing a multi-step dialog. It takes focus when
  * nothing in it asked for focus, so keys reach it rather than a terminal
- * behind it, and gives focus back to what had it when it closes.
+ * behind it, and gives focus back to what had it when it closes. It eases in;
+ * closing is immediate, with the exit played on a static copy (motion.ts).
  */
 export function Modal({
   className = "modal",
@@ -25,6 +27,7 @@ export function Modal({
 }) {
   const box = useRef<HTMLDivElement>(null);
   const opener = useRef(document.activeElement);
+  const presence = usePresence<HTMLDivElement>("dialog");
   useEscape(() => onClose?.());
   useEffect(() => {
     if (box.current && !box.current.contains(document.activeElement)) box.current.focus({ preventScroll: true });
@@ -35,7 +38,7 @@ export function Modal({
     };
   }, []);
   return (
-    <div className="modal-back" onMouseDown={closeOnBackdrop ? () => onClose?.() : undefined}>
+    <div ref={presence} className="modal-back" onMouseDown={closeOnBackdrop ? () => onClose?.() : undefined}>
       <div ref={box} className={className} tabIndex={-1} onKeyDown={onKeyDown} onMouseDown={(e) => e.stopPropagation()}>
         {children}
       </div>

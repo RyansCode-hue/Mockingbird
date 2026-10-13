@@ -13,6 +13,7 @@ import { useAction } from "./useAction";
 import { SetRow } from "./SetRow";
 import { Toggle } from "./Toggle";
 import { TeamSection } from "./Team";
+import { useMotionPref, type MotionPref } from "./motion";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
 
@@ -396,6 +397,28 @@ const SETTINGS_SECTIONS = [
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
 
 
+/** Settings → Motion: follow macOS's Reduce motion, or choose. */
+function MotionRow() {
+  const m = useMotionPref();
+  const opt = (p: MotionPref, label: string) => (
+    <button className={m.pref === p ? "on" : ""} aria-pressed={m.pref === p} onClick={() => m.set(p)}>
+      {label}
+    </button>
+  );
+  return (
+    <SetRow
+      title="Motion"
+      note={`Panes fly into their workspace's folder when minimized and back out when shown; dialogs, menus and toasts ease in and out. Reduce keeps only short fades. macOS Reduce motion is ${m.osReduce ? "on" : "off"}.`}
+    >
+      <span className="seg">
+        {opt("os", "Follow macOS")}
+        {opt("reduce", "Reduce")}
+        {opt("full", "Full")}
+      </span>
+    </SetRow>
+  );
+}
+
 export function SettingsView({
   sessions,
   theme,
@@ -545,6 +568,7 @@ export function SettingsView({
                 <button className={theme === "light" ? "on" : ""} onClick={() => onTheme("light")}>Light</button>
               </span>
             </SetRow>
+            <MotionRow />
             <SetRow title="Tabs" note="Turned-off tabs leave the top bar and the command palette. A notification or search result can still open one; WorkTracker debriefs and Council discussions keep running.">
               <span className="tab-toggles">
                 {OPTIONAL_TABS.map((t) => {

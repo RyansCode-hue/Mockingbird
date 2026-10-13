@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { isErr, type SessionInfo, type FileEntry, type FileContent, type GitChange, type GitChanges, type LspLocation, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { escapeHtml, highlightLines, languageFor } from "./highlight";
 import { fileKey, filesClosing, tabKey, type EditorState, type OpenFile } from "./editorTabs";
@@ -13,6 +13,7 @@ import { settled } from "./settled";
 import { plural } from "../shared/format";
 import { baseName, dirName, tildePath } from "../shared/paths";
 import { usePersisted } from "./prefs";
+import { D, EASE, play } from "./motion";
 
 const STATUS_TITLE: Record<GitChange["status"], string> = {
   M: "Modified",
@@ -24,7 +25,6 @@ const STATUS_TITLE: Record<GitChange["status"], string> = {
 
 /** A path with the home folder shown as ~. */
 
-const SLIDE_MS = 200;
 
 /** A file's type badge, or a plain file icon for types without one. */
 export function FileGlyph({ path }: { path: string }) {
@@ -289,9 +289,9 @@ export function askToClose(tabs: OpenFile[], closing: readonly string[]): boolea
 
 /**
  * The editor column beside the side bar: a tab per open file or diff over the
- * viewer. It slides open with the first tab and closed with the last; the
- * wrapper animates its width around a fixed-width editor, so the editor travels
- * instead of squashing. The handle on its right edge sizes it.
+ * viewer. It opens with the first tab and closes with the last: its width
+ * changes at once, so the terminals beside it re-fit once, and the editor
+ * slides in within it. The handle on its right edge sizes it.
  */
 export function EditorDock({
   editor,
@@ -328,21 +328,14 @@ export function EditorDock({
     return () => window.removeEventListener("resize", h);
   }, []);
   const open = editor.tabs.find((t) => tabKey(t) === editor.active) ?? null;
-  // the last tab shown stays rendered while the dock slides closed
-  const [shown, setShown] = useState<OpenFile | null>(open);
-  const [entered, setEntered] = useState(false);
-  useEffect(() => {
-    if (open) {
-      setShown(open);
-      let r = requestAnimationFrame(() => (r = requestAnimationFrame(() => setEntered(true))));
-      return () => cancelAnimationFrame(r);
-    }
-    setEntered(false);
-    // a timer rather than transitionend — reduced-motion users get no transition event
-    const t = setTimeout(() => setShown(null), SLIDE_MS);
-    return () => clearTimeout(t);
-  }, [open]);
-  const tab = open ?? shown;
+  // the editor slides in when the first tab opens (not when the view comes back with tabs already open)
+  const wasOpen = useRef(!!open);
+  const editorEl = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (open && !wasOpen.current && editorEl.current) play(editorEl.current, [{ opacity: 0, transform: "translateX(-12px)" }, { opacity: 1, transform: "none" }], { duration: D.m, easing: EASE.enter });
+    wasOpen.current = !!open;
+  }, [!!open]);
+  const tab = open;
   if (!tab) return null;
   // the remembered width, but never so wide the terminals can't keep a usable column
   const w = Math.max(320, Math.min(width, window.innerWidth - 700));
@@ -364,10 +357,10 @@ export function EditorDock({
   };
 
   return (
-    <div className="fp-slide" style={{ width: entered && open ? w + 1 : 0 }}>
-      <div className="fp-editor" style={{ width: w }}>
+    <div className="fp-slide" style={{ width: w + 1 }}>
+      <div className="fp-editor" ref={editorEl} style={{ width: w }}>
         <div className="fp-tabbar" role="tablist">
-          {(open ? editor.tabs : [tab]).map((t) => {
+          {editor.tabs.map((t) => {
             const key = tabKey(t);
             return (
               <div

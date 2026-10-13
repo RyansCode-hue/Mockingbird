@@ -1474,6 +1474,11 @@ if (section) {
   set("mb.setSection", section);
 }
 if (theme === "light" || theme === "dark") set("mb.theme", theme);
+// ?motion=off|reduce|full|os: how much moves (Settings → Motion; off is for tests). Screenshots and layout checks
+// (?shot, ?measure) default to off, since a box read mid-animation includes its transform
+const motionQ = params.get("motion") ?? (params.has("shot") || params.has("measure") ? "off" : null);
+if (motionQ === "off") (window as unknown as { __mbMotion?: string }).__mbMotion = "off";
+else if (motionQ === "reduce" || motionQ === "full" || motionQ === "os") set("mb.motion", motionQ);
 if (shown) set("mb.shown", shown.split(","));
 // team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared);
 // ?chat=list shows the room list, each room with its sessions
@@ -1702,6 +1707,90 @@ if (params.has("artifactDrop")) {
 }
 const composerText = params.get("composer");
 if (composerText) waitFor(".rc-bar textarea", (el) => setTimeout(() => typeArea(el as HTMLTextAreaElement, composerText), 300));
+// ?motionAudit (with ?motion=full or reduce) plays the moments that animate — minimizing the "api" workspace into
+// its folder and restoring it, a dialog, a toast — finishing every animation rather than waiting on real time, then
+// writes what's left into <script id="mb-motion-audit"> for test/uiMotion.test.ts (real time: pageResult): the folder's state after each
+// step, the panes in the grid, copies left behind, animations left holding a frame, View Transitions started, and
+// the longest animation that ran
+if (params.has("motionAudit")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const finite = () => document.getAnimations().filter((a) => Number.isFinite(a.effect?.getComputedTiming().activeDuration ?? Infinity));
+  // the longest one-shot animation (the waiting pulse repeats, and is checked on its own)
+  let longest = 0;
+  const note = () => {
+    for (const a of finite()) if (a.effect?.getComputedTiming().iterations === 1) longest = Math.max(longest, Number(a.effect.getComputedTiming().activeDuration));
+  };
+  const settle = async () => {
+    for (let i = 0; i < 6; i++) {
+      await sleep(40);
+      note();
+      for (const a of finite()) a.finish();
+    }
+    await sleep(40);
+  };
+  let transitions = 0;
+  const start = (document as unknown as { startViewTransition?: (cb: () => void) => unknown }).startViewTransition;
+  if (start)
+    (document as unknown as { startViewTransition: (cb: () => void) => unknown }).startViewTransition = function (cb: () => void) {
+      transitions++;
+      return start.call(document, cb);
+    };
+  const folder = () => document.querySelector(".sub-label[data-ws] .ico.folder");
+  const state = () => ({
+    folderOpen: !!folder()?.classList.contains("open"),
+    cells: [...document.querySelectorAll<HTMLElement>(".grid > [data-cell]")].map((c) => c.dataset.cell),
+    ghosts: document.querySelectorAll(".mb-ghost").length,
+    // finished but still applying their last frame: a stuck fill
+    holding: document.getAnimations().filter((a) => a.playState === "finished").length,
+    named: document.querySelectorAll("[style*='view-transition-name']").length,
+  });
+  const clickRow = (el: Element) => el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  waitFor(".sub-label[data-ws]", async () => {
+    await sleep(300);
+    const out: Record<string, unknown> = { before: state() };
+    clickRow(document.querySelector(".sub-label[data-ws]")!);
+    await sleep(320); // a folder click waits out a double-click
+    note();
+    out.inFlight = { ...state(), move: document.documentElement.dataset.gridMove ?? null };
+    await settle();
+    out.minimized = state();
+    clickRow(document.querySelector(".sub-label[data-ws]")!);
+    await sleep(320);
+    out.lidOpening = state();
+    await sleep(300);
+    await settle();
+    out.restored = state();
+    ([...document.querySelectorAll<HTMLElement>(".topbar button")].find((b) => b.textContent?.startsWith("Import")) ?? null)?.click();
+    await sleep(40);
+    note();
+    out.dialogOpen = document.querySelectorAll(".modal-back:not(.mb-ghost)").length;
+    await settle();
+    document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await sleep(10);
+    out.dialogClosing = { real: document.querySelectorAll(".modal-back:not(.mb-ghost)").length, ghosts: document.querySelectorAll(".mb-ghost").length };
+    await settle();
+    out.dialogClosed = state();
+    emit("onHouseWarning", { at: Date.now(), sessionId: "s1", sessionTitle: "Org dropdowns remember the last org", decision: "deny", tool: "Edit", conflicts: [{ file: "src/api/orgs/last.py", root: "/x", hits: [] }] });
+    await sleep(40);
+    note();
+    await settle();
+    (document.querySelector(".house-toast button.icon") as HTMLElement | null)?.click();
+    await sleep(10);
+    note();
+    await settle();
+    out.toastGone = { ...state(), toasts: document.querySelectorAll(".house-toast:not(.mb-ghost)").length };
+    const dot = document.querySelector(".dot.waiting");
+    out.waitingPulse = dot ? getComputedStyle(dot).animationName : null;
+    out.transitions = transitions;
+    out.longest = Math.round(longest);
+    out.mode = document.documentElement.dataset.motion;
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-motion-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  });
+}
 // ?help opens the guide (⌘/)
 if (params.has("help")) waitFor(".statusbar .help-link", (el) => el.click());
 // ?measure=<selector> (repeatable) writes where each match sits into the page once the fixtures have landed, for

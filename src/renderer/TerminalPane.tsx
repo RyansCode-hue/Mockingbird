@@ -24,6 +24,7 @@ import { ChangeCount } from "./changeCount";
 import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { settled } from "./settled";
+import { StatusDot } from "./StatusDot";
 
 export { applyTermTheme } from "./cachedTerm";
 
@@ -314,6 +315,7 @@ export function TerminalPane({
   onOpenRun,
   meter,
   onZoom,
+  cell,
   onAddTab,
   onResume,
   onCleanup,
@@ -357,6 +359,8 @@ export function TerminalPane({
   meter?: SessionMeter;
   onOpenRun?: () => void;
   onZoom?: () => void; // omit to hide the fullscreen control (WorkTracker tab)
+  /** The grid cell this pane is (a pane of its own, not a workspace tab): grid animations find it by this. */
+  cell?: string;
   onAddTab?: () => void; // "+" — start a workspace here and add a tab to it
   onResume: () => void;
   onCleanup: () => void;
@@ -821,6 +825,7 @@ export function TerminalPane({
         assistant ? "kind-assistant" : "",
       ].join(" ")}
       style={area ? { gridArea: area } : undefined}
+      data-cell={cell}
       onMouseDown={onFocus}
     >
       <div
@@ -842,7 +847,7 @@ export function TerminalPane({
           tabDrop.drop(e);
         }}
       >
-        <span className={`dot ${density === "max" ? "lg" : ""} ${session.status}`} />
+        <StatusDot status={session.status} className={density === "max" ? "lg" : ""} />
         {editTitle !== null ? (
           <input
             className="rename-input"

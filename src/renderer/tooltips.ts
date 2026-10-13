@@ -2,6 +2,7 @@
  * Quick tooltips for icon buttons: any element with `data-tip` shows its text
  * after a short hover, in a floating box that panels and scroll areas can't
  * clip (the system's title tooltips take a second or more, and are easy to miss).
+ * Once one has shown, the next within half a second shows at once, without the fade.
  */
 let installed = false;
 
@@ -14,10 +15,13 @@ export function installTooltips(): void {
   document.body.appendChild(tip);
   let timer: ReturnType<typeof setTimeout> | null = null;
   let current: HTMLElement | null = null;
+  // when a shown tip last went away: moving straight on to the next is "warm"
+  let shownUntil = -Infinity;
   const hide = () => {
     if (timer) clearTimeout(timer);
     timer = null;
     current = null;
+    if (tip.classList.contains("on")) shownUntil = performance.now();
     tip.classList.remove("on");
   };
   const show = (el: HTMLElement) => {
@@ -40,7 +44,9 @@ export function installTooltips(): void {
     hide();
     if (!el) return;
     current = el;
-    timer = setTimeout(() => show(el), 350);
+    const warm = performance.now() - shownUntil < 500;
+    tip.classList.toggle("warm", warm);
+    timer = setTimeout(() => show(el), warm ? 0 : 350);
   });
   document.addEventListener("mousedown", hide, true);
   document.addEventListener("scroll", hide, true);

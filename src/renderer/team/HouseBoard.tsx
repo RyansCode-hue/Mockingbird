@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Modal } from "../Modal";
 import { Select } from "../Menu";
 import { KanbanIcon } from "../Icons";
 import { useAction } from "../useAction";
+import { useFlip, usePresenceRefs } from "../motion";
 import { ago, plural } from "../../shared/format";
 import { isErr } from "../../shared/types";
 import {
@@ -652,6 +653,10 @@ export function HouseWarnings({ onJump, onOpenBoard, boardRoomId }: { onJump: (s
   const [notices, setNotices] = useState<(ClaimWarningNotice & { key: number })[]>([]);
   const [allAsks, answer] = useConsentAsks();
   const asks = consentToasts(allAsks, boardRoomId);
+  // toasts rise in, leave sideways, and the rest slide to make room (motion.ts)
+  const stack = useRef<HTMLDivElement>(null);
+  useFlip(stack);
+  const toastRef = usePresenceRefs<HTMLDivElement>("toast");
   useEffect(
     () =>
       window.mb.onHouseWarning((n: ClaimWarningNotice) => {
@@ -663,9 +668,9 @@ export function HouseWarnings({ onJump, onOpenBoard, boardRoomId }: { onJump: (s
   );
   if (!notices.length && !asks.length) return null;
   return (
-    <div className="house-toasts" role="status">
+    <div ref={stack} className="house-toasts" role="status">
       {asks.map((a) => (
-        <div key={`consent-${a.roomId}`} className="house-toast consent">
+        <div key={`consent-${a.roomId}`} ref={toastRef(`consent-${a.roomId}`)} className="house-toast consent">
           <span className="house-toast-body">
             <b>Use your {a.project} builder token for room {a.room}?</b> {a.admin ? `${a.admin} connected the room` : "The room is connected"} to Radley House project {a.project}. Nothing here reads your token or calls the House for this room until you allow it.
             {a.problem && <span className="err"> {a.problem}</span>}
@@ -689,7 +694,7 @@ export function HouseWarnings({ onJump, onOpenBoard, boardRoomId }: { onJump: (s
             ? `The team room's claims check failed in ${n.sessionTitle}'s hook; its edit went ahead unchecked. ${n.error ?? ""}`
             : `${n.sessionTitle} ${n.decision === "deny" ? "tried to edit" : "edited"} ${c?.file}${n.conflicts.length > 1 ? ` and ${plural(n.conflicts.length - 1, "more file")}` : ""} — ${hit?.owner.name}'s ticket #${hit?.n} has been changing ${n.conflicts.length > 1 ? "these files" : "this file"}. ${n.decision === "deny" ? "The agent was held back once; it can repeat the edit." : "It went ahead after the warning."}`;
         return (
-          <div key={n.key} className={`house-toast ${n.decision}`}>
+          <div key={n.key} ref={toastRef(n.key)} className={`house-toast ${n.decision}`}>
             <button className="house-toast-body" title={n.sessionId ? "Go to the session" : undefined} onClick={() => n.sessionId && onJump(n.sessionId)}>
               {what}
             </button>

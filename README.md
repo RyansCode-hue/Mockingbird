@@ -127,6 +127,13 @@ renders a screen with `?measure=<selector>` and returns the page with where thos
 elements sit (`test/uiLayout.test.ts` checks that row actions, the Council's
 inspector and its controls don't overlap; local only, like the screenshot test).
 
+Motion: `?motion=off|reduce|full` picks how much moves; screenshots and
+`?measure` default to off, so they never catch a box mid-animation.
+`?motionAudit` plays the animated moments (minimize into the folder and back, a
+dialog, a toast), finishing each animation instead of waiting, and reports the
+end states; `test/uiMotion.test.ts` reads them through `pageResult`, which runs
+Chrome in real time (virtual time doesn't run View Transitions).
+
 ## Design system
 
 The UI follows `design_handoff_mockingbird` (see the zip in this folder): warm dark
@@ -136,7 +143,11 @@ SF Mono) for anything the machine produced, and one hard rule — **amber
 and the focus ring are neutral). Every text colour keeps 4.5:1 contrast on the
 surfaces it sits on, in both themes (`test/contrast.test.ts` checks the tokens).
 Status is always a
-dot: teal working · amber waiting (pulsing) · grey idle · red dead. Not yet
+dot: teal working · amber waiting (pulsing for ~10 s) · grey idle · red dead.
+Motion is "Fluid" (tokens in `styles.css`, helpers in `motion.ts` and
+`gridMotion.ts`): only transform and opacity move, nothing waits on an
+animation, and Settings → Motion (or macOS Reduce motion) cuts it to short
+fades. Not yet
 implemented from the handoff: cross-session transcript search (1f), the
 draft-comment queue from the ADO design (1d ships as the Dashboard without
 `pending-comments.md`), and per-pane token/cost + PR instrumentation in the rail
@@ -161,6 +172,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Shipped recently
 
+- **Motion** — one personality, "Fluid" (90/150/220/340 ms, a critically damped
+  spring, no bounce), with the genie for minimize: a workspace's folder in the
+  side bar is open while it's on screen and closed while minimized; minimizing
+  flies the pane into the open folder and the lid closes after it, restoring
+  opens the lid and the pane comes back out (collapsed side bar: the rail's
+  Sessions icon). Panes open, re-arrange and go fullscreen in place; group
+  switches come from their side of the side bar; dialogs, menus, popovers and
+  toasts ease in and out, closing at once (the exit plays on a copy); session
+  rows slide to new places; arriving at waiting pops the dot once, and the
+  pulse stops after ~10 s. Grid changes are View Transitions over snapshots, so
+  terminals never animate and re-fit once; the side bar and file panel no
+  longer animate width. **Settings → Motion**: Follow macOS / Reduce (fades of
+  120 ms or less, no View Transitions, no loops) / Full.
 - **UI review, first batch** — primary buttons and the focus ring are neutral,
   so amber means only "waiting on you" [G1]; every text colour keeps 4.5:1 on
   its surface in both themes, checked from the tokens [G5]; one disabled-button
