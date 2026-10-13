@@ -2251,7 +2251,7 @@ function App() {
                   ) : null;
                 })()}
                 {/* team rooms: live panes */}
-                <FollowControls follow={follow} />
+                <FollowControls follow={follow} shared={!!roomOfGroup(teamStatus, activeGroup)} />
                 <span style={{ marginLeft: "auto" }} />
                 {statusNote && <span className="flbl-info">{statusNote}</span>}
                 <Select
@@ -2267,7 +2267,7 @@ function App() {
                 />
                 <button className="gb-btn" data-tip="Ask every agent session in this group for a three-line status report — each answers when its current turn ends" onClick={() => askGroupStatus(activeGroup)}>
                   <AskIcon />
-                  <span className="gb-t">Ask everyone for status</span>
+                  <span className="gb-t">Ask this group for status</span>
                 </button>
                 <span className="flbl-info gb-count">
                   Showing {gridSessions.filter((s) => topOf(s) === activeGroup).length} of {topSessions.length}
@@ -2507,9 +2507,11 @@ function App() {
             key={u.agent}
             className="sb-update"
             title={`${AGENT_NAME[u.agent]} ${u.installed} is installed; these sessions still run the version they started with:\n${u.sessions.map((x) => `  ${x.title} (${x.version})`).join("\n")}\nRestarting resumes each conversation.`}
+            aria-label={`Restart ${plural(u.sessions.length, `${AGENT_NAME[u.agent]} session`)} on ${u.installed}`}
             onClick={() => setModal("restart")}
           >
-            {AGENT_NAME[u.agent]} {u.installed} · restart {plural(u.sessions.length, "session")}
+            ↻ Restart {u.sessions.length}
+            {agentUpdates.length > 1 && ` ${AGENT_NAME[u.agent]}`}
           </button>
         ))}
         {(["working", "waiting", "idle", "dead"] as const).map((st) => {

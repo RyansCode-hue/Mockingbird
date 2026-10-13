@@ -736,7 +736,7 @@ function Composer({
               }}
             >
               {s.head}
-              <span>{s.label}</span>
+              <span className="rc-sug-meta">{s.label}</span>
             </div>
           ))}
         </div>

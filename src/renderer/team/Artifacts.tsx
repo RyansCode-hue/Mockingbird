@@ -589,7 +589,7 @@ function NewNoteDialog({ roomId, ctx, onClose, onAdded }: { roomId: string; ctx:
       <h3>New note</h3>
       <div className="sub-h">Markdown everyone in the room can read and edit — specs, decisions, checklists. Room agents read it too.</div>
       <label>Name</label>
-      <input type="text" autoFocus value={name} maxLength={MAX_ARTIFACT_NAME} placeholder="Last-org spec" onChange={(e) => setName(e.target.value)} />
+      <input type="text" autoFocus value={name} maxLength={MAX_ARTIFACT_NAME} placeholder="e.g. Last-org spec" onChange={(e) => setName(e.target.value)} />
       <div className="art-note-bar">
         <label>Text</label>
         <WritePreview preview={preview} setPreview={setPreview} />
@@ -638,7 +638,7 @@ function LinkDialog({ roomId, onClose, onAdded }: { roomId: string; onClose: () 
         type="text"
         autoFocus
         value={url}
-        placeholder="https://dev.azure.com/…/_workitems/edit/5110"
+        placeholder="e.g. https://dev.azure.com/…/edit/5110"
         onChange={(e) => {
           const next = e.target.value;
           setUrl(next);
@@ -713,7 +713,7 @@ function RepoFormDialog({
         type="text"
         autoFocus
         value={lines}
-        placeholder="12 or 12–40"
+        placeholder="e.g. 12 or 12–40"
         onChange={(e) => {
           setLines(e.target.value);
           const p = parseLines(e.target.value);

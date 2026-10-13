@@ -66,6 +66,33 @@ describe.skipIf(!local)("the interface's layout", () => {
     expect(failed.boxes[parts[1]][0]?.text).toMatch(/^Couldn't read ~\/\.claude\/CLAUDE\.md: .*EACCES/);
   }, 120_000);
 
+  it("keeps the status bar's restart button whole in a narrow window", async () => {
+    const { boxes } = await render("1000x700", "", [".statusbar .sb-update"]);
+    const [pill] = boxes[".statusbar .sb-update"] ?? [];
+    expect(pill?.text).toBe("↻ Restart 1");
+    expect(pill.w).toBeGreaterThan(60);
+  }, 90_000);
+
+  it("keeps a tall dialog's title and closing buttons in the window: the House board at 1000×700", async () => {
+    const parts = [".house-modal > .house-head", ".house-modal > .row:last-child"];
+    const { boxes } = await render("1000x700", "house=1", parts);
+    const [head, foot] = parts.map((s) => boxes[s]?.[0]);
+    expect(head && shown(head)).toBe(true);
+    expect(foot && shown(foot)).toBe(true);
+    expect(head.y).toBeGreaterThanOrEqual(0);
+    expect(foot.y + foot.h).toBeLessThanOrEqual(700);
+  }, 90_000);
+
+  it("keeps the room composer's # completion inside the sidebar", async () => {
+    const parts = [".sidebar", ".rc-suggest", ".rc-sug"];
+    const { boxes } = await render("1500x900", "view=room&composer=%23spec", parts);
+    const [side] = boxes[".sidebar"];
+    const [pop] = boxes[".rc-suggest"] ?? [];
+    expect(pop && shown(pop)).toBe(true);
+    expect(pop.x + pop.w).toBeLessThanOrEqual(side.x + side.w);
+    for (const row of boxes[".rc-sug"]) expect(row.x + row.w).toBeLessThanOrEqual(pop.x + pop.w);
+  }, 90_000);
+
   it("shows the version being built", async () => {
     const { html } = await render("1200x800", "");
     expect(html).toContain(`v${pkg.version}`);

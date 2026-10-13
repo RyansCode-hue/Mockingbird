@@ -32,6 +32,8 @@ const MODES: { id: CollabMode; label: string; note: string }[] = [
   { id: "auto", label: "Auto", note: "runs a set number of rounds" },
   { id: "consensus", label: "Until agreed", note: "stops when every model agrees" },
 ];
+/** Up to this many councils, the list shows unless it was collapsed. */
+const SHORT_LIST = 6;
 const nextMode = (m: CollabMode): CollabMode => MODES[(MODES.findIndex((x) => x.id === m) + 1) % MODES.length].id;
 
 /** Councils: several models discuss an idea with the user; edits only happen after the user approves a plan. */
@@ -40,7 +42,8 @@ export function CouncilView({ onOpenSession, focusRoom }: { onOpenSession: (sess
   const [catalog, setCatalog] = useState<Catalog>({ presets: [], efforts: { claude: [], codex: [] } });
   const [selected, setSelected] = useState<string | "new" | null>(null);
   const [error, setError] = useState("");
-  const [railOpen, setRailOpen] = usePersisted<boolean>("mb.collab.rail", false);
+  // the council list shows by default while it's short; once toggled, it stays as left
+  const [listPref, setListPref] = usePersisted<boolean | null>("mb.collab.list", null);
   // room files on disk that couldn't be read: left in place, and named here so a vanished room isn't a mystery
   const [unreadable, setUnreadable] = useState<CollabLoadProblem[]>([]);
 
@@ -62,18 +65,19 @@ export function CouncilView({ onOpenSession, focusRoom }: { onOpenSession: (sess
   }, [focusRoom]);
 
   const room = rooms.find((r) => r.id === selected) ?? null;
+  const railOpen = listPref ?? rooms.length <= SHORT_LIST;
 
   return (
     <div className="collab">
       <aside className={`collab-rooms ${railOpen ? "" : "rail"}`}>
         <div className="collab-rail-top">
-          <button className="icon" title={railOpen ? "Collapse the council list" : "Show the council list"} onClick={() => setRailOpen(!railOpen)}>
+          <button className="icon" data-tip={railOpen ? "Collapse the council list" : "Show the council list"} aria-label={railOpen ? "Collapse the council list" : "Show the council list"} onClick={() => setListPref(!railOpen)}>
             ☰
           </button>
           {railOpen ? (
             <button className="primary collab-new" onClick={() => setSelected("new")}>New council</button>
           ) : (
-            <button className={`icon collab-rail-new ${selected === "new" ? "on" : ""}`} title="New council" onClick={() => setSelected("new")}>+</button>
+            <button className={`icon collab-rail-new ${selected === "new" ? "on" : ""}`} data-tip="New council" aria-label="New council" onClick={() => setSelected("new")}>+</button>
           )}
         </div>
         {rooms.map((r) =>
@@ -93,7 +97,8 @@ export function CouncilView({ onOpenSession, focusRoom }: { onOpenSession: (sess
             <button
               key={r.id}
               className={`collab-rail-item ${r.id === selected ? "on" : ""}`}
-              title={`${r.title}${r.running ? " — running" : ""}${r.pending?.length ? " — needs your OK" : ""}`}
+              data-tip={`${r.title}${r.running ? " — running" : ""}${r.pending?.length ? " — needs your OK" : ""}`}
+              aria-label={r.title}
               onClick={() => setSelected(r.id)}
             >
               {initials(r.title)}
@@ -167,11 +172,11 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
       <label>Models <span className="wi-note">they speak in this order</span></label>
       <SeatEditor seats={seats} onChange={setSeats} catalog={catalog} hasRepo={!!repo} />
       <label>Title</label>
-      <input type="text" placeholder="CSV export for the donor list" value={title} onChange={(e) => setTitle(e.target.value)} />
+      <input type="text" placeholder="e.g. Donor list CSV export" value={title} onChange={(e) => setTitle(e.target.value)} />
       <label>The idea or feature</label>
       <textarea
         rows={7}
-        placeholder="We need a way to export the donor list to CSV from the backoffice. It has to respect the user's filters and handle 200k rows…"
+        placeholder="e.g. Export the donor list to CSV, keeping the user's filters"
         value={brief}
         onChange={(e) => setBrief(e.target.value)}
       />
@@ -179,7 +184,12 @@ function NewRoom({ catalog, onCreated }: { catalog: Catalog; onCreated: (r: Coll
       <ModeSeg mode={mode} onMode={setMode} />
       {error && <div className="err">{error}</div>}
       <div className="set-actions">
-        <button className="primary" disabled={!brief.trim() || seats.length < 2} onClick={create}>
+        <button
+          className="primary"
+          disabled={!brief.trim() || seats.length < 2}
+          data-tip={!brief.trim() ? "Describe the idea first" : seats.length < 2 ? "Pick at least two models" : undefined}
+          onClick={create}
+        >
           Start discussion
         </button>
       </div>
@@ -301,8 +311,9 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
           <ModeSeg mode={room.mode} onMode={(m) => setMode(m)} />
           {room.mode !== "step" && (
             <label className="collab-rounds" title={room.mode === "auto" ? "Rounds per run" : "Give up after this many rounds"}>
-              {room.mode === "auto" ? "rounds" : "cap"}
+              {room.mode !== "auto" && "Up to"}
               <input type="number" min={1} max={20} value={room.maxRounds} onChange={(e) => setMode(room.mode, Number(e.target.value))} />
+              {room.mode === "auto" ? "rounds per run" : "rounds"}
             </label>
           )}
           <span className="spacer" />
@@ -313,7 +324,7 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
               {room.mode === "step" ? "Next round" : "Run"}
             </button>
           )}
-          <button className="primary" disabled={!draft.trim()} onClick={send}>Send</button>
+          <button className="primary" disabled={!draft.trim()} data-tip={draft.trim() ? undefined : "Write a message first"} onClick={send}>Send</button>
         </div>
       </footer>
 

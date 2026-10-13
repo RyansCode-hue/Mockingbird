@@ -157,11 +157,13 @@ button.outline:disabled, button.outline:disabled:hover { opacity: 1; background:
 .kbd { font: 400 9.5px var(--mono); color: var(--text-4); }
 button.primary .kbd { color: var(--on-primary); opacity: .65; }
 button.primary:disabled .kbd { color: var(--text-4); opacity: 1; }
+/* placeholders: dim and in the interface font, so an example never reads as a value already filled in */
+::placeholder { color: var(--text-4); opacity: 1; font-family: var(--ui); }
 /* the keyboard focus ring: neutral, never amber (amber means a session waits on you) */
 :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
 .seg { display: flex; background: var(--fill-subtle); border-radius: 5px; padding: 2px; }
-.seg button { border: none; border-radius: 3px; padding: 2px 8px; font: 500 10px var(--mono); color: var(--text-3); }
+.seg button { border: none; border-radius: 3px; padding: 2px 8px; font: 500 10.5px var(--ui); color: var(--text-3); }
 .seg button:hover { color: var(--text-1); background: transparent; }
 .seg button.on { background: var(--chip-on-bg); color: var(--chip-on-fg); }
 .seg button.on:hover { background: var(--chip-on-bg); color: var(--chip-on-fg); }
@@ -558,6 +560,14 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .modal textarea { min-height: 240px; resize: vertical; }
 .modal .row { display: flex; gap: 8px; align-items: center; margin-top: 16px; justify-content: flex-end; }
 .modal .row .foot-hint { margin-right: auto; }
+/* a dialog taller than the window scrolls its body only: its title and its closing buttons stay in view
+   (each spans the dialog's padding, so what scrolls under it is hidden) */
+.modal:not(.art-dlg) > h3:first-child, .modal:not(.art-dlg) > .house-head:first-child {
+  position: sticky; top: -18px; z-index: 3; margin: -18px -20px 0; padding: 18px 20px 6px; background: var(--bg-pane-header);
+}
+.modal:not(.art-dlg) > .row:last-child {
+  position: sticky; bottom: -18px; z-index: 3; margin: 6px -20px -18px; padding: 10px 20px 18px; background: var(--bg-pane-header);
+}
 
 /* how-to-use popup */
 .modal.help { width: 680px; }
@@ -1213,7 +1223,7 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .collab-bar textarea { width: 100%; resize: vertical; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 6px; padding: 8px 10px; font: 400 12.5px var(--ui); }
 .collab-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .collab-controls .spacer { flex: 1; }
-.collab-rounds { display: inline-flex; align-items: center; gap: 6px; font: 400 10.5px var(--mono); color: var(--text-3); }
+.collab-rounds { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font: 400 10.5px var(--ui); color: var(--text-3); }
 .collab-rounds input { width: 44px; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 4px; padding: 2px 4px; font: 400 11px var(--mono); }
 .c-0 .who { color: var(--m-0) !important; }
 .collab-msg.c-0 { border-left: 3px solid var(--m-0); }
@@ -1322,7 +1332,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ins-head > .err { flex-basis: 100%; margin-top: 4px; text-transform: none; letter-spacing: 0; }
 .ins-eff { font: 400 9.5px var(--mono); color: var(--text-4); }
 .ins-perms { display: flex; gap: 4px; flex-shrink: 0; }
-.ins-perms span { font: 400 9.5px var(--mono); color: var(--text-3); padding: 0 4px; border: 1px solid var(--line-med); border-radius: 4px; }
+.ins-perms span { font: 400 10px var(--ui); white-space: nowrap; color: var(--text-3); padding: 0 4px; border: 1px solid var(--line-med); border-radius: 4px; }
 .ins-perms span.off { color: var(--text-4); border-style: dashed; }
 .ins-value { font: 400 11.5px/1.45 var(--ui); color: var(--text-2); overflow-wrap: anywhere; }
 .ins-note { font: 400 10.5px var(--ui); color: var(--text-4); }
@@ -1555,7 +1565,7 @@ button.danger-btn:hover { color: #fff; background: var(--red); border-color: var
 
 /* Settings → General → Tabs */
 .tab-toggles { display: flex; flex-direction: column; gap: 6px; }
-.tab-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.tab-toggle { display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 12px; color: var(--text-2); cursor: pointer; }
 
 /* ---- Run and Debug (side bar) ---- */
 .rv { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -1842,6 +1852,8 @@ button.chip { border: none; cursor: pointer; }
 .ns-foot { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line-soft); background: var(--bg-chrome); }
 .ns-foot .ns-sum { flex: 1; min-width: 0; font: 400 10px var(--mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .ns-foot button.primary.cta { min-width: 150px; padding: 6px 20px; }
+.ns-foot.end { justify-content: flex-end; }
+.ns-check .wi-note { font: 400 10.5px var(--ui); }
 button.ns-ghost { padding: 5px 4px; color: var(--text-3); flex-shrink: 0; }
 button.ns-ghost:hover { background: none; color: var(--text-1); }
 .seg.ns-mode { display: inline-flex; padding: 2px; }
@@ -1912,7 +1924,9 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .sess-item .mute.on { display: inline-block; opacity: 1; color: var(--text-3); }
 .quiet-hours { display: inline-flex; align-items: center; gap: 6px; font: 400 11px var(--ui); color: var(--text-3); }
 .quiet-hours input[type=time] { background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 11px var(--mono); }
-.quiet-hours input[type=time]:disabled { opacity: .5; }
+/* quiet hours turned off: the times read as set aside, not as fields waiting for input */
+.quiet-hours:has(input:disabled) > :not(.toggle) { opacity: .45; }
+.quiet-hours input[type=time]:disabled { background: transparent; border-style: dashed; cursor: default; }
 /* weekly rollup */
 .rollup-dlg { width: 760px; }
 .rollup-md { margin: 10px 0 6px; max-height: 56vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--bg-pane); font: 400 11px/1.55 var(--mono); color: var(--text-2); white-space: pre-wrap; }
@@ -1921,7 +1935,7 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
    overflow: hidden would clip them away entirely while their backdrop still takes the next click */
 .statusbar { overflow-x: clip; overflow-y: visible; }
 .statusbar > * { white-space: nowrap; flex-shrink: 0; }
-.statusbar > .sb-update { flex-shrink: 1; }
+.statusbar > .sb-update { flex-shrink: 0; max-width: none; }
 /* the folder cell clips its name, never its Files button (after the cell's own inline-flex rule) */
 .rail .cell.folder .v { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rail .cell.folder .v .fn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -2172,9 +2186,12 @@ button.rc-new-session.rc-more { padding: 1px 5px; color: var(--text-3); letter-s
 .rc-sug { display: flex; align-items: baseline; gap: 6px; padding: 4px 7px; border-radius: 4px; cursor: pointer; font: 400 11px var(--ui); color: var(--text-3); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rc-sug b { font-weight: 600; color: var(--text-1); }
 .rc-sug.on, .rc-sug:hover { background: var(--fill-selected); }
-.rc-sug.art { align-items: center; }
+/* an artifact: its name on the first line, who and when under it, each cut with an ellipsis inside the sidebar */
+.rc-sug.art { align-items: center; flex-wrap: wrap; row-gap: 1px; }
 .rc-sug.art .fp-glyph { flex-shrink: 0; }
-.rc-sug.art b { flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.rc-sug.art b { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rc-sug.art > .rc-sug-meta { flex: 0 0 100%; min-width: 0; padding-left: 26px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+.rc-sug > .rc-sug-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- team rooms: artifacts ---- */
 .rc { position: relative; }

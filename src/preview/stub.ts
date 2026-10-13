@@ -1012,7 +1012,8 @@ const api: Record<string, (...a: any[]) => any> = {
     claude: { found: true, path: "/opt/homebrew/bin/claude", version: "2.1.290", signedIn: true },
     codex: { found: true, path: "/opt/homebrew/bin/codex", version: "0.156.1", signedIn: true },
     hooks: { claude: true, codex: true },
-    repoRoots: [{ path: "~/Code", exists: true, repos: 12 }],
+    // every repo folder in Settings, as the app counts them: ~/Code holds the fixture repos, the rest none
+    repoRoots: settings.repoRoots.map((path) => ({ path, exists: true, repos: path === "~/Code" ? 12 : 0 })),
     workTrackerPath: "~/Code/WorkTracker",
     ado: { connected: true, display: "You", detail: "acme / Backoffice" },
   }),
@@ -1590,12 +1591,13 @@ const typeInto = (selector: string, text: string) => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 };
-// ?council opens the Council tab on its fixture discussion; ?council=list also unfolds the council list;
-// ?council=new opens the New council form
+// ?council opens the Council tab on its fixture discussion, its list as a first visit shows it (unfolded while short);
+// ?council=list unfolds the list, ?council=rail folds it; ?council=new opens the New council form
 if (params.has("council")) {
   set("mb.tab", "collaborate");
-  set("mb.collab.rail", params.get("council") === "list");
-  if (params.get("council") === "new") setTimeout(() => click(".collab-rail-new"), 500);
+  const list = params.get("council");
+  if (list === "list" || list === "rail") set("mb.collab.list", list === "list");
+  if (list === "new") setTimeout(() => click(".collab-rail-new, .collab-new"), 500);
 }
 // ?new opens New session, as ⌘N does; ?new=connected switches it to the first team room;
 // ?new=room opens it from the first shared group's + instead

@@ -309,9 +309,9 @@ export function SetupWizard({ onClose, onFinish }: { onClose: () => void; onFini
             <button className="outline" onClick={pickWorkTracker}>Browse…</button>
           </div>
           <label>Organization URL</label>
-          <input type="text" placeholder="https://dev.azure.com/YourOrg" value={ado.orgUrl} onChange={(e) => setAdo({ ...ado, orgUrl: e.target.value })} />
+          <input type="text" placeholder="e.g. https://dev.azure.com/YourOrg" value={ado.orgUrl} onChange={(e) => setAdo({ ...ado, orgUrl: e.target.value })} />
           <label>Project</label>
-          <input type="text" placeholder="YourProject" value={ado.project} onChange={(e) => setAdo({ ...ado, project: e.target.value })} />
+          <input type="text" placeholder="e.g. YourProject" value={ado.project} onChange={(e) => setAdo({ ...ado, project: e.target.value })} />
           <label>Token file</label>
           <div className="path-row">
             <span className="p">{ado.patFile || "none chosen"}</span>
