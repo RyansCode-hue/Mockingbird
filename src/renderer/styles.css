@@ -340,6 +340,9 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 /* panes making room move on the spring; a resized pane's two images cross-fade */
 ::view-transition-group(.mb-pane) { animation-duration: var(--dur-spring); animation-timing-function: var(--ease-spring); }
 ::view-transition-old(.mb-pane), ::view-transition-new(.mb-pane) { animation-duration: var(--dur-2); }
+/* text in a resizing pane never stretches: each image stays its own size, pinned top-left and clipped to the
+   moving box (the new one, at the final size, is what's left) */
+::view-transition-old(.mb-pane), ::view-transition-new(.mb-pane) { height: 100%; object-fit: none; object-position: 0 0; overflow: clip; }
 /* a pane opening rises in from slightly smaller; one closing fades a little smaller, faster */
 ::view-transition-new(.mb-pane):only-child { animation: mb-pane-in var(--dur-spring) var(--ease-spring) both, mb-fade-in var(--dur-3) linear both; }
 ::view-transition-old(.mb-pane):only-child { animation: mb-pane-out var(--dur-2) var(--ease-exit) both; }

@@ -622,8 +622,9 @@ function App() {
     if (activeGroup && g !== activeGroup && !pinnedSet.has(s.id)) {
       const remembered = rememberedLayout(g);
       switchGrid(g, remembered.length ? [...new Set([...remembered, s.id])] : [s.id]);
-    } else {
-      setShown((p) => (p.includes(s.id) ? p : [...p, s.id]));
+    } else if (!shown.includes(s.id)) {
+      // it opens in place and the panes already there make room
+      gridChange({ kind: "open" }, () => setShown((p) => (p.includes(s.id) ? p : [...p, s.id])));
     }
   };
 
@@ -837,9 +838,12 @@ function App() {
     if (next && !sameTree(next, tree)) setTrees((p) => ({ ...p, [seatKey]: next }));
   };
   /** Arrange the panes, in the order they're read, into a snap layout or N even columns. */
-  const arrangeAs = (id: string) => commitTree((t) => arrange(id, readingOrder(t), gridExtent.current));
-  const arrangeInCols = (n: number) => commitTree((t) => evenGrid(readingOrder(t), n));
-  const refit = () => commitTree((t) => reconcile(null, readingOrder(t), gridExtent.current));
+  // re-arranging moves every pane to its new place together (gridMotion.ts)
+  const arrangeAs = (id: string) => gridChange({ kind: "layout" }, () => commitTree((t) => arrange(id, readingOrder(t), gridExtent.current)));
+  const arrangeInCols = (n: number) => gridChange({ kind: "layout" }, () => commitTree((t) => evenGrid(readingOrder(t), n)));
+  const refit = () => gridChange({ kind: "layout" }, () => commitTree((t) => reconcile(null, readingOrder(t), gridExtent.current)));
+  /** Fullscreen a pane (null: back to the grid): it grows to the grid's size while the others fade. */
+  const zoomTo = (id: string | null) => gridChange({ kind: "zoom" }, () => setZoomed(id));
 
   /**
    * A group rename is about to change keys: the group's tree is copied under
@@ -1303,12 +1307,12 @@ function App() {
     }
     if (cmd && !e.shiftKey && e.key === "e" && (focused || zoomed)) {
       handled();
-      setZoomed(zoomed ? null : focused);
+      zoomTo(zoomed ? null : focused);
       return;
     }
     if (e.key === "Escape" && zoomed && escapeLeavesFullscreen(e.target as Element, !!document.querySelector(OVERLAYS))) {
       handled();
-      setZoomed(null);
+      zoomTo(null);
       return;
     }
     if (cmd && e.ctrlKey && /^[1-4]$/.test(e.key)) {
@@ -2360,7 +2364,7 @@ function App() {
                       showView("run");
                     }}
                     onClose={onCloseOverride ?? (() => hide(s.id))}
-                    onZoom={() => setZoomed(zoomed === s.id ? null : s.id)}
+                    onZoom={() => zoomTo(zoomed === s.id ? null : s.id)}
                     onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
                     tabDrop={embedded ? undefined : tabDrop(s, `h:${s.id}`)}
                     pinned={isPinned(pinIds)}
@@ -2676,7 +2680,7 @@ function App() {
                   {
                     label: `${zoomed === focusedSession.id ? "Exit fullscreen" : "Fullscreen"} ${titleOf(focusedSession)}`,
                     kbd: "⌘E",
-                    run: () => setZoomed(zoomed === focusedSession.id ? null : focusedSession.id),
+                    run: () => zoomTo(zoomed === focusedSession.id ? null : focusedSession.id),
                   },
                   {
                     label: `Rename ${titleOf(focusedSession)}…`,

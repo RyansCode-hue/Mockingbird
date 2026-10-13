@@ -131,6 +131,7 @@ const inUpdate = (update: () => void) => {
 /** What a grid change is, for its animation. */
 export type GridMove =
   | { kind: "open" }
+  | { kind: "layout" }
   | { kind: "close" }
   | { kind: "zoom" }
   | { kind: "switch"; dir: 1 | -1 }
