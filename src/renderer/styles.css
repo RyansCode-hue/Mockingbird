@@ -2165,6 +2165,12 @@ button.house-toast-body:hover { background: none; color: var(--text-1-warm); }
 .house-toast.consent .house-toast-body b { color: var(--text-1); font-weight: 600; }
 .house-toast.consent .err { color: var(--red); }
 /* what the board couldn't do on this Mac: one line each, under the tickets */
+.mig-line { font: 400 11px/1.5 var(--ui); color: var(--text-2); margin: -4px 0 10px; overflow-wrap: anywhere; }
+.mig-line b { color: var(--text-1); font-weight: 600; }
+.mig-line .mig-clash { color: var(--amber-text); }
+.mig-edit { display: inline-flex; gap: 6px; align-items: center; }
+.mig-edit input { width: 220px; }
+.mig-folders { font: 400 11px var(--mono); color: var(--text-2); }
 .house-problem { font: 400 11px/1.45 var(--ui); color: var(--amber-text); padding: 3px 0 3px 10px; border-left: 2px solid color-mix(in srgb, var(--amber) 55%, transparent); margin: 4px 0; overflow-wrap: anywhere; }
 .house-note.house-consent { border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
 @media (max-width: 600px) {

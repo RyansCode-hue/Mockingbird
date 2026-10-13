@@ -3,6 +3,8 @@ export interface TeamRoomsParts {
   livePanes: { stop(): void };
   chat: { stop(): void };
   house: { stop(): void };
+  /** Teammates' changes and migration numbers (teamChanges.ts). */
+  changes?: { stop(): void };
   artifacts: { stop(): void };
   takeover: () => { close(): void } | null;
   team: { stop(): void };
@@ -21,6 +23,7 @@ export function stopTeamRooms(p: TeamRoomsParts, log: (context: string, err: unk
     ["live panes", () => p.livePanes.stop()],
     ["team chat", () => p.chat.stop()],
     ["House board", () => p.house.stop()],
+    ["teammates' changes", () => p.changes?.stop()],
     ["room artifacts", () => p.artifacts.stop()],
     ["take-over", () => p.takeover()?.close()],
     ["team transport", () => p.team.stop()],

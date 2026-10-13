@@ -151,11 +151,22 @@ describe("MCP server script", () => {
     p.kill();
     const byId = Object.fromEntries(out.trim().split("\n").map((l) => JSON.parse(l)).map((m) => [m.id, m]));
     expect(byId[1].result).toMatchObject({ protocolVersion: "2025-06-18", serverInfo: { name: "mockingbird" } });
-    expect(byId[2].result.tools.map((t: any) => t.name)).toEqual(["list_sessions", "send_message", ...HOUSE_TOOL_NAMES, "list_room_artifacts", "read_room_artifact"]);
+    expect(byId[2].result.tools.map((t: any) => t.name)).toEqual([
+      "list_sessions",
+      "send_message",
+      ...HOUSE_TOOL_NAMES,
+      "list_room_artifacts",
+      "read_room_artifact",
+      "list_teammate_changes",
+      "read_teammate_diff",
+      "reserve_migration_number",
+      "list_migration_reservations",
+      "release_migration_number",
+    ]);
     // the House's writes need a person's OK on every call (Claude Code, in any permission mode); its reads are read-only
     const listed = Object.fromEntries(byId[2].result.tools.map((t: any) => [t.name, t]));
     for (const tool of HOUSE_WRITE_TOOLS) expect(listed[tool]).toMatchObject({ _meta: { "anthropic/requiresUserInteraction": true }, annotations: { readOnlyHint: false } });
-    for (const tool of HOUSE_READ_TOOLS) {
+    for (const tool of [...HOUSE_READ_TOOLS, "list_teammate_changes", "read_teammate_diff", "list_migration_reservations"]) {
       expect(listed[tool].annotations).toEqual({ readOnlyHint: true });
       expect(listed[tool]).not.toHaveProperty("_meta");
     }

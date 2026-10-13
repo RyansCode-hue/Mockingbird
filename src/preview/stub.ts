@@ -12,6 +12,7 @@
  */
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
+import type { MigrationsView } from "../shared/team/migrations";
 import type { TeamStatus } from "../shared/team/types";
 // the version being built, and an update one patch above it
 import { version } from "../../package.json";
@@ -271,6 +272,22 @@ const houseDetail = (n: number): HouseTicketDetail => ({
 });
 const houseOwner = (t: HouseTicket): HouseOwner | null => (t.claim && isOpenStatus(t.status) ? { name: t.claim.by === "You" ? "You" : t.claim.by ?? "Someone", member: t.claim.by === "You" ? ME : t.claim.by === "Sam" ? SAM : NICK, self: t.claim.by === "You" } : null);
 const houseRow = (n: number, addedBy?: string): HouseRow => ({ n, ticket: houseTickets[n] ?? null, owner: houseTickets[n] ? houseOwner(houseTickets[n]) : null, ...(addedBy ? { addedBy } : {}) });
+/** Rooms' migration reservations (teamChanges.ts view): Nick's 0025 and yours 0026 in the 5101 room. */
+const migrationViews: Record<string, MigrationsView> = {
+  R5101aaaaaaaaaaaaaaaaa: {
+    roomId: "R5101aaaaaaaaaaaaaaaaa",
+    check: true,
+    canChange: true,
+    adminName: "You",
+    repos: [{ key: "github:acme/backoffice", label: "acme/backoffice", detected: ["db/migrations"], override: null }],
+    reservations: [
+      { id: "res0025aaaaaaaaaaaaaaa", label: "0025", folder: "db/migrations", repo: "acme/backoffice", member: "Nick Smith", self: false, session: "Export API", ticket: "#447", branch: "feature/447-export", at: Date.now() - 3_600_000, clash: false },
+      { id: "res0026aaaaaaaaaaaaaaa", label: "0026", folder: "db/migrations", repo: "acme/backoffice", member: "You", self: true, session: "Donor entities", ticket: "#453", branch: "feature/453-donors", at: Date.now() - 600_000, clash: false },
+    ],
+    problems: [],
+  },
+  R5110bbbbbbbbbbbbbbbbb: { roomId: "R5110bbbbbbbbbbbbbbbbb", check: true, canChange: true, adminName: "You", repos: [], reservations: [], problems: [] },
+};
 const houseConsentQuery = teamQuery.get("houseConsent");
 const houseRooms: Record<string, { project: string | null; added: { n: number; by: string }[]; isAdmin: boolean; admin: string; consent?: "pending" | "declined" }> = {
   R5101aaaaaaaaaaaaaaaaa: {
@@ -1366,6 +1383,23 @@ const api: Record<string, (...a: any[]) => any> = {
     for (const s of takeoverView.sessions) if (s.roomId === roomId) s.toOrigin = on;
     takeoverChanged();
     return later(null, 400);
+  },
+  // team rooms: migration number reservations
+  teamChangesView: async (roomId: string) => (migrationViews[roomId] ? JSON.parse(JSON.stringify(migrationViews[roomId])) : err(`Not a member of room ${roomId}`)),
+  teamChangesSetCheck: async (roomId: string, on: boolean) => {
+    const v = migrationViews[roomId];
+    if (!v) return err(`Not a member of room ${roomId}`);
+    if (!v.canChange) return err(`Only the room's admin (${v.adminName}) turns the migration check on or off`);
+    v.check = on;
+    emit("onTeamChangesChanged", JSON.parse(JSON.stringify(v)));
+    return later(JSON.parse(JSON.stringify(v)), 300);
+  },
+  teamChangesSetFolders: async (roomId: string, key: string, folders: string[]) => {
+    const r = migrationViews[roomId]?.repos.find((x) => x.key === key);
+    if (!r) return err("No such repository in the room");
+    r.override = folders.length ? folders : null;
+    emit("onTeamChangesChanged", JSON.parse(JSON.stringify(migrationViews[roomId])));
+    return later(JSON.parse(JSON.stringify(migrationViews[roomId])), 300);
   },
   teamTakeoverPlan: async (_roomId: string, sessionId: string) => (takeoverPlans[sessionId] ? later(takeoverPlans[sessionId], 500) : err("No backup of that session has reached this Mac yet")),
   teamTakeOver: async (_roomId: string, sessionId: string) => {

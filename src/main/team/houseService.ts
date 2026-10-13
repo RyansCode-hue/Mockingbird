@@ -82,6 +82,14 @@ export interface HouseServiceDeps {
   notify?: (title: string, body: string, sessionId?: string) => void;
   /** Teammates' branch files changed: the overlap check should look again. */
   overlapsChanged?: () => void;
+  /**
+   * The rest of a worktree's room files (teamChanges.ts): teammates' changed
+   * files for the overlap heads-up, and the rooms' migration folders and
+   * reservations. Absent: empty ones.
+   */
+  worktreeFiles?: (o: { worktree: string; clone: string; key: string; branch: string | null; rooms: RoomState[] }) => { overlaps: string; migrations: string };
+  /** The numbered migration folders known in a room's repositories, for its agents' instructions. */
+  migrationFolders?: (roomId: RoomId) => string[];
   /** Where the worktrees holding a copy are remembered (default ~/.mockingbird/team/plan-copies.json). */
   copiesFile?: string;
   /** Where this member's answers to "use your token for this room's project?" are kept (default ~/.mockingbird/team/house-consent.json). */
@@ -123,7 +131,8 @@ const REPEAT_NOTICE_MS = 10 * 60_000;
 /** How long a conversation's "already warned" files are remembered. */
 const WARNED_TTL_MS = 14 * 24 * 3_600_000;
 const BASES = new Set([...BASE_NAMES.dev, ...BASE_NAMES.main].map((b) => b.toLowerCase()));
-const isBase = (branch: string) => BASES.has(branch.toLowerCase());
+/** A dev/main-style base branch (UAT, dev, main…): never a ticket's branch. */
+export const isBase = (branch: string) => BASES.has(branch.toLowerCase());
 const SUMMARY_ROWS = 40;
 /** How many of the agents' failed House writes the board keeps. */
 const WRITE_PROBLEMS_KEPT = 5;
@@ -153,7 +162,7 @@ interface RoomCache {
 }
 
 /** A teammate's branch here: pushed to origin, fetched into a clone, and what it changes. */
-interface TeammateBranch {
+export interface TeammateBranch {
   roomId: RoomId;
   member: MemberId;
   name: string;
@@ -162,6 +171,8 @@ interface TeammateBranch {
   key: string;
   repo: string;
   files: string[];
+  /** The pushed branch's commit, as fetched. */
+  tip?: string;
   problem?: string;
 }
 
@@ -549,6 +560,8 @@ export class HouseService {
       project: h.project,
       board: this.summary(roomId),
       problem: this.notConnected(room) ?? (conn.state === "missing" || conn.state === "bad" || conn.state === "error" ? fenced(conn.message, 600) : null),
+      migrationCheck: room.ext.settings?.migrationCheck !== false,
+      migrationFolders: this.d.migrationFolders?.(roomId) ?? [],
     });
   }
 
@@ -622,7 +635,7 @@ export class HouseService {
   }
 
   /** A warning the claims check gave an agent (or its failure): the window shows it, and a held-back edit notifies. */
-  claimEvent(e: ClaimEvent): void {
+  claimEvent(e: Exclude<ClaimEvent, { kind: "room" }>): void {
     if (e.kind === "failed") {
       const why = this.d.log("team House board: the claims check in an agent's hook failed (the edit went ahead unchecked)", e.message);
       this.d.emit("house:warning", { at: Date.now(), sessionId: e.pane || null, sessionTitle: this.titleOf(e.pane), decision: "failed", tool: "", conflicts: [], error: why } satisfies ClaimWarningNotice);
@@ -652,6 +665,23 @@ export class HouseService {
   /** Teammates' pushed branches with the files they change, for the overlap check. */
   teammateChanges(): TeammateChanges[] {
     return this.teammates.filter((t) => !t.problem && t.files.length).map((t) => ({ roomId: t.roomId, member: t.member, name: t.name, branch: t.branch, repo: t.repo, files: t.files }));
+  }
+
+  /** Every teammate branch this Mac reads, with its files or why it couldn't be read (teamChanges.ts). */
+  teammateBranches(): readonly TeammateBranch[] {
+    return this.teammates;
+  }
+
+  /** Read teammates' branches again now: fetched first when `fetch` (teamChanges.ts asks before reserving a migration number). */
+  async refreshTeammatesNow(fetch: boolean): Promise<void> {
+    this.refreshTeammates(fetch);
+    while (this.teammatesRun) await this.teammatesRun;
+  }
+
+  /** Write every worktree's room files again (teammates' changes or reservations changed); resolves once written. */
+  async rewriteCopies(): Promise<void> {
+    this.refreshCopies();
+    while (this.copyRun) await this.copyRun;
   }
 
   // ---- writes -----------------------------------------------------------------------------------
@@ -1140,7 +1170,7 @@ export class HouseService {
     // clone of the same repository that a teammate's session record happens to name
     const clones = await this.roomClones();
     const out: TeammateBranch[] = [];
-    const files = new Map<string, { files: string[]; problem?: string }>();
+    const files = new Map<string, { files: string[]; tip?: string; problem?: string }>();
     const problems = new Map<RoomId, string[]>();
     const note = (roomId: RoomId, text: string) => {
       const list = problems.get(roomId) ?? [];
@@ -1166,11 +1196,11 @@ export class HouseService {
       const at = `${clone}\t${w.branch}`;
       if (!files.has(at)) {
         const r = await pushedBranchFiles(clone, w.branch).catch((err: Error) => ({ problem: this.d.log(`team House board: reading ${w.branch}'s files in ${clone}`, err) }));
-        files.set(at, "problem" in r ? { files: [], problem: r.problem } : { files: r.files });
+        files.set(at, "problem" in r ? { files: [], problem: r.problem } : { files: r.files, tip: r.tip });
       }
       const f = files.get(at)!;
       if (f.problem) note(w.roomId, `${w.name}'s branch ${w.branch} wasn't read, so its files aren't claimed here: ${f.problem}`);
-      out.push({ roomId: w.roomId, member: w.member, name: w.name, branch: w.branch, key: w.key, repo: clone, files: f.files, ...(f.problem ? { problem: f.problem } : {}) });
+      out.push({ roomId: w.roomId, member: w.member, name: w.name, branch: w.branch, key: w.key, repo: clone, files: f.files, ...(f.tip ? { tip: f.tip } : {}), ...(f.problem ? { problem: f.problem } : {}) });
     }
     const shown = JSON.stringify([...this.branchProblems].sort());
     this.branchProblems = problems;
@@ -1232,8 +1262,8 @@ export class HouseService {
   private async writeCopies(): Promise<void> {
     const team = this.need();
     const byClone = new Map<string, { key: string; rooms: RoomState[] }>();
+    // every room's repositories, a House project or not: the overlap and migration checks need their files too
     for (const room of team.rooms()) {
-      if (!houseOfRoom(room).project) continue;
       const keys = new Set(this.records(room).flatMap((r) => (r.repo ? [originKey(r.repo)] : [])));
       for (const key of keys) {
         for (const clone of await this.clonesOf(key)) {
@@ -1262,7 +1292,8 @@ export class HouseService {
             continue;
           }
           try {
-            writeRoomCopy(wt, { claims: `${JSON.stringify(claimsFile(rooms.map((r) => this.claimsRoom(r, key, branch)), team.self.id), null, 2)}\n`, context: `${context}\n` });
+            const more = this.d.worktreeFiles?.({ worktree: wt, clone, key, branch, rooms });
+            writeRoomCopy(wt, { claims: `${JSON.stringify(claimsFile(rooms.map((r) => this.claimsRoom(r, key, branch)), team.self.id), null, 2)}\n`, context: `${context}\n`, ...(more ?? {}) });
           } catch (err) {
             // one worktree refusing (a link where the room's folder goes) leaves the clone's other worktrees updated
             const why = this.d.log(`team House board: writing the room's claims into ${wt}`, err);

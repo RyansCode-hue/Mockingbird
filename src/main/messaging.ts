@@ -10,6 +10,8 @@ import { houseToolCall } from "./team/houseService";
 import { ARTIFACT_TOOL } from "../shared/team/artifacts";
 import { named, quoted } from "../shared/team/agentText";
 import { ARTIFACT_TOOL_SCHEMAS, artifactToolCall } from "./team/artifactTools";
+import { isTeamChangesTool, TEAM_CHANGES_TOOL_SCHEMAS, teamChangesToolCall } from "./team/teamChanges";
+import { parseRemoteId, remoteSessionId } from "../shared/team/livePanes";
 
 const SOCK = path.join(MB_DIR, "mb.sock");
 const MCP_SCRIPT = path.join(MB_DIR, "mcp.js");
@@ -114,6 +116,7 @@ const SESSION_TOOLS = [
   },
   ...${JSON.stringify(HOUSE_TOOL_SCHEMAS)},
   ${ARTIFACT_TOOL_SCHEMAS.map((t) => JSON.stringify(t)).join(",\n  ")},
+  ...${JSON.stringify(TEAM_CHANGES_TOOL_SCHEMAS)},
 ];
 
 function ask(req) {
@@ -185,17 +188,7 @@ export type RoomRequestHandler = (roomId: string, seatKey: string, op: string, a
 
 // ---- teammates' sessions, through a team room ------------------------------------------------
 
-/**
- * A session on a teammate's laptop is addressed as "<its id>@<the first 8
- * characters of the teammate's member id>": unique in the room, and never
- * mistaken for a local id (those have no "@").
- */
-export const remoteSessionId = (sessionId: string, member: string): string => `${sessionId}@${member.slice(0, 8)}`;
-
-export function parseRemoteId(id: string): { session: string; member: string } | null {
-  const m = /^([\w-]{1,64})@([0-9a-f]{8})$/.exec(id);
-  return m ? { session: m[1], member: m[2] } : null;
-}
+export { remoteSessionId, parseRemoteId };
 
 /** A room session as teammates see it. Sessions outside rooms are never shown to anyone. */
 export interface RoomSessionInfo {
@@ -346,6 +339,8 @@ export class Messaging {
     if (isHouseTool(req.op)) return houseToolCall(me.id, req.op!, req.args ?? {});
     // team rooms: artifacts — likewise, outside a room it says there are none
     if (req.op === ARTIFACT_TOOL.list || req.op === ARTIFACT_TOOL.read) return artifactToolCall(me, req.op, req.args ?? {});
+    // team rooms: teammates' changes and migration numbers — likewise refused outside a room
+    if (isTeamChangesTool(req.op)) return teamChangesToolCall(me, req.op!, req.args ?? {});
 
     if (req.op === MCP_TOOL.listSessions) {
       const others: Record<string, unknown>[] = live

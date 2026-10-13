@@ -8,6 +8,8 @@ import { readJsonFile, writeFileAtomic, writeGenerated } from "./fileOps";
 import { CLAUDE_SETTINGS, CODEX_DIR } from "./agentFiles";
 import { hookShellLines, writeClaimsCheck } from "./team/claims";
 import type { ClaimWarning } from "../shared/team/claims";
+import type { MigrationHit } from "../shared/team/migrations";
+import type { OverlapHit } from "../shared/team/overlaps";
 
 const EVENTS_DIR = path.join(MB_DIR, "events");
 /** Where hook scripts from older builds append; still read, for one that runs on after an upgrade. */
@@ -163,14 +165,31 @@ type StatusHandler = (session: SessionInfo, status: string) => void;
 /** A prompt was submitted in a pane: its turn is starting. */
 type PromptHandler = (session: SessionInfo, prompt: string) => void;
 
-/** What the claims check left for the app: a warning it gave an agent, or its own failure. */
-export type ClaimEvent = { kind: "warning"; warning: ClaimWarning } | { kind: "failed"; pane: string; message: string };
+/** A new migration held back, or a teammate overlap told, by the room checks in an agent's hook. */
+export interface RoomCheckNotice {
+  pane: string;
+  cwd: string;
+  conversation: string;
+  tool: string;
+  migrations: MigrationHit[];
+  overlaps: { file: string; hits: OverlapHit[] }[];
+}
+
+/** What the room checks left for the app: a claims warning it gave an agent, a migration or overlap notice, or a check's failure. */
+export type ClaimEvent = { kind: "warning"; warning: ClaimWarning } | { kind: "room"; notice: RoomCheckNotice } | { kind: "failed"; pane: string; message: string };
 type ClaimHandler = (e: ClaimEvent) => void;
 
 function claimEvent(evt: any): ClaimEvent | null {
   const p = evt.payload ?? {};
   const pane = typeof evt.pane === "string" ? evt.pane : "";
   if (evt.event === "ClaimCheckFailed") return { kind: "failed", pane, message: String(p.message ?? "no reason given").slice(0, 2000) };
+  if (evt.event === "RoomCheck") {
+    if (!Array.isArray(p.migrations) || !Array.isArray(p.overlaps)) {
+      console.error(`[hooks] skipped a room check notice that doesn't have the expected shape: ${JSON.stringify(p).slice(0, 300)}`);
+      return null;
+    }
+    return { kind: "room", notice: { pane, cwd: String(p.cwd ?? ""), conversation: String(p.conversation ?? ""), tool: String(p.tool ?? ""), migrations: p.migrations, overlaps: p.overlaps } };
+  }
   if (!Array.isArray(p.conflicts) || (p.decision !== "deny" && p.decision !== "context")) {
     console.error(`[hooks] skipped a claim warning that doesn't have the expected shape: ${JSON.stringify(p).slice(0, 300)}`);
     return null;
@@ -180,7 +199,7 @@ function claimEvent(evt: any): ClaimEvent | null {
 
 /** One hook event → its pane's status, and the alert and prompt callbacks that follow from it. */
 function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler, onPrompt?: PromptHandler, onClaim?: ClaimHandler): void {
-  if (evt.event === "ClaimWarning" || evt.event === "ClaimCheckFailed") {
+  if (evt.event === "ClaimWarning" || evt.event === "ClaimCheckFailed" || evt.event === "RoomCheck") {
     const e = claimEvent(evt);
     if (e) onClaim?.(e);
     return;

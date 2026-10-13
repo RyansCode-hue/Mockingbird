@@ -374,6 +374,18 @@ const api = {
     ipcRenderer.on("team:takeoverChanged", h);
     return () => ipcRenderer.removeListener("team:takeoverChanged", h);
   },
+  // team rooms: migration number reservations
+  /** A room's live reservations, its migration folders and the admin's setting: MigrationsView. */
+  teamChangesView: (roomId: string) => ipcRenderer.invoke("teamChanges:view", roomId),
+  /** Hold back agents' unreserved new migrations in a room, or not (its admin only; on by default). */
+  teamChangesSetCheck: (roomId: string, on: boolean) => ipcRenderer.invoke("teamChanges:setCheck", roomId, on),
+  /** The admin's migration folders for a repository (origin key); none: back to detection. */
+  teamChangesSetFolders: (roomId: string, key: string, folders: string[]) => ipcRenderer.invoke("teamChanges:setFolders", roomId, key, folders),
+  onTeamChangesChanged: (cb: (view: unknown) => void) => {
+    const h = (_e: unknown, v: unknown) => cb(v);
+    ipcRenderer.on("teamChanges:changed", h);
+    return () => ipcRenderer.removeListener("teamChanges:changed", h);
+  },
   // team rooms: live panes
   /** Teammates' room sessions, tags for this install's own, and teammates' views: LivePanesState. */
   teamLive: () => ipcRenderer.invoke("team:live"),

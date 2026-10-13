@@ -4,6 +4,7 @@ import { SetRow } from "./SetRow";
 import { Toggle } from "./Toggle";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { RoomBackupsSetting } from "./team/RoomBackups";
+import { RoomMigrationsSetting } from "./team/Migrations";
 import { isErr, type Settings } from "../shared/types";
 import { allowCreatorsCommand } from "../shared/team/protocol";
 import type { LeaveOutcome, PeerStatus, RemoveOutcome, TeamNotice, TeamRoomSummary, TeamStatus } from "../shared/team/types";
@@ -593,6 +594,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
             </button>
           </SetRow>
           <RoomBackupsSetting room={r} />
+          <RoomMigrationsSetting roomId={r.id} />
           <RoomMembers room={r} onRemove={(member) => setRemoving({ room: r, member })} />
           <RoomJoinRequests room={r} self={st?.self?.id} />
         </div>

@@ -106,6 +106,14 @@ export interface RoomSettings {
    * read access to the repository can fetch them. Off: peer to peer only.
    */
   backupsToOrigin: boolean;
+  /**
+   * Agents' new migration files are held back unless their number is
+   * reserved (docs/team-rooms.md, "Teammates' changes and migration
+   * numbers"). Absent: on.
+   */
+  migrationCheck?: boolean;
+  /** Per repository (origin key): the folders that hold numbered migrations, where detection got it wrong. Absent: detected. */
+  migrationFolders?: Record<string, string[]>;
   /** Who last changed them, and when (their clock: display only). */
   by: MemberId;
   at: number;
@@ -146,7 +154,7 @@ declare module "./types" {
     /** The session's current owner deleted its backup ref on origin: members delete their copies. */
     "session.backupDropped": { sessionId: string; reason: DropReason };
     /** The room's admin changed its settings: each one named is set, the rest stay. */
-    "room.settings": { backupsToOrigin?: boolean };
+    "room.settings": { backupsToOrigin?: boolean; migrationCheck?: boolean; migrationFolders?: Record<string, string[]> };
   }
   interface RoomExtensions {
     takeover: TakeoverRoomState;

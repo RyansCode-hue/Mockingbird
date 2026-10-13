@@ -1103,7 +1103,13 @@ export interface FileOverlap {
   files: string[];
   // team rooms: set when the other side is a teammate's pushed branch (`other` is then no session here)
   /** The teammate whose pushed branch it is, and the room it's shared in. */
-  teammate?: { id: string; name: string; roomId: string };
+  teammate?: {
+    id: string;
+    name: string;
+    roomId: string;
+    /** Of `files`, those the teammate's session changed in uncommitted work (its snapshot, shared peer to peer). */
+    uncommitted?: string[];
+  };
 }
 
 /** One agent-to-agent message, as the message log shows it. */

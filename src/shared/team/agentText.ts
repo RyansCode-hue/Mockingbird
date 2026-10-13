@@ -30,6 +30,16 @@ export function fenced(s: unknown, max = 200): string {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
+/**
+ * Many lines a teammate controls (a diff of their work), between `<tag>` and
+ * `</tag>`: the tag is taken out of the text, so it can't end the fence early
+ * and go on as Mockingbird's words.
+ */
+export function block(tag: string, text: string): string {
+  const re = new RegExp(`<(\\/?)(${tag.replace(/[^\w-]/g, "")})`, "gi");
+  return `<${tag}>\n${String(text).replace(re, "‹$1$2")}\n</${tag}>`;
+}
+
 /** Plain words: letters and digits, with spaces and . _ ' @ / - between them. */
 const PLAIN_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._'@/-]*$/u;
 

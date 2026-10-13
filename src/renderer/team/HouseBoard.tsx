@@ -28,6 +28,7 @@ import {
   type HouseWrite,
 } from "../../shared/team/house";
 import type { ClaimWarningNotice } from "../../shared/team/claims";
+import { MigrationsLine } from "./Migrations";
 
 /**
  * A shared room's Radley House board (docs/team-rooms.md, "Radley House
@@ -545,6 +546,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
       <div className="sub-h">
         The House is the system of record: claims, notes and new tickets are written there with your own builder token, from here or by your agents. A file a teammate's sessions have changed on a ticket they claimed is theirs — an agent editing it is held back once and warned.
       </div>
+      <MigrationsLine roomId={roomId} />
       {(renaming || !view.project) && <ProjectLine view={view} act={act} onCancel={view.project ? () => setRenaming(false) : undefined} />}
       <ConsentNote view={view} onAnswer={(allow) => void run("consent", () => window.mb.houseConsent(roomId, allow))} />
       {view.project && <ConnectionNote view={view} />}

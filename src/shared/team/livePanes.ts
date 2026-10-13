@@ -90,6 +90,19 @@ declare module "./types" {
   }
 }
 
+/**
+ * A session on a teammate's laptop, as agents address it (list_sessions,
+ * send_message, the teammate tools): "<its id>@<the first 8 characters of
+ * the teammate's member id>" — unique in the room, and never mistaken for a
+ * local id (those have no "@").
+ */
+export const remoteSessionId = (sessionId: string, member: string): string => `${sessionId}@${member.slice(0, 8)}`;
+
+export function parseRemoteId(id: string): { session: string; member: string } | null {
+  const m = /^([\w-]{1,64})@([0-9a-f]{8})$/.exec(id);
+  return m ? { session: m[1], member: m[2] } : null;
+}
+
 /** A room session's key in room state and views: the same on every member's Mockingbird. */
 export const roomSessionKey = (owner: MemberId, id: string): string => `${owner}:${id}`;
 

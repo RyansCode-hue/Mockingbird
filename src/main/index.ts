@@ -59,6 +59,7 @@ import { TeamService, type RoomCleanup } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
 // team rooms: the Radley House board (importing it registers the board's room events, before any room log loads)
 import { HouseService } from "./team/houseService";
+import { TeamChanges } from "./team/teamChanges";
 import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 // team rooms: team chat
 import { TeamRoom } from "./team/teamRoom";
@@ -133,7 +134,7 @@ const team: TeamService = new TeamService({
   cleanup: (): RoomCleanup[] => [
     { what: "the room's live panes", roomLeft: (room, groupKey) => livePanes.roomLeft(room, groupKey) },
     { what: "the room chat's read marks", roomLeft: (room) => teamRoom.chat.roomLeft(room.id) },
-    { what: "the room's files in worktrees (claims, agent context)", roomLeft: (room) => teamHouse.roomLeft(room.id) },
+    { what: "the room's files in worktrees (claims, agent context, overlaps, migrations)", roomLeft: (room) => (teamChanges.roomLeft(room.id), teamHouse.roomLeft(room.id)) },
     { what: "the room's artifacts and agents' copies of them", roomLeft: (room) => teamArtifacts.roomLeft(room.id) },
     { what: "the room's backups and hidden refs", roomLeft: (room) => takeover?.roomLeft(room) ?? [] },
   ],
@@ -152,7 +153,7 @@ function knownRoomRepos(): string[] {
 
 // team rooms: the Radley House board — tickets read and written with this builder's token, claims in the
 // room repos' worktrees, teammates' branches
-const teamHouse = new HouseService({
+const teamHouse: HouseService = new HouseService({
   roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
   sessions: () => sessions.list(),
   roomGuards: (id) => sessions.guardsOf(id),
@@ -160,7 +161,27 @@ const teamHouse = new HouseService({
   emit: toWindow,
   log: logError,
   notify: (title, body, sessionId) => (sessionId ? notifySession(sessionId, title, body) : new Notification({ title, body }).show()),
+  overlapsChanged: () => {
+    overlapsSoon();
+    teamChanges.refreshSoon();
+  },
+  worktreeFiles: (o) => teamChanges.worktreeFiles(o),
+  migrationFolders: (roomId) => teamChanges.migrationFolders(roomId),
+});
+// team rooms: what teammates' sessions on other Macs change (their pushed branches and the snapshots
+// take-over copies here), for the overlap heads-up and the agents' tools; migration number reservations
+const teamChanges: TeamChanges = new TeamChanges({
+  roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
+  sessions: () => sessions.list(),
+  knownRepos: knownRoomRepos,
+  teammateBranches: () => teamHouse.teammateBranches(),
+  mirrors: () => takeover?.mirrored() ?? [],
+  rewriteCopies: () => teamHouse.rewriteCopies(),
   overlapsChanged: () => overlapsSoon(),
+  emit: toWindow,
+  log: logError,
+  notify: (title, body, sessionId) => (sessionId ? notifySession(sessionId, title, body) : new Notification({ title, body }).show()),
+  secretFiles: () => knownSecretFiles(store.settings.workTrackerPath).files,
 });
 // team rooms: artifacts — files, notes, repo references and links kept in a room;
 // files copied peer to peer by hash, read by room agents through their tools
@@ -208,7 +229,10 @@ function startTakeover(): TakeoverService | null {
     repos: () => [...new Set([...indexRepos(store.settings.repoRoots).map((r) => r.path), ...sessions.list().flatMap((s) => (s.repoPath ? [s.repoPath] : []))])],
     launch: (req) => sessions.create(req),
     log: logError,
-    changed: () => toWindow("team:takeoverChanged", takeover?.view()),
+    changed: () => {
+      toWindow("team:takeoverChanged", takeover?.view());
+      teamChanges.refreshSoon(); // a teammate's snapshot may have arrived: their uncommitted work
+    },
     onTakenOver: (id, by) => notifySession(id, "Taken over", `${by} continues ${titleOfSession(id)} on their Mac: it stopped here`),
     // asked to hand a session over: told even when its pane's notifications were just shown (no coalescing)
     onAsk: (a) => {
@@ -479,6 +503,7 @@ app.whenReady().then(() => {
   createWindow();
   team.start();
   if (team.transport) teamHouse.start(team.transport); // team rooms: the House board
+  if (team.transport) teamChanges.start(team.transport); // team rooms: teammates' changes, migration numbers
   if (team.transport) teamArtifacts.start(team.transport); // team rooms: artifacts
   // team rooms: take-over — unneeded backups are pruned now and daily
   takeover = startTakeover();
@@ -593,7 +618,7 @@ app.whenReady().then(() => {
       () => snapshotErrors.delete(info.id),
       (err) => snapshotErrors.set(info.id, logError(`snapshot ${info.id}`, err))
     );
-  }, (e) => teamHouse.claimEvent(e)); // team rooms: claim warnings from the agents' hooks
+  }, (e) => (e.kind === "room" ? teamChanges.roomCheck(e.notice) : teamHouse.claimEvent(e))); // team rooms: the room checks in the agents' hooks
   startScheduler(sessions, store);
   app.on("activate", () => {
     if (!appWindow()) createWindow();
@@ -637,7 +662,7 @@ let teamStopped = false;
 function stopTeam(): void {
   if (teamStopped) return;
   teamStopped = true;
-  stopTeamRooms({ livePanes, chat: teamRoom, house: teamHouse, artifacts: teamArtifacts, takeover: () => takeover, team }, logError);
+  stopTeamRooms({ livePanes, chat: teamRoom, house: teamHouse, changes: teamChanges, artifacts: teamArtifacts, takeover: () => takeover, team }, logError);
 }
 
 app.on("window-all-closed", () => {
@@ -1009,6 +1034,10 @@ handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(
 // team rooms: take-over
 handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [] });
 handle("team:setBackupsToOrigin", (roomId, on) => needTakeover().setBackupsToOrigin(String(roomId), on === true));
+// team rooms: migration number reservations and the admin's settings for them
+handle("teamChanges:view", (roomId) => teamChanges.view(String(roomId)));
+handle("teamChanges:setCheck", (roomId, on) => teamChanges.setCheck(String(roomId), on === true));
+handle("teamChanges:setFolders", (roomId, key, folders) => teamChanges.setFolders(String(roomId), String(key), Array.isArray(folders) ? folders.map(String) : []));
 handle("team:takeoverPlan", (roomId, sessionId, clonePath) => needTakeover().plan(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 handle("team:takeOver", (roomId, sessionId, clonePath) => needTakeover().takeOver(String(roomId), String(sessionId), clonePath ? String(clonePath) : null));
 handle("team:takeoverAnswer", (askId, answer) => {
@@ -1449,7 +1478,7 @@ async function refreshOverlaps(): Promise<void> {
     const c = worktreeChanges.get(s.cwd);
     return c ? [{ sessionId: s.id, title: s.ticketTitle ?? s.title, branch: c.branch, repo: c.repo, cwd: s.cwd, files: c.files }] : [];
   });
-  const next = mergeOverlaps(overlaps(list), teammateOverlaps(list, teamHouse.teammateChanges())); // team rooms: teammates' pushed branches too
+  const next = mergeOverlaps(overlaps(list), teammateOverlaps(list, teamChanges.teammateChanges())); // team rooms: teammates' branches and shared uncommitted work too
   if (JSON.stringify(next) === JSON.stringify(overlapState)) return;
   overlapState = next;
   toWindow("overlaps:changed", overlapState);

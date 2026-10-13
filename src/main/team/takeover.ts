@@ -3,6 +3,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { defineEventType, onMemberRemoved, roomAdmin } from "./rooms";
+import { checkRepoKey } from "./migrations";
+import { checkFolder } from "../../shared/team/migrations";
 import type { RoomSessionSource } from "./roomSessions";
 import { PeerError, TeamError, type RequestContext, type Team, type Unsubscribe } from "./transport";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
@@ -247,13 +249,38 @@ defineEventType("room.settings", {
   validate(b: any) {
     if (!b || typeof b !== "object" || Array.isArray(b)) throw new Error("no body");
     if (b.backupsToOrigin !== undefined && typeof b.backupsToOrigin !== "boolean") throw new Error("backupsToOrigin must be true or false");
+    if (b.migrationCheck !== undefined && typeof b.migrationCheck !== "boolean") throw new Error("migrationCheck must be true or false");
+    if (b.migrationFolders !== undefined) checkMigrationFolders(b.migrationFolders);
   },
   reduce(state, e) {
     // the room's admin at this point in its order decides, the same on every member
     if (roomAdmin(state) !== e.author) return;
-    state.ext.settings = { backupsToOrigin: e.body.backupsToOrigin ?? state.ext.settings?.backupsToOrigin ?? false, by: e.author, at: e.at };
+    const was = state.ext.settings;
+    const check = e.body.migrationCheck ?? was?.migrationCheck;
+    // a repository given no folders goes back to detection
+    const folders = { ...(was?.migrationFolders ?? {}), ...(e.body.migrationFolders ?? {}) };
+    for (const [k, v] of Object.entries(folders)) if (!v.length) delete folders[k];
+    state.ext.settings = {
+      backupsToOrigin: e.body.backupsToOrigin ?? was?.backupsToOrigin ?? false,
+      ...(check !== undefined ? { migrationCheck: check } : {}),
+      ...(Object.keys(folders).length ? { migrationFolders: folders } : {}),
+      by: e.author,
+      at: e.at,
+    };
   },
 });
+
+/** room.settings' migration folders: at most 20 repositories (origin keys), each with at most 10 folders (none: back to detection). */
+function checkMigrationFolders(v: unknown): void {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error("migrationFolders must be an object");
+  const entries = Object.entries(v as Record<string, unknown>);
+  if (entries.length > 20) throw new Error("migrationFolders names at most 20 repositories");
+  for (const [k, folders] of entries) {
+    checkRepoKey(k);
+    if (!Array.isArray(folders) || folders.length > 10) throw new Error("each repository's migrationFolders is a list of at most 10");
+    for (const f of folders) if (checkFolder(f) !== f) throw new Error("a migration folder isn't in its plain form");
+  }
+}
 
 // a member who left or was removed deletes their own backups; nobody can take those sessions over any more
 onMemberRemoved("takeover", (state, member, e) => {
@@ -1811,6 +1838,25 @@ export class TakeoverService {
       left,
       received,
     };
+  }
+
+  /**
+   * Teammates' room sessions whose newest snapshot was copied into a clone
+   * here peer to peer (their uncommitted work, as of their last turn): what
+   * the overlap check and the agents' teammate tools read. A session taken
+   * over, whose backup was dropped, or whose owner left isn't listed.
+   */
+  mirrored(): { roomId: RoomId; sessionId: string; owner: MemberId; sha: string; takenAt: number; repo: string }[] {
+    const out: { roomId: RoomId; sessionId: string; owner: MemberId; sha: string; takenAt: number; repo: string }[] = [];
+    for (const room of this.d.team.rooms()) {
+      const mirrored = this.local(room.id).mirrored;
+      for (const b of Object.values(room.ext.takeover?.sessions ?? {})) {
+        const m = mirrored[b.sessionId];
+        if (!m || m.from !== b.owner || b.owner === this.d.team.self.id || b.takenOver || b.dropped || !room.members.some((x) => x.id === b.owner)) continue;
+        out.push({ roomId: room.id, sessionId: b.sessionId, owner: b.owner, sha: m.sha, takenAt: m.takenAt, repo: m.repo });
+      }
+    }
+    return out;
   }
 
   /** A room's backup setting for Settings → Team: on or off, who changed it, who may, and what the remote is called. */

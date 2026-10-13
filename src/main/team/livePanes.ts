@@ -34,6 +34,7 @@ import type { MemberId, RoomId, RoomState } from "../../shared/team/types";
 import type { LaunchTarget, RemotePanes, RoomLaunch, SessionManager } from "../sessions";
 import { MAX_STREAM_CHUNK, splitText } from "./frames";
 import { roomAgentContext } from "./houseService";
+import { TEAM_CHANGES_READ_TOOLS } from "./teamChanges";
 import { ROOM_CONTEXT_ENV } from "../../shared/team/claims";
 import { HOUSE_READ_TOOLS } from "../../shared/team/house";
 import { ARTIFACT_TOOL } from "../../shared/team/artifacts";
@@ -397,7 +398,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       denyReads,
       codexPermissions,
       instructions: [instructions, codexGuarded ? CODEX_ROOM_SANDBOX_NOTE : null].filter(Boolean).join("\n\n") || null,
-      allowTools: target.agent === "claude" ? [...HOUSE_READ_TOOLS, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read] : [],
+      allowTools: target.agent === "claude" ? [...HOUSE_READ_TOOLS, ARTIFACT_TOOL.list, ARTIFACT_TOOL.read, ...TEAM_CHANGES_READ_TOOLS] : [],
       inline,
       guards: { secrets: target.agent === "claude" || codexGuarded, coauthors: this.hooksReady },
     };

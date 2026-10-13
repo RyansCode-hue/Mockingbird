@@ -63,6 +63,10 @@ export interface TeammateChanges {
   /** The local clone's main checkout (as WorktreeChanges.repo). */
   repo: string;
   files: string[];
+  /** Of `files`, those changed in uncommitted work (the session's newest snapshot shared peer to peer). */
+  uncommitted?: string[];
+  /** The teammate's session, when known (its snapshot or record): its title. */
+  session?: string;
 }
 
 /** The `other` of a teammate's overlap: not a session here, so there's no pane to jump to. */
@@ -81,7 +85,14 @@ export function teammateOverlaps(list: WorktreeChanges[], teammates: TeammateCha
       const theirs = new Set(t.files);
       const both = a.files.filter((f) => theirs.has(f));
       if (!both.length) continue;
-      (out[a.sessionId] ??= []).push({ other: teammateOverlapId(t.member, t.branch), otherTitle: `${t.name}'s pushed branch`, otherBranch: t.branch, files: both, teammate: { id: t.member, name: t.name, roomId: t.roomId } });
+      const uncommitted = both.filter((f) => t.uncommitted?.includes(f));
+      (out[a.sessionId] ??= []).push({
+        other: teammateOverlapId(t.member, t.branch),
+        otherTitle: t.session ? `${t.name}'s session ${t.session}` : `${t.name}'s pushed branch`,
+        otherBranch: t.branch,
+        files: both,
+        teammate: { id: t.member, name: t.name, roomId: t.roomId, ...(uncommitted.length ? { uncommitted } : {}) },
+      });
     }
   }
   return out;
