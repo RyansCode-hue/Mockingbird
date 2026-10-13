@@ -301,3 +301,24 @@ describe("Claude Code's background sessions", () => {
     expect(ask).not.toHaveBeenCalled();
   });
 });
+
+describe("a session a teammate continues", () => {
+  it("isn't started by a relaunch that was already under way when the take-over arrived", async () => {
+    const { m } = await manager();
+    const s = await m.create(agentPane);
+    m.kill(s.id, false);
+    let refusal: string | null = null;
+    m.relaunchGuard = () => refusal;
+    // the take-over is heard while the relaunch prepares its launch; stopping the session finds nothing running yet
+    m.roomLaunch = async () => {
+      refusal = "“a” continues on Nick's laptop";
+      expect(m.stop(s.id)).toBe(false);
+      return null;
+    };
+    const started = ptys.length;
+    await expect(m.relaunch(s.id)).rejects.toThrow(/continues on Nick's laptop/);
+    expect(ptys.length).toBe(started);
+    expect(m.list().some((x) => x.id === s.id && x.status !== "dead")).toBe(false);
+    expect(m.resumable().map((x) => x.id)).toContain(s.id);
+  });
+});

@@ -317,6 +317,8 @@ export class SessionManager {
     const runs = req.shell ? req.shellResume?.agent : req.agent ?? "claude";
     let proc: pty.IPty;
     this.refuseWhileQuitting(); // shutdown may have begun while this launch was being prepared
+    // a teammate may have taken the session over meanwhile: stopping it then found nothing live to stop
+    if (req.reuseId) this.mayRun(req.reuseId);
     try {
       proc = pty.spawn("/bin/zsh", claudeArgs, {
         name: "xterm-256color",
