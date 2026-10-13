@@ -276,6 +276,33 @@ export function useFlip(ref: RefObject<HTMLElement>): void {
 }
 
 /**
+ * Rows of a list (matched by `selector`, told apart by their `attr`) slide to their new places when `change`
+ * changes, and rows new to it fade up in. Nothing moves when `context` changed too: a filter typed, a group
+ * folded or unfolded, a different view — those redraw at once. Positions are layout offsets, read after every
+ * render, so a row that's mid-slide is measured where it really is.
+ */
+export function useFlipRows(ref: RefObject<HTMLElement>, selector: string, attr: string, change: string, context: string): void {
+  const last = useRef<{ at: Map<string, number>; change: string; context: string }>({ at: new Map(), change, context });
+  useLayoutEffect(() => {
+    const root = ref.current;
+    const prev = last.current;
+    const animate = !!root && prev.at.size > 0 && change !== prev.change && context === prev.context;
+    const at = new Map<string, number>();
+    for (const el of root?.querySelectorAll<HTMLElement>(selector) ?? []) {
+      const key = el.getAttribute(attr);
+      if (!key) continue;
+      const y = el.offsetTop;
+      at.set(key, y);
+      if (!animate) continue;
+      const was = prev.at.get(key);
+      if (was === undefined) play(el, [{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }], { duration: D.s, easing: EASE.enter });
+      else if (Math.abs(was - y) > 0.5) play(el, [{ transform: `translateY(${was - y}px)` }, { transform: "none" }], { ...springTiming(), composite: "add" });
+    }
+    last.current = { at, change, context };
+  });
+}
+
+/**
  * usePresence for the items of a list: `refFor(key)` is each item's ref, the same function for the same key
  * on every render, so an item plays its entrance once and its exit when it leaves.
  */

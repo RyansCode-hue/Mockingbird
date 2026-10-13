@@ -102,7 +102,7 @@ import { roomRepoNames } from "./newSessionModel";
 import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { usePersisted, readPref, writePref } from "./prefs";
-import { D, EASE, initMotion, motion, play } from "./motion";
+import { D, EASE, initMotion, motion, play, useFlipRows } from "./motion";
 import { StatusDot } from "./StatusDot";
 import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
 
@@ -1018,6 +1018,16 @@ function App() {
   // Workspace folders in the sidebar: explicitly opened/closed ones remember it;
   // the rest are open exactly while the workspace is in the grid.
   const [wsOpen, setWsOpen] = usePersisted<Record<string, boolean>>("mb.wsOpen", {});
+  // the session list's rows and headings ([data-flip]) slide to their new places when sessions arrive, leave,
+  // move group or re-sort — never as the filter is typed, or a group or workspace folds open or shut
+  const sessionList = useRef<HTMLDivElement>(null);
+  useFlipRows(
+    sessionList,
+    "[data-flip]",
+    "data-flip",
+    workSessions.map((s) => `${s.id}:${s.taskGroup ?? ""}:${s.status}`).join("|"),
+    `${filter}|${[...collapsed].join(",")}|${JSON.stringify(wsOpen)}|${sideView}|${tab}|${sideCollapsed}`
+  );
 
   const bySub = (list: SessionInfo[]): [string, SessionInfo[]][] => {
     const m = new Map<string, SessionInfo[]>();
@@ -1692,6 +1702,7 @@ function App() {
       <div
         key={s.id}
         data-sid={s.id}
+        data-flip={`s:${s.id}`}
         className={`sess-item ${idx >= 0 ? "shown" : ""} ${focused === s.id ? "focused" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""} ${s.muted ? "muted" : ""} ${isRemote(s) ? "remote" : ""}`}
         tabIndex={0}
         onClick={() => (idx >= 0 ? minimizePane(s) : showSession(s))}
@@ -1785,6 +1796,7 @@ function App() {
             {sub && (
               <div
                 data-ws={wsKey}
+                data-flip={`w:${wsKey}`}
                 className={`sub-label ${inGrid ? "in-grid" : ""}`}
                 title="click to show/minimize this workspace · ✎/double-click to rename · ✕ dissolves it (sessions stay) · drop a session to move it in"
                 onClick={() =>
@@ -2140,7 +2152,7 @@ function App() {
             />
           )}
           {sideView === "sessions" && (
-          <div className="scroll">
+          <div className="scroll" ref={sessionList}>
             <div className="filter-row">
               <input
                 className="filter"
@@ -2155,14 +2167,15 @@ function App() {
               // team rooms: their groups and sessions are in the Team view; this line opens it
               if (entry.kind === "connected")
                 return (
+                  <div key="connected" data-flip="connected">
                   <ConnectedLine
-                    key="connected"
                     summary={connected}
                     onOpen={() => {
                       openTeamView(connected.roomId);
                       showView("room");
                     }}
                   />
+                  </div>
                 );
               const { key, list, shared } = entry;
               return (
@@ -2170,6 +2183,7 @@ function App() {
                 {(
                   <div
                     className="group-label"
+                    data-flip={`g:${key}`}
                     title="click to focus this group in the grid · ✎/double-click to rename · drop a session here to move it"
                     onClick={() => deferClick(() => focusGroup(key, list))}
                     onDoubleClick={() => {
@@ -2249,7 +2263,7 @@ function App() {
 
             {resumable.length > 0 && (
               <>
-                <h2>
+                <h2 data-flip="previous">
                   <span>Previous</span>
                   <button className="icon" title="Relaunch every previous session, resuming its conversation" onClick={restoreAll}>
                     ↺ restore all
@@ -2260,7 +2274,7 @@ function App() {
                   const taken = roomLive.state?.own[s.id]?.takenOver;
                   const left = leftFor(s);
                   return (
-                  <div key={s.id} className="sess-item" title={taken ? `${s.cwd} — ${taken.byName} continued this session on their laptop, so this copy doesn't run again here.` : s.cwd}>
+                  <div key={s.id} data-flip={`p:${s.id}`} className="sess-item" title={taken ? `${s.cwd} — ${taken.byName} continued this session on their laptop, so this copy doesn't run again here.` : s.cwd}>
                     <span className="dot dead" />
                     <span className="name">
                       <span className="nm">{s.title}</span>
