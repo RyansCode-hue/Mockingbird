@@ -88,6 +88,38 @@ const CHROME = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/M
  * about) the user's own Chrome data.
  */
 export async function screenshot(file, { size = "1400x900", query = "", outDir } = {}) {
+  const target = path.resolve(file);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.rmSync(target, { force: true });
+  // Chrome writes the screenshot within seconds but can linger for minutes
+  // before exiting, so the file decides when it's done (or, once Chrome has gone, that it's there)
+  let lastSize = -1;
+  await inChrome({ size, query: `shot${query ? `&${query.replace(/^[?&]/, "")}` : ""}`, outDir, args: [`--screenshot=${target}`], what: "the screenshot" }, (closed) => {
+    const now = fs.existsSync(target) ? fs.statSync(target).size : -1;
+    const done = now > 0 && (closed || now === lastSize);
+    lastSize = now;
+    return done;
+  });
+  if (!fs.existsSync(target)) throw new Error("Chrome finished without writing the screenshot");
+  return target;
+}
+
+/**
+ * Render the preview in headless Chrome and return the page's HTML once the
+ * fixtures have landed — with `measure=<selector>` in the query, it holds
+ * where those elements sit (src/preview/stub.ts), for layout checks.
+ */
+export async function pageDom({ size = "1400x900", query = "", outDir } = {}) {
+  let html = "";
+  await inChrome({ size, query, outDir, args: ["--dump-dom"], what: "the page", onStdout: (d) => (html += d) }, () => html.includes("</html>"));
+  return html;
+}
+
+/**
+ * Build and serve the preview, open it in headless Chrome with `args`, and stop it all once `done(closed)` says
+ * the result is there (`closed`: Chrome has exited and its output is read).
+ */
+async function inChrome({ size, query, outDir, args, what, onStdout }, done) {
   if (!fs.existsSync(CHROME)) throw new Error(`Chrome isn't at ${CHROME} — set CHROME to its binary`);
   const [w, h] = size.split("x").map(Number);
   if (!w || !h) throw new Error(`--size wants WIDTHxHEIGHT, not "${size}"`);
@@ -96,12 +128,7 @@ export async function screenshot(file, { size = "1400x900", query = "", outDir }
     const s = serve(dir, 0, () => resolve(s));
   });
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "mb-preview-chrome-"));
-  const target = path.resolve(file);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const url = `http://localhost:${server.address().port}/?reset&shot${query ? `&${query.replace(/^[?&]/, "")}` : ""}`;
-  // Chrome writes the screenshot within seconds but can linger for minutes
-  // before exiting, so the file decides when it's done, not the process
-  fs.rmSync(target, { force: true });
+  const url = `http://localhost:${server.address().port}/?reset${query ? `&${query.replace(/^[?&]/, "")}` : ""}`;
   const chrome = spawn(
     CHROME,
     [
@@ -113,30 +140,30 @@ export async function screenshot(file, { size = "1400x900", query = "", outDir }
       "--hide-scrollbars",
       `--window-size=${w},${h}`,
       "--virtual-time-budget=4000", // the fixtures answer after short delays; let them land
-      `--screenshot=${target}`,
+      ...args,
       url,
     ],
-    { stdio: ["ignore", "ignore", "pipe"] }
+    { stdio: ["ignore", onStdout ? "pipe" : "ignore", "pipe"] }
   );
+  if (onStdout) chrome.stdout.on("data", (d) => onStdout(String(d)));
+  // closed: exited, and its output read to the end
+  let closed = false;
+  chrome.once("close", () => (closed = true));
   let stderr = "";
   chrome.stderr.on("data", (d) => (stderr = (stderr + d).slice(-2000)));
   try {
     await new Promise((resolve, reject) => {
       const started = Date.now();
-      let lastSize = -1;
       const tick = setInterval(() => {
-        const size = fs.existsSync(target) ? fs.statSync(target).size : -1;
-        if (size > 0 && size === lastSize) {
+        if (done(closed)) {
           clearInterval(tick);
-          return resolve();
-        }
-        lastSize = size;
-        if (chrome.exitCode !== null && size <= 0) {
+          resolve();
+        } else if (closed) {
           clearInterval(tick);
-          reject(new Error(`Chrome exited without the screenshot: ${stderr.trim().split("\n").pop() ?? ""}`));
+          reject(new Error(`Chrome exited without ${what}: ${stderr.trim().split("\n").pop() ?? ""}`));
         } else if (Date.now() - started > 60_000) {
           clearInterval(tick);
-          reject(new Error("Chrome took over a minute without writing the screenshot"));
+          reject(new Error(`Chrome took over a minute without ${what}`));
         }
       }, 250);
     });
@@ -150,8 +177,6 @@ export async function screenshot(file, { size = "1400x900", query = "", outDir }
     server.close();
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
-  if (!fs.existsSync(target)) throw new Error("Chrome finished without writing the screenshot");
-  return target;
 }
 
 const arg = (name) => {

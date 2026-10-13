@@ -1230,8 +1230,14 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .collab-rail-dot { position: absolute; top: -2px; right: -2px; width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--bg-sidebar); }
 .collab-rail-dot.run { background: var(--teal); }
 .collab-rail-dot.ask { background: var(--amber); }
-.collab-room { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: row; }
-.collab-center { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* a council: its header, the discussion and the composer in a column, the inspector beside all three */
+.collab-room {
+  position: relative; flex: 1; min-width: 0; min-height: 0; container: collab-room / inline-size;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.collab-room > .collab-head, .collab-body, .collab-room > .collab-bar { grid-column: 1; }
+.collab-body { grid-row: 2; min-height: 0; display: flex; flex-direction: column; }
+.collab-room > .collab-inspector-wrap { grid-column: 2; grid-row: 1 / -1; min-height: 0; max-width: 45cqw; }
 .collab-head { display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-bottom: 1px solid var(--line-soft); background: var(--bg-chrome); }
 .collab-head h2 { font: 600 14px var(--ui); color: var(--text-1); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .collab-head .spacer { flex: 1; }
@@ -1295,9 +1301,11 @@ button.link { border: none; background: none; padding: 0; font: 500 11px var(--u
 button.link:hover { background: none; text-decoration: underline; }
 button.link:disabled { color: var(--text-4); text-decoration: none; }
 button.link.danger { color: var(--red); }
-/* narrow windows: the inspector floats over the conversation instead of squeezing it */
-@media (max-width: 1000px) {
-  .collab-inspector-wrap { position: absolute; top: 0; right: 0; bottom: 0; z-index: 5; box-shadow: -8px 0 24px rgba(0,0,0,.35); }
+/* a narrow council: the inspector floats over the discussion only, between the header and the composer, so the
+   Thread/Rounds switch, the inspector's own toggle, Run and Send stay in reach */
+@container collab-room (max-width: 720px) {
+  .collab-room > .collab-head, .collab-body, .collab-room > .collab-bar { grid-column: 1 / -1; }
+  .collab-room > .collab-inspector-wrap { grid-row: 2; max-width: 85cqw; z-index: 5; box-shadow: -8px 0 24px rgba(0,0,0,.35); }
 }
 /* Models, edited in the inspector: a card per model that opens in place */
 .ins-models .ins-head { gap: 8px; }
@@ -2403,37 +2411,29 @@ button.lbtn:focus-visible { outline: 1px solid var(--line-focus); outline-offset
 .mb-ctx-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mb-ctx-sep { height: 1px; margin: 4px 6px; background: var(--line-soft); flex-shrink: 0; }
 
-/* ---- session rows: the name across the width, what it is under it, labelled actions ---- */
+/* ---- session rows: the name with the row's actions at the end of its line, what it is under it ---- */
 .sess-item { position: relative; outline: none; }
 .sess-item:focus-visible { box-shadow: inset 0 0 0 1px var(--line-focus); }
 .sess-item .name .br.who { font: 400 10px var(--ui); color: var(--text-3); }
 .sess-item.remote .name .br.who { color: var(--teal-text); }
-.sess-item .sr-acts button { display: inline-flex; opacity: 1; }
-/* the Sessions view: the actions sit over the row's right end while it's hovered or focused, so the name keeps the width */
-.sess-item .sr-acts {
-  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
-  display: none; padding-left: 14px; border-radius: 5px;
-  background: linear-gradient(to right, transparent, var(--bg-sidebar) 14px);
-}
-.sess-item:hover .sr-acts, .sess-item:focus-within .sr-acts { display: inline-flex; }
-.sess-item:hover .sr-acts { background: linear-gradient(to right, transparent, color-mix(in srgb, var(--fill-subtle), var(--bg-sidebar)) 14px); }
-/* pinned or muted: that button stays, with its word, while the row rests */
-.sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) { display: inline-flex; background: none; padding-left: 0; }
+/* the actions share the title's line, in the flow: the name gives way to them (an ellipsis) rather than sitting
+   under them, and the lines below, with their own buttons, are never covered. A sidebar row has no room for
+   their words, so here they're icons, named in their tooltips and in the right-click menu */
+.sess-item .sr-line { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 16px; }
+.sess-item .sr-line .nm { flex: 1 1 auto; min-width: 0; }
+.sess-item .sr-acts { display: none; gap: 1px; }
+.sess-item .sr-acts button.lbtn { display: inline-flex; opacity: 1; min-width: 20px; height: 16px; padding: 0 3px; }
+.sess-item .sr-acts .lbtn .ico { width: 12px; height: 12px; }
+.sess-item .sr-acts .lbtn-t { display: none; }
+.sess-item:is(:hover, :focus-within) .sr-acts { display: inline-flex; }
+/* pinned or muted: that button stays while the row rests */
+.sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) { display: inline-flex; }
 .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) > :not(.on) { display: none; }
-.sess-item:not(:hover):not(:focus-within):has(.sr-acts .lbtn.on) { padding-right: 44px; }
-
-/* the Team view: a room's rows show their actions on a line of their own while hovered, focused from the
-   keyboard, or selected (the pane you're in); resting rows are just their two lines of words */
-.room-sess-body .sess-item { flex-wrap: wrap; align-items: flex-start; row-gap: 3px; }
+/* the Team view: the selected row (the pane you're in) keeps its actions */
+.room-sess-body .sess-item { align-items: flex-start; }
 .room-sess-body .sess-item > .dot { margin-top: 5px; }
-.room-sess-body .sess-item .name { flex: 1 1 0; }
-.room-sess-body .sess-item .sr-acts,
-.room-sess-body .sess-item:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) { display: none; }
-.room-sess-body .sess-item:not(:hover):not(:focus-within):has(.sr-acts .lbtn.on) { padding-right: 8px; }
-.room-sess-body .sess-item:is(:hover, :focus-within, .focused) .sr-acts {
-  position: static; transform: none; display: inline-flex; flex-basis: 100%; padding: 0 0 0 9px; margin-left: 4px; background: none;
-}
-.room-sess-body .sess-item:is(:hover, :focus-within, .focused) .sr-acts > * { display: inline-flex; }
+.room-sess-body .sess-item.focused .sr-acts,
+.room-sess-body .sess-item.focused:not(:hover):not(:focus-within) .sr-acts:has(.lbtn.on) > :not(.on) { display: inline-flex; }
 /* a room's group in the Sessions list */
 .group-label .gl-shared { flex-shrink: 0; font: 500 9.5px var(--ui); color: var(--teal-text); }
 

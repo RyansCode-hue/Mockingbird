@@ -39,23 +39,22 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
   useEffect(() => {
     let alive = true; // a slower earlier read must not land on top of a newer target
     setIoError(null);
-    window.mb
-      .readClaudeMd(target)
-      .then((r: { path: string; content: string } | { error: string }) => {
-        if (!alive) return;
-        if (isErr(r)) {
-          // an unreadable file must never look like an empty one — saving that
-          // empty editor back would overwrite the real CLAUDE.md
-          setIoError(`Couldn't read ${target}: ${r.error}`);
-          setContent("");
-          setOriginal("");
-          setLoadedPath(target);
-          return;
-        }
-        setContent(r.content);
-        setOriginal(r.content);
-        setLoadedPath(r.path);
-      });
+    // a rejected call is a failed read too, not an editor left blank
+    void settled<{ path: string; content: string } | { error: string }>(window.mb.readClaudeMd(target)).then((r) => {
+      if (!alive) return;
+      if (isErr(r)) {
+        // an unreadable file must never look like an empty one — saving that
+        // empty editor back would overwrite the real CLAUDE.md
+        setIoError(`Couldn't read ${target}: ${r.error}`);
+        setContent("");
+        setOriginal("");
+        setLoadedPath(target);
+        return;
+      }
+      setContent(r.content);
+      setOriginal(r.content);
+      setLoadedPath(r.path);
+    });
     return () => {
       alive = false;
     };

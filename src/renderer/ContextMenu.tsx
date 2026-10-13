@@ -255,7 +255,9 @@ export function LabelledButton({ action, className = "" }: { action: Action; cla
     <button
       type="button"
       className={`lbtn ${a.primary ? "primary" : ""} ${a.danger ? "danger" : ""} ${a.pressed ? "on" : ""} ${className}`}
-      title={a.title}
+      // where there's no room for the word (a sidebar row), the button is its icon alone: it's named by these
+      title={a.title ?? a.label}
+      aria-label={a.label}
       aria-pressed={a.pressed}
       disabled={a.disabled}
       data-action={a.key}

@@ -13,6 +13,9 @@
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import type { TeamStatus } from "../shared/team/types";
+// the version being built, and an update one patch above it
+import { version } from "../../package.json";
+const nextVersion = version.replace(/\d+$/, (n) => String(Number(n) + 1));
 // team rooms: the House board
 import { HOUSE_TOKEN_HOW, isOpenStatus, openBacklog, type HouseHistoryEntry, type HouseOwner, type HouseRow, type HouseTicket, type HouseTicketDetail, type HouseTicketView, type HouseView, type HouseWrite } from "../shared/team/house";
 // team rooms: team chat
@@ -141,7 +144,7 @@ const usage: UsageReport = {
   claude: { agent: "claude", plan: "Max", at: now - 2 * min, limits: [{ label: "5-hour limit", window: "5h", usedPct: 38, resetsAt: now + 2.5 * 60 * min }, { label: "Weekly · all models", window: "week", usedPct: 61, resetsAt: now + 3 * 24 * 60 * min }] },
   codex: { agent: "codex", plan: "Plus", at: now - 20 * min, limits: [{ label: "5-hour limit", window: "5h", usedPct: 9, resetsAt: now + 4 * 60 * min }] },
 };
-// each session's context window; ?ctx=error answers every read with a failure
+// each session's context window; ?contextWindow=error answers every read with a failure
 const contexts: Record<string, ContextWindow> = {
   s1: { state: "reading", agent: "claude", tokens: 275_612, window: 1_000_000, at: now - 4_000 },
   s2: { state: "reading", agent: "claude", tokens: 183_400, window: 200_000, at: now - 40_000 },
@@ -396,6 +399,15 @@ const artTexts: Record<string, string> = {
   [ART.copy]: specText.replace("Save the choice on change, not on submit", "Save the choice on change, debounced 500 ms"),
   [ART.csv]: 'org_id,name,members,last_used\n42,"Acme Foundation",318,2026-10-11\n7,"Bright Futures, Inc.",54,2026-10-09\n19,Cedar Grove Trust,121,2026-09-30\n23,"Delta ""Arts"" Council",12,\n',
   [ART.env]: "DATABASE_URL=postgres://staging-db.internal/backoffice\nFEATURE_LAST_ORG=1\nSENTRY_DSN=(in the vault)\n",
+  [ART.log]: [
+    "2026-10-12T14:58:02Z INFO  GET /api/users/me/last-org 200 12ms",
+    "2026-10-12T14:58:40Z ERROR PUT /api/users/me/last-org 500 41ms org_id=42",
+    "  KeyError: 'org_id' in handlers/orgs.py:88 (save_last_org)",
+    "2026-10-12T14:59:13Z WARN  GET /api/orgs 200 1.9s slow query: orgs_for_user",
+    "2026-10-12T14:59:55Z ERROR PUT /api/users/me/last-org 500 38ms org_id=7",
+    "  KeyError: 'org_id' in handlers/orgs.py:88 (save_last_org)",
+    "",
+  ].join("\n"),
 };
 const KB = 1024;
 const art = (over: Partial<ArtifactSummary> & Pick<ArtifactSummary, "id" | "kind" | "name" | "addedBy" | "addedAt">): ArtifactSummary => ({
@@ -774,7 +786,11 @@ const api: Record<string, (...a: any[]) => any> = {
   resumableSessions: async () => previous,
   openExternal: async (url: string) => console.info(`[preview] would open ${url} in the browser`),
   collabProblems: async () => [],
-  readClaudeMd: async (p: string) => `# ${p}\n\n- Run the tests before calling anything done.\n`,
+  // main answers { path, content } (the path with ~ expanded), or { error }; ?claudeMd=error rejects the call outright
+  readClaudeMd: async (p: string) => {
+    if (params.get("claudeMd") === "error") throw new Error("Error invoking remote method 'claudemd:read': EACCES: permission denied");
+    return { path: p.replace(/^~/, "/Users/you"), content: `# Working here\n\n- Run the tests before calling anything done.\n- Keep commits small; one change each.\n` };
+  },
   saveClaudeMd: async () => true,
   listImportable: async () => [
     { sessionId: "c-import-1", agent: "claude", cwd: REPO, title: "Why does the org picker reset on save?", mtimeMs: now - 50 * min },
@@ -847,14 +863,14 @@ const api: Record<string, (...a: any[]) => any> = {
       return { id, outcome };
     }),
   hooksInstalled: async () => true,
-  appVersion: async () => "1.3.0",
+  appVersion: async () => version,
   getSettings: async () => settings,
   setSettings: async (patch: Partial<Settings>) => {
     settings = { ...settings, ...patch }; // main merges what it's sent
   },
   usageGet: async () => usage,
   contextWindow: async (id: string): Promise<ContextWindow | { error: string }> =>
-    new URLSearchParams(location.search).get("ctx") === "error"
+    new URLSearchParams(location.search).get("contextWindow") === "error"
       ? { error: `EACCES: permission denied, open '/Users/you/.mockingbird/context/${id}.json'` }
       : (contexts[id] ?? { state: "none", why: "No reply yet in this conversation" }),
   metersGet: async () => meters,
@@ -988,7 +1004,7 @@ const api: Record<string, (...a: any[]) => any> = {
       : [];
     return { hits, conversations: 128, files: 131, indexing: null, lastSync: now, problem: null };
   },
-  updateCheck: async () => later({ latest: "1.3.1", current: "1.3.0", newer: true, url: "https://github.com/", source: "branch" }, 600),
+  updateCheck: async () => later({ latest: nextVersion, current: version, newer: true, url: "https://github.com/", source: "branch" }, 600),
   updateStatus: async () => ({ state: "idle", done: [], log: [] }),
   updateOutcome: async () => null,
   updateSource: async () => ({ configured: null, found: "/Users/you/Code/Mockingbird" }),
@@ -1478,7 +1494,7 @@ if (!view && params.has("chatMenu")) {
 // ?paneControls shows every pane header's controls as a hover does, and every session row's actions, for screenshots
 if (params.has("paneControls")) {
   const show = document.createElement("style");
-  show.textContent = ".pane .pane-header .controls, .sess-item .sr-acts { display: inline-flex !important; }";
+  show.textContent = ".pane .pane-header .controls, .sess-item .sr-acts, .sess-item .sr-acts > * { display: inline-flex !important; }";
   document.head.appendChild(show);
 }
 const ctxOn = params.get("ctx");
@@ -1614,7 +1630,8 @@ if (params.has("joining")) {
   }, 700);
   setTimeout(() => click(".team-dlg .row button.primary"), 900);
 }
-// team rooms: artifacts (with view=room) — ?artifact=<n|name> opens the viewer for the nth row, or the row of that name;
+// team rooms: artifacts (with view=room) — ?artifact=<n|name> opens the viewer for the nth row (newest first:
+// 1 is api-errors.log; ?artifact=Last-org%20spec for the note), or the row of that name;
 // ?artifactEdit edits the note opened (=stale: and Sam saves an edit of it meanwhile); ?artifactAdd opens + Add (=note,
 // =link, =repo picks that); ?artifactDrop holds a file over the Team tab; ?composer=<text> types into the message box
 // (%23spec: the # completion); ?artifactsClosed starts with the section collapsed
@@ -1683,6 +1700,25 @@ if (params.has("artifactDrop")) {
 }
 const composerText = params.get("composer");
 if (composerText) waitFor(".rc-bar textarea", (el) => setTimeout(() => typeArea(el as HTMLTextAreaElement, composerText), 300));
+// ?help opens the guide (⌘/)
+if (params.has("help")) waitFor(".statusbar .help-link", (el) => el.click());
+// ?measure=<selector> (repeatable) writes where each match sits into the page once the fixtures have landed, for
+// layout checks that read the page back (pageDom in scripts/ui-preview.mjs): a <script id="mb-measure"> holding
+// { [selector]: { x, y, w, h, text }[] }, hidden matches included at 0×0
+const measure = params.getAll("measure");
+if (measure.length) {
+  setTimeout(() => {
+    const at = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height, text: (el.textContent ?? "").trim().slice(0, 200) };
+    };
+    const out = document.createElement("script");
+    out.type = "application/json";
+    out.id = "mb-measure";
+    out.textContent = JSON.stringify(Object.fromEntries(measure.map((sel) => [sel, [...document.querySelectorAll(sel)].map(at)]))).replace(/</g, "\\u003c");
+    document.body.appendChild(out);
+  }, 2500);
+}
 if (params.has("reset")) {
   params.delete("reset");
   history.replaceState(null, "", `${location.pathname}${params.size ? `?${params}` : ""}`);

@@ -1598,7 +1598,7 @@ function App() {
     ]);
   };
 
-  /** A session's row: its name across the whole width, what it is underneath, then its labelled actions. */
+  /** A session's row: its name, with its actions at the end of that line, and what it is underneath. */
   const sessionRow = (s: SessionInfo) => {
     const idx = shown.indexOf(s.id);
     const acts = sessionActions(s);
@@ -1654,7 +1654,11 @@ function App() {
               if (!isRemote(s)) setEditing({ key: s.id, value: titleOf(s) });
             }}
           >
-            <span className="nm">{titleOf(s)}</span>
+            {/* the title line holds the row's actions, so they never sit over the lines and buttons under it */}
+            <span className="sr-line">
+              <span className="nm">{titleOf(s)}</span>
+              <ActionBar className="sr-acts" actions={pickActions(acts, isRemote(s) ? ["takeover", "notify", "pin"] : ["notify", "pin", "close"])} more={acts} label={titleOf(s)} />
+            </span>
             {/* team rooms: live panes — whose session it is and who's looking, in words */}
             {s.room && <span className="br who">{roomRowLine(s.room)}</span>}
             {(s.branch || s.agent === "codex") && (
@@ -1673,7 +1677,6 @@ function App() {
             <ReceivedNotice received={receivedFor(s)} onReview={setReviewing} compact />
           </span>
         )}
-        <ActionBar className="sr-acts" actions={pickActions(acts, isRemote(s) ? ["takeover", "notify", "pin"] : ["notify", "pin", "close"])} more={acts} label={titleOf(s)} />
       </div>
     );
   };
@@ -2818,7 +2821,7 @@ function App() {
         />
       )}
       {reviewing && <ReceivedDialog received={tkView?.received.find((r) => r.id === reviewing.id) ?? reviewing} onClose={() => setReviewing(null)} />}
-      <HouseWarnings onJump={jumpTo} onOpenBoard={setBoardDlg} />
+      <HouseWarnings onJump={jumpTo} onOpenBoard={setBoardDlg} boardRoomId={boardDlg} />
 
       {renameDlg && (
         <RenameDialog

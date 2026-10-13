@@ -832,7 +832,8 @@ House's **open backlog**.
   for the room until that member says yes: "Use your <project> builder token
   for room <name>?" — **Allow** / **Not now**, on a toast that stays until it's
   answered and on the board, which shows **Connect your <project> token**
-  meanwhile. The answer is kept on this Mac per room and project
+  meanwhile (while that room's board is open, its toast steps aside: one
+  question in one place). The answer is kept on this Mac per room and project
   (`~/.mockingbird/team/house-consent.json`, never in the room log) and asked
   again when the admin points the room at another project; leaving the room
   forgets it. The admin choosing a project on their own board is their

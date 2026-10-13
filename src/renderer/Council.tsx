@@ -241,30 +241,30 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
 
   return (
     <div className="collab-room">
-      <div className="collab-center">
-        <header className="collab-head">
-          <h2 title={room.brief}>{room.title}</h2>
-          <span className="collab-pill">round {room.round}</span>
-          {agree && (
-            <span className="collab-agree" title={`Stances in round ${agree.round}`}>
-              {agree.agree} of {agree.of} agree
-            </span>
-          )}
-          <span className="spacer" />
-          {pending.length > 0 && (
-            <button className="collab-waiting" onClick={() => asksRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" })}>
-              {pending.length === 1 ? "1 request waiting" : `${pending.length} requests waiting`}
-            </button>
-          )}
-          <span className="seg" title="Read the discussion as a thread, or compare the models round by round">
-            <button className={view === "thread" ? "on" : ""} onClick={() => setView("thread")}>Thread</button>
-            <button className={view === "rounds" ? "on" : ""} onClick={() => setView("rounds")}>Rounds</button>
+      <header className="collab-head">
+        <h2 title={room.brief}>{room.title}</h2>
+        <span className="collab-pill">round {room.round}</span>
+        {agree && (
+          <span className="collab-agree" title={`Stances in round ${agree.round}`}>
+            {agree.agree} of {agree.of} agree
           </span>
-          <button className={`icon collab-panel-toggle ${inspector ? "on" : ""}`} title={inspector ? "Hide council details" : "Show council details"} onClick={() => setInspector(!inspector)}>
-            <PanelRightIcon open={inspector} />
+        )}
+        <span className="spacer" />
+        {pending.length > 0 && (
+          <button className="collab-waiting" onClick={() => asksRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" })}>
+            {pending.length === 1 ? "1 request waiting" : `${pending.length} requests waiting`}
           </button>
-        </header>
+        )}
+        <span className="seg" title="Read the discussion as a thread, or compare the models round by round">
+          <button className={view === "thread" ? "on" : ""} onClick={() => setView("thread")}>Thread</button>
+          <button className={view === "rounds" ? "on" : ""} onClick={() => setView("rounds")}>Rounds</button>
+        </span>
+        <button className={`icon collab-panel-toggle ${inspector ? "on" : ""}`} title={inspector ? "Hide council details" : "Show council details"} onClick={() => setInspector(!inspector)}>
+          <PanelRightIcon open={inspector} />
+        </button>
+      </header>
 
+      <div className="collab-body">
         {view === "thread" ? (
           <Thread room={room} label={label} color={color} open={open} toggle={toggle} call={call} endRef={endRef} />
         ) : (
@@ -280,42 +280,42 @@ function Room({ room, catalog, onDeleted, onOpenSession }: { room: CollabRoom; c
         )}
 
         {error && <div className="err">{error}</div>}
-        <footer className="collab-bar">
-          <textarea
-            rows={2}
-            placeholder={room.running ? "Add to the discussion — the models see it on their next turn" : "Say something, or press Run to continue"}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Tab" && e.shiftKey) {
-                e.preventDefault();
-                setMode(nextMode(room.mode));
-              } else if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-          />
-          <div className="collab-controls">
-            <ModeSeg mode={room.mode} onMode={(m) => setMode(m)} />
-            {room.mode !== "step" && (
-              <label className="collab-rounds" title={room.mode === "auto" ? "Rounds per run" : "Give up after this many rounds"}>
-                {room.mode === "auto" ? "rounds" : "cap"}
-                <input type="number" min={1} max={20} value={room.maxRounds} onChange={(e) => setMode(room.mode, Number(e.target.value))} />
-              </label>
-            )}
-            <span className="spacer" />
-            {room.running ? (
-              <button className="outline" onClick={() => call("stop", () => window.mb.collabStop(room.id))}>Stop</button>
-            ) : (
-              <button className="outline" onClick={() => window.mb.collabRun(room.id)}>
-                {room.mode === "step" ? "Next round" : "Run"}
-              </button>
-            )}
-            <button className="primary" disabled={!draft.trim()} onClick={send}>Send</button>
-          </div>
-        </footer>
       </div>
+      <footer className="collab-bar">
+        <textarea
+          rows={2}
+          placeholder={room.running ? "Add to the discussion — the models see it on their next turn" : "Say something, or press Run to continue"}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Tab" && e.shiftKey) {
+              e.preventDefault();
+              setMode(nextMode(room.mode));
+            } else if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send();
+            }
+          }}
+        />
+        <div className="collab-controls">
+          <ModeSeg mode={room.mode} onMode={(m) => setMode(m)} />
+          {room.mode !== "step" && (
+            <label className="collab-rounds" title={room.mode === "auto" ? "Rounds per run" : "Give up after this many rounds"}>
+              {room.mode === "auto" ? "rounds" : "cap"}
+              <input type="number" min={1} max={20} value={room.maxRounds} onChange={(e) => setMode(room.mode, Number(e.target.value))} />
+            </label>
+          )}
+          <span className="spacer" />
+          {room.running ? (
+            <button className="outline" onClick={() => call("stop", () => window.mb.collabStop(room.id))}>Stop</button>
+          ) : (
+            <button className="outline" onClick={() => window.mb.collabRun(room.id)}>
+              {room.mode === "step" ? "Next round" : "Run"}
+            </button>
+          )}
+          <button className="primary" disabled={!draft.trim()} onClick={send}>Send</button>
+        </div>
+      </footer>
 
       {inspector && (
         <Inspector

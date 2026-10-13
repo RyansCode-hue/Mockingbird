@@ -634,10 +634,19 @@ function useConsentAsks(): [(HouseConsentAsk & { problem?: string })[], (ask: Ho
   return [asks, answer];
 }
 
+/**
+ * The token asks to show as toasts: all of them but the open board's room, whose board asks in its own
+ * card. One question in one place; the toast comes back if the board closes unanswered.
+ */
+export function consentToasts<T extends { roomId: string }>(asks: T[], boardRoomId: string | null): T[] {
+  return boardRoomId ? asks.filter((a) => a.roomId !== boardRoomId) : asks;
+}
+
 /** Claim warnings as they happen: which agent touched which teammate's ticket. Click one to go to its session. */
-export function HouseWarnings({ onJump, onOpenBoard }: { onJump: (sessionId: string) => void; onOpenBoard: (roomId: string) => void }) {
+export function HouseWarnings({ onJump, onOpenBoard, boardRoomId }: { onJump: (sessionId: string) => void; onOpenBoard: (roomId: string) => void; boardRoomId: string | null }) {
   const [notices, setNotices] = useState<(ClaimWarningNotice & { key: number })[]>([]);
-  const [asks, answer] = useConsentAsks();
+  const [allAsks, answer] = useConsentAsks();
+  const asks = consentToasts(allAsks, boardRoomId);
   useEffect(
     () =>
       window.mb.onHouseWarning((n: ClaimWarningNotice) => {
