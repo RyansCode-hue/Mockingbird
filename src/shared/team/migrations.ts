@@ -265,7 +265,7 @@ export function migrationHookResponse(hits: MigrationHit[]): { reason: string; s
   const named = (s: unknown) => (/^[\p{L}\p{N}][\p{L}\p{N} ._'@/-]*$/u.test(line(s)) ? line(s) : quote(s));
   const whose = (h: MigrationHit) => {
     if (!h.holder) return "which isn't reserved for your user";
-    const extra = [h.holder.ticket ? `ticket ${named(h.holder.ticket)}` : null, h.holder.branch ? `branch ${named(h.holder.branch)}` : null].filter(Boolean).join(", ");
+    const extra = [h.holder.ticket ? `ticket #${named(String(h.holder.ticket).replace(/^#/, ""))}` : null, h.holder.branch ? `branch ${named(h.holder.branch)}` : null].filter(Boolean).join(", ");
     return `which ${named(h.holder.name)}'s session ${quote(h.holder.session)}${extra ? ` (${extra})` : ""} reserved`;
   };
   const parts = hits.map((h) => `${quote(h.file)} would add migration ${h.label} to ${quote(h.folder)}, ${whose(h)}`);

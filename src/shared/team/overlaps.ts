@@ -96,7 +96,7 @@ export function overlapHookResponse(found: { file: string; hits: OverlapHit[] }[
   const quote = (s: unknown) => JSON.stringify(line(s)).replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
   const named = (s: unknown) => (/^[\p{L}\p{N}][\p{L}\p{N} ._'@/-]*$/u.test(line(s)) ? line(s) : quote(s));
   const who = (h: OverlapHit) => {
-    const extra = [h.ticket ? `ticket ${named(h.ticket)}` : null, h.branch ? `branch ${named(h.branch)}` : null].filter(Boolean).join(", ");
+    const extra = [h.ticket ? `ticket #${named(String(h.ticket).replace(/^#/, ""))}` : null, h.branch ? `branch ${named(h.branch)}` : null].filter(Boolean).join(", ");
     return `${named(h.member)}'s session ${quote(h.session)}${extra ? ` (${extra})` : ""}${h.uncommitted ? ", in uncommitted work on their Mac," : ""}`;
   };
   const parts = found.map((f) => `${f.hits.map(who).join(" and ")} is also changing ${quote(f.file)}`);
