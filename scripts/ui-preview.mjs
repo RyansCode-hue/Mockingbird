@@ -116,10 +116,56 @@ export async function pageDom({ size = "1400x900", query = "", outDir } = {}) {
 }
 
 /**
- * Build and serve the preview, open it in headless Chrome with `args`, and stop it all once `done(closed)` says
- * the result is there (`closed`: Chrome has exited and its output is read).
+ * Render the preview in headless Chrome in real time (no virtual time: animations and View Transitions only
+ * run in real frames) and return what the page's expression `read` gives, once it gives anything but null —
+ * for checks a page script reports on, like the motion audit (src/preview/stub.ts).
  */
-async function inChrome({ size, query, outDir, args, what, onStdout }, done) {
+export async function pageResult({ size = "1400x900", query = "", outDir, read }) {
+  let devtools = null;
+  let result = null;
+  let ws = null;
+  let id = 0;
+  const ask = (method, params) =>
+    new Promise((resolve) => {
+      const n = ++id;
+      const on = (e) => {
+        const m = JSON.parse(String(e.data));
+        if (m.id !== n) return;
+        ws.removeEventListener("message", on);
+        resolve(m.result);
+      };
+      ws.addEventListener("message", on);
+      ws.send(JSON.stringify({ id: n, method, params }));
+    });
+  try {
+    await inChrome({ size, query, outDir, budget: null, args: ["--remote-debugging-port=0"], what: "the page's result", onStderr: (text) => (devtools ??= text.match(/DevTools listening on (ws:\/\/\S+)/)?.[1] ?? null) }, async () => {
+      if (!devtools) return false;
+      if (!ws) {
+        const pages = await (await fetch(`http://127.0.0.1:${new URL(devtools).port}/json`)).json();
+        const page = pages.find((t) => t.type === "page" && t.url.startsWith("http://localhost"));
+        if (!page) return false;
+        ws = new WebSocket(page.webSocketDebuggerUrl);
+        await new Promise((r, j) => {
+          ws.addEventListener("open", r, { once: true });
+          ws.addEventListener("error", j, { once: true });
+        });
+      }
+      const r = await ask("Runtime.evaluate", { expression: read, returnByValue: true });
+      result = r?.result?.value ?? null;
+      return result !== null;
+    });
+  } finally {
+    ws?.close();
+  }
+  return result;
+}
+
+/**
+ * Build and serve the preview, open it in headless Chrome with `args`, and stop it all once `done(closed)` says
+ * the result is there (`closed`: Chrome has exited and its output is read). `budget` is the virtual time the
+ * page gets (null: real time).
+ */
+async function inChrome({ size, query, outDir, args, what, onStdout, onStderr, budget = 4000 }, done) {
   if (!fs.existsSync(CHROME)) throw new Error(`Chrome isn't at ${CHROME} — set CHROME to its binary`);
   const [w, h] = size.split("x").map(Number);
   if (!w || !h) throw new Error(`--size wants WIDTHxHEIGHT, not "${size}"`);
@@ -139,7 +185,8 @@ async function inChrome({ size, query, outDir, args, what, onStdout }, done) {
       "--no-first-run",
       "--hide-scrollbars",
       `--window-size=${w},${h}`,
-      "--virtual-time-budget=4000", // the fixtures answer after short delays; let them land
+      // the fixtures answer after short delays; let them land
+      ...(budget === null ? [] : [`--virtual-time-budget=${budget}`]),
       ...args,
       url,
     ],
@@ -150,23 +197,18 @@ async function inChrome({ size, query, outDir, args, what, onStdout }, done) {
   let closed = false;
   chrome.once("close", () => (closed = true));
   let stderr = "";
-  chrome.stderr.on("data", (d) => (stderr = (stderr + d).slice(-2000)));
+  chrome.stderr.on("data", (d) => {
+    stderr = (stderr + d).slice(-2000);
+    onStderr?.(stderr);
+  });
   try {
-    await new Promise((resolve, reject) => {
-      const started = Date.now();
-      const tick = setInterval(() => {
-        if (done(closed)) {
-          clearInterval(tick);
-          resolve();
-        } else if (closed) {
-          clearInterval(tick);
-          reject(new Error(`Chrome exited without ${what}: ${stderr.trim().split("\n").pop() ?? ""}`));
-        } else if (Date.now() - started > 60_000) {
-          clearInterval(tick);
-          reject(new Error(`Chrome took over a minute without ${what}`));
-        }
-      }, 250);
-    });
+    const started = Date.now();
+    for (;;) {
+      if (await done(closed)) break;
+      if (closed) throw new Error(`Chrome exited without ${what}: ${stderr.trim().split("\n").pop() ?? ""}`);
+      if (Date.now() - started > 60_000) throw new Error(`Chrome took over a minute without ${what}`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
   } finally {
     // the profile can only go once Chrome has let go of it
     if (chrome.exitCode === null) {

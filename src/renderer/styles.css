@@ -1107,6 +1107,16 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .sub-label::before { display: none; }
 .sub-label:hover { background: var(--fill-subtle); }
 .sub-label .ico { width: 13px; height: 13px; margin: 0; color: var(--text-4); flex-shrink: 0; }
+/* a folder's lid: closed, it's the folder's front; open, it leans back off the folder's lower edge */
+.ico.folder { overflow: visible; }
+.ico.folder .lid { transform-box: fill-box; transform-origin: 0 100%; }
+.ico.folder.open .lid { transform: skewX(-26deg) scaleY(.74); }
+/* the sidebar's workspace folders swing it (a pane flies in, then it closes; it opens, then the pane comes out) */
+.sub-label .ico.folder .lid { transition: transform var(--dur-spring) var(--ease-spring); }
+[data-motion="reduce"] .sub-label .ico.folder .lid { transition: none; }
+/* the row's brief tint as a pane lands in its folder (gridMotion.ts) */
+.sub-label { position: relative; }
+.sub-label::after { content: ""; position: absolute; inset: -2px -4px -2px 4px; border-radius: 4px; background: var(--fill-selected); opacity: 0; pointer-events: none; }
 .sub-label.in-grid { color: var(--text-1); }
 .sub-label.in-grid > .ico { color: var(--teal-text); }
 .sub-label .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }

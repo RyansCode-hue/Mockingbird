@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { flyTarget, genieFlight, switchDir, type Rect } from "../src/renderer/gridMotion";
 import { SETTLED_MS, StatusDot, popsOnChange } from "../src/renderer/StatusDot";
+import { FolderIcon } from "../src/renderer/Icons";
 
 describe("a session's status changing", () => {
   it("is emphasised only on arriving at waiting, from a state that had settled", () => {
@@ -42,7 +43,8 @@ describe("where a minimized pane flies", () => {
     expect(flyTarget({ target: icon, list, listShown: false, rail })).toEqual({ to: rail, via: "rail" });
     expect(flyTarget({ target: null, list: null, listShown: false, rail })).toEqual({ to: rail, via: "rail" });
   });
-  it("nowhere when there's nothing to fly to", () => {
+  it("nowhere when the list shows but the target's folded away, or there's nothing to fly to", () => {
+    expect(flyTarget({ target: null, list, listShown: true, rail })).toEqual({ to: null, via: "none" });
     expect(flyTarget({ target: null, list: null, listShown: false, rail: null })).toEqual({ to: null, via: "none" });
   });
 });
@@ -68,5 +70,20 @@ describe("the genie flight", () => {
     expect(out.image.frames.map((f) => f.offset ?? null)).toEqual([null, 1 - 0.78, 1 - 0.4, null].map((o) => (o === null ? null : expect.closeTo(o, 6))));
     expect(out.pair.frames[0].transform).toBe(last(into.pair.frames).transform);
     expect(last(out.image.frames).opacity).toBe(1);
+  });
+});
+
+describe("a workspace's folder", () => {
+  it("is one back and one lid, the lid leaning open while its workspace is on screen", () => {
+    const open = renderToStaticMarkup(React.createElement(FolderIcon, { open: true }));
+    const closed = renderToStaticMarkup(React.createElement(FolderIcon, { open: false }));
+    expect(open).toContain('class="ico folder open"');
+    expect(closed).toContain('class="ico folder"');
+    for (const svg of [open, closed]) {
+      expect(svg.match(/class="back"/g)).toHaveLength(1);
+      expect(svg.match(/class="lid"/g)).toHaveLength(1);
+    }
+    // the same paths either way: only the lid's transform (styles.css) tells them apart, so it can swing
+    expect(open.replace(" open", "")).toBe(closed);
   });
 });

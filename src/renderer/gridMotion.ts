@@ -1,5 +1,5 @@
 import { flushSync } from "react-dom";
-import { D, SPRING, fromKeyboard, motion, play, springTiming } from "./motion";
+import { D, EASE, SPRING, fromKeyboard, motion, play, springTiming } from "./motion";
 
 /**
  * The grid's motion: panes opening, closing, going fullscreen, swapping groups, and flying into (and out of)
@@ -16,10 +16,12 @@ export type FlyTo = { to: Rect; via: "target" | "edge" | "rail" } | { to: null; 
 /**
  * Picks the flight's end. The target counts when the Sessions list is showing and it's inside the list's
  * visible part; scrolled out, the pane goes to the list's edge on that side; with the side bar collapsed or
- * on another view, to the rail's Sessions icon; with none of those, it just fades where it is.
+ * on another view, to the rail's Sessions icon. A list showing without the target (its group folded away),
+ * or nothing to fly to at all: the pane just leaves where it is.
  */
 export function flyTarget(o: { target: Rect | null; list: Rect | null; listShown: boolean; rail: Rect | null }): FlyTo {
-  if (o.listShown && o.target && o.list) {
+  if (o.listShown) {
+    if (!o.target || !o.list) return { to: null, via: "none" };
     const t = o.target;
     const l = o.list;
     if (t.y >= l.y - 1 && t.y + t.h <= l.y + l.h + 1) return { to: t, via: "target" };
@@ -96,7 +98,7 @@ const nameOf = (key: string) => {
 const FLY = "mb-fly";
 
 const cellsNow = () => [...document.querySelectorAll<HTMLElement>(".grid > [data-cell]")];
-const rectOf = (el: Element): Rect => {
+export const rectOf = (el: Element): Rect => {
   const r = el.getBoundingClientRect();
   return { x: r.left, y: r.top, w: r.width, h: r.height };
 };
@@ -172,18 +174,19 @@ export function gridChange(move: GridMove, update: () => void): void {
     if (move.kind === "minimize" && fly) fly.t = move.target();
     // the pane coming out of the folder takes the flight's name; the rest keep theirs
     nameCells(move.kind === "restore" && move.from.via !== "none" ? move.cell : null);
-    if (move.kind === "minimize" && fly?.t.via === "none") {
-      // nowhere to fly: it leaves like a closing pane
-      root.dataset.gridMove = "close";
-    }
   });
   running = t;
+  // the flight's animations hold their last frame (fill) until the transition ends, then go with it
+  const driven: Animation[] = [];
   t.ready
     .then(() => {
-      if (move.kind === "minimize" && fly && fly.t.to) flight(fly.p, fly.t.to, "in", "old");
+      if (move.kind === "minimize" && fly && fly.t.to) driven.push(...flight(fly.p, fly.t.to, "in", "old"));
+      // nowhere to fly: it leaves like a closing pane
+      else if (move.kind === "minimize" && fly)
+        driven.push(root.animate([{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(0.985)" }], { duration: D.s, easing: EASE.exit, fill: "both", pseudoElement: `::view-transition-old(${FLY})` }));
       if (move.kind === "restore" && move.from.to) {
         const el = cellsNow().find((c) => c.dataset.cell === move.cell);
-        if (el) flight(rectOf(el), move.from.to, "out", "new");
+        if (el) driven.push(...flight(rectOf(el), move.from.to, "out", "new"));
       }
     })
     .catch(() => {});
@@ -196,6 +199,7 @@ export function gridChange(move: GridMove, update: () => void): void {
     })
     .finally(() => {
       if (running === t) running = null;
+      for (const a of driven) a.cancel();
       unnameCells();
       delete root.dataset.gridMove;
       if (move.kind === "minimize") move.onLanded?.(fly?.t.via ?? "none");
@@ -204,14 +208,12 @@ export function gridChange(move: GridMove, update: () => void): void {
 }
 
 /** Drives the flying snapshot's pseudo-elements along the genie path (the pane's own snapshot: `side`). */
-function flight(p: Rect, t: Rect, dir: "in" | "out", side: "old" | "new") {
+function flight(p: Rect, t: Rect, dir: "in" | "out", side: "old" | "new"): Animation[] {
   const g = genieFlight(p, t, dir);
   const root = document.documentElement;
   const run = (part: FlightPart, pseudo: string) =>
     root.animate(part.frames, { duration: D.l, easing: part.easing, fill: "both", pseudoElement: `::view-transition-${pseudo}(${FLY})` });
-  run(g.group, "group");
-  run(g.pair, "image-pair");
-  run(g.image, side);
+  return [run(g.group, "group"), run(g.pair, "image-pair"), run(g.image, side)];
 }
 
 /** The folder's gulp as a pane lands in it (or the rail icon's, collapsed): squash and back, on the spring. */

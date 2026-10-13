@@ -102,9 +102,9 @@ import { roomRepoNames } from "./newSessionModel";
 import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { usePersisted, readPref, writePref } from "./prefs";
-import { D, EASE, initMotion, play } from "./motion";
+import { D, EASE, initMotion, motion, play } from "./motion";
 import { StatusDot } from "./StatusDot";
-import { gridChange, switchDir } from "./gridMotion";
+import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
 
 initMotion();
 
@@ -686,6 +686,82 @@ function App() {
     setShown((p) => p.filter((id) => !list.some((s) => s.id === id)));
     if (zoomed && list.some((s) => s.id === zoomed)) setZoomed(null);
     folderFollowsGrid(list);
+  };
+
+  // ---- minimizing into the side bar's folders, and restoring out of them (gridMotion.ts) ----
+  // A workspace's folder is drawn open while it's in the grid and closed once minimized. Held open here while
+  // its pane flies in (the lid closes once it lands), or opened ahead of a pane coming back out.
+  const [lidOpen, setLidOpen] = useState<string | null>(null);
+  const pendingRestore = useRef<number | null>(null);
+  const cancelRestore = () => {
+    if (pendingRestore.current !== null) clearTimeout(pendingRestore.current);
+    pendingRestore.current = null;
+  };
+  const folderSel = (wsKey: string) => `.sub-label[data-ws="${CSS.escape(wsKey)}"] .ico.folder`;
+  const rowDotSel = (id: string) => `.sess-item[data-sid="${CSS.escape(id)}"] > .dot`;
+  const railIcon = () => document.querySelector('.activitybar .ab-btn[aria-label="Sessions"] .ico');
+  const cellInGrid = (key: string) => !!document.querySelector(`.grid > [data-cell="${CSS.escape(key)}"]`);
+  /** Where a pane going into (or coming out of) the icon at `sel` flies, measured now. */
+  const flyTo = (sel: string): FlyTo => {
+    const listShown = !sideCollapsed && sideView === "sessions";
+    const icon = listShown ? document.querySelector(sel) : null;
+    const list = document.querySelector(".sidebar .scroll");
+    const rail = railIcon();
+    return flyTarget({ target: icon && rectOf(icon), list: list && rectOf(list), listShown, rail: rail && rectOf(rail) });
+  };
+  /** A pane has landed: the folder's lid closes behind it and the folder (or the rail's icon) gulps. */
+  const landed = (via: FlyTo["via"], sel: string, wsKey: string | null) => {
+    // (unless that folder is already opening again for a restore)
+    if (wsKey && pendingRestore.current === null) setLidOpen((l) => (l === wsKey ? null : l));
+    if (via === "target") {
+      const icon = document.querySelector(sel);
+      gulp(icon);
+      const row = icon?.closest(".sub-label");
+      if (row) play(row, [{ opacity: 1 }, { opacity: 0 }], { duration: D.l, easing: "ease-out", pseudoElement: "::after" });
+    } else if (via === "rail") gulp(railIcon());
+  };
+
+  /** Minimize a workspace: its pane flies into the open folder, then the lid closes. */
+  const minimizeWorkspace = (wsKey: string, list: SessionInfo[]) => {
+    cancelRestore();
+    const cell = list.map((s) => cellKeyFor(s.id, s.taskGroup)).find(cellInGrid);
+    if (!cell) return hideSessions(list);
+    const sel = folderSel(wsKey);
+    gridChange({ kind: "minimize", cell, target: () => flyTo(sel), onLanded: (via) => landed(via, sel, wsKey) }, () => {
+      setLidOpen(wsKey);
+      hideSessions(list);
+    });
+  };
+
+  /** Show a minimized workspace again: the folder's lid opens, then its pane comes out to its place. */
+  const restoreWorkspace = (top: string, wsKey: string, list: SessionInfo[]) => {
+    cancelRestore();
+    const sel = folderSel(wsKey);
+    const from = flyTo(sel);
+    const cell = list[0] ? cellKeyFor(list[0].id, list[0].taskGroup) : "";
+    const out = () => gridChange({ kind: "restore", cell, from, onOut: () => setLidOpen((l) => (l === wsKey ? null : l)) }, () => focusSub(top, list));
+    if (motion() !== "full" || from.via !== "target" || tab !== "sessions") return out();
+    setLidOpen(wsKey);
+    pendingRestore.current = window.setTimeout(() => {
+      pendingRestore.current = null;
+      out();
+    }, LID_MS);
+  };
+
+  /** Hide one session's pane: it flies into its workspace's folder, or its own row's dot. */
+  const minimizePane = (s: SessionInfo) => {
+    const sub = subOf(s);
+    const wsKey = sub ? `${topOf(s)}/${sub}` : null;
+    const cell = cellKeyFor(s.id, s.taskGroup);
+    // a workspace tab with others still shown leaves its pane in place: nothing flies
+    const leaves = !wsKey || !shown.some((id) => id !== s.id && sessions.some((x) => x.id === id && cellKeyFor(x.id, x.taskGroup) === cell));
+    if (!leaves || !cellInGrid(cell)) return hide(s.id);
+    cancelRestore();
+    const sel = wsKey ? folderSel(wsKey) : rowDotSel(s.id);
+    gridChange({ kind: "minimize", cell, target: () => flyTo(sel), onLanded: (via) => landed(via, sel, wsKey) }, () => {
+      if (wsKey) setLidOpen(wsKey);
+      hide(s.id);
+    });
   };
 
   const jumpToSession = (s: SessionInfo) => {
@@ -1577,7 +1653,7 @@ function App() {
     const b = isRemote(s) ? backupFor(s) : null;
     return tidyMenu([
       inGrid
-        ? { key: "show", label: "Hide", menuLabel: "Hide from the grid", icon: <MinusIcon />, title: "Take its pane off the grid — the session keeps running", onPick: () => hide(s.id) }
+        ? { key: "show", label: "Hide", menuLabel: "Hide from the grid", icon: <MinusIcon />, title: "Take its pane off the grid — the session keeps running", onPick: () => minimizePane(s) }
         : { key: "show", label: "Show", menuLabel: "Show in the grid", icon: <GridIcon />, onPick: () => showSession(s) },
       "-",
       // team rooms: take-over
@@ -1615,13 +1691,14 @@ function App() {
     return (
       <div
         key={s.id}
+        data-sid={s.id}
         className={`sess-item ${idx >= 0 ? "shown" : ""} ${focused === s.id ? "focused" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""} ${s.muted ? "muted" : ""} ${isRemote(s) ? "remote" : ""}`}
         tabIndex={0}
-        onClick={() => (idx >= 0 ? hide(s.id) : showSession(s))}
+        onClick={() => (idx >= 0 ? minimizePane(s) : showSession(s))}
         onKeyDown={(e) => {
           if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
-            idx >= 0 ? hide(s.id) : showSession(s);
+            idx >= 0 ? minimizePane(s) : showSession(s);
           }
         }}
         title={`${s.cwd} — double-click name to rename · drag onto a group to move, or onto a pane to open it as a tab there · right-click for more`}
@@ -1707,13 +1784,14 @@ function App() {
           <div key={sub || "_"} className={sub ? "ws-folder" : "loose-rows"}>
             {sub && (
               <div
+                data-ws={wsKey}
                 className={`sub-label ${inGrid ? "in-grid" : ""}`}
                 title="click to show/minimize this workspace · ✎/double-click to rename · ✕ dissolves it (sessions stay) · drop a session to move it in"
                 onClick={() =>
                   deferClick(() =>
                     inGrid
-                      ? hideSessions(subList) // minimize the workspace
-                      : focusSub(key, subList)
+                      ? minimizeWorkspace(wsKey, subList)
+                      : restoreWorkspace(key, wsKey, subList)
                   )
                 }
                 onDoubleClick={(e) => {
@@ -1735,7 +1813,7 @@ function App() {
                 >
                   <ChevronIcon open={open} />
                 </span>
-                <FolderIcon open={inGrid} />
+                <FolderIcon open={inGrid || lidOpen === wsKey} />
                 <span className="txt">{sub}</span>
                 <StatusDots list={subList} />
                 <button
@@ -2363,7 +2441,7 @@ function App() {
                       setFocused(s.id);
                       showView("run");
                     }}
-                    onClose={onCloseOverride ?? (() => hide(s.id))}
+                    onClose={onCloseOverride ?? (() => minimizePane(s))}
                     onZoom={() => zoomTo(zoomed === s.id ? null : s.id)}
                     onAddTab={embedded ? undefined : () => startWorkspaceFrom(s)}
                     tabDrop={embedded ? undefined : tabDrop(s, `h:${s.id}`)}
@@ -2489,7 +2567,7 @@ function App() {
                         +
                       </button>
                     </div>
-                    {paneFor(active, true, () => hideSessions(cell.list), cell.list.map((s) => s.id))}
+                    {paneFor(active, true, () => minimizeWorkspace(key, cell.list), cell.list.map((s) => s.id))}
                   </div>
                 );
               })}

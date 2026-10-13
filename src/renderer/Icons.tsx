@@ -2,10 +2,10 @@ import React from "react";
 
 // 16-unit line icons drawn in currentColor, so they follow the button's text
 // color through hover, active, and both themes.
-function Icon({ children }: { children: React.ReactNode }) {
+function Icon({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
     <svg
-      className="ico"
+      className={className ? `ico ${className}` : "ico"}
       viewBox="0 0 16 16"
       width="13"
       height="13"
@@ -38,14 +38,14 @@ export const FilesIcon = () => (
   </Icon>
 );
 
-/** A folder; open while its workspace is in the grid. */
+/**
+ * A folder: open while its workspace is in the grid, closed while it's minimized. Its back and its lid are
+ * separate paths, so the lid can swing between the two (styles.css: .folder .lid).
+ */
 export const FolderIcon = ({ open }: { open?: boolean }) => (
-  <Icon>
-    {open ? (
-      <path d="M2 12.5V4.25A1.25 1.25 0 0 1 3.25 3h3l1.5 1.75h4.5A1.25 1.25 0 0 1 13.5 6v1M2 12.5l1.6-4.6a1 1 0 0 1 .95-.65h9.6a.75.75 0 0 1 .7 1l-1.45 4.25H2z" />
-    ) : (
-      <path d="M2 4.25A1.25 1.25 0 0 1 3.25 3h3l1.5 1.75h5A1.25 1.25 0 0 1 14 6v6a1.25 1.25 0 0 1-1.25 1.25h-9.5A1.25 1.25 0 0 1 2 12z" />
-    )}
+  <Icon className={open ? "folder open" : "folder"}>
+    <path className="back" d="M2 12.6V4.25A1.25 1.25 0 0 1 3.25 3h3l1.5 1.75h5A1.25 1.25 0 0 1 14 6v1.1" />
+    <path className="lid" d="M2 6.6h12v5.4a1.25 1.25 0 0 1-1.25 1.25h-9.5A1.25 1.25 0 0 1 2 12z" />
   </Icon>
 );
 
