@@ -1474,6 +1474,11 @@ if (section) {
   set("mb.setSection", section);
 }
 if (theme === "light" || theme === "dark") set("mb.theme", theme);
+// ?motion=off|reduce|full|os: how much moves (Settings → Motion; off is for tests). Screenshots and layout checks
+// (?shot, ?measure) default to off, since a box read mid-animation includes its transform
+const motionQ = params.get("motion") ?? (params.has("shot") || params.has("measure") ? "off" : null);
+if (motionQ === "off") (window as unknown as { __mbMotion?: string }).__mbMotion = "off";
+else if (motionQ === "reduce" || motionQ === "full" || motionQ === "os") set("mb.motion", motionQ);
 if (shown) set("mb.shown", shown.split(","));
 // team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared);
 // ?chat=list shows the room list, each room with its sessions

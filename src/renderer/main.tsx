@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, type PaneDensity, type PaneResize } from "./TerminalPane";
@@ -102,6 +102,9 @@ import { roomRepoNames } from "./newSessionModel";
 import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { usePersisted, readPref, writePref } from "./prefs";
+import { D, EASE, initMotion, play } from "./motion";
+
+initMotion();
 
 type ModalKind = "new" | "import" | "help" | "restart" | "setup" | "update" | "quickopen" | null;
 /** What the side bar shows, picked from the activity bar as in VS Code. */
@@ -277,6 +280,14 @@ function App() {
   // a session title being edited inline in its sidebar row
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
   const [sideCollapsed, setSideCollapsed] = usePersisted<boolean>("mb.side", false);
+  // the side bar's width snaps (the grid re-fits once); shown again, its contents slide in from the rail
+  const sideInner = useRef<HTMLDivElement>(null);
+  const sideWasCollapsed = useRef(sideCollapsed);
+  useLayoutEffect(() => {
+    if (sideWasCollapsed.current && !sideCollapsed && sideInner.current)
+      play(sideInner.current, [{ opacity: 0, transform: "translateX(-12px)" }, { opacity: 1, transform: "none" }], { duration: D.s, easing: EASE.enter });
+    sideWasCollapsed.current = sideCollapsed;
+  }, [sideCollapsed]);
   const [layoutOpen, setLayoutOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(readPref<string[]>("mb.collapsed", [])));
@@ -1971,7 +1982,7 @@ function App() {
           })}
         </nav>
         <div className={`sidebar ${sideCollapsed ? "collapsed" : ""}`} style={{ width: sideCollapsed ? 0 : sideW }}>
-          <div className="side-inner" style={{ width: sideW }}>
+          <div className="side-inner" ref={sideInner} style={{ width: sideW }}>
           <div className="side-head">
             <span className="side-title">{SIDE_VIEWS.find((v) => v.id === sideView)?.label}</span>
           </div>
