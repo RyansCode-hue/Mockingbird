@@ -36,6 +36,11 @@ to see the screen without a browser. `--query` picks it: `tab=dashboard`,
 Claude in Chrome extension (`/chrome`), a session can also open the live preview
 and click through it.
 
+Screenshots and `?measure` run with motion off; `?motion=full` (or `reduce`)
+turns it on. Check animations by their end states — `?motionAudit` and
+`test/uiMotion.test.ts` finish every animation with `getAnimations()` and read
+what's left — never by frames caught in flight.
+
 Nothing real runs in the preview. When a change adds a main-process call
 (`window.mb.*`), add it to `src/preview/stub.ts`; calls it doesn't simulate
 answer `{ error }` and are logged in the console and `window.__mbCalls`.
