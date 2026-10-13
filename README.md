@@ -122,6 +122,11 @@ renders in headless Chrome; with the Claude in Chrome extension (`/chrome`) it
 can open the live preview and click through it. When a feature adds a
 main-process call, add it to the stand-in so the preview shows it.
 
+Layout can be checked the same way: `pageDom` in `scripts/ui-preview.mjs`
+renders a screen with `?measure=<selector>` and returns the page with where those
+elements sit (`test/uiLayout.test.ts` checks that row actions, the Council's
+inspector and its controls don't overlap; local only, like the screenshot test).
+
 ## Design system
 
 The UI follows `design_handoff_mockingbird` (see the zip in this folder): warm dark
@@ -152,6 +157,13 @@ Ordered by intent: **Now** is being designed or actively hurts, **Next** is
 agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Shipped recently
+
+- **1.4.7 UI fixes** — a session row's actions sit at the end of its title
+  line, as icons with tooltips, never over its other lines or their buttons; a
+  narrow council's details float over the discussion only, so Thread/Rounds,
+  Run and Send stay in reach; the House token is asked in one place at a time
+  (the board while it's open, else a toast); the guide (⌘/) covers today's
+  rows and every tab; a CLAUDE.md read that fails outright shows its error.
 
 - **Panes keep their Claude conversations** — Claude Code 2.1.29x can move a
   session to its background (`←` at an empty prompt, `/background`), where it
@@ -434,7 +446,7 @@ agreed direction, **Later** is worth doing once the foundations settle.
     (`~/.config/radley-house/<project>.env`), which never leaves the main
     process — and only once that member has allowed it for the room ("Use
     your <project> builder token for room <name>?", asked once per room and
-    project). Agents use the `*_house_ticket` tools: reads run on their own,
+    project — on the board while it's open, otherwise in a toast). Agents use the `*_house_ticket` tools: reads run on their own,
     and every write (create, claim, release, post) waits for its owner's OK
     in the agent's own permission prompt in the pane. The files a teammate's
     sessions changed on a ticket they claimed are theirs: an agent's first edit
@@ -446,9 +458,43 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Next
 
-- **Labelled controls everywhere.** The session rows, pane headers, group bar
-  and Team room view have labelled icons and right-click menus; the Explorer,
-  Source Control and Settings rows still use bare glyphs (✎ ✕ ⇪ ⤷).
+The 1.4.7 UI review's recommended order (its ids in brackets). Decided: primary
+buttons go neutral (G1) and a room gets tabs (R1); for the other choices, mock
+2–3 options and pick before building.
+
+**Quick wins — tokens, text and copy (S)**
+- [G5] Contrast: light and dark dim text and inactive tabs to ≥ 4.5:1; recheck the chips on their tints.
+- [G2] One disabled-button style (subtle fill, dim text, no accent), with a tooltip saying why.
+- [P4] A visible focused-pane outline, distinct from waiting's amber border.
+- [S4] The Team badge as a teal count, not "@2" (reads as "82").
+- [T2] The status-bar Claude pill never shrinks to "C." ("↻ Restart 1", the version in its tooltip).
+- [G6] Placeholders start with "e.g.", lighter and short.
+- [H4] Modals keep their header and footer in view; only the body scrolls.
+- [R4] The # completion popover isn't clipped at the sidebar's edge.
+- [P7 C2 C3 C4 N1 N2 SET2 SET3 SET5] Copy and labels: unshared groups' buttons, the Council rail, code-access chips and pacing, New session's ⌘↵, Room created, Settings rows, About's update buttons, repo counts.
+
+**Look and feel (M)**
+- [G1] Primary buttons become neutral; amber is kept only for "waiting on you" (the focus ring follows).
+- [G3 G4] A four-step type scale with nothing under 11px; mono only for code, paths, numbers and keys.
+- [G7] Raw git and fetch errors become short chips, the full text in a popover with Copy and Retry.
+- Labelled controls everywhere: Explorer, Source Control and Settings rows still use bare glyphs (✎ ✕ ⇪ ⤷).
+
+**Grid, sidebar and bars (M)**
+- [P2 P3] Pane headers: the title keeps ~40%, warnings merge into one chip, Full · Hide · ⋯ on hover.
+- [P1] A responsive pane metric strip.
+- [S2] Two-line session rows: title, then branch · owner; backup and live state as glyphs.
+- [S5] One Tab stop in the session list (roving tabindex); group headers focusable.
+- [T1 T3] One New session button with Import in its menu; the status bar in three clusters.
+
+**Team, House and side views (M)**
+- [H1 H3] House board rows in fixed columns; its problems in one banner, raw detail behind an expand.
+- [V1] Explorer, Source Control and Run open on the focused pane, with a session picker.
+- [D1 W1] Dashboard columns flex to fill; WorkTracker as cards for its three debriefs.
+
+**Bigger (L)**
+- [R1] A room in the Team tab gets tabs — Chat · Sessions · Artifacts · Board — with the chat's composer pinned at the bottom.
+- [S3 P6] A resizable sidebar; the grid reflows in narrow windows.
+- [SET1] Where Control room lives (a Broadcast action, or Settings → Tools).
 
 ### Later
 
