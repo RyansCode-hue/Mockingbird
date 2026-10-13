@@ -506,30 +506,57 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Next
 
-The 1.4.7 UI review's recommended order (its ids in brackets). Decided: a room
-gets tabs (R1); for the other choices, mock 2–3 options and pick before building.
+Four phases, in order. UI-heavy items get 2–3 mocked options to pick from
+before they're built.
 
-**Look and feel (M)**
+**Phase 1 — reliability**
+- The artifact fetch test that hung once on CI ("wait, saying why, while nobody connected has a file": 89 ms locally) — find the race.
+- Settings' setup and connector checks stay on "checking…" when their call fails; show the error.
+- Tests leave nothing running (a debugger test's dotnet app outlived its run).
+- Motion measured in the real app (frame timing was measured in headless Chrome only).
+
+**Phase 2 — the daily workflow**
+- Ticket → session in one click: claim the House ticket, create its branch and worktree, and start an agent with the ticket as its first prompt.
+- Away mode: the take-over brief is ready before you leave, and your sessions say a teammate can take over in one click.
+- Context warnings: suggest /compact or a fresh session with a brief before a session nears its limit.
+- Usage per session and per ticket, with a warning before an expensive action (like a cold resume).
+
+**Phase 3 — coordination**
+- A ticket's House status follows its PR (opened → review, merged → onward).
+- Ask a teammate to review a session's changes; their line comments go back to your agent.
+- A prompt queue: line up instructions that send when a session goes idle.
+- A daily room digest of what each member's agents did (commits, tickets moved, sessions finished), without a model call.
+
+**Phase 4 — polish and extras**
+
+The rest of the 1.4.7 UI review (its ids in brackets). Decided: a room gets tabs (R1).
+
+**Look and feel**
 - [G3 G4] A four-step type scale with nothing under 11px; mono only for code, paths, numbers and keys.
 - [G7] Raw git and fetch errors become short chips, the full text in a popover with Copy and Retry.
 - Labelled controls everywhere: Explorer, Source Control and Settings rows still use bare glyphs (✎ ✕ ⇪ ⤷).
 
-**Grid, sidebar and bars (M)**
+**Grid, sidebar and bars**
 - [P2 P3] Pane headers: the title keeps ~40%, warnings merge into one chip, Full · Hide · ⋯ on hover.
 - [P1] A responsive pane metric strip.
 - [S2] Two-line session rows: title, then branch · owner; backup and live state as glyphs.
 - [S5] One Tab stop in the session list (roving tabindex); group headers focusable.
 - [T1 T3] One New session button with Import in its menu; the status bar in three clusters.
 
-**Team, House and side views (M)**
+**Team, House and side views**
 - [H1 H3] House board rows in fixed columns; its problems in one banner, raw detail behind an expand.
 - [V1] Explorer, Source Control and Run open on the focused pane, with a session picker.
 - [D1 W1] Dashboard columns flex to fill; WorkTracker as cards for its three debriefs.
 
-**Bigger (L)**
+**Bigger**
 - [R1] A room in the Team tab gets tabs — Chat · Sessions · Artifacts · Board — with the chat's composer pinned at the bottom.
 - [S3 P6] A resizable sidebar; the grid reflows in narrow windows.
 - [SET1] Where Control room lives (a Broadcast action, or Settings → Tools).
+
+**Extras**
+- Motion, round two: usage bars, teammates coming online, chat arrivals, take-over.
+- An approved Council plan becomes House tickets.
+- Phone alerts when an agent is waiting on you and you're away.
 
 ### Later
 
