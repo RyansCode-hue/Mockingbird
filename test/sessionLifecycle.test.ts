@@ -110,6 +110,29 @@ describe("quitting the app", () => {
     expect(p.signals).toEqual(["SIGHUP", "SIGKILL"]);
     expect(warn.mock.calls.some((c) => String(c[0]).includes("1 pty(s) still running"))).toBe(true);
   });
+
+  it("starts no pty once shutdown has begun, not even for a launch already under way", async () => {
+    const { m } = await manager();
+    await m.create(agentPane);
+    const started = ptys.length;
+    const launching = m.create({ ...agentPane, title: "late" }); // still preparing when the quit begins
+    const quit = m.shutdown(20);
+    await expect(launching).rejects.toThrow(/quitting/);
+    await expect(m.create({ ...agentPane, title: "later" })).rejects.toThrow(/quitting/);
+    expect(ptys.length).toBe(started);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await quit;
+  });
+
+  it("kills every pty at once when a quit is forced", async () => {
+    const { m } = await manager();
+    await m.create(agentPane);
+    await m.create({ ...agentPane, title: "b" });
+    const [a, b] = ptys.slice(-2);
+    m.killAll();
+    expect([a.signals, b.signals]).toEqual([["SIGKILL"], ["SIGKILL"]]);
+    await expect(m.create({ ...agentPane, title: "after" })).rejects.toThrow(/quitting/);
+  });
 });
 
 describe("messages waiting for a pane", () => {

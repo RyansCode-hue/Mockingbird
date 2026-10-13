@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { tempDir } from "../helpers";
+import { descendants, killOrphans, killTree, track } from "./processes";
 import { startLocalSignaling } from "../../signaling/src/local/server";
 import { DEFAULT_SETTINGS, type Settings } from "../../src/shared/types";
 import type { TeamStatus } from "../../src/shared/team/types";
@@ -51,12 +52,27 @@ export async function launchApp(name: string, signalingUrl: string, o: LaunchOpt
   // the app's git (worktrees, backups) needs an identity, and this HOME has no other
   fs.writeFileSync(path.join(home, ".gitconfig"), `[user]\n\tname = ${name}\n\temail = ${name.toLowerCase()}@example.invalid\n`);
   const main = path.join(home, "devmain.js");
-  fs.writeFileSync(main, `const { app } = require("electron");\napp.setPath("userData", ${JSON.stringify(userData)});\nrequire(${JSON.stringify(path.join(root, "dist", "main.js"))});\n`);
+  // once the test process that started it is gone, the instance quits: nothing else would end it
+  fs.writeFileSync(
+    main,
+    `const { app } = require("electron");
+app.setPath("userData", ${JSON.stringify(userData)});
+const parent = process.ppid;
+const orphaned = setInterval(() => {
+  if (process.ppid === parent) return;
+  clearInterval(orphaned);
+  console.error("[e2e] the test process is gone: quitting");
+  app.quit();
+}, 1000);
+require(${JSON.stringify(path.join(root, "dist", "main.js"))});
+`
+  );
   const env = { HOME: home, USER: process.env.USER ?? "", LOGNAME: process.env.USER ?? "", PATH: "/usr/bin:/bin:/usr/sbin:/sbin", TMPDIR: process.env.TMPDIR ?? "/tmp", ...o.env };
   // the DevTools port is written once Electron listens: a previous run's file names a port nobody listens on
   const portFile = path.join(userData, "DevToolsActivePort");
   fs.rmSync(portFile, { force: true });
   const child = spawn(electronBin!, [main, "--remote-debugging-port=0", "--use-mock-keychain", "--password-store=basic"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  track(child);
   const output: string[] = [];
   child.stdout!.on("data", (d) => output.push(String(d)));
   child.stderr!.on("data", (d) => output.push(String(d)));
@@ -73,7 +89,7 @@ export async function launchApp(name: string, signalingUrl: string, o: LaunchOpt
     }
   }
   if (!wsUrl) {
-    child.kill("SIGKILL"); // the caller never gets it to quit
+    killTree(child.pid!); // the caller never gets it to quit
     throw new Error(`${name}'s window never appeared:\n${output.join("").slice(-2000)}`);
   }
   const ws = new WebSocket(wsUrl);
@@ -128,12 +144,25 @@ export async function acceptInWindow(admin: AppInstance, joiner: AppInstance, ro
   await untilTrue("the prompt to go once accepted", async () => !(await admin.evaluate<boolean>(`!!document.querySelector(".join-ask")`)), 30_000);
 }
 
-export async function quitApp(child: ChildProcess) {
-  if (child.exitCode !== null) return;
+/**
+ * Quit an instance as a signal would, and kill it if it hasn't quit within
+ * 8 s. Returns what didn't go as it should: that it had to be killed, and
+ * the processes it started that outlived it (killed too).
+ */
+export async function quitApp(child: ChildProcess): Promise<{ killed: boolean; leftovers: number[] }> {
+  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return { killed: false, leftovers: [] };
+  const started = descendants(child.pid);
   const exited = new Promise((r) => child.once("exit", r));
   child.kill("SIGTERM");
   await Promise.race([exited, new Promise((r) => setTimeout(r, 8000))]);
-  if (child.exitCode === null) child.kill("SIGKILL");
+  const killed = child.exitCode === null && child.signalCode === null;
+  if (killed) {
+    console.warn(`[e2e] pid ${child.pid} didn't quit within 8 s of SIGTERM: killing it`);
+    killTree(child.pid);
+    await exited;
+  }
+  await new Promise((r) => setTimeout(r, 1000)); // Electron's helper processes end just after it
+  return { killed, leftovers: killOrphans(started) };
 }
 
 /** An instance's main.log, for what went wrong. */
