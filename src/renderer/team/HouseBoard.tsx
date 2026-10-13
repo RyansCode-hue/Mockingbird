@@ -152,7 +152,7 @@ function AddTicket({ act, onDone }: { act: (what: string, w: HouseWrite) => Prom
       </div>
       {mode === "track" ? (
         <div className="house-inline">
-          <input type="text" autoFocus value={n} placeholder="#143" onChange={(e) => setN(e.target.value)} onKeyDown={(e) => e.key === "Enter" && num > 0 && void act("add", { kind: "track", n: num }).then(ok)} />
+          <input type="text" autoFocus value={n} placeholder="e.g. #143" onChange={(e) => setN(e.target.value)} onKeyDown={(e) => e.key === "Enter" && num > 0 && void act("add", { kind: "track", n: num }).then(ok)} />
           <button className="primary" disabled={!(Number.isSafeInteger(num) && num > 0)} onClick={() => void act("add", { kind: "track", n: num }).then(ok)}>
             Add to the board
           </button>
@@ -163,7 +163,7 @@ function AddTicket({ act, onDone }: { act: (what: string, w: HouseWrite) => Prom
       ) : (
         <>
           <label>Title — the outcome</label>
-          <input type="text" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Donor export skips archived donors" />
+          <input type="text" autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Donor export skips archived donors" />
           <label>Description — context and approach</label>
           <textarea className="house-ta" value={description} onChange={(e) => setDescription(e.target.value)} />
           <label>Acceptance — the observable finish line</label>
@@ -173,7 +173,11 @@ function AddTicket({ act, onDone }: { act: (what: string, w: HouseWrite) => Prom
             <button className="outline" onClick={onDone}>
               Cancel
             </button>
-            <button className="primary" disabled={!title.trim() || !description.trim()} onClick={() => void act("create", { kind: "create", title: title.trim(), description, acceptance }).then(ok)}>
+            <button
+              className="primary"
+              disabled={!title.trim() || !description.trim()}
+              data-tip={!title.trim() ? "Give it a title first" : !description.trim() ? "Add a description first" : undefined}
+              onClick={() => void act("create", { kind: "create", title: title.trim(), description, acceptance }).then(ok)}>
               Create ticket
             </button>
           </div>
@@ -449,6 +453,7 @@ function TicketDetail({ roomId, n, view, onBack, onOpen }: { roomId: string; n: 
             <button
               className="primary"
               disabled={!text.trim() || doing("post") || (kind === "status" && !status)}
+              data-tip={!text.trim() ? "Write it first" : kind === "status" && !status ? "Pick the new status first" : undefined}
               onClick={() => void write("post", { kind: "event", n, event: kind, text, ...((kind === "status" || kind === "progress") && status ? { status } : {}) }).then((r) => !isErr(r) && setText(""))}
             >
               Post

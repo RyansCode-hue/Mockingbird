@@ -477,7 +477,7 @@ export function DashboardBoard({
             <span className="wi-id">{detail.id}</span>
             <span className="path">{detail.type}{detail.assignedTo ? ` · ${detail.assignedTo}` : " · Unassigned"}</span>
             <span style={{ marginLeft: "auto" }} />
-            {dirty && <span className="kbd" style={{ color: "var(--amber)" }}>unsaved</span>}
+            {dirty && <span className="kbd" style={{ color: "var(--amber-ink)" }}>unsaved</span>}
             <button className="primary" disabled={!dirty || doing("save")} onClick={save}>
               {doing("save") ? "Saving…" : "Save"}
             </button>

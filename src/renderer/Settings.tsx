@@ -162,8 +162,13 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
           <textarea value={content} onChange={(e) => setContent(e.target.value)} spellCheck={false} />
           <div className="ft">
             <span className="diff">{dirty ? `${plural(changedLines, "line")} changed` : "no changes"}</span>
-            <button className="outline" disabled={!dirty} onClick={() => saveAndReread(false)}>Save</button>
-            <button className="primary" disabled={!dirty || !rereadTargets.length} onClick={() => saveAndReread(true)}>
+            <button className="outline" disabled={!dirty} data-tip={dirty ? undefined : "No changes to save"} onClick={() => saveAndReread(false)}>Save</button>
+            <button
+              className="primary"
+              disabled={!dirty || !rereadTargets.length}
+              data-tip={!dirty ? "No changes to save" : !rereadTargets.length ? "No running session reads this CLAUDE.md" : undefined}
+              onClick={() => saveAndReread(true)}
+            >
               Save &amp; re-read in {rereadTargets.length}
             </button>
           </div>
@@ -188,7 +193,12 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
                 Selected ({selected.size})
               </button>
             </div>
-            <button className="primary" disabled={!message.trim() || !bTargets.length} onClick={queueBroadcast}>
+            <button
+              className="primary"
+              disabled={!message.trim() || !bTargets.length}
+              data-tip={!message.trim() ? "Write the message first" : !bTargets.length ? (scope === "selected" ? "Select a session first" : "No running session to send it to") : undefined}
+              onClick={queueBroadcast}
+            >
               Queue for {plural(bTargets.length, "session")}
             </button>
             {bError && <div className="err">{bError}</div>}
@@ -542,6 +552,7 @@ export function SettingsView({
                   const on = !hidden.includes(t);
                   return (
                     <label key={t} className="tab-toggle">
+                      {TAB_LABELS[t]}
                       <Toggle
                         label={`Show ${TAB_LABELS[t]}`}
                         on={on}
@@ -551,7 +562,6 @@ export function SettingsView({
                           onHiddenTabs(next);
                         }}
                       />
-                      {TAB_LABELS[t]}
                     </label>
                   );
                 })}
@@ -708,7 +718,15 @@ export function SettingsView({
                 <SetRow
                   key={r}
                   title={r}
-                  note={!found ? "" : !found.exists ? "folder not found" : plural(found.repos, "repo")}
+                  note={
+                    status && isErr(status)
+                      ? `Couldn't count its repos: ${status.error}`
+                      : !found
+                        ? "scanning…"
+                        : !found.exists
+                          ? "folder not found"
+                          : plural(found.repos, "repo")
+                  }
                 >
                   <button className="danger" title="Remove" onClick={() => upd({ repoRoots: s.repoRoots.filter((x) => x !== r) })}>
                     ✕
@@ -761,9 +779,9 @@ export function SettingsView({
             {adoCfg && (
               <div className="set-form">
                 <label>Organization URL</label>
-                <input type="text" placeholder="https://dev.azure.com/YourOrg" value={adoCfg.orgUrl} onChange={(e) => setAdoCfg({ ...adoCfg, orgUrl: e.target.value })} />
+                <input type="text" placeholder="e.g. https://dev.azure.com/YourOrg" value={adoCfg.orgUrl} onChange={(e) => setAdoCfg({ ...adoCfg, orgUrl: e.target.value })} />
                 <label>Project</label>
-                <input type="text" placeholder="YourProject" value={adoCfg.project} onChange={(e) => setAdoCfg({ ...adoCfg, project: e.target.value })} />
+                <input type="text" placeholder="e.g. YourProject" value={adoCfg.project} onChange={(e) => setAdoCfg({ ...adoCfg, project: e.target.value })} />
                 <label>Token file</label>
                 <div className="path-row">
                   <span className="p">{adoCfg.patFile || "a text file containing your personal access token"}</span>
@@ -838,8 +856,8 @@ export function SettingsView({
                 </SetRow>
               ))}
             <div className="set-inline">
-              <input type="text" style={{ flex: 1 }} placeholder="azure-devops" value={mcpName} onChange={(e) => setMcpName(e.target.value)} />
-              <input type="text" style={{ flex: 2.2 }} placeholder="npx -y @azure-devops/mcp YourOrg" value={mcpCmd} onChange={(e) => setMcpCmd(e.target.value)} />
+              <input type="text" style={{ flex: 1 }} placeholder="e.g. azure-devops" value={mcpName} onChange={(e) => setMcpName(e.target.value)} />
+              <input type="text" style={{ flex: 2.2 }} placeholder="e.g. npx -y @azure-devops/mcp YourOrg" value={mcpCmd} onChange={(e) => setMcpCmd(e.target.value)} />
               <button
                 className="outline"
                 disabled={!mcpName.trim() || !mcpCmd.trim()}
@@ -929,7 +947,14 @@ function UpdateSourceRow({ onUpdate }: { onUpdate: () => void }) {
         Choose…
       </button>
       {src?.configured && <button className="outline" onClick={() => choose(null)}>Find automatically</button>}
-      <button className="outline" disabled={!src?.found} onClick={onUpdate}>Update…</button>
+      <button
+        className="outline"
+        disabled={!src?.found}
+        data-tip={src?.found ? "Pull and build this clone, then restart into it" : "No clone to build from yet"}
+        onClick={onUpdate}
+      >
+        Build from…
+      </button>
     </SetRow>
   );
 }

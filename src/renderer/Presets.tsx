@@ -37,7 +37,7 @@ export function PresetEditor({ initial, onSave, onClose }: { initial: SessionPre
       <h3>{initial.name ? `Preset: ${initial.name}` : "New preset"}</h3>
       <div className="sub-h">A session setup you start in one click, from New session or ⌘K.</div>
       <label>Name</label>
-      <input type="text" autoFocus value={p.name} placeholder="Review session on dev" onChange={(e) => set({ name: e.target.value })} />
+      <input type="text" autoFocus value={p.name} placeholder="e.g. Review session on dev" onChange={(e) => set({ name: e.target.value })} />
       <label>Launch</label>
       <span className="seg" style={{ display: "inline-flex" }}>
         {(["claude", "codex", "shell"] as const).map((l) => (
@@ -57,14 +57,14 @@ export function PresetEditor({ initial, onSave, onClose }: { initial: SessionPre
             <button className={mode === "new" ? "on" : ""} onClick={() => set({ branch: { mode: "new", pattern: mode === "new" ? p.branch.pattern : "review-{date}", base: mode === "new" ? p.branch.base : "dev" } })}>New branch</button>
           </span>
           {p.branch.mode === "existing" && (
-            <input type="text" style={{ marginTop: 8 }} value={p.branch.name} placeholder="dev" onChange={(e) => set({ branch: { mode: "existing", name: e.target.value } })} />
+            <input type="text" style={{ marginTop: 8 }} value={p.branch.name} placeholder="e.g. dev" onChange={(e) => set({ branch: { mode: "existing", name: e.target.value } })} />
           )}
           {p.branch.mode === "new" && (
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <input
                 type="text"
                 value={p.branch.pattern}
-                placeholder="review-{date}"
+                placeholder="e.g. review-{date}"
                 title="{date} becomes YYYYMMDD and {time} HHMM; a name already taken gets -2, -3…"
                 onChange={(e) => set({ branch: { ...(p.branch as { mode: "new"; pattern: string; base?: string }), pattern: e.target.value } })}
               />
@@ -92,7 +92,7 @@ export function PresetEditor({ initial, onSave, onClose }: { initial: SessionPre
       <textarea
         value={p.kickoff ?? ""}
         onChange={(e) => set({ kickoff: e.target.value })}
-        placeholder={p.launch === "shell" ? "npm test -- --watch" : "Review the latest changes on this branch for bugs and missing tests."}
+        placeholder={p.launch === "shell" ? "e.g. npm test -- --watch" : "e.g. Review this branch's changes for bugs"}
         style={{ minHeight: 90 }}
       />
       {p.launch !== "shell" && (

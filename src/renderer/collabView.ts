@@ -126,11 +126,12 @@ export function initials(title: string): string {
 
 /** What a model may do with the room's repository — each level includes the ones before it. */
 export type Access = "none" | "read" | "run" | "docker";
-export const ACCESS_LEVELS: { id: Access; label: string; note: string }[] = [
-  { id: "none", label: "none", note: "No code — asks a model that reads it" },
-  { id: "read", label: "read", note: "Reads the repository" },
-  { id: "run", label: "run", note: "Reads, and runs tests and builds in a disposable test copy" },
-  { id: "docker", label: "docker", note: "Runs commands and uses Docker, which reaches past the sandbox" },
+/** `chip`: the words on a seat's collapsed card. */
+export const ACCESS_LEVELS: { id: Access; label: string; chip: string; note: string }[] = [
+  { id: "none", label: "none", chip: "no repo", note: "No code — asks a model that reads it" },
+  { id: "read", label: "read", chip: "reads repo", note: "Reads the repository" },
+  { id: "run", label: "run", chip: "runs tests", note: "Reads, and runs tests and builds in a disposable test copy" },
+  { id: "docker", label: "docker", chip: "uses Docker", note: "Runs commands and uses Docker, which reaches past the sandbox" },
 ];
 
 const RANK: Record<Access, number> = { none: 0, read: 1, run: 2, docker: 3 };

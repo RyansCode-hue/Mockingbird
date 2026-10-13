@@ -377,9 +377,9 @@ export function NewSessionModal({
     ) : null;
   const customModel =
     launch === "codex" && codexCustom ? (
-      <input type="text" placeholder="model id, e.g. gpt-6-luna" value={codexModel} onChange={(e) => setCodexModel(e.target.value)} />
+      <input type="text" placeholder="e.g. gpt-6-luna" value={codexModel} onChange={(e) => setCodexModel(e.target.value)} />
     ) : launch === "claude" && model === "__custom" ? (
-      <input type="text" placeholder="model id, e.g. claude-sonnet-5-5" value={modelCustom} onChange={(e) => setModelCustom(e.target.value)} />
+      <input type="text" placeholder="e.g. claude-sonnet-5-5" value={modelCustom} onChange={(e) => setModelCustom(e.target.value)} />
     ) : null;
 
   // the session runs in the room made for it: what's left is inviting the teammate
@@ -413,10 +413,9 @@ export function NewSessionModal({
             </div>
           </section>
         </div>
-        <div className="ns-foot">
-          <span className="ns-sum">send the code to the teammate joining you</span>
-          <button className="outline" onClick={() => onCreated(done.info)} data-tip="⌘↵">
-            Done
+        <div className="ns-foot end">
+          <button className="outline" onClick={() => onCreated(done.info)}>
+            Done <span className="kbd">⌘↵</span>
           </button>
         </div>
       </Modal>
@@ -581,7 +580,7 @@ export function NewSessionModal({
                             type="text"
                             autoFocus
                             maxLength={120}
-                            placeholder="5120 Donor search"
+                            placeholder="e.g. 5120 Donor search"
                             title="A leading ticket number groups the room by ticket, as the ticket's sessions are"
                             value={roomName}
                             onChange={(e) => {
@@ -864,8 +863,14 @@ export function NewSessionModal({
         <button className="outline" onClick={onClose}>
           Cancel
         </button>
-        <button className="primary cta" disabled={!!busy || (importing && !conv) || (!!whereBlock && !restoring)} onClick={create} data-tip="⌘↵">
+        <button
+          className="primary cta"
+          disabled={!!busy || (importing && !conv) || (!!whereBlock && !restoring)}
+          onClick={create}
+          data-tip={busy ? undefined : importing && !conv ? "Pick a conversation first" : whereBlock && !restoring ? whereBlock : undefined}
+        >
           {busy === "share" ? "Creating the room…" : busy ? "Starting…" : importing ? (conv?.restore ? "Restore session" : `Resume ${conv ? AGENT_NAME[conv.agent] : ""}`.trim()) : launch === "shell" ? "Open terminal" : `Start ${agentLabel}`}
+          {!busy && <span className="kbd"> ⌘↵</span>}
         </button>
       </div>
     </Modal>

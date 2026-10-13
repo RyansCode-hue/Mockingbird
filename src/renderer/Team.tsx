@@ -226,7 +226,7 @@ export function JoinRoomDialog({ onClose }: { onClose: () => void }) {
       {!joining && (
         <>
           <label>Room code</label>
-          <textarea className="team-code" autoFocus placeholder="MBR1-…" value={text} onChange={(e) => setText(e.target.value)} />
+          <textarea className="team-code" autoFocus placeholder="e.g. MBR1-…" value={text} onChange={(e) => setText(e.target.value)} />
         </>
       )}
       {joining && !joined && pending && <div className={pending.state === "declined" || pending.state === "rejected" ? "err" : "hint"}>{pendingJoinText(pending)}</div>}
@@ -539,7 +539,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
         />
       </SetRow>
       <SetRow title="Signaling URL" note="Your signaling Worker's address. New rooms use it; teammates don't need it — invite codes carry it.">
-        <input type="text" className="team-input wide" placeholder="https://mockingbird-signaling.you.workers.dev" value={url} onChange={(e) => setUrl(e.target.value)} onBlur={saveUrl} />
+        <input type="text" className="team-input wide" placeholder="e.g. https://signaling.you.workers.dev" value={url} onChange={(e) => setUrl(e.target.value)} onBlur={saveUrl} />
         <button className="outline" disabled={!url.trim()} onClick={checkUrl}>
           Check
         </button>

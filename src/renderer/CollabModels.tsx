@@ -117,11 +117,14 @@ export function ModelsSection({ room, catalog, call }: { room: CollabRoom; catal
               {p.effort && <span className="ins-eff">{p.effort}</span>}
               {!open && room.repoPath && (
                 <span className="ins-perms">
-                  {access === "none" ? (
-                    <span className="off" title="Asks a model that reads the code">no code</span>
-                  ) : (
-                    <span title={ACCESS_LEVELS.find((a) => a.id === access)!.note}>{access === "read" ? "</>" : access === "run" ? "$_" : "docker"}</span>
-                  )}
+                  {(() => {
+                    const level = ACCESS_LEVELS.find((a) => a.id === access)!;
+                    return (
+                      <span className={access === "none" ? "off" : ""} data-tip={level.note}>
+                        {level.chip}
+                      </span>
+                    );
+                  })()}
                 </span>
               )}
               <span className="ins-chev">

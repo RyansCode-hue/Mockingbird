@@ -2,8 +2,9 @@
 
 /* Design tokens — design_handoff_mockingbird (1a–1h).
    The amber rule: #e0a34a means "a session is blocked on you" and nothing else.
-   It is also the primary-button fill (the resolution of a waiting state).
-   Never amber for branding, focus rings, links, or emphasis. */
+   Never amber for primary buttons, selection, branding, focus rings, links, or emphasis:
+   primary buttons and the focus ring are neutral (--primary, --focus-ring).
+   Text tokens keep 4.5:1 on every surface in both themes (test/contrast.test.ts). */
 :root {
   --bg-app: #1a1917;
   --bg-chrome: #1f1e1b;
@@ -15,15 +16,16 @@
   --text-1: #e8e4dc;
   --text-1-warm: #f0e6d4;
   --text-2: #c9c3b8;
-  --text-3: #9a938a;
-  --text-4: #7d766b;
+  --text-3: #aca69f;
+  --text-4: #9c968c;
   --amber: #e0a34a;
+  --amber-ink: #e0a34a;
   --amber-text: #c9a877;
-  --amber-text-dim: #a3906d;
+  --amber-text-dim: #a79473;
   --teal: #4fb3a5;
   --teal-text: #7fb8ae;
   --idle: #8d877c;
-  --red: #cf6a5a;
+  --red: #d78274;
   --git-add: #8fb573;
   --git-mod: #6fa3d8;
   --m-0: #7fc3a0;
@@ -42,6 +44,13 @@
   --fill-waiting: rgba(224, 163, 74, .12);
   --fill-waiting-glow: rgba(224, 163, 74, .13);
   --on-amber: #1a1917;
+  --on-teal: #1a1917;
+  --primary: #e8e4dc;
+  --primary-hover: #f7f3eb;
+  --on-primary: #1a1917;
+  --focus-ring: #b9b3a8;
+  --pane-focus: rgba(255, 255, 255, .5);
+  --bg-pane-header-focus: #2b2a26;
   --chip-on-bg: #c9c3b8;
   --chip-on-fg: #1a1917;
   --line-btn: rgba(255, 255, 255, .1);
@@ -66,24 +75,25 @@
   --bg-pane-waiting: #f6ead2;
   --text-1: #2b2820;
   --text-1-warm: #3a2d15;
-  --text-2: #4f4a3f;
-  --text-3: #7b7466;
-  --text-4: #9a927f;
+  --text-2: #423e35;
+  --text-3: #555046;
+  --text-4: #615b4d;
   --amber: #a06a12;
-  --amber-text: #8a6520;
-  --amber-text-dim: #97824f;
+  --amber-ink: #79500e;
+  --amber-text: #75561b;
+  --amber-text-dim: #685936;
   --teal: #1c8576;
-  --teal-text: #1d7a6c;
+  --teal-text: #18665a;
   --idle: #8d877c;
-  --red: #b84632;
-  --git-add: #4d7d2c;
-  --git-mod: #2f6aa8;
-  --m-0: #2f7f57;
-  --m-1: #9a5a2c;
+  --red: #9c3b2a;
+  --git-add: #3e6524;
+  --git-mod: #295d94;
+  --m-0: #266646;
+  --m-1: #854d26;
   --m-2: #5b4ba3;
-  --m-3: #2a6f99;
-  --m-4: #a03f6d;
-  --m-5: #6b7520;
+  --m-3: #246085;
+  --m-4: #953b66;
+  --m-5: #575f1a;
   --diff-add: rgba(77, 125, 44, .14);
   --diff-del: rgba(184, 70, 50, .13);
   --line-strong: rgba(0, 0, 0, .13);
@@ -94,6 +104,13 @@
   --fill-waiting: rgba(160, 106, 18, .13);
   --fill-waiting-glow: rgba(160, 106, 18, .17);
   --on-amber: #fffdf6;
+  --on-teal: #ffffff;
+  --primary: #2b2820;
+  --primary-hover: #474236;
+  --on-primary: #fbf9f5;
+  --focus-ring: #4f4a3f;
+  --pane-focus: rgba(0, 0, 0, .55);
+  --bg-pane-header-focus: #e6e1d6;
   --chip-on-bg: #454034;
   --chip-on-fg: #f4f1e9;
   --line-btn: rgba(0, 0, 0, .15);
@@ -125,17 +142,28 @@ button .ico { vertical-align: -2.5px; margin-right: 3px; }
 button.outline { border-color: var(--line-btn); color: var(--text-2); }
 button.outline:hover { border-color: var(--line-btn-hover); color: var(--text-1); background: transparent; }
 button.outline.strong { border-color: var(--line-btn-hover); color: var(--text-1); }
-button.primary { background: var(--amber); color: var(--on-amber); font-weight: 600; }
-button.primary:hover { filter: brightness(1.08); }
+button.primary { background: var(--primary); color: var(--on-primary); font-weight: 600; }
+button.primary:hover { background: var(--primary-hover); color: var(--on-primary); }
 button.danger:hover { color: var(--red); background: rgba(207, 106, 90, .08); }
 button.icon { padding: 3px 6px; font-size: 10.5px; color: var(--text-4); border: none; }
 button.icon:hover { color: var(--text-1); }
 button:disabled { opacity: .35; cursor: default; }
+/* a disabled filled or outlined button: no accent and no fill of its own, only dim text, so it never reads as
+   a warning or a muted live button; its tooltip says what it's waiting for */
+button.primary:disabled, button.primary:disabled:hover, button.lbtn.primary:disabled, button.lbtn.primary:disabled:hover {
+  opacity: 1; background: var(--fill-subtle); color: var(--text-4); border-color: transparent;
+}
+button.outline:disabled, button.outline:disabled:hover { opacity: 1; background: transparent; border-color: var(--line-soft); color: var(--text-4); }
 .kbd { font: 400 9.5px var(--mono); color: var(--text-4); }
-button.primary .kbd { color: var(--on-amber); opacity: .65; }
+button.primary .kbd { color: var(--on-primary); opacity: .65; }
+button.primary:disabled .kbd { color: var(--text-4); opacity: 1; }
+/* placeholders: dim and in the interface font, so an example never reads as a value already filled in */
+::placeholder { color: var(--text-4); opacity: 1; font-family: var(--ui); }
+/* the keyboard focus ring: neutral, never amber (amber means a session waits on you) */
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
 .seg { display: flex; background: var(--fill-subtle); border-radius: 5px; padding: 2px; }
-.seg button { border: none; border-radius: 3px; padding: 2px 8px; font: 500 10px var(--mono); color: var(--text-3); }
+.seg button { border: none; border-radius: 3px; padding: 2px 8px; font: 500 10.5px var(--ui); color: var(--text-3); }
 .seg button:hover { color: var(--text-1); background: transparent; }
 .seg button.on { background: var(--chip-on-bg); color: var(--chip-on-fg); }
 .seg button.on:hover { background: var(--chip-on-bg); color: var(--chip-on-fg); }
@@ -173,9 +201,11 @@ button.primary .kbd { color: var(--on-amber); opacity: .65; }
 .ab-btn.on { color: var(--text-1); box-shadow: inset 2px 0 0 var(--teal); }
 .ab-badge {
   position: absolute; right: 5px; bottom: 5px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px;
-  background: var(--teal); color: var(--bg-app); font: 600 9px/15px var(--mono); text-align: center;
+  background: var(--teal); color: var(--on-teal); font: 600 9.5px/15px var(--ui); font-variant-numeric: tabular-nums; text-align: center;
 }
-.ab-badge.waiting { background: var(--amber); }
+.ab-badge.waiting { background: var(--amber); color: var(--on-amber); }
+/* unread team messages that mention you: the same count, ringed */
+.ab-badge.mention { box-shadow: 0 0 0 1.5px var(--bg-chrome), 0 0 0 3px var(--text-1); }
 .sidebar {
   position: relative; background: var(--bg-sidebar); border-right: 1px solid var(--line-med);
   display: flex; flex-shrink: 0; transition: width .15s ease; overflow: hidden;
@@ -243,7 +273,7 @@ body.fp-resizing .sidebar { transition: none; }
 .sess-item button { opacity: 0; padding: 1px 5px; }
 .sess-item:hover button { opacity: 1; }
 
-.hooks-bad { font: 500 9.5px var(--mono); color: var(--amber); cursor: pointer; }
+.hooks-bad { font: 500 9.5px var(--mono); color: var(--amber-ink); cursor: pointer; }
 
 /* ---- status dots (6px everywhere; 5px inline; 7px instrumented header) ---- */
 .dot { display: inline-block; width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; }
@@ -295,7 +325,11 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
   min-width: 0; min-height: 0;
   border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden;
 }
-.pane.focused { border-color: var(--line-focus); }
+/* the focused pane: a neutral ring outside its border and a lifted header; a waiting pane keeps its amber
+   border and glow, and shows the ring too when it's also the focused one */
+.pane.focused, .ws-pane:has(.pane.focused) { outline: 1.5px solid var(--pane-focus); outline-offset: 2px; }
+.pane.focused:not(.st-waiting) > .pane-header { background: var(--bg-pane-header-focus); }
+.pane.focused:not(.st-waiting) > .pane-header .controls { box-shadow: -12px 0 10px -4px var(--bg-pane-header-focus); }
 
 /* window-style resize: a pane's own right edge (x), bottom edge (y), corner (both) —
    the boundary there moves and the panes on either side trade size */
@@ -381,7 +415,7 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
   border-radius: 4px; background: var(--fill-waiting-glow); flex-shrink: 0;
 }
 .wait-banner .reason {
-  font: 500 10px var(--ui); color: var(--amber);
+  font: 500 10px var(--ui); color: var(--amber-ink);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
 }
 .wait-banner .kbd { color: var(--amber-text-dim); flex-shrink: 0; }
@@ -440,7 +474,7 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .ws-add:hover { color: var(--text-1); border-color: var(--line-btn-hover); border-style: solid; background: var(--fill-subtle); }
 .hint-inline { color: var(--text-3); font-weight: 400; }
 .pane.embedded { border: none; border-radius: 0; box-shadow: none; flex: 1; min-height: 0; }
-.pane.embedded.focused { border: none; }
+.pane.embedded.focused { border: none; outline: none; }
 
 /* ---- status bar ---- */
 .statusbar {
@@ -449,7 +483,7 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
   font: 400 10px var(--mono); color: var(--text-3); flex-shrink: 0;
 }
 .statusbar .count { display: inline-flex; align-items: center; gap: 5px; }
-.statusbar .count.waiting { color: var(--amber); }
+.statusbar .count.waiting { color: var(--amber-ink); }
 .statusbar .count.clickable { cursor: pointer; }
 .statusbar .count.clickable:hover { color: var(--text-1); }
 .statusbar .count.waiting.clickable:hover { color: var(--amber-text); }
@@ -471,7 +505,7 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
   z-index: 61; overflow: hidden; display: flex; flex-direction: column; max-height: 70vh;
 }
 .palette .inrow { display: flex; align-items: center; gap: 9px; padding: 13px 14px; border-bottom: 1px solid var(--line-med); }
-.palette .inrow .prompt { color: var(--amber); font: 600 14px var(--mono); }
+.palette .inrow .prompt { color: var(--text-3); font: 600 14px var(--mono); }
 .palette .inrow input {
   flex: 1; background: transparent; border: none; outline: none;
   font: 400 14px var(--ui); color: var(--text-1); caret-color: var(--amber);
@@ -491,8 +525,8 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .palette .row .state { font: 400 10px var(--mono); color: var(--text-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .palette .row .state.amber { color: var(--amber-text); }
 .palette .row .kbd { margin-left: auto; flex-shrink: 0; }
-.palette .row.sel { background: var(--fill-waiting); border-left-color: var(--amber); }
-.palette .row.sel .lab { color: var(--text-1-warm); }
+.palette .row.sel { background: var(--fill-selected); border-left-color: var(--text-2); }
+.palette .row.sel .lab { color: var(--text-1); }
 .palette .pfoot {
   display: flex; gap: 14px; padding: 9px 14px; background: var(--bg-chrome);
   border-top: 1px solid var(--line-med); font: 400 9.5px var(--mono); color: var(--text-4);
@@ -526,6 +560,14 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .modal textarea { min-height: 240px; resize: vertical; }
 .modal .row { display: flex; gap: 8px; align-items: center; margin-top: 16px; justify-content: flex-end; }
 .modal .row .foot-hint { margin-right: auto; }
+/* a dialog taller than the window scrolls its body only: its title and its closing buttons stay in view
+   (each spans the dialog's padding, so what scrolls under it is hidden) */
+.modal:not(.art-dlg) > h3:first-child, .modal:not(.art-dlg) > .house-head:first-child {
+  position: sticky; top: -18px; z-index: 3; margin: -18px -20px 0; padding: 18px 20px 6px; background: var(--bg-pane-header);
+}
+.modal:not(.art-dlg) > .row:last-child {
+  position: sticky; bottom: -18px; z-index: 3; margin: 6px -20px -18px; padding: 10px 20px 18px; background: var(--bg-pane-header);
+}
 
 /* how-to-use popup */
 .modal.help { width: 680px; }
@@ -558,7 +600,7 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .upd-mark { display: inline-block; width: 16px; color: var(--text-4); }
 .upd-mark.ok { color: var(--teal); }
 .upd-mark.bad { color: var(--red); }
-.upd-mark.run { color: var(--amber); animation: upd-pulse 1s ease-in-out infinite alternate; }
+.upd-mark.run { color: var(--amber-ink); animation: upd-pulse 1s ease-in-out infinite alternate; }
 @keyframes upd-pulse { from { opacity: .35; } to { opacity: 1; } }
 .upd-clone { font: 400 10px var(--mono); color: var(--text-4); margin-bottom: 6px; overflow-wrap: anywhere; }
 .upd-ready { font: 400 11.5px/1.5 var(--ui); color: var(--text-2); margin: 6px 0; }
@@ -577,8 +619,8 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 }
 .opt .c { font: 400 10px/1.4 var(--mono); color: var(--text-3); margin: 4px 0 0 20px; }
 .opt:hover { background: var(--fill-subtle); }
-.opt.sel { border-color: rgba(224, 163, 74, .4); background: rgba(224, 163, 74, .09); }
-.opt.sel .t .radio { border: 4px solid var(--amber); }
+.opt.sel { border-color: var(--line-btn-hover); background: var(--fill-selected); }
+.opt.sel .t .radio { border: 4px solid var(--text-1); }
 .opt.destructive .t { color: var(--red); }
 .wt-name { font-family: var(--mono); color: var(--text-2); }
 
@@ -592,7 +634,7 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 }
 .control .hd .t { font: 600 11.5px var(--ui); color: var(--text-1); flex-shrink: 0; }
 .control .hd .path { font: 400 9.5px var(--mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.control .hd .unsaved { margin-left: auto; font: 500 9.5px var(--mono); color: var(--amber); flex-shrink: 0; }
+.control .hd .unsaved { margin-left: auto; font: 500 9.5px var(--mono); color: var(--amber-ink); flex-shrink: 0; }
 .control .editor .mb-select {
   width: auto; display: inline-flex;
   margin: 10px 14px 0; background: var(--bg-pane); color: var(--text-1);
@@ -831,7 +873,7 @@ input[type=checkbox] { accent-color: var(--teal); }
   padding: 6px; border: 1px solid var(--line-btn); border-radius: 8px; background: none; cursor: pointer;
 }
 .lay-opt:hover { border-color: var(--line-btn-hover); background: var(--fill-subtle); }
-.lay-opt.on { border-color: var(--amber); }
+.lay-opt.on { border-color: var(--text-2); }
 .lay-thumb {
   display: grid; gap: 2px; width: 100%; height: 34px;
 }
@@ -934,7 +976,7 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .fp-glyph.plain { background: none; color: var(--text-4); display: grid; place-items: center; }
 .fp-glyph.plain .ico { width: 13px; height: 13px; }
 .fp-folder { width: 20px; flex-shrink: 0; display: grid; place-items: center; color: var(--amber-text-dim); }
-.fp-folder.open { color: var(--amber); }
+.fp-folder.open { color: var(--amber-ink); }
 .fp-folder .ico { width: 15px; height: 15px; }
 /* Explorer: what changed since the last commit, then the open editors and the tree */
 .ex-head { padding: 2px 12px 9px; border-bottom: 1px solid var(--line-soft); flex-shrink: 0; }
@@ -1162,7 +1204,7 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .collab-ask-card .set-actions code { font: 400 11px var(--mono); }
 .collab-kinds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
 .collab-kind { display: inline-flex; align-items: center; gap: 2px; padding: 1px 2px 1px 7px; border: 1px solid var(--line-med); border-radius: 5px; font: 400 11px var(--mono); }
-.collab-needs { color: var(--amber); font-weight: 500; }
+.collab-needs { color: var(--amber-ink); font-weight: 500; }
 .collab-msg { max-width: 860px; padding: 10px 12px; border-radius: 8px; background: var(--bg-pane); border: 1px solid var(--line-soft); }
 .collab-msg.you { align-self: flex-end; background: var(--fill-selected); max-width: 640px; }
 .collab-msg.sys { align-self: center; background: transparent; border: none; font: 400 11px var(--ui); color: var(--text-3); padding: 2px; }
@@ -1181,7 +1223,7 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .collab-bar textarea { width: 100%; resize: vertical; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 6px; padding: 8px 10px; font: 400 12.5px var(--ui); }
 .collab-controls { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .collab-controls .spacer { flex: 1; }
-.collab-rounds { display: inline-flex; align-items: center; gap: 6px; font: 400 10.5px var(--mono); color: var(--text-3); }
+.collab-rounds { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font: 400 10.5px var(--ui); color: var(--text-3); }
 .collab-rounds input { width: 44px; background: var(--fill-subtle); color: var(--text-1); border: 1px solid var(--line-med); border-radius: 4px; padding: 2px 4px; font: 400 11px var(--mono); }
 .c-0 .who { color: var(--m-0) !important; }
 .collab-msg.c-0 { border-left: 3px solid var(--m-0); }
@@ -1243,7 +1285,7 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .collab-head .spacer { flex: 1; }
 .collab-pill { font: 400 10px var(--mono); color: var(--text-3); padding: 1px 7px; border: 1px solid var(--line-med); border-radius: 9px; white-space: nowrap; }
 .collab-agree { font: 400 10.5px var(--ui); color: var(--teal-text); white-space: nowrap; }
-.collab-waiting { font: 500 10.5px var(--ui); color: var(--amber); background: var(--fill-waiting); border: 1px solid var(--amber); border-radius: 9px; padding: 2px 9px; white-space: nowrap; }
+.collab-waiting { font: 500 10.5px var(--ui); color: var(--amber-ink); background: var(--fill-waiting); border: 1px solid var(--amber); border-radius: 9px; padding: 2px 9px; white-space: nowrap; }
 button.icon.on { color: var(--text-1); }
 .seat-row { flex-wrap: wrap; }
 .collab-transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
@@ -1276,7 +1318,7 @@ button.icon.on { color: var(--text-1); }
 .collab-asks { flex-shrink: 0; max-height: 45%; overflow-y: auto; padding: 8px 16px; border-top: 1px solid var(--amber); background: var(--bg-pane-waiting); display: flex; flex-direction: column; gap: 8px; }
 .collab-ask-card { padding: 9px 11px; border: 1px solid var(--amber); border-radius: 8px; background: var(--fill-waiting); }
 .collab-ask-card .collab-msg-head { margin-bottom: 2px; }
-.collab-ask-timer { margin-left: auto; font: 500 10px var(--mono); color: var(--amber); }
+.collab-ask-timer { margin-left: auto; font: 500 10px var(--mono); color: var(--amber-ink); }
 .collab-inspector-wrap { position: relative; flex-shrink: 0; display: flex; border-left: 1px solid var(--line-med); background: var(--bg-sidebar); }
 .collab-inspector { flex: 1; min-width: 0; overflow-y: auto; padding: 6px 0; display: flex; flex-direction: column; }
 .collab-inspector-grip { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: col-resize; z-index: 3; }
@@ -1290,7 +1332,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .ins-head > .err { flex-basis: 100%; margin-top: 4px; text-transform: none; letter-spacing: 0; }
 .ins-eff { font: 400 9.5px var(--mono); color: var(--text-4); }
 .ins-perms { display: flex; gap: 4px; flex-shrink: 0; }
-.ins-perms span { font: 400 9.5px var(--mono); color: var(--text-3); padding: 0 4px; border: 1px solid var(--line-med); border-radius: 4px; }
+.ins-perms span { font: 400 10px var(--ui); white-space: nowrap; color: var(--text-3); padding: 0 4px; border: 1px solid var(--line-med); border-radius: 4px; }
 .ins-perms span.off { color: var(--text-4); border-style: dashed; }
 .ins-value { font: 400 11.5px/1.45 var(--ui); color: var(--text-2); overflow-wrap: anywhere; }
 .ins-note { font: 400 10.5px var(--ui); color: var(--text-4); }
@@ -1381,8 +1423,8 @@ button.link.danger { color: var(--red); }
 .sc-msg-wrap { position: relative; display: flex; flex-direction: column; }
 .sc-msg-wrap .sc-msg { padding-right: 28px; }
 .sc-gen { position: absolute; top: 4px; right: 14px; padding: 3px; color: var(--text-4); }
-.sc-gen:hover:not(:disabled) { color: var(--amber); }
-.sc-gen.busy { color: var(--amber); animation: sc-gen-pulse 1s ease-in-out infinite; }
+.sc-gen:hover:not(:disabled) { color: var(--amber-ink); }
+.sc-gen.busy { color: var(--amber-ink); animation: sc-gen-pulse 1s ease-in-out infinite; }
 @keyframes sc-gen-pulse { 50% { opacity: .35; } }
 .sc-commit { margin: 6px 10px 6px; }
 .sc-list { flex: 1; min-height: 0; }
@@ -1523,7 +1565,7 @@ button.danger-btn:hover { color: #fff; background: var(--red); border-color: var
 
 /* Settings → General → Tabs */
 .tab-toggles { display: flex; flex-direction: column; gap: 6px; }
-.tab-toggle { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); cursor: pointer; }
+.tab-toggle { display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 12px; color: var(--text-2); cursor: pointer; }
 
 /* ---- Run and Debug (side bar) ---- */
 .rv { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -1588,7 +1630,7 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 
 /* ---- debugger: Run and Debug view ---- */
 .rv-bug .ico { width: 12px; height: 12px; }
-.rv-bug:hover:not(:disabled) { color: var(--amber); }
+.rv-bug:hover:not(:disabled) { color: var(--amber-ink); }
 .dv { padding-bottom: 8px; margin-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
 .dv-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px 6px 12px; }
 .dv-title { flex: 1; min-width: 0; font-size: 12px; color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1621,7 +1663,7 @@ body.bp-resizing { cursor: row-resize; user-select: none; }
 .dc-line.input { color: var(--text-4); }
 .dc-line.result { color: var(--m-0); }
 .dc-in { display: flex; align-items: center; gap: 6px; padding: 4px 8px 6px 12px; border-top: 1px solid var(--line-soft); }
-.dc-prompt { color: var(--amber); font: 600 12px var(--mono); }
+.dc-prompt { color: var(--amber-ink); font: 600 12px var(--mono); }
 .dc-in input { flex: 1; background: none; border: 0; outline: none; color: var(--text-1); font: 400 11.5px var(--mono); }
 
 /* quick tooltips (data-tip) */
@@ -1810,6 +1852,8 @@ button.chip { border: none; cursor: pointer; }
 .ns-foot { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line-soft); background: var(--bg-chrome); }
 .ns-foot .ns-sum { flex: 1; min-width: 0; font: 400 10px var(--mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 .ns-foot button.primary.cta { min-width: 150px; padding: 6px 20px; }
+.ns-foot.end { justify-content: flex-end; }
+.ns-check .wi-note { font: 400 10.5px var(--ui); }
 button.ns-ghost { padding: 5px 4px; color: var(--text-3); flex-shrink: 0; }
 button.ns-ghost:hover { background: none; color: var(--text-1); }
 .seg.ns-mode { display: inline-flex; padding: 2px; }
@@ -1880,7 +1924,9 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .sess-item .mute.on { display: inline-block; opacity: 1; color: var(--text-3); }
 .quiet-hours { display: inline-flex; align-items: center; gap: 6px; font: 400 11px var(--ui); color: var(--text-3); }
 .quiet-hours input[type=time] { background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 4px; padding: 2px 4px; font: 400 11px var(--mono); }
-.quiet-hours input[type=time]:disabled { opacity: .5; }
+/* quiet hours turned off: the times read as set aside, not as fields waiting for input */
+.quiet-hours:has(input:disabled) > :not(.toggle) { opacity: .45; }
+.quiet-hours input[type=time]:disabled { background: transparent; border-style: dashed; cursor: default; }
 /* weekly rollup */
 .rollup-dlg { width: 760px; }
 .rollup-md { margin: 10px 0 6px; max-height: 56vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--bg-pane); font: 400 11px/1.55 var(--mono); color: var(--text-2); white-space: pre-wrap; }
@@ -1889,7 +1935,7 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
    overflow: hidden would clip them away entirely while their backdrop still takes the next click */
 .statusbar { overflow-x: clip; overflow-y: visible; }
 .statusbar > * { white-space: nowrap; flex-shrink: 0; }
-.statusbar > .sb-update { flex-shrink: 1; }
+.statusbar > .sb-update { flex-shrink: 0; max-width: none; }
 /* the folder cell clips its name, never its Files button (after the cell's own inline-flex rule) */
 .rail .cell.folder .v { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rail .cell.folder .v .fn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -2140,9 +2186,12 @@ button.rc-new-session.rc-more { padding: 1px 5px; color: var(--text-3); letter-s
 .rc-sug { display: flex; align-items: baseline; gap: 6px; padding: 4px 7px; border-radius: 4px; cursor: pointer; font: 400 11px var(--ui); color: var(--text-3); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .rc-sug b { font-weight: 600; color: var(--text-1); }
 .rc-sug.on, .rc-sug:hover { background: var(--fill-selected); }
-.rc-sug.art { align-items: center; }
+/* an artifact: its name on the first line, who and when under it, each cut with an ellipsis inside the sidebar */
+.rc-sug.art { align-items: center; flex-wrap: wrap; row-gap: 1px; }
 .rc-sug.art .fp-glyph { flex-shrink: 0; }
-.rc-sug.art b { flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; }
+.rc-sug.art b { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rc-sug.art > .rc-sug-meta { flex: 0 0 100%; min-width: 0; padding-left: 26px; font-size: 10px; overflow: hidden; text-overflow: ellipsis; }
+.rc-sug > .rc-sug-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- team rooms: artifacts ---- */
 .rc { position: relative; }
@@ -2383,11 +2432,11 @@ button.lbtn {
 button.lbtn .ico { width: 13px; height: 13px; margin: 0; vertical-align: 0; flex-shrink: 0; }
 button.lbtn:hover { color: var(--text-1); background: var(--fill-selected); }
 button.lbtn.on { color: var(--teal-text); }
-button.lbtn.primary { color: var(--on-amber); background: var(--amber); }
-button.lbtn.primary:hover { filter: brightness(1.08); }
+button.lbtn.primary { color: var(--on-primary); background: var(--primary); }
+button.lbtn.primary:hover { color: var(--on-primary); background: var(--primary-hover); }
 button.lbtn.danger:hover { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
 button.lbtn:disabled { opacity: .55; cursor: default; background: transparent; }
-button.lbtn:focus-visible { outline: 1px solid var(--line-focus); outline-offset: -1px; }
+button.lbtn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 
 /* a pane header's controls: labelled while the pane has room, icons alone in a very narrow one (the right-click menu has the words) */
 .pane-header { container-type: inline-size; }

@@ -60,9 +60,12 @@ export const termLinkHandler: ILinkHandler = {
   },
 };
 
-/** A terminal in the app's terminal font and current theme, with its fit addon loaded. */
+/**
+ * A terminal in the app's terminal font and current theme, with its fit addon loaded. Output colours too faint
+ * for the theme's background are pushed to 4.5:1 (xterm halves that for SGR-dim text).
+ */
 export function makeTerm(options: ITerminalOptions): { term: Terminal; fit: FitAddon } {
-  const term = new Terminal({ fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace', theme: currentTermTheme(), linkHandler: termLinkHandler, ...options });
+  const term = new Terminal({ fontFamily: '"JetBrains Mono", "SF Mono", Menlo, monospace', theme: currentTermTheme(), linkHandler: termLinkHandler, minimumContrastRatio: 4.5, ...options });
   const fit = new FitAddon();
   term.loadAddon(fit);
   return { term, fit };

@@ -130,8 +130,8 @@ export function Lookers({ room }: { room: RoomSessionTag }) {
   );
 }
 
-/** Following someone, or who can be followed, for the group bar. */
-export function FollowControls({ follow }: { follow: Follow }) {
+/** Following someone, or who can be followed, for the group bar: who to follow only in a shared group. */
+export function FollowControls({ follow, shared }: { follow: Follow; shared: boolean }) {
   if (follow.leader) {
     const away = !follow.leader.view;
     const who = firstName(follow.leader.name);
@@ -145,7 +145,7 @@ export function FollowControls({ follow }: { follow: Follow }) {
       </span>
     );
   }
-  if (!follow.candidates.length) return null;
+  if (!shared || !follow.candidates.length) return null;
   return (
     <span className="team-follow">
       {follow.candidates.map((v) => (
