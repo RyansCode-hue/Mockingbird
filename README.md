@@ -86,7 +86,10 @@ removal (who may remove whom, what each Mac deletes, the Worker's revoke, and
 an older Worker); joining (only the admin's add counts, rooms from before
 keeping theirs; accept, decline, a request passed on to an offline admin,
 expiry; the Worker's door — knocking, the admin's admit, deny — and an older
-Worker).
+Worker); teammates' changes and migration numbers (folder detection, the next
+number above every source, reservations clashing across a partition the same
+on every member, the hook's hold-back and heads-up, the agents' tools fenced
+with secrets withheld, release when merged or the branch is gone).
 `test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer
 hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
 `test/teamLiveApp.e2e.test.ts` run two real Mockingbird instances in throwaway
@@ -94,7 +97,9 @@ homes (their windows open while they run): share, join (the admin accepting
 from its prompt), a terminal watched and typed into, chat, a package claimed,
 a turn of a Claude stand-in backed up peer to peer (nothing on origin), a
 session handed over from the owner's prompt, and Take over from the copy that
-reached the taker once the owner has quit, their copy stopping when it starts again. `MB_E2E_SIGNALING_URL=https://…` runs
+reached the taker once the owner has quit, their copy stopping when it starts again; and
+migration numbers reserved through the agents' tools on one instance holding
+back the other's file, with each side's uncommitted work a heads-up on the other. `MB_E2E_SIGNALING_URL=https://…` runs
 them against a deployed Worker — allow the fingerprint `npm run
 team:e2e-fingerprint` prints there first — with a relay-only variant that
 proves the TURN fallback.
@@ -171,6 +176,14 @@ Ordered by intent: **Now** is being designed or actively hurts, **Next** is
 agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Shipped recently
+
+- **1.4.9: fewer merge conflicts between teammates** — migration numbers are
+  reserved before an agent adds one (`reserve_migration_number`, shown on the
+  House board; an unreserved new migration is held back once), an agent
+  editing a file a teammate's session is also changing — committed or still
+  uncommitted on their Mac — gets a heads-up naming that session, and agents
+  can list teammates' changed files and read a file's diff. Room worktrees get
+  their `.mockingbird/` files whether or not the room has a House project.
 
 - **Motion** — one personality, "Fluid" (90/150/220/340 ms, a critically damped
   spring, no bounce), with the genie for minimize: a workspace's folder in the
@@ -503,6 +516,26 @@ agreed direction, **Later** is worth doing once the foundations settle.
     shows on the pane ("Nick's branch also changes …") and opens the board.
     It replaced the work-package plan board (`mockingbird/plan` is no longer
     pushed; old branches are left alone).
+  - **Teammates' changes and migration numbers** — fewer merge conflicts
+    between teammates' branches in one repository. An agent's first edit of a
+    file a teammate's room session is also changing — on its pushed branch, or
+    in the uncommitted work its last backup brought to your Mac — comes with a
+    heads-up naming that session, ticket and branch ("coordinate with
+    send_message"), from the agent's own PreToolUse hook (Claude's Edit/Write,
+    Codex's apply_patch), again only after 30 minutes; the pane's chip says
+    "Nick's work also changes …". `list_teammate_changes` and
+    `read_teammate_diff` let agents look (fenced as teammate content, secret
+    files' diffs withheld, cut to size). Numbered migration folders
+    (`db/migrations/0024_x.sql`, `V25__x.sql`, `20261012_x.rb`) are found by
+    themselves; an agent reserves the next number with
+    `reserve_migration_number` — above every number on the base branch
+    (fetched first), teammates' branches and shared work, your worktrees and
+    every reservation — and a new migration file whose number isn't reserved
+    for its user is held back once. Reservations are signed room events,
+    shown on the House board ("Migrations: 0025 Nick (#447), 0026 Ryan
+    (#453)"), released by hand or once their number is on the base branch or
+    their branch is gone. The room's admin can turn the hold-back off, or name
+    a repository's migration folders, in Settings → Team.
 
 ### Next
 

@@ -286,7 +286,7 @@ const migrationViews: Record<string, MigrationsView> = {
     ],
     problems: [],
   },
-  R5110bbbbbbbbbbbbbbbbb: { roomId: "R5110bbbbbbbbbbbbbbbbb", check: true, canChange: true, adminName: "You", repos: [], reservations: [], problems: [] },
+  R5110bbbbbbbbbbbbbbbbb: { roomId: "R5110bbbbbbbbbbbbbbbbb", check: true, canChange: false, adminName: "Nick Smith", repos: [], reservations: [], problems: [] },
 };
 const houseConsentQuery = teamQuery.get("houseConsent");
 const houseRooms: Record<string, { project: string | null; added: { n: number; by: string }[]; isAdmin: boolean; admin: string; consent?: "pending" | "declined" }> = {

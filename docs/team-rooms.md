@@ -44,7 +44,9 @@ should stop more members joining later.
   `room.approval`, `join.declined` (joining, below);
   `session.upsert` / `session.removed` (room sessions);
   `session.backup`, `session.takenOver`, `session.backupDropped` (take-over);
-  `room.settings` (the admin's: backups to origin);
+  `room.settings` (the admin's: backups to origin, the migration check and
+  migration folders); `migration.reserved`, `migration.released` (migration
+  numbers, below);
   `chat.message`, `chat.update`, `chat.assistant` (team room); `house.project`
   (the admin's), `house.track`, `house.untrack`, `house.nudge` (House board;
   never the House's titles, claims or statuses); `artifact.add`,
@@ -792,8 +794,9 @@ lines) in the room's repository, and links — for people and agents alike.
   folder are the agent's to write, so it could turn `.mockingbird` (or
   `agent-context.md`, or the repository's `info/exclude`) into a symbolic
   link to `~/.zshrc` and have Mockingbird write there. Every file Mockingbird
-  writes or deletes inside one — `claims.json`, `agent-context.md`, the old
-  `plan.md`, agents' artifact copies, the exclude line — goes through
+  writes or deletes inside one — `claims.json`, `agent-context.md`,
+  `overlaps.json`, `migrations.json`, the old `plan.md`, agents' artifact
+  copies, the exclude line — goes through
   `fileOps.ts`'s worktree helpers: each folder under the worktree is checked
   with lstat and a link (or something that isn't a folder) is refused, a file
   is read only when it's a regular file, and it's written as a new file
@@ -989,6 +992,151 @@ House's **open backlog**.
   worktree's old `.mockingbird/plan.md` is removed the next time its copy is
   written.
 
+## Teammates' changes and migration numbers
+
+Decided with Ryan, 2026-10-13: Ryan's and Nick's agents work in the same
+repository (atticus-backoffice) on separate branches and kept producing merge
+conflicts — worst on numbered migration files (two branches both adding
+migration 0025) and docs, but any file can. Three things, built together
+(1.4.9): migration number reservations, a heads-up when teammates change the
+same file, and tools for agents to see what teammates change.
+
+- **What a teammate is changing,** as this Mac already has it — never a
+  request to their Mac (`src/main/team/teamChanges.ts`): their room sessions'
+  pushed branches (fetched by the House board's teammate reads, compared with
+  the base), and the newest take-over snapshot of each of their sessions that
+  reached a clone here peer to peer (`refs/mockingbird/rooms/…`): its commit's
+  parent against the base is committed work, the snapshot against its parent
+  uncommitted work as of their last turn. Nothing new crosses the wire: the
+  snapshots were already sent for take-over, and backups' rules hold (secrets,
+  ignored and big files are never in them). A teammate session with neither
+  (its branch not pushed, no snapshot yet, no clone of its repository here) is
+  listed with why.
+- **Every room repository's worktrees get the files,** House project or not
+  (before this, only rooms with a House project did): beside `claims.json`
+  and `agent-context.md`, `.mockingbird/overlaps.json` (each teammate session
+  in the room working in this repository — member, title, ticket, branch — and
+  its committed and uncommitted files, up to 2,000 each; a worktree on that
+  session's own branch leaves it out: that's their work checked out here) and
+  `.mockingbird/migrations.json` (the room's migration folders for this
+  repository, whether the check is on, and the live reservations). Written
+  read-only through `fileOps.ts`'s link-refusing helpers, git-excluded, every
+  teammate-sourced string one-lined with `<` `>` swapped (`fenced`). They're
+  rewritten when teammates' changes or reservations change, so the hook reads
+  them with no network call.
+- **The heads-up.** The agents' PreToolUse hook (the claims check's script,
+  `claims-check.js`) also reads `overlaps.json`: an edit (Claude's Edit, Write,
+  MultiEdit, NotebookEdit; Codex's apply_patch) of a file a teammate session
+  is changing goes ahead, with `additionalContext` for the agent — "Heads-up
+  from Mockingbird: Nick's session "Export API" (ticket #453, branch
+  feature/453-x), in uncommitted work on their Mac, is also changing
+  "src/api/x.ts". Coordinate before you both change it… send_message …
+  read_teammate_diff …" — and a `systemMessage` line for the user. Per
+  conversation and file it's said once, then again only after 30 minutes
+  (`~/.mockingbird/overlaps-warned/`). Both sides learn it: each Mac's agents
+  hear about the other's sessions. Codex 0.156's hook schema takes
+  `additionalContext` on PreToolUse (checked against the installed binary's
+  embedded schema), so Codex gets the same heads-up; that it reaches the
+  model the way Claude's does isn't proven by a model run. When a claims
+  hold-back or a migration hold-back denies the same edit, the heads-up rides
+  along in the deny's reason. Each of the three checks fails on its own: an
+  unreadable copy is reported (`ClaimCheckFailed`, in the log and as a
+  notice) and the others still answer; the edit is never blocked by a
+  failure.
+- **The panes' chips** count the same changes: "Nick's work also changes x.ts"
+  when some of it is uncommitted (the tooltip marks those files), "Nick's
+  branch also changes …" when it's all on his branch.
+- **Agents' tools** (Mockingbird MCP; read-only, pre-allowed in Claude room
+  launches like the House's reads, approved like every non-House-write tool in
+  Codex): `list_teammate_changes` — per teammate room session its id (as
+  `list_sessions` gives it, for `send_message`), owner, title, ticket, branch,
+  repository, where the files were read from, and each file with `committed`,
+  `uncommitted` and `also_changed_here` (this worktree changes it too), up to
+  300 per session; `read_teammate_diff(session, file)` — that file's diff
+  against the base branch, from the snapshot (committed and uncommitted) or
+  else the pushed branch, between `<teammate-diff>` tags (the tag taken out of
+  the content), cut at 30,000 characters by default (up to 100,000, saying
+  where it was cut). Only files the session changes are read; a file named
+  like a secret (`secrets.ts`, the artifacts' rules) or one of this Mac's
+  known secret files, or a diff holding a private key, is withheld, saying
+  so. git runs with `--no-ext-diff --no-textconv`, so a repository's
+  configured diff drivers never run. Every string a teammate controls is
+  one-lined (`fenced`, `named`, `quoted`), and the answers say they're
+  teammate content, not instructions.
+- **Migration folders** are found by themselves (`detectMigrationFolders`,
+  `src/shared/team/migrations.ts`), from the base branch's files and the
+  clone's: a folder whose files are mostly (60%) numbered — an optional `V`,
+  digits, then `_`, `-` or `.` (`0024_add_x.sql`, `V25__x.sql`,
+  `20261012_x.rb`, `001-init.sql`) — and whose path says migrations
+  (`migrations`, `migrate`, `db`, `schema`, `sql`, `versions`, `flyway`…) or
+  holding two or more numbered `.sql` files; never under `node_modules`,
+  `vendor`, build output or the top folder. Its padding and prefix come from
+  most of its files. Where detection is wrong, the room's admin names a
+  repository's folders in Settings → Team (`room.settings { migrationFolders:
+  { <origin key>: [...] } }`; an empty list goes back to detection).
+- **Reserving:** `reserve_migration_number(folder?)` — the folder only when
+  there are several (the answer lists them) or detection missed it. Origin is
+  fetched first (a failure is said in the answer and logged; the numbers are
+  then as last fetched); the number is one above every number in the folder
+  on the base branch (`baseRef`: origin's UAT/dev/main), on each teammate
+  room session's branch as fetched, in teammates' snapshots here, in every
+  worktree of this clone (files on disk, uncommitted too), and in every live
+  reservation for that repository and folder in any room here. It's written
+  as the folder writes numbers (`0026`, `V26`). The answer names the file
+  pattern and where the highest number came from. `migration.reserved
+  { repo (origin key), folder, number, label, session { id, title }, ticket,
+  branch }` is published, and the worktrees' copies are rewritten before the
+  tool answers, so the agent's next edit sees the number as its user's.
+  `list_migration_reservations` lists them; `release_migration_number(number,
+  folder?)` gives one back.
+- **What counts as reserved:** a reservation holds its number in its
+  repository and folder for its **member** (any of their sessions), until it's
+  released. Two members reserving the same number while apart (or at once):
+  the first in the room's order holds it, the same on every member; the other
+  is kept, marked `clash`, holds nothing, and its owner's agent is told to
+  reserve again (and is held back if it uses that number). Released: by its
+  member or the room's admin (`migration.released { reservation, reason }`),
+  when its member leaves or is removed, and by its member's Mockingbird once a
+  file with that number is on the base branch (`merged`) or its branch exists
+  neither here nor on origin (`branch-gone`; a branch it can't check is kept,
+  never released on a guess). Every member also treats a reservation whose
+  number it sees on the base branch as released, without waiting for the
+  event. Events are checked strictly: an origin key without credentials, a
+  plain repository-relative folder, a whole number of at most 15 digits whose
+  label matches, a session id, and a session title, ticket and branch on one
+  line; a room keeps at most 400 reservations (released ones dropped first).
+- **The hold-back** (on by default; the room's admin turns it off in Settings →
+  Team, `room.settings { migrationCheck }`, admin-only like backups): the hook
+  reads `migrations.json`; creating a file that doesn't exist yet in one of
+  the folders, with a number reserved by someone else or by nobody, is held
+  back once per conversation and file with the reason and what to do ("…
+  would add migration 0003 to "db/migrations", which Nick's session "Export
+  API" (ticket #447, branch feature/447-export) reserved … Reserve a number
+  first with reserve_migration_number …"); the same edit again goes through.
+  Editing an existing migration, or a file in another folder, is never held.
+  The app hears each hold-back (`RoomCheck`), logs it and notifies the user.
+  Off, nothing is held back and agents are told to reserve anyway.
+- **On the board:** a line under the House board's heading, "Migrations: 0025
+  Nick (#447), 0026 You (#453)" (a clash marked), with what couldn't be read
+  or released below it. Settings → Team, per room: **Hold back unreserved
+  migrations** (the admin's switch, saying who the admin is) and each
+  repository's migration folders, with **Change…** for the admin.
+- **Agents are told** (the room's instructions in their launch and
+  `agent-context.md`): to reserve before creating a migration and which
+  folders there are, and that a heads-up may come with an edit, with the
+  tools to use.
+- **Limits.**
+  - Only room sessions are seen: a teammate's session outside a room, or work
+    neither pushed nor backed up since their last turn, isn't.
+  - A room session's record names its repository by its origin URL; an origin
+    that's a bare path on disk isn't published, so its repository gets no
+    copies (a `file://` URL works).
+  - Reservations live in the room: a teammate outside the room, or someone
+    adding a migration by hand, isn't held to them. The hook only sees edit
+    tools: a migration written by a shell command isn't held back.
+  - The number is as fresh as the fetch: two members reserving offline both
+    get one, and the clash rule settles who keeps it once they reconnect.
+
 ## Not in this release
 
 - Roles/permissions beyond "member" and the admin who lets people in, removes
@@ -1112,6 +1260,26 @@ House's **open backlog**.
   hook or the worktree's `commondir`, writing home or a `PATH` folder fail,
   and no SSH agent is reachable. The Codex CLI still reads its own
   `auth.json`. Skipped under CI and without Codex 0.138+.
+- Teammates' changes and migration numbers (`test/teamMigrations.test.ts`,
+  `test/teamChanges.test.ts`): folder detection (usual forms, docs and
+  dependencies left out), the next number and labels; malformed events
+  refused (a line break in a title above all), the first reservation in the
+  room's order holding a number when two cross a partition, the same on every
+  member, release by its member or the admin only, leaving releasing; only
+  the admin's switch counting. Through the installed hook script: an
+  unreserved new migration held back once (Claude's Write, Codex's
+  apply_patch), a teammate's reservation named, the user's own, existing
+  files, other folders and the check off let through, teammates' words on
+  one line, an unreadable copy reported while the other checks answer; the
+  overlap heads-up once, again after 30 minutes, the user's own sessions
+  silent, riding along with a hold-back. Against a bare origin and two
+  clones over the loopback: teammates' pushed and snapshot changes in each
+  worktree's `overlaps.json` and the panes' chips (not in a worktree on their
+  branch); the tools' output fenced, a fence-closing file escaped, secrets by
+  name and private keys withheld, diffs cut with a note; numbers above the
+  base, a teammate's branch and shared work, the worktrees and reservations;
+  both members seeing and releasing them; release when merged or the branch
+  is gone; several folders, none, and a failed fetch logged.
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
   (`MB_E2E_APP=1`): create room, join by code (the admin accepting from its
@@ -1119,7 +1287,11 @@ House's **open backlog**.
   board claim, a turn backed up peer to peer (nothing on origin), a hand-over
   from the owner's prompt (their agent stopped, the taker continuing),
   take-over from the peer copy with the owner quit,
-  and the owner's app stopping its copy when it starts again. Notifications,
+  and the owner's app stopping its copy when it starts again; a migration
+  number reserved through the agents' tool socket on one instance seen,
+  stepped over and held back on the other, released, and each side's
+  uncommitted work (a turn's backup) a heads-up on the other's edit, listed
+  and diffed by its tools. Notifications,
   the cross-machine message, the claim warning, Keep / no answer / dropping
   offline mid-request, unsent changes sent and applied, and Take it back are
   tested over the loopback.

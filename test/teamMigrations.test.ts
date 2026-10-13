@@ -8,7 +8,7 @@ import { loopbackRoom, until } from "../src/main/team/loopback";
 import "../src/main/team/takeover"; // room.settings
 import { migrationCheckOn, reservationsOf } from "../src/main/team/migrations";
 import { installHooks } from "../src/main/hooks";
-import { OVERLAPS_WARNED_DIR } from "../src/main/team/claims";
+import { agentContextText, OVERLAPS_WARNED_DIR } from "../src/main/team/claims";
 import { claimsFile } from "../src/shared/team/claims";
 import { detectMigrationFolders, isLive, migrationHit, migrationLabel, migrationNumbers, migrationsFile, nextMigrationNumber, parseMigrationName, patternOf, type MigrationsFile } from "../src/shared/team/migrations";
 import { OVERLAP_REMIND_MS, overlapHits, overlapsFile, type OverlapsFile } from "../src/shared/team/overlaps";
@@ -59,6 +59,17 @@ describe("numbered migration folders", () => {
     expect(migrationLabel(25, { width: 4, prefix: "" })).toBe("0025");
     expect(migrationLabel(26, { width: 0, prefix: "V" })).toBe("V26");
     expect(patternOf(["0001_a.sql", "0002_b.sql"])).toEqual({ width: 4, prefix: "", example: "0002_b.sql", numbered: 2 });
+  });
+});
+
+describe("what room agents are told", () => {
+  it("to reserve before creating a migration, in which folders, and that teammates' overlapping edits come with a heads-up", () => {
+    const base = { name: "5110", teammates: ["Nick"], project: null, board: null, problem: null };
+    const on = agentContextText({ ...base, migrationFolders: ["db/migrations"] });
+    expect(on).toContain('- Numbered migrations ("db/migrations"): before you create a migration file, reserve its number with reserve_migration_number');
+    expect(on).toContain("Mockingbird holds back creating a migration file whose number isn't reserved for your user");
+    expect(on).toContain("list_teammate_changes lists what each teammate session changes");
+    expect(agentContextText({ ...base, migrationCheck: false })).toContain("turned Mockingbird's check off, so nothing holds an unreserved one back: reserve anyway");
   });
 });
 

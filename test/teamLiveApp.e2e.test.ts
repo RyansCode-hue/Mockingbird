@@ -1,4 +1,5 @@
-import { execFileSync } from "child_process";
+import { execFile, execFileSync } from "child_process";
+import * as net from "net";
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +10,33 @@ import type { TakeoverPlan, TakeoverView } from "../src/shared/team/takeover";
 import type { HouseView } from "../src/shared/team/house";
 import { builderHome, fakeHouse } from "./fakeHouse";
 import type { RoomChatView as ChatView } from "../src/shared/team/chat";
+import type { MigrationsView } from "../src/shared/team/migrations";
+import type { OverlapsFile } from "../src/shared/team/overlaps";
+
+/** A Mockingbird MCP tool call, as an agent in session `from` makes it: through the app's own socket. */
+const tool = (a: AppInstance, from: string, op: string, args: Record<string, unknown> = {}) =>
+  new Promise<{ result?: string; error?: string }>((resolve, reject) => {
+    const c = net.createConnection(path.join(a.home, ".mockingbird", "mb.sock"));
+    let buf = "";
+    c.on("data", (d) => (buf += d));
+    c.on("end", () => {
+      try {
+        resolve(JSON.parse(buf));
+      } catch (err) {
+        reject(err);
+      }
+    });
+    c.on("error", reject);
+    c.end(JSON.stringify({ op, args, from }));
+  });
+
+/** An agent's edit (Claude Code's PreToolUse) through an instance's installed hook script: what it answers. */
+const editHook = (a: AppInstance, sessionId: string, cwd: string, toolName: "Edit" | "Write", file: string) =>
+  new Promise<string>((resolve, reject) => {
+    const input = toolName === "Write" ? { file_path: path.join(cwd, file), content: "-- x\n" } : { file_path: path.join(cwd, file), old_string: "a", new_string: "b" };
+    const child = execFile(path.join(a.home, ".mockingbird", "hook.sh"), ["PreToolUse"], { cwd, env: { HOME: a.home, PATH: "/usr/bin:/bin", MOCKINGBIRD_SESSION: sessionId } }, (err, out) => (err ? reject(err) : resolve(out)));
+    child.stdin!.end(JSON.stringify({ session_id: `conv-${sessionId}`, cwd, hook_event_name: "PreToolUse", tool_name: toolName, tool_input: input }));
+  });
 
 /**
  * Team rooms between two real Mockingbird instances on one Mac (separate HOME
@@ -108,8 +136,8 @@ const dialogsOf = (a: AppInstance) =>
   ]);
 
 /** A bare origin and each laptop's clone of it, in a folder its Mockingbird indexes. */
-function repos() {
-  const seed = makeRepo({ "README.md": "backoffice\n", "src/donors.ts": "export const donors = [];\n" }, "backoffice");
+function repos(extra: Record<string, string> = {}) {
+  const seed = makeRepo({ "README.md": "backoffice\n", "src/donors.ts": "export const donors = [];\n", ...extra }, "backoffice");
   const bare = path.join(tempDir("origin"), "backoffice.git");
   execFileSync("git", ["clone", "--bare", "-q", seed, bare]);
   const code = (who: string) => {
@@ -399,6 +427,96 @@ describe("team rooms between two Mockingbird instances", () => {
       }
     },
     360_000
+  );
+
+  it.skipIf(!appE2E)(
+    "migration numbers reserved through the agents' tools reach the teammate and hold back their file; uncommitted work on one Mac is a heads-up on the other",
+    async () => {
+      execFileSync(process.execPath, ["esbuild.mjs"], { cwd: root, stdio: "ignore" });
+      const signal = await e2eSignaling();
+      const r = repos({ "db/migrations/0001_init.sql": "-- init\n", "db/migrations/0002_donors.sql": "-- donors\n" });
+      // a room session's record carries its origin as a URL (a bare path is never published): file:// here
+      for (const c of [r.ryan.clone, r.nick.clone]) git(c, "remote", "set-url", "origin", `file://${r.bare}`);
+      const stub = path.join(tempDir("bin"), "claude");
+      fs.writeFileSync(stub, FAKE_CLAUDE, { mode: 0o755 });
+      const settings = (code: string) => ({ claudeBin: stub, repoRoots: [code] });
+      const ryan = await launchApp("Ryan", signal.url, { home: signal.creatorHome ?? tempDir("ryan"), settings: settings(r.ryan.dir) });
+      const nick = await launchApp("Nick", signal.url, { settings: settings(r.nick.dir) });
+      try {
+        const { roomId } = await connect(signal, ryan, nick);
+        const rid = JSON.stringify(roomId);
+        for (const a of [ryan, nick]) expect(await a.evaluate(`window.mb.installHooks()`)).toMatchObject({ installed: true });
+        const start = async (a: AppInstance, branch: string, title: string) => {
+          const s = await a.evaluate<{ id: string; cwd: string; error?: string }>(
+            `window.mb.createSession({ repoPath: ${JSON.stringify(a === ryan ? r.ryan.clone : r.nick.clone)}, useWorktree: true, branchName: ${JSON.stringify(branch)}, agent: "claude", taskGroup: "5110", title: ${JSON.stringify(title)} })`
+          );
+          expect(s.error).toBeUndefined();
+          await untilTrue(`${title} to start`, async () => (await buffer(a, s.id)).includes("fake-claude started"), 20_000);
+          return s;
+        };
+        const rs = await start(ryan, "5110-donors", "Donor entities");
+        const ns = await start(nick, "5110-export", "Gift export");
+        // the teammate tools that only read are pre-allowed in a room launch
+        expect(await buffer(ryan, rs.id)).toContain("mcp__mockingbird__list_teammate_changes");
+        expect(await buffer(ryan, rs.id)).not.toContain("mcp__mockingbird__reserve_migration_number");
+
+        // ---- Ryan's agent reserves the next number; Nick's sees it, gets the one after, and is held back from Ryan's
+        const reserved = await tool(ryan, rs.id, "reserve_migration_number", {});
+        expect(reserved.result).toMatch(/^Reserved migration 0003 in "db\/migrations" for your user/);
+        await untilTrue("Ryan's reservation at Nick's", async () => (await nick.evaluate<MigrationsView>(`window.mb.teamChangesView(${rid})`)).reservations.some((x) => x.label === "0003" && x.member === "Ryan"));
+        expect((await tool(nick, ns.id, "list_migration_reservations")).result).toContain('"held_by": "Ryan"');
+        expect((await tool(nick, ns.id, "reserve_migration_number", {})).result).toMatch(/^Reserved migration 0004 /);
+        await untilTrue("both on Ryan's board line", async () => (await ryan.evaluate<MigrationsView>(`window.mb.teamChangesView(${rid})`)).reservations.map((x) => `${x.label} ${x.self ? "You" : x.member}`).join(", ") === "0003 You, 0004 Nick");
+        const copyOf = (cwd: string, name: string) => (fs.existsSync(path.join(cwd, ".mockingbird", name)) ? fs.readFileSync(path.join(cwd, ".mockingbird", name), "utf8") : "");
+        await untilTrue("Ryan's 0003 in Nick's worktree copy", async () => copyOf(ns.cwd, "migrations.json").includes('"label":"0003"')).catch((err) => {
+          throw new Error(`${err.message}: ${ns.cwd} holds ${JSON.stringify(fs.existsSync(path.join(ns.cwd, ".mockingbird")) ? fs.readdirSync(path.join(ns.cwd, ".mockingbird")) : null)}, migrations.json ${copyOf(ns.cwd, "migrations.json")}, clone ${JSON.stringify(fs.existsSync(path.join(r.nick.clone, ".mockingbird")) ? fs.readdirSync(path.join(r.nick.clone, ".mockingbird")) : null)}`);
+        });
+        const held = JSON.parse(await editHook(nick, ns.id, ns.cwd, "Write", "db/migrations/0003_gift_export.sql"));
+        expect(held.hookSpecificOutput.permissionDecision).toBe("deny");
+        expect(held.hookSpecificOutput.permissionDecisionReason).toContain(`which Ryan's session "Donor entities" (branch 5110-donors) reserved`);
+        expect(await editHook(nick, ns.id, ns.cwd, "Write", "db/migrations/0004_gift_export.sql")).toBe("");
+        // Ryan gives his back: gone from Nick's side
+        expect((await tool(ryan, rs.id, "release_migration_number", { number: 3 })).result).toBe('Released 0003 in "db/migrations".');
+        await untilTrue("Ryan's release at Nick's", async () => (await nick.evaluate<MigrationsView>(`window.mb.teamChangesView(${rid})`)).reservations.map((x) => x.label).join() === "0004");
+
+        // ---- uncommitted work: each turn writes notes.txt; after each side's backup reaches the other, an edit of it there is a heads-up
+        const ryanId = (await ryan.status()).self!.id;
+        const nickId = (await nick.status()).self!.id;
+        await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(rs.id)}, "add the donor notes\\r")`);
+        await nick.evaluate(`window.mb.sessionWrite(${JSON.stringify(ns.id)}, "add the export notes\\r")`);
+        const mirrored = async (a: AppInstance, owner: string, sessionId: string) => !!(await takeovers(a)).sessions.find((v) => v.sessionId === sessionId && v.owner === owner)?.peerCopy;
+        await untilTrue("Ryan's snapshot at Nick's", () => mirrored(nick, ryanId, rs.id), 60_000);
+        await untilTrue("Nick's snapshot at Ryan's", () => mirrored(ryan, nickId, ns.id), 60_000);
+        const told = (cwd: string, who: string) => {
+          try {
+            return (JSON.parse(fs.readFileSync(path.join(cwd, ".mockingbird", "overlaps.json"), "utf8")) as OverlapsFile).sessions.some((x) => x.member.name === who && x.uncommitted.includes("notes.txt"));
+          } catch {
+            return false;
+          }
+        };
+        await untilTrue("Ryan's notes.txt in Nick's worktree copy", async () => told(ns.cwd, "Ryan"), 30_000);
+        await untilTrue("Nick's notes.txt in Ryan's worktree copy", async () => told(rs.cwd, "Nick"), 30_000);
+        const atNick = JSON.parse(await editHook(nick, ns.id, ns.cwd, "Edit", "notes.txt"));
+        expect(atNick.hookSpecificOutput.additionalContext).toMatch(/^Heads-up from Mockingbird: Ryan's session "Donor entities" \(branch 5110-donors\), in uncommitted work on their Mac, is also changing "notes.txt"\./);
+        expect(await editHook(nick, ns.id, ns.cwd, "Edit", "notes.txt")).toBe(""); // told once, for a while
+        const atRyan = JSON.parse(await editHook(ryan, rs.id, rs.cwd, "Edit", "notes.txt"));
+        expect(atRyan.hookSpecificOutput.additionalContext).toMatch(/^Heads-up from Mockingbird: Nick's session "Gift export" \(branch 5110-export\), in uncommitted work on their Mac, is also changing "notes.txt"\./);
+        // and the agents can look: Nick's tools list Ryan's session with notes.txt, and show its diff
+        const listed = (await tool(nick, ns.id, "list_teammate_changes")).result ?? "";
+        const changes = JSON.parse(listed.slice(listed.indexOf("\n") + 1));
+        expect(changes.sessions).toEqual([expect.objectContaining({ owner: "Ryan", title: "Donor entities", files: expect.arrayContaining([{ path: "notes.txt", committed: false, uncommitted: true, also_changed_here: true }]) })]);
+        const diff = await tool(nick, ns.id, "read_teammate_diff", { session: changes.sessions[0].id, file: "notes.txt" });
+        expect(diff.result).toMatch(/<teammate-diff>\n[^]*\+add the donor notes[^]*\n<\/teammate-diff>$/);
+      } catch (err) {
+        throw new Error(`${(err as Error).message}\n--- Ryan's log ---\n${mainLog(ryan).slice(-4000)}\n--- Nick's log ---\n${mainLog(nick).slice(-4000)}`);
+      } finally {
+        ryan.close();
+        nick.close();
+        await Promise.all([quitApp(ryan.child), quitApp(nick.child)]);
+        await signal.close();
+      }
+    },
+    300_000
   );
 
   it.skipIf(!appE2E || !process.env.MB_E2E_SIGNALING_URL)(
