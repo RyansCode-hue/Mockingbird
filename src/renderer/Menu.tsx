@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { useListNav } from "./listNav";
+import { usePresence } from "./motion";
 
 export interface MenuItem {
   key: string;
@@ -35,13 +36,16 @@ export function placePopover(anchor: Rect, size: { width: number; height: number
 function usePopover(open: boolean, close: () => void, size: (button: DOMRect, list: HTMLDivElement) => { width: number; height: number }, remeasure: unknown) {
   const btn = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number; width: number } | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number; width: number; transformOrigin: string } | null>(null);
+  // it grows from its control's edge and fades on close (motion.ts)
+  const listRef = usePresence<HTMLDivElement>("menu", { also: list });
 
   useLayoutEffect(() => {
     if (!open || !btn.current || !list.current) return;
     const b = btn.current.getBoundingClientRect();
     const s = size(b, list.current);
-    setPos({ ...placePopover(b, s, { width: window.innerWidth, height: window.innerHeight }), width: s.width });
+    const at = placePopover(b, s, { width: window.innerWidth, height: window.innerHeight });
+    setPos({ ...at, width: s.width, transformOrigin: at.top >= b.bottom ? "left top" : "left bottom" });
   }, [open, remeasure]);
 
   useEffect(() => {
@@ -62,7 +66,7 @@ function usePopover(open: boolean, close: () => void, size: (button: DOMRect, li
     };
   }, [open]);
 
-  return { btn, list, pos, unplace: () => setPos(null) };
+  return { btn, list, listRef, pos, unplace: () => setPos(null) };
 }
 
 /**
@@ -83,7 +87,7 @@ export function MenuButton({
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const { btn, list, pos, unplace } = usePopover(open, () => setOpen(false), (_b, l) => ({ width: l.getBoundingClientRect().width, height: l.scrollHeight }), items.length);
+  const { btn, listRef, pos, unplace } = usePopover(open, () => setOpen(false), (_b, l) => ({ width: l.getBoundingClientRect().width, height: l.scrollHeight }), items.length);
 
   useEscape(() => setOpen(false), open);
 
@@ -106,10 +110,10 @@ export function MenuButton({
       {open &&
         createPortal(
           <div
-            ref={list}
+            ref={listRef}
             className="mb-menu"
             role="menu"
-            style={pos ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight } : { left: -9999, top: -9999 } /* measured first, then placed */}
+            style={pos ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight, transformOrigin: pos.transformOrigin } : { left: -9999, top: -9999 } /* measured first, then placed */}
           >
             {items.map((it) => (
               <button
@@ -164,7 +168,7 @@ export function Select({
 }) {
   const [open, setOpen] = useState(false);
   const { sel: active, setSel: setActive, onArrow } = useListNav(options.length, []);
-  const { btn, list, pos, unplace } = usePopover(open, () => setOpen(false), (b, l) => ({ width: Math.max(b.width, 220), height: l.scrollHeight }), options.length);
+  const { btn, list, listRef, pos, unplace } = usePopover(open, () => setOpen(false), (b, l) => ({ width: Math.max(b.width, 220), height: l.scrollHeight }), options.length);
   const current = options.find((o) => o.value === value);
 
   useEffect(() => {
@@ -219,10 +223,10 @@ export function Select({
       {open &&
         createPortal(
           <div
-            ref={list}
+            ref={listRef}
             className="mb-menu mb-listbox"
             role="listbox"
-            style={pos ? { left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxHeight } : { left: -9999, top: -9999 }}
+            style={pos ? { left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxHeight, transformOrigin: pos.transformOrigin } : { left: -9999, top: -9999 }}
           >
             {options.map((o, i) => {
               const head = o.group && o.group !== lastGroup ? o.group : null;

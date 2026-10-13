@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { MoreIcon } from "./Icons";
+import { fromKeyboard, usePresence } from "./motion";
 
 /**
  * One action, said once and shown two ways: as a labelled icon button (an
@@ -107,6 +108,8 @@ function run(a: Action, close: () => void) {
 /** The menu itself, in a portal over everything. Use it through useContextMenu or MoreButton. */
 function ContextMenuView({ state, setState, label }: { state: MenuState; setState: (s: MenuState | null) => void; label?: string }) {
   const ref = useRef<HTMLDivElement>(null);
+  // it grows from the pointer's corner; opened from the keyboard, it's simply there
+  const presence = usePresence<HTMLDivElement>("menu", { instant: fromKeyboard, also: ref });
   const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
   const close = () => setState(null);
   useEscape(close);
@@ -147,11 +150,15 @@ function ContextMenuView({ state, setState, label }: { state: MenuState; setStat
 
   return createPortal(
     <div
-      ref={ref}
+      ref={presence}
       className="mb-menu mb-ctx"
       role="menu"
       aria-label={label}
-      style={pos ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight } : { left: -9999, top: -9999 } /* measured first, then placed */}
+      style={
+        pos
+          ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight, transformOrigin: `${pos.left < state.at.x - 1 ? "right" : "left"} ${pos.top < state.at.y - 1 ? "bottom" : "top"}` }
+          : { left: -9999, top: -9999 } /* measured first, then placed */
+      }
       // React passes a portal's events up its component tree: a click here isn't a click on the row or header that opened it
       onContextMenu={(e) => {
         e.preventDefault();
@@ -218,7 +225,7 @@ export function useContextMenu(label?: string) {
       // unless what the row did took focus (a dialog), or another menu opened
       requestAnimationFrame(() => {
         const now = document.activeElement;
-        if (el?.isConnected && (!now || now === document.body) && !document.querySelector(".mb-ctx")) el.focus({ preventScroll: true });
+        if (el?.isConnected && (!now || now === document.body) && !document.querySelector(".mb-ctx:not(.mb-ghost)")) el.focus({ preventScroll: true });
       });
     }
   };

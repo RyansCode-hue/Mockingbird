@@ -1,4 +1,4 @@
-import { useCallback, useRef, useSyncExternalStore, type MutableRefObject, type RefObject } from "react";
+import { useCallback, useLayoutEffect, useRef, useSyncExternalStore, type MutableRefObject, type RefObject } from "react";
 import { readPref, writePref } from "./prefs";
 
 /**
@@ -205,7 +205,19 @@ export function exitGhost(kind: Presence, node: HTMLElement): void {
   ghost.setAttribute("aria-hidden", "true");
   ghost.inert = true;
   Object.assign(ghost.style, { position: "fixed", left: `${r.left}px`, top: `${r.top}px`, right: "auto", bottom: "auto", width: `${r.width}px`, height: `${r.height}px`, margin: "0", pointerEvents: "none" });
-  node.parentNode.insertBefore(ghost, node.nextSibling);
+  // a toast's list goes when its last toast does: its copy waits in the body (toasts are fixed, styled on their own)
+  if (kind === "toast") {
+    // stacked as its list was, so the toasts sliding over its place don't hide it
+    for (let up = node.parentElement; up && up !== document.body; up = up.parentElement) {
+      const z = getComputedStyle(up).zIndex;
+      if (z !== "auto") {
+        ghost.style.zIndex = z;
+        break;
+      }
+    }
+    document.body.appendChild(ghost);
+  }
+  else node.parentNode.insertBefore(ghost, node.nextSibling);
   const anims = exitFrames(kind, ghost);
   const done = () => ghost.remove();
   if (!anims.length) return done();
@@ -238,16 +250,18 @@ export function usePresence<T extends HTMLElement>(kind: Presence, opts: { insta
 
 /**
  * Children that move when the list changes slide from where they were (FLIP, transform only). Call after
- * every render of the list's owner, with its container; positions are layout offsets, so a running
- * animation never skews the next measurement.
+ * every render of the list's owner, with its container; positions are the container's place plus layout
+ * offsets, so a running animation never skews the next measurement (the container itself mustn't move).
  */
 export function flipChildren(container: HTMLElement | null, last: Map<Element, number>): void {
   if (!container) return;
+  // the container's own place counts: a stack anchored at its bottom grows upward, moving every toast in it
+  const base = container.getBoundingClientRect().top;
   const seen = new Set<Element>();
   for (const child of container.children) {
     if (!(child instanceof HTMLElement) || child.classList.contains(GHOST)) continue;
     seen.add(child);
-    const now = child.offsetTop;
+    const now = base + child.offsetTop;
     const was = last.get(child);
     last.set(child, now);
     if (was !== undefined && Math.abs(was - now) > 0.5) play(child, [{ transform: `translateY(${was - now}px)` }, { transform: "none" }], { ...springTiming(), composite: "add" });
@@ -256,9 +270,36 @@ export function flipChildren(container: HTMLElement | null, last: Map<Element, n
 }
 
 /** Each child of `ref`'s element slides to its new place when the list changes (flipChildren, after every render). */
-export function useFlip<T extends HTMLElement>(): RefObject<T> & { after: () => void } {
-  const ref = useRef<T>(null) as MutableRefObject<T | null> & { after?: () => void };
+export function useFlip(ref: RefObject<HTMLElement>): void {
   const last = useRef(new Map<Element, number>());
-  ref.after ??= () => flipChildren(ref.current, last.current);
-  return ref as RefObject<T> & { after: () => void };
+  useLayoutEffect(() => flipChildren(ref.current, last.current));
+}
+
+/**
+ * usePresence for the items of a list: `refFor(key)` is each item's ref, the same function for the same key
+ * on every render, so an item plays its entrance once and its exit when it leaves.
+ */
+export function usePresenceRefs<T extends HTMLElement>(kind: Presence): (key: string | number) => (el: T | null) => void {
+  const refs = useRef(new Map<string | number, (el: T | null) => void>());
+  return useCallback(
+    (key) => {
+      let f = refs.current.get(key);
+      if (!f) {
+        let last: T | null = null;
+        f = (el) => {
+          if (el) {
+            last = el;
+            enter(kind, el);
+          } else if (last) {
+            exitGhost(kind, last);
+            last = null;
+            refs.current.delete(key);
+          }
+        };
+        refs.current.set(key, f);
+      }
+      return f;
+    },
+    [kind]
+  );
 }

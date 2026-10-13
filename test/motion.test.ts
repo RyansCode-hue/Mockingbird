@@ -1,6 +1,7 @@
 import { readFileSync } from "fs";
 import { describe, expect, it } from "vitest";
-import { D, REDUCED_MS, SPRING, motionMode, spring } from "../src/renderer/motion";
+import { D, GHOST, REDUCED_MS, SPRING, motionMode, spring } from "../src/renderer/motion";
+import { OVERLAYS } from "../src/renderer/keys";
 
 const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
 /** The declarations of the first rule whose selector is exactly `sel`. */
@@ -78,5 +79,14 @@ describe("the stylesheet's motion", () => {
   });
   it("keys reduced motion off the root's data-motion, so Settings can override macOS", () => {
     expect(css).not.toMatch(/prefers-reduced-motion/);
+  });
+});
+
+describe("exits played on a static copy", () => {
+  it("never count as an open overlay (Esc, focus return)", () => {
+    for (const sel of OVERLAYS.split(",").map((x) => x.trim()))
+      if (/modal-back|mb-menu/.test(sel)) expect(sel).toContain(`:not(.${GHOST})`);
+    const menu = readFileSync(new URL("../src/renderer/ContextMenu.tsx", import.meta.url), "utf8");
+    expect(menu).toContain(`.mb-ctx:not(.${GHOST})`);
   });
 });
