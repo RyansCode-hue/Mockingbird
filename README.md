@@ -132,7 +132,10 @@ inspector and its controls don't overlap; local only, like the screenshot test).
 The UI follows `design_handoff_mockingbird` (see the zip in this folder): warm dark
 palette, Helvetica Neue for anything you click, JetBrains Mono (falls back to
 SF Mono) for anything the machine produced, and one hard rule — **amber
-`#e0a34a` means "a session needs you" and nothing else**. Status is always a
+`#e0a34a` means "a session needs you" and nothing else** (primary buttons
+and the focus ring are neutral). Every text colour keeps 4.5:1 contrast on the
+surfaces it sits on, in both themes (`test/contrast.test.ts` checks the tokens).
+Status is always a
 dot: teal working · amber waiting (pulsing) · grey idle · red dead. Not yet
 implemented from the handoff: cross-session transcript search (1f), the
 draft-comment queue from the ADO design (1d ships as the Dashboard without
@@ -157,6 +160,14 @@ Ordered by intent: **Now** is being designed or actively hurts, **Next** is
 agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Shipped recently
+
+- **UI review, first batch** — primary buttons and the focus ring are neutral,
+  so amber means only "waiting on you" [G1]; every text colour keeps 4.5:1 on
+  its surface in both themes, checked from the tokens [G5]; one disabled-button
+  style that says why [G2]; a visible focused pane [P4]; the Team badge as a
+  count [S4]; "↻ Restart N" [T2]; "e.g." placeholders [G6]; dialogs keep their
+  title and buttons in view [H4]; the # completion fits [R4]; copy and labels
+  [P7 C2 C3 C4 N1 N2 SET2 SET3 SET5].
 
 - **1.4.7 UI fixes** — a session row's actions sit at the end of its title
   line, as icons with tooltips, never over its other lines or their buttons; a
@@ -458,23 +469,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Next
 
-The 1.4.7 UI review's recommended order (its ids in brackets). Decided: primary
-buttons go neutral (G1) and a room gets tabs (R1); for the other choices, mock
-2–3 options and pick before building.
-
-**Quick wins — tokens, text and copy (S)**
-- [G5] Contrast: light and dark dim text and inactive tabs to ≥ 4.5:1; recheck the chips on their tints.
-- [G2] One disabled-button style (subtle fill, dim text, no accent), with a tooltip saying why.
-- [P4] A visible focused-pane outline, distinct from waiting's amber border.
-- [S4] The Team badge as a teal count, not "@2" (reads as "82").
-- [T2] The status-bar Claude pill never shrinks to "C." ("↻ Restart 1", the version in its tooltip).
-- [G6] Placeholders start with "e.g.", lighter and short.
-- [H4] Modals keep their header and footer in view; only the body scrolls.
-- [R4] The # completion popover isn't clipped at the sidebar's edge.
-- [P7 C2 C3 C4 N1 N2 SET2 SET3 SET5] Copy and labels: unshared groups' buttons, the Council rail, code-access chips and pacing, New session's ⌘↵, Room created, Settings rows, About's update buttons, repo counts.
+The 1.4.7 UI review's recommended order (its ids in brackets). Decided: a room
+gets tabs (R1); for the other choices, mock 2–3 options and pick before building.
 
 **Look and feel (M)**
-- [G1] Primary buttons become neutral; amber is kept only for "waiting on you" (the focus ring follows).
 - [G3 G4] A four-step type scale with nothing under 11px; mono only for code, paths, numbers and keys.
 - [G7] Raw git and fetch errors become short chips, the full text in a popover with Copy and Retry.
 - Labelled controls everywhere: Explorer, Source Control and Settings rows still use bare glyphs (✎ ✕ ⇪ ⤷).
