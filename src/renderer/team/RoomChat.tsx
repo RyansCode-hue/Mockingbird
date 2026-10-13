@@ -64,15 +64,15 @@ export const openTeamView = (roomId: string | null) => {
 
 const sumUnread = (u: ChatUnread) => Object.values(u).reduce((acc, r) => ({ unread: acc.unread + r.unread, mentions: acc.mentions + r.mentions }), { unread: 0, mentions: 0 });
 
-/** The activity bar's team room icon, with unread messages (mentions of you as @N). */
+/** The activity bar's team room icon: a count of unread messages, ringed when any of them mention you. */
 export function TeamRoomIcon() {
   const { unread, mentions } = sumUnread(useChatUnread());
   return (
     <>
       <ChatIcon />
       {unread > 0 && (
-        <span className="ab-badge" title={`${unread} unread in team rooms${mentions ? ` · ${mentions} mentioning you` : ""}`}>
-          {mentions ? `@${mentions > 9 ? "9+" : mentions}` : unread > 99 ? "99+" : unread}
+        <span className={`ab-badge${mentions ? " mention" : ""}`} title={`${unread} unread in team rooms${mentions ? ` · ${mentions} mentioning you` : ""}`}>
+          {unread > 99 ? "99+" : unread}
         </span>
       )}
     </>

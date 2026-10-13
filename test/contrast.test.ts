@@ -1,0 +1,95 @@
+import * as fs from "fs";
+import * as path from "path";
+import { describe, expect, it } from "vitest";
+
+// WCAG contrast of the design tokens in styles.css, computed from the tokens themselves: every text colour on every
+// surface it's drawn on (tinted chips over the surfaces they sit on), in both themes, at least 4.5:1.
+const css = fs.readFileSync(path.join(__dirname, "../src/renderer/styles.css"), "utf8");
+
+function block(selector: string): Record<string, string> {
+  const start = css.indexOf(`${selector} {`);
+  if (start < 0) throw new Error(`styles.css has no "${selector} {" block`);
+  const body = css.slice(start, css.indexOf("}", start));
+  return Object.fromEntries([...body.matchAll(/(--[a-z0-9-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+}
+const dark = block(":root");
+const themes = { dark, light: { ...dark, ...block(':root[data-theme="light"]') } };
+
+type RGBA = [number, number, number, number];
+function parse(value: string): RGBA {
+  const hex = value.match(/^#([0-9a-f]{6})$/i);
+  if (hex) return [0, 2, 4].map((i) => parseInt(hex[1].slice(i, i + 2), 16)).concat(1) as RGBA;
+  const rgba = value.match(/^rgba?\(([^)]+)\)$/);
+  if (rgba) {
+    const [r, g, b, a = 1] = rgba[1].split(",").map(Number);
+    return [r, g, b, a];
+  }
+  throw new Error(`can't read the colour "${value}"`);
+}
+/** `top` (possibly translucent) laid over the opaque `under`. */
+const over = (top: RGBA, under: RGBA): RGBA => [0, 1, 2].map((i) => top[i] * top[3] + under[i] * (1 - top[3])).concat(1) as RGBA;
+const luminance = ([r, g, b]: RGBA) => {
+  const lin = (c: number) => ((c /= 255) <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+};
+export const contrast = (a: RGBA, b: RGBA) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+
+// the surfaces text sits on: the plain ones, a selected row or tab, and a plain chip's fill
+const surfaces = ["--bg-app", "--bg-chrome", "--bg-sidebar", "--bg-pane", "--bg-pane-header", "--bg-pane-header-focus", "--bg-rail", "--bg-assist", "--bg-pane-waiting"];
+const layered: [string, string][] = [
+  ["--fill-selected", "--bg-sidebar"],
+  ["--fill-selected", "--bg-chrome"],
+  ["--fill-subtle", "--bg-pane-header"],
+  ["--fill-subtle", "--bg-sidebar"],
+];
+const text = ["--text-1", "--text-1-warm", "--text-2", "--text-3", "--text-4", "--amber-ink", "--amber-text", "--amber-text-dim", "--teal-text", "--red", "--git-add", "--git-mod", "--m-0", "--m-1", "--m-2", "--m-3", "--m-4", "--m-5"];
+// a tinted chip: its text on its own tint, over the surfaces chips sit on
+const tinted: [string, string][] = [
+  ["--amber-text", "--fill-waiting"],
+  ["--amber-ink", "--fill-waiting-glow"], // .wait-banner
+  ["--teal-text", "rgba(79, 179, 165, .12)"], // .chip.teal, .chip.stage
+  ["--red", "rgba(207, 106, 90, .12)"], // .chip.overlap
+];
+const chipGrounds = ["--bg-pane", "--bg-pane-header", "--bg-pane-waiting", "--bg-chrome", "--bg-sidebar"];
+// filled controls: their label on their fill
+const filled: [string, string][] = [
+  ["--on-primary", "--primary"],
+  ["--on-primary", "--primary-hover"],
+  ["--chip-on-fg", "--chip-on-bg"],
+  ["--on-amber", "--amber"],
+  ["--on-teal", "--teal"],
+];
+
+function failures(t: Record<string, string>): string[] {
+  const color = (v: string) => parse(v.startsWith("--") ? t[v] : v);
+  const grounds = [
+    ...surfaces.map((s) => [s, color(s)] as const),
+    ...layered.map(([fill, base]) => [`${fill} on ${base}`, over(color(fill), color(base))] as const),
+  ];
+  const bad: string[] = [];
+  const check = (fg: string, bgName: string, bg: RGBA, min = 4.5) => {
+    const r = contrast(color(fg), bg);
+    if (r < min) bad.push(`${fg} on ${bgName}: ${r.toFixed(2)}`);
+  };
+  for (const fg of text) for (const [name, bg] of grounds) check(fg, name, bg);
+  for (const [fg, tint] of tinted) for (const g of chipGrounds) check(fg, `${tint} on ${g}`, over(color(tint), color(g)));
+  for (const [fg, bg] of filled) check(fg, bg, color(bg));
+  return bad;
+}
+
+describe("the design tokens' contrast", () => {
+  for (const [name, tokens] of Object.entries(themes)) {
+    it(`keeps every text colour at 4.5:1 or more on the surfaces it sits on: ${name}`, () => {
+      expect(failures(tokens)).toEqual([]);
+    });
+  }
+
+  it("reads the colours it checks", () => {
+    expect(contrast(parse("#000000"), parse("#ffffff"))).toBeCloseTo(21, 5);
+    expect(contrast(over(parse("rgba(0, 0, 0, .5)"), parse("#ffffff")), parse("#ffffff"))).toBeGreaterThan(3);
+    for (const tokens of Object.values(themes)) for (const s of surfaces) expect(parse(tokens[s])[3]).toBe(1);
+  });
+});
