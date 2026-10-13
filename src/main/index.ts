@@ -52,6 +52,7 @@ import { buildCatalog, collabModels } from "./models";
 import type { AgentKind, BroadcastRequest, ContextWindow, FileOverlap, Meters, ModelCatalog, PrStatus, SessionInfo, UpdateOutcome } from "../shared/types";
 import { isWorkItemId, localDay, topOfKey, UI_COMMANDS } from "../shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, startInstaller, takeUpdateOutcome } from "./selfUpdate";
+import { QuitSequence } from "./quit";
 import { claudeRunner, freeForResume } from "./claudeBackground";
 import { binSettingsChanged, guarded, instructionFile, liveSessionIn, rememberAnswer, samePath } from "./handlers";
 import { TeamService, type RoomCleanup } from "./team/service";
@@ -86,6 +87,13 @@ function logError(context: string, err: unknown): string {
     /* logging must never crash the app */
   }
   return err instanceof Error ? err.message : String(err);
+}
+function logLine(line: string): void {
+  try {
+    appendLogLine(LOG, `[${new Date().toISOString()}] ${line}`);
+  } catch {
+    /* logging must never crash the app */
+  }
 }
 process.on("uncaughtException", (e) => logError("uncaughtException", e));
 process.on("unhandledRejection", (e) => logError("unhandledRejection", e));
@@ -415,8 +423,16 @@ function createWindow(): void {
     stopTeam();
   });
   win.loadFile(path.join(__dirname, "index.html"));
-  // the editor holds unsaved changes: the window says so (beforeunload), and quitting asks first
+  // the editor holds unsaved changes: the window says so (beforeunload), and
+  // quitting asks first. A signal quits regardless: the question would hold
+  // the app open with no one to answer it, and a modal question blocks the
+  // main process, so not even a second signal would get through.
   win.webContents.on("will-prevent-unload", (event) => {
+    if (quit.bySignal) {
+      logLine(`quit: unsaved editor changes discarded, quitting on ${quit.bySignal}`);
+      event.preventDefault();
+      return;
+    }
     const choice = dialog.showMessageBoxSync(win, {
       type: "warning",
       buttons: ["Quit without saving", "Cancel"],
@@ -425,8 +441,13 @@ function createWindow(): void {
       message: "Some files have unsaved changes",
       detail: "Edits in the editor that haven't been saved (⌘S) will be lost.",
     });
-    if (choice === 0) event.preventDefault(); // go ahead and unload
-    else if (pendingInstall) {
+    if (choice === 0) {
+      event.preventDefault(); // go ahead and unload
+      quit.resumed();
+      return;
+    }
+    quit.cancelled();
+    if (pendingInstall) {
       // the quit is off, and so is the restart into the update
       pendingInstall = null;
       updater.installAborted();
@@ -579,44 +600,37 @@ app.whenReady().then(() => {
   });
 });
 
-// services and debug sessions Mockingbird started stop with it — nothing keeps
-// holding ports, containers or debug windows
-let servicesStopped = false;
-app.on("before-quit", (e) => {
-  const running = runs.states().some((s) => s.status === "running" || s.status === "starting" || s.status === "stopping") || debug.infos().some((d) => d.state !== "ended");
-  if (servicesStopped || !running) return;
-  e.preventDefault();
-  const done = () => {
-    servicesStopped = true;
-    app.quit();
-  };
-  const stopped = Promise.allSettled([runs.stopAll(), debug.stopAll()]).then(([r, d]) => {
-    if (r.status === "rejected") logError("run:stopAll on quit", r.reason);
-    if (d.status === "rejected") logError("debug:stopAll on quit", d.reason);
-  });
-  Promise.race([stopped, new Promise((r) => setTimeout(r, 15_000))]).finally(done);
-});
-
 // each pane's scrollback, so relaunched panes show their earlier output
 setInterval(() => sessions.saveScrollback(), 60_000);
-app.on("will-quit", () => {
-  sessions.saveScrollback(true);
-  stopTeam();
-});
-// panes' ptys end before Node is torn down (SessionManager.shutdown); by
-// will-quit nothing can cancel the quit, so open panes aren't ended for nothing
-let ptysEnded = false;
-app.on("will-quit", (e) => {
-  if (ptysEnded) return;
-  e.preventDefault();
-  sessions
-    .shutdown()
-    .catch((err) => logError("sessions:shutdown on quit", err))
-    .finally(() => {
-      ptysEnded = true;
-      app.quit();
+
+// quitting (see QuitSequence): services and debug sessions Mockingbird started
+// stop first, so nothing keeps holding ports, containers or debug windows; once
+// nothing can cancel the quit, the steps below run and the panes' ptys end
+// before Node is torn down
+const quit = new QuitSequence({
+  app,
+  log: (line) => {
+    if (isPrimary) logLine(line); // a second copy only hands over to the first
+  },
+  logError: (context, err) => void logError(context, err),
+  stopServices: () => {
+    const running = runs.states().some((s) => s.status === "running" || s.status === "starting" || s.status === "stopping") || debug.infos().some((d) => d.state !== "ended");
+    if (!running) return null;
+    return Promise.allSettled([runs.stopAll(), debug.stopAll()]).then(([r, d]) => {
+      if (r.status === "rejected") logError("run:stopAll on quit", r.reason);
+      if (d.status === "rejected") logError("debug:stopAll on quit", d.reason);
     });
+  },
+  steps: [
+    { name: "saving scrollback", run: () => sessions.saveScrollback(true) },
+    { name: "stopping team rooms", run: () => stopTeam() },
+    { name: "stopping language servers", run: () => void lsp.stopAll().catch((err) => logError("lsp:stopAll on quit", err)) },
+    { name: "starting the update's installer", run: () => startPendingInstall() },
+  ],
+  endPtys: () => sessions.shutdown(),
+  killPtys: () => sessions.killAll(),
 });
+app.whenReady().then(() => quit.listenForSignals(process));
 
 // team rooms stop once, whichever comes first (the window closing, or quitting): see stopTeamRooms for the order
 let teamStopped = false;
@@ -1218,7 +1232,6 @@ const lsp = new LspManager({
   onDiagnostics: (file, d) => toWindow("lsp:diagnostics", file, d),
   onStatus: (st) => toWindow("lsp:status", st),
 });
-app.on("will-quit", () => void lsp.stopAll());
 /** A file of a session's folder, as the root and an absolute path inside it. */
 const lspFile = async (sessionId: string, rel: string) => {
   const root = sessionRoot(String(sessionId));
@@ -1630,7 +1643,7 @@ const updater = new UpdateRunner({
 // "Restart to update" starts a quit; the installer starts only once nothing can
 // cancel it anymore (unsaved editor changes ask first, and may keep the app open)
 let pendingInstall: Parameters<typeof startInstaller>[0] | null = null;
-app.on("will-quit", () => {
+function startPendingInstall(): void {
   if (!pendingInstall) return;
   const opts = pendingInstall;
   pendingInstall = null;
@@ -1640,7 +1653,7 @@ app.on("will-quit", () => {
     const why = logError("update:install", err);
     dialog.showErrorBox("Mockingbird couldn't start the update", `${why}\n\nOpen Mockingbird again — the new version is still built in your clone.`);
   }
-});
+}
 handle("update:status", () => updater.progress);
 handle("update:prepare", () => {
   // runs for minutes; progress (and any failure) arrives as update:progress

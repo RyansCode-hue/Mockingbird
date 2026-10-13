@@ -168,6 +168,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
   count [S4]; "↻ Restart N" [T2]; "e.g." placeholders [G6]; dialogs keep their
   title and buttons in view [H4]; the # completion fits [R4]; copy and labels
   [P7 C2 C3 C4 N1 N2 SET2 SET3 SET5].
+- **A quit always finishes** — Electron acts on only the first SIGTERM,
+  SIGINT or SIGHUP, so after a quit that didn't finish (the unsaved-changes
+  question, with no one to answer it) the next `kill` did nothing. Now every
+  signal quits; a second one while quitting exits at once; a signal doesn't
+  stop to ask about unsaved editor changes (it logs that they were dropped);
+  and a quit still running after 30 s is forced: the rest of the quit steps
+  run, every pane's pty is killed, and the app exits. Each quit step runs on
+  its own, so one that fails no longer skips the panes' shutdown or Update's
+  installer. No pane starts once the quit has begun, since a pty started then
+  would outlive the app. `main.log` notes each quit (`quit: …`). The
+  two-instance tests kill every instance they start, with what it started,
+  when its test ends (timed out included), and an instance quits by itself
+  once its test process is gone.
 
 - **1.4.7 UI fixes** — a session row's actions sit at the end of its title
   line, as icons with tooltips, never over its other lines or their buttons; a

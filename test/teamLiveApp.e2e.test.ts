@@ -328,7 +328,7 @@ describe("team rooms between two Mockingbird instances", () => {
 
         // ---- Ryan's Mockingbird quits; Nick takes the session over from his sidebar
         ryan.close();
-        await quitApp(ryan.child);
+        expect(await quitApp(ryan.child)).toEqual({ killed: false, leftovers: [] }); // it quits on its own, its agents with it
         await untilTrue("Ryan offline at Nick's", async () => (await nick.status()).rooms[0]?.online.length === 0, 60_000);
         await untilTrue("Take over, prominent", async () => nick.evaluate<boolean>(`!!${takeOverOf("Donor entities")}?.classList.contains("primary")`));
         expect(await nick.evaluate<string>(whoLine("Donor entities"))).toMatch(/^Ryan's session · offline/);

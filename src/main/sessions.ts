@@ -246,6 +246,7 @@ export class SessionManager {
 
   /** Start a pane. `notice` is shown in it above the agent's output (see paneNotice). */
   async create(req: NewSessionRequest, opts: { notice?: string } = {}): Promise<SessionInfo> {
+    this.refuseWhileQuitting();
     const settings = this.store.settings;
     let cwd: string;
     let branch: string | null = null;
@@ -315,6 +316,7 @@ export class SessionManager {
     // the agent this pty runs: an agent pane's, or the one a terminal brings back
     const runs = req.shell ? req.shellResume?.agent : req.agent ?? "claude";
     let proc: pty.IPty;
+    this.refuseWhileQuitting(); // shutdown may have begun while this launch was being prepared
     try {
       proc = pty.spawn("/bin/zsh", claudeArgs, {
         name: "xterm-256color",
@@ -551,6 +553,27 @@ export class SessionManager {
     if (await allExitWithin(graceMs)) return;
     signal("SIGKILL");
     if (!(await allExitWithin(1000))) console.warn(`[sessions] ${this.running.size} pty(s) still running as the app quits`);
+  }
+
+  /**
+   * Kills every pty at once: a quit being forced. A pty's spawn-helper that
+   * hasn't opened its terminal yet when the app's side of it closes waits for
+   * it forever, so none is left to the app's exit.
+   */
+  killAll(): void {
+    this.quitting = true;
+    for (const p of this.running.keys()) {
+      try {
+        p.kill("SIGKILL");
+      } catch (err) {
+        console.warn(`[sessions] couldn't kill pty ${p.pid} while quitting: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+  }
+
+  /** A pty started once shutdown has signalled the others would be left running, or waiting forever to start, after the app. */
+  private refuseWhileQuitting(): void {
+    if (this.quitting) throw new Error("Mockingbird is quitting");
   }
 
   /** Write every pane's scrollback that changed since it was last written (and all of them when quitting). */
