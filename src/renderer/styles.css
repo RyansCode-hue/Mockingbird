@@ -333,12 +333,34 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1;
 }
 .grid { position: relative; display: grid; flex: 1; min-height: 0; gap: 8px; padding: 8px; }
-.grid.slide-in { animation: gridslide .24s ease-out; }
-@keyframes gridslide {
-  from { transform: translateX(28px); opacity: .2; }
-  to { transform: none; opacity: 1; }
-}
-[data-motion="reduce"] .grid.slide-in { animation: none; }
+/* grid changes (gridMotion.ts) run as View Transitions over snapshots of the panes, never the live terminals.
+   Only the panes are captured: the rest of the page stays live, and clicks pass through to it. */
+:root { view-transition-name: none; }
+::view-transition { pointer-events: none; }
+/* panes making room move on the spring; a resized pane's two images cross-fade */
+::view-transition-group(.mb-pane) { animation-duration: var(--dur-spring); animation-timing-function: var(--ease-spring); }
+::view-transition-old(.mb-pane), ::view-transition-new(.mb-pane) { animation-duration: var(--dur-2); }
+/* a pane opening rises in from slightly smaller; one closing fades a little smaller, faster */
+::view-transition-new(.mb-pane):only-child { animation: mb-pane-in var(--dur-spring) var(--ease-spring) both, mb-fade-in var(--dur-3) linear both; }
+::view-transition-old(.mb-pane):only-child { animation: mb-pane-out var(--dur-2) var(--ease-exit) both; }
+@keyframes mb-pane-in { from { transform: translateY(var(--rise)) scale(var(--pop)); } }
+@keyframes mb-pane-out { to { opacity: 0; transform: scale(.985); } }
+@keyframes mb-fade-out { to { opacity: 0; } }
+/* switching groups: the new group's panes arrive from its side of the side bar, the old ones just go */
+:root[data-grid-move="down"]::view-transition-new(.mb-pane):only-child { animation: mb-from-below var(--dur-2) var(--ease-enter) both; }
+:root[data-grid-move="up"]::view-transition-new(.mb-pane):only-child { animation: mb-from-above var(--dur-2) var(--ease-enter) both; }
+:root[data-grid-move="down"]::view-transition-old(.mb-pane):only-child,
+:root[data-grid-move="up"]::view-transition-old(.mb-pane):only-child { animation: mb-fade-out var(--dur-1) linear both; }
+@keyframes mb-from-below { from { opacity: 0; transform: translateY(12px); } }
+@keyframes mb-from-above { from { opacity: 0; transform: translateY(-12px); } }
+/* fullscreen, often a key: the pane grows to the grid in 220 ms while the others fade */
+:root[data-grid-move="zoom"]::view-transition-group(.mb-pane) { animation-duration: var(--dur-3); animation-timing-function: var(--ease-move); }
+:root[data-grid-move="zoom"]::view-transition-old(.mb-pane):only-child { animation: mb-fade-out var(--dur-2) linear both; }
+:root[data-grid-move="zoom"]::view-transition-new(.mb-pane):only-child { animation: mb-fade-in var(--dur-3) linear both; }
+/* a pane flying into (or out of) its folder: script drives it along the genie path */
+::view-transition-group(mb-fly), ::view-transition-image-pair(mb-fly), ::view-transition-old(mb-fly), ::view-transition-new(mb-fly) { animation: none; }
+::view-transition-group(mb-fly) { z-index: 10; }
+::view-transition-image-pair(mb-fly) { transform-origin: 0 0; }
 .pane {
   position: relative; background: var(--bg-pane); display: flex; flex-direction: column;
   min-width: 0; min-height: 0;

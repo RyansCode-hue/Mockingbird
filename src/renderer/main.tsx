@@ -103,6 +103,8 @@ import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { usePersisted, readPref, writePref } from "./prefs";
 import { D, EASE, initMotion, play } from "./motion";
+import { StatusDot } from "./StatusDot";
+import { gridChange, switchDir } from "./gridMotion";
 
 initMotion();
 
@@ -580,19 +582,6 @@ function App() {
   const collapseOthers = (g: string) =>
     setCollapsed(new Set([...new Set(sessions.map(topOf))].filter((k) => k !== g)));
 
-  // brief slide-in when the grid swaps to a different group (reduced-motion users get none)
-  const prevGroup = useRef<string | null>(null);
-  const [sliding, setSliding] = useState(false);
-  useEffect(() => {
-    const prev = prevGroup.current;
-    prevGroup.current = activeGroup;
-    if (activeGroup && prev && activeGroup !== prev) {
-      setSliding(true);
-      const t = setTimeout(() => setSliding(false), 260);
-      return () => clearTimeout(t);
-    }
-  }, [activeGroup]);
-
   // record the active group's visible subset whenever it changes (its own
   // panes only — pinned visitors from other groups aren't part of its layout)
   useEffect(() => {
@@ -612,12 +601,18 @@ function App() {
     return (groupLayouts[g] ?? []).filter((id) => ids.includes(id));
   };
 
-  /** Swap the grid to another group's panes; pinned panes stay where they are. */
+  /** Swap the grid to another group's panes; pinned panes stay where they are. The new group's panes come in
+   *  from its side of the side bar. */
   const switchGrid = (g: string, ids: string[]) => {
-    setZoomed(null);
-    setLastGroup(g);
-    setShown((p) => switchTo(p, pinnedSet, ids));
-    collapseOthers(g);
+    const apply = () => {
+      setZoomed(null);
+      setLastGroup(g);
+      setShown((p) => switchTo(p, pinnedSet, ids));
+      collapseOthers(g);
+    };
+    if (!activeGroup || g === activeGroup) return apply();
+    const order = outline.flatMap((e) => (e.kind === "connected" ? [] : [e.key]));
+    gridChange({ kind: "switch", dir: switchDir(order, activeGroup, g) }, apply);
   };
 
   /** Show a session — same group appends; a different group swaps the grid to
@@ -1654,7 +1649,7 @@ function App() {
           }
         }}
       >
-        <span className={`dot ${s.status}`} />
+        <StatusDot status={s.status} />
         {editing?.key === s.id ? (
           editInput
         ) : (
@@ -2312,7 +2307,7 @@ function App() {
             </div>
           ) : (
             <div
-              className={`grid ${sliding ? "slide-in" : ""} ${previewOn ? "previewing" : ""}`}
+              className={`grid ${previewOn ? "previewing" : ""}`}
               ref={gridRef}
               style={{
                 gridTemplateColumns: (layoutGrid?.cols ?? [1]).map((f) => `minmax(0, ${f}fr)`).join(" "),
@@ -2347,6 +2342,7 @@ function App() {
                     density={density}
                     paneIndex={i}
                     area={embedded ? undefined : area}
+                    cell={embedded ? undefined : myKey}
                     embedded={embedded}
                     onFocus={() => setFocused(s.id)}
                     onOpenFiles={() => {
@@ -2406,7 +2402,7 @@ function App() {
                 const anyWaiting = cell.list.some((s) => s.status === "waiting");
                 const strip = tabDrop(active, `h:ws:${key}`);
                 return (
-                  <div key={`ws-${key}`} className={`ws-pane ${anyWaiting ? "st-waiting" : ""}`} style={area ? { gridArea: area } : undefined}>
+                  <div key={`ws-${key}`} data-cell={myKey} className={`ws-pane ${anyWaiting ? "st-waiting" : ""}`} style={area ? { gridArea: area } : undefined}>
                     <div
                       className="ws-tabs"
                       data-drop={strip.cue}
@@ -2462,7 +2458,7 @@ function App() {
                             ])
                           )}
                         >
-                          <span className={`dot sm ${s.status}`} />
+                          <StatusDot status={s.status} className="sm" />
                           <span className="t">{titleOf(s)}</span>
                           {/* a teammate's session is theirs to close */}
                           {!isRemote(s) && (
