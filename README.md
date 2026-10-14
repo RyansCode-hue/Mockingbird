@@ -554,6 +554,22 @@ before they're built.
 - Context warnings: suggest /compact or a fresh session with a brief before a session nears its limit.
 - Usage per session and per ticket, with a warning before an expensive action (like a cold resume).
 
+**Room roles** — Owner, Admin, Member, replacing today's single admin (the
+creator, else the longest-standing member). Decided:
+- **Owner** (one per room, the creator): everything an admin can do, plus
+  making or demoting admins, handing over ownership, and the owner-only
+  settings — backups to GitHub, the House project, closing the room.
+- **Admin**: accepts or declines joins, removes members, sets the room's rules
+  (tooling, guard strength — security-relevant ones included — migrations).
+- **Member**: uses the room; quiets notes for their own agents only.
+- Removing: admins remove members; only the owner removes an admin (or the
+  owner), and an admin can't remove another admin.
+- The owner hands over before leaving. If the owner is gone for good (removed
+  from the Worker's allow list or never back), the longest-standing admin can
+  claim ownership after a waiting period, announced to everyone.
+- Role changes are signed room events every Mac checks, announced in the chat
+  ("Ryan made Nick an admin"). Tooling profiles build on these roles.
+
 **Tooling profiles** — what Mockingbird adds to an agent, adjustable per project
 so rules that fit one repo don't get in the way in another. Decided:
 - Covers normal sessions and rooms. Settings live on this Mac (per repo) and in
