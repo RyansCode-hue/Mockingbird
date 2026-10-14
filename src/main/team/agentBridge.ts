@@ -3,6 +3,9 @@ import { parseRemoteId, type Messaging, type RemoteAgents, type RemoteSendResult
 import { PeerError, TeamError, type Team, type Unsubscribe } from "./transport";
 import { topOfKey, type SessionInfo } from "../../shared/types";
 import type { MemberId, RoomId } from "../../shared/team/types";
+import { fenced, named, quoted } from "../../shared/team/agentText";
+import { remoteSessionId, roomMessageRefusal } from "../../shared/team/livePanes";
+import { continuation } from "../../shared/team/takeover";
 
 /**
  * Mockingbird's agent messaging across laptops (docs/team-rooms.md → Team
@@ -14,7 +17,12 @@ import type { MemberId, RoomId } from "../../shared/team/types";
  * A session is in a room when its top-level group is the group the room is
  * shown as on this install. Only those are ever listed to teammates, and
  * only to members of that room (the transport checks membership of the room
- * a request names). Two requests:
+ * a request names). The list holds every running pane the live panes show
+ * teammates in that room, so an agent finds every session its person can
+ * watch; one that won't take messages (a terminal, an exited agent) is
+ * listed with why. A message that can't be delivered is refused saying why
+ * — taken over and continuing under another id, closed, in another room the
+ * sender is in — and never naming a group outside the room. Two requests:
  *
  *   agents.list   {}                      → { sessions: RoomSessionInfo[] }
  *   agents.send   { from, to, text }      → { status, detail, toTitle? }
@@ -29,6 +37,8 @@ const STATUSES = new Set(["working", "waiting", "idle", "dead"]);
 export interface AgentBridgeDeps {
   /** This install's sessions (the session manager's list). */
   sessions: () => SessionInfo[];
+  /** Its closed sessions that can be resumed, so a message to one says so. */
+  resumable?: () => SessionInfo[];
   /** Which local group each room is shown as. */
   roomGroups: () => { roomId: RoomId; groupKey: string }[];
   /**
@@ -41,8 +51,10 @@ export interface AgentBridgeDeps {
   now?: () => number;
 }
 
-/** A session teammates may see: a live agent pane (no terminals, debriefs or assistant panes). */
-const shareable = (s: SessionInfo) => s.status !== "dead" && !s.shell && !s.debrief && s.kind === "work";
+/** What a session's room record says about taking messages (roomSessions.ts recordFor). */
+const asRecord = (s: SessionInfo, live = true) => ({ agent: s.shell ? null : s.agent ?? "claude", status: s.status, live });
+
+const titleOf = (s: SessionInfo): string => s.ticketTitle ?? s.title;
 
 export class AgentBridge implements RemoteAgents {
   private team: Team | null = null;
@@ -64,7 +76,7 @@ export class AgentBridge implements RemoteAgents {
     this.offs.push(
       team.onRequest(AGENT_REQUESTS.list, (_params, ctx) => {
         if (!ctx.roomId) throw new PeerError("name the room whose sessions to list");
-        return { sessions: this.localSessions(ctx.roomId).map(describe) };
+        return { sessions: this.roomSessions(ctx.roomId).map(({ session, refused }) => describe(session, refused)) };
       }),
       team.onRequest(AGENT_REQUESTS.send, (p, ctx) => {
         if (!ctx.roomId) throw new PeerError("name the room the message goes through");
@@ -72,7 +84,13 @@ export class AgentBridge implements RemoteAgents {
         const from = senderOf(p?.from);
         if (!from || typeof p.to !== "string" || typeof p.text !== "string") throw new PeerError("malformed agent message");
         const member = { id: ctx.from, name: this.nameOf(roomId, ctx.from) };
-        return this.messaging!.receiveRemote({ member, from, to: p.to, text: p.text }, (s) => this.roomOf(s) === roomId);
+        const m = { member, from, to: p.to, text: p.text };
+        const refused = this.refusal(roomId, p.to, ctx.from);
+        if (refused) {
+          this.d.log(`refused a message from ${member.name}'s session "${from.title}" to session ${p.to} in ${this.team?.room(roomId)?.name ?? roomId}: ${refused.detail}`);
+          return this.messaging!.refuseRemote(m, refused.detail, refused.toTitle);
+        }
+        return this.messaging!.receiveRemote(m, (s) => this.roomOf(s) === roomId);
       })
     );
   }
@@ -89,9 +107,69 @@ export class AgentBridge implements RemoteAgents {
     return this.d.roomGroups().find((r) => r.groupKey === top)?.roomId ?? null;
   }
 
-  /** This install's live agent sessions in a room. */
+  /**
+   * This install's running panes in a room — the ones the live panes show
+   * teammates there — each with why it won't take agent messages, if it won't.
+   */
+  roomSessions(roomId: RoomId): { session: SessionInfo; refused: string | null }[] {
+    const me = this.selfName(roomId);
+    return this.d
+      .sessions()
+      .filter((s) => !s.debrief && this.roomOf(s) === roomId)
+      .map((session) => ({ session, refused: roomMessageRefusal(asRecord(session), me) }));
+  }
+
+  /** This install's sessions in a room that take agent messages. */
   localSessions(roomId: RoomId): SessionInfo[] {
-    return this.d.sessions().filter((s) => shareable(s) && this.roomOf(s) === roomId);
+    return this.roomSessions(roomId).flatMap((x) => (x.refused ? [] : [x.session]));
+  }
+
+  /**
+   * Why a message from member `from` to this install's session `to`, through
+   * `roomId`, can't be delivered; null when it goes on to delivery. Only a
+   * session the room shows (or showed) is named; one outside the room is told
+   * apart from a wrong id only when it's in another room the sender is in.
+   */
+  private refusal(roomId: RoomId, to: string, from: MemberId): { detail: string; toTitle?: string } | null {
+    const team = this.team;
+    const room = team?.room(roomId);
+    if (!team || !room) return null;
+    const me = this.selfName(roomId);
+    const theirs = (s: SessionInfo) => `${me}'s session ${quoted(titleOf(s), 120)}`;
+    // taken over: the copy left here is out of the room, and the session goes on under a new id
+    const entry = room.ext.takeover?.sessions[to];
+    if (entry?.takenOver && entry.owner === team.self.id) {
+      const title = quoted(entry.session.title, 120);
+      let now: ReturnType<typeof continuation> = null;
+      try {
+        now = continuation(room.ext.takeover, to);
+      } catch (err) {
+        this.d.log(`following session ${to}'s take-overs in ${room.name} failed: ${(err as Error).message}`);
+      }
+      if (!now) return { detail: `${me}'s session ${title} was taken over, and where it continues isn't known here — call list_sessions for current ids`, toTitle: entry.session.title };
+      const where =
+        now.owner === from
+          ? `in your own Mockingbird, as "${now.sessionId}"`
+          : `on ${named(this.nameOf(roomId, now.owner), 60)}'s Mac, as "${remoteSessionId(now.sessionId, now.owner)}"`;
+      return { detail: `${me}'s session ${title} was taken over: it continues ${where} — send it there`, toTitle: entry.session.title };
+    }
+    const s = this.d.sessions().find((x) => x.id === to);
+    if (s?.debrief) return null; // delivery refuses a debrief, saying so
+    if (s) {
+      const r = this.roomOf(s);
+      if (r === roomId) {
+        const why = roomMessageRefusal(asRecord(s), me);
+        return why ? { detail: `${theirs(s)}: ${why}`, toTitle: titleOf(s) } : null;
+      }
+      const other = r ? team.room(r) : undefined;
+      if (other?.members.some((m) => m.id === from)) {
+        return { detail: `${theirs(s)} is in the room ${quoted(other.name, 100)}, not this one: only sessions in that room can message it`, toTitle: titleOf(s) };
+      }
+    } else {
+      const closed = this.d.resumable?.().find((x) => x.id === to && this.roomOf(x) === roomId);
+      if (closed) return { detail: `${theirs(closed)}: ${roomMessageRefusal(asRecord(closed, false), me)}`, toTitle: titleOf(closed) };
+    }
+    return { detail: `${me}'s Mockingbird has no session "${to}" in this room: it was closed for good, moved out of the room, or the id is wrong — call list_sessions for current ids` };
   }
 
   /** Each teammate's sessions in the room: asked now when they're connected, else as last seen. */
@@ -143,7 +221,10 @@ export class AgentBridge implements RemoteAgents {
       const r = await team.request<{ status?: unknown; detail?: unknown; toTitle?: unknown }>(member.id, AGENT_REQUESTS.send, { from, to: target.session, text }, { roomId, timeoutMs: SEND_TIMEOUT_MS });
       const status = r?.status === "delivered" || r?.status === "queued" || r?.status === "refused" ? r.status : null;
       if (!status) throw new TeamError("remote", "its answer said nothing about the delivery");
-      return { ...base, status, detail: String(r.detail ?? status).slice(0, 500), ...(typeof r.toTitle === "string" ? { toTitle: r.toTitle.slice(0, 300) } : {}) };
+      // their words go into what an agent reads: on one line
+      const detail = fenced(String(r.detail ?? status), 500);
+      if (status === "refused") this.d.log(`${member.name}'s Mockingbird refused a message to ${to} in ${room.name}: ${detail}`);
+      return { ...base, status, detail, ...(typeof r.toTitle === "string" ? { toTitle: r.toTitle.slice(0, 300) } : {}) };
     } catch (err) {
       const problem = problemOf(err, member.name);
       this.d.log(`a message to ${to} in ${room.name} failed: ${problem}`);
@@ -154,20 +235,25 @@ export class AgentBridge implements RemoteAgents {
     }
   }
 
+  private selfName(roomId: RoomId): string {
+    return this.team ? this.nameOf(roomId, this.team.self.id) : "this Mockingbird";
+  }
+
   private nameOf(roomId: RoomId, id: MemberId): string {
     return this.team?.room(roomId)?.members.find((m) => m.id === id)?.name ?? id.slice(0, 8);
   }
 }
 
-function describe(s: SessionInfo): RoomSessionInfo {
+function describe(s: SessionInfo, refused: string | null): RoomSessionInfo {
   return {
     id: s.id,
-    title: s.ticketTitle ?? s.title,
+    title: titleOf(s),
     agent: s.agent ?? "claude",
     repo: s.repoPath ? path.basename(s.repoPath) : null,
     branch: s.branch,
     status: s.status,
     ...(s.status === "waiting" ? { waitingReason: s.waitingReason } : {}),
+    ...(refused ? { refused } : {}),
   };
 }
 
@@ -189,6 +275,7 @@ function sessionInfo(v: any): RoomSessionInfo | null {
     branch,
     status: v.status,
     ...(typeof v.waitingReason === "string" ? { waitingReason: v.waitingReason.slice(0, 300) } : {}),
+    ...(typeof v.refused === "string" && v.refused ? { refused: fenced(v.refused, 500) } : {}),
   };
 }
 

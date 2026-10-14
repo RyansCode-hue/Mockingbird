@@ -1001,6 +1001,7 @@ handle("artifacts:dismissNotice", (roomId, noticeId) => teamArtifacts.dismissNot
 // (on this laptop, under this user's account), and agent messaging across laptops
 const teamRoom = new TeamRoom({
   sessions: () => sessions.list(),
+  resumable: () => sessions.resumable(),
   roomGroups: () => team.status().rooms.map((r) => ({ roomId: r.id, groupKey: r.groupKey })),
   roomOf: (id) => livePanes.roomOfSession(id),
   // Claude only: it runs with no tools, while Codex's read-only sandbox can still read files,

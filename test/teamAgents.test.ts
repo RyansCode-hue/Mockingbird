@@ -102,9 +102,13 @@ describe("list_sessions across laptops", () => {
     expect(remote.map((s: any) => [s.id, s.title, s.owner, s.status, s.same_group])).toEqual([
       [rid("api", nick), "Export API", "Nick", "idle", true],
       [rid("busy", nick), "busy", "Nick", "working", true],
+      [rid("term", nick), "term", "Nick", "idle", true],
     ]);
     expect(remote[0]).toMatchObject({ agent: "claude", repo: "backoffice", branch: "api-branch", group: "5110" });
-    expect(JSON.stringify(r.result)).not.toMatch(/Private spike|brief|term/);
+    expect(remote[0].accepts_messages).toBeUndefined();
+    // the room shows the terminal, so it's listed — as one that won't take messages
+    expect(remote[2]).toMatchObject({ accepts_messages: false, why: expect.stringMatching(/^it's a terminal on Nick's Mac/) });
+    expect(JSON.stringify(r.result)).not.toMatch(/Private spike|brief/);
     expect(r.result.teammates).toEqual([{ name: "Nick", connected: true }]);
   });
 
@@ -117,7 +121,7 @@ describe("list_sessions across laptops", () => {
   it("answers a teammate's list only for a room it names, with that room's sessions", async () => {
     await expect(ryan.m.team.request(nick.m.id, AGENT_REQUESTS.list, {})).rejects.toThrow(/name the room/);
     const r = await ryan.m.team.request<any>(nick.m.id, AGENT_REQUESTS.list, {}, { roomId });
-    expect(r.sessions.map((s: any) => s.id)).toEqual(["api", "busy"]);
+    expect(r.sessions.map((s: any) => s.id)).toEqual(["api", "busy", "term"]);
   });
 });
 
@@ -142,9 +146,14 @@ describe("send_message across laptops", () => {
 
   it("refuses sessions outside the room, debriefs, and senders outside rooms", async () => {
     const outside = await ask({ op: "send_message", from: "front", args: { to: rid("private", nick), message: "hi" } });
-    expect(outside.error).toMatch(/^Refused by Nick's Mockingbird: no running session "private" in this room/);
-    expect(nick.delivered.some((d) => d.to === "private")).toBe(false);
+    // the same words as for an id that was never there: a group outside the room is never named
+    expect(outside.error).toBe(`Refused by Nick's Mockingbird: Nick's Mockingbird has no session "private" in this room: it was closed for good, moved out of the room, or the id is wrong — call list_sessions for current ids`);
     expect(nick.log.at(-1)).toMatchObject({ to: "private", refused: true });
+    expect((await ask({ op: "send_message", from: "front", args: { to: rid("nothere", nick), message: "hi" } })).error).toBe(outside.error.replace('"private"', '"nothere"'));
+    const term = await ask({ op: "send_message", from: "front", args: { to: rid("term", nick), message: "hi" } });
+    expect(term.error).toMatch(/^Refused by Nick's Mockingbird: Nick's session "term": it's a terminal on Nick's Mac/);
+    expect(nick.delivered.some((d) => d.to === "term")).toBe(false);
+    expect(nick.delivered.some((d) => d.to === "private")).toBe(false);
     const debrief = await ask({ op: "send_message", from: "front", args: { to: rid("brief", nick), message: "hi" } });
     expect(debrief.error).toMatch(/debrief interview/);
     const notInRoom = await ask({ op: "send_message", from: "solo", args: { to: rid("api", nick), message: "hi" } });
@@ -169,6 +178,7 @@ describe("send_message across laptops", () => {
     expect(list.result.sessions.filter((s: any) => s.remote).map((s: any) => [s.id, s.status])).toEqual([
       [rid("api", nick), "offline"],
       [rid("busy", nick), "offline"],
+      [rid("term", nick), "offline"],
     ]);
     const sent = await ask({ op: "send_message", from: "front", args: { to: rid("api", nick), message: "still there?" } });
     expect(sent.error).toMatch(/^Not sent: Nick's Mockingbird isn't connected right now/);
@@ -197,7 +207,7 @@ describe("the MCP server script", () => {
     p.kill();
     const byId = Object.fromEntries(out.trim().split("\n").map((l) => JSON.parse(l)).map((m) => [m.id, m]));
     const listed = JSON.parse(byId[1].result.content[0].text);
-    expect(listed.sessions.filter((s: any) => s.remote).map((s: any) => s.owner)).toEqual(["Nick", "Nick"]);
+    expect(listed.sessions.filter((s: any) => s.remote).map((s: any) => s.owner)).toEqual(["Nick", "Nick", "Nick"]);
     expect(byId[2].result.isError).toBe(false);
     expect(byId[2].result.content[0].text).toMatch(/^Delivered to "Export API" on Nick's laptop/);
     expect(nick.delivered.at(-1)!.text.endsWith("via MCP")).toBe(true);
