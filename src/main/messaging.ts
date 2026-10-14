@@ -91,6 +91,7 @@ const SESSION_TOOLS = [
       "with id, title, agent, repo, branch, group and status. same_group marks sessions working on the same ticket/group as you. " +
       "When your group is a shared team room, the sessions teammates run in it on their own laptops are listed too, " +
       "marked remote with their owner (their ids end in @ and the teammate's key); teammates lists who is connected. " +
+      "A remote session with accepts_messages false (a terminal, an exited agent) is one its owner's Mockingbird won't type messages into; why says so. " +
       "Use it to find the session to coordinate with before ${MCP_TOOL.sendMessage}.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
@@ -199,6 +200,8 @@ export interface RoomSessionInfo {
   branch: string | null;
   status: SessionStatus;
   waitingReason?: string | null;
+  /** Why its owner's Mockingbird refuses agent messages to it (a terminal, an exited agent); absent when it takes them. */
+  refused?: string;
 }
 
 /** One teammate's sessions in a room. */
@@ -375,6 +378,7 @@ export class Messaging {
                 same_group: true,
                 remote: true,
                 owner: t.name,
+                ...(s.refused ? { accepts_messages: false, why: s.refused } : {}),
               }))
             ),
           ];
@@ -471,6 +475,13 @@ export class Messaging {
     return { error: `Refused by ${r.owner}'s Mockingbird: ${r.detail}` };
   }
 
+  /** Refuse a message from a teammate's session, saying why, and log it here. */
+  refuseRemote(m: RemoteDelivery, detail: string, toTitle?: string): { status: "refused"; detail: string; toTitle?: string } {
+    const logged = { at: Date.now(), from: remoteSessionId(m.from.id, m.member.id), fromTitle: `${m.from.title} (${m.member.name})`, to: m.to, toTitle: toTitle ?? m.to, text: m.text.trim() };
+    this.onMessage({ ...logged, outcome: `refused: ${detail}`, refused: true });
+    return { status: "refused", detail, ...(toTitle ? { toTitle } : {}) };
+  }
+
   /**
    * Deliver a message from a teammate's session to one of this install's
    * room sessions, by the rules local messages follow (the pair limit, the
@@ -484,13 +495,11 @@ export class Messaging {
     const target = this.live().find((s) => s.id === m.to && inRoom(s));
     const toTitle = target ? titleOf(target) : undefined;
     const logged = { at: Date.now(), from: replyTo, fromTitle, to: m.to, toTitle: toTitle ?? m.to, text };
-    const refuse = (detail: string) => {
-      this.onMessage({ ...logged, outcome: `refused: ${detail}`, refused: true });
-      return { status: "refused" as const, detail, ...(toTitle ? { toTitle } : {}) };
-    };
+    const refuse = (detail: string) => this.refuseRemote(m, detail, toTitle);
     if (!text) return refuse("the message is empty");
     if (text.length > MAX_MESSAGE) return refuse(`the message is ${text.length} characters; the limit is ${MAX_MESSAGE}`);
-    if (!target) return refuse(`no running session "${m.to}" in this room — call list_sessions for current ids`);
+    // the room's checks said it takes messages: it closed, exited or left the room since
+    if (!target) return refuse(`session "${m.to}" stopped running in this room just now — call list_sessions for current ids`);
     if (target.debrief) return refuse("that session is a debrief interview with the user and does not take agent messages");
     if (this.paced({ id: replyTo, title: fromTitle, ticketTitle: null }, target, logged)) {
       return { status: "refused", detail: `paused: these two sessions hit the limit of ${PAIR_LIMIT} messages in ${PAIR_WINDOW_MS / 60_000} minutes — ask the user how to proceed`, toTitle };

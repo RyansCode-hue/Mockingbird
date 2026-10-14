@@ -656,6 +656,21 @@ A chat thread in each room, for people and agents:
   they're stuck (from board changes and session status).
 - **Agents across machines:** Mockingbird's agent messaging (`send_message`,
   `list_sessions`) reaches room sessions on the other laptop through the room.
+  Since 2026-10-14 (a terminal of Nick's running Claude showed live on
+  Ryan's Mac while messages to it were refused as "no running session"):
+  `list_sessions` lists every running pane a teammate's live panes
+  show in the room (`agents.list` answers with the same set the owner
+  publishes), by the id `send_message` takes. A terminal is listed but never
+  typed into, whatever runs in it — a message typed after its agent quits
+  would run as a shell command — and an exited agent's pane likewise; both
+  carry `accepts_messages: false` and `why` (`roomMessageRefusal`,
+  `src/shared/team/livePanes.ts`; `list_teammate_changes` marks its sessions
+  the same way from their records). A refused message says why, from the
+  owner's Mockingbird, and is logged on both Macs: a terminal or an exited
+  agent; closed (only its owner can resume it); taken over (where it
+  continues, by the id to use); in another room the sender is in (named).
+  A session outside every room the sender shares gets the same words as an
+  id that never existed, so no group outside the room is ever named.
 - **@assistant:** a member @-mentions the assistant. It runs on **the asker's
   laptop under their account**, reads the room (chat, the House board as the
   asker's Mockingbird reads it, session list, artifacts) and the repo's docs,
@@ -1049,8 +1064,10 @@ same file, and tools for agents to see what teammates change.
 - **Agents' tools** (Mockingbird MCP; read-only, pre-allowed in Claude room
   launches like the House's reads, approved like every non-House-write tool in
   Codex): `list_teammate_changes` — per teammate room session its id (as
-  `list_sessions` gives it, for `send_message`), owner, title, ticket, branch,
-  repository, where the files were read from, and each file with `committed`,
+  `list_sessions` gives it, for `send_message`; `accepts_messages: false` and
+  `why` for a closed session, a terminal or an exited agent), owner, title,
+  ticket, branch, repository, where the files were read from, and each file
+  with `committed`,
   `uncommitted` and `also_changed_here` (this worktree changes it too), up to
   300 per session; `read_teammate_diff(session, file)` — that file's diff
   against the base branch, from the snapshot (committed and uncommitted) or

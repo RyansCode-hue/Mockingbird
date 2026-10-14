@@ -136,6 +136,8 @@ export interface TeammateSessionChanges {
   roomId: RoomId;
   member: { id: MemberId; name: string };
   session: { id: string; title: string };
+  /** Why its owner's Mockingbird refuses agent messages to it, from its record (livePanes.ts roomMessageRefusal); null when it takes them. */
+  refused: string | null;
   ticket: string | null;
   branch: string | null;
   /** The origin it works in (branchFiles.ts originKey) and the clone here it was read in. */

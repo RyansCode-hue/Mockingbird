@@ -16,7 +16,7 @@ import { roomAdmin } from "./rooms";
 import type { Team, Unsubscribe } from "./transport";
 import { block, CONTROL_CHARS_RE, fenced, named, oneLine, quoted } from "../../shared/team/agentText";
 import { BRANCH_RE } from "../../shared/team/house";
-import { remoteSessionId } from "../../shared/team/livePanes";
+import { remoteSessionId, roomMessageRefusal } from "../../shared/team/livePanes";
 import {
   checkFolder,
   detectMigrationFolders,
@@ -115,7 +115,7 @@ export const TEAM_CHANGES_TOOL_SCHEMAS = [
   {
     name: TEAMMATE_TOOL.changes,
     description:
-      "List what your teammates' room sessions on other Macs are changing in this team room's repositories: per session its id (for read_teammate_diff and send_message), owner, title, ticket and branch, " +
+      "List what your teammates' room sessions on other Macs are changing in this team room's repositories: per session its id (for read_teammate_diff and send_message), owner, title, ticket and branch (accepts_messages false, with why, when its owner's Mockingbird won't take messages for it: closed, a terminal, an exited agent), " +
       "and each file it changes against the base branch — committed (on its branch) or uncommitted (in the work its Mockingbird last shared) — with also_changed_here when your worktree changes it too. " +
       `Read before changing a file a teammate may be working on. ${DATA}`,
     ...READS,
@@ -324,6 +324,7 @@ export class TeamChanges {
           roomId: room.id,
           member: { id: rec.owner, name: this.nameOf(room, rec.owner) },
           session: { id: rec.id, title: rec.ticketTitle ?? rec.title },
+          refused: roomMessageRefusal(rec, this.nameOf(room, rec.owner)),
           ticket: ticketOf(rec.ticketId),
           branch: rec.branch,
           repoKey: key,
@@ -615,6 +616,7 @@ export class TeamChanges {
           id: remoteSessionId(c.session.id, c.member.id),
           owner: fenced(c.member.name, 60),
           title: fenced(c.session.title, 120),
+          ...(c.refused ? { accepts_messages: false, why: fenced(c.refused, 500) } : {}),
           ticket: c.ticket ? fenced(c.ticket, 60) : null,
           branch: c.branch ? fenced(c.branch, 250) : null,
           repo: fenced(c.repoKey, 200),

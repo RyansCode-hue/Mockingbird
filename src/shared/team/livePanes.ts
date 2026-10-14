@@ -11,6 +11,7 @@
  */
 import type { AgentKind, SessionInfo, SessionStatus } from "../types";
 import { isNewer } from "../versions";
+import { named } from "./agentText";
 import type { MemberId, RoomId } from "./types";
 
 /** The owner's git state for a room session's folder: the chips a pane shows. */
@@ -101,6 +102,23 @@ export const remoteSessionId = (sessionId: string, member: string): string => `$
 export function parseRemoteId(id: string): { session: string; member: string } | null {
   const m = /^([\w-]{1,64})@([0-9a-f]{8})$/.exec(id);
   return m ? { session: m[1], member: m[2] } : null;
+}
+
+/**
+ * Why agent messages to a room session are refused, from what its record
+ * says (`owner`: whose it is, as words); null when they're delivered. A
+ * terminal never takes them, whatever runs in it: a message typed after its
+ * agent quits would run as a shell command. Teammates' views show all of
+ * these sessions, so list_sessions lists them too, with this reason.
+ */
+export function roomMessageRefusal(s: { agent: AgentKind | null; status: SessionStatus; live: boolean }, owner: string): string | null {
+  const who = named(owner, 60);
+  if (!s.live) return `${who} closed it; only ${who} can resume it`;
+  if (s.agent === null) {
+    return `it's a terminal on ${who}'s Mac (an agent started in it by hand, or brought back in one): agent messages are never typed into terminals, where one typed after the agent quits would run as a shell command — ask ${who} to continue it in an agent pane`;
+  }
+  if (s.status === "dead") return `its agent has exited on ${who}'s Mac (the pane is still open) — ask ${who} to restart it`;
+  return null;
 }
 
 /** A room session's key in room state and views: the same on every member's Mockingbird. */
