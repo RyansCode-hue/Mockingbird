@@ -353,18 +353,23 @@ export class ArtifactFetcher {
       });
       this.active.set(k, run);
     }
-    this.schedule();
+    this.schedule(now);
   }
 
-  private schedule(): void {
+  /**
+   * Arm the timer for the next retry not yet due at `now`: the same instant
+   * pump judged them by. Read afresh, the clock may have passed a retry pump
+   * skipped as not due, and that file would wait for some other event.
+   */
+  private schedule(now: number): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    const next = Math.min(...[...this.wants.values()].filter((w) => (w.eager || w.priority) && w.nextAt > this.now()).map((w) => w.nextAt));
+    const next = Math.min(...[...this.wants.values()].filter((w) => (w.eager || w.priority) && w.nextAt > now).map((w) => w.nextAt));
     if (!Number.isFinite(next)) return;
     this.timer = setTimeout(() => {
       this.timer = null;
       this.pump();
-    }, Math.max(0, next - this.now()));
+    }, next - now);
     this.timer.unref?.();
   }
 
