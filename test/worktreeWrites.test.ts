@@ -7,7 +7,7 @@ import { items, sideFor, sides, type Side } from "./artifactSides";
 import { loopbackRoom, until } from "../src/main/team/loopback";
 import { Messaging } from "../src/main/messaging";
 import { excludePlanDir, removeRoomCopy, writeRoomCopy } from "../src/main/team/claims";
-import { writeGeneratedInside } from "../src/main/fileOps";
+import { removeDirInside, writeGeneratedInside } from "../src/main/fileOps";
 import type { SessionInfo } from "../src/shared/types";
 
 /**
@@ -74,6 +74,24 @@ describe("the room's copy in a worktree", () => {
     expect(writeRoomCopy(repo, COPY)).toBe(false);
     removeRoomCopy(repo);
     expect(fs.existsSync(path.join(repo, ".mockingbird"))).toBe(false);
+  });
+
+  it("removes a conversation saved at a take-over with the copy: links inside it go, never their targets; a takeover folder that is a link is refused", () => {
+    const repo = makeRepo();
+    const home = outsideFile();
+    writeGeneratedInside(repo, ".mockingbird/takeover/conv.jsonl", "the whole conversation\n", 0o400, 0o700);
+    fs.symlinkSync(home.file, path.join(repo, ".mockingbird", "takeover", "zshrc.jsonl"));
+    fs.symlinkSync(home.dir, path.join(repo, ".mockingbird", "takeover", "home"));
+    removeRoomCopy(repo);
+    expect(fs.existsSync(path.join(repo, ".mockingbird"))).toBe(false);
+    expect(tree(home.dir)).toEqual([".zshrc"]);
+    expect(fs.readFileSync(home.file, "utf8")).toBe(home.text);
+    // the takeover folder itself a link: refused, nothing deleted through it
+    fs.mkdirSync(path.join(repo, ".mockingbird"));
+    fs.symlinkSync(home.dir, path.join(repo, ".mockingbird", "takeover"));
+    expect(() => removeDirInside(repo, ".mockingbird/takeover")).toThrow(/takeover is a symbolic link/);
+    expect(() => removeRoomCopy(repo)).toThrow(/takeover is a symbolic link/);
+    expect(tree(home.dir)).toEqual([".zshrc"]);
   });
 
   it("never reads through a link it then refuses (a FIFO there can't stall the app)", () => {

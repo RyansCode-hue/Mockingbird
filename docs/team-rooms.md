@@ -264,6 +264,8 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   - the room's files in its worktrees (`.mockingbird/claims.json`,
     `agent-context.md`; rewritten without the room where another room still
     uses the repository) and its sessions' co-author lists;
+  - the teammates' conversations it saved in its worktrees at the room's
+    take-overs (`.mockingbird/takeover/`, below);
   - hidden refs `refs/mockingbird/{rooms,rooms-origin,rooms-left,rooms-sent}/<roomId>/*`
     in every repository Mockingbird knows;
   - any backups it pushed to origin (`git push origin :<ref>`, with a lease;
@@ -521,6 +523,24 @@ on their laptop under their own account.
   backup — and the brief says where, to read only when it needs detail. If it
   can't be saved (a repository that tracks `.mockingbird/`), the brief says so
   and the failure is logged.
+- **Kept only while it's needed.** It's the owner's whole conversation, never
+  filtered for secrets, readable by any agent started in that worktree, so
+  Mockingbird records where it saved it (`takeover.json`'s `saved`) and
+  deletes `.mockingbird/takeover/` once the session continued there
+  is done with it: when that session is taken over again (taken back, or
+  handed back — as soon as this Mac hears), closed, or its backup dropped by
+  its owner (closed, merged, stale); on the prune (start and daily) when it's
+  gone or had no turn for 14 days, or never started; when this Mac leaves the
+  room or is removed; and with the room's files when its repository is no
+  longer any room's. The taker's first backup — which drops the owner's old
+  one — doesn't: the agent may still need it. One saved by 1.4.7–1.4.9, with
+  no record, is found from the room's take-overs and the worktree the
+  continued session runs in. Each deletion is logged; it goes through
+  `fileOps.ts`'s helpers (a `.mockingbird` or `takeover` that is a link is
+  refused, never followed; links inside it are removed, not their targets),
+  and one that fails is logged, shown with the room's warnings ("conversation
+  not deleted from its worktree"; in the notice when leaving) and retried on
+  the next prune.
 - **Part or none of it arrived:** the brief says the conversation's end is
   missing (it's built from what arrived), or that there's nothing of it but the
   files, and the agent is asked to say so first.
@@ -642,7 +662,9 @@ on their laptop under their own account.
   its clone (found by origin URL), the conversation under
   `~/.mockingbird/team/rooms/<room>/transcripts/<session>/`, and — only in a
   room backing up to origin, while taking over — what it read from origin
-  under `refs/mockingbird/rooms-origin/<room>/<session>`.
+  under `refs/mockingbird/rooms-origin/<room>/<session>`. The taker's Mac also
+  has the conversation in the new worktree's `.mockingbird/takeover/` while
+  the continued session needs it.
 - **Origin:** nothing, unless the room's admin turned on backups to origin;
   then each session's newest snapshot under
   `refs/mockingbird/rooms/<room>/<session>` (never a branch, never fetched by
@@ -1046,9 +1068,9 @@ same file, and tools for agents to see what teammates change.
 - **The panes' chips** count the same changes: "Nick's work also changes x.ts"
   when some of it is uncommitted (the tooltip marks those files), "Nick's
   branch also changes …" when it's all on his branch.
-- **Agents' tools** (Mockingbird MCP; read-only, pre-allowed in Claude room
-  launches like the House's reads, approved like every non-House-write tool in
-  Codex): `list_teammate_changes` — per teammate room session its id (as
+- **Agents' tools** (Mockingbird MCP; the reads pre-allowed in Claude room
+  launches like the House's reads and approved in Codex; Codex asks before
+  each `reserve_migration_number`, below): `list_teammate_changes` — per teammate room session its id (as
   `list_sessions` gives it, for `send_message`), owner, title, ticket, branch,
   repository, where the files were read from, and each file with `committed`,
   `uncommitted` and `also_changed_here` (this worktree changes it too), up to
@@ -1105,6 +1127,35 @@ same file, and tools for agents to see what teammates change.
   plain repository-relative folder, a whole number of at most 15 digits whose
   label matches, a session id, and a session title, ticket and branch on one
   line; a room keeps at most 400 reservations (released ones dropped first).
+- **Caps:** a member holds at most 5 live reservations in one
+  repository's folder and 20 in the room, and a room 100 in all. One over a
+  cap is kept, marked `refused`, and holds nothing — decided in the room's
+  order, the same on every member, like a clash (`capReached`,
+  `src/shared/team/migrations.ts`). The reserve tool checks first and answers
+  with the numbers its user holds and to release ones no longer needed,
+  publishing nothing. (Rooms' snapshots from before are reduced again under
+  the caps.)
+- **Plausible numbers only:** a reservation counts only up to 20
+  above the highest number in its folder's files as this Mac has them (the
+  base branch, teammates' branches and shared work, this clone's worktrees).
+  One above that — a 15-digit number would make the next one 16 digits, which
+  no event may carry, and block everyone — is ignored by each member: kept
+  out of the next number, `migrations.json`, the list and the board line,
+  logged and shown on the board once ("Nick's reservation of 0040 in
+  "db/migrations" is ignored: it's more than 20 above the highest migration
+  there (5) …"). A folder this Mac hasn't read yet is taken on trust until it
+  has (a new reservation reads it soon); the reserve tool always reads first.
+  The tool never publishes an implausible number either: when the next free
+  one would be more than 20 above the highest file, or longer than 15
+  digits, it answers why instead.
+- **Codex asks** before each `reserve_migration_number` (its launch sets the
+  tool's `approval_mode="prompt"`, as for the House's writes; agents.ts
+  `CODEX_ASKS_TOOLS`): a reservation is a room event every teammate's agents
+  are held to. Unlike the House's writes, an older Codex (or one that joined
+  the room while running) isn't refused: a reservation spends no one's
+  credentials, and the caps and plausibility bound what an agent approving
+  its own calls can do. Claude asks as its permission mode says (the tool
+  isn't pre-allowed).
 - **The hold-back** (on by default; the room's admin turns it off in Settings →
   Team, `room.settings { migrationCheck }`, admin-only like backups): the hook
   reads `migrations.json`; creating a file that doesn't exist yet in one of
@@ -1157,7 +1208,8 @@ same file, and tools for agents to see what teammates change.
   removal of a connected and an offline member, leaving with and without
   anyone online, an older Worker (peer to peer, the message to update it, the
   admin's catch-up once it's updated); what each Mac deletes (the room's
-  folder, read marks, mutes, the room's worktree files, hidden refs, backups on origin —
+  folder, read marks, mutes, the room's worktree files, conversations saved
+  at take-overs, hidden refs, backups on origin —
   and a failure there reported), a cleanup cut short finished on the next
   start; the Worker's revoke (self, admin, refused, a room from before revoke,
   admin succession, re-admission, stale admits) and the app's client against
@@ -1173,6 +1225,14 @@ same file, and tools for agents to see what teammates change.
   failed backup); turned off, each owner deletes what it pushed (a failure
   shown and retried by the prune); a room from before the setting behaves as
   off, its owner deleting its old backups from origin on start.
+- The conversation saved at a take-over (`test/teamTakeover.test.ts`,
+  `test/worktreeWrites.test.ts`): kept past the taker's first backup and
+  while turns come, deleted (and logged) after 14 days without one, when the
+  continued session is forgotten or found closed, when its backup is dropped,
+  when it's taken back (once the taker hears), when the taker leaves the
+  room, and where an earlier version saved it without a record; a `takeover` folder
+  swapped for a link refused, its target untouched and the failure reported;
+  links inside it removed, never followed.
 - The House board (`test/teamHouse.test.ts`, `test/teamHouseService.test.ts`,
   `test/teamClaims.test.ts`), against a fake House on this Mac (nothing calls
   the real one; it answers with the real House's fields and order): the env
@@ -1279,7 +1339,12 @@ same file, and tools for agents to see what teammates change.
   name and private keys withheld, diffs cut with a note; numbers above the
   base, a teammate's branch and shared work, the worktrees and reservations;
   both members seeing and releasing them; release when merged or the branch
-  is gone; several folders, none, and a failed fetch logged.
+  is gone; several folders, none, and a failed fetch logged; caps (the sixth
+  in a folder and the 21st in the room refused on every member, a release
+  making room, the room's 100) and the tool refusing before it publishes; a
+  teammate's 15-digit and 0040 reservations ignored, logged and on the board
+  while the next number stays 0006, and one that would take the next past
+  the window refused. Codex's launch asks before each reservation.
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
   (`MB_E2E_APP=1`): create room, join by code (the admin accepting from its

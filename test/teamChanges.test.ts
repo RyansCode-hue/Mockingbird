@@ -9,6 +9,7 @@ import { HouseService } from "../src/main/team/houseService";
 import { TeamChanges } from "../src/main/team/teamChanges";
 import { recordFor } from "../src/main/team/roomSessions";
 import { reservationsOf } from "../src/main/team/migrations";
+import { originKey } from "../src/main/team/branchFiles";
 import { installHooks } from "../src/main/hooks";
 import { teammateOverlaps } from "../src/main/conflicts";
 import { remoteSessionId } from "../src/shared/team/livePanes";
@@ -280,6 +281,42 @@ describe("migration number reservations", () => {
     n.changes.refreshSoon();
     await until(() => reservationsOf(ryan.team.room(roomId)!).find((x) => x.label === "0005")?.released?.reason === "merged", "Nick's 0005 released as merged", 10_000);
     expect(ryanS).toBeTruthy();
+  }, 40_000);
+
+  it("count only plausible numbers: a teammate's inflated reservation never pushes the next number up or past 15 digits", async () => {
+    const { r, wtA, bare, ryan, nick, roomId, ryanS } = await scene();
+    await until(() => r.changes.teammateChanges().some((c) => c.uncommitted?.length), "Nick's work read at Ryan's", 15_000);
+    const raw = (number: number, label = String(number).padStart(4, "0")) =>
+      nick.team.publish(roomId, "migration.reserved", { repo: originKey(bare), folder: "db/migrations", number, label, session: { id: "n1", title: "Export API" }, ticket: "#447", branch: "feature/447-export" });
+    // published by hand (or an older Mockingbird): a 15-digit number, and 0040 — both more than 20 above the highest migration (5)
+    raw(999_999_999_999_999, "999999999999999");
+    raw(40);
+    await until(() => reservationsOf(ryan.team.room(roomId)!).length === 2, "Nick's two at Ryan's");
+    expect(ok(await r.changes.toolCall(ryanS, "reserve_migration_number", {}))).toMatch(/^Reserved migration 0006 /);
+    // ignored here, each logged and shown on the board once, and kept out of the hook's copy and the agents' list
+    const said = r.logs.filter((l) => /reservation of (999999999999999|0040) in db\/migrations is ignored: it's more than 20 above the highest migration there \(5\)/.test(l));
+    expect(said).toHaveLength(2);
+    expect(r.changes.view(roomId).problems).toEqual(expect.arrayContaining([expect.stringMatching(/^Nick's reservation of 999999999999999 .* is ignored/), expect.stringMatching(/^Nick's reservation of 0040 .* is ignored/)]));
+    expect(r.changes.view(roomId).reservations.map((x) => x.label)).toEqual(["0006"]);
+    expect(fileIn<MigrationsFile>(wtA, "migrations.json")!.rooms[0].reservations.map((x) => x.label)).toEqual(["0006"]);
+    expect(json(ok(await r.changes.toolCall(ryanS, "list_migration_reservations", {}))).reservations.map((x: { number: string }) => x.number)).toEqual(["0006"]);
+    // one at the window's edge counts, so the next would be past it: refused before it's published, saying why
+    raw(25);
+    await until(() => reservationsOf(ryan.team.room(roomId)!).length === 4, "Nick's 0025 at Ryan's");
+    expect(await r.changes.toolCall(ryanS, "reserve_migration_number", {})).toEqual({ error: expect.stringMatching(/^Mockingbird didn't reserve 0026: it's more than 20 above the highest migration in "db\/migrations" \(5\), because the numbers between are reserved/) });
+    expect(reservationsOf(ryan.team.room(roomId)!).filter((x) => x.by === ryan.id)).toHaveLength(1);
+  }, 40_000);
+
+  it("cap a member's live reservations in a folder: the sixth is refused before it's published, and one released makes room", async () => {
+    const { r, ryan, roomId, ryanS } = await scene();
+    for (const label of ["0006", "0007", "0008", "0009", "0010"]) expect(ok(await r.changes.toolCall(ryanS, "reserve_migration_number", {}))).toMatch(new RegExp(`^Reserved migration ${label} `));
+    const events = ryan.team.room(roomId)!.events;
+    expect(await r.changes.toolCall(ryanS, "reserve_migration_number", {})).toEqual({
+      error: expect.stringMatching(/^Mockingbird didn't reserve a number: the room already has 5 live reservations in one folder, the most a member holds there\. Your user holds 0006 in "db\/migrations", .*0010 in "db\/migrations"\. Release ones no longer needed with release_migration_number/),
+    });
+    expect(ryan.team.room(roomId)!.events).toBe(events);
+    ok(await r.changes.toolCall(ryanS, "release_migration_number", { number: "0006" }));
+    expect(ok(await r.changes.toolCall(ryanS, "reserve_migration_number", {}))).toMatch(/^Reserved migration 0011 /);
   }, 40_000);
 
   it("ask for a folder when there are several, and say so when there's none", async () => {

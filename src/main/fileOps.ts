@@ -213,6 +213,19 @@ export function removeInside(root: string, rel: string): boolean {
   }
 }
 
+/**
+ * Remove the folder `relDir` under `root` and everything in it, its folders
+ * on the way checked (one that is a link is refused, never followed). Links
+ * inside it are removed themselves, never their targets. Returns whether
+ * there was one.
+ */
+export function removeDirInside(root: string, relDir: string): boolean {
+  const dir = dirInside(root, relDir);
+  if (!dir) return false;
+  fs.rmSync(dir, { recursive: true });
+  return true;
+}
+
 /** Append to a file that may sit where agents write (.git/info/exclude): never through a link, its folder checked. */
 export function appendNoFollow(file: string, text: string): void {
   const parent = path.dirname(file);

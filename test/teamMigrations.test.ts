@@ -10,7 +10,22 @@ import { migrationCheckOn, reservationsOf } from "../src/main/team/migrations";
 import { installHooks } from "../src/main/hooks";
 import { agentContextText, OVERLAPS_WARNED_DIR } from "../src/main/team/claims";
 import { claimsFile } from "../src/shared/team/claims";
-import { detectMigrationFolders, isLive, migrationHit, migrationLabel, migrationNumbers, migrationsFile, nextMigrationNumber, parseMigrationName, patternOf, type MigrationsFile } from "../src/shared/team/migrations";
+import {
+  capReached,
+  detectMigrationFolders,
+  isLive,
+  isPlausible,
+  MAX_LIVE_PER_ROOM,
+  migrationHit,
+  migrationLabel,
+  migrationNumbers,
+  migrationsFile,
+  nextMigrationNumber,
+  parseMigrationName,
+  patternOf,
+  type MigrationReservation,
+  type MigrationsFile,
+} from "../src/shared/team/migrations";
 import { OVERLAP_REMIND_MS, overlapHits, overlapsFile, type OverlapsFile } from "../src/shared/team/overlaps";
 
 const NICK = "b".repeat(32);
@@ -133,6 +148,47 @@ describe("reservation events", () => {
     await until(() => !!reservationsOf(ryan.team.room(roomId)!).find((x) => x.id === again.id), "Nick's 0026 at Ryan's");
     await nick.team.leave(roomId);
     await until(() => reservationsOf(ryan.team.room(roomId)!).find((x) => x.id === again.id)!.released?.reason === "left-room", "Nick's 0026 released when he left");
+  });
+
+  it("caps live reservations per member and folder and per member, the same on every member: one over holds nothing, one released makes room", async () => {
+    const { members, roomId } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("t") });
+    const [ryan, nick] = members;
+    const at = (folder: string, number: number) => body({ folder, number, label: String(number).padStart(4, "0") });
+    // Nick's Mockingbird — or an agent approving its own calls — publishes a sixth in one folder
+    const mine = [25, 26, 27, 28, 29, 30].map((n) => nick.team.publish(roomId, "migration.reserved", at("db/migrations", n)));
+    await until(() => reservationsOf(ryan.team.room(roomId)!).length === 6, "Nick's six at Ryan's");
+    for (const m of members) {
+      const rs = reservationsOf(m.team.room(roomId)!);
+      expect(rs.filter(isLive).map((x) => x.number).sort((a, b) => a - b)).toEqual([25, 26, 27, 28, 29]);
+      expect(rs.find((x) => x.id === mine[5].id)!.refused).toBe("folder-cap");
+    }
+    // released, one makes room for the next (the refused one stays refused)
+    nick.team.publish(roomId, "migration.released", { reservation: mine[0].id, reason: "released" });
+    const next = nick.team.publish(roomId, "migration.reserved", at("db/migrations", 31));
+    await until(() => !!reservationsOf(ryan.team.room(roomId)!).find((x) => x.id === next.id), "Nick's 31 at Ryan's");
+    expect(reservationsOf(ryan.team.room(roomId)!).filter(isLive).map((x) => x.number).sort((a, b) => a - b)).toEqual([26, 27, 28, 29, 31]);
+    // across folders: 20 live in the room at most, per member
+    for (const f of ["a/migrations", "b/migrations", "c/migrations"]) for (let n = 1; n <= 5; n++) nick.team.publish(roomId, "migration.reserved", at(f, n));
+    const over = nick.team.publish(roomId, "migration.reserved", at("d/migrations", 1));
+    await until(() => !!reservationsOf(ryan.team.room(roomId)!).find((x) => x.id === over.id), "the 21st at Ryan's");
+    expect(reservationsOf(ryan.team.room(roomId)!).find((x) => x.id === over.id)!.refused).toBe("member-cap");
+    expect(reservationsOf(ryan.team.room(roomId)!).filter((x) => isLive(x) && x.by === nick.id)).toHaveLength(20);
+    // Ryan's own still count
+    const ryans = ryan.team.publish(roomId, "migration.reserved", at("db/migrations", 32));
+    await until(() => !!reservationsOf(nick.team.room(roomId)!).find((x) => x.id === ryans.id), "Ryan's at Nick's");
+    expect(isLive(reservationsOf(nick.team.room(roomId)!).find((x) => x.id === ryans.id)!)).toBe(true);
+  });
+
+  it("caps the room's live reservations, and counts only plausible numbers", () => {
+    const r = (i: number, by: string): MigrationReservation => ({ id: `r${i}`, by, at: i, repo: "github:acme/x", folder: `f${i % 7}`, number: i, label: String(i), session: { id: "s1", title: "t" }, ticket: null, branch: null });
+    const full = Array.from({ length: MAX_LIVE_PER_ROOM }, (_, i) => r(i, `m${i % 10}`));
+    expect(capReached(full.slice(0, -1), "someone", "github:acme/x", "elsewhere")).toBeNull();
+    expect(capReached(full, "someone", "github:acme/x", "elsewhere")).toBe("room-cap");
+    expect(capReached([...full.slice(0, -1), { ...full.at(-1)!, released: { by: "m0", at: 1, reason: "released" } }], "someone", "github:acme/x", "elsewhere")).toBeNull();
+    expect(isPlausible(25, 5)).toBe(true);
+    expect(isPlausible(26, 5)).toBe(false);
+    expect(isPlausible(999_999_999_999_999, 24)).toBe(false);
+    expect(isPlausible(20, 0)).toBe(true);
   });
 
   it("lets only the room's admin turn the check off; a room without the setting has it on", async () => {

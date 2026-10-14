@@ -23,6 +23,23 @@ export const MIGRATION_TOOL = { reserve: "reserve_migration_number", list: "list
 export const MAX_RESERVATIONS = 400;
 /** A migration number's digits: up to 15, so every one is a safe integer (timestamps like 20261012093000 fit). */
 export const MAX_DIGITS = 15;
+/**
+ * Live reservations one member may hold in one repository's folder, one
+ * member in the whole room, and the room altogether. A reservation beyond
+ * one of them is kept, marked `refused`, and holds nothing: the same on every
+ * member, as the room's order decides it.
+ */
+export const MAX_LIVE_PER_FOLDER = 5;
+export const MAX_LIVE_PER_MEMBER = 20;
+export const MAX_LIVE_PER_ROOM = 100;
+/**
+ * How far above the highest number in a folder's files (the base branch,
+ * teammates' branches and shared work, this Mac's worktrees) a reservation
+ * may go and still count. A higher one would push everyone's next number up
+ * — at 15 digits, past what can be reserved at all — so each member ignores
+ * it, saying why.
+ */
+export const PLAUSIBLE_ABOVE = 20;
 
 /**
  * A migration file's number, from its name: an optional V (Flyway's
@@ -127,6 +144,9 @@ export function nextMigrationNumber(taken: readonly number[]): number {
   return max + 1;
 }
 
+/** Whether a reservation of `number` counts, given the highest number in the folder's files (0 when it has none). */
+export const isPlausible = (number: number, highestReal: number): boolean => Number.isSafeInteger(number) && number <= highestReal + PLAUSIBLE_ABOVE;
+
 /** A number as the folder writes it: "0025", "V26", "20261013". */
 export function migrationLabel(n: number, folder: Pick<MigrationFolder, "width" | "prefix">): string {
   return `${folder.prefix}${String(n).padStart(folder.width, "0")}`;
@@ -143,6 +163,26 @@ export function checkFolder(v: unknown): string {
 }
 
 // ---- the room's record ----------------------------------------------------------------------
+
+/** Which cap a reservation went over: its member's in its folder, its member's in the room, or the room's. */
+export type CapReason = "folder-cap" | "member-cap" | "room-cap";
+
+/**
+ * Whether one more reservation by `by` in `repo`'s `folder` goes over a cap,
+ * given the room's reservations so far (deterministic: the reducer and the
+ * reserve tool both ask it).
+ */
+export function capReached(reservations: readonly MigrationReservation[], by: MemberId, repo: string, folder: string): CapReason | null {
+  const live = reservations.filter(isLive);
+  if (live.filter((r) => r.by === by && r.repo === repo && r.folder === folder).length >= MAX_LIVE_PER_FOLDER) return "folder-cap";
+  if (live.filter((r) => r.by === by).length >= MAX_LIVE_PER_MEMBER) return "member-cap";
+  if (live.length >= MAX_LIVE_PER_ROOM) return "room-cap";
+  return null;
+}
+
+/** A cap as people read it. */
+export const capText = (c: CapReason): string =>
+  c === "folder-cap" ? `${MAX_LIVE_PER_FOLDER} live reservations in one folder, the most a member holds there` : c === "member-cap" ? `${MAX_LIVE_PER_MEMBER} live reservations in the room, the most a member holds` : `${MAX_LIVE_PER_ROOM} live reservations, the most the room holds`;
 
 /** Why a reservation ended: released by hand, its number reached the base branch, its branch went, or its member left the room. */
 export type ReleaseReason = "released" | "merged" | "branch-gone" | "left-room";
@@ -167,6 +207,8 @@ export interface MigrationReservation {
   released?: { by: MemberId; at: number; reason: ReleaseReason };
   /** Another member reserved the same number first in the room's order: this one doesn't count (that event's id). */
   clash?: string;
+  /** It went over a cap when the room reduced it: it holds nothing. */
+  refused?: CapReason;
 }
 
 export interface MigrationsRoomState {
@@ -184,8 +226,8 @@ declare module "./types" {
   }
 }
 
-/** A reservation that holds its number: neither released nor beaten to it. */
-export const isLive = (r: MigrationReservation): boolean => !r.released && !r.clash;
+/** A reservation that holds its number: neither released, beaten to it, nor over a cap. */
+export const isLive = (r: MigrationReservation): boolean => !r.released && !r.clash && !r.refused;
 
 // ---- the hook's copy ------------------------------------------------------------------------
 

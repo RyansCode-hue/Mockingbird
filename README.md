@@ -462,7 +462,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
     its plan, the changed files and the last turns, built without a model
     call) rather than re-reading theirs, with their whole transcript saved in
     the worktree's git-excluded `.mockingbird/takeover/` for it to read when it
-    needs detail; taking your own session back resumes your own conversation,
+    needs detail (deleted once that session is done with it: taken back,
+    closed, its backup dropped, 14 days without a turn, or you leaving the
+    room); taking your own session back resumes your own conversation,
     briefed on what they did. A connected owner is asked first (**Hand
     over** / **Keep**, kept after 2 minutes unanswered): handing over lets their
     turn finish, sends that exact backup straight to you and stops their agent.
@@ -535,7 +537,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
     shown on the House board ("Migrations: 0025 Nick (#447), 0026 Ryan
     (#453)"), released by hand or once their number is on the base branch or
     their branch is gone. The room's admin can turn the hold-back off, or name
-    a repository's migration folders, in Settings → Team.
+    a repository's migration folders, in Settings → Team. Live reservations
+    are capped (5 per member and folder, 20 per member, 100 per room), one
+    more than 20 above the folder's highest migration is ignored, and Codex
+    asks before each reservation.
 
 ### Next
 

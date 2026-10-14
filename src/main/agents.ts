@@ -7,6 +7,7 @@ import { MCP_SERVER, MCP_TOOL, claudeToolName, type McpLaunch } from "./messagin
 import { CLAUDE_PROJECTS, ROLLOUT_NAME_RE, codexRollouts } from "./agentFiles";
 import { readSlice } from "./fileOps";
 import { HOUSE_WRITE_TOOLS } from "../shared/team/house";
+import { MIGRATION_TOOL } from "../shared/team/migrations";
 
 export interface LaunchContext {
   /** The per-session Mockingbird MCP server that lets agents message each other; absent for an agent outside messaging. */
@@ -23,7 +24,7 @@ export interface LaunchContext {
   instructions?: string;
   /**
    * More Mockingbird MCP tools the agent may call without asking (Claude;
-   * Codex approves all of the server's but the House's writes, codexMcpSettings).
+   * Codex approves all of the server's but CODEX_ASKS_TOOLS, codexMcpSettings).
    */
   allowTools?: string[];
   /**
@@ -206,8 +207,15 @@ export function claudeMcpConfig(mcp: McpLaunch): string {
 }
 
 /**
+ * The Mockingbird MCP tools Codex asks the user about before every call: the
+ * House's writes (made with the user's token) and reserving a migration
+ * number (a room event every teammate's agents are held to).
+ */
+export const CODEX_ASKS_TOOLS: string[] = [...HOUSE_WRITE_TOOLS, MIGRATION_TOOL.reserve];
+
+/**
  * Codex's -c settings for the Mockingbird MCP server: its tools pre-approved
- * but for the House's writes, which ask before every call ("prompt" offers no
+ * but for CODEX_ASKS_TOOLS, which ask before every call ("prompt" offers no
  * approve-for-the-session; with approval_policy "never" Codex refuses the
  * call instead). -c values are TOML; JSON strings, arrays and this flat
  * table are valid TOML too. `toolTimeoutSec` raises Codex's limit for a tool
@@ -222,7 +230,7 @@ export function codexMcpSettings(mcp: McpLaunch, opts: { toolTimeoutSec?: number
     `${key}.env={${env}}`,
     `${key}.default_tools_approval_mode="approve"`,
     ...(opts.toolTimeoutSec ? [`${key}.tool_timeout_sec=${opts.toolTimeoutSec}`] : []),
-    ...HOUSE_WRITE_TOOLS.map((tool) => `${key}.tools.${tool}.approval_mode="prompt"`),
+    ...CODEX_ASKS_TOOLS.map((tool) => `${key}.tools.${tool}.approval_mode="prompt"`),
   ];
 }
 

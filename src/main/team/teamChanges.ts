@@ -18,10 +18,15 @@ import { block, CONTROL_CHARS_RE, fenced, named, oneLine, quoted } from "../../s
 import { BRANCH_RE } from "../../shared/team/house";
 import { remoteSessionId } from "../../shared/team/livePanes";
 import {
+  capReached,
+  capText,
   checkFolder,
   detectMigrationFolders,
   isLive,
+  isPlausible,
+  MAX_DIGITS,
   MIGRATION_TOOL,
+  PLAUSIBLE_ABOVE,
   migrationLabel,
   migrationNumbers,
   migrationsFile,
@@ -104,7 +109,7 @@ const ORIGIN_TTL_MS = 5 * 60_000;
 
 /** The agents' tools for teammates' changes and migration numbers. */
 export const TEAM_CHANGES_TOOLS: string[] = [TEAMMATE_TOOL.changes, TEAMMATE_TOOL.diff, MIGRATION_TOOL.reserve, MIGRATION_TOOL.list, MIGRATION_TOOL.release];
-/** The ones that only read: pre-allowed in Claude room sessions (livePanes.ts), like the House's and artifacts' reads. */
+/** The ones that only read: pre-allowed in Claude room sessions (livePanes.ts), like the House's and artifacts' reads. Codex asks before each reservation (agents.ts CODEX_ASKS_TOOLS). */
 export const TEAM_CHANGES_READ_TOOLS: string[] = [TEAMMATE_TOOL.changes, TEAMMATE_TOOL.diff, MIGRATION_TOOL.list];
 export const isTeamChangesTool = (op: string | undefined): boolean => !!op && TEAM_CHANGES_TOOLS.includes(op);
 
@@ -144,7 +149,8 @@ export const TEAM_CHANGES_TOOL_SCHEMAS = [
       "Reserve the next migration number in this repository's numbered migration folder before you create a migration file, and name the file with it. " +
       "The number is higher than every one in the folder on the base branch (fetched now), on your teammates' branches and shared work, in your worktrees, and in every reservation. " +
       "Your teammates see the reservation; it's released when a file with that number reaches the base branch, when your branch is gone, or with release_migration_number. " +
-      "folder is needed only when the repository has more than one migration folder (the answer lists them).",
+      "folder is needed only when the repository has more than one migration folder (the answer lists them). " +
+      "In Codex your user approves each call first; if they decline, don't try again — ask them what they want instead.",
     inputSchema: {
       type: "object",
       properties: { folder: { type: "string", description: "The migration folder, e.g. db/migrations" } },
@@ -203,6 +209,10 @@ export class TeamChanges {
   private origins = new Map<string, { main: string; key: string | null; at: number }>();
   /** Live reservations whose number this Mac sees on the base branch: released, whatever the room log says yet. */
   private merged = new Set<string>();
+  /** The highest number in each folder's files (by origin key and folder), as last read: what reservations are judged against. */
+  private highest = new Map<string, number>();
+  /** Reservations ignored as implausible, each logged once. */
+  private ignored = new Set<string>();
   /** Per room: what couldn't be read or done, newest last (the board shows it). */
   private problems = new Map<RoomId, string[]>();
   private emitTimers = new Map<RoomId, ReturnType<typeof setTimeout>>();
@@ -384,7 +394,12 @@ export class TeamChanges {
         const clones = clonesOf.get(r.repo) ?? [];
         if (!clones.length) continue;
         const k = `${clones[0]}\0${r.folder}`;
-        if (!baseNumbers.has(k)) baseNumbers.set(k, await this.baseNumbers(room.id, clones[0], r.folder));
+        if (!baseNumbers.has(k)) {
+          // also what liveOf judges reservations in this folder against (this.highest)
+          const real = await this.realNumbers(clones[0], r.repo, r.folder);
+          if (real.baseProblem) this.problem(room.id, `Migrations on the base branch in ${clones[0]} couldn't be read, so reservations there aren't released when merged: ${real.baseProblem}`);
+          baseNumbers.set(k, real.base);
+        }
         if (baseNumbers.get(k)?.includes(r.number)) merged.add(r.id);
         if (r.by !== team.self.id) continue;
         if (merged.has(r.id)) this.release(room, r, "merged");
@@ -392,18 +407,6 @@ export class TeamChanges {
       }
     }
     this.merged = merged;
-  }
-
-  /** The numbers in `folder` on the clone's base branch; null when they couldn't be read (said on the board). */
-  private async baseNumbers(roomId: RoomId, clone: string, folder: string): Promise<number[] | null> {
-    try {
-      const base = await baseRef(clone);
-      if (!base) return null;
-      return migrationNumbers(split(await git(clone, ["ls-tree", "--name-only", "-z", base, "--", `${folder}/`], { trim: false })));
-    } catch (err) {
-      this.problem(roomId, `Migrations on the base branch in ${clone} couldn't be read, so reservations there aren't released when merged: ${this.d.log(`team changes: reading ${folder} on the base branch in ${clone}`, err)}`);
-      return null;
-    }
   }
 
   private async branchAnywhere(roomId: RoomId, clones: string[], branch: string): Promise<boolean> {
@@ -505,9 +508,29 @@ export class TeamChanges {
     return [...out].sort();
   }
 
-  /** Reservations holding their number, as this Mac sees them (not released, not beaten to it, not on the base branch here). */
+  /** Reservations holding their number, as this Mac sees them (not released, beaten to it or over a cap; not on the base branch here; plausible). */
   private liveOf(room: RoomState): MigrationReservation[] {
-    return reservationsOf(room).filter((r) => isLive(r) && !this.merged.has(r.id));
+    return reservationsOf(room).filter((r) => isLive(r) && !this.merged.has(r.id) && this.plausible(room, r));
+  }
+
+  /**
+   * Whether a reservation is within PLAUSIBLE_ABOVE of the highest number in
+   * its folder's files as this Mac last read them. One that isn't holds
+   * nothing here — it would push every next number up, at 15 digits past
+   * what can be reserved — and is logged and shown on the board once. A
+   * folder not read yet (or with no clone here) is taken on trust until it
+   * is; the reserve tool always reads first.
+   */
+  private plausible(room: RoomState, r: MigrationReservation): boolean {
+    const highest = this.highest.get(`${r.repo}\0${r.folder}`);
+    if (highest === undefined || isPlausible(r.number, highest)) return true;
+    if (!this.ignored.has(r.id)) {
+      this.ignored.add(r.id);
+      const why = `${named(this.nameOf(room, r.by))}'s reservation of ${r.label} in ${fenced(r.folder, 200)} is ignored: it's more than ${PLAUSIBLE_ABOVE} above the highest migration there (${highest}), so it would push everyone's next number up`;
+      this.d.log(`team changes: room ${room.id}, reservation ${r.id}`, why);
+      this.problem(room.id, `${why}.`);
+    }
+    return false;
   }
 
   // ---- the window -----------------------------------------------------------------------------
@@ -522,7 +545,8 @@ export class TeamChanges {
       const f = clone ? this.folders.get(clone) : undefined;
       return { key, label: repoLabel(key), detected: f?.detected.map((x) => x.folder) ?? [], override: migrationFoldersOverride(room, key), ...(f?.problem ? { problem: f.problem } : !clone ? { problem: "No clone of it here" } : {}) };
     });
-    const shown = reservationsOf(room).filter((r) => (isLive(r) && !this.merged.has(r.id)) || (r.clash && !r.released && r.by === team.self.id));
+    const live = new Set(this.liveOf(room));
+    const shown = reservationsOf(room).filter((r) => live.has(r) || (r.clash && !r.released && r.by === team.self.id));
     return {
       roomId,
       check: migrationCheckOn(room),
@@ -707,10 +731,26 @@ export class TeamChanges {
     } else {
       return { error: `This repository has ${list.length} migration folders: ${list.map((f) => quoted(f, 200)).join(", ")}. Call again with folder set to the one you're adding a migration to.` };
     }
-    const taken = await this.taken(room, clone, o.key, folder.folder);
+    const self = team.self.id;
+    const cap = capReached(reservationsOf(room), self, o.key, folder.folder);
+    if (cap) {
+      const mine = reservationsOf(room).filter((r) => isLive(r) && r.by === self && (cap !== "folder-cap" || (r.repo === o.key && r.folder === folder.folder)));
+      const held = mine.length ? ` Your user holds ${mine.map((r) => `${r.label} in ${quoted(r.folder, 200)}`).join(", ")}.` : "";
+      return { error: `Mockingbird didn't reserve a number: the room already has ${capText(cap)}.${held} Release ones no longer needed with ${MIGRATION_TOOL.release}, or tell your user (the room's admin can release teammates' on the board).` };
+    }
+    const taken = await this.taken(clone, o.key, folder.folder);
     problems.push(...taken.problems);
     const n = nextMigrationNumber(taken.numbers);
     const label = migrationLabel(n, folder);
+    const whence = taken.sources.length ? `, from ${taken.sources.join(", ")}` : "";
+    if (String(n).length > MAX_DIGITS) {
+      return { error: `Mockingbird didn't reserve a number: the next one in ${quoted(folder.folder, 200)} would be ${n}, longer than the ${MAX_DIGITS} digits a reservation holds (the highest taken${whence}). Tell your user.` };
+    }
+    if (!isPlausible(n, taken.highest)) {
+      return {
+        error: `Mockingbird didn't reserve ${label}: it's more than ${PLAUSIBLE_ABOVE} above the highest migration in ${quoted(folder.folder, 200)} (${taken.highest}), because the numbers between are reserved (the highest taken${whence}). Release ones no longer needed with ${MIGRATION_TOOL.release} (${MIGRATION_TOOL.list} lists them), or tell your user.`,
+      };
+    }
     const branch = session.branch && BRANCH_RE.test(session.branch) && !isBase(session.branch) ? session.branch : null;
     const ticket = ticketOf(session.ticketId);
     const e = team.publish(roomId, "migration.reserved", { repo: o.key, folder: folder.folder, number: n, label, session: { id: session.id, title: oneLine(session.ticketTitle ?? session.title, 200) || "a session" }, ticket, branch });
@@ -723,6 +763,7 @@ export class TeamChanges {
     }
     this.emitSoon(roomId);
     if (r?.clash) return { error: `${label} was reserved by someone else at the same moment; call ${MIGRATION_TOOL.reserve} again.` };
+    if (r?.refused) return { error: `Mockingbird didn't reserve a number: the room already has ${capText(r.refused)}. Release ones no longer needed with ${MIGRATION_TOOL.release}, or tell your user.` };
     const ext = folder.example ? path.extname(folder.example) : "";
     const highest = taken.numbers.length ? Math.max(...taken.numbers) : null;
     return {
@@ -749,8 +790,14 @@ export class TeamChanges {
     return { width, prefix, example };
   }
 
-  /** Every number taken in a folder: on the base branch, teammates' branches and snapshots, this clone's worktrees, and live reservations. */
-  private async taken(room: RoomState, clone: string, key: string, folder: string): Promise<{ numbers: number[]; sources: string[]; problems: string[] }> {
+  /**
+   * Every number in a folder's files as this Mac has them: on the base branch
+   * (`base`, null when it couldn't be read), on teammates' room sessions'
+   * branches and in their snapshots here (every room this install is in), and
+   * in this clone's worktrees. Its highest is what reservations are judged
+   * against (`highest`, kept for liveOf).
+   */
+  private async realNumbers(clone: string, key: string, folder: string): Promise<{ numbers: number[]; base: number[] | null; baseProblem: string | null; sources: string[]; problems: string[] }> {
     const team = this.need();
     const numbers: number[] = [];
     const sources: string[] = [];
@@ -760,26 +807,33 @@ export class TeamChanges {
       numbers.push(...ns);
       sources.push(`${what} (up to ${Math.max(...ns)})`);
     };
-    const ls = async (ref: string, what: string, repo = clone) => {
+    const ls = async (ref: string, what: string, repo = clone): Promise<number[] | null> => {
       try {
-        from(what, migrationNumbers(split(await git(repo, ["ls-tree", "--name-only", "-z", ref, "--", `${folder}/`], { trim: false }))));
+        const ns = migrationNumbers(split(await git(repo, ["ls-tree", "--name-only", "-z", ref, "--", `${folder}/`], { trim: false })));
+        from(what, ns);
+        return ns;
       } catch (err) {
         problems.push(`${what} couldn't be read: ${this.d.log(`team changes: reading ${folder} on ${ref} in ${repo}`, err)}`);
+        return null;
       }
     };
-    const base = await baseRef(clone);
-    if (base) await ls(base, `the base branch ${base}`);
-    else problems.push("there's no dev/main-style base branch here to read");
+    const baseName = await baseRef(clone);
+    const base = baseName ? await ls(baseName, `the base branch ${baseName}`) : null;
+    const baseProblem = baseName && !base ? (problems.at(-1) ?? null) : null;
+    if (!baseName) problems.push("there's no dev/main-style base branch here to read");
     const seen = new Set<string>();
-    for (const rec of Object.values(room.ext.sessions ?? {})) {
-      if (rec.owner === team.self.id || !rec.repo || originKey(rec.repo) !== key || !rec.branch || isBase(rec.branch) || seen.has(rec.branch)) continue;
-      seen.add(rec.branch);
-      const ref = `refs/remotes/origin/${rec.branch}`;
-      if (await git(clone, ["rev-parse", "--verify", "-q", ref], { okCodes: [0, 1] })) await ls(ref, `${named(this.nameOf(room, rec.owner))}'s branch ${named(rec.branch)}`);
+    for (const room of team.rooms()) {
+      for (const rec of Object.values(room.ext.sessions ?? {})) {
+        if (rec.owner === team.self.id || !rec.repo || originKey(rec.repo) !== key || !rec.branch || isBase(rec.branch) || seen.has(rec.branch)) continue;
+        seen.add(rec.branch);
+        const ref = `refs/remotes/origin/${rec.branch}`;
+        if (await git(clone, ["rev-parse", "--verify", "-q", ref], { okCodes: [0, 1] })) await ls(ref, `${named(this.nameOf(room, rec.owner))}'s branch ${named(rec.branch)}`);
+      }
     }
     for (const m of this.d.mirrors()) {
+      const room = team.room(m.roomId);
       const o = await this.origin(m.repo);
-      if (m.roomId !== room.id || o.key !== key) continue;
+      if (!room || o.key !== key) continue;
       await ls(m.sha, `${named(this.nameOf(room, m.owner))}'s shared work`, o.main);
     }
     for (const wt of await worktreesOf(clone)) {
@@ -789,21 +843,35 @@ export class TeamChanges {
         if (!isMissing(err)) problems.push(`${wt}'s ${folder} couldn't be read: ${this.d.log(`team changes: reading ${folder} in ${wt}`, err)}`);
       }
     }
-    // every room this install is in that works in the repository: a number reserved in one is taken in all
+    this.highest.set(`${key}\0${folder}`, numbers.length ? Math.max(...numbers) : 0);
+    return { numbers, base, baseProblem, sources, problems };
+  }
+
+  /**
+   * Every number taken in a folder: its files (realNumbers) and the live
+   * reservations of every room this install is in that works in the
+   * repository — a number reserved in one is taken in all — that are
+   * plausible against those files.
+   */
+  private async taken(clone: string, key: string, folder: string): Promise<{ numbers: number[]; highest: number; sources: string[]; problems: string[] }> {
+    const real = await this.realNumbers(clone, key, folder);
+    const highest = real.numbers.length ? Math.max(...real.numbers) : 0;
     const held = this.need()
       .rooms()
       .flatMap((r) => this.liveOf(r))
       .filter((r) => r.repo === key && r.folder === folder);
-    from("reservations", held.map((r) => r.number));
-    return { numbers, sources, problems };
+    const numbers = [...real.numbers, ...held.map((r) => r.number)];
+    const sources = held.length ? [...real.sources, `reservations (up to ${Math.max(...held.map((r) => r.number))})`] : real.sources;
+    return { numbers, highest, sources, problems: real.problems };
   }
 
   private async listReservations(roomId: RoomId): Promise<string> {
     await this.fresh();
     const room = this.room(roomId);
     const self = this.need().self.id;
+    const live = new Set(this.liveOf(room));
     const rows = reservationsOf(room)
-      .filter((r) => (isLive(r) && !this.merged.has(r.id)) || (r.clash && !r.released && r.by === self))
+      .filter((r) => live.has(r) || (r.clash && !r.released && r.by === self))
       .map((r) => ({
         number: r.label,
         folder: fenced(r.folder, 200),
@@ -842,6 +910,8 @@ export class TeamChanges {
       this.emitSoon(room.id);
       // the hook's copy follows at once: a teammate's new reservation holds its number in every worktree here
       void this.d.rewriteCopies().catch((err) => this.d.log("team changes: writing reservations into worktrees", err));
+      // a reservation in a folder not read yet is judged once its files are
+      if (e.type === "migration.reserved") this.refreshSoon();
     }
     if (e.type === "session.upsert" || e.type === "session.removed" || e.type === "member.removed" || e.type === "session.backup" || e.type === "session.takenOver" || e.type === "session.backupDropped") this.refreshSoon();
   }

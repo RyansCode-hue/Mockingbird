@@ -160,7 +160,7 @@ export function RoomBackupWarnings({ room, view }: { room: TeamRoomSummary; view
   }
   const warnings = [
     ...view.unbacked.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: "not backed up" })),
-    ...view.cleanup.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: "backup not deleted from origin" })),
+    ...view.cleanup.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: u.what ?? "backup not deleted from origin" })),
   ];
   if (!warnings.length) return null;
   return (

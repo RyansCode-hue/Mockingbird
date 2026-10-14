@@ -2,7 +2,7 @@ import { defineEventType, onMemberRemoved, roomAdmin } from "./rooms";
 import { CONTROL_CHARS_RE } from "../../shared/team/agentText";
 import { BRANCH_RE } from "../../shared/team/house";
 import { SESSION_ID_RE } from "../../shared/team/takeover";
-import { checkFolder, isLive, MAX_DIGITS, MAX_RESERVATIONS, RELEASE_REASONS, type MigrationReservation, type MigrationsRoomState } from "../../shared/team/migrations";
+import { capReached, checkFolder, isLive, MAX_DIGITS, MAX_RESERVATIONS, RELEASE_REASONS, type MigrationReservation, type MigrationsRoomState } from "../../shared/team/migrations";
 import type { RoomState } from "../../shared/team/types";
 
 /**
@@ -15,7 +15,10 @@ import type { RoomState } from "../../shared/team/types";
  * The first reservation of a number in the room's order holds it: a later
  * one of the same number in the same repository and folder (two members
  * reserving at once, or while apart) is kept but marked `clash`, the same on
- * every member, and holds nothing.
+ * every member, and holds nothing. So does one that goes over a cap on live
+ * reservations (capReached: per member and folder, per member, per room),
+ * marked `refused`: a member, or an agent approving its own calls, can't
+ * fill the room with numbers.
  */
 
 const isObj = (b: unknown): b is Record<string, unknown> => !!b && typeof b === "object" && !Array.isArray(b);
@@ -52,7 +55,9 @@ defineEventType("migration.reserved", {
     const m = migrations(state);
     if (m.reservations[e.id]) return;
     const b = e.body;
-    const first = Object.values(m.reservations).find((r) => isLive(r) && r.repo === b.repo && r.folder === b.folder && r.number === b.number);
+    const all = Object.values(m.reservations);
+    const refused = capReached(all, e.author, b.repo, b.folder);
+    const first = refused ? undefined : all.find((r) => isLive(r) && r.repo === b.repo && r.folder === b.folder && r.number === b.number);
     m.reservations[e.id] = {
       id: e.id,
       by: e.author,
@@ -65,6 +70,7 @@ defineEventType("migration.reserved", {
       ticket: b.ticket,
       branch: b.branch,
       ...(first ? { clash: first.id } : {}),
+      ...(refused ? { refused } : {}),
     };
     prune(m);
   },
@@ -85,8 +91,9 @@ defineEventType("migration.released", {
   },
 });
 
-// a member who leaves or is removed gives their numbers back
-onMemberRemoved("migrations", (state, member, e) => {
+// a member who leaves or is removed gives their numbers back. The name carries the reducers'
+// version: a room snapshot reduced before the caps existed is reduced again under them.
+onMemberRemoved("migrations/caps",(state, member, e) => {
   for (const r of Object.values(state.ext.migrations?.reservations ?? {})) if (r.by === member && !r.released) r.released = { by: e.author, at: e.at, reason: "left-room" };
 });
 

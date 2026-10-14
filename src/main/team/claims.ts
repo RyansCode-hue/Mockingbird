@@ -1,10 +1,10 @@
 import * as fs from "fs";
 import * as path from "path";
 import { git } from "../git";
-import { appendNoFollow, dirInside, isMissing, readRegularFile, removeInside, writeGenerated, writeGeneratedInside } from "../fileOps";
+import { appendNoFollow, dirInside, isMissing, readRegularFile, removeDirInside, removeInside, writeGenerated, writeGeneratedInside } from "../fileOps";
 import { MB_DIR } from "../store";
 import { ARTIFACT_TOOL } from "../../shared/team/artifacts";
-import { AGENT_CONTEXT_FILE, CLAIMS_FILE, claimConflicts, claimHookResponse, editedPaths, LEGACY_PLAN_FILE, PLAN_DIR, ROOM_CONTEXT_ENV } from "../../shared/team/claims";
+import { AGENT_CONTEXT_FILE, CLAIMS_FILE, claimConflicts, claimHookResponse, editedPaths, LEGACY_PLAN_FILE, PLAN_DIR, ROOM_CONTEXT_ENV, TAKEOVER_TRANSCRIPT_DIR } from "../../shared/team/claims";
 import { HOUSE_TOOLS, NEEDS_AGENT } from "../../shared/team/house";
 import { named, quoted } from "../../shared/team/agentText";
 import { combineHookAnswers, OVERLAP_REMIND_MS, overlapHits, overlapHookResponse, overlapsFile, OVERLAPS_FILE, TEAMMATE_TOOL } from "../../shared/team/overlaps";
@@ -116,9 +116,14 @@ export function writeRoomCopy(worktree: string, copy: RoomCopy): boolean {
   return changed;
 }
 
-/** Remove a worktree's copy (its repo is no longer any room's). A linked .mockingbird is refused, never followed. */
+/**
+ * Remove a worktree's copy (its repo is no longer any room's), and a
+ * teammate's conversation saved there at a take-over: no room session runs
+ * there any more to need it. A linked .mockingbird is refused, never followed.
+ */
 export function removeRoomCopy(worktree: string): void {
   for (const rel of [CLAIMS_FILE, AGENT_CONTEXT_FILE, OVERLAPS_FILE, MIGRATIONS_FILE, LEGACY_PLAN_FILE]) removeInside(worktree, rel);
+  if (removeDirInside(worktree, TAKEOVER_TRANSCRIPT_DIR)) console.log(`[team] deleted the conversation saved at a take-over in ${path.join(worktree, TAKEOVER_TRANSCRIPT_DIR)}: its repository is no longer any room's`);
   const dir = dirInside(worktree, PLAN_DIR);
   if (!dir) return;
   try {
