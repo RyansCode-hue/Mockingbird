@@ -6,7 +6,8 @@ vi.hoisted(() => {
 });
 
 import { Terminal } from "@xterm/xterm";
-import { attachTerm, dataPump, makeTerm, replay, syncViewport, termLinkHandler, type CachedTerm } from "../src/renderer/cachedTerm";
+import type { FitAddon } from "@xterm/addon-fit";
+import { attachTerm, dataPump, fitTerm, makeTerm, repaintTerm, replay, syncViewport, termLinkHandler, REPAINT_NUDGE_MS, type CachedTerm, type SizedTerm } from "../src/renderer/cachedTerm";
 
 const parsed = (term: Terminal) => new Promise<void>((r) => term.write("", r));
 const screen = (term: Terminal) => {
@@ -124,6 +125,99 @@ describe("a cached terminal shown in a pane again", () => {
     expect(viewport.scrollTop).toBe(100 * 18 + 5);
     attach(holderOf(false));
     expect(viewport.scrollTop).toBe(0);
+  });
+});
+
+/**
+ * A terminal in a holder of `area` (null: out of the page or display:none), at `size`, whose holder fits `fits`.
+ * fit() resizes it to what the holder fits, as the fit addon does.
+ */
+function fitted(size: [number, number], fits: [number, number], area: [number, number] | null = [500, 400]) {
+  const holder = { isConnected: !!area, getClientRects: () => (area ? [{}] : []), clientWidth: area?.[0] ?? 0, clientHeight: area?.[1] ?? 0 };
+  const term = { cols: size[0], rows: size[1], element: { parentElement: holder } };
+  const fit = {
+    proposeDimensions: () => ({ cols: fits[0], rows: fits[1] }),
+    fit: () => ([term.cols, term.rows] = fits),
+  };
+  const e = { term, fit } as unknown as SizedTerm;
+  const sent: string[] = [];
+  const resize = (cols: number, rows: number) => void sent.push(`${cols}×${rows}`);
+  return { e, term, holder, sent, resize };
+}
+
+describe("fitting a terminal to its pane", () => {
+  it("tells a new pty its size on the first fit, even when the terminal already had that size, then only what changes", () => {
+    // a relaunched session's pty starts at its default size, whatever size the terminal shows
+    const { e, term, holder, sent, resize } = fitted([80, 24], [80, 24]);
+    fitTerm(e, resize);
+    expect(sent).toEqual(["80×24"]);
+    fitTerm(e, resize); // the holder observed again at the same size
+    expect(sent).toEqual(["80×24"]);
+    (e.fit as unknown as { proposeDimensions: () => unknown }).proposeDimensions = () => ({ cols: 90, rows: 30 });
+    (e.fit as unknown as { fit: () => void }).fit = () => ([term.cols, term.rows] = [90, 30]);
+    holder.clientWidth = 560;
+    fitTerm(e, resize);
+    expect(sent).toEqual(["80×24", "90×30"]);
+  });
+
+  it("never measures a holder out of the page, hidden or squeezed to nothing", () => {
+    for (const area of [null, [0, 0], [500, 0]] as const) {
+      // the fit addon still proposes its two-column, one-row minimum for an empty holder
+      const { e, term, sent, resize } = fitted([80, 24], [2, 1], area as [number, number] | null);
+      fitTerm(e, resize);
+      expect(sent).toEqual([]);
+      expect([term.cols, term.rows]).toEqual([80, 24]);
+    }
+  });
+});
+
+describe("Repaint", () => {
+  function repainting(rows = 10) {
+    const term = new Terminal({ allowProposedApi: true, cols: 40, rows, scrollback: 1000 });
+    const e = { term, fit: {} as FitAddon } as SizedTerm;
+    const sent: string[] = [];
+    const resize = (cols: number, r: number) => void sent.push(`${cols}×${r}`);
+    let restore: (() => void) | null = null;
+    const later = (fn: () => void) => void (restore = fn);
+    return { term, e, sent, resize, later, restore: () => restore?.() };
+  }
+  const lines = (term: Terminal) => {
+    const b = term.buffer.active;
+    return Array.from({ length: b.length }, (_, i) => b.getLine(i)?.translateToString(true) ?? "");
+  };
+
+  it("keeps the scrollback: an inline session's history stays where it was", async () => {
+    const { term, e, resize, later, restore } = repainting();
+    await new Promise<void>((r) => term.write(Array.from({ length: 200 }, (_, i) => `history ${i}\r\n`).join("") + "> ", r));
+    const before = lines(term);
+    repaintTerm(e, resize, later);
+    restore();
+    await parsed(term);
+    expect(term.buffer.active.type).toBe("normal");
+    expect(lines(term)).toEqual(before);
+  });
+
+  it("keeps the program's alternate screen and mouse tracking, clearing only that screen for its redraw", async () => {
+    const { term, e, resize, later, restore } = repainting();
+    await new Promise<void>((r) => term.write("shell history\r\n\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[Hgarbled frame", r));
+    repaintTerm(e, resize, later);
+    restore();
+    await parsed(term);
+    expect(term.buffer.active.type).toBe("alternate");
+    expect(term.modes.mouseTrackingMode).toBe("vt200");
+    expect(screen(term)).toEqual([]);
+    expect(term.buffer.normal.getLine(0)?.translateToString(true)).toBe("shell history");
+  });
+
+  it("makes the program redraw by a resize round trip, given back at the terminal's size when it ends", () => {
+    const { term, e, sent, resize, later, restore } = repainting(12);
+    repaintTerm(e, resize, later);
+    expect(sent).toEqual(["39×12"]);
+    term.resize(60, 20); // the pane re-fitted during the round trip
+    restore();
+    expect(sent).toEqual(["39×12", "60×20"]);
+    expect(e.ptySize).toEqual({ cols: 60, rows: 20 });
+    expect(REPAINT_NUDGE_MS).toBeGreaterThan(0);
   });
 });
 

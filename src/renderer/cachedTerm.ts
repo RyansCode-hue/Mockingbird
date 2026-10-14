@@ -71,22 +71,65 @@ export function makeTerm(options: ITerminalOptions): { term: Terminal; fit: FitA
   return { term, fit };
 }
 
+/** A terminal whose program's pty this renderer sizes: `ptySize` is what the pty was last told. */
+export interface SizedTerm {
+  term: Terminal;
+  fit: FitAddon;
+  ptySize?: { cols: number; rows: number };
+}
+
+/** Whether a terminal's holder is laid out with an area to measure: not out of the page, not display:none, not squeezed to nothing. */
+function holderHasArea(term: Terminal): boolean {
+  const holder = term.element?.parentElement;
+  return !!holder?.isConnected && holder.getClientRects().length > 0 && holder.clientWidth > 0 && holder.clientHeight > 0;
+}
+
 /**
- * Fit a terminal to its holder and tell the pty the new size — only when the
- * geometry actually changed: every needless pty resize makes the CLI redraw
- * its frame, which leaves stale duplicated lines behind when xterm has
- * reflowed the old one.
+ * Fit a terminal to its holder and tell the pty its size whenever the pty
+ * doesn't have it yet: the first fit after the terminal is made, and every
+ * change since. A pty is told nothing otherwise — every needless resize makes
+ * the CLI redraw its frame, which leaves stale duplicated lines behind when
+ * xterm has reflowed the old one. A holder with no area is never measured:
+ * fitting to it would give the program a two-column, one-row screen.
  */
-export function fitTerm(e: { term: Terminal; fit: FitAddon }, resize: (cols: number, rows: number) => void): void {
-  try {
-    const dims = e.fit.proposeDimensions();
-    if (!dims || !dims.cols || !dims.rows) return;
-    if (dims.cols === e.term.cols && dims.rows === e.term.rows) return;
-    e.fit.fit();
-    resize(e.term.cols, e.term.rows);
-  } catch {
-    /* not visible: nothing to measure */
-  }
+export function fitTerm(e: SizedTerm, resize: (cols: number, rows: number) => void): void {
+  if (!holderHasArea(e.term)) return;
+  const dims = e.fit.proposeDimensions();
+  if (!dims || !dims.cols || !dims.rows) return;
+  if (dims.cols !== e.term.cols || dims.rows !== e.term.rows) e.fit.fit();
+  const { cols, rows } = e.term;
+  if (e.ptySize?.cols === cols && e.ptySize.rows === rows) return;
+  e.ptySize = { cols, rows };
+  resize(cols, rows);
+}
+
+/** How long a Repaint holds the pty one column narrower before giving it its size back. */
+export const REPAINT_NUDGE_MS = 80;
+
+/**
+ * Have a terminal's program draw its screen again, keeping everything the
+ * terminal holds: its scrollback (an inline session's whole history) and the
+ * modes the program set (the alternate screen, mouse tracking, bracketed
+ * paste). A full reset would wipe both, and the program, never told, would go
+ * on drawing into the normal screen with the wheel no longer reaching it.
+ *
+ * The program is made to redraw by a resize round trip (a SIGWINCH each way);
+ * the size given back is the terminal's own at that moment, so a fit made in
+ * between isn't undone. A full-screen program redraws all of its screen, so
+ * the alternate screen is cleared first; the normal screen is left as it is,
+ * since what's on it is the newest history. xterm repaints its rows from the
+ * buffer either way.
+ */
+export function repaintTerm(e: SizedTerm, resize: (cols: number, rows: number) => void, later: (fn: () => void, ms: number) => unknown = setTimeout): void {
+  const { term } = e;
+  if (term.buffer.active.type === "alternate") term.write("\x1b[2J");
+  term.refresh(0, term.rows - 1);
+  syncViewport(term);
+  resize(Math.max(2, term.cols - 1), term.rows);
+  later(() => {
+    e.ptySize = { cols: term.cols, rows: term.rows };
+    resize(term.cols, term.rows);
+  }, REPAINT_NUDGE_MS);
 }
 
 /**
@@ -174,7 +217,7 @@ export function followFixedSize(e: { term: Terminal }, holder: HTMLElement | nul
 }
 
 /** Keep a terminal fitted to its holder from now on; returns the stop. */
-export function followSize(e: { term: Terminal; fit: FitAddon }, holder: HTMLElement | null, resize: (cols: number, rows: number) => void): () => void {
+export function followSize(e: SizedTerm, holder: HTMLElement | null, resize: (cols: number, rows: number) => void): () => void {
   const fit = () => fitTerm(e, resize);
   fit();
   // a holder shown again after display:none comes back scrolled to 0 (syncViewport)

@@ -863,14 +863,20 @@ const api: Record<string, (...a: any[]) => any> = {
     }
     return s;
   },
+  // a relaunch starts a new process under the same id, stamped with a new createdAt, as main's create() does
   relaunchSession: async (id: string) => {
     const p = previous.find((x) => x.id === id) ?? byId(id);
     if (!p) return null;
-    sessions = [...sessions.filter((s) => s.id !== id), { ...p, status: "idle" }];
+    const next: SessionInfo = { ...p, status: "idle", exitCode: undefined, createdAt: Date.now() };
+    sessions = [...sessions.filter((s) => s.id !== id), next];
     sessionsChanged();
-    return p;
+    return next;
   },
-  sessionRestart: async (id: string) => byId(id) ?? err("Session is no longer running"),
+  sessionRestart: async (id: string) => {
+    const s = byId(id);
+    if (!s) return err("Session is no longer running");
+    return api.relaunchSession(id);
+  },
   restartAllSessions: async () => ({ restarted: sessions.filter((s) => !s.shell).map((s) => s.id), skipped: [], failed: [] }),
   // main's rule: idle panes are given it, busy ones queue it, terminals and debriefs never get it
   broadcast: async (req: { message: string; sessionIds: string[] }) =>
@@ -1821,6 +1827,138 @@ if (params.has("motionAudit")) {
     const tag = document.createElement("script");
     tag.type = "application/json";
     tag.id = "mb-motion-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  });
+}
+// ?termAudit (with ?motion=full or off) does what re-fits or moves terminals — the side bar and the bottom panel
+// shown and hidden, fullscreen and back, a group switch and back, a workspace minimized and restored, a pane opened,
+// a workspace tab switched, a waiting banner shown and gone — with panes full of history and output streaming, then
+// a Repaint on the normal screen and on the alternate one, and a pane relaunched in place. It finishes animations
+// rather than waiting on them, and writes into <script id="mb-term-audit"> for test/uiTerminal.test.ts what was
+// wrong after each step: a terminal not at its holder's size, a pty not told its terminal's size, a size sent from a
+// holder with no area. The pty sizes are as main has them: a relaunched session's new pty starts at 120×32.
+if (params.has("termAudit")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  type Entry = { term: import("@xterm/xterm").Terminal; fit: { proposeDimensions(): { cols: number; rows: number } | undefined } };
+  const terms = () => w.__mbTerms as Map<string, Entry> | undefined;
+  const pty: Record<string, string> = {};
+  const sent: { id: string; size: string }[] = [];
+  const problems: string[] = [];
+  const realResize = api.sessionResize;
+  api.sessionResize = async (id: string, cols: number, rows: number) => {
+    const holder = terms()?.get(id)?.term.element?.parentElement;
+    const area = holder?.isConnected && holder.getClientRects().length ? holder.clientWidth * holder.clientHeight : 0;
+    if (!area) problems.push(`${id} was sized ${cols}×${rows} from a holder with no area`);
+    pty[id] = `${cols}×${rows}`;
+    sent.push({ id, size: pty[id] });
+    return realResize(id, cols, rows);
+  };
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) {
+      await sleep(50);
+      for (const a of document.getAnimations()) if (Number.isFinite(a.effect?.getComputedTiming().activeDuration ?? Infinity)) a.finish();
+    }
+    await sleep(250);
+  };
+  const check = (step: string) => {
+    for (const [id, e] of terms() ?? []) {
+      if (!e.term.element?.isConnected || !sessions.some((s) => s.id === id)) continue;
+      const size = `${e.term.cols}×${e.term.rows}`;
+      const fits = e.fit.proposeDimensions();
+      if (!fits || `${fits.cols}×${fits.rows}` !== size) problems.push(`${step}: ${id} is ${size} in a holder that fits ${fits ? `${fits.cols}×${fits.rows}` : "nothing"}`);
+      if (pty[id] !== size) problems.push(`${step}: ${id}'s pty is ${pty[id] ?? "unsized"} under a ${size} terminal`);
+    }
+  };
+  const key = (k: string) => window.dispatchEvent(new KeyboardEvent("keydown", { key: k, metaKey: true, bubbles: true }));
+  const press = (el: Element | null | undefined, what: string) => {
+    if (!el) throw new Error(`the audit found no ${what}`);
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  };
+  const row = (selector: string, text: string) => [...document.querySelectorAll(selector)].find((el) => el.textContent?.includes(text));
+  const say = (id: string, text: string) => {
+    buffers[id] = (buffers[id] ?? "") + text;
+    emit("onSessionData", id, text);
+  };
+  const setSession = (id: string, patch: Partial<SessionInfo>) => {
+    sessions = sessions.map((s) => (s.id === id ? { ...s, ...patch } : s));
+    sessionsChanged();
+  };
+  const buffer = (id: string) => terms()?.get(id)?.term.buffer.active;
+  waitFor(".grid > [data-cell=s1] .xterm", async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      for (const id of ["s1", "s2", "s3", "s4", "s5", "s8"]) say(id, Array.from({ length: 3000 }, (_, i) => `${id} history ${i}\r\n`).join(""));
+      let n = 0;
+      const stream = setInterval(() => {
+        for (const id of ["s1", "s2", "s3", "s4", "s5", "s8"]) say(id, `${id} live ${n}\r\n`);
+        n++;
+      }, 20);
+      await settle();
+      check("start");
+      const steps: [string, () => void][] = [
+        ["side bar hidden", () => key("b")],
+        ["side bar shown", () => key("b")],
+        ["bottom panel shown", () => key("j")],
+        ["bottom panel hidden", () => key("j")],
+        ["fullscreen", () => press(document.querySelector(".pane[data-cell=s1] [data-action=zoom]"), "Full button")],
+        ["back to the grid", () => press(document.querySelector("[data-action=zoom]"), "Grid button")],
+        ["group switched", () => press(row(".sidebar .group-label", "#5102"), "group #5102")],
+        ["group switched back", () => press(row(".sidebar .group-label", "#5101"), "group #5101")],
+        ["workspace minimized", () => press(document.querySelector(".sidebar .sub-label[data-ws]"), "workspace folder")],
+        ["workspace restored", () => press(document.querySelector(".sidebar .sub-label[data-ws]"), "workspace folder")],
+        ["pane opened", () => press(row(".sidebar .sess-item", "Release notes"), "Release notes row")],
+        ["workspace tab switched", () => press(document.querySelector(".ws-tab:not(.on)"), "workspace tab")],
+        ["workspace tab switched back", () => press(document.querySelector(".ws-tab:not(.on)"), "workspace tab")],
+        ["waiting banner shown", () => setSession("s1", { status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: Date.now() })],
+        ["waiting banner gone", () => setSession("s1", { status: "working", waitingReason: null, waitingSince: null })],
+      ];
+      const done: string[] = [];
+      for (const [step, act] of steps) {
+        act();
+        await sleep(400); // a folder or group click waits out a double-click
+        await settle();
+        check(step);
+        done.push(step);
+      }
+      out.steps = done;
+      clearInterval(stream);
+      await sleep(100);
+      // Repaint on the normal screen: an inline session's history is its scrollback
+      const before = { lines: buffer("s1")?.length ?? 0, first: buffer("s1")?.getLine(0)?.translateToString(true) };
+      let mark = sent.length;
+      press(document.querySelector(".pane[data-cell=s1] [data-action=repaint]"), "s1's Repaint");
+      await sleep(300);
+      const s1 = terms()?.get("s1")?.term;
+      out.repaint = { before, after: { lines: buffer("s1")?.length ?? 0, first: buffer("s1")?.getLine(0)?.translateToString(true) }, size: s1 ? `${s1.cols}×${s1.rows}` : null, sent: sent.slice(mark).filter((r) => r.id === "s1").map((r) => r.size) };
+      // Repaint on the alternate screen, with the program's mouse tracking on
+      say("s4", "\x1b[?1049h\x1b[?1000h\x1b[?1006h\x1b[Ha full-screen program");
+      await sleep(100);
+      const s4 = terms()?.get("s4")?.term;
+      const modes = () => ({ screen: s4?.buffer.active.type, mouse: s4?.modes.mouseTrackingMode });
+      const altBefore = modes();
+      press(document.querySelector(".pane[data-cell=s4] [data-action=repaint]"), "s4's Repaint");
+      await sleep(300);
+      out.repaintAlt = { before: altBefore, after: modes() };
+      // the process dies, and is relaunched under the same id: main starts the new pty at 120×32
+      const old = terms()?.get("s1")?.term;
+      setSession("s1", { status: "dead", exitCode: 1 });
+      await sleep(400);
+      mark = sent.length;
+      pty.s1 = "120×32";
+      await api.relaunchSession("s1");
+      await sleep(400);
+      await settle();
+      check("relaunched in place");
+      out.relaunch = { newTerminal: !!terms()?.get("s1") && terms()?.get("s1")?.term !== old, sent: sent.slice(mark).filter((r) => r.id === "s1").map((r) => r.size) };
+    } catch (err) {
+      out.error = String(err);
+    }
+    out.problems = problems;
+    out.mode = document.documentElement.dataset.motion;
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-term-audit";
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
   });

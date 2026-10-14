@@ -13,7 +13,7 @@ import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneS
 import { isViewControl } from "../shared/termInput";
 import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
-import { attachTerm, dataPump, fitTerm, followFixedSize, followSize, makeTerm, replay, termThemeListeners, trackUserInput, type CachedTerm } from "./cachedTerm";
+import { attachTerm, dataPump, fitTerm, followFixedSize, followSize, makeTerm, repaintTerm, replay, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
@@ -34,8 +34,10 @@ export { applyTermTheme } from "./cachedTerm";
 // OSC colour), and forwarding those answers to the pty types garbage into the
 // live prompt — that is how a reload could end up submitting a stray slash
 // command like /clear.
-interface TermEntry extends CachedTerm, MouseModeState {
+interface TermEntry extends CachedTerm, MouseModeState, SizedTerm {
   fit: FitAddon;
+  /** The `createdAt` of the session process this terminal was made for: a relaunch under the same id starts a new one. */
+  startedAt: number;
   /** Told when the CLI's side-panel close glyph appears or goes, while a pane shows this terminal. */
   onPanel: ((cell: { col: number; row: number } | null) => void) | null;
   /** A teammate's session: told when scrolling found no history here to move (its program is full screen), while a pane shows this terminal. */
@@ -161,8 +163,8 @@ const ensureDataPump = dataPump((cb) => window.mb.onSessionData(cb), terms, pump
 /**
  * Repaint a glitched terminal. Replaying the byte history can't fix TUI
  * corruption (old frames were rendered at other sizes — replay reproduces the
- * garbage). Instead: clear the terminal, then nudge the pty size so the CLI
- * redraws its current frame cleanly, like a fresh SIGWINCH.
+ * garbage). Instead the CLI is asked to redraw its screen (repaintTerm); the
+ * scrollback and the CLI's terminal modes stay as they are.
  */
 export async function resyncTerm(id: string): Promise<void> {
   const entry = terms.get(id);
@@ -173,15 +175,7 @@ export async function resyncTerm(id: string): Promise<void> {
     if (isErr(r)) console.error(`[mockingbird] couldn't redraw ${id} from its owner:`, r.error);
     return;
   }
-  const { term } = entry;
-  // RIS rather than term.reset(): it applies after output already queued, so a
-  // queued mode change can't land after the reset. The CLI still believes its
-  // mouse modes are on (wantsMouse stays), so the wheel is forwarded for it.
-  term.write("\x1bc");
-  entry.tracking = 0;
-  const { cols, rows } = term;
-  window.mb.sessionResize(id, Math.max(2, cols - 1), rows);
-  setTimeout(() => window.mb.sessionResize(id, cols, rows), 80);
+  repaintTerm(entry, (cols, rows) => window.mb.sessionResize(id, cols, rows));
 }
 
 /** "52k new input · 12k output · 1.1M read from cache · 30k written to cache · 41 replies". */
@@ -484,6 +478,13 @@ export function TerminalPane({
     ensureDataPump();
     let entry = terms.get(session.id);
     const remoteEntry = isRemotePaneId(session.id);
+    // relaunched in place (Restore all, a dead pane's Relaunch): the cached terminal holds the old
+    // process's screen and modes, and fits only when its own size changes, so the new pty would keep
+    // the size it started at. A teammate's copy is redrawn from its owner's scrollback instead.
+    if (entry && !remoteEntry && entry.startedAt !== session.createdAt) {
+      disposeTerm(session.id);
+      entry = undefined;
+    }
     if (!entry) {
       // a session id keeps its agent and shell flag through restarts, and a
       // resumed pane gets a fresh entry, so the policy is fixed per entry
@@ -501,6 +502,7 @@ export function TerminalPane({
       const e: TermEntry = {
         term,
         fit,
+        startedAt: session.createdAt,
         replayed: false,
         ready: false,
         onPanel: null,
@@ -749,7 +751,7 @@ export function TerminalPane({
         if (t.onFullScreen === flashFullScreen) t.onFullScreen = null;
       }
     };
-  }, [session.id, dead]);
+  }, [session.id, dead, session.createdAt]);
 
   // a teammate's session follows its owner's terminal size; its font fits it to the pane
   useEffect(() => {
@@ -783,7 +785,7 @@ export function TerminalPane({
   // the header's labelled controls, and its right-click menu: the same actions, then the session's own
   const headerMenu = useContextMenu(session.ticketTitle ?? session.title);
   const controls = tidyMenu([
-    !dead && { key: "repaint", label: "Repaint", icon: <RepaintIcon />, title: "Repaint — clear glitched output and have the session redraw its screen", onPick: () => resyncTerm(session.id) },
+    !dead && { key: "repaint", label: "Repaint", icon: <RepaintIcon />, title: "Repaint — have the session redraw its screen (its scrollback stays)", onPick: () => resyncTerm(session.id) },
     !!panelClose && !dead && { key: "diff", label: "Hide diff", menuLabel: "Hide the diff panel", icon: <PanelRightIcon open />, title: "Hide the CLI's diff side panel (same as its × or /diff)", onPick: () => panelClose && clickCell(session.id, panelClose) },
     !!onAddTab && !dead && !remote && { key: "tab", label: "Tab", menuLabel: "New tab…", icon: <PlusIcon />, title: "New tab — turn this pane into a workspace and open another session in it", onPick: () => onAddTab?.() },
     !!onUndoTurn && { key: "undo", label: "Undo", menuLabel: "Undo a turn…", icon: <UndoIcon />, title: "Undo a turn — put the files back as they were before one of the agent's recent turns", onPick: () => onUndoTurn?.() },
