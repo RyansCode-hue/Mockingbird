@@ -60,11 +60,12 @@ describe("Codex launch", () => {
     expect(args.join(" ")).not.toContain("tool_timeout_sec"); // only Collaborate's code reader needs minutes
     expect(args.slice(-2)).toEqual(["--", "Ticket #1\nline two"]);
   });
-  it("pre-approves the MCP server's tools but for the House's writes, which ask before every call", async () => {
+  it("pre-approves the MCP server's tools but for the House's writes and reserving a migration number, which ask before every call", async () => {
     const { HOUSE_READ_TOOLS, HOUSE_WRITE_TOOLS } = await import("../src/shared/team/house");
+    const { MIGRATION_TOOL } = await import("../src/shared/team/migrations");
     const args = agentFor("codex").launchArgs({ ...base }, { mcp });
-    for (const tool of HOUSE_WRITE_TOOLS) expect(args).toContain(`mcp_servers.mockingbird.tools.${tool}.approval_mode="prompt"`);
-    for (const tool of HOUSE_READ_TOOLS) expect(args.join(" ")).not.toContain(`tools.${tool}.`);
+    for (const tool of [...HOUSE_WRITE_TOOLS, MIGRATION_TOOL.reserve]) expect(args).toContain(`mcp_servers.mockingbird.tools.${tool}.approval_mode="prompt"`);
+    for (const tool of [...HOUSE_READ_TOOLS, MIGRATION_TOOL.list, MIGRATION_TOOL.release]) expect(args.join(" ")).not.toContain(`tools.${tool}.`);
     expect(args).toContain(`mcp_servers.mockingbird.default_tools_approval_mode="approve"`);
   });
   it("passes a kickoff that starts with a dash as the prompt, not as options", () => {
