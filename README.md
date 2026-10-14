@@ -138,6 +138,11 @@ Motion: `?motion=off|reduce|full` picks how much moves; screenshots and
 dialog, a toast), finishing each animation instead of waiting, and reports the
 end states; `test/uiMotion.test.ts` reads them through `pageResult`, which runs
 Chrome in real time (virtual time doesn't run View Transitions).
+`?termAudit` does what re-fits or moves terminals (side bar, bottom panel,
+fullscreen, group switch, minimize and restore, a pane opened, a tab switched,
+a waiting banner), then a Repaint and a relaunch in place, and reports any
+terminal not at its holder's size or pty not told its terminal's size;
+`test/uiTerminal.test.ts` reads it with motion full and off.
 
 ## Design system
 
@@ -176,6 +181,16 @@ Ordered by intent: **Now** is being designed or actively hurts, **Next** is
 agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Shipped recently
+
+- **Repaint keeps the scrollback; a relaunched pane gets its size** (not yet
+  in a release) — Repaint no longer resets the terminal: it asks the session
+  to redraw by a resize round trip, so an inline room session's history, a
+  full-screen agent's alternate screen and its mouse scrolling all survive it
+  (a full-screen agent's screen is cleared for its redraw). A session
+  relaunched in place (Restore all, a dead pane's Relaunch) gets a fresh
+  terminal, and every new terminal tells its pty its size on its first fit:
+  the new pty had stayed at 120×32 under the pane's terminal until a Repaint.
+  Terminals never fit to a holder with no area.
 
 - **1.4.9: fewer merge conflicts between teammates** — migration numbers are
   reserved before an agent adds one (`reserve_migration_number`, shown on the
