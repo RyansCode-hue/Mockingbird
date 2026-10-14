@@ -16,6 +16,8 @@ import { writeFileAtomic } from "./fileOps";
 import { isRemotePaneId, type PaneSnapshot } from "../shared/team/livePanes";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
+/** How long after an agent's start hook its prompt is ready to take a queued message. */
+const STARTED_SETTLE_MS = 1500;
 
 /**
  * Where a relaunched pane's earlier output ends: cursor shown and attributes
@@ -51,7 +53,19 @@ export function paneEnv(): Record<string, string> {
   return env;
 }
 
-type Queued = { text: string; submit: boolean };
+/** A message waiting for its pane's turn to end; `from` is the local session that sent it, `at` when. */
+type Queued = { text: string; submit: boolean; at: number; from?: string; overdueTold?: boolean };
+
+/** A queued agent message that has waited longer than it should (see SessionManager.overdueMessages). */
+export interface OverdueMessage {
+  from: string;
+  to: string;
+  toTitle: string;
+  toStatus: SessionStatus;
+  /** The target's status can't be trusted: its agent's hooks never reported (SessionInfo.hooksSilent). */
+  hooksSilent: boolean;
+  waitedMs: number;
+}
 
 /**
  * Teammates' room sessions shown in this window (team rooms): they run on
@@ -109,6 +123,9 @@ interface LiveSession {
   cols: number;
   rows: number;
   guards: RoomLaunch["guards"] | null; // set when it was started as a room session
+  hookEvents: number; // hook events routed to this pty since it started
+  kickoff: boolean; // its initial prompt is still to be typed in
+  startTimer: NodeJS.Timeout | null; // delivers queued messages once a just-started agent has drawn its prompt
 }
 
 export class SessionManager {
@@ -412,6 +429,9 @@ export class SessionManager {
       cols: 120,
       rows: 32,
       guards: room?.guards ?? null,
+      hookEvents: 0,
+      kickoff: false,
+      startTimer: null,
     };
     sess.total = sess.buffer.length;
     this.live.set(info.id, sess);
@@ -443,7 +463,11 @@ export class SessionManager {
     // kickoff prompt (e.g. the ADO ticket) — sent once claude has had time to boot
     if (req.initialPrompt && !req.shell && !agent.promptInArgs) {
       const prompt = req.initialPrompt;
-      setTimeout(() => this.sendMessage(info.id, prompt), 6000);
+      sess.kickoff = true;
+      setTimeout(() => {
+        sess.kickoff = false;
+        this.sendMessage(info.id, prompt);
+      }, 6000);
     }
     // a terminal's kickoff is a command (a preset's "npm test -- --watch"): typed
     // once the login shell has had time to start, and run
@@ -654,6 +678,18 @@ export class SessionManager {
         s.info.stalledSince = null;
         changed = true;
       }
+      // "working" since launch with nothing from the agent's hooks: the status is a guess
+      const silent = stalled && s.hookEvents === 0;
+      if (silent !== !!s.info.hooksSilent) {
+        s.info.hooksSilent = silent;
+        changed = true;
+        if (silent) {
+          console.warn(
+            `[sessions] ${s.info.id} (${s.info.title}): no hook event from its ${agentLabel(s.info.agent)} since it started ` +
+              `${Math.round((now - s.info.createdAt) / 60_000)} min ago — its status can't be trusted; are Mockingbird's hooks installed?`
+          );
+        }
+      }
     }
     if (changed) this.emitChanged();
     return changed;
@@ -771,11 +807,11 @@ export class SessionManager {
       }));
   }
 
-  /** Manual override for a stale waiting state — marks the session idle. */
+  /** Manual override for a stale waiting or working state — marks the session idle, and delivers what waited for that. */
   clearWaiting(id: string): void {
-    this.ownOnly(id, "mark it as no longer waiting");
+    this.ownOnly(id, "mark it as idle");
     const s = this.live.get(id);
-    if (!s || s.info.status !== "waiting") return;
+    if (!s || (s.info.status !== "waiting" && s.info.status !== "working")) return;
     this.setStatus(id, "idle");
     this.flushQueued(s);
   }
@@ -896,6 +932,7 @@ export class SessionManager {
         /* already dead */
       }
       if (s.flushTimer) clearTimeout(s.flushTimer);
+      if (s.startTimer) clearTimeout(s.startTimer);
       this.live.delete(id);
     }
     const owed = [...(this.undelivered.get(id) ?? []), ...(s?.queued ?? [])];
@@ -930,10 +967,10 @@ export class SessionManager {
    * a pending permission prompt). While the user has unsent text in that prompt
    * it waits for them to send it; see flushQueued.
    */
-  deliverAgentMessage(id: string, message: string, submit: boolean): string {
+  deliverAgentMessage(id: string, message: string, submit: boolean, from?: string): string {
     const s = this.live.get(id);
     if (!s) throw new Error(`session ${id} is not running`);
-    s.queued.push({ text: message, submit });
+    s.queued.push({ text: message, submit, at: Date.now(), ...(from ? { from } : {}) });
     if (s.info.status === "idle") {
       this.flushQueued(s);
       this.emitChanged();
@@ -969,7 +1006,7 @@ export class SessionManager {
       // permission request the user has not looked at yet. An idle pane goes
       // through the queue too, which holds it while the user has unsent text
       // in the prompt (Enter would send that along with it).
-      s.queued.push({ text: message, submit: true });
+      s.queued.push({ text: message, submit: true, at: Date.now() });
       if (s.info.status === "idle") this.flushQueued(s);
       outcomes.push({ id, outcome: s.queued.length ? "queued" : "delivered" });
     }
@@ -991,6 +1028,8 @@ export class SessionManager {
     conversationId?: string;
     agent?: AgentKind;
     paneId?: string;
+    /** The agent has just started (or resumed, or cleared): it is drawing its prompt. */
+    started?: boolean;
   }): SessionInfo | null {
     // a tagged event that names no live pane comes from something else Mockingbird
     // runs (a Collaborate room) or a closed pane — never guess a pane for it
@@ -998,13 +1037,45 @@ export class SessionManager {
     // events arrive up to a poll late: one written just before the agent exited
     // must not bring its dead pane back to life
     if (!s || s.info.status === "dead") return null;
+    s.hookEvents++;
+    if (s.info.hooksSilent) {
+      s.info.hooksSilent = false;
+      this.emitChanged();
+    }
     if (ev.conversationId) this.noteConversation(s, ev.agent ?? s.info.agent ?? "claude", ev.conversationId);
+    // a starting agent that is about to be given its kickoff prompt is about to work
+    if (ev.started && s.kickoff) return s.info;
     this.setStatus(s.info.id, ev.status, ev.reason);
+    if (ev.status !== "idle") return s.info;
     // deliver queued broadcasts whenever the session frees up (a session can
     // reach idle from waiting too — e.g. a declined permission, or the idle
-    // reminder — and those queues used to strand forever)
-    if (ev.status === "idle") this.flushQueued(s);
+    // reminder — and those queues used to strand forever). The start hook runs
+    // while the agent is still drawing its prompt: what's typed then can be lost.
+    if (!ev.started) this.flushQueued(s);
+    else if (s.queued.length && !s.startTimer) {
+      s.startTimer = setTimeout(() => {
+        s.startTimer = null;
+        if (this.live.get(s.info.id) === s && s.info.status === "idle") this.flushQueued(s);
+      }, STARTED_SETTLE_MS);
+    }
     return s.info;
+  }
+
+  /**
+   * Queued agent messages that have waited `ms` or more, each reported once:
+   * the sender is told its message hasn't arrived (a pane whose turn never
+   * ends, or whose status is wrong, would otherwise hold it with no word).
+   */
+  overdueMessages(now: number, ms: number): OverdueMessage[] {
+    const out: OverdueMessage[] = [];
+    for (const s of this.live.values()) {
+      for (const m of s.queued) {
+        if (!m.from || m.overdueTold || now - m.at < ms) continue;
+        m.overdueTold = true;
+        out.push({ from: m.from, to: s.info.id, toTitle: s.info.ticketTitle ?? s.info.title, toStatus: s.info.status, hooksSilent: !!s.info.hooksSilent, waitedMs: now - m.at });
+      }
+    }
+    return out;
   }
 
   /** The pane's current conversation is what a relaunch resumes; /clear starts a new one. */

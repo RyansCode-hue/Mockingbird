@@ -38,6 +38,8 @@ export interface SessionInfo {
   agentVersion?: string;
   /** Working, but no output since this time: it may be stuck. */
   stalledSince?: number | null;
+  /** Stalled, and its agent's hooks haven't reported once since the pane started: its status can't be trusted. */
+  hooksSilent?: boolean;
   /** No notifications from this session. */
   muted?: boolean;
   // team rooms: live panes

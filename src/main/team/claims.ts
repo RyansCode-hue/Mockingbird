@@ -411,7 +411,8 @@ export function writeClaimsCheck(eventsDir: string): void {
  * - SessionStart prints the worktree's agent-context.md (both CLIs add plain
  *   stdout at SessionStart to the agent's context) unless the launch already
  *   carried it (ROOM_CONTEXT_ENV); it falls back to the main checkout's copy, as
- *   a brand-new worktree may not have its own yet.
+ *   a brand-new worktree may not have its own yet. It runs after the event is
+ *   written (stdin is read by then) and ends the script.
  * - PreToolUse of an edit tool, in a checkout with a claims file, runs the
  *   claims check, whose stdout is the hook's answer.
  */
@@ -429,7 +430,6 @@ mb_find_up() {
   done
 }`,
     sessionStart: String.raw`if [ "$1" = SessionStart ]; then
-  cat >/dev/null
   [ -n "${"$"}{${ROOM_CONTEXT_ENV}:-}" ] && exit 0
   if root=$(mb_find_up ${AGENT_CONTEXT_FILE}); then cat "$root/${AGENT_CONTEXT_FILE}"; exit 0; fi
   common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0

@@ -1113,8 +1113,30 @@ export function TerminalPane({
             </div>
           )}
           {session.stalledSince && session.status === "working" && (
-            <div className="stall-banner" title="An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process.">
-              <span className="reason">No output for {fmtElapsed(session.stalledSince, true)} while working — it may be stuck</span>
+            <div
+              className="stall-banner"
+              title={
+                session.hooksSilent
+                  ? "Mockingbird learns a session's status from its agent's hooks, and none has reported since this pane started. Check the hooks in Settings; Mark idle if the agent is at its prompt (queued messages are then delivered)."
+                  : "An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process."
+              }
+            >
+              <span className="reason">
+                {session.hooksSilent
+                  ? `No status from its agent's hooks since it started, and no output for ${fmtElapsed(session.stalledSince, true)} — "working" may be wrong`
+                  : `No output for ${fmtElapsed(session.stalledSince, true)} while working — it may be stuck`}
+              </span>
+              {session.hooksSilent && !remote && (
+                <button
+                  className="outline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    window.mb.clearWaiting(session.id);
+                  }}
+                >
+                  Mark idle
+                </button>
+              )}
               <button
                 className="outline"
                 onClick={(e) => {

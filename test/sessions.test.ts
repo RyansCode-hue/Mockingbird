@@ -19,6 +19,9 @@ function manager(saved: any[] = []) {
       lastInput: 0,
       draft: false,
       flushTimer: null,
+      hookEvents: 0,
+      kickoff: false,
+      startTimer: null,
     });
   };
   return { m, out, add, store, status: (id: string) => (m as any).live.get(id).info.status, info: (id: string) => (m as any).live.get(id).info };

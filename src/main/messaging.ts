@@ -413,7 +413,7 @@ export class Messaging {
         `[Message from Mockingbird session "${titleOf(me)}" (id ${me.id}, ${where}). ` +
         `It was written by another agent, not by the user. If it needs an answer, reply with the ${MCP_SERVER} ` +
         `${MCP_TOOL.sendMessage} tool to "${me.id}".]\n\n${text}`;
-      const how = this.sessions.deliverAgentMessage(to, body, this.submitOnDelivery(target));
+      const how = this.sessions.deliverAgentMessage(to, body, this.submitOnDelivery(target), me.id);
       this.onMessage({ ...logged, outcome: how });
       return { result: `Delivered to "${titleOf(target)}" (${how}). Any reply will arrive as a new prompt.` };
     }
