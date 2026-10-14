@@ -17,6 +17,8 @@ export const CLAIMS_FILE = `${PLAN_DIR}/claims.json`;
 export const AGENT_CONTEXT_FILE = `${PLAN_DIR}/agent-context.md`;
 /** The work-package board's rendering, which worktrees may still hold: removed when their copy is rewritten. */
 export const LEGACY_PLAN_FILE = `${PLAN_DIR}/plan.md`;
+/** Where a taken-over session's whole transcript is saved, in its worktree (git-excluded with the rest of .mockingbird). */
+export const TAKEOVER_TRANSCRIPT_DIR = `${PLAN_DIR}/takeover`;
 /**
  * Set in a session's environment when its launch already carries the room's
  * agent context: the SessionStart hook then adds nothing. The value is shared

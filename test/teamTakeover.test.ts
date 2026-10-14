@@ -1,7 +1,7 @@
 import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { liveRoomHost, TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
@@ -148,7 +148,7 @@ function files(root: string): Record<string, string> {
  * backups on origin, so the room's admin (Ryan) turns those on, unless
  * `backupsToOrigin: false` keeps the room as every room starts: peer to peer.
  */
-async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number; backupsToOrigin?: boolean } = {}) {
+async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number; nickNow?: () => number; backupsToOrigin?: boolean } = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(names, { dir: tempDir("team") });
   const [ryanM, nickM, samM] = members;
@@ -157,7 +157,7 @@ async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryan
     await until(() => members.every((m) => m.team.room(roomId)?.ext.settings?.backupsToOrigin === true), "everyone to hear the room backs up to origin");
   }
   const ryan = takeover(ryanM, roomId, { repos: [r.ryanClone], sessions: [session({ id: "s1", cwd: r.wt, repoPath: r.ryanClone })], now: o.ryanNow });
-  const nick = takeover(nickM, roomId, { repos: o.nickHasClone === false ? [] : [r.nickClone] });
+  const nick = takeover(nickM, roomId, { repos: o.nickHasClone === false ? [] : [r.nickClone], now: o.nickNow });
   const sam = samM ? takeover(samM, roomId, { repos: [] }) : null;
   const transcript = claudeTranscript(ryan.claudeProjects, r.wt, [userLine(r.wt, "Add the donor entity"), agentLine(r.wt, "Added src/b.ts and started on a.ts")]);
   return { ...r, roomId, net, ryanM, nickM, samM, ryan, nick, sam, transcript };
@@ -756,6 +756,115 @@ describe("leaving the room", () => {
     expect(refIn(t.bare, roomBackupRef(t.roomId, "s1"))).not.toBeNull();
     expect(refIn(t.ryanClone, roomBackupRef(t.roomId, "s1"))).toBeNull(); // this Mac's own copy still goes
   });
+});
+
+describe("the conversation saved at a take-over", () => {
+  /** Nick takes Ryan's s1 over with Ryan offline: Ryan's whole conversation is saved in Nick's new worktree. */
+  async function takenOver(o: { nickNow?: () => number } = {}) {
+    const t = await setup(["Ryan", "Nick"], o);
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
+    const r = await t.nick.svc.takeOver(t.roomId, "s1");
+    const saved = path.join(r.cwd, ".mockingbird", "takeover");
+    expect(fs.existsSync(path.join(saved, `${CONV}.jsonl`))).toBe(true);
+    return { ...t, r, saved };
+  }
+  const logged = (spy: { mock: { calls: unknown[][] } }, re: RegExp) => spy.mock.calls.some((c) => re.test(String(c[0])));
+
+  it("stays while the continued session runs — past the taker's first backup — and goes once it has no turn for 14 days, logged", async () => {
+    let clock = Date.parse("2026-10-07T09:00:00Z");
+    const t = await takenOver({ nickNow: () => clock });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      // Nick's first backup of his copy deletes Ryan's old backup: the conversation stays, his agent may still need it
+      await t.nick.svc.turnEnded(t.r.sessionId);
+      await until(() => backupIn(t.nickM, t.roomId)?.dropped?.reason === "taken-over", "the old backup to go");
+      await t.nick.svc.settled();
+      clock += 10 * 86_400_000;
+      await t.nick.svc.turnEnded(t.r.sessionId);
+      clock += 13 * 86_400_000;
+      await t.nick.svc.prune();
+      expect(fs.existsSync(t.saved)).toBe(true);
+      clock += 2 * 86_400_000;
+      await t.nick.svc.prune();
+      expect(fs.existsSync(t.saved)).toBe(false);
+      expect(fs.existsSync(path.join(t.r.cwd, "src/a.ts"))).toBe(true); // the worktree itself stays
+      expect(logged(log, /deleted the conversation saved at a take-over in .*takeover: “Donor entities” had no turn for 14 days/)).toBe(true);
+    } finally {
+      log.mockRestore();
+    }
+  }, 30_000);
+
+  it("goes once the continued session is closed: forgotten at once, or found closed by the prune", async () => {
+    const t = await takenOver();
+    await t.nick.svc.sessionForgotten(t.r.sessionId);
+    expect(fs.existsSync(t.saved)).toBe(false);
+    expect(t.nick.svc.view().cleanup).toEqual([]);
+
+    const u = await takenOver();
+    u.nick.sessions.delete(u.r.sessionId); // closed without being kept to resume
+    await u.nick.svc.prune();
+    expect(fs.existsSync(u.saved)).toBe(false);
+  }, 40_000);
+
+  it("goes when its owner drops the continued session's backup", async () => {
+    const t = await takenOver();
+    await t.nick.svc.turnEnded(t.r.sessionId);
+    t.nickM.team.publish(t.roomId, "session.backupDropped", { sessionId: t.r.sessionId, reason: "merged" });
+    await until(() => !fs.existsSync(t.saved), "the saved conversation to go");
+  }, 30_000);
+
+  it("goes when the session is taken back, as soon as the taker hears", async () => {
+    const t = await takenOver();
+    t.net.setOnline(t.ryanM.id, true);
+    await until(() => t.nickM.team.presence(t.roomId).includes(t.ryanM.id), "Ryan back");
+    await t.nick.svc.turnEnded(t.r.sessionId);
+    await t.nick.svc.settled();
+    await until(() => !!refIn(t.ryanClone, roomBackupRef(t.roomId, t.r.sessionId)), "Nick's copy at Ryan's");
+    t.net.setOnline(t.nickM.id, false);
+    await until(() => t.ryanM.team.presence(t.roomId).length === 0, "Nick to drop");
+    await t.ryan.svc.takeOver(t.roomId, t.r.sessionId);
+    expect(fs.existsSync(t.saved)).toBe(true); // Nick hasn't heard yet
+    t.net.setOnline(t.nickM.id, true);
+    await until(() => t.nick.takenOver.length === 1, "Nick to hear of the take-back");
+    await until(() => !fs.existsSync(t.saved), "the saved conversation to go");
+  }, 40_000);
+
+  it("goes when its taker leaves the room, refusing a link in its place and saying so", async () => {
+    const t = await takenOver();
+    const out = await t.nickM.team.leave(t.roomId);
+    expect(await t.nick.svc.roomLeft(out.room)).toEqual([]);
+    expect(fs.existsSync(t.saved)).toBe(false);
+
+    // the agent swapped the folder for a link to somewhere else: nothing there is deleted, and the failure is said
+    const u = await takenOver();
+    const elsewhere = tempDir("nick-home");
+    fs.writeFileSync(path.join(elsewhere, "keep.txt"), "mine\n");
+    fs.rmSync(u.saved, { recursive: true });
+    fs.symlinkSync(elsewhere, u.saved);
+    const left = await u.nickM.team.leave(u.roomId);
+    expect(await u.nick.svc.roomLeft(left.room)).toEqual([expect.stringMatching(/^The conversation of “Donor entities” saved at its take-over couldn't be deleted from .*takeover: .*takeover is a symbolic link/)]);
+    expect(fs.readFileSync(path.join(elsewhere, "keep.txt"), "utf8")).toBe("mine\n");
+    expect(u.nick.logs.some((l) => /deleting the conversation saved at a take-over in .*\(this Mac left the room\)/.test(l))).toBe(true);
+  }, 40_000);
+
+  it("is found and deleted where an earlier version saved it without a record", async () => {
+    const t = await takenOver();
+    t.nick.svc.close();
+    const file = path.join(t.nickM.store.dir, t.roomId, "takeover.json");
+    const state = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(Object.keys(state.saved)).toEqual([t.r.cwd]);
+    delete state.saved;
+    fs.writeFileSync(file, JSON.stringify(state));
+    const again = takeover(t.nickM, t.roomId, { repos: [t.nickClone], sessions: [...t.nick.sessions.values()] });
+    await again.svc.prune();
+    expect(fs.existsSync(t.saved)).toBe(true); // its session still runs
+    const out = await t.nickM.team.leave(t.roomId);
+    expect(await again.svc.roomLeft(out.room)).toEqual([]);
+    expect(fs.existsSync(t.saved)).toBe(false);
+  }, 30_000);
 });
 
 const viewOf = (svc: TakeoverService, id = "s1") => svc.view().sessions.find((s) => s.sessionId === id)!;

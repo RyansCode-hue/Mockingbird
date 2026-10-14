@@ -15,10 +15,11 @@ import { worktreeAt } from "../worktrees";
 import { CLAUDE_PROJECTS, CODEX_SESSIONS, ROLLOUT_NAME_RE, claudeProjectDir, claudeTranscriptOf, codexRolloutOf, realpathOr } from "../agentFiles";
 import { rebaseTranscript } from "../transcripts";
 import { transcriptLines } from "../handoff";
-import { TAKEOVER_TRANSCRIPT_DIR, takeoverBrief } from "./takeoverBrief";
+import { takeoverBrief } from "./takeoverBrief";
+import { TAKEOVER_TRANSCRIPT_DIR } from "../../shared/team/claims";
 import { excludePlanDir } from "./claims";
 import { baseRef } from "../files";
-import { isMissing, readJsonOrSetAside, writeFileAtomic, writeGeneratedInside } from "../fileOps";
+import { isMissing, readJsonOrSetAside, removeDirInside, writeFileAtomic, writeGeneratedInside } from "../fileOps";
 import { MEMBER_ID_RE } from "../../shared/team/protocol";
 import {
   ASK_MS,
@@ -107,6 +108,8 @@ import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/t
  * and every member deletes its copies — when the owner forgets the session,
  * when the daily prune finds all its work merged into the base branch or no
  * turn for STALE_BACKUP_MS, and when a taker's first backup of its copy lands.
+ * The conversation a take-over saved in the taker's worktree goes once the
+ * session continued there no longer needs it (savedDone, removeSaved).
  *
  * Request methods between members: takeover.have, takeover.snapshot,
  * takeover.transcript, takeover.ask, takeover.progress, takeover.changes
@@ -397,6 +400,20 @@ interface LeftRecord {
   /** The changes last sent: a commit on top of `base` (or of the send before), kept under SENT_ROOT. */
   sent?: { sha: string; at: number; files: number };
 }
+/**
+ * A teammate's conversation saved in one of this Mac's worktrees at a
+ * take-over (TAKEOVER_TRANSCRIPT_DIR), for the continued session's agent to
+ * read. It's the whole conversation, never filtered for secrets, so it goes
+ * once that session no longer needs it (savedDone).
+ */
+interface SavedTranscript {
+  /** The session continued there; null until it has started. */
+  sessionId: string | null;
+  /** The teammate's session it came from. */
+  from: string;
+  title: string;
+  at: number;
+}
 /** Changes a teammate sent from their copy (the patch is <room>/received/<id>.patch). */
 interface ReceivedRecord {
   sessionId: string;
@@ -418,6 +435,8 @@ interface LocalState {
   left: Record<string, LeftRecord>;
   /** Changes teammates sent, by id. */
   received: Record<string, ReceivedRecord>;
+  /** Teammates' conversations saved in this Mac's worktrees at take-overs, by worktree. */
+  saved: Record<string, SavedTranscript>;
 }
 type Decision = "handover" | "keep" | "timeout" | "gone" | "closed";
 interface PendingAsk extends IncomingAsk {
@@ -468,7 +487,7 @@ export class TakeoverService {
   private taking = new Set<string>();
   /** Sessions the owner forgot: no more backups. */
   private forgotten = new Set<string>();
-  private cleanupProblems = new Map<string, { roomId: RoomId; title: string; problem: string }>();
+  private cleanupProblems = new Map<string, { roomId: RoomId; title: string; problem: string; what?: string }>();
   private changeTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
   private readonly askMs: number;
@@ -628,6 +647,7 @@ export class TakeoverService {
    */
   async sessionForgotten(sessionId: string): Promise<void> {
     this.forgotten.add(sessionId);
+    this.removeSavedFor(sessionId, "its session was closed");
     await this.backups.get(sessionId)?.done; // a push under way would bring the ref back
     for (const room of this.d.team.rooms()) {
       const local = this.local(room.id);
@@ -665,6 +685,15 @@ export class TakeoverService {
    */
   async prune(): Promise<void> {
     for (const room of this.d.team.rooms()) {
+      try {
+        this.adoptSaved(room);
+      } catch (err) {
+        this.d.log(`team: finding conversations saved at take-overs in room ${room.id}`, err);
+      }
+      for (const [worktree, rec] of Object.entries(this.local(room.id).saved)) {
+        const why = this.savedDone(room, rec);
+        if (why) this.removeSaved(room.id, worktree, why);
+      }
       if (!backupsToOrigin(room)) await this.withdrawFromOrigin(room.id);
       for (const [sessionId, rec] of Object.entries(this.local(room.id).own)) {
         if (this.backups.has(sessionId)) continue; // being backed up: it's active
@@ -806,6 +835,8 @@ export class TakeoverService {
   private onDropped(e: RoomEvent<"session.backupDropped">, room: RoomState): void {
     const s = room.ext.takeover?.sessions[e.body.sessionId];
     if (s?.dropped?.by !== e.author) return; // not the owner's: the room ignored it
+    // the session continued in a worktree here is done (closed, merged, stale, taken over): the conversation saved for it goes
+    if (s.owner === this.d.team.self.id) this.removeSavedFor(e.body.sessionId, `the backup of “${s.session.title}” was deleted (${e.body.reason})`);
     this.track(
       this.forgetLocal(room.id, e.body.sessionId).catch((err) => {
         this.cleanupFailed(room.id, e.body.sessionId, s.session.title, err);
@@ -846,6 +877,16 @@ export class TakeoverService {
   async roomLeft(room: RoomState): Promise<string[]> {
     const problems: string[] = [];
     const local = this.local(room.id);
+    // the conversations saved at its take-overs, before the room's folder (and their record) goes
+    try {
+      this.adoptSaved(room);
+    } catch (err) {
+      this.d.log(`team: finding conversations saved at take-overs in room ${room.id}`, err);
+    }
+    for (const [worktree, rec] of Object.entries(local.saved)) {
+      const failed = this.removeSaved(room.id, worktree, "this Mac left the room");
+      if (failed) problems.push(`The conversation of “${rec.title}” saved at its take-over couldn't be deleted from ${path.join(worktree, TAKEOVER_TRANSCRIPT_DIR)}: ${failed}`);
+    }
     const owned = Object.entries(local.own);
     // a push under way would bring the ref back (later turns aren't backed up: the session isn't the room's any more)
     for (const [sessionId] of owned) await this.backups.get(sessionId)?.done;
@@ -1150,6 +1191,8 @@ export class TakeoverService {
     // only the take-over the room settled on counts
     if (s?.takenOver?.by === e.author && e.body.from === this.d.team.self.id) {
       this.leave(room.id, e.body.sessionId);
+      // whoever continues it now has the conversation: this copy's agent has stopped and needs it no more
+      this.removeSavedFor(e.body.sessionId, `“${s.session.title}” was taken over by ${this.nameOf(room.id, e.author)}`);
       try {
         this.d.onTakenOver?.(e.body.sessionId, this.nameOf(room.id, e.author));
       } catch (err) {
@@ -1621,7 +1664,13 @@ export class TakeoverService {
       try {
         info = await this.d.launch(req);
       } catch (err) {
+        if (this.local(roomId).saved[wt.path]) this.removeSaved(roomId, wt.path, "the session it was saved for didn't start");
         throw new Error(`The work is restored in ${wt.path}, but the session didn't start: ${(err as Error).message}`);
+      }
+      const saved = this.local(roomId).saved[wt.path];
+      if (saved) {
+        saved.sessionId = info.id;
+        this.saveLocal(roomId);
       }
       const snapshot = { sha: snap.sha, takenAt: snap.takenAt, source: snap.source };
       try {
@@ -1694,7 +1743,7 @@ export class TakeoverService {
     const file = meta && plan.conversation.kind !== "none" ? path.join(this.transcriptDir(roomId, b.sessionId), meta.file) : null;
     const conversation = plan.conversation.kind === "full" ? "full" : plan.conversation.kind === "partial" ? "partial" : "none";
     const lines = file ? await transcriptLines(file) : [];
-    const transcript = file ? await this.saveTranscriptIn(wt.path, file, meta!.file, b.sessionId) : null;
+    const transcript = file ? await this.saveTranscriptIn(roomId, wt.path, file, meta!.file, b) : null;
     const own = await this.resumeOwn(roomId, b, wt.path);
     let base = await baseRef(wt.path);
     const fork = base ? await git(wt.path, ["merge-base", "HEAD", base], { okCodes: [0, 1] }) : "";
@@ -1726,19 +1775,101 @@ export class TakeoverService {
   /**
    * The transcript that arrived, saved read-only in the worktree's .mockingbird
    * (git-excluded first, so it's never committed or in a backup) for the agent
-   * to read on demand. A failure is logged and the brief says so.
+   * to read on demand, and recorded so it's deleted once the session continued
+   * there is done with it (savedDone). A failure is logged and the brief says so.
    */
-  private async saveTranscriptIn(worktree: string, file: string, name: string, sessionId: string): Promise<{ path: string; bytes: number } | { error: string }> {
+  private async saveTranscriptIn(roomId: RoomId, worktree: string, file: string, name: string, b: RoomSessionBackup): Promise<{ path: string; bytes: number } | { error: string }> {
     try {
       await excludePlanDir(worktree);
       const text = await fs.promises.readFile(file, "utf8");
       const rel = `${TAKEOVER_TRANSCRIPT_DIR}/${name}`;
       writeGeneratedInside(worktree, rel, text, 0o400, 0o700);
+      this.local(roomId).saved[worktree] = { sessionId: null, from: b.sessionId, title: b.session.title.slice(0, 300), at: this.now() };
+      this.saveLocal(roomId);
       return { path: path.join(worktree, rel), bytes: Buffer.byteLength(text) };
     } catch (err) {
-      this.d.log(`team: saving session ${sessionId}'s conversation in ${worktree}`, err);
+      this.d.log(`team: saving session ${b.sessionId}'s conversation in ${worktree}`, err);
       return { error: (err as Error).message };
     }
+  }
+
+  /**
+   * Why a conversation saved at a take-over is no longer needed, or null
+   * while the session continued there still runs (or can be resumed) and has
+   * had a turn within STALE_BACKUP_MS.
+   */
+  private savedDone(room: RoomState, rec: SavedTranscript): string | null {
+    if (!rec.sessionId) return this.taking.size ? null : "the session it was saved for never started";
+    const entry = room.ext.takeover?.sessions[rec.sessionId];
+    if (entry?.takenOver) return `“${rec.title}” was taken over again, by ${this.nameOf(room.id, entry.takenOver.by)}`;
+    if (entry?.dropped) return `the backup of “${rec.title}” was deleted (${entry.dropped.reason})`;
+    if (!this.d.host.session(rec.sessionId)) return `“${rec.title}” is closed`;
+    const active = Math.max(rec.at, this.local(room.id).own[rec.sessionId]?.activeAt ?? 0);
+    if (this.now() - active > STALE_BACKUP_MS) return `“${rec.title}” had no turn for ${Math.round(STALE_BACKUP_MS / 86_400_000)} days`;
+    return null;
+  }
+
+  /**
+   * Delete a conversation saved in a worktree at a take-over (a symbolic link
+   * on the way is refused, never followed), logging why. A failure is logged,
+   * shown with the room's cleanup problems, kept and retried on the next
+   * prune; it's returned.
+   */
+  private removeSaved(roomId: RoomId, worktree: string, why: string): string | null {
+    const local = this.local(roomId);
+    const rec = local.saved[worktree];
+    const key = `saved:${worktree}`;
+    const where = path.join(worktree, TAKEOVER_TRANSCRIPT_DIR);
+    try {
+      if (removeDirInside(worktree, TAKEOVER_TRANSCRIPT_DIR)) console.log(`[team] deleted the conversation saved at a take-over in ${where}: ${why}`);
+    } catch (err) {
+      const problem = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").trim().slice(0, 300);
+      this.d.log(`team: deleting the conversation saved at a take-over in ${where} (${why})`, problem);
+      this.cleanupProblems.set(key, { roomId, title: rec?.title ?? path.basename(worktree), problem: `${where}: ${problem}`, what: "conversation not deleted from its worktree" });
+      this.changed();
+      return problem;
+    }
+    if (rec) {
+      delete local.saved[worktree];
+      this.saveLocal(roomId);
+    }
+    if (this.cleanupProblems.delete(key)) this.changed();
+    return null;
+  }
+
+  /** Delete what was saved for `sessionId` (the session continued there), in any room, because `why`. */
+  private removeSavedFor(sessionId: string, why: string): void {
+    for (const room of this.d.team.rooms()) {
+      for (const [worktree, rec] of Object.entries(this.local(room.id).saved)) if (rec.sessionId === sessionId) this.removeSaved(room.id, worktree, why);
+    }
+  }
+
+  /**
+   * Conversations an earlier Mockingbird saved at take-overs without a record
+   * of them: found from the room's take-overs by this install and the
+   * worktree each continued session runs in, and recorded.
+   */
+  private adoptSaved(room: RoomState): void {
+    const self = this.d.team.self.id;
+    const local = this.local(room.id);
+    const known = new Set(Object.values(local.saved).map((r) => r.sessionId));
+    let changed = false;
+    for (const e of Object.values(room.ext.takeover?.sessions ?? {})) {
+      const t = e.takenOver;
+      if (t?.by !== self || known.has(t.newSessionId)) continue;
+      const mine = room.ext.takeover?.sessions[t.newSessionId];
+      const cwd = this.d.host.session(t.newSessionId)?.cwd ?? (mine?.owner === self ? mine.session.cwd : null);
+      if (!cwd || local.saved[cwd]) continue;
+      try {
+        fs.lstatSync(path.join(cwd, TAKEOVER_TRANSCRIPT_DIR));
+      } catch (err) {
+        if (!isMissing(err)) this.d.log(`team: looking for a conversation saved at a take-over in ${cwd}`, err);
+        continue;
+      }
+      local.saved[cwd] = { sessionId: t.newSessionId, from: e.sessionId, title: e.session.title, at: t.at };
+      changed = true;
+    }
+    if (changed) this.saveLocal(room.id);
   }
 
   /** This Mac's own session that became `b` (it's being taken back): its own conversation, moved to `worktree` for its CLI to resume. The conversation id, or null. */
@@ -1801,7 +1932,7 @@ export class TakeoverService {
         });
       }
     }
-    const list = (m: Map<string, { roomId: RoomId; title: string; problem: string }>) => [...m].map(([sessionId, u]) => ({ sessionId, ...u }));
+    const list = <T extends { roomId: RoomId; title: string; problem: string }>(m: Map<string, T>) => [...m].map(([sessionId, u]) => ({ sessionId, ...u }));
     const left: LeftCopy[] = [];
     const received: ReceivedChanges[] = [];
     for (const room of this.d.team.rooms()) {
@@ -1943,7 +2074,7 @@ export class TakeoverService {
     let s = this.locals.get(roomId);
     if (!s) {
       const v = readJsonOrSetAside(path.join(this.d.roomsDir, roomId, "takeover.json"), null, `room ${roomId}'s backups`) as LocalState | null;
-      s = v && v.v === 1 ? { v: 1, own: v.own ?? {}, mirrored: v.mirrored ?? {}, left: v.left ?? {}, received: v.received ?? {} } : { v: 1, own: {}, mirrored: {}, left: {}, received: {} };
+      s = v && v.v === 1 ? { v: 1, own: v.own ?? {}, mirrored: v.mirrored ?? {}, left: v.left ?? {}, received: v.received ?? {}, saved: v.saved ?? {} } : { v: 1, own: {}, mirrored: {}, left: {}, received: {}, saved: {} };
       this.locals.set(roomId, s);
     }
     return s;

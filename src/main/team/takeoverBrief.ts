@@ -1,7 +1,6 @@
 import { parseClaudeLine, parseCodexLine } from "../transcripts";
 import { agentLabel } from "../agents";
 import { fenced, named, quoted } from "../../shared/team/agentText";
-import { PLAN_DIR } from "../../shared/team/claims";
 import { ticketIdOf, type AgentKind } from "../../shared/types";
 
 /**
@@ -28,8 +27,6 @@ export const TOOL_MAX = 200;
 /** The plan and the changed files at most. */
 export const PLAN_MAX = 6_000;
 export const CHANGES_MAX = 8_000;
-/** Where a taken-over session's whole transcript is saved, in its worktree (git-excluded with the rest of .mockingbird). */
-export const TAKEOVER_TRANSCRIPT_DIR = `${PLAN_DIR}/takeover`;
 export const BRIEF_FENCE = "handover";
 
 /** The conversation as one-line entries: USER and AGENT text, TOOL calls by name and input; tool output is left out. */

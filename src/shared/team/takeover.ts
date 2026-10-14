@@ -202,8 +202,8 @@ export interface TakeoverView {
   rooms: RoomBackupSetting[];
   /** This install's room sessions that couldn't be backed up at all (no origin, not a repository…). */
   unbacked: { roomId: RoomId; sessionId: string; title: string; problem: string }[];
-  /** Backups this install should have deleted and couldn't (retried on the next prune). */
-  cleanup: { roomId: RoomId; sessionId: string; title: string; problem: string }[];
+  /** Backups — or conversations saved in worktrees at take-overs (`what` says so) — this install should have deleted and couldn't (retried on the next prune). */
+  cleanup: { roomId: RoomId; sessionId: string; title: string; problem: string; what?: string }[];
   /** Teammates asking to continue this install's sessions on their laptops, waiting for an answer here. */
   asks: IncomingAsk[];
   /** This install asked a session's owner to hand it over, and is waiting. */
