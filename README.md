@@ -554,6 +554,24 @@ before they're built.
 - Context warnings: suggest /compact or a fresh session with a brief before a session nears its limit.
 - Usage per session and per ticket, with a warning before an expensive action (like a cold resume).
 
+**Tooling profiles** — what Mockingbird adds to an agent, adjustable per project
+so rules that fit one repo don't get in the way in another. Decided:
+- Covers normal sessions and rooms. Settings live on this Mac (per repo) and in
+  the room (signed, admin-set); a committed repo file (`.mockingbird/tooling.json`)
+  is a later option, kept in mind but not built.
+- The room's admin sets the room's rules; each person can quiet notes and
+  heads-ups for their own agents only, never loosen a guard for anyone.
+- Editable: **tools** on/off (House, artifacts, migrations, teammate changes,
+  messaging); **guard strength** per guard (off · note · hold back once · block —
+  claims, migrations, overlaps); **instruction text** agents read, with a preview
+  of exactly what an agent sees. Launch rules (Codex push/network, pre-allowed
+  Claude tools) stay fixed for now.
+- Locked: secret-file blocks, the House-write approval and token consent can't
+  be loosened by any profile.
+- Presets to start from ("Radley House project", "Plain repo", "Strict",
+  "Light"); every room change shows in its chat ("Ryan turned off migration
+  hold-back"). Settings UI is mocked as options first.
+
 **Phase 3 — coordination**
 - A ticket's House status follows its PR (opened → review, merged → onward).
 - Ask a teammate to review a session's changes; their line comments go back to your agent.
