@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { Store, appendLogLine, expandHome, MB_DIR } from "./store";
 import { readJsonFile, writeFileAtomic } from "./fileOps";
-import { SessionManager, paneEnv } from "./sessions";
+import { SessionManager, paneEnv, type OverdueMessage } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
 import { FolderWatcher } from "./watch";
@@ -556,11 +556,7 @@ app.whenReady().then(() => {
   setInterval(updateTray, 60_000); // keep wait durations in the dropdown fresh
   const messaging = new Messaging(
     sessions,
-    // a group can override the app-wide choice
-    (target) => {
-      const mode = store.settings.agentMessagesByGroup?.[topOfKey(target.taskGroup ?? "ungrouped")];
-      return mode ? mode === "send" : store.settings.agentMessagesSubmit !== false;
-    },
+    submitsAgentMessages,
     (from, to) =>
       notifySession(
         from.id,
@@ -1401,8 +1397,37 @@ handle("shell:reveal", (file) => {
   shell.showItemInFolder(f);
 });
 
+/** Whether an agent message to this session is submitted, or typed in and left for its user. A group can override the app-wide choice. */
+function submitsAgentMessages(target: SessionInfo): boolean {
+  const mode = store.settings.agentMessagesByGroup?.[topOfKey(target.taskGroup ?? "ungrouped")];
+  return mode ? mode === "send" : store.settings.agentMessagesSubmit !== false;
+}
+
 // ---- session health: CLIs updated under running panes, and panes that went quiet mid-turn ----
 const STALL_MS = 5 * 60_000;
+/** An agent message queued this long for its target's turn to end is reported to its sender. */
+const MESSAGE_OVERDUE_MS = 15 * 60_000;
+
+/** Tell a message's sender (its agent, and its user) that the message is still waiting, and why. */
+function tellOverdue(o: OverdueMessage): void {
+  const mins = Math.round(o.waitedMs / 60_000);
+  const state = o.toStatus === "waiting" ? "waiting on its user" : o.toStatus;
+  const why = o.hooksSilent ? `, but Mockingbird has heard nothing from its agent's hooks since it started, so that status may be wrong` : "";
+  logLine(`messaging: a message from ${o.from} to ${o.to} ("${o.toTitle}") is still queued after ${mins} min; that session is ${state}${why}`);
+  const sender = sessions.list().find((s) => s.id === o.from && s.status !== "dead");
+  if (!sender) return;
+  notifySession(o.from, "Message not delivered yet", `To ${o.toTitle}: waiting ${mins} min — that session is ${state}${o.hooksSilent ? " (its status may be wrong)" : ""}`);
+  try {
+    sessions.deliverAgentMessage(
+      o.from,
+      `[Mockingbird: your message to session "${o.toTitle}" (id ${o.to}) hasn't been delivered after ${mins} minutes. ` +
+        `It is delivered when that session's turn ends, and it is still ${state}${why}. If it's urgent, ask your user to look at that session.]`,
+      submitsAgentMessages(sender)
+    );
+  } catch (err) {
+    logError(`messaging: telling ${o.from} its message to ${o.to} is overdue`, err);
+  }
+}
 let lastNotices = "";
 /** An agent CLI's installed version; null when it isn't installed or doesn't say (logged). */
 async function readAgentVersion(agent: AgentKind): Promise<string | null> {
@@ -1440,6 +1465,7 @@ app.whenReady().then(() => {
   setInterval(versions, 10 * 60_000);
   setInterval(() => {
     sessions.checkStalls(Date.now(), STALL_MS);
+    for (const o of sessions.overdueMessages(Date.now(), MESSAGE_OVERDUE_MS)) tellOverdue(o);
     healthChanged();
   }, 30_000);
 });

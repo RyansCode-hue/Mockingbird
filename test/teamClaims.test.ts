@@ -166,14 +166,14 @@ describe("the claims check in the agents' PreToolUse hook", () => {
 });
 
 describe("the SessionStart hook", () => {
-  it("gives an agent in a room's checkout the room's instructions, and leaves no status event", async () => {
+  it("gives an agent in a room's checkout the room's instructions, and leaves its event (the pane is at its prompt)", async () => {
     const repo = roomCheckout();
     fs.mkdirSync(path.join(repo, "src", "deep"), { recursive: true });
     const start = { session_id: "c1", cwd: repo, hook_event_name: "SessionStart", source: "startup" };
     expect(await runHook("SessionStart", start, path.join(repo, "src", "deep"))).toBe("You're working in a Mockingbird team room.\n");
     expect(await runHook("SessionStart", start, repo, { [ROOM_CONTEXT_ENV]: "1" })).toBe("");
     expect(await runHook("SessionStart", start, makeRepo())).toBe("");
-    expect(fs.existsSync(eventsDir) ? events("SessionStart") : []).toEqual([]);
+    expect(events("SessionStart").map((e) => e.payload)).toEqual([start, start, start]);
   });
 
   it("reads the main checkout's copy in a worktree too new to have its own", async () => {

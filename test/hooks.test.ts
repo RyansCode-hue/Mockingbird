@@ -174,6 +174,21 @@ describe("hook script", () => {
     expect(fs.readdirSync(eventsDir)).toEqual([]); // each event is read once, then removed
   });
 
+  it("handles every event either agent sends: exits 0 at once, prints nothing outside a room, and leaves the event", () => {
+    installHooks(null);
+    fs.rmSync(eventsDir, { recursive: true, force: true });
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "plain-"));
+    const all = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "PermissionRequest", "Stop"];
+    for (const ev of all) {
+      const started = Date.now();
+      const out = execFileSync(script, [ev], { cwd, input: JSON.stringify({ session_id: "c9", cwd, hook_event_name: ev, source: "startup", tool_name: "Bash" }), env: { ...process.env, MOCKINGBIRD_SESSION: "p9" }, timeout: 5000 });
+      expect([ev, out.toString()]).toEqual([ev, ""]); // execFileSync throws on a non-zero exit
+      expect(Date.now() - started).toBeLessThan(2000);
+    }
+    const left = fs.readdirSync(eventsDir).map((n) => JSON.parse(fs.readFileSync(path.join(eventsDir, n), "utf8")).event);
+    expect(left.sort()).toEqual([...all].sort());
+  });
+
   it("is rewritten when an older build's differs, in one step", () => {
     installHooks(null);
     fs.writeFileSync(script, "#!/bin/bash\necho old >> events.jsonl\n");
@@ -209,6 +224,26 @@ describe("watchEvents", () => {
     ]);
     // a submitted prompt starts a turn: its files are recorded first (undo a turn)
     expect(prompts).toEqual(["p1: Add the dropdown"]);
+  });
+
+  it("marks an agent that has just started, resumed or cleared idle at its prompt — without a 'Finished' alert, and not for a compaction", async () => {
+    const alerts: string[] = [];
+    const seen: any[] = [];
+    const sessions = { statusFromHook: (ev: any) => (seen.push(ev), { id: ev.paneId, title: "t" }) };
+    stops.push(watchEvents(sessions as any, (info, status) => alerts.push(`${info.id} ${status}`)));
+    drop(event("SessionStart", { source: "startup" }, "a"));
+    drop(event("SessionStart", { source: "resume", transcript_path: "/h/.codex/sessions/r.jsonl" }, "b"));
+    drop(event("SessionStart", { source: "clear" }, "c"));
+    drop(event("SessionStart", { source: "compact" }, "d"));
+    drop(event("SessionStart", {}, "e"));
+    await settle();
+    expect(seen.map((ev) => [ev.paneId, ev.status, ev.started, ev.agent])).toEqual([
+      ["a", "idle", true, "claude"],
+      ["b", "idle", true, "codex"],
+      ["c", "idle", true, "claude"],
+      ["e", "idle", true, "claude"],
+    ]);
+    expect(alerts).toEqual([]);
   });
 
   it("reads Codex's own hook payloads: a permission request turns the pane amber", async () => {

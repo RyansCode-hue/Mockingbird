@@ -80,7 +80,8 @@ function wired(file: string, events: readonly string[]): boolean {
 // its own, written under a dot-name and then renamed into place: payloads carry
 // whole file contents, so hooks running at once would interleave in a shared
 // file, and the app never reads an event that is still being written.
-// SessionStart leaves no event (it isn't a status); it only answers the agent.
+// SessionStart leaves its event too (a pane that just started or resumed is at
+// its prompt: see routeEvent), then answers the agent with the room's instructions.
 //
 // Team room claims: an edit of a file a teammate's claimed ticket owns is answered
 // with the same JSON by both CLIs. The first such edit of a file in a
@@ -98,16 +99,17 @@ const SCRIPT = `#!/bin/bash
 # Mockingbird hook — leaves each agent hook event in a file for the app to read,
 # hands agents in a team room's repo the room's instructions, and checks their edits against its claims.
 ${ROOM.functions}
-${ROOM.sessionStart}
 dir="${EVENTS_DIR}"
 mkdir -p "$dir"
-tmp=$(mktemp "$dir/.tmp.XXXXXXXX") || exit 0
-if { printf '{"event":"%s","ts":%s,"pane":"%s","payload":' "$1" "$(date +%s)" "\${MOCKINGBIRD_SESSION:-}"; cat; printf '}\\n'; } > "$tmp"; then
+if tmp=$(mktemp "$dir/.tmp.XXXXXXXX"); then
+  if { printf '{"event":"%s","ts":%s,"pane":"%s","payload":' "$1" "$(date +%s)" "\${MOCKINGBIRD_SESSION:-}"; cat; printf '}\\n'; } > "$tmp"; then
 ${ROOM.preToolUse}
-  mv -f "$tmp" "$dir/$(date +%s)-\${tmp##*.}.json" || rm -f "$tmp"
-else
-  rm -f "$tmp"
+    mv -f "$tmp" "$dir/$(date +%s)-\${tmp##*.}.json" || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
 fi
+${ROOM.sessionStart}
 exit 0
 `;
 
@@ -204,7 +206,6 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
     if (e) onClaim?.(e);
     return;
   }
-  if (evt.event === "SessionStart") return; // not a status: hook.sh leaves none, but an event file could still name it
   const cwd: string | undefined = typeof evt.payload?.cwd === "string" ? evt.payload.cwd : undefined;
   if (!cwd && !evt.pane) return;
   const msg = typeof evt.payload?.message === "string" ? evt.payload.message : undefined;
@@ -214,6 +215,15 @@ function routeEvent(evt: any, sessions: SessionManager, onStatus: StatusHandler,
   const transcript = typeof evt.payload?.transcript_path === "string" ? evt.payload.transcript_path : "";
   const agent = transcript.includes("/.codex/") ? ("codex" as const) : ("claude" as const);
   const route = { cwd, conversationId, paneId, agent };
+  // An agent that has just started, resumed or cleared its conversation waits at
+  // its prompt: no turn has run, so no Stop will come until someone prompts it.
+  // A compaction's SessionStart can come mid-turn, so it says nothing. A starting
+  // pane is no "Finished" to announce, so onStatus doesn't hear it.
+  if (evt.event === "SessionStart") {
+    const source = typeof evt.payload?.source === "string" ? evt.payload.source : "startup";
+    if (source !== "compact") sessions.statusFromHook({ ...route, status: "idle", started: true });
+    return;
+  }
   // Claude Code's ~60s idle reminder ("Claude is waiting for your input")
   // is not blocked-on-you — treat it as idle so finished sessions don't
   // flip amber a minute after you walk away.
