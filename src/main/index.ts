@@ -46,6 +46,7 @@ import { prStatusFor } from "./prStatus";
 import { LspManager } from "./lsp/manager";
 import { LSP_DIR } from "./lsp/servers";
 import { checkForUpdate, updateRepo } from "./updates";
+import { Suggestions, findGhOnPath } from "./suggestions";
 import { agentLabel, cliVersion, isInstalledBin } from "./agents";
 import { TranscriptIndex, importable, linkHits, type UsageRow } from "./transcripts";
 import { buildCatalog, collabModels } from "./models";
@@ -1722,6 +1723,16 @@ handle("update:outcome", () => {
   updateOutcome = null;
   return o;
 });
+// What's new → Suggest something: GitHub issues filed and listed with the user's own gh
+let ghPath: string | null = null;
+const suggestions = new Suggestions({
+  findGh: async () => (ghPath ??= findGhOnPath(process.env.PATH) ?? (await which("gh"))),
+  repo: updateRepo,
+  canPost: app.isPackaged,
+});
+handle("suggest:prepare", () => suggestions.prepare());
+handle("suggest:post", (draft) => suggestions.post({ title: String(draft?.title ?? ""), body: String(draft?.body ?? "") }));
+handle("suggest:list", (fresh) => suggestions.list(fresh === true));
 handle("update:source", async () => {
   try {
     return { configured: store.settings.updateSource ?? null, found: await findClone() };

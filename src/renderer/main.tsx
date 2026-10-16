@@ -11,6 +11,8 @@ import { useFolderRefresh } from "./folderWatch";
 import { SetupWizard } from "./SetupWizard";
 import { CouncilView } from "./Council";
 import { UpdatePanel } from "./UpdatePanel";
+import { WhatsNew } from "./WhatsNew";
+import { LAST_SEEN_KEY, justUpdated, seenNow } from "./whatsNewModel";
 import { DragLabel, beginDrag, cue, dragFrom, dragging, installDragListeners, overTarget, placeBeside, useDrag } from "./drag";
 import { activeGroupOf, layoutToRemember, pruneToGroup, switchTo } from "./gridModel";
 import {
@@ -386,10 +388,16 @@ function App() {
     window.mb.updateStatus().then(unlessError("the update's progress", setUpd));
     return window.mb.onUpdateProgress((p: UpdateProgress) => setUpd(p));
   }, []);
+  // the update this launch ends, as far as What's new needs it: undefined until it's been read
+  const [outcomeSeen, setOutcomeSeen] = useState<{ ok: boolean; to: string } | null | undefined>(undefined);
   // After an update restart: say how it went, and bring back the sessions that were open
   useEffect(() => {
     window.mb.updateOutcome().then(async (o: UpdateOutcome | null | { error: string }) => {
-      if (isErr(o)) return readFailed("how the last update went", o);
+      if (isErr(o)) {
+        setOutcomeSeen(null);
+        return readFailed("how the last update went", o);
+      }
+      setOutcomeSeen(o ? { ok: o.ok, to: o.to } : null);
       if (!o) return;
       const restoreErrors: string[] = [];
       for (const id of o.sessions) {
@@ -410,6 +418,30 @@ function App() {
   useEffect(() => {
     window.mb.appVersion().then(unlessError("the app version", (v: string) => setAppVersion(String(v))));
   }, []);
+  // What's new: the first launch on a newer version labels the version "Updated to …" and opens its notes once;
+  // dismissing them records the version as seen
+  const [updatedTo, setUpdatedTo] = useState(false);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const whatsNewChecked = useRef(false);
+  useEffect(() => {
+    if (!appVersion || outcomeSeen === undefined || whatsNewChecked.current) return;
+    whatsNewChecked.current = true;
+    const last = readPref<string | null>(LAST_SEEN_KEY, null);
+    const updated = justUpdated(appVersion, last, outcomeSeen);
+    if (updated) {
+      setUpdatedTo(true);
+      setWhatsNewOpen(true);
+    }
+    const seen = seenNow(appVersion, last, updated);
+    if (seen) writePref(LAST_SEEN_KEY, seen);
+  }, [appVersion, outcomeSeen]);
+  const closeWhatsNew = () => {
+    setWhatsNewOpen(false);
+    if (updatedTo) {
+      writePref(LAST_SEEN_KEY, appVersion);
+      setUpdatedTo(false);
+    }
+  };
   const [sideView, setSideView] = usePersisted<SideView>("mb.sideView", "sessions");
   const [sideW, setSideW] = usePersisted<number>("mb.sideW", 264);
   const [editor, setEditor] = useState(EMPTY_EDITOR);
@@ -1876,7 +1908,7 @@ function App() {
         <span className="brand">
           <span className="mark">🪶</span>
           <span className="name">Mockingbird</span>
-          {appVersion && <span className="ver">v{appVersion}</span>}
+          {appVersion && <WhatsNew version={appVersion} updated={updatedTo} open={whatsNewOpen} onOpen={() => setWhatsNewOpen(true)} onClose={closeWhatsNew} />}
         </span>
         <span className="tabs">
           {(["sessions", "dashboard", "worktracker", "collaborate", "settings"] as const).filter((t) => shownTab(t) || tab === t).map((t) => (
@@ -2664,16 +2696,17 @@ function App() {
               <button className="icon" title="Dismiss" onClick={() => setReadError(null)}>✕</button>
             </span>
           )}
-          {updOutcome && (
+          {/* a good update is said by the top bar's "Updated to" label; this note is for what went wrong */}
+          {updOutcome && (!updOutcome.ok || !!updOutcome.restoreErrors?.length) && (
             <span
-              className={`update-note ${updOutcome.ok ? "" : "bad"}`}
+              className="update-note bad"
               title={[
                 updOutcome.message,
                 updOutcome.restoreErrors?.length ? `Sessions that couldn't come back: ${updOutcome.restoreErrors.join("; ")}` : "",
                 `Log: ${updOutcome.logPath}`,
               ].filter(Boolean).join("\n")}
             >
-              {updOutcome.ok ? `✓ ${updOutcome.message}` : `✕ ${updOutcome.message}`}
+              {updOutcome.ok ? `✕ ${plural(updOutcome.restoreErrors!.length, "session")} couldn't come back after the update` : `✕ ${updOutcome.message}`}
               <button className="icon" title="Dismiss" onClick={() => setUpdOutcome(null)}>✕</button>
             </span>
           )}

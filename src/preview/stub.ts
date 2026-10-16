@@ -12,6 +12,8 @@
  */
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
+import { CHANGELOG } from "../shared/changelog";
+import type { SuggestProblem } from "../shared/suggestions";
 import type { MigrationsView } from "../shared/team/migrations";
 import type { TeamStatus } from "../shared/team/types";
 // the version being built, and an update one patch above it
@@ -764,6 +766,15 @@ const teamChanged = () => emit("onTeamChanged", JSON.parse(JSON.stringify(team))
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 const byId = (id: string) => sessions.find((s) => s.id === id);
 const later = <T,>(v: T, ms = 120) => new Promise<T>((r) => setTimeout(() => r(v), ms));
+const suggestQ = new URLSearchParams(location.search).get("suggest");
+const suggestProblem = (): SuggestProblem | null =>
+  suggestQ === "gh-missing"
+    ? { problem: "gh-missing", message: "The GitHub CLI (gh) isn't installed, so Mockingbird can't file or list suggestions.", fix: "brew install gh && gh auth login" }
+    : suggestQ === "signed-out"
+      ? { problem: "signed-out", message: "The GitHub CLI isn't signed in to GitHub, so Mockingbird can't file or list suggestions.", fix: "gh auth login" }
+      : suggestQ === "no-access"
+        ? { problem: "no-access", message: "Your GitHub account can't see RyansCode-hue/Mockingbird. Ask the repository's owner for access, or copy the suggestion and send it another way." }
+        : null;
 const err = (message: string) => ({ error: message });
 
 /** The ticket's pipeline, started at the first stage when it has none yet. */
@@ -1031,6 +1042,38 @@ const api: Record<string, (...a: any[]) => any> = {
   updateStatus: async () => ({ state: "idle", done: [], log: [] }),
   updateOutcome: async () => null,
   updateSource: async () => ({ configured: null, found: "/Users/you/Code/Mockingbird" }),
+  // What's new → Suggest something: nothing reaches GitHub. ?suggest=gh-missing|signed-out|no-access picks a problem,
+  // =create the first suggestion on a repo without its labels, =posted a filing that worked, =list-error a failed read
+  suggestPrepare: async () => {
+    const p = suggestProblem();
+    if (p) return later(p, 300);
+    return later({ repo: "RyansCode-hue/Mockingbird", login: "you", labels: suggestQ === "create" ? "create" : "existing" }, 300);
+  },
+  suggestPost: async () => {
+    if (suggestQ === "posted") return later({ number: 58, url: "https://github.com/RyansCode-hue/Mockingbird/issues/58", labelled: true }, 400);
+    return later<SuggestProblem>({ problem: "dev-build", message: "UI preview: nothing is posted to GitHub." }, 300);
+  },
+  suggestList: async () => {
+    const p = suggestProblem();
+    if (p) return later(p, 300);
+    if (suggestQ === "list-error") return later(err("gh: HTTP 502: Server Error (https://api.github.com/graphql)"), 300);
+    const issue = (number: number, title: string, status: string, author: string) => ({ number, title, status, author, mine: author === "you", url: `https://github.com/RyansCode-hue/Mockingbird/issues/${number}`, createdAt: new Date(now - number * 3_600_000).toISOString() });
+    return later(
+      {
+        repo: "RyansCode-hue/Mockingbird",
+        login: "you",
+        at: now,
+        items: [
+          issue(57, "Show the branch's CI status in the pane rail", "roadmap", "you"),
+          issue(51, "Pin a council to the side bar", "open", "you"),
+          issue(55, "A room's chat should keep my draft when I switch rooms", "shipped", "nick"),
+          issue(49, "Hide the status bar's usage", "declined", "nick"),
+          issue(46, "Keyboard shortcut to jump to the waiting session", "open", "sam"),
+        ],
+      },
+      400
+    );
+  },
   setupStatus: async () => ({
     claude: { found: true, path: "/opt/homebrew/bin/claude", version: "2.1.290", signedIn: true },
     codex: { found: true, path: "/opt/homebrew/bin/codex", version: "0.156.1", signedIn: true },
@@ -1962,6 +2005,110 @@ if (params.has("termAudit")) {
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
   });
+}
+// What's new: ?whatsNew opens the version label's popover; =updated starts as the first launch after an update
+// ("Updated to …", opened by itself); =earlier, =next and =suggestions unfold that part (=all: every part);
+// =form, =confirm and =problem walk Suggest something to that step (pair =problem with ?suggest=gh-missing …)
+const whatsNewQ = params.get("whatsNew");
+if (whatsNewQ === "updated") {
+  const older = CHANGELOG.find((r) => r.version !== version)?.version ?? "1.0.0";
+  set("mb.whatsNew.lastSeen", older);
+}
+if (whatsNewQ !== null && whatsNewQ !== "updated") {
+  waitFor(".brand .ver", (el) => {
+    el.click();
+    const fold = (id: string) => (document.querySelector(`.wn-fold[data-fold="${id}"] > .wn-fold-btn`) as HTMLElement | null)?.click();
+    setTimeout(() => {
+      if (whatsNewQ === "earlier" || whatsNewQ === "all") {
+        fold("earlier");
+        setTimeout(() => fold(`v${CHANGELOG.find((r) => r.version !== version)?.version}`), 50);
+      }
+      if (whatsNewQ === "next" || whatsNewQ === "all") fold("next");
+      if (whatsNewQ === "suggestions" || whatsNewQ === "all") fold("suggestions");
+      if (whatsNewQ === "form" || whatsNewQ === "confirm" || whatsNewQ === "problem") {
+        click(".wn-foot button");
+        setTimeout(() => {
+          typeInto(".wn-form input", "Show the branch's CI status in the pane rail");
+          const area = document.querySelector(".wn-form textarea") as HTMLTextAreaElement | null;
+          if (area) typeArea(area, "A green or red dot next to the branch name, so I don't have to open GitHub to see whether CI passed.");
+          if (whatsNewQ !== "form") setTimeout(() => (buttonNamed(".wn-foot", "Review") as HTMLElement | undefined)?.click(), 80);
+        }, 80);
+      }
+    }, 120);
+  });
+}
+// ?wnAudit (real time: pageResult) checks the popover from the keyboard's side — the label is a focusable button,
+// opening moves focus into a named dialog whose body scrolls inside a bounded height, Esc closes it and gives focus
+// back to the label, as does a click outside — and writes the results into <script id="mb-wn-audit"> for
+// test/uiWhatsNew.test.ts. With ?whatsNew=updated it starts from the label's "Updated to" state.
+if (params.has("wnAudit")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const label = () => document.querySelector(".brand .ver") as HTMLButtonElement | null;
+  const pop = () => document.querySelector(".wn-pop") as HTMLElement | null;
+  const esc = () => (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  const inPop = () => !!pop()?.contains(document.activeElement);
+  (async () => {
+    for (let i = 0; i < 100 && !label(); i++) await sleep(50);
+    await sleep(400);
+    const out: Record<string, unknown> = {};
+    out.startLabel = label()?.textContent ?? null;
+    out.startOpen = !!pop();
+    if (pop()) {
+      esc();
+      await sleep(250);
+    }
+    out.afterDismissLabel = label()?.textContent ?? null;
+    out.lastSeen = localStorage.getItem("mb.whatsNew.lastSeen");
+    const b = label()!;
+    b.focus();
+    out.labelFocusable = document.activeElement === b && b.tagName === "BUTTON" && b.tabIndex >= 0;
+    out.labelPopup = b.getAttribute("aria-haspopup");
+    b.click();
+    await sleep(250);
+    out.opened = !!pop();
+    out.expanded = b.getAttribute("aria-expanded");
+    out.role = pop()?.getAttribute("role") ?? null;
+    out.name = pop()?.getAttribute("aria-label") ?? null;
+    out.focusInside = inPop();
+    for (const id of ["earlier", "next", "suggestions"]) (document.querySelector(`.wn-fold[data-fold="${id}"] > .wn-fold-btn`) as HTMLElement | null)?.click();
+    await sleep(100);
+    for (const btn of document.querySelectorAll<HTMLElement>(".wn-fold.sub > .wn-fold-btn")) btn.click();
+    await sleep(600);
+    const body = document.querySelector(".wn-body") as HTMLElement | null;
+    const box = pop()!.getBoundingClientRect();
+    out.popHeight = box.height;
+    out.popBottom = box.bottom;
+    out.windowHeight = innerHeight;
+    out.bodyScrolls = !!body && getComputedStyle(body).overflowY === "auto" && body.scrollHeight > body.clientHeight;
+    out.expandedFolds = document.querySelectorAll('.wn-fold-btn[aria-expanded="true"]').length;
+    esc();
+    await sleep(250);
+    out.closedByEsc = !pop();
+    out.focusBack = document.activeElement === label();
+    label()!.click();
+    await sleep(250);
+    (document.querySelector(".ver-wrap .who-back") as HTMLElement | null)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    await sleep(250);
+    out.closedByOutside = !pop();
+    // Esc while typing a suggestion closes the popover too, and the draft is still there when it's reopened
+    label()!.click();
+    await sleep(200);
+    click(".wn-foot button");
+    await sleep(150);
+    typeInto(".wn-form input", "Draft title");
+    out.typingFocus = document.activeElement === document.querySelector(".wn-form input");
+    esc();
+    await sleep(250);
+    out.closedFromForm = !pop();
+    label()!.click();
+    await sleep(250);
+    out.draftKept = (document.querySelector(".wn-form input") as HTMLInputElement | null)?.value ?? null;
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-wn-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  })();
 }
 // ?help opens the guide (⌘/)
 if (params.has("help")) waitFor(".statusbar .help-link", (el) => el.click());

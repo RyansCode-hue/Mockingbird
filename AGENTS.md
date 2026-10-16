@@ -59,7 +59,12 @@ answer `{ error }` and are logged in the console and `window.__mbCalls`.
 Work on a branch; once verified, fast-forward `main` (never force-push), push,
 and delete the branch. Ryan installs through the app's own Update, so don't
 package or install it. Bump the version only when Ryan asks — Update offers a
-build only when the version goes up. Keep the README roadmap current.
+build only when the version goes up. Every version bump adds its entry to
+`src/shared/changelog.ts` (What's new) in the same commit: what users notice
+since the last bump — features, fixes, polish and UI, never docs, tests or
+internal changes — one plain line each, most important first, at most about
+eight. `test/changelog.test.ts` fails when package.json's version has no
+entry. Keep the README roadmap current.
 
 Several sessions can work in this checkout at once: before committing, check
 `git status` and `git log`, and commit only the files you changed.

@@ -19,7 +19,7 @@ status hooks, and sets your repo folders. Native deps use node-pty's prebuilt
 binaries (`npmRebuild: false`), so packaging doesn't need a working C++
 toolchain.
 
-**Updates:** Settings → Agents → **Update** (next to Claude Code or Codex) runs that CLI's own updater — needed when a new model (e.g. a new Opus) says the CLI must update — then **Restart all sessions** moves every pane onto the new build without losing conversations. For Mockingbird itself: dev runs pick up renderer changes with `npm run build` + ⌘R (main-process changes need a restart). The packaged app checks GitHub (on launch and every 6h; Settings → About → Check for updates any time) against the latest release, or — with none published — the `version` on `main`. The repository is private, so the check signs in with the GitHub CLI (`gh auth login` once). A newer version shows a teal "⭮ vX.Y available" link in the status bar; **Update** pulls and builds it in your clone of the repo (found under your repo folders, or chosen under Settings → About) while you keep working — it stops if the clone has uncommitted changes, isn't on `main`, can't fast-forward, or lacks Node 22. When the build is ready, **Restart to update** quits, swaps the app in /Applications (putting the old one back if anything fails), reopens it, and brings back the sessions that were open; the status bar says how it went (log: `~/.mockingbird/update.log`). To ship an update: bump `version` on `main` (and optionally publish a GitHub release). True silent auto-update would additionally need an Apple Developer ID signature + notarization.
+**Updates:** Settings → Agents → **Update** (next to Claude Code or Codex) runs that CLI's own updater — needed when a new model (e.g. a new Opus) says the CLI must update — then **Restart all sessions** moves every pane onto the new build without losing conversations. For Mockingbird itself: dev runs pick up renderer changes with `npm run build` + ⌘R (main-process changes need a restart). The packaged app checks GitHub (on launch and every 6h; Settings → About → Check for updates any time) against the latest release, or — with none published — the `version` on `main`. The repository is private, so the check signs in with the GitHub CLI (`gh auth login` once). A newer version shows a teal "⭮ vX.Y available" link in the status bar; **Update** pulls and builds it in your clone of the repo (found under your repo folders, or chosen under Settings → About) while you keep working — it stops if the clone has uncommitted changes, isn't on `main`, can't fast-forward, or lacks Node 22. When the build is ready, **Restart to update** quits, swaps the app in /Applications (putting the old one back if anything fails), reopens it, and brings back the sessions that were open; the top bar's version reads "Updated to X" and What's new opens once (a failed update, or sessions that couldn't come back, show in the status bar; log: `~/.mockingbird/update.log`). To ship an update: bump `version` on `main` (and optionally publish a GitHub release). True silent auto-update would additionally need an Apple Developer ID signature + notarization.
 
 ## What it does (v1)
 
@@ -181,6 +181,19 @@ Ordered by intent: **Now** is being designed or actively hurts, **Next** is
 agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Shipped recently
+
+- **What's new** (not yet in a release) — click the version next to
+  "Mockingbird" in the top bar: this version's changes, each tagged New, Fix,
+  Polish or UI, then fold-outs for earlier versions (back to 1.0.0), what's
+  coming next, and the suggestions filed so far with their status (open, on the
+  roadmap, shipped, declined). The first launch on a new version reads
+  "Updated to 1.4.11" and opens it once; dismissing it goes back to "v1.4.11".
+  **Suggest something** files a GitHub issue on the Mockingbird repository,
+  labelled `suggestion`, through your own `gh` sign-in, after showing exactly
+  what will be posted and that everyone with access to the repository can see
+  it; without `gh` or a sign-in it says how to fix that and offers **Copy
+  suggestion**. The notes live in `src/shared/changelog.ts`, one entry per
+  version bump.
 
 - **Repaint keeps the scrollback; a relaunched pane gets its size** (not yet
   in a release) — Repaint no longer resets the terminal: it asks the session

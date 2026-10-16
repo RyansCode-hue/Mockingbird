@@ -35,6 +35,9 @@ const api = {
   updateInstall: () => ipcRenderer.invoke("update:install"),
   updateOutcome: () => ipcRenderer.invoke("update:outcome"),
   updateSource: () => ipcRenderer.invoke("update:source"),
+  suggestPrepare: () => ipcRenderer.invoke("suggest:prepare"),
+  suggestPost: (draft: { title: string; body: string }) => ipcRenderer.invoke("suggest:post", draft),
+  suggestList: (fresh?: boolean) => ipcRenderer.invoke("suggest:list", fresh === true),
   onUpdateProgress: (cb: (p: unknown) => void) => {
     const h = (_e: unknown, p: unknown) => cb(p);
     ipcRenderer.on("update:progress", h);
