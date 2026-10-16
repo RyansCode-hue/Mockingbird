@@ -641,6 +641,7 @@ so rules that fit one repo don't get in the way in another. Decided:
 
 **Phase 3 — coordination**
 - A ticket's House status follows its PR (opened → review, merged → onward).
+- Ticket pipeline stages update themselves from the work and ADO: a session on the ticket's branch → Coding, a PR to dev/UAT or main → PR stages, a merge → the testing stage after it, and the ADO board column. Each automatic move shows why; you can still set one by hand, and the drafted ADO comment still waits for your click.
 - Ask a teammate to review a session's changes; their line comments go back to your agent.
 - A prompt queue: line up instructions that send when a session goes idle.
 - A daily room digest of what each member's agents did (commits, tickets moved, sessions finished), without a model call.
