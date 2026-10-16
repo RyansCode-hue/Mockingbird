@@ -44,6 +44,8 @@ const layered: [string, string][] = [
   ["--fill-selected", "--bg-chrome"],
   ["--fill-subtle", "--bg-pane-header"],
   ["--fill-subtle", "--bg-sidebar"],
+  ["--fill-blocked", "--bg-pane"], // a blocked work item's card, and the header's blocked filter when on
+  ["--fill-blocked", "--bg-pane-header"], // the blocked note in a work item's detail
 ];
 const text = ["--text-1", "--text-1-warm", "--text-2", "--text-3", "--text-4", "--amber-ink", "--amber-text", "--amber-text-dim", "--teal-text", "--red", "--git-add", "--git-mod", "--m-0", "--m-1", "--m-2", "--m-3", "--m-4", "--m-5"];
 // a tinted chip: its text on its own tint, over the surfaces chips sit on

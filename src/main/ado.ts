@@ -1,7 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Store, expandHome } from "./store";
-import { AdoWorkItem, AdoComment, AdoBoard, localDay } from "../shared/types";
+import { AdoWorkItem, AdoComment, AdoBoard, AdoCardRules, isErr, localDay } from "../shared/types";
+import { BLOCKED_FIELD, ITEM_PROP_FIELDS, parseCardRules, parseTags, ruleFields } from "../shared/cardRules";
 
 interface AdoConfig {
   orgUrl: string;
@@ -123,11 +124,15 @@ export async function adoIdentity(store: Store): Promise<{ display: string; emai
 // Display name AND email, because ADO sometimes spells connectionData's display
 // name differently than System.AssignedTo on work items; email is the stable key.
 let cachedMe: { display: string; email: string } | null = null;
-let boardsCache: { at: number; value: { team: string; boards: AdoBoard[] } } | null = null;
+// the answer in flight is cached too, so the board's work items and its boards share one read
+let boardsCache: { at: number; value: Promise<{ team: string; boards: AdoBoard[] }> } | null = null;
+// the project's field reference names, lowercased: which optional fields exist to be asked for
+let fieldsCache: Promise<Set<string>> | null = null;
 /** Drop cached identity after the ADO connector config changes. */
 export function resetAdoCache(): void {
   cachedMe = null;
   boardsCache = null;
+  fieldsCache = null;
 }
 async function connectionIdentity(cfg: AdoConfig): Promise<{ display: string; email: string }> {
   const r = await adoFetch(cfg, `${cfg.orgUrl}/_apis/connectionData`);
@@ -162,6 +167,8 @@ async function whoAmI(cfg: AdoConfig): Promise<{ display: string; email: string 
  */
 export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[]; total: number; me: string }> {
   const cfg = loadAdoConfig(store);
+  // read alongside the query: the boards are usually being read for the Dashboard at the same time
+  const ruledFields = cardRuleFields(store, cfg);
   const wiql = {
     query:
       "SELECT [System.Id] FROM WorkItems " +
@@ -179,16 +186,22 @@ export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[
   const all: number[] = (q.workItems ?? []).map((w: any) => w.id);
   const ids = all.slice(0, 200);
   if (!ids.length) return { items: [], total: all.length, me: meIds.display };
+  const ruled = await ruledFields;
   const fields = [
-    "System.Title",
-    "System.State",
-    "System.WorkItemType",
-    "System.AssignedTo",
-    "System.ChangedDate",
-    "System.Description",
-    "System.BoardColumn",
+    ...new Set([
+      "System.Title",
+      "System.State",
+      "System.WorkItemType",
+      "System.AssignedTo",
+      "System.ChangedDate",
+      "System.Description",
+      "System.BoardColumn",
+      "System.Tags",
+      ...ruled,
+    ]),
   ].join(",");
   const r = await wit(cfg, `workitems?ids=${ids.join(",")}&fields=${fields}&${ADO_API}`);
+  const extra = ruled.filter((f) => !ITEM_PROP_FIELDS.has(f));
   const items = (r.value ?? []).map((v: any): AdoWorkItem => ({
     id: v.id,
     title: v.fields["System.Title"] ?? "",
@@ -198,6 +211,8 @@ export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[
     changed: v.fields["System.ChangedDate"] ?? "",
     description: htmlToText(v.fields["System.Description"] ?? ""),
     ...(v.fields["System.BoardColumn"] ? { boardColumn: String(v.fields["System.BoardColumn"]) } : {}),
+    tags: parseTags(v.fields["System.Tags"]),
+    ...(extra.length ? { fields: Object.fromEntries(extra.map((f) => [f, fieldText(v.fields[f])])) } : {}),
     url: `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_workitems/edit/${v.id}`,
   }));
   // resolve "me" to the exact spelling the work items use (match by email first,
@@ -214,6 +229,52 @@ export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[
     : undefined;
   const me = emailMatch?.display || nameMatch?.display || meIds.display;
   return { items, total: all.length, me };
+}
+
+/** A field's value as card rules compare it: a person as "Name <email>", nothing as "". */
+function fieldText(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "object") {
+    const p = v as { displayName?: string; uniqueName?: string };
+    return p.uniqueName ? `${p.displayName ?? ""} <${p.uniqueName}>` : String(p.displayName ?? "");
+  }
+  return String(v);
+}
+
+/** Reference names of the fields the project defines (lowercased), read once per run. */
+function projectFields(cfg: AdoConfig): Promise<Set<string>> {
+  if (!fieldsCache) {
+    const p = wit(cfg, `fields?${ADO_API}`).then((r) => new Set<string>((r.value ?? []).map((f: any) => String(f.referenceName).toLowerCase())));
+    // a failure is retried on the next load, not remembered
+    p.catch(() => {
+      if (fieldsCache === p) fieldsCache = null;
+    });
+    fieldsCache = p;
+  }
+  return fieldsCache;
+}
+
+/**
+ * The optional fields to fetch with the work items: the Blocked field and the
+ * fields the team's card rules test, those the project defines — asking for a
+ * field it doesn't define fails the whole request. Without the boards or the
+ * field list, work items load with their tags only, and the log says so.
+ */
+async function cardRuleFields(store: Store, cfg: AdoConfig): Promise<string[]> {
+  const wanted = new Set([BLOCKED_FIELD]);
+  try {
+    const { boards } = await teamBoards(store);
+    for (const b of boards) if (!isErr(b.cardRules)) for (const f of ruleFields(b.cardRules)) wanted.add(f);
+  } catch (err) {
+    console.warn("[mockingbird] couldn't read the team's boards, so card rules' fields aren't fetched:", (err as Error).message);
+  }
+  try {
+    const known = await projectFields(cfg);
+    return [...wanted].filter((f) => known.has(f.toLowerCase()));
+  } catch (err) {
+    console.warn("[mockingbird] couldn't list the project's fields; work items load without the Blocked field or card rules' fields:", (err as Error).message);
+    return [];
+  }
 }
 
 /** Valid states for a work item type (drives the state dropdown). */
@@ -337,11 +398,38 @@ const BOARDS_TTL_MS = 10 * 60_000;
 /**
  * The team's boards — their columns, the state each work item type has in each
  * column, and the Kanban column field — so the Dashboard shows the board the
- * team really uses rather than raw states. Team: azureDevOps.team, else the
- * project's default team.
+ * team really uses rather than raw states, and each board's card styles.
+ * Team: azureDevOps.team, else the project's default team.
  */
-export async function teamBoards(store: Store, fresh = false): Promise<{ team: string; boards: AdoBoard[] }> {
+export function teamBoards(store: Store, fresh = false): Promise<{ team: string; boards: AdoBoard[] }> {
   if (!fresh && boardsCache && Date.now() - boardsCache.at < BOARDS_TTL_MS) return boardsCache.value;
+  const entry = { at: Date.now(), value: readBoards(store) };
+  boardsCache = entry;
+  // a failure is retried on the next call, not remembered
+  entry.value.catch(() => {
+    if (boardsCache === entry) boardsCache = null;
+  });
+  return entry.value;
+}
+
+/**
+ * A board's card styles, read-only. When they can't be read the board still
+ * loads: blocked work is then marked by its tags and Blocked field alone, and
+ * the board carries the reason so the Dashboard can say so.
+ */
+async function boardCardRules(cfg: AdoConfig, tbase: string, board: { id: string; name: string }): Promise<AdoCardRules | { error: string }> {
+  try {
+    const rules = parseCardRules(await adoFetch(cfg, `${tbase}/_apis/work/boards/${encodeURIComponent(board.id)}/cardrulesettings?${ADO_API}`));
+    for (const why of rules.ignored) console.warn(`[mockingbird] ${board.name} board: card style ${why}; not applied`);
+    return rules;
+  } catch (err) {
+    const error = (err as Error).message;
+    console.warn(`[mockingbird] couldn't read the ${board.name} board's card styles; blocked work is marked by tag and Blocked field only:`, error);
+    return { error };
+  }
+}
+
+async function readBoards(store: Store): Promise<{ team: string; boards: AdoBoard[] }> {
   const cfg = loadAdoConfig(store);
   const project = encodeURIComponent(cfg.project);
   let team = cfg.team;
@@ -354,18 +442,20 @@ export async function teamBoards(store: Store, fresh = false): Promise<{ team: s
   const list = await adoFetch(cfg, `${tbase}/_apis/work/boards?${ADO_API}`);
   const boards: AdoBoard[] = await Promise.all(
     (list.value ?? []).map(async (b: any) => {
-      const d = await adoFetch(cfg, `${tbase}/_apis/work/boards/${b.id}?${ADO_API}`);
+      const [d, cardRules] = await Promise.all([
+        adoFetch(cfg, `${tbase}/_apis/work/boards/${b.id}?${ADO_API}`),
+        boardCardRules(cfg, tbase, { id: String(b.id), name: String(b.name) }),
+      ]);
       return {
         id: String(b.id),
         name: String(b.name),
         columnField: d.fields?.columnField?.referenceName ?? null,
         columns: (d.columns ?? []).map((c: any) => ({ name: String(c.name), type: c.columnType, stateMappings: c.stateMappings ?? {} })),
+        cardRules,
       };
     })
   );
-  const value = { team: team!, boards };
-  boardsCache = { at: Date.now(), value };
-  return value;
+  return { team: team!, boards };
 }
 
 /**

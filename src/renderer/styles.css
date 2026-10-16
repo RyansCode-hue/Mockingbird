@@ -43,6 +43,7 @@
   --fill-selected: rgba(255, 255, 255, .06);
   --fill-waiting: rgba(224, 163, 74, .12);
   --fill-waiting-glow: rgba(224, 163, 74, .13);
+  --fill-blocked: rgba(215, 110, 96, .12); /* a blocked work item's card: --red, washed in */
   --on-amber: #1a1917;
   --on-teal: #1a1917;
   --primary: #e8e4dc;
@@ -103,6 +104,7 @@
   --fill-selected: rgba(0, 0, 0, .07);
   --fill-waiting: rgba(160, 106, 18, .13);
   --fill-waiting-glow: rgba(160, 106, 18, .17);
+  --fill-blocked: rgba(214, 72, 52, .09);
   --on-amber: #fffdf6;
   --on-teal: #ffffff;
   --primary: #2b2820;
@@ -800,6 +802,23 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .bc-age { margin-left: auto; font: 400 9px var(--mono); color: var(--text-4); }
 .bc-title { font: 500 11.5px/1.4 var(--ui); color: var(--text-1); margin: 5px 0 7px; }
 .bc-foot { display: flex; align-items: center; gap: 5px; font: 400 9.5px var(--mono); color: var(--text-4); }
+/* blocked work: the app's red, on the card and in the header's count */
+.bcard.blocked { background: var(--fill-blocked); border-color: var(--red); }
+.bcard.blocked:hover { border-color: var(--red); box-shadow: 0 0 0 1px var(--red); }
+/* outlined, not tinted: a red tint on the red-washed card would take --red below 4.5:1 */
+.chip.blocked { color: var(--red); background: transparent; border: 1px solid var(--red); font-weight: 600; flex-shrink: 0; padding: 0 4px; }
+.who-btn.blocked-btn { color: var(--red); border-color: var(--red); }
+.who-btn.blocked-btn.on { background: var(--fill-blocked); }
+.who-btn.blocked-btn.on:hover { background: var(--fill-blocked); }
+.bd-blocked { margin-top: 11px; padding: 7px 9px; border-radius: 5px; border: 1px solid var(--red); background: var(--fill-blocked); font: 400 10.5px/1.45 var(--ui); color: var(--text-1); }
+.bd-blocked b { color: var(--red); }
+/* tags: chips in the board's tag colours, kept to one line on a card */
+.wi-tags { display: flex; gap: 4px; flex-wrap: wrap; margin: -2px 0 7px; }
+.bcard .wi-tags { flex-wrap: nowrap; overflow: hidden; }
+.chip.tag { padding: 1px 5px; max-width: 96px; }
+.chip.tag.more { flex-shrink: 0; }
+.bd-side .wi-tags { margin: 0; }
+.bd-side .chip.tag { max-width: 100%; }
 .wi-id { font: 500 9.5px var(--mono); color: var(--text-3); }
 .wi-empty { font: 400 10.5px var(--ui); color: var(--text-4); padding: 8px 2px; }
 
@@ -1458,7 +1477,7 @@ button.link.danger { color: var(--red); }
 .drag-label { position: fixed; z-index: 200; pointer-events: none; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 3px 8px; border-radius: 6px; background: var(--bg-pane-header); border: 1px solid var(--line-strong2); box-shadow: 0 6px 18px rgba(0,0,0,.35); font: 500 11px var(--ui); color: var(--text-3); }
 .drag-label.ok { border-color: var(--amber); color: var(--text-1); }
 /* Dashboard: board picker and the Columns list */
-.board-pick { width: auto; background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 5px; padding: 3px 6px; font: 500 10.5px var(--ui); }
+.mb-select.board-pick { width: auto; background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 5px; padding: 3px 6px; font: 500 10.5px var(--ui); }
 .cols-pop { min-width: 260px; max-height: 420px; }
 .cols-src { white-space: normal; padding: 4px 9px 6px; }
 .col-row { cursor: default; }
