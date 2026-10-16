@@ -15,6 +15,9 @@ import { usePersisted } from "./prefs";
 import { useAction } from "./useAction";
 import { isRemote } from "./team/RoomLive";
 import { CARD_TAGS, TagChips, cardLook, useCardTheme, type CardLook } from "./cardStyle";
+import { useContextMenu, type MenuEntry } from "./ContextMenu";
+import { blockAction, editTags, tagSuggestions } from "./tagEdits";
+import { splitTagInput, type TagChange } from "../shared/cardRules";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -219,6 +222,52 @@ export function DashboardBoard({
   const detail = items?.find((i) => i.id === detailId) ?? null;
   const detailLook = detail ? looks.get(detail.id) : undefined;
 
+  // ---- tags: written to Azure DevOps on the user's click only ----
+  // one write at a time per work item, so a failed one goes back to tags no later edit has moved on from
+  const tagWrites = useRef(new Set<number>());
+  const [tagBusy, setTagBusy] = useState<number[]>([]);
+  const [notice, setNotice] = useState("");
+  const [tagDraft, setTagDraft] = useState("");
+  const [projTags, setProjTags] = useState<string[] | { error: string } | null>(null);
+  const showTags = (id: number, tags: string[]) => setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, tags } : i)) : p));
+  const changeTags = async (it: AdoWorkItem, change: TagChange, after: string | null = null) => {
+    if (tagWrites.current.has(it.id)) return;
+    tagWrites.current.add(it.id);
+    setTagBusy([...tagWrites.current]);
+    setError("");
+    setNotice("");
+    const r = await editTags(it, change, window.mb.adoSetTags, showTags);
+    tagWrites.current.delete(it.id);
+    setTagBusy([...tagWrites.current]);
+    if (isErr(r)) setError(`Couldn't change #${it.id}'s tags — they're back as they were: ${r.error}`);
+    else if (after) setNotice(after);
+    return r;
+  };
+  const toggleBlocked = (it: AdoWorkItem) => {
+    const a = blockAction(it, cardRules);
+    if (a.change) return void changeTags(it, a.change, a.note);
+    setError("");
+    setNotice(a.note ?? "");
+  };
+  const addTags = async () => {
+    if (!detail) return;
+    const add = splitTagInput(tagDraft);
+    if (!add.length) return;
+    const r = await changeTags(detail, { add });
+    if (r && !isErr(r)) setTagDraft("");
+  };
+  const suggestions = detail && items ? tagSuggestions(items, Array.isArray(projTags) ? projTags : [], detail.tags) : [];
+  const cardMenu = useContextMenu("Work item");
+  const cardActions = (it: AdoWorkItem): MenuEntry[] => {
+    const b = blockAction(it, cardRules);
+    return [
+      { key: "open", label: "Open", onPick: () => openDetail(it) },
+      { key: b.key, label: b.label, disabled: tagBusy.includes(it.id), title: b.key === "block" ? "Adds the “blocked” tag in Azure DevOps" : "Removes the “blocked” tag in Azure DevOps", onPick: () => toggleBlocked(it) },
+      "-",
+      { key: "ado", label: "Open in ADO", onPick: () => openLink(it.url) },
+    ];
+  };
+
   // the work item last opened: a slower answer for one opened before it is dropped
   const detailReq = useRef<number | null>(null);
   const openDetail = (it: AdoWorkItem) => {
@@ -232,6 +281,14 @@ export function DashboardBoard({
     setAttachId("");
     setComments(null);
     setDraft("");
+    setTagDraft("");
+    setNotice("");
+    // the project's tags, for Add tag's suggestions: read once, when a work item is first opened
+    if (projTags === null || isErr(projTags))
+      window.mb.adoProjectTags().then((r: string[] | { error: string }) => {
+        if (isErr(r)) console.warn("[mockingbird] couldn't read the project's tags; Add tag suggests the board's tags only:", r.error);
+        setProjTags(r);
+      });
     window.mb.adoStates(it.type).then((r: string[] | { error: string }) => {
       if (detailReq.current !== it.id) return;
       if (Array.isArray(r)) setTypeStates(r);
@@ -437,6 +494,8 @@ export function DashboardBoard({
         <button className="outline" onClick={() => load(true)}>Refresh</button>
       </div>
       {error && <div className="err board-err">{error}</div>}
+      {notice && !detail && <div className="board-note" role="status">{notice}</div>}
+      {cardMenu.menu}
       <div className="board-cols">
         {items === null && <div className="wi-empty" style={{ padding: 14 }}>Loading work items…</div>}
         {items !== null && stateCols.length === 0 && !error && (
@@ -480,6 +539,7 @@ export function DashboardBoard({
                       draggable
                       onDragStart={(e) => beginDrag(e, "text/mb-wi", String(it.id), `Moving #${it.id}`)}
                       onClick={() => openDetail(it)}
+                      {...cardMenu.bind(() => cardActions(it))}
                       title={look?.fill ? `Card style “${look.fill.rule}” from Azure DevOps · drag to another column to change state` : "drag to another column to change state"}
                     >
                       <span className="tbar" style={{ background: typeColor(it.type) }} />
@@ -529,6 +589,8 @@ export function DashboardBoard({
             <button className="outline" onClick={() => openLink(detail.url)}>Open in ADO</button>
             <button className="icon" title="Close (esc)" onClick={() => setDetailId(null)}>✕</button>
           </div>
+          {error && <div className="err board-err" role="alert">{error}</div>}
+          {notice && <div className="board-note" role="status">{notice}</div>}
           <div className="bd-body">
             <div className="wi-form bd-main">
               <PipelinePanel
@@ -582,13 +644,54 @@ export function DashboardBoard({
               {detailLook && detailLook.blocked.length > 0 && (
                 <div className="bd-blocked">
                   <b>Blocked</b> — {detailLook.blocked.join(" · ")}
+                  <button className="outline bd-block-btn" disabled={tagBusy.includes(detail.id)} onClick={() => toggleBlocked(detail)}>
+                    Unblock
+                  </button>
                 </div>
               )}
-              <label>Tags</label>
+              <label htmlFor="bd-tag-in">Tags</label>
               {detail.tags.length ? (
-                <TagChips tags={detail.tags} rules={cardRules} ground={cardTheme?.card.ground ?? null} light={!!cardTheme?.card.light} />
+                <TagChips
+                  tags={detail.tags}
+                  rules={cardRules}
+                  ground={cardTheme?.card.ground ?? null}
+                  light={!!cardTheme?.card.light}
+                  disabled={tagBusy.includes(detail.id)}
+                  onRemove={(t) => void changeTags(detail, { remove: [t] })}
+                />
               ) : (
                 <div className="wi-empty">No tags.</div>
+              )}
+              <div className="bd-tag-add">
+                <input
+                  id="bd-tag-in"
+                  type="text"
+                  list="bd-tag-list"
+                  placeholder="Add tag"
+                  value={tagDraft}
+                  disabled={tagBusy.includes(detail.id)}
+                  onChange={(e) => setTagDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void addTags();
+                    }
+                  }}
+                />
+                <datalist id="bd-tag-list">
+                  {suggestions.map((t) => (
+                    <option key={t} value={t} />
+                  ))}
+                </datalist>
+                <button className="outline" disabled={!splitTagInput(tagDraft).length || tagBusy.includes(detail.id)} onClick={() => void addTags()}>
+                  {tagBusy.includes(detail.id) ? "Saving…" : "Add"}
+                </button>
+              </div>
+              {isErr(projTags) && <div className="wi-note">Suggesting this board's tags — couldn't read the project's: {projTags.error}</div>}
+              {!(detailLook && detailLook.blocked.length > 0) && (
+                <button className="outline bd-block-btn" disabled={tagBusy.includes(detail.id)} data-tip="Adds the “blocked” tag in Azure DevOps" onClick={() => toggleBlocked(detail)}>
+                  Mark blocked
+                </button>
               )}
               {detailLook?.fill && <div className="wi-note">Card style “{detailLook.fill.rule}” from Azure DevOps</div>}
               <label>State</label>

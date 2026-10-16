@@ -819,6 +819,18 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .chip.tag.more { flex-shrink: 0; }
 .bd-side .wi-tags { margin: 0; }
 .bd-side .chip.tag { max-width: 100%; }
+/* the dialog's tags: chips with a ✕, an Add tag field, Mark blocked / Unblock */
+.chip.tag.rm { display: inline-flex; align-items: center; gap: 2px; padding: 1px 1px 1px 5px; }
+.chip.tag .tag-t { overflow: hidden; text-overflow: ellipsis; }
+.chip.tag .tag-x { flex-shrink: 0; padding: 0 3px; border: none; border-radius: 2px; color: inherit; font: inherit; line-height: 1.3; opacity: .7; }
+.chip.tag .tag-x:hover, .chip.tag .tag-x:focus-visible { opacity: 1; background: var(--fill-subtle); color: inherit; }
+.chip.tag .tag-x:disabled { opacity: .35; cursor: default; }
+.bd-tag-add { display: flex; gap: 6px; margin-top: 6px; }
+.bd-tag-add input[type=text] { flex: 1; min-width: 0; }
+.bd-block-btn { align-self: flex-start; margin-top: 7px; }
+.bd-blocked .bd-block-btn { display: block; margin-top: 6px; }
+.board-note { margin: 8px 14px 0; font: 400 10.5px/1.5 var(--mono); color: var(--text-2); }
+.bdetail .board-err, .bdetail .board-note { margin: 8px 14px 0; flex-shrink: 0; }
 .wi-id { font: 500 9.5px var(--mono); color: var(--text-3); }
 .wi-empty { font: 400 10.5px var(--ui); color: var(--text-4); padding: 8px 2px; }
 

@@ -40,6 +40,62 @@ export function blockedReasons(it: AdoWorkItem, rules?: AdoCardRules | null): st
   return reasons;
 }
 
+// ---- changing tags ----
+
+/** The tag Mark blocked adds and Unblock removes. */
+export const BLOCKED_TAG = "blocked";
+
+/** Tags to add or remove. Removals match in any case; an added tag already there in another case keeps its spelling, as in ADO. */
+export interface TagChange {
+  add?: string[];
+  remove?: string[];
+}
+
+/** A tag as typed, as ADO keeps it: runs of whitespace made one space, case kept. */
+export const normalizeTag = (t: string) => t.replace(/\s+/g, " ").trim();
+
+/** What was typed in Add tag: "; " separates tags in System.Tags, so "a; b" is two. */
+export const splitTagInput = (text: string) => text.split(";").map(normalizeTag).filter(Boolean);
+
+/** The tags after a change: current order kept, new ones last, no two alike in any case. */
+export function changedTags(current: string[], change: TagChange): string[] {
+  const gone = new Set((change.remove ?? []).map((t) => normalizeTag(t).toLowerCase()));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const t of [...current, ...(change.add ?? [])].map(normalizeTag)) {
+    const k = t.toLowerCase();
+    if (!t || seen.has(k) || gone.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+  }
+  return out;
+}
+
+/** The same tags, in the same order and spelling. */
+export const sameTags = (a: string[], b: string[]) => a.length === b.length && a.every((t, i) => t === b[i]);
+
+/**
+ * What Unblock can do for a work item: the plain "blocked" tags it removes,
+ * and what would block it even after that (another blocked tag, the Blocked
+ * field, a card rule) — Unblock says so rather than pretend.
+ */
+export function unblockPlan(it: AdoWorkItem, rules?: AdoCardRules | null): { remove: string[]; still: string[] } {
+  const remove = it.tags.filter(isBareBlockedTag);
+  const still = blockedReasons({ ...it, tags: it.tags.filter((t) => !isBareBlockedTag(t)) }, rules);
+  return { remove, still };
+}
+
+/** Unblock's word on what still blocks a work item, which a "blocked" tag doesn't explain; null when nothing does. */
+export function stillBlockedNote(id: number, plan: { remove: string[]; still: string[] }): string | null {
+  if (!plan.still.length) return null;
+  const why = plan.still.join(" · ");
+  const byTag = plan.still.filter((r) => r.startsWith("tag ")).length;
+  const how = byTag === plan.still.length ? "Remove that tag here." : byTag ? "Remove the tag here, and change the rest in Azure DevOps." : "Change that in Azure DevOps.";
+  return plan.remove.length
+    ? `Removed the “blocked” tag, but #${id} is still blocked: ${why}. ${how}`
+    : `#${id} has no “blocked” tag to remove; it's blocked by: ${why}. ${how}`;
+}
+
 // ---- reading the board's card rules ----
 
 /** "#rgb" or "#rrggbb" as lowercase "#rrggbb"; null for anything else. */

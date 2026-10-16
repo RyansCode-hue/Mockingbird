@@ -14,7 +14,7 @@ import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindo
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
 import type { SuggestProblem } from "../shared/suggestions";
-import { parseCardRules } from "../shared/cardRules";
+import { changedTags, parseCardRules, type TagChange } from "../shared/cardRules";
 import type { MigrationsView } from "../shared/team/migrations";
 import type { TeamStatus } from "../shared/team/types";
 // the version being built, and an update one patch above it
@@ -1002,6 +1002,15 @@ const api: Record<string, (...a: any[]) => any> = {
   adoComments: async () => [{ id: 1, author: "Sam", date: new Date(now - 3 * 60 * min).toISOString(), text: "Can it remember per tenant too?" }],
   adoAddComment: async (_id: number, text: string) => ({ id: Date.now(), author: "You", date: new Date().toISOString(), text }),
   adoUpdate: async (id: number) => ({ id }),
+  // tags change in the fixture, as Azure DevOps would keep them; ?tagFail makes every tag write fail, to see the revert
+  adoSetTags: async (id: number, change: TagChange) => {
+    if (new URLSearchParams(location.search).has("tagFail")) return later(err(`Azure DevOps 403 Forbidden: TF401289: You don't have permission to edit work item ${id}.`), 300);
+    const t = tickets.find((x) => x.id === id);
+    if (!t) return err(`Azure DevOps 404 Not Found: work item ${id} doesn't exist`);
+    t.tags = changedTags(t.tags, change);
+    return later({ id, tags: t.tags }, 300);
+  },
+  adoProjectTags: async () => ["accessibility", "backend", "customer-reported", "data-export", "frontend", "integration", "org-picker", "pathways", "perf", "regression", "security", "tech-debt"],
   adoMoveToColumn: async (id: number, _type: string, _board: string, column: string) => ({ id, state: column }),
   pipelineAll: async () => JSON.parse(JSON.stringify(pipelines)),
   pipelineStage: async (id: string, stage: TicketStage) => setStage(id, stage),
@@ -1699,6 +1708,34 @@ const typeInto = (selector: string, text: string) => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, text);
   input.dispatchEvent(new Event("input", { bubbles: true }));
 };
+// the Dashboard's work items: ?workItem=5102 opens its dialog — then ?tagAdd=a11y adds that tag, ?tagRemove=perf
+// removes one, ?tagDraft=per types into Add tag, ?block presses Mark blocked / Unblock; ?cardMenu=5102 opens that
+// card's right-click menu (add ?tagFail to make the writes fail)
+const workItemQ = params.get("workItem") ?? params.get("cardMenu");
+if (workItemQ) {
+  set("mb.tab", "dashboard");
+  let tries = 0;
+  const open = setInterval(() => {
+    const card = [...document.querySelectorAll(".bcard")].find((c) => c.querySelector(".wi-id")?.textContent === workItemQ) as HTMLElement | undefined;
+    if (!card && ++tries < 50) return;
+    clearInterval(open);
+    if (!card) return;
+    if (params.has("cardMenu")) {
+      const r = card.getBoundingClientRect();
+      card.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 20 }));
+      return;
+    }
+    card.click();
+    setTimeout(() => {
+      const draft = params.get("tagAdd") ?? params.get("tagDraft");
+      if (draft) typeInto("#bd-tag-in", draft);
+      if (params.has("tagAdd")) setTimeout(() => click(".bd-tag-add button"), 50);
+      const rm = params.get("tagRemove");
+      if (rm) (document.querySelector(`.bd-side .tag-x[aria-label="Remove tag ${rm}"]`) as HTMLElement | null)?.click();
+      if (params.has("block")) click(".bd-side .bd-block-btn");
+    }, 150);
+  }, 100);
+}
 // ?council opens the Council tab on its fixture discussion, its list as a first visit shows it (unfolded while short);
 // ?council=list unfolds the list, ?council=rail folds it; ?council=new opens the New council form
 if (params.has("council")) {

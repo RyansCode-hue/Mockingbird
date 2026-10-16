@@ -27,7 +27,7 @@ import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner }
 import { userShell, userShellWithInput, which, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
-import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, adoRequest } from "./ado";
+import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, adoRequest, setWorkItemTags, projectTags } from "./ado";
 import { PipelineStore } from "./pipeline";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
@@ -1058,6 +1058,8 @@ handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 handle("ado:list", () => listWorkItems(store));
 handle("ado:states", (type) => workItemStates(store, type));
 handle("ado:update", (id, patch) => updateWorkItem(store, id, patch));
+handle("ado:setTags", (id, change) => setWorkItemTags(store, Number(id), change));
+handle("ado:projectTags", () => projectTags(store));
 handle("ado:me", () => adoIdentity(store));
 handle("ado:boards", (fresh) => teamBoards(store, !!fresh));
 handle("ado:moveToColumn", (id, type, board, column) => moveToBoardColumn(store, Number(id), String(type), String(board), String(column)));

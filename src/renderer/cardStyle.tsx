@@ -53,8 +53,8 @@ export function cardLook(it: AdoWorkItem, rules: AdoCardRules | null, theme: The
   return { blocked, fill: { rule: rule.name, ...f }, ground: parseColor(f.background) };
 }
 
-/** A work item's tags as chips, in the board's tag colours; at most `max`, then "+N". */
-export function TagChips({ tags, rules, ground, light, max }: { tags: string[]; rules: AdoCardRules | null; ground: RGB | null; light: boolean; max?: number }) {
+/** A work item's tags as chips, in the board's tag colours; at most `max`, then "+N". With `onRemove`, each chip has a ✕ that removes it. */
+export function TagChips({ tags, rules, ground, light, max, onRemove, disabled }: { tags: string[]; rules: AdoCardRules | null; ground: RGB | null; light: boolean; max?: number; onRemove?: (tag: string) => void; disabled?: boolean }) {
   // a plain "blocked" tag is what the Blocked chip already says
   const shown = max == null ? tags : tags.filter((t) => !isBareBlockedTag(t));
   if (!shown.length) return null;
@@ -65,8 +65,13 @@ export function TagChips({ tags, rules, ground, light, max }: { tags: string[]; 
       {visible.map((t) => {
         const c = rules && ground ? tagColor(t, rules) : null;
         return (
-          <span key={t} className="chip tag" style={c && ground ? chipColors(c, ground, light) : undefined}>
-            {t}
+          <span key={t} className={`chip tag ${onRemove ? "rm" : ""}`} style={c && ground ? chipColors(c, ground, light) : undefined}>
+            <span className="tag-t">{t}</span>
+            {onRemove && (
+              <button type="button" className="tag-x" aria-label={`Remove tag ${t}`} data-tip={`Remove “${t}”`} disabled={disabled} onClick={() => onRemove(t)}>
+                ✕
+              </button>
+            )}
           </span>
         );
       })}

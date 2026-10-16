@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { Store, expandHome } from "./store";
 import { AdoWorkItem, AdoComment, AdoBoard, AdoCardRules, isErr, localDay } from "../shared/types";
-import { BLOCKED_FIELD, ITEM_PROP_FIELDS, parseCardRules, parseTags, ruleFields } from "../shared/cardRules";
+import { BLOCKED_FIELD, ITEM_PROP_FIELDS, changedTags, normalizeTag, parseCardRules, parseTags, ruleFields, sameTags, type TagChange } from "../shared/cardRules";
 
 interface AdoConfig {
   orgUrl: string;
@@ -74,6 +74,8 @@ export async function adoRequest(store: Store, url: string, init?: RequestInit):
 /** The REST API version every call uses, except the comments API, which is only in preview. */
 export const ADO_API = "api-version=7.0";
 const COMMENTS_API = "api-version=7.1-preview.3";
+/** The project tag list is preview-only too. */
+const TAGS_API = "api-version=7.1-preview.1";
 
 /** A call to the project's work-item API; `rest` follows `_apis/wit/` and carries its api-version. */
 function wit(cfg: AdoConfig, rest: string, init?: RequestInit): Promise<any> {
@@ -391,6 +393,41 @@ export async function updateWorkItem(
   if (!ops.length) throw new Error("Nothing to update");
   const r = await patchWorkItem(cfg, id, ops);
   return { id: r.id };
+}
+
+/** The JSON-Patch that turns System.Tags as stored (`raw`) into the tags after `change`; no ops when it changes nothing. */
+export function tagsPatch(raw: unknown, change: TagChange): { tags: string[]; ops: { op: string; path: string; value: string }[] } {
+  const current = parseTags(raw);
+  const tags = changedTags(current, change);
+  return { tags, ops: sameTags(current, tags) ? [] : [{ op: "add", path: "/fields/System.Tags", value: tags.join("; ") }] };
+}
+
+/**
+ * Add or remove a work item's tags, on the user's click. The change is applied
+ * to the tags Azure DevOps has right now, read just before the write, so a tag
+ * someone else added since the board loaded survives. Returns the tags ADO
+ * stored, which the card shows.
+ */
+export async function setWorkItemTags(store: Store, id: number, change: TagChange): Promise<{ id: number; tags: string[] }> {
+  if (!Number.isInteger(id) || id <= 0) throw new Error(`Not a work item id: ${id}`);
+  const clean = (l: unknown) => (Array.isArray(l) ? l : []).map((t) => normalizeTag(String(t))).filter(Boolean);
+  const add = clean(change?.add);
+  const remove = clean(change?.remove);
+  if (!add.length && !remove.length) throw new Error("No tags to add or remove");
+  const cfg = loadAdoConfig(store);
+  const now = await wit(cfg, `workitems/${id}?fields=System.Tags&${ADO_API}`);
+  const { tags, ops } = tagsPatch(now.fields?.["System.Tags"], { add, remove });
+  if (!ops.length) return { id, tags };
+  const r = await patchWorkItem(cfg, id, ops);
+  // ADO answers with the item as saved (an empty field left out); its tags are the truth, in the order and case it kept
+  return { id, tags: r.fields ? parseTags(r.fields["System.Tags"]) : tags };
+}
+
+/** Every tag used in the project, for Add tag's suggestions. Read only. */
+export async function projectTags(store: Store): Promise<string[]> {
+  const cfg = loadAdoConfig(store);
+  const r = await wit(cfg, `tags?${TAGS_API}`);
+  return (r.value ?? []).map((t: any) => String(t.name ?? "")).filter(Boolean);
 }
 
 const BOARDS_TTL_MS = 10 * 60_000;
