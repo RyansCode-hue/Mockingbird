@@ -183,6 +183,39 @@ export interface AdoWorkItem {
   description: string; // flattened plain text
   url: string; // browser link to the work item
   boardColumn?: string; // the column it sits in on the team's board (System.BoardColumn)
+  tags: string[]; // System.Tags, split
+  /** Values, by reference name, of the fields card rules and blocked detection read (Microsoft.VSTS.CMMI.Blocked…), where the process has them. */
+  fields?: Record<string, string>;
+}
+
+/** One condition of a board's card rule, as Azure DevOps stores it: `field op value`, joined to the one before by `logic`. */
+export interface AdoCardRuleClause {
+  field: string; // reference name
+  op: "=" | "contains";
+  value: string;
+  logic: "and" | "or";
+}
+
+/** A card rule that fills the cards it matches (team settings → Cards → Styles). */
+export interface AdoFillRule {
+  name: string;
+  clauses: AdoCardRuleClause[];
+  background: string; // #rrggbb as set in Azure DevOps
+  /** It marks blocked work: named for it, or it tests a blocked tag or the Blocked field. */
+  blocked: boolean;
+}
+
+/** A tag's colour (team settings → Cards → Tag colors). */
+export interface AdoTagStyle {
+  tag: string;
+  background: string; // #rrggbb
+}
+
+/** A board's card styling, as far as Mockingbird can apply it; `ignored` says which rules it can't, and why. */
+export interface AdoCardRules {
+  fill: AdoFillRule[];
+  tags: AdoTagStyle[];
+  ignored: string[];
 }
 
 /** One column of a team's Azure Boards board, and the state each work item type has there. */
@@ -198,6 +231,7 @@ export interface AdoBoard {
   name: string;
   columns: AdoBoardColumn[];
   columnField: string | null; // the Kanban column field: tells columns that share a state apart
+  cardRules: AdoCardRules | { error: string }; // the board's card styles, or why they couldn't be read
 }
 
 export interface AdoComment {

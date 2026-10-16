@@ -14,8 +14,9 @@ const backlog: AdoBoard = {
     { name: "In Progress", type: "inProgress", stateMappings: { Bug: "In Progress", "Product Backlog Item": "In Development" } },
     { name: "Done", type: "outgoing", stateMappings: { Bug: "Done", "Product Backlog Item": "Done" } },
   ],
+  cardRules: { fill: [], tags: [], ignored: [] },
 };
-const features: AdoBoard = { id: "b2", name: "Features", columnField: null, columns: [{ name: "New", type: "incoming", stateMappings: { Feature: "New" } }] };
+const features: AdoBoard = { id: "b2", name: "Features", columnField: null, columns: [{ name: "New", type: "incoming", stateMappings: { Feature: "New" } }], cardRules: { error: "unread" } };
 const item = (id: number, type: string, state: string, boardColumn?: string): AdoWorkItem =>
   ({ id, type, state, title: "", assignedTo: "", changed: "", description: "", url: "", ...(boardColumn ? { boardColumn } : {}) }) as AdoWorkItem;
 

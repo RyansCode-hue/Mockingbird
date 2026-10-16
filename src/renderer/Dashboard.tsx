@@ -14,6 +14,7 @@ import { Modal } from "./Modal";
 import { usePersisted } from "./prefs";
 import { useAction } from "./useAction";
 import { isRemote } from "./team/RoomLive";
+import { CARD_TAGS, TagChips, cardLook, useCardTheme, type CardLook } from "./cardStyle";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -175,10 +176,29 @@ export function DashboardBoard({
     return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [items, who, me]);
 
+  // the board's card styles (Azure DevOps → team settings → Cards); blocked work is marked without them too
+  const cardRules = board && !isErr(board.cardRules) ? board.cardRules : null;
+  const cardTheme = useCardTheme();
+  const looks = useMemo(() => new Map<number, CardLook>((items ?? []).map((i) => [i.id, cardLook(i, cardRules, cardTheme)])), [items, cardRules, cardTheme]);
+  const isBlocked = (i: AdoWorkItem) => (looks.get(i.id)?.blocked.length ?? 0) > 0;
+  const [blockedOnly, setBlockedOnly] = useState(false);
+
   const whoSet = new Set(who ?? []);
-  const visibleItems = (items ?? []).filter(
+  const assignedItems = (items ?? []).filter(
     (i) => whoSet.size === 0 || whoSet.has(i.assignedTo || "Unassigned")
   );
+  const shownCol = (i: AdoWorkItem) => {
+    const c = colOfItem(i);
+    return c !== null && !hiddenCols.has(c);
+  };
+  const blockedCount = assignedItems.filter((i) => isBlocked(i) && shownCol(i)).length;
+  const cardStyleNote = !board
+    ? "Blocked: a “blocked” tag or the Blocked field"
+    : isErr(board.cardRules)
+      ? `Couldn't read the board's card styles (${board.cardRules.error}) — blocked work is marked by its tag or Blocked field`
+      : `Card styles from Azure DevOps: ${plural(board.cardRules.fill.length, "rule")}, ${plural(board.cardRules.tags.length, "tag colour")}` +
+        (board.cardRules.ignored.length ? ` · ${board.cardRules.ignored.length} not applied` : "");
+  const visibleItems = blockedOnly ? assignedItems.filter(isBlocked) : assignedItems;
   const whoLabel =
     who === null
       ? "…"
@@ -197,6 +217,7 @@ export function DashboardBoard({
     });
 
   const detail = items?.find((i) => i.id === detailId) ?? null;
+  const detailLook = detail ? looks.get(detail.id) : undefined;
 
   // the work item last opened: a slower answer for one opened before it is dropped
   const detailReq = useRef<number | null>(null);
@@ -387,9 +408,23 @@ export function DashboardBoard({
               <div className="who-row" onClick={() => setPrefs({ order: [], hidden: defaultHidden })}>
                 {board ? "Reset to the board's order" : "Reset order"}
               </div>
+              <div className="who-hint cols-src" data-tip={cardRules?.ignored.length ? `Not applied: ${cardRules.ignored.join("; ")}` : undefined}>
+                {cardStyleNote}
+              </div>
             </Popover>
           )}
         </span>
+        {(blockedCount > 0 || blockedOnly) && (
+          <button
+            className={`who-btn blocked-btn ${blockedOnly ? "on" : ""}`}
+            aria-pressed={blockedOnly}
+            data-tip={blockedOnly ? "Show every work item again" : "Show only blocked work items"}
+            onClick={() => setBlockedOnly((b) => !b)}
+          >
+            {blockedOnly && <span aria-hidden>✓</span>}
+            {blockedCount} blocked
+          </button>
+        )}
         <span style={{ marginLeft: "auto" }} />
         <span className="flbl-info">
           {items ? `${visibleItems.length} items` : ""}
@@ -435,22 +470,31 @@ export function DashboardBoard({
               <div className="bcol-body">
                 {colItems.map((it) => {
                   const live = linkedTo(it);
+                  const look = looks.get(it.id);
+                  const blocked = !!look?.blocked.length;
                   return (
                     <div
                       key={it.id}
-                      className="bcard"
+                      className={`bcard ${blocked ? "blocked" : ""}`}
+                      style={look?.fill ? { background: look.fill.background, borderColor: look.fill.edge } : undefined}
                       draggable
                       onDragStart={(e) => beginDrag(e, "text/mb-wi", String(it.id), `Moving #${it.id}`)}
                       onClick={() => openDetail(it)}
-                      title="drag to another column to change state"
+                      title={look?.fill ? `Card style “${look.fill.rule}” from Azure DevOps · drag to another column to change state` : "drag to another column to change state"}
                     >
                       <span className="tbar" style={{ background: typeColor(it.type) }} />
                       <div className="bc-top">
                         <span className="wi-id">{it.id}</span>
                         <span className="bc-type">{it.type}</span>
+                        {blocked && (
+                          <span className="chip blocked" data-tip={`Blocked: ${look!.blocked.join(" · ")}`}>
+                            Blocked
+                          </span>
+                        )}
                         <span className="bc-age">{it.changed ? agoShort(Date.parse(it.changed)) : ""}</span>
                       </div>
                       <div className="bc-title">{it.title}</div>
+                      <TagChips tags={it.tags} rules={cardRules} ground={look?.ground ?? null} light={!!cardTheme?.card.light} max={CARD_TAGS} />
                       <div className="bc-foot">
                         {live.map((s) => (
                           <span key={s.id} className={`dot sm ${s.status}`} />
@@ -476,6 +520,7 @@ export function DashboardBoard({
             <span className="tsq" style={{ background: typeColor(detail.type) }} />
             <span className="wi-id">{detail.id}</span>
             <span className="path">{detail.type}{detail.assignedTo ? ` · ${detail.assignedTo}` : " · Unassigned"}</span>
+            {detailLook && detailLook.blocked.length > 0 && <span className="chip blocked">Blocked</span>}
             <span style={{ marginLeft: "auto" }} />
             {dirty && <span className="kbd" style={{ color: "var(--amber-ink)" }}>unsaved</span>}
             <button className="primary" disabled={!dirty || doing("save")} onClick={save}>
@@ -534,6 +579,18 @@ export function DashboardBoard({
               </div>
             </div>
             <div className="wi-form bd-side">
+              {detailLook && detailLook.blocked.length > 0 && (
+                <div className="bd-blocked">
+                  <b>Blocked</b> — {detailLook.blocked.join(" · ")}
+                </div>
+              )}
+              <label>Tags</label>
+              {detail.tags.length ? (
+                <TagChips tags={detail.tags} rules={cardRules} ground={cardTheme?.card.ground ?? null} light={!!cardTheme?.card.light} />
+              ) : (
+                <div className="wi-empty">No tags.</div>
+              )}
+              {detailLook?.fill && <div className="wi-note">Card style “{detailLook.fill.rule}” from Azure DevOps</div>}
               <label>State</label>
               <Pick value={state} onChange={(e) => setState(e.target.value)}>
                 {[...new Set([state, ...typeStates])].map((s) => (

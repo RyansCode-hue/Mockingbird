@@ -12,6 +12,7 @@
  */
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
+import { parseCardRules } from "../shared/cardRules";
 import type { MigrationsView } from "../shared/team/migrations";
 import type { TeamStatus } from "../shared/team/types";
 // the version being built, and an update one patch above it
@@ -108,12 +109,30 @@ const commits: GraphCommit[] = [
   { sha: "d4e5f60", parents: [], refs: [], subject: "Initial import", author: "Sam", at: now - 30 * 24 * 60 * min },
 ];
 
+const P1 = "Microsoft.VSTS.Common.Priority";
 const tickets: AdoWorkItem[] = [
-  { id: 5101, title: "Org dropdowns remember the last org", state: "Active", type: "User Story", assignedTo: "You", changed: new Date(now - 2 * 60 * min).toISOString(), description: "Users pick the same org every time. Remember it.", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5101", boardColumn: "In Progress" },
-  { id: 5102, title: "Pathways quick view freezes with many tags", state: "Active", type: "Bug", assignedTo: "You", changed: new Date(now - 26 * 60 * min).toISOString(), description: "Typing in the tag filter freezes the page.", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5102", boardColumn: "In Progress" },
-  { id: 5110, title: "Export donors to CSV", state: "New", type: "User Story", assignedTo: "You", changed: new Date(now - 3 * 24 * 60 * min).toISOString(), description: "", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5110", boardColumn: "New" },
-  { id: 5098, title: "Login redirect loops on Safari", state: "Resolved", type: "Bug", assignedTo: "Sam", changed: new Date(now - 5 * 24 * 60 * min).toISOString(), description: "", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5098", boardColumn: "Testing" },
+  { id: 5101, title: "Org dropdowns remember the last org", state: "Active", type: "User Story", assignedTo: "You", changed: new Date(now - 2 * 60 * min).toISOString(), description: "Users pick the same org every time. Remember it.", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5101", boardColumn: "In Progress", tags: ["frontend", "org-picker"], fields: { [P1]: "2" } },
+  { id: 5102, title: "Pathways quick view freezes with many tags", state: "Active", type: "Bug", assignedTo: "You", changed: new Date(now - 26 * 60 * min).toISOString(), description: "Typing in the tag filter freezes the page.", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5102", boardColumn: "In Progress", tags: ["Blocked", "perf", "pathways", "customer-reported", "regression"], fields: { [P1]: "2" } },
+  { id: 5115, title: "Donor sync waits on the CRM's API keys", state: "Active", type: "User Story", assignedTo: "You", changed: new Date(now - 2 * 24 * 60 * min).toISOString(), description: "The CRM team hasn't issued production keys yet.", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5115", boardColumn: "In Progress", tags: ["blocked-by-crm", "integration"], fields: { [P1]: "2" } },
+  { id: 5110, title: "Export donors to CSV", state: "New", type: "User Story", assignedTo: "You", changed: new Date(now - 3 * 24 * 60 * min).toISOString(), description: "", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5110", boardColumn: "New", tags: ["data-export"], fields: { [P1]: "1" } },
+  { id: 5120, title: "Receipt PDFs cut off long names", state: "New", type: "Bug", assignedTo: "You", changed: new Date(now - 4 * 24 * 60 * min).toISOString(), description: "", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5120", boardColumn: "New", tags: [], fields: { [P1]: "3", "Microsoft.VSTS.CMMI.Blocked": "Yes" } },
+  { id: 5098, title: "Login redirect loops on Safari", state: "Resolved", type: "Bug", assignedTo: "Sam", changed: new Date(now - 5 * 24 * 60 * min).toISOString(), description: "", url: "https://dev.azure.com/acme/Backoffice/_workitems/edit/5098", boardColumn: "Testing", tags: [], fields: { [P1]: "2" } },
 ];
+// the board's card styles, as Azure DevOps answers cardrulesettings: one rule Mockingbird can't check
+const cardRuleSettings = {
+  rules: {
+    fill: [
+      { name: "Blocked", isEnabled: "true", clauses: [{ fieldName: "System.Tags", index: 1, logicalOperator: "", operator: "Contains", value: "Blocked" }], settings: { "background-color": "#F4A3A3", "title-color": "#000000" } },
+      { name: "Urgent", isEnabled: "true", clauses: [{ fieldName: P1, index: 1, logicalOperator: "", operator: "=", value: "1" }], settings: { "background-color": "#FBE74B" } },
+      { name: "Stale", isEnabled: "true", clauses: [{ fieldName: "System.ChangedDate", index: 1, logicalOperator: "", operator: "<", value: "@Today - 30" }], settings: { "background-color": "#DDDDDD" } },
+    ],
+    tagStyle: [
+      { name: "frontend", isEnabled: "true", settings: { "background-color": "#009CCC", color: "#FFFFFF" } },
+      { name: "regression", isEnabled: "true", settings: { "background-color": "#CC293D", color: "#FFFFFF" } },
+      { name: "integration", isEnabled: "true", settings: { "background-color": "#773B93", color: "#FFFFFF" } },
+    ],
+  },
+};
 const board: AdoBoard = {
   id: "b1",
   name: "Stories",
@@ -124,6 +143,7 @@ const board: AdoBoard = {
     { name: "Testing", type: "inProgress", stateMappings: { "User Story": "Resolved", Bug: "Resolved" } },
     { name: "Done", type: "outgoing", stateMappings: { "User Story": "Closed", Bug: "Closed" } },
   ],
+  cardRules: parseCardRules(cardRuleSettings),
 };
 
 let settings: Settings = { ...DEFAULT_SETTINGS, setupDone: true, teamName: "You", signalingUrl: "https://mockingbird-signaling.you.workers.dev", presets: [{ id: "p-review", name: "Review on dev", launch: "claude", repoPath: REPO, branch: { mode: "new", pattern: "review-{date}", base: "dev" }, useWorktree: true, kickoff: "Review the latest changes on dev for bugs and missing tests." }] };

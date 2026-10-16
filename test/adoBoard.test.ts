@@ -29,6 +29,23 @@ const routes = {
     ],
   },
   "/_apis/wit/workitems/42?": { id: 42 },
+  "/Epsilon%20Team/_apis/work/boards/b1/cardrulesettings?": {
+    rules: {
+      fill: [
+        { name: "Blocked", isEnabled: "true", clauses: [{ fieldName: "System.Tags", index: 1, logicalOperator: "", operator: "Contains", value: "Blocked" }], settings: { "background-color": "#F4A3A3" } },
+        { name: "Urgent", isEnabled: "true", clauses: [{ fieldName: "Microsoft.VSTS.Common.Priority", index: 1, logicalOperator: "", operator: "=", value: "1" }], settings: { "background-color": "#FBE74B" } },
+      ],
+      tagStyle: [{ name: "regression", isEnabled: "true", settings: { "background-color": "#CC293D", color: "#FFFFFF" } }],
+    },
+  },
+};
+const cardRules = {
+  fill: [
+    { name: "Blocked", clauses: [{ field: "System.Tags", op: "contains", value: "Blocked", logic: "and" }], background: "#f4a3a3", blocked: true },
+    { name: "Urgent", clauses: [{ field: "Microsoft.VSTS.Common.Priority", op: "=", value: "1", logic: "and" }], background: "#fbe74b", blocked: false },
+  ],
+  tags: [{ tag: "regression", background: "#cc293d" }],
+  ignored: [],
 };
 
 afterEach(() => {
@@ -51,8 +68,43 @@ describe("the team's board in Azure DevOps", () => {
           { name: "Planning", type: "inProgress", stateMappings: { Bug: "New" } },
           { name: "In Progress", type: "inProgress", stateMappings: { Bug: "In Progress" } },
         ],
+        cardRules,
       },
     ]);
+  });
+
+  it("reads each board's card styles read-only", async () => {
+    const { store, calls } = setup(routes);
+    await teamBoards(store);
+    expect(calls.map((c) => c.url)).toContain("https://dev.azure.com/acme/Epsilon/Epsilon%20Team/_apis/work/boards/b1/cardrulesettings?api-version=7.0");
+    expect(calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("still loads the board when its card styles can't be read, saying so in the log", async () => {
+    const { "/Epsilon%20Team/_apis/work/boards/b1/cardrulesettings?": _, ...withoutRules } = routes;
+    const { store } = setup(withoutRules);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { boards } = await teamBoards(store);
+    expect(boards[0].columns).toHaveLength(3);
+    expect(boards[0].cardRules).toEqual({ error: expect.stringMatching(/Azure DevOps 404/) });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/couldn't read the Backlog items board's card styles; blocked work is marked by tag and Blocked field only/), expect.stringMatching(/404/));
+    warn.mockRestore();
+  });
+
+  it("logs the card styles it can't apply", async () => {
+    const odd = { rules: { fill: [{ name: "Stale", isEnabled: "true", clauses: [{ fieldName: "System.ChangedDate", operator: "<", value: "@Today - 30" }], settings: { "background-color": "#dddddd" } }] } };
+    const { store } = setup({ ...routes, "/Epsilon%20Team/_apis/work/boards/b1/cardrulesettings?": odd });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { boards } = await teamBoards(store);
+    expect(boards[0].cardRules).toEqual({ fill: [], tags: [], ignored: [expect.stringMatching(/^“Stale”: System.ChangedDate compares to @Today - 30, a macro/)] });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/Backlog items board: card style “Stale”.*not applied/));
+    warn.mockRestore();
+  });
+
+  it("shares one read of the boards between calls made together", async () => {
+    const { store, calls } = setup(routes);
+    await Promise.all([teamBoards(store, true), teamBoards(store)]);
+    expect(calls.filter((c) => c.url.includes("/_apis/work/boards?"))).toHaveLength(1);
   });
 
   it("moves a card by setting the column's state and the board column field", async () => {
@@ -148,5 +200,55 @@ describe("who the PAT belongs to", () => {
     await expect(writeAdoSnapshot(unknown.store)).rejects.toThrow(/which work items are yours/);
     expect(fs.existsSync(path.join(unknown.store.settings.workTrackerPath, "session-digests"))).toBe(false);
     log.mockRestore();
+  });
+});
+
+describe("the board's work items: tags and the fields card styles read", () => {
+  const items = {
+    "/_apis/connectionData": { authenticatedUser: { providerDisplayName: "Ryan E" } },
+    "/_apis/wit/wiql?": { workItems: [{ id: 1 }, { id: 2 }] },
+    "/_apis/wit/workitems?ids=": {
+      value: [
+        { id: 1, fields: { "System.Title": "Waiting", "System.State": "Active", "System.Tags": "Blocked; perf;  ; regression", "Microsoft.VSTS.CMMI.Blocked": "Yes", "Microsoft.VSTS.Common.Priority": 1 } },
+        { id: 2, fields: { "System.Title": "Untagged", "System.State": "New" } },
+      ],
+    },
+  };
+  const fieldsOf = (calls: { url: string }[]) => new URL(calls.find((c) => c.url.includes("/workitems?ids="))!.url).searchParams.get("fields")!.split(",");
+  const projectFields = (...refs: string[]) => ({ "/Epsilon/_apis/wit/fields?": { value: refs.map((referenceName) => ({ referenceName })) } });
+
+  it("splits System.Tags into a list", async () => {
+    const { store } = setup({ ...routes, ...items, ...projectFields("System.Tags") });
+    const { items: got } = await listWorkItems(store);
+    expect(got.map((i) => i.tags)).toEqual([["Blocked", "perf", "regression"], []]);
+  });
+
+  it("fetches the Blocked field and the fields card rules test, where the project defines them", async () => {
+    const { store, calls } = setup({ ...routes, ...items, ...projectFields("System.Tags", "Microsoft.VSTS.CMMI.Blocked", "Microsoft.VSTS.Common.Priority") });
+    const { items: got } = await listWorkItems(store);
+    expect(fieldsOf(calls)).toEqual(expect.arrayContaining(["System.Tags", "Microsoft.VSTS.CMMI.Blocked", "Microsoft.VSTS.Common.Priority"]));
+    expect(got[0].fields).toEqual({ "Microsoft.VSTS.CMMI.Blocked": "Yes", "Microsoft.VSTS.Common.Priority": "1" });
+    expect(got[1].fields).toEqual({ "Microsoft.VSTS.CMMI.Blocked": "", "Microsoft.VSTS.Common.Priority": "" });
+  });
+
+  it("doesn't ask for the Blocked field in a process without it, which would fail the whole request", async () => {
+    const { store, calls } = setup({ ...routes, ...items, ...projectFields("System.Tags", "Microsoft.VSTS.Common.Priority") });
+    await listWorkItems(store);
+    expect(fieldsOf(calls)).not.toContain("Microsoft.VSTS.CMMI.Blocked");
+    expect(fieldsOf(calls)).toContain("Microsoft.VSTS.Common.Priority");
+  });
+
+  it("loads with tags only when the boards or the project's fields can't be read, and logs it", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { store, calls } = setup(items);
+    const { items: got } = await listWorkItems(store);
+    expect(got[0].tags).toEqual(["Blocked", "perf", "regression"]);
+    expect(got[0].fields).toBeUndefined();
+    expect(fieldsOf(calls)).not.toContain("Microsoft.VSTS.CMMI.Blocked");
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/couldn't read the team's boards/), expect.any(String));
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/couldn't list the project's fields/), expect.any(String));
+    // reading only: the work item query is the one POST
+    expect(calls.filter((c) => c.method !== "GET").map((c) => c.url)).toEqual([expect.stringContaining("/_apis/wit/wiql?")]);
+    warn.mockRestore();
   });
 });
