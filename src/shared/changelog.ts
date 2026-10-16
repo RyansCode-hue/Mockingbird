@@ -45,7 +45,7 @@ export const CHANGELOG: Release[] = [
     version: "1.4.11",
     date: "2026-10-16",
     items: [
-      n("What's new: click the version in the top bar for each release's changes, what's coming next, and to suggest something"),
+      n("What's new: click the top bar's version for each release's changes, what's next, and to suggest something"),
       n("Dashboard cards show their Azure DevOps tags, and blocked work is marked in red with an \"N blocked\" filter"),
       n("Edit a work item's tags from its dialog, and Mark blocked / Unblock from a card's right-click menu"),
       u("Cards take your board's own card colours and tag colours where Mockingbird can match them"),
