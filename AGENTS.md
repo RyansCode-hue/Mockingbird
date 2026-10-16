@@ -59,7 +59,21 @@ answer `{ error }` and are logged in the console and `window.__mbCalls`.
 Work on a branch; once verified, fast-forward `main` (never force-push), push,
 and delete the branch. Ryan installs through the app's own Update, so don't
 package or install it. Bump the version only when Ryan asks — Update offers a
-build only when the version goes up. Every version bump adds its entry to
+build only when the version goes up, so every release that should reach Ryan
+or Nick gets a new number (never re-ship an installed version).
+
+Versions follow these rules from 1.5.0 on (`test/changelog.test.ts` enforces
+the first and the numbering):
+- **Patch** (1.5.1 → 1.5.2): only fixes, polish, wording, performance — no
+  "New" item in its changelog entry.
+- **Minor** (1.5 → 1.6, patch back to 0): anything new a user can do or see —
+  a feature, a new view or UI redesign, an integration.
+- **Major** (1.x → 2.0): breaks compatibility — data an older version can't
+  read, or a team-room change an older Mockingbird can't talk to. A release
+  that needs both teammates to update says so in its notes and is at least a
+  minor.
+- One step at a time: +1 in exactly one part, lower parts reset to 0.
+ Every version bump adds its entry to
 `src/shared/changelog.ts` (What's new) in the same commit: what users notice
 since the last bump — features, fixes, polish and UI, never docs, tests or
 internal changes — one plain line each, most important first, at most about

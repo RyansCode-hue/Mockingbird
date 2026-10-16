@@ -39,6 +39,22 @@ describe("the changelog", () => {
     }
   });
 
+  it("versions by what a release brings, from 1.5.0 on: anything new is a minor (x.y.0), a patch only fixes and polishes", () => {
+    const parse = (v: string) => v.split(".").map(Number) as [number, number, number];
+    const ruled = CHANGELOG.filter((r) => isNewer("1.4.11", r.version));
+    for (const r of ruled) {
+      const [, , patch] = parse(r.version);
+      const hasNew = r.items.some((c) => c.kind === "new");
+      if (patch > 0) expect(hasNew, `${r.version} has New items, so it must be a minor release (x.y.0), not a patch`).toBe(false);
+    }
+    // each step is +1 in exactly one part, the lower parts reset
+    for (let i = 0; i + 1 < CHANGELOG.length && isNewer("1.4.11", CHANGELOG[i].version); i++) {
+      const [a, b, c] = parse(CHANGELOG[i + 1].version);
+      const next = CHANGELOG[i].version;
+      expect([`${a + 1}.0.0`, `${a}.${b + 1}.0`, `${a}.${b}.${c + 1}`], `${CHANGELOG[i + 1].version} → ${next} skips a number`).toContain(next);
+    }
+  });
+
   it("goes back to 1.0.0 and covers every 1.4 release", () => {
     expect(CHANGELOG.at(-1)?.version).toBe("1.0.0");
     for (let n = 0; n <= 10; n++) expect(releaseOf(`1.4.${n}`), `1.4.${n}`).not.toBeNull();
