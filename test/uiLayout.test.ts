@@ -66,6 +66,25 @@ describe.skipIf(!local)("the interface's layout", () => {
     expect(failed.boxes[parts[1]][0]?.text).toMatch(/^Couldn't read ~\/\.claude\/CLAUDE\.md: .*EACCES/);
   }, 120_000);
 
+  it("says in each Settings row when its check failed, with a Retry, instead of checking forever", async () => {
+    const parts = [".set-row .set-row-note", ".set-row .set-row-ctl button"];
+    const ok = await render("1200x800", "section=agents", parts);
+    expect(ok.boxes[parts[0]].map((b) => b.text)).toContain("2.1.290 · signed in");
+    expect(ok.boxes[parts[1]].map((b) => b.text)).not.toContain("Retry");
+    // a rejected call (no handler) and an { error } answer, on a section of each check
+    for (const [query, failure] of [
+      ["section=agents&checks=error", /^Couldn't check: .*No handler registered for 'setup:status'/],
+      ["section=ado&checks=error", /^Couldn't check: .*No handler registered for 'setup:status'/],
+      ["section=debriefs&checks=reply", /^Couldn't check: the login shell timed out/],
+    ] as const) {
+      const { boxes } = await render("1200x800", query, parts);
+      const notes = boxes[parts[0]].map((b) => b.text);
+      expect(notes.some((n) => failure.test(n)), `${query}: ${notes.join(" | ")}`).toBe(true);
+      expect(notes.filter((n) => n === "checking…"), query).toEqual([]);
+      expect(boxes[parts[1]].map((b) => b.text), query).toContain("Retry");
+    }
+  }, 180_000);
+
   it("keeps the status bar's restart button whole in a narrow window", async () => {
     const { boxes } = await render("1000x700", "", [".statusbar .sb-update"]);
     const [pill] = boxes[".statusbar .sb-update"] ?? [];

@@ -1,5 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
-import { settled } from "../src/renderer/settled";
+import { checkNote, runCheck, settled } from "../src/renderer/settled";
+
+describe("a check a Settings row shows", () => {
+  const note = (c: Parameters<typeof checkNote<{ az: boolean }>>[0]) => checkNote(c, (v) => (v.az ? "Found" : "Not installed"));
+  it("reads checking… only while the call is out, then its answer", () => {
+    expect(note(null)).toBe("checking…");
+    expect(note({ az: true })).toBe("Found");
+  });
+  it("lands a rejected call as the row's failure, logged with what was being checked", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const r = await runCheck("the Azure CLI", Promise.reject(new Error("No handler registered for 'connectors:status'")));
+    expect(note(r)).toBe("Couldn't check: No handler registered for 'connectors:status'");
+    expect(spy.mock.calls.some((c) => String(c[0]).includes("couldn't check the Azure CLI"))).toBe(true);
+    spy.mockRestore();
+  });
+  it("logs an { error } answer too, and shows it the same way", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const r = await runCheck("the Azure CLI", Promise.resolve({ error: "login shell timed out" }));
+    expect(note(r)).toBe("Couldn't check: login shell timed out");
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+});
 
 describe("an IPC reply a view waits on", () => {
   it("passes a reply through as it came, { error } replies included", async () => {

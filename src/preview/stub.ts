@@ -796,6 +796,13 @@ const suggestProblem = (): SuggestProblem | null =>
         ? { problem: "no-access", message: "Your GitHub account can't see RyansCode-hue/Mockingbird. Ask the repository's owner for access, or copy the suggestion and send it another way." }
         : null;
 const err = (message: string) => ({ error: message });
+/** A Settings check failing as ?checks= says: `error` rejects the call (as a missing handler does), `reply` answers { error }. */
+const checksFail = (channel: string): { error: string } | undefined => {
+  const how = new URLSearchParams(location.search).get("checks");
+  if (how === "error") throw new Error(`Error invoking remote method '${channel}': Error: No handler registered for '${channel}'`);
+  if (how === "reply") return err("the login shell timed out after 15s");
+  return undefined;
+};
 
 /** The ticket's pipeline, started at the first stage when it has none yet. */
 const pipelineOf = (id: string) => (pipelines[id] ??= { ticketId: id, stage: "ba", history: [], prs: [], feedback: [], drafts: [], checks: {} });
@@ -1103,7 +1110,9 @@ const api: Record<string, (...a: any[]) => any> = {
       400
     );
   },
-  setupStatus: async () => ({
+  // Settings' checks; ?checks=error rejects them outright, ?checks=reply answers { error }
+  connectorsStatus: async () => checksFail("connectors:status") ?? { az: true, global: ["github"], project: [] },
+  setupStatus: async () => checksFail("setup:status") ?? {
     claude: { found: true, path: "/opt/homebrew/bin/claude", version: "2.1.290", signedIn: true },
     codex: { found: true, path: "/opt/homebrew/bin/codex", version: "0.156.1", signedIn: true },
     hooks: { claude: true, codex: true },
@@ -1111,7 +1120,7 @@ const api: Record<string, (...a: any[]) => any> = {
     repoRoots: settings.repoRoots.map((path) => ({ path, exists: true, repos: path === "~/Code" ? 12 : 0 })),
     workTrackerPath: "~/Code/WorkTracker",
     ado: { connected: true, display: "You", detail: "acme / Backoffice" },
-  }),
+  },
   adoConfigGet: async () => ({ orgUrl: "https://dev.azure.com/acme", project: "Backoffice", patFile: "secrets/ado.pat" }),
   modelCatalog: async () => err("UI preview: no model catalog"),
 
