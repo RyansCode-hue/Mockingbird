@@ -33,4 +33,14 @@ describe("the stylesheet", () => {
     expect(rule(".term-holder.fixed > .terminal")).toMatch(/margin-top:\s*auto/);
     expect(rule(".term-holder.fixed")).not.toMatch(/justify-content/);
   });
+
+  it("floats a pane's status banners over its terminal, out of the layout, each on an opaque ground", () => {
+    const rule = (sel: string) => css.match(new RegExp(`^${sel.replace(/[.>*]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`, "m"))?.[1] ?? "";
+    expect(rule(".term-area")).toMatch(/position:\s*relative/);
+    expect(rule(".pane-notes")).toMatch(/position:\s*absolute/);
+    expect(rule(".pane-notes")).toMatch(/pointer-events:\s*none/);
+    expect(rule(".pane-notes > *")).toMatch(/pointer-events:\s*auto/);
+    // tints alone are translucent: over the terminal's text they'd be unreadable
+    for (const banner of [".wait-banner", ".stall-banner", ".team-pane-note"]) expect(rule(banner), banner).toMatch(/background:[^;]*var\(--bg-pane\)/);
+  });
 });

@@ -440,7 +440,17 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .rail .cell .v.teal { color: var(--teal-text); }
 .rail .cell .v.red { color: var(--red); }
 
-.term-holder { flex: 1; min-height: 0; padding: 9px 3px 3px 9px; }
+.term-area { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* xterm's own layers stack up to z-index 10; isolated, they stay under the pane's notes */
+.term-holder { flex: 1; min-height: 0; padding: 9px 3px 3px 9px; isolation: isolate; }
+/* a pane's status banners float over the top of its terminal: coming and going, they never re-fit it
+   (a re-fit resizes the pty, and the agent redraws its whole screen). The top rows are the oldest output;
+   the agent's prompt, at the bottom, stays clear. Each banner paints its tint over the pane's own ground. */
+.pane-notes {
+  position: absolute; top: 5px; left: 8px; right: 8px; z-index: 1;
+  display: flex; flex-direction: column; gap: 4px; pointer-events: none;
+}
+.pane-notes > * { pointer-events: auto; margin: 0; box-shadow: 0 2px 6px rgba(0, 0, 0, .22); }
 /* terminals scroll with trackpad/wheel — no visible scrollbar gutter */
 .term-holder .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
 
@@ -456,8 +466,8 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .pane.st-waiting .pane-header .meta { color: var(--amber-text-dim); }
 .pane.st-waiting .chip { color: var(--amber-text); background: var(--fill-waiting); }
 .wait-banner {
-  display: flex; align-items: center; gap: 6px; margin: 0 8px 8px; padding: 5px 7px;
-  border-radius: 4px; background: var(--fill-waiting-glow); flex-shrink: 0;
+  display: flex; align-items: center; gap: 6px; padding: 5px 7px;
+  border-radius: 4px; background: linear-gradient(var(--fill-waiting-glow), var(--fill-waiting-glow)), var(--bg-pane);
 }
 .wait-banner .reason {
   font: 500 10px var(--ui); color: var(--amber-ink);
@@ -1985,8 +1995,8 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .chip.overlap { color: var(--red); background: rgba(207, 106, 90, .12); cursor: pointer; flex-shrink: 0; }
 /* session health: a quiet working pane, and agents updated under running panes */
 .stall-banner {
-  display: flex; align-items: center; gap: 8px; margin: 0 8px 8px; padding: 5px 7px; flex-shrink: 0;
-  border-radius: 4px; background: var(--fill-subtle); border: 1px solid var(--line-strong);
+  display: flex; align-items: center; gap: 8px; padding: 5px 7px;
+  border-radius: 4px; background: linear-gradient(var(--fill-subtle), var(--fill-subtle)), var(--bg-pane); border: 1px solid var(--line-strong);
   font: 400 10.5px var(--ui); color: var(--text-2);
 }
 .stall-banner .reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2509,8 +2519,8 @@ button.chip.warn { border: 0; cursor: pointer; }
    pane scrollable from its top. */
 .term-holder.fixed > .terminal { flex: none; margin-top: auto; }
 .team-pane-note {
-  margin: 0 8px 8px; padding: 5px 7px; border-radius: 4px; flex-shrink: 0;
-  background: var(--fill-subtle); font: 500 10px var(--ui); color: var(--text-2);
+  padding: 5px 7px; border-radius: 4px;
+  background: linear-gradient(var(--fill-subtle), var(--fill-subtle)), var(--bg-pane); font: 500 10px var(--ui); color: var(--text-2);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .team-follow { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; font: 500 10.5px var(--ui); color: var(--text-2); }
