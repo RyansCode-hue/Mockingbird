@@ -347,6 +347,10 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 /* a pane opening rises in from slightly smaller; one closing fades a little smaller, faster */
 ::view-transition-new(.mb-pane):only-child { animation: mb-pane-in var(--dur-spring) var(--ease-spring) both, mb-fade-in var(--dur-3) linear both; }
 ::view-transition-old(.mb-pane):only-child { animation: mb-pane-out var(--dur-2) var(--ease-exit) both; }
+/* a pane that keeps its size shows only its live image as it moves: a streaming terminal's snapshot is stale at
+   once, and fading across from it doubles the text (keepsItsSize in gridMotion.ts) */
+::view-transition-old(.mb-same) { animation: none; opacity: 0; }
+::view-transition-new(.mb-same) { animation: none; }
 @keyframes mb-pane-in { from { transform: translateY(var(--rise)) scale(var(--pop)); } }
 @keyframes mb-pane-out { to { opacity: 0; transform: scale(.985); } }
 @keyframes mb-fade-out { to { opacity: 0; } }

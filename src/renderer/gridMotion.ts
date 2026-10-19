@@ -75,6 +75,15 @@ export function genieFlight(p: Rect, t: Rect, dir: "in" | "out"): { group: Fligh
   };
 }
 
+/**
+ * Whether a pane keeps its size through a grid change (moved or not). Such a pane shows only its live image: a
+ * terminal streaming output would otherwise cross-fade from its snapshot, which is already stale, and double
+ * its text. A pane that's resized cross-fades, since its text reflows.
+ */
+export function keepsItsSize(was: Rect | undefined, now: Rect): boolean {
+  return !!was && Math.abs(was.w - now.w) < 0.5 && Math.abs(was.h - now.h) < 0.5;
+}
+
 /** Which way a group swap moves: down (1) to a group listed below the current one, up (-1) to one above. */
 export function switchDir(order: readonly string[], from: string, to: string): 1 | -1 {
   const a = order.indexOf(from);
@@ -103,11 +112,12 @@ export const rectOf = (el: Element): Rect => {
   return { x: r.left, y: r.top, w: r.width, h: r.height };
 };
 
-function nameCells(fly: string | null) {
+/** Names the grid's cells for a View Transition; given their sizes before the change, marks the ones that keep theirs. */
+function nameCells(fly: string | null, was?: Map<string, Rect>) {
   for (const el of cellsNow()) {
     const key = el.dataset.cell!;
     el.style.setProperty("view-transition-name", key === fly ? FLY : nameOf(key));
-    el.style.setProperty("view-transition-class", key === fly ? "" : "mb-pane");
+    el.style.setProperty("view-transition-class", key === fly ? "" : was && keepsItsSize(was.get(key), rectOf(el)) ? "mb-pane mb-same" : "mb-pane");
   }
 }
 function unnameCells() {
@@ -163,6 +173,7 @@ export function gridChange(move: GridMove, update: () => void): void {
   const root = document.documentElement;
   root.dataset.gridMove = move.kind === "switch" ? (move.dir > 0 ? "down" : "up") : move.kind;
   const flyKey = move.kind === "minimize" ? move.cell : null;
+  const was = new Map(cellsNow().map((el) => [el.dataset.cell!, rectOf(el)]));
   nameCells(flyKey);
   let fly: { p: Rect; t: FlyTo } | null = null;
   if (move.kind === "minimize") {
@@ -173,7 +184,7 @@ export function gridChange(move: GridMove, update: () => void): void {
     inUpdate(update);
     if (move.kind === "minimize" && fly) fly.t = move.target();
     // the pane coming out of the folder takes the flight's name; the rest keep theirs
-    nameCells(move.kind === "restore" && move.from.via !== "none" ? move.cell : null);
+    nameCells(move.kind === "restore" && move.from.via !== "none" ? move.cell : null, was);
   });
   running = t;
   // the flight's animations hold their last frame (fill) until the transition ends, then go with it

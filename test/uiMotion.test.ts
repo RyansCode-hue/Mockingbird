@@ -13,7 +13,7 @@ const local = !process.env.CI && fs.existsSync(chrome);
 type State = { folderOpen: boolean; cells: string[]; ghosts: number; holding: number; named: number };
 type Audit = {
   before: State;
-  inFlight: State & { move: string | null };
+  inFlight: State & { move: string | null; images: { cell: string; same: boolean; oldOpacity: string; newAnimation: string }[] };
   minimized: State;
   lidOpening: State;
   restored: State;
@@ -52,6 +52,10 @@ describe.skipIf(!local)("the interface's motion", () => {
     expect(a.inFlight.move).toBe("minimize");
     expect(a.inFlight.cells).not.toContain(ws);
     expect(a.inFlight.folderOpen).toBe(true);
+    // the pane keeping its size shows only its live terminal, never its stale snapshot faded across it; the
+    // resized one cross-fades, as its text reflows
+    expect(a.inFlight.images).toContainEqual({ cell: "s1", same: true, oldOpacity: "0", newAnimation: "none" });
+    expect(a.inFlight.images.find((i) => i.cell === "s4")).toMatchObject({ same: false, newAnimation: expect.stringContaining("fade-in") });
     // landed: the lid has closed
     expect(a.minimized.folderOpen).toBe(false);
     settled(a.minimized);
