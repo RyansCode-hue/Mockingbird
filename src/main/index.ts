@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { Store, appendLogLine, expandHome, MB_DIR } from "./store";
 import { readJsonFile, writeFileAtomic } from "./fileOps";
-import { SessionManager, paneEnv, type OverdueMessage } from "./sessions";
+import { SessionManager, PTY_TERM, paneEnv, terminalEnv, type OverdueMessage } from "./sessions";
 import { indexRepos } from "./repos";
 import { worktreeState, cleanupWorktree, listBranches, listWorktrees, removeWorktree, migrateWorktree, forgetState } from "./worktrees";
 import { FolderWatcher } from "./watch";
@@ -282,9 +282,9 @@ const debug = new DebugManager({ emit: toWindow });
 const runs = new RunManager({
   debugger: debug,
   debugTarget: debugTargetFor,
-  spawn: (command, opts) => pty.spawn("/bin/zsh", ["-ilc", command], { name: "xterm-256color", cols: 120, rows: 30, cwd: opts.cwd, env: opts.env }),
+  spawn: (command, opts) => pty.spawn("/bin/zsh", ["-ilc", command], { name: PTY_TERM, cols: 120, rows: 30, cwd: opts.cwd, env: opts.env }),
   emit: toWindow,
-  baseEnv: () => paneEnv() as Record<string, string>,
+  baseEnv: terminalEnv,
   docker: async () => {
     const bin = await which("docker");
     if (!bin) throw new Error("Docker isn't installed (or isn't on your shell's PATH)");

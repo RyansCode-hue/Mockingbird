@@ -53,6 +53,19 @@ export function paneEnv(): Record<string, string> {
   return env;
 }
 
+/** The terminal type every pty Mockingbird starts reports: xterm.js speaks xterm-256color's sequences. */
+export const PTY_TERM = "xterm-256color";
+
+/**
+ * paneEnv for a process running on one of Mockingbird's terminals. xterm.js
+ * draws 24-bit colour (still held to the theme's minimum contrast), so programs
+ * are told so; a login shell's profile or a launch's own env can still set
+ * COLORTERM otherwise.
+ */
+export function terminalEnv(): Record<string, string> {
+  return { ...paneEnv(), COLORTERM: "truecolor" };
+}
+
 /** A message waiting for its pane's turn to end; `from` is the local session that sent it, `at` when. */
 type Queued = { text: string; submit: boolean; at: number; from?: string; overdueTold?: boolean };
 
@@ -338,12 +351,12 @@ export class SessionManager {
     if (req.reuseId) this.mayRun(req.reuseId);
     try {
       proc = pty.spawn("/bin/zsh", claudeArgs, {
-        name: "xterm-256color",
+        name: PTY_TERM,
         cols: 120,
         rows: 32,
         cwd,
         env: {
-          ...paneEnv(),
+          ...terminalEnv(),
           MOCKINGBIRD: "1",
           // inherited by the agent and its hooks — including an agent the user
           // starts by hand inside a terminal pane — so every hook event names

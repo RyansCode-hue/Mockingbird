@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { SessionManager, paneEnv } from "../src/main/sessions";
+import { SessionManager, paneEnv, terminalEnv } from "../src/main/sessions";
 
 type Written = string[];
 function manager(saved: any[] = []) {
@@ -173,6 +173,14 @@ describe("paneEnv", () => {
     expect(env.CLAUDE_CONFIG_DIR).toBe("/keep/me");
     expect(env.ANTHROPIC_MODEL).toBe("keep-too");
     expect(env.HOME).toBe(process.env.HOME);
+  });
+  it("is told 24-bit colour only on a terminal (panes, terminals, Run's services), whatever the app inherited", () => {
+    const keep = { ...process.env };
+    process.env.COLORTERM = "";
+    const [plain, onTerminal] = [paneEnv(), terminalEnv()];
+    process.env = keep;
+    expect(onTerminal.COLORTERM).toBe("truecolor");
+    expect(plain.COLORTERM).toBe("");
   });
 });
 
