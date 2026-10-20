@@ -1217,6 +1217,13 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .set-row-ctl { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
 .set-ok { color: var(--teal); font: 600 13px var(--mono); }
 .set-bad { color: var(--red); font: 600 13px var(--mono); }
+.set-check-failed {
+  display: flex; align-items: center; gap: 12px; padding: 8px 10px; margin: 0 0 6px; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--red) 40%, transparent); background: color-mix(in srgb, var(--red) 7%, transparent);
+}
+.set-check-failed .msg { flex: 1; min-width: 0; font: 400 11px/1.5 var(--ui); color: var(--red); overflow-wrap: anywhere; }
+.set-check-failed button { flex-shrink: 0; }
+.set-unknown { color: var(--text-4); }
 .set-note { font: 400 11px var(--ui); color: var(--text-3); margin: 6px 0; }
 .set-note.ok { color: var(--teal-text); }
 .set-actions { display: flex; gap: 8px; margin: 12px 0; }

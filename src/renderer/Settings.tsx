@@ -8,7 +8,7 @@ import { TAB_LABELS } from "./tabs";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { readPref, writePref } from "./prefs";
-import { checkNote, runCheck, settled } from "./settled";
+import { checkNote, runCheck, settled, type Check } from "./settled";
 import { useAction } from "./useAction";
 import { SetRow } from "./SetRow";
 import { Toggle } from "./Toggle";
@@ -563,14 +563,13 @@ export function SettingsView({
     }
   };
   const st = status && !isErr(status) ? status : null;
-  /** A row's Retry while the setup check it shows has failed. */
-  const statusRetry = isErr(status) && (
-    <button className="outline" onClick={loadStatus}>
-      Retry
-    </button>
-  );
+  /**
+   * A row's note on the setup check, in a section whose CheckFailed notice says why the check failed:
+   * the row then reads a dim "—" rather than repeating the error.
+   */
+  const statusNote = (done: (s: SetupStatus) => string) => (isErr(status) ? <Unknown /> : checkNote(status, done));
   const agentLine = (a: (s: SetupStatus) => AgentCheck) =>
-    checkNote(status, (s) => {
+    statusNote((s) => {
       const c = a(s);
       return !c.found ? "not installed" : `${c.version ?? ""}${c.signedIn === true ? " · signed in" : c.signedIn === false ? " · not signed in" : ""}`;
     });
@@ -673,8 +672,8 @@ export function SettingsView({
         {section === "agents" && (
           <>
             <h2>Agents</h2>
+            <CheckFailed what="the agents and status hooks" check={status} onRetry={loadStatus} />
             <SetRow title="Claude Code" note={agentLine((x) => x.claude)}>
-              {statusRetry}
               <button
                 className="outline"
                 disabled={updating !== null}
@@ -690,7 +689,6 @@ export function SettingsView({
               </button>
             </SetRow>
             <SetRow title="Codex" note={agentLine((x) => x.codex)}>
-              {statusRetry}
               <button
                 className="outline"
                 disabled={updating !== null || (st !== null && !st.codex.found)}
@@ -714,7 +712,7 @@ export function SettingsView({
             </SetRow>
             <SetRow
               title="Status hooks"
-              note={checkNote(status, ({ hooks }) =>
+              note={statusNote(({ hooks }) =>
                 hooks.codex === false
                   ? "Codex hooks missing — Codex panes won't show working / waiting / idle"
                   : hooks.claude
@@ -722,7 +720,6 @@ export function SettingsView({
                     : "Not installed — panes won't show working / waiting / idle"
               )}
             >
-              {statusRetry}
               {st && (!st.hooks.claude || st.hooks.codex === false) ? (
                 <button
                   className="outline"
@@ -764,23 +761,15 @@ export function SettingsView({
           <>
             <h2>Repos</h2>
             <p className="set-lede">New Session lists the git repos under these folders.</p>
+            <CheckFailed what="the repo folders" check={status} onRetry={loadStatus} />
             {s.repoRoots.map((r) => {
               const found = st?.repoRoots.find((x) => x.path === r);
               return (
                 <SetRow
                   key={r}
                   title={r}
-                  note={
-                    status && isErr(status)
-                      ? `Couldn't count its repos: ${status.error}`
-                      : !found
-                        ? "scanning…"
-                        : !found.exists
-                          ? "folder not found"
-                          : plural(found.repos, "repo")
-                  }
+                  note={isErr(status) ? <Unknown /> : !found ? "scanning…" : !found.exists ? "folder not found" : plural(found.repos, "repo")}
                 >
-                  {statusRetry}
                   <button className="danger" title="Remove" onClick={() => upd({ repoRoots: s.repoRoots.filter((x) => x !== r) })}>
                     ✕
                   </button>
@@ -816,8 +805,12 @@ export function SettingsView({
               title="Connection"
               note={checkNote(status, ({ ado }) => (ado.connected ? `Connected as ${ado.display} · ${ado.detail}` : ado.detail))}
             >
-              {statusRetry}
-              {st &&<span className={st.ado.connected ? "set-ok" : "set-bad"}>{st.ado.connected ? "✓" : "✕"}</span>}
+              {isErr(status) && (
+                <button className="outline" onClick={loadStatus}>
+                  Retry
+                </button>
+              )}
+              {st && <span className={st.ado.connected ? "set-ok" : "set-bad"}>{st.ado.connected ? "✓" : "✕"}</span>}
             </SetRow>
             <SetRow title="WorkTracker folder" note={`${s.workTrackerPath} — holds config.json and debrief notes`}>
               <button
@@ -964,6 +957,30 @@ export function SettingsView({
         )}
       </div>
     </div>
+  );
+}
+
+/** A check that failed, said once above the rows it feeds (which read <Unknown />), with its Retry. */
+function CheckFailed({ what, check, onRetry }: { what: string; check: Check<unknown>; onRetry: () => void }) {
+  if (!isErr(check)) return null;
+  return (
+    <div className="set-check-failed" role="alert">
+      <span className="msg">
+        Couldn't check {what}: {check.error}
+      </span>
+      <button className="outline" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
+/** A row's value while the check above it has failed. */
+function Unknown() {
+  return (
+    <span className="set-unknown" title="Couldn't check — see above">
+      —
+    </span>
   );
 }
 
