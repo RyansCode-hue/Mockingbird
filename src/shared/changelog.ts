@@ -42,6 +42,19 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.4.12",
+    date: "2026-10-20",
+    items: [
+      p("Sessions show their full colours: every pane runs with COLORTERM=truecolor"),
+      f("Status banners float over the terminal instead of resizing it, so Claude stops redrawing"),
+      f("A Settings check that fails shows the error and a Retry instead of \"checking…\" forever"),
+      f("Stopping or quitting a debug session ends the program it launched; attached ones keep running"),
+      f("Grid changes no longer show doubled text in panes that keep their size"),
+      p("Animations run about a third slower, and the genie into the folder takes 480 ms"),
+      f("A room backup you drop is forgotten before your next turn backs up"),
+    ],
+  },
+  {
     version: "1.4.11",
     date: "2026-10-16",
     items: [
