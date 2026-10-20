@@ -1,6 +1,8 @@
+import { spawn } from "child_process";
 import * as fs from "fs";
 import * as http from "http";
 import type * as https from "https";
+import * as net from "net";
 import type { AddressInfo } from "net";
 import * as os from "os";
 import * as path from "path";
@@ -23,7 +25,7 @@ import { describeStray, killStrays, settledStrays } from "./leaks";
  * adapter, killed with its process group. What had to be killed fails the
  * test, naming it.
  */
-const live: { runs: RunManager; dbg: DebugManager }[] = [];
+const live: { runs?: RunManager; dbg: DebugManager }[] = [];
 afterEach(async () => {
   const problems: string[] = [];
   const within = (p: Promise<void>, what: string) =>
@@ -31,7 +33,7 @@ afterEach(async () => {
       problems.push(err.message);
     });
   for (const { runs, dbg } of live.splice(0)) {
-    await within(runs.stopAll(), "stopping the services");
+    if (runs) await within(runs.stopAll(), "stopping the services");
     await within(dbg.stopAll(), "stopping the debug sessions");
   }
   const left = await settledStrays({ roots: [os.homedir()], descendantsOf: process.pid }, 3000);
@@ -212,6 +214,68 @@ describe("a debug session's end", () => {
   });
 });
 
+describe("what a debug adapter started", () => {
+  const adapter = path.join(__dirname, "fixtures", "dap", "fakeAdapter.mjs");
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  };
+  const until = async (what: string, ok: () => boolean, ms = 5000) => {
+    for (const end = Date.now() + ms; !ok(); await new Promise((r) => setTimeout(r, 50))) if (Date.now() > end) throw new Error(`${what} within ${ms / 1000} s`);
+  };
+
+  /** A session through the fixture adapter (test/fixtures/dap), with the adapter's pid — its process group — and the debuggee's. */
+  async function session(dir: string, config: { request: "launch" | "attach" } & Record<string, unknown>) {
+    const events: unknown[][] = [];
+    const dbg = new DebugManager({ emit: (...e) => events.push(e), breakpointsDir: path.join(dir, ".bp") });
+    live.push({ dbg });
+    const { spawnStdioAdapter } = await import("../src/main/dap/adapters");
+    const id = await dbg.launch({ worktree: dir, repo: dir, service: "app", name: "app", adapterID: "fake", config, connect: async () => spawnStdioAdapter(process.execPath, [adapter], { PATH: "/usr/bin:/bin" }, dir) });
+    let pids: RegExpExecArray | null = null;
+    await until("the adapter to say what it started", () => !!(pids = events.map((e) => /adapter (\d+) debuggee (\d+)/.exec(String(e[3]))).find(Boolean) ?? null));
+    return { dbg, id, group: Number(pids![1]), debuggee: Number(pids![2]) };
+  }
+
+  const endings: [string, (dbg: DebugManager, id: string, adapterPid: number) => unknown][] = [
+    ["the session is stopped", (dbg, id) => dbg.stop(id)],
+    ["the adapter dies", (_dbg, _id, pid) => process.kill(pid, "SIGKILL")],
+    ["the app quits without waiting on the adapter", (dbg) => dbg.endAll()],
+  ];
+
+  it.each(endings)("ends the program it launched, with its whole process group, when %s", async (_, end) => {
+    const dir = fs.realpathSync(tempDir("dap-launch"));
+    const s = await session(dir, { request: "launch", cwd: dir });
+    expect(alive(s.debuggee)).toBe(true);
+    await end(s.dbg, s.id, s.group);
+    await until("the adapter's process group to end", () => !alive(-s.group));
+    expect(alive(s.debuggee)).toBe(false);
+    expect(s.dbg.infos()[0].state).toBe("ended");
+  });
+
+  it("leaves a process it attached to running, however the session ends", async () => {
+    const dir = fs.realpathSync(tempDir("dap-attach"));
+    // the user's own process, in a group of its own
+    const user = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: dir, detached: true, stdio: "ignore" });
+    try {
+      for (const [how, end] of endings) {
+        const s = await session(dir, { request: "attach", processId: user.pid });
+        expect(s.debuggee).toBe(user.pid);
+        await end(s.dbg, s.id, s.group);
+        await until(`the adapter's process group to end when ${how}`, () => !alive(-s.group));
+        await new Promise((r) => setTimeout(r, 200));
+        expect(alive(user.pid!), `the attached process, once ${how}`).toBe(true);
+      }
+    } finally {
+      user.kill("SIGKILL");
+      await until("the attached process to end", () => user.exitCode !== null || user.signalCode !== null);
+    }
+  });
+});
+
 describe("the environment adapters run in", () => {
   it("is the service's own, not Mockingbird's", async () => {
     const dir = fs.realpathSync(tempDir("py-env"));
@@ -279,6 +343,21 @@ describe("reading a Python service's command for the debugger", () => {
 
 // the real adapter, cached between test runs so it's downloaded once
 const cache = path.join(os.tmpdir(), "mockingbird-test-debug-cache");
+
+/**
+ * A loopback port nothing listens on now, for a service's base port: test
+ * runs in other checkouts share the machine, and on a fixed port one run's
+ * debugger finds another run's program.
+ */
+const freePort = () =>
+  new Promise<number>((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as AddressInfo;
+      srv.close(() => resolve(port));
+    });
+  });
 
 describe("debugging a real Python program", () => {
   it("stops at a breakpoint, shows locals, evaluates, steps, and runs to the end", async () => {
@@ -409,13 +488,14 @@ describe("debugging real JavaScript", () => {
   // a real Chrome needs a desktop session: CI runners have none, so this runs on a developer's Mac only
   it.skipIf(!fs.existsSync(chrome) || !!process.env.CI)("opens a dev server's page in Chrome and stops at a breakpoint in its script", async () => {
     const dir = fs.realpathSync(tempDir("dbg-web"));
+    const port = await freePort();
     fs.writeFileSync(path.join(dir, "index.html"), '<!doctype html><html><body><script src="main.js"></script></body></html>');
     fs.writeFileSync(path.join(dir, "main.js"), ["function greet(name) {", "  const message = 'hello ' + name;", "  document.title = message;", "}", "setTimeout(() => greet('mockingbird'), 500);", ""].join("\n"));
     const server = `node -e "const fs=require('fs'),p=require('path');require('http').createServer((q,s)=>{const f=p.join(process.cwd(),q.url==='/'?'index.html':q.url);fs.readFile(f,(e,d)=>{s.writeHead(e?404:200,{'Content-Type':f.endsWith('.js')?'text/javascript':'text/html'});s.end(d)})}).listen(\${port:web})"`;
     const events: any[] = [];
     const { dbg, runs } = debugRun(
       dir,
-      { services: [{ name: "web", command: server, ports: [{ name: "web", base: 47410, url: "http://localhost:${port}/" }], ready: { port: "web" }, debug: { type: "chrome", url: "http://localhost:${port:web}/" } }] },
+      { services: [{ name: "web", command: server, ports: [{ name: "web", base: port, url: "http://localhost:${port}/" }], ready: { port: "web" }, debug: { type: "chrome", url: "http://localhost:${port:web}/" } }] },
       events,
       { browserArgs: ["--headless=new", "--use-mock-keychain", "--password-store=basic"] }
     );
@@ -564,6 +644,7 @@ describe("Blazor WebAssembly and containers", () => {
     fs.writeFileSync(path.join(dir, "worker.py"), ["import time", "def tick(n):", "    value = n * 3", "    return value", "for i in range(1000):", "    tick(i)", "    time.sleep(0.05)", ""].join("\n"));
     const { ensureAdapter, DEBUGPY } = await import("../src/main/dap/adapters");
     const debugpyDir = await ensureAdapter(DEBUGPY, undefined, cache);
+    const port = await freePort();
     const events: any[] = [];
     const dbg = new DebugManager({ emit: (ch, ...a) => events.push([ch, ...a]), breakpointsDir: path.join(dir, ".bp") });
     await dbg.setBreakpoints(dir, "worker.py", [3]);
@@ -581,7 +662,7 @@ describe("Blazor WebAssembly and containers", () => {
               {
                 name: "worker",
                 command: `PYTHONPATH=${debugpyDir} python3 -m debugpy --listen 127.0.0.1:\${port:debug} worker.py`,
-                ports: [{ name: "debug", base: 47630 }],
+                ports: [{ name: "debug", base: port }],
                 ready: { port: "debug" },
                 debug: { type: "python-attach", port: "debug", pathMappings: [{ localRoot: ".", remoteRoot: dir }] },
               },

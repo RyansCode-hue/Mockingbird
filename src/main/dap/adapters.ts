@@ -139,7 +139,14 @@ interface StdioAdapter {
   stderr(): string;
 }
 
+/**
+ * Start an adapter in its own process group, ended whole when its connection
+ * closes: on a stop, on quitting, and when the adapter exits. A program the
+ * adapter launches itself (netcoredbg's dotnet app) is in that group, so it
+ * never outlives the adapter; a process the adapter only attaches to is in a
+ * group of its own, which this never touches.
+ */
 export function spawnStdioAdapter(command: string, args: string[], env: Record<string, string>, cwd: string): StdioAdapter {
-  const { conn, stderr } = spawnRpcProcess(command, args, { cwd, env, name: "The debug adapter" }, (input, output, onClose) => new DapConnection(input, output, { onClose, closeOnEnd: false }));
+  const { conn, stderr } = spawnRpcProcess(command, args, { cwd, env, name: "The debug adapter", group: true }, (input, output, onClose) => new DapConnection(input, output, { onClose, closeOnEnd: false }));
   return { conn, dispose: () => conn.close(), stderr };
 }

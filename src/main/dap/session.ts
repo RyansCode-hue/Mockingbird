@@ -366,18 +366,46 @@ export class DebugManager {
     return { result: String(r.result ?? ""), ref: r.variablesReference ?? 0, ...(r.type ? { type: String(r.type) } : {}) };
   }
 
+  /**
+   * Whether the program a session debugs is Mockingbird's to end: its top
+   * session launched it. An attach to a process started elsewhere only
+   * detaches, leaving that process running — debugpy honours
+   * terminateDebuggee on an attach too.
+   */
+  private launched(l: Live): boolean {
+    let top = l;
+    for (let p: Live | undefined; top.info.parentId && (p = this.live.get(top.info.parentId)); ) top = p;
+    return top.opts.config.request === "launch";
+  }
+
   /** End a session (and its children), stopping what it launched. */
   async stop(id: string): Promise<void> {
     const l = this.live.get(id);
     if (!l || l.info.state === "ended") return;
     l.stopRequested = true;
     for (const c of [...this.live.values()]) if (c.info.parentId === id) await this.stop(c.info.id);
-    await l.conn.request("disconnect", { terminateDebuggee: true, restart: false }, 8_000).catch(() => {});
+    await l.conn
+      .request("disconnect", { terminateDebuggee: this.launched(l), restart: false }, 8_000)
+      // an adapter that closes the connection rather than answer has done what was asked
+      .catch((err: Error) => l.conn.isClosed || this.output(l.info.id, "important", `The debugger didn't disconnect cleanly: ${err.message}\n`));
     this.end(l);
   }
 
   /** Every session, for quitting the app. */
   async stopAll(): Promise<void> {
     for (const l of [...this.live.values()]) if (!l.info.parentId) await this.stop(l.info.id);
+  }
+
+  /**
+   * End every session now, without waiting on the adapters: for a quit that
+   * can't wait. Each adapter's process group ends with its connection, taking
+   * what it launched along; what a session only attached to keeps running.
+   */
+  endAll(): void {
+    for (const l of [...this.live.values()]) {
+      if (l.info.parentId || l.info.state === "ended") continue;
+      l.stopRequested = true;
+      this.end(l);
+    }
   }
 }

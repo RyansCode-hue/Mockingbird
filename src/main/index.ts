@@ -646,6 +646,8 @@ const quit = new QuitSequence({
   steps: [
     { name: "saving scrollback", run: () => sessions.saveScrollback(true) },
     { name: "stopping team rooms", run: () => stopTeam() },
+    // whatever debug session outlasted the services' bounded stop: its adapter's process group ends now
+    { name: "ending debug sessions", run: () => debug.endAll() },
     { name: "stopping language servers", run: () => void lsp.stopAll().catch((err) => logError("lsp:stopAll on quit", err)) },
     { name: "starting the update's installer", run: () => startPendingInstall() },
   ],

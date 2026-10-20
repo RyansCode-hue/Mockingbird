@@ -5,7 +5,7 @@ import * as net from "net";
 import * as path from "path";
 import { DEBUG_DIR, DEBUGPY, JS_DEBUG, NETCOREDBG, ensureAdapter, spawnStdioAdapter } from "./adapters";
 import { DEBUGPY_IN_CONTAINER } from "../composeOverride";
-import { killIfAlive, stderrTail } from "../rpc";
+import { endProcessGroup, stderrTail } from "../rpc";
 import { quote } from "../shell";
 import { connectTcp, tcpConnector, type DapConnection } from "./client";
 import type { Connection } from "./session";
@@ -354,11 +354,13 @@ function jsDebugConnector(dir: string, env: Record<string, string>): () => Promi
     const proc = spawn(process.execPath, [path.join(dir, "js-debug", "src", "dapDebugServer.js"), String(port), "127.0.0.1"], {
       env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
       stdio: ["ignore", "ignore", "pipe"],
+      // its own process group, ended whole with it (see spawnStdioAdapter)
+      detached: true,
     });
     const tail = stderrTail(proc, 4000);
     let failed = "";
     proc.on("error", (e) => (failed = `js-debug didn't start: ${e.message}\n`));
-    return { port, kill: () => killIfAlive(proc), stderr: () => failed + tail() };
+    return { port, kill: () => endProcessGroup(proc), stderr: () => failed + tail() };
   };
   return async () => {
     server ??= start();

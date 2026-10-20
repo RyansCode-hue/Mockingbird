@@ -7,7 +7,8 @@
  * 2. The windows close. The editor's unsaved changes ask first and can keep
  *    the app open (`cancelled`), except on a signal, which quits regardless.
  * 3. will-quit, when nothing can cancel the quit anymore: the quit steps run
- *    (scrollback, team rooms, language servers, the update's installer), each
+ *    (scrollback, team rooms, debug sessions still left, language servers,
+ *    the update's installer), each
  *    on its own so one failing never skips the rest; then every pty ends
  *    (bounded) before Node is torn down.
  *
