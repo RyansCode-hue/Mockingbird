@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
+import { D } from "../src/renderer/motion";
 import { tempDir } from "./helpers";
 
 // Motion, played in the UI preview in real headless Chrome: local only (CI runners have no desktop); the script
@@ -72,7 +73,8 @@ describe.skipIf(!local)("the interface's motion", () => {
     settled(a.dialogClosed);
     expect(a.toastGone.toasts).toBe(0);
     settled(a.toastGone);
-    expect(a.longest).toBeLessThanOrEqual(400);
+    // the genie is the longest animation there is
+    expect(a.longest).toBeLessThanOrEqual(D.genie);
   }, 120_000);
 
   it("under reduce, runs no View Transitions, only fades of 120 ms or less, and no waiting pulse", async () => {

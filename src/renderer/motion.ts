@@ -25,8 +25,11 @@ export function motionMode(pref: MotionPref, osReduce: boolean, forcedOff = fals
   return osReduce ? "reduce" : "full";
 }
 
-/** Fluid's durations, ms: xs for small feedback, s for menus and exits, m for state, l for journeys. */
-export const D = { xs: 90, s: 150, m: 220, l: 340 } as const;
+/**
+ * Fluid's durations, ms: xs for small feedback, s for menus and exits, m for state, l for journeys, genie for
+ * a pane flying into or out of its folder. "Relaxed": about a third longer than Fluid's first cut.
+ */
+export const D = { xs: 120, s: 200, m: 300, l: 460, genie: 480 } as const;
 /** The longest any animation runs under reduce. */
 export const REDUCED_MS = 120;
 export const EASE = {
@@ -70,8 +73,9 @@ export function spring(stiffness: number, damping: number): { easing: string; du
   return { easing: `linear(${pts.join(", ")})`, duration, overshoot: Math.max(0, Math.max(...samples) - 1) };
 }
 
-/** Fluid's spring: what moves on screen (the grid making room, the lid, toasts) moves on this. */
-export const SPRING = spring(700, 2 * 0.9 * Math.sqrt(700));
+/** Fluid's spring: what moves on screen (the grid making room, the lid, toasts) moves on this. Stiffness 384
+ * settles about 1.35× slower than 700 at the same damping ratio, matching the Relaxed durations. */
+export const SPRING = spring(384, 2 * 0.9 * Math.sqrt(384));
 
 // ---- the live mode ----
 

@@ -231,7 +231,7 @@ agreed direction, **Later** is worth doing once the foundations settle.
   can list teammates' changed files and read a file's diff. Room worktrees get
   their `.mockingbird/` files whether or not the room has a House project.
 
-- **Motion** — one personality, "Fluid" (90/150/220/340 ms, a critically damped
+- **Motion** — one personality, "Fluid" (120/200/300/460 ms, the genie 480 ms, a critically damped
   spring, no bounce), with the genie for minimize: a workspace's folder in the
   side bar is open while it's on screen and closed while minimized; minimizing
   flies the pane into the open folder and the lid closes after it, restoring

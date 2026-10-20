@@ -223,7 +223,7 @@ function flight(p: Rect, t: Rect, dir: "in" | "out", side: "old" | "new"): Anima
   const g = genieFlight(p, t, dir);
   const root = document.documentElement;
   const run = (part: FlightPart, pseudo: string) =>
-    root.animate(part.frames, { duration: D.l, easing: part.easing, fill: "both", pseudoElement: `::view-transition-${pseudo}(${FLY})` });
+    root.animate(part.frames, { duration: D.genie, easing: part.easing, fill: "both", pseudoElement: `::view-transition-${pseudo}(${FLY})` });
   return [run(g.group, "group"), run(g.pair, "image-pair"), run(g.image, side)];
 }
 
