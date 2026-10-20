@@ -655,6 +655,7 @@ describe("cleaning up backups", () => {
     clock += 2 * 86_400_000;
     await t.ryan.svc.prune();
     expect(refIn(t.bare, ref)).toBeNull();
+    expect(refIn(t.ryanClone, ref)).toBeNull(); // the owner's own copy goes with the drop, before any next turn
     expect(backupIn(t.ryanM, t.roomId)!.dropped).toMatchObject({ reason: "stale" });
     await until(() => !nickCopy(t).ref, "Nick's copy to go");
     // a turn after all brings the session's backup back

@@ -723,8 +723,10 @@ export class TakeoverService {
 
   /**
    * Delete a session's backup ref on origin, where there may be one, then
-   * tell the room, whose members delete their copies. A failure is kept on
-   * the session and shown.
+   * tell the room, whose members delete their copies, and delete this
+   * install's own before resolving: its record of the backup must be gone by
+   * the next turn, which would otherwise take origin's copy as still pushed.
+   * A failure is kept on the session and shown.
    */
   private async dropBackup(roomId: RoomId, sessionId: string, reason: DropReason, repo: string, title: string): Promise<void> {
     try {
@@ -736,8 +738,10 @@ export class TakeoverService {
       const rec = this.local(roomId).own[sessionId];
       const error = this.cleanupFailed(roomId, sessionId, title, err);
       if (rec) this.saveOwn(roomId, sessionId, { ...rec, drop: { reason, error, at: this.now() } });
+      this.changed();
+      return;
     }
-    this.changed();
+    await this.forgetLocal(roomId, sessionId).catch((err) => void this.cleanupFailed(roomId, sessionId, title, err));
   }
 
   private cleanupFailed(roomId: RoomId, sessionId: string, title: string, err: unknown): string {
@@ -837,6 +841,8 @@ export class TakeoverService {
     if (s?.dropped?.by !== e.author) return; // not the owner's: the room ignored it
     // the session continued in a worktree here is done (closed, merged, stale, taken over): the conversation saved for it goes
     if (s.owner === this.d.team.self.id) this.removeSavedFor(e.body.sessionId, `the backup of “${s.session.title}” was deleted (${e.body.reason})`);
+    // this install's own drop: dropBackup deletes its copies itself, in order with its next turn
+    if (e.author === this.d.team.self.id) return;
     this.track(
       this.forgetLocal(room.id, e.body.sessionId).catch((err) => {
         this.cleanupFailed(room.id, e.body.sessionId, s.session.title, err);
