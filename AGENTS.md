@@ -22,6 +22,16 @@ npm run build
 Add a test with each fix or feature. Tests run with a throwaway HOME, so they
 never touch `~/.mockingbird`, `~/.claude` or `~/.codex`.
 
+Tests leave nothing behind (`test/leaks.ts`): make temp folders inside the
+file's HOME (`tempDir()`), or with `scratchDir()` when one must be outside it —
+never elsewhere with a bare `mkdtemp`. When a file ends, whatever it started or still runs from its
+folders is killed with its process group and fails the file by name; the run
+ends by killing and removing whatever is still left in its own folders, and
+fails listing it. `MB_E2E_APP=1` runs the two-app tests: a missing Electron
+binary is installed first (from `~/Library/Caches/electron`; a worktree with no
+node_modules uses the main checkout's), and the run fails, rather than skips,
+when it can't be.
+
 ## Look at UI changes
 
 ```bash

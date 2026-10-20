@@ -2,13 +2,21 @@ import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import { removeAtEnd } from "./leaks";
 
 export const git = (cwd: string, ...args: string[]) =>
   execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
-/** A fresh directory inside this test file's temp home. */
+/** A fresh directory inside this test file's temp home, removed with it. */
 export function tempDir(name: string): string {
   return fs.mkdtempSync(path.join(os.homedir(), `${name}-`));
+}
+
+/** A fresh directory outside this test file's temp home (in the system's temp folder), removed when the file ends. */
+export function scratchDir(name: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`));
+  removeAtEnd(dir);
+  return dir;
 }
 
 /** A git repo on `main` with the given files committed, in `parent` (a fresh temp folder by default). */

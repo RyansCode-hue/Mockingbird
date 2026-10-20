@@ -41,11 +41,15 @@ describe.skipIf(!appE2E)("quitting the app with panes open", () => {
     // what the editor does with unsaved changes; a click gives the page the user activation that needs
     await app.evaluate(`window.addEventListener("beforeunload", (e) => { e.preventDefault(); e.returnValue = false; }), 1`);
     for (const type of ["mousePressed", "mouseReleased"]) await app.send("Input.dispatchMouseEvent", { type, x: 400, y: 300, button: "left", clickCount: 1 });
+    await untilTrue("the terminal running", async () => (await app.evaluate<number>(`window.mb.listSessions().then((l) => l.filter((s) => s.status !== "dead").length)`)) === 1);
     app.close();
+    const started = descendants(app.child.pid!);
     const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => app.child.once("exit", (code, signal) => resolve({ code, signal })));
     app.child.kill("SIGTERM");
     const quit = await Promise.race([exit, new Promise((r) => setTimeout(() => r("still running 10 s later"), 10_000))]);
     expect(quit).toEqual({ code: 0, signal: null });
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(killOrphans(started)).toEqual([]); // its terminal ended with it
     expect(mainLog(app)).toMatch(/quit: unsaved editor changes discarded, quitting on SIGTERM/);
   }, 60_000);
 });
