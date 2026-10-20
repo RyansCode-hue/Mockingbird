@@ -6,7 +6,7 @@ import * as os from "os";
 import * as path from "path";
 import * as pty from "node-pty";
 import { PassThrough } from "stream";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { DapConnection } from "../src/main/dap/client";
 import { FrameParser, frame } from "../src/main/rpc";
 import { DebugManager } from "../src/main/dap/session";
@@ -14,6 +14,31 @@ import { debugTargetFor, inferPython, shellWords } from "../src/main/dap/targets
 import { RunManager, type Spawn } from "../src/main/run";
 import { validateProfile } from "../src/main/runProfile";
 import { tempDir } from "./helpers";
+import { describeStray, killStrays, settledStrays } from "./leaks";
+
+/**
+ * Each test's services and debug sessions end with it — passed, failed or
+ * timed out (a timed-out test never reaches its own finally) — and so does
+ * whatever they launched that still runs: a debuggee left behind by its
+ * adapter, killed with its process group. What had to be killed fails the
+ * test, naming it.
+ */
+const live: { runs: RunManager; dbg: DebugManager }[] = [];
+afterEach(async () => {
+  const problems: string[] = [];
+  const within = (p: Promise<void>, what: string) =>
+    Promise.race([p, new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`${what} didn't finish within 15 s`)), 15_000).unref())]).catch((err: Error) => {
+      problems.push(err.message);
+    });
+  for (const { runs, dbg } of live.splice(0)) {
+    await within(runs.stopAll(), "stopping the services");
+    await within(dbg.stopAll(), "stopping the debug sessions");
+  }
+  const left = await settledStrays({ roots: [os.homedir()], descendantsOf: process.pid }, 3000);
+  await killStrays(left);
+  problems.push(...left.map((s) => `left running (killed now): ${describeStray(s)}`));
+  if (problems.length) throw new Error(`the test's debuggers didn't end cleanly:\n  ${problems.join("\n  ")}`);
+}, 60_000);
 
 describe("the DAP wire format", () => {
   it("frames messages and reassembles them however the bytes arrive", () => {
@@ -278,6 +303,7 @@ describe("debugging a real Python program", () => {
       debugger: dbg,
       debugTarget: (s, ctx) => debugTargetFor(s, { ...ctx, debugRoot: cache }),
     });
+    live.push({ runs, dbg });
 
     const stoppedAt = async () => {
       for (let i = 0; i < 200; i++) {
@@ -345,6 +371,7 @@ describe("debugging real JavaScript", () => {
       debugger: dbg,
       debugTarget: (s, ctx) => debugTargetFor(s, { ...ctx, debugRoot: cache, ...extra }),
     });
+    live.push({ runs, dbg });
     return { dbg, runs };
   };
   const stopped = async (events: any[]) => {
@@ -483,6 +510,7 @@ describe("debugging a real .NET program", () => {
       debugger: dbg,
       debugTarget: (s, ctx) => debugTargetFor(s, { ...ctx, debugRoot: cache }),
     });
+    live.push({ runs, dbg });
     try {
       const r = (await runs.start(dir, { mode: "side", debug: ["app"] })) as { ids: string[] };
       let e: any;
@@ -565,6 +593,7 @@ describe("Blazor WebAssembly and containers", () => {
       debugger: dbg,
       debugTarget: (s, ctx) => debugTargetFor(s, { ...ctx, debugRoot: cache }),
     });
+    live.push({ runs, dbg });
     try {
       await runs.start(dir, { mode: "side", debug: ["worker"] });
       let e: any;

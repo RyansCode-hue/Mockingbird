@@ -7,6 +7,7 @@ import { keysOf, leaf, split } from "../src/renderer/layoutTree";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
 import type { SessionInfo } from "../src/shared/types";
+import { scratchDir } from "./helpers";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, title: id, cwd: `/w/${id}`, status: "idle", kind: "work", ...over }) as SessionInfo;
@@ -99,7 +100,7 @@ describe("closing a session whose worktree state can't be read", () => {
     expect(worktreeGone(gone)).toBe(true);
   });
   it("doesn't take any other failure for a missing worktree", async () => {
-    const notRepo = fs.mkdtempSync(path.join(os.tmpdir(), "mb-notrepo-"));
+    const notRepo = scratchDir("mb-notrepo");
     const failed = await worktreeState(notRepo).then(
       () => "",
       (e: Error) => e.message

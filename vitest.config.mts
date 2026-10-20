@@ -10,6 +10,7 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     environment: "node",
     setupFiles: ["test/setup.ts"],
+    globalSetup: ["test/globalSetup.ts"],
     pool: "forks", // node-pty is native, and tests change HOME per file
     testTimeout: 20_000,
   },

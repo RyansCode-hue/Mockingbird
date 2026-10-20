@@ -4,6 +4,7 @@ import * as path from "path";
 import { execFile, execFileSync } from "child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installHooks, hookStatus, hooksInstalled, watchEvents, ensureHookScript } from "../src/main/hooks";
+import { scratchDir } from "./helpers";
 
 const claudeSettings = path.join(os.homedir(), ".claude", "settings.json");
 const codexHooks = path.join(os.homedir(), ".codex", "hooks.json");
@@ -177,7 +178,7 @@ describe("hook script", () => {
   it("handles every event either agent sends: exits 0 at once, prints nothing outside a room, and leaves the event", () => {
     installHooks(null);
     fs.rmSync(eventsDir, { recursive: true, force: true });
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "plain-"));
+    const cwd = scratchDir("plain");
     const all = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "PermissionRequest", "Stop"];
     for (const ev of all) {
       const started = Date.now();

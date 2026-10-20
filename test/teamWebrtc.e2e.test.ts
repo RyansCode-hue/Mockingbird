@@ -1,8 +1,8 @@
 import { spawn } from "child_process";
 import * as esbuild from "esbuild";
-import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
+import { electronBinary, ensureElectron, findElectronPackage } from "./e2e/electron";
 import { tempDir } from "./helpers";
 
 /**
@@ -17,17 +17,14 @@ import { tempDir } from "./helpers";
  */
 
 const root = path.resolve(__dirname, "..");
-const electronDir = path.join(root, "node_modules", "electron");
-const electronBin = (() => {
-  try {
-    return path.join(electronDir, "dist", fs.readFileSync(path.join(electronDir, "path.txt"), "utf8").trim());
-  } catch {
-    return null;
-  }
+// with MB_E2E_APP set, a missing Electron fails the run (the global setup installs it) rather than skipping this
+const electronBin = process.env.CI ? null : process.env.MB_E2E_APP ? ensureElectron(root, false).bin : (() => {
+  const { pkg } = findElectronPackage(root);
+  return pkg && electronBinary(pkg);
 })();
 
 describe("team rooms over real WebRTC", () => {
-  it.skipIf(!!process.env.CI || !electronBin || !fs.existsSync(electronBin))(
+  it.skipIf(!electronBin)(
     "two peer hosts connect, exchange events, a request and a stream, survive crashes and drops, and refuse forged descriptions",
     async () => {
       const out = path.join(tempDir("e2e"), "app");

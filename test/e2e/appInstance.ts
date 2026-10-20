@@ -3,6 +3,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { tempDir } from "../helpers";
+import { removeAtEnd } from "../leaks";
+import { ensureElectron } from "./electron";
 import { descendants, killOrphans, killTree, track } from "./processes";
 import { startLocalSignaling } from "../../signaling/src/local/server";
 import { DEFAULT_SETTINGS, type Settings } from "../../src/shared/types";
@@ -16,16 +18,11 @@ import type { TeamStatus } from "../../src/shared/team/types";
 
 export const root = path.resolve(__dirname, "..", "..");
 
-export const electronBin = (() => {
-  try {
-    return path.join(root, "node_modules/electron/dist", fs.readFileSync(path.join(root, "node_modules/electron/path.txt"), "utf8").trim());
-  } catch {
-    return null;
-  }
-})();
+/** Whether the two-instance tests run: asked for (they open windows), and not in CI. */
+export const appE2E = !!process.env.MB_E2E_APP && !process.env.CI;
 
-/** Whether the two-instance tests run: asked for (they open windows), not in CI, and Electron is installed. */
-export const appE2E = !!process.env.MB_E2E_APP && !process.env.CI && !!electronBin && fs.existsSync(electronBin);
+/** Asked for, they fail without Electron rather than skip: the run's global setup installs it (test/e2e/electron.ts). */
+export const electronBin = appE2E ? ensureElectron(root, false).bin : null;
 
 export type AppInstance = Awaited<ReturnType<typeof launchApp>>;
 
@@ -197,6 +194,7 @@ export async function e2eSignaling(): Promise<{ url: string; real: boolean; crea
   const identity = path.join(E2E_CREATOR_HOME, ".mockingbird", "team", "identity.json");
   if (!fs.existsSync(identity)) throw new Error(`There's no e2e room creator at ${identity}: run npm run team:e2e-fingerprint and allow its fingerprint on the Worker first`);
   const home = fs.mkdtempSync("/tmp/mbe2e-");
+  removeAtEnd(home); // when a test fails before close()
   fs.mkdirSync(path.join(home, ".mockingbird", "team"), { recursive: true, mode: 0o700 });
   fs.copyFileSync(identity, path.join(home, ".mockingbird", "team", "identity.json"));
   fs.chmodSync(path.join(home, ".mockingbird", "team", "identity.json"), 0o600);
