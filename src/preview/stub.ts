@@ -1904,7 +1904,15 @@ if (params.has("motionAudit")) {
     clickRow(document.querySelector(".sub-label[data-ws]")!);
     await sleep(320); // a folder click waits out a double-click
     note();
-    out.inFlight = { ...state(), move: document.documentElement.dataset.gridMove ?? null };
+    // panes that keep their size show only their live image; resized ones cross-fade from their snapshot
+    const images = () =>
+      [...document.querySelectorAll<HTMLElement>(".grid > [data-cell]")].flatMap((el) => {
+        const name = el.style.getPropertyValue("view-transition-name");
+        if (!name || name === "mb-fly") return [];
+        const pseudo = (side: string) => getComputedStyle(document.documentElement, `::view-transition-${side}(${name})`);
+        return [{ cell: el.dataset.cell, same: el.style.getPropertyValue("view-transition-class").split(" ").includes("mb-same"), oldOpacity: pseudo("old").opacity, newAnimation: pseudo("new").animationName }];
+      });
+    out.inFlight = { ...state(), move: document.documentElement.dataset.gridMove ?? null, images: images() };
     await settle();
     out.minimized = state();
     clickRow(document.querySelector(".sub-label[data-ws]")!);

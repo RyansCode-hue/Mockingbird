@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
+import { D } from "../src/renderer/motion";
 import { tempDir } from "./helpers";
 
 // Motion, played in the UI preview in real headless Chrome: local only (CI runners have no desktop); the script
@@ -13,7 +14,7 @@ const local = !process.env.CI && fs.existsSync(chrome);
 type State = { folderOpen: boolean; cells: string[]; ghosts: number; holding: number; named: number };
 type Audit = {
   before: State;
-  inFlight: State & { move: string | null };
+  inFlight: State & { move: string | null; images: { cell: string; same: boolean; oldOpacity: string; newAnimation: string }[] };
   minimized: State;
   lidOpening: State;
   restored: State;
@@ -52,6 +53,10 @@ describe.skipIf(!local)("the interface's motion", () => {
     expect(a.inFlight.move).toBe("minimize");
     expect(a.inFlight.cells).not.toContain(ws);
     expect(a.inFlight.folderOpen).toBe(true);
+    // the pane keeping its size shows only its live terminal, never its stale snapshot faded across it; the
+    // resized one cross-fades, as its text reflows
+    expect(a.inFlight.images).toContainEqual({ cell: "s1", same: true, oldOpacity: "0", newAnimation: "none" });
+    expect(a.inFlight.images.find((i) => i.cell === "s4")).toMatchObject({ same: false, newAnimation: expect.stringContaining("fade-in") });
     // landed: the lid has closed
     expect(a.minimized.folderOpen).toBe(false);
     settled(a.minimized);
@@ -68,7 +73,8 @@ describe.skipIf(!local)("the interface's motion", () => {
     settled(a.dialogClosed);
     expect(a.toastGone.toasts).toBe(0);
     settled(a.toastGone);
-    expect(a.longest).toBeLessThanOrEqual(400);
+    // the genie is the longest animation there is
+    expect(a.longest).toBeLessThanOrEqual(D.genie);
   }, 120_000);
 
   it("under reduce, runs no View Transitions, only fades of 120 ms or less, and no waiting pulse", async () => {

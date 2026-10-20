@@ -1,7 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { flyTarget, genieFlight, switchDir, type Rect } from "../src/renderer/gridMotion";
+import { flyTarget, genieFlight, keepsItsSize, switchDir, type Rect } from "../src/renderer/gridMotion";
 import { SETTLED_MS, StatusDot, popsOnChange } from "../src/renderer/StatusDot";
 import { FolderIcon } from "../src/renderer/Icons";
 
@@ -16,6 +16,20 @@ describe("a session's status changing", () => {
   it("draws the same dot as before", () => {
     expect(renderToStaticMarkup(React.createElement(StatusDot, { status: "waiting", className: "sm" }))).toBe('<span class="dot sm waiting"></span>');
     expect(renderToStaticMarkup(React.createElement(StatusDot, { status: "idle" }))).toBe('<span class="dot idle"></span>');
+  });
+});
+
+describe("a pane through a grid change", () => {
+  const was: Rect = { x: 8, y: 8, w: 600, h: 400 };
+  it("keeps its size when only its place changes, or nothing does", () => {
+    expect(keepsItsSize(was, was)).toBe(true);
+    expect(keepsItsSize(was, { ...was, x: 616, y: 416 })).toBe(true);
+    expect(keepsItsSize(was, { ...was, w: 600.3 })).toBe(true); // subpixel layout rounding
+  });
+  it("doesn't when it's resized, or is new to the grid", () => {
+    expect(keepsItsSize(was, { ...was, w: 1216 })).toBe(false);
+    expect(keepsItsSize(was, { ...was, h: 820 })).toBe(false);
+    expect(keepsItsSize(undefined, was)).toBe(false);
   });
 });
 

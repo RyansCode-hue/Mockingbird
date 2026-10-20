@@ -36,8 +36,8 @@ describe("springs", () => {
   });
   it("don't bounce at Fluid's damping, and do when under-damped", () => {
     expect(SPRING.overshoot).toBeLessThan(0.002);
-    expect(SPRING.duration).toBeGreaterThan(200);
-    expect(SPRING.duration).toBeLessThan(300);
+    expect(SPRING.duration).toBeGreaterThan(300);
+    expect(SPRING.duration).toBeLessThan(400);
     expect(spring(800, 2 * 0.6 * Math.sqrt(800)).overshoot).toBeGreaterThan(0.05);
   });
 });

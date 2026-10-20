@@ -128,16 +128,16 @@
    The root's data-motion says how much: full; reduce (macOS Reduce motion, or Settings → Motion), where
    everything is a fade of 120 ms or less and loops stop; off, for tests and screenshots. */
 :root {
-  --dur-1: 90ms;
-  --dur-2: 150ms;
-  --dur-3: 220ms;
-  --dur-4: 340ms;
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 300ms;
+  --dur-4: 460ms;
   --ease-enter: cubic-bezier(.05, .7, .1, 1);
   --ease-exit: cubic-bezier(.3, 0, .8, .15);
   --ease-move: cubic-bezier(.2, 0, 0, 1);
-  /* spring k700 ζ.9 (SPRING in motion.ts; test/motion.test.ts keeps the two equal) */
-  --ease-spring: linear(0, 0.018, 0.06, 0.108, 0.164, 0.225, 0.298, 0.361, 0.421, 0.48, 0.544, 0.595, 0.642, 0.692, 0.73, 0.765, 0.796, 0.828, 0.853, 0.874, 0.896, 0.912, 0.926, 0.938, 0.95, 0.958, 0.966, 0.972, 0.978, 0.982, 0.986, 0.99, 0.992, 0.994, 0.996, 0.997, 0.998, 0.999, 1, 1, 1);
-  --dur-spring: 252ms;
+  /* spring k384 ζ.9 (SPRING in motion.ts; test/motion.test.ts keeps the two equal) */
+  --ease-spring: linear(0, 0.016, 0.054, 0.1, 0.155, 0.214, 0.283, 0.345, 0.405, 0.464, 0.526, 0.578, 0.625, 0.669, 0.71, 0.75, 0.783, 0.812, 0.841, 0.863, 0.883, 0.901, 0.918, 0.931, 0.942, 0.952, 0.961, 0.968, 0.974, 0.979, 0.984, 0.987, 0.99, 0.992, 0.995, 0.996, 0.997, 0.998, 0.999, 1, 1);
+  --dur-spring: 331ms;
   --rise: 10px;
   --pop: .95;
 }
@@ -347,6 +347,10 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 /* a pane opening rises in from slightly smaller; one closing fades a little smaller, faster */
 ::view-transition-new(.mb-pane):only-child { animation: mb-pane-in var(--dur-spring) var(--ease-spring) both, mb-fade-in var(--dur-3) linear both; }
 ::view-transition-old(.mb-pane):only-child { animation: mb-pane-out var(--dur-2) var(--ease-exit) both; }
+/* a pane that keeps its size shows only its live image as it moves: a streaming terminal's snapshot is stale at
+   once, and fading across from it doubles the text (keepsItsSize in gridMotion.ts) */
+::view-transition-old(.mb-same) { animation: none; opacity: 0; }
+::view-transition-new(.mb-same) { animation: none; }
 @keyframes mb-pane-in { from { transform: translateY(var(--rise)) scale(var(--pop)); } }
 @keyframes mb-pane-out { to { opacity: 0; transform: scale(.985); } }
 @keyframes mb-fade-out { to { opacity: 0; } }
