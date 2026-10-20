@@ -8,7 +8,7 @@ import { TAB_LABELS } from "./tabs";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { readPref, writePref } from "./prefs";
-import { settled } from "./settled";
+import { checkNote, runCheck, settled, type Check } from "./settled";
 import { useAction } from "./useAction";
 import { SetRow } from "./SetRow";
 import { Toggle } from "./Toggle";
@@ -117,7 +117,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
 
   const saveAndReread = async (broadcastToo: boolean) => {
     if (ioError) return; // don't write an editor we never managed to fill
-    const r = await window.mb.saveClaudeMd(target, content);
+    const r = await settled(window.mb.saveClaudeMd(target, content));
     if (isErr(r)) {
       setIoError(`Couldn't save ${target}: ${r.error}`);
       return; // no broadcast — nothing was written to re-read
@@ -125,11 +125,13 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
     setIoError(null);
     setOriginal(content);
     if (broadcastToo && rereadTargets.length) {
-      const b = await window.mb.broadcast({
-        message: `Heads up: ${loadedPath} was just updated. Please re-read it now and apply it to all work going forward in this session.`,
-        sessionIds: rereadTargets.map((s) => s.id),
-        whenIdle: true,
-      });
+      const b = await settled(
+        window.mb.broadcast({
+          message: `Heads up: ${loadedPath} was just updated. Please re-read it now and apply it to all work going forward in this session.`,
+          sessionIds: rereadTargets.map((s) => s.id),
+          whenIdle: true,
+        })
+      );
       if (isErr(b)) return setBError(`Saved, but couldn't ask the sessions to re-read it: ${b.error}`);
       setBError(null);
       markDelivery(b);
@@ -138,7 +140,7 @@ function ControlRoomPanel({ sessions }: { sessions: SessionInfo[] }) {
 
   const queueBroadcast = async () => {
     if (!message.trim() || !bTargets.length) return;
-    const r = await window.mb.broadcast({ message, sessionIds: bTargets.map((s) => s.id), whenIdle: true });
+    const r = await settled(window.mb.broadcast({ message, sessionIds: bTargets.map((s) => s.id), whenIdle: true }));
     if (isErr(r)) return setBError(`Couldn't queue the broadcast: ${r.error}`);
     setBError(null);
     markDelivery(r);
@@ -246,7 +248,7 @@ function WorktreeJanitor() {
   const { doing, run, error, setError } = useAction();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const load = async () => {
-    const r = await window.mb.listWorktrees();
+    const r = await settled(window.mb.listWorktrees());
     if (isErr(r)) return setError(r.error);
     setError("");
     setList(r);
@@ -466,7 +468,7 @@ export function SettingsView({
   const [newerVersion, setNewerVersion] = useState<string | null>(null);
   const checkForUpdate = async () => {
     setUpdNote("Checking…");
-    const r = await window.mb.updateCheck();
+    const r = await settled(window.mb.updateCheck());
     const where = (u: { source: string }) => (u.source === "release" ? "the latest release" : "the newest version on GitHub");
     setNewerVersion(r && !r.error && r.newer ? r.latest : null);
     if (r === null) setUpdNote("This build doesn't say where its updates come from, so it can't check.");
@@ -490,35 +492,52 @@ export function SettingsView({
 
   const loadStatus = () => {
     setStatus(null);
-    window.mb.setupStatus().then(setStatus);
+    void runCheck("the agents, hooks, repo folders and Azure DevOps", window.mb.setupStatus()).then(setStatus);
   };
-  const loadConnectors = () => window.mb.connectorsStatus().then(setConn);
+  const loadConnectors = () => runCheck("the Azure CLI and debrief MCP servers", window.mb.connectorsStatus()).then(setConn);
+  const retryConnectors = () => {
+    setConn(null);
+    void loadConnectors();
+  };
+  const loadSettings = () => {
+    setLoadError("");
+    void settled<Settings | { error: string }>(window.mb.getSettings()).then((r) => (isErr(r) ? setLoadError(r.error) : setS(r)));
+  };
   useEffect(() => {
-    window.mb.getSettings().then((r: Settings | { error: string }) => (isErr(r) ? setLoadError(r.error) : setS(r)));
-    window.mb.appVersion().then((v: string | { error: string }) =>
+    loadSettings();
+    void settled<string | { error: string }>(window.mb.appVersion()).then((v) =>
       isErr(v) ? console.error("[mockingbird] couldn't read the app version:", v.error) : setVersion(v)
     );
-    window.mb.adoConfigGet().then((r: any) => {
+    void settled(window.mb.adoConfigGet()).then((r: any) => {
       if (isErr(r)) setAdoNote({ ok: false, msg: `Couldn't read your Azure DevOps config: ${r.error}` });
       else setAdoCfg(r);
     });
     loadStatus();
-    loadConnectors();
+    void loadConnectors();
   }, []);
-  if (!s) return <div className="settings-page">{loadError && <div className="err">Couldn't read settings: {loadError}</div>}</div>;
+  if (!s)
+    return (
+      <div className="settings-page">
+        {loadError && (
+          <div className="err">
+            Couldn't read settings: {loadError} <button className="link" onClick={loadSettings}>Retry</button>
+          </div>
+        )}
+      </div>
+    );
 
   // every change saves immediately — there is no Save button to forget. Only the
   // patch is sent: the store merges it, so settings written elsewhere since this
   // view loaded (update folder, presets, per-group message modes) are kept
   const upd = async (patch: Partial<Settings>) => {
     setS((cur) => cur && { ...cur, ...patch });
-    const r = await window.mb.setSettings(patch);
+    const r = await settled(window.mb.setSettings(patch));
     setSaveState(isErr(r) ? { ok: false, msg: `Couldn't save: ${r.error}` } : { ok: true, msg: "Saved" });
     if (patch.repoRoots || patch.claudeBin || patch.codexBin) loadStatus();
   };
   /** A path from the system picker; null when it was cancelled, or failed (said beside the section list). */
   const pick = async (opts: { file?: boolean; defaultPath?: string }): Promise<string | null> => {
-    const p: string | null | { error: string } = await window.mb.pickPath(opts);
+    const p: string | null | { error: string } = await settled(window.mb.pickPath(opts));
     if (isErr(p)) setSaveState({ ok: false, msg: `Couldn't open the picker: ${p.error}` });
     return typeof p === "string" && p ? p : null;
   };
@@ -544,8 +563,16 @@ export function SettingsView({
     }
   };
   const st = status && !isErr(status) ? status : null;
-  const agentLine = (a?: AgentCheck) =>
-    !a ? "checking…" : !a.found ? "not installed" : `${a.version ?? ""}${a.signedIn === true ? " · signed in" : a.signedIn === false ? " · not signed in" : ""}`;
+  /**
+   * A row's note on the setup check, in a section whose CheckFailed notice says why the check failed:
+   * the row then reads a dim "—" rather than repeating the error.
+   */
+  const statusNote = (done: (s: SetupStatus) => string) => (isErr(status) ? <Unknown /> : checkNote(status, done));
+  const agentLine = (a: (s: SetupStatus) => AgentCheck) =>
+    statusNote((s) => {
+      const c = a(s);
+      return !c.found ? "not installed" : `${c.version ?? ""}${c.signedIn === true ? " · signed in" : c.signedIn === false ? " · not signed in" : ""}`;
+    });
 
   return (
     <div className="settings-page set2">
@@ -645,14 +672,14 @@ export function SettingsView({
         {section === "agents" && (
           <>
             <h2>Agents</h2>
-            {status && isErr(status) && <div className="err">Couldn't check agents: {status.error}</div>}
-            <SetRow title="Claude Code" note={agentLine(st?.claude)}>
+            <CheckFailed what="the agents and status hooks" check={status} onRetry={loadStatus} />
+            <SetRow title="Claude Code" note={agentLine((x) => x.claude)}>
               <button
                 className="outline"
                 disabled={updating !== null}
                 onClick={async () => {
                   setUpdating("claude");
-                  const r = await window.mb.agentUpdate("claude");
+                  const r = await settled(window.mb.agentUpdate("claude"));
                   setUpdating(null);
                   setAgentNote(isErr(r) ? `Claude Code update failed: ${r.error}` : `Claude Code: ${r} — restart sessions to use it`);
                   loadStatus();
@@ -661,13 +688,13 @@ export function SettingsView({
                 {updating === "claude" ? "Updating…" : "Update"}
               </button>
             </SetRow>
-            <SetRow title="Codex" note={agentLine(st?.codex)}>
+            <SetRow title="Codex" note={agentLine((x) => x.codex)}>
               <button
                 className="outline"
                 disabled={updating !== null || (st !== null && !st.codex.found)}
                 onClick={async () => {
                   setUpdating("codex");
-                  const r = await window.mb.agentUpdate("codex");
+                  const r = await settled(window.mb.agentUpdate("codex"));
                   setUpdating(null);
                   setAgentNote(isErr(r) ? `Codex update failed: ${r.error}` : `Codex: ${r} — restart sessions to use it`);
                   loadStatus();
@@ -685,21 +712,19 @@ export function SettingsView({
             </SetRow>
             <SetRow
               title="Status hooks"
-              note={
-                !st
-                  ? "checking…"
-                  : st.hooks.codex === false
-                    ? "Codex hooks missing — Codex panes won't show working / waiting / idle"
-                    : st.hooks.claude
-                      ? `Installed for Claude Code${st.hooks.codex ? " and Codex (Codex asks you to trust them once: /hooks)" : ""}`
-                      : "Not installed — panes won't show working / waiting / idle"
-              }
+              note={statusNote(({ hooks }) =>
+                hooks.codex === false
+                  ? "Codex hooks missing — Codex panes won't show working / waiting / idle"
+                  : hooks.claude
+                    ? `Installed for Claude Code${hooks.codex ? " and Codex (Codex asks you to trust them once: /hooks)" : ""}`
+                    : "Not installed — panes won't show working / waiting / idle"
+              )}
             >
               {st && (!st.hooks.claude || st.hooks.codex === false) ? (
                 <button
                   className="outline"
                   onClick={async () => {
-                    const r = await window.mb.installHooks();
+                    const r = await settled(window.mb.installHooks());
                     if (isErr(r)) setAgentNote(`Couldn't install hooks: ${r.error}`);
                     loadStatus();
                   }}
@@ -736,21 +761,14 @@ export function SettingsView({
           <>
             <h2>Repos</h2>
             <p className="set-lede">New Session lists the git repos under these folders.</p>
+            <CheckFailed what="the repo folders" check={status} onRetry={loadStatus} />
             {s.repoRoots.map((r) => {
               const found = st?.repoRoots.find((x) => x.path === r);
               return (
                 <SetRow
                   key={r}
                   title={r}
-                  note={
-                    status && isErr(status)
-                      ? `Couldn't count its repos: ${status.error}`
-                      : !found
-                        ? "scanning…"
-                        : !found.exists
-                          ? "folder not found"
-                          : plural(found.repos, "repo")
-                  }
+                  note={isErr(status) ? <Unknown /> : !found ? "scanning…" : !found.exists ? "folder not found" : plural(found.repos, "repo")}
                 >
                   <button className="danger" title="Remove" onClick={() => upd({ repoRoots: s.repoRoots.filter((x) => x !== r) })}>
                     ✕
@@ -785,8 +803,13 @@ export function SettingsView({
             </p>
             <SetRow
               title="Connection"
-              note={!st ? "checking…" : st.ado.connected ? `Connected as ${st.ado.display} · ${st.ado.detail}` : st.ado.detail}
+              note={checkNote(status, ({ ado }) => (ado.connected ? `Connected as ${ado.display} · ${ado.detail}` : ado.detail))}
             >
+              {isErr(status) && (
+                <button className="outline" onClick={loadStatus}>
+                  Retry
+                </button>
+              )}
               {st && <span className={st.ado.connected ? "set-ok" : "set-bad"}>{st.ado.connected ? "✓" : "✕"}</span>}
             </SetRow>
             <SetRow title="WorkTracker folder" note={`${s.workTrackerPath} — holds config.json and debrief notes`}>
@@ -848,16 +871,16 @@ export function SettingsView({
             </SetRow>
             <SetRow
               title="Azure CLI"
-              note={
-                conn === null
-                  ? "checking…"
-                  : isErr(conn)
-                    ? `Couldn't check: ${conn.error}`
-                    : conn.az
-                      ? "Found — your token is passed to debrief sessions, so az boards / az repos work without az login"
-                      : "Not installed — debriefs still get the ticket snapshot"
-              }
-            />
+              note={checkNote(conn, (c) =>
+                c.az ? "Found — your token is passed to debrief sessions, so az boards / az repos work without az login" : "Not installed — debriefs still get the ticket snapshot"
+              )}
+            >
+              {isErr(conn) && (
+                <button className="outline" onClick={retryConnectors}>
+                  Retry
+                </button>
+              )}
+            </SetRow>
             <h3 className="set-sub">MCP servers for debrief sessions</h3>
             <p className="set-lede">
               Optional. Saved to WorkTracker/.mcp.json; Claude Code asks you to approve each on first use.
@@ -870,7 +893,7 @@ export function SettingsView({
                     className="danger"
                     title="Remove"
                     onClick={async () => {
-                      const r = await window.mb.mcpRemove(n);
+                      const r = await settled(window.mb.mcpRemove(n));
                       setMcpErr(isErr(r) ? `Couldn't remove ${n}: ${r.error}` : "");
                       loadConnectors();
                     }}
@@ -886,7 +909,7 @@ export function SettingsView({
                 className="outline"
                 disabled={!mcpName.trim() || !mcpCmd.trim()}
                 onClick={async () => {
-                  const r = await window.mb.mcpAdd(mcpName.trim(), mcpCmd.trim());
+                  const r = await settled(window.mb.mcpAdd(mcpName.trim(), mcpCmd.trim()));
                   if (isErr(r)) return setMcpErr(`Couldn't add ${mcpName.trim()}: ${r.error}`);
                   setMcpErr("");
                   setMcpName("");
@@ -937,22 +960,46 @@ export function SettingsView({
   );
 }
 
+/** A check that failed, said once above the rows it feeds (which read <Unknown />), with its Retry. */
+function CheckFailed({ what, check, onRetry }: { what: string; check: Check<unknown>; onRetry: () => void }) {
+  if (!isErr(check)) return null;
+  return (
+    <div className="set-check-failed" role="alert">
+      <span className="msg">
+        Couldn't check {what}: {check.error}
+      </span>
+      <button className="outline" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
+/** A row's value while the check above it has failed. */
+function Unknown() {
+  return (
+    <span className="set-unknown" title="Couldn't check — see above">
+      —
+    </span>
+  );
+}
+
 /** Where in-app updates build from: the user's clone, found automatically or chosen. */
 function UpdateSourceRow({ onUpdate }: { onUpdate: () => void }) {
   const [src, setSrc] = useState<{ configured: string | null; found: string | null; problem?: string } | null>(null);
-  const load = () => window.mb.updateSource().then((r: any) => setSrc(isErr(r) ? { configured: null, found: null, problem: r.error } : r));
+  const load = () => settled(window.mb.updateSource()).then((r: any) => setSrc(isErr(r) ? { configured: null, found: null, problem: r.error } : r));
   useEffect(() => {
     load();
   }, []);
   const [error, setError] = useState("");
   const choose = async (dir: string | null) => {
-    const r = await window.mb.setSettings({ updateSource: dir });
+    const r = await settled(window.mb.setSettings({ updateSource: dir }));
     if (isErr(r)) return setError(`Couldn't save the folder: ${r.error}`);
     setError("");
     load();
   };
   const browse = async () => {
-    const d: string | null | { error: string } = await window.mb.pickPath({ defaultPath: src?.found ?? undefined });
+    const d: string | null | { error: string } = await settled(window.mb.pickPath({ defaultPath: src?.found ?? undefined }));
     if (isErr(d)) setError(`Couldn't open the picker: ${d.error}`);
     else if (typeof d === "string" && d) choose(d);
   };

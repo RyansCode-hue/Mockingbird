@@ -232,6 +232,18 @@ describe("finding each agent's binary", () => {
   });
 });
 
+describe("a pane's terminal", () => {
+  it("tells what runs on it that it draws 24-bit colour: agent panes and plain terminals alike", async () => {
+    const { m } = await manager();
+    await m.create(agentPane);
+    expect(ptys.at(-1)!.env.COLORTERM).toBe("truecolor");
+    await m.create({ ...agentPane, agent: "codex" });
+    expect(ptys.at(-1)!.env.COLORTERM).toBe("truecolor");
+    await m.create({ repoPath: null, useWorktree: false, shell: true, title: "plain" });
+    expect(ptys.at(-1)!.env.COLORTERM).toBe("truecolor");
+  });
+});
+
 describe("Claude Code's background sessions", () => {
   /** A Claude transcript on disk, so a relaunch resumes that conversation by id. */
   const transcript = (id: string) => {

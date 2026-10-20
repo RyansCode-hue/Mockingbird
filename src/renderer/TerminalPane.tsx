@@ -1080,7 +1080,7 @@ export function TerminalPane({
           </div>
         </div>
       ) : (
-        <>
+        <div className="term-area">
           <div
             className={`term-holder ${remote ? "fixed" : ""}`}
             ref={holder}
@@ -1103,87 +1103,89 @@ export function TerminalPane({
           />
           <CopyToast note={copyNote} failed="Couldn't copy selection" />
           {remote && fullScreenNote && <span className="scroll-toast">{remote.ownerName}'s session is full screen: only they can scroll it</span>}
-          {room?.takenOver && !remote && (
-            <div className="team-pane-note" title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
-              Continued on {room.takenOver.byName}'s laptop {ago(room.takenOver.at)} — this copy is stopping; its files stay as they are
-            </div>
-          )}
-          {teamNotice}
-          {remote && (!remote.online || remote.problem) && (
-            <div className="team-pane-note" title={remote.problem ?? undefined}>
-              {!remote.online ? `${remote.ownerName}'s Mockingbird is offline — this is what it last sent` : remote.problem}
-            </div>
-          )}
-          {session.stalledSince && session.status === "working" && (
-            <div
-              className="stall-banner"
-              title={
-                session.hooksSilent
-                  ? "Mockingbird learns a session's status from its agent's hooks, and none has reported since this pane started. Check the hooks in Settings; Mark idle if the agent is at its prompt (queued messages are then delivered)."
-                  : "An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process."
-              }
-            >
-              <span className="reason">
-                {session.hooksSilent
-                  ? `No status from its agent's hooks since it started, and no output for ${fmtElapsed(session.stalledSince, true)} — "working" may be wrong`
-                  : `No output for ${fmtElapsed(session.stalledSince, true)} while working — it may be stuck`}
-              </span>
-              {session.hooksSilent && !remote && (
+          <div className="pane-notes">
+            {room?.takenOver && !remote && (
+              <div className="team-pane-note" title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
+                Continued on {room.takenOver.byName}'s laptop {ago(room.takenOver.at)} — this copy is stopping; its files stay as they are
+              </div>
+            )}
+            {teamNotice}
+            {remote && (!remote.online || remote.problem) && (
+              <div className="team-pane-note" title={remote.problem ?? undefined}>
+                {!remote.online ? `${remote.ownerName}'s Mockingbird is offline — this is what it last sent` : remote.problem}
+              </div>
+            )}
+            {session.stalledSince && session.status === "working" && (
+              <div
+                className="stall-banner"
+                title={
+                  session.hooksSilent
+                    ? "Mockingbird learns a session's status from its agent's hooks, and none has reported since this pane started. Check the hooks in Settings; Mark idle if the agent is at its prompt (queued messages are then delivered)."
+                    : "An agent's screen keeps changing while it works; this one hasn't for a while. Repaint redraws it; Restart stops it and resumes the conversation in a fresh process."
+                }
+              >
+                <span className="reason">
+                  {session.hooksSilent
+                    ? `No status from its agent's hooks since it started, and no output for ${fmtElapsed(session.stalledSince, true)} — "working" may be wrong`
+                    : `No output for ${fmtElapsed(session.stalledSince, true)} while working — it may be stuck`}
+                </span>
+                {session.hooksSilent && !remote && (
+                  <button
+                    className="outline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.mb.clearWaiting(session.id);
+                    }}
+                  >
+                    Mark idle
+                  </button>
+                )}
                 <button
                   className="outline"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    resyncTerm(session.id);
+                  }}
+                >
+                  Repaint
+                </button>
+                {onRestart && (
+                  <button
+                    className="outline"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRestart();
+                    }}
+                  >
+                    Restart
+                  </button>
+                )}
+              </div>
+            )}
+            {waiting && (
+              <div className="wait-banner">
+                <span className="dot sm waiting" />
+                <span className="reason">
+                  {shortReason(session.waitingReason)}
+                  {session.waitingSince ? ` · ${fmtElapsed(session.waitingSince, true)}` : ""}
+                </span>
+                {shortcut && <span className="kbd">{shortcut}</span>}
+                {!remote && (
+                <button
+                  className="icon"
+                  title="Dismiss — mark this session idle (use if the status is stale)"
                   onClick={(e) => {
                     e.stopPropagation();
                     window.mb.clearWaiting(session.id);
                   }}
                 >
-                  Mark idle
+                  ✕
                 </button>
-              )}
-              <button
-                className="outline"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  resyncTerm(session.id);
-                }}
-              >
-                Repaint
-              </button>
-              {onRestart && (
-                <button
-                  className="outline"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRestart();
-                  }}
-                >
-                  Restart
-                </button>
-              )}
-            </div>
-          )}
-          {waiting && (
-            <div className="wait-banner">
-              <span className="dot sm waiting" />
-              <span className="reason">
-                {shortReason(session.waitingReason)}
-                {session.waitingSince ? ` · ${fmtElapsed(session.waitingSince, true)}` : ""}
-              </span>
-              {shortcut && <span className="kbd">{shortcut}</span>}
-              {!remote && (
-              <button
-                className="icon"
-                title="Dismiss — mark this session idle (use if the status is stale)"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  window.mb.clearWaiting(session.id);
-                }}
-              >
-                ✕
-              </button>
-              )}
-            </div>
-          )}
-        </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {resize?.x && (

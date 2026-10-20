@@ -71,7 +71,11 @@ let sessions: SessionInfo[] = [
   // continued on Nick's laptop: its agent stopped here (team rooms: take-over)
   session("y1", { title: "Donor entity model", taskGroup: "5110", branch: "5110-donor-entities", cwd: WT("5110-donor-entities"), status: "dead" }),
 ];
-const previous: SessionInfo[] = [session("p1", { title: "Yesterday's spike", status: "dead", taskGroup: null })];
+// ?stall=hooks: s1 shows the stall banner of a pane whose hooks never reported ("working" may be wrong, Mark idle);
+// ?stall=quiet: of one that's gone quiet while working
+const stallQ = new URLSearchParams(location.search).get("stall");
+if (stallQ) sessions = sessions.map((s) => (s.id === "s1" ? { ...s, status: "working", stalledSince: now - 6 * min, hooksSilent: stallQ === "hooks" } : s));
+const previous: SessionInfo[] = [session("p1",{ title: "Yesterday's spike", status: "dead", taskGroup: null })];
 
 const C = { dim: "\x1b[2m", reset: "\x1b[0m", bold: "\x1b[1m", amber: "\x1b[38;5;214m", teal: "\x1b[38;5;43m", red: "\x1b[31m", green: "\x1b[32m" };
 const buffers: Record<string, string> = {
@@ -796,6 +800,13 @@ const suggestProblem = (): SuggestProblem | null =>
         ? { problem: "no-access", message: "Your GitHub account can't see RyansCode-hue/Mockingbird. Ask the repository's owner for access, or copy the suggestion and send it another way." }
         : null;
 const err = (message: string) => ({ error: message });
+/** A Settings check failing as ?checks= says: `error` rejects the call (as a missing handler does), `reply` answers { error }. */
+const checksFail = (channel: string): { error: string } | undefined => {
+  const how = new URLSearchParams(location.search).get("checks");
+  if (how === "error") throw new Error(`Error invoking remote method '${channel}': Error: No handler registered for '${channel}'`);
+  if (how === "reply") return err("the login shell timed out after 15s");
+  return undefined;
+};
 
 /** The ticket's pipeline, started at the first stage when it has none yet. */
 const pipelineOf = (id: string) => (pipelines[id] ??= { ticketId: id, stage: "ba", history: [], prs: [], feedback: [], drafts: [], checks: {} });
@@ -1103,7 +1114,9 @@ const api: Record<string, (...a: any[]) => any> = {
       400
     );
   },
-  setupStatus: async () => ({
+  // Settings' checks; ?checks=error rejects them outright, ?checks=reply answers { error }
+  connectorsStatus: async () => checksFail("connectors:status") ?? { az: true, global: ["github"], project: [] },
+  setupStatus: async () => checksFail("setup:status") ?? {
     claude: { found: true, path: "/opt/homebrew/bin/claude", version: "2.1.290", signedIn: true },
     codex: { found: true, path: "/opt/homebrew/bin/codex", version: "0.156.1", signedIn: true },
     hooks: { claude: true, codex: true },
@@ -1111,7 +1124,7 @@ const api: Record<string, (...a: any[]) => any> = {
     repoRoots: settings.repoRoots.map((path) => ({ path, exists: true, repos: path === "~/Code" ? 12 : 0 })),
     workTrackerPath: "~/Code/WorkTracker",
     ado: { connected: true, display: "You", detail: "acme / Backoffice" },
-  }),
+  },
   adoConfigGet: async () => ({ orgUrl: "https://dev.azure.com/acme", project: "Backoffice", patFile: "secrets/ado.pat" }),
   modelCatalog: async () => err("UI preview: no model catalog"),
 
@@ -1933,11 +1946,11 @@ if (params.has("motionAudit")) {
 }
 // ?termAudit (with ?motion=full or off) does what re-fits or moves terminals — the side bar and the bottom panel
 // shown and hidden, fullscreen and back, a group switch and back, a workspace minimized and restored, a pane opened,
-// a workspace tab switched, a waiting banner shown and gone — with panes full of history and output streaming, then
+// a workspace tab switched, a waiting banner and a stall banner each shown and gone — with panes full of history and output streaming, then
 // a Repaint on the normal screen and on the alternate one, and a pane relaunched in place. It finishes animations
 // rather than waiting on them, and writes into <script id="mb-term-audit"> for test/uiTerminal.test.ts what was
 // wrong after each step: a terminal not at its holder's size, a pty not told its terminal's size, a size sent from a
-// holder with no area. The pty sizes are as main has them: a relaunched session's new pty starts at 120×32.
+// holder with no area; and the pty sizes each step sent. The pty sizes are as main has them: a relaunched session's new pty starts at 120×32.
 if (params.has("termAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Entry = { term: import("@xterm/xterm").Terminal; fit: { proposeDimensions(): { cols: number; rows: number } | undefined } };
@@ -2012,16 +2025,22 @@ if (params.has("termAudit")) {
         ["workspace tab switched back", () => press(document.querySelector(".ws-tab:not(.on)"), "workspace tab")],
         ["waiting banner shown", () => setSession("s1", { status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: Date.now() })],
         ["waiting banner gone", () => setSession("s1", { status: "working", waitingReason: null, waitingSince: null })],
+        ["stall banner shown", () => setSession("s1", { stalledSince: Date.now() - 5 * min, hooksSilent: true })],
+        ["stall banner gone", () => setSession("s1", { stalledSince: null, hooksSilent: false })],
       ];
       const done: string[] = [];
+      const resized: Record<string, string[]> = {};
       for (const [step, act] of steps) {
+        const mark = sent.length;
         act();
         await sleep(400); // a folder or group click waits out a double-click
         await settle();
         check(step);
         done.push(step);
+        resized[step] = sent.slice(mark).map((r) => `${r.id} ${r.size}`);
       }
       out.steps = done;
+      out.resized = resized;
       clearInterval(stream);
       await sleep(100);
       // Repaint on the normal screen: an inline session's history is its scrollback

@@ -12,6 +12,8 @@ const local = !process.env.CI && fs.existsSync(chrome);
 
 type Audit = {
   steps: string[];
+  /** The pty sizes each step sent, as "<id> <cols>×<rows>". */
+  resized: Record<string, string[]>;
   problems: string[];
   repaint: { before: { lines: number; first: string }; after: { lines: number; first: string }; size: string; sent: string[] };
   repaintAlt: { before: { screen: string; mouse: string }; after: { screen: string; mouse: string } };
@@ -34,8 +36,13 @@ describe.skipIf(!local)("terminals in the interface", () => {
       const a = await audit(motion);
       expect(a.error).toBeUndefined();
       expect(a.mode).toBe(motion);
-      expect(a.steps).toHaveLength(15);
+      expect(a.steps).toHaveLength(17);
       expect(a.problems).toEqual([]);
+
+      // a pane's status banners float over its terminal: showing or clearing one re-fits nothing, so the agent
+      // isn't resized into redrawing its screen
+      const banners = ["waiting banner shown", "waiting banner gone", "stall banner shown", "stall banner gone"];
+      expect(Object.fromEntries(banners.map((s) => [s, a.resized[s]]))).toEqual(Object.fromEntries(banners.map((s) => [s, []])));
 
       // Repaint keeps the scrollback (an inline session's whole history) and asks the program to redraw by a
       // resize round trip that ends at the terminal's size

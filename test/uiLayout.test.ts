@@ -66,6 +66,35 @@ describe.skipIf(!local)("the interface's layout", () => {
     expect(failed.boxes[parts[1]][0]?.text).toMatch(/^Couldn't read ~\/\.claude\/CLAUDE\.md: .*EACCES/);
   }, 120_000);
 
+  it("says a failed Settings check once per section, with one Retry, and never leaves a row checking", async () => {
+    const parts = [".set-row .set-row-note", ".set-row .set-row-ctl button", ".set-check-failed .msg", ".set-check-failed button"];
+    const ok = await render("1200x800", "section=agents", parts);
+    expect(ok.boxes[parts[0]].map((b) => b.text)).toContain("2.1.290 · signed in");
+    expect(ok.boxes[parts[1]].map((b) => b.text)).not.toContain("Retry");
+    expect(ok.boxes[parts[2]]).toEqual([]);
+    // a rejected call (no handler) and an { error } answer; `quiet` is how many rows the section's notice speaks for
+    const noHandler = /No handler registered for 'setup:status'/;
+    const timedOut = /the login shell timed out/;
+    for (const [query, failure, quiet] of [
+      ["section=agents&checks=error", noHandler, 3],
+      ["section=agents&checks=reply", timedOut, 3],
+      ["section=repos&checks=reply", timedOut, 2],
+      ["section=ado&checks=error", noHandler, 0],
+      ["section=debriefs&checks=reply", timedOut, 0],
+    ] as const) {
+      const { boxes } = await render("1200x800", query, parts);
+      const [notes, rowButtons, notice, noticeButtons] = parts.map((p) => boxes[p].map((b) => b.text));
+      const said = [...notes, ...notice];
+      expect(said.filter((t) => failure.test(t)), `${query}: ${said.join(" | ")}`).toHaveLength(1);
+      expect(said.filter((t) => t.startsWith("Couldn't check")), query).toHaveLength(1);
+      expect(notes.filter((n) => n === "checking…" || n === "scanning…"), query).toEqual([]);
+      expect([...rowButtons, ...noticeButtons].filter((t) => t === "Retry"), query).toHaveLength(1);
+      // several rows on one check: the notice says it and those rows read "—"; a single row says it itself
+      expect(notice, query).toHaveLength(quiet ? 1 : 0);
+      expect(notes.filter((n) => n === "—"), query).toHaveLength(quiet);
+    }
+  }, 240_000);
+
   it("keeps the status bar's restart button whole in a narrow window", async () => {
     const { boxes } = await render("1000x700", "", [".statusbar .sb-update"]);
     const [pill] = boxes[".statusbar .sb-update"] ?? [];
