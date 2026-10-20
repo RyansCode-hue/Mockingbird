@@ -130,11 +130,14 @@ let cachedMe: { display: string; email: string } | null = null;
 let boardsCache: { at: number; value: Promise<{ team: string; boards: AdoBoard[] }> } | null = null;
 // the project's field reference names, lowercased: which optional fields exist to be asked for
 let fieldsCache: Promise<Set<string>> | null = null;
+// the field the project's backlogs and boards order work items by
+let orderFieldCache: Promise<string | null> | null = null;
 /** Drop cached identity after the ADO connector config changes. */
 export function resetAdoCache(): void {
   cachedMe = null;
   boardsCache = null;
   fieldsCache = null;
+  orderFieldCache = null;
 }
 async function connectionIdentity(cfg: AdoConfig): Promise<{ display: string; email: string }> {
   const r = await adoFetch(cfg, `${cfg.orgUrl}/_apis/connectionData`);
@@ -171,6 +174,7 @@ export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[
   const cfg = loadAdoConfig(store);
   // read alongside the query: the boards are usually being read for the Dashboard at the same time
   const ruledFields = cardRuleFields(store, cfg);
+  const rankField = boardOrderField(cfg);
   const wiql = {
     query:
       "SELECT [System.Id] FROM WorkItems " +
@@ -189,6 +193,7 @@ export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[
   const ids = all.slice(0, 200);
   if (!ids.length) return { items: [], total: all.length, me: meIds.display };
   const ruled = await ruledFields;
+  const rankBy = await rankField;
   const fields = [
     ...new Set([
       "System.Title",
@@ -200,11 +205,12 @@ export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[
       "System.BoardColumn",
       "System.Tags",
       ...ruled,
+      ...(rankBy ? [rankBy] : []),
     ]),
   ].join(",");
   const r = await wit(cfg, `workitems?ids=${ids.join(",")}&fields=${fields}&${ADO_API}`);
   const extra = ruled.filter((f) => !ITEM_PROP_FIELDS.has(f));
-  const items = (r.value ?? []).map((v: any): AdoWorkItem => ({
+  const items = rankOrder((r.value ?? []).map((v: any): AdoWorkItem => ({
     id: v.id,
     title: v.fields["System.Title"] ?? "",
     state: v.fields["System.State"] ?? "",
@@ -215,8 +221,9 @@ export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[
     ...(v.fields["System.BoardColumn"] ? { boardColumn: String(v.fields["System.BoardColumn"]) } : {}),
     tags: parseTags(v.fields["System.Tags"]),
     ...(extra.length ? { fields: Object.fromEntries(extra.map((f) => [f, fieldText(v.fields[f])])) } : {}),
+    ...(rankBy && Number.isFinite(v.fields[rankBy]) ? { rank: Number(v.fields[rankBy]) } : {}),
     url: `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_workitems/edit/${v.id}`,
-  }));
+  })));
   // resolve "me" to the exact spelling the work items use (match by email first,
   // then case-insensitive name) so the filter actually matches the cards
   const identities: { display: string; email: string }[] = (r.value ?? []).map((v: any) => ({
@@ -231,6 +238,63 @@ export async function listWorkItems(store: Store): Promise<{ items: AdoWorkItem[
     : undefined;
   const me = emailMatch?.display || nameMatch?.display || meIds.display;
   return { items, total: all.length, me };
+}
+
+/**
+ * Work items in the order Azure Boards shows them: by backlog rank, lowest
+ * first, then the unranked in the order they came (most recently changed
+ * first). Items of equal rank keep the order they came in.
+ */
+export function rankOrder(items: AdoWorkItem[]): AdoWorkItem[] {
+  return items
+    .map((it, i) => ({ it, i }))
+    .sort((a, b) => {
+      const ra = a.it.rank;
+      const rb = b.it.rank;
+      if ((ra == null) !== (rb == null)) return ra == null ? 1 : -1;
+      return ra != null && rb != null && ra !== rb ? ra - rb : a.i - b.i;
+    })
+    .map((x) => x.it);
+}
+
+/** The order fields of the stock processes, for when the process configuration can't be read: Agile, CMMI and Basic; Scrum. */
+const ORDER_FIELDS = ["Microsoft.VSTS.Common.StackRank", "Microsoft.VSTS.Common.BacklogPriority"];
+
+/**
+ * The field the project's backlogs and boards order work items by (Stack Rank
+ * or Backlog Priority, as its process configuration names it), when the
+ * project defines it; read once per run. Null when there's no knowing, which
+ * the log says: the board is then in last-changed order.
+ */
+function boardOrderField(cfg: AdoConfig): Promise<string | null> {
+  if (orderFieldCache) return orderFieldCache;
+  const p = (async () => {
+    let named: string | null = null;
+    try {
+      const pc = await adoFetch(cfg, `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/_apis/work/processconfiguration?${ADO_API}`);
+      named = pc?.typeFields?.Order?.referenceName ? String(pc.typeFields.Order.referenceName) : null;
+      if (!named) console.warn("[mockingbird] the project's process configuration names no order field; looking for Stack Rank or Backlog Priority");
+    } catch (err) {
+      console.warn("[mockingbird] couldn't read the project's process configuration; looking for Stack Rank or Backlog Priority:", (err as Error).message);
+    }
+    let known: Set<string>;
+    try {
+      known = await projectFields(cfg);
+    } catch (err) {
+      // asking for a field the project doesn't define would fail the whole work item read
+      console.warn("[mockingbird] couldn't list the project's fields, so the board is in last-changed order:", (err as Error).message);
+      return null;
+    }
+    const field = [...(named ? [named] : []), ...ORDER_FIELDS].find((f) => known.has(f.toLowerCase())) ?? null;
+    if (!field) console.warn("[mockingbird] the project has no backlog order field, so the board is in last-changed order");
+    return field;
+  })();
+  orderFieldCache = p;
+  // not knowing is retried on the next load, not remembered
+  void p.then((f) => {
+    if (f === null && orderFieldCache === p) orderFieldCache = null;
+  });
+  return p;
 }
 
 /** A field's value as card rules compare it: a person as "Name <email>", nothing as "". */
@@ -512,4 +576,29 @@ export async function moveToBoardColumn(store: Store, id: number, type: string, 
   if (board.columnField) ops.push({ op: "add", path: `/fields/${board.columnField}`, value: column });
   const r = await patchWorkItem(cfg, id, ops);
   return { id: r.id, state };
+}
+
+/** The Work Items Order API's body: `id` goes between `previousId` and `nextId` (0: none) in the team's backlog order. */
+export function reorderBody(id: number, previousId: number, nextId: number): { parentId: number; previousId: number; nextId: number; ids: number[] } {
+  return { parentId: 0, previousId, nextId, ids: [id] };
+}
+
+/**
+ * Place a work item between two others in the team's backlog order, which
+ * orders every column of the team's boards, on the user's drop or keypress.
+ * ADO gives it a rank between theirs; the answer carries that rank.
+ */
+export async function reorderWorkItem(store: Store, id: number, previousId: number, nextId: number): Promise<{ id: number; rank: number | null }> {
+  const isId = (n: unknown) => Number.isInteger(n) && (n as number) > 0;
+  if (!isId(id)) throw new Error(`Not a work item id: ${id}`);
+  if (![previousId, nextId].every((n) => n === 0 || isId(n))) throw new Error(`Not a place for #${id}: after ${previousId}, before ${nextId}`);
+  if (previousId === id || nextId === id) throw new Error(`#${id} can't be placed beside itself`);
+  if (!previousId && !nextId) throw new Error(`Nothing to place #${id} beside`);
+  if (previousId === nextId) throw new Error(`#${id} can't go both after and before #${previousId}`);
+  const { team } = await teamBoards(store);
+  const cfg = loadAdoConfig(store);
+  const url = `${cfg.orgUrl}/${encodeURIComponent(cfg.project)}/${encodeURIComponent(team)}/_apis/work/workitemsorder?api-version=7.1`;
+  const r = await adoFetch(cfg, url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(reorderBody(id, previousId, nextId)) });
+  const placed = (r?.value ?? []).find((v: any) => v?.id === id);
+  return { id, rank: typeof placed?.order === "number" ? placed.order : null };
 }

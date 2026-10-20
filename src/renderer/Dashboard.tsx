@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRepos } from "./RepoPick";
 import { Pick } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard, COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
@@ -18,6 +18,7 @@ import { CARD_TAGS, TagChips, cardLook, useCardTheme, type CardLook } from "./ca
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { blockAction, editTags, tagSuggestions } from "./tagEdits";
 import { splitTagInput, type TagChange } from "../shared/cardRules";
+import { gapAt, placeCard, placeLabel, placement, stepGap } from "./boardOrder";
 
 /** The Dashboard tab: the team's Azure DevOps board, and starting sessions from its tickets. */
 
@@ -87,28 +88,95 @@ export function DashboardBoard({
       const side = sideOf(e, e.currentTarget, "x");
       return srcCol === col || samePlace(orderedCols, srcCol, col, side) ? null : { key: `c:${col}`, side, outcome: `Put ${srcCol} ${side} ${col}` };
     }
-    const it = items?.find((i) => String(i.id) === dragging("text/mb-wi"));
-    if (!it) return null;
-    if (!board) return it.state !== col ? { key: `c:${col}`, outcome: `#${it.id}: ${it.state} → ${col}` } : null;
-    const mv = cardMove(it, board, col);
-    return mv ? { key: `c:${col}`, outcome: `#${it.id} → ${col}${mv.stateChanges ? ` (${it.state} → ${mv.state})` : ""}` } : null;
+    const d = cardDrop(e, col);
+    if (!d) return null;
+    const where = placeLabel(d.place);
+    if (!d.patch) return { key: `c:${col}`, gap: d.gap, outcome: `Put #${d.it.id} ${where}` };
+    const stateNote = d.patch.state !== d.it.state ? ` (${d.it.state} → ${d.patch.state})` : "";
+    return { key: `c:${col}`, gap: d.gap, outcome: `#${d.it.id} → ${col}${where ? `, ${where}` : ""}${stateNote}` };
   };
 
-  /** Drop a card in a board column: the column (and its state for the card's type) is saved to ADO. */
-  const moveCard = async (id: number, col: string) => {
-    const prev = items?.find((i) => i.id === id);
-    if (!prev) return;
-    if (!board) return changeState(id, col);
-    const mv = cardMove(prev, board, col);
-    if (!mv) return;
-    setError("");
-    setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, boardColumn: col, state: mv.state } : i)) : p));
-    const r = await window.mb.adoMoveToColumn(id, prev.type, board.name, col);
-    if (isErr(r)) {
-      setItems((p) => (p ? p.map((i) => (i.id === id ? prev : i)) : p));
-      setError(`Couldn't move ${id} to ${col}: ${r.error}`);
-    }
+  /** A column's cards as shown, top to bottom, and the gap between them the pointer is nearest. */
+  const gapIn = (e: { clientY: number }, colEl: Element): { ids: number[]; gap: number } => {
+    const body = colEl.querySelector(".bcol-body") as HTMLElement | null;
+    if (!body) return { ids: [], gap: 0 };
+    const cards = [...body.children].filter((c): c is HTMLElement => c instanceof HTMLElement && c.classList.contains("bcard"));
+    // layout positions, not on-screen ones: the neighbours parting around the line mustn't move the gap they mark
+    const y = e.clientY - body.getBoundingClientRect().top + body.scrollTop;
+    return { ids: cards.map((c) => Number(c.dataset.id)), gap: gapAt(cards.map((c) => c.offsetTop + c.offsetHeight / 2), y) };
   };
+  /** Where the dragged card would land in this column, and the column and state it would take; null if it can't go there or wouldn't move. */
+  const cardDrop = (e: React.DragEvent, col: string) => {
+    const it = items?.find((i) => String(i.id) === dragging("text/mb-wi"));
+    if (!it) return null;
+    const { ids, gap } = gapIn(e, e.currentTarget);
+    const at = placement(ids, it.id, gap);
+    if (!at) return null;
+    if (colOfItem(it) === col) return { it, gap, place: at, patch: null };
+    const mv = board ? cardMove(it, board, col) : it.state !== col ? { state: col } : null;
+    if (!mv) return null;
+    return { it, gap, place: at, patch: board ? { boardColumn: col, state: mv.state } : { state: col } };
+  };
+
+  /** Re-read the work items, in Azure DevOps's order, after a write: a change someone else made meanwhile shows too. */
+  const reloadItems = async () => {
+    const r: { items: AdoWorkItem[]; total: number; me: string } | { error: string } = await window.mb.adoList();
+    if (isErr(r)) return setError((e) => `${e ? `${e} · ` : ""}Couldn't re-read the board: ${r.error}`);
+    setItems(r.items);
+    setTotal(r.total);
+    setSyncedAt(Date.now());
+  };
+
+  // one write at a time per card; a failed one puts it back where no later move has taken it from
+  const placing = useRef(new Set<number>());
+  /**
+   * Put a card in a new place: between two cards of its column, or into another
+   * column (and its state) between two of its cards. Written on the user's drop
+   * or keypress only, then the board is re-read.
+   */
+  const place = async (it: AdoWorkItem, at: { previousId: number; nextId: number }, toCol: string | null, patch?: Partial<AdoWorkItem>) => {
+    if (!items) return;
+    if (placing.current.has(it.id)) return setNotice(`#${it.id} is still being saved — move it again once it has landed`);
+    placing.current.add(it.id);
+    setError("");
+    setNotice("");
+    const r = await placeCard(
+      items,
+      it,
+      { previousId: at.previousId, nextId: at.nextId, ...(toCol ? { column: toCol, patch } : {}) },
+      {
+        move: toCol ? () => (board ? window.mb.adoMoveToColumn(it.id, it.type, board.name, toCol) : window.mb.adoUpdate(it.id, { state: toCol })) : null,
+        reorder: (id, previousId, nextId) => window.mb.adoReorder(id, previousId, nextId),
+      },
+      (f) => setItems((p) => (p ? f(p) : p))
+    );
+    placing.current.delete(it.id);
+    if ("error" in r) setError(r.error);
+    if (!("error" in r) || r.wrote) await reloadItems();
+  };
+  const dropCard = (e: React.DragEvent, col: string) => {
+    const d = cardDrop(e, col);
+    if (d) void place(d.it, d.place, d.patch ? col : null, d.patch ?? undefined);
+  };
+
+  // a card moved from the keyboard keeps the focus: React re-inserting it in its new place drops it
+  const refocus = useRef<number | null>(null);
+  const stepCard = (it: AdoWorkItem, column: AdoWorkItem[], dir: -1 | 1) => {
+    const ids = column.map((i) => i.id);
+    const gap = stepGap(ids, it.id, dir);
+    const at = gap === null ? null : placement(ids, it.id, gap);
+    if (!at) return;
+    refocus.current = it.id;
+    void place(it, at, null);
+  };
+  useLayoutEffect(() => {
+    const id = refocus.current;
+    if (id === null) return;
+    const active = document.activeElement;
+    const el = document.querySelector<HTMLElement>(`.bcard[data-id="${id}"]`);
+    if (el && active !== el && (!active || active === document.body)) el.focus();
+    else if (active !== el) refocus.current = null;
+  }, [items]);
   // detail edit state
   const [title, setTitle] = useState("");
   const [state, setState] = useState("");
@@ -306,21 +374,6 @@ export function DashboardBoard({
       }
     });
 
-  /** Optimistic state change (drag between columns or the detail dropdown). */
-  const changeState = async (id: number, newState: string) => {
-    const prev = items?.find((i) => i.id === id);
-    if (!prev || prev.state === newState) return;
-    setError("");
-    setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, state: newState } : i)) : p));
-    if (detailId === id) setState(newState);
-    const r = await window.mb.adoUpdate(id, { state: newState });
-    if (isErr(r)) {
-      setItems((p) => (p ? p.map((i) => (i.id === id ? { ...i, state: prev.state } : i)) : p));
-      if (detailId === id) setState(prev.state);
-      setError(`Couldn't move ${id} to ${newState}: ${r.error}`);
-    }
-  };
-
   const dirty = !!detail && (title !== detail.title || state !== detail.state || desc !== detail.description);
 
   const save = async () => {
@@ -503,18 +556,21 @@ export function DashboardBoard({
         )}
         {orderedCols.filter((c) => !hiddenCols.has(c)).map((col) => {
           const colItems = visibleItems.filter((i) => colOfItem(i) === col);
+          // a card dragged here: the gap it would land in, marked by a line rather than the column's outline
+          const gapHere = drag?.type === "text/mb-wi" && drag.target?.key === `c:${col}` ? drag.target.gap : undefined;
+          const lifted = drag?.type === "text/mb-wi" ? drag.payload : null;
           return (
             <div
               key={col}
               className="bcol"
-              data-drop={cue(drag, `c:${col}`)}
+              data-col={col}
+              data-drop={gapHere === undefined ? cue(drag, `c:${col}`) : undefined}
               onDragOver={(e) => overTarget(e, columnTarget(e, col))}
               onDrop={(e) => {
                 e.preventDefault();
                 const movedCol = e.dataTransfer.getData("text/mb-col");
                 if (movedCol) return movedCol !== col && reorderCols(movedCol, col, sideOf(e, e.currentTarget, "x"));
-                const id = parseInt(e.dataTransfer.getData("text/mb-wi"), 10);
-                if (id) moveCard(id, col);
+                dropCard(e, col);
               }}
             >
               <div
@@ -526,21 +582,35 @@ export function DashboardBoard({
                 {col}
                 <span className="cnt">{colItems.length}</span>
               </div>
-              <div className="bcol-body">
-                {colItems.map((it) => {
+              <div className="bcol-body" data-gap={gapHere !== undefined && colItems.length === 0 ? "empty" : undefined}>
+                {colItems.map((it, idx) => {
                   const live = linkedTo(it);
                   const look = looks.get(it.id);
                   const blocked = !!look?.blocked.length;
                   return (
                     <div
                       key={it.id}
-                      className={`bcard ${blocked ? "blocked" : ""}`}
+                      data-id={it.id}
+                      className={`bcard ${blocked ? "blocked" : ""} ${lifted === String(it.id) ? "lifted" : ""}`}
+                      data-gap={gapHere === idx ? "above" : gapHere === idx + 1 ? "below" : undefined}
                       style={look?.fill ? { background: look.fill.background, borderColor: look.fill.edge } : undefined}
                       draggable
+                      tabIndex={0}
+                      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                       onDragStart={(e) => beginDrag(e, "text/mb-wi", String(it.id), `Moving #${it.id}`)}
                       onClick={() => openDetail(it)}
+                      onKeyDown={(e) => {
+                        if (e.target !== e.currentTarget) return;
+                        if (e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+                          e.preventDefault();
+                          stepCard(it, colItems, e.key === "ArrowUp" ? -1 : 1);
+                        } else if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openDetail(it);
+                        }
+                      }}
                       {...cardMenu.bind(() => cardActions(it))}
-                      title={look?.fill ? `Card style “${look.fill.rule}” from Azure DevOps · drag to another column to change state` : "drag to another column to change state"}
+                      title={`${look?.fill ? `Card style “${look.fill.rule}” from Azure DevOps · ` : ""}drag up or down to reorder, or to another column · ⌥↑ ⌥↓ move it`}
                     >
                       <span className="tbar" style={{ background: typeColor(it.type) }} />
                       <div className="bc-top">

@@ -995,7 +995,7 @@ const api: Record<string, (...a: any[]) => any> = {
   lspOpen: async () => ({ server: null, state: "none" }),
 
   // board and tickets
-  adoList: async () => ({ items: tickets, total: tickets.length, me: "You" }),
+  adoList: async () => ({ items: tickets.map((t) => ({ ...t })), total: tickets.length, me: "You" }),
   adoMe: async () => ({ display: "You", email: "you@example.com", org: "acme", project: "Backoffice" }),
   adoStates: async () => ["New", "Active", "Resolved", "Closed"],
   adoBoards: async () => ({ team: "Backoffice Team", boards: [board] }),
@@ -1011,7 +1011,26 @@ const api: Record<string, (...a: any[]) => any> = {
     return later({ id, tags: t.tags }, 300);
   },
   adoProjectTags: async () => ["accessibility", "backend", "customer-reported", "data-export", "frontend", "integration", "org-picker", "pathways", "perf", "regression", "security", "tech-debt"],
-  adoMoveToColumn: async (id: number, _type: string, _board: string, column: string) => ({ id, state: column }),
+  // moves and reorders change the fixture, as Azure DevOps keeps them, so the board's re-read after a write shows them;
+  // the fixture's order is the backlog order. ?reorderFail makes every reorder fail, to see the card go back
+  adoMoveToColumn: async (id: number, type: string, _board: string, column: string) => {
+    const t = tickets.find((x) => x.id === id);
+    const state = board.columns.find((c) => c.name === column)?.stateMappings[type];
+    if (!t || !state) return err(`A ${type} can't go in ${column} on the ${board.name} board`);
+    Object.assign(t, { state, boardColumn: column, changed: new Date().toISOString() });
+    return later({ id, state }, 200);
+  },
+  adoReorder: async (id: number, previousId: number, nextId: number) => {
+    if (new URLSearchParams(location.search).has("reorderFail")) return later(err(`Azure DevOps 403 Forbidden: TF400409: You don't have permission to reorder work items in team Backoffice Team.`), 300);
+    const from = tickets.findIndex((x) => x.id === id);
+    if (from < 0) return err(`Azure DevOps 404 Not Found: work item ${id} doesn't exist`);
+    const [t] = tickets.splice(from, 1);
+    const after = tickets.findIndex((x) => x.id === previousId);
+    const before = tickets.findIndex((x) => x.id === nextId);
+    tickets.splice(after >= 0 ? after + 1 : before >= 0 ? before : from, 0, t);
+    tickets.forEach((x, i) => (x.rank = (i + 1) * 1000));
+    return later({ id, rank: t.rank ?? null }, 200);
+  },
   pipelineAll: async () => JSON.parse(JSON.stringify(pipelines)),
   pipelineStage: async (id: string, stage: TicketStage) => setStage(id, stage),
   pipelineFeedback: async (id: string, text: string) => {
@@ -2163,6 +2182,180 @@ if (params.has("wnAudit")) {
     const tag = document.createElement("script");
     tag.type = "application/json";
     tag.id = "mb-wn-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  })();
+}
+// Dashboard cards dragged with the events a browser sends while a person drags (drop target under the pointer, the
+// DataTransfer carried along). A drag Esc cancels ends as the browser ends it: dragend on the card, with no drop.
+const boardDrag = (() => {
+  const col = (name: string) => document.querySelector<HTMLElement>(`.bcol[data-col="${name}"]`);
+  const cards = (name: string) => [...(col(name)?.querySelectorAll<HTMLElement>(".bcol-body > .bcard") ?? [])];
+  const ids = (name: string) => cards(name).map((c) => Number(c.dataset.id));
+  const card = (id: number) => document.querySelector<HTMLElement>(`.bcard[data-id="${id}"]`);
+  const send = (el: Element, type: string, dt: DataTransfer, x: number, y: number) =>
+    el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: y }));
+  /** A pointer y inside gap `gap` of a column, from where its cards sit in the layout (not where they've parted to). */
+  const gapY = (name: string, gap: number) => {
+    const list = cards(name);
+    const body = col(name)!.querySelector<HTMLElement>(".bcol-body")!;
+    const top = body.getBoundingClientRect().top - body.scrollTop;
+    const mid = (c: HTMLElement) => top + c.offsetTop + c.offsetHeight / 2;
+    if (!list.length) return top + 30;
+    if (gap <= 0) return top + list[0].offsetTop + 2;
+    if (gap >= list.length) return top + list[list.length - 1].offsetTop + list[list.length - 1].offsetHeight - 2;
+    return (mid(list[gap - 1]) + mid(list[gap])) / 2;
+  };
+  let held: { src: HTMLElement; dt: DataTransfer; x: number; y: number } | null = null;
+  return {
+    col,
+    cards,
+    ids,
+    card,
+    start(id: number) {
+      const src = card(id)!;
+      const r = src.getBoundingClientRect();
+      held = { src, dt: new DataTransfer(), x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      send(src, "dragstart", held.dt, held.x, held.y);
+    },
+    over(name: string, gap: number) {
+      const c = col(name)!;
+      const r = c.getBoundingClientRect();
+      held!.x = r.left + r.width / 2;
+      held!.y = gapY(name, gap);
+      send(document.elementFromPoint(held!.x, held!.y) ?? c, "dragover", held!.dt, held!.x, held!.y);
+    },
+    drop() {
+      const at = document.elementFromPoint(held!.x, held!.y)!;
+      send(at, "drop", held!.dt, held!.x, held!.y);
+      send(held!.src, "dragend", held!.dt, held!.x, held!.y);
+      held = null;
+    },
+    cancel() {
+      send(held!.src, "dragend", held!.dt, held!.x, held!.y);
+      held = null;
+    },
+  };
+})();
+// ?boardDrag=5115,In Progress,1 picks up a card and holds it over a gap of a column (0: above its first card), for a
+// screenshot of the line mid-drag
+const boardDragQ = params.get("boardDrag");
+if (boardDragQ) {
+  set("mb.tab", "dashboard");
+  const [id, name, gap] = boardDragQ.split(",");
+  waitFor(`.bcard[data-id="${id}"]`, () => {
+    boardDrag.start(Number(id));
+    setTimeout(() => boardDrag.over(name, Number(gap)), 50);
+  });
+}
+// ?boardAudit (with ?motion=full or reduce; real time: pageResult) drags Dashboard cards up and down the In
+// Progress column and into others, cancels one as Esc does, moves one with ⌥↑, and writes what it saw into
+// <script id="mb-board-audit"> for test/uiBoardOrder.test.ts: the line at each gap (its owner, where it is, the
+// neighbours either side, after their parting has finished), the writes, and the columns' cards after each drop.
+// ?boardAudit=fail (with ?reorderFail) drops one whose reorder Azure DevOps refuses.
+if (params.has("boardAudit")) {
+  set("mb.tab", "dashboard");
+  const b = boardDrag;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const settle = async () => {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    for (const a of document.getAnimations()) a.finish();
+  };
+  const box = (el: Element | null) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { top: r.top, bottom: r.bottom };
+  };
+  // how far a card has moved up or down, in whole px (0, never -0)
+  const shift = (el: Element) => {
+    const t = getComputedStyle(el).transform;
+    return Math.round(t === "none" ? 0 : new DOMMatrix(t).m42) || 0;
+  };
+  /** The drop line: the element drawing it, its middle on screen, its colour and thickness; null with none shown. */
+  const line = () => {
+    const el = document.querySelector<HTMLElement>('.bcard[data-gap="above"], .bcard[data-gap="below"]:last-child, .bcol-body[data-gap="empty"]');
+    if (!el) return null;
+    const pseudo = el.matches('.bcard[data-gap="below"]') ? "::after" : "::before";
+    const s = getComputedStyle(el, pseudo);
+    if (s.content === "none" || s.content === "normal") return null;
+    const r = el.getBoundingClientRect();
+    const h = parseFloat(s.height);
+    const y = el.classList.contains("bcol-body") ? r.top + parseFloat(getComputedStyle(el).paddingTop) + h / 2 : r.top + parseFloat(getComputedStyle(el).borderTopWidth) + parseFloat(s.top) + h / 2;
+    return { owner: el.classList.contains("bcol-body") ? "empty" : Number(el.dataset.id), y, height: h, color: s.backgroundColor, width: parseFloat(s.width) };
+  };
+  /** What's on screen while hovering a gap. */
+  const hover = async (name: string, gap: number) => {
+    b.over(name, gap);
+    await settle();
+    const list = b.cards(name);
+    return {
+      line: line(),
+      above: box(list[gap - 1] ?? null),
+      below: box(list[gap] ?? null),
+      shifts: Object.fromEntries(list.map((c) => [c.dataset.id, shift(c)])),
+      label: document.querySelector(".drag-label")?.textContent ?? null,
+      lifted: [...document.querySelectorAll<HTMLElement>(".bcard.lifted")].map((c) => Number(c.dataset.id)),
+    };
+  };
+  const writes = () => calls.filter((c) => c.fn === "adoReorder" || c.fn === "adoMoveToColumn").map((c) => [c.fn, ...c.args]);
+  const reads = () => calls.filter((c) => c.fn === "adoList").length;
+  const columns = () => Object.fromEntries(["New", "In Progress", "Testing"].map((n) => [n, b.ids(n)]));
+  (async () => {
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < 100 && b.ids("In Progress").length < 3; i++) await sleep(50);
+    await sleep(300);
+    out.mode = document.documentElement.dataset.motion;
+    out.start = columns();
+    if (params.get("boardAudit") === "fail") {
+      b.start(5115);
+      await hover("In Progress", 0);
+      b.drop();
+      await settle();
+      out.optimistic = columns();
+      await sleep(900);
+      out.after = columns();
+      out.error = document.querySelector(".board-err")?.textContent ?? null;
+      out.writes = writes();
+    } else {
+      // up the column: the bottom card over the top gap, then over the middle one, and dropped there
+      out.readsBefore = reads();
+      b.start(5115);
+      out.top = await hover("In Progress", 0);
+      out.middle = await hover("In Progress", 1);
+      b.drop();
+      await settle();
+      out.dropped = { columns: columns(), line: line(), lifted: document.querySelectorAll(".bcard.lifted").length };
+      await sleep(700);
+      out.afterDrop = { columns: columns(), writes: writes(), reads: reads() };
+      // over the bottom gap, then cancelled
+      b.start(5101);
+      out.bottom = await hover("In Progress", 3);
+      b.cancel();
+      await settle();
+      await sleep(300);
+      out.cancelled = { columns: columns(), writes: writes(), reads: reads(), line: line(), lifted: document.querySelectorAll(".bcard.lifted").length, label: !!document.querySelector(".drag-label") };
+      // into a column with no cards shown (Testing's is Sam's), then into the middle of In Progress
+      b.start(5110);
+      out.empty = await hover("Testing", 0);
+      b.drop();
+      await sleep(700);
+      out.afterEmpty = { columns: columns(), writes: writes() };
+      b.start(5120);
+      out.across = await hover("In Progress", 1);
+      b.drop();
+      await sleep(900);
+      out.afterAcross = { columns: columns(), writes: writes() };
+      // the keyboard: the bottom card of In Progress, one place up
+      const last = b.cards("In Progress").at(-1)!;
+      last.focus();
+      last.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", altKey: true, bubbles: true, cancelable: true }));
+      await sleep(700);
+      const focused = document.activeElement as HTMLElement | null;
+      out.keyboard = { moved: Number(last.dataset.id), columns: columns(), writes: writes(), focused: focused?.classList.contains("bcard") ? Number(focused.dataset.id) : null, outline: focused ? getComputedStyle(focused).outlineStyle : null };
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-board-audit";
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
   })();

@@ -27,7 +27,7 @@ import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner }
 import { userShell, userShellWithInput, which, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
-import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, adoRequest, setWorkItemTags, projectTags } from "./ado";
+import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, reorderWorkItem, adoRequest, setWorkItemTags, projectTags } from "./ado";
 import { PipelineStore } from "./pipeline";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
@@ -1063,6 +1063,7 @@ handle("ado:projectTags", () => projectTags(store));
 handle("ado:me", () => adoIdentity(store));
 handle("ado:boards", (fresh) => teamBoards(store, !!fresh));
 handle("ado:moveToColumn", (id, type, board, column) => moveToBoardColumn(store, Number(id), String(type), String(board), String(column)));
+handle("ado:reorder", (id, previousId, nextId) => reorderWorkItem(store, Number(id), Number(previousId), Number(nextId)));
 handle("update:check", () => checkForUpdate());
 // Each CLI updates itself (`claude update` / `codex update`); running panes keep
 // the old build until they restart, which the Settings UI offers right after.

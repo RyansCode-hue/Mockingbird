@@ -187,6 +187,7 @@ const api = {
   adoProjectTags: () => ipcRenderer.invoke("ado:projectTags"),
   adoBoards: (fresh?: boolean) => ipcRenderer.invoke("ado:boards", fresh),
   adoMoveToColumn: (id: number, type: string, board: string, column: string) => ipcRenderer.invoke("ado:moveToColumn", id, type, board, column),
+  adoReorder: (id: number, previousId: number, nextId: number) => ipcRenderer.invoke("ado:reorder", id, previousId, nextId),
   adoComments: (id: number) => ipcRenderer.invoke("ado:comments", id),
   adoAddComment: (id: number, text: string) => ipcRenderer.invoke("ado:comment:add", id, text),
   reviewStart: (sessionId: string) => ipcRenderer.invoke("review:start", sessionId),

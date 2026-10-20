@@ -186,6 +186,8 @@ export interface AdoWorkItem {
   tags: string[]; // System.Tags, split
   /** Values, by reference name, of the fields card rules and blocked detection read (Microsoft.VSTS.CMMI.Blocked…), where the process has them. */
   fields?: Record<string, string>;
+  /** Its place in the team's backlog order (Stack Rank or Backlog Priority): lower comes first. Unset when unranked or unknown. */
+  rank?: number;
 }
 
 /** One condition of a board's card rule, as Azure DevOps stores it: `field op value`, joined to the one before by `logic`. */
