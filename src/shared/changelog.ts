@@ -46,6 +46,7 @@ export const CHANGELOG: Release[] = [
     date: "2026-10-20",
     items: [
       p("Sessions show their full colours: every pane runs with COLORTERM=truecolor"),
+      f("Panes keep following the latest output and leave no blank space below the input box"),
       f("Status banners float over the terminal instead of resizing it, so Claude stops redrawing"),
       f("A Settings check that fails shows the error and a Retry instead of \"checking…\" forever"),
       f("Stopping or quitting a debug session ends the program it launched; attached ones keep running"),
