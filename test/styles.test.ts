@@ -24,6 +24,12 @@ describe("the stylesheet", () => {
     for (const v of overflow("overflow-y")) expect(v).toBe("visible");
   });
 
+  it("clips a terminal's hidden input to the terminal, so no pane scrolls below its last line to reach it", () => {
+    const rule = css.match(/^\.term-holder \.xterm\s*\{([^}]*)\}/m)?.[1] ?? "";
+    // clip, not hidden: the browser still scrolls a hidden overflow to show a focused element
+    expect(rule).toMatch(/overflow:\s*clip/);
+  });
+
   it("puts a teammate's copy at the bottom of a pane taller than its owner's screen, still scrollable from its top", () => {
     const rule = (sel: string) => css.match(new RegExp(`^${sel.replace(/[.>]/g, (c) => `\\${c}`)}\\s*\\{([^}]*)\\}`, "m"))?.[1] ?? "";
     expect(rule(".term-holder.fixed")).toMatch(/display:\s*flex/);

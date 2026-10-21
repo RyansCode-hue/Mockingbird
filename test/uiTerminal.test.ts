@@ -30,6 +30,31 @@ async function audit(motion: "full" | "off"): Promise<Audit> {
   return JSON.parse(json);
 }
 
+type ScrollAudit = { steps: string[]; shown: string[]; internals: boolean; problems: string[]; mode: string; error?: string };
+
+async function scrollAudit(motion: "full" | "off"): Promise<ScrollAudit> {
+  // @ts-expect-error — a plain .mjs build script, no type declarations
+  const { pageResult } = await import("../scripts/ui-preview.mjs");
+  const json: string | null = await pageResult({ size: "1400x900", query: `motion=${motion}&scrollAudit`, outDir: path.join(tempDir("scroll"), "out"), read: `document.getElementById("mb-scroll-audit")?.textContent ?? null` });
+  if (!json) throw new Error("the preview didn't finish its scroll audit");
+  return JSON.parse(json);
+}
+
+describe.skipIf(!local)("terminals following their output", () => {
+  for (const motion of ["full", "off"] as const) {
+    it(`stay at the bottom through every action unless the user scrolled up, with nothing to scroll below the program's last line: motion ${motion}`, async () => {
+      const a = await scrollAudit(motion);
+      expect(a.error).toBeUndefined();
+      expect(a.mode).toBe(motion);
+      expect(a.shown).toEqual(expect.arrayContaining(["s1", "s4", expect.stringMatching(/^r~/)]));
+      // the viewport internals cachedTerm.ts resyncs (an xterm upgrade that renames them fails here)
+      expect(a.internals).toBe(true);
+      expect(a.steps).toEqual(["start", "group switch", "teammate's screen grew", "side bar hidden", "side bar shown", "bottom panel shown", "bottom panel hidden", "scrolled up, then back", "Repaint"]);
+      expect(a.problems).toEqual([]);
+    }, 120_000);
+  }
+});
+
 describe.skipIf(!local)("terminals in the interface", () => {
   for (const motion of ["full", "off"] as const) {
     it(`fit their holders and give their ptys that size after every action, never measuring a holder with no area: motion ${motion}`, async () => {

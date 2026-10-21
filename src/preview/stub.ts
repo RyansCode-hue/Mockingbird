@@ -13,6 +13,7 @@
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
+import { fitSize } from "../renderer/cachedTerm";
 import type { SuggestProblem } from "../shared/suggestions";
 import { changedTags, parseCardRules, type TagChange } from "../shared/cardRules";
 import type { MigrationsView } from "../shared/team/migrations";
@@ -1961,7 +1962,7 @@ if (params.has("motionAudit")) {
 // holder with no area; and the pty sizes each step sent. The pty sizes are as main has them: a relaunched session's new pty starts at 120×32.
 if (params.has("termAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  type Entry = { term: import("@xterm/xterm").Terminal; fit: { proposeDimensions(): { cols: number; rows: number } | undefined } };
+  type Entry = import("../renderer/cachedTerm").SizedTerm;
   const terms = () => w.__mbTerms as Map<string, Entry> | undefined;
   const pty: Record<string, string> = {};
   const sent: { id: string; size: string }[] = [];
@@ -1986,7 +1987,7 @@ if (params.has("termAudit")) {
     for (const [id, e] of terms() ?? []) {
       if (!e.term.element?.isConnected || !sessions.some((s) => s.id === id)) continue;
       const size = `${e.term.cols}×${e.term.rows}`;
-      const fits = e.fit.proposeDimensions();
+      const fits = fitSize(e);
       if (!fits || `${fits.cols}×${fits.rows}` !== size) problems.push(`${step}: ${id} is ${size} in a holder that fits ${fits ? `${fits.cols}×${fits.rows}` : "nothing"}`);
       if (pty[id] !== size) problems.push(`${step}: ${id}'s pty is ${pty[id] ?? "unsized"} under a ${size} terminal`);
     }
@@ -2086,6 +2087,170 @@ if (params.has("termAudit")) {
     const tag = document.createElement("script");
     tag.type = "application/json";
     tag.id = "mb-term-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  });
+}
+// ?scrollAudit (with ?motion=full or off) checks that terminals follow their output: a pane whose view was at the
+// bottom stays there through a group switch (output arriving while it's hidden, the pane shown again while its
+// program is idle), a teammate's copy re-fitted to a wider owner screen at a smaller font, the side bar and the
+// bottom panel hidden and shown, and a Repaint; one the user scrolled up stays where they put it while output goes
+// on (a teammate's copy too, through its font change), with a "Jump to latest" control that brings it back. After each step it checks every shown terminal: at its bottom (xterm's and the page's
+// scroll offsets agreeing), its rows within its holder's content box, nothing scrollable below it. It writes what was
+// wrong into <script id="mb-scroll-audit"> for test/uiTerminal.test.ts.
+if (params.has("scrollAudit")) {
+  set("mb.shown", ["s1", "s4", NICK_PANE]);
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  type Core = { _bufferService: { isUserScrolling: boolean }; viewport?: { _currentRowHeight?: number; syncScrollArea?: unknown; _innerRefresh?: unknown }; _renderService: { dimensions: { css: { cell: { height: number } } } } };
+  type Term = import("@xterm/xterm").Terminal & { _core: Core };
+  const terms = () => w.__mbTerms as Map<string, { term: Term }> | undefined;
+  const ids = ["s1", "s2", "s3", "s4", "s5", "s8", NICK_PANE];
+  const say = (id: string, text: string) => {
+    buffers[id] = (buffers[id] ?? "") + text;
+    emit("onSessionData", id, text);
+  };
+  const lines = (n: number, tag: string) => {
+    for (const id of ids) say(id, Array.from({ length: n }, (_, i) => `${id} ${tag} ${i}\r\n`).join(""));
+  };
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) {
+      await sleep(50);
+      for (const a of document.getAnimations()) if (Number.isFinite(a.effect?.getComputedTiming().activeDuration ?? Infinity)) a.finish();
+    }
+    await sleep(300);
+  };
+  const press = (el: Element | null | undefined, what: string) => {
+    if (!el) throw new Error(`the audit found no ${what}`);
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  };
+  const row = (selector: string, text: string) => [...document.querySelectorAll(selector)].find((el) => el.textContent?.includes(text));
+  const problems: string[] = [];
+  const shownTerms = () => [...(terms() ?? [])].filter(([, e]) => e.term.element?.isConnected && (e.term.element.parentElement?.getClientRects().length ?? 0) > 0);
+  const behind = (t: Term) => t.buffer.active.baseY - t.buffer.active.viewportY;
+  const check = (step: string, scrolledUp: string[] = []) => {
+    for (const [id, { term }] of shownTerms()) {
+      const holder = term.element!.parentElement!;
+      const vp = term.element!.querySelector<HTMLElement>(".xterm-viewport")!;
+      const rowH = term._core.viewport?._currentRowHeight || term._core._renderService.dimensions.css.cell.height;
+      const pad = getComputedStyle(holder);
+      const content = holder.clientHeight - parseFloat(pad.paddingTop) - parseFloat(pad.paddingBottom);
+      const pane = holder.closest(".pane");
+      const toast = !!pane?.querySelector(".scroll-toast.jump");
+      if (scrolledUp.includes(id)) {
+        if (!behind(term)) problems.push(`${step}: ${id} was scrolled up, and its view went to the bottom`);
+        if (!toast) problems.push(`${step}: ${id} is scrolled up with no Jump to latest`);
+      } else {
+        if (behind(term)) problems.push(`${step}: ${id} is ${behind(term)} lines above its bottom${term._core._bufferService.isUserScrolling ? ", no longer following its output" : ""}`);
+        if (toast) problems.push(`${step}: ${id} is at its bottom and shows Jump to latest`);
+        // the page's scroll offset is where xterm reads the next wheel move from: a screen short of the bottom, it jumps the view up
+        const reach = Math.round((vp.scrollHeight - vp.clientHeight) / rowH);
+        if (Math.abs(reach - term.buffer.active.baseY) > 0) problems.push(`${step}: ${id}'s page can scroll to line ${reach} of its ${term.buffer.active.baseY}`);
+        if (Math.abs(vp.scrollTop / rowH - term.buffer.active.viewportY) >= 0.5) problems.push(`${step}: ${id}'s page is scrolled to line ${(vp.scrollTop / rowH).toFixed(1)}, its view at ${term.buffer.active.viewportY}`);
+      }
+      if (!holder.classList.contains("fixed") && term.rows * rowH > content + 0.5) problems.push(`${step}: ${id} has ${term.rows} rows (${(term.rows * rowH).toFixed(1)}px) in ${content}px`);
+      // a holder that scrolls past its terminal shows blank space below the program's last line
+      const below = holder.scrollHeight - holder.clientHeight - Math.max(0, term.element!.offsetHeight + parseFloat(pad.paddingTop) + parseFloat(pad.paddingBottom) - holder.clientHeight);
+      if (below > 1) problems.push(`${step}: ${id}'s pane has ${below}px to scroll below its terminal`);
+    }
+  };
+  waitFor(".grid > [data-cell=s1] .xterm", async () => {
+    const out: Record<string, unknown> = {};
+    const done: string[] = [];
+    try {
+      await sleep(500); // the teammate's copy opens with the rest
+      lines(3000, "history");
+      await settle();
+      out.internals = shownTerms().every(([, e]) => typeof e.term._core.viewport?.syncScrollArea === "function" && typeof e.term._core.viewport?._innerRefresh === "function");
+      out.shown = shownTerms().map(([id]) => id);
+      check("start");
+      done.push("start");
+      // output while the group is hidden; shown again while its programs are idle
+      press(row(".sidebar .group-label", "#5102"), "group #5102");
+      await sleep(400);
+      await settle();
+      for (let i = 0; i < 10; i++) {
+        lines(20, `hidden ${i}`);
+        await sleep(30);
+      }
+      await settle();
+      press(row(".sidebar .group-label", "#5101"), "group #5101");
+      await sleep(400);
+      await settle();
+      check("group shown again, idle");
+      lines(40, "after");
+      await settle();
+      check("output after the group came back");
+      done.push("group switch");
+      // the teammate's screen widens while their copy here is scrolled up: it re-fits at a smaller font and stays
+      // where it was; then their screen narrows again, and the copy follows its output at the larger font
+      const nick = live.remote.find((s) => s.id === NICK_PANE)!;
+      const copy = terms()!.get(NICK_PANE)!.term;
+      copy.element!.querySelector(".xterm-screen")!.dispatchEvent(new WheelEvent("wheel", { deltaY: -400, deltaMode: 0, bubbles: true, cancelable: true }));
+      await settle();
+      nick.room = { ...nick.room!, cols: 240, rows: 30 };
+      emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+      await settle();
+      lines(20, "small font");
+      await settle();
+      check("teammate's copy at a smaller font, scrolled up", [NICK_PANE]);
+      const copyLatest = document.querySelector(`.pane[data-cell="${CSS.escape(NICK_PANE)}"] .scroll-toast.jump`);
+      if (copyLatest) press(copyLatest, "the copy's Jump to latest");
+      else copy.scrollToBottom(); // its problem is noted: the rest still runs
+      nick.room = { ...nick.room!, cols: 110, rows: 30 };
+      emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+      await settle();
+      lines(20, "larger font");
+      await settle();
+      check("teammate's copy back at its larger font");
+      done.push("teammate's screen grew");
+      // the side bar hidden and shown: every pane re-fits, the teammate's copy at another font
+      for (const step of ["side bar hidden", "side bar shown"]) {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "b", metaKey: true, bubbles: true }));
+        lines(10, step);
+        await settle();
+        check(step);
+        done.push(step);
+      }
+      // the bottom panel shown and hidden while the programs are idle: the panes get shorter and taller, every
+      // program's cursor where it was
+      for (const step of ["bottom panel shown", "bottom panel hidden"]) {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", metaKey: true, bubbles: true }));
+        await settle();
+        check(`${step}, idle`);
+        done.push(step);
+      }
+      // the user scrolls a pane up; output goes on; it stays, until Jump to latest
+      const s1 = terms()!.get("s1")!.term;
+      s1.element!.querySelector(".xterm-screen")!.dispatchEvent(new WheelEvent("wheel", { deltaY: -600, deltaMode: 0, bubbles: true, cancelable: true }));
+      await settle();
+      const top = s1.buffer.active.getLine(s1.buffer.active.viewportY)?.translateToString(true);
+      lines(60, "while scrolled up");
+      await settle();
+      check("output while the user is scrolled up", ["s1"]);
+      if (s1.buffer.active.getLine(s1.buffer.active.viewportY)?.translateToString(true) !== top) problems.push("output while the user is scrolled up: s1's view moved from where they put it");
+      const toLatest = document.querySelector(".pane[data-cell=s1] .scroll-toast.jump");
+      if (toLatest) press(toLatest, "s1's Jump to latest");
+      else s1.scrollToBottom(); // its problem is noted: the rest still runs
+      await settle();
+      check("Jump to latest");
+      lines(20, "after the jump");
+      await settle();
+      check("output after Jump to latest");
+      done.push("scrolled up, then back");
+      press(document.querySelector(".pane[data-cell=s1] [data-action=repaint]"), "s1's Repaint");
+      await sleep(300);
+      await settle();
+      check("Repaint");
+      done.push("Repaint");
+    } catch (err) {
+      out.error = String(err);
+    }
+    out.steps = done;
+    out.problems = problems;
+    out.mode = document.documentElement.dataset.motion;
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-scroll-audit";
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
   });

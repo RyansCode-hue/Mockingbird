@@ -457,6 +457,10 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .pane-notes > * { pointer-events: auto; margin: 0; box-shadow: 0 2px 6px rgba(0, 0, 0, .22); }
 /* terminals scroll with trackpad/wheel — no visible scrollbar gutter */
 .term-holder .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
+/* xterm places its hidden input at the cursor, and moves it only when the cursor moves in view: after a pane gets
+   shorter or its font smaller it sits below the terminal, and a holder (or pane) would scroll down to it, blank.
+   clip, not hidden: a hidden overflow is still scrolled by the browser to show a focused element */
+.term-holder .xterm { overflow: clip; }
 
 /* waiting state — the design's most important element */
 .pane.st-waiting {
@@ -985,7 +989,8 @@ input[type=checkbox] { accent-color: var(--teal); }
   animation: copytoast 1.6s ease forwards;
 }
 .copy-toast.failed { color: var(--red); }
-/* a teammate's full-screen session: scrolling has nothing here to move, and theirs is theirs */
+/* a teammate's full-screen session: scrolling has nothing here to move, and theirs is theirs;
+   .jump: the user scrolled the terminal up, and this brings it back to its newest output */
 .scroll-toast {
   position: absolute; left: 14px; bottom: 14px; z-index: 6; max-width: calc(100% - 28px);
   padding: 4px 10px; border-radius: 6px;
@@ -994,6 +999,8 @@ input[type=checkbox] { accent-color: var(--teal); }
   pointer-events: none;
   animation: scrolltoast 0.15s ease;
 }
+.scroll-toast.jump { pointer-events: auto; cursor: pointer; color: var(--teal-text); }
+.scroll-toast.jump:hover { border-color: var(--teal); background: var(--bg-pane-header); color: var(--teal-text); }
 @keyframes scrolltoast {
   from { opacity: 0; transform: translateY(4px); }
 }

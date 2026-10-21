@@ -85,6 +85,23 @@ function holderHasArea(term: Terminal): boolean {
 }
 
 /**
+ * The size a terminal fits its holder at: the fit addon's, with no more rows
+ * than the holder's content box holds. The addon measures the holder's
+ * border box, so its rows run into the holder's padding — the last of them
+ * drawn under the pane's edge.
+ */
+export function fitSize(e: SizedTerm): { cols: number; rows: number } | null {
+  const dims = e.fit.proposeDimensions();
+  if (!dims || !dims.cols || !dims.rows) return null;
+  const holder = e.term.element?.parentElement;
+  const cell = cellOf(e.term);
+  if (!holder || !cell) return dims;
+  const pad = getComputedStyle(holder);
+  const content = holder.clientHeight - parseFloat(pad.paddingTop) - parseFloat(pad.paddingBottom);
+  return { cols: dims.cols, rows: Math.max(1, Math.min(dims.rows, Math.floor(content / cell.height))) };
+}
+
+/**
  * Fit a terminal to its holder and tell the pty its size whenever the pty
  * doesn't have it yet: the first fit after the terminal is made, and every
  * change since. A pty is told nothing otherwise — every needless resize makes
@@ -94,9 +111,9 @@ function holderHasArea(term: Terminal): boolean {
  */
 export function fitTerm(e: SizedTerm, resize: (cols: number, rows: number) => void): void {
   if (!holderHasArea(e.term)) return;
-  const dims = e.fit.proposeDimensions();
-  if (!dims || !dims.cols || !dims.rows) return;
-  if (dims.cols !== e.term.cols || dims.rows !== e.term.rows) e.fit.fit();
+  const dims = fitSize(e);
+  if (!dims) return;
+  if (dims.cols !== e.term.cols || dims.rows !== e.term.rows) e.term.resize(dims.cols, dims.rows);
   const { cols, rows } = e.term;
   if (e.ptySize?.cols === cols && e.ptySize.rows === rows) return;
   e.ptySize = { cols, rows };
@@ -172,24 +189,55 @@ export function attachTerm(term: Terminal, holder: HTMLElement | null): void {
   if (!holder) return;
   if (!term.element) term.open(holder);
   else if (term.element.parentElement !== holder) holder.appendChild(term.element);
+  followOutput(term);
   syncViewport(term);
 }
 
+/** The parts of xterm's viewport (the element that scrolls) this module keeps in step with the page: not public API. */
+interface XtermViewport {
+  /** Records the buffer's length and refreshes when anything it measured changed. */
+  syncScrollArea(immediate?: boolean): void;
+  /** Measures the viewport as laid out now, sizes its scroll area to the buffer and puts its offset at the view's row. */
+  _innerRefresh(): void;
+}
+
+let missingViewport = false;
+function viewportOf(term: Terminal): XtermViewport | null {
+  const v = (term as unknown as { _core?: { viewport?: Partial<XtermViewport> } })._core?.viewport;
+  if (v && typeof v.syncScrollArea === "function" && typeof v._innerRefresh === "function") return v as XtermViewport;
+  if (term.element && !missingViewport) {
+    missingViewport = true;
+    console.error("[mockingbird] xterm's viewport has no syncScrollArea/_innerRefresh: terminals can't resync their scroll offsets (an xterm upgrade?)");
+  }
+  return null;
+}
+
 /**
- * Put the viewport's scroll offset back where the buffer is scrolled to. An
- * element taken out of the page (its pane unmounted, its holder display:none)
- * comes back scrolled to 0, and xterm doesn't notice until its buffer grows —
- * never, once the scrollback is full. Meanwhile it shows the right rows, but
- * the next wheel or scrollbar move is read against that 0 and jumps the view
- * to the top of the history.
+ * Bring xterm's viewport in step with the page, and a view that follows its
+ * output back to the bottom.
+ *
+ * xterm measures its viewport on the frame after its buffer grows, also while
+ * the terminal is out of the page (its pane hidden, output still arriving).
+ * Measured there, the viewport is 0px tall, and the scroll area it sizes from
+ * that is a screen short. Shown again, the page can't scroll to the bottom:
+ * the offset is clamped a screen up, and xterm reads that scroll as the user's,
+ * stops following output, and once its scrollback is full drifts further up
+ * with every line. An offset computed here from the cell's CSS height, not the
+ * row height xterm reads offsets in (they differ after a font change until
+ * xterm's next refresh, and by a fraction of a pixel at some row counts),
+ * moves the view the same way. And an element put back into the page comes
+ * back scrolled to 0, where the next wheel move would be read from. So xterm
+ * measures again itself, now that the holder is laid out, and sets the offset
+ * in its own row height.
  */
 export function syncViewport(term: Terminal): void {
-  const viewport = term.element?.querySelector<HTMLElement>(".xterm-viewport");
-  const cell = cellOf(term);
-  if (!viewport || !cell || !term.element?.isConnected) return;
-  const want = term.buffer.active.viewportY * cell.height;
-  // xterm's scroll handler reads the row back from this offset, rounding: within half a row it already agrees
-  if (Math.abs(viewport.scrollTop - want) >= cell.height / 2) viewport.scrollTop = want;
+  if (!term.element?.isConnected || !holderHasArea(term)) return;
+  const vp = viewportOf(term);
+  if (vp) {
+    vp.syncScrollArea(true);
+    vp._innerRefresh();
+  }
+  if (follows.get(term)?.atBottom && !atBottom(term)) term.scrollToBottom();
 }
 
 /** xterm's cell size in CSS pixels, for its current font (not public API: null when it isn't there). */
@@ -198,33 +246,123 @@ function cellOf(term: Terminal): { width: number; height: number } | null {
   return cell?.width && cell.height ? cell : null;
 }
 
+/** How long after a wheel, touch or key a scroll counts as the user's. */
+export const USER_SCROLL_MS = 300;
+
+interface Follow {
+  /** The user left the view at the bottom (or never moved it): it follows output there. */
+  atBottom: boolean;
+  /** When the user last wheeled, touched or pressed a key in the terminal; a held pointer (a selection drag) counts until it's let go. */
+  userAt: number;
+  holding: boolean;
+  listeners: Set<(atBottom: boolean) => void>;
+}
+const follows = new WeakMap<Terminal, Follow>();
+const atBottom = (term: Pick<Terminal, "buffer">) => term.buffer.active.viewportY >= term.buffer.active.baseY;
+
+/**
+ * Keep a terminal's view on its newest output while the user leaves it
+ * there, and where they put it when they scroll up. xterm alone follows the
+ * bottom until any scroll of its viewport it didn't make itself, which it
+ * takes for the user's: a layout change (an offset clamped or reset by the
+ * page) stops it following. Here only a scroll right after the user's wheel,
+ * touch, key or held pointer decides that the view left the bottom; any other
+ * scroll away from it, while it was following, goes back. Reaching the bottom
+ * by any means follows again. Needs the terminal opened; once.
+ */
+export function followOutput(term: Terminal): void {
+  const el = term.element;
+  if (follows.has(term) || !el) return;
+  const f: Follow = { atBottom: atBottom(term), userAt: 0, holding: false, listeners: new Set() };
+  follows.set(term, f);
+  const user = () => (f.userAt = Date.now());
+  for (const ev of ["wheel", "touchstart", "touchmove", "keydown"]) el.addEventListener(ev, user, { capture: true, passive: true });
+  const release = () => {
+    f.holding = false;
+    user();
+    window.removeEventListener("pointerup", release, true);
+    window.removeEventListener("pointercancel", release, true);
+  };
+  el.addEventListener(
+    "pointerdown",
+    () => {
+      user();
+      f.holding = true;
+      window.addEventListener("pointerup", release, true);
+      window.addEventListener("pointercancel", release, true);
+    },
+    true
+  );
+  const check = () => {
+    const bottom = atBottom(term);
+    const theirs = f.holding || Date.now() - f.userAt < USER_SCROLL_MS;
+    if (!bottom && !theirs) {
+      if (f.atBottom) term.scrollToBottom();
+      return;
+    }
+    if (bottom === f.atBottom) return;
+    f.atBottom = bottom;
+    for (const l of f.listeners) l(bottom);
+  };
+  // registered after xterm's own listener, which has read the scroll into the buffer by then
+  el.querySelector(".xterm-viewport")?.addEventListener("scroll", check);
+  term.onScroll(check);
+}
+
+/** The user moved this terminal's view themselves (a teammate's copy scrolls without xterm seeing the wheel or key). */
+export function noteUserScroll(term: Pick<Terminal, "buffer">): void {
+  const f = follows.get(term as Terminal);
+  if (f) f.userAt = Date.now();
+}
+
+/** Told whether the view follows the bottom whenever that changes; returns the unsubscribe. */
+export function onFollowChange(term: Terminal, cb: (atBottom: boolean) => void): () => void {
+  const f = follows.get(term);
+  if (!f) return () => undefined;
+  f.listeners.add(cb);
+  return () => void f.listeners.delete(cb);
+}
+
+/** Whether the view follows the bottom (true for a terminal not followed yet). */
+export function followsBottom(term: Terminal): boolean {
+  return follows.get(term)?.atBottom ?? true;
+}
+
+/** Back to the newest output, following it again. */
+export function jumpToLatest(term: Terminal): void {
+  noteUserScroll(term);
+  term.scrollToBottom();
+}
+
 /**
  * Keep a terminal at a fixed size, fitted to its holder by its font, from now
  * on. Returns the stop, and `refit` for when the size or the largest font changes.
  */
 export function followFixedSize(e: { term: Terminal }, holder: HTMLElement | null, size: () => { cols: number; rows: number }, maxFont: () => number): { stop: () => void; refit: () => void } {
-  const refit = () => fitFixed(e, holder, size(), maxFont());
+  // a new font changes the row height the viewport's offsets are read in, and a holder shown again after
+  // display:none comes back scrolled to 0 (syncViewport)
+  const refit = () => {
+    fitFixed(e, holder, size(), maxFont());
+    syncViewport(e.term);
+  };
   refit();
   // the terminal font may still be loading: its proportions decide the fit
   void document.fonts?.ready.then(refit);
-  // a holder shown again after display:none comes back scrolled to 0 (syncViewport)
-  const ro = new ResizeObserver(() => {
-    refit();
-    syncViewport(e.term);
-  });
+  const ro = new ResizeObserver(refit);
   if (holder) ro.observe(holder);
   return { stop: () => ro.disconnect(), refit };
 }
 
 /** Keep a terminal fitted to its holder from now on; returns the stop. */
 export function followSize(e: SizedTerm, holder: HTMLElement | null, resize: (cols: number, rows: number) => void): () => void {
-  const fit = () => fitTerm(e, resize);
-  fit();
-  // a holder shown again after display:none comes back scrolled to 0 (syncViewport)
-  const ro = new ResizeObserver(() => {
-    fit();
+  // a re-fit changes what the viewport measured, and a holder shown again after display:none comes back
+  // scrolled to 0 (syncViewport)
+  const fit = () => {
+    fitTerm(e, resize);
     syncViewport(e.term);
-  });
+  };
+  fit();
+  const ro = new ResizeObserver(fit);
   if (holder) ro.observe(holder);
   return () => ro.disconnect();
 }

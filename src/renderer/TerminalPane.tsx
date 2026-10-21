@@ -13,7 +13,7 @@ import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneS
 import { isViewControl } from "../shared/termInput";
 import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
-import { attachTerm, dataPump, fitTerm, followFixedSize, followSize, makeTerm, repaintTerm, replay, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
+import { attachTerm, dataPump, fitTerm, followFixedSize, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
@@ -110,7 +110,9 @@ function pumpWrite(e: TermEntry, data: string): void {
   if (!keep) return void e.term.write(chunk);
   e.term.write(chunk, () => {
     const y = anchorLine(e.term, keep);
-    if (y !== null) e.term.scrollToLine(y);
+    if (y === null) return;
+    noteUserScroll(e.term); // where the viewer had put it: not a view to send back to the bottom
+    e.term.scrollToLine(y);
   });
 }
 
@@ -406,6 +408,8 @@ export function TerminalPane({
   const [editTitle, setEditTitle] = useState<string | null>(null);
   const [copyNote, copy] = useCopyNote();
   const [fullScreenNote, flashFullScreen] = useFlash(2500);
+  // the user scrolled this pane's terminal up: it stays there, and Jump to latest brings it back to its output
+  const [scrolledUp, setScrolledUp] = useState(false);
   const [panelClose, setPanelClose] = useState<{ col: number; row: number } | null>(null);
   const [exitTail, setExitTail] = useState<string | null>(null);
   useEffect(() => {
@@ -569,7 +573,9 @@ export function TerminalPane({
         const page = remoteEntry ? pageKey(ev) : 0;
         if (page) {
           ev.preventDefault();
-          if (ev.type === "keydown" && scrollCopy(term, page * Math.max(1, term.rows - 1)) === "full-screen") e.onFullScreen?.();
+          if (ev.type !== "keydown") return false;
+          noteUserScroll(term);
+          if (scrollCopy(term, page * Math.max(1, term.rows - 1)) === "full-screen") e.onFullScreen?.();
           return false;
         }
         if (ev.type === "keydown" || ev.type === "keypress") e.lastInput = Date.now();
@@ -601,6 +607,8 @@ export function TerminalPane({
     onPanel(entry.wantsMouse ? findPanelClose(term) : null);
     attachTerm(term, holder.current);
     trackUserInput(entry);
+    setScrolledUp(!followsBottom(term));
+    const stopFollowNote = onFollowChange(term, (atBottom) => setScrolledUp(!atBottom));
     let stopFollowing: () => void;
     if (remoteEntry) {
       const fixed = followFixedSize(entry, holder.current, () => ownerSize.current, () => fontSizeFor(densityNow.current));
@@ -691,6 +699,7 @@ export function TerminalPane({
         if (!t || !screen) return;
         const r = screen.getBoundingClientRect();
         const lines = wheelLines(t, ev, r.height / t.term.rows, r.height);
+        noteUserScroll(t.term);
         // full screen: no default kept, so a holder the owner's size overflows still scrolls
         if (scrollCopy(t.term, lines) === "full-screen") return void t.onFullScreen?.();
         ev.preventDefault();
@@ -736,6 +745,7 @@ export function TerminalPane({
     window.addEventListener("pointercancel", cancelDrag, true);
     return () => {
       stopFollowing();
+      stopFollowNote();
       el?.removeEventListener("paste", onPaste, true);
       el?.removeEventListener("pointerdown", onDown, true);
       el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
@@ -764,6 +774,7 @@ export function TerminalPane({
     if (!entry || remote || entry.term.options.fontSize === fontSizeFor(density)) return;
     entry.term.options.fontSize = fontSizeFor(density);
     fitTerm(entry, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
+    syncViewport(entry.term);
   }, [density, session.id]);
 
   const assistant = session.kind === "assistant" && !session.shell; // repo-less shells aren't assistants
@@ -1103,6 +1114,20 @@ export function TerminalPane({
           />
           <CopyToast note={copyNote} failed="Couldn't copy selection" />
           {remote && fullScreenNote && <span className="scroll-toast">{remote.ownerName}'s session is full screen: only they can scroll it</span>}
+          {scrolledUp && !(remote && fullScreenNote) && (
+            <button
+              className="scroll-toast jump"
+              title="Back to the newest output; the pane follows it again"
+              onClick={() => {
+                const t = terms.get(session.id)?.term;
+                if (!t) return;
+                jumpToLatest(t);
+                t.focus();
+              }}
+            >
+              ↓ Jump to latest
+            </button>
+          )}
           <div className="pane-notes">
             {room?.takenOver && !remote && (
               <div className="team-pane-note" title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">

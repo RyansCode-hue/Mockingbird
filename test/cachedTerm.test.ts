@@ -7,7 +7,7 @@ vi.hoisted(() => {
 
 import { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
-import { attachTerm, dataPump, fitTerm, makeTerm, repaintTerm, replay, syncViewport, termLinkHandler, REPAINT_NUDGE_MS, type CachedTerm, type SizedTerm } from "../src/renderer/cachedTerm";
+import { attachTerm, dataPump, fitTerm, followsBottom, jumpToLatest, makeTerm, onFollowChange, repaintTerm, replay, syncViewport, termLinkHandler, REPAINT_NUDGE_MS, type CachedTerm, type SizedTerm } from "../src/renderer/cachedTerm";
 
 const parsed = (term: Terminal) => new Promise<void>((r) => term.write("", r));
 const screen = (term: Terminal) => {
@@ -78,53 +78,247 @@ describe("cached terminal replay", () => {
 });
 
 /**
- * A cached terminal as a pane shows it, scrolled to `viewportY` with 18px rows. Holders behave as
- * the browser does: an element put into one comes back with its viewport scrolled to 0.
+ * A cached terminal as a pane shows it: xterm's buffer for real, and its viewport — the element that scrolls —
+ * as xterm 5.5's Viewport keeps it (src/browser/Viewport.ts), in a page that behaves as the browser does. The page
+ * clamps an offset to what its scroll area allows and fires a scroll event for each change on the next frame, before
+ * that frame's animation callbacks; an element out of the page measures 0px tall, and comes back scrolled to 0.
+ * xterm measures its viewport on a frame after its buffer grows, and reads every scroll it didn't flag as its own
+ * into the buffer, as the user's.
  */
-function shownTerm(viewportY: number) {
-  const viewport = { scrollTop: 0 };
-  const element = { parentElement: null as unknown, isConnected: false, querySelector: (sel: string) => (sel === ".xterm-viewport" ? viewport : null) };
-  const term = {
-    element: undefined as typeof element | undefined,
-    buffer: { active: { viewportY } },
-    open(holder: ReturnType<typeof holderOf>) {
-      term.element = element;
-      holder.appendChild(element);
+function paneTerm(rows = 10, rowH = 18) {
+  const term = new Terminal({ allowProposedApi: true, cols: 40, rows, scrollback: 1000 });
+  const core = (term as unknown as { _core: any })._core;
+  const page = { scrollEvents: [] as (() => void)[], frames: [] as (() => void)[] };
+  const dims = { css: { cell: { width: 8, height: rowH }, canvas: { height: rows * rowH } }, device: { cell: { height: rowH } } };
+  core._renderService = { dimensions: dims, refreshRows: () => undefined };
+  let holder: ReturnType<typeof holderOf> | null = null;
+  const inPage = () => !!holder?.connected;
+  const listeners = new Map<string, ((ev?: unknown) => void)[]>();
+  const on = (type: string, fn: (ev?: unknown) => void) => listeners.set(type, [...(listeners.get(type) ?? []), fn]);
+  const fire = (type: string) => (listeners.get(type) ?? []).forEach((fn) => fn());
+  const viewportEl = {
+    top: 0,
+    area: 0,
+    pending: false,
+    get offsetHeight() {
+      return inPage() ? dims.css.canvas.height : 0;
     },
-    _core: { _renderService: { dimensions: { css: { cell: { width: 7, height: 18 } } } } },
+    get clientHeight() {
+      return this.offsetHeight;
+    },
+    get scrollHeight() {
+      return inPage() ? Math.max(this.area, this.clientHeight) : 0;
+    },
+    get scrollTop() {
+      return this.top;
+    },
+    set scrollTop(v: number) {
+      const to = Math.max(0, Math.min(v, this.scrollHeight - this.clientHeight));
+      if (to === this.top) return;
+      this.top = to;
+      if (this.pending) return;
+      this.pending = true;
+      page.scrollEvents.push(() => {
+        this.pending = false;
+        fire("scroll");
+      });
+    },
+    get offsetParent() {
+      return inPage() ? {} : null;
+    },
+    addEventListener: on,
   };
-  const holderOf = (connected = true) => {
+  // xterm's Viewport, as 5.5 has it
+  const vp = {
+    _currentRowHeight: 0,
+    _lastRecordedBufferLength: 0,
+    _lastRecordedViewportHeight: 0,
+    _lastRecordedBufferHeight: 0,
+    _lastScrollTop: 0,
+    _ignoreNextScrollEvent: false,
+    _refreshAnimationFrame: null as null | number,
+    _refresh(immediate: boolean) {
+      if (immediate) return vp._innerRefresh();
+      if (vp._refreshAnimationFrame === null) vp._refreshAnimationFrame = page.frames.push(() => vp._innerRefresh());
+    },
+    _innerRefresh() {
+      vp._currentRowHeight = dims.device.cell.height;
+      vp._lastRecordedViewportHeight = viewportEl.offsetHeight;
+      const h = Math.round(vp._currentRowHeight * vp._lastRecordedBufferLength) + (vp._lastRecordedViewportHeight - dims.css.canvas.height);
+      if (vp._lastRecordedBufferHeight !== h) viewportEl.area = vp._lastRecordedBufferHeight = h;
+      const top = term.buffer.active.viewportY * vp._currentRowHeight;
+      if (viewportEl.scrollTop !== top) {
+        vp._ignoreNextScrollEvent = true;
+        viewportEl.scrollTop = top;
+      }
+      vp._refreshAnimationFrame = null;
+    },
+    syncScrollArea(immediate = false) {
+      const b = core._bufferService.buffer;
+      if (vp._lastRecordedBufferLength !== b.lines.length) {
+        vp._lastRecordedBufferLength = b.lines.length;
+        return vp._refresh(immediate);
+      }
+      if (vp._lastRecordedViewportHeight !== dims.css.canvas.height) return vp._refresh(immediate);
+      if (vp._lastScrollTop !== b.ydisp * vp._currentRowHeight) return vp._refresh(immediate);
+      if (dims.device.cell.height !== vp._currentRowHeight) return vp._refresh(immediate);
+    },
+    scrollLines(disp: number) {
+      if (disp) core.scrollLines(disp, false, 1);
+    },
+  };
+  on("scroll", () => {
+    vp._lastScrollTop = viewportEl.scrollTop;
+    if (!viewportEl.offsetParent) return;
+    if (vp._ignoreNextScrollEvent) return void (vp._ignoreNextScrollEvent = false);
+    core.scrollLines(Math.round(vp._lastScrollTop / vp._currentRowHeight) - term.buffer.active.viewportY, true, 1);
+  });
+  term.onScroll(() => vp.syncScrollArea());
+  core.viewport = vp;
+  const elListeners = new Map<string, (() => void)[]>();
+  const element = {
+    parentElement: null as unknown,
+    get isConnected() {
+      return inPage();
+    },
+    querySelector: (sel: string) => (sel === ".xterm-viewport" ? viewportEl : null),
+    addEventListener: (type: string, fn: () => void) => elListeners.set(type, [...(elListeners.get(type) ?? []), fn]),
+  };
+  core.element = element;
+  function holderOf(connected = true) {
     const h = {
+      connected,
+      get isConnected() {
+        return h.connected;
+      },
+      getClientRects: () => (h.connected ? [{}] : []),
+      clientWidth: 320,
+      clientHeight: rows * rowH,
       appendChild(el: typeof element) {
         el.parentElement = h;
-        el.isConnected = connected;
-        viewport.scrollTop = 0;
+        holder = h;
+        viewportEl.top = 0; // an element put into the page comes back scrolled to 0, with no scroll event
       },
     };
     return h;
+  }
+  /** One frame: the page's scroll events, then the animation callbacks. */
+  const frame = () => {
+    for (const fn of page.scrollEvents.splice(0)) fn();
+    for (const fn of page.frames.splice(0)) fn();
   };
-  const attach = (h: ReturnType<typeof holderOf>) => attachTerm(term as unknown as Terminal, h as unknown as HTMLElement);
-  return { term, viewport, holderOf, attach };
+  const write = async (n: number, tag = "line") => {
+    await new Promise<void>((r) => term.write(Array.from({ length: n }, (_, i) => `${tag} ${i}\r\n`).join(""), r));
+    frame();
+    frame();
+  };
+  const shownIn = (h: ReturnType<typeof holderOf>) => {
+    attachTerm(term, h as unknown as HTMLElement);
+    frame();
+    frame();
+  };
+  /** The user turns the wheel: xterm moves the page's offset, the scroll event reads it into the buffer. */
+  const wheel = (lines: number) => {
+    elListeners.get("wheel")?.forEach((fn) => fn());
+    viewportEl.scrollTop += lines * vp._currentRowHeight;
+    frame();
+  };
+  const hide = () => {
+    if (holder) holder.connected = false;
+  };
+  const state = () => ({
+    behind: term.buffer.active.baseY - term.buffer.active.viewportY,
+    following: !core._bufferService.isUserScrolling,
+    // the line the page's offset says, which the next wheel move is read from
+    pageLine: Math.round(viewportEl.scrollTop / vp._currentRowHeight),
+  });
+  return { term, dims, vp, viewportEl, holderOf, frame, write, shownIn, wheel, hide, state };
 }
 
-describe("a cached terminal shown in a pane again", () => {
-  it("keeps the view it had: its viewport's offset follows the buffer, so the next scroll moves from there, not from the top", () => {
-    const { term, viewport, holderOf, attach } = shownTerm(7995);
-    attach(holderOf()); // first shown
-    expect(viewport.scrollTop).toBe(7995 * 18);
-    attach(holderOf()); // its tab switched away and back
-    expect(term.element?.isConnected).toBe(true);
-    expect(viewport.scrollTop).toBe(7995 * 18);
+describe("a cached terminal's view of its output", () => {
+  it("still follows its output when its pane is shown again after output arrived while it was hidden", async () => {
+    const t = paneTerm();
+    t.shownIn(t.holderOf());
+    await t.write(300);
+    expect(t.state()).toEqual({ behind: 0, following: true, pageLine: t.term.buffer.active.baseY });
+    t.hide(); // its group switched away: output still arrives, and xterm measures a viewport 0px tall
+    await t.write(50, "while hidden");
+    expect(t.viewportEl.area).toBe(t.term.buffer.active.length * 18 - 10 * 18); // a screen short
+    t.shownIn(t.holderOf()); // shown again while its program is idle
+    expect(t.state()).toEqual({ behind: 0, following: true, pageLine: t.term.buffer.active.baseY });
+    await t.write(30, "after");
+    expect(t.state()).toEqual({ behind: 0, following: true, pageLine: t.term.buffer.active.baseY });
   });
 
-  it("leaves an offset within half a row alone, and a terminal out of the page untouched", () => {
-    const { term, viewport, holderOf, attach } = shownTerm(100);
-    attach(holderOf());
-    viewport.scrollTop = 100 * 18 + 5; // mid-scroll on a trackpad
-    syncViewport(term as unknown as Terminal);
-    expect(viewport.scrollTop).toBe(100 * 18 + 5);
-    attach(holderOf(false));
-    expect(viewport.scrollTop).toBe(0);
+  it("keeps its place when the font changes, though xterm's row height catches up a frame later", async () => {
+    const t = paneTerm();
+    t.shownIn(t.holderOf());
+    await t.write(300);
+    // a teammate's copy re-fitted at a smaller font: the cell is measured at once, the viewport on its next frame
+    t.dims.css.cell.height = t.dims.device.cell.height = 9;
+    t.dims.css.canvas.height = 10 * 9;
+    syncViewport(t.term); // the holder's resize observer, after the re-fit
+    t.frame();
+    t.frame();
+    expect(t.state()).toEqual({ behind: 0, following: true, pageLine: t.term.buffer.active.baseY });
+  });
+
+  it("goes back to the bottom after a scroll the user didn't make, and follows on", async () => {
+    const t = paneTerm();
+    t.shownIn(t.holderOf());
+    await t.write(300);
+    t.viewportEl.scrollTop -= 40 * 18; // the page moved the offset: a clamp, a layout change
+    t.frame();
+    expect(t.state()).toMatchObject({ behind: 0, following: true });
+    await t.write(20);
+    expect(t.state()).toMatchObject({ behind: 0, following: true });
+  });
+
+  it("stays where the user scrolled it while output goes on, says so, and jumps back to the newest output", async () => {
+    const t = paneTerm();
+    t.shownIn(t.holderOf());
+    await t.write(300);
+    const told: boolean[] = [];
+    onFollowChange(t.term, (atBottom) => told.push(atBottom));
+    t.wheel(-40);
+    const top = t.term.buffer.active.viewportY;
+    expect(t.state().behind).toBe(40);
+    expect(followsBottom(t.term)).toBe(false);
+    expect(told).toEqual([false]);
+    await t.write(30, "more");
+    expect(t.term.buffer.active.viewportY).toBe(top);
+    t.hide();
+    await t.write(10, "hidden");
+    t.shownIn(t.holderOf()); // a tab switched away and back keeps the place too
+    expect(t.term.buffer.active.viewportY).toBe(top);
+    expect(t.state().pageLine).toBe(top);
+    jumpToLatest(t.term);
+    t.frame();
+    expect(t.state()).toEqual({ behind: 0, following: true, pageLine: t.term.buffer.active.baseY });
+    expect(followsBottom(t.term)).toBe(true);
+    expect(told).toEqual([false, true]);
+    await t.write(10);
+    expect(t.state().behind).toBe(0);
+  });
+
+  it("follows again once the user scrolls back down to the bottom", async () => {
+    const t = paneTerm();
+    t.shownIn(t.holderOf());
+    await t.write(300);
+    t.wheel(-5);
+    expect(followsBottom(t.term)).toBe(false);
+    t.wheel(5);
+    expect(followsBottom(t.term)).toBe(true);
+    await t.write(10);
+    expect(t.state().behind).toBe(0);
+  });
+
+  it("leaves a terminal out of the page alone", async () => {
+    const t = paneTerm();
+    t.shownIn(t.holderOf());
+    await t.write(300);
+    t.shownIn(t.holderOf(false));
+    expect(t.viewportEl.scrollTop).toBe(0);
   });
 });
 
@@ -134,11 +328,8 @@ describe("a cached terminal shown in a pane again", () => {
  */
 function fitted(size: [number, number], fits: [number, number], area: [number, number] | null = [500, 400]) {
   const holder = { isConnected: !!area, getClientRects: () => (area ? [{}] : []), clientWidth: area?.[0] ?? 0, clientHeight: area?.[1] ?? 0 };
-  const term = { cols: size[0], rows: size[1], element: { parentElement: holder } };
-  const fit = {
-    proposeDimensions: () => ({ cols: fits[0], rows: fits[1] }),
-    fit: () => ([term.cols, term.rows] = fits),
-  };
+  const term = { cols: size[0], rows: size[1], element: { parentElement: holder }, resize: (cols: number, rows: number) => ([term.cols, term.rows] = [cols, rows]) };
+  const fit = { proposeDimensions: () => ({ cols: fits[0], rows: fits[1] }) };
   const e = { term, fit } as unknown as SizedTerm;
   const sent: string[] = [];
   const resize = (cols: number, rows: number) => void sent.push(`${cols}×${rows}`);
@@ -154,7 +345,6 @@ describe("fitting a terminal to its pane", () => {
     fitTerm(e, resize); // the holder observed again at the same size
     expect(sent).toEqual(["80×24"]);
     (e.fit as unknown as { proposeDimensions: () => unknown }).proposeDimensions = () => ({ cols: 90, rows: 30 });
-    (e.fit as unknown as { fit: () => void }).fit = () => ([term.cols, term.rows] = [90, 30]);
     holder.clientWidth = 560;
     fitTerm(e, resize);
     expect(sent).toEqual(["80×24", "90×30"]);
@@ -167,6 +357,20 @@ describe("fitting a terminal to its pane", () => {
       fitTerm(e, resize);
       expect(sent).toEqual([]);
       expect([term.cols, term.rows]).toEqual([80, 24]);
+    }
+  });
+
+  it("gives it no more rows than its holder's content box holds: the fit addon's run into the holder's padding", () => {
+    vi.stubGlobal("getComputedStyle", () => ({ paddingTop: "9px", paddingBottom: "3px" }));
+    try {
+      // 806px tall with 12px of padding: 41 rows of 19.5px by the border box, 40 in the 794px inside it
+      const { e, term, sent, resize } = fitted([80, 24], [100, 41], [800, 806]);
+      (term as unknown as { _core: unknown })._core = { _renderService: { dimensions: { css: { cell: { width: 8, height: 19.5 } } } } };
+      fitTerm(e, resize);
+      expect(sent).toEqual(["100×40"]);
+      expect(term.rows * 19.5).toBeLessThanOrEqual(794);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });
