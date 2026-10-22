@@ -98,6 +98,8 @@ export const PEER_FAILED = "it failed on their Mockingbird (the reason is in its
 
 export interface Team {
   readonly self: { id: MemberId; publicKey: string };
+  /** This install's signature over `text`, by its identity key (take-over grants carry one: takeoverGrants.ts). */
+  sign(text: string): string;
   /** Rooms this install is a member of. */
   rooms(): readonly RoomState[];
   room(roomId: RoomId): RoomState | undefined;
@@ -316,6 +318,10 @@ export class TeamCore implements Team {
   /** Join requests being passed on to the admin right now (room, joiner): one at a time. */
   private forwarding = new Set<string>();
   private joinTicks = 0;
+
+  sign(text: string): string {
+    return this.identity.sign(text);
+  }
 
   constructor(private o: TeamOptions) {
     this.identity = o.identity;

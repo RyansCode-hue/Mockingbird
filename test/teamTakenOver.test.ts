@@ -136,7 +136,7 @@ function app(m: LoopbackMember, clone: string, takeoverOpts: Partial<TakeoverDep
 }
 
 /** Ryan's room session with Nick; the room backs up to origin (its admin, Ryan, turned that on) unless `backupsToOrigin: false` keeps it peer to peer, as every room starts. */
-async function setup(takeoverOpts: Partial<TakeoverDeps> = {}, o: { backupsToOrigin?: boolean } = {}) {
+async function setup(takeoverOpts: Partial<TakeoverDeps> = {}, o: { backupsToOrigin?: boolean; away?: boolean } = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("team") });
   const [ryanM, nickM] = members;
@@ -150,6 +150,11 @@ async function setup(takeoverOpts: Partial<TakeoverDeps> = {}, o: { backupsToOri
   const nickRun = nick.startLive();
   // backing up to origin needs each member's own consent too: both allowed it (kept on their Macs, across restarts)
   if (o.backupsToOrigin !== false) for (const run of [ryanRun, nickRun]) run.tk.setBackupConsent(roomId, true);
+  // taking over while the owner is offline needs their away grant: both allowed it for all their sessions, unless `away: false`
+  if (o.away !== false) {
+    for (const run of [ryanRun, nickRun]) run.tk.setAwayGrant(roomId, { hours: 168, sessions: null });
+    await until(() => [ryanM, nickM].every((m) => Object.keys(m.team.room(roomId)?.ext.takeover?.away ?? {}).length === 2), "both to hear the away grants");
+  }
   // Ryan's room session, with a conversation on disk for its transcript
   const s = await ryan.sessions.create({ repoPath: r.ryanClone, cwd: r.wt, branchName: "feature-x", useWorktree: false, agent: "claude", taskGroup: "5110", title: "Donor entities" });
   const file = path.join(claudeProjectDir(r.wt, ryan.claudeProjects), `${CONV}.jsonl`);
@@ -186,7 +191,7 @@ describe("a room session's backup in the window", () => {
     const view = (owner: string, sessionId: string, roomId = "R1") => ({ roomId, owner, sessionId }) as any;
     const ryan = "a".repeat(32);
     const nick = "b".repeat(32);
-    const v = { sessions: [view(ryan, "s1"), view(nick, "s1"), view(nick, "s2", "R2")], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [] };
+    const v = { sessions: [view(ryan, "s1"), view(nick, "s1"), view(nick, "s2", "R2")], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [], refused: [] };
     // Nick's s1 shows here as remotePaneId(nick, "s1"); its tag still names s1
     expect(backupOf(v, { roomId: "R1", sessionId: "s1", owner: nick })).toBe(v.sessions[1]);
     expect(backupOf(v, { roomId: "R1", sessionId: "s1", owner: ryan })).toBe(v.sessions[0]);

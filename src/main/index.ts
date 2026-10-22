@@ -241,7 +241,7 @@ function startTakeover(): TakeoverService | null {
     // asked to hand a session over: told even when its pane's notifications were just shown (no coalescing)
     onAsk: (a) => {
       if (!shouldNotify({ settings: store.settings, kind: "other", now: new Date() })) return;
-      const n = new Notification({ title: `${a.fromName} wants to continue a session`, body: `${a.title} — on their laptop. Hand over or keep it?` });
+      const n = new Notification({ title: `${a.fromName} wants to take over “${a.title}”`, body: "Hand over, or keep it?" });
       n.on("click", () => focusPane(a.sessionId));
       n.show();
     },
@@ -1035,9 +1035,14 @@ handle("teamChat:read", (roomId) => teamRoom.chat.markRead(String(roomId)));
 handle("teamChat:unread", () => teamRoom.chat.unread());
 handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(roomId) : null));
 // team rooms: take-over
-handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [] });
+handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [], refused: [] });
 handle("team:setBackupsToOrigin", (roomId, on) => needTakeover().setBackupsToOrigin(String(roomId), on === true));
 handle("team:setBackupConsent", (roomId, allow) => needTakeover().setBackupConsent(String(roomId), allow === true));
+handle("team:setAwayGrant", (roomId, away) => {
+  if (away === null) return needTakeover().setAwayGrant(String(roomId), null);
+  const a = away as { hours?: unknown; sessions?: unknown };
+  return needTakeover().setAwayGrant(String(roomId), { hours: Number(a?.hours), sessions: Array.isArray(a?.sessions) ? a.sessions.map(String) : null });
+});
 // team rooms: migration number reservations and the admin's settings for them
 handle("teamChanges:view", (roomId) => teamChanges.view(String(roomId)));
 handle("teamChanges:setCheck", (roomId, on) => teamChanges.setCheck(String(roomId), on === true));
