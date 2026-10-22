@@ -97,6 +97,7 @@ import {
   useTakeover,
 } from "./team/TakeOver";
 import { backupOf, type LeftCopy, type ReceivedChanges, type RoomSessionBackupView } from "../shared/team/takeover";
+import { BackupConsentPrompt } from "./team/RoomBackups";
 // team rooms: live panes
 import { FollowControls, LiveProblems, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
@@ -320,6 +321,8 @@ function App() {
     if (!joinShown && joinAsk) setJoinShown(joinAsk);
   }, [joinShown, joinAsk]);
   const joinDone = useCallback(() => setJoinShown(null), []);
+  // team rooms: rooms whose admin made backups to origin available and this member hasn't answered for theirs; Not now is an answer, closing asks again next start
+  const [laterConsents, setLaterConsents] = useState<string[]>([]);
   // team rooms: the House board — the room whose board is open
   const [boardDlg, setBoardDlg] = useState<string | null>(null);
   // group/workspace renames use a dialog: inline editing broke because the same
@@ -2959,6 +2962,13 @@ function App() {
         />
       )}
       {reviewing && <ReceivedDialog received={tkView?.received.find((r) => r.id === reviewing.id) ?? reviewing} onClose={() => setReviewing(null)} />}
+      {/* team rooms: back up my room sessions to origin? — once the room's admin made it available */}
+      {(() => {
+        if (tkView?.asks[0] || joinShown) return null;
+        const c = tkView?.rooms.find((r) => r.toOrigin && r.consent === null && !laterConsents.includes(r.roomId));
+        const room = c && teamRooms.find((r) => r.id === c.roomId);
+        return c && room ? <BackupConsentPrompt key={c.roomId} setting={c} roomName={room.name} onLater={() => setLaterConsents((l) => [...l, c.roomId])} /> : null;
+      })()}
       <HouseWarnings onJump={jumpTo} onOpenBoard={setBoardDlg} boardRoomId={boardDlg} />
 
       {renameDlg && (

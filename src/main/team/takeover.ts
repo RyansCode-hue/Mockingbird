@@ -25,6 +25,7 @@ import {
   ASK_MS,
   backupsToOrigin,
   continuation,
+  NOT_ALLOWED,
   DROP_REASONS,
   HANDOVER_TURN_MS,
   NOT_PUSHED,
@@ -69,11 +70,14 @@ import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/t
  *     what their clone lacks, imported under the same ref there) and the
  *     conversation's new bytes (offset-checked appends, resent from where they
  *     are after a gap). The conversation never goes anywhere else;
- *   - only in a room whose admin turned on backups to origin (`room.settings`,
- *     off by default): that ref is pushed to origin with a lease on its own
+ *   - only in a room whose admin made backups to origin available
+ *     (`room.settings`, off by default), and only once this member allowed
+ *     it for their own sessions in that room (asked once, kept on this Mac,
+ *     like the House token's consent): that ref is pushed to origin with a lease on its own
  *     last value (never a branch), through the repository's pre-push hook,
  *     coalesced, with a timeout; the event records how it went, failures
- *     included. Turned off, each owner deletes what it pushed there.
+ *     included. Turned off — by the admin, or by the member for their own —
+ *     each owner deletes what it pushed there.
  *
  * Taker side, on Take over: their clone (found by origin URL), a new worktree
  * on the session's branch at the snapshot's parent with the snapshot's files
@@ -362,6 +366,8 @@ export interface TakeoverDeps {
   now?: () => number;
   pushTimeoutMs?: number;
   fetchTimeoutMs?: number;
+  /** Where this member's answers to "back up my room sessions to origin?" are kept (default <team dir>/backup-consent.json). */
+  consentFile?: string;
 }
 
 /** What this install remembers per room (<room>/takeover.json). */
@@ -505,6 +511,9 @@ export class TakeoverService {
   private held = new Map<string, Map<MemberId, string>>();
   /** Each room's backups-to-origin setting as last acted on. */
   private originSetting = new Map<RoomId, boolean>();
+  /** This member's answer per room to backing up their own sessions to origin (R7): only theirs to give. */
+  private consents: Record<RoomId, { allow: boolean; at: number }> = {};
+  private readonly consentFile: string;
 
   constructor(private d: TakeoverDeps) {
     this.now = d.now ?? Date.now;
@@ -512,6 +521,11 @@ export class TakeoverService {
     this.codexSessions = d.codexSessions ?? CODEX_SESSIONS;
     this.askMs = d.askMs ?? ASK_MS;
     this.handoverTurnMs = d.handoverTurnMs ?? HANDOVER_TURN_MS;
+    this.consentFile = d.consentFile ?? path.join(path.dirname(d.roomsDir), "backup-consent.json");
+    const answers = readJsonOrSetAside(this.consentFile, {}, "your answers about backing up to origin");
+    for (const [roomId, a] of Object.entries(answers && typeof answers === "object" ? answers : {})) {
+      if (typeof (a as any)?.allow === "boolean") this.consents[roomId] = { allow: (a as any).allow, at: Number((a as any).at) || 0 };
+    }
     const t = d.team;
     for (const r of t.rooms()) {
       this.presence.set(r.id, new Set(t.presence(r.id)));
@@ -605,9 +619,9 @@ export class TakeoverService {
     await git(top, ["update-ref", ref, rec.sha]);
     this.saveOwn(roomId, s.id, rec);
     for (const peer of this.d.team.presence(roomId)) this.mirror(peer, roomId, s.id);
-    const toOrigin = backupsToOrigin(this.d.team.room(roomId));
+    const toOrigin = this.toOriginFor(roomId);
     let push: PushOutcome;
-    if (!toOrigin) push = { ok: false, at: rec.takenAt, error: NOT_PUSHED };
+    if (!toOrigin) push = { ok: false, at: rec.takenAt, error: backupsToOrigin(this.d.team.room(roomId)) ? NOT_ALLOWED : NOT_PUSHED };
     else if (rec.pushed === rec.sha) push = { ok: true, at: rec.pushedAt ?? takenAt };
     else {
       push = await this.push(top, ref, rec, s.id);
@@ -694,7 +708,7 @@ export class TakeoverService {
         const why = this.savedDone(room, rec);
         if (why) this.removeSaved(room.id, worktree, why);
       }
-      if (!backupsToOrigin(room)) await this.withdrawFromOrigin(room.id);
+      if (!this.toOriginFor(room.id)) await this.withdrawFromOrigin(room.id);
       for (const [sessionId, rec] of Object.entries(this.local(room.id).own)) {
         if (this.backups.has(sessionId)) continue; // being backed up: it's active
         try {
@@ -731,7 +745,7 @@ export class TakeoverService {
   private async dropBackup(roomId: RoomId, sessionId: string, reason: DropReason, repo: string, title: string): Promise<void> {
     try {
       // a room that keeps backups off origin has one there only if this install pushed it before
-      if (backupsToOrigin(this.d.team.room(roomId)) || this.local(roomId).own[sessionId]?.pushed) await this.deleteOnOrigin(repo, roomBackupRef(roomId, sessionId));
+      if (this.toOriginFor(roomId) || this.local(roomId).own[sessionId]?.pushed) await this.deleteOnOrigin(repo, roomBackupRef(roomId, sessionId));
       this.d.team.publish(roomId, "session.backupDropped", { sessionId, reason });
       this.cleanupProblems.delete(sessionId);
     } catch (err) {
@@ -764,16 +778,17 @@ export class TakeoverService {
   }
 
   /**
-   * The room keeps backups off origin (its admin turned that off, or it never
-   * had it on): delete there every backup ref this install pushed. A failure
-   * is kept on the session, shown, and retried on the next prune.
+   * This member's sessions in the room keep backups off origin (its admin
+   * turned that off or never on, or this member hasn't allowed it): delete
+   * there every backup ref this install pushed. A failure is kept on the
+   * session, shown, and retried on the next prune.
    */
   private async withdrawFromOrigin(roomId: RoomId): Promise<void> {
     const local = this.local(roomId);
     for (const sessionId of Object.keys(local.own)) {
       if (!local.own[sessionId]?.pushed) continue;
       await this.backups.get(sessionId)?.done; // a push under way would bring the ref back
-      if (backupsToOrigin(this.d.team.room(roomId))) return; // turned on again meanwhile
+      if (this.toOriginFor(roomId)) return; // turned on again meanwhile
       const rec = local.own[sessionId];
       if (!rec?.pushed) continue;
       try {
@@ -787,15 +802,59 @@ export class TakeoverService {
     this.changed();
   }
 
-  /** The room's settings changed: backups to origin turned on push what this install has now; turned off, what it pushed goes. */
+  /**
+   * The room's settings changed: backups to origin made available push what
+   * this install has now, once this member allowed it (until then the window
+   * asks); taken away, what it pushed goes.
+   */
   private onSettings(room: RoomState): void {
     const now = backupsToOrigin(room);
     if (this.originSetting.get(room.id) === now) return; // an event that changed nothing (not the admin's, or the same value)
     this.originSetting.set(room.id, now);
-    if (now) {
-      for (const sessionId of Object.keys(this.local(room.id).own)) if (this.d.host.roomOf(sessionId) === room.id) void this.track(this.turnEnded(sessionId));
-    } else void this.track(this.withdrawFromOrigin(room.id));
+    if (now) this.pushOwnNow(room.id);
+    else void this.track(this.withdrawFromOrigin(room.id));
     this.changed();
+  }
+
+  /** Back up this install's sessions in the room at once, without waiting for a turn: what goes to origin goes now. */
+  private pushOwnNow(roomId: RoomId): void {
+    if (!this.toOriginFor(roomId)) return;
+    for (const sessionId of Object.keys(this.local(roomId).own)) if (this.d.host.roomOf(sessionId) === roomId) void this.track(this.turnEnded(sessionId));
+  }
+
+  /**
+   * Whether this install's sessions in the room back up to origin: only
+   * when the room's admin made it available and this member allowed it for
+   * their own sessions. The admin's switch never pushes anyone's work alone.
+   */
+  private toOriginFor(roomId: RoomId): boolean {
+    return backupsToOrigin(this.d.team.room(roomId)) && this.consents[roomId]?.allow === true;
+  }
+
+  /** This member's answer to backing up their own room sessions to origin: true, false (Not now), or null (not asked yet). */
+  backupConsent(roomId: RoomId): boolean | null {
+    return this.consents[roomId]?.allow ?? null;
+  }
+
+  /**
+   * This member allows (or stops) backups of their own sessions in the room
+   * to origin. Kept on this Mac only. Allowed while the room has them
+   * available, the newest snapshots go at once; stopped, what this install
+   * pushed is deleted from origin.
+   */
+  setBackupConsent(roomId: RoomId, allow: boolean): void {
+    if (typeof allow !== "boolean") throw new Error("Say allow or not");
+    if (!this.d.team.room(roomId)) throw new Error("You're not in that room");
+    this.consents[roomId] = { allow, at: this.now() };
+    this.saveConsents();
+    if (allow) this.pushOwnNow(roomId);
+    else void this.track(this.withdrawFromOrigin(roomId));
+    this.changed();
+  }
+
+  private saveConsents(): void {
+    fs.mkdirSync(path.dirname(this.consentFile), { recursive: true, mode: 0o700 });
+    writeFileAtomic(this.consentFile, `${JSON.stringify(this.consents, null, 2)}\n`, 0o600);
   }
 
   /**
@@ -822,7 +881,7 @@ export class TakeoverService {
     const clone = entry && !own ? await this.cloneFor(entry.session.originUrl) : null;
     const ref = roomBackupRef(roomId, sessionId);
     // what this install pushed while the room backed up to origin goes from there first (with the room on, its current owner deletes it)
-    if (own?.pushed && !backupsToOrigin(this.d.team.room(roomId))) await this.deleteOnOrigin(own.repo, ref);
+    if (own?.pushed && !this.toOriginFor(roomId)) await this.deleteOnOrigin(own.repo, ref);
     for (const repo of new Set([own?.repo, mirrored?.repo, clone].filter((r): r is string => !!r && fs.existsSync(r)))) {
       for (const r of [ref, roomBackupRef(roomId, sessionId, ORIGIN_COPY_ROOT)]) await git(repo, ["update-ref", "-d", r]);
     }
@@ -896,7 +955,7 @@ export class TakeoverService {
     const owned = Object.entries(local.own);
     // a push under way would bring the ref back (later turns aren't backed up: the session isn't the room's any more)
     for (const [sessionId] of owned) await this.backups.get(sessionId)?.done;
-    const toOrigin = backupsToOrigin(room);
+    const toOrigin = this.toOriginFor(room.id);
     for (const [sessionId, rec] of owned) {
       if (!toOrigin && !rec.pushed) continue; // kept peer to peer: nothing of it on origin
       const ref = roomBackupRef(room.id, sessionId);
@@ -936,6 +995,14 @@ export class TakeoverService {
     this.locals.delete(room.id);
     this.presence.delete(room.id);
     this.originSetting.delete(room.id);
+    if (this.consents[room.id]) {
+      delete this.consents[room.id];
+      try {
+        this.saveConsents();
+      } catch (err) {
+        problems.push(`Your answer about backing up this room's sessions to origin couldn't be forgotten: ${this.d.log(`team: forgetting the backup answer for room ${room.id}`, err)}`);
+      }
+    }
     this.changed();
     return problems;
   }
@@ -1014,7 +1081,7 @@ export class TakeoverService {
       { roomId, sessionId, originUrl: publicUrl(url), candidates: [rec.sha, ...new Set(candidates)] },
       { roomId, timeoutMs: SEND_TIMEOUT_MS }
     );
-    const toOrigin = backupsToOrigin(this.d.team.room(roomId));
+    const toOrigin = this.toOriginFor(roomId);
     if (!r?.repo) {
       const k = `${peer}\n${repoIdentity(url)}`;
       const then = toOrigin ? "they'll take it over from origin's backup" : "they can't take it over until they clone it (this room keeps backups off origin)";
@@ -1539,9 +1606,9 @@ export class TakeoverService {
     await this.mirrors.get(`${to}\n${sessionId}`)?.done;
     const delivered = await this.sendSnapshot(to, roomId, sessionId);
     await this.sendTranscript(to, roomId, sessionId);
-    const toOrigin = backupsToOrigin(this.d.team.room(roomId));
+    const toOrigin = this.toOriginFor(roomId);
     if (!delivered && (!toOrigin || rec.pushed !== rec.sha)) {
-      throw new PeerError(`${this.nameOf(roomId, to)} has no clone of the repository to copy it into, ${toOrigin ? "and origin's backup didn't take it" : "and this room keeps backups off origin"}`);
+      throw new PeerError(`${this.nameOf(roomId, to)} has no clone of the repository to copy it into, ${toOrigin ? "and origin's backup didn't take it" : "and this session's backups stay off origin"}`);
     }
     this.d.host.stop(sessionId);
     return { answer: "handed-over", sha: rec.sha, takenAt: rec.takenAt };
@@ -2007,6 +2074,7 @@ export class TakeoverService {
     return {
       roomId: room.id,
       toOrigin: backupsToOrigin(room),
+      consent: this.backupConsent(room.id),
       changed: s ? { byName: this.nameOf(room.id, s.by), self: s.by === this.d.team.self.id, at: s.at } : null,
       adminName: admin ? this.nameOf(room.id, admin) : null,
       canChange: admin === this.d.team.self.id,

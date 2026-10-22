@@ -7,6 +7,9 @@ import { ago } from "../format";
  * room session's backup, and what the window is told. The main-process side is
  * src/main/team/takeover.ts.
  *
+ * Origin only ever gets a member's snapshots when the room's admin made it
+ * available and that member allowed it for their own sessions.
+ *
  * After every agent turn the owner's Mockingbird snapshots the session's
  * worktree as a commit on top of its branch's commit, keeps it under the
  * hidden ref `refs/mockingbird/rooms/<room>/<session>`, copies it peer to peer
@@ -127,6 +130,8 @@ export const backupsToOrigin = (room: { ext: { settings?: RoomSettings } } | nul
  * from before the setting require one: they show this as why it isn't there.
  */
 export const NOT_PUSHED = "not on origin: this room keeps backups peer to peer";
+/** What a backup kept off origin carries when the room makes origin available but its owner hasn't allowed it for their own sessions. */
+export const NOT_ALLOWED = "not on origin: its owner keeps their backups peer to peer";
 
 declare module "./types" {
   interface RoomEventBodies {
@@ -184,8 +189,14 @@ export interface RoomSessionBackupView extends RoomSessionBackup {
 /** A room's backup setting as Settings → Team shows it. */
 export interface RoomBackupSetting {
   roomId: RoomId;
-  /** Snapshots also go to origin (RoomSettings.backupsToOrigin). */
+  /** The room's admin made backups to origin available (RoomSettings.backupsToOrigin); each member's own still need their consent. */
   toOrigin: boolean;
+  /**
+   * This member's answer to backing up their own sessions in the room to
+   * origin: true (allowed), false (Not now) or null (not asked yet: the
+   * window asks once the room makes it available). Kept on this Mac only.
+   */
+  consent: boolean | null;
   /** Who last changed it (`self`: this install), and when; null while nobody has (off). */
   changed: { byName: string; self: boolean; at: number } | null;
   /** The room's admin, by name: the only one who can change it. */

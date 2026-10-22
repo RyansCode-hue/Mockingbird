@@ -11,7 +11,7 @@ import { claudeProjectDir, codexRolloutPath, realpathOr } from "../src/main/agen
 import { publicUrl, repoIdentity, withoutCredentials } from "../src/main/git";
 import { rebaseTranscript } from "../src/main/transcripts";
 import { worktreeAt } from "../src/main/worktrees";
-import { backupFreshness, NOT_PUSHED, remoteLabel, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
+import { backupFreshness, NOT_ALLOWED, NOT_PUSHED, remoteLabel, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
 import type { NewSessionRequest, SessionInfo } from "../src/shared/types";
 
 const CONV = "7f3c2a10-1b2c-4d5e-8f90-a1b2c3d4e5f6";
@@ -148,7 +148,7 @@ function files(root: string): Record<string, string> {
  * backups on origin, so the room's admin (Ryan) turns those on, unless
  * `backupsToOrigin: false` keeps the room as every room starts: peer to peer.
  */
-async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number; nickNow?: () => number; backupsToOrigin?: boolean } = {}) {
+async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number; nickNow?: () => number; backupsToOrigin?: boolean; consent?: boolean } = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(names, { dir: tempDir("team") });
   const [ryanM, nickM, samM] = members;
@@ -159,6 +159,8 @@ async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryan
   const ryan = takeover(ryanM, roomId, { repos: [r.ryanClone], sessions: [session({ id: "s1", cwd: r.wt, repoPath: r.ryanClone })], now: o.ryanNow });
   const nick = takeover(nickM, roomId, { repos: o.nickHasClone === false ? [] : [r.nickClone], now: o.nickNow });
   const sam = samM ? takeover(samM, roomId, { repos: [] }) : null;
+  // backing up to origin needs each member's own consent too: here, everyone allowed it
+  if (o.consent !== false) for (const m of [ryan, nick, sam]) m?.svc.setBackupConsent(roomId, true);
   const transcript = claudeTranscript(ryan.claudeProjects, r.wt, [userLine(r.wt, "Add the donor entity"), agentLine(r.wt, "Added src/b.ts and started on a.ts")]);
   return { ...r, roomId, net, ryanM, nickM, samM, ryan, nick, sam, transcript };
 }
@@ -941,7 +943,7 @@ describe("backups kept peer to peer (every room's default)", () => {
   it("is the admin's alone to change: anyone else's change is refused here and changes nothing in the room", async () => {
     const t = await setup(["Ryan", "Nick"], { backupsToOrigin: false });
     expect(() => t.nick.svc.setBackupsToOrigin(t.roomId, true)).toThrow(/^Only the room's admin \(Ryan\) can change where its backups go/);
-    expect(t.nick.svc.view().rooms).toEqual([{ roomId: t.roomId, toOrigin: false, changed: null, adminName: "Ryan", canChange: false, remote: "origin" }]);
+    expect(t.nick.svc.view().rooms).toEqual([{ roomId: t.roomId, toOrigin: false, consent: true, changed: null, adminName: "Ryan", canChange: false, remote: "origin" }]);
     expect(t.ryan.svc.view().rooms[0]).toMatchObject({ canChange: true, adminName: "Ryan" });
     // a Mockingbird that doesn't cooperate signs one anyway: every member applies it as nothing
     t.nickM.team.publish(t.roomId, "room.settings", { backupsToOrigin: true });
@@ -1050,6 +1052,51 @@ describe("backups to origin (the admin's opt-in)", () => {
     await until(() => backupIn(t.nickM, t.roomId)?.latest.sha === b.latest.sha, "Nick to hear of it");
     expect(await t.nick.svc.plan(t.roomId, "s1")).toMatchObject({ toOrigin: false, snapshot: { source: "peer", sha: b.latest.sha }, other: null });
     expect(sh(t.nickClone, "for-each-ref", "refs/mockingbird/rooms-origin")).toBe("");
+  });
+});
+
+describe("each member's consent to backups to origin", () => {
+  it("the admin's switch alone pushes nobody's work: each member allows it for their own sessions, and turning theirs off deletes what they pushed", async () => {
+    const t = await setup(["Ryan", "Nick"], { consent: false });
+    const ref = roomBackupRef(t.roomId, "s1");
+    // the admin (Ryan) made it available; nobody has answered yet: asked, and kept peer to peer meanwhile
+    expect(t.ryan.svc.view().rooms[0]).toMatchObject({ toOrigin: true, consent: null });
+    expect(t.nick.svc.view().rooms[0]).toMatchObject({ toOrigin: true, consent: null });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    expect(originRefs(t.bare)).toBe("");
+    let b = backupIn(t.ryanM, t.roomId)!;
+    expect(b).toMatchObject({ toOrigin: false, pushed: null, push: { ok: false, error: NOT_ALLOWED } });
+    expect(refIn(t.nickClone, ref)).toBe(b.latest.sha); // still copied to Nick, peer to peer
+    // Not now is an answer: still nothing on origin, and it's kept
+    t.ryan.svc.setBackupConsent(t.roomId, false);
+    await t.ryan.svc.settled();
+    write(t.wt, { "src/a.ts": "turn 2\n" });
+    await t.ryan.svc.turnEnded("s1");
+    expect(originRefs(t.bare)).toBe("");
+    expect(t.ryan.svc.view().rooms[0]).toMatchObject({ consent: false });
+    // Allow: the newest snapshot goes at once, and every turn after
+    t.ryan.svc.setBackupConsent(t.roomId, true);
+    await t.ryan.svc.settled();
+    b = backupIn(t.ryanM, t.roomId)!;
+    expect(refIn(t.bare, ref)).toBe(b.latest.sha);
+    expect(b).toMatchObject({ toOrigin: true, push: { ok: true } });
+    // Nick's answer is his own: Ryan allowing it changed nothing for him
+    expect(t.nick.svc.view().rooms[0]).toMatchObject({ consent: null });
+    // the answer is kept on this Mac only, across restarts
+    const kept = path.join(path.dirname(t.ryanM.store.dir), "backup-consent.json");
+    expect(JSON.parse(fs.readFileSync(kept, "utf8"))).toEqual({ [t.roomId]: { allow: true, at: expect.any(Number) } });
+    expect(fs.statSync(kept).mode & 0o777).toBe(0o600);
+    expect(JSON.stringify(t.ryanM.team.room(t.roomId)!.ext)).not.toContain("consent");
+    // turning his own off deletes what he pushed, and pushes no more
+    t.ryan.svc.setBackupConsent(t.roomId, false);
+    await t.ryan.svc.settled();
+    expect(refIn(t.bare, ref)).toBeNull();
+    write(t.wt, { "src/a.ts": "turn 3\n" });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    expect(originRefs(t.bare)).toBe("");
+    expect(backupIn(t.ryanM, t.roomId)).toMatchObject({ toOrigin: false, pushed: null });
   });
 });
 

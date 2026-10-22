@@ -621,8 +621,9 @@ const takeoverView: TakeoverView = (() => {
       }),
     ],
     rooms: [
-      { roomId: "R5101aaaaaaaaaaaaaaaaa", toOrigin: !p2p, changed: { byName: "You", self: true, at: now - 3 * 24 * 60 * min }, adminName: "You", canChange: true, remote: "Azure DevOps" },
-      { roomId: "R5110bbbbbbbbbbbbbbbbb", toOrigin: false, changed: null, adminName: "Nick Smith", canChange: false, remote: "GitHub" },
+      // ?backupConsent: you haven't answered whether your own 5101 sessions back up to origin, so the window asks
+      { roomId: "R5101aaaaaaaaaaaaaaaaa", toOrigin: !p2p, consent: teamQuery.has("backupConsent") ? null : true, changed: { byName: "You", self: true, at: now - 3 * 24 * 60 * min }, adminName: "You", canChange: true, remote: "Azure DevOps" },
+      { roomId: "R5110bbbbbbbbbbbbbbbbb", toOrigin: false, consent: null, changed: null, adminName: "Nick Smith", canChange: false, remote: "GitHub" },
     ],
     unbacked: [],
     cleanup: [{ roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "s0", title: "Spike: org cache", problem: "remote: TF401027: You need the Git 'ForcePush' permission to delete the backup" }],
@@ -1475,6 +1476,13 @@ const api: Record<string, (...a: any[]) => any> = {
     for (const s of takeoverView.sessions) if (s.roomId === roomId) s.toOrigin = on;
     takeoverChanged();
     return later(null, 400);
+  },
+  teamSetBackupConsent: async (roomId: string, allow: boolean) => {
+    const r = takeoverView.rooms.find((x) => x.roomId === roomId);
+    if (!r) return err("You're not in that room");
+    r.consent = allow;
+    takeoverChanged();
+    return later(null, 300);
   },
   // team rooms: migration number reservations
   teamChangesView: async (roomId: string) => (migrationViews[roomId] ? JSON.parse(JSON.stringify(migrationViews[roomId])) : err(`Not a member of room ${roomId}`)),

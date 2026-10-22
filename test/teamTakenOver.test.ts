@@ -148,6 +148,8 @@ async function setup(takeoverOpts: Partial<TakeoverDeps> = {}, o: { backupsToOri
   const nick = app(nickM, r.nickClone, takeoverOpts);
   const ryanRun = ryan.startLive();
   const nickRun = nick.startLive();
+  // backing up to origin needs each member's own consent too: both allowed it (kept on their Macs, across restarts)
+  if (o.backupsToOrigin !== false) for (const run of [ryanRun, nickRun]) run.tk.setBackupConsent(roomId, true);
   // Ryan's room session, with a conversation on disk for its transcript
   const s = await ryan.sessions.create({ repoPath: r.ryanClone, cwd: r.wt, branchName: "feature-x", useWorktree: false, agent: "claude", taskGroup: "5110", title: "Donor entities" });
   const file = path.join(claudeProjectDir(r.wt, ryan.claudeProjects), `${CONV}.jsonl`);

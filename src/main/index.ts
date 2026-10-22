@@ -1037,6 +1037,7 @@ handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(
 // team rooms: take-over
 handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [] });
 handle("team:setBackupsToOrigin", (roomId, on) => needTakeover().setBackupsToOrigin(String(roomId), on === true));
+handle("team:setBackupConsent", (roomId, allow) => needTakeover().setBackupConsent(String(roomId), allow === true));
 // team rooms: migration number reservations and the admin's settings for them
 handle("teamChanges:view", (roomId) => teamChanges.view(String(roomId)));
 handle("teamChanges:setCheck", (roomId, on) => teamChanges.setCheck(String(roomId), on === true));
