@@ -781,9 +781,12 @@ describe("what goes wrong is said, not swallowed", () => {
     fs.writeFileSync(path.resolve(clones.ryan, head), "not a ref\n");
     h.items.get(141)!.title = "Last-org API v2";
     await r.svc.refreshNow(roomId);
-    await until(() => /ryan-on-nicks's branch couldn't be read, so the room's claims there weren't updated/.test(r.svc.view(roomId).copiesProblem ?? ""), "the problem on the board");
+    // a rewrite already under way can report the unreadable branch with the old title; wait for the one that read v2
+    await until(
+      () => /ryan-on-nicks's branch couldn't be read, so the room's claims there weren't updated/.test(r.svc.view(roomId).copiesProblem ?? "") && claimsIn(clones.ryan).rooms[0]?.tickets[0]?.title === "Last-org API v2",
+      "the problem on the board and the new title in the readable worktree",
+    );
     expect(claimsIn(wtSame).rooms[0].tickets).toEqual([]);
-    expect(claimsIn(clones.ryan).rooms[0].tickets[0].title).toBe("Last-org API v2");
     expect(r.logs.some((l) => /^team House board: reading \S*ryan-on-nicks's branch for its claims/.test(l))).toBe(true);
   }, 20_000);
 });
