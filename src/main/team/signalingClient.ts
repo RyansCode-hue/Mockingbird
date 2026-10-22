@@ -30,7 +30,15 @@ export type SignalingEvent =
   /** Signed room events the server passed on: removals made while this install was offline, or its own. */
   | { t: "room-events"; events: unknown[] }
   /** The server refused a request (a signal to someone offline, too many messages…). */
-  | { t: "refused"; code: string; message: string; to?: string };
+  | { t: "refused"; code: string; message: string; to?: string }
+  /** The server closed this connection: this install's key connected to the room from somewhere else. */
+  | { t: "replaced" };
+
+/** What a room says while another connection with this install's key has replaced this one. */
+export const REPLACED = "Your room identity connected from another place; this Mac was disconnected";
+export const REPLACED_ADVICE = "If that wasn't you on another Mac, someone may hold a copy of this Mac's room identity: tell the room's admin.";
+/** Reconnecting after that waits this long, so two places holding one key don't knock each other off every second. */
+export const REPLACED_RETRY_MS = 60_000;
 
 /** What the server said to a revoke (see transport.ts RevokeOutcome). */
 export type RevokeAnswer = { ok: true } | { ok: false; reason: "unsupported" | "refused" | "offline" | "failed"; message: string };
@@ -61,7 +69,7 @@ export class SignalingClient {
   state: "connecting" | "online" | "offline" | "stopped" = "offline";
   /** Why the server refused this install (set until it's let in), and that refusal's code. */
   problem: string | null = null;
-  problemCode: "protocol" | "not-member" | "revoked" | "declined" | "creation-refused" | "bad-url" | null = null;
+  problemCode: "protocol" | "not-member" | "revoked" | "declined" | "creation-refused" | "bad-url" | "replaced" | null = null;
   /** Members connected to the room right now (not this install); joiners at the door are flagged `knocking`. */
   readonly peers = new Map<string, SignalingPeer>();
   relay = false;
@@ -337,7 +345,15 @@ export class SignalingClient {
           this.settleDenies(null, { ok: false, reason: "unsupported", message: OLD_WORKER_APPROVE });
           return;
         }
-        if (msg.code === "replaced") return;
+        if (msg.code === "replaced") {
+          // this.ws is never an old socket of this client's own (drop() detaches those first): the same key connected from somewhere else
+          this.problem = REPLACED;
+          this.problemCode = "replaced";
+          this.retryAfter = REPLACED_RETRY_MS;
+          this.o.log(`signaling ${this.o.roomId}: the server closed this connection because the same key connected again from somewhere else`);
+          this.o.onEvent({ t: "replaced" });
+          return;
+        }
         this.o.onEvent({ t: "refused", code: msg.code, message: msg.message, ...(msg.to ? { to: msg.to } : {}) });
         return;
       case "invited":

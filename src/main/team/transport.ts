@@ -1,5 +1,7 @@
 import { decodeInvite, encodeInvite, formatFingerprint, joinRequestPayload, MEMBER_ID_RE, PUBLIC_KEY_RE, SIGNATURE_RE, TEAM_PROTOCOL, TOKEN_RE, type JoinRequestFields, type SignalType } from "../../shared/team/protocol";
-import type { JoinRequestSummary, MemberId, PeerLinkState, PeerStatus, PendingJoinSummary, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState, TeamRoomSummary, TeamStatus } from "../../shared/team/types";
+import type { JoinRequestSummary, MemberId, PeerLinkState, PeerStatus, PendingJoinSummary, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState, RoomWarning, TeamRoomSummary, TeamStatus } from "../../shared/team/types";
+import { ROOM_LIMITS, sizeText, type LimitKind, type RoomLimits } from "./roomLimits";
+import { REPLACED, REPLACED_ADVICE } from "./signalingClient";
 import { encodeFrame, MAX_STREAM_CHUNK, Reassembler, splitText, type StreamFrame, type TeamFrame } from "./frames";
 import { fingerprintOf, joinProof, randomToken, roomIdFor, sameSecret, signalingJoinKey, signalingTokenHash, verifySignature, type Identity } from "./identity";
 import { oneLine } from "../../shared/team/agentText";
@@ -113,6 +115,12 @@ export interface Team {
   onPresence(handler: (roomId: RoomId, online: MemberId[]) => void): Unsubscribe;
   /** Every teammate across rooms, and how they're reached. */
   peers(): PeerStatus[];
+  /**
+   * Something this Mac refused from `member` in the room by a limit (a
+   * transcript too big…): logged, and shown under the room once per member
+   * and kind as "Nick's Mockingbird sent <what>".
+   */
+  refusedOverLimit?(roomId: RoomId, member: MemberId, kind: LimitKind, what: string): void;
 }
 
 // ---- the wire: how a transport connects members ---------------------------------------
@@ -166,6 +174,8 @@ export interface WireHandler {
   reachable(roomId: RoomId, ids: MemberId[]): void;
   /** Signed room events the signaling server passed on (removals from revokes): checked like any event before they count. */
   roomEvents(roomId: RoomId, events: unknown[]): void;
+  /** The signaling server closed this install's connection to a room because the same key connected again from somewhere else. */
+  replaced?(roomId: RoomId): void;
   /** Link or signaling states changed (for the window). */
   changed(): void;
 }
@@ -236,6 +246,23 @@ interface PendingRequest {
 }
 
 const key = (...parts: string[]) => parts.join("\n");
+
+/** What a member's Mockingbird sent past a limit, for the room's warning ("Nick's Mockingbird sent …"). */
+function limitText(kind: LimitKind, l: RoomLimits, what: string): string {
+  switch (kind) {
+    case "size":
+      return `a room event over ${sizeText(l.maxEventBytes)}; it was refused`;
+    case "rate":
+      return `more than ${l.eventsPerMinute} room events a minute; the rest are refused for now and asked for again shortly`;
+    case "share":
+      return `more than ${sizeText(l.maxMemberLogBytes)} to this room's log; its new events are refused`;
+    case "order":
+      return "events placed before ones it had already sent (backdated); they were refused";
+    case "transcript":
+    case "snapshot":
+      return `${what}; it was refused`;
+  }
+}
 
 /** The request a member answers with whether it holds a room event (not room-scoped: the asker may have just left). */
 const HAS_EVENT = "room.hasEvent";
@@ -316,6 +343,13 @@ export class TeamCore implements Team {
   /** Join requests being passed on to the admin right now (room, joiner): one at a time. */
   private forwarding = new Set<string>();
   private joinTicks = 0;
+  /** Per room: what this Mac refused or noticed there, one warning per key. */
+  private warnings = new Map<RoomId, Map<string, RoomWarning>>();
+  private warningHandlers = new Set<(roomId: RoomId, w: RoomWarning) => void>();
+  /** Per room, author and limit: events refused since the last log line about them. */
+  private refusedCounts = new Map<string, number>();
+  /** Per peer, room and author: a timer to ask again for events refused for rate. */
+  private rerequests = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private o: TeamOptions) {
     this.identity = o.identity;
@@ -616,6 +650,7 @@ export class TeamCore implements Team {
     // a room just removed from stays on the wire until its moment is up (an answer to the remover may still be on its way)
     this.lastSpecs.delete(roomId);
     this.leftReported.delete(roomId);
+    this.warnings.delete(roomId);
     if (this.joins.some((j) => j.roomId === roomId)) {
       this.joins = this.joins.filter((j) => j.roomId !== roomId);
       this.store.savePendingJoins(this.joins);
@@ -1018,6 +1053,7 @@ export class TeamCore implements Team {
         ...(sig?.revoke !== undefined ? { workerRevoke: sig.revoke } : {}),
         ...(sig?.approve !== undefined ? { workerApprove: sig.approve } : {}),
         requests: this.requestsOf(r),
+        ...(this.warnings.get(r.id)?.size ? { warnings: [...this.warnings.get(r.id)!.values()] } : {}),
       };
     });
     const pending: PendingJoinSummary[] = this.joins.map((j) => ({
@@ -1035,6 +1071,8 @@ export class TeamCore implements Team {
   close(): void {
     this.closed = true;
     clearInterval(this.joinTimer);
+    for (const t of this.rerequests.values()) clearTimeout(t);
+    this.rerequests.clear();
     for (const room of this.departing.values()) for (const d of room.values()) clearTimeout(d.timer);
     this.departing.clear();
     for (const l of this.lingering.values()) clearTimeout(l.timer);
@@ -1080,8 +1118,75 @@ export class TeamCore implements Team {
       for (const j of this.joins) if (j.roomId === roomId && !j.inviterKey && !j.rejected && ids.includes(j.inviter)) this.sendJoin(j);
     },
     roomEvents: (roomId, events) => this.onServerEvents(roomId, events),
+    replaced: (roomId) => this.onReplaced(roomId),
     changed: () => this.changedSoon(),
   };
+
+  /**
+   * The signaling server dropped this install from a room because the same
+   * key connected from somewhere else: another Mac holding a copy of this
+   * install's identity. The connection is tried again (signalingClient waits
+   * a minute), so the user is told, once per room with a count, not every time.
+   */
+  private onReplaced(roomId: RoomId): void {
+    const name = this.room(roomId)?.name ?? roomId;
+    this.log(`signaling ${roomId}: this install's key connected to ${name} from somewhere else, and the signaling server disconnected this Mac`);
+    this.warn(roomId, "replaced", `${REPLACED}. ${REPLACED_ADVICE}`);
+  }
+
+  /** Something about a room, shown under it once (a repeat counts up) and told to onWarning's handlers. */
+  warn(roomId: RoomId, key: string, text: string): void {
+    let room = this.warnings.get(roomId);
+    if (!room) this.warnings.set(roomId, (room = new Map()));
+    const now = this.now();
+    const was = room.get(key);
+    const w: RoomWarning = was ? { ...was, text, at: now, count: was.count + 1 } : { key, text, since: now, at: now, count: 1 };
+    room.delete(key);
+    room.set(key, w);
+    // a flood of distinct keys (members, kinds) keeps the newest few
+    while (room.size > 10) room.delete(room.keys().next().value!);
+    for (const h of this.warningHandlers) this.safely("a room-warning handler", () => h(roomId, w));
+    this.changedSoon();
+  }
+
+  /** A warning was shown under a room (or a repeat counted). */
+  onWarning(cb: (roomId: RoomId, w: RoomWarning) => void): Unsubscribe {
+    this.warningHandlers.add(cb);
+    return () => this.warningHandlers.delete(cb);
+  }
+
+  refusedOverLimit(roomId: RoomId, member: MemberId, kind: LimitKind, what: string): void {
+    const k = key(roomId, member, kind);
+    const n = (this.refusedCounts.get(k) ?? 0) + 1;
+    this.refusedCounts.set(k, n);
+    // the first refusal is logged with its reason; a flood, every hundredth
+    if (n === 1 || n % 100 === 0) this.log(`refused ${what} from ${this.nameOf(member)} in room ${roomId}, over the ${kind} limit${n === 1 ? "" : ` (${n} refused so far)`}`);
+    this.warn(roomId, `${kind}:${member}`, `${this.nameOf(member)}'s Mockingbird sent ${limitText(kind, this.store.get(roomId)?.limits ?? ROOM_LIMITS, what)}`);
+  }
+
+  /** A room event refused by a limit: logged, shown under the room, and (for rate) asked for again once there's room. */
+  private refusedEvent(roomId: RoomId, e: RoomEvent, r: { reason: string; limit?: LimitKind }, from: MemberId | null): void {
+    if (!r.limit) return;
+    this.refusedOverLimit(roomId, e.author, r.limit, `event ${e.id} (${String(e.type)}): ${r.reason}`);
+    if (r.limit === "rate" && from) this.askAgainLater(from, roomId, e.author);
+  }
+
+  /** Ask `peer` again for `author`'s events this log lacks, once the per-minute limit has room for them. */
+  private askAgainLater(peer: MemberId, roomId: RoomId, author: MemberId): void {
+    const k = key(peer, roomId, author);
+    if (this.rerequests.has(k) || this.closed) return;
+    const log = this.store.get(roomId);
+    if (!log) return;
+    // once there's room for a frame's worth (200 events, or a whole burst), within a second to a minute
+    const wait = Math.min(60_000, Math.max(1_000, log.rateWaitMs(author, 200)));
+    const t = setTimeout(() => {
+      this.rerequests.delete(k);
+      if (this.closed || !this.hellos.has(peer) || !this.allowed(peer, roomId)) return;
+      this.sendFrame(peer, { k: "have", roomId, author, ids: log.idsBy(author) });
+    }, wait);
+    t.unref?.();
+    this.rerequests.set(k, t);
+  }
 
   /**
    * Removals the signaling server passed on (from revokes): signed by their
@@ -1097,8 +1202,11 @@ export class TeamCore implements Team {
         continue;
       }
       try {
-        const r = log.add(raw as RoomEvent);
-        if (r.status === "rejected") this.log(`refused a removal the signaling server passed on for room ${roomId}: ${r.reason}`);
+        const r = log.add(raw as RoomEvent, { remote: true });
+        if (r.status === "rejected") {
+          this.log(`refused a removal the signaling server passed on for room ${roomId}: ${r.reason}`);
+          this.refusedEvent(roomId, raw as RoomEvent, r, null);
+        }
         else if (r.status === "pending") this.log(`a removal the signaling server passed on for room ${roomId} is by someone this install doesn't know yet; it waits`);
       } catch (err) {
         this.log(`couldn't store a removal the signaling server passed on for room ${roomId}: ${(err as Error).message}`);
@@ -1185,12 +1293,15 @@ export class TeamCore implements Team {
       for (const e of events) {
         let r;
         try {
-          r = log.add(e);
+          r = log.add(e, { remote: true });
         } catch (err) {
           this.log(`couldn't store event ${e?.id} in room ${roomId}: ${(err as Error).message}`);
           continue;
         }
-        if (r.status === "rejected") this.log(`refused event ${String(e?.id)} (${String(e?.type)}) in room ${roomId} from ${this.nameOf(peer)}: ${r.reason}`);
+        if (r.status !== "rejected") continue;
+        // limits are logged and shown per author and kind (refusedEvent), not once per event of a flood
+        if (r.limit) this.refusedEvent(roomId, e, r, peer);
+        else this.log(`refused event ${String(e?.id)} (${String(e?.type)}) in room ${roomId} from ${this.nameOf(peer)}: ${r.reason}`);
       }
     } finally {
       this.applyingFrom = null;
@@ -1201,7 +1312,12 @@ export class TeamCore implements Team {
   private onSync(peer: MemberId, roomId: RoomId, summary: unknown): void {
     if (!this.allowed(peer, roomId)) return this.log(`refused a sync of room ${roomId} from ${this.nameOf(peer)}, who isn't a member`);
     const log = this.store.get(roomId) ?? this.watch(this.store.open(roomId));
-    for (const author of log.differingAuthors((summary ?? {}) as Record<string, { n: number; h: string }>)) {
+    const theirs = (summary ?? {}) as Record<string, { n: number; h: string }>;
+    const mine = log.summary();
+    for (const author of log.differingAuthors(theirs)) {
+      // the backlog they say they hold arrives without counting against the per-minute limit (the share still holds)
+      const n = theirs[author]?.n;
+      if (typeof n === "number" && Number.isSafeInteger(n)) log.expectCatchUp(author, n - (mine[author]?.n ?? 0));
       this.sendFrame(peer, { k: "have", roomId, author, ids: log.idsBy(author) });
     }
   }
@@ -1403,6 +1519,7 @@ export class TeamCore implements Team {
   /** Hook a room's log up: applied events reach handlers and the room's other members. */
   private watch(log: RoomLog): RoomLog {
     log.onApplied = (e) => this.applied(log, e);
+    log.onRefused = (e, r) => this.refusedEvent(log.roomId, e, r, null);
     return log;
   }
 

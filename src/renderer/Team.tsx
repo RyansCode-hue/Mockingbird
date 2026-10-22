@@ -431,6 +431,21 @@ export function RemoveMemberDialog({ room, member, onClose }: { room: TeamRoomSu
   );
 }
 
+/** What this Mac refused from a teammate in a room, or noticed about it (this install's key connected elsewhere): one line each, repeats counted. */
+export function RoomWarnings({ room }: { room: TeamRoomSummary }) {
+  if (!room.warnings?.length) return null;
+  return (
+    <div className="room-warnings">
+      {room.warnings.map((w) => (
+        <div key={w.key} className="room-warning" title={`First ${new Date(w.since).toLocaleString()}`}>
+          {w.text}
+          {w.count > 1 ? ` (${w.count} times, last at ${new Date(w.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })})` : ""}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Rooms this install left or was removed from, with what couldn't be cleaned up, until dismissed. */
 export function TeamNotices({ notices }: { notices: TeamNotice[] | undefined }) {
   if (!notices?.length) return null;
@@ -593,6 +608,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
               Leave room…
             </button>
           </SetRow>
+          <RoomWarnings room={r} />
           <RoomBackupsSetting room={r} />
           <RoomMigrationsSetting roomId={r.id} />
           <RoomMembers room={r} onRemove={(member) => setRemoving({ room: r, member })} />

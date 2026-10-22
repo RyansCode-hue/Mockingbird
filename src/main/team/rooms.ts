@@ -4,6 +4,7 @@ import * as path from "path";
 import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { fingerprintOf, roomIdFor, TEAM_DIR, verifySignature, type Identity } from "./identity";
 import { CONTROL_CHARS_RE } from "../../shared/team/agentText";
+import { CATCH_UP_MS, RateBucket, ROOM_LIMITS, sizeText, type LimitKind, type RoomLimits } from "./roomLimits";
 import { canonicalJson, MEMBER_ID_RE, PUBLIC_KEY_RE, ROOM_ID_RE, SIGNATURE_RE, toBase64Url, TOKEN_RE, type JoinRequestFields } from "../../shared/team/protocol";
 import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState } from "../../shared/team/types";
 
@@ -33,12 +34,17 @@ import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType,
  * in RoomExtensions), then defineEventType(type, { validate, reduce }).
  * Unknown types (from a newer Mockingbird) are kept and passed on but don't
  * change the state.
+ *
+ * Limits (roomLimits.ts) hold every author to a share of the log: an event
+ * over the size limit, past the author's share, or backdated below what the
+ * author sent before is refused from anyone; past the per-minute limit, from
+ * peers (`remote`). A refusal says which limit (AddOutcome.limit).
  */
 
 export const ROOMS_DIR = path.join(TEAM_DIR, "rooms");
 
 /** The largest event body accepted. Bulk data travels by request, not in the log. */
-export const MAX_EVENT_BODY = 256 * 1024;
+export const MAX_EVENT_BODY = ROOM_LIMITS.maxEventBytes;
 const MAX_PENDING = 2000;
 const SNAPSHOT_EVERY = 100;
 
@@ -295,7 +301,18 @@ function shapeProblem(e: RoomEvent, roomId: string): string | null {
   return null;
 }
 
-export type AddOutcome = { status: "added" } | { status: "duplicate" } | { status: "pending" } | { status: "rejected"; reason: string };
+export type AddOutcome = { status: "added" } | { status: "duplicate" } | { status: "pending" } | { status: "rejected"; reason: string; limit?: LimitKind };
+
+/** Events that decide who's in the room: always taken past an author's share, so a member over it can still leave or be removed. */
+const MEMBERSHIP_TYPES = new Set(["room.created", "member.added", "member.removed", "room.approval", "join.declined"]);
+
+/** While an author's events wait to be asked for again (refused for rate), their order floor holds still: the backlog may sort below newer events. */
+const RATE_FREEZE_MS = 30 * 60_000;
+
+export interface RoomLogOptions {
+  limits?: Partial<RoomLimits>;
+  now?: () => number;
+}
 
 /** Per author: how many events, and a digest of their ids. Equal summaries mean equal logs. */
 export type LogSummary = Record<MemberId, { n: number; h: string }>;
@@ -322,9 +339,27 @@ export class RoomLog {
   readonly problems: string[] = [];
   /** Called for each event once it's stored and applied (directly, or once its author became known). */
   onApplied: ((e: RoomEvent) => void) | null = null;
+  /** Called when a waiting event, retried once its author became known, is refused by a limit (add's caller has long returned). */
+  onRefused: ((e: RoomEvent, r: Extract<AddOutcome, { status: "rejected" }>) => void) | null = null;
+  readonly limits: RoomLimits;
+  private readonly now: () => number;
+  /** Per author: bytes of the log (as stored). */
+  private bytesBy = new Map<MemberId, number>();
+  /** Per author: the newest Lamport time held long enough to be a floor, and what arrived since. */
+  private order = new Map<MemberId, { floor: number; recent: { lamport: number; at: number }[] }>();
+  private buckets = new Map<MemberId, RateBucket>();
+  /** Per author: events a peer's sync said it holds that this log lacks, taken without the per-minute limit until `until`. */
+  private catchUp = new Map<MemberId, { n: number; until: number }>();
+  private rateRefusedAt = new Map<MemberId, number>();
 
-  constructor(readonly roomId: RoomId, readonly dir: string) {
+  constructor(
+    readonly roomId: RoomId,
+    readonly dir: string,
+    o: RoomLogOptions = {}
+  ) {
     if (!ROOM_ID_RE.test(roomId)) throw new Error(`not a room id: ${roomId}`);
+    this.limits = { ...ROOM_LIMITS, ...o.limits };
+    this.now = o.now ?? Date.now;
   }
 
   get state(): RoomState | null {
@@ -356,6 +391,10 @@ export class RoomLog {
         if (this.ids.has(e.id)) return;
         this.ids.add(e.id);
         this.events.push(e);
+        this.bytesBy.set(e.author, (this.bytesBy.get(e.author) ?? 0) + Buffer.byteLength(line) + 1);
+        const o = this.order.get(e.author);
+        if (!o) this.order.set(e.author, { floor: e.lamport, recent: [] });
+        else o.floor = Math.max(o.floor, e.lamport);
       } catch (err) {
         const msg = `${this.logFile} line ${i + 1} is unreadable (${(err as Error).message}); skipped`;
         this.problems.push(msg);
@@ -406,11 +445,70 @@ export class RoomLog {
     return this.pending.size;
   }
 
+  /** Bytes of the log `author` wrote. */
+  bytesOf(author: MemberId): number {
+    return this.bytesBy.get(author) ?? 0;
+  }
+
+  /**
+   * A peer's sync says it holds `n` events by `author` this log lacks: they
+   * may arrive (from anyone) without counting against the per-minute limit
+   * for a while. The share and order still hold.
+   */
+  expectCatchUp(author: MemberId, n: number): void {
+    if (!(n > 0)) return;
+    const was = this.catchUp.get(author);
+    const now = this.now();
+    this.catchUp.set(author, { n: Math.max(n, was && was.until > now ? was.n : 0), until: now + CATCH_UP_MS });
+  }
+
+  /** How long until `n` more of `author`'s events from peers would be taken (at most a burst's worth). */
+  rateWaitMs(author: MemberId, n = 1): number {
+    return this.buckets.get(author)?.waitMs(this.now(), n) ?? 0;
+  }
+
+  /**
+   * The Lamport time an author's next event must be above: the newest of
+   * theirs held for backdateGraceMs. Held still while their events wait to
+   * be asked for again (refused for rate), whose backlog may sort lower.
+   */
+  private floorOf(author: MemberId): number {
+    const o = this.order.get(author);
+    if (!o) return 0;
+    const now = this.now();
+    if (now - (this.rateRefusedAt.get(author) ?? -Infinity) >= RATE_FREEZE_MS) {
+      while (o.recent.length && now - o.recent[0].at >= this.limits.backdateGraceMs) o.floor = Math.max(o.floor, o.recent.shift()!.lamport);
+    }
+    return o.floor;
+  }
+
+  /** Why an event that passed every other check is over its author's limits, or null. */
+  private overLimit(e: RoomEvent, bytes: number, remote: boolean): { reason: string; limit: LimitKind } | null {
+    const floor = this.floorOf(e.author);
+    if (e.type !== "room.created" && e.lamport <= floor) return { limit: "order", reason: `backdated: its Lamport time ${e.lamport} sorts at or before ${floor}, which its author sent earlier` };
+    if (!MEMBERSHIP_TYPES.has(e.type) && this.bytesOf(e.author) + bytes > this.limits.maxMemberLogBytes) {
+      return { limit: "share", reason: `its author has written ${sizeText(this.bytesOf(e.author))} of this room's log; the limit is ${sizeText(this.limits.maxMemberLogBytes)}` };
+    }
+    if (!remote) return null;
+    const now = this.now();
+    const c = this.catchUp.get(e.author);
+    if (c && c.n > 0 && c.until > now) {
+      c.n -= 1;
+      return null;
+    }
+    let bucket = this.buckets.get(e.author);
+    if (!bucket) this.buckets.set(e.author, (bucket = new RateBucket(this.limits.eventsPerMinute, this.limits.eventBurst, now)));
+    if (bucket.take(now)) return null;
+    this.rateRefusedAt.set(e.author, now);
+    return { limit: "rate", reason: `its author sent more than ${this.limits.eventsPerMinute} events a minute` };
+  }
+
   /**
    * Take an event from anyone (this install or a peer): check it, store it,
-   * apply it. Throws only when it can't be written to disk.
+   * apply it. Throws only when it can't be written to disk. `remote`: it came
+   * from a peer, so the per-minute limit applies too.
    */
-  add(e: RoomEvent): AddOutcome {
+  add(e: RoomEvent, o: { remote?: boolean } = {}): AddOutcome {
     const problem = shapeProblem(e, this.roomId);
     if (problem) return { status: "rejected", reason: problem };
     if (this.ids.has(e.id)) return { status: "duplicate" };
@@ -420,7 +518,7 @@ export class RoomLog {
     } catch (err) {
       return { status: "rejected", reason: (err as Error).message };
     }
-    if (payload.length > MAX_EVENT_BODY + 1024) return { status: "rejected", reason: "body too big" };
+    if (payload.length > this.limits.maxEventBytes + 1024) return { status: "rejected", reason: `over ${sizeText(this.limits.maxEventBytes)}`, limit: "size" };
     if (eventIdOf(payload) !== e.id) return { status: "rejected", reason: "its id doesn't match its content" };
     let key: string | undefined;
     if (e.type === "room.created") {
@@ -436,9 +534,11 @@ export class RoomLog {
           if (this.pending.size >= MAX_PENDING) {
             const oldest = this.pending.keys().next().value!;
             this.pending.delete(oldest);
+            this.pendingRemote.delete(oldest);
             console.error(`[mockingbird] room ${this.roomId}: dropped event ${oldest} from an unknown author (too many waiting)`);
           }
           this.pending.set(e.id, e);
+          if (o.remote) this.pendingRemote.add(e.id);
         }
         return { status: "pending" };
       }
@@ -450,7 +550,10 @@ export class RoomLog {
       return { status: "rejected", reason: `malformed ${e.type}: ${(err as Error).message}` };
     }
     if (e.lamport > this.clock + LAMPORT_LEAP) return { status: "rejected", reason: `its Lamport time ${e.lamport} is more than ${LAMPORT_LEAP} past this room's ${this.clock}` };
-    this.store(e);
+    const line = JSON.stringify(e);
+    const over = this.overLimit(e, Buffer.byteLength(line) + 1, !!o.remote);
+    if (over) return { status: "rejected", ...over };
+    this.store(e, line);
     this.retryPending();
     return { status: "added" };
   }
@@ -520,11 +623,16 @@ export class RoomLog {
     this.sinceSnapshot = 0;
   }
 
-  private store(e: RoomEvent): void {
+  private store(e: RoomEvent, line: string): void {
     fs.mkdirSync(this.dir, { recursive: true });
-    fs.appendFileSync(this.logFile, `${JSON.stringify(e)}\n`);
+    fs.appendFileSync(this.logFile, `${line}\n`);
     this.ids.add(e.id);
     this.pending.delete(e.id);
+    this.pendingRemote.delete(e.id);
+    this.bytesBy.set(e.author, this.bytesOf(e.author) + Buffer.byteLength(line) + 1);
+    const o = this.order.get(e.author);
+    if (!o) this.order.set(e.author, { floor: 0, recent: [{ lamport: e.lamport, at: this.now() }] });
+    else o.recent.push({ lamport: e.lamport, at: this.now() });
     this.summaryCache = null;
     this.clock = Math.max(this.clock, e.lamport);
     const last = this.events.at(-1);
@@ -548,6 +656,8 @@ export class RoomLog {
   }
 
   private retrying = false;
+  /** Waiting events that came from peers (the per-minute limit applies when they're taken). */
+  private pendingRemote = new Set<string>();
 
   /** Waiting events whose author has since become a member. */
   private retryPending(): void {
@@ -560,8 +670,12 @@ export class RoomLog {
         for (const e of [...this.pending.values()].sort(compareEvents)) {
           if (!this.knownKey(e.author)) continue;
           this.pending.delete(e.id);
-          const r = this.add(e);
-          if (r.status === "rejected") console.error(`[mockingbird] room ${this.roomId}: refused event ${e.id} (${e.type}) by ${e.author}: ${r.reason}`);
+          const remote = this.pendingRemote.delete(e.id);
+          const r = this.add(e, { remote });
+          if (r.status === "rejected") {
+            console.error(`[mockingbird] room ${this.roomId}: refused event ${e.id} (${e.type}) by ${e.author}: ${r.reason}`);
+            if (r.limit) this.onRefused?.(e, r);
+          }
           progressed = true;
         }
       }
@@ -636,7 +750,10 @@ export class RoomStore {
   private logs = new Map<RoomId, RoomLog>();
   readonly problems: string[] = [];
 
-  constructor(readonly dir = ROOMS_DIR) {}
+  constructor(
+    readonly dir = ROOMS_DIR,
+    private o: RoomLogOptions = {}
+  ) {}
 
   /** Open every room on disk. A room that can't be read is reported, not dropped. */
   load(): this {
@@ -649,7 +766,7 @@ export class RoomStore {
     for (const name of names) {
       if (!ROOM_ID_RE.test(name)) continue;
       try {
-        const log = new RoomLog(name, path.join(this.dir, name)).load();
+        const log = new RoomLog(name, path.join(this.dir, name), this.o).load();
         this.problems.push(...log.problems);
         this.logs.set(name, log);
       } catch (err) {
@@ -673,7 +790,7 @@ export class RoomStore {
   open(roomId: RoomId): RoomLog {
     let log = this.logs.get(roomId);
     if (!log) {
-      log = new RoomLog(roomId, path.join(this.dir, roomId));
+      log = new RoomLog(roomId, path.join(this.dir, roomId), this.o);
       fs.mkdirSync(log.dir, { recursive: true, mode: 0o700 });
       this.logs.set(roomId, log);
     }

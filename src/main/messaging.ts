@@ -501,7 +501,8 @@ export class Messaging {
     // the room's checks said it takes messages: it closed, exited or left the room since
     if (!target) return refuse(`session "${m.to}" stopped running in this room just now — call list_sessions for current ids`);
     if (target.debrief) return refuse("that session is a debrief interview with the user and does not take agent messages");
-    if (this.paced({ id: replyTo, title: fromTitle, ticketTitle: null }, target, logged)) {
+    // keyed on the sending member (the transport's authenticated peer), not the session id they report: a new id per message doesn't reset it
+    if (this.paced({ id: `member:${m.member.id}`, title: fromTitle, ticketTitle: null }, target, logged)) {
       return { status: "refused", detail: `paused: these two sessions hit the limit of ${PAIR_LIMIT} messages in ${PAIR_WINDOW_MS / 60_000} minutes — ask the user how to proceed`, toTitle };
     }
     // the teammate's words for their session, its repo and branch, and their own name: one line each, quoted unless plain
