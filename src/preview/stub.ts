@@ -13,7 +13,7 @@
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
-import { fitSize } from "../renderer/cachedTerm";
+import { bottomLine, fitSize, followsBottom } from "../renderer/cachedTerm";
 import type { SuggestProblem } from "../shared/suggestions";
 import { changedTags, parseCardRules, type TagChange } from "../shared/cardRules";
 import type { MigrationsView } from "../shared/team/migrations";
@@ -2094,7 +2094,8 @@ if (params.has("termAudit")) {
 // ?scrollAudit (with ?motion=full or off) checks that terminals follow their output: a pane whose view was at the
 // bottom stays there through a group switch (output arriving while it's hidden, the pane shown again while its
 // program is idle), a teammate's copy re-fitted to a wider owner screen at a smaller font, the side bar and the
-// bottom panel hidden and shown, and a Repaint; one the user scrolled up stays where they put it while output goes
+// bottom panel hidden and shown, an agent's inline frame shrinking and its pane getting taller under it, and a Repaint;
+// one the user scrolled up stays where they put it while output goes
 // on (a teammate's copy too, through its font change), with a "Jump to latest" control that brings it back. After each step it checks every shown terminal: at its bottom (xterm's and the page's
 // scroll offsets agreeing), its rows within its holder's content box, nothing scrollable below it. It writes what was
 // wrong into <script id="mb-scroll-audit"> for test/uiTerminal.test.ts.
@@ -2126,7 +2127,8 @@ if (params.has("scrollAudit")) {
   const row = (selector: string, text: string) => [...document.querySelectorAll(selector)].find((el) => el.textContent?.includes(text));
   const problems: string[] = [];
   const shownTerms = () => [...(terms() ?? [])].filter(([, e]) => e.term.element?.isConnected && (e.term.element.parentElement?.getClientRects().length ?? 0) > 0);
-  const behind = (t: Term) => t.buffer.active.baseY - t.buffer.active.viewportY;
+  // the bottom of an agent's view is its last drawn row (bottomLine), which the blank-rows check below verifies on its own
+  const behind = (t: Term) => bottomLine(t) - t.buffer.active.viewportY;
   const check = (step: string, scrolledUp: string[] = []) => {
     for (const [id, { term }] of shownTerms()) {
       const holder = term.element!.parentElement!;
@@ -2140,7 +2142,7 @@ if (params.has("scrollAudit")) {
         if (!behind(term)) problems.push(`${step}: ${id} was scrolled up, and its view went to the bottom`);
         if (!toast) problems.push(`${step}: ${id} is scrolled up with no Jump to latest`);
       } else {
-        if (behind(term)) problems.push(`${step}: ${id} is ${behind(term)} lines above its bottom${term._core._bufferService.isUserScrolling ? ", no longer following its output" : ""}`);
+        if (behind(term)) problems.push(`${step}: ${id} is ${behind(term)} lines above its bottom${followsBottom(term) ? "" : ", no longer following its output"}`);
         if (toast) problems.push(`${step}: ${id} is at its bottom and shows Jump to latest`);
         // the page's scroll offset is where xterm reads the next wheel move from: a screen short of the bottom, it jumps the view up
         const reach = Math.round((vp.scrollHeight - vp.clientHeight) / rowH);
@@ -2148,6 +2150,13 @@ if (params.has("scrollAudit")) {
         if (Math.abs(vp.scrollTop / rowH - term.buffer.active.viewportY) >= 0.5) problems.push(`${step}: ${id}'s page is scrolled to line ${(vp.scrollTop / rowH).toFixed(1)}, its view at ${term.buffer.active.viewportY}`);
       }
       if (!holder.classList.contains("fixed") && term.rows * rowH > content + 0.5) problems.push(`${step}: ${id} has ${term.rows} rows (${(term.rows * rowH).toFixed(1)}px) in ${content}px`);
+      // an agent's view of its newest output ends at its last drawn row (or its cursor), with history above rather than blank rows below
+      if (id !== "s4" && !scrolledUp.includes(id)) {
+        const b = term.buffer.active;
+        let blank = 0;
+        for (let y = term.rows - 1; y >= 0 && b.viewportY + y !== b.baseY + b.cursorY && !b.getLine(b.viewportY + y)?.translateToString(true).trim(); y--) blank++;
+        if (blank && b.viewportY > 0) problems.push(`${step}: ${id} shows ${blank} blank rows below its program's last line`);
+      }
       // a holder that scrolls past its terminal shows blank space below the program's last line
       const below = holder.scrollHeight - holder.clientHeight - Math.max(0, term.element!.offsetHeight + parseFloat(pad.paddingTop) + parseFloat(pad.paddingBottom) - holder.clientHeight);
       if (below > 1) problems.push(`${step}: ${id}'s pane has ${below}px to scroll below its terminal`);
@@ -2219,6 +2228,25 @@ if (params.has("scrollAudit")) {
         check(`${step}, idle`);
         done.push(step);
       }
+      // an agent drawing inline (Claude Code's classic renderer) parks its cursor in its input box and leaves the rows its
+      // frame gives up blank below it: as its frame shrinks, and as its pane gets taller (xterm adds those rows blank)
+      const agents = ["s1", NICK_PANE];
+      const frameRows = (id: string, n: number) => {
+        const rule = "─".repeat(terms()!.get(id)!.term.cols);
+        return [rule, "> ", rule, "  auto mode on", ...Array.from({ length: n }, (_, i) => `  agent ${i} running`)];
+      };
+      for (const id of agents) say(id, `${frameRows(id, 6).join("\r\n")}\r\n\x1b[2C\x1b[9A`);
+      await settle();
+      check("inline frame drawn");
+      for (const id of agents) say(id, `\x1b[2D\x1b[9B${"\x1b[2K\x1b[1A".repeat(4)}\x1b[2K\x1b[G\x1b[1A\x1b[2K\x1b[2C\x1b[4A`);
+      await settle();
+      check("inline frame shrank");
+      for (const step of ["bottom panel shown", "bottom panel hidden"]) {
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "j", metaKey: true, bubbles: true }));
+        await settle();
+        check(`${step} under an inline frame`);
+      }
+      done.push("inline frame");
       // the user scrolls a pane up; output goes on; it stays, until Jump to latest
       const s1 = terms()!.get("s1")!.term;
       s1.element!.querySelector(".xterm-screen")!.dispatchEvent(new WheelEvent("wheel", { deltaY: -600, deltaMode: 0, bubbles: true, cancelable: true }));
