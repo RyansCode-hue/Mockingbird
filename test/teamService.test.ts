@@ -103,4 +103,17 @@ describe("the team service", () => {
     await expect(s.shareGroup("5110", "x")).rejects.toThrow(/unreadable/);
     expect(s.transport).toBeNull();
   });
+
+  it("says in Settings → Team when the key stays in plain text because the Keychain isn't available", () => {
+    const net = new LoopbackNetwork();
+    const dir = path.join(tempDir("plain"), "team");
+    const logged: string[] = [];
+    const keySealer = { name: "safeStorage", unavailable: () => "the macOS Keychain isn't available to Mockingbird", seal: () => Buffer.alloc(0), open: () => Buffer.alloc(0) };
+    const s = new TeamService({ settings: () => DEFAULT_SETTINGS, localGroups: () => [], emit: () => undefined, log: (c, e) => (logged.push(`${c}: ${e}`), String(e)), assetsDir: "", dir, wire: (i) => net.wire(i.id), keySealer });
+    s.start();
+    const st = s.status();
+    expect(st.self).not.toBeNull();
+    expect(st.problems).toEqual([expect.stringMatching(/team key is kept in .*identity\.json, owner-only: the macOS Keychain isn't available/)]);
+    expect(logged.filter((l) => l.startsWith("team identity"))).toHaveLength(1);
+  });
 });
