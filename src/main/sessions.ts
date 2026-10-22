@@ -34,6 +34,17 @@ export function restartDivider(at: Date, earlier: string): string {
 }
 
 /** Something Mockingbird did while starting a pane that its user should know about, as the pane shows it above the agent's output. */
+/**
+ * A message's text as it may be pasted into an agent's prompt: lines and tabs
+ * kept, every other control character gone — ESC above all, so nothing in it
+ * can end the bracketed paste (ESC [ 201 ~) and go on as keys typed into the
+ * pane, and no carriage return can press Enter inside it. C1 controls go
+ * too (0x9b is a one-byte CSI to a terminal that reads 8-bit controls).
+ */
+export function pasteText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+}
+
 export const paneNotice = (text: string): string => `\x1b[0m\x1b[33m${text.replace(/\r?\n/g, "\r\n")}\x1b[0m\r\n\r\n`;
 
 /**
@@ -893,7 +904,9 @@ export class SessionManager {
     // Enter sends the draft and Ctrl-C clears it; escape sequences (arrows, focus
     // reports) don't add text — except a bracketed paste, which is text.
     // Anything else leaves unsent text in the prompt.
+    // Keys pressed while the agent asks for permission answer it, and leave nothing in its prompt.
     if (/[\r\x03]/.test(data) && !data.startsWith("\x1b[200~")) s.draft = false;
+    else if (s.info.status === "waiting") return void s.proc.write(data);
     else if (!data.startsWith("\x1b") || data.startsWith("\x1b[200~")) s.draft = true;
     s.proc.write(data);
   }
@@ -965,13 +978,28 @@ export class SessionManager {
     this.emitChanged();
   }
 
-  /** Inject a chat message into a session (paste, then submit unless told not to). */
+  /**
+   * Inject a chat message into a session (paste, then submit unless told not
+   * to). Callers paste only into a pane at its prompt; should its agent start
+   * asking for permission before the Enter, the Enter isn't sent — it would
+   * answer that — and the message waits in the prompt as a draft.
+   */
   sendMessage(id: string, message: string, submit = true): void {
     const s = this.live.get(id);
     if (!s) return;
     // bracketed paste so multi-line messages arrive as one prompt
-    s.proc.write(`\x1b[200~${message}\x1b[201~`);
-    if (submit) setTimeout(() => s.proc.write("\r"), 120);
+    s.proc.write(`\x1b[200~${pasteText(message)}\x1b[201~`);
+    if (!submit) return;
+    setTimeout(() => {
+      if (this.live.get(id) !== s || s.info.status === "dead") return;
+      if (s.info.status === "waiting") {
+        s.draft = true;
+        s.lastInput = Date.now();
+        console.warn(`[sessions] ${id} started asking for permission as a message was pasted: it stays in the prompt, unsent`);
+        return;
+      }
+      s.proc.write("\r");
+    }, 120);
   }
 
   /**
@@ -990,6 +1018,8 @@ export class SessionManager {
       return s.queued.length ? "queued — the user has an unsent draft in that pane" : submit ? "delivered" : "placed in its prompt for the user to send";
     }
     this.emitChanged();
+    // pasted now, its Enter would answer the prompt
+    if (s.info.status === "waiting") return "queued: its agent is asking for permission, and it's delivered once that's answered";
     return "queued until its current turn ends";
   }
 

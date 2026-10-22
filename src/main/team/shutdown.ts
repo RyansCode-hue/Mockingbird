@@ -7,6 +7,8 @@ export interface TeamRoomsParts {
   changes?: { stop(): void };
   artifacts: { stop(): void };
   takeover: () => { close(): void } | null;
+  /** The audit log of remote actions: what it gathered is written. */
+  audit?: { stop(): void };
   team: { stop(): void };
 }
 
@@ -15,7 +17,8 @@ export interface TeamRoomsParts {
  * through the team first, the transport last. The live panes send output
  * gathered for teammates; the chat posts the agent updates still gathering
  * (up to 30 s of them); then the House board, room artifacts (downloads stop
- * where they are, resumed on the next start), take-over and the team stop.
+ * where they are, resumed on the next start), take-over, the audit log
+ * (writing what it gathered) and the team stop.
  * Every part is stopped even when one before it fails (that's logged).
  */
 export function stopTeamRooms(p: TeamRoomsParts, log: (context: string, err: unknown) => void): void {
@@ -26,6 +29,7 @@ export function stopTeamRooms(p: TeamRoomsParts, log: (context: string, err: unk
     ["teammates' changes", () => p.changes?.stop()],
     ["room artifacts", () => p.artifacts.stop()],
     ["take-over", () => p.takeover()?.close()],
+    ["audit log", () => p.audit?.stop()],
     ["team transport", () => p.team.stop()],
   ];
   for (const [what, stop] of steps) {

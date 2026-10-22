@@ -17,6 +17,7 @@ import { claudeToolName } from "../src/main/messaging";
 import { ROOM_CONTEXT_ENV } from "../src/shared/team/claims";
 import { HOUSE_READ_TOOLS, HOUSE_TOOL_NAMES, HOUSE_WRITE_TOOLS } from "../src/shared/team/house";
 import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
+import { RemoteAudit } from "../src/main/team/remoteAudit";
 
 /** Every pty a session manager starts: its command, environment and what was written to it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; emit(d: string): void; exit(code: number): void };
@@ -72,6 +73,8 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
   const audits: string[] = [];
   const logs: string[] = [];
   const base = path.join(dir, m.name, "live");
+  const remoteAudit = new RemoteAudit({ file: path.join(dir, m.name, "audit.log"), log: (c, e) => logs.push(`${c}: ${e}`), timing: { quietMs: 20 } });
+  remoteAudit.watch(m.team);
   const live = new LivePanes({
     team: () => m.team,
     rooms: () => m.team.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey })),
@@ -80,6 +83,7 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
     notify: (title, body, paneId) => notes.push({ title, body, paneId }),
     toWindow: (...a) => window.push(a),
     audit: (l) => audits.push(l),
+    remoteAudit,
     log: (c, e) => {
       logs.push(`${c}: ${e instanceof Error ? e.message : e}`);
       return String(e);
@@ -98,7 +102,7 @@ function side(m: LoopbackMember, dir: string, over: Partial<LivePanesDeps> = {},
   const start = (req: Partial<NewSessionRequest> = {}) => sessions.create({ repoPath: null, useWorktree: false, agent: "claude", taskGroup: "5110", title: "donors", ...req });
   /** What the window was sent for a pane, as its terminal would show it. */
   const shown = (paneId: string) => window.filter((w) => w[0] === "session:data" && w[1] === paneId).map((w) => w[2]).join("");
-  return { m, settings, sessions, live, window, notes, audits, logs, store, start, shown };
+  return { m, settings, sessions, live, window, notes, audits, logs, store, start, shown, remoteAudit };
 }
 
 async function pair(over: Partial<LivePanesDeps> = {}) {
@@ -109,6 +113,15 @@ async function pair(over: Partial<LivePanesDeps> = {}) {
 }
 
 const remoteOf = (s: ReturnType<typeof side>, id: string) => s.live.state().remote.find((r) => r.room?.sessionId === id);
+
+/** `viewer` asks to type into `owner`'s session, and the owner allows it ("session": while it runs, "minutes": for 15). */
+async function allowTyping(owner: ReturnType<typeof side>, viewer: ReturnType<typeof side>, sessionId: string, choice: "session" | "minutes" = "session") {
+  await until(() => !!remoteOf(viewer, sessionId), "the record");
+  await viewer.live.askToType(remotePaneId(owner.m.id, sessionId));
+  await until(() => owner.live.state().own[sessionId]?.typingAsks?.some((a) => a.member === viewer.m.id) ?? false, "the ask");
+  owner.live.decideTyping(sessionId, viewer.m.id, choice);
+  await until(() => remoteOf(viewer, sessionId)?.room?.typing?.state === "allowed", "the allowance at the viewer's");
+}
 
 describe("room sessions in the room log", () => {
   it("every member sees a session started in the shared group, tagged with its owner; sessions outside it stay private", async () => {
@@ -289,7 +302,7 @@ describe("typing into a teammate's session", () => {
   it("reaches the owner's pty and is audited; a terminal's automatic answers never are", async () => {
     const { ryan, nick } = await pair();
     const s = await ryan.start();
-    await until(() => !!remoteOf(nick, s.id), "the record");
+    await allowTyping(ryan, nick, s.id);
     const paneId = remotePaneId(ryan.m.id, s.id);
     nick.sessions.write(paneId, "fix the ");
     nick.sessions.write(paneId, "tests\r");
@@ -309,7 +322,7 @@ describe("typing into a teammate's session", () => {
     let clock = 1_000_000;
     const { ryan, nick } = await pair({ now: () => clock });
     const s = await ryan.start();
-    await until(() => !!remoteOf(nick, s.id), "the record");
+    await allowTyping(ryan, nick, s.id);
     const paneId = remotePaneId(ryan.m.id, s.id);
     const tick = () => new Promise((r) => setImmediate(r)); // each write its own pty.input
     // what an older Mockingbird's pane sends while its terminal tracks the mouse, and its paging keys
@@ -355,6 +368,7 @@ describe("typing into a teammate's session", () => {
       const s = await ryan.start();
       ryan.sessions.statusFromHook({ paneId: s.id, status: "idle" });
       await until(() => remoteOf(nick, s.id)?.status === "idle", "the record");
+      await allowTyping(ryan, nick, s.id);
       // one Mockingbird per process answers for its own sessions; here both run in one
       setRoomSessionLookup(ryan.live);
       expect(isRoomSession(s.id)).toBe(true);
@@ -374,6 +388,186 @@ describe("typing into a teammate's session", () => {
     } finally {
       off();
     }
+  });
+});
+
+describe("typing needs the owner's consent", () => {
+  const settle = () => new Promise((r) => setTimeout(r, 60));
+  /** pty.input as a modified client (or a newer one, with `v`) would send it straight to the owner. */
+  const raw = (viewer: ReturnType<typeof side>, owner: ReturnType<typeof side>, sessionId: string, data: string, v?: number) =>
+    viewer.m.team.request<any>(owner.m.id, "pty.input", { session: sessionId, data, ...(v ? { v } : {}) }, { roomId: remoteOf(viewer, sessionId)!.room!.roomId });
+
+  it("a teammate's copy is view-only: their keys never reach the pty, they see why, and the owner is asked", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    nick.sessions.write(paneId, "rm -rf ~\r");
+    await until(() => remoteOf(nick, s.id)?.room?.typing?.state === "asked", "the ask, from typing");
+    expect(ptyOf(s.id).writes).toEqual([]);
+    expect(remoteOf(nick, s.id)!.room!.typing!.refused?.why).toMatch(/^Ryan hasn't allowed you to type in "donors"/);
+    // the owner sees who asks, and is notified
+    await until(() => ryan.live.state().own[s.id]?.typingAsks?.length === 1, "the ask at Ryan's");
+    expect(ryan.live.state().own[s.id].typingAsks![0]).toMatchObject({ member: nick.m.id, name: "Nick" });
+    expect(ryan.notes).toEqual([{ title: "Nick wants to type", body: 'In "donors": allow it or not in its pane', paneId: s.id }]);
+    // more keys while asked: held here, said so, and never sent
+    nick.sessions.write(paneId, "ls\r");
+    await settle();
+    expect(remoteOf(nick, s.id)!.room!.typing!.refused?.why).toBe("Waiting for Ryan to let you type");
+    expect(ptyOf(s.id).writes).toEqual([]);
+  });
+
+  it("is decided on the owner's Mac: a client that skips its own checks is refused, and an older one is told why without losing the connection", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    // a current Mockingbird's request: refused with where it stands
+    expect(await raw(nick, ryan, s.id, "rm -rf ~\r", 2)).toEqual({ ok: false, typing: { session: s.id, state: "view-only", why: `Ryan hasn't allowed you to type in "donors"` } });
+    // an older Mockingbird's (no v): an error its pane shows as it is
+    await expect(raw(nick, ryan, s.id, "rm -rf ~\r")).rejects.toThrow(/Ryan hasn't allowed you to type in "donors" — a newer Mockingbird can ask them to let you type/);
+    expect(ptyOf(s.id).writes).toEqual([]);
+    // the connection carries on: the copy still loads
+    expect(await nick.sessions.paneBuffer(remotePaneId(ryan.m.id, s.id))).toBe("");
+    ptyOf(s.id).emit("still here\r\n");
+    await until(() => nick.shown(remotePaneId(ryan.m.id, s.id)).includes("still here"), "output after the refusals");
+  });
+
+  it("allowed while the session runs: typing arrives; taken back: refused again, and the teammate told", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await allowTyping(ryan, nick, s.id);
+    expect(ryan.live.state().own[s.id].typists).toEqual([{ member: nick.m.id, name: "Nick", until: null, at: expect.any(Number) }]);
+    expect(ryan.live.state().own[s.id].typingAsks).toEqual([]);
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    nick.sessions.write(paneId, "fix it\r");
+    await until(() => ptyOf(s.id).writes.join("") === "fix it\r", "the typing");
+    ryan.live.decideTyping(s.id, nick.m.id, "revoke");
+    await until(() => remoteOf(nick, s.id)?.room?.typing?.state === "denied", "the revoke at Nick's");
+    expect(remoteOf(nick, s.id)!.room!.typing!.refused?.why).toBe("Ryan stopped your typing");
+    expect(ryan.live.state().own[s.id].typists).toEqual([]);
+    nick.sessions.write(paneId, "more\r");
+    await settle();
+    expect(await raw(nick, ryan, s.id, "more\r", 2)).toMatchObject({ ok: false, typing: { state: "denied" } });
+    expect(ptyOf(s.id).writes.join("")).toBe("fix it\r");
+    // after a no, asking again waits a little
+    await nick.live.askToType(paneId);
+    expect(remoteOf(nick, s.id)!.room!.typing).toMatchObject({ state: "denied", refused: { why: "Ryan said no a moment ago: ask again in a minute" } });
+  });
+
+  it("denied: the teammate is told, and nothing they type gets through", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    await nick.live.askToType(remotePaneId(ryan.m.id, s.id));
+    await until(() => ryan.live.state().own[s.id]?.typingAsks?.length === 1, "the ask");
+    ryan.live.decideTyping(s.id, nick.m.id, "deny");
+    await until(() => remoteOf(nick, s.id)?.room?.typing?.state === "denied", "the no at Nick's");
+    expect(remoteOf(nick, s.id)!.room!.typing!.refused?.why).toBe("Ryan didn't allow typing");
+    expect(await raw(nick, ryan, s.id, "x", 2)).toMatchObject({ ok: false });
+    expect(ptyOf(s.id).writes).toEqual([]);
+  });
+
+  it("allowed for 15 minutes: refused once they're up, and the teammate told", async () => {
+    let clock = 5_000_000;
+    const { ryan, nick } = await pair({ now: () => clock });
+    const s = await ryan.start();
+    await allowTyping(ryan, nick, s.id, "minutes");
+    expect(ryan.live.state().own[s.id].typists![0].until).toBe(5_000_000 + 15 * 60_000);
+    expect(remoteOf(nick, s.id)!.room!.typing!.until).toBe(5_000_000 + 15 * 60_000);
+    expect(await raw(nick, ryan, s.id, "a", 2)).toEqual({ ok: true });
+    clock += 15 * 60_000;
+    // refused at once on the owner's Mac, before any timer has said so
+    expect(await raw(nick, ryan, s.id, "b", 2)).toMatchObject({ ok: false, typing: { state: "view-only" } });
+    await until(() => remoteOf(nick, s.id)?.room?.typing?.state === "view-only", "the expiry at Nick's");
+    expect(remoteOf(nick, s.id)!.room!.typing!.refused?.why).toBe("the 15 minutes Ryan allowed are up");
+    expect(ryan.live.state().own[s.id].typists).toEqual([]);
+    expect(ptyOf(s.id).writes).toEqual(["a"]);
+  });
+
+  it("never while the owner's agent asks for permission, even when allowed: the approval is the owner's", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await allowTyping(ryan, nick, s.id);
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    ryan.sessions.statusFromHook({ paneId: s.id, status: "waiting", reason: "Claude needs your permission to use Bash" });
+    await until(() => remoteOf(nick, s.id)?.status === "waiting", "the prompt at Nick's");
+    // Nick's own Mockingbird holds his keys back and says why
+    nick.sessions.write(paneId, "1");
+    await settle();
+    expect(remoteOf(nick, s.id)!.room!.typing!.refused?.why).toBe("Ryan's agent is asking for permission: only Ryan can answer it");
+    // and Ryan's refuses them whatever sends them
+    expect(await raw(nick, ryan, s.id, "\r", 2)).toEqual({ ok: false, typing: { session: s.id, state: "allowed", until: null, prompt: true, why: `Ryan's agent in "donors" is asking for permission: only Ryan can answer it` } });
+    await expect(raw(nick, ryan, s.id, "y")).rejects.toThrow(/asking for permission: only Ryan can answer it — try again once they have/);
+    expect(ptyOf(s.id).writes).toEqual([]);
+    // Ryan answers it himself; Nick's typing goes through again
+    ryan.sessions.write(s.id, "1");
+    ryan.sessions.statusFromHook({ paneId: s.id, status: "working" });
+    await until(() => remoteOf(nick, s.id)?.status === "working", "the turn at Nick's");
+    nick.sessions.write(paneId, "after\r");
+    await until(() => ptyOf(s.id).writes.join("") === "1after\r", "Nick's typing after the prompt");
+  });
+
+  it("ends with the session: a session closed and started again is view-only again", async () => {
+    const { ryan, nick } = await pair();
+    const s = await ryan.start();
+    await allowTyping(ryan, nick, s.id);
+    ptyOf(s.id).exit(0);
+    await until(() => ryan.sessions.list().find((x) => x.id === s.id)?.status === "dead", "the exit");
+    await until(() => !ryan.live.state().own[s.id]?.typists?.length, "the allowance gone");
+    expect(await raw(nick, ryan, s.id, "x", 2).catch((e) => String(e))).not.toEqual({ ok: true });
+    ryan.remoteAudit.flush();
+    expect(ryan.remoteAudit.recent().map((e) => e.kind)).toContain("typing.ended");
+  });
+
+  it("with an owner on a Mockingbird from before typing consent, typing goes through as it did", async () => {
+    const { ryan, nick } = await pair();
+    // Ryan's Mockingbird as it was: no typing answers, every member's keys taken
+    const live = ryan.live as any;
+    const scrollback = live.answerScrollback.bind(live);
+    live.answerScrollback = (...a: unknown[]) => {
+      const { typing: _t, ...snap } = scrollback(...a);
+      return snap;
+    };
+    live.inputRefusal = () => null;
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    await nick.sessions.paneBuffer(paneId);
+    expect(remoteOf(nick, s.id)!.room!.typing).toEqual({ state: "legacy" });
+    nick.sessions.write(paneId, "old ways\r");
+    await until(() => ptyOf(s.id).writes.join("") === "old ways\r", "the typing");
+  });
+
+  it("is in the audit log by counts — asks, answers and keystrokes — never by what was typed", async () => {
+    const { ryan, nick, dir } = await pair();
+    const s = await ryan.start();
+    await until(() => !!remoteOf(nick, s.id), "the record");
+    const paneId = remotePaneId(ryan.m.id, s.id);
+    nick.sessions.write(paneId, "secret-before");
+    await until(() => ryan.live.state().own[s.id]?.typingAsks?.length === 1, "the ask");
+    await raw(nick, ryan, s.id, "hunter2-refused", 2);
+    ryan.live.decideTyping(s.id, nick.m.id, "minutes");
+    await until(() => remoteOf(nick, s.id)?.room?.typing?.state === "allowed", "the allowance");
+    for (const k of ["hunter2", "-typed", "\r"]) nick.sessions.write(paneId, k);
+    await until(() => ptyOf(s.id).writes.join("") === "hunter2-typed\r", "the typing");
+    ryan.live.decideTyping(s.id, nick.m.id, "revoke");
+    await until(() => ryan.remoteAudit.recent().some((e) => e.kind === "input"), "the keystrokes counted");
+    ryan.remoteAudit.flush();
+    const file = path.join(dir, "Ryan", "audit.log");
+    const text = fs.readFileSync(file, "utf8");
+    expect(text).not.toMatch(/hunter2|secret-before|-typed/);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    const entries = text.trim().split("\n").map((l) => JSON.parse(l));
+    const of = (kind: string) => entries.filter((e) => e.kind === kind);
+    expect(of("typing.asked")).toEqual([expect.objectContaining({ member: "Nick", memberId: nick.m.id, session: s.id, title: "donors" })]);
+    expect(of("input.refused")).toEqual([expect.objectContaining({ member: "Nick", reason: "view-only", n: 2, bytes: 28 })]);
+    expect(of("typing.allowed")).toEqual([expect.objectContaining({ until: expect.any(Number) })]);
+    expect(of("input")).toEqual([expect.objectContaining({ member: "Nick", session: s.id, n: expect.any(Number), bytes: 14 })]);
+    expect(of("typing.revoked")).toHaveLength(1);
+    // Nick's scrollback reads are there too, counted
+    await nick.sessions.paneBuffer(paneId);
+    ryan.remoteAudit.flush();
+    expect(ryan.remoteAudit.recent().find((e) => e.kind === "scrollback")).toMatchObject({ member: "Nick", session: s.id, n: expect.any(Number) });
   });
 });
 

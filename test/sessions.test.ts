@@ -42,7 +42,7 @@ describe("delivering agent messages", () => {
   it("waits for a busy pane's turn to end — Enter would answer a pending prompt", () => {
     const { m, out, add } = manager();
     add("b", "waiting");
-    expect(m.deliverAgentMessage("b", "hello", true)).toMatch(/queued until its current turn ends/);
+    expect(m.deliverAgentMessage("b", "hello", true)).toMatch(/queued: its agent is asking for permission/);
     vi.advanceTimersByTime(60_000);
     expect(out.b).toEqual([]);
     m.statusFromHook({ cwd: "/w/b", status: "idle" });
@@ -109,6 +109,27 @@ describe("delivering agent messages", () => {
     expect(status("q")).toBe("idle");
     // what was left in the prompt now holds the next submitted message back, like the user's own draft
     expect(m.deliverAgentMessage("q", "third", true)).toMatch(/unsent draft/);
+  });
+  it("never presses Enter once its agent asks for permission: the message stays in the prompt", () => {
+    const { m, out, add, status } = manager();
+    add("p", "idle");
+    expect(m.deliverAgentMessage("p", "hello", true)).toBe("delivered");
+    m.statusFromHook({ paneId: "p", status: "waiting", reason: "Claude needs your permission to use Bash" });
+    vi.advanceTimersByTime(500);
+    expect(out.p).toEqual(["|hello|"]);
+    expect(status("p")).toBe("waiting");
+    // what's in the prompt holds the next message back, as the user's own draft would
+    m.statusFromHook({ paneId: "p", status: "idle" });
+    expect(m.deliverAgentMessage("p", "next", true)).toMatch(/unsent draft/);
+  });
+  it("doesn't count keys answering a permission prompt as a draft", () => {
+    const { m, out, add } = manager();
+    add("k", "waiting");
+    m.deliverAgentMessage("k", "hello", true);
+    m.write("k", "2");
+    m.statusFromHook({ paneId: "k", status: "idle" });
+    vi.advanceTimersByTime(200);
+    expect(out.k).toEqual(["2", "|hello|", "\r"]);
   });
   it("in manual mode, places the message without pressing Enter", () => {
     const { m, out, add, status } = manager();

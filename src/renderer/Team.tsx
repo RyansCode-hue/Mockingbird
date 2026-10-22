@@ -5,6 +5,7 @@ import { Toggle } from "./Toggle";
 import { CopyToast, useCopyNote } from "./copyNote";
 import { RoomBackupsSetting } from "./team/RoomBackups";
 import { RoomMigrationsSetting } from "./team/Migrations";
+import { RemoteActivity } from "./team/RemoteActivity";
 import { isErr, type Settings } from "../shared/types";
 import { allowCreatorsCommand } from "../shared/team/protocol";
 import type { LeaveOutcome, PeerStatus, RemoveOutcome, TeamNotice, TeamRoomSummary, TeamStatus } from "../shared/team/types";
@@ -617,6 +618,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
           Join a room…
         </button>
       </div>
+      <RemoteActivity />
       {st?.problems.map((p) => (
         <div key={p} className="err">
           {p}

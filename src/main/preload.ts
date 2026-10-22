@@ -398,6 +398,12 @@ const api = {
   teamLiveView: (view: { shown: string[]; focused: string | null }) => ipcRenderer.send("team:liveView", view),
   /** Fetch a teammate's session's scrollback again and redraw its pane. */
   teamPaneResync: (id: string) => ipcRenderer.invoke("team:paneResync", id),
+  /** Ask a teammate to let this Mac type into their session (its pane id here). */
+  teamAskToType: (id: string) => ipcRenderer.invoke("team:askToType", id),
+  /** Answer a teammate asking to type into one of this Mac's sessions, or take typing back. */
+  teamDecideTyping: (sessionId: string, member: string, choice: "session" | "minutes" | "deny" | "revoke") => ipcRenderer.invoke("team:decideTyping", sessionId, member, choice),
+  /** The audit log's last `n` entries, newest first: AuditEntry[]. */
+  teamAuditRecent: (n: number) => ipcRenderer.invoke("team:auditRecent", n),
   // team rooms: artifacts (src/shared/team/artifacts.ts); every call answers { error } on failure
   artifactsList: (roomId: string) => ipcRenderer.invoke("artifacts:list", roomId),
   /** A file picker for files to add; null when cancelled. */

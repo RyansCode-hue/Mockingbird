@@ -15,6 +15,7 @@ import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
 import { attachTerm, dataPump, fitTerm, followFixedSize, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
+import { TypingAsks, TypingChip, TypingRefused, Typists } from "./team/Typing";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
 import type { RoomSessionBackupView } from "../shared/team/takeover";
@@ -242,7 +243,7 @@ function GuardChip({ session, guards, inline, onRestart }: { session: SessionInf
   const credit = guards.coauthors ? "" : " It started outside the room, so its commits don't credit teammates who type into it until it restarts.";
   if (session.shell) {
     return (
-      <span className="chip warn" title={`Teammates in this room see this terminal and can type into it. A terminal can read any file you can, .env files included.${credit}`}>
+      <span className="chip warn" title={`Teammates in this room see this terminal, and can type into it once you let them. A terminal can read any file you can, .env files included.${credit}`}>
         shared terminal
       </span>
     );
@@ -888,6 +889,8 @@ export function TerminalPane({
         )}
         {room && <OwnerTag room={room} />}
         {room && <Lookers room={room} />}
+        {room && <Typists session={session} room={room} />}
+        {room && <TypingChip session={session} room={room} />}
         {backup && density !== "min" && <BackupFreshness view={backup} />}
         {backup && remote && onTakeOver && <TakeOverButton view={backup} onOpen={onTakeOver} />}
         {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
@@ -1129,6 +1132,8 @@ export function TerminalPane({
             </button>
           )}
           <div className="pane-notes">
+            {room && <TypingAsks session={session} room={room} />}
+            {room && <TypingRefused session={session} room={room} />}
             {room?.takenOver && !remote && (
               <div className="team-pane-note" title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
                 Continued on {room.takenOver.byName}'s laptop {ago(room.takenOver.at)} — this copy is stopping; its files stay as they are

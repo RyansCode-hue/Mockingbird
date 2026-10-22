@@ -13,6 +13,7 @@ import {
   codexGuardsSecrets,
   decodePtyChunk,
   encodePtyChunk,
+  INPUT_VERSION,
   isRemotePaneId,
   LIVE_METHODS,
   parseRoomSessionKey,
@@ -28,8 +29,16 @@ import {
   type RoomSessionRecord,
   type RoomSessionState,
   type RoomSessionTag,
+  type RemoteTyping,
+  type TypingAnswer,
+  type TypingAsk,
+  type TypingGrant,
+  type TypingState,
   type ViewMessage,
+  TYPING_MINUTES,
 } from "../../shared/team/livePanes";
+import { quoted } from "../../shared/team/agentText";
+import type { RemoteAudit } from "./remoteAudit";
 import type { MemberId, RoomId, RoomState } from "../../shared/team/types";
 import type { LaunchTarget, RemotePanes, RoomLaunch, SessionManager } from "../sessions";
 import { MAX_STREAM_CHUNK, splitText } from "./frames";
@@ -52,9 +61,14 @@ import { PeerError, TeamError, type Team, type TeamStream } from "./transport";
  * waiting and closing go out at once, other changes at most once a second).
  * Its pty output is streamed on "pty:<id>" while a connected teammate shows
  * it — their view says so (or they just asked for its scrollback). A
- * teammate's keystrokes arrive as pty.input requests and are written into the
- * pty; the terminal's automatic answers never are, nor mouse reports and
- * PageUp/PageDown, which would move the owner's view.
+ * teammate's copy is view-only: their keystrokes arrive as pty.input
+ * requests and are written into the pty only once this Mac's person let that
+ * teammate type into that session (pty.typingAsk asks; the answer goes back
+ * as pty.typingState), and never while its agent is asking for permission —
+ * so every approval is the owner's. The terminal's automatic answers never
+ * are written, nor mouse reports and PageUp/PageDown, which would move the
+ * owner's view. This is decided here, on the owner's Mac: a teammate's
+ * Mockingbird can't skip it.
  *
  * Viewer side: a teammate's session is a pane here (remotePaneId). Its
  * scrollback comes by pty.scrollback; live output follows on the stream, each
@@ -80,6 +94,8 @@ export interface LivePanesDeps {
   toWindow: (channel: string, ...args: unknown[]) => void;
   /** A line in the pty audit log (Store.audit). */
   audit: (line: string) => void;
+  /** The audit log of remote actions: typing asked, allowed and refused, and keystrokes counted (never their content). */
+  remoteAudit?: Pick<RemoteAudit, "record" | "count">;
   log: (context: string, err: unknown) => string;
   gitState?: (cwd: string) => Promise<WorktreeStateInfo>;
   /** The repository's origin URL, or null when it has none. */
@@ -119,6 +135,11 @@ const PIECE = MAX_STREAM_CHUNK - 256;
 const MIRROR_MAX = 400_000;
 const MAX_INPUT = 64 * 1024;
 const MAX_VIEW_KEYS = 200;
+/** An ask to type that its owner hasn't answered lapses after this long (the teammate can ask again). */
+const ASK_TTL_MS = 10 * 60_000;
+/** After a no, a new ask waits this long: keys held down can't nag the owner. */
+const ASK_AGAIN_MS = 30_000;
+const TYPING_STATES = new Set<TypingState>(["view-only", "asked", "allowed", "denied"]);
 
 /** A teammate's session, as this install keeps up with it. */
 interface PaneSync {
@@ -177,6 +198,14 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   private dropping = new Set<string>();
   /** When a teammate's mouse or paging input to a session was last written to the audit log, per `${sessionId}\n${member}`. */
   private viewInputAudited = new Map<string, number>();
+  /** Teammates allowed to type, per session of this install's. */
+  private grants = new Map<string, Map<MemberId, TypingGrant & { roomId: RoomId }>>();
+  /** Teammates asking to type, per session of this install's. */
+  private asks = new Map<string, Map<MemberId, TypingAsk & { roomId: RoomId }>>();
+  /** When this install's person last said no to a teammate typing, per `${sessionId}\n${member}`. */
+  private denied = new Map<string, number>();
+  /** Teammates whose Mockingbird can't hear typing answers (older), said once each. */
+  private oldViewers = new Set<MemberId>();
 
   // viewer side
   private remotes = new Map<string, Remote>();
@@ -185,6 +214,9 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   private myView: { shown: string[]; focused: string | null } = { shown: [], focused: null };
   private sentViews = new Map<RoomId, { text: string; at: number }>();
   private inputQueue = new Map<string, string>();
+  /** Where this install stands on typing into each teammate's session; absent until its owner says. */
+  private typing = new Map<string, RemoteTyping>();
+  private asking = new Set<string>();
   private inputScheduled = false;
   private muted = new Set<string>();
   private notified = new Map<string, number | null>();
@@ -247,6 +279,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       team.onStream(VIEW_CHANNEL, (chunk, ctx) => this.heardView(chunk, ctx.roomId, ctx.from)),
       team.onRequest(LIVE_METHODS.scrollback, (params, ctx) => this.answerScrollback(params, ctx.from, ctx.roomId)),
       team.onRequest(LIVE_METHODS.input, (params, ctx) => this.answerInput(params, ctx.from, ctx.roomId)),
+      team.onRequest(LIVE_METHODS.typingAsk, (params, ctx) => this.answerTypingAsk(params, ctx.from, ctx.roomId)),
+      team.onRequest(LIVE_METHODS.typingState, (params, ctx) => this.heardTypingState(params, ctx.from, ctx.roomId)),
       s.watch(() => {
         this.ownRooms = null;
         this.schedule(50);
@@ -613,12 +647,12 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     // output gathered but not yet sent goes out first; the asker's copy skips what the snapshot already holds
     this.flush(s.id);
     this.recomputeWatched();
-    return out;
+    return { ...out, typing: this.typingAnswer(s, from) };
   }
 
-  private answerInput(params: unknown, from: MemberId, roomId: RoomId | undefined): { ok: true } {
+  private answerInput(params: unknown, from: MemberId, roomId: RoomId | undefined): { ok: true } | { ok: false; typing: TypingAnswer } {
     const s = this.ownRoomSession(params, roomId);
-    const p = params as { data?: unknown; email?: unknown };
+    const p = params as { data?: unknown; email?: unknown; v?: unknown };
     if (typeof p.data !== "string" || !p.data || p.data.length > MAX_INPUT) throw new PeerError("typing must be text of up to 64 KB");
     const room = this.d.team()?.room(roomId!);
     const name = room ? memberName(room.members, from) : from.slice(0, 8);
@@ -638,11 +672,168 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       }
       return { ok: true };
     }
+    const who = { roomId, member: from, session: s.id, title: s.ticketTitle ?? s.title };
+    const refused = this.inputRefusal(s, from);
+    if (refused) {
+      this.d.remoteAudit?.count("input.refused", who, Buffer.byteLength(data), { reason: refused.prompt ? "prompt" : "view-only" });
+      // a Mockingbird from before typing consent reads only an error, which its pane then shows
+      if (p.v !== INPUT_VERSION) throw new PeerError(`${refused.why} — ${refused.prompt ? "try again once they have" : "a newer Mockingbird can ask them to let you type"}`);
+      return { ok: false, typing: refused };
+    }
     if (/[\r\x03]/.test(data)) this.d.audit(`remote-input session=${s.id} from=${JSON.stringify(name)} bytes=${JSON.stringify(data.slice(-300))}`);
+    this.d.remoteAudit?.count("input", who, Buffer.byteLength(data));
     this.d.sessions.write(s.id, data);
     const email = typeof p.email === "string" ? p.email.slice(0, 200) : null;
     this.coauthors.typed(s.id, { id: from, name, email }, s.status, !s.shell);
     return { ok: true };
+  }
+
+  // ---- owner: who may type ---------------------------------------------------------------------
+
+  /** `member`'s grant to type into session `sessionId`, if it holds now. */
+  private grantOf(sessionId: string, member: MemberId): TypingGrant | null {
+    const g = this.grants.get(sessionId)?.get(member);
+    return g && (g.until === null || g.until > this.now()) ? g : null;
+  }
+
+  private selfNameIn(roomId: RoomId): string {
+    const team = this.d.team();
+    return team ? memberNameIn(team, roomId, team.self.id) : "the owner";
+  }
+
+  /** Where `member` stands on typing into this install's session `s`. */
+  private typingAnswer(s: SessionInfo, member: MemberId): TypingAnswer {
+    const g = this.grantOf(s.id, member);
+    if (g) return { session: s.id, state: "allowed", until: g.until, ...(s.status === "waiting" ? { prompt: true } : {}) };
+    if (this.asks.get(s.id)?.has(member)) return { session: s.id, state: "asked" };
+    if (this.denied.has(`${s.id}\n${member}`)) return { session: s.id, state: "denied" };
+    return { session: s.id, state: "view-only" };
+  }
+
+  /** Why `member`'s keys can't go into `s` now; null when they can. */
+  private inputRefusal(s: SessionInfo, member: MemberId): TypingAnswer | null {
+    const roomId = this.roomOfInfo(s)!;
+    const me = this.selfNameIn(roomId);
+    const title = quoted(s.ticketTitle ?? s.title, 80);
+    const a = this.typingAnswer(s, member);
+    if (a.state !== "allowed") return { ...a, why: `${me} hasn't allowed you to type in ${title}` };
+    // "waiting" is the agent blocked on its person: a permission prompt above all. Its answer is the owner's alone.
+    if (a.prompt) return { ...a, why: `${me}'s agent in ${title} is asking for permission: only ${me} can answer it` };
+    return null;
+  }
+
+  /** A teammate asks to type into one of this install's sessions (`ask: true`), or asks where they stand. */
+  private answerTypingAsk(params: unknown, from: MemberId, roomId: RoomId | undefined): TypingAnswer {
+    const s = this.ownRoomSession(params, roomId);
+    const now = this.now();
+    if ((params as { ask?: unknown }).ask === true && !this.grantOf(s.id, from) && !this.asks.get(s.id)?.has(from)) {
+      const no = this.denied.get(`${s.id}\n${from}`);
+      if (no !== undefined && now - no < ASK_AGAIN_MS) {
+        return { session: s.id, state: "denied", why: `${this.selfNameIn(roomId!)} said no a moment ago: ask again in a minute` };
+      }
+      const team = this.d.team();
+      const room = team?.room(roomId!);
+      const name = room ? memberName(room.members, from) : from.slice(0, 8);
+      const asks = this.asks.get(s.id) ?? new Map();
+      asks.set(from, { member: from, name, at: now, roomId: roomId! });
+      this.asks.set(s.id, asks);
+      this.d.remoteAudit?.record("typing.asked", { roomId, member: from, session: s.id, title: s.ticketTitle ?? s.title });
+      if (shouldNotify({ settings: this.d.settings(), kind: "other", now: new Date(now) })) {
+        this.d.notify(`${name} wants to type`, `In ${quoted(s.ticketTitle ?? s.title, 80)}: allow it or not in its pane`, s.id);
+      }
+      this.changed();
+    }
+    return this.typingAnswer(s, from);
+  }
+
+  /**
+   * This install's person answers a teammate's ask, or takes typing back:
+   * allow while the session runs ("session"), for TYPING_MINUTES ("minutes"),
+   * "deny" an ask, or "revoke" an allowance. The teammate is told at once.
+   */
+  decideTyping(sessionId: string, member: MemberId, choice: "session" | "minutes" | "deny" | "revoke"): void {
+    const team = this.team();
+    const s = this.d.sessions.list().find((x) => x.id === sessionId);
+    const roomId = s ? this.roomOfInfo(s) : null;
+    if (!team || !s || !roomId) throw new Error("That session isn't shared in a room any more");
+    const room = team.room(roomId);
+    if (!room || member === team.self.id || !room.members.some((x) => x.id === member)) throw new Error("They aren't a member of this session's room");
+    const who = { roomId, member, session: s.id, title: s.ticketTitle ?? s.title };
+    const me = this.selfNameIn(roomId);
+    const now = this.now();
+    this.asks.get(sessionId)?.delete(member);
+    if (choice === "session" || choice === "minutes") {
+      const until = choice === "minutes" ? now + TYPING_MINUTES * 60_000 : null;
+      const grants = this.grants.get(sessionId) ?? new Map();
+      grants.set(member, { member, name: memberName(room.members, member), until, at: now, roomId });
+      this.grants.set(sessionId, grants);
+      this.denied.delete(`${sessionId}\n${member}`);
+      this.d.remoteAudit?.record("typing.allowed", who, { until });
+    } else {
+      const had = !!this.grants.get(sessionId)?.delete(member);
+      this.denied.set(`${sessionId}\n${member}`, now);
+      this.d.remoteAudit?.record(choice === "revoke" && had ? "typing.revoked" : "typing.denied", who);
+    }
+    const answer = this.typingAnswer(s, member);
+    if (answer.state === "denied") answer.why = choice === "revoke" ? `${me} stopped your typing` : `${me} didn't allow typing`;
+    this.tellTyping(roomId, member, answer);
+    this.changed();
+  }
+
+  /** Tell a teammate where they stand now. An older Mockingbird can't hear it: its next keys are refused instead. */
+  private tellTyping(roomId: RoomId, member: MemberId, answer: TypingAnswer): void {
+    const team = this.team();
+    if (!team || !team.presence(roomId).includes(member)) return; // they hear it with the session's scrollback when back
+    team.request(member, LIVE_METHODS.typingState, answer, { roomId, timeoutMs: 10_000 }).catch((err) => {
+      if (err instanceof TeamError && err.code === "no-handler") {
+        if (!this.oldViewers.has(member)) this.d.log("team", `${memberNameIn(team, roomId, member)}'s Mockingbird predates typing consent: their keys are refused with the reason until they update`);
+        this.oldViewers.add(member);
+        return;
+      }
+      this.d.log(`team: telling ${memberNameIn(team, roomId, member)} about typing in session ${answer.session}`, err);
+    });
+  }
+
+  /** Allowances that ran out, and allowances and asks for sessions that closed, left the room or whose teammate left: gone, and said so. */
+  private expireTyping(): void {
+    const team = this.team();
+    const now = this.now();
+    const live = new Map(this.d.sessions.list().map((s) => [s.id, s]));
+    let changed = false;
+    for (const [sessionId, grants] of this.grants) {
+      const s = live.get(sessionId);
+      const roomId = s && s.status !== "dead" ? this.roomOfInfo(s) : null;
+      for (const [member, g] of grants) {
+        const gone = !team || roomId !== g.roomId || !team.room(g.roomId)?.members.some((m) => m.id === member);
+        const expired = g.until !== null && g.until <= now;
+        if (!gone && !expired) continue;
+        grants.delete(member);
+        changed = true;
+        const who = { roomId: g.roomId, member, session: sessionId, title: s ? s.ticketTitle ?? s.title : null };
+        if (expired && !gone) {
+          this.d.remoteAudit?.record("typing.expired", who);
+          this.tellTyping(g.roomId, member, { session: sessionId, state: "view-only", why: `the ${TYPING_MINUTES} minutes ${this.selfNameIn(g.roomId)} allowed are up` });
+        } else {
+          const reason = !s || s.status === "dead" ? "the session ended" : roomId === g.roomId ? "they left the room" : "the session left the room";
+          this.d.remoteAudit?.record("typing.ended", who, { reason });
+        }
+      }
+      if (!grants.size) this.grants.delete(sessionId);
+    }
+    for (const [sessionId, asks] of this.asks) {
+      const s = live.get(sessionId);
+      const roomId = s && s.status !== "dead" ? this.roomOfInfo(s) : null;
+      for (const [member, a] of asks) {
+        const lapsed = now - a.at >= ASK_TTL_MS;
+        if (!lapsed && roomId === a.roomId && team?.presence(a.roomId).includes(member)) continue;
+        asks.delete(member);
+        changed = true;
+        if (lapsed && roomId === a.roomId) this.tellTyping(a.roomId, member, { session: sessionId, state: "view-only", why: `${this.selfNameIn(a.roomId)} didn't answer` });
+      }
+      if (!asks.size) this.asks.delete(sessionId);
+    }
+    for (const [k, at] of this.denied) if (now - at >= ASK_TTL_MS) this.denied.delete(k);
+    if (changed) this.changed();
   }
 
   /** Hear when one of this install's room sessions ends an agent turn (take-over backs it up then). */
@@ -675,6 +866,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       }
     }
     for (const id of this.panes.keys()) if (!next.has(id)) this.panes.delete(id);
+    for (const id of this.typing.keys()) if (!next.has(id)) this.typing.delete(id);
     this.remotes = next;
   }
 
@@ -724,6 +916,10 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
           if (!snap || typeof snap.data !== "string" || typeof snap.epoch !== "string" || !Number.isSafeInteger(snap.end)) throw new Error("the owner sent a malformed scrollback");
           p.epoch = snap.epoch;
           p.expected = snap.end;
+          // an owner from before typing consent says nothing about it: it takes anyone's typing
+          const typing = snap.typing === undefined ? null : typingOf(snap.typing, r.rec.id);
+          if (snap.typing !== undefined && !typing) this.d.log("team", `${memberNameIn(team, r.roomId, r.rec.owner)} sent a malformed typing answer with ${r.rec.id}'s scrollback`);
+          this.setTyping(id, typing ?? { session: r.rec.id, state: "legacy" });
           let out = snap.data;
           for (const c of p.pending.sort((a, b) => a.pos - b.pos)) {
             if (c.epoch !== p.epoch || c.pos > p.expected) continue; // a later chunk shows the hole
@@ -786,7 +982,22 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   }
 
   write(id: string, data: string): void {
-    if (!this.remotes.has(id)) return;
+    const r = this.remotes.get(id);
+    if (!r) return;
+    const t = this.typing.get(id);
+    // the terminal's own answers and pointer input aren't anyone's typing: never sent where they'd be refused, never an ask
+    const automatic = isTermReply(data) || isViewControl(data);
+    const owner = memberNameIn(this.team(), r.roomId, r.rec.owner);
+    if (t && (t.state === "view-only" || t.state === "asked" || t.state === "denied")) {
+      if (automatic) return;
+      this.refusedHere(id, t.state === "asked" ? `Waiting for ${owner} to let you type` : `${owner} hasn't allowed typing`);
+      if (t.state === "view-only") void this.askToType(id);
+      return;
+    }
+    if (t?.state === "allowed" && r.rec.status === "waiting") {
+      if (!automatic) this.refusedHere(id, `${owner}'s agent is asking for permission: only ${owner} can answer it`);
+      return;
+    }
     this.inputQueue.set(id, (this.inputQueue.get(id) ?? "") + data);
     if (this.inputScheduled) return;
     this.inputScheduled = true;
@@ -802,8 +1013,15 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       const r = this.remotes.get(id);
       if (!r || !team) continue;
       for (const piece of splitText(data, MAX_INPUT)) {
-        team.request(r.rec.owner, LIVE_METHODS.input, { session: r.rec.id, data: piece, email: this.email }, { roomId: r.roomId }).then(
-          () => this.panes.get(id)?.problem?.startsWith("Couldn't type") && this.setProblem(id, undefined),
+        team.request<{ ok?: boolean; typing?: unknown } | null>(r.rec.owner, LIVE_METHODS.input, { session: r.rec.id, data: piece, email: this.email, v: INPUT_VERSION }, { roomId: r.roomId }).then(
+          (res) => {
+            if (this.panes.get(id)?.problem?.startsWith("Couldn't type")) this.setProblem(id, undefined);
+            if (res?.ok !== false) return;
+            const a = typingOf(res.typing, r.rec.id);
+            if (!a) return void this.d.log("team", `${memberNameIn(team, r.roomId, r.rec.owner)} refused typing into ${r.rec.id} without saying why`);
+            this.setTyping(id, a, a.why ?? "Typing was refused");
+            if (a.state === "view-only") void this.askToType(id);
+          },
           (err) => {
             const msg = `Couldn't type into ${r.rec.title}: ${errText(err)}`;
             this.d.log("team: typing into a teammate's session", msg);
@@ -812,6 +1030,58 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         );
       }
     }
+  }
+
+  /** Ask a teammate to let this install type into their session `id` (its pane's Ask to type, or typing into it). */
+  async askToType(id: string): Promise<void> {
+    const r = this.remotes.get(id);
+    const team = this.team();
+    if (!r || !team || this.asking.has(id)) return;
+    this.asking.add(id);
+    try {
+      const a = typingOf(await team.request(r.rec.owner, LIVE_METHODS.typingAsk, { session: r.rec.id, ask: true }, { roomId: r.roomId, timeoutMs: 15_000 }), r.rec.id);
+      if (!a) throw new Error("its answer made no sense");
+      this.setTyping(id, a, a.why);
+    } catch (err) {
+      // an owner on a Mockingbird from before typing consent takes anyone's typing
+      if (err instanceof TeamError && err.code === "no-handler") return void this.setTyping(id, { session: r.rec.id, state: "legacy" });
+      const msg = `Couldn't ask ${memberNameIn(team, r.roomId, r.rec.owner)} to let you type: ${errText(err)}`;
+      this.d.log("team: asking to type", msg);
+      this.refusedHere(id, msg);
+    } finally {
+      this.asking.delete(id);
+    }
+  }
+
+  /** The owner's word on typing into their session `id`; `why`, when keys were just refused. */
+  private setTyping(id: string, a: TypingAnswer | { session: string; state: "legacy" }, why?: string): void {
+    const before = this.typing.get(id);
+    const next: RemoteTyping = { state: a.state, ...("until" in a && a.until !== undefined ? { until: a.until } : {}) };
+    // why keys were refused stays said until typing goes through
+    if (why) next.refused = { at: this.now(), why };
+    else if (before?.refused && next.state !== "allowed" && next.state !== "legacy") next.refused = before.refused;
+    if (sameJson(before, next)) return;
+    this.typing.set(id, next);
+    this.changed();
+  }
+
+  /** Keys typed here didn't go: the pane says why. */
+  private refusedHere(id: string, why: string): void {
+    const t = this.typing.get(id) ?? { state: "view-only" as const };
+    this.typing.set(id, { ...t, refused: { at: this.now(), why } });
+    this.changed();
+  }
+
+  /** An owner says where this install stands on typing into one of their sessions. */
+  private heardTypingState(params: unknown, from: MemberId, roomId: RoomId | undefined): { ok: true } {
+    const session = (params as { session?: unknown })?.session;
+    const a = typeof session === "string" ? typingOf(params, session) : null;
+    if (!a) throw new PeerError("malformed typing state");
+    const id = remotePaneId(from, a.session);
+    const r = this.remotes.get(id);
+    if (!r || r.roomId !== roomId) throw new PeerError("no such session of yours in this room here");
+    this.setTyping(id, a, a.why);
+    return { ok: true };
   }
 
   setMuted(id: string, muted: boolean): void {
@@ -856,6 +1126,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       this.coauthors.forget(id);
       this.leases.delete(id);
       this.watchedOwn.delete(id);
+      this.grants.delete(id);
+      this.asks.delete(id);
     }
     // teammates' sessions as the room last had them (this install's own records went with its removal)
     const theirs = Object.values(room.ext.sessions ?? {}).map((r) => remotePaneId(r.owner, r.id));
@@ -865,6 +1137,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       if (p?.resyncTimer) clearTimeout(p.resyncTimer);
       this.panes.delete(id);
       this.notified.delete(id);
+      this.typing.delete(id);
     }
     const muteProblem = this.unmute(theirs);
     if (muteProblem) problems.push(muteProblem);
@@ -888,6 +1161,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const problem = this.unmute(unmute);
     if (problem) this.problem(problem);
     this.views.get(member)?.delete(roomId);
+    this.expireTyping();
     this.changed();
   }
 
@@ -1024,6 +1298,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     }
     this.recomputeWatched();
     this.sendViews(true);
+    this.expireTyping();
   }
 
   // ---- the window -----------------------------------------------------------------------------------
@@ -1106,6 +1381,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         repoName: rec.repoName,
         guards: rec.guards,
         ...(p?.problem ? { problem: p.problem } : {}),
+        ...(this.typing.has(r.paneId) ? { typing: this.typing.get(r.paneId) } : {}),
       };
       remote.push({
         id: r.paneId,
@@ -1156,6 +1432,8 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         repoName: pub?.repoName ?? null,
         guards: this.d.sessions.guardsOf(s.id) ?? NO_GUARDS,
         inlineOnStart: this.d.settings().roomSessionsInline !== false,
+        typists: [...(this.grants.get(s.id)?.values() ?? [])].filter((g) => roomId === g.roomId && (g.until === null || g.until > this.now())).map(({ roomId: _r, ...g }) => g),
+        typingAsks: [...(this.asks.get(s.id)?.values() ?? [])].filter((a) => roomId === a.roomId).map(({ roomId: _r, ...a }) => a),
         ...(taken ? { takenOver: { by: taken.by, byName: memberNameIn(team, roomId, taken.by), at: taken.at } } : {}),
       };
     }
@@ -1180,4 +1458,18 @@ async function defaultOriginOf(repoPath: string): Promise<string | null> {
 /** No global email set (git config exits 1): teammates' trailers name this install by a handle instead. */
 async function defaultGitEmail(): Promise<string | null> {
   return (await git(os.homedir(), ["config", "--global", "--get", "user.email"], { okCodes: [0, 1] })) || null;
+}
+
+/** A typing answer from a teammate's Mockingbird for session `session`, checked; null when malformed. */
+function typingOf(v: unknown, session: string): TypingAnswer | null {
+  const a = v as Partial<TypingAnswer> | null;
+  if (!a || typeof a !== "object" || a.session !== session || !TYPING_STATES.has(a.state as TypingState)) return null;
+  if (a.until !== undefined && a.until !== null && !Number.isSafeInteger(a.until)) return null;
+  return {
+    session,
+    state: a.state as TypingAnswer["state"],
+    ...(a.until !== undefined ? { until: a.until } : {}),
+    ...(typeof a.why === "string" ? { why: a.why.replace(/[\x00-\x1f\x7f-\x9f]+/g, " ").slice(0, 300) } : {}),
+    ...(a.prompt === true ? { prompt: true } : {}),
+  };
 }

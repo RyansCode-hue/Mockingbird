@@ -1,7 +1,8 @@
 # Team rooms
 
 Live co-presence between two (later more) Mockingbirds: share a group as a
-room, see and type into each other's sessions, talk in a team room with your
+room, see each other's sessions (and, with the owner's consent, type into
+them), talk in a team room with your
 agents, keep files, notes, repo references and links in it, claim the
 project's Radley House tickets on a shared board, and take over a teammate's
 session when they're away.
@@ -52,8 +53,8 @@ should stop more members joining later.
   never the House's titles, claims or statuses); `artifact.add`,
   `artifact.update`, `artifact.remove` (artifacts' records — never a file's
   bytes). Older rooms' `plan.*` events are kept but change nothing. Terminal
-  output, views and typing are streams and requests between connected
-  members, never stored; so are take-over's copies and questions
+  output, views, typing and its consent (`pty.typingAsk`, `pty.typingState`)
+  are streams and requests between connected members, never stored; so are take-over's copies and questions
   (`takeover.have`, `.snapshot`, `.transcript`, `.ask`, `.progress`,
   `.changes`) and artifacts' files (`artifact.have`, `.chunk`).
 
@@ -357,7 +358,8 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   program mouse reports or, on the alternate screen, arrow keys. As a backstop
   the owner drops a teammate's input that is only mouse reports or
   PageUp/PageDown (logged once a minute in `pty-audit.log`); typing, paste,
-  Ctrl-C and arrow keys go through.
+  Ctrl-C and arrow keys go through — from a teammate the owner lets type
+  (Typing, below).
 - **Room sessions run inline:** a full-screen agent keeps its history inside
   itself, so a copy of it would show one screen with nothing to scroll. Room
   sessions therefore start on the normal screen, where their history lands in
@@ -391,8 +393,8 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   inline rendering). Resuming a pane whose
   conversation got there anyway stops the background copy first and says so
   in the pane (not mid-turn: the resume says why and waits).
-- **Typing:** any member can type into any room session, at the same time, like
-  plain tmux. No lock.
+- **Typing:** see "Typing needs the owner's consent", below. Members the owner
+  lets type can type at the same time as the owner, like plain tmux. No lock.
 - **Notifications:** when an agent in a room is waiting on input, every member
   is notified, whatever their focus.
 - **Layout:** each member arranges their own grid. "Follow <name>" mirrors the
@@ -463,8 +465,8 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 - **What the deny rules don't cover:** Claude's stop Claude's file tools, not
   a shell command the user approves (`cat .env`); Codex's stop everything the
   agent runs, but not a `!` command typed into the pane. A terminal in a
-  shared group is shared too (anyone in the room sees and can type into it)
-  and says so. A session moved into a shared group while running keeps what
+  shared group is shared too (anyone in the room sees it, and can type into
+  it once its owner lets them) and says so. A session moved into a shared group while running keeps what
   it started with until it's restarted, and offers the restart.
 - **How commits get the trailer:** a room session starts with
   `GIT_CONFIG_PARAMETERS` pointing `core.hooksPath` at Mockingbird's hooks
@@ -475,6 +477,83 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   turn (in a terminal, which has no turns: in the last ten minutes).
 - **Who's told what:** teammates are notified when a room session waits, not
   when a turn finishes. Muting a teammate's session mutes it for you only.
+
+## Typing needs the owner's consent
+
+Decided with Ryan, 2026-10-22, from the security review's H3 and R1: until
+1.5.0 any member could type anything into another member's room sessions —
+terminals, `!` commands, the agent's permission prompts.
+
+- **View-only by default.** A teammate's copy of your session takes no keys
+  until you let that teammate type into that session. This is decided on
+  your Mac, where the keys arrive (`answerInput`, `src/main/team/livePanes.ts`):
+  a modified client gains nothing by skipping its own checks.
+- **Asking.** A teammate who types into a view-only copy (or clicks **View
+  only · Ask to type** in its header) asks you (`pty.typingAsk`). Their keys
+  aren't sent, and their pane says why: "Ryan hasn't allowed typing", then
+  "Waiting for Ryan to let you type". A key held down can't nag: one ask
+  per teammate and session at a time, and after a no a new one waits 30 s.
+  An unanswered ask lapses after 10 minutes or when they go offline.
+- **Your answer.** The pane shows **"Nick wants to type in “Export API”"**
+  over its top rows (where the waiting banner goes), with **Allow for this
+  session**, **Allow for 15 min** and **Deny**, and a desktop notification
+  brings the pane up. Only a click answers it: the prompt never takes focus
+  or a key, so your own typing can't. While Nick may type, the pane header
+  says **"Nick can type"** (with the minutes left), and its ✕ takes it back
+  at once. "This session" lasts while the session runs: closing it, its
+  agent exiting, moving it out of the room, a take-over or Nick leaving the
+  room ends it. Every change reaches Nick at once (`pty.typingState`); his
+  header says **You can type**, **Asked Ryan…** or **View only**.
+- **Never at a permission prompt.** Even allowed, a teammate's keys are
+  refused while your agent is asking for permission (the pane's status is
+  "waiting": Claude's Notification hook, Codex's PermissionRequest), so every
+  approval — House writes included — is yours. Their copy says "Typing
+  paused", and keys typed then say "Ryan's agent is asking for permission:
+  only Ryan can answer it". Limits: the status comes from the agents' hooks,
+  read up to half a second late, so a key arriving in that moment after the
+  prompt appears still lands; a prompt the hooks never report (an agent
+  without Mockingbird's hooks, something other than Claude or Codex in a
+  terminal) isn't detected; and a prompt declined in Claude can leave the
+  status "waiting" until its next turn, blocking an allowed teammate until
+  then (your typing, or ✕ on the waiting banner, clears it). Recognising the
+  prompt from the screen was left out: its words change between releases,
+  and a miss would look like protection.
+- **Older Mockingbirds.** Before 1.5.0 a viewer didn't know about consent:
+  its keys are refused with the reason as an error, which its pane shows
+  ("Couldn't type into Export API: Ryan hasn't allowed you to type in
+  "Export API" — a newer Mockingbird can ask them to let you type"). It
+  can't ask, so it stays view-only until it's updated; nothing else about
+  the connection changes. A current viewer of an owner before 1.5.0 types as
+  before (its scrollback carries no consent answer).
+- Typing asked, allowed, denied, taken back and expired, and the keys
+  delivered or refused (counted) are in the remote-activity log (below).
+
+## Remote activity
+
+One log of what teammates did on this Mac (the security review's R5):
+`~/.mockingbird/team/audit.log`, a JSON line per entry, created owner-only
+(0600; a looser one is tightened, a link refused), only ever appended to,
+and past 1 MB moved to `audit.log.1` (the one before is dropped). Settings →
+Team → **Recent remote activity** shows its last 50 entries in words.
+
+- **What's in it:** typing asked, allowed (and until when), denied, taken
+  back, expired and ended; teammates' keystrokes written into a session and
+  refused (why: not allowed, or a permission prompt) — writes and bytes,
+  gathered per teammate and session until they pause for 30 s (at most 10
+  minutes per entry); terminal history (scrollback) read; agent messages
+  received (sending session, target, size, outcome); take-over asks (the
+  answer) and take-overs; room files fetched from this Mac; backups of this
+  Mac's sessions sent to a teammate.
+- **Never in it:** what was typed, a message's text, a file's bytes — names,
+  sessions, times and sizes only.
+- **Diff reads:** teammates' agents read your uncommitted work from the
+  backup copies already on their Mac (Teammates' changes, below), never by
+  asking this one, so this Mac can't see each read. It logs what makes them
+  possible: each backup sent to a teammate.
+- Where it comes from: the transport's request tap (`tapRequests`) for
+  requests teammates make here and backups sent; the live panes for typing;
+  `session.takenOver` events for take-overs. `pty-audit.log` keeps what it
+  kept before.
 
 ## Take-over
 
@@ -676,6 +755,16 @@ A chat thread in each room, for people and agents:
 
 - **Agent updates:** agents post what they claimed, finished, and where
   they're stuck (from board changes and session status).
+- **Agent messages never answer a permission prompt** (R2, M6). A message
+  is pasted only into an agent at its prompt: one that's working waits for
+  its turn to end, and one asking for permission waits until that's answered
+  (the sender is told "queued: its agent is asking for permission"). Should
+  the agent start asking between the paste and its Enter, the Enter isn't
+  sent and the message stays in the prompt. Keys its person presses to answer
+  a prompt don't count as an unsent draft. The text loses every control
+  character but line breaks and tabs (`pasteText`, `src/main/sessions.ts`):
+  ESC above all, so nothing in it can end the bracketed paste and go on as
+  keys, and no carriage return can press Enter inside it.
 - **Agents across machines:** Mockingbird's agent messaging (`send_message`,
   `list_sessions`) reaches room sessions on the other laptop through the room.
   Since 2026-10-14 (a terminal of Nick's running Claude showed live on
@@ -1362,10 +1451,31 @@ same file, and tools for agents to see what teammates change.
   teammate's 15-digit and 0040 reservations ignored, logged and on the board
   while the next number stays 0006, and one that would take the next past
   the window refused. Codex's launch asks before each reservation.
+- Typing consent (`test/teamLivePanes.test.ts`, over the loopback): a
+  teammate's keys never reaching the pty until allowed, their pane saying
+  why and asking, the owner asked and notified; refused on the owner's Mac
+  for a client that skips its checks, and for an older one as an error, the
+  connection carrying on; allowed while the session runs, taken back, denied
+  (asking again waits), 15 minutes running out, ended with the session; keys
+  refused at a permission prompt even when allowed, then let through once
+  the owner answered; an owner from before consent taking typing as before;
+  the audit entries counting without content. Agent messages
+  (`test/agentPermissionPrompt.test.ts`, `test/sessions.test.ts`): a fake agent
+  behind the pty that reads paste and keys as the CLIs do and asks for
+  permission through the real hook script; a teammate's message queued at
+  its prompt and delivered once its person answered, never answering it; a
+  message holding a paste-end, CSI, Enter and other controls arriving as one
+  paste with none of them; no Enter once a prompt appears. The audit log
+  (`test/remoteAudit.test.ts`): messages, take-over asks, files and backups
+  through the request tap, sizes and outcomes only; gathering; 0600,
+  append-only and rotation; a link refused. The UI (`test/uiTyping.test.ts`,
+  local Chrome): the prompt, the indicator, Allow for 15 min and ✕ clicked,
+  the prompt's buttons inside a narrow pane, Recent remote activity.
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
   (`MB_E2E_APP=1`): create room, join by code (the admin accepting from its
-  prompt, again after removing the joiner), live pane, remote typing, chat,
+  prompt, again after removing the joiner), live pane, remote typing (refused
+  until Ryan allows it from the prompt on his pane, then arriving), chat,
   board claim, a turn backed up peer to peer (nothing on origin), a hand-over
   from the owner's prompt (their agent stopped, the taker continuing),
   take-over from the peer copy with the owner quit,

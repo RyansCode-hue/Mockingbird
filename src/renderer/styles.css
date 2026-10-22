@@ -1237,6 +1237,11 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .set-unknown { color: var(--text-4); }
 .set-note { font: 400 11px var(--ui); color: var(--text-3); margin: 6px 0; }
 .set-note.ok { color: var(--teal-text); }
+.audit-list { list-style: none; margin: 6px 0; padding: 0; max-height: 320px; overflow: auto; border: 1px solid var(--line-soft); border-radius: 6px; }
+.audit-list li { display: flex; gap: 10px; padding: 4px 8px; font: 400 11px/1.45 var(--ui); color: var(--text-2); border-bottom: 1px solid var(--line-soft); }
+.audit-list li:last-child { border-bottom: 0; }
+.audit-list .when { flex: 0 0 52px; color: var(--text-3); font: 400 10px/1.6 var(--mono); }
+.audit-list .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .set-actions { display: flex; gap: 8px; margin: 12px 0; }
 .set-inline { display: flex; gap: 8px; margin-top: 8px; }
 .set-form { margin-top: 6px; }
@@ -2545,6 +2550,23 @@ button.chip.warn { border: 0; cursor: pointer; }
 .team-follow button.chip { border: 0; cursor: pointer; }
 .team-follow.on { color: var(--teal-text); }
 .team-live-problems { padding: 0 8px 6px; }
+/* typing into a teammate's session: the owner's prompt (over the pane's top rows, like the waiting banner), who can type, and a
+   teammate's view-only copy */
+.typing-ask {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; padding: 5px 7px; border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--teal) 45%, transparent);
+  background: linear-gradient(rgba(79, 179, 165, .14), rgba(79, 179, 165, .14)), var(--bg-pane);
+}
+.typing-ask .reason { flex: 1 1 140px; min-width: 0; font: 600 10.5px var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.typing-ask button { padding: 2px 8px; font-size: 10.5px; flex-shrink: 0; }
+.chip.typist { display: inline-flex; align-items: center; gap: 3px; color: var(--teal-text); background: rgba(79, 179, 165, .12); flex-shrink: 0; overflow: visible; }
+.chip.typist .typist-x { padding: 0 2px; border: 0; border-radius: 2px; font-size: 8.5px; line-height: 1.2; color: inherit; }
+.chip.typist .typist-x:hover { color: var(--text-1); background: var(--fill-selected); }
+button.chip.view-only { border: 0; cursor: pointer; flex-shrink: 0; }
+button.chip.view-only:hover { color: var(--text-1); background: var(--fill-selected); }
+.team-pane-note.typing-refused { display: flex; align-items: center; gap: 6px; color: var(--amber-text); }
+.team-pane-note.typing-refused .reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.team-pane-note.typing-refused button { padding: 2px 8px; font-size: 10.5px; flex-shrink: 0; }
 
 /* ---- labelled icons: an icon over a short word, for every icon button in rows, headers and bars ---- */
 .lbar { display: inline-flex; align-items: center; gap: 1px; flex-shrink: 0; }

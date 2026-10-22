@@ -109,7 +109,7 @@ export function OwnerTag({ room }: { room: RoomSessionTag }) {
   if (!room.remote) return null;
   const where = !room.online ? " — their Mockingbird is offline" : !room.live ? " — closed there (they can resume it)" : "";
   return (
-    <span className={`team-owner ${room.online && room.live ? "" : "away"}`} title={`${room.ownerName}'s session: it runs on ${room.ownerName}'s Mockingbird${where}. You can watch it and type into it.`}>
+    <span className={`team-owner ${room.online && room.live ? "" : "away"}`} title={`${room.ownerName}'s session: it runs on ${room.ownerName}'s Mockingbird${where}. You can watch it; typing into it needs ${room.ownerName}'s OK.`}>
       {initialsOf(room.ownerName)}
     </span>
   );
