@@ -6,8 +6,10 @@ import { QuitSequence, QUIT_TIMING, type QuitEvent, type QuitOptions } from "../
  * Electron's quit, as far as the sequence sees it: app.quit() does nothing
  * while a quit is under way; before-quit, then the windows close, then
  * will-quit; a listener's preventDefault() ends that quit, and the app exits
- * once will-quit goes by unprevented. `windowsHang` keeps the windows from
- * ever closing (a quit stuck under way).
+ * once will-quit goes by unprevented. A prevented quit is called off only
+ * after the microtasks its listeners started have run (Electron runs them
+ * before it returns), so a quit() from those is ignored. `windowsHang` keeps
+ * the windows from ever closing (a quit stuck under way).
  */
 class FakeApp extends EventEmitter {
   quitting = false;
@@ -18,10 +20,13 @@ class FakeApp extends EventEmitter {
     this.quits++;
     if (this.quitting || this.exited !== null) return;
     this.quitting = true;
-    if (this.fire("before-quit")) return void (this.quitting = false);
+    if (this.fire("before-quit")) return this.callOff();
     if (this.windowsHang) return;
-    if (this.fire("will-quit")) return void (this.quitting = false);
+    if (this.fire("will-quit")) return this.callOff();
     this.exited = 0;
+  }
+  private callOff(): void {
+    setTimeout(() => (this.quitting = false), 0);
   }
   exit(code: number): void {
     this.exited = code;
@@ -67,6 +72,10 @@ function setup(o: Partial<QuitOptions> = {}) {
   return { app, quit, order, lines, errors, signals };
 }
 
+/** Time for the quit's own next-turn calls (a 0 ms timer set while timers run is due 1 ms later). */
+const TURNS = 10;
+const STEPS_RUN = expect.stringMatching(/^quit: steps run \(saving scrollback \d+ ms, stopping team rooms \d+ ms, starting the update's installer \d+ ms\)$/);
+
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
@@ -81,10 +90,32 @@ describe("quitting", () => {
     expect(app.exited).toBe(0);
   });
 
+  it("goes on when what held the quit up is done at once: no services or ptys to wait for", async () => {
+    const { app, order, lines } = setup({ stopServices: () => Promise.resolve(), endPtys: () => Promise.resolve() });
+    app.quit();
+    await vi.advanceTimersByTimeAsync(TURNS);
+    expect(order).toEqual(["scrollback", "installer"]);
+    expect(app.exited).toBe(0);
+    expect(lines).toEqual(["quit: started", STEPS_RUN, "quit: exiting"]);
+  });
+
+  it("forces the exit when Electron doesn't finish the quit once the ptys have ended", async () => {
+    const { app, order, lines } = setup();
+    const quit = app.quit.bind(app);
+    app.quit = () => void (app.quits === 0 ? quit() : app.quits++); // the quit after the ptys goes nowhere
+    app.quit();
+    await vi.advanceTimersByTimeAsync(QUIT_TIMING.exitMs - TURNS);
+    expect(app.exited).toBeNull();
+    await vi.advanceTimersByTimeAsync(2 * TURNS + QUIT_TIMING.reapMs);
+    expect(app.exited).toBe(1);
+    expect(order).toEqual(["scrollback", "installer", "ptys", "killed ptys"]);
+    expect(lines.slice(-2)).toEqual([STEPS_RUN, `quit: Electron didn't finish the quit within ${QUIT_TIMING.exitMs / 1000} s of the ptys ending; exiting now`]);
+  });
+
   it("goes on when the ptys never say they've ended", async () => {
     const { app, lines } = setup({ endPtys: () => new Promise(() => {}) });
     app.quit();
-    await vi.advanceTimersByTimeAsync(QUIT_TIMING.ptysMs);
+    await vi.advanceTimersByTimeAsync(QUIT_TIMING.ptysMs + TURNS);
     expect(app.exited).toBe(0);
     expect(lines).toContain(`quit: the ptys didn't stop within ${QUIT_TIMING.ptysMs / 1000} s; going on without them`);
   });
@@ -93,8 +124,10 @@ describe("quitting", () => {
     let asked = 0;
     const { app, order } = setup({ stopServices: () => (asked++, new Promise(() => {})) });
     app.quit();
+    await vi.advanceTimersByTimeAsync(0);
     expect(app.quitting).toBe(false); // held for the services
-    await vi.advanceTimersByTimeAsync(QUIT_TIMING.servicesMs);
+    expect(app.exited).toBeNull();
+    await vi.advanceTimersByTimeAsync(QUIT_TIMING.servicesMs + TURNS);
     expect(asked).toBe(1);
     expect(order).toEqual(["scrollback", "installer", "ptys"]);
     expect(app.exited).toBe(0);
@@ -109,7 +142,7 @@ describe("quitting", () => {
     await vi.advanceTimersByTimeAsync(1 + QUIT_TIMING.reapMs);
     expect(order).toEqual(["scrollback", "installer", "killed ptys"]);
     expect(app.exited).toBe(1);
-    expect(lines.at(-1)).toBe(`quit: the quit didn't finish within ${QUIT_TIMING.deadlineMs / 1000} s; exiting now`);
+    expect(lines.slice(-2)).toEqual([`quit: the quit didn't finish within ${QUIT_TIMING.deadlineMs / 1000} s; exiting now`, STEPS_RUN]);
   });
 
   it("quits on every signal: a second one while quitting forces it at once", async () => {
@@ -122,7 +155,7 @@ describe("quitting", () => {
     await vi.advanceTimersByTimeAsync(QUIT_TIMING.reapMs);
     expect(order).toEqual(["scrollback", "installer", "killed ptys"]);
     expect(app.exited).toBe(1);
-    expect(lines).toEqual(["quit: SIGINT", "quit: SIGTERM while already quitting on SIGINT; exiting now"]);
+    expect(lines).toEqual(["quit: SIGINT", "quit: SIGTERM while already quitting on SIGINT; exiting now", STEPS_RUN]);
   });
 
   it("a signal quits normally when nothing holds the quit up", async () => {

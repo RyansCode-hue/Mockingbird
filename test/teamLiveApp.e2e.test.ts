@@ -420,11 +420,7 @@ describe("team rooms between two Mockingbird instances", () => {
         // the reconnect's catch-up done: Nick's clone holds the session's newest snapshot again
         await untilTrue("Ryan to have caught Nick up", async () => !!(await takeovers(ryan)).sessions.find((v) => v.sessionId === s.id && v.self)?.heldBy.includes("Nick"), 60_000);
         ryan.close();
-        // An instance restarted with its saved state often outlives SIGTERM here (its will-quit runs; the
-        // quit after the ptys never comes), so this quit is held only to leaving nothing running.
-        const second = await quitApp(ryan.child);
-        if (second.killed) console.warn(`[e2e] Ryan's restarted Mockingbird needed killing at its second quit:\n${mainLog(ryan).slice(-1500)}`);
-        expect(second.leftovers).toEqual([]);
+        expect(await quitApp(ryan.child)).toEqual({ killed: false, leftovers: [] });
         await untilTrue("Ryan offline at Nick's again", async () => (await nick.status()).rooms[0]?.online.length === 0, 60_000);
 
         // ---- Nick takes the session over from his sidebar, under Ryan's away grant

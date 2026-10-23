@@ -8,11 +8,11 @@ import { descendants, killOrphans } from "./e2e/processes";
  * Quitting the real app (dist/, under Electron) with panes open. Their ptys
  * end before Node is torn down — one exiting during that teardown aborts the
  * app from node-pty's exit callback — and their saved state stays resumable.
- * Opt-in, like the other app tests:
+ * With no panes, the quit goes straight on. Opt-in, like the other app tests:
  *
  *   npm run build && MB_E2E_APP=1 npx vitest run test/quitApp.e2e.test.ts
  */
-describe.skipIf(!appE2E)("quitting the app with panes open", () => {
+describe.skipIf(!appE2E)("quitting the app", () => {
   it("exits cleanly, and the panes are still resumable, not dead", async () => {
     const app = await launchApp("Quitter", "");
     for (const title of ["one", "two", "three"]) {
@@ -33,6 +33,26 @@ describe.skipIf(!appE2E)("quitting the app with panes open", () => {
       ["three", false],
       ["two", false],
     ]);
+  }, 60_000);
+
+  it("exits at once with no panes to wait for, started again in the same HOME too", async () => {
+    let home: string | undefined;
+    for (const run of ["first", "restarted"]) {
+      const app = await launchApp("Idle", "", { home, keepState: !!home });
+      home = app.home;
+      expect(await app.evaluate<number>("window.mb.listSessions().then((l) => l.length)")).toBe(0);
+      app.close();
+      const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => app.child.once("exit", (code, signal) => resolve({ code, signal })));
+      const started = Date.now();
+      app.child.kill("SIGTERM");
+      const quit = await Promise.race([exit, new Promise((r) => setTimeout(() => r("still running 5 s later"), 5000))]);
+      expect({ run, quit }).toEqual({ run, quit: { code: 0, signal: null } });
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(mainLog(app).split("\n").filter((l) => /quit: /.test(l)).slice(-2).map((l) => l.replace(/^\[[^\]]+\] /, ""))).toEqual([
+        expect.stringMatching(/^quit: steps run \(/),
+        "quit: exiting",
+      ]);
+    }
   }, 60_000);
 
   it("quits on a signal with unsaved editor changes, rather than asking with no one to answer", async () => {

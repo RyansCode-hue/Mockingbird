@@ -9,12 +9,19 @@
  * 3. will-quit, when nothing can cancel the quit anymore: the quit steps run
  *    (scrollback, team rooms, debug sessions still left, language servers,
  *    the update's installer), each
- *    on its own so one failing never skips the rest; then every pty ends
- *    (bounded) before Node is torn down.
+ *    on its own so one failing never skips the rest, and their times are
+ *    logged; then every pty ends (bounded) before Node is torn down.
+ *
+ * A quit held up in 1 or 3 goes on with a new app.quit() on the next turn of
+ * the event loop. Electron doesn't take one sooner: while it is still sending
+ * before-quit or will-quit (the microtasks its listeners start included, as
+ * Electron runs those before it goes on), app.quit() is ignored or re-entered,
+ * and the preventDefault() then calls that quit off, so it would never come.
  *
  * A quit always finishes: one still running `deadlineMs` after it began is
- * forced (the steps not yet run, every pty killed, exit), and so is one that
- * gets a second signal. Each problem is logged.
+ * forced (the steps not yet run, every pty killed, exit), so is one Electron
+ * hasn't finished `exitMs` after the ptys ended, and so is one that gets a
+ * second signal. Each problem is logged.
  */
 
 export interface QuitEvent {
@@ -39,6 +46,8 @@ export const QUIT_TIMING = {
   ptysMs: 6_000,
   /** How long a quit may take in all before it's forced. */
   deadlineMs: 30_000,
+  /** Once the ptys have ended (the windows closed and the steps run): how long Electron gets to finish the quit before it's forced. */
+  exitMs: 2_000,
   /** After a forced quit kills the ptys: time for their exits to be reaped before Node goes. */
   reapMs: 500,
 };
@@ -129,7 +138,7 @@ export class QuitSequence {
     e.preventDefault();
     void this.within(stopping, this.t.servicesMs, "services").then(() => {
       this.servicesStopped = true;
-      this.o.app.quit();
+      this.quitAgain();
     });
   }
 
@@ -143,21 +152,36 @@ export class QuitSequence {
     }
     e.preventDefault();
     void this.within(this.o.endPtys(), this.t.ptysMs, "the ptys").then(() => {
+      if (this.forced) return;
       this.ptysEnded = true;
-      this.o.app.quit();
+      // nothing is left to wait for: the rest is Electron's, and short
+      this.disarm();
+      this.deadline = setTimeout(() => this.force(`Electron didn't finish the quit within ${this.t.exitMs / 1000} s of the ptys ending`), this.t.exitMs);
+      this.quitAgain();
     });
+  }
+
+  /** Go on with a quit held up for the services or the ptys: on the next turn, as Electron ignores a quit while it sends the event that held it. */
+  private quitAgain(): void {
+    setTimeout(() => {
+      if (!this.forced) this.o.app.quit();
+    }, 0);
   }
 
   private runSteps(): void {
     if (this.stepsRun) return;
     this.stepsRun = true;
+    const took: string[] = [];
     for (const step of this.o.steps) {
+      const started = Date.now();
       try {
         step.run();
       } catch (err) {
         this.o.logError(`quit: ${step.name}`, err);
       }
+      took.push(`${step.name} ${Date.now() - started} ms`);
     }
+    this.o.log(`quit: steps run (${took.join(", ")})`);
   }
 
   /** Settles once `p` does or `ms` pass, whichever is first; a failure or the time running out is logged. */
