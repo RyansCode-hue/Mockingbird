@@ -68,26 +68,38 @@ class FakeAgent {
     this.draft = "";
     this.submitted.push(text);
     this.state = "working";
-    void hook("UserPromptSubmit", this.pane, { prompt: text }).then(() => {
-      if (/please run/.test(text)) {
-        this.state = "permission";
-        return hook("Notification", this.pane, { message: "Claude needs your permission to use Bash" });
-      }
-      this.state = "prompt";
-      return hook("Stop", this.pane);
-    });
+    turns.push(
+      hook("UserPromptSubmit", this.pane, { prompt: text }).then(() => {
+        if (/please run/.test(text)) {
+          this.state = "permission";
+          return hook("Notification", this.pane, { message: "Claude needs your permission to use Bash" });
+        }
+        this.state = "prompt";
+        return hook("Stop", this.pane);
+      })
+    );
   }
 
   private answer(a: "approved" | "denied"): void {
     this.answers.push(a);
     this.state = "working";
     // approved: the tool runs, then the turn ends; denied: the turn ends there
-    void (a === "approved" ? hook("PreToolUse", this.pane, { tool_name: "Bash" }) : Promise.resolve()).then(() => {
-      this.state = "prompt";
-      return hook("Stop", this.pane);
-    });
+    turns.push(
+      (a === "approved" ? hook("PreToolUse", this.pane, { tool_name: "Bash" }) : Promise.resolve()).then(() => {
+        this.state = "prompt";
+        return hook("Stop", this.pane);
+      })
+    );
   }
 }
+
+/**
+ * The hooks each turn of a fake agent runs, in order. A test ends with its
+ * agents' last turns still running their hooks; each waits for them, so none
+ * runs on after the file's home (and hook.sh in it) is gone, and a hook that
+ * fails fails its test.
+ */
+const turns: Promise<void>[] = [];
 
 const agents = new Map<string, FakeAgent>();
 vi.mock("node-pty", () => ({
@@ -121,8 +133,11 @@ const until = async (what: string, done: () => boolean, ms = 8000) => {
 };
 
 let stops: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
+  const failed: unknown[] = [];
+  while (turns.length) for (const r of await Promise.allSettled(turns.splice(0))) if (r.status === "rejected") failed.push(r.reason);
   for (const stop of stops.splice(0)) stop();
+  if (failed.length) throw failed[0];
 });
 
 /** A session manager reading real hook events, with one agent pane at its prompt and asking for permission. */

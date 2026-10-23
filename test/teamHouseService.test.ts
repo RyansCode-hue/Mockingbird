@@ -586,6 +586,8 @@ describe("claims from claimed tickets", () => {
         return false;
       }
     }, "Ryan's worktree to hold Nick's claim");
+    // a pass writes the clone's worktrees one after another: the rest of this one may still be under way
+    await r.svc.idle();
     const mine = claimsIn(wtA);
     expect(mine).toMatchObject({ mockingbird: "house-claims/1", self: ryan.id, rooms: [{ roomId, room: "5110", tickets: [{ n: 141, title: "Last-org API", status: "in_progress", owner: { id: nick.id, name: "Nick" }, branch: "5110-donorApi", files: ["src/api/x.ts"] }] }] });
     expect(claimConflicts(mine, "src/api/x.ts")).toEqual([{ roomId, room: "5110", n: 141, title: "Last-org API", status: "in_progress", owner: { id: nick.id, name: "Nick" }, branch: "5110-donorApi" }]);

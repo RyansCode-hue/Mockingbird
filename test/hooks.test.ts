@@ -4,7 +4,8 @@ import * as path from "path";
 import { execFile, execFileSync } from "child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installHooks, hookStatus, hooksInstalled, watchEvents, ensureHookScript } from "../src/main/hooks";
-import { scratchDir } from "./helpers";
+import { makeRepo, scratchDir, write } from "./helpers";
+import { claimsFile } from "../src/shared/team/claims";
 
 const claudeSettings = path.join(os.homedir(), ".claude", "settings.json");
 const codexHooks = path.join(os.homedir(), ".codex", "hooks.json");
@@ -188,6 +189,31 @@ describe("hook script", () => {
     }
     const left = fs.readdirSync(eventsDir).map((n) => JSON.parse(fs.readFileSync(path.join(eventsDir, n), "utf8")).event);
     expect(left.sort()).toEqual([...all].sort());
+  });
+
+  it("needs nothing beyond the system's PATH, in a room's checkout too, and exits 0 with none at all", () => {
+    installHooks(null);
+    // a room checkout: a teammate's claimed file, and the room's instructions
+    const room = makeRepo({ "src/x.ts": "x\n" });
+    const claims = claimsFile([{ roomId: "R".repeat(22), room: "#5110", tickets: [{ n: 141, title: "Donor API", status: "in_progress", owner: { id: "b".repeat(32), name: "Nick" }, branch: "5110-donorApi", files: ["src/x.ts"] }] }], "a".repeat(32));
+    write(room, { ".mockingbird/claims.json": JSON.stringify(claims), ".mockingbird/agent-context.md": "You're in a team room.\n" });
+    const all = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "PermissionRequest", "Stop"];
+    /** The hook as an agent runs it, with `PATH` for the agent's: its output, and its exit (execFileSync throws on any other than 0). */
+    const run = (ev: string, cwd: string, PATH: string, payload: object = {}) =>
+      execFileSync(script, [ev], { cwd, input: JSON.stringify({ session_id: "c9", cwd, hook_event_name: ev, source: "startup", tool_name: "Bash", ...payload }), env: { ...process.env, PATH, MOCKINGBIRD_SESSION: "p9" }, stdio: "pipe", timeout: 15_000 }).toString();
+    const system = "/usr/bin:/bin:/usr/sbin:/sbin";
+    for (const cwd of [scratchDir("plain"), room]) {
+      fs.rmSync(eventsDir, { recursive: true, force: true });
+      for (const ev of all) run(ev, cwd, system);
+      const left = fs.readdirSync(eventsDir).map((n) => JSON.parse(fs.readFileSync(path.join(eventsDir, n), "utf8")));
+      expect(left.map((e) => e.event).sort()).toEqual([...all].sort());
+      expect(left.every((e) => e.pane === "p9" && e.ts > 0 && e.payload.cwd === cwd)).toBe(true);
+    }
+    expect(run("SessionStart", path.join(room, "src"), system)).toBe("You're in a team room.\n");
+    const edit = JSON.parse(run("PreToolUse", room, system, { tool_name: "Edit", tool_input: { file_path: path.join(room, "src/x.ts"), old_string: "x", new_string: "y" } }));
+    expect(edit.hookSpecificOutput).toMatchObject({ permissionDecision: "deny" });
+    // with no command found at all, the event is lost but the agent is never held up
+    for (const ev of all) run(ev, room, "/nonexistent");
   });
 
   it("is rewritten when an older build's differs, in one step", () => {
