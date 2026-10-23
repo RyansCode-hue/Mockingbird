@@ -1072,31 +1072,72 @@ House's **open backlog**.
   with no angle brackets (agents get errors as tool answers).
 - **What the board shows** (**Board**, with the kanban-board icon, on a room in
   the Team room view and in a shared group's bar, or "House board" in the
-  palette): "Radley House · <project>" with **+ Add ticket**, then:
-  - **Open backlog** — every ticket whose status isn't `done` or `dropped`,
-    in the House's own order (`GET work-items` lists priority-sorted, high to
-    low). Its **Needs an agent** filter keeps the tickets tagged
-    `needs-agent` (handed back to an agent), with their count.
-  - **Added by the room** — the room's own tickets (`house.track` /
-    `house.untrack`, by number, any member) that the open backlog doesn't
-    hold: closed ones, or ones the House's list left out.
+  palette): "Radley House · <project>" with **+ Add ticket**, then the
+  board's tickets as **columns by House status**, like the Dashboard's
+  (decided with Ryan, 2026-10-23: option A of the redesign mock-ups). The
+  tickets are the same as before the columns:
+  - the **open backlog** — every ticket whose status isn't `done` or
+    `dropped` — and
+  - **the room's own tickets** (`house.track` / `house.untrack`, by number,
+    any member) that the open backlog doesn't hold: closed ones, or ones the
+    House's list left out.
 
-  A ticket shows once. The room's ticket that is open stays in the backlog,
-  in the House's order, with an **added** mark ("Nick added it"), rather than
-  being pulled out: the backlog stays complete and its order means something,
-  and the second section holds only what the backlog can't show — a ticket
-  the room tracked keeps its place on the board after staff close it.
+  A ticket shows once; the room's ones carry an **added** mark ("Nick added
+  it"), so a ticket the room tracked keeps its place on the board after
+  staff close it. The columns follow the House's flow: **Ready → In progress
+  → Review → Validating → Done**, each header with its count. **Parked**
+  folds into a row above them ("Parked · 3 ▸"); **Done** is folded to a
+  narrow strip with its count ("Done · 16 ▸") until opened; **Dropped** is
+  hidden until its toggle shows it as a last column. The folds are kept on
+  this Mac. A status the board doesn't know shows in an "Other statuses" row,
+  and a ticket that couldn't be read is a line of its own with why, rather
+  than vanishing. Within a column the cards keep the House's order (`GET
+  work-items` lists priority-sorted, high to low; one outside the open
+  backlog sits by its priority). **Needs an agent** keeps only the tickets
+  tagged `needs-agent` (handed back to an agent), with their count. The
+  columns scroll sideways inside the board, never the dialog, so a narrow
+  window keeps the header, filters and footer in place.
 
-  Each row is `#<n>`, the priority (high, medium, low, investigate), the
-  title, its marks — `needs-human` (an agent is blocked on a question for a
-  person) and `needs-agent`, "blocked by #122" (`blocked_by`), "waiting on …"
-  (`waiting_on`), "added" — then "<person> · <status>" when claimed or the
-  status and **Claim** (on a branch: one of your room sessions', or
-  `feature/<n>-<slug>`; not offered on a closed ticket). Statuses read as the
-  House's flow, human-readably: parked → ready → in progress → review →
-  validating → done, or dropped. A row opens the ticket: its detail,
-  acceptance, blockers (each opens that ticket) and history, Claim / Release,
-  a comment, progress, status change or question, and **Open in the House**.
+  Each card is `#<n>`, the priority (high, medium, low, investigate), the
+  title, "Blocked by #122" (`blocked_by`) and "Waiting on …" (`waiting_on`)
+  in the Dashboard's red blocked treatment (the card filled and outlined
+  red), the marks `needs-human` (an agent is blocked on a question for a
+  person), `needs-agent` and "added", then who has it — "You", the person,
+  or "unclaimed" — and the claim's branch. Your own tickets have a teal edge.
+  A card opens the ticket: its detail, acceptance, blockers (each opens that
+  ticket) and history, Claim / Release, a comment, progress, status change or
+  question, and **Open in the House**.
+- **Dragging a card to another column changes its status in the House**,
+  with your own builder token, through the board's existing writes — only
+  from your own drag (or ⌥← ⌥→ on a focused card, one column along the
+  flow), never an agent's: agents' House writes keep their approval prompts.
+  The Dashboard's drag is reused — the card fades where it was, the label on
+  the cursor says what the drop does ("#143 → Validating (review →
+  validating)"), Esc cancels, and a line marks where the card will land:
+  where the House's order puts it, since a builder's token has no rank to
+  write, so a column can't be reordered and the line shows only for a move
+  to another column. What each move is:
+  - **into In progress**, unclaimed: a **claim**, which needs a branch. The
+    card waits in the column with the Claim button's own small prompt, the
+    branch picked as it picks it (your room session's on that ticket, or
+    `feature/<n>-<slug>`); Cancel or Esc puts it back.
+  - **In progress → Ready**, claimed: a **release**.
+  - **any other move**: a status change, written the way the House's own CLI
+    and the ticket's Status change write it — `POST …/events {event:
+    "progress", note: "Moved from Review to Validating on the room's board.",
+    status}` — with one of the statuses a builder may set (parked, ready, in
+    progress, review, validating).
+  - **into Done or Dropped: refused.** Only staff close tickets; those
+    columns outline in red and the label says "Only House staff close
+    tickets", and nothing is written.
+
+  The card shows in its new place at once and "saving…" while the write is
+  on its way; when the House refuses (a claim someone else holds, a move it
+  doesn't allow), it goes back where it was and the board says why, in the
+  House's own words ("Couldn't move #143 to Validating — it's back in
+  Review: The House answered 403: …"). The House decides every move; the
+  board doesn't guess which transitions it allows beyond refusing the
+  closing ones.
   History entries are the House's `{at, actor, event, note?, to_status?}`: a
   status change, which has a `to_status` and no note, reads "Ryan · status →
   review"; others read "Nick · progress" with the note below. + Add ticket
@@ -1134,7 +1175,8 @@ House's **open backlog**.
   question (`{event: "question"}`, then the handoff tags: `needs-human` on,
   `needs-agent` off), a comment (`PATCH …/work-items/<n> {note}`), a new ticket
   (`POST work-items`, then `PATCH {tags}` if it has any). Only staff close a
-  ticket as done or dropped; the board never offers it.
+  ticket as done or dropped; the board never offers it, and its Done and
+  Dropped columns refuse a dragged card.
 - **Agents** in a room get the mockingbird MCP tools `list_house_tickets`
   (no filter: the board — the open backlog, then the room's tickets outside
   it; `filter`: `open`, `tracked` (the room's own) or `all` (everything the
@@ -1615,7 +1657,18 @@ be taken.
   fetched only into a clone this Mac's room sessions use, failures on the
   board; failed agent writes, an unreadable ticket page, a failed board
   read, schema drift and an unreadable worktree branch all logged and shown;
-  old `plan.*` logs and snapshots still loading. `test/houseLive.test.ts` runs
+  old `plan.*` logs and snapshots still loading. The columns
+  (`test/houseColumns.test.ts`): grouping by status in the House's order,
+  an unknown status and an unread ticket kept apart; Parked and Done folded
+  and Dropped hidden to start with, Done and Dropped taking no card; each
+  drag reaching the fake House as the claim, release or status change it is,
+  with the member's own token; Done and Dropped refused with nothing sent;
+  and a refused move going back with the House's message. In the preview, in
+  headless Chrome (`test/uiHouseBoard.test.ts`, local only): the columns and
+  their counts, the line where a dragged card lands and the drop's write, no
+  line within a column, Done refusing with its reason, the claim's branch
+  asked on the card, a release, ⌥←, a refusal putting the card back, and the
+  columns scrolling sideways inside a narrow board. `test/houseLive.test.ts` runs
   `test/houseCheck.ts` against the real House (GETs only) when run by hand
   with `MB_HOUSE_LIVE=1`, never in CI: the open backlog non-empty when the
   House has open tickets, every status and priority known, histories

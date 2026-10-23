@@ -1294,6 +1294,8 @@ const api: Record<string, (...a: any[]) => any> = {
     if (!r) return err(`Not a member of room ${roomId}`);
     const at = new Date().toISOString();
     const log = (n: number, e: Omit<HouseHistoryEntry, "at" | "by" | "reference" | "status"> & Partial<HouseHistoryEntry>) => (houseHistory[n] ??= []).push({ at, by: "You", reference: null, status: null, ...e });
+    // ?houseRefuse: the House refuses every status change, as it does one a builder may not make
+    if (teamQuery.has("houseRefuse") && w.kind === "event" && w.status) return later(err(`The House answered 403: only the claimant moves #${w.n} on`), 300);
     switch (w.kind) {
       case "project":
         r.project = w.project;
@@ -1702,7 +1704,7 @@ if (shown) set("mb.shown", shown.split(","));
 if (params.get("chat")) set("mb.roomChat.room", params.get("chat") === "list" ? "" : params.get("chat"));
 // the House board and New session in a room are opened from the Team view's rooms: it opens on the room list
 // (and, for ?chatMenu, on the first room) unless ?view says otherwise
-const houseKeys = ["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent", "houseProblems"];
+const houseKeys = ["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent", "houseProblems", "houseBoardAudit", "houseDrag"];
 if (!view && (houseKeys.some((k) => params.has(k)) || params.get("new") === "room")) {
   set("mb.sideView", "room");
   if (!params.get("chat")) set("mb.roomChat.room", "");
@@ -1746,8 +1748,10 @@ if (params.has("shot")) {
   document.head.appendChild(still);
 }
 // team rooms: the House board — ?house=1 opens the first shared group's board (2: the second); ?houseTicket=141 opens
-// that ticket on it, ?houseClaim=142 starts claiming it, ?houseAdd (=new) opens + Add ticket; ?houseWarning adds a claim
-// warning; ?houseAgent turns on the open backlog's "Needs an agent" filter
+// that ticket on it, ?houseClaim=142 starts claiming it (⌥→ from Ready, which asks for the branch on the card),
+// ?houseAdd (=new) opens + Add ticket; ?houseWarning adds a claim warning; ?houseAgent turns on the "Needs an agent"
+// filter; ?houseFolds=open unfolds Parked and Done and shows Dropped (the board remembers its folds)
+if (params.get("houseFolds") === "open") set("mb.house.folds", { parked: false, done: false, showDropped: true });
 if (houseKeys.some((k) => params.has(k))) {
   let tries = 0;
   const open = setInterval(() => {
@@ -1761,12 +1765,15 @@ if (houseKeys.some((k) => params.has(k))) {
     const ticket = params.get("houseTicket") ?? params.get("houseClaim");
     let boardTries = 0;
     const board = setInterval(() => {
-      const r = ticket ? ([...document.querySelectorAll(".house-row-main")].find((x) => x.querySelector(".house-n")?.textContent === `#${ticket}`) as HTMLElement | undefined) : (document.querySelector(".house-modal") as HTMLElement | null) ?? undefined;
+      const r = ticket ? (document.querySelector(`.house-card[data-id="${ticket}"]`) as HTMLElement | null) ?? undefined : (document.querySelector(".house-modal") as HTMLElement | null) ?? undefined;
       if (!r && ++boardTries < 50) return;
       clearInterval(board);
       if (params.has("houseAgent")) (document.querySelector(".house-filter") as HTMLElement | null)?.click();
       if (params.has("houseTicket")) r?.click();
-      if (params.has("houseClaim")) (r?.querySelector(".house-claim-btn") as HTMLElement | null)?.click();
+      if (params.has("houseClaim")) {
+        r?.focus();
+        r?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, bubbles: true, cancelable: true }));
+      }
       if (params.has("houseAdd")) {
         ([...document.querySelectorAll(".house-head button")].find((x) => x.textContent === "+ Add ticket") as HTMLElement | undefined)?.click();
         if (params.get("houseAdd") === "new") setTimeout(() => ([...document.querySelectorAll(".house-tabs button")].find((x) => x.textContent === "New ticket") as HTMLElement | undefined)?.click(), 50);
@@ -2478,19 +2485,24 @@ if (params.has("wnAudit")) {
     document.body.appendChild(tag);
   })();
 }
-// Dashboard cards dragged with the events a browser sends while a person drags (drop target under the pointer, the
-// DataTransfer carried along). A drag Esc cancels ends as the browser ends it: dragend on the card, with no drop.
-const boardDrag = (() => {
-  const col = (name: string) => document.querySelector<HTMLElement>(`.bcol[data-col="${name}"]`);
-  const cards = (name: string) => [...(col(name)?.querySelectorAll<HTMLElement>(".bcol-body > .bcard") ?? [])];
+// Cards on a board (the Dashboard's, `root` ".board"; the House board's, ".house-board") dragged with the events a
+// browser sends while a person drags (drop target under the pointer, the DataTransfer carried along). A drag Esc
+// cancels ends as the browser ends it: dragend on the card, with no drop.
+const cardDrag = (root: string) => {
+  const col = (name: string) => document.querySelector<HTMLElement>(`${root} [data-col="${name}"]`);
+  const cards = (name: string) => [...(col(name)?.querySelectorAll<HTMLElement>(":is(.bcol-body, .house-fold-body) > .bcard") ?? [])];
   const ids = (name: string) => cards(name).map((c) => Number(c.dataset.id));
-  const card = (id: number) => document.querySelector<HTMLElement>(`.bcard[data-id="${id}"]`);
+  const card = (id: number) => document.querySelector<HTMLElement>(`${root} .bcard[data-id="${id}"]`);
   const send = (el: Element, type: string, dt: DataTransfer, x: number, y: number) =>
     el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: y }));
-  /** A pointer y inside gap `gap` of a column, from where its cards sit in the layout (not where they've parted to). */
+  /** A pointer y inside gap `gap` of a column, from where its cards sit in the layout (not where they've parted to); a column with no card list (folded), its middle. */
   const gapY = (name: string, gap: number) => {
     const list = cards(name);
-    const body = col(name)!.querySelector<HTMLElement>(".bcol-body")!;
+    const body = col(name)!.querySelector<HTMLElement>(".bcol-body");
+    if (!body) {
+      const r = col(name)!.getBoundingClientRect();
+      return r.top + Math.min(r.height / 2, 60);
+    }
     const top = body.getBoundingClientRect().top - body.scrollTop;
     const mid = (c: HTMLElement) => top + c.offsetTop + c.offsetHeight / 2;
     if (!list.length) return top + 30;
@@ -2510,12 +2522,13 @@ const boardDrag = (() => {
       held = { src, dt: new DataTransfer(), x: r.left + r.width / 2, y: r.top + r.height / 2 };
       send(src, "dragstart", held.dt, held.x, held.y);
     },
-    over(name: string, gap: number) {
+    /** True when the place under the pointer takes the drop (its dragover cancelled the event, as a browser needs). */
+    over(name: string, gap: number): boolean {
       const c = col(name)!;
       const r = c.getBoundingClientRect();
       held!.x = r.left + r.width / 2;
       held!.y = gapY(name, gap);
-      send(document.elementFromPoint(held!.x, held!.y) ?? c, "dragover", held!.dt, held!.x, held!.y);
+      return !send(document.elementFromPoint(held!.x, held!.y) ?? c, "dragover", held!.dt, held!.x, held!.y);
     },
     drop() {
       const at = document.elementFromPoint(held!.x, held!.y)!;
@@ -2528,7 +2541,8 @@ const boardDrag = (() => {
       held = null;
     },
   };
-})();
+};
+const boardDrag = cardDrag(".board");
 // ?boardDrag=5115,In Progress,1 picks up a card and holds it over a gap of a column (0: above its first card), for a
 // screenshot of the line mid-drag
 const boardDragQ = params.get("boardDrag");
@@ -2649,6 +2663,132 @@ if (params.has("boardAudit")) {
     tag.type = "application/json";
     tag.id = "mb-board-audit";
     tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  })();
+}
+// ?houseDrag=143,Validating picks up a House board card and holds it over a column (or Parked), for a screenshot of
+// the line mid-drag
+const houseDragQ = params.get("houseDrag");
+if (houseDragQ) {
+  const [n, name] = houseDragQ.split(",");
+  const h = cardDrag(".house-board");
+  waitFor(`.house-card[data-id="${n}"]`, () => {
+    h.start(Number(n));
+    setTimeout(() => h.over(name, 0), 50);
+  });
+}
+// ?houseBoardAudit drags House board cards between its columns with the events a browser sends — a status change, a
+// drag within its own column, one over the folded Done column, a claim (its branch asked on the card) and a release —
+// moves one with ⌥←, and writes what it saw into <script id="mb-house-audit"> for test/uiHouseBoard.test.ts: the
+// columns' cards, their headers, the line (its owner and where it sits), the label and the House writes after each.
+// =fail (with ?houseRefuse) drops one whose status change the House refuses; =narrow reports what scrolls sideways.
+if (params.has("houseBoardAudit")) {
+  const mode = params.get("houseBoardAudit");
+  const h = cardDrag(".house-board");
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const settle = async () => {
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    for (const a of document.getAnimations()) a.finish();
+  };
+  const NAMES = ["Ready", "In progress", "Review", "Validating"];
+  const columns = () => Object.fromEntries(NAMES.map((n) => [n, h.ids(n)]));
+  const writes = () => calls.filter((c) => c.fn === "houseWrite").map((c) => c.args[1]);
+  const line = () => {
+    const el = document.querySelector<HTMLElement>('.house-board .bcard[data-gap="above"], .house-board .bcard[data-gap="below"]:last-child, .house-board .bcol-body[data-gap="empty"]');
+    if (!el) return null;
+    const pseudo = el.matches('.bcard[data-gap="below"]') ? "::after" : "::before";
+    const s = getComputedStyle(el, pseudo);
+    if (s.content === "none" || s.content === "normal") return null;
+    return { owner: el.classList.contains("bcol-body") ? "empty" : Number(el.dataset.id), column: el.closest<HTMLElement>("[data-col]")?.dataset.col ?? null, height: parseFloat(s.height) };
+  };
+  const hover = async (name: string) => {
+    const accepted = h.over(name, 0);
+    await settle();
+    return {
+      accepted,
+      line: line(),
+      label: document.querySelector(".drag-label")?.textContent ?? null,
+      labelRefused: !!document.querySelector(".drag-label.no"),
+      drop: h.col(name)?.dataset.drop ?? null,
+      refuseNote: h.col(name)?.querySelector(".house-refuse")?.textContent ?? null,
+      lifted: [...document.querySelectorAll<HTMLElement>(".house-board .bcard.lifted")].map((c) => Number(c.dataset.id)),
+    };
+  };
+  const text = (sel: string) => [...document.querySelectorAll<HTMLElement>(sel)].map((e) => e.textContent?.replace(/\s+/g, " ").trim() ?? "");
+  (async () => {
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < 100 && h.ids("Ready").length < 3; i++) await sleep(50);
+    await sleep(300);
+    out.start = columns();
+    out.heads = text(".house-board .bcol .bcol-hd, .house-board .house-col-unfold");
+    out.folds = text(".house-board .house-fold-h");
+    out.parkedShown = h.ids("Parked").length;
+    out.doneCards = document.querySelectorAll('.house-board [data-col="Done"] .bcard').length;
+    out.droppedColumn = !!h.col("Dropped");
+    if (mode === "narrow") {
+      const modal = document.querySelector<HTMLElement>(".house-modal")!;
+      const cols = document.querySelector<HTMLElement>(".house-cols")!;
+      const box = modal.getBoundingClientRect();
+      out.narrow = { modalScrolls: modal.scrollWidth > modal.clientWidth, colsScroll: cols.scrollWidth > cols.clientWidth, modalInWindow: box.left >= 0 && box.right <= window.innerWidth, overflowX: getComputedStyle(cols).overflowX };
+    } else if (mode === "fail") {
+      h.start(143);
+      await hover("Validating");
+      h.drop();
+      await settle();
+      out.optimistic = columns();
+      await sleep(900);
+      out.after = columns();
+      out.error = document.querySelector(".house-board .fp-note.err")?.textContent ?? null;
+      out.writes = writes();
+    } else {
+      // Review → Validating: a status change; the line where the House's order puts it, whatever gap it's over
+      h.start(143);
+      out.across = await hover("Validating");
+      h.drop();
+      await settle();
+      out.dropped = { columns: columns(), line: line(), lifted: document.querySelectorAll(".house-board .bcard.lifted").length };
+      await sleep(700);
+      out.afterAcross = { columns: columns(), writes: writes() };
+      // within its own column: no line, nothing to drop (the House has no rank to write); Esc cancels
+      h.start(149);
+      out.same = await hover("Ready");
+      h.cancel();
+      await settle();
+      out.afterSame = { writes: writes(), line: line(), label: !!document.querySelector(".drag-label") };
+      // over the folded Done column: refused, and the label says why; the drop does nothing
+      h.start(151);
+      out.done = await hover("Done");
+      h.drop();
+      await sleep(500);
+      out.afterDone = { columns: columns(), writes: writes(), notice: document.querySelector('.house-board [role="status"]')?.textContent ?? null };
+      // Ready → In progress, unclaimed: a claim, its branch asked on the card
+      h.start(146);
+      out.claim = await hover("In progress");
+      h.drop();
+      await settle();
+      const form = document.querySelector<HTMLElement>('.house-card[data-id="146"] .house-claim');
+      out.asking = { columns: columns(), branch: form?.querySelector("input")?.value ?? null, writes: writes().length };
+      form?.querySelector<HTMLElement>("button.primary")?.click();
+      await sleep(800);
+      out.afterClaim = { columns: columns(), writes: writes() };
+      // In progress → Ready, claimed by you: a release
+      h.start(151);
+      out.release = await hover("Ready");
+      h.drop();
+      await sleep(800);
+      out.afterRelease = { columns: columns(), writes: writes() };
+      // ⌥← on a focused card: one column back along the flow, by the same write, and it keeps the focus
+      const c = h.card(143)!;
+      c.focus();
+      c.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", altKey: true, bubbles: true, cancelable: true }));
+      await sleep(800);
+      const focused = document.activeElement as HTMLElement | null;
+      out.keyboard = { columns: columns(), writes: writes(), focused: focused?.classList.contains("house-card") ? Number(focused.dataset.id) : null };
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-house-audit";
+    tag.textContent = JSON.stringify(out).replace(/</g, "\\u003c");
     document.body.appendChild(tag);
   })();
 }

@@ -22,6 +22,8 @@ export interface DropTarget {
   preview?: { tree: LayoutNode; hot: string };
   /** A drop into a list: the gap between its items it would land in, 0 above the first. A line marks it. */
   gap?: number;
+  /** A place that won't take the drop: the drop isn't allowed, and the label says why (`outcome`). */
+  refused?: boolean;
 }
 
 export interface DragState {
@@ -83,11 +85,12 @@ export function dragFrom(): string | undefined {
 
 /**
  * Call from a target's onDragOver. With a target, the drop is allowed and the
- * cursor label says `outcome`; null means "not here" (no-op or not allowed).
+ * cursor label says `outcome`; null means "not here" (no-op or not allowed),
+ * and a `refused` target is "not here, because…": no drop, the label says why.
  */
 export function overTarget(e: React.DragEvent, target: DropTarget | null): void {
   (e.nativeEvent as any).__mbTarget = true; // this event found a target: the page-level handler leaves it alone
-  if (target) {
+  if (target && !target.refused) {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
   } else {
@@ -126,10 +129,10 @@ export function samePlace<T>(list: T[], src: T, target: T, side: Side): boolean 
   return next.length === list.length && next.every((x, i) => x === list[i]);
 }
 
-/** The drop-cue attribute for an element: "into" (outlined) or "before"/"after" (a line on that side). */
-export function cue(d: DragState | null, key: string): "into" | Side | undefined {
+/** The drop-cue attribute for an element: "into" (outlined), "before"/"after" (a line on that side), or "refused" (won't take it). */
+export function cue(d: DragState | null, key: string): "into" | "refused" | Side | undefined {
   if (!d?.target || d.target.key !== key) return undefined;
-  return d.target.side ?? "into";
+  return d.target.refused ? "refused" : d.target.side ?? "into";
 }
 
 const EDGE = 48;
@@ -191,7 +194,7 @@ export function DragLabel() {
   // near the window's right edge the label sits left of the cursor, so it stays readable
   const flip = d.x > window.innerWidth - 340;
   return (
-    <div className={`drag-label ${d.target ? "ok" : ""}`} style={flip ? { right: window.innerWidth - d.x + 14, top: d.y + 16 } : { left: d.x + 14, top: d.y + 16 }}>
+    <div className={`drag-label ${d.target ? (d.target.refused ? "no" : "ok") : ""}`} style={flip ? { right: window.innerWidth - d.x + 14, top: d.y + 16 } : { left: d.x + 14, top: d.y + 16 }}>
       <span className="drag-what">{d.target ? d.target.outcome : d.label}</span>
       <span className="drag-esc">esc cancels</span>
     </div>

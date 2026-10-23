@@ -76,6 +76,8 @@ export async function fakeHouse(builders: Record<string, string>, o: { tls?: { k
     delayMs: 0,
     /** Put the caller's token in error messages, as a careless server might. */
     echoToken: false,
+    /** Refuse a status change a builder asks for (an event with a status), with this message; null lets it through. */
+    refuseStatus: null as ((it: FakeItem, to: string, builder: string) => string | null) | null,
   };
   const at = () => new Date().toISOString();
   const item = (n: number, over: Partial<FakeItem> = {}): FakeItem => {
@@ -194,6 +196,9 @@ export async function fakeHouse(builders: Record<string, string>, o: { tls?: { k
         if (parts[2] === "events") {
           if (!["progress", "question"].includes(body?.event)) return fail(422, `Unknown event ${body?.event}`);
           if (body.status && ["done", "dropped"].includes(body.status)) return fail(403, "Only staff close a work item");
+          if (body.status && !["parked", "ready", "in_progress", "review", "validating"].includes(body.status)) return fail(422, `Unknown status ${body.status}`);
+          const refused = body.status ? state.refuseStatus?.(it, body.status, builder) : null;
+          if (refused) return fail(409, refused);
           record(it, builder, body.event, { note: body.note, reference: body.reference, status: body.status });
           return send(201, it);
         }
