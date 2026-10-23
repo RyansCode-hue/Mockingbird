@@ -1,4 +1,4 @@
-import { Terminal, type ILinkHandler, type ITerminalOptions } from "@xterm/xterm";
+import { Terminal, type IBufferCell, type IBufferLine, type ILinkHandler, type ITerminalOptions } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { externalUrlAllowed } from "../shared/links";
 import { openLink } from "./uiUtil";
@@ -237,7 +237,65 @@ export function syncViewport(term: Terminal): void {
     vp.syncScrollArea(true);
     vp._innerRefresh();
   }
-  if (follows.get(term)?.atBottom && !atBottom(term)) term.scrollToBottom();
+  if (follows.get(term)?.atBottom && !atBottom(term)) toBottom(term);
+}
+
+/**
+ * Terminals whose newest-output view ends at their program's last content
+ * rather than at the bottom of the screen (an agent's pane; see bottomLine).
+ */
+const anchored = new WeakSet<Terminal>();
+
+/** From now on, this terminal's view of its newest output ends at its program's content (bottomLine). */
+export function anchorToContent(term: Terminal): void {
+  anchored.add(term);
+}
+
+/** A row with nothing drawn in it: no text, and no background or inverse colour behind its spaces (a renderer clears cells by writing spaces). */
+function blankRow(line: IBufferLine, cell: IBufferCell): boolean {
+  if (line.translateToString(true).trim()) return false;
+  for (let x = 0; x < line.length; x++) {
+    const c = line.getCell(x, cell);
+    if (c && (!c.isBgDefault() || c.isInverse())) return false;
+  }
+  return true;
+}
+
+/**
+ * The first line of a terminal's view when it shows its newest output: the
+ * screen's, or for a terminal anchored to its content, up by the blank rows
+ * below both its program's last drawn row and its cursor, as far as there is
+ * history to show above.
+ *
+ * An inline agent CLI (Claude Code's classic renderer) draws its frame
+ * relative to the cursor, which it parks in its input box, and keeps the rows
+ * its frame gives up: when the frame shrinks it erases them and moves up,
+ * after a full redraw it paints the frame from the screen's top row, and when
+ * the terminal gets taller it draws nothing while xterm adds the new rows
+ * blank below the frame (xterm brings back scrollback only for a cursor on
+ * the last row). The screen's bottom rows then hold nothing, and a view of the
+ * screen shows them below the input box. A full-screen program fills its
+ * screen, and has no scrollback to show instead (bottomLine is its baseY).
+ * Only the view moves: the program's screen stays as it drew it, so its
+ * cursor-relative drawing lands where it expects.
+ */
+export function bottomLine(term: Pick<Terminal, "buffer" | "rows" | "modes">): number {
+  const b = term.buffer.active;
+  if (!anchored.has(term as Terminal) || b.type !== "normal" || term.modes.mouseTrackingMode !== "none") return b.baseY;
+  const cell = b.getNullCell();
+  let last = b.cursorY;
+  for (let y = term.rows - 1; y > last; y--) {
+    const line = b.getLine(b.baseY + y);
+    if (line && !blankRow(line, cell)) last = y;
+  }
+  return Math.max(0, b.baseY - (term.rows - 1 - last));
+}
+
+/** Show a terminal's newest output (bottomLine). */
+function toBottom(term: Terminal): void {
+  const y = bottomLine(term);
+  if (y === term.buffer.active.baseY) term.scrollToBottom();
+  else if (term.buffer.active.viewportY !== y) term.scrollToLine(y);
 }
 
 /** xterm's cell size in CSS pixels, for its current font (not public API: null when it isn't there). */
@@ -258,7 +316,7 @@ interface Follow {
   listeners: Set<(atBottom: boolean) => void>;
 }
 const follows = new WeakMap<Terminal, Follow>();
-const atBottom = (term: Pick<Terminal, "buffer">) => term.buffer.active.viewportY >= term.buffer.active.baseY;
+const atBottom = (term: Terminal) => term.buffer.active.viewportY >= bottomLine(term);
 
 /**
  * Keep a terminal's view on its newest output while the user leaves it
@@ -268,7 +326,10 @@ const atBottom = (term: Pick<Terminal, "buffer">) => term.buffer.active.viewport
  * page) stops it following. Here only a scroll right after the user's wheel,
  * touch, key or held pointer decides that the view left the bottom; any other
  * scroll away from it, while it was following, goes back. Reaching the bottom
- * by any means follows again. Needs the terminal opened; once.
+ * by any means follows again. A terminal anchored to its content never shows
+ * the blank rows below it (bottomLine): a scroll down into them goes back up,
+ * and a following view keeps the content's last row at the bottom as output
+ * and resizes move it. Needs the terminal opened; once.
  */
 export function followOutput(term: Terminal): void {
   const el = term.element;
@@ -294,10 +355,12 @@ export function followOutput(term: Terminal): void {
     true
   );
   const check = () => {
+    // below the content's last row there is nothing to see: back up (that scroll checks again)
+    if (term.buffer.active.viewportY > bottomLine(term)) return toBottom(term);
     const bottom = atBottom(term);
     const theirs = f.holding || Date.now() - f.userAt < USER_SCROLL_MS;
     if (!bottom && !theirs) {
-      if (f.atBottom) term.scrollToBottom();
+      if (f.atBottom) toBottom(term);
       return;
     }
     if (bottom === f.atBottom) return;
@@ -307,6 +370,12 @@ export function followOutput(term: Terminal): void {
   // registered after xterm's own listener, which has read the scroll into the buffer by then
   el.querySelector(".xterm-viewport")?.addEventListener("scroll", check);
   term.onScroll(check);
+  // xterm follows the screen's bottom itself; the content's moves with what the program draws and with resizes
+  if (anchored.has(term)) {
+    const follow = () => void (f.atBottom && toBottom(term));
+    term.onWriteParsed(follow);
+    term.onResize(follow);
+  }
 }
 
 /** The user moved this terminal's view themselves (a teammate's copy scrolls without xterm seeing the wheel or key). */
@@ -331,7 +400,7 @@ export function followsBottom(term: Terminal): boolean {
 /** Back to the newest output, following it again. */
 export function jumpToLatest(term: Terminal): void {
   noteUserScroll(term);
-  term.scrollToBottom();
+  toBottom(term);
 }
 
 /**

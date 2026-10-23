@@ -7,7 +7,7 @@ vi.hoisted(() => {
 
 import { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
-import { attachTerm, dataPump, fitTerm, followsBottom, jumpToLatest, makeTerm, onFollowChange, repaintTerm, replay, syncViewport, termLinkHandler, REPAINT_NUDGE_MS, type CachedTerm, type SizedTerm } from "../src/renderer/cachedTerm";
+import { anchorToContent, attachTerm, bottomLine, dataPump, fitTerm, followsBottom, jumpToLatest, makeTerm, onFollowChange, repaintTerm, replay, syncViewport, termLinkHandler, REPAINT_NUDGE_MS, type CachedTerm, type SizedTerm } from "../src/renderer/cachedTerm";
 
 const parsed = (term: Terminal) => new Promise<void>((r) => term.write("", r));
 const screen = (term: Terminal) => {
@@ -85,8 +85,9 @@ describe("cached terminal replay", () => {
  * xterm measures its viewport on a frame after its buffer grows, and reads every scroll it didn't flag as its own
  * into the buffer, as the user's.
  */
-function paneTerm(rows = 10, rowH = 18) {
+function paneTerm(rows = 10, rowH = 18, anchor = false) {
   const term = new Terminal({ allowProposedApi: true, cols: 40, rows, scrollback: 1000 });
+  if (anchor) anchorToContent(term);
   const core = (term as unknown as { _core: any })._core;
   const page = { scrollEvents: [] as (() => void)[], frames: [] as (() => void)[] };
   const dims = { css: { cell: { width: 8, height: rowH }, canvas: { height: rows * rowH } }, device: { cell: { height: rowH } } };
@@ -319,6 +320,123 @@ describe("a cached terminal's view of its output", () => {
     await t.write(300);
     t.shownIn(t.holderOf(false));
     expect(t.viewportEl.scrollTop).toBe(0);
+  });
+});
+
+/**
+ * Bytes as an inline agent CLI draws its frame (Claude Code's classic renderer, CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN):
+ * relative to the cursor, ending on the row after the frame, then the cursor parked in the input box. The frame is a
+ * rule, the prompt, a rule, a status line and one row per background agent.
+ */
+const RULE = "─".repeat(40);
+const frameRows = (agents: number) => [RULE, "> ", RULE, "  auto mode on", ...Array.from({ length: agents }, (_, i) => `  agent ${i} running`)];
+const drawFrame = (agents: number) => {
+  const rows = frameRows(agents);
+  return `${rows.join("\r\n")}\r\n\x1b[2C\x1b[${rows.length - 1}A`;
+};
+/** The frame loses `gone` agent rows: back to the row after it, erase upward as the renderer does, park again. */
+const shrinkFrame = (agents: number, gone: number) => {
+  const len = frameRows(agents).length;
+  return `\x1b[2D\x1b[${len - 1}B${"\x1b[2K\x1b[1A".repeat(gone - 1)}\x1b[2K\x1b[G\x1b[1A\x1b[2K\x1b[2C\x1b[${len - gone - 1}A`;
+};
+/** A full redraw: the screen's rows erased from its top down, the frame painted from the top row. */
+const redrawFromTop = (rows: number, agents: number) => `\x1b[H${"\x1b[2K\x1b[1B".repeat(rows)}\x1b[H${drawFrame(agents)}`;
+
+describe("an inline agent's view of its output", () => {
+  const send = async (t: ReturnType<typeof paneTerm>, bytes: string) => {
+    await new Promise<void>((r) => t.term.write(bytes, r));
+    t.frame();
+    t.frame();
+  };
+  const view = (term: Terminal) => {
+    const b = term.buffer.active;
+    return Array.from({ length: term.rows }, (_, y) => b.getLine(b.viewportY + y)?.translateToString(true) ?? "");
+  };
+  const screenRows = (term: Terminal) => {
+    const b = term.buffer.active;
+    return Array.from({ length: term.rows }, (_, y) => b.getLine(b.baseY + y)?.translateToString(true) ?? "");
+  };
+  async function agentPane(anchor = true) {
+    const t = paneTerm(10, 18, anchor);
+    t.shownIn(t.holderOf());
+    await t.write(300, "history");
+    await send(t, drawFrame(4));
+    return t;
+  }
+
+  it("keeps the frame's last row at the bottom of the view when the frame shrinks, with history above", async () => {
+    const t = await agentPane();
+    expect(view(t.term).at(-1)).toBe("  agent 3 running");
+    await send(t, shrinkFrame(4, 3));
+    // the renderer erased the rows its frame gave up: the screen's bottom rows hold nothing
+    expect(screenRows(t.term).slice(-5)).toEqual(["  agent 0 running", "", "", "", ""]);
+    expect(view(t.term).at(-1)).toBe("  agent 0 running");
+    expect(view(t.term)[0]).toMatch(/^history \d+$/);
+    expect(followsBottom(t.term)).toBe(true);
+    // the program's own drawing still lands where it expects: the frame grows back into those rows
+    await send(t, `\x1b[2D\x1b[4B\r${["  agent 1 running", "  agent 2 running"].join("\r\n")}\r\n\x1b[2C\x1b[6A`);
+    expect(screenRows(t.term).slice(-5)).toEqual(["  agent 0 running", "  agent 1 running", "  agent 2 running", "", ""]);
+    expect(view(t.term).at(-1)).toBe("  agent 2 running");
+  });
+
+  it("never scrolls down into the blank rows below the frame; a scroll up stays until the user comes back down", async () => {
+    const t = await agentPane();
+    await send(t, shrinkFrame(4, 3));
+    const shown = view(t.term);
+    t.wheel(5);
+    t.frame(); // the page takes the offset back
+    expect(view(t.term)).toEqual(shown);
+    expect(t.state().pageLine).toBe(t.term.buffer.active.viewportY);
+    expect(followsBottom(t.term)).toBe(true);
+    t.wheel(-3);
+    expect(followsBottom(t.term)).toBe(false);
+    await send(t, "\x1b[2D\x1b[4B\r  agent 1 running\r\n\x1b[2C\x1b[5A");
+    expect(followsBottom(t.term)).toBe(false); // left where the user put it while the frame changed
+    t.wheel(10);
+    expect(followsBottom(t.term)).toBe(true);
+    expect(view(t.term).at(-1)).toBe("  agent 1 running");
+  });
+
+  it("shows history, not blank rows, when the pane gets taller while the cursor is in the input box", async () => {
+    const t = await agentPane();
+    t.term.resize(40, 15);
+    t.frame();
+    t.frame();
+    // xterm brings back scrollback only for a cursor on the last row: it added the new rows blank below the frame
+    expect(screenRows(t.term).slice(-7)).toEqual(["  agent 3 running", "", "", "", "", "", ""]);
+    expect(view(t.term).at(-1)).toBe("  agent 3 running");
+    expect(view(t.term)[0]).toMatch(/^history \d+$/);
+  });
+
+  it("shows history above a frame redrawn from the screen's top row, not blank rows below it", async () => {
+    const t = await agentPane();
+    await send(t, redrawFromTop(10, 1));
+    expect(screenRows(t.term)[0]).toBe(RULE);
+    expect(screenRows(t.term).at(-1)).toBe("");
+    expect(view(t.term).at(-1)).toBe("  agent 0 running");
+    expect(view(t.term)[0]).toMatch(/^history \d+$/);
+  });
+
+  it("counts a row with a background colour as drawn", async () => {
+    const t = await agentPane();
+    await send(t, `\x1b[2D\x1b[7B\x1b[44m\x1b[2K\x1b[0m\x1b[2C\x1b[7A`); // the row after the frame filled with blue
+    expect(t.state().behind).toBe(0);
+  });
+
+  it("leaves a shell's cleared screen as it is: its prompt at the top, no history brought back", async () => {
+    const t = paneTerm(10, 18, false);
+    t.shownIn(t.holderOf());
+    await t.write(300, "history");
+    await send(t, "\x1b[H\x1b[2J$ ");
+    expect(t.state()).toMatchObject({ behind: 0, following: true });
+    expect(view(t.term)[0]).toBe("$ ");
+  });
+
+  it("is the screen's bottom for a program on the alternate screen", async () => {
+    const t = await agentPane();
+    await send(t, "\x1b[?1049h\x1b[H> full screen");
+    expect(t.term.buffer.active.type).toBe("alternate");
+    expect(bottomLine(t.term)).toBe(t.term.buffer.active.baseY);
   });
 });
 

@@ -13,7 +13,7 @@ import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneS
 import { isViewControl } from "../shared/termInput";
 import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
-import { attachTerm, dataPump, fitTerm, followFixedSize, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
+import { anchorToContent, attachTerm, dataPump, fitTerm, followFixedSize, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
@@ -503,6 +503,8 @@ export function TerminalPane({
         // otherwise type arrow keys into the prompt.
         ...(mousePolicy === "claude" ? { macOptionClickForcesSelection: true, altClickMovesCursor: false } : {}),
       });
+      // an agent's inline frame leaves blank rows below it (bottomLine); a shell's cleared screen keeps its prompt at the top
+      if (!session.shell) anchorToContent(term);
       const e: TermEntry = {
         term,
         fit,
