@@ -7,7 +7,9 @@
  * A room session is a session in a room's shared group. It runs on its
  * owner's laptop; the owner publishes a record of it (session.upsert) and
  * every member shows it, tagged with the owner's initials. Its terminal
- * streams only to members who show it, and anyone can type into it.
+ * streams only to members who show it. A teammate's copy is view-only until
+ * the owner lets them type (TypingAnswer), and never takes keys while the
+ * owner's agent is asking for permission.
  */
 import type { AgentKind, SessionInfo, SessionStatus } from "../types";
 import { isNewer } from "../versions";
@@ -168,6 +170,12 @@ export interface RoomSessionTag {
    * any more, and teammates can't type into it.
    */
   takenOver?: { by: MemberId; byName: string; at: number };
+  /** Own only: teammates the owner lets type into it, and until when. */
+  typists?: TypingGrant[];
+  /** Own only: teammates asking to type into it, waiting for the owner's answer. */
+  typingAsks?: TypingAsk[];
+  /** Remote only: whether this Mac may type into the teammate's session. */
+  typing?: RemoteTyping;
   /**
    * Own only: this install starts its room sessions inline (Settings → Team),
    * so restarting one that joined the room while running brings it inline.
@@ -245,7 +253,70 @@ export const LIVE_METHODS = {
   scrollback: "pty.scrollback",
   /** Keystrokes for a room session, from a teammate. */
   input: "pty.input",
+  /** A teammate asks to type into a room session, or asks where they stand: TypingAnswer. */
+  typingAsk: "pty.typingAsk",
+  /** The owner tells a teammate their typing answer changed (allowed, denied, revoked, expired): TypingAnswer. */
+  typingState: "pty.typingState",
 } as const;
+
+/**
+ * Typing into a teammate's session. A teammate's copy is view-only: the
+ * owner's Mockingbird refuses its keys until the owner allows that teammate
+ * to type, for as long as the session runs or for TYPING_MINUTES, and takes
+ * it back whenever they like. Even then, keys are refused while the owner's
+ * agent asks for permission, so every approval is the owner's own.
+ */
+export type TypingState =
+  /** Not allowed (the default); nothing asked. */
+  | "view-only"
+  /** Asked; the owner hasn't answered yet. */
+  | "asked"
+  | "allowed"
+  /** The owner said no (or took it back): asking again is up to the teammate. */
+  | "denied"
+  /** The owner's Mockingbird predates typing consent: it takes anyone's typing, as before. */
+  | "legacy";
+
+/** How long "Allow for 15 min" lasts. */
+export const TYPING_MINUTES = 15;
+
+/** The owner's answer about one teammate typing into one session (pty.typingAsk, pty.typingState, a refused pty.input). */
+export interface TypingAnswer {
+  session: string;
+  state: Exclude<TypingState, "legacy">;
+  /** Allowed until (the owner's clock); null while the session runs. */
+  until?: number | null;
+  /** Why keys were refused just now, in words for the teammate. */
+  why?: string;
+  /** Allowed, but the owner's agent is asking for permission: keys wait for the owner to answer it. */
+  prompt?: boolean;
+}
+
+/** A teammate allowed to type into one of this install's sessions. */
+export interface TypingGrant {
+  member: MemberId;
+  name: string;
+  /** null: while the session runs. */
+  until: number | null;
+  at: number;
+}
+
+export interface TypingAsk {
+  member: MemberId;
+  name: string;
+  at: number;
+}
+
+/** What this window knows about typing into a teammate's session. */
+export interface RemoteTyping {
+  state: TypingState;
+  until?: number | null;
+  /** Keys typed here were refused (or held back): why, and when, for the pane's note. */
+  refused?: { at: number; why: string };
+}
+
+/** pty.input as a current Mockingbird sends it: `v` says it reads a refusal as TypingAnswer instead of an error. */
+export const INPUT_VERSION = 2;
 
 /** A room session's output so far, as its owner answers pty.scrollback. */
 export interface PaneSnapshot {
@@ -255,4 +326,6 @@ export interface PaneSnapshot {
   end: number;
   cols: number;
   rows: number;
+  /** pty.scrollback's answer only: where the asker stands on typing (absent from a Mockingbird before typing consent). */
+  typing?: TypingAnswer;
 }

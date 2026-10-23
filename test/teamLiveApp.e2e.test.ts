@@ -205,15 +205,42 @@ describe("team rooms between two Mockingbird instances", () => {
         await untilTrue("the scrollback in Nick's pane", async () => (await screenOf(nick, paneId)).includes("ready-42"));
         await ryan.evaluate(`window.mb.sessionWrite(${JSON.stringify(sh.id)}, "echo live-$((50+5))\\r")`);
         await untilTrue("live output in Nick's pane", async () => (await screenOf(nick, paneId)).includes("live-55"));
-        await nick.evaluate(`(() => { const t = window.__mbTerms.get(${JSON.stringify(paneId)}).term; t.element.closest(".pane").dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); t.focus(); })()`);
-        await nick.send("Input.insertText", { text: "echo from-nick-$((6*7))" });
-        await nick.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
-        await nick.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        const typeAsNick = async (text: string) => {
+          await nick.evaluate(`(() => { const t = window.__mbTerms.get(${JSON.stringify(paneId)}).term; t.element.closest(".pane").dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); t.focus(); })()`);
+          await nick.send("Input.insertText", { text });
+          await nick.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+          await nick.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        };
+        // Nick's copy is view-only: his typing is refused on Ryan's Mac, he's told why, and Ryan is asked
+        await untilTrue("Nick's copy marked view-only", async () => /View only · Ask to type/.test(await nick.evaluate<string>(`document.querySelector(".pane .chip.view-only")?.textContent ?? ""`)));
+        await typeAsNick("echo refused-$((6*7))");
+        await untilTrue("why at Nick's", async () => /Ryan hasn't allowed|Waiting for Ryan to let you type/.test(await nick.evaluate<string>(`document.querySelector(".typing-refused")?.textContent ?? ""`)));
+        await untilTrue("the ask at Ryan's", async () => !!(await live(ryan)).own[sh.id]?.typingAsks?.some((a) => a.name === "Nick"));
+        await ryan.evaluate(`${row("shared shell")}?.click()`); // the pane, as the ask's notification brings it up
+        await untilTrue("the ask on Ryan's pane", async () => /Nick wants to type in “shared shell”/.test(await ryan.evaluate<string>(`document.querySelector(".typing-ask")?.textContent ?? ""`)), 30_000);
+        expect(await buffer(ryan, sh.id)).not.toContain("refused-");
+        // Ryan allows it from the prompt; Nick's typing then goes through
+        await ryan.evaluate(`[...document.querySelectorAll(".typing-ask button")].find((b) => b.textContent === "Allow for this session").click()`);
+        await untilTrue("Nick told he can type", async () => (await live(nick)).remote.find((x) => x.id === paneId)?.room?.typing?.state === "allowed");
+        await untilTrue("Ryan's pane says Nick can type", async () => /Nick can type/.test(await ryan.evaluate<string>(`document.querySelector(".chip.typist")?.textContent ?? ""`)));
+        await typeAsNick("echo from-nick-$((6*7))");
         await untilTrue("Nick's typing in Ryan's shell", async () => (await buffer(ryan, sh.id)).includes("from-nick-42"));
+        expect(await buffer(ryan, sh.id)).not.toContain("refused-");
         await untilTrue("the result back in Nick's pane", async () => (await screenOf(nick, paneId)).includes("from-nick-42"));
         await untilTrue("Nick's initials on Ryan's session", async () => (await live(ryan)).own[sh.id]?.lookers.some((l) => l.name === "Nick" && l.focused) ?? false);
-        expect((await live(ryan)).own[sh.id]).toMatchObject({ cols: 120, rows: 32 });
+        // the session keeps the size of Ryan's own pane: Nick's copy never resizes it
+        const ryanSize = await ryan.evaluate<{ cols: number; rows: number }>(`(() => { const t = window.__mbTerms.get(${JSON.stringify(sh.id)}).term; return { cols: t.cols, rows: t.rows }; })()`);
+        await untilTrue("the session at the size of Ryan's pane", async () => {
+          const own = (await live(ryan)).own[sh.id];
+          return own?.cols === ryanSize.cols && own?.rows === ryanSize.rows;
+        });
         expect(fs.readFileSync(path.join(ryan.home, ".mockingbird", "pty-audit.log"), "utf8")).toMatch(/remote-input session=\S+ from="Nick"/);
+        // the audit log of remote actions: the ask and the allowance, by name, never what was typed
+        const auditLog = path.join(ryan.home, ".mockingbird", "team", "audit.log");
+        expect(fs.readFileSync(auditLog, "utf8")).toMatch(/"kind":"typing.asked"[^\n]*"member":"Nick"[^\n]*"title":"shared shell"/);
+        expect(fs.readFileSync(auditLog, "utf8")).toMatch(/"kind":"typing.allowed"[^\n]*"until":null/);
+        expect(fs.readFileSync(auditLog, "utf8")).not.toMatch(/refused-|from-nick/);
+        expect(fs.statSync(auditLog).mode & 0o777).toBe(0o600);
 
         // ---- Nick scrolls his copy of Ryan's shell; nothing reaches Ryan's, even while Ryan's program asks for the mouse.
         // cat -v shows whatever arrives: a mouse report or an arrow key as ^[[…

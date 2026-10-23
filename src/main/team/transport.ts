@@ -121,7 +121,20 @@ export interface Team {
    * and kind as "Nick's Mockingbird sent <what>".
    */
   refusedOverLimit?(roomId: RoomId, member: MemberId, kind: LimitKind, what: string): void;
+  /**
+   * Hear each teammate's request this install answered, and each request it
+   * sends (the audit log of remote actions). Taps see parameters and
+   * answers whole: they keep counts, never content.
+   */
+  tapRequests?(tap: RequestTap): Unsubscribe;
 }
+
+/** A request as tapRequests reports it: one this install answered (`dir: "in"`) or sent (`"out"`, before any answer). */
+export type TappedRequest =
+  | { dir: "in"; method: string; peer: MemberId; roomId?: RoomId; params: unknown; ok: true; result: unknown }
+  | { dir: "in"; method: string; peer: MemberId; roomId?: RoomId; params: unknown; ok: false; error: string }
+  | { dir: "out"; method: string; peer: MemberId; roomId?: RoomId; params: unknown };
+export type RequestTap = (r: TappedRequest) => void;
 
 // ---- the wire: how a transport connects members ---------------------------------------
 
@@ -300,6 +313,7 @@ export class TeamCore implements Team {
   private readonly departGraceMs: number;
 
   private eventHandlers = new Map<string, Set<(e: RoomEvent<any>, room: RoomState) => void>>();
+  private requestTaps = new Set<RequestTap>();
   private requestHandlers = new Map<string, (params: any, ctx: RequestContext) => unknown>();
   private streamHandlers = new Map<string, Set<(chunk: string, ctx: StreamContext) => void>>();
   private presenceHandlers = new Set<(roomId: RoomId, online: MemberId[]) => void>();
@@ -417,6 +431,7 @@ export class TeamCore implements Team {
     if (this.closed) return Promise.reject(new TeamError("closed", "the team transport is closed"));
     if (!this.hellos.has(peer)) return Promise.reject(new TeamError("offline", `${this.nameOf(peer)} isn't connected`));
     const id = this.nextRequest++;
+    this.tapped({ dir: "out", method, peer, ...(opts.roomId ? { roomId: opts.roomId } : {}), params });
     return new Promise<T>((resolve, reject) => {
       const timeoutMs = opts.timeoutMs ?? this.requestTimeoutMs;
       const timer = setTimeout(() => {
@@ -430,6 +445,15 @@ export class TeamCore implements Team {
         reject(new TeamError("offline", `${this.nameOf(peer)} isn't connected`));
       }
     });
+  }
+
+  tapRequests(tap: RequestTap): Unsubscribe {
+    this.requestTaps.add(tap);
+    return () => this.requestTaps.delete(tap);
+  }
+
+  private tapped(r: TappedRequest): void {
+    for (const tap of this.requestTaps) this.safely(`a request tap (${r.method})`, () => tap(r));
   }
 
   onRequest(method: string, handler: (params: any, ctx: RequestContext) => unknown): Unsubscribe {
@@ -1338,13 +1362,16 @@ export class TeamCore implements Team {
     }
     const handler = this.requestHandlers.get(f.method);
     if (!handler) return void answer({ ok: false, code: "no-handler", error: `no handler for ${f.method}` });
+    const asked = { dir: "in" as const, method: f.method, peer, ...(f.roomId ? { roomId: f.roomId } : {}), params: f.params };
     try {
       const result = await handler(f.params, { from: peer, ...(f.roomId ? { roomId: f.roomId } : {}) });
       answer({ ok: true, result: result ?? null });
+      this.tapped({ ...asked, ok: true, result });
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       this.log(`answering ${f.method} for ${this.nameOf(peer)} failed: ${why}`);
       answer({ ok: false, code: "remote", error: err instanceof PeerError ? why : PEER_FAILED });
+      this.tapped({ ...asked, ok: false, error: err instanceof PeerError ? why : PEER_FAILED });
     }
   }
 

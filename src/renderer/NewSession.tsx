@@ -534,7 +534,7 @@ export function NewSessionModal({
                 <button className={!connected ? "on" : ""} onClick={() => (setConnected(false), resetWorkspace())}>Local</button>
                 <button
                   className={connected ? "on" : ""}
-                  title="A session in a team room: teammates see it live and can type into it"
+                  title="A session in a team room: teammates see it live, and can type into it once you let them"
                   onClick={() => (setConnected(true), resetWorkspace())}
                 >
                   Connected{rooms.length ? ` · ${rooms.length}` : ""}
@@ -631,7 +631,7 @@ export function NewSessionModal({
                   )}
                   <WorkspacePick subs={subs} value={wsSel} newName={wsNew} onChange={setWsSel} onNewName={setWsNew} />
                   <div className="ns-note">
-                    Teammates in the room see this session live{importing ? ", its earlier conversation included as it shows on screen," : ""} and can type into it. Its agent can't read .env files, keys or logins, and can't push.
+                    Teammates in the room see this session live{importing ? ", its earlier conversation included as it shows on screen," : ""} and can type into it once you let them (never into your agent's permission prompts). Its agent can't read .env files, keys or logins, and can't push.
                   </div>
                 </>
               ) : (

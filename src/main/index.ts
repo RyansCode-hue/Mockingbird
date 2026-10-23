@@ -71,6 +71,7 @@ import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
 // team rooms: live panes
 import { LivePanes } from "./team/livePanes";
+import { RemoteAudit } from "./team/remoteAudit";
 import { stopTeamRooms } from "./team/shutdown";
 // team rooms: artifacts (importing it registers the artifacts' room events, before any room log loads)
 import { TeamArtifacts } from "./team/artifacts";
@@ -260,7 +261,10 @@ const needTakeover = (): TakeoverService => {
   return takeover;
 };
 
-// team rooms: live panes — sessions in shared groups, streamed to and typed into by teammates
+// team rooms: one log of what teammates did on this Mac (~/.mockingbird/team/audit.log)
+const remoteAudit = new RemoteAudit({ log: logError });
+
+// team rooms: live panes — sessions in shared groups, streamed to teammates, typed into with their owner's consent
 const livePanes = new LivePanes({
   team: () => team.transport,
   rooms: () => team.status().rooms.map((r) => ({ id: r.id, groupKey: r.groupKey })),
@@ -273,6 +277,7 @@ const livePanes = new LivePanes({
   },
   toWindow,
   audit: (line) => Store.audit(line),
+  remoteAudit,
   log: logError,
 });
 
@@ -503,6 +508,7 @@ app.whenReady().then(() => {
   }
   createWindow();
   team.start();
+  if (team.transport) remoteAudit.watch(team.transport); // team rooms: the audit log of remote actions
   if (team.transport) teamHouse.start(team.transport); // team rooms: the House board
   if (team.transport) teamChanges.start(team.transport); // team rooms: teammates' changes, migration numbers
   if (team.transport) teamArtifacts.start(team.transport); // team rooms: artifacts
@@ -661,7 +667,7 @@ let teamStopped = false;
 function stopTeam(): void {
   if (teamStopped) return;
   teamStopped = true;
-  stopTeamRooms({ livePanes, chat: teamRoom, house: teamHouse, changes: teamChanges, artifacts: teamArtifacts, takeover: () => takeover, team }, logError);
+  stopTeamRooms({ livePanes, chat: teamRoom, house: teamHouse, changes: teamChanges, artifacts: teamArtifacts, takeover: () => takeover, audit: remoteAudit, team }, logError);
 }
 
 app.on("window-all-closed", () => {
@@ -1052,6 +1058,12 @@ handle("team:takeoverDismissReceived", (roomId, id) => needTakeover().dismissRec
 // team rooms: live panes
 handle("team:live", () => livePanes.state());
 handle("team:paneResync", (id) => livePanes.resync(String(id)));
+handle("team:askToType", (id) => livePanes.askToType(String(id)));
+handle("team:decideTyping", (sessionId, member, choice) => {
+  if (!["session", "minutes", "deny", "revoke"].includes(choice)) throw new Error(`unknown answer ${String(choice)}`);
+  livePanes.decideTyping(String(sessionId), String(member), choice);
+});
+handle("team:auditRecent", (n) => remoteAudit.recent(Math.min(500, Math.max(1, Number(n) || 50))));
 ipcMain.on("team:liveView", (_e, view) => livePanes.setView(view));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));

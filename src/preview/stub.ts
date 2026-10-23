@@ -27,6 +27,7 @@ import { HOUSE_TOKEN_HOW, isOpenStatus, openBacklog, type HouseHistoryEntry, typ
 import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../shared/team/chat";
 // team rooms: take-over
 import { NOT_PUSHED, type RoomSessionBackupView, type TakeoverPlan, type TakeoverView } from "../shared/team/takeover";
+import type { AuditEntry } from "../shared/team/audit";
 // team rooms: live panes
 import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
 // team rooms: artifacts
@@ -698,6 +699,18 @@ index 0000000..5d1e2f3
 +- [ ] Release note reviewed
 +- [ ] Screenshots updated
 `;
+// team rooms: the audit log of remote actions, newest first (Settings → Team → Recent remote activity)
+const auditEntries: AuditEntry[] = [
+  { at: now - 2 * min, kind: "input", room: "#5101 Org dropdowns", member: "Nick Smith", session: "s1", title: "Org dropdowns remember the last org", n: 38, bytes: 214, since: now - 9 * min },
+  { at: now - 9 * min, kind: "typing.allowed", room: "#5101 Org dropdowns", member: "Nick Smith", session: "s1", title: "Org dropdowns remember the last org", until: now + 6 * min },
+  { at: now - 10 * min, kind: "typing.asked", room: "#5101 Org dropdowns", member: "Nick Smith", session: "s1", title: "Org dropdowns remember the last org" },
+  { at: now - 14 * min, kind: "input.refused", room: "#5101 Org dropdowns", member: "Nick Smith", session: "s2", title: "API: last org per user", n: 2, bytes: 2, reason: "prompt", since: now - 14 * min },
+  { at: now - 22 * min, kind: "message", room: "#5101 Org dropdowns", member: "Nick Smith", session: "s8", title: "Release notes for #5101", from: "Donor export: CSV writer", bytes: 412, outcome: "delivered" },
+  { at: now - 41 * min, kind: "artifact.served", room: "#5101 Org dropdowns", member: "Sam", title: "org-dropdown-spec.pdf", n: 4, bytes: 1_843_200, since: now - 41 * min },
+  { at: now - 63 * min, kind: "backup.sent", room: "#5101 Org dropdowns", member: "Nick Smith", session: "s1", title: "Org dropdowns remember the last org", n: 3, bytes: 88_000, since: now - 80 * min },
+  { at: now - 3 * 60 * min, kind: "takeover", room: "#5110 Donor entities", member: "Nick Smith", session: "y1", title: "Donor entity model" },
+];
+
 const takeoverPlans: Record<string, TakeoverPlan> = {
   n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: p2p ? "peer" : "origin", skipped: [] }, other: null, toOrigin: !p2p, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 }, resumesOwn: false },
   // ?p2p: only the copy that reached this Mac half an hour ago, a turn behind Sam's laptop
@@ -715,6 +728,7 @@ const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, 
 // and the Codex one on a Codex too old for the room's permission profile, run without
 // the secret deny rules, and say so.
 const ROOM_5101 = "R5101aaaaaaaaaaaaaaaaa";
+const teamTypingQ = new URLSearchParams(location.search);
 const NICK_PANE = remotePaneId(NICK, "n1");
 const SAM_PANE = remotePaneId(SAM, "m1");
 const ROOM_5110 = "R5110bbbbbbbbbbbbbbbbb";
@@ -727,7 +741,11 @@ const live: LivePanesState = {
   remote: [
     session(NICK_PANE, {
       title: "Donor export: CSV writer", taskGroup: "5101", branch: "5101-csvExport", repoPath: null, cwd: "(on Nick Smith's Mockingbird) backoffice", status: "working", model: "sonnet",
-      room: roomTag({ sessionId: "n1", owner: NICK, ownerName: "Nick Smith", remote: true, cols: 110, rows: 30, git: nickGit, lookers: [{ id: NICK, name: "Nick Smith", focused: false }] }),
+      // view-only here; ?typingRefused: you just typed into it
+      room: roomTag({
+        sessionId: "n1", owner: NICK, ownerName: "Nick Smith", remote: true, cols: 110, rows: 30, git: nickGit, lookers: [{ id: NICK, name: "Nick Smith", focused: false }],
+        typing: { state: "view-only", ...(teamTypingQ.has("typingRefused") ? { refused: { at: Date.now() + 60 * min, why: "Nick Smith hasn't allowed typing" } } : {}) },
+      }),
     }),
     session(SAM_PANE, {
       title: "Last-org API tests", taskGroup: "5101/api", branch: "5101-api-tests", repoPath: null, cwd: "(on Sam's Mockingbird) backoffice", status: "idle", agent: "codex",
@@ -739,11 +757,12 @@ const live: LivePanesState = {
     }),
   ],
   own: {
-    s1: roomTag({ sessionId: "s1", lookers: [{ id: NICK, name: "Nick Smith", focused: true }] }),
+    // Nick may type in s1 for a few more minutes; ?typingAsk: he's asking to type in s8 (shown with ?shown=s8,…)
+    s1: roomTag({ sessionId: "s1", lookers: [{ id: NICK, name: "Nick Smith", focused: true }], typists: [{ member: NICK, name: "Nick Smith", until: now + 12 * min, at: now - 3 * min }] }),
     s2: roomTag({ sessionId: "s2" }),
     s3: roomTag({ sessionId: "s3", guards: { secrets: false, coauthors: true } }),
     s4: roomTag({ sessionId: "s4", guards: { secrets: false, coauthors: true } }),
-    s8: roomTag({ sessionId: "s8" }),
+    s8: roomTag({ sessionId: "s8", ...(teamTypingQ.has("typingAsk") ? { typingAsks: [{ member: NICK, name: "Nick Smith", at: now - 20_000 }] } : {}) }),
     y1: roomTag({ roomId: ROOM_5110, sessionId: "y1", live: true, takenOver: { by: NICK, byName: "Nick Smith", at: now - 12 * min } }),
   },
   views: [{ member: NICK, name: "Nick Smith", shown: ["s1", NICK_PANE], focused: "s1", at: now }],
@@ -1581,6 +1600,23 @@ const api: Record<string, (...a: any[]) => any> = {
     return state;
   },
   teamLiveView: () => undefined,
+  // typing into teammates' sessions: asking makes Nick's pane "asked"; an answer or a revoke changes your session's tag
+  teamAskToType: async (id: string) => {
+    const r = live.remote.find((x) => x.id === id)?.room;
+    if (r) r.typing = { state: "asked" };
+    emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+    return null;
+  },
+  teamDecideTyping: async (sessionId: string, member: string, choice: "session" | "minutes" | "deny" | "revoke") => {
+    const tag = live.own[sessionId];
+    if (!tag) return err("That session isn't shared in a room any more");
+    tag.typingAsks = (tag.typingAsks ?? []).filter((a) => a.member !== member);
+    tag.typists = (tag.typists ?? []).filter((g) => g.member !== member);
+    if (choice === "session" || choice === "minutes") tag.typists.push({ member, name: "Nick Smith", until: choice === "minutes" ? Date.now() + 15 * min : null, at: Date.now() });
+    emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+    return null;
+  },
+  teamAuditRecent: async () => JSON.parse(JSON.stringify(auditEntries)),
   teamPaneResync: async (id: string) => emit("onSessionData", id, `\x1bc${buffers[id] ?? ""}`),
 };
 

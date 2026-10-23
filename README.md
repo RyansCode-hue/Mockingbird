@@ -182,6 +182,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Shipped recently
 
+- **Typing consent and the remote-activity log** (1.5.0, from the security
+  review's R1, R2, R5) — teammates' copies of your room sessions are
+  view-only until you allow typing (this session, or 15 min; revocable from
+  the pane header); never while your agent asks for permission. Agent messages
+  wait out permission prompts and are stripped of control characters. One
+  audit log of remote actions, shown in Settings → Team. Prompt and indicator
+  were mocked as three options (in-pane banner, docked strip, dialog); Ryan
+  picked the docked strip with a teal outline around the pane.
 - **What's new** (1.4.11) — click the version next to
   "Mockingbird" in the top bar: this version's changes, each tagged New, Fix,
   Polish or UI, then fold-outs for earlier versions (back to 1.0.0), what's
@@ -478,8 +486,23 @@ agreed direction, **Later** is worth doing once the foundations settle.
     Where → **Connected** (it lists your rooms, who's online, and offers the
     repo the room works in; **+ New room** shares a new group first, keyed by
     a leading ticket number: "5120 Donor search" is group 5120). It streams to
-    whoever shows it, anyone can type into it, its row names who's looking,
+    whoever shows it, its row names who's looking,
     Follow mirrors a teammate's grid, and everyone hears when it waits.
+    A teammate's copy is **view-only**: typing into it (or **Ask to type**)
+    asks the session's owner, whose pane shows a strip under its header,
+    "Nick wants to type in “Export API”" — **Allow for this session**,
+    **Allow for 15 min** or **Deny**. While Nick can type, the pane is outlined
+    in teal and its header shows "Nick can type" with ✕ to take it back. The owner's Mockingbird enforces it, so a modified client can't skip
+    it, and even an allowed teammate's keys are refused while the owner's
+    agent asks for permission: approvals are always the owner's. An older
+    Mockingbird typing in is refused with the reason (the connection stays).
+    Agent messages from teammates never answer a permission prompt either:
+    they wait until it's answered, and their text can't end the paste early
+    (control characters are stripped). **Settings → Team → Recent remote
+    activity** lists what teammates did on this Mac — typing asked, allowed
+    and refused, keystrokes counted, agent messages, take-overs, files and
+    backups — from `~/.mockingbird/team/audit.log` (owner-only, append-only,
+    rotated), which never holds what was typed or said.
     Scrolling a teammate's session scrolls only your copy: room sessions run
     Claude Code and Codex inline, so their history — everything the terminal
     keeps, not just the screen on view — is in every copy's scrollback
