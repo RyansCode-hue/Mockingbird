@@ -594,11 +594,14 @@ describe("debugging a real .NET program", () => {
     try {
       const r = (await runs.start(dir, { mode: "side", debug: ["app"] })) as { ids: string[] };
       let e: any;
-      for (let i = 0; i < 600 && !e; i++) {
+      // a build that failed, or a session that ended, never stops: what it said is the failure
+      for (let i = 0; i < 600 && !e && runs.states()[0]?.status !== "failed" && !dbg.infos().some((x) => x.state === "ended"); i++) {
         e = events.find((x) => x[0] === "debug:stopped");
         await new Promise((res) => setTimeout(res, 100));
       }
-      expect(e, JSON.stringify(events.filter((x) => x[0] === "debug:output").map((x) => x[3])).slice(0, 600)).toBeTruthy();
+      const said = () =>
+        JSON.stringify({ service: runs.states()[0], debugger: dbg.infos(), output: events.filter((x) => x[0] === "debug:output").map((x) => x[3]), log: runs.buffer(r.ids[0]).slice(-3000) }, null, 1);
+      expect(e, said()).toBeTruthy();
       expect(e[2].frame).toMatchObject({ path: path.join(dir, "app", "Program.cs"), line: 3 });
       const locals = await dbg.variables(e[1], (await dbg.scopes(e[1], e[2].frame.id))[0].ref);
       expect(locals.filter((v) => ["a", "b"].includes(v.name)).map((v) => `${v.name}=${v.value}`).sort()).toEqual(["a=4", "b=5"]);
