@@ -100,6 +100,8 @@ export const PEER_FAILED = "it failed on their Mockingbird (the reason is in its
 
 export interface Team {
   readonly self: { id: MemberId; publicKey: string };
+  /** This install's signature over `text`, by its identity key (take-over grants carry one: takeoverGrants.ts). */
+  sign(text: string): string;
   /** Rooms this install is a member of. */
   rooms(): readonly RoomState[];
   room(roomId: RoomId): RoomState | undefined;
@@ -364,6 +366,10 @@ export class TeamCore implements Team {
   private refusedCounts = new Map<string, number>();
   /** Per peer, room and author: a timer to ask again for events refused for rate. */
   private rerequests = new Map<string, ReturnType<typeof setTimeout>>();
+
+  sign(text: string): string {
+    return this.identity.sign(text);
+  }
 
   constructor(private o: TeamOptions) {
     this.identity = o.identity;

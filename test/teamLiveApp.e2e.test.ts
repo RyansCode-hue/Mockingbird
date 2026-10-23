@@ -163,7 +163,7 @@ async function connect(signal: { url: string; real: boolean; creatorHome?: strin
 
 describe("team rooms between two Mockingbird instances", () => {
   it.skipIf(!appE2E)(
-    "live panes, chat, the House board, a backed-up turn, a hand-over from the owner's prompt, and a take-over while the owner is away",
+    "live panes, chat, the House board, a backed-up turn, a hand-over from the owner's prompt, and a take-over while the owner is away: refused without their grant, then under it",
     async () => {
       execFileSync(process.execPath, ["esbuild.mjs"], { cwd: root, stdio: "ignore" });
       const signal = await e2eSignaling();
@@ -370,7 +370,8 @@ describe("team rooms between two Mockingbird instances", () => {
         const askButton = `[...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Ask Ryan")`;
         await untilTrue("Ask Ryan in Nick's dialog", async () => nick.evaluate<boolean>(`(() => { const b = ${askButton}; return !!b && !b.disabled; })()`));
         await nick.evaluate(`${askButton}.click()`);
-        await untilTrue("Ryan's prompt", async () => /Nick wants to continue “Gift export” on their laptop/.test(await ryan.evaluate<string>(`document.querySelector(".tk-ask")?.textContent ?? ""`)));
+        await untilTrue("Ryan's prompt", async () => /Nick wants to take over “Gift export”/.test(await ryan.evaluate<string>(`document.querySelector(".tk-ask")?.textContent ?? ""`)));
+        expect(await ryan.evaluate<string[]>(`[...document.querySelectorAll(".tk-ask button")].map((b) => b.textContent)`)).toEqual(expect.arrayContaining(["Hand over", "Keep it"]));
         await untilTrue("Nick told he's waiting", async () => /Waiting for Ryan to answer/.test(await nick.evaluate<string>(`document.querySelector(".tk-dlg")?.textContent ?? ""`)));
         await ryan.evaluate(`[...document.querySelectorAll(".tk-ask button.primary")].find((x) => x.textContent === "Hand over").click()`);
         await untilTrue("the hand-over done", async () => /Running here now/.test(await nick.evaluate<string>(`document.querySelector(".tk-dlg")?.textContent ?? ""`)), 90_000);
@@ -379,7 +380,9 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(ryanEx?.status).toBe("dead");
         expect(fs.readFileSync(path.join(ex.cwd, "notes.txt"), "utf8")).toBe("write the gift export\n");
         const exView = (await takeovers(nick)).sessions.find((v) => v.sessionId === ex.id)!;
-        expect(exView.takenOver).toMatchObject({ by: nickId, conversation: "full", snapshot: { sha: exView.latest.sha } });
+        // the room took it on Ryan's signed hand-over, checked on both Macs
+        expect(exView.takenOver).toMatchObject({ by: nickId, conversation: "full", snapshot: { sha: exView.latest.sha }, grant: "handover" });
+        await untilTrue("Ryan's Mac to record the hand-over", async () => (await takeovers(ryan)).sessions.find((v) => v.sessionId === ex.id)?.takenOver?.grant === "handover");
         const nickEx = (await nick.evaluate<{ id: string; cwd: string }[]>("window.mb.listSessions()")).find((x) => x.id === exView.takenOver!.newSessionId)!;
         expect(fs.readFileSync(path.join(nickEx.cwd, "notes.txt"), "utf8")).toBe("write the gift export\n");
         // a new conversation on Nick's account, briefed; Ryan's whole conversation saved in the worktree for reference
@@ -392,21 +395,49 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(await ryan.evaluate(`window.mb.relaunchSession(${JSON.stringify(ex.id)})`)).toMatchObject({ error: expect.stringMatching(/continues on Nick's laptop/) });
         await nick.evaluate(`[...document.querySelectorAll(".tk-dlg button")].find((x) => x.textContent === "Close").click()`);
 
-        // ---- Ryan's Mockingbird quits; Nick takes the session over from his sidebar
+        // ---- Ryan's Mockingbird quits without allowing take-overs while he's away: Nick can't take his session over
         ryan.close();
         expect(await quitApp(ryan.child)).toEqual({ killed: false, leftovers: [] }); // it quits on its own, its agents with it
         await untilTrue("Ryan offline at Nick's", async () => (await nick.status()).rooms[0]?.online.length === 0, 60_000);
+        await untilTrue("Nick's row: Ryan offline", async () => /^Ryan's session · offline/.test(await nick.evaluate<string>(whoLine("Donor entities"))));
+        const refused = await nick.evaluate<TakeoverPlan>(`window.mb.teamTakeoverPlan(${JSON.stringify(roomId)}, ${JSON.stringify(s.id)}, null)`);
+        expect(refused.grant).toEqual({ kind: "none", why: expect.stringMatching(/^Ryan hasn't allowed take-overs while they're away\. Ask Ryan to hand it over when they're back online/) });
+        expect(await nick.evaluate<boolean>(`!!${takeOverOf("Donor entities")}?.classList.contains("primary")`)).toBe(false);
+        await nick.evaluate(`${takeOverOf("Donor entities")}.click()`);
+        await untilTrue("the dialog saying why", async () => /Can't be taken over: Ryan hasn't allowed take-overs while they're away/.test(await nick.evaluate<string>(`document.querySelector(".tk-dlg")?.textContent ?? ""`)));
+        expect(await nick.evaluate<boolean>(`[...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Take over")?.disabled ?? null`)).toBe(true);
+        // asked for it anyway (as a click on a stale button would), it's refused before anything starts
+        expect(await nick.evaluate(`window.mb.teamTakeOver(${JSON.stringify(roomId)}, ${JSON.stringify(s.id)}, null)`)).toMatchObject({ error: expect.stringMatching(/can't be taken over: Ryan hasn't allowed take-overs while they're away/) });
+        expect((await takeovers(nick)).sessions.find((v) => v.sessionId === s.id)?.takenOver).toBeNull();
+        await nick.evaluate(`[...document.querySelectorAll(".tk-dlg button")].find((x) => x.textContent === "Cancel").click()`);
+
+        // ---- Ryan comes back, allows take-overs of his sessions while he's away, and quits again
+        ryan = await launchApp("Ryan", signal.url, { home: ryan.home, keepState: true, env: houseEnv });
+        await untilTrue("Ryan back to allow it", async () => (await ryan.status()).rooms[0]?.online.length === 1, 90_000);
+        expect((await ryan.status()).self?.id).toBe(ryanId); // the same identity after a restart (its key sealed with the test keychain)
+        expect(await ryan.evaluate(`window.mb.teamSetAwayGrant(${JSON.stringify(roomId)}, { hours: 8, sessions: null })`)).not.toMatchObject({ error: expect.anything() });
+        await untilTrue("Nick to hear the away grant", async () => !!(await takeovers(nick)).sessions.find((v) => v.sessionId === s.id)?.awayUntil, 30_000);
+        // the reconnect's catch-up done: Nick's clone holds the session's newest snapshot again
+        await untilTrue("Ryan to have caught Nick up", async () => !!(await takeovers(ryan)).sessions.find((v) => v.sessionId === s.id && v.self)?.heldBy.includes("Nick"), 60_000);
+        ryan.close();
+        // An instance restarted with its saved state often outlives SIGTERM here (its will-quit runs; the
+        // quit after the ptys never comes), so this quit is held only to leaving nothing running.
+        const second = await quitApp(ryan.child);
+        if (second.killed) console.warn(`[e2e] Ryan's restarted Mockingbird needed killing at its second quit:\n${mainLog(ryan).slice(-1500)}`);
+        expect(second.leftovers).toEqual([]);
+        await untilTrue("Ryan offline at Nick's again", async () => (await nick.status()).rooms[0]?.online.length === 0, 60_000);
+
+        // ---- Nick takes the session over from his sidebar, under Ryan's away grant
         await untilTrue("Take over, prominent", async () => nick.evaluate<boolean>(`!!${takeOverOf("Donor entities")}?.classList.contains("primary")`));
-        expect(await nick.evaluate<string>(whoLine("Donor entities"))).toMatch(/^Ryan's session · offline/);
         const plan = await nick.evaluate<TakeoverPlan>(`window.mb.teamTakeoverPlan(${JSON.stringify(roomId)}, ${JSON.stringify(s.id)}, null)`);
-        expect(plan).toMatchObject({ ownerOnline: false, branch: "5110-donors", conversation: { kind: "full" }, latestMissing: false, toOrigin: false, snapshot: { source: "peer" } });
+        expect(plan).toMatchObject({ ownerOnline: false, branch: "5110-donors", conversation: { kind: "full" }, latestMissing: false, toOrigin: false, snapshot: { source: "peer" }, grant: { kind: "away" } });
         expect(fs.realpathSync(plan.clone!)).toBe(fs.realpathSync(r.nick.clone));
         await nick.evaluate(`${takeOverOf("Donor entities")}.click()`);
         await untilTrue("the dialog's plan", async () => nick.evaluate<boolean>(`(() => { const b = [...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Take over"); return !!b && !b.disabled; })()`));
         await nick.evaluate(`[...document.querySelectorAll(".tk-dlg button.primary")].find((x) => x.textContent === "Take over").click()`);
         await untilTrue("the take-over done", async () => /Running here now/.test(await nick.evaluate<string>(`document.querySelector(".tk-dlg")?.textContent ?? ""`)), 60_000);
         const view = (await takeovers(nick)).sessions.find((v) => v.sessionId === s.id)!;
-        expect(view.takenOver).toMatchObject({ by: nickId, conversation: "full", snapshot: { source: "peer" } });
+        expect(view.takenOver).toMatchObject({ by: nickId, conversation: "full", snapshot: { source: "peer" }, grant: "away" });
         expect(git(r.bare, "for-each-ref", "--format=%(refname)", "refs/mockingbird")).toBe("");
         const mine = (await nick.evaluate<{ id: string; cwd: string; branch: string | null; taskGroup: string | null }[]>("window.mb.listSessions()")).find((x) => x.id === view.takenOver!.newSessionId)!;
         // the work in a worktree of Nick's clone, on the session's branch, a new conversation briefed from Ryan's
@@ -442,6 +473,7 @@ describe("team rooms between two Mockingbird instances", () => {
           /continued on Nick's laptop/.test(await ryan.evaluate<string>(`[...document.querySelectorAll(".sess-item")].filter((x) => x.textContent.includes("Donor entities")).map((x) => x.textContent).join("|")`))
         );
         expect((await takeovers(ryan)).left.map((l) => l.sessionId).sort()).toEqual([ex.id, s.id].sort());
+        expect((await takeovers(ryan)).refused).toEqual([]);
       } catch (err) {
         const dialogs = `--- Ryan's dialogs ---\n${await dialogsOf(ryan)}\n--- Nick's dialogs ---\n${await dialogsOf(nick)}`;
         throw new Error(`${(err as Error).message}\n${dialogs}\n--- Ryan's log ---\n${mainLog(ryan).slice(-4000)}\n--- Nick's log ---\n${mainLog(nick).slice(-4000)}`);
@@ -453,7 +485,7 @@ describe("team rooms between two Mockingbird instances", () => {
         await house.close();
       }
     },
-    360_000
+    480_000
   );
 
   it.skipIf(!appE2E)(

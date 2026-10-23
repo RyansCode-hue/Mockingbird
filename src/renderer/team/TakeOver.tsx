@@ -30,7 +30,10 @@ import { TakeOverIcon } from "../Icons";
  * row: this Mac's sessions that couldn't be backed up, and backups it
  * couldn't delete.
  *
- * A connected owner is asked first: HandOverPrompt is theirs. A copy a
+ * A take-over needs the owner's signed consent: a connected owner is asked
+ * first (HandOverPrompt is theirs); an offline owner's session can be taken
+ * over only under the away grant they gave before leaving (Settings → Team),
+ * and the dialog says why not, and whom to ask, without one. A copy a
  * teammate continued is stopped here and shows LeftCopyPanel (its pane) and
  * LeftCopyLine (its row): Take it back, and Send the changes the teammate
  * lacks. Changes sent that way land on the teammate's session as
@@ -105,8 +108,8 @@ export function TakeOverButton({ view, onOpen, asking }: { view: RoomSessionBack
   }
   return (
     <button
-      className={`tk-btn ${view.ownerOnline ? "outline" : "primary"}`}
-      title={view.ownerOnline ? `Ask ${view.ownerName} to hand this session over to your Mac (they're connected)` : `${view.ownerName} is offline — continue this session on your Mac`}
+      className={`tk-btn ${view.ownerOnline || !view.awayUntil ? "outline" : "primary"}`}
+      title={takeOverTitle(view)}
       onClick={(e) => {
         e.stopPropagation();
         onOpen(view);
@@ -138,11 +141,25 @@ export function takeOverAction(view: RoomSessionBackupView | null, onOpen: (view
     label: "Take over",
     menuLabel: "Take over…",
     icon: <TakeOverIcon />,
-    primary: !view.ownerOnline,
-    title: view.ownerOnline ? `Ask ${view.ownerName} to hand this session over to your Mac (they're connected)` : `${view.ownerName} is offline — continue this session on your Mac`,
+    primary: !view.ownerOnline && !!view.awayUntil,
+    title: takeOverTitle(view),
     onPick: () => onOpen(view),
   };
 }
+
+/** What Take over does for this session now: ask its connected owner, use their away grant, or nothing until they're back. */
+function takeOverTitle(view: RoomSessionBackupView): string {
+  if (view.ownerOnline) return `Ask ${view.ownerName} to hand this session over to your Mac (they're connected)`;
+  if (view.awayUntil) return `${view.ownerName} is away and allowed take-overs until ${clock(view.awayUntil)} — continue this session on your Mac`;
+  return `${view.ownerName} is offline and hasn't allowed take-overs while away: ask them to hand it over when they're back`;
+}
+
+/** A time to the minute, with the day when it isn't today. */
+const clock = (t: number) => {
+  const d = new Date(t);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })} ${time}`;
+};
 
 /**
  * What the sidebar rows don't show about a shared group's backups: this
@@ -161,6 +178,7 @@ export function RoomBackupWarnings({ room, view }: { room: TeamRoomSummary; view
   const warnings = [
     ...view.unbacked.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: "not backed up" })),
     ...view.cleanup.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: u.what ?? "backup not deleted from origin" })),
+    ...view.refused.filter((u) => u.roomId === room.id).map((u) => ({ ...u, what: `take-over by ${u.byName} refused, it runs on here`, problem: u.why })),
   ];
   if (!warnings.length) return null;
   return (
@@ -253,9 +271,10 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
       <div className="sub-h">
         {online
           ? `${view.ownerName} is connected, so they're asked first: their turn in progress finishes, and the session continues here from exactly where it stopped on their laptop. If they keep it or don't answer within 2 minutes, it stays with them.`
-          : `${view.ownerName} is offline. Their copy stops when their Mockingbird is back, and keeps its files.`}{" "}
+          : `${view.ownerName} is offline. A take-over needs their consent: the hand-over they allowed while away. Their copy stops when their Mockingbird is back, and keeps its files.`}{" "}
         The session continues on this Mac under your account, in a worktree of your clone on its branch.
       </div>
+      {p?.grant.kind === "none" && <div className="err tk-grant">Can't be taken over: {p.grant.why}</div>}
       {plan === null && <div className="fp-note">{view.toOrigin ? "Checking this Mac and origin…" : "Checking what reached this Mac…"}</div>}
       {isErr(plan) && <div className="err">{plan.error}</div>}
       {p && (
@@ -326,6 +345,12 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
           </dd>
           <dt>Branch</dt>
           <dd>{p.branch ?? "(detached)"}</dd>
+          <dt>Consent</dt>
+          <dd>
+            {p.grant.kind === "ask" && <>{p.ownerName} is asked to hand it over; their Mockingbird signs the hand-over.</>}
+            {p.grant.kind === "away" && <>{p.ownerName} allowed take-overs while they're away, until {clock(p.grant.expiresAt)}.</>}
+            {p.grant.kind === "none" && <span className="warn">None: {p.grant.why}</span>}
+          </dd>
         </dl>
       )}
       {busy && asking && (
@@ -347,7 +372,7 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
           {done ? "Close" : busy && asking ? "Hide" : "Cancel"}
         </button>
         {!done && (
-          <button className="primary" onClick={go} disabled={busy || !p?.clone || !p.snapshot}>
+          <button className="primary" onClick={go} disabled={busy || !p?.clone || !p.snapshot || p.grant.kind === "none"}>
             {busy ? (online ? `Asking ${view.ownerName}…` : `${verb === "Take back" ? "Taking back" : "Taking over"}…`) : online ? `Ask ${view.ownerName}` : verb}
           </button>
         )}
@@ -378,15 +403,15 @@ export function HandOverPrompt({ ask, onShow }: { ask: IncomingAsk; onShow?: (se
   return (
     <Modal className="modal tk-dlg tk-ask" onClose={() => waiting && !sent && void answer("keep")} closeOnBackdrop={false}>
       <h3>
-        {ask.fromName} wants to continue “{ask.title}” on their laptop
+        {ask.fromName} wants to take over “{ask.title}”
       </h3>
       {waiting ? (
         <>
           <div className="sub-h">
-            <b>Hand over</b>: the turn in progress finishes, Mockingbird backs the session up and sends it straight to {ask.fromName}, then stops the agent here. Your worktree stays exactly
-            as it is, and you can take the session back later.
+            <b>Hand over</b>: the turn in progress finishes, Mockingbird backs the session up and sends it straight to {ask.fromName} with your signed hand-over, then stops the agent
+            here. Your worktree stays exactly as it is, and you can take the session back later.
             <br />
-            <b>Keep</b>: it carries on here, and {ask.fromName} is told.
+            <b>Keep it</b>: it carries on here, and {ask.fromName} is told. Nobody can take it over without your hand-over.
           </div>
           <div className="fp-note tk-quiet">Kept in {countdown(ask.deadline, now)} if you don't answer.</div>
         </>
@@ -402,7 +427,7 @@ export function HandOverPrompt({ ask, onShow }: { ask: IncomingAsk; onShow?: (se
         )}
         <span style={{ flex: 1 }} />
         <button className="outline" onClick={() => answer("keep")} disabled={!waiting || sent}>
-          Keep
+          Keep it
         </button>
         <button className="primary" onClick={() => answer("handover")} disabled={!waiting || sent}>
           {waiting ? "Hand over" : "Handing over…"}

@@ -1,6 +1,6 @@
 import * as os from "os";
 import * as path from "path";
-import { loadIdentity, TEAM_DIR, type Identity } from "./identity";
+import { loadIdentity, TEAM_DIR, type Identity, type KeySealer } from "./identity";
 import { ElectronPeerHost } from "./peerHost";
 import { RoomStore } from "./rooms";
 import { TeamCore, type LeftInfo, type PeerWire, type RevokeOutcome, type Team } from "./transport";
@@ -52,6 +52,8 @@ export interface TeamServiceDeps {
   cleanup?: () => RoomCleanup[];
   /** A desktop notification: this install was removed from a room, someone asks to join (to the admin), someone joined. */
   notify?: (title: string, body: string) => void;
+  /** What seals the identity's private key (the app: safeStorage, keyStore.ts). Without one the key file is used as it is. */
+  keySealer?: KeySealer | null;
 }
 
 export class TeamService {
@@ -64,6 +66,8 @@ export class TeamService {
   private forgetting = new Map<RoomId, Promise<string[]>>();
   private leavingNow = new Set<RoomId>();
   private nextNotice = 1;
+  /** The identity's key stays in plain text though it should be sealed: shown in Settings → Team. */
+  private keyWarning: string | null = null;
 
   constructor(private d: TeamServiceDeps) {}
 
@@ -76,7 +80,13 @@ export class TeamService {
     if (this.core) return;
     const dir = this.d.dir ?? TEAM_DIR;
     try {
-      this.identity = loadIdentity(dir);
+      this.identity = loadIdentity(dir, {
+        sealer: this.d.keySealer,
+        warn: (m) => {
+          this.keyWarning = m;
+          this.d.log("team identity", m);
+        },
+      });
     } catch (err) {
       this.error = this.d.log("team identity", err);
       return;
@@ -129,7 +139,8 @@ export class TeamService {
     const s = this.d.settings();
     const base = { signalingUrl: s.signalingUrl ?? "", rooms: [], pending: [], peers: [], problems: [], notices: this.notices };
     if (!this.core || !this.identity) return { ...base, self: null, error: this.error ?? "Team rooms haven't started" };
-    return { ...base, self: { id: this.identity.id, name: this.displayName(), fingerprint: formatFingerprint(this.identity.id) }, ...this.core.status() };
+    const st = this.core.status();
+    return { ...base, self: { id: this.identity.id, name: this.displayName(), fingerprint: formatFingerprint(this.identity.id) }, ...st, problems: this.keyWarning ? [...st.problems, this.keyWarning] : st.problems };
   }
 
   // ---- leaving and removing -------------------------------------------------------------------

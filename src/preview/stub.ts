@@ -571,6 +571,8 @@ const runDownload = (roomId: string, a: ArtifactSummary) => {
 // snapshot was copied here. 5110 keeps backups peer to peer (the default; Nick is its admin): one of yours taken over by Nick.
 // ?p2p: 5101 keeps its backups peer to peer too — Sam's copy here is older than his last turn
 const p2p = teamQuery.has("p2p");
+// ?noAway: Sam (offline) didn't allow take-overs while he's away, so his session can't be taken over; ?refused: Nick's older Mockingbird took over s2 without your hand-over
+const noAway = teamQuery.has("noAway");
 const takeoverView: TakeoverView = (() => {
   const sha = (c: string) => c.repeat(40).slice(0, 40);
   const base = (o: Partial<RoomSessionBackupView> & Pick<RoomSessionBackupView, "sessionId" | "owner" | "ownerName">): RoomSessionBackupView => {
@@ -588,6 +590,7 @@ const takeoverView: TakeoverView = (() => {
       self: false,
       takenOverByName: null,
       peerCopy: { sha: sha("a1"), takenAt: now - 2 * min },
+      awayUntil: null,
       heldBy: [],
       transcript: { have: 412_000, of: 412_000 },
       problem: null,
@@ -616,6 +619,8 @@ const takeoverView: TakeoverView = (() => {
         peerCopy: p2p ? { sha: sha("c3"), takenAt: now - 31 * min } : { sha: sha("b2"), takenAt: now - 4 * min },
         transcriptBytes: 980_000,
         transcript: { have: 640_000, of: 980_000 },
+        // Sam allowed take-overs while he's away, for six more hours (?noAway: he didn't)
+        awayUntil: noAway ? null : now + 6 * 60 * min,
       }),
       base({
         roomId: "R5110bbbbbbbbbbbbbbbbb",
@@ -631,8 +636,10 @@ const takeoverView: TakeoverView = (() => {
       }),
     ],
     rooms: [
-      { roomId: "R5101aaaaaaaaaaaaaaaaa", toOrigin: !p2p, changed: { byName: "You", self: true, at: now - 3 * 24 * 60 * min }, adminName: "You", canChange: true, remote: "Azure DevOps" },
-      { roomId: "R5110bbbbbbbbbbbbbbbbb", toOrigin: false, changed: null, adminName: "Nick Smith", canChange: false, remote: "GitHub" },
+      // ?backupConsent: you haven't answered whether your own 5101 sessions back up to origin, so the window asks
+      // you allowed take-overs of all your 5101 sessions while you're away, until tomorrow
+      { roomId: "R5101aaaaaaaaaaaaaaaaa", toOrigin: !p2p, consent: teamQuery.has("backupConsent") ? null : true, away: { sessions: null, expiresAt: now + 20 * 60 * min }, changed: { byName: "You", self: true, at: now - 3 * 24 * 60 * min }, adminName: "You", canChange: true, remote: "Azure DevOps" },
+      { roomId: "R5110bbbbbbbbbbbbbbbbb", toOrigin: false, consent: null, away: null, changed: null, adminName: "Nick Smith", canChange: false, remote: "GitHub" },
     ],
     unbacked: [],
     cleanup: [{ roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "s0", title: "Spike: org cache", problem: "remote: TF401027: You need the Git 'ForcePush' permission to delete the backup" }],
@@ -676,6 +683,9 @@ const takeoverView: TakeoverView = (() => {
         applied: null,
       },
     ],
+    refused: teamQuery.has("refused")
+      ? [{ roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "s2", title: "#5101 — Org dropdowns: API", byName: "Nick Smith", at: now - 6 * min, why: "Nick Smith's Mockingbird needs to update to take over: take-overs now need You's signed hand-over" }]
+      : [],
   };
 })();
 const receivedPatch = `diff --git a/docs/release-notes.md b/docs/release-notes.md
@@ -711,14 +721,17 @@ const auditEntries: AuditEntry[] = [
   { at: now - 3 * 60 * min, kind: "takeover", room: "#5110 Donor entities", member: "Nick Smith", session: "y1", title: "Donor entity model" },
 ];
 
+const samGrant: TakeoverPlan["grant"] = noAway
+  ? { kind: "none", why: "Sam hasn't allowed take-overs while they're away. Ask Sam to hand it over when they're back online, or to allow take-overs while they're away (Settings → Team)." }
+  : { kind: "away", expiresAt: now + 6 * 60 * min };
 const takeoverPlans: Record<string, TakeoverPlan> = {
-  n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: p2p ? "peer" : "origin", skipped: [] }, other: null, toOrigin: !p2p, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 }, resumesOwn: false },
+  n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: p2p ? "peer" : "origin", skipped: [] }, other: null, toOrigin: !p2p, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 }, resumesOwn: false, grant: { kind: "ask" } },
   // ?p2p: only the copy that reached this Mac half an hour ago, a turn behind Sam's laptop
   m1: p2p
-    ? { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: true, conversation: { kind: "partial", have: 640_000, of: 980_000 }, resumesOwn: false }
-    : { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, toOrigin: true, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 }, resumesOwn: false },
+    ? { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: true, conversation: { kind: "partial", have: 640_000, of: 980_000 }, resumesOwn: false, grant: samGrant }
+    : { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "m1", title: "Last-org API tests", agent: "codex", branch: "5101-api-tests", ownerName: "Sam", ownerOnline: false, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "b2".repeat(20), takenAt: now - 4 * min, source: "peer", skipped: [] }, other: { sha: "c3".repeat(20), takenAt: now - 31 * min, source: "origin" }, toOrigin: true, originProblem: null, latestMissing: false, conversation: { kind: "partial", have: 640_000, of: 980_000 }, resumesOwn: false, grant: samGrant },
   // 5110 keeps backups peer to peer: what Nick's laptop sent while connected
-  n7: { roomId: "R5110bbbbbbbbbbbbbbbbb", sessionId: "n7", title: "Donor entity model", agent: "claude", branch: "5110-donor-entities", ownerName: "Nick Smith", ownerOnline: true, originUrl: "git@github.com:acme/donors.git", clone: REPO, snapshot: { sha: "d5".repeat(20), takenAt: now - 3 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 }, resumesOwn: false },
+  n7: { roomId: "R5110bbbbbbbbbbbbbbbbb", sessionId: "n7", title: "Donor entity model", agent: "claude", branch: "5110-donor-entities", ownerName: "Nick Smith", ownerOnline: true, originUrl: "git@github.com:acme/donors.git", clone: REPO, snapshot: { sha: "d5".repeat(20), takenAt: now - 3 * min, source: "peer", skipped: [] }, other: null, toOrigin: false, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 }, resumesOwn: false, grant: { kind: "ask" } },
 };
 const takeoverChanged = () => emit("onTeamTakeoverChanged", JSON.parse(JSON.stringify(takeoverView)));
 const inviteCode = (roomId: string) => `MBR1-${btoa(JSON.stringify({ r: roomId, u: SIGNAL, t: Math.random().toString(36).slice(2), f: ME, n: "preview" })).replace(/=+$/, "")}`;
@@ -1522,6 +1535,20 @@ const api: Record<string, (...a: any[]) => any> = {
     for (const s of takeoverView.sessions) if (s.roomId === roomId) s.toOrigin = on;
     takeoverChanged();
     return later(null, 400);
+  },
+  teamSetAwayGrant: async (roomId: string, away: { hours: number; sessions: string[] | null } | null) => {
+    const r = takeoverView.rooms.find((x) => x.roomId === roomId);
+    if (!r) return err("You're not in that room");
+    r.away = away ? { sessions: away.sessions, expiresAt: Date.now() + away.hours * 3_600_000 } : null;
+    takeoverChanged();
+    return later(null, 300);
+  },
+  teamSetBackupConsent: async (roomId: string, allow: boolean) => {
+    const r = takeoverView.rooms.find((x) => x.roomId === roomId);
+    if (!r) return err("You're not in that room");
+    r.consent = allow;
+    takeoverChanged();
+    return later(null, 300);
   },
   // team rooms: migration number reservations
   teamChangesView: async (roomId: string) => (migrationViews[roomId] ? JSON.parse(JSON.stringify(migrationViews[roomId])) : err(`Not a member of room ${roomId}`)),

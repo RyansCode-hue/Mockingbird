@@ -81,7 +81,14 @@ origin; the admin's opt-in to origin, its pre-push hook, and turning it off
 again) and
 take-over with the owner online (Hand over, Keep,
 no answer, dropping offline mid-request), away or restarted, the old copy
-stopping, its unsent changes sent and applied, and Take it back; leaving and
+stopping, its unsent changes sent and applied, and Take it back; take-over
+only with the owner's signed grant (refused without an away grant, expired,
+withdrawn, forged, the admin's own, an older Mockingbird told to update,
+take-overs from before grants accepted once), from a snapshot the owner
+recorded (a planted ref on origin ignored and logged, a peer copy kept only
+as the commit it named); backups to origin only for members who allowed it;
+the identity key sealed (moved keeping its fingerprint, the plain file kept
+and a warning without the Keychain, never replaced when it can't be opened); leaving and
 removal (who may remove whom, what each Mac deletes, the Worker's revoke, and
 an older Worker); joining (only the admin's add counts, rooms from before
 keeping theirs; accept, decline, a request passed on to an offline admin,
@@ -96,8 +103,9 @@ hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
 homes (their windows open while they run): share, join (the admin accepting
 from its prompt), a terminal watched and typed into, chat, a package claimed,
 a turn of a Claude stand-in backed up peer to peer (nothing on origin), a
-session handed over from the owner's prompt, and Take over from the copy that
-reached the taker once the owner has quit, their copy stopping when it starts again; and
+session handed over from the owner's prompt, Take over refused once the owner
+has quit without allowing it while away, and allowed from the copy that
+reached the taker under the away grant they gave, their copy stopping when it starts again; and
 migration numbers reserved through the agents' tools on one instance holding
 back the other's file, with each side's uncommitted work a heads-up on the other. `MB_E2E_SIGNALING_URL=https://…` runs
 them against a deployed Worker — allow the fingerprint `npm run
@@ -440,7 +448,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
   teammate's Mockingbird. Built and tested end to end on one Mac; next is the
   first run between two laptops through the deployed Worker.
   - **Connecting:** each install has a key pair and a display name (Settings →
-    Team; `npm run team:fingerprint`). Laptops connect peer to peer over WebRTC
+    Team; `npm run team:fingerprint`) — the private key sealed with a key the
+    macOS Keychain holds for Mockingbird, so a copy of the file isn't enough to
+    act as you (moved there on first start, same fingerprint; without the
+    Keychain it stays in the owner-only file, and Settings → Team says so). Laptops connect peer to peer over WebRTC
     (in a hidden window), introduced by a Cloudflare signaling Worker
     (`signaling/`, deployed once; only fingerprints in its `ALLOWED_CREATORS`
     create rooms) with Cloudflare TURN as the fallback relay. Every connection
@@ -520,9 +531,12 @@ agreed direction, **Later** is worth doing once the foundations settle.
     connected teammates with its conversation, which never goes to git.
     Backups stay off GitHub by default: only the room's admin can turn on
     **Also back up to GitHub** (Settings → Team, per room, after a warning),
-    which also pushes each snapshot to that hidden ref on origin — through the
-    repository's pre-push hook — so a session can be taken over while its
-    owner's laptop is off; turned off, each member deletes what they pushed.
+    which makes it available; each member is then asked once — **Back up my
+    room sessions to GitHub (origin)?** Allow / Not now, kept on their Mac —
+    and only those who allow it push their snapshots to that hidden ref on
+    origin, through the repository's pre-push hook, so a session can be taken
+    over while its owner's laptop is off; turned off, by the admin or by a
+    member for their own, what was pushed is deleted.
     Rows and panes say where each backup is ("copied to Nick 2m ago",
     "backed up 2m ago"). **Take over** continues a teammate's session on your
     laptop from the newest snapshot that reached you (saying how old it is,
@@ -534,9 +548,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
     needs detail (deleted once that session is done with it: taken back,
     closed, its backup dropped, 14 days without a turn, or you leaving the
     room); taking your own session back resumes your own conversation,
-    briefed on what they did. A connected owner is asked first (**Hand
-    over** / **Keep**, kept after 2 minutes unanswered): handing over lets their
-    turn finish, sends that exact backup straight to you and stops their agent.
+    briefed on what they did. **Nobody takes over a session without its
+    owner's signed consent** — not the room's admin either. A connected owner
+    is asked first ("Nick wants to take over “Export API”": **Hand over** /
+    **Keep it**, kept after 2 minutes unanswered): handing over lets their
+    turn finish, sends that exact backup straight to you with their signed
+    hand-over and stops their agent. An offline owner's session can be taken
+    over only if they allowed it before leaving (Settings → Team, **While I'm
+    away**: all their sessions in the room or one, for 8 hours to a week);
+    otherwise Take over says why and to ask them. Every Mac checks the grant,
+    so a take-over without one — an older Mockingbird's, say — changes nothing
+    on the owner's Mac, which says so in the room; both teammates need 1.5 to
+    take over. The snapshot it starts from is one the owner's signed room log
+    names: a backup ref someone else pushed to origin is ignored.
     An owner who was away stops their copy as soon as their Mockingbird is back
     (or started): its worktree stays untouched, its pane says "Continued on
     Nick's laptop" with **Take it back** (the same take-over, in reverse) and
@@ -624,7 +648,7 @@ before they're built.
 
 **Phase 2 — the daily workflow**
 - Ticket → session in one click: claim the House ticket, create its branch and worktree, and start an agent with the ticket as its first prompt.
-- Away mode: the take-over brief is ready before you leave, and your sessions say a teammate can take over in one click.
+- Away mode, the rest: the take-over brief is ready before you leave, and your sessions say a teammate can take over in one click. (Allowing take-overs while you're away — a signed, expiring grant — shipped in 1.5.)
 - Context warnings: suggest /compact or a fresh session with a brief before a session nears its limit.
 - Usage per session and per ticket, with a warning before an expensive action (like a cold resume).
 
@@ -643,6 +667,10 @@ creator, else the longest-standing member). Decided:
   claim ownership after a waiting period, announced to everyone.
 - Role changes are signed room events every Mac checks, announced in the chat
   ("Ryan made Nick an admin"). Tooling profiles build on these roles.
+- Take-over stays the session owner's to grant (a hand-over or an away
+  grant): no role can take a session over without it. An emergency path for
+  an owner who's gone for good would be its own explicit, announced and
+  logged event, never a bypass of the grant check.
 
 **Tooling profiles** — what Mockingbird adds to an agent, adjustable per project
 so rules that fit one repo don't get in the way in another. Decided:

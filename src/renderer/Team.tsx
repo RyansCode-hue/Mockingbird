@@ -3,7 +3,7 @@ import { Modal } from "./Modal";
 import { SetRow } from "./SetRow";
 import { Toggle } from "./Toggle";
 import { CopyToast, useCopyNote } from "./copyNote";
-import { RoomBackupsSetting } from "./team/RoomBackups";
+import { RoomAwaySetting, RoomBackupsSetting } from "./team/RoomBackups";
 import { RoomMigrationsSetting } from "./team/Migrations";
 import { RemoteActivity } from "./team/RemoteActivity";
 import { isErr, type Settings } from "../shared/types";
@@ -611,6 +611,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
           </SetRow>
           <RoomWarnings room={r} />
           <RoomBackupsSetting room={r} />
+          <RoomAwaySetting room={r} />
           <RoomMigrationsSetting roomId={r.id} />
           <RoomMembers room={r} onRemove={(member) => setRemoving({ room: r, member })} />
           <RoomJoinRequests room={r} self={st?.self?.id} />

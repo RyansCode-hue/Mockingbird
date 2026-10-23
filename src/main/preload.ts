@@ -375,6 +375,10 @@ const api = {
   teamTakeoverDismissReceived: (roomId: string, id: string) => ipcRenderer.invoke("team:takeoverDismissReceived", roomId, id),
   /** Turn a room's backups to origin on or off (its admin only; off by default: peer to peer). */
   teamSetBackupsToOrigin: (roomId: string, on: boolean) => ipcRenderer.invoke("team:setBackupsToOrigin", roomId, on),
+  /** This member allows (or stops) backing up their own sessions in a room to origin, once its admin made that available. */
+  teamSetBackupConsent: (roomId: string, allow: boolean) => ipcRenderer.invoke("team:setBackupConsent", roomId, allow),
+  /** Allow take-overs of this member's sessions in a room while they're away (`sessions`: null for all), for `hours`; null stops. */
+  teamSetAwayGrant: (roomId: string, away: { hours: number; sessions: string[] | null } | null) => ipcRenderer.invoke("team:setAwayGrant", roomId, away),
   onTeamTakeoverChanged: (cb: (view: unknown) => void) => {
     const h = (_e: unknown, v: unknown) => cb(v);
     ipcRenderer.on("team:takeoverChanged", h);

@@ -7,6 +7,9 @@ import { ago } from "../format";
  * room session's backup, and what the window is told. The main-process side is
  * src/main/team/takeover.ts.
  *
+ * Origin only ever gets a member's snapshots when the room's admin made it
+ * available and that member allowed it for their own sessions.
+ *
  * After every agent turn the owner's Mockingbird snapshots the session's
  * worktree as a commit on top of its branch's commit, keeps it under the
  * hidden ref `refs/mockingbird/rooms/<room>/<session>`, copies it peer to peer
@@ -51,7 +54,45 @@ export interface TakenOver {
   newSessionId: string;
   snapshot: { sha: string; takenAt: number; source: SnapshotSource };
   conversation: ConversationCarried;
+  /**
+   * The owner's consent it carried: their hand-over, their away grant, or
+   * "accepted" — a take-over from before grants that the owner's
+   * Mockingbird had already honoured, accepted once it updated. Absent on
+   * an ungranted one (RoomSessionBackup.ungranted).
+   */
+  grant?: TakeoverGrant["kind"] | "accepted";
 }
+
+/**
+ * A session owner's signed consent to a take-over (src/main/team/takeoverGrants.ts):
+ *   - "handover": answering a teammate's request, for one session, that
+ *     teammate (`to`) and the snapshot handed over (`sha`), for HANDOVER_GRANT_MS;
+ *   - "away": ahead of time, for the owner's sessions in the room (`sessions`,
+ *     or null for all of them), any teammate, until `expiresAt` (at most
+ *     AWAY_GRANT_MAX_MS). Published as `session.awayGrant`; only the latest counts.
+ * `sig` is the owner's key over the rest (grantInput).
+ */
+export interface TakeoverGrant {
+  v: 1;
+  id: string;
+  kind: "handover" | "away";
+  roomId: RoomId;
+  owner: MemberId;
+  sessions: string[] | null;
+  to: MemberId | null;
+  sha: string | null;
+  issuedAt: number;
+  expiresAt: number;
+  sig: string;
+}
+/** How long a hand-over stays good for the taker to start the session and tell the room. */
+export const HANDOVER_GRANT_MS = 30 * 60_000;
+/** The longest an away grant can last. */
+export const AWAY_GRANT_MAX_MS = 7 * 86_400_000;
+/** How far ahead of a take-over a grant's issue time may be (clocks differ between laptops). */
+export const GRANT_SKEW_MS = 5 * 60_000;
+/** What Settings → Team offers for "while I'm away", in hours. */
+export const AWAY_HOURS = [8, 24, 72, 168] as const;
 
 /** One room session's backup as the room knows it. */
 export interface RoomSessionBackup {
@@ -73,7 +114,18 @@ export interface RoomSessionBackup {
   pushed: { sha: string; takenAt: number; at: number } | null;
   /** The transcript's size when the newest snapshot was taken: a complete copy has at least this much. */
   transcriptBytes: number | null;
+  /** Its owner's Mockingbird signs take-over grants (its latest backup said so): one that doesn't needs an update before the session can be taken over. */
+  grants?: true;
   takenOver: TakenOver | null;
+  /**
+   * A take-over that carried no valid grant from the owner (an older
+   * Mockingbird's, or a forged one): it changes nothing — the owner's session
+   * runs on — but is kept so the owner's Mockingbird can tell the taker, and
+   * accept one it had already honoured before it updated.
+   */
+  ungranted?: TakenOver | null;
+  /** The ungranted taker dropped the old backup; it counts if the take-over is accepted. */
+  ungrantedDrop?: { at: number; by: MemberId; reason: DroppedBecause } | null;
   /** Its backup was deleted from origin and members' clones (or its owner left the room); a later backup by its owner revives it. */
   dropped: { at: number; by: MemberId; reason: DroppedBecause } | null;
 }
@@ -93,6 +145,8 @@ export const STALE_BACKUP_MS = 14 * 86_400_000;
 
 export interface TakeoverRoomState {
   sessions: Record<string, RoomSessionBackup>;
+  /** Each member's current away grant (session.awayGrant): their sessions that may be taken over while they're away, until it expires. */
+  away?: Record<MemberId, TakeoverGrant>;
 }
 
 /**
@@ -127,6 +181,8 @@ export const backupsToOrigin = (room: { ext: { settings?: RoomSettings } } | nul
  * from before the setting require one: they show this as why it isn't there.
  */
 export const NOT_PUSHED = "not on origin: this room keeps backups peer to peer";
+/** What a backup kept off origin carries when the room makes origin available but its owner hasn't allowed it for their own sessions. */
+export const NOT_ALLOWED = "not on origin: its owner keeps their backups peer to peer";
 
 declare module "./types" {
   interface RoomEventBodies {
@@ -141,6 +197,8 @@ declare module "./types" {
       toOrigin?: boolean;
       session: RoomSessionDescriptor;
       transcriptBytes: number | null;
+      /** 1: the owner's Mockingbird signs take-over grants. Absent from older ones. */
+      grants?: 1;
     };
     "session.takenOver": {
       sessionId: string;
@@ -150,7 +208,13 @@ declare module "./types" {
       snapshot: { sha: string; takenAt: number; source: SnapshotSource };
       conversation: ConversationCarried;
       branch: string | null;
+      /** The owner's consent. Without a valid one the take-over changes nothing (an older Mockingbird sends none). */
+      grant?: TakeoverGrant;
     };
+    /** A member allows take-overs of their sessions while they're away (or, with null, withdraws that). */
+    "session.awayGrant": { grant: TakeoverGrant | null };
+    /** A session's owner accepts a take-over that carried no grant: one its Mockingbird honoured before it signed grants. */
+    "session.takeoverAccepted": { sessionId: string; by: MemberId; newSessionId: string };
     /** The session's current owner deleted its backup ref on origin: members delete their copies. */
     "session.backupDropped": { sessionId: string; reason: DropReason };
     /** The room's admin changed its settings: each one named is set, the rest stay. */
@@ -173,6 +237,8 @@ export interface RoomSessionBackupView extends RoomSessionBackup {
   takenOverByName: string | null;
   /** The newest snapshot copied into this Mac's clone peer to peer. */
   peerCopy: { sha: string; takenAt: number } | null;
+  /** A teammate's session: its owner's away grant lets it be taken over while they're offline, until then; null when it doesn't. */
+  awayUntil: number | null;
   /** This install's session: the teammates whose clones hold its newest snapshot, by name, as heard since Mockingbird started. */
   heldBy: string[];
   /** The conversation copied to this Mac: bytes held, of the size last announced (null: unknown). */
@@ -184,14 +250,22 @@ export interface RoomSessionBackupView extends RoomSessionBackup {
 /** A room's backup setting as Settings → Team shows it. */
 export interface RoomBackupSetting {
   roomId: RoomId;
-  /** Snapshots also go to origin (RoomSettings.backupsToOrigin). */
+  /** The room's admin made backups to origin available (RoomSettings.backupsToOrigin); each member's own still need their consent. */
   toOrigin: boolean;
+  /**
+   * This member's answer to backing up their own sessions in the room to
+   * origin: true (allowed), false (Not now) or null (not asked yet: the
+   * window asks once the room makes it available). Kept on this Mac only.
+   */
+  consent: boolean | null;
   /** Who last changed it (`self`: this install), and when; null while nobody has (off). */
   changed: { byName: string; self: boolean; at: number } | null;
   /** The room's admin, by name: the only one who can change it. */
   adminName: string | null;
   /** This install is the room's admin. */
   canChange: boolean;
+  /** This member's current away grant in the room (their sessions teammates may take over while they're away), or null. */
+  away: { sessions: string[] | null; expiresAt: number } | null;
   /** Where backups would go, for the switch's label: "GitHub", "Azure DevOps", a host name, or "origin" when the room's repositories differ or none is known. */
   remote: string;
 }
@@ -212,6 +286,19 @@ export interface TakeoverView {
   left: LeftCopy[];
   /** Changes a teammate sent from their copy after this install continued a session of theirs. */
   received: ReceivedChanges[];
+  /** Take-overs of this install's sessions that carried no grant from it: refused, the session running on here. */
+  refused: RefusedTakeover[];
+}
+
+/** A teammate's take-over of one of this install's sessions without its signed consent: it changed nothing here. */
+export interface RefusedTakeover {
+  roomId: RoomId;
+  sessionId: string;
+  title: string;
+  byName: string;
+  at: number;
+  /** Why it didn't count, in words for both sides ("Nick's Mockingbird needs an update to take over"). */
+  why: string;
 }
 
 // ---- asking the owner first --------------------------------------------------------------
@@ -249,8 +336,8 @@ export interface OutgoingAsk {
   state: "asking" | "handing-over";
 }
 
-/** What the owner answered a request to continue their session. */
-export type AskAnswer = { answer: "handed-over"; sha: string; takenAt: number } | { answer: "kept" } | { answer: "timeout" };
+/** What the owner answered a request to continue their session; a hand-over carries the owner's signed grant. */
+export type AskAnswer = { answer: "handed-over"; sha: string; takenAt: number; grant: TakeoverGrant } | { answer: "kept" } | { answer: "timeout" };
 
 // ---- what's left of a taken-over copy --------------------------------------------------------
 
@@ -352,6 +439,12 @@ export interface TakeoverPlan {
   conversation: { kind: "full"; bytes: number } | { kind: "partial"; have: number; of: number } | { kind: "none" };
   /** It was this Mac's own session (taken back): this Mac's own conversation resumes, the brief telling it what the teammate did. Otherwise a new conversation starts from the brief. */
   resumesOwn: boolean;
+  /**
+   * The owner's consent this take-over would carry: asked for now (they're
+   * online), their away grant (until when), or none — and why, naming who
+   * to ask. Without one it can't go ahead.
+   */
+  grant: { kind: "ask" } | { kind: "away"; expiresAt: number } | { kind: "none"; why: string };
 }
 
 export interface TakeoverResult {

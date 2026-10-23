@@ -8,6 +8,7 @@ import { SessionManager } from "../src/main/sessions";
 import { LivePanes } from "../src/main/team/livePanes";
 import { TeamRoom } from "../src/main/team/teamRoom";
 import "../src/main/team/takeover"; // the take-over events
+import { signGrant } from "../src/main/team/takeoverGrants";
 import { Messaging, mcpLaunch, remoteSessionId } from "../src/main/messaging";
 import { DEFAULT_SETTINGS, type AgentMessage, type NewSessionRequest, type SessionInfo, type Settings } from "../src/shared/types";
 
@@ -222,7 +223,9 @@ describe("a teammate's session someone can watch is one their agent can find and
       transcriptBytes: null,
     } as any);
     await until(() => !!ryan.m.team.room(roomId)?.ext.takeover?.sessions[s.id], "the backup to reach Ryan");
-    ryan.m.team.publish(roomId, "session.takenOver", { sessionId: s.id, newSessionId: "beef0001", from: nick.m.id, snapshot: { sha, takenAt: Date.now(), source: "peer" }, conversation: "none", branch: "dev" } as any);
+    // Nick handed it over: his signed grant, for Ryan and that snapshot
+    const grant = signGrant(nick.m.team, { kind: "handover", roomId, sessions: [s.id], to: ryan.m.id, sha, issuedAt: Date.now(), expiresAt: Date.now() + 60_000 });
+    ryan.m.team.publish(roomId, "session.takenOver", { sessionId: s.id, newSessionId: "beef0001", from: nick.m.id, snapshot: { sha, takenAt: Date.now(), source: "peer" }, conversation: "none", branch: "dev", grant } as any);
     await until(() => !!nick.m.team.room(roomId)?.ext.takeover?.sessions[s.id]?.takenOver, "the take-over to reach Nick");
     const r = await send(s.id);
     expect(r.error).toMatch(/Nick's session "Handed over" was taken over: it continues in your own Mockingbird, as "beef0001"/);
