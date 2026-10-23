@@ -42,6 +42,20 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.5.0",
+    date: "2026-10-23",
+    items: [
+      n("Teammates see your room sessions view-only; they ask to type and you allow it per session or for 15 min"),
+      n("A take-over needs your OK: hand over live, or allow take-overs while you're away"),
+      n("Drag Dashboard tickets up and down to reorder them; a line shows where they'll land"),
+      n("Settings → Team shows recent remote activity on your Mac: typing, messages, take-overs, files"),
+      f("Room sessions no longer leave blank space below the input box"),
+      f("Quitting with no sessions running finishes at once instead of hanging for 30 seconds"),
+      p("Rooms refuse oversized or backdated events, and warn if your room identity connects elsewhere"),
+      p("Both teammates need 1.5.0 for take-overs and for asking to type"),
+    ],
+  },
+  {
     version: "1.4.12",
     date: "2026-10-20",
     items: [
