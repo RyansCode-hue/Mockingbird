@@ -4,9 +4,7 @@ import * as path from "path";
 import * as util from "util";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
-import * as crypto from "crypto";
-import { fingerprintOf, joinProof, loadIdentity, readPublicIdentity, roomIdFor, sameSecret, signalingJoinKey, signalingTokenHash, verifySignature, randomToken, TEAM_DIR, type KeySealer } from "../src/main/team/identity";
-import { safeStorageSealer } from "../src/main/team/keyStore";
+import { fingerprintOf, joinProof, loadIdentity, roomIdFor, sameSecret, signalingJoinKey, signalingTokenHash, verifySignature, randomToken, TEAM_DIR } from "../src/main/team/identity";
 import { canonicalJson, decodeInvite, encodeInvite, envelopeProblem, formatFingerprint, fromBase64Url, InviteError, ReplayGuard, sdpFingerprint, signalingSocketUrl, signalPayload, toBase64Url, TEAM_PROTOCOL, type SignedEnvelope, type UnsignedEnvelope } from "../src/shared/team/protocol";
 
 describe("team identity", () => {
@@ -79,134 +77,6 @@ describe("team identity", () => {
     expect(verifySignature(b.publicKey, "hello room", sig)).toBe(false);
     expect(verifySignature("short", "hello room", sig)).toBe(false);
     expect(verifySignature(a.publicKey, "hello room", "A".repeat(86))).toBe(false);
-  });
-});
-
-/**
- * A stand-in for safeStorage (never the real Keychain): AES-GCM under a key
- * held in memory. `failOpenAfter` makes opening fail from that call on (a
- * Keychain that stops answering), `unavailable` says why it can't be used.
- */
-function fakeSealer(o: { unavailable?: string; failOpenAfter?: number; corruptReadBack?: boolean } = {}) {
-  const key = crypto.randomBytes(32);
-  let opens = 0;
-  const calls: string[] = [];
-  const sealer: KeySealer = {
-    name: "safeStorage",
-    unavailable: () => o.unavailable ?? null,
-    seal(plain) {
-      calls.push("seal");
-      const iv = crypto.randomBytes(12);
-      const c = crypto.createCipheriv("aes-256-gcm", key, iv);
-      const body = Buffer.concat([c.update(plain), c.final()]);
-      return Buffer.concat([iv, c.getAuthTag(), body]);
-    },
-    open(sealed) {
-      calls.push("open");
-      opens++;
-      if (o.failOpenAfter !== undefined && opens > o.failOpenAfter) throw new Error("the Keychain refused");
-      const d = crypto.createDecipheriv("aes-256-gcm", key, sealed.subarray(0, 12));
-      d.setAuthTag(sealed.subarray(12, 28));
-      const out = Buffer.concat([d.update(sealed.subarray(28)), d.final()]);
-      // the read-back (the second open) answering with other bytes
-      if (o.corruptReadBack && opens === 2) out[out.length - 1] ^= 1;
-      return out;
-    },
-  };
-  return { sealer, calls };
-}
-const fileOf = (dir: string) => JSON.parse(fs.readFileSync(path.join(dir, "identity.json"), "utf8"));
-const leftovers = (dir: string) => fs.readdirSync(dir).filter((f) => f !== "identity.json");
-
-describe("the identity's key in the Keychain", () => {
-  it("moves a plain key into the seal on first launch, keeping the same identity and fingerprint, with no plain copy left", () => {
-    const dir = path.join(tempDir("id"), "team");
-    const before = loadIdentity(dir); // an identity from before: the key in plain text
-    const plainKey = fileOf(dir).privateKey as string;
-    expect(fileOf(dir).version).toBe(1);
-    const { sealer } = fakeSealer();
-    const warnings: string[] = [];
-    const after = loadIdentity(dir, { sealer, warn: (m) => warnings.push(m) });
-    expect(warnings).toEqual([]);
-    expect(after.id).toBe(before.id);
-    expect(after.publicKey).toBe(before.publicKey);
-    // signs as the same member: rooms that pinned the old key take its signatures
-    expect(verifySignature(before.publicKey, "hello room", after.sign("hello room"))).toBe(true);
-    const rec = fileOf(dir);
-    expect(rec).toMatchObject({ version: 2, publicKey: before.publicKey, sealed: { by: "safeStorage" } });
-    expect(rec.privateKey).toBeUndefined();
-    const text = fs.readFileSync(path.join(dir, "identity.json"), "utf8");
-    expect(text).not.toContain(plainKey);
-    expect(text).not.toContain(plainKey.slice(20, 60));
-    expect(leftovers(dir)).toEqual([]); // no temporary file with the plain key
-    expect(fs.statSync(path.join(dir, "identity.json")).mode & 0o777).toBe(0o600);
-    // every launch after opens it
-    expect(loadIdentity(dir, { sealer }).id).toBe(before.id);
-    // the fingerprint is still readable without opening the key
-    expect(readPublicIdentity(dir)).toEqual({ id: before.id, publicKey: before.publicKey });
-  });
-
-  it("creates a new identity sealed from the start", () => {
-    const dir = path.join(tempDir("id"), "team");
-    const { sealer } = fakeSealer();
-    const id = loadIdentity(dir, { sealer });
-    expect(fileOf(dir)).toMatchObject({ version: 2, publicKey: id.publicKey });
-    expect(fileOf(dir).privateKey).toBeUndefined();
-    expect(loadIdentity(dir, { sealer }).id).toBe(id.id);
-  });
-
-  it("keeps working from the plain file, warning once, when the Keychain isn't available", () => {
-    const dir = path.join(tempDir("id"), "team");
-    const before = loadIdentity(dir);
-    const plain = fs.readFileSync(path.join(dir, "identity.json"), "utf8");
-    const { sealer, calls } = fakeSealer({ unavailable: "the macOS Keychain isn't available to Mockingbird" });
-    const warnings: string[] = [];
-    expect(loadIdentity(dir, { sealer, warn: (m) => warnings.push(m) }).id).toBe(before.id);
-    expect(warnings).toEqual([expect.stringMatching(/stays in .*identity\.json, owner-only: the macOS Keychain isn't available/)]);
-    expect(fs.readFileSync(path.join(dir, "identity.json"), "utf8")).toBe(plain);
-    expect(calls).toEqual([]);
-  });
-
-  it("never loses the key: a read-back that doesn't match puts the plain file back", () => {
-    const dir = path.join(tempDir("id"), "team");
-    const before = loadIdentity(dir);
-    const plain = fileOf(dir);
-    const { sealer } = fakeSealer({ corruptReadBack: true });
-    const warnings: string[] = [];
-    expect(loadIdentity(dir, { sealer, warn: (m) => warnings.push(m) }).id).toBe(before.id);
-    expect(warnings).toEqual([expect.stringMatching(/Moving the team key into safeStorage failed \(the key read back isn't the same key\), so it stays in/)]);
-    expect(fileOf(dir)).toEqual(plain);
-    expect(leftovers(dir)).toEqual([]);
-    expect(loadIdentity(dir).id).toBe(before.id);
-  });
-
-  it("never replaces a sealed key it can't open: it says why and keeps the file", () => {
-    const dir = path.join(tempDir("id"), "team");
-    const { sealer } = fakeSealer({ failOpenAfter: 1 }); // the check while sealing opens once; the next launch's open is refused
-    const id = loadIdentity(dir, { sealer });
-    const sealed = fs.readFileSync(path.join(dir, "identity.json"), "utf8");
-    expect(() => loadIdentity(dir, { sealer })).toThrow(/couldn't be opened with safeStorage \(the Keychain refused\)\. It's kept as it is/);
-    expect(() => loadIdentity(dir, { sealer: fakeSealer({ unavailable: "no Keychain" }).sealer })).toThrow(/sealed with safeStorage, which isn't available: no Keychain\. It's kept as it is/);
-    expect(() => loadIdentity(dir)).toThrow(/sealed with safeStorage, which only the Mockingbird app can open/);
-    expect(fs.readFileSync(path.join(dir, "identity.json"), "utf8")).toBe(sealed);
-    expect(readPublicIdentity(dir).id).toBe(id.id);
-  });
-
-  it("seals through safeStorage only on macOS, and only when it says it can", () => {
-    const fake = { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(`sealed:${s}`), decryptString: (b: Buffer) => b.toString().slice(7) };
-    const mac = safeStorageSealer(fake, "darwin");
-    expect(mac.unavailable()).toBeNull();
-    const der = crypto.randomBytes(48);
-    expect(mac.open(mac.seal(der)).equals(der)).toBe(true);
-    expect(safeStorageSealer(fake, "linux").unavailable()).toMatch(/macOS Keychain isn't available on this system/);
-    expect(safeStorageSealer({ ...fake, isEncryptionAvailable: () => false }, "darwin").unavailable()).toMatch(/isn't available to Mockingbird/);
-    const broken = {
-      ...fake,
-      isEncryptionAvailable: (): boolean => {
-        throw new Error("boom");
-      },
-    };
-    expect(safeStorageSealer(broken, "darwin").unavailable()).toMatch(/couldn't be reached \(boom\)/);
   });
 });
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, powerMonitor, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, Tray, nativeImage, powerMonitor, shell } from "electron";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -66,7 +66,6 @@ import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 import { TeamRoom } from "./team/teamRoom";
 // team rooms: take-over
 import { liveRoomHost, TakeoverService } from "./team/takeover";
-import { safeStorageSealer } from "./team/keyStore";
 import type { TakeoverView } from "../shared/team/takeover";
 import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
@@ -133,8 +132,6 @@ const team: TeamService = new TeamService({
   emit: (status) => toWindow("team:changed", status),
   log: logError,
   assetsDir: __dirname,
-  // the identity's private key, sealed with a key the macOS Keychain holds for this app
-  keySealer: safeStorageSealer(safeStorage),
   // what each stage kept of a room this install left or was removed from goes, then the room's folder
   cleanup: (): RoomCleanup[] => [
     { what: "the room's live panes", roomLeft: (room, groupKey) => livePanes.roomLeft(room, groupKey) },

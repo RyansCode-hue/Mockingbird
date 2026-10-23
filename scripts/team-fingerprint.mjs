@@ -2,11 +2,10 @@
 //
 //   npm run team:fingerprint
 //
-// Reads ~/.mockingbird/team/identity.json's public key, or creates the file
-// as the app would without the Keychain (an Ed25519 key, owner-only; the app
-// seals the private key into the Keychain when it next starts), and prints
-// the fingerprint and the command that lets it create rooms on the signaling
-// Worker (signaling/README.md). The private key is never opened or printed.
+// Reads ~/.mockingbird/team/identity.json, or creates it exactly as the app
+// would (an Ed25519 key, owner-only), and prints the fingerprint and the
+// command that lets it create rooms on the signaling Worker
+// (signaling/README.md). The private key is never printed.
 //
 //   npm run team:e2e-fingerprint
 //
@@ -24,7 +23,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const out = path.join(os.tmpdir(), `mockingbird-team-fingerprint-${process.pid}.mjs`);
 await esbuild.build({
   stdin: {
-    contents: 'export { readPublicIdentity, TEAM_DIR } from "./src/main/team/identity";\nexport { formatFingerprint, allowCreatorsCommand } from "./src/shared/team/protocol";\n',
+    contents: 'export { loadIdentity, TEAM_DIR } from "./src/main/team/identity";\nexport { formatFingerprint, allowCreatorsCommand } from "./src/shared/team/protocol";\n',
     resolveDir: root,
     loader: "ts",
   },
@@ -35,11 +34,11 @@ await esbuild.build({
   logLevel: "error",
 });
 try {
-  const { readPublicIdentity, TEAM_DIR, formatFingerprint, allowCreatorsCommand } = await import(pathToFileURL(out).href);
+  const { loadIdentity, TEAM_DIR, formatFingerprint, allowCreatorsCommand } = await import(pathToFileURL(out).href);
   const e2e = process.argv.includes("--e2e");
   const dir = e2e ? path.join(os.tmpdir(), "mockingbird-e2e-creator", ".mockingbird", "team") : TEAM_DIR;
   const existed = fs.existsSync(path.join(dir, "identity.json"));
-  const id = readPublicIdentity(dir);
+  const id = loadIdentity(dir);
   console.log(`${e2e ? "The e2e tests' room creator's" : "This Mockingbird's"} team fingerprint: ${formatFingerprint(id.id)}`);
   console.log(existed ? `(from ${path.join(dir, "identity.json")})` : `(new: ${path.join(dir, "identity.json")} — the ${e2e ? "tests use" : "app uses"} this same key)`);
   console.log("");
