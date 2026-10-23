@@ -5,6 +5,7 @@ import { ElectronPeerHost } from "./peerHost";
 import { RoomStore } from "./rooms";
 import { TeamCore, type LeftInfo, type PeerWire, type RevokeOutcome, type Team } from "./transport";
 import { WebRtcWire } from "./webrtc";
+import { REPLACED_ADVICE } from "./signalingClient";
 import { allowCreatorsCommand, formatFingerprint, SIGNALING_PROTOCOL, type SignalingHealth } from "../../shared/team/protocol";
 import { oneLine } from "../../shared/team/agentText";
 import { isShareableGroup, type Settings } from "../../shared/types";
@@ -97,6 +98,10 @@ export class TeamService {
     this.core.onEvent("member.added", (e, room) => {
       const line = joinAnnouncement(e, room, this.identity!.id, Date.now());
       if (line) this.tell(line.title, line.body, "a join");
+    });
+    // this install's key in use elsewhere is told at once (later repeats count up under the room)
+    this.core.onWarning((roomId, w) => {
+      if (w.key === "replaced" && w.count === 1) this.tell("Your room identity connected from another place", `${this.core?.room(roomId)?.name ?? "A room"}: this Mac was disconnected. ${REPLACED_ADVICE}`, "a replaced connection");
     });
   }
 

@@ -7,6 +7,7 @@ import { checkRepoKey } from "./migrations";
 import { checkFolder } from "../../shared/team/migrations";
 import type { RoomSessionSource } from "./roomSessions";
 import { PeerError, TeamError, type RequestContext, type Team, type Unsubscribe } from "./transport";
+import { transcriptRefusal } from "./roomLimits";
 import { branchesOf, currentBranch, git, gitBytes, hasCredentials, isAncestor, originUrl, pickDefaultBase, publicUrl, repoIdentity, repoTop, withoutCredentials } from "../git";
 import { checkoutSnapshotFiles, skippedIn, snapshotCommit, takeSnapshot, worktreeCommitOn, worktreeTree } from "../snapshots";
 import { parseNameStatus } from "../files";
@@ -1134,7 +1135,10 @@ export class TakeoverService {
     const ref = roomBackupRef(roomId, sessionId);
     if (typeof p.bundle === "string" && p.bundle) {
       const bytes = Buffer.from(p.bundle, "base64");
-      if (bytes.length > MAX_BUNDLE) throw new PeerError(`a ${mb(bytes.length)} snapshot is over the ${mb(MAX_BUNDLE)} accepted`);
+      if (bytes.length > MAX_BUNDLE) {
+        this.d.team.refusedOverLimit?.(roomId, ctx.from, "snapshot", `a ${mb(bytes.length)} session snapshot, over the ${mb(MAX_BUNDLE)} accepted`);
+        throw new PeerError(`a ${mb(bytes.length)} snapshot is over the ${mb(MAX_BUNDLE)} accepted`);
+      }
       const tmp = path.join(os.tmpdir(), `mb-room-${crypto.randomBytes(6).toString("hex")}.bundle`);
       await fs.promises.writeFile(tmp, bytes, { mode: 0o600 });
       try {
@@ -1172,6 +1176,11 @@ export class TakeoverService {
     let have = await fileSize(target);
     if (p.offset !== have) return { have };
     const bytes = Buffer.from(data, "base64");
+    const over = transcriptRefusal(path.dirname(dir), target, ctx.from, have, bytes.length);
+    if (over) {
+      this.d.team.refusedOverLimit?.(roomId, ctx.from, "transcript", over);
+      throw new PeerError(`refused: ${over} (this Mac's limit)`);
+    }
     if (bytes.length) await fs.promises.appendFile(target, bytes, { mode: 0o600 });
     have += bytes.length;
     const meta: TranscriptMeta = { agent, conversationId, file, ownerCwd, total: Math.max(p.total, have), from: ctx.from, updatedAt: this.now() };

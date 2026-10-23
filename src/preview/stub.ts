@@ -212,6 +212,15 @@ const team: TeamStatus = {
     {
       id: "R5101aaaaaaaaaaaaaaaaa", name: "#5101 Org dropdowns remember the last org", groupKey: "5101", members: [{ id: ME, name: "You", self: true }, { id: NICK, name: "Nick Smith", self: false }, { id: SAM, name: "Sam", self: false }], admin: ME, creator: ME, former: [{ id: ALEX, name: "Alex" }], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke, workerApprove,
       requests: asks ? [{ roomId: "R5101aaaaaaaaaaaaaaaaa", id: LEE, name: "Lee Park", fingerprint: fp(LEE), inviter: SAM, inviterName: "Sam", admin: ME, adminName: "You", role: "admin", state: "waiting", at: now - 3 * min, expiresAt: now + 6 * 24 * 60 * min }] : [],
+      // ?roomWarnings: what this Mac refused from Nick over a limit, and this install's key connected from another place
+      ...(teamQuery.has("roomWarnings")
+        ? {
+            warnings: [
+              { key: `rate:${NICK}`, text: "Nick Smith's Mockingbird sent more than 600 room events a minute; the rest are refused for now and asked for again shortly", since: now - 9 * min, at: now - 2 * min, count: 3 },
+              { key: "replaced", text: "Your room identity connected from another place; this Mac was disconnected. If that wasn't you on another Mac, someone may hold a copy of this Mac's room identity: tell the room's admin.", since: now - min, at: now - min, count: 1 },
+            ],
+          }
+        : {}),
     },
     {
       id: "R5110bbbbbbbbbbbbbbbbb", name: "#5110 Donor entities", groupKey: "5110", members: [{ id: NICK, name: "Nick Smith", self: false }, { id: ME, name: "You", self: true }], admin: NICK, creator: NICK, former: [], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke, workerApprove,

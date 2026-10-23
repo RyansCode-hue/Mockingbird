@@ -137,6 +137,19 @@ export interface TeamRoomSummary {
   workerApprove?: boolean;
   /** Join requests this install answers (as the room's admin) or passed on (as the inviter), newest last. */
   requests?: JoinRequestSummary[];
+  /** What this Mac refused or noticed in the room (a teammate over a limit, this install's key connected elsewhere), newest last. */
+  warnings?: RoomWarning[];
+}
+
+/** Something about a room this Mac refused or noticed: shown under the room once (repeats count up) until Mockingbird restarts. */
+export interface RoomWarning {
+  /** What it's about, one warning each: "rate:<member>", "replaced"… */
+  key: string;
+  text: string;
+  /** When it first and last happened, and how often. */
+  since: number;
+  at: number;
+  count: number;
 }
 
 /** Someone asking to join a room, as the admin (who accepts or declines) and the inviter (who passed it on) see it. */

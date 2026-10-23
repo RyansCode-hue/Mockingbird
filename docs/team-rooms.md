@@ -74,8 +74,10 @@ should stop more members joining later.
   and merged on reconnect. The room keeps working for whoever's online when the
   creator's laptop is off. An event whose Lamport time is more than a million
   past a member's is refused, so no event can leave the room unable to take
-  the next. Origin URLs go into the log without any user name or token, and an
-  event carrying one is refused.
+  the next; one placed before what its author sent minutes ago is refused
+  too, and each member is held to limits on what they add ("Limits on what a
+  member adds", below). Origin URLs go into the log without any user name or
+  token, and an event carrying one is refused.
 - **Names are one line.** A room's name and a member's (`room.created`,
   `member.added`, `member.renamed`) are refused with a control character in
   them — a line break above all: names go into what agents read, where one
@@ -202,10 +204,13 @@ Worker admitted their key as soon as the join key matched.
   counts only in a room that doesn't need accepting yet (its admin hasn't
   switched it).
 - **Limits.**
-  - The room log trusts each author's Lamport time, as removal does: an
-    uncooperative member's Mockingbird could backdate an add before a room's
-    `room.approval`. Rooms created now need accepting from their first event,
-    so there's nothing before it to backdate into.
+  - The room log takes each author's Lamport time within bounds, as removal
+    does: since 1.5.0 an event placed before what its author sent minutes
+    earlier is refused, but an uncooperative member's Mockingbird that never
+    advanced its own times could still place an add before a room's
+    `room.approval` (see "Limits on what a member adds"). Rooms created now
+    need accepting from their first event, so there's nothing before it to
+    backdate into.
   - The joiner hears the outcome from its inviter: accepted while the inviter
     is offline, the joiner waits until the inviter is back (the admin can
     still see it's accepted).
@@ -1205,6 +1210,118 @@ same file, and tools for agents to see what teammates change.
   - The number is as fresh as the fetch: two members reserving offline both
     get one, and the clash rule settles who keeps it once they reconnect.
 
+## Limits on what a member adds
+
+Since 1.5.0. Every member keeps a full copy of the room, so what one member's
+Mockingbird adds lands on everyone's disk. The Mac that receives something
+enforces the limits (`src/main/team/roomLimits.ts`, the room log in
+`rooms.ts`); nothing the sender says about itself is trusted. Limits are per
+**author**: an event a third member passes on counts against the member who
+signed it.
+
+| What | Limit | Normal use |
+| --- | --- | --- |
+| One room event | 256 KB (unchanged) | 260–960 bytes; the largest a validator allows is a 60,000-character note, ~120 KB escaped |
+| Events a minute, per author, from peers | 600 a minute, bursts of 1,000 | the most one member added to one room in a minute across the test suite was 504 (a 500-artifact drop); a session's record goes out at most once a second, so ten live sessions peak near 600 |
+| An author's share of a room's log | 256 MB | ~650 bytes a session update: about 400,000 updates, months of heavy use in one room |
+| Order | above what the author sent 5+ minutes ago | an author's events arrive in the order written |
+| One conversation copied for take-over | 512 MB | long Claude sessions with screenshots run tens of MB |
+| All of one member's conversations in a room | 2 GB | |
+| A session snapshot sent peer to peer | 24 MB (unchanged) | |
+
+The numbers come from measuring the test suite's rooms (3,600 events across
+the team tests) and from how often Mockingbird publishes; each is set well
+above what normal use makes.
+
+- **Refused, logged, shown once.** An event over a limit is refused, never
+  dropped silently. This Mac's log says which event, from whom and why (the
+  first, then every hundredth of a flood), and the room shows one line under
+  its name, in the Team room view and in Settings → Team, until Mockingbird
+  restarts: "Nick's Mockingbird sent more than 600 room events a minute; the
+  rest are refused for now and asked for again shortly" — one per member and
+  kind, a repeat counting up ("3 times, last at 11:59"). A refused
+  conversation copy or snapshot is also refused to the sender, who sees why.
+- **The per-minute limit** is a token bucket per author, on events from
+  peers (this install's own are held to the size limit and share, not the
+  rate). Events it refuses are asked for again from the member that sent
+  them (a `have` for that author) once the bucket has room — within a second
+  to a minute — so a burst only slows down, it doesn't go missing.
+- **Catch-up isn't a flood.** When a peer's sync says it holds N events by an
+  author that this log lacks, those N arrive without counting against the
+  per-minute limit for ten minutes: a joiner copying a room, or a member back
+  from a week away, gets everything at once. The share and order still hold.
+  A modified Mockingbird can claim a big backlog to skip the per-minute limit
+  once per connection; it's still held to its share.
+- **Membership always gets through.** `room.created`, `member.added`,
+  `member.removed`, `room.approval` and `join.declined` are taken past an
+  author's share (not past the size, rate or order limits), so a member over
+  it can still leave and the admin can still remove them.
+- **Unknown event types** (from a newer Mockingbird) are still kept and passed
+  on, and count against their author like any other.
+- **What's already stored stays.** The share counts what's on disk, across
+  restarts. Removing a member stops what they add; what they added stays
+  until each member leaves the room.
+
+### Order: events can't be backdated
+
+An event's author picks its Lamport time, and the room is ordered by it. A
+legitimate author's events have increasing times in the order written, and
+reach every Mac in that order: data channels are ordered, catch-up is sent
+sorted, and members pass events on as they apply them. The one exception is
+a reconnect: an event written just after reconnecting can overtake the
+backlog by a round trip.
+
+So the room log keeps, per author, a **floor**: the newest Lamport time of
+theirs this Mac has held for 5 minutes (everything read from disk counts at
+once). An event at or below its author's floor is refused as backdated.
+Within the 5 minutes, an author's backlog may still arrive behind a newer
+event. While an author's events are waiting to be asked for again (refused
+for rate, 30 minutes since the last), their floor holds still, so the
+backlog isn't refused as backdated when it comes. The leap limit (a million
+past the room's clock) stays.
+
+What it doesn't stop: an author's Mockingbird that keeps its own times low
+from the start can still place new events before other members' recent
+ones (never before its own). Telling that from a member writing offline
+needs a causal reference in each event, which an older Mockingbird wouldn't
+send. A Mac restored from an older backup writes a few events below its own
+floor until it has caught up: those are refused (and shown), the rest of
+its events count.
+
+An event that sorts before the newest still makes the receiver replay the
+room from the start. A partition's catch-up does that legitimately; past
+it, one member can cause it at most as often as the per-minute limit lets
+their events in, and never by reaching below their own floor.
+
+### Agent messages and your key elsewhere
+
+- **Agent messages from a teammate's Mac** are paced by the receiver per
+  sending member and target session: 8 in 5 minutes (as between local
+  sessions). The member is the one the transport authenticated, not the
+  session id their message reports, so a new id per message doesn't reset it.
+- **Your key connected from somewhere else.** The signaling Worker keeps one
+  connection per member key and closes the older one with `replaced`.
+  Mockingbird closes its own old sockets before reconnecting, so a
+  `replaced` it hears means another Mac holds this install's identity. It's
+  logged, a notification says "Your room identity connected from another
+  place", and the room shows "Your room identity connected from another
+  place; this Mac was disconnected. If that wasn't you on another Mac,
+  someone may hold a copy of this Mac's room identity: tell the room's
+  admin." (counted on repeats). This Mac waits a minute before connecting
+  again, so the two places don't knock each other off every second.
+  Teammates aren't told: the Worker can't tell a second place from an app
+  reconnecting before its old socket closed, and saying "Ryan connected from a
+  new place" every Wi-Fi change would be wrong.
+
+### Compatibility
+
+All of this is checked on receipt and changes nothing on the wire: an older
+Mockingbird's normal events, catch-up and transcripts get through to a newer
+one, and a newer one asks an older one again for refused events with the
+`have` frame both understand. Only traffic past the limits is refused: a
+conversation copy over 512 MB from an older Mac is refused where it used to
+be taken.
+
 ## Not in this release
 
 - Roles/permissions beyond "member" and the admin who lets people in, removes
@@ -1231,6 +1348,19 @@ same file, and tools for agents to see what teammates change.
   start; the Worker's revoke (self, admin, refused, a room from before revoke,
   admin succession, re-admission, stale admits) and the app's client against
   a new and an older local Worker.
+- Limits on what a member adds (`test/teamLimits.test.ts`, and the
+  conversation-copy case in `test/teamTakeover.test.ts`): an event over the
+  size limit, past the per-minute limit, past a member's share (across a
+  restart; a leave still taken) or backdated below its author's floor is
+  refused, logged once and shown once under the room; a burst is asked for
+  again until it's all in; a member back from offline, and one catching up
+  through a third member, gets a long history without one refusal; a backlog
+  arriving just behind a newer event (a reconnect) is taken, and the floor
+  holds still while refused events wait; a conversation copy over the limit
+  is refused to the sender and shown, and a member's copies count together;
+  agent messages from a teammate are paced per member whatever session id
+  they report; a key connected from two places against the local Worker, said
+  plainly, with a notification once and a minute's wait before reconnecting.
 - Where backups go (`test/teamTakeover.test.ts`, `test/teamTakenOver.test.ts`):
   a room left as it starts never pushes or fetches `refs/mockingbird/*` on
   origin (asserted on the bare origin), copies each snapshot peer to peer,

@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { acceptInWindow, appE2E, e2eSignaling, launchApp, mainLog, quitApp, root, routes, untilTrue } from "./e2e/appInstance";
+import { tempDir } from "./helpers";
 
 /**
  * Two real Mockingbird instances (this checkout's build) on one Mac, each with
@@ -89,6 +90,21 @@ describe("team rooms between two Mockingbird instances", () => {
         expect(left).toMatchObject({ told: ["Ryan"], problems: [] });
         expect(fs.existsSync(roomDir)).toBe(false);
         await untilTrue("Ryan to see Nick leave", async () => (await ryan.status()).rooms[0]?.members.length === 1);
+
+        // a copy of Ryan's identity and rooms starts on "another Mac": Ryan's app is told its key connected from somewhere else
+        const elsewhereHome = tempDir("ryan-elsewhere");
+        fs.cpSync(path.join(ryan.home, ".mockingbird", "team"), path.join(elsewhereHome, ".mockingbird", "team"), { recursive: true });
+        const elsewhere = await launchApp("Ryan elsewhere", signal.url, { home: elsewhereHome });
+        try {
+          await untilTrue("Ryan to be told", async () => !!(await ryan.status()).rooms[0]?.warnings?.some((w) => w.key === "replaced"), 60_000);
+          expect((await ryan.status()).rooms[0].warnings!.find((w) => w.key === "replaced")!.text).toMatch(/^Your room identity connected from another place; this Mac was disconnected\./);
+          await ryan.evaluate(`document.querySelector('.ab-btn[aria-label="Team room"]')?.click()`);
+          await untilTrue("the warning under the room in Ryan's Team room", async () => (await ryan.evaluate<string>(`document.querySelector(".room-warning")?.textContent ?? ""`)).includes("Your room identity connected from another place"), 30_000);
+        } finally {
+          elsewhere.close();
+          await quitApp(elsewhere.child);
+        }
+        expect(mainLog(ryan)).toMatch(/the same key connected again from somewhere else/);
       } finally {
         ryan.close();
         nick.close();

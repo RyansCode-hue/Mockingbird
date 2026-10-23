@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createIpcStore, loadInto } from "../ipcStore";
 import { readPref, usePersisted, writePref } from "../prefs";
-import { initialsOf, LeaveRoomDialog, roomOfGroup, TeamNotices } from "../Team";
+import { initialsOf, LeaveRoomDialog, roomOfGroup, RoomWarnings, TeamNotices } from "../Team";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type MenuEntry } from "../ContextMenu";
 import { BackIcon, ChatIcon, ChevronIcon, CloseIcon, GridIcon, InviteIcon, KanbanIcon, PlusIcon } from "../Icons";
 import { roomPresence } from "./connectedModel";
@@ -174,6 +174,7 @@ function RoomHead({ room, hooks, onChat, onLeave }: { room: TeamRoomSummary; hoo
         {roomPresence(room)}
         {room.problem ? ` · ${room.problem}` : ""}
       </div>
+      <RoomWarnings room={room} />
       <ActionBar className="room-acts" actions={pickActions(acts, [onChat ? "chat" : "show", "board", "invite", "new"])} more={acts} label={room.name} />
       {menu.menu}
     </div>

@@ -402,6 +402,10 @@ export class WebRtcWire implements PeerWire {
       case "refused":
         if (e.code !== "peer-offline") this.o.log(`signaling ${room.spec.roomId}: ${e.code}: ${e.message}`);
         return;
+      case "replaced":
+        this.handler?.replaced?.(room.spec.roomId);
+        this.handler?.changed();
+        return;
       case "offline":
       case "peer-joined":
       case "peer-left":

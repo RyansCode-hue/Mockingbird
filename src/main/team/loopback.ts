@@ -1,6 +1,6 @@
 import * as path from "path";
 import { loadIdentity, type Identity } from "./identity";
-import { RoomStore } from "./rooms";
+import { RoomStore, type RoomLogOptions } from "./rooms";
 import { TeamCore, type IntroType, type PeerWire, type RevokeOutcome, type RoomSignalingState, type TeamOptions, type WireHandler, type WireRoom } from "./transport";
 import { OLD_WORKER_APPROVE, OLD_WORKER_REVOKE } from "./signalingClient";
 import type { MemberId, PeerLinkState, RoomEvent, RoomId } from "../../shared/team/types";
@@ -301,11 +301,11 @@ export interface LoopbackMember {
   rename(name: string): void;
 }
 
-/** A member on the network, with its identity and rooms under `dir/<name>`. */
-export function loopbackMember(net: LoopbackNetwork, name: string, dir: string, opts: Partial<TeamOptions> = {}): LoopbackMember {
+/** A member on the network, with its identity and rooms under `dir/<name>` (`rooms`: its room logs' limits and clock). */
+export function loopbackMember(net: LoopbackNetwork, name: string, dir: string, opts: Partial<TeamOptions> = {}, rooms: RoomLogOptions = {}): LoopbackMember {
   const base = path.join(dir, name);
   const identity = loadIdentity(base);
-  const store = new RoomStore(path.join(base, "rooms")).load();
+  const store = new RoomStore(path.join(base, "rooms"), rooms).load();
   const wire = net.wire(identity.id);
   const logs: string[] = [];
   let display = name;
@@ -337,9 +337,9 @@ export function acceptJoins(team: TeamCore): () => void {
  * its admin, accepts every join), the rest join with invite codes. Resolves
  * once every member has every other as a member and connected.
  */
-export async function loopbackRoom(names: string[], opts: { dir: string; groupKey?: string; net?: LoopbackNetwork; team?: Partial<TeamOptions> }) {
+export async function loopbackRoom(names: string[], opts: { dir: string; groupKey?: string; net?: LoopbackNetwork; team?: Partial<TeamOptions>; rooms?: RoomLogOptions }) {
   const net = opts.net ?? new LoopbackNetwork();
-  const members = names.map((n) => loopbackMember(net, n, opts.dir, opts.team));
+  const members = names.map((n) => loopbackMember(net, n, opts.dir, opts.team, opts.rooms));
   const [creator, ...rest] = members;
   acceptJoins(creator.team);
   const groupKey = opts.groupKey ?? "5110";

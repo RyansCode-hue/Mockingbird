@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { git, makeRepo, tempDir, write } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { liveRoomHost, TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
+import { ROOM_LIMITS } from "../src/main/team/roomLimits";
 import { TurnFeed } from "../src/main/team/roomSessions";
 import { agentFor } from "../src/main/agents";
 import { claudeProjectDir, codexRolloutPath, realpathOr } from "../src/main/agentFiles";
@@ -398,6 +399,23 @@ describe("the conversation's copy", () => {
     const copy = path.join(t.nickM.store.dir, t.roomId, "transcripts", "s1", `${CONV}.jsonl`);
     expect(fs.statSync(copy).size).toBe(fs.statSync(t.transcript).size);
   }, 30_000);
+
+  it("refuses what would take a copy past this Mac's limit, telling the sender and showing it under the room", async () => {
+    const t = await setup();
+    const was = ROOM_LIMITS.maxTranscriptBytes;
+    ROOM_LIMITS.maxTranscriptBytes = 100;
+    try {
+      const send = (offset: number, bytes: number) =>
+        t.ryanM.team.request(t.nickM.id, "takeover.transcript", { roomId: t.roomId, sessionId: "s1", agent: "claude", conversationId: CONV, file: `${CONV}.jsonl`, ownerCwd: "/x", offset, data: Buffer.alloc(bytes, "x").toString("base64"), total: 500 }, { roomId: t.roomId });
+      await expect(send(0, 80)).resolves.toEqual({ have: 80 });
+      await expect(send(80, 40)).rejects.toThrow(/refused: a conversation copy over 0.1 KB \(this Mac's limit\)/);
+      const copy = path.join(t.nickM.store.dir, t.roomId, "transcripts", "s1", `${CONV}.jsonl`);
+      expect(fs.statSync(copy).size).toBe(80);
+      expect(t.nickM.team.status().rooms[0].warnings).toEqual([expect.objectContaining({ key: `transcript:${t.ryanM.id}`, text: "Ryan's Mockingbird sent a conversation copy over 0.1 KB; it was refused" })]);
+    } finally {
+      ROOM_LIMITS.maxTranscriptBytes = was;
+    }
+  });
 
   it("never puts the conversation in git", async () => {
     const t = await setup();

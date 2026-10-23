@@ -2661,6 +2661,8 @@ button.room-name:hover { color: var(--teal-text); background: none; }
 .room-presence.warn { color: var(--amber-text); }
 .room-presence.warn::before { background: var(--amber); }
 .room-acts { margin: 3px 0 0 -4px; }
+.room-warnings { display: flex; flex-direction: column; gap: 4px; }
+.room-warning { font: 400 10.5px/1.4 var(--ui); color: var(--amber-text); overflow-wrap: anywhere; }
 .room-sessions { padding: 4px 10px 6px; border-bottom: 1px solid var(--line-med); }
 .room-sess-body { max-height: 38vh; overflow-y: auto; margin: 2px -4px 0; padding: 0 4px; }
 .room-sess-body .group-label, .room-sess-body .tk-rows { margin-top: 4px; }
