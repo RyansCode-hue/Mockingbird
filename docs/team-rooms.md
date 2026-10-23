@@ -28,7 +28,28 @@ should stop more members joining later.
   in the Worker as a secret. The Worker hands room members short-lived TURN
   credentials, so no laptop holds the token.
 - **Identity:** each Mockingbird install has its own key pair (in
-  `~/.mockingbird`, never synced) and a display name set in Settings → Team.
+  `~/.mockingbird/team/identity.json`, never synced) and a display name set in
+  Settings → Team. The private key is sealed with Electron's `safeStorage`,
+  whose key the macOS Keychain keeps for Mockingbird ("Mockingbird Safe
+  Storage"), so the file alone — from a backup, a disk image, another account
+  — isn't enough to act as the member (security review R3). Chosen over a
+  generic-password item written by the `security` CLI: that item trusts
+  `/usr/bin/security`, so any process running as the user could read it back
+  without a prompt; the safeStorage item is readable without asking only by an
+  app with Mockingbird's code signature. On the first start with it, a plain
+  key (version 1) is moved: the same key, so the same fingerprint (no room
+  joined again); sealed, opened again and compared, the file replaced in one
+  step (owner-only from the moment it exists), read back from disk and
+  compared again — a read-back that doesn't match puts the plain file back.
+  Without the Keychain (or off macOS) the plain file keeps working, with one
+  warning in the log and Settings → Team. A sealed key that can't be opened
+  (the Keychain refused) stops team rooms with that reason and is never
+  replaced: the next start with the Keychain back opens it. Limits: a copy of
+  the plain file in an older backup or snapshot stays readable; resetting the
+  login keychain loses the key (the member joins their rooms again); an
+  unsigned build may be asked once per update to use its Keychain item.
+  `npm run team:fingerprint` reads only the public key. Tests seal with a fake
+  (`KeySealer`); the two-instance tests run with `--use-mock-keychain`.
   Connection details are signed by the sender's key and checked against the
   room's member list. Each side pins the other's DTLS fingerprint from those
   signed details, so a tampered signaling server can't step in between.
@@ -43,7 +64,8 @@ should stop more members joining later.
   `member.renamed`, `member.removed` (leaving and removal, below),
   `room.approval`, `join.declined` (joining, below);
   `session.upsert` / `session.removed` (room sessions);
-  `session.backup`, `session.takenOver`, `session.backupDropped` (take-over);
+  `session.backup`, `session.takenOver`, `session.backupDropped`,
+  `session.awayGrant`, `session.takeoverAccepted` (take-over);
   `room.settings` (the admin's: backups to origin, the migration check and
   migration folders); `migration.reserved`, `migration.released` (migration
   numbers, below);
@@ -54,8 +76,9 @@ should stop more members joining later.
   bytes). Older rooms' `plan.*` events are kept but change nothing. Terminal
   output, views and typing are streams and requests between connected
   members, never stored; so are take-over's copies and questions
-  (`takeover.have`, `.snapshot`, `.transcript`, `.ask`, `.progress`,
-  `.changes`) and artifacts' files (`artifact.have`, `.chunk`).
+  (`takeover.have`, `.snapshot`, `.transcript`, `.handover`, `.progress`,
+  `.changes`; `.ask` is the pre-grant request, refused) and artifacts' files
+  (`artifact.have`, `.chunk`).
 
 ## Rooms
 
@@ -479,7 +502,8 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 ## Take-over
 
 When the owner is away, a member clicks **Take over** and the session continues
-on their laptop under their own account.
+on their laptop under their own account — only with the owner's signed
+consent (below: "The owner's consent").
 
 - **Work:** after every agent turn (the agent going from working or waiting
   to idle, or exiting: the same turns Co-authored-by counts), Mockingbird
@@ -494,10 +518,11 @@ on their laptop under their own account.
   offers **Take over**, prominent while its owner is offline.
 - **Off GitHub by default, GitHub opt-in** (decided with Ryan, 2026-10-08:
   "Peer to peer, GitHub opt-in"). Backups never reach origin unless the
-  room's admin turns on **Also back up to GitHub** (below). Then each snapshot
+  room's admin makes **Also back up to GitHub** available (below) and the
+  session's owner allowed it for their own sessions. Then each snapshot
   is also pushed to that hidden ref on origin, so a session can be taken over
-  while its owner's laptop is off even by a teammate who wasn't connected
-  when its turns ended — and the rows say "backed up 2m ago", or warn when a
+  while its owner's laptop is off even by a teammate whose Mac has no copy of
+  its latest turns — and the rows say "backed up 2m ago", or warn when a
   push failed.
 - **Conversation:** the transcript syncs **peer to peer only, never to GitHub**.
   Take-over **starts a new conversation on the taker's account; it never
@@ -550,9 +575,23 @@ on their laptop under their own account.
   and its first input is the brief of what the teammate did meanwhile. The
   dialog says which it will be.
 - Take-over creates the session's branch/worktree on the taker's laptop from
-  the newest snapshot it has: the peer copy in its clone, or — in a room that
-  backs up to origin — origin's hidden ref, whichever is newer (a room kept
-  peer to peer never fetches from origin, and keeps no `rooms-origin` copy).
+  the newest snapshot it has **that the owner signed** (security review N6):
+  only a commit the room log's `session.backup` names (its newest, or the one
+  it says origin holds) — or, for a hand-over, the one the owner's signed
+  answer names — chosen by the time in those signed records, never a date
+  inside a commit. The peer copy is the commit the owner's Mockingbird sent
+  this Mac (`takeover.snapshot` names it; the bundle's objects are fetched,
+  the ref set to that commit only if it arrived — a commit's id is the hash of
+  its content — whatever the bundle's own ref says, and a mismatch is refused
+  and logged). In a room that backs up to origin, origin's hidden ref counts
+  only when it points at one of those signed commits; anything else — anyone
+  who can push to the repository can set that ref, member or not, and plant a
+  tree with `.claude/settings.json` or `.mcp.json` in it — is ignored, its
+  copy deleted, logged and shown in the dialog ("origin's backup ref points
+  at 1a2b3c4d, a commit Ryan never recorded backing up — ignored"). So
+  origin's newer backup is used once the room's record of it reached the
+  taker (through any member), not before. A room kept peer to peer never
+  fetches from origin, and keeps no `rooms-origin` copy.
   The dialog says which snapshot it uses and how old it is; kept peer to peer
   with the owner offline, it says plainly that this is the newest copy that
   reached this Mac and that newer work may be on the owner's laptop (turns
@@ -563,20 +602,69 @@ on their laptop under their own account.
   record, stops streaming it, refuses teammates' typing into it and stops
   backing it up, as soon as it learns of the take-over — at once, or when it's
   next online or started. Until then, teammates hide the stale record.
+- **The owner's consent** (security review R6, M3; 1.5). A take-over counts
+  only with a grant the session's owner signed with their identity key
+  (`src/main/team/takeoverGrants.ts`), carried in `session.takenOver`. Every
+  member's reducer checks it where the take-over falls in the room's order —
+  the owner's key as the room knows it, the session, the taker and (for a
+  hand-over) the snapshot, the event's time within the grant's — so the
+  owner's Mac stops its session only for a take-over its owner granted, from
+  whichever Mockingbird it came, and the taker's Mac checks the same before it
+  starts anything. **No role gets past it**: the room's admin can't take a
+  session over without its owner's grant either. (Room roles may later add an
+  emergency path for an owner gone for good; it would be its own explicit,
+  announced and logged event, not an exception to this check.) A take-over
+  without a valid grant changes nothing — the owner's session runs on and
+  keeps backing up — and is kept in the room's state as `ungranted`, so the
+  owner's Mac can say so: once per taker, in the room's chat ("“Export API”
+  keeps running on Ryan's laptop: Nick's Mockingbird needs to update to take
+  over…") — the only way to reach an older Mockingbird, which believes it took
+  the session over — in the log, and under the room's warnings. Times are the
+  take-over event's own (its author's clock, the only one every member
+  agrees on): a taker whose clock is set wrong on purpose can use a grant past
+  its expiry, but never without the owner having signed one for that session.
 - **Owner online → asked first** (decided with Ryan, 2026-10-07). If the owner
   is connected when a teammate clicks Take over, it doesn't happen at once:
-  the owner gets a prompt (and a notification), "<Nick> wants to continue
-  <session> on their laptop", with **Hand over** / **Keep**. Hand over lets
+  the owner gets a prompt (and a notification), "<Nick> wants to take over
+  “<session>”", with **Hand over** / **Keep it**. Hand over lets
   the turn in progress finish (at once if the agent isn't working; a turn
   still running after 30 minutes keeps the session), backs the session up,
   copies that snapshot and the whole conversation to the taker peer to peer,
-  stops the owner's agent, and answers with the snapshot: the take-over then
-  uses exactly it. Keep, no answer within 2 minutes, or the owner dropping
-  offline mid-request: the taker is told, and nothing is taken over; once the
-  owner is offline, Take over works from the newest backup as before. The
-  taker's dialog shows the request's progress. An owner whose Mockingbird is
-  older can't be asked: the taker is told it needs an update, and it isn't
-  taken over while it's connected.
+  stops the owner's agent, and answers (`takeover.handover`) with the
+  snapshot and a signed **hand-over**: for that session, that teammate and
+  exactly that snapshot, good for 30 minutes. The take-over then uses exactly
+  it. Keep, no answer within 2 minutes, or the owner dropping offline
+  mid-request: the taker is told, and nothing is taken over. The taker's
+  dialog shows the request's progress.
+- **Owner away → only with their away grant.** Before leaving, the owner
+  allows it: Settings → Team, per room, **While I'm away** — all their
+  sessions in the room, or one, for 8 hours, a day, 3 days or a week (at
+  most). Their Mockingbird signs an **away grant** and publishes it
+  (`session.awayGrant`); only their latest counts, it ends by itself, and
+  **Stop** withdraws it (publishing none). With it, Take over works while
+  they're offline from the newest signed backup, as above; the button leads
+  and its title says until when. Without one, an offline owner's session
+  can't be taken over: the dialog says why and whom to ask ("Ryan hasn't
+  allowed take-overs while they're away. Ask Ryan to hand it over when
+  they're back online, or to allow take-overs while they're away (Settings →
+  Team).") and Take over is disabled. Online, they're asked first whatever
+  their away grant says.
+- **Mixed versions** (both teammates need 1.5 for take-over; the rest of the
+  room works with older peers as before). An older taker's request
+  (`takeover.ask`) is refused: "Nick needs to update Mockingbird to take over
+  “Export API”: take-overs now need Ryan's signed hand-over". An older owner
+  can't be asked (there's no `takeover.handover` there): "Ryan needs to update
+  Mockingbird to hand “Export API” over". An older owner's offline sessions
+  can't be taken over (they can't sign an away grant; their backups lack
+  `grants: 1`, and the dialog says they need an update). An older taker's
+  take-over while the owner is away changes nothing on a newer owner's Mac
+  (above), though that older Mac believes it took the session over until it's
+  updated. Take-overs from before grants: a newer Mac replays the room's log,
+  so an old take-over without a grant would no longer count; the owner's
+  Mockingbird, on its first start with grants, accepts each one it had
+  already honoured (it kept a record of each copy it stopped: `takeover.json`'s
+  `left`) with `session.takeoverAccepted`, with the old backup's drop if the
+  taker made one — and never one it didn't honour.
 - **The old copy stops.** When the owner's Mockingbird learns of a take-over
   (at once, on reconnecting, or on starting — even after relaunching the
   session before the room caught up), it ends that session's agent and never
@@ -617,19 +705,33 @@ on their laptop under their own account.
 
 - **Settings → Team, per room:** a switch, "Also back up to GitHub" (or the
   remote's name: Azure DevOps, GitLab, a host, or "origin" when the room's
-  repositories differ). Its note says what it does — after each turn, every
-  member's room sessions' snapshot (uncommitted and untracked files, never
-  secrets) also goes to a hidden ref on the remote, where anyone with read
-  access to the repository can fetch it, so a teammate can take over while
-  the owner's laptop is off — who the admin is, and who last changed it.
-  Turning it on asks first, with that warning; turning it off doesn't.
+  repositories differ). Its note says what it does — after each turn, the
+  room sessions' snapshot (uncommitted and untracked files, never secrets) of
+  each member who allows it also goes to a hidden ref on the remote, where
+  anyone with read access to the repository can fetch it, so a teammate can
+  take over while the owner's laptop is off — who the admin is, and who last
+  changed it. Turning it on asks first, with that warning; turning it off
+  doesn't.
+- **Each member's own consent** (security review R7; 1.5). The admin's
+  switch only makes it available: nobody's work goes to origin on the
+  admin's word. Each member is asked once per room, "Back up my room sessions
+  to GitHub (origin)?" — Allow / Not now — and the answer is kept on their Mac
+  (`~/.mockingbird/team/backup-consent.json`, owner-only, like the House
+  token's consent; forgotten when they leave the room). Settings → Team has
+  their own switch under the admin's ("Back up my sessions to GitHub").
+  Until they allow it their backups stay peer to peer, recorded with
+  `toOrigin: false` and the push outcome "not on origin: its owner keeps
+  their backups peer to peer"; teammates then don't read origin for those
+  sessions. Allowing it pushes their newest snapshots at once; turning their
+  own off deletes from origin what they pushed (as the admin's switch turning
+  off does), a failure shown and retried.
 - **The admin's alone.** It's a replicated room setting: `room.settings
   { backupsToOrigin }`, signed like every event, reduced on every member. Only
   the room's admin at that point in the room's order (`roomAdmin`) changes
   anything; anyone else's event is kept in the log and changes nothing, and
   the switch is disabled for them, naming the admin. A room with no settings
   event — every room made before this — is off.
-- **On:** each owner pushes its sessions' newest snapshots at once (not only
+- **On:** each owner who allowed it pushes its sessions' newest snapshots at once (not only
   after the next turn), then after every turn, with a lease, as before — but
   now through the repository's own pre-push hook (no `--no-verify`), so a
   secret scanner sees each push first. A hook that refuses one (or chokes on
@@ -1208,7 +1310,12 @@ same file, and tools for agents to see what teammates change.
 ## Not in this release
 
 - Roles/permissions beyond "member" and the admin who lets people in, removes
-  them and turns on backups to origin.
+  them and makes backups to origin available. No role takes over a session
+  without its owner's grant; an emergency path for an owner gone for good is
+  left to Room roles (README), as an explicit logged event.
+- An audit log of remote actions on this Mac (security review R5): take-over
+  asks, hand-overs, away grants and refused take-overs are marked
+  `TODO(audit-log)` in `takeover.ts` for it.
 - Other transports (Tailscale, a self-hosted relay): designed for, not built.
 - Running sessions on an always-on shared host.
 
@@ -1242,6 +1349,36 @@ same file, and tools for agents to see what teammates change.
   failed backup); turned off, each owner deletes what it pushed (a failure
   shown and retried by the prune); a room from before the setting behaves as
   off, its owner deleting its old backups from origin on start.
+- The owner's consent (`test/teamTakeover.test.ts`, `test/teamTakenOver.test.ts`):
+  refused while the owner is away without an away grant (saying why and whom
+  to ask, nothing launched or published), then allowed for the session named
+  and stopped on the owner's Mac; away grants covering only the sessions
+  named, an expired one forced through anyway counting for nothing, withdrawn;
+  every grant checked against the owner's key, the session, the taker, the
+  snapshot, the room and its lifetime (forged and edited ones refused); an
+  ungranted take-over — the room admin's own — changing nothing on the owner's
+  Mac, which says so in the chat once; an older taker's `takeover.ask` told to
+  update, an older owner reported as needing one; take-overs from before
+  grants accepted on the owner's first start when it had honoured them, never
+  otherwise; hand-overs over the loopback carrying the signed grant.
+- The snapshot a take-over starts from (`test/teamTakeover.test.ts`): a ref
+  planted on origin by someone outside the room, dated in the future with a
+  `.claude/settings.json` in it, ignored, logged and its copy deleted, the
+  take-over starting from the signed snapshot; a planted ref alone never a
+  snapshot; a peer copy kept only as the commit it names, a bundle whose ref
+  says otherwise refused; origin's newer backup used once its record reached
+  the taker through another member.
+- Backups to origin need each member's consent (`test/teamTakeover.test.ts`):
+  the admin's switch alone pushing nothing, Not now kept, Allow pushing at
+  once, one member's answer not another's, the answer only on this Mac
+  (owner-only), turning one's own off deleting what was pushed.
+- The identity key (`test/teamIdentity.test.ts`, `test/teamService.test.ts`),
+  against a fake sealer, never the Keychain: a plain key moved keeping its id,
+  public key and signatures, no plain copy or temporary file left; a new one
+  sealed from the start; without the Keychain the plain file kept with one
+  warning (shown in Settings → Team); a read-back that doesn't match putting
+  the plain file back; a sealed key that can't be opened refused, never
+  replaced; `safeStorage` used only on macOS and only when it says it can.
 - The conversation saved at a take-over (`test/teamTakeover.test.ts`,
   `test/worktreeWrites.test.ts`): kept past the taker's first backup and
   while turns come, deleted (and logged) after 14 days without one, when the
@@ -1367,8 +1504,11 @@ same file, and tools for agents to see what teammates change.
   (`MB_E2E_APP=1`): create room, join by code (the admin accepting from its
   prompt, again after removing the joiner), live pane, remote typing, chat,
   board claim, a turn backed up peer to peer (nothing on origin), a hand-over
-  from the owner's prompt (their agent stopped, the taker continuing),
-  take-over from the peer copy with the owner quit,
+  from the owner's prompt (their agent stopped, the taker continuing, the
+  room recording the signed hand-over), a take-over refused with the owner
+  quit without an away grant (the dialog saying why, Take over disabled),
+  then — the owner back, allowing take-overs while away (its IPC), and
+  quitting — a take-over from the peer copy under that grant,
   and the owner's app stopping its copy when it starts again; a migration
   number reserved through the agents' tool socket on one instance seen,
   stepped over and held back on the other, released, and each side's
