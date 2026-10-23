@@ -87,8 +87,7 @@ withdrawn, forged, the admin's own, an older Mockingbird told to update,
 take-overs from before grants accepted once), from a snapshot the owner
 recorded (a planted ref on origin ignored and logged, a peer copy kept only
 as the commit it named); backups to origin only for members who allowed it;
-the identity key sealed (moved keeping its fingerprint, the plain file kept
-and a warning without the Keychain, never replaced when it can't be opened); leaving and
+leaving and
 removal (who may remove whom, what each Mac deletes, the Worker's revoke, and
 an older Worker); joining (only the admin's add counts, rooms from before
 keeping theirs; accept, decline, a request passed on to an offline admin,
@@ -448,10 +447,8 @@ agreed direction, **Later** is worth doing once the foundations settle.
   teammate's Mockingbird. Built and tested end to end on one Mac; next is the
   first run between two laptops through the deployed Worker.
   - **Connecting:** each install has a key pair and a display name (Settings →
-    Team; `npm run team:fingerprint`) — the private key sealed with a key the
-    macOS Keychain holds for Mockingbird, so a copy of the file isn't enough to
-    act as you (moved there on first start, same fingerprint; without the
-    Keychain it stays in the owner-only file, and Settings → Team says so). Laptops connect peer to peer over WebRTC
+    Team; `npm run team:fingerprint`; the private key in an owner-only file).
+    Laptops connect peer to peer over WebRTC
     (in a hidden window), introduced by a Cloudflare signaling Worker
     (`signaling/`, deployed once; only fingerprints in its `ALLOWED_CREATORS`
     create rooms) with Cloudflare TURN as the fallback relay. Every connection
@@ -733,3 +730,8 @@ The rest of the 1.4.7 UI review (its ids in brackets). Decided: a room gets tabs
 - **Signed + notarized builds.** Updating is covered by the in-app Update
   (pull, build, restart). What's left needs an Apple Developer ID: no
   right-click→Open for new users, and updates that install in the background.
+- **Room identity key in the Keychain** (security review R3), once builds are
+  signed: built (sealed with Electron's safeStorage, moved keeping its
+  fingerprint) and held back because an unsigned build is asked to use its
+  Keychain item after every update, and a moved key can't be read by an older
+  Mockingbird (which would make it a major release).

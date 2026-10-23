@@ -30,27 +30,10 @@ should stop more members joining later.
   credentials, so no laptop holds the token.
 - **Identity:** each Mockingbird install has its own key pair (in
   `~/.mockingbird/team/identity.json`, never synced) and a display name set in
-  Settings → Team. The private key is sealed with Electron's `safeStorage`,
-  whose key the macOS Keychain keeps for Mockingbird ("Mockingbird Safe
-  Storage"), so the file alone — from a backup, a disk image, another account
-  — isn't enough to act as the member (security review R3). Chosen over a
-  generic-password item written by the `security` CLI: that item trusts
-  `/usr/bin/security`, so any process running as the user could read it back
-  without a prompt; the safeStorage item is readable without asking only by an
-  app with Mockingbird's code signature. On the first start with it, a plain
-  key (version 1) is moved: the same key, so the same fingerprint (no room
-  joined again); sealed, opened again and compared, the file replaced in one
-  step (owner-only from the moment it exists), read back from disk and
-  compared again — a read-back that doesn't match puts the plain file back.
-  Without the Keychain (or off macOS) the plain file keeps working, with one
-  warning in the log and Settings → Team. A sealed key that can't be opened
-  (the Keychain refused) stops team rooms with that reason and is never
-  replaced: the next start with the Keychain back opens it. Limits: a copy of
-  the plain file in an older backup or snapshot stays readable; resetting the
-  login keychain loses the key (the member joins their rooms again); an
-  unsigned build may be asked once per update to use its Keychain item.
-  `npm run team:fingerprint` reads only the public key. Tests seal with a fake
-  (`KeySealer`); the two-instance tests run with `--use-mock-keychain`.
+  Settings → Team. The private key sits in that file, owner-only (0600, in a
+  0700 folder). Moving it into the macOS Keychain (security review R3) waits
+  for signed builds: an unsigned build is asked to use its Keychain item after
+  every update, and an older Mockingbird couldn't read a moved key.
   Connection details are signed by the sender's key and checked against the
   room's member list. Each side pins the other's DTLS fingerprint from those
   signed details, so a tampered signaling server can't step in between.
@@ -1595,13 +1578,6 @@ be taken.
   the admin's switch alone pushing nothing, Not now kept, Allow pushing at
   once, one member's answer not another's, the answer only on this Mac
   (owner-only), turning one's own off deleting what was pushed.
-- The identity key (`test/teamIdentity.test.ts`, `test/teamService.test.ts`),
-  against a fake sealer, never the Keychain: a plain key moved keeping its id,
-  public key and signatures, no plain copy or temporary file left; a new one
-  sealed from the start; without the Keychain the plain file kept with one
-  warning (shown in Settings → Team); a read-back that doesn't match putting
-  the plain file back; a sealed key that can't be opened refused, never
-  replaced; `safeStorage` used only on macOS and only when it says it can.
 - The conversation saved at a take-over (`test/teamTakeover.test.ts`,
   `test/worktreeWrites.test.ts`): kept past the taker's first backup and
   while turns come, deleted (and logged) after 14 days without one, when the
