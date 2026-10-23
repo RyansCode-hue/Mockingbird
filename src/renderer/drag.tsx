@@ -20,6 +20,8 @@ export interface DropTarget {
   side?: Side;
   /** A drop on the grid: the layout it would leave, and the pane to highlight in it. */
   preview?: { tree: LayoutNode; hot: string };
+  /** A drop into a list: the gap between its items it would land in, 0 above the first. A line marks it. */
+  gap?: number;
 }
 
 export interface DragState {
@@ -190,7 +192,8 @@ export function DragLabel() {
   const flip = d.x > window.innerWidth - 340;
   return (
     <div className={`drag-label ${d.target ? "ok" : ""}`} style={flip ? { right: window.innerWidth - d.x + 14, top: d.y + 16 } : { left: d.x + 14, top: d.y + 16 }}>
-      {d.target ? d.target.outcome : d.label}
+      <span className="drag-what">{d.target ? d.target.outcome : d.label}</span>
+      <span className="drag-esc">esc cancels</span>
     </div>
   );
 }

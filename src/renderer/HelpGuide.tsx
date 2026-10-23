@@ -8,6 +8,7 @@ export function HelpGuide() {
     ["⌘E", "fullscreen the focused pane; ⌘E again restores (so does esc, outside the terminal and editor)"],
     ["⌘⌃1–4", "arrange the panes in 1–4 even columns"],
     ["drag", "a session onto a pane's edge puts it beside that pane (a preview shows where); onto its middle swaps the two, or opens it as a tab; onto its header opens it as a tab"],
+    ["⌥↑ ⌥↓", "move the focused Dashboard card up or down its column, as dragging it does (esc cancels a drag)"],
     ["⌘P", "go to a file in the focused session's folder (name:42 jumps to a line)"],
     ["⌘B", "show or hide the side bar"],
     ["⌘⇧E", "Explorer — the focused session's folder"],
@@ -83,7 +84,7 @@ export function HelpGuide() {
           </p>
           <div className="help-sec">The other tabs</div>
           <p>
-            <b>Dashboard</b> — your ADO board: drag cards between columns, comment, start a session
+            <b>Dashboard</b> — your ADO board: drag cards up or down a column to reorder them, or to another column; comment, start a session
             from a ticket. <b>WorkTracker</b> — the morning brief, 4pm wrap-up and weekly rollup,
             each in its own pane. <b>Council</b> — several models discuss one idea in rounds until
             they agree; you steer, approve, and have one write up the plan.

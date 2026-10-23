@@ -89,6 +89,12 @@ describe("the design tokens' contrast", () => {
     });
   }
 
+  it("draws a dragged Dashboard card's drop line, in --primary, at 3:1 or more on its column: both themes", () => {
+    const rule = css.slice(css.indexOf('.bcard[data-gap="above"]::before, '), css.indexOf("}", css.indexOf('.bcard[data-gap="above"]::before, ')));
+    expect(rule).toContain("background: var(--primary)");
+    for (const t of Object.values(themes)) expect(contrast(parse(t["--primary"]), parse(t["--bg-sidebar"]))).toBeGreaterThanOrEqual(3);
+  });
+
   it("reads the colours it checks", () => {
     expect(contrast(parse("#000000"), parse("#ffffff"))).toBeCloseTo(21, 5);
     expect(contrast(over(parse("rgba(0, 0, 0, .5)"), parse("#ffffff")), parse("#ffffff"))).toBeGreaterThan(3);

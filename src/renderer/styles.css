@@ -1514,8 +1514,27 @@ button.link.danger { color: var(--red); }
 .bcol[data-drop="after"] { box-shadow: inset -3px 0 0 var(--amber); }
 .ins-card[data-drop="before"], .sess-item[data-drop="before"] { box-shadow: inset 0 2px 0 var(--amber); }
 .ins-card[data-drop="after"], .sess-item[data-drop="after"] { box-shadow: inset 0 -2px 0 var(--amber); }
-.drag-label { position: fixed; z-index: 200; pointer-events: none; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 3px 8px; border-radius: 6px; background: var(--bg-pane-header); border: 1px solid var(--line-strong2); box-shadow: 0 6px 18px rgba(0,0,0,.35); font: 500 11px var(--ui); color: var(--text-3); }
+.drag-label { position: fixed; z-index: 200; pointer-events: none; display: flex; gap: 8px; align-items: baseline; max-width: 360px; white-space: nowrap; padding: 3px 8px; border-radius: 6px; background: var(--bg-pane-header); border: 1px solid var(--line-strong2); box-shadow: 0 6px 18px rgba(0,0,0,.35); font: 500 11px var(--ui); color: var(--text-3); }
+.drag-label .drag-what { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.drag-label .drag-esc { flex-shrink: 0; font: 400 9.5px var(--mono); color: var(--text-4); }
 .drag-label.ok { border-color: var(--amber); color: var(--text-1); }
+/* a Dashboard card's drop: a line in the gap it lands in (data-gap on the cards either side, or on an empty column's
+   body), in the neutral primary; under full motion the two neighbours part to open the gap, otherwise only the line */
+.bcol-body { position: relative; --gap-open: 0px; }
+:root[data-motion="full"] .bcol-body { --gap-open: 4px; }
+.bcard { transition: transform var(--dur-2) var(--ease-move), opacity var(--dur-2) linear; }
+.bcard[data-gap="above"] { transform: translateY(var(--gap-open)); }
+.bcard[data-gap="below"] { transform: translateY(calc(-1 * var(--gap-open))); }
+.bcard[data-gap="above"]::before, .bcard[data-gap="below"]:last-child::after, .bcol-body[data-gap="empty"]::before {
+  content: ""; height: 2px; border-radius: 1px; background: var(--primary); pointer-events: none;
+}
+/* the gap's middle: 4px of the 8px between cards, past the card's 1px border, half the line, and the part opened */
+.bcard[data-gap="above"]::before { position: absolute; left: -1px; right: -1px; top: calc(-6px - var(--gap-open)); }
+.bcard[data-gap="below"]:last-child::after { position: absolute; left: -1px; right: -1px; bottom: calc(-6px - var(--gap-open)); }
+.bcol-body[data-gap="empty"]::before { flex-shrink: 0; }
+/* the card being dragged stays in its place, faded, while the browser's copy of it follows the pointer */
+.bcard.lifted { opacity: .4; }
+.bcard:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 /* Dashboard: board picker and the Columns list */
 .mb-select.board-pick { width: auto; background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 5px; padding: 3px 6px; font: 500 10.5px var(--ui); }
 .cols-pop { min-width: 260px; max-height: 420px; }
