@@ -82,7 +82,42 @@ function failures(t: Record<string, string>): string[] {
   return bad;
 }
 
+// non-text marks (WCAG 1.4.11), at least 3:1 against what's on either side of them
+/** The colour token a rule's `property` uses, read from styles.css. */
+function ruleColor(selector: string, property: string): string {
+  const start = css.indexOf(`${selector} {`);
+  if (start < 0) throw new Error(`styles.css has no "${selector} {" rule`);
+  const m = css.slice(start, css.indexOf("}", start)).match(new RegExp(`${property}:[^;]*var\\((--[a-z0-9-]+)\\)`));
+  if (!m) throw new Error(`"${selector}" sets no ${property} colour from a token`);
+  return m[1];
+}
+const paneGrounds = ["--bg-app", "--bg-pane", "--bg-pane-header", "--bg-pane-header-focus", "--bg-pane-waiting"];
+const marks: [string, string[]][] = [
+  // a pane's outline while a teammate can type, and the typing strip's edge: the app's ground outside, the pane and
+  // its header inside, a waiting pane's header
+  [ruleColor(".pane.typing-on::after", "border"), paneGrounds],
+  [ruleColor(".typing-ask", "border-bottom"), paneGrounds],
+];
+// the typing strip's words and buttons on its teal tint over the pane
+const strip = "rgba(79, 179, 165, .14)";
+
 describe("the design tokens' contrast", () => {
+  for (const [name, t] of Object.entries(themes)) {
+    it(`keeps outlines at 3:1 and the typing strip's text at 4.5:1: ${name}`, () => {
+      const color = (v: string) => parse(v.startsWith("--") ? t[v] : v);
+      const bad: string[] = [];
+      for (const [mark, grounds] of marks) {
+        for (const g of grounds) {
+          const r = contrast(over(color(mark), color(g)), color(g)); // a translucent mark as it's drawn on that ground
+          if (r < 3) bad.push(`${mark} on ${g}: ${r.toFixed(2)}`);
+        }
+      }
+      const ground = over(color(strip), color("--bg-pane"));
+      for (const fg of ["--text-1", "--text-2", "--red"]) if (contrast(color(fg), ground) < 4.5) bad.push(`${fg} on the typing strip: ${contrast(color(fg), ground).toFixed(2)}`);
+      expect(bad).toEqual([]);
+    });
+  }
+
   for (const [name, tokens] of Object.entries(themes)) {
     it(`keeps every text colour at 4.5:1 or more on the surfaces it sits on: ${name}`, () => {
       expect(failures(tokens)).toEqual([]);

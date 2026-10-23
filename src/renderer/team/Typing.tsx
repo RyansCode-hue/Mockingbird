@@ -33,8 +33,10 @@ async function decide(sessionId: string, member: string, choice: "session" | "mi
 }
 
 /**
- * The owner's prompt on its pane: "Nick wants to type in “Export API”", and
- * Allow for this session / Allow for 15 min / Deny. Only a click answers it:
+ * The owner's prompt on its pane: a strip docked under the pane header,
+ * "Nick wants to type in “Export API”", with Allow for this session / Allow
+ * for 15 min / Deny. It lies over the terminal's top rows rather than taking
+ * room from it: the pty is never resized for it. Only a click answers it:
  * it never takes focus or a key, so typing in the pane can't answer it.
  */
 export function TypingAsks({ session, room }: { session: SessionInfo; room: RoomSessionTag }) {
@@ -48,7 +50,7 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
     setBusy("");
   };
   return (
-    <>
+    <div className="typing-strip">
       {room.typingAsks.map((a) => (
         <div
           key={a.member}
@@ -72,10 +74,13 @@ export function TypingAsks({ session, room }: { session: SessionInfo; room: Room
           </button>
         </div>
       ))}
-      {error && <div className="team-pane-note err">{error}</div>}
-    </>
+      {error && <div className="typing-ask err">{error}</div>}
+    </div>
   );
 }
+
+/** Whether teammates can type into this session of this Mac's now: its pane is outlined in teal. */
+export const typingOn = (room: RoomSessionTag | null | undefined): boolean => !!room && !room.remote && !!room.typists?.length;
 
 /** The owner's pane header: "Nick can type", for as long as they can, with ✕ to take it back. */
 export function Typists({ session, room }: { session: SessionInfo; room: RoomSessionTag }) {

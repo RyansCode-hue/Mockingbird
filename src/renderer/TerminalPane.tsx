@@ -15,7 +15,7 @@ import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
 import { attachTerm, dataPump, fitTerm, followFixedSize, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
-import { TypingAsks, TypingChip, TypingRefused, Typists } from "./team/Typing";
+import { TypingAsks, TypingChip, TypingRefused, Typists, typingOn } from "./team/Typing";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
 import type { RoomSessionBackupView } from "../shared/team/takeover";
@@ -837,6 +837,7 @@ export function TerminalPane({
         waiting ? "st-waiting" : "",
         dead ? "st-dead" : "",
         assistant ? "kind-assistant" : "",
+        typingOn(room) ? "typing-on" : "",
       ].join(" ")}
       style={area ? { gridArea: area } : undefined}
       data-cell={cell}

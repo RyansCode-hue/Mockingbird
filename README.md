@@ -188,8 +188,8 @@ agreed direction, **Later** is worth doing once the foundations settle.
   the pane header); never while your agent asks for permission. Agent messages
   wait out permission prompts and are stripped of control characters. One
   audit log of remote actions, shown in Settings → Team. Prompt and indicator
-  were mocked as three options (in-pane banner, docked strip, dialog); the
-  in-pane banner shipped.
+  were mocked as three options (in-pane banner, docked strip, dialog); Ryan
+  picked the docked strip with a teal outline around the pane.
 - **What's new** (1.4.11) — click the version next to
   "Mockingbird" in the top bar: this version's changes, each tagged New, Fix,
   Polish or UI, then fold-outs for earlier versions (back to 1.0.0), what's
@@ -489,10 +489,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
     whoever shows it, its row names who's looking,
     Follow mirrors a teammate's grid, and everyone hears when it waits.
     A teammate's copy is **view-only**: typing into it (or **Ask to type**)
-    asks the session's owner, whose pane says "Nick wants to type in
-    “Export API”" — **Allow for this session**, **Allow for 15 min** or
-    **Deny** — and whose header then shows "Nick can type" with ✕ to take it
-    back. The owner's Mockingbird enforces it, so a modified client can't skip
+    asks the session's owner, whose pane shows a strip under its header,
+    "Nick wants to type in “Export API”" — **Allow for this session**,
+    **Allow for 15 min** or **Deny**. While Nick can type, the pane is outlined
+    in teal and its header shows "Nick can type" with ✕ to take it back. The owner's Mockingbird enforces it, so a modified client can't skip
     it, and even an allowed teammate's keys are refused while the owner's
     agent asks for permission: approvals are always the owner's. An older
     Mockingbird typing in is refused with the reason (the connection stays).

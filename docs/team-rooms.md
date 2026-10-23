@@ -494,13 +494,17 @@ terminals, `!` commands, the agent's permission prompts.
   "Waiting for Ryan to let you type". A key held down can't nag: one ask
   per teammate and session at a time, and after a no a new one waits 30 s.
   An unanswered ask lapses after 10 minutes or when they go offline.
-- **Your answer.** The pane shows **"Nick wants to type in “Export API”"**
-  over its top rows (where the waiting banner goes), with **Allow for this
-  session**, **Allow for 15 min** and **Deny**, and a desktop notification
-  brings the pane up. Only a click answers it: the prompt never takes focus
-  or a key, so your own typing can't. While Nick may type, the pane header
-  says **"Nick can type"** (with the minutes left), and its ✕ takes it back
-  at once. "This session" lasts while the session runs: closing it, its
+- **Your answer.** A strip docked under the pane's header says **"Nick
+  wants to type in “Export API”"**, with **Allow for this session**, **Allow
+  for 15 min** and **Deny**, and a desktop notification brings the pane up.
+  The strip lies over the terminal's top rows (the first of the pane's
+  notes), so the terminal is never re-fitted and the pty never resized for
+  it. Only a click answers it: it never takes focus or a key, so your own
+  typing can't. While anyone may type, the whole pane is outlined in teal
+  (at least 3:1 against what's on either side, both themes), and the header
+  says **"Nick can type"** (with the minutes left), whose ✕ takes it back at
+  once. Chosen by Ryan, 2026-10-23, from three mocked options (an in-pane
+  banner, this strip and outline, a dialog). "This session" lasts while the session runs: closing it, its
   agent exiting, moving it out of the room, a take-over or Nick leaving the
   room ends it. Every change reaches Nick at once (`pty.typingState`); his
   header says **You can type**, **Asked Ryan…** or **View only**.
@@ -1469,8 +1473,11 @@ same file, and tools for agents to see what teammates change.
   (`test/remoteAudit.test.ts`): messages, take-over asks, files and backups
   through the request tap, sizes and outcomes only; gathering; 0600,
   append-only and rotation; a link refused. The UI (`test/uiTyping.test.ts`,
-  local Chrome): the prompt, the indicator, Allow for 15 min and ✕ clicked,
-  the prompt's buttons inside a narrow pane, Recent remote activity.
+  local Chrome): the strip docked over the terminal with no re-fit or pty
+  resize, the outline on the panes someone can type into (gone after ✕), the
+  chip, Allow for 15 min and ✕ clicked, the buttons inside a narrow pane,
+  Recent remote activity; `test/contrast.test.ts` holds the outline and the
+  strip's edge at 3:1 and its text at 4.5:1 in both themes.
 - Two Mockingbird instances on one Mac (separate HOME/userData, local
   signaling server, real WebRTC between them) driven end to end
   (`MB_E2E_APP=1`): create room, join by code (the admin accepting from its

@@ -2552,10 +2552,19 @@ button.chip.warn { border: 0; cursor: pointer; }
 .team-live-problems { padding: 0 8px 6px; }
 /* typing into a teammate's session: the owner's prompt (over the pane's top rows, like the waiting banner), who can type, and a
    teammate's view-only copy */
+/* the ask: a strip docked under the pane header, full width. It floats over the terminal's top rows inside
+   .pane-notes (cancelling its inset), so showing it never re-fits the terminal or resizes the pty */
+.pane-notes > .typing-strip { margin: -5px -8px 0; box-shadow: 0 2px 6px rgba(0, 0, 0, .22); }
 .typing-ask {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; padding: 5px 7px; border-radius: 4px;
-  border: 1px solid color-mix(in srgb, var(--teal) 45%, transparent);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px 6px; padding: 5px 9px;
+  border-bottom: 1px solid var(--teal);
   background: linear-gradient(rgba(79, 179, 165, .14), rgba(79, 179, 165, .14)), var(--bg-pane);
+}
+.typing-ask.err { color: var(--red); font: 500 10px var(--ui); }
+/* while a teammate can type: the whole pane outlined in teal, over its edges (the focus ring stays outside) */
+.pane.typing-on::after {
+  content: ""; position: absolute; inset: 0; z-index: 6; pointer-events: none;
+  border: 2px solid var(--teal); border-radius: inherit;
 }
 .typing-ask .reason { flex: 1 1 140px; min-width: 0; font: 600 10.5px var(--ui); color: var(--text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .typing-ask button { padding: 2px 8px; font-size: 10.5px; flex-shrink: 0; }

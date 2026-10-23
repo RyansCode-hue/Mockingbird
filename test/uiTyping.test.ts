@@ -30,7 +30,13 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     const html = await dom(`shown=s1,s8,${NICK_PANE}&typingAsk&typingRefused`);
     const t = text(html);
     expect(t).toContain("Nick wants to type in “Release notes for #5101” Allow for this session Allow for 15 min Deny");
+    // docked as a strip over the top of s8's terminal (the first of its pane notes), never a modal
+    expect(html).toMatch(/<div class="pane-notes"><div class="typing-strip"><div class="typing-ask" role="alert"/);
+    expect(html).not.toMatch(/class="modal/);
     expect(html).toMatch(/class="chip typist"[^>]*>Nick can type · 12 min<button class="typist-x" aria-label="Stop Nick Smith typing">/);
+    // s1, which Nick may type into, is outlined; s8, where he only asks, and his own session here aren't
+    const panes = [...html.matchAll(/<div class="(pane [^"]*)"[^>]*>[^]*?<span class="title"[^>]*>([^<]*)</g)].map((m) => [m[2], m[1].includes("typing-on")]);
+    expect(Object.fromEntries(panes)).toMatchObject({ "Org dropdowns remember the last org": true, "Release notes for #5101": false, "Donor export: CSV writer": false });
     // the teammate's side: view-only, with Ask to type, and why the keys just typed didn't go
     expect(t).toContain("View only · Ask to type");
     expect(t).toContain("Nick Smith hasn't allowed typing Ask to type");
@@ -51,7 +57,35 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
     expect(JSON.parse(await result(`shown=s1,s8&typingAsk`, read)).sort()).toEqual(["Nick can type · 12 min✕", "Nick can type · 15 min✕"]);
   }, 90_000);
 
-  it("✕ takes typing back", async () => {
+  it("shows the strip over the terminal: no re-fit, no pty resize", async () => {
+    // runs once in the page (Runtime.evaluate doesn't await): it leaves its answer in window.__done
+    const read = `(window.__audit ??= (async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const until = async (f) => { for (let i = 0; i < 200 && !f(); i++) await wait(50); return f(); };
+      const term = await until(() => window.__mbTerms?.get("s8")?.term?.rows && window.__mbTerms.get("s8").term);
+      const holder = term.element.closest(".term-holder");
+      await wait(500); // the first fit settles
+      const before = { cols: term.cols, rows: term.rows, h: holder.getBoundingClientRect().height };
+      const calls = window.__mbCalls.length;
+      const state = await window.mb.teamLive();
+      state.own.s8.typingAsks = [{ member: "0f1e2d3c4b5a69788796a5b4c3d2e1f0", name: "Nick Smith", at: Date.now() }];
+      window.__mbEmit("onTeamLive", state);
+      const strip = await until(() => document.querySelector(".typing-strip"));
+      await wait(500); // a re-fit would have happened by now
+      const resizes = window.__mbCalls.slice(calls).filter((c) => c.fn === "sessionResize" && c.args[0] === "s8");
+      const sb = strip.getBoundingClientRect(), h = holder.getBoundingClientRect(), head = term.element.closest(".term-area").getBoundingClientRect(); // the top of the terminal, under the header (and its rail)
+      window.__done = JSON.stringify({
+        before, after: { cols: term.cols, rows: term.rows, h: h.height }, resizes: resizes.length,
+        docked: Math.abs(sb.top - head.top) < 1.5, overTerminal: sb.top < h.bottom && sb.bottom > h.top, fullWidth: sb.width >= h.width - 4,
+      });
+    })().catch((e) => (window.__done = JSON.stringify({ error: String(e) }))), window.__done ?? null)`;
+    const r = JSON.parse(await result(`shown=s1,s8`, read));
+    expect(r.after).toEqual({ cols: r.before.cols, rows: r.before.rows, h: r.before.h });
+    expect(r.resizes).toBe(0);
+    expect(r).toMatchObject({ docked: true, overTerminal: true, fullWidth: true });
+  }, 90_000);
+
+  it("✕ takes typing back, and the outline goes with it", async () => {
     const read = `(() => {
       const x = document.querySelector(".chip.typist .typist-x");
       if (!window.__stopped) {
@@ -60,7 +94,7 @@ describe.skipIf(!local)("typing into teammates' sessions, in the window", () => 
         x.click();
         return null;
       }
-      return document.querySelector(".chip.typist") ? null : "gone";
+      return document.querySelector(".chip.typist") ? null : document.querySelector(".pane.typing-on") ? "outlined still" : "gone";
     })()`;
     expect(await result(`shown=s1`, read)).toBe("gone");
   }, 90_000);
