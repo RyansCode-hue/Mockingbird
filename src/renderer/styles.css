@@ -2165,7 +2165,6 @@ button.link.house-change { margin-left: 8px; font-size: 10.5px; }
 .house-inline { display: flex; gap: 6px; align-items: center; }
 .house-inline.end { justify-content: flex-end; }
 .modal .house-inline input[type=text] { flex: 1; min-width: 0; padding: 4px 8px; font-size: 11px; }
-.house-section { margin-top: 12px; }
 .house-section-h { font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); padding: 0 2px 5px; display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--line-soft); margin-top: 12px; min-height: 22px; }
 .house-cnt { color: var(--text-3); }
 .house-section-hint { font: 400 10px var(--ui); letter-spacing: 0; text-transform: none; color: var(--text-4); }
@@ -2189,27 +2188,56 @@ button.link.house-change { margin-left: 8px; font-size: 10.5px; }
 }
 .house-mark.human { color: var(--amber-text); background: var(--fill-waiting); }
 .house-mark.agent { color: var(--teal-text); background: color-mix(in srgb, var(--teal) 14%, transparent); }
-.house-mark.blocked { color: var(--red); background: color-mix(in srgb, var(--red) 11%, transparent); }
-.house-mark.waiting { color: var(--amber-text-dim); }
 .house-mark.added { background: transparent; box-shadow: inset 0 0 0 1px var(--line-med); font-weight: 400; }
 .modal button.link.house-blocker { font-size: 10px; color: var(--red); }
 .house-empty { font: 400 10.5px/1.5 var(--ui); color: var(--text-4); padding: 8px 4px; }
-.house-row { border-bottom: 1px solid var(--line-soft); }
-.house-row.mine { box-shadow: inset 2px 0 0 var(--teal); }
-button.house-row-main {
-  display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 6px; border: none; border-radius: 0;
-  background: none; text-align: left; text-transform: none; letter-spacing: 0; color: var(--text-1); cursor: pointer;
-}
-button.house-row-main:hover { background: var(--fill-subtle); color: var(--text-1); }
-.house-n { font: 500 10.5px var(--mono); color: var(--text-3); flex-shrink: 0; min-width: 38px; }
-.house-title { flex: 1; min-width: 0; font: 500 11.5px/1.35 var(--ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .house-chip { flex-shrink: 0; font: 500 10px var(--ui); padding: 3px 8px; border-radius: 10px; background: var(--fill-subtle); color: var(--text-2); white-space: nowrap; }
 .house-chip.claimed { background: color-mix(in srgb, var(--m-2) 22%, var(--bg-pane-header)); color: var(--text-1); }
 .house-chip.claimed.mine { background: color-mix(in srgb, var(--teal) 24%, var(--bg-pane-header)); }
-.house-chip-wrap { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .house-status { font: 400 10px var(--ui); color: var(--text-4); white-space: nowrap; }
-.modal button.house-claim-btn { padding: 2px 10px; font-size: 10px; }
-.house-claim { padding: 0 6px 8px 120px; }
+.house-claim { flex-wrap: wrap; }
+/* the board as columns (HouseBoard.tsx Columns): the Dashboard's columns, cards, drop line and blocked red, in a wider
+   dialog; the columns scroll sideways inside it, never the dialog or the page */
+.modal.house-modal.house-board-modal { width: min(1160px, calc(100vw - 40px)); }
+.house-board { margin-top: 10px; min-width: 0; }
+.house-board-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 2px 6px; }
+.house-board-bar .house-section-hint::before { content: none; }
+.board-cols.house-cols { padding: 6px 0 10px; gap: 8px; flex: none; }
+.house-cols .bcol { width: 228px; }
+.house-cols .bcol-hd { cursor: default; padding: 8px 10px; }
+.house-cols .bcol-body { padding: 8px; min-height: 72px; }
+.modal button.link.house-col-fold { margin-left: auto; padding: 0 3px; font-size: 11px; color: var(--text-4); }
+.house-cols .bcol.folded { width: 38px; }
+.modal button.house-col-unfold {
+  flex: 1; writing-mode: vertical-rl; border: none; border-radius: 8px; background: none; padding: 12px 0; text-align: left;
+  font: 600 10.5px var(--ui); letter-spacing: 0; text-transform: none; color: var(--text-2);
+}
+.modal button.house-col-unfold:hover { background: var(--fill-subtle); color: var(--text-1); }
+.house-card .tbar { background: var(--teal); opacity: 1; }
+.house-card .bc-top { align-items: center; }
+.house-card .house-pri { width: auto; }
+.house-card .bc-title { margin: 4px 0 6px; overflow-wrap: anywhere; }
+.house-card-holds, .house-card-marks { display: flex; flex-wrap: wrap; gap: 4px; margin: -1px 0 7px; min-width: 0; }
+.house-card-holds .chip.blocked { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.house-card .bc-foot { gap: 8px; min-width: 0; }
+.house-who { flex-shrink: 0; font: 500 10px var(--ui); color: var(--text-2); }
+.house-who.house-dim { font-weight: 400; color: var(--text-4); }
+.house-branch { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.house-card .house-claim { margin-top: 8px; cursor: default; }
+.modal .house-card .house-claim input[type=text] { min-width: 130px; }
+.house-refuse { font: 500 10.5px/1.4 var(--ui); color: var(--red); padding: 2px 2px 4px; }
+.house-fold { border: 1px solid var(--line-med); border-radius: 8px; background: var(--bg-sidebar); margin: 6px 0; min-width: 0; }
+.modal button.house-fold-h {
+  display: flex; gap: 6px; width: 100%; border: none; border-radius: 8px; background: none; padding: 7px 10px; text-align: left;
+  font: 600 10.5px var(--ui); letter-spacing: 0; text-transform: none; color: var(--text-2);
+}
+.modal button.house-fold-h:hover { background: var(--fill-subtle); color: var(--text-1); }
+.house-fold-body { display: flex; gap: 8px; overflow-x: auto; padding: 2px 8px 8px; align-items: flex-start; }
+.house-fold-body .bcard { width: 228px; flex-shrink: 0; }
+.modal button.link.house-unread { display: block; text-align: left; font-size: 11px; color: var(--amber-text); margin: 2px 0; overflow-wrap: anywhere; }
+/* a place that won't take the dragged card (Done, Dropped: only staff close tickets), and the label saying so */
+[data-drop="refused"] { outline: 2px dashed var(--red); outline-offset: -2px; border-radius: 8px; }
+.drag-label.no { border-color: var(--red); color: var(--red); }
 .house-add { border: 1px solid var(--line-med); border-radius: 7px; padding: 10px 12px; margin-bottom: 6px; background: var(--bg-pane); }
 .house-add label:first-of-type { margin-top: 8px; }
 .house-tabs { display: inline-flex; gap: 2px; margin-bottom: 8px; padding: 2px; border-radius: 6px; background: var(--fill-subtle); }
@@ -2256,8 +2284,7 @@ button.house-toast-body:hover { background: none; color: var(--text-1-warm); }
 .house-problem { font: 400 11px/1.45 var(--ui); color: var(--amber-text); padding: 3px 0 3px 10px; border-left: 2px solid color-mix(in srgb, var(--amber) 55%, transparent); margin: 4px 0; overflow-wrap: anywhere; }
 .house-note.house-consent { border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
 @media (max-width: 600px) {
-  .house-claim { padding-left: 6px; }
-  .house-pri, .house-mark.added, .house-mark.waiting { display: none; }
+  .house-cols .bcol, .house-fold-body .bcard { width: 200px; }
 }
 /* ---- team rooms: team chat ---- */
 .rc { flex: 1; min-height: 0; display: flex; flex-direction: column; }

@@ -589,12 +589,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
     text, for later joiners too.
   - **Radley House board** (the kanban-board icon: **Board** on a room in the
     Team room view and in the group bar): the room's House project (its admin's
-    choice) — the open backlog (every ticket not done or dropped, in the
-    House's priority order, with a "Needs an agent" filter; `needs-human`,
-    blocked and waiting tickets marked), then the room's own tickets outside
-    it, each shown once; who has each, a ticket's history ("Ryan · status →
-    review"); claim, release, comment, post progress or a question, create
-    tickets. The House is the system of record: each member's
+    choice) as columns like the Dashboard's — Ready, In progress, Review,
+    Validating, Done (folded), with Parked folded into a row above and
+    Dropped behind a toggle — holding the open backlog (every ticket not done
+    or dropped) and the room's own tickets, each once, in the House's
+    priority order, with a "Needs an agent" filter; `needs-human` tags,
+    blocked and waiting tickets in red, your own with a teal edge; who has
+    each, a ticket's history ("Ryan · status → review"). Drag a card to
+    another column (or ⌥← ⌥→) to change its status in the House: into In
+    progress claims it (asking for the branch on the card), back to Ready
+    releases it, Done and Dropped refuse it (only House staff close
+    tickets), and a move the House refuses goes back with its reason. Also
+    claim, release, comment, post progress or a question, create tickets.
+    The House is the system of record: each member's
     Mockingbird reads and writes it with their own builder token
     (`~/.config/radley-house/<project>.env`), which never leaves the main
     process — and only once that member has allowed it for the room ("Use
@@ -711,7 +718,7 @@ The rest of the 1.4.7 UI review (its ids in brackets). Decided: a room gets tabs
 - [T1 T3] One New session button with Import in its menu; the status bar in three clusters.
 
 **Team, House and side views**
-- [H1 H3] House board rows in fixed columns; its problems in one banner, raw detail behind an expand.
+- [H3] The House board's problems in one banner, raw detail behind an expand. (H1: the board became status columns.)
 - [V1] Explorer, Source Control and Run open on the focused pane, with a session picker.
 - [D1 W1] Dashboard columns flex to fill; WorkTracker as cards for its three debriefs.
 

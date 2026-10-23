@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Modal } from "../Modal";
 import { Select } from "../Menu";
 import { KanbanIcon } from "../Icons";
 import { useAction } from "../useAction";
+import { useEscape } from "../useEscape";
+import { usePersisted } from "../prefs";
 import { useFlip, usePresenceRefs } from "../motion";
+import { beginDrag, cue, dragging, overTarget, useDrag, type DropTarget } from "../drag";
 import { ago, plural } from "../../shared/format";
 import { isErr } from "../../shared/types";
 import {
@@ -29,14 +32,32 @@ import {
 } from "../../shared/team/house";
 import type { ClaimWarningNotice } from "../../shared/team/claims";
 import { MigrationsLine } from "./Migrations";
+import {
+  boardMove,
+  CLOSE_REFUSAL,
+  columnLayout,
+  DEFAULT_FOLDS,
+  groupRows,
+  landingGap,
+  moveCard,
+  moveLabel,
+  moveWrite,
+  placeName,
+  placeOf,
+  shownStatus,
+  stepPlace,
+  type HouseFolds,
+  type HousePlace,
+  type PendingMove,
+} from "./houseColumns";
 
 /**
  * A shared room's Radley House board (docs/team-rooms.md, "Radley House
- * board"): the House's open backlog in its own order, with a "Needs an
- * agent" filter, then the room's tickets outside it — who has each — and a
- * ticket's detail and history with its actions. The House is the system of
- * record; everything here is read and written by the main process with this
- * member's own builder token.
+ * board"): the House's open backlog and the room's own tickets as columns by
+ * status, with a "Needs an agent" filter — who has each — and a ticket's
+ * detail and history with its actions. The House is the system of record;
+ * everything here is read and written by the main process with this member's
+ * own builder token.
  */
 
 type Err = { error: string };
@@ -193,6 +214,7 @@ function AddTicket({ act, onDone }: { act: (what: string, w: HouseWrite) => Prom
 function ClaimForm({ n, title, branches, busy, onClaim, onCancel }: { n: number; title: string; branches: string[]; busy: boolean; onClaim: (branch: string) => void; onCancel: () => void }) {
   const [branch, setBranch] = useState(branches.find((b) => new RegExp(`(^|\\D)${n}(\\D|$)`).test(b)) ?? branchFor(n, title));
   const list = `house-branches-${n}`;
+  useEscape(onCancel);
   return (
     <div className="house-inline house-claim" onClick={(e) => e.stopPropagation()}>
       <span className="house-dim">on branch</span>
@@ -218,29 +240,21 @@ function Priority({ p }: { p: string | null }) {
   return <span className={`house-pri ${known ? `p-${p}` : ""}`}>{p ?? ""}</span>;
 }
 
-/** What a row says besides its title: the handoff tags, what holds it up, and (in the open backlog) that the room added it. */
+/** A card's handoff tags, and that the room added it. */
 function Marks({ t, addedBy }: { t: HouseTicket; addedBy?: string }) {
-  const blocked = t.blockedBy.map((b) => `#${b}`).join(", ");
+  const human = t.tags.includes(NEEDS_HUMAN);
+  const agent = t.tags.includes(NEEDS_AGENT);
+  if (!human && !agent && !addedBy) return null;
   return (
-    <>
-      {t.tags.includes(NEEDS_HUMAN) && (
+    <div className="house-card-marks">
+      {human && (
         <span className="house-mark human" title="An agent is blocked on a question for a person">
           {NEEDS_HUMAN}
         </span>
       )}
-      {t.tags.includes(NEEDS_AGENT) && (
+      {agent && (
         <span className="house-mark agent" title="Handed back to an agent">
           {NEEDS_AGENT}
-        </span>
-      )}
-      {blocked && (
-        <span className="house-mark blocked" title={`Blocked by ${blocked}`}>
-          blocked by {t.blockedBy.length > 2 ? `#${t.blockedBy[0]} +${t.blockedBy.length - 1}` : blocked}
-        </span>
-      )}
-      {t.waiting && (
-        <span className="house-mark waiting" title={t.waiting.on ? `Waiting on ${t.waiting.on}` : "Waiting"}>
-          {t.waiting.on ? `waiting on ${t.waiting.on}` : "waiting"}
         </span>
       )}
       {addedBy && (
@@ -248,81 +262,343 @@ function Marks({ t, addedBy }: { t: HouseTicket; addedBy?: string }) {
           added
         </span>
       )}
-    </>
-  );
-}
-
-function Row({ row, view, marked, onOpen, act, busy }: { row: HouseRow; view: HouseView; marked: boolean; onOpen: () => void; act: (what: string, w: HouseWrite) => Promise<unknown>; busy: boolean }) {
-  const [claiming, setClaiming] = useState(false);
-  const t = row.ticket;
-  const readOnly = view.connection.state !== "ok";
-  return (
-    <div className={`house-row ${row.owner?.self ? "mine" : ""}`}>
-      <button className="house-row-main" onClick={onOpen} title={row.problem ?? (row.addedBy ? `Added by ${row.addedBy}` : undefined)}>
-        <span className="house-n">#{row.n}</span>
-        <Priority p={t?.priority ?? null} />
-        <span className={`house-title ${t ? "" : "house-dim"}`}>{t ? t.title : row.problem ? `couldn't be read: ${row.problem}` : "not read yet"}</span>
-        {t && <Marks t={t} addedBy={marked ? row.addedBy : undefined} />}
-        {t && row.owner ? (
-          <span className={`house-chip claimed ${row.owner.self ? "mine" : ""}`} title={t.claim?.branch ? `on ${t.claim.branch}` : undefined}>
-            {ownerChip(row.owner, t.status)}
-          </span>
-        ) : t && !claiming ? (
-          <span className="house-chip-wrap">
-            <span className="house-status">{statusLabel(t.status)}</span>
-            {!readOnly && isOpenStatus(t.status) && (
-              <button
-                className="outline house-claim-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setClaiming(true);
-                }}
-              >
-                Claim
-              </button>
-            )}
-          </span>
-        ) : null}
-      </button>
-      {claiming && t && <ClaimForm n={row.n} title={t.title} branches={view.branches} busy={busy} onCancel={() => setClaiming(false)} onClaim={(branch) => void act(`claim:${row.n}`, { kind: "claim", n: row.n, branch }).then((r) => !isErr(r as Err) && setClaiming(false))} />}
     </div>
   );
 }
 
-function Section({
-  title,
-  count,
-  hint,
-  tools,
-  rows,
-  empty,
-  marked = false,
-  ...rest
+/** What holds a ticket up — the tickets it's blocked by, whom it waits on — each as the Dashboard marks blocked work. */
+function holdsOf(t: HouseTicket): { text: string; tip: string }[] {
+  const out: { text: string; tip: string }[] = [];
+  if (t.blockedBy.length) {
+    const all = t.blockedBy.map((b) => `#${b}`).join(", ");
+    out.push({ text: `Blocked by ${t.blockedBy.length > 2 ? `#${t.blockedBy[0]} +${t.blockedBy.length - 1}` : all}`, tip: `Blocked by ${all}` });
+  }
+  if (t.waiting) out.push({ text: t.waiting.on ? `Waiting on ${t.waiting.on}` : "Waiting", tip: t.waiting.on ? `Waiting on ${t.waiting.on}` : "Waiting" });
+  return out;
+}
+
+const DRAG_TYPE = "text/mb-house";
+
+/** One ticket on the board: what the list showed, a card to open or drag. */
+function Card({
+  row,
+  status,
+  lifted,
+  gap,
+  asking,
+  saving,
+  readOnly,
+  branches,
+  onOpen,
+  onKeyDown,
+  onClaim,
+  onCancelClaim,
 }: {
-  title: string;
-  count?: string;
-  hint?: string;
-  tools?: ReactNode;
-  rows: HouseRow[];
-  empty: string;
-  /** Mark the room's own tickets among the rows ("added"). */
-  marked?: boolean;
-  view: HouseView;
-  onOpen: (n: number) => void;
-  act: (what: string, w: HouseWrite) => Promise<unknown>;
-  busy: boolean;
+  row: HouseRow;
+  status: string;
+  lifted: boolean;
+  gap: "above" | "below" | undefined;
+  asking: boolean;
+  saving: boolean;
+  readOnly: boolean;
+  branches: string[];
+  onOpen: () => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
+  onClaim: (branch: string) => void;
+  onCancelClaim: () => void;
 }) {
+  const t = row.ticket!;
+  const holds = holdsOf(t);
+  const mine = !!row.owner?.self;
+  const who = row.owner ? (row.owner.self ? "You" : row.owner.name) : isOpenStatus(status) ? "unclaimed" : "";
+  const branch = t.claim?.branch;
   return (
-    <div className="house-section">
-      <div className="house-section-h">
-        {title} <span className="house-cnt">{count ?? rows.length}</span>
-        {hint && <span className="house-section-hint">{hint}</span>}
-        {tools && <span className="house-section-tools">{tools}</span>}
+    <div
+      data-id={row.n}
+      className={`bcard house-card ${holds.length ? "blocked" : ""} ${mine ? "mine" : ""} ${lifted ? "lifted" : ""}`}
+      data-gap={gap}
+      draggable={!readOnly && !asking && !saving}
+      tabIndex={0}
+      aria-keyshortcuts={readOnly ? undefined : "Alt+ArrowLeft Alt+ArrowRight"}
+      title={readOnly ? undefined : `${row.problem ? `${row.problem} · ` : ""}drag to another column to change its status in the House · ⌥← ⌥→ move it`}
+      onDragStart={(e) => beginDrag(e, DRAG_TYPE, String(row.n), `Moving #${row.n} — drop it on another column`)}
+      onClick={asking ? undefined : onOpen}
+      onKeyDown={onKeyDown}
+    >
+      {mine && <span className="tbar" />}
+      <div className="bc-top">
+        <span className="wi-id">#{row.n}</span>
+        <Priority p={t.priority} />
+        {saving && <span className="bc-age">saving…</span>}
       </div>
-      {rows.map((r) => (
-        <Row key={r.n} row={r} view={rest.view} marked={marked} onOpen={() => rest.onOpen(r.n)} act={rest.act} busy={rest.busy} />
+      <div className="bc-title">{t.title}</div>
+      {holds.length > 0 && (
+        <div className="house-card-holds">
+          {holds.map((h) => (
+            <span key={h.text} className="chip blocked" title={h.tip}>
+              {h.text}
+            </span>
+          ))}
+        </div>
+      )}
+      <Marks t={t} addedBy={row.addedBy} />
+      <div className="bc-foot">
+        <span className={`house-who ${row.owner ? "" : "house-dim"}`}>{who}</span>
+        {branch && (
+          <span className="house-branch" title={`on ${branch}`}>
+            {branch}
+          </span>
+        )}
+      </div>
+      {asking && <ClaimForm n={row.n} title={t.title} branches={branches} busy={saving} onClaim={onClaim} onCancel={onCancelClaim} />}
+    </div>
+  );
+}
+
+/**
+ * The board's tickets as columns by House status, Parked folded into a row
+ * above them, Done folded and Dropped hidden until asked for. Dragging a card
+ * to another column (or ⌥← ⌥→) writes the move to the House with this
+ * member's token, from this drag only (houseColumns.ts).
+ */
+function Columns({ roomId, view, onOpen }: { roomId: string; view: HouseView; onOpen: (n: number) => void }) {
+  const [agentOnly, setAgentOnly] = useState(false);
+  const [folds, setFolds] = usePersisted<HouseFolds>("mb.house.folds", DEFAULT_FOLDS);
+  const [otherOpen, setOtherOpen] = useState(true);
+  const [moves, setMoves] = useState<Record<number, PendingMove>>({});
+  const [savingNs, setSavingNs] = useState<number[]>([]);
+  const saving = useRef(new Set<number>());
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const drag = useDrag();
+  const readOnly = view.connection.state !== "ok";
+
+  const order = (view.open ?? []).map((r) => r.n);
+  const all = [...(view.open ?? []), ...view.added];
+  const latest = useRef(all);
+  latest.current = all;
+  const forAgents = all.filter((r) => needsAgent(r.ticket));
+  const rows = agentOnly ? forAgents : all;
+  const g = groupRows(rows, order, moves);
+  const cols = columnLayout(g, folds);
+  const placeOfRow = (r: HouseRow) => placeOf(shownStatus(r, moves) ?? "other");
+
+  // a written move shows until the board's next read has it; a read that already has it ends it at once
+  useEffect(() => {
+    setMoves((m) => {
+      const next = { ...m };
+      for (const [k, mv] of Object.entries(m)) {
+        const r = all.find((x) => x.n === Number(k));
+        if (mv.landed || (!mv.asking && r?.ticket?.status === mv.status)) delete next[Number(k)];
+      }
+      return next;
+    });
+  }, [view]);
+
+  const show = (n: number, status: string | null) =>
+    setMoves((m) => {
+      const next = { ...m };
+      if (status === null) delete next[n];
+      else next[n] = { status };
+      return next;
+    });
+  const commit = async (row: HouseRow, from: HousePlace, to: HousePlace, w: HouseWrite) => {
+    if (saving.current.has(row.n)) return setNotice(`#${row.n} is still being saved — move it again once it has landed`);
+    saving.current.add(row.n);
+    setSavingNs([...saving.current]);
+    setError("");
+    setNotice("");
+    const r = await moveCard(row, from, to, w, (x) => window.mb.houseWrite(roomId, x), show);
+    saving.current.delete(row.n);
+    setSavingNs([...saving.current]);
+    // a card moved from the keyboard is followed until its move has landed, or gone back
+    setTimeout(() => refocus.current === row.n && (refocus.current = null), 0);
+    if ("error" in r) return setError(r.error);
+    setMoves((m) => {
+      if (!m[row.n]) return m;
+      const next = { ...m };
+      if (latest.current.find((x) => x.n === row.n)?.ticket?.status === to) delete next[row.n];
+      else next[row.n] = { status: to, landed: true };
+      return next;
+    });
+  };
+  /** Move a card, from a drop or a keypress: a claim asks for its branch first, on the card. */
+  const move = (row: HouseRow, to: HousePlace) => {
+    const from = placeOfRow(row);
+    const mv = boardMove(row, from, to);
+    if (!mv) return;
+    if ("refused" in mv) {
+      setError("");
+      return setNotice(`#${row.n} stays in ${placeName(from)}: ${mv.refused}.`);
+    }
+    if (mv.kind === "claim") {
+      setNotice("");
+      return setMoves((m) => ({ ...m, [row.n]: { status: to, asking: { from } } }));
+    }
+    void commit(row, from, to, moveWrite(row, mv, from));
+  };
+
+  const dragged = (): HouseRow | undefined => {
+    const p = dragging(DRAG_TYPE);
+    return p ? all.find((r) => String(r.n) === p && r.ticket) : undefined;
+  };
+  /** What dropping the dragged card on `place` would do: where it lands (the House's order puts it), or why it can't. */
+  const target = (place: HousePlace, column: HouseRow[]): DropTarget | null => {
+    const row = dragged();
+    if (!row) return null;
+    const mv = boardMove(row, placeOfRow(row), place);
+    if (!mv) return null;
+    const key = `h:${place}`;
+    if ("refused" in mv) return { key, outcome: mv.refused, refused: true };
+    if (saving.current.has(row.n) || moves[row.n]?.asking) return { key, outcome: `#${row.n} is still being saved`, refused: true };
+    return { key, outcome: moveLabel(row, mv, place), ...(place === "parked" ? {} : { gap: landingGap(column, row, order) }) };
+  };
+  const dropOn = (e: React.DragEvent, place: HousePlace, column: HouseRow[]) => {
+    e.preventDefault();
+    const row = dragged();
+    if (row && target(place, column) && !target(place, column)!.refused) move(row, place);
+  };
+  const dropProps = (place: HousePlace, column: HouseRow[]) =>
+    readOnly
+      ? {}
+      : {
+          onDragOver: (e: React.DragEvent) => overTarget(e, target(place, column)),
+          onDrop: (e: React.DragEvent) => dropOn(e, place, column),
+        };
+
+  // a card moved from the keyboard keeps the focus: React re-inserting it in its new column drops it
+  const refocus = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const n = refocus.current;
+    if (n === null) return;
+    const active = document.activeElement;
+    const el = document.querySelector<HTMLElement>(`.house-card[data-id="${n}"]`);
+    if (el && active !== el && (!active || active === document.body || !active.isConnected)) el.focus();
+    else if (active !== el) refocus.current = null;
+  }, [moves, view]);
+
+  const lifted = drag?.type === DRAG_TYPE ? drag.payload : null;
+  const card = (r: HouseRow, place: HousePlace, gapHere: number | undefined, idx: number) => (
+    <Card
+      key={r.n}
+      row={r}
+      status={shownStatus(r, moves) ?? ""}
+      lifted={lifted === String(r.n)}
+      gap={gapHere === idx ? "above" : gapHere === idx + 1 ? "below" : undefined}
+      asking={!!moves[r.n]?.asking}
+      saving={savingNs.includes(r.n)}
+      readOnly={readOnly}
+      branches={view.branches}
+      onOpen={() => onOpen(r.n)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (!readOnly && e.altKey && !e.metaKey && !e.ctrlKey && !e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+          e.preventDefault();
+          const to = stepPlace(place, e.key === "ArrowLeft" ? -1 : 1);
+          if (!to) return;
+          refocus.current = r.n;
+          move(r, to);
+        } else if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen(r.n);
+        }
+      }}
+      onClaim={(branch) => {
+        const from = moves[r.n]?.asking?.from ?? placeOfRow(r);
+        void commit(r, from, "in_progress", { kind: "claim", n: r.n, branch });
+      }}
+      onCancelClaim={() => show(r.n, null)}
+    />
+  );
+
+  const fold = (place: "parked" | "other", open: boolean, toggle: () => void) => {
+    const list = g[place];
+    const refused = place === "other" ? { onDragOver: (e: React.DragEvent) => overTarget(e, dragged() ? { key: "h:other", outcome: "That row holds statuses the board doesn't know; it can't take a card", refused: true } : null) } : dropProps(place, list);
+    return (
+      <div className={`house-fold ${open ? "open" : ""}`} data-col={placeName(place)} data-drop={cue(drag, `h:${place}`)} {...refused}>
+        <button className="house-fold-h" aria-expanded={open} onClick={toggle} title={place === "parked" ? "Parked: not ready to start. Drop a card here to park it." : "Tickets in a status the board doesn't have a column for"}>
+          {placeName(place)} · {list.length} <span aria-hidden>{open ? "▾" : "▸"}</span>
+        </button>
+        {open && list.length > 0 && <div className="house-fold-body">{list.map((r, i) => card(r, place, undefined, i))}</div>}
+      </div>
+    );
+  };
+
+  const empty = !view.open
+    ? view.connection.state === "ok"
+      ? "Reading the House…"
+      : null
+    : agentOnly && !forAgents.length
+      ? `No ticket on the board is tagged ${NEEDS_AGENT}: nothing has been handed back to an agent.`
+      : !all.length
+        ? "Nothing open: every ticket in the House is done or dropped."
+        : null;
+  return (
+    <div className="house-board">
+      <div className="house-board-bar">
+        <span className="house-section-hint">The open backlog and the room's tickets, high priority first{readOnly ? "" : " · drag a card to another column to change its status"}</span>
+        <span className="house-section-tools">
+          <button className={`house-filter ${agentOnly ? "on" : ""}`} aria-pressed={agentOnly} title={`Only the tickets tagged ${NEEDS_AGENT}: handed back to an agent`} onClick={() => setAgentOnly(!agentOnly)}>
+            Needs an agent <span className="house-cnt">{forAgents.length}</span>
+          </button>
+          <button className={`house-filter ${folds.showDropped ? "on" : ""}`} aria-pressed={folds.showDropped} title={folds.showDropped ? "Hide the dropped tickets" : "Show the room's dropped tickets"} onClick={() => setFolds({ ...folds, showDropped: !folds.showDropped })}>
+            Dropped <span className="house-cnt">{g.dropped.length}</span>
+          </button>
+        </span>
+      </div>
+      {error && (
+        <div className="fp-note err" role="alert">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="house-problem" role="status">
+          {notice}
+        </div>
+      )}
+      {empty && <div className="house-empty">{empty}</div>}
+      {g.unread.map((r) => (
+        <button key={r.n} className="link house-unread" onClick={() => onOpen(r.n)}>
+          #{r.n} {r.problem ? `couldn't be read: ${r.problem}` : "not read yet"}
+        </button>
       ))}
-      {!rows.length && <div className="house-empty">{empty}</div>}
+      {fold("parked", !folds.parked, () => setFolds({ ...folds, parked: !folds.parked }))}
+      {g.other.length > 0 && fold("other", otherOpen, () => setOtherOpen(!otherOpen))}
+      <div className="board-cols house-cols">
+        {cols.map((c) => {
+          const list = g[c.place];
+          const key = `h:${c.place}`;
+          const here = drag?.type === DRAG_TYPE && drag.target?.key === key ? drag.target : null;
+          const gapHere = here && !here.refused ? here.gap : undefined;
+          const unfold = c.place === "done" ? () => setFolds({ ...folds, done: !folds.done }) : null;
+          if (c.folded) {
+            return (
+              <div key={c.place} className="bcol house-col folded" data-col={c.name} data-drop={cue(drag, key)} {...dropProps(c.place, list)}>
+                <button className="house-col-unfold" aria-expanded={false} title={`Show the ${c.count} ${c.name.toLowerCase()} tickets${c.accepts ? "" : ` · ${CLOSE_REFUSAL}`}`} onClick={unfold!}>
+                  {c.name} · {c.count} <span aria-hidden>▸</span>
+                </button>
+              </div>
+            );
+          }
+          return (
+            <div key={c.place} className="bcol house-col" data-col={c.name} data-drop={gapHere === undefined ? cue(drag, key) : undefined} {...dropProps(c.place, list)}>
+              <div className="bcol-hd" title={c.accepts ? undefined : `${CLOSE_REFUSAL}: a card can't be dragged here`}>
+                {c.name}
+                <span className="cnt">{c.count}</span>
+                {unfold && (
+                  <button className="link house-col-fold" aria-expanded title="Fold the column" onClick={unfold}>
+                    ◂
+                  </button>
+                )}
+              </div>
+              <div className="bcol-body" data-gap={gapHere !== undefined && list.length === 0 ? "empty" : undefined}>
+                {here?.refused && <div className="house-refuse">{here.outcome}</div>}
+                {list.map((r, i) => card(r, c.place, gapHere, i))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -486,7 +762,6 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
   const [renaming, setRenaming] = useState(false);
-  const [agentOnly, setAgentOnly] = useState(false);
   const act = (what: string, w: HouseWrite) => run(what, () => window.mb.houseWrite(roomId, w));
   if (!view || isErr(view)) {
     return (
@@ -516,12 +791,8 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
     );
   }
   const connected = view.connection.state === "ok";
-  const backlog = view.open ?? [];
-  const forAgents = backlog.filter((r) => needsAgent(r.ticket));
-  const shown = agentOnly ? forAgents : backlog;
-  const openEmpty = !view.open ? (connected ? "Reading the House…" : "—") : agentOnly ? `No open ticket is tagged ${NEEDS_AGENT}: nothing has been handed back to an agent.` : "Nothing open: every ticket in the House is done or dropped.";
   return (
-    <Modal className="modal house-modal" onClose={onClose} closeOnBackdrop={!adding}>
+    <Modal className="modal house-modal house-board-modal" onClose={onClose} closeOnBackdrop={!adding}>
       <div className="house-head">
         <h3 title={view.envFile ? `Read and written with your own token, from ${view.envFile}` : undefined}>
           <KanbanIcon /> Radley House · {view.project ?? "no project"}
@@ -544,7 +815,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
         </button>
       </div>
       <div className="sub-h">
-        The House is the system of record: claims, notes and new tickets are written there with your own builder token, from here or by your agents. A file a teammate's sessions have changed on a ticket they claimed is theirs — an agent editing it is held back once and warned.
+        The House is the system of record: claims, status moves, notes and new tickets are written there with your own builder token, from here or by your agents. A file a teammate's sessions have changed on a ticket they claimed is theirs — an agent editing it is held back once and warned.
       </div>
       <MigrationsLine roomId={roomId} />
       {(renaming || !view.project) && <ProjectLine view={view} act={act} onCancel={view.project ? () => setRenaming(false) : undefined} />}
@@ -554,39 +825,7 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
       {view.copiesProblem && <div className="house-note bad">{view.copiesProblem}</div>}
       {adding && <AddTicket act={act} onDone={() => setAdding(false)} />}
       {error && <div className="fp-note err">{error}</div>}
-      {view.project && view.connection.state !== "missing" && view.connection.state !== "bad" && view.connection.state !== "consent" && (
-        <>
-          <Section
-            title="Open backlog"
-            count={agentOnly ? `${shown.length} of ${backlog.length}` : undefined}
-            hint="high priority first"
-            tools={
-              <button className={`house-filter ${agentOnly ? "on" : ""}`} aria-pressed={agentOnly} title={`Only the tickets tagged ${NEEDS_AGENT}: handed back to an agent`} onClick={() => setAgentOnly(!agentOnly)}>
-                Needs an agent <span className="house-cnt">{forAgents.length}</span>
-              </button>
-            }
-            rows={shown}
-            empty={openEmpty}
-            marked
-            view={view}
-            onOpen={setOpen}
-            act={act}
-            busy={!!busy}
-          />
-          {!agentOnly && (
-            <Section
-              title="Added by the room"
-              hint="outside the open backlog"
-              rows={view.added}
-              empty={connected ? "None — the room's open tickets are marked “added” in the backlog. + Add ticket adds one by number, or creates one." : "—"}
-              view={view}
-              onOpen={setOpen}
-              act={act}
-              busy={!!busy}
-            />
-          )}
-        </>
-      )}
+      {view.project && view.connection.state !== "missing" && view.connection.state !== "bad" && view.connection.state !== "consent" && <Columns roomId={roomId} view={view} onOpen={setOpen} />}
       {view.writeProblems?.map((p) => (
         <div key={`${p.at}-${p.text}`} className="house-problem">
           <span className="house-when">{ago(p.at)}</span>
