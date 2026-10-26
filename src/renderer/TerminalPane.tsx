@@ -332,6 +332,8 @@ export function TerminalPane({
   onTakeOver,
   leftCopy,
   teamNotice,
+  contextNote,
+  contextChip,
   onRestart,
   messages,
   onShowMessages,
@@ -387,6 +389,9 @@ export function TerminalPane({
   leftCopy?: React.ReactNode;
   /** A line over the terminal from team rooms (changes a teammate sent, to review). */
   teamNotice?: React.ReactNode;
+  /** The pane's context warning (ContextWarning.tsx): over the terminal, or as a chip in the header, per its look. */
+  contextNote?: React.ReactNode;
+  contextChip?: React.ReactNode;
   /** Restart this pane, resuming its conversation (for a stuck one). */
   onRestart?: () => void;
   /** Agent messages this pane received and sent, and opening their log. */
@@ -969,6 +974,7 @@ export function TerminalPane({
         {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
         {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row or ⌘K)">muted</span>}
         {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />}
+        {contextChip}
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <ActionBar className="controls" actions={controls} />
         {headerMenu.menu}
@@ -1143,6 +1149,7 @@ export function TerminalPane({
               </div>
             )}
             {teamNotice}
+            {contextNote}
             {remote && (!remote.online || remote.problem) && (
               <div className="team-pane-note" title={remote.problem ?? undefined}>
                 {!remote.online ? `${remote.ownerName}'s Mockingbird is offline — this is what it last sent` : remote.problem}

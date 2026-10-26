@@ -2859,3 +2859,54 @@ button.gb-btn.teal { color: var(--teal-text); border-color: color-mix(in srgb, v
 .wn-problem .err { margin-top: 0; font-family: var(--ui); font-size: 11px; }
 .wn-fix { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; font: 400 10.5px/1.5 var(--ui); color: var(--text-3); }
 .wn-cmd { display: flex; align-items: center; gap: 8px; }
+
+/* context warnings (ContextWarning.tsx): heads-up amber, firm red; never re-fit the terminal (they float in .pane-notes) */
+.ctx-banner {
+  display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 8px; border-radius: 4px;
+  background: linear-gradient(var(--fill-waiting), var(--fill-waiting)), var(--bg-pane); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
+  font: 400 10.5px var(--ui); color: var(--amber-ink);
+}
+.ctx-banner.firm { background: linear-gradient(color-mix(in srgb, var(--red) 14%, transparent), color-mix(in srgb, var(--red) 14%, transparent)), var(--bg-pane); border-color: color-mix(in srgb, var(--red) 45%, transparent); color: var(--red); }
+.ctx-banner .reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-banner .ctx-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.ctx-banner button.outline, .ctx-meter button.outline, .ctx-acts button.outline { padding: 2px 8px; font-size: 10.5px; flex-shrink: 0; }
+.ctx-banner button.icon, .ctx-meter button.icon { flex-shrink: 0; color: inherit; opacity: .75; }
+.ctx-banner button.icon:hover, .ctx-meter button.icon:hover { opacity: 1; }
+.ctx-chip-wrap { position: relative; flex-shrink: 0; }
+button.chip.ctx-chip { border: 0; cursor: pointer; flex-shrink: 0; color: var(--amber-text); background: var(--fill-waiting); }
+button.chip.ctx-chip.firm { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+.ctx-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 50; width: 320px;
+  background: var(--bg-pane); border: 1px solid var(--line-strong); border-radius: 8px; padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35); font-family: var(--ui);
+}
+.ctx-pop-h { font: 500 12px var(--ui); color: var(--text-1); }
+.ctx-pop-sub { font: 400 11px var(--ui); color: var(--text-3); margin: 3px 0 9px; }
+.ctx-acts { display: flex; align-items: center; gap: 6px; }
+.ctx-meter {
+  position: relative; display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 8px; border-radius: 4px; overflow: hidden;
+  background: var(--bg-pane); border: 1px solid var(--line-strong); font: 400 10.5px var(--ui); color: var(--amber-ink);
+}
+.ctx-meter.firm { color: var(--red); }
+.ctx-meter-fill { position: absolute; left: 0; top: 0; bottom: 0; background: currentColor; opacity: .14; pointer-events: none; }
+.ctx-meter-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; position: relative; }
+.ctx-meter > button, .ctx-meter .ctx-err { position: relative; }
+.ctx-err { color: var(--red); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+/* an expensive action's estimate (CostDialog, BriefDialog) */
+.cost-line { margin: 8px 0 6px; padding: 8px 10px; border-radius: 6px; background: var(--fill-subtle); border: 1px solid var(--line-soft); }
+.cost-line.big { background: var(--fill-waiting); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
+.cost-say { font: 500 12px var(--ui); color: var(--text-1); }
+.cost-why { font: 400 11px var(--ui); color: var(--text-3); margin-top: 3px; }
+.cost-dlg { width: 460px; }
+.brief-dlg { width: 680px; }
+/* a group's and a ticket's usage (GroupUsage.tsx) */
+.gb-usage { display: inline-flex; align-items: baseline; gap: 5px; flex-shrink: 0; padding: 0 4px; font: 400 10.5px var(--ui); color: var(--text-2); cursor: default; }
+.gb-usage .k { font: 500 8.5px var(--ui); letter-spacing: .8px; text-transform: uppercase; color: var(--text-4); }
+.gb-usage .v { font: 400 10.5px var(--mono); color: var(--text-1); }
+.gb-usage .share { color: var(--amber-text); }
+.group-label .gl-usage { order: 2; margin-left: auto; font: 400 9.5px var(--mono); letter-spacing: 0; text-transform: none; color: var(--text-4); }
+.tk-usage-sec { margin-bottom: 10px; }
+.tk-usage { font: 400 11.5px var(--ui); color: var(--text-2); }
+.tk-usage .v { font-family: var(--mono); color: var(--text-1); }
+.tk-usage .dim { color: var(--text-3); }
+.tk-usage.none { color: var(--text-4); }

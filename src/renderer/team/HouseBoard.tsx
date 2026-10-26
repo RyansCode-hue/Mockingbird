@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { TicketUsage } from "../GroupUsage";
 import { Modal } from "../Modal";
 import { Select } from "../Menu";
 import { KanbanIcon } from "../Icons";
@@ -665,6 +666,7 @@ function TicketDetail({ roomId, n, view, onBack, onOpen }: { roomId: string; n: 
         </span>
       </div>
       {openNote && <div className="house-problem">{openNote}</div>}
+      <TicketUsage ticket={String(n)} />
       {d.detail.trim() && <div className="house-text">{d.detail}</div>}
       {d.acceptance.trim() && (
         <div className="house-text">

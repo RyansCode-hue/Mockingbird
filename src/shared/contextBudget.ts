@@ -157,6 +157,8 @@ export interface PromptCache {
 export interface CostEstimate {
   tokens: number;
   cold: boolean;
+  /** A new conversation: nothing of it was ever cached. */
+  fresh: boolean;
   /** Why it's taken to be cold or warm, in a few words. */
   why: string;
   /** Weighted units: what it costs as estimated, and what it would cost from a warm cache. */
@@ -212,7 +214,7 @@ export function rereadCost(o: {
   const units = cold ? (o.tokens * coldWeight) / 1e6 : warmUnits;
   const sharePct = o.unitsPerPct ? units / o.unitsPerPct : null;
   const ask = cold && (sharePct !== null ? sharePct >= ASK_SHARE_PCT : o.tokens >= ASK_TOKENS);
-  return { tokens: o.tokens, cold, why, units, warmUnits, sharePct, ask };
+  return { tokens: o.tokens, cold, fresh: !!o.fresh, why, units, warmUnits, sharePct, ask };
 }
 
 function ago(ms: number): string {
@@ -242,7 +244,7 @@ export function roughShare(pct: number): string {
  * roughly 12% of your 5-hour limit." `doing` starts the sentence.
  */
 export function costSentence(doing: string, e: CostEstimate, what = "re-reads"): string {
-  const share = e.sharePct !== null ? `, roughly ${roughShare(e.sharePct)} of your 5-hour limit` : "";
+  const share = e.sharePct === null ? "" : e.sharePct < 0.1 ? ", under 0.1% of your 5-hour limit" : `, roughly ${roughShare(e.sharePct)} of your 5-hour limit`;
   return `${doing} ${what} about ${roughTokens(e.tokens)} tokens${share}.`;
 }
 
@@ -250,6 +252,7 @@ export function costSentence(doing: string, e: CostEstimate, what = "re-reads"):
 export function costWhy(e: CostEstimate, agent: AgentKind): string {
   if (!e.cold) return `It's cheap now: ${e.why}, and a cached read costs about a tenth of new input.`;
   const factor = e.warmUnits > 0 ? Math.round(e.units / e.warmUnits) : null;
+  if (e.fresh) return agent === "claude" ? "A new conversation has nothing cached: all of it is written to the cache, at about 1.25× the input price." : "A new conversation has nothing cached: all of it is sent as new input.";
   const price = agent === "claude" ? "written to the cache again at about 1.25× the input price" : "sent as new input";
   return `Cold: ${e.why}, so they're ${price}${factor ? ` — about ${factor}× what a warm cache would cost` : ""}.`;
 }
