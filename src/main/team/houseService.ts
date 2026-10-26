@@ -496,6 +496,39 @@ export class HouseService {
     });
   }
 
+  // ---- a session from a ticket (ticketSession.ts) ---------------------------------------------
+
+  /** The room as Start session needs it: its name, shared group and House project, and this Mac's room sessions' branches. */
+  startContext(roomId: RoomId): { room: string; group: string | null; project: string | null; branches: string[] } {
+    const room = this.room(roomId);
+    return { room: room.name, group: this.d.roomGroups().find((r) => r.roomId === roomId)?.groupKey ?? null, project: houseOfRoom(room).project, branches: this.branchesOf(roomId) };
+  }
+
+  /**
+   * The room's repositories, by origin — as every member's room sessions name
+   * theirs, and this Mac's own — each with the folder names it goes by and
+   * this Mac's clones of it (main checkouts among the known repos), the one
+   * most of the room's sessions work in first.
+   */
+  async roomRepos(roomId: RoomId): Promise<{ key: string; names: string[]; clones: string[] }[]> {
+    const room = this.room(roomId);
+    const by = new Map<string, { names: Set<string>; count: number }>();
+    const count = (key: string, name: string | null) => {
+      const e = by.get(key) ?? { names: new Set<string>(), count: 0 };
+      if (name) e.names.add(name);
+      e.count++;
+      by.set(key, e);
+    };
+    for (const r of this.records(room)) if (r.repo) count(originKey(r.repo), r.repoName);
+    for (const [at, main] of await this.roomClones()) {
+      const [rid, key] = at.split("\t");
+      if (rid === roomId && !by.has(key)) count(key, path.basename(main));
+    }
+    const out: { key: string; names: string[]; clones: string[]; count: number }[] = [];
+    for (const [key, e] of by) out.push({ key, names: [...e.names], clones: await this.clonesOf(key), count: e.count });
+    return out.sort((a, b) => b.count - a.count).map(({ key, names, clones }) => ({ key, names, clones }));
+  }
+
   /** A change from the window, as this install's member. Throws a message fit for the user. */
   async write(roomId: RoomId, w: HouseWrite, via?: string): Promise<{ message: string; n?: number }> {
     const room = this.room(roomId);

@@ -22,7 +22,9 @@ import type { TeamStatus } from "../shared/team/types";
 import { version } from "../../package.json";
 const nextVersion = version.replace(/\d+$/, (n) => String(Number(n) + 1));
 // team rooms: the House board
-import { HOUSE_TOKEN_HOW, isOpenStatus, openBacklog, type HouseHistoryEntry, type HouseOwner, type HouseRow, type HouseTicket, type HouseTicketDetail, type HouseTicketView, type HouseView, type HouseWrite } from "../shared/team/house";
+import { branchFor, HOUSE_TOKEN_HOW, isOpenStatus, openBacklog, type HouseHistoryEntry, type HouseOwner, type HouseRow, type HouseTicket, type HouseTicketDetail, type HouseTicketView, type HouseView, type HouseWrite } from "../shared/team/house";
+// team rooms: a session from a ticket
+import type { TicketHolder, TicketSessionPlan, TicketSessionRequest, TicketSessionResult } from "../shared/team/ticketSession";
 // team rooms: team chat
 import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../shared/team/chat";
 // team rooms: take-over
@@ -306,6 +308,8 @@ const houseDetail = (n: number): HouseTicketDetail => ({
         : "",
   acceptance: n === 141 ? "GET returns the org last PUT by that user; PUT with an org the user can't see is a 403." : n === 146 ? "An export test with an archived donor: no row, not in the totals." : "",
   history: houseHistory[n] ?? [],
+  branch: houseTickets[n].claim?.branch ?? null,
+  links: n === 146 ? [{ label: "Support thread", url: "https://support.example.org/t/8812" }] : [],
 });
 const houseOwner = (t: HouseTicket): HouseOwner | null => (t.claim && isOpenStatus(t.status) ? { name: t.claim.by === "You" ? "You" : t.claim.by ?? "Someone", member: t.claim.by === "You" ? ME : t.claim.by === "Sam" ? SAM : NICK, self: t.claim.by === "You" } : null);
 const houseRow = (n: number, addedBy?: string): HouseRow => ({ n, ticket: houseTickets[n] ?? null, owner: houseTickets[n] ? houseOwner(houseTickets[n]) : null, ...(addedBy ? { addedBy } : {}) });
@@ -1338,6 +1342,56 @@ const api: Record<string, (...a: any[]) => any> = {
     return later({ message: "Saved to the House" }, 250);
   },
   houseOpen: async () => later(undefined, 50),
+  // a session from a ticket: the plan from the fixture House and repos; Start claims as houseWrite does and starts a
+  // session as createSession does. ?houseStartFail=claim: someone claims it first (the House's 409); =session: the
+  // worktree can't be made, and the claim is released again (=stuck: releasing fails too)
+  houseSessionPlan: async (roomId: string, n: number) => {
+    const r = houseRooms[roomId];
+    const t = houseTickets[n];
+    if (!r?.project) return err(`Room ${roomId} isn't connected to a House project`);
+    if (!t) return later(err(`The House answered 404: no work item #${n} in this project`), 150);
+    const owner = houseOwner(t);
+    const holder: TicketHolder = !isOpenStatus(t.status) ? { state: "closed", status: t.status } : owner ? (owner.self ? { state: "yours" } : { state: "taken", by: owner.name }) : { state: "free" };
+    const own = holder.state === "yours" ? t.claim?.branch : null;
+    const room = team.rooms.find((x) => x.id === roomId);
+    const plan: TicketSessionPlan = {
+      roomId,
+      room: room?.name ?? roomId,
+      group: room?.groupKey ?? "",
+      project: r.project,
+      n,
+      title: t.title,
+      holder,
+      branch: own || branchFor(n, t.title),
+      branchFrom: own ? "claim" : "new",
+      repos: [{ path: REPO, name: "backoffice", base: own ? null : "dev" }],
+      repoNote: null,
+    };
+    return later(plan, 200);
+  },
+  houseStartSession: async (roomId: string, req: TicketSessionRequest): Promise<TicketSessionResult> => {
+    const t = houseTickets[req.n];
+    const fail = teamQuery.get("houseStartFail");
+    const owner = houseOwner(t);
+    if (owner && !owner.self) return later({ error: `#${req.n} is ${owner.name}'s, on ${t.claim?.branch}: nothing was started. Ask ${owner.name} to release it, or start on another ticket.`, step: "claim", takenBy: owner.name }, 300);
+    const branch = owner?.self && t.claim?.branch ? t.claim.branch : req.branch || branchFor(req.n, t.title);
+    if (fail === "claim") return later({ error: `Nick Smith claimed #${req.n} just before you, so nothing was started. The House answered: The House answered 409: Already claimed by Nick Smith`, step: "claim", takenBy: "Nick Smith" }, 400);
+    const claimed = !owner;
+    if (claimed) await api.houseWrite(roomId, { kind: "claim", n: req.n, branch });
+    if (fail === "session" || fail === "stuck") {
+      if (fail === "session" && claimed) await api.houseWrite(roomId, { kind: "release", n: req.n });
+      const why = `fatal: '${branch}' is already checked out at '/Users/you/Code/backoffice'`;
+      return later(
+        fail === "stuck"
+          ? { error: `Couldn't make #${req.n}'s worktree or start its session: ${why}. #${req.n} is still claimed by you on ${branch}: releasing it failed (The House answered 503: try again).`, step: "session", stillClaimed: true }
+          : { error: `Couldn't make #${req.n}'s worktree or start its session: ${why}. Released #${req.n} again, so it's unclaimed as before.`, step: "session" },
+        300
+      );
+    }
+    const room = team.rooms.find((x) => x.id === roomId);
+    const session: SessionInfo = await api.createSession({ repoPath: req.repoPath, useWorktree: true, branchName: branch, taskGroup: room?.groupKey, agent: req.agent, title: `#${req.n} — ${t.title}` });
+    return later({ session, claimed, branch, message: claimed ? `Claimed #${req.n} and started ${req.agent === "codex" ? "Codex" : "Claude"} on ${branch}` : `Started on ${branch}` }, 300);
+  },
   houseConsent: async (roomId: string, allow: boolean) => {
     const r = houseRooms[roomId];
     if (!r?.project) return err(`Room ${roomId} isn't connected to a House project`);
@@ -1704,7 +1758,7 @@ if (shown) set("mb.shown", shown.split(","));
 if (params.get("chat")) set("mb.roomChat.room", params.get("chat") === "list" ? "" : params.get("chat"));
 // the House board and New session in a room are opened from the Team view's rooms: it opens on the room list
 // (and, for ?chatMenu, on the first room) unless ?view says otherwise
-const houseKeys = ["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent", "houseProblems", "houseBoardAudit", "houseDrag"];
+const houseKeys = ["house", "houseTicket", "houseClaim", "houseAdd", "houseWarning", "houseAgent", "houseProblems", "houseBoardAudit", "houseDrag", "houseStart", "houseStartAudit"];
 if (!view && (houseKeys.some((k) => params.has(k)) || params.get("new") === "room")) {
   set("mb.sideView", "room");
   if (!params.get("chat")) set("mb.roomChat.room", "");
@@ -1762,7 +1816,7 @@ if (houseKeys.some((k) => params.has(k))) {
     if (!button && ++tries < 50) return;
     clearInterval(open);
     if (!params.has("houseWarning") || params.has("house")) button?.click();
-    const ticket = params.get("houseTicket") ?? params.get("houseClaim");
+    const ticket = params.get("houseTicket") ?? params.get("houseClaim") ?? params.get("houseStart")?.split(",")[0] ?? null;
     let boardTries = 0;
     const board = setInterval(() => {
       const r = ticket ? (document.querySelector(`.house-card[data-id="${ticket}"]`) as HTMLElement | null) ?? undefined : (document.querySelector(".house-modal") as HTMLElement | null) ?? undefined;
@@ -1770,6 +1824,15 @@ if (houseKeys.some((k) => params.has(k))) {
       clearInterval(board);
       if (params.has("houseAgent")) (document.querySelector(".house-filter") as HTMLElement | null)?.click();
       if (params.has("houseTicket")) r?.click();
+      // ?houseStart=146 opens Start session on that card (with ?houseTicket, from the ticket's own button); =146,menu
+      // right-clicks the card for its menu instead
+      if (params.has("houseStart") && !params.has("houseTicket")) {
+        if (params.get("houseStart")!.endsWith(",menu")) {
+          const b = r!.getBoundingClientRect();
+          r?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 20 }));
+        } else (r?.querySelector(".house-start") as HTMLElement | null)?.click();
+      }
+      if (params.has("houseStart") && params.has("houseTicket")) waitFor(".house-acts button.primary", (el) => el.click());
       if (params.has("houseClaim")) {
         r?.focus();
         r?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, bubbles: true, cancelable: true }));

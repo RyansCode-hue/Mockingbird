@@ -444,5 +444,15 @@ export function detailOf(raw: unknown): HouseTicketDetail | null {
     detail: str(first(o, ["detail", "description", "body"])),
     acceptance: str(o.acceptance),
     history: historyOf(o.history ?? o.events),
+    branch: t.claim?.branch ?? (str(first(o, ["branch", "branch_name", "claim_branch"])).trim() || null),
+    links: linksOf(o.links ?? o.references),
   };
+}
+
+/** A ticket's links: URLs, or objects with a url and a label (title, name). */
+function linksOf(v: unknown): HouseTicketDetail["links"] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((x) => (isObj(x) ? { label: str(first(x, ["label", "title", "name", "kind"])).trim() || null, url: str(first(x, ["url", "href", "link"])).trim() } : { label: null, url: str(x).trim() }))
+    .filter((l) => !!l.url);
 }

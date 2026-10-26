@@ -2934,7 +2934,17 @@ function App() {
       {shareDlg && <ShareRoomDialog groupKey={shareDlg.key} title={shareDlg.title} onClose={() => setShareDlg(null)} />}
       {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
       {/* team rooms: the House board */}
-      {boardDlg && <HouseBoardDialog roomId={boardDlg} onClose={() => setBoardDlg(null)} />}
+      {boardDlg && (
+        <HouseBoardDialog
+          roomId={boardDlg}
+          onClose={() => setBoardDlg(null)}
+          onStarted={(s) => {
+            setBoardDlg(null);
+            refresh();
+            jumpToSession(s);
+          }}
+        />
+      )}
       {rowMenu.menu}
       {takeOverFor && (
         <TakeOverDialog

@@ -1,14 +1,16 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Modal } from "../Modal";
 import { Select } from "../Menu";
-import { KanbanIcon } from "../Icons";
+import { KanbanIcon, LinkIcon, ReadIcon, RunIcon } from "../Icons";
+import { tidyMenu, useContextMenu, type MenuEntry } from "../ContextMenu";
+import { TicketStartPopover } from "./TicketStart";
 import { useAction } from "../useAction";
 import { useEscape } from "../useEscape";
 import { usePersisted } from "../prefs";
 import { useFlip, usePresenceRefs } from "../motion";
 import { beginDrag, cue, dragging, overTarget, useDrag, type DropTarget } from "../drag";
 import { ago, plural } from "../../shared/format";
-import { isErr } from "../../shared/types";
+import { isErr, type SessionInfo } from "../../shared/types";
 import {
   branchFor,
   BUILDER_STATUSES,
@@ -279,6 +281,23 @@ function holdsOf(t: HouseTicket): { text: string; tip: string }[] {
 
 const DRAG_TYPE = "text/mb-house";
 
+/** Why a ticket can't get a session from here (someone else has it, or it's closed); null when it can. */
+export function cantStart(t: Pick<HouseTicket, "n" | "status">, owner: HouseRow["owner"]): string | null {
+  if (!isOpenStatus(t.status)) return `#${t.n} is ${statusLabel(t.status)}`;
+  if (owner && !owner.self) return `${owner.name} has #${t.n}`;
+  return null;
+}
+
+/** A ticket's right-click menu: start a session on it, open it, open it in the House. */
+function ticketMenu(o: { n: number; why: string | null; readOnly: boolean; onStart: () => void; onOpen: () => void; onOpenHouse: () => void }): MenuEntry[] {
+  return tidyMenu([
+    { key: "start", label: "Start session", menuLabel: "Start session…", icon: <RunIcon />, title: o.why ?? (o.readOnly ? "The House isn't connected here" : `Claim #${o.n}, make its worktree and start an agent on it`), disabled: !!o.why || o.readOnly, onPick: o.onStart },
+    "-",
+    { key: "open", label: "Open", menuLabel: "Open the ticket", icon: <ReadIcon />, onPick: o.onOpen },
+    { key: "house", label: "House", menuLabel: "Open in the House ↗", icon: <LinkIcon />, onPick: o.onOpenHouse },
+  ]);
+}
+
 /** One ticket on the board: what the list showed, a card to open or drag. */
 function Card({
   row,
@@ -293,6 +312,8 @@ function Card({
   onKeyDown,
   onClaim,
   onCancelClaim,
+  onStart,
+  onOpenHouse,
 }: {
   row: HouseRow;
   status: string;
@@ -306,30 +327,51 @@ function Card({
   onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
   onClaim: (branch: string) => void;
   onCancelClaim: () => void;
+  /** Start session on it, the confirmation placed by `at`. */
+  onStart: (at: HTMLElement) => void;
+  onOpenHouse: () => void;
 }) {
   const t = row.ticket!;
   const holds = holdsOf(t);
   const mine = !!row.owner?.self;
   const who = row.owner ? (row.owner.self ? "You" : row.owner.name) : isOpenStatus(status) ? "unclaimed" : "";
   const branch = t.claim?.branch;
+  const el = useRef<HTMLDivElement>(null);
+  const menu = useContextMenu(`#${row.n}`);
+  const why = cantStart({ n: row.n, status }, row.owner);
+  const startable = !why && !readOnly && !asking && !saving;
   return (
     <div
+      ref={el}
       data-id={row.n}
       className={`bcard house-card ${holds.length ? "blocked" : ""} ${mine ? "mine" : ""} ${lifted ? "lifted" : ""}`}
       data-gap={gap}
       draggable={!readOnly && !asking && !saving}
       tabIndex={0}
       aria-keyshortcuts={readOnly ? undefined : "Alt+ArrowLeft Alt+ArrowRight"}
-      title={readOnly ? undefined : `${row.problem ? `${row.problem} · ` : ""}drag to another column to change its status in the House · ⌥← ⌥→ move it`}
+      title={readOnly ? undefined : `${row.problem ? `${row.problem} · ` : ""}drag to another column to change its status in the House · ⌥← ⌥→ move it · right-click for more`}
       onDragStart={(e) => beginDrag(e, DRAG_TYPE, String(row.n), `Moving #${row.n} — drop it on another column`)}
       onClick={asking ? undefined : onOpen}
       onKeyDown={onKeyDown}
+      {...menu.bind(() => ticketMenu({ n: row.n, why, readOnly: readOnly || asking || saving, onStart: () => el.current && onStart(el.current), onOpen, onOpenHouse }))}
     >
       {mine && <span className="tbar" />}
       <div className="bc-top">
         <span className="wi-id">#{row.n}</span>
         <Priority p={t.priority} />
         {saving && <span className="bc-age">saving…</span>}
+        {startable && (
+          <button
+            className="house-start"
+            title={`Start session: ${mine ? "" : `claim #${row.n}, `}make its worktree and start an agent on it`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onStart(e.currentTarget);
+            }}
+          >
+            <RunIcon /> Start
+          </button>
+        )}
       </div>
       <div className="bc-title">{t.title}</div>
       {holds.length > 0 && (
@@ -351,6 +393,7 @@ function Card({
         )}
       </div>
       {asking && <ClaimForm n={row.n} title={t.title} branches={branches} busy={saving} onClaim={onClaim} onCancel={onCancelClaim} />}
+      {menu.menu}
     </div>
   );
 }
@@ -361,7 +404,7 @@ function Card({
  * to another column (or ⌥← ⌥→) writes the move to the House with this
  * member's token, from this drag only (houseColumns.ts).
  */
-function Columns({ roomId, view, onOpen }: { roomId: string; view: HouseView; onOpen: (n: number) => void }) {
+function Columns({ roomId, view, onOpen, onStart, onOpenHouse }: { roomId: string; view: HouseView; onOpen: (n: number) => void; onStart: (n: number, at: HTMLElement) => void; onOpenHouse: (n: number) => void }) {
   const [agentOnly, setAgentOnly] = useState(false);
   const [folds, setFolds] = usePersisted<HouseFolds>("mb.house.folds", DEFAULT_FOLDS);
   const [otherOpen, setOtherOpen] = useState(true);
@@ -508,6 +551,8 @@ function Columns({ roomId, view, onOpen }: { roomId: string; view: HouseView; on
         void commit(r, from, "in_progress", { kind: "claim", n: r.n, branch });
       }}
       onCancelClaim={() => show(r.n, null)}
+      onStart={(at) => onStart(r.n, at)}
+      onOpenHouse={() => onOpenHouse(r.n)}
     />
   );
 
@@ -604,7 +649,7 @@ function Columns({ roomId, view, onOpen }: { roomId: string; view: HouseView; on
 }
 
 /** One ticket: its detail and history, claim or release, a note, and the House's own page. */
-function TicketDetail({ roomId, n, view, onBack, onOpen }: { roomId: string; n: number; view: HouseView; onBack: () => void; onOpen: (n: number) => void }) {
+function TicketDetail({ roomId, n, view, onBack, onOpen, onStart }: { roomId: string; n: number; view: HouseView; onBack: () => void; onOpen: (n: number) => void; onStart: (n: number, at: HTMLElement) => void }) {
   const [t, setT] = useState<HouseTicketView | null>(null);
   const { run, doing, error } = useAction();
   const [claiming, setClaiming] = useState(false);
@@ -673,8 +718,13 @@ function TicketDetail({ roomId, n, view, onBack, onOpen }: { roomId: string; n: 
       )}
       {!readOnly && (
         <div className="house-acts">
+          {!claiming && !cantStart(d, t.owner) && (
+            <button className="primary" title={`${t.owner?.self ? "" : `Claim #${n}, `}make its worktree and start an agent on it, briefed on the ticket`} onClick={(e) => onStart(n, e.currentTarget)}>
+              <RunIcon /> Start session
+            </button>
+          )}
           {!t.owner && !claiming && isOpenStatus(d.status) && (
-            <button className="primary" onClick={() => setClaiming(true)}>
+            <button className="outline" onClick={() => setClaiming(true)}>
               Claim
             </button>
           )}
@@ -756,11 +806,17 @@ function TicketDetail({ roomId, n, view, onBack, onOpen }: { roomId: string; n: 
   );
 }
 
-export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose: () => void }) {
+export function HouseBoardDialog({ roomId, onClose, onStarted }: { roomId: string; onClose: () => void; onStarted: (s: SessionInfo) => void }) {
   const view = useHouseView(roomId);
   const { run, busy, doing, error } = useAction();
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<number | null>(null);
+  // Start session's confirmation, by the button or card it was asked from
+  const [starting, setStarting] = useState<{ n: number; at: HTMLElement } | null>(null);
+  const [openNote, setOpenNote] = useState("");
+  const startPop = starting && <TicketStartPopover key={starting.n} roomId={roomId} n={starting.n} anchor={starting.at} onClose={() => setStarting(null)} onStarted={onStarted} />;
+  const onStart = (n: number, at: HTMLElement) => setStarting({ n, at });
+  const openHouse = (n: number) => void run("open", () => window.mb.houseOpen(roomId, n)).then((r: { note?: string } | Err | undefined) => setOpenNote(r && !isErr(r) && r.note ? r.note : ""));
   const [renaming, setRenaming] = useState(false);
   const act = (what: string, w: HouseWrite) => run(what, () => window.mb.houseWrite(roomId, w));
   if (!view || isErr(view)) {
@@ -781,7 +837,8 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
   if (open !== null) {
     return (
       <Modal className="modal house-modal" onClose={onClose}>
-        <TicketDetail key={open} roomId={roomId} n={open} view={view} onBack={() => setOpen(null)} onOpen={setOpen} />
+        <TicketDetail key={open} roomId={roomId} n={open} view={view} onBack={() => setOpen(null)} onOpen={setOpen} onStart={onStart} />
+        {startPop}
         <div className="row">
           <button className="outline" onClick={onClose}>
             Close
@@ -825,7 +882,9 @@ export function HouseBoardDialog({ roomId, onClose }: { roomId: string; onClose:
       {view.copiesProblem && <div className="house-note bad">{view.copiesProblem}</div>}
       {adding && <AddTicket act={act} onDone={() => setAdding(false)} />}
       {error && <div className="fp-note err">{error}</div>}
-      {view.project && view.connection.state !== "missing" && view.connection.state !== "bad" && view.connection.state !== "consent" && <Columns roomId={roomId} view={view} onOpen={setOpen} />}
+      {view.project && view.connection.state !== "missing" && view.connection.state !== "bad" && view.connection.state !== "consent" && <Columns roomId={roomId} view={view} onOpen={setOpen} onStart={onStart} onOpenHouse={openHouse} />}
+      {openNote && <div className="house-problem">{openNote}</div>}
+      {startPop}
       {view.writeProblems?.map((p) => (
         <div key={`${p.at}-${p.text}`} className="house-problem">
           <span className="house-when">{ago(p.at)}</span>

@@ -114,6 +114,10 @@ export interface HouseTicketDetail extends HouseTicket {
   detail: string;
   acceptance: string;
   history: HouseHistoryEntry[];
+  /** The House's branch field, claimed or not (a released ticket can keep it): where work on it goes. */
+  branch: string | null;
+  /** Links the House keeps on the ticket (its links or references), as given. */
+  links: { label: string | null; url: string }[];
 }
 
 /** A history entry after who wrote it: "status → review" for a status change, "claimed → in progress", "question". */
