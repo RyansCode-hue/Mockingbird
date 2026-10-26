@@ -328,8 +328,9 @@ export interface MigrationsView {
   roomId: RoomId;
   /** The check is on (the default): agents' unreserved new migrations are held back once. */
   check: boolean;
-  /** This install is the room's admin, who alone changes the setting. */
+  /** This install is the room's owner or an admin, who change the setting (a room rule). */
   canChange: boolean;
+  /** The room's owner and admins by name ("Ryan or Nick"). */
   adminName: string | null;
   /** The room's repositories here, with the folders detected and any override. */
   repos: { key: string; label: string; detected: string[]; override: string[] | null; problem?: string }[];

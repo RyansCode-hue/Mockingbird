@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createIpcStore, loadInto } from "../ipcStore";
 import { readPref, usePersisted, writePref } from "../prefs";
-import { initialsOf, LeaveRoomDialog, roomOfGroup, RoomWarnings, TeamNotices } from "../Team";
+import { initialsOf, LeaveRoomDialog, RoleChip, RoleNotice, roomOfGroup, RoomWarnings, TeamNotices, useMemberActions } from "../Team";
+import { roleIn } from "./rolesModel";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type MenuEntry } from "../ContextMenu";
 import { BackIcon, ChatIcon, ChevronIcon, CloseIcon, GridIcon, InviteIcon, KanbanIcon, PlusIcon } from "../Icons";
 import { roomPresence } from "./connectedModel";
@@ -337,6 +338,8 @@ function RoomChat({
   const listRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const [leaving, setLeaving] = useState(false);
+  const memberActs = useMemberActions(room);
+  const memberMenu = useContextMenu("Teammate");
   const arts = useArtifacts(room.id);
   const actions = useArtifactActions(room.id);
   const artifacts = arts.view?.items ?? [];
@@ -450,15 +453,27 @@ function RoomChat({
         <div className="rc-members">
           {room.members.map((m) => {
             const on = m.self || room.online.includes(m.id);
+            const acts = m.self ? [] : memberActs.actionsFor(m);
+            const role = roleIn(room, m.id);
             return (
-              <span key={m.id} className={`rc-member ${on ? "on" : ""}`} title={`${m.name}${m.self ? " (you)" : on ? " · connected" : " · offline"}`}>
+              <span
+                key={m.id}
+                className={`rc-member ${on ? "on" : ""}`}
+                title={`${m.name}${m.self ? " (you)" : on ? " · connected" : " · offline"}${role !== "member" ? ` · ${role}` : ""}${acts.length ? " — right-click for their role" : ""}`}
+                {...(acts.length ? memberMenu.bind(acts) : {})}
+              >
                 <span className="rc-initials">{initialsOf(m.name)}</span>
                 {m.self ? "you" : mentionHandle(m.name)}
+                <RoleChip room={room} id={m.id} className="rc-role" />
               </span>
             );
           })}
         </div>
+        <RoleNotice room={room} />
+        {memberActs.error && <div className="rc-error err">{memberActs.error}</div>}
       </div>
+      {memberMenu.menu}
+      {memberActs.dialogs}
       <RoomSessions room={room} hooks={hooks} foldable />
       <ArtifactShelf
         room={room}

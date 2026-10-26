@@ -13,10 +13,10 @@ import type { TeamRoomSummary } from "../../shared/team/types";
 /**
  * Settings → Team, per room: whether room sessions' backups also go to origin
  * (docs/team-rooms.md, "Take-over"). Off by default — snapshots go only peer
- * to peer. The room's admin alone makes it available, after a warning that
+ * to peer. The room's owner alone makes it available, after a warning that
  * anyone who can read the repository can fetch them; each member then allows
  * it for their own sessions or not (BackupConsentPrompt, and the row below
- * the admin's switch). Nobody's work goes to origin on the admin's word alone.
+ * the owner's switch). Nobody's work goes to origin on the owner's word alone.
  */
 export function RoomBackupsSetting({ room }: { room: TeamRoomSummary }) {
   const view = useTakeover();
@@ -49,7 +49,7 @@ export function RoomBackupsSetting({ room }: { room: TeamRoomSummary }) {
           label={`Also back up to ${s.remote}: ${room.name}`}
           on={s.toOrigin}
           disabled={!s.canChange || busy}
-          title={s.canChange ? undefined : `Only ${s.adminName ?? "the room's admin"}, the room's admin, can change this`}
+          title={s.canChange ? undefined : `Only ${s.adminName ?? "the room's owner"}, the room's owner, can change this`}
           onChange={(on) => (on ? setConfirming(true) : void set(false))}
         />
       </SetRow>
@@ -57,7 +57,7 @@ export function RoomBackupsSetting({ room }: { room: TeamRoomSummary }) {
         title={`Back up my sessions to ${s.remote}`}
         note={
           !s.toOrigin
-            ? `Available once ${s.canChange ? "you turn" : `${s.adminName ?? "the room's admin"} turns`} on backups to ${s.remote} above. Yours stay peer to peer until you allow it.`
+            ? `Available once ${s.canChange ? "you turn" : `${s.adminName ?? "the room's owner"} turns`} on backups to ${s.remote} above. Yours stay peer to peer until you allow it.`
             : s.consent
               ? `Your room sessions' snapshots also go to ${s.remote} after each turn. Turning this off deletes the ones you pushed.`
               : `Your room sessions' backups stay peer to peer${s.consent === false ? " (you chose Not now)" : ""}: teammates can take them over only from copies that reached their Mac.`
@@ -102,7 +102,7 @@ export function RoomBackupsSetting({ room }: { room: TeamRoomSummary }) {
 
 /** What the setting does, and who can change it. */
 function BackupsNote({ s }: { s: RoomBackupSetting }) {
-  const who = s.canChange ? "It makes the option available to every member; each one allows it for their own sessions." : `Only ${s.adminName ?? "the room's admin"}, the room's admin, can change it.`;
+  const who = s.canChange ? "It makes the option available to every member; each one allows it for their own sessions." : `Only ${s.adminName ?? "the room's owner"}, the room's owner, can change it.`;
   const changed = s.changed ? ` ${s.changed.self ? "You" : s.changed.byName} turned it ${s.toOrigin ? "on" : "off"} ${ago(s.changed.at)}.` : "";
   return (
     <>
@@ -116,7 +116,7 @@ function BackupsNote({ s }: { s: RoomBackupSetting }) {
 }
 
 /**
- * Asked once per room, when its admin makes backups to origin available:
+ * Asked once per room, when its owner makes backups to origin available:
  * whether this member's own sessions may go there. Allow / Not now, kept on
  * this Mac (Settings → Team changes it later). Closing it asks again on the
  * next start.
@@ -135,7 +135,7 @@ export function BackupConsentPrompt({ setting: s, roomName, onLater }: { setting
     <Modal className="modal team-dlg tk-consent" onClose={busy ? undefined : onLater} closeOnBackdrop={false}>
       <h3>Back up my room sessions to {s.remote === "origin" ? "origin" : `${s.remote} (origin)`}?</h3>
       <div className="sub-h">
-        {s.canChange ? "You" : (s.adminName ?? "The room's admin")} made backups to {s.remote} available in {roomName}. Your sessions there go only to teammates' Macs, peer to peer, unless you allow it.
+        {s.canChange ? "You" : (s.adminName ?? "The room's owner")} made backups to {s.remote} available in {roomName}. Your sessions there go only to teammates' Macs, peer to peer, unless you allow it.
       </div>
       <ul className="team-effects">
         <li>After each agent turn, a snapshot of your room session — uncommitted and untracked files, never secrets — goes to a hidden ref on {s.remote}.</li>

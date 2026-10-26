@@ -177,6 +177,32 @@ export class TeamService {
     return { name, delivered: r.delivered, worker: workerProblem(r.revoke, name) };
   }
 
+  // ---- roles -----------------------------------------------------------------------------------
+
+  /** Make a teammate an admin of a room, or take the role back (the owner only). */
+  setAdmin(roomId: RoomId, memberId: string, admin: boolean): void {
+    this.need().setAdmin(roomId, memberId, admin);
+    this.changed();
+  }
+
+  /** Hand ownership of a room to a teammate (the owner only); this install stays an admin. */
+  handOver(roomId: RoomId, memberId: string): void {
+    this.need().handOver(roomId, memberId);
+    this.changed();
+  }
+
+  /** Claim ownership of a room whose owner hasn't been heard from for 14 days (its longest-standing admin only). */
+  claimOwnership(roomId: RoomId): void {
+    this.need().claimOwnership(roomId);
+    this.changed();
+  }
+
+  /** Take back ownership a claim took from this install. */
+  contestClaim(roomId: RoomId): void {
+    this.need().contestClaim(roomId);
+    this.changed();
+  }
+
   dismissNotice(id: string): void {
     this.notices = this.notices.filter((n) => n.id !== id);
     this.changed();

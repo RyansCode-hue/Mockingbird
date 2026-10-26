@@ -220,7 +220,7 @@ export class WebRtcWire implements PeerWire {
         signaling: st,
         ...(r.client.problem ? { problem: r.client.problem } : {}),
         ...(r.client.problemCode ? { code: r.client.problemCode } : {}),
-        ...(r.client.features ? { revoke: r.client.features.has("revoke"), approve: r.client.features.has("approve") } : {}),
+        ...(r.client.features ? { revoke: r.client.features.has("revoke"), approve: r.client.features.has("approve"), roles: r.client.features.has("roles") } : {}),
         ...(r.client.knocking ? { knocking: true } : {}),
       });
     }
@@ -433,6 +433,12 @@ export class WebRtcWire implements PeerWire {
     }
     const admit = room.spec.admit.filter((k) => PUBLIC_KEY_RE.test(k)).sort().join(",");
     if (admit && admit !== room.admitted && room.client.send({ t: "admit", publicKeys: admit.split(",") })) room.admitted = admit;
+    // the room's roles, for a Worker that knows them: it keeps them from whoever it trusts (an answer that it didn't is only logged)
+    const roles = room.spec.roles;
+    if (roles?.owner && room.client.features?.has("roles")) {
+      const k = `roles:${roles.owner}:${roles.admins.join(",")}`;
+      if (!room.registered.has(k) && room.client.send({ t: "roles", owner: roles.owner, admins: roles.admins })) room.registered.add(k);
+    }
     // the room's admin keeps former members cut off: a revoke that failed or predates the server's support is made again
     if (!room.client.features?.has("revoke")) return;
     for (const r of room.spec.revoke ?? []) {

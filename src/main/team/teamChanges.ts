@@ -12,7 +12,7 @@ import { fetchOrigin, originKey } from "./branchFiles";
 import { worktreesOf } from "./claims";
 import { isBase, type TeammateBranch } from "./houseService";
 import { migrationCheckOn, migrationFoldersOverride, reservationsOf } from "./migrations";
-import { roomAdmin } from "./rooms";
+import { isRoomAdmin, roomDeciders } from "./rooms";
 import type { Team, Unsubscribe } from "./transport";
 import { block, CONTROL_CHARS_RE, fenced, named, oneLine, quoted } from "../../shared/team/agentText";
 import { BRANCH_RE } from "../../shared/team/house";
@@ -539,8 +539,7 @@ export class TeamChanges {
   view(roomId: RoomId): MigrationsView {
     const team = this.need();
     const room = this.room(roomId);
-    const admin = roomAdmin(room);
-    const keys = new Set<string>([...Object.values(room.ext.sessions ?? {}).flatMap((r) => (r.repo ? [originKey(r.repo)] : [])), ...reservationsOf(room).map((r) => r.repo)]);
+    const keys =new Set<string>([...Object.values(room.ext.sessions ?? {}).flatMap((r) => (r.repo ? [originKey(r.repo)] : [])), ...reservationsOf(room).map((r) => r.repo)]);
     const repos = [...keys].sort().map((key) => {
       const clone = [...this.origins].find(([, o]) => o.key === key)?.[1].main;
       const f = clone ? this.folders.get(clone) : undefined;
@@ -551,15 +550,15 @@ export class TeamChanges {
     return {
       roomId,
       check: migrationCheckOn(room),
-      canChange: admin === team.self.id,
-      adminName: admin ? this.nameOf(room, admin) : null,
+      canChange: isRoomAdmin(room, team.self.id),
+      adminName: this.decidersOf(room),
       repos,
       reservations: shown.map((r) => ({ id: r.id, label: r.label, folder: r.folder, repo: repoLabel(r.repo), member: this.nameOf(room, r.by), self: r.by === team.self.id, session: r.session.title, ticket: r.ticket, branch: r.branch, at: r.at, clash: !!r.clash })),
       problems: this.problems.get(roomId) ?? [],
     };
   }
 
-  /** The room admin's switch: agents' unreserved new migrations held back, or not. */
+  /** A room rule, the owner's or an admin's: agents' unreserved new migrations held back, or not. */
   setCheck(roomId: RoomId, on: boolean): MigrationsView {
     this.asAdmin(roomId, "turns the migration check on or off");
     if (typeof on !== "boolean") throw new Error("Say on or off");
@@ -567,7 +566,7 @@ export class TeamChanges {
     return this.view(roomId);
   }
 
-  /** The room admin's folders for a repository, where detection got them wrong; none: back to detection. */
+  /** The owner's or an admin's folders for a repository, where detection got them wrong; none: back to detection. */
   setFolders(roomId: RoomId, key: string, folders: string[]): MigrationsView {
     this.asAdmin(roomId, "sets the migration folders");
     if (!Array.isArray(folders) || folders.length > 10) throw new Error("At most 10 folders");
@@ -576,10 +575,18 @@ export class TeamChanges {
     return this.view(roomId);
   }
 
+  /** A room rule: its owner's or an admin's to change. */
   private asAdmin(roomId: RoomId, what: string): void {
     const room = this.room(roomId);
-    const admin = roomAdmin(room);
-    if (admin !== this.need().self.id) throw new Error(`Only the room's admin${admin ? ` (${this.nameOf(room, admin)})` : ""} ${what}`);
+    if (isRoomAdmin(room, this.need().self.id)) return;
+    const who = this.decidersOf(room);
+    throw new Error(`Only the room's owner or an admin${who ? ` (${who})` : ""} ${what}`);
+  }
+
+  /** The room's owner and admins by name ("Ryan or Nick"), or null with nobody. */
+  private decidersOf(room: RoomState): string | null {
+    const names = roomDeciders(room).map((id) => this.nameOf(room, id));
+    return names.length ? names.join(" or ") : null;
   }
 
   /** What the room checks in an agent's hook did: a held-back migration notifies, both are logged. */

@@ -260,9 +260,9 @@ export interface RoomBackupSetting {
   consent: boolean | null;
   /** Who last changed it (`self`: this install), and when; null while nobody has (off). */
   changed: { byName: string; self: boolean; at: number } | null;
-  /** The room's admin, by name: the only one who can change it. */
+  /** The room's owner, by name: the only one who can change it (backups to origin are an owner-only setting). */
   adminName: string | null;
-  /** This install is the room's admin. */
+  /** This install is the room's owner. */
   canChange: boolean;
   /** This member's current away grant in the room (their sessions teammates may take over while they're away), or null. */
   away: { sessions: string[] | null; expiresAt: number } | null;

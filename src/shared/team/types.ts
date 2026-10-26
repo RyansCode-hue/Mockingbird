@@ -50,8 +50,16 @@ export interface RoomEventBodies {
   /** The admin declined a join request: the inviter tells the joiner. Changes no state. */
   "join.declined": { id: MemberId; invite: string; inviter: MemberId };
   "member.renamed": { name: string };
-  /** A member leaves (`member` is the author), or the room's admin removes them. */
+  /** A member leaves (`member` is the author), or someone whose role allows it removes them (rooms.ts mayRemove). */
   "member.removed": { member: MemberId; reason?: "left" | "removed" };
+  /** The owner makes `member` an admin (`admin: true`), or takes the role back. */
+  "role.admin": { member: MemberId; admin: boolean };
+  /** The owner hands ownership to `member`; the old owner stays an admin. */
+  "role.owner": { member: MemberId };
+  /** The room's claimant takes ownership from an owner not heard from for OWNER_CLAIM_WAIT_MS (rooms.ts). */
+  "role.claim": Record<string, never>;
+  /** The owner a claim took ownership from takes it back. */
+  "role.contest": Record<string, never>;
 }
 export type RoomEventType = keyof RoomEventBodies;
 
@@ -70,6 +78,24 @@ export interface RoomEvent<K extends string = string> {
   sig: string;
 }
 
+export type RoomRole = "owner" | "admin" | "member";
+
+/**
+ * A room's roles, reduced from its signed events the same on every member
+ * (rooms.ts). One owner — the creator, until a hand-over, a claim, or their
+ * leaving — and the admins the owner made, in the order made (the first is
+ * the longest-standing). Everyone else is a member.
+ */
+export interface RoomRoles {
+  /** Null only once nobody is left. */
+  owner: MemberId | null;
+  admins: MemberId[];
+  /** The newest time (an event's `at`) the owner was heard from in the room: a claim needs it OWNER_CLAIM_WAIT_MS past. */
+  ownerSeenAt: number;
+  /** The newest claim, until the owner it took ownership from contests it or leaves. */
+  claim?: { from: MemberId; by: MemberId; at: number; byWasAdmin: boolean };
+}
+
 /** What later stages keep in a room (sessions, chat, board…), each under its own key. */
 export interface RoomExtensions {}
 
@@ -84,8 +110,10 @@ export interface RoomState {
   members: RoomMember[];
   /** Who left or was removed, newest last (absent in states reduced before removal existed). */
   former?: FormerMember[];
-  /** Joins need the admin's acceptance from here in the room's order: only the admin's member.added counts (absent: any member's, as before). */
+  /** Joins need accepting from here in the room's order: only the owner's or an admin's member.added counts (absent: any member's, as before). */
   joinApproval?: true;
+  /** Who holds which role (absent in states made by hand, as tests do: rooms.ts roomRoles derives it). */
+  roles?: RoomRoles;
   /** Filled by other stages' reducers. */
   ext: Partial<RoomExtensions>;
   /** Highest Lamport time applied. */
@@ -120,8 +148,16 @@ export interface TeamRoomSummary {
   /** The local top-level group the room is shown as. */
   groupKey: string;
   members: { id: MemberId; name: string; self: boolean }[];
-  /** Who can remove members: the creator while a member, else the longest-standing member (see roomAdmin). */
+  /** The room's owner (rooms.ts roomOwner). */
+  owner?: MemberId | null;
+  /** The room's admins, the longest-standing first (the owner isn't listed). */
+  admins?: MemberId[];
+  /** Whom the signaling Worker and Mockingbirds from before roles take for the room's admin (rooms.ts legacyAdmin). */
   admin?: MemberId | null;
+  /** The newest ownership claim, while the owner it took ownership from can contest it. */
+  claim?: { from: MemberId; by: MemberId; at: number };
+  /** This install may claim ownership: from when (the owner not heard from), or null when it isn't the claimant. */
+  claimOpensAt?: number | null;
   creator?: MemberId;
   /** People who left or were removed, by name: their messages still say who wrote them. */
   former?: { id: MemberId; name: string }[];
@@ -135,6 +171,8 @@ export interface TeamRoomSummary {
   workerRevoke?: boolean;
   /** The signaling Worker holds joiners at the door until the admin accepts: false when it's older and needs redeploying, absent until it has answered. */
   workerApprove?: boolean;
+  /** The signaling Worker knows the room's admins, so their accepts and removals count there too: false when it's older and needs redeploying, absent until it has answered. */
+  workerRoles?: boolean;
   /** Join requests this install answers (as the room's admin) or passed on (as the inviter), newest last. */
   requests?: JoinRequestSummary[];
   /** What this Mac refused or noticed in the room (a teammate over a limit, this install's key connected elsewhere), newest last. */

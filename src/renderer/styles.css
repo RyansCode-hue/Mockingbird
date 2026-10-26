@@ -2113,12 +2113,25 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .team-member { display: flex; align-items: center; gap: 6px; min-width: 0; font: 400 11.5px var(--ui); color: var(--text-2); }
 .team-member-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .team-member .team-link { font-size: 10px; }
-.team-member button.link.danger { margin-left: auto; font: 500 10.5px var(--ui); color: var(--text-3); }
-.team-member button.link.danger:hover { color: var(--red); }
-.team-admin {
+.team-members .set-row-note { margin-top: 3px; }
+.team-members .set-row-note.warn { color: var(--amber-text); }
+/* room roles: a chip for the owner and admins; the owner's actions on a teammate; the ownership claim */
+.team-role, .rc-role {
   font: 500 9px var(--ui); letter-spacing: .3px; color: var(--text-3); border: 1px solid var(--line-med); border-radius: 4px; padding: 0 4px; line-height: 13px;
 }
-.team-members .set-row-note { margin-top: 3px; }
+.team-role.owner, .rc-role.owner { color: var(--text-1); border-color: color-mix(in srgb, var(--teal) 55%, var(--line-med)); }
+.rc-role { font-size: 8.5px; line-height: 12px; padding: 0 3px; }
+.team-member-acts { margin-left: auto; display: inline-flex; gap: 10px; }
+.team-member-acts button.link { font: 500 10.5px var(--ui); color: var(--text-3); }
+.team-member-acts button.link:hover { color: var(--text-1); }
+.team-member-acts button.link.danger:hover { color: var(--red); }
+.role-notice {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 6px 0 2px; padding: 6px 8px; border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line-med)); font: 400 10.5px/1.45 var(--ui); color: var(--amber-text);
+}
+.role-notice span { flex: 1; min-width: 160px; }
+.role-notice button.outline { padding: 1px 8px; font: 500 10.5px var(--ui); }
+select.team-heir { margin-left: 2px; font: 500 11px var(--ui); }
 ul.team-effects { margin: 0 0 4px; padding-left: 16px; display: flex; flex-direction: column; gap: 6px; font: 400 11px/1.55 var(--ui); color: var(--text-2); }
 ul.team-effects b { color: var(--text-1); font-weight: 600; }
 ul.team-effects li.warn { color: var(--amber-text); }

@@ -222,7 +222,7 @@ export interface HouseView {
   roomId: RoomId;
   room: string;
   project: string | null;
-  /** The room's admin by name, who alone chooses the project. */
+  /** The room's owner by name, who alone chooses the project (an owner-only setting). */
   admin: string | null;
   isAdmin: boolean;
   /** The env file this Mac reads for the project (`~/…`). */
@@ -259,7 +259,7 @@ export interface HouseConsentAsk {
   roomId: RoomId;
   room: string;
   project: string;
-  /** Who connected the room to it (its admin), by name. */
+  /** Who connected the room to it (its owner), by name. */
   admin: string | null;
 }
 

@@ -426,10 +426,12 @@ describe("the room's board events", () => {
     expect(h.by(NICK_T).length - before).toBeLessThanOrEqual(3);
   }, 15_000);
 
-  it("lets only the room's admin choose the House project; anyone else's choice changes nothing", async () => {
+  it("lets only the room's owner choose the House project; anyone else's choice — an admin's too — changes nothing", async () => {
     const h = await house();
     const { ryan, nick, roomId, r, n } = await pair(h);
-    await expect(n.svc.write(roomId, { kind: "project", project: "other-project" })).rejects.toThrow("Only the room's admin (Ryan) chooses its House project");
+    ryan.team.setAdmin(roomId, nick.team.self.id, true);
+    await until(() => !!nick.team.room(roomId)!.roles?.admins.includes(nick.team.self.id), "Nick to be an admin at his");
+    await expect(n.svc.write(roomId, { kind: "project", project: "other-project" })).rejects.toThrow("Only the room's owner (Ryan) chooses its House project");
     nick.team.publish(roomId, "house.project", { project: "sneaky" });
     await until(() => ryan.team.room(roomId)!.events === nick.team.room(roomId)!.events, "the event to reach Ryan");
     for (const m of [ryan, nick]) expect(houseOfRoom(m.team.room(roomId)!).project).toBe(PROJECT);
@@ -625,6 +627,7 @@ describe("claims from claimed tickets", () => {
     await until(() => claimsIn(wtA).rooms[0].tickets.length === 0, "the claim to leave Ryan's worktree");
 
     // leaving the room takes the files out of the worktrees
+    ryan.team.handOver(roomId, nick.team.self.id); // the owner hands over before leaving
     await ryan.team.leave(roomId);
     expect(await r.svc.roomLeft(roomId)).toEqual([]);
     for (const wt of [clones.ryan, wtA, wtSame]) expect(fs.existsSync(path.join(wt, ".mockingbird"))).toBe(false);

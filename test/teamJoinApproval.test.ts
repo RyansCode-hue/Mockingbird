@@ -134,7 +134,7 @@ describe("joining: the room's admin accepts or declines", () => {
     expect(nick.store.get(roomId)).toBeUndefined();
     expect(net.isLinked(ryan.id, nick.id) || net.isLinked(sam.id, nick.id)).toBe(false);
     // only the admin answers
-    await expect(sam.team.answerJoin(roomId, nick.id, true)).rejects.toThrow(/Only the room's admin \(Ryan\)/);
+    await expect(sam.team.answerJoin(roomId, nick.id, true)).rejects.toThrow(/Only the room's owner or an admin \(Ryan\)/);
     expect(await ryan.team.answerJoin(roomId, nick.id, true)).toEqual({ name: "Nick", accepted: true, worker: null });
     await until(() => !!nick.team.room(roomId) && ryan.team.presence(roomId).includes(nick.id) && sam.team.room(roomId)?.members.length === 3, "Nick in, everyone knowing");
     for (const m of [ryan, sam, nick]) expect(m.team.room(roomId)!.ext.chat!.entries.at(-1)).toMatchObject({ kind: "member", change: "accepted", author: ryan.id, member: nick.id });
@@ -181,7 +181,7 @@ describe("joining: the room's admin accepts or declines", () => {
     await until(() => requestsOf(sam, roomId)[0]?.state === "waiting", "Sam to see Ryan has it");
     expect(requestsOf(sam, roomId)).toEqual([expect.objectContaining({ role: "inviter", id: lee.id, adminName: "Ryan", state: "waiting" })]);
     // Sam can't let Lee in himself
-    await expect(sam.team.answerJoin(roomId, lee.id, true)).rejects.toThrow(/Only the room's admin/);
+    await expect(sam.team.answerJoin(roomId, lee.id, true)).rejects.toThrow(/Only the room's owner or an admin/);
     await ryan.team.answerJoin(roomId, lee.id, true);
     await until(() => !!lee.team.room(roomId) && lee.team.presence(roomId).length === 2, "Lee in, connected to both");
     expect(lee.team.room(roomId)!.members.find((m) => m.id === lee.id)).toMatchObject({ invitedBy: sam.id, acceptedBy: ryan.id });

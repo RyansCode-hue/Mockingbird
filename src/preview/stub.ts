@@ -17,7 +17,7 @@ import { bottomLine, fitSize, followsBottom } from "../renderer/cachedTerm";
 import type { SuggestProblem } from "../shared/suggestions";
 import { changedTags, parseCardRules, type TagChange } from "../shared/cardRules";
 import type { MigrationsView } from "../shared/team/migrations";
-import type { TeamStatus } from "../shared/team/types";
+import type { TeamRoomSummary, TeamStatus } from "../shared/team/types";
 // the version being built, and an update one patch above it
 import { version } from "../../package.json";
 const nextVersion = version.replace(/\d+$/, (n) => String(Number(n) + 1));
@@ -206,12 +206,18 @@ const LEE = "3c3c3c3c4d4d4d4d5e5e5e5e6f6f6f6f";
 const KIM = "7a7a7a7a8b8b8b8b9c9c9c9cadadadad";
 const fp = (id: string) => id.replace(/(.{4})(?=.)/g, "$1 ");
 const asks = teamQuery.has("joinRequest");
+// room roles: you own 5101 with Nick its admin; Nick owns 5110. ?claim: Nick hasn't been heard from in 5110 for 15 days,
+// so you (its longest-standing member, with no admins) may claim it; ?claim=contest: Nick claimed 5101 from you while you were away
+const claimQuery = teamQuery.get("claim");
+const rolesOf5101: Pick<TeamRoomSummary, "owner" | "admins" | "claim" | "claimOpensAt"> =
+  claimQuery === "contest" ? { owner: NICK, admins: [], claim: { from: ME, by: NICK, at: now - 2 * 60 * min }, claimOpensAt: null } : { owner: ME, admins: [NICK], claimOpensAt: null };
+const rolesOf5110: Pick<TeamRoomSummary, "owner" | "admins" | "claim" | "claimOpensAt"> = { owner: NICK, admins: [], claimOpensAt: claimQuery === null || claimQuery === "contest" ? now + 9 * 24 * 60 * min : now - 24 * 60 * min };
 const team: TeamStatus = {
   self: { id: ME, name: "You", fingerprint: fp(ME) },
   signalingUrl: SIGNAL,
   rooms: [
     {
-      id: "R5101aaaaaaaaaaaaaaaaa", name: "#5101 Org dropdowns remember the last org", groupKey: "5101", members: [{ id: ME, name: "You", self: true }, { id: NICK, name: "Nick Smith", self: false }, { id: SAM, name: "Sam", self: false }], admin: ME, creator: ME, former: [{ id: ALEX, name: "Alex" }], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke, workerApprove,
+      id: "R5101aaaaaaaaaaaaaaaaa", name: "#5101 Org dropdowns remember the last org", groupKey: "5101", members: [{ id: ME, name: "You", self: true }, { id: NICK, name: "Nick Smith", self: false }, { id: SAM, name: "Sam", self: false }], ...rolesOf5101, admin: ME, creator: ME, former: [{ id: ALEX, name: "Alex" }], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke, workerApprove,
       requests: asks ? [{ roomId: "R5101aaaaaaaaaaaaaaaaa", id: LEE, name: "Lee Park", fingerprint: fp(LEE), inviter: SAM, inviterName: "Sam", admin: ME, adminName: "You", role: "admin", state: "waiting", at: now - 3 * min, expiresAt: now + 6 * 24 * 60 * min }] : [],
       // ?roomWarnings: what this Mac refused from Nick over a limit, and this install's key connected from another place
       ...(teamQuery.has("roomWarnings")
@@ -224,7 +230,7 @@ const team: TeamStatus = {
         : {}),
     },
     {
-      id: "R5110bbbbbbbbbbbbbbbbb", name: "#5110 Donor entities", groupKey: "5110", members: [{ id: NICK, name: "Nick Smith", self: false }, { id: ME, name: "You", self: true }], admin: NICK, creator: NICK, former: [], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke, workerApprove,
+      id: "R5110bbbbbbbbbbbbbbbbb", name: "#5110 Donor entities", groupKey: "5110", members: [{ id: NICK, name: "Nick Smith", self: false }, { id: ME, name: "You", self: true }], ...rolesOf5110, admin: NICK, creator: NICK, former: [], online: [NICK], signalingUrl: SIGNAL, signaling: "online", workerRevoke, workerApprove,
       requests: asks ? [{ roomId: "R5110bbbbbbbbbbbbbbbbb", id: KIM, name: "Kim", fingerprint: fp(KIM), inviter: ME, inviterName: "You", admin: NICK, adminName: "Nick Smith", role: "inviter", state: "waiting", at: now - 12 * min, expiresAt: now + 5 * 24 * 60 * min }] : [],
     },
   ],
@@ -1263,9 +1269,11 @@ const api: Record<string, (...a: any[]) => any> = {
     const room = team.rooms.find((r) => r.id === roomId);
     const member = room?.members.find((m) => m.id === memberId) ?? room?.former?.find((m) => m.id === memberId);
     if (!room || !member) return err("They aren't in that room");
-    if (room.admin !== ME) return err("Only the room's admin can remove members");
+    const mine = room.owner === ME ? "owner" : room.admins?.includes(ME) ? "admin" : "member";
+    if (mine === "member" || (mine === "admin" && (room.owner === memberId || room.admins?.includes(memberId)))) return err("Only the room's owner removes an admin or the owner; admins remove members");
     if (room.members.some((m) => m.id === memberId)) {
       room.members = room.members.filter((m) => m.id !== memberId);
+      room.admins = room.admins?.filter((id) => id !== memberId);
       room.former = [...(room.former ?? []), { id: member.id, name: member.name }];
       (chats[roomId] ??= []).push(chatEntry({ kind: "member", author: ME, at: Date.now(), member: memberId, change: "removed" }));
       teamChanged();
@@ -1273,6 +1281,44 @@ const api: Record<string, (...a: any[]) => any> = {
     }
     const worker = workerRevoke ? null : "Your signaling Worker is older and doesn't know how to cut members off. Update your signaling Worker (cd signaling && npx wrangler deploy) to also cut them off at the Worker.";
     return later({ name: member.name, delivered: room.online.includes(memberId), worker }, 600);
+  },
+  // room roles: the fixture's roles change, and the room's chat says so
+  teamSetAdmin: async (roomId: string, memberId: string, admin: boolean) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    if (!room?.members.some((m) => m.id === memberId)) return err("They aren't in that room");
+    if (room.owner !== ME) return err("Only the room's owner makes admins");
+    room.admins = admin ? [...new Set([...(room.admins ?? []), memberId])] : (room.admins ?? []).filter((id) => id !== memberId);
+    (chats[roomId] ??= []).push(chatEntry({ kind: "member", author: ME, at: Date.now(), member: memberId, change: admin ? "admin" : "unadmin" }));
+    teamChanged();
+    chatChanged(roomId);
+  },
+  teamHandOver: async (roomId: string, memberId: string) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    if (!room?.members.some((m) => m.id === memberId)) return err("They aren't in that room");
+    if (room.owner !== ME) return err("Only the room's owner hands over ownership");
+    room.owner = memberId;
+    room.admins = [...(room.admins ?? []).filter((id) => id !== memberId), ME];
+    (chats[roomId] ??= []).push(chatEntry({ kind: "member", author: ME, at: Date.now(), member: memberId, change: "owner" }));
+    teamChanged();
+    chatChanged(roomId);
+  },
+  teamClaimOwnership: async (roomId: string) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    if (!room || room.claimOpensAt == null || room.claimOpensAt > Date.now()) return err("Ownership can't be claimed yet");
+    const from = room.owner!;
+    Object.assign(room, { owner: ME, admins: (room.admins ?? []).filter((id) => id !== ME), claim: { from, by: ME, at: Date.now() }, claimOpensAt: null });
+    (chats[roomId] ??= []).push(chatEntry({ kind: "member", author: ME, at: Date.now(), member: from, change: "claim" }));
+    teamChanged();
+    chatChanged(roomId);
+  },
+  teamContestClaim: async (roomId: string) => {
+    const room = team.rooms.find((r) => r.id === roomId);
+    if (room?.claim?.from !== ME) return err("Nobody claimed ownership from you");
+    const was = room.owner!;
+    Object.assign(room, { owner: ME, admins: [...(room.admins ?? []), was], claim: undefined });
+    (chats[roomId] ??= []).push(chatEntry({ kind: "member", author: ME, at: Date.now(), member: was, change: "contest" }));
+    teamChanged();
+    chatChanged(roomId);
   },
   teamDismissNotice: async (id: string) => {
     team.notices = (team.notices ?? []).filter((n) => n.id !== id);

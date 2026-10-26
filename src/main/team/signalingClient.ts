@@ -356,6 +356,11 @@ export class SignalingClient {
         }
         this.o.onEvent({ t: "refused", code: msg.code, message: msg.message, ...(msg.to ? { to: msg.to } : {}) });
         return;
+      case "roles-ignored":
+        // every admin's Mockingbird sends the roles; the server keeps them from the one it trusts
+        this.o.log(`signaling ${this.o.roomId}: the server didn't take the room's roles from this install (${String(msg.reason).slice(0, 200)})`);
+        return;
+      case "roles-set":
       case "invited":
       case "admitted":
       case "pong":

@@ -1,7 +1,7 @@
 import * as path from "path";
 import { readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { TEAM_DIR } from "./identity";
-import { defineEventType, onMemberAdded, onMemberRemoved } from "./rooms";
+import { defineEventType, onMemberAdded, onMemberRemoved, onRoleChanged } from "./rooms";
 import type { Team, Unsubscribe } from "./transport";
 import { MEMBER_ID_RE } from "../../shared/team/protocol";
 import {
@@ -108,14 +108,19 @@ defineEventType("chat.update", {
   },
 });
 
-// the room's chat says who left, or whom the admin removed
+// the room's chat says who left, or whom the owner or an admin removed
 onMemberRemoved("chat", (state, member, e) => {
   append(chatOf(state), { id: e.id, kind: "member", author: e.author, lamport: e.lamport, at: e.at, text: "", member, change: member === e.author ? "left" : "removed" });
 });
 
-// and who joined: "Ryan accepted Nick" (the admin let them in), or "Nick joined" from before joins needed accepting
+// and who joined: "Ryan accepted Nick" (the owner or an admin let them in), or "Nick joined" from before joins needed accepting
 onMemberAdded("chat", (state, e) => {
   append(chatOf(state), { id: e.id, kind: "member", author: e.author, lamport: e.lamport, at: e.at, text: "", member: e.body.id, change: state.joinApproval ? "accepted" : "joined" });
+});
+
+// and every role change: "Ryan made Nick an admin", "Ryan handed ownership of the room to Nick"…
+onRoleChanged("chat", (state, c, e) => {
+  append(chatOf(state), { id: e.id, kind: "member", author: e.author, lamport: e.lamport, at: e.at, text: "", member: c.member, change: c.change });
 });
 
 // ---- the chat on this install ---------------------------------------------------------------------

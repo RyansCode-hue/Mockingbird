@@ -90,7 +90,7 @@ const KIND_LABEL: Record<HouseEventKind, string> = { note: "Comment", progress: 
 function ProjectLine({ view, act, onCancel }: { view: HouseView; act: (what: string, w: HouseWrite) => Promise<unknown>; onCancel?: () => void }) {
   const [name, setName] = useState(view.project ?? "");
   if (!view.isAdmin) {
-    return <div className="house-note warn">The room's admin{view.admin ? ` (${view.admin})` : ""} hasn't connected a Radley House project yet. Once they do, the board shows the House's open backlog and the tickets the room adds.</div>;
+    return <div className="house-note warn">The room's owner{view.admin ? ` (${view.admin})` : ""} hasn't connected a Radley House project yet. Once they do, the board shows the House's open backlog and the tickets the room adds.</div>;
   }
   const connect = () => {
     if (name.trim() && name.trim() !== view.project) void act("project", { kind: "project", project: name.trim() }).then((r) => !isErr(r as Err) && onCancel?.());
@@ -123,7 +123,7 @@ function ConsentNote({ view, onAnswer }: { view: HouseView; onAnswer: (allow: bo
     <div className="house-note house-consent">
       <b>Connect your {view.project} token</b>
       <span>
-        {view.isAdmin ? "This room works in" : `${view.admin ?? "The room's admin"} connected this room to`} Radley House project <code>{view.project}</code>. Use your {view.project} builder token (from <code>{view.envFile}</code>) for this room? Mockingbird then reads and writes the House for this room as you — from this board, and from your agents once you approve each write in their pane.
+        {view.isAdmin ? "This room works in" : `${view.admin ?? "The room's owner"} connected this room to`} Radley House project <code>{view.project}</code>. Use your {view.project} builder token (from <code>{view.envFile}</code>) for this room? Mockingbird then reads and writes the House for this room as you — from this board, and from your agents once you approve each write in their pane.
         {declined ? " You chose Not now: nothing on this Mac uses your token for this room." : " Until you allow it, nothing on this Mac reads your token or calls the House for this room."}
       </span>
       <div className="house-inline">

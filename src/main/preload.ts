@@ -301,6 +301,14 @@ const api = {
   teamRemoveMember: (roomId: string, memberId: string) => ipcRenderer.invoke("team:removeMember", roomId, memberId),
   /** Accept or decline someone's request to join a room (its admin only): JoinAnswerOutcome. */
   teamAnswerJoin: (roomId: string, joinerId: string, accept: boolean) => ipcRenderer.invoke("team:answerJoin", roomId, joinerId, accept),
+  /** Make a teammate an admin of a room, or take the role back (its owner only). */
+  teamSetAdmin: (roomId: string, memberId: string, admin: boolean) => ipcRenderer.invoke("team:setAdmin", roomId, memberId, admin),
+  /** Hand ownership of a room to a teammate (its owner only); you stay an admin. */
+  teamHandOver: (roomId: string, memberId: string) => ipcRenderer.invoke("team:handOver", roomId, memberId),
+  /** Claim ownership of a room whose owner hasn't been heard from for 14 days (its longest-standing admin only). */
+  teamClaimOwnership: (roomId: string) => ipcRenderer.invoke("team:claimOwnership", roomId),
+  /** Take back ownership a claim took from you. */
+  teamContestClaim: (roomId: string) => ipcRenderer.invoke("team:contestClaim", roomId),
   teamDismissNotice: (id: string) => ipcRenderer.invoke("team:dismissNotice", id),
   teamCheckSignaling: (url: string) => ipcRenderer.invoke("team:checkSignaling", url),
   onTeamChanged: (cb: (status: unknown) => void) => {

@@ -1,3 +1,4 @@
+import { OWNER_CLAIM_WAIT_MS } from "./protocol";
 import type { MemberId, RoomId } from "./types";
 
 /**
@@ -73,23 +74,41 @@ export interface ChatEntry {
   state?: AssistantState;
   items?: AgentUpdate[];
   /**
-   * Member entries: who came or went. accepted: the admin let them in · joined: they joined with
-   * a code, before joins needed accepting · left · removed: by the admin.
+   * Member entries: who came or went, or whose role changed. accepted: the owner or an admin let
+   * them in · joined: they joined with a code, before joins needed accepting · left · removed: by
+   * the author. Roles (rooms.ts RoleChange): admin / unadmin, owner (handed to `member`), claim (the
+   * author claimed ownership from `member`), contest (the author took it back from `member`),
+   * succeeded (the owner left; `member` owns the room now).
    */
   member?: MemberId;
-  change?: "left" | "removed" | "accepted" | "joined";
+  change?: "left" | "removed" | "accepted" | "joined" | "admin" | "unadmin" | "owner" | "claim" | "contest" | "succeeded";
 }
 
-/** A member entry as a line: "Nick left" / "Ryan removed Nick" / "Ryan accepted Nick" / "Nick joined". */
+/** A member entry as a line: "Nick left" / "Ryan removed Nick" / "Ryan accepted Nick" / "Nick joined" / "Ryan made Nick an admin"… */
 export function memberLine(e: ChatEntry, nameOf: (id: MemberId) => string): string {
   const who = nameOf(e.member ?? e.author);
+  const by = nameOf(e.author);
+  // "You" reads as "you" after a verb
+  const them = who === "You" ? "you" : who;
   switch (e.change) {
     case "removed":
-      return `${nameOf(e.author)} removed ${who}`;
+      return `${by} removed ${them}`;
     case "accepted":
-      return `${nameOf(e.author)} accepted ${who}`;
+      return `${by} accepted ${them}`;
     case "joined":
       return `${who} joined`;
+    case "admin":
+      return `${by} made ${them} an admin`;
+    case "unadmin":
+      return `${by} removed ${them} as an admin`;
+    case "owner":
+      return `${by} handed ownership of the room to ${them}`;
+    case "claim":
+      return `${by} claimed ownership of the room: ${them} hadn't been heard from in it for ${Math.round(OWNER_CLAIM_WAIT_MS / 86_400_000)} days, and can take it back`;
+    case "contest":
+      return `${by} took ownership of the room back from ${them}`;
+    case "succeeded":
+      return `${who} ${who === "You" ? "own" : "owns"} the room now`;
     default:
       return `${who} left`;
   }

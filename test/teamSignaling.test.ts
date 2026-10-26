@@ -258,9 +258,9 @@ describe("signaling room: who may create rooms (ALLOWED_CREATORS)", () => {
 describe("the Worker's /health", () => {
   it("says how many may create rooms, whether TURN is set and what it can do, never who", () => {
     const a = "a1b2c3d4e5f60718293a4b5c6d7e8f90";
-    expect(healthBody({})).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: false, creators: 0, features: ["revoke", "approve"] });
+    expect(healthBody({})).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: false, creators: 0, features: ["revoke", "approve", "roles"] });
     const h = healthBody({ ALLOWED_CREATORS: `${formatFingerprint(a)}, ${"b".repeat(32)}, typo`, TURN_KEY_ID: "k", TURN_KEY_API_TOKEN: "t" });
-    expect(h).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: true, creators: 2, creatorsInvalid: 1, features: ["revoke", "approve"] });
+    expect(h).toEqual({ service: "mockingbird-signaling", protocol: SIGNALING_PROTOCOL, relay: true, creators: 2, creatorsInvalid: 1, features: ["revoke", "approve", "roles"] });
     expect(JSON.stringify(h)).not.toContain("a1b2");
   });
 });
@@ -332,7 +332,7 @@ describe("signaling room: revoke (leaving and removal)", () => {
 
   it("announces what it can do, and lets a member cut itself off when it leaves", async () => {
     const { h, c, ids, socks } = await room(["nick"]);
-    expect(c.last("welcome")).toMatchObject({ features: ["revoke", "approve"] });
+    expect(c.last("welcome")).toMatchObject({ features: ["revoke", "approve", "roles"] });
     const [nick] = ids;
     const [n] = socks;
     await h.say(n, { t: "revoke", member: nick.id, event: removal(nick.id) });
@@ -372,13 +372,13 @@ describe("signaling room: revoke (leaving and removal)", () => {
     expect(h.logs.some((l) => /refused a turn from .* isn't a member any more/.test(l))).toBe(true);
   });
 
-  it("refuses a revoke of someone else from anyone but the admin, and says so", async () => {
+  it("refuses a revoke of someone else from anyone but the owner or an admin, and says so", async () => {
     const { h, ids, socks } = await room(["nick", "sam"]);
     const [, sam] = ids;
     const [n] = socks;
     await h.say(n, { t: "revoke", member: sam.id });
     expect(n.last("error")).toMatchObject({ code: "forbidden", member: sam.id });
-    expect(n.last("error")?.message).toMatch(/only the room's admin/);
+    expect(n.last("error")?.message).toMatch(/only the room's owner or an admin can remove members/);
     expect(await h.room.memberIds()).toContain(sam.id);
     expect(h.logs.some((l) => /refused .*'s revoke of/.test(l))).toBe(true);
   });
@@ -471,7 +471,7 @@ describe("signaling room: joiners at the door (approve)", () => {
 
   it("a joiner at the door sees only its inviter, gets no TURN, invites, admits or revokes, and exchanges only the join handshake", async () => {
     const { h, c, n, s, l, nick, sam, lee, token } = await door();
-    expect(l.last("welcome")).toEqual({ t: "welcome", v: SIGNALING_PROTOCOL, you: lee.id, now: expect.any(Number), peers: [{ id: nick.id, team: TEAM_PROTOCOL }], relay: false, features: ["revoke", "approve"], knocking: true });
+    expect(l.last("welcome")).toEqual({ t: "welcome", v: SIGNALING_PROTOCOL, you: lee.id, now: expect.any(Number), peers: [{ id: nick.id, team: TEAM_PROTOCOL }], relay: false, features: ["revoke", "approve", "roles"], knocking: true });
     // members see it at the door
     for (const m of [c, n, s]) expect(m.last("peer-joined")).toEqual({ t: "peer-joined", peer: { id: lee.id, team: TEAM_PROTOCOL, knocking: true } });
     // only the handshake goes through
@@ -509,7 +509,7 @@ describe("signaling room: joiners at the door (approve)", () => {
     const { h, c, n, s, l, lee } = await door();
     await h.say(n, { t: "admit", publicKeys: [lee.publicKey] });
     expect(n.last("admitted")).toEqual({ t: "admitted", ids: [] });
-    expect(h.logs.some((l) => /ignored .*'s admit of .*: only the room's admin .* adds keys; it waits at the door/.test(l))).toBe(true);
+    expect(h.logs.some((l) => /ignored .*'s admit of .*: only the room's owner or an admin .* adds keys; it waits at the door/.test(l))).toBe(true);
     expect(await h.room.knockingIds()).toEqual([lee.id]);
     expect(l.last("welcome")?.knocking).toBe(true);
     await h.say(c, { t: "admit", publicKeys: [lee.publicKey] });

@@ -5,8 +5,8 @@ import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { fingerprintOf, roomIdFor, TEAM_DIR, verifySignature, type Identity } from "./identity";
 import { CONTROL_CHARS_RE } from "../../shared/team/agentText";
 import { CATCH_UP_MS, RateBucket, ROOM_LIMITS, sizeText, type LimitKind, type RoomLimits } from "./roomLimits";
-import { canonicalJson, MEMBER_ID_RE, PUBLIC_KEY_RE, ROOM_ID_RE, SIGNATURE_RE, toBase64Url, TOKEN_RE, type JoinRequestFields } from "../../shared/team/protocol";
-import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomState } from "../../shared/team/types";
+import { canonicalJson, MEMBER_ID_RE, OWNER_CLAIM_WAIT_MS, PUBLIC_KEY_RE, ROOM_ID_RE, SIGNATURE_RE, toBase64Url, TOKEN_RE, type JoinRequestFields } from "../../shared/team/protocol";
+import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType, RoomId, RoomRole, RoomRoles, RoomState } from "../../shared/team/types";
 
 /**
  * Room state: every member keeps a full copy of each room as an append-only
@@ -25,10 +25,18 @@ import type { FormerMember, MemberId, RoomEvent, RoomEventBodies, RoomEventType,
  * on every member: an event counts only if its author is a member at that
  * point. So a member who left or was removed (member.removed) is kept as a
  * former member — what they did before still counts, what they do after
- * changes nothing — until a later member.added brings them back. Only the
- * room's admin (roomAdmin) removes someone else; anyone may leave. Joins
- * need the admin's acceptance: only the admin's member.added counts, except
- * in rooms from before that, up to their switch (mayAddMember).
+ * changes nothing — until a later member.added brings them back. Anyone
+ * may leave; who removes someone else is up to their roles (mayRemove).
+ * Joins need accepting: only the owner's or an admin's member.added counts,
+ * except in rooms from before that, up to their switch (mayAddMember).
+ *
+ * Roles (roomRoles): one owner — the creator, until a hand-over (role.owner),
+ * a claim (role.claim) or their leaving — and the admins the owner makes
+ * (role.admin). Like membership, a role event counts only if its author
+ * holds the role it needs at that point in the order, so every member
+ * reduces the same roles; an older Mockingbird that doesn't know role events
+ * keeps them and passes them on, and goes on taking legacyAdmin for the
+ * admin.
  *
  * Adding an event type: declare its body in RoomEventBodies (and any state
  * in RoomExtensions), then defineEventType(type, { validate, reduce }).
@@ -63,8 +71,12 @@ export const LAMPORT_LEAP = 1_000_000;
 // ---- event types --------------------------------------------------------------------
 
 export interface EventDef<B> {
-  /** Throw when the body is malformed; runs before the event is stored. */
-  validate?(body: unknown, event: RoomEvent): void;
+  /**
+   * Throw when the body is malformed; runs before the event is stored (never
+   * on a log being loaded). `now` is this Mac's clock: an event whose rule
+   * reads its time can refuse one dated ahead of it (notAhead).
+   */
+  validate?(body: unknown, event: RoomEvent, ctx: { now: number }): void;
   /**
    * Apply the event, in total order, to the room's state (mutated in place).
    * Deterministic and JSON only: every member reduces the same events to the
@@ -102,36 +114,169 @@ export function onMemberAdded(name: string, reduce: MemberAddedReducer): void {
   addedReducers.set(name, reduce);
 }
 
+/**
+ * A role change that counted, for a stage's state (the chat announces it):
+ *   admin / unadmin   the owner (author) made `member` an admin, or took it back
+ *   owner             the owner (author) handed ownership to `member`
+ *   claim             the author claimed ownership from `member`, who'd gone unheard
+ *   contest           the author took ownership back from `member`, whose claim it was
+ *   succeeded         the owner left (only an older Mockingbird lets them): `member` owns the room now
+ */
+export interface RoleChange {
+  change: "admin" | "unadmin" | "owner" | "claim" | "contest" | "succeeded";
+  member: MemberId;
+}
+export type RoleChangedReducer = (state: RoomState, change: RoleChange, event: RoomEvent) => void;
+const roleReducers = new Map<string, RoleChangedReducer>();
+
+/** Have a role change also change a stage's state. `name` is the stage's, once. Part of reducing: deterministic, JSON only. */
+export function onRoleChanged(name: string, reduce: RoleChangedReducer): void {
+  if (roleReducers.has(name)) throw new Error(`a role reducer named ${name} is already defined`);
+  roleReducers.set(name, reduce);
+}
+
+const announce = (state: RoomState, e: RoomEvent, change: RoleChange): void => {
+  for (const reduce of roleReducers.values()) reduce(state, change, e);
+};
+
 /** Everything that reduces events: a snapshot made under another set is reduced again. */
 const reducerNames = (): string[] => [
   ...registry.keys(),
   ...[...removalReducers.keys()].map((n) => `member.removed:${n}`),
   ...[...addedReducers.keys()].map((n) => `member.added:${n}`),
+  ...[...roleReducers.keys()].map((n) => `role:${n}`),
 ];
 
+// ---- roles --------------------------------------------------------------------------------
+
 /**
- * Who may remove other members: the room's creator while it's a member, else
- * the longest-standing member (the earliest member.added, in room order, of
- * those still in it). Null once nobody is left. The signaling Worker follows
- * the same rule as far as it can know it (signaling/src/room.ts signalingAdmin).
+ * OWNER_CLAIM_WAIT_MS: how long the owner must go unheard from in the room
+ * (no event of theirs, by its time) before the room's claimant may take
+ * ownership (role.claim). Fourteen days: longer than a week off or a
+ * fortnight's holiday with the laptop shut is likely to run, so an owner
+ * who's simply away isn't claimed from — and they can contest a claim
+ * whenever they're back — yet short enough that a room whose owner is gone
+ * for good isn't left for a month with nobody to make admins, set where
+ * backups go or pick its House project. The owner a claim took ownership
+ * from can't be removed for as long again (mayRemove), so a claim can't be
+ * followed at once by removing the person who could contest it.
  */
-export function roomAdmin(state: Pick<RoomState, "creator" | "members">): MemberId | null {
+export { OWNER_CLAIM_WAIT_MS };
+
+/** How far ahead of this Mac's clock an event whose rule reads its time may be dated (clocks drift). */
+export const AHEAD_MS = 10 * 60_000;
+
+/** Refuse an event dated ahead of this Mac's clock: a rule that reads its time can't be hurried by a clock set forward. */
+const notAhead = (e: RoomEvent, now: number) => {
+  if (e.at > now + AHEAD_MS) throw new Error(`it's dated ${Math.round((e.at - now) / 60_000)} minutes ahead of this Mac's clock`);
+};
+
+/**
+ * Who Mockingbirds from before roles (and the signaling Worker, until it's
+ * told the roles: signaling/src/room.ts) take for the room's admin: its
+ * creator while a member, else the longest-standing member. Null once nobody
+ * is left. Never what this Mockingbird checks permissions against.
+ */
+export function legacyAdmin(state: Pick<RoomState, "creator" | "members">): MemberId | null {
   if (state.members.some((m) => m.id === state.creator)) return state.creator;
   return state.members[0]?.id ?? null;
 }
 
+type RolesView = Pick<RoomState, "creator" | "members" | "roles">;
+const inRoom = (state: Pick<RoomState, "members">, id: MemberId | null | undefined): id is MemberId => !!id && state.members.some((m) => m.id === id);
+
 /**
- * May `author` add a member at this point in the room's order? Joins need the
- * admin's acceptance: once the room says so (`joinApproval`, from its
- * room.created or its first room.approval by the admin), only the admin's
- * member.added counts. Before that point — every room created before joins
- * needed accepting, up to the admin's switch — any member's counts, as it did
+ * A room's roles. A state reduced from its log always has them (room.created
+ * makes the creator the owner); one made by hand without them reads as a
+ * room before roles: legacyAdmin owns it, nobody else is an admin.
+ */
+export function roomRoles(state: RolesView): RoomRoles {
+  return state.roles ?? { owner: legacyAdmin(state), admins: [], ownerSeenAt: 0 };
+}
+
+/** The roles of a state being reduced, made when it has none yet. */
+const rolesFor = (state: RoomState): RoomRoles => (state.roles ??= { owner: legacyAdmin(state), admins: [], ownerSeenAt: 0 });
+
+/** The room's owner: everything an admin can do, plus making admins, handing over ownership, and the owner-only settings. Null once nobody is left. */
+export function roomOwner(state: RolesView): MemberId | null {
+  const o = roomRoles(state).owner;
+  return inRoom(state, o) ? o : null;
+}
+
+/** The room's admins (not the owner), the longest-standing first. */
+export function roomAdmins(state: RolesView): MemberId[] {
+  const r = roomRoles(state);
+  return r.admins.filter((id) => id !== r.owner && inRoom(state, id));
+}
+
+/** A member's role, or null for someone who isn't a member. */
+export function roleOf(state: RolesView, id: MemberId): RoomRole | null {
+  if (!inRoom(state, id)) return null;
+  if (roomOwner(state) === id) return "owner";
+  return roomAdmins(state).includes(id) ? "admin" : "member";
+}
+
+/**
+ * May `id` do what admins do: accept or decline joins, remove members, set
+ * the room's rules (the migration check and its folders, release a
+ * reservation)? The owner and the admins.
+ */
+export function isRoomAdmin(state: RolesView, id: MemberId): boolean {
+  const r = roleOf(state, id);
+  return r === "owner" || r === "admin";
+}
+
+/** The owner and the admins: who answers join requests. The owner first. */
+export function roomDeciders(state: RolesView): MemberId[] {
+  const owner = roomOwner(state);
+  return [...(owner ? [owner] : []), ...roomAdmins(state)];
+}
+
+/**
+ * May `author` remove `target` at time `at`? Anyone may leave. The owner
+ * removes anyone; an admin removes members, never another admin or the
+ * owner. The owner a claim took ownership from can't be removed by anyone
+ * for OWNER_CLAIM_WAIT_MS after it (they may come back to contest it).
+ */
+export function mayRemove(state: RolesView, author: MemberId, target: MemberId, at: number): boolean {
+  if (author === target) return inRoom(state, author);
+  const by = roleOf(state, author);
+  const of = roleOf(state, target);
+  if (!by || !of) return false;
+  const claim = roomRoles(state).claim;
+  if (claim?.from === target && at < claim.at + OWNER_CLAIM_WAIT_MS) return false;
+  if (by === "owner") return true;
+  return by === "admin" && of === "member";
+}
+
+/**
+ * Who may claim ownership once the owner has gone unheard from: the
+ * longest-standing admin, or — in a room with no admins — the
+ * longest-standing member besides the owner. Null with no owner or nobody else.
+ */
+export function claimantOf(state: RolesView): MemberId | null {
+  const owner = roomOwner(state);
+  if (!owner) return null;
+  return roomAdmins(state)[0] ?? state.members.find((m) => m.id !== owner)?.id ?? null;
+}
+
+/** From when the claimant may claim ownership (the owner last heard from, plus OWNER_CLAIM_WAIT_MS); null with no owner. */
+export function claimOpensAt(state: RolesView): number | null {
+  return roomOwner(state) ? roomRoles(state).ownerSeenAt + OWNER_CLAIM_WAIT_MS : null;
+}
+
+/**
+ * May `author` add a member at this point in the room's order? Joins need
+ * accepting: once the room says so (`joinApproval`, from its room.created or
+ * its first room.approval by its owner or an admin), only the owner's or an
+ * admin's member.added counts. Before that point — every room created before
+ * joins needed accepting, up to the switch — any member's counts, as it did
  * then, so the members they added stay members. Which side of the switch an
  * event falls on is its place in the room's order, the same on every member.
  */
-export function mayAddMember(state: Pick<RoomState, "creator" | "members" | "joinApproval">, author: MemberId): boolean {
-  if (!state.members.some((m) => m.id === author)) return false;
-  return !state.joinApproval || roomAdmin(state) === author;
+export function mayAddMember(state: Pick<RoomState, "creator" | "members" | "joinApproval" | "roles">, author: MemberId): boolean {
+  if (!inRoom(state, author)) return false;
+  return !state.joinApproval || isRoomAdmin(state, author);
 }
 
 const str = (v: unknown, what: string, max: number, min = 0): string => {
@@ -188,13 +333,13 @@ defineEventType("member.added", {
   },
 });
 
-// a room created before joins needed accepting switches over at its admin's room.approval (see mayAddMember)
+// a room created before joins needed accepting switches over at its owner's or an admin's room.approval (see mayAddMember)
 defineEventType("room.approval", {
   validate(b: any) {
     if (!b || typeof b !== "object" || Array.isArray(b)) throw new Error("no body");
   },
   reduce(state, e) {
-    if (roomAdmin(state) === e.author) state.joinApproval = true;
+    if (isRoomAdmin(state, e.author)) state.joinApproval = true;
   },
 });
 
@@ -211,22 +356,114 @@ defineEventType("join.declined", {
 });
 
 defineEventType("member.removed", {
-  validate(b: any, e) {
+  validate(b: any, e, ctx) {
     if (!b || typeof b !== "object") throw new Error("no body");
     if (typeof b.member !== "string" || !MEMBER_ID_RE.test(b.member)) throw new Error("bad member id");
     if (b.reason !== undefined && b.reason !== "left" && b.reason !== "removed") throw new Error("bad reason");
     if (b.reason === "left" && b.member !== e.author) throw new Error("only the member themselves can leave");
+    // removing someone else can depend on its time (an owner whose ownership was claimed, mayRemove)
+    if (b.member !== e.author) notAhead(e, ctx.now);
   },
   reduce(state, e) {
     const target = e.body.member;
     const i = state.members.findIndex((m) => m.id === target);
     if (i < 0) return;
-    // anyone may leave; only the admin removes someone else
-    if (target !== e.author && roomAdmin(state) !== e.author) return;
+    if (!mayRemove(state, e.author, target, e.at)) return;
     const [m] = state.members.splice(i, 1);
     const former: FormerMember = { ...m, leftAt: e.at, removedBy: target === e.author ? null : e.author };
     state.former = [...(state.former ?? []).filter((f) => f.id !== target), former];
+    const r = rolesFor(state);
+    r.admins = r.admins.filter((id) => id !== target);
+    if (r.claim?.from === target) delete r.claim;
+    // an owner can only leave (nobody else removes them), and only an older Mockingbird lets them before
+    // handing over: ownership goes on as before roles, to the longest-standing admin, else member
+    let next: MemberId | null = null;
+    if (r.owner === target) {
+      next = r.admins[0] ?? state.members[0]?.id ?? null;
+      r.owner = next;
+      r.admins = r.admins.filter((id) => id !== next);
+      r.ownerSeenAt = e.at;
+    }
     for (const reduce of removalReducers.values()) reduce(state, target, e as RoomEvent<"member.removed">);
+    if (next) announce(state, e, { change: "succeeded", member: next });
+  },
+});
+
+const memberIdOf = (v: unknown): MemberId => {
+  if (typeof v !== "string" || !MEMBER_ID_RE.test(v)) throw new Error("bad member id");
+  return v;
+};
+const isBody = (b: unknown): b is Record<string, unknown> => !!b && typeof b === "object" && !Array.isArray(b);
+
+// the owner makes an admin, or takes the role back
+defineEventType("role.admin", {
+  validate(b) {
+    if (!isBody(b)) throw new Error("no body");
+    memberIdOf(b.member);
+    if (typeof b.admin !== "boolean") throw new Error("admin must be true or false");
+  },
+  reduce(state, e) {
+    const m = e.body.member;
+    if (roomOwner(state) !== e.author || m === e.author || !inRoom(state, m)) return;
+    const r = rolesFor(state);
+    if (r.admins.includes(m) === e.body.admin) return;
+    r.admins = e.body.admin ? [...r.admins, m] : r.admins.filter((id) => id !== m);
+    announce(state, e, { change: e.body.admin ? "admin" : "unadmin", member: m });
+  },
+});
+
+// the owner hands ownership to another member, and stays an admin
+defineEventType("role.owner", {
+  validate(b) {
+    if (!isBody(b)) throw new Error("no body");
+    memberIdOf(b.member);
+  },
+  reduce(state, e) {
+    const m = e.body.member;
+    if (roomOwner(state) !== e.author || m === e.author || !inRoom(state, m)) return;
+    const r = rolesFor(state);
+    r.owner = m;
+    r.admins = [...r.admins.filter((id) => id !== m && id !== e.author), e.author];
+    r.ownerSeenAt = e.at;
+    if (r.claim?.from === m) delete r.claim;
+    announce(state, e, { change: "owner", member: m });
+  },
+});
+
+// the claimant takes ownership from an owner unheard from for OWNER_CLAIM_WAIT_MS; the owner may contest it
+defineEventType("role.claim", {
+  validate(b, e, ctx) {
+    if (!isBody(b)) throw new Error("no body");
+    notAhead(e, ctx.now);
+  },
+  reduce(state, e) {
+    const owner = roomOwner(state);
+    const r = rolesFor(state);
+    if (!owner || claimantOf(state) !== e.author || e.at < r.ownerSeenAt + OWNER_CLAIM_WAIT_MS) return;
+    r.claim = { from: owner, by: e.author, at: e.at, byWasAdmin: r.admins.includes(e.author) };
+    r.owner = e.author;
+    r.admins = r.admins.filter((id) => id !== e.author);
+    r.ownerSeenAt = e.at;
+    announce(state, e, { change: "claim", member: owner });
+  },
+});
+
+// the owner a claim took ownership from takes it back; whoever owned it since stays an admin (a claimant who wasn't one before doesn't)
+defineEventType("role.contest", {
+  validate(b) {
+    if (!isBody(b)) throw new Error("no body");
+  },
+  reduce(state, e) {
+    const r = rolesFor(state);
+    const c = r.claim;
+    if (!c || c.from !== e.author) return;
+    const was = roomOwner(state);
+    r.owner = e.author;
+    r.admins = r.admins.filter((id) => id !== e.author);
+    if (was && was !== e.author && (was !== c.by || c.byWasAdmin) && !r.admins.includes(was)) r.admins.push(was);
+    delete r.claim;
+    r.ownerSeenAt = e.at;
+    if (was && was !== e.author) announce(state, e, { change: "contest", member: was });
   },
 });
 
@@ -264,6 +501,7 @@ function createdState(e: RoomEvent<"room.created">): RoomState {
     members: [{ id: e.author, name: e.body.creatorName, publicKey: e.body.publicKey, joinedAt: e.at, invitedBy: null }],
     former: [],
     ...(e.body.approval ? { joinApproval: true as const } : {}),
+    roles: { owner: e.author, admins: [], ownerSeenAt: e.at },
     ext: {},
     lamport: e.lamport,
     events: 1,
@@ -275,7 +513,12 @@ export function applyEvent(state: RoomState | null, e: RoomEvent): RoomState | n
   if (e.type === "room.created") return state ?? createdState(e as RoomEvent<"room.created">);
   if (!state) return null;
   // an author who isn't a member at this point in the order (gone, or not yet back) changes nothing
-  if (state.members.some((m) => m.id === e.author)) registry.get(e.type)?.reduce(state, e);
+  if (state.members.some((m) => m.id === e.author)) {
+    registry.get(e.type)?.reduce(state, e);
+    // anything the owner says — of any type, known here or not — is them being heard from (claimOpensAt)
+    const r = state.roles;
+    if (r && r.owner === e.author && e.at > r.ownerSeenAt) r.ownerSeenAt = e.at;
+  }
   state.lamport = Math.max(state.lamport, e.lamport);
   state.events += 1;
   return state;
@@ -303,8 +546,14 @@ function shapeProblem(e: RoomEvent, roomId: string): string | null {
 
 export type AddOutcome = { status: "added" } | { status: "duplicate" } | { status: "pending" } | { status: "rejected"; reason: string; limit?: LimitKind };
 
+/** Events that change who holds which role. */
+export const ROLE_TYPES = ["role.admin", "role.owner", "role.claim", "role.contest"] as const;
+
+/** Events that decide who's a member and who may add or remove one: what a former member is given to see their own removal (membershipUpTo). */
+const DECIDES_MEMBERSHIP = new Set(["room.created", "member.added", "member.removed", "room.approval", ...ROLE_TYPES]);
+
 /** Events that decide who's in the room: always taken past an author's share, so a member over it can still leave or be removed. */
-const MEMBERSHIP_TYPES = new Set(["room.created", "member.added", "member.removed", "room.approval", "join.declined"]);
+const MEMBERSHIP_TYPES = new Set(["room.created", "member.added", "member.removed", "room.approval", "join.declined", ...ROLE_TYPES]);
 
 /** While an author's events wait to be asked for again (refused for rate), their order floor holds still: the backlog may sort below newer events. */
 const RATE_FREEZE_MS = 30 * 60_000;
@@ -545,7 +794,7 @@ export class RoomLog {
     }
     if (!verifySignature(key, payload, e.sig)) return { status: "rejected", reason: "bad signature" };
     try {
-      registry.get(e.type)?.validate?.(e.body, e);
+      registry.get(e.type)?.validate?.(e.body, e, { now: this.now() });
     } catch (err) {
       return { status: "rejected", reason: `malformed ${e.type}: ${(err as Error).message}` };
     }
@@ -600,13 +849,13 @@ export class RoomLog {
 
   /**
    * What a former member needs to see their own removal: the events that
-   * decide membership (room.created, member.added, member.removed), up to and
+   * decide membership and roles (room.created, member.added, member.removed, role.*), up to and
    * including their newest removal — never what was said after it.
    */
   membershipUpTo(member: MemberId): RoomEvent[] {
     const removal = this.removalOf(member);
     if (!removal) return [];
-    return this.events.filter((e) => (e.type === "room.created" || e.type === "member.added" || e.type === "member.removed") && compareEvents(e, removal) <= 0);
+    return this.events.filter((e) => DECIDES_MEMBERSHIP.has(e.type) && compareEvents(e, removal) <= 0);
   }
 
   /** This log's events by `author` that aren't among `theirIds`, in total order. */
@@ -740,8 +989,10 @@ export interface JoinRequestRecord extends JoinRequestFields {
   sig: string;
   decision?: "accepted" | "declined";
   decidedAt?: number;
-  /** Inviter: the admin whose Mockingbird confirmed it has the request. */
+  /** Inviter: the first of the owner and admins whose Mockingbird confirmed it has the request. */
   forwardedTo?: MemberId;
+  /** Inviter: every owner or admin whose Mockingbird confirmed it has the request. */
+  sentTo?: MemberId[];
   /** Inviter: why the admin couldn't be given it yet (an older Mockingbird). */
   problem?: string;
 }

@@ -1,4 +1,4 @@
-import { defineEventType, roomAdmin } from "./rooms";
+import { defineEventType, roomOwner } from "./rooms";
 import { emptyHouse, HOUSE_PROJECT_RE, isTicketNumber, MAX_TRACKED, NUDGE_CHANGES, VIA_MAX, type HouseRoomState } from "../../shared/team/house";
 import type { RoomState } from "../../shared/team/types";
 
@@ -28,8 +28,8 @@ defineEventType("house.project", {
     if (b.project !== null && (typeof b.project !== "string" || !HOUSE_PROJECT_RE.test(b.project))) throw new Error("project must be a House project name or null");
   },
   reduce(state, e) {
-    // the room's admin at this point in its order decides, the same on every member
-    if (roomAdmin(state) !== e.author) return;
+    // the room's owner at this point in its order decides (an owner-only setting), the same on every member
+    if (roomOwner(state) !== e.author) return;
     const h = houseOf(state);
     h.project = e.body.project;
     h.projectBy = e.author;
