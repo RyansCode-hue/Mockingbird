@@ -14,9 +14,9 @@ export type Away = PhoneStatus["away"];
 /**
  * Whether the user is away from the Mac: its screen is locked, it has had no
  * input for `idleMinutes`, or they said so themselves (`manual`, an "I'm
- * away" switch elsewhere, when there is one). Lock and unlock come as events,
- * and are also asked for each time — an event missed while asleep can't
- * leave it thinking the screen is still locked.
+ * away" switch elsewhere, when there is one). Lock and unlock come as events;
+ * the idle state is asked each time too, so a lock whose event was missed
+ * (it came while Mockingbird started) still counts.
  */
 export class AwayDetector {
   private locked = false;
@@ -46,8 +46,8 @@ export class AwayDetector {
     const idleSeconds = Math.max(0, Math.floor(this.d.monitor.getSystemIdleTime() || 0));
     const threshold = Math.max(1, Math.round(this.d.idleMinutes() * 60));
     const asked = this.d.monitor.getSystemIdleState(threshold);
-    if (asked === "locked" || (this.locked && asked === "unknown")) return { away: true, why: "locked", idleSeconds };
-    if (asked === "active" || asked === "idle") this.locked = false;
+    // input at the lock screen (a password typed) makes the Mac "active": only unlock-screen clears the lock
+    if (asked === "locked" || this.locked) return { away: true, why: "locked", idleSeconds };
     if (this.d.manual?.()) return { away: true, why: "manual", idleSeconds };
     if (idleSeconds >= threshold) return { away: true, why: "idle", idleSeconds };
     return { away: false, why: null, idleSeconds };

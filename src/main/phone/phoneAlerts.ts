@@ -119,7 +119,7 @@ export class PhoneAlerts {
   private polling = false;
   private lastSendAt = 0;
   private last: PhoneStatus["last"] = null;
-  private repliesState: PhoneStatus["replies"] = { state: "off", detail: "" };
+  private repliesState: PhoneStatus["replies"] = { state: "unchecked", detail: "" };
   private cursor: number | null = null;
   private failing = false;
   private recentReplies = new Map<string, number>();
@@ -312,8 +312,8 @@ export class PhoneAlerts {
       this.stopPolling();
       this.open.clear();
       this.cursor = null;
-      this.repliesState = { state: "off", detail: "" };
-    } else if (this.repliesState.state === "off") {
+      this.repliesState = { state: "unchecked", detail: "" };
+    } else if (this.repliesState.state === "unchecked") {
       void this.checkReplies();
     }
     this.changed();
@@ -398,12 +398,10 @@ export class PhoneAlerts {
     const outcome = this.act(a, r, s);
     const title = s ? titleOf(s) : a.title;
     this.d.audit.record("phone.reply", { session: a.sessionId, title }, { outcome: outcome.words, ...(r.action === "text" ? { bytes: Buffer.byteLength(r.text) } : {}) });
-    if (outcome.done) {
-      this.open.delete(a.code);
-      this.d.sessions.note(a.sessionId, `Answered from your phone: ${outcome.words}`);
-    }
+    if (outcome.close) this.open.delete(a.code);
+    if (outcome.ok) this.d.sessions.note(a.sessionId, `Answered from your phone: ${outcome.words}`);
     this.d.info(`phone alerts: reply ${r.code} (${r.action}) for ${a.sessionId}: ${outcome.words}`);
-    const back = outcome.done ? `Mockingbird: done — ${outcome.words} in “${alertLine(title, 50)}”.` : `Mockingbird: not done — ${outcome.words}. (${a.code})`;
+    const back = outcome.ok ?`Mockingbird: done — ${outcome.words} in “${alertLine(title, 50)}”.` : `Mockingbird: not done — ${outcome.words}. (${a.code})`;
     try {
       await this.d.sender.send(this.handle!, back);
     } catch (err) {
@@ -411,23 +409,34 @@ export class PhoneAlerts {
     }
   }
 
-  /** What a reply does to its session; only ever that session, and only these three things. */
-  private act(a: OpenAlert, r: ReplyAction, s: SessionInfo | undefined): { done: boolean; words: string } {
-    if (!s || s.status === "dead") return { done: true, words: "refused: the session isn't running any more" };
+  /**
+   * What a reply does to its session; only ever that session, and only these
+   * three things. `close`: the alert's code is spent (it worked, or can't any
+   * more); a refusal the user can correct leaves it open.
+   */
+  private act(a: OpenAlert, r: ReplyAction, s: SessionInfo | undefined): { ok: boolean; close: boolean; words: string } {
+    const refused = (words: string, close: boolean) => ({ ok: false, close, words: `refused: ${words}` });
+    if (!s || s.status === "dead") return refused("the session isn't running any more", true);
     if (r.action === "text") {
       const problem = replyTextProblem(r.text);
-      if (problem) return { done: false, words: `refused: ${problem}` };
-      if (s.shell || s.debrief) return { done: true, words: "refused: that session doesn't take messages" };
-      if (s.status !== "idle") return { done: false, words: s.status === "waiting" ? "refused: it's waiting on a prompt — reply 1 or 2 to it" : "refused: it's working — send it once it finishes" };
-      const how = this.d.sessions.deliver(s.id, r.text.trim());
-      return { done: true, words: `message sent (${how})` };
+      if (problem) return refused(problem, false);
+      if (s.shell || s.debrief) return refused("that session doesn't take messages", true);
+      if (s.status !== "idle") return refused(s.status === "waiting" ? "it's waiting on a prompt — reply 1 or 2 to it" : "it's working — send it once it finishes", false);
+      let how: string;
+      try {
+        how = this.d.sessions.deliver(s.id, r.text.trim());
+      } catch (err) {
+        this.d.log(`phone alerts: a reply's message for ${s.id}`, err);
+        return refused(`it couldn't be delivered: ${(err as Error).message}`, true);
+      }
+      return { ok: true, close: true, words: `message sent (${how})` };
     }
-    if (a.kind !== "permission") return { done: false, words: "refused: it isn't asking for permission" };
+    if (a.kind !== "permission") return refused("it isn't asking for permission", false);
     const same = s.status === "waiting" && s.waitingSince === a.waitingSince && s.waitingReason === a.reason;
-    if (!same) return { done: true, words: "refused: that prompt was answered or changed since the alert" };
+    if (!same) return refused("that prompt was answered or changed since the alert", true);
     const agent = s.agent === "codex" ? "codex" : "claude";
     this.d.sessions.write(s.id, ANSWER_KEYS[r.action][agent]);
-    return { done: true, words: r.action === "allow" ? "allow once" : "deny" };
+    return { ok: true, close: true, words: r.action === "allow" ? "allow once" : "deny" };
   }
 
   stop(): void {

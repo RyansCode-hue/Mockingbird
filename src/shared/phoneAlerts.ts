@@ -219,6 +219,8 @@ export function replyTextProblem(text: string): string | null {
 export type RepliesState =
   /** Replies are off: nothing reads Messages. */
   | "off"
+  /** On, and not tried yet. */
+  | "unchecked"
   /** Reading works. */
   | "ok"
   /** macOS refused: Full Disk Access isn't granted to Mockingbird. */
