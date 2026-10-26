@@ -1138,6 +1138,23 @@ export function TerminalPane({
               </div>
             )}
             {teamNotice}
+            {session.phoneNote && !remote && (
+              <div className="team-pane-note phone-note" title="A reply to a phone alert (Settings → Notifications → Phone alerts). Each one is in Settings → Team → Recent remote activity.">
+                <span className="reason">
+                  {session.phoneNote.text} · {ago(session.phoneNote.at)}
+                </span>
+                <button
+                  className="icon"
+                  aria-label="Dismiss"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void settled(window.mb.clearPhoneNote(session.id)).then((r) => isErr(r) && console.error("[mockingbird] couldn't dismiss the phone note:", r.error));
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             {remote && (!remote.online || remote.problem) && (
               <div className="team-pane-note" title={remote.problem ?? undefined}>
                 {!remote.online ? `${remote.ownerName}'s Mockingbird is offline — this is what it last sent` : remote.problem}

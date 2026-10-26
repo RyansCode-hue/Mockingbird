@@ -13,6 +13,7 @@ import { useAction } from "./useAction";
 import { SetRow } from "./SetRow";
 import { Toggle } from "./Toggle";
 import { TeamSection } from "./Team";
+import { PhoneAlertsSection } from "./PhoneAlerts";
 import { useMotionPref, type MotionPref } from "./motion";
 
 /** The Settings tab, with the worktree janitor and the control room (broadcast + CLAUDE.md). */
@@ -387,6 +388,7 @@ function WorktreeJanitor() {
 
 const SETTINGS_SECTIONS = [
   { id: "general", label: "General" },
+  { id: "notifications", label: "Notifications" },
   { id: "agents", label: "Agents" },
   { id: "repos", label: "Repos" },
   { id: "presets", label: "Presets" },
@@ -631,41 +633,46 @@ export function SettingsView({
                 }}
               />
             </SetRow>
-            <SetRow title="Notifications" note="When a session needs you, or finishes its turn. A session can be muted from its row in the sidebar (or ⌘K).">
-              <Toggle label="Notifications" on={s.notifications} onChange={(v) => upd({ notifications: v })} />
-            </SetRow>
-            {s.notifications && (
-              <>
-                <SetRow title="When a session finishes" note="Off: only sessions that need you notify">
-                  <Toggle label="Notify when a session finishes" on={s.notifyFinished !== false} onChange={(v) => upd({ notifyFinished: v })} />
-                </SetRow>
-                <SetRow title="Quiet hours" note="No session notifications between these times (the Dock badge and menu bar still count)">
-                  <span className="quiet-hours">
-                    <input
-                      type="time"
-                      value={s.quietHours?.from ?? "18:00"}
-                      disabled={!s.quietHours?.enabled}
-                      onChange={(e) => upd({ quietHours: { enabled: true, from: e.target.value, to: s.quietHours?.to ?? "08:00" } })}
-                    />
-                    <span>to</span>
-                    <input
-                      type="time"
-                      value={s.quietHours?.to ?? "08:00"}
-                      disabled={!s.quietHours?.enabled}
-                      onChange={(e) => upd({ quietHours: { enabled: true, from: s.quietHours?.from ?? "18:00", to: e.target.value } })}
-                    />
-                    <Toggle
-                      label="Quiet hours"
-                      on={!!s.quietHours?.enabled}
-                      onChange={(v) => upd({ quietHours: { enabled: v, from: s.quietHours?.from ?? "18:00", to: s.quietHours?.to ?? "08:00" } })}
-                    />
-                  </span>
-                </SetRow>
-              </>
-            )}
             <SetRow title="Setup wizard" note="Agents, status hooks, repo folders, Azure DevOps">
               <button className="outline" onClick={onSetup}>Run setup</button>
             </SetRow>
+          </>
+        )}
+
+        {section === "notifications" && (
+          <>
+            <h2>Notifications</h2>
+            <SetRow title="Desktop notifications" note="When a session needs you, or finishes its turn. A session can be muted from its row in the sidebar (or ⌘K).">
+              <Toggle label="Notifications" on={s.notifications} onChange={(v) => upd({ notifications: v })} />
+            </SetRow>
+            {s.notifications && (
+              <SetRow title="When a session finishes" note="Off: only sessions that need you notify">
+                <Toggle label="Notify when a session finishes" on={s.notifyFinished !== false} onChange={(v) => upd({ notifyFinished: v })} />
+              </SetRow>
+            )}
+            <SetRow title="Quiet hours" note="No session notifications or phone alerts between these times (the Dock badge and menu bar still count)">
+              <span className="quiet-hours">
+                <input
+                  type="time"
+                  value={s.quietHours?.from ?? "18:00"}
+                  disabled={!s.quietHours?.enabled}
+                  onChange={(e) => upd({ quietHours: { enabled: true, from: e.target.value, to: s.quietHours?.to ?? "08:00" } })}
+                />
+                <span>to</span>
+                <input
+                  type="time"
+                  value={s.quietHours?.to ?? "08:00"}
+                  disabled={!s.quietHours?.enabled}
+                  onChange={(e) => upd({ quietHours: { enabled: true, from: s.quietHours?.from ?? "18:00", to: e.target.value } })}
+                />
+                <Toggle
+                  label="Quiet hours"
+                  on={!!s.quietHours?.enabled}
+                  onChange={(v) => upd({ quietHours: { enabled: v, from: s.quietHours?.from ?? "18:00", to: s.quietHours?.to ?? "08:00" } })}
+                />
+              </span>
+            </SetRow>
+            <PhoneAlertsSection settings={s} onChange={upd} />
           </>
         )}
 
