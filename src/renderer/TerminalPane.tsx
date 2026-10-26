@@ -11,6 +11,7 @@ import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
 import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneScroll";
 import { isViewControl } from "../shared/termInput";
+import { shortReason } from "../shared/phoneAlerts";
 import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
 import { anchorToContent, attachTerm, dataPump, fitTerm, followFixedSize, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
@@ -216,14 +217,8 @@ export interface PaneResize {
   reset?: () => void; // double-click a handle → even the grid back out
 }
 
-/** Shorten hook Notification messages to banner-sized reasons. */
-export function shortReason(reason: string | null): string {
-  if (!reason) return "waiting for you";
-  const perm = reason.match(/needs your permission to (?:use )?(.+)/i);
-  if (perm) return `permission: ${perm[1]}`;
-  if (/waiting for your input/i.test(reason)) return "waiting for you";
-  return reason;
-}
+/** Shorten hook Notification messages to banner-sized reasons (phone alerts say them the same way). */
+export { shortReason };
 
 /**
  * A room session of this Mac's that teammates see but that runs without the

@@ -449,6 +449,21 @@ const api = {
   setSettings: (s: unknown) => ipcRenderer.invoke("settings:set", s),
   runDebrief: (kind: string) => ipcRenderer.invoke("debrief:run", kind),
 
+  // phone alerts (src/shared/phoneAlerts.ts); every call answers { error } on failure
+  /** Away, the last alert sent, whether replies can be read: PhoneStatus. */
+  phoneStatus: () => ipcRenderer.invoke("phone:status"),
+  /** Send one test iMessage now (a development build only logs it). */
+  phoneTest: () => ipcRenderer.invoke("phone:test"),
+  /** Check again whether Messages can be read (after granting Full Disk Access). */
+  phoneCheckReplies: () => ipcRenderer.invoke("phone:checkReplies"),
+  phoneOpenPrivacy: (which: "automation" | "fullDiskAccess") => ipcRenderer.invoke("phone:openPrivacy", which),
+  clearPhoneNote: (id: string) => ipcRenderer.invoke("sessions:clearPhoneNote", id),
+  onPhoneChanged: (cb: (s: unknown) => void) => {
+    const h = (_e: unknown, s: unknown) => cb(s);
+    ipcRenderer.on("phone:changed", h);
+    return () => ipcRenderer.removeListener("phone:changed", h);
+  },
+
   // events from main
   onSessionData: (cb: (id: string, data: string) => void) => {
     const h = (_e: unknown, id: string, data: string) => cb(id, data);
