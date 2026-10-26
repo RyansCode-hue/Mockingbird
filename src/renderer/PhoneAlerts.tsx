@@ -192,7 +192,7 @@ export function PhoneAlertsSection({ settings, onChange }: { settings: Settings;
             <div className="phone-fda" role="dialog" aria-label="Replies need Full Disk Access">
               <div className="phone-fda-title">Replies need Full Disk Access</div>
               <p>
-                macOS keeps Messages' history in one database, and lets an app read it only with Full Disk Access — there's no narrower permission, and no other way to see a reply. Full Disk Access lets Mockingbird read <b>every file on this Mac</b>, all your Messages conversations included.
+                macOS keeps Messages' history in one database, and lets an app read it only with Full Disk Access — there's no narrower permission, and no other way to see a reply. Full Disk Access lets Mockingbird read <b>every file on this Mac</b>, all your Messages conversations and Mail included — <b>and so can everything it runs</b>: the agents, terminals and commands in its panes. An unsigned build may need it granted again after each update; Settings says when.
               </p>
               <p>
                 Mockingbird reads only your conversation with yourself, only while an alert is waiting for a reply, and only messages after that alert that start with its code. A reply can allow or deny that one prompt once, or type a short message into that one session; never "always allow", never a shell command. Each reply is in Settings → Team → Recent remote activity.

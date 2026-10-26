@@ -195,8 +195,8 @@ agreed direction, **Later** is worth doing once the foundations settle.
   Messages with AppleScript; it names the session, its ticket or group and
   what it waits on, never what an agent wrote. One per session per 10
   minutes, one per prompt, close ones batched; quiet hours and muted sessions
-  apply. Opt-in replies (they need Full Disk Access, said before it's
-  granted): `K4 1` allows that prompt once, `K4 2` denies it, `K4` and a
+  apply. Opt-in replies (they need Full Disk Access — for Mockingbird and
+  everything its panes run — said before it's granted): `K4 1` allows that prompt once, `K4 2` denies it, `K4` and a
   message types into a finished session — only from your conversation with
   yourself, only after the alert, only while it's the same prompt; each in the
   remote-activity log and shown in the pane. Settings were mocked as three

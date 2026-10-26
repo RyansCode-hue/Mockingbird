@@ -63,6 +63,7 @@ describe.skipIf(!local)("phone alerts in Settings", () => {
         dialogAfter: !!$(".phone-fda"),
       };`);
     expect(r.dialog).toContain("every file on this Mac");
+    expect(r.dialog).toContain("and so can everything it runs: the agents, terminals and commands in its panes");
     expect(r.dialog).toContain("only your conversation with yourself");
     expect(r.savedBefore).toBe(false);
     expect(r.savedAfter).toEqual([true]);
