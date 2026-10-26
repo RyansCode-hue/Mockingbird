@@ -102,6 +102,7 @@ export class TicketSessions {
         if (!/\b409\b/.test(why)) return fail("claim", `Couldn't claim #${n}, so nothing was started: ${why}`);
         // someone claimed it since it was read: say who, as the House has it now
         const now = await this.d.house.ticket(roomId, n);
+        if ("error" in now) this.d.log(`team House board: reading who claimed #${n} after the House refused Start's claim`, now.error);
         const by = "error" in now ? null : now.owner?.name ?? now.detail.claim?.by ?? null;
         return fail("claim", `${by ? `${by} claimed #${n}` : `Someone claimed #${n}`} just before you, so nothing was started. The House answered: ${why}`, by ? { takenBy: by } : {});
       }

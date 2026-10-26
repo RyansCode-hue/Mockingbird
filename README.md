@@ -601,6 +601,18 @@ agreed direction, **Later** is worth doing once the foundations settle.
     releases it, Done and Dropped refuse it (only House staff close
     tickets), and a move the House refuses goes back with its reason. Also
     claim, release, comment, post progress or a question, create tickets.
+    **Start session** on a ticket (the card's Start, its right-click menu, or
+    the ticket's own button) does the rest in one go, after a small
+    confirmation of the repo, branch and agent: it claims the ticket as you,
+    makes its branch's worktree (the ticket's own branch, your claim's, or
+    `feature/<n>-<slug>` cut from the repository's base on origin) in your
+    clone of the room's repository, and starts Claude or Codex there in the
+    room's group, briefed
+    on the ticket — number, title, status, priority, tags, detail, acceptance,
+    blockers, links — fenced as the House's words, not instructions. A ticket
+    a teammate has, or a repository not cloned here, stops it before anything
+    is written (and says who, or which repository); a worktree that can't be
+    made releases the claim it made.
     The House is the system of record: each member's
     Mockingbird reads and writes it with their own builder token
     (`~/.config/radley-house/<project>.env`), which never leaves the main
@@ -649,7 +661,6 @@ Settings checks that hung on "checking…" (1.4.12), tests leaving nothing
 running (1.4.12), motion measured in the real app (1.4.12).
 
 **Phase 2 — the daily workflow**
-- Ticket → session in one click: claim the House ticket, create its branch and worktree, and start an agent with the ticket as its first prompt.
 - Away mode, the rest: the take-over brief is ready before you leave, and your sessions say a teammate can take over in one click. (Allowing take-overs while you're away — a signed, expiring grant — shipped in 1.5.)
 - Context warnings: suggest /compact or a fresh session with a brief before a session nears its limit.
 - Usage per session and per ticket, with a warning before an expensive action (like a cold resume).
