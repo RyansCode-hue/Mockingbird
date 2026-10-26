@@ -144,7 +144,7 @@ export function play(el: Element, frames: Keyframe[], o: KeyframeAnimationOption
     if (!fades) return null;
     const from = frames[0].opacity ?? 1;
     const to = frames[frames.length - 1].opacity ?? 1;
-    return el.animate([{ opacity: from }, { opacity: to }], { duration: Math.min(REDUCED_MS, Number(o.duration) || REDUCED_MS), easing: "linear", fill: o.fill === "forwards" || o.fill === "both" ? o.fill : "none" });
+    return el.animate([{ opacity: from }, { opacity: to }], { duration: Math.min(REDUCED_MS, Number(o.duration) || REDUCED_MS), easing: "linear", fill: o.fill === "forwards" || o.fill === "both" ? o.fill : "none", pseudoElement: o.pseudoElement });
   }
   return el.animate(frames, o);
 }
@@ -152,8 +152,9 @@ export function play(el: Element, frames: Keyframe[], o: KeyframeAnimationOption
 /** The spring's timing, for el.animate. */
 export const springTiming = (fill: FillMode = "none"): KeyframeAnimationOptions => ({ duration: SPRING.duration, easing: SPRING.easing, fill });
 
-/** Things that enter and leave: dialogs (the backdrop, its box the first child), menus, and toasts. */
-export type Presence = "dialog" | "menu" | "toast";
+/** Things that enter and leave: dialogs (the backdrop, its box the first child), menus, toasts, and badges
+ * (a small label whose content changes: the old one fades out on a copy as the new one fades in). */
+export type Presence = "dialog" | "menu" | "toast" | "badge";
 
 function enterFrames(kind: Presence, el: HTMLElement): Animation[] {
   const out: (Animation | null)[] = [];
@@ -164,6 +165,9 @@ function enterFrames(kind: Presence, el: HTMLElement): Animation[] {
   } else if (kind === "menu") {
     out.push(play(el, [{ transform: "scale(0.96)" }, { transform: "none" }], { duration: D.s, easing: EASE.enter }));
     out.push(play(el, [{ opacity: 0 }, { opacity: 1 }], { duration: D.xs, easing: "linear" }));
+  } else if (kind === "badge") {
+    out.push(play(el, [{ opacity: 0 }, { opacity: 1 }], { duration: D.m, easing: "linear" }));
+    out.push(play(el, [{ transform: "scale(0.8)" }, { transform: "none" }], springTiming()));
   } else {
     out.push(play(el, [{ transform: "translateY(16px)" }, { transform: "none" }], springTiming()));
     out.push(play(el, [{ opacity: 0 }, { opacity: 1 }], { duration: D.s, easing: "linear" }));
@@ -179,6 +183,8 @@ function exitFrames(kind: Presence, el: HTMLElement): Animation[] {
     if (box && mode === "full") out.push(play(box, [{ transform: "none" }, { transform: "scale(0.98)" }], { duration: D.s, easing: EASE.exit, fill: "forwards" }));
   } else if (kind === "menu") {
     out.push(play(el, [{ opacity: 1 }, { opacity: 0 }], { duration: D.xs, easing: "linear", fill: "forwards" }));
+  } else if (kind === "badge") {
+    out.push(play(el, [{ opacity: 1 }, { opacity: 0 }], { duration: D.s, easing: "linear", fill: "forwards" }));
   } else {
     out.push(play(el, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateX(14px)" }], { duration: D.s, easing: EASE.exit, fill: "forwards" }));
   }
@@ -209,8 +215,9 @@ export function exitGhost(kind: Presence, node: HTMLElement): void {
   ghost.setAttribute("aria-hidden", "true");
   ghost.inert = true;
   Object.assign(ghost.style, { position: "fixed", left: `${r.left}px`, top: `${r.top}px`, right: "auto", bottom: "auto", width: `${r.width}px`, height: `${r.height}px`, margin: "0", pointerEvents: "none" });
-  // a toast's list goes when its last toast does: its copy waits in the body (toasts are fixed, styled on their own)
-  if (kind === "toast") {
+  // a toast's list goes when its last toast does: its copy waits in the body (toasts are fixed, styled on their own).
+  // A badge's copy waits there too: in a row sliding to its new place, a transformed ancestor would carry it off.
+  if (kind === "toast" || kind === "badge") {
     // stacked as its list was, so the toasts sliding over its place don't hide it
     for (let up = node.parentElement; up && up !== document.body; up = up.parentElement) {
       const z = getComputedStyle(up).zIndex;
@@ -333,4 +340,176 @@ export function usePresenceRefs<T extends HTMLElement>(kind: Presence): (key: st
     },
     [kind]
   );
+}
+
+/**
+ * A ref for a badge rendered with a `key` of what it says: when that changes, the old badge fades out on a copy
+ * while the new one fades in. Its first showing doesn't animate (a pane or view opening shows what's there).
+ */
+export function useCrossfade<T extends HTMLElement>(): (el: T | null) => void {
+  const shown = useRef(false);
+  return usePresence<T>("badge", {
+    instant: () => {
+      const first = !shown.current;
+      shown.current = true;
+      return first;
+    },
+  });
+}
+
+// ---- values that change in place: bars, presence, arrivals, a session changing hands ----
+
+/** Nothing plays into a hidden window: its animations would all be finished, unseen, when it's shown. */
+const visible = () => mode !== "off" && hasDom && !document.hidden;
+
+/** The smallest change of a bar (in percentage points) that animates; smaller ones just land, unseen. */
+export const FILL_STEP = 1;
+
+/** A bar going from `was` to `now` (0–100) moves visibly: not its first reading, nor a poll that changed nothing. */
+export const fillMoves = (was: number | null, now: number): boolean => was !== null && Math.abs(now - was) >= FILL_STEP;
+
+/** The scaleX a running animation has an element at, or null when none is running. */
+function runningScaleX(el: Element): number | null {
+  if (!el.getAnimations().some((a) => a.playState === "running")) return null;
+  const m = getComputedStyle(el).transform.match(/^matrix\(([^,]+)/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * A bar's fill (sized by width, always at its value) springs there from its old value when it changes by
+ * FILL_STEP or more while showing the same thing: `of` names it, so another session's context window lands at
+ * once. The motion is a transform from the old width, so nothing is laid out again as it plays. Under reduce a
+ * bar just lands.
+ */
+export function useFill<T extends HTMLElement>(pct: number, of = ""): RefObject<T> {
+  const ref = useRef<T>(null);
+  const last = useRef<{ pct: number; of: string } | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const prev = last.current;
+    last.current = el ? { pct, of } : null;
+    if (!el || !prev || prev.of !== of || !fillMoves(prev.pct, pct) || !visible()) return;
+    // one already moving starts from where it is: its scale is of the old width
+    const from = prev.pct * (runningScaleX(el) ?? 1);
+    for (const a of el.getAnimations()) a.cancel();
+    if (pct <= 0) return; // an empty bar has no width to scale
+    play(el, [{ transform: `scaleX(${from / pct})` }, { transform: "none" }], springTiming());
+  }, [pct, of]);
+  return ref;
+}
+
+/**
+ * A teammate coming online: their presence dot grows in and fades up, and their row eases in. Going offline,
+ * the dot settles to grey from slightly smaller; the row stays put. `pseudo` when the dot is the row's ::before.
+ */
+export function presenceTurn(row: HTMLElement, dot: HTMLElement | null, on: boolean, pseudo?: string): void {
+  if (!visible()) return;
+  const target = dot ?? row;
+  const o = pseudo ? { pseudoElement: pseudo } : {};
+  if (on) {
+    play(target, [{ opacity: 0, transform: "scale(0.4)" }, { opacity: 1, transform: "none" }], { ...springTiming(), ...o });
+    play(row, [{ opacity: 0.5, transform: "translateX(-4px)" }, { opacity: 1, transform: "none" }], { duration: D.m, easing: EASE.enter });
+  } else {
+    play(target, [{ opacity: 0.4, transform: "scale(0.7)" }, { opacity: 1, transform: "none" }], { duration: D.m, easing: EASE.move, ...o });
+  }
+}
+
+/**
+ * Items of a list (matched by `selector`, told apart by their `attr`) that are on or off — a teammate connected
+ * or not — call `turn` when that flips. Never on the first render, nor for an item new to the list: whoever is
+ * already there when a view opens doesn't move. Read after every render, so it needs no deps.
+ */
+export function useTurns(ref: RefObject<HTMLElement>, selector: string, attr: string, isOn: (el: HTMLElement) => boolean, turn: (el: HTMLElement, on: boolean) => void): void {
+  const last = useRef<Map<string, boolean> | null>(null);
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return void (last.current = null);
+    const prev = last.current;
+    const now = new Map<string, boolean>();
+    for (const el of root.querySelectorAll<HTMLElement>(selector)) {
+      const key = el.getAttribute(attr);
+      if (!key) continue;
+      const on = isOn(el);
+      now.set(key, on);
+      const was = prev?.get(key);
+      if (was !== undefined && was !== on) turn(el, on);
+    }
+    last.current = now;
+  });
+}
+
+/** Calls `onChange(was, now)` when `value` changes after the first render (compared with Object.is). */
+export function useChange<V>(value: V, onChange: (was: V, now: V) => void): void {
+  const last = useRef<{ v: V } | null>(null);
+  const f = useRef(onChange);
+  f.current = onChange;
+  useLayoutEffect(() => {
+    const prev = last.current;
+    last.current = { v: value };
+    if (prev && !Object.is(prev.v, value)) f.current(prev.v, value);
+  }, [value]);
+}
+
+/** More than this many entries at once is catching up (a reconnect, a sync), not someone talking: they just appear. */
+export const ARRIVALS_MAX = 3;
+
+/**
+ * Which entries of a chat arrived since it was last drawn and should slide in: those after the last entry seen,
+ * written by someone else. None the first time it's drawn (that's history), none of one's own (sent, it's
+ * there at once), none when the list was replaced, and none when more than ARRIVALS_MAX came together.
+ */
+export function chatArrivals(seen: readonly string[] | null, entries: readonly { id: string; author: string }[], self: string): string[] {
+  if (!seen) return [];
+  const at = seen.length ? entries.findIndex((e) => e.id === seen[seen.length - 1]) : -1;
+  if (seen.length && at < 0) return [];
+  const known = new Set(seen);
+  const fresh = entries.slice(at + 1).filter((e) => !known.has(e.id));
+  if (fresh.length > ARRIVALS_MAX) return [];
+  return fresh.filter((e) => e.author !== self).map((e) => e.id);
+}
+
+/**
+ * A chat's new entries slide up and fade in (chatArrivals says which). `entries` is null until the chat has been
+ * read; each entry's element carries `data-entry` with its id.
+ */
+export function useChatArrivals(ref: RefObject<HTMLElement>, entries: readonly { id: string; author: string }[] | null, self: string): void {
+  const seen = useRef<string[] | null>(null);
+  useLayoutEffect(() => {
+    if (!entries) return;
+    const ids = chatArrivals(seen.current, entries, self);
+    seen.current = entries.map((e) => e.id);
+    const root = ref.current;
+    if (!root || !ids.length || !visible()) return;
+    for (const id of ids) {
+      const el = root.querySelector<HTMLElement>(`[data-entry="${CSS.escape(id)}"]`);
+      if (el) play(el, [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: D.m, easing: EASE.enter });
+    }
+  }, [entries, self]);
+}
+
+/** How long after a session changes hands its pane still marks it when first drawn (it may be shown a moment later). */
+export const HANDOVER_FRESH_MS = 15_000;
+
+/** A hand-over at `at` is news for a pane drawn at `now`: it happened moments ago, not before the app opened. */
+export const handoverFresh = (at: number | null | undefined, now: number): at is number => typeof at === "number" && now - at >= -1000 && now - at < HANDOVER_FRESH_MS;
+
+/**
+ * A session that just changed hands (taken over, or handed over): its pane's ring pulses once and the note
+ * saying so (`[data-handover]`) eases in. The ring is the pane's ::after, over everything: the terminal under
+ * it never moves. Under reduce, only the note fades in.
+ */
+export function handoverPulse(pane: HTMLElement): void {
+  if (!visible()) return;
+  if (mode === "full") play(pane, [{ opacity: 0 }, { opacity: 1, offset: 0.25 }, { opacity: 0 }], { duration: D.l, easing: "linear", pseudoElement: "::after" });
+  for (const note of pane.querySelectorAll<HTMLElement>("[data-handover]")) play(note, [{ opacity: 0, transform: "translateY(-4px)" }, { opacity: 1, transform: "none" }], { duration: D.m, easing: EASE.enter });
+}
+
+/** The pane (by `ref`) marks a hand-over at `at` once, while it's fresh (handoverFresh). */
+export function useHandover(ref: RefObject<HTMLElement>, at: number | null | undefined): void {
+  const played = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (!handoverFresh(at, Date.now()) || played.current === at) return;
+    played.current = at;
+    if (ref.current) handoverPulse(ref.current);
+  }, [at]);
 }
