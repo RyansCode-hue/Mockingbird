@@ -261,6 +261,17 @@ describe("phone alerts", () => {
     expect(h.sent).toHaveLength(2);
   });
 
+  it("never alerts the same prompt twice, however long it waits", async () => {
+    const s1 = sess("s1");
+    const h = harness({ sessions: [s1] });
+    h.alerts.sessionStatus(s1, "waiting");
+    await vi.advanceTimersByTimeAsync(1_000);
+    vi.setSystemTime(Date.now() + 30 * 60_000);
+    h.alerts.awayChanged({ away: true, why: "locked", idleSeconds: 0 }); // locked again: still waiting on the same prompt
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.sent).toHaveLength(1);
+  });
+
   it("keeps messages apart: one that comes soon after another waits out the gap and takes everything since", async () => {
     const list = [sess("s1"), sess("s2"), sess("s3")];
     const h = harness({ sessions: list });
@@ -515,14 +526,17 @@ describe("replies to phone alerts", () => {
     expect(t.audit.recent(10).filter((e) => e.kind === "phone.reply")).toEqual([]);
   });
 
-  it("ignores a chat named like the self-conversation when someone else is in it", async () => {
+  it("ignores a chat named like the self-conversation when someone else is in it, or that isn't one-to-one", async () => {
     const f = messages();
-    const spoof = f.db.chat(HANDLE, [f.me, f.friend]);
+    const shared = f.db.chat(HANDLE, [f.me, f.friend]);
+    const group = f.db.chat(HANDLE, [f.me], { style: 43 });
     const h = harness({ sessions: [sess("s1")], phone: { replies: true }, replies: new ChatDb(f.db.file) });
     h.alerts.sessionStatus(h.list[0], "waiting");
     await vi.advanceTimersByTimeAsync(1_000);
     await waitFor(() => h.sent.length > 0);
-    f.db.message(spoof, { text: "K4 1", handle: f.friend, at: Date.now() + 1_000 });
+    f.db.message(shared, { text: "K4 1", handle: f.friend, at: Date.now() + 1_000 });
+    f.db.message(shared, { text: "K4 1", handle: f.me, at: Date.now() + 1_000 });
+    f.db.message(group, { text: "K4 1", fromMe: true, at: Date.now() + 1_000 });
     await poll(h);
     expect(h.writes).toEqual([]);
   });
