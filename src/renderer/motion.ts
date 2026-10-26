@@ -484,7 +484,7 @@ export function useChatArrivals(ref: RefObject<HTMLElement>, entries: readonly {
       const el = root.querySelector<HTMLElement>(`[data-entry="${CSS.escape(id)}"]`);
       if (el) play(el, [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }], { duration: D.m, easing: EASE.enter });
     }
-  }, [entries, self]);
+  }, [entries, entries?.length, entries?.at(-1)?.id, self]); // a list added to in place is still news
 }
 
 /** How long after a session changes hands its pane still marks it when first drawn (it may be shown a moment later). */
