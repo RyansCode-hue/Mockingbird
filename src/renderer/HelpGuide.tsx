@@ -96,7 +96,8 @@ export function HelpGuide() {
             yours and theirs, live — its artifacts and its chat. <b>Take over</b> continues a
             teammate's session on your Mac. A room linked to a Radley House project has a{" "}
             <b>Board</b>: its backlog and who has claimed what, read with your own builder token
-            once you allow it.
+            once you allow it. <b>Start</b> on a ticket claims it, makes its worktree and starts an
+            agent there, briefed on the ticket.
           </p>
           <div className="help-sec">After a restart</div>
           <p>
