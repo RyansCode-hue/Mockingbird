@@ -263,7 +263,29 @@ export function claudeContext(id: string, dir = CONTEXT_DIR): ContextWindow {
   } catch (err) {
     return contextError("Claude's report", err);
   }
-  return { state: "reading", agent: "claude", tokens, window, at };
+  return { state: "reading", agent: "claude", tokens, window, at, ...claudeExtras(payload) };
+}
+
+/**
+ * What else Claude Code 2.1.3xx's statusline payload says about the
+ * conversation: the model (model.id), the prompt cache (prompt_cache: warm,
+ * expires_at in epoch seconds, recache_tokens_if_cold), and the process's
+ * running cost (cost.total_cost_usd, API list prices). Each is left out when
+ * missing or not the type expected: older CLIs don't send prompt_cache.
+ */
+export function claudeExtras(payload: any): Pick<Extract<ContextWindow, { state: "reading" }>, "model" | "cache" | "costUsd"> {
+  const out: Pick<Extract<ContextWindow, { state: "reading" }>, "model" | "cache" | "costUsd"> = {};
+  if (typeof payload?.model?.id === "string") out.model = payload.model.id;
+  const pc = payload?.prompt_cache;
+  if (typeof pc?.warm === "boolean") {
+    out.cache = {
+      warm: pc.warm,
+      expiresAt: typeof pc.expires_at === "number" ? pc.expires_at * 1000 : null,
+      recacheTokens: typeof pc.recache_tokens_if_cold === "number" ? pc.recache_tokens_if_cold : null,
+    };
+  }
+  if (typeof payload?.cost?.total_cost_usd === "number") out.costUsd = payload.cost.total_cost_usd;
+  return out;
 }
 
 const rolloutFiles = new Map<string, string>();

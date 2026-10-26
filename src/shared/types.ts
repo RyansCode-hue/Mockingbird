@@ -843,7 +843,19 @@ export interface AgentUsage {
  * couldn't be read (the main process logged it).
  */
 export type ContextWindow =
-  | { state: "reading"; agent: AgentKind; tokens: number; window: number; at: number }
+  | {
+      state: "reading";
+      agent: AgentKind;
+      tokens: number;
+      window: number;
+      at: number;
+      /** The model of the last reply, when the agent reports it. */
+      model?: string;
+      /** Claude's prompt cache as of the last reply: warm, and when it goes cold (ms). */
+      cache?: { warm: boolean; expiresAt: number | null; recacheTokens: number | null };
+      /** Claude's own running cost of the CLI process (statusline cost.total_cost_usd, API list prices): a resume starts it over. */
+      costUsd?: number;
+    }
   | { state: "none"; why: string }
   | { state: "error"; why: string };
 
@@ -900,9 +912,21 @@ export function localDay(d: Date = new Date()): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/** The sessions of a group or ticket, summed over their conversations (each counted once). */
+export interface GroupMeter {
+  sessions: number;
+  tokens: TokenCounts;
+  /** By agent: tokens in its current 5-hour window, and their estimated share of its limit. */
+  window: Partial<Record<AgentKind, { tokens: number; sharePct: number | null }>>;
+}
+
 export interface Meters {
   /** By pane (session id). */
   sessions: Record<string, SessionMeter>;
+  /** By top-level group (its key). Optional: a meter from before groups were summed has none. */
+  groups?: Record<string, GroupMeter>;
+  /** By ticket id (without "#"): sessions with that ticket, or in a group named after it. */
+  tickets?: Record<string, GroupMeter>;
   /** Since local midnight, per agent. */
   today: Partial<Record<AgentKind, TokenCounts>>;
   at: number;

@@ -1,4 +1,5 @@
-import { totalTokens, type AgentKind, type Meters, type SessionInfo, type TokenCounts, type UsageReport } from "../shared/types";
+import { isWorkItemId, ticketIdOf, topOfKey, totalTokens, type AgentKind, type GroupMeter, type Meters, type SessionInfo, type TokenCounts, type UsageReport } from "../shared/types";
+import { weightsFor } from "../shared/contextBudget";
 import type { UsageRow } from "./transcripts";
 
 /**
@@ -12,20 +13,6 @@ import type { UsageRow } from "./transcripts";
  */
 
 const WINDOW_MS = 5 * 3_600_000;
-
-// relative weights per million tokens: [input, output, cache read, cache write]
-const CLAUDE_OPUS = [15, 75, 1.5, 18.75];
-const CLAUDE_SONNET = [3, 15, 0.3, 3.75];
-const CLAUDE_HAIKU = [1, 5, 0.1, 1.25];
-const CODEX = [1.25, 10, 0.125, 1.25];
-
-function weightsFor(agent: AgentKind, model: string | null): number[] {
-  if (agent === "codex") return CODEX;
-  const m = (model ?? "").toLowerCase();
-  if (/haiku/.test(m)) return CLAUDE_HAIKU;
-  if (/sonnet/.test(m)) return CLAUDE_SONNET;
-  return CLAUDE_OPUS; // opus, fable, and models not yet known: the dearer guess
-}
 
 export function weighted(r: UsageRow): number {
   const [i, o, cr, cw] = weightsFor(r.agent, r.model);
@@ -60,8 +47,16 @@ export const conversationsOf = (s: Pick<SessionInfo, "conversations" | "conversa
 export const withConversation = (s: Pick<SessionInfo, "conversations" | "conversation">, id: string): string[] =>
   [...conversationsOf(s).filter((c) => c !== id), id].slice(-50);
 
+/** The ticket a session counts toward: its own, or the group it's in when that is named after a work item. */
+export function ticketOfSession(s: Partial<Pick<SessionInfo, "ticketId" | "taskGroup">>): string | null {
+  if (s.ticketId) return ticketIdOf(s.ticketId);
+  const top = s.taskGroup ? topOfKey(s.taskGroup) : "";
+  return top && isWorkItemId(top) ? top : null;
+}
+
 export function computeMeters(o: {
-  sessions: Pick<SessionInfo, "id" | "agent" | "conversations" | "conversation">[];
+  /** Live and resumable sessions: a ticket's usage counts its closed-but-resumable sessions too. */
+  sessions: (Pick<SessionInfo, "id" | "agent" | "conversations" | "conversation"> & Partial<Pick<SessionInfo, "taskGroup" | "ticketId">>)[];
   /** All-time usage of the panes' conversations. */
   rows: UsageRow[];
   /** Every conversation's usage within each agent's current window. */
@@ -95,5 +90,34 @@ export function computeMeters(o: {
   }
   const today: Meters["today"] = {};
   for (const r of o.todayRows) add((today[r.agent] ??= zero()), r);
-  return { sessions, today, at: o.now };
+
+  // a group's or ticket's sessions, over the union of their conversations: one two panes shared counts once
+  const sum = (keyOf: (s: (typeof o.sessions)[number]) => string | null): Record<string, GroupMeter> => {
+    const members = new Map<string, { n: number; convs: Set<string> }>();
+    for (const s of o.sessions) {
+      const key = keyOf(s);
+      const convs = conversationsOf(s);
+      if (!key || !convs.length) continue;
+      const m = members.get(key) ?? { n: 0, convs: new Set<string>() };
+      m.n++;
+      convs.forEach((c) => m.convs.add(c));
+      members.set(key, m);
+    }
+    const out: Record<string, GroupMeter> = {};
+    for (const [key, m] of members) {
+      const window: GroupMeter["window"] = {};
+      for (const [agent, w] of Object.entries(windows) as [AgentKind, { usedPct: number }][]) {
+        const inWindow = (o.windowRows[agent] ?? []).filter((r) => m.convs.has(r.conv));
+        if (!inWindow.length) continue;
+        const total = windowTotal[agent] ?? 0;
+        const share = total > 0 ? (inWindow.reduce((n, r) => n + weighted(r), 0) / total) * w.usedPct : null;
+        window[agent] = { tokens: totalTokens(inWindow.reduce(add, zero())), sharePct: share === null ? null : Math.round(share * 10) / 10 };
+      }
+      out[key] = { sessions: m.n, tokens: o.rows.filter((r) => m.convs.has(r.conv)).reduce(add, zero()), window };
+    }
+    return out;
+  };
+  const groups = sum((s) => (s.taskGroup ? topOfKey(s.taskGroup) : null));
+  const tickets = sum(ticketOfSession);
+  return { sessions, groups, tickets, today, at: o.now };
 }
