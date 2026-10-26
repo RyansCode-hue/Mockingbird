@@ -644,11 +644,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
 Four phases, in order. UI-heavy items get 2–3 mocked options to pick from
 before they're built.
 
-**Phase 1 — reliability**
-- The artifact fetch test that hung once on CI ("wait, saying why, while nobody connected has a file": 89 ms locally) — find the race.
-- Settings' setup and connector checks stay on "checking…" when their call fails; show the error.
-- Tests leave nothing running (a debugger test's dotnet app outlived its run).
-- Motion measured in the real app (frame timing was measured in headless Chrome only).
+**Phase 1 — reliability** — done: the artifact fetch retry race (1.4.10),
+Settings checks that hung on "checking…" (1.4.12), tests leaving nothing
+running (1.4.12), motion measured in the real app (1.4.12).
 
 **Phase 2 — the daily workflow**
 - Ticket → session in one click: claim the House ticket, create its branch and worktree, and start an agent with the ticket as its first prompt.
@@ -716,6 +714,7 @@ The rest of the 1.4.7 UI review (its ids in brackets). Decided: a room gets tabs
 - [S2] Two-line session rows: title, then branch · owner; backup and live state as glyphs.
 - [S5] One Tab stop in the session list (roving tabindex); group headers focusable.
 - [T1 T3] One New session button with Import in its menu; the status bar in three clusters.
+- The top bar overflows the window below about 700px wide (Import and New/Import Session run off the edge).
 
 **Team, House and side views**
 - [H3] The House board's problems in one banner, raw detail behind an expand. (H1: the board became status columns.)
