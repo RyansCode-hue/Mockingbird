@@ -2855,6 +2855,87 @@ if (params.has("houseBoardAudit")) {
     document.body.appendChild(tag);
   })();
 }
+// ?houseStartAudit starts a session on a House card the ways a person would — its Start button, its right-click menu,
+// the ticket's own button — and writes what it saw into <script id="mb-house-start-audit"> for
+// test/uiTicketStart.test.ts: which cards offer Start, the menus' rows, the confirmation's fields, what Start asked of
+// the main process, the House writes, and where the window went. =fail (with ?houseStartFail=session) has the
+// worktree fail; =detail starts from the ticket's dialog.
+if (params.has("houseStartAudit")) {
+  const mode = params.get("houseStartAudit");
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const card = (n: number) => document.querySelector<HTMLElement>(`.house-card[data-id="${n}"]`);
+  const menuOf = async (n: number) => {
+    const c = card(n)!;
+    const b = c.getBoundingClientRect();
+    c.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 20 }));
+    await sleep(150);
+    const rows = [...document.querySelectorAll<HTMLButtonElement>(".mb-ctx button")].map((x) => ({ text: x.textContent?.trim() ?? "", disabled: x.disabled, title: x.title }));
+    return rows;
+  };
+  const closeMenu = async () => {
+    document.querySelector(".mb-ctx")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await sleep(150);
+  };
+  const pop = () => {
+    const el = document.querySelector<HTMLElement>(".t2s-pop");
+    if (!el) return null;
+    const grid = [...el.querySelectorAll<HTMLElement>(".t2s-grid > *")].map((x) => (x.querySelector("input") as HTMLInputElement | null)?.value ?? x.textContent?.replace(/\s+/g, " ").trim() ?? "");
+    return {
+      head: el.querySelector(".t2s-h")?.textContent ?? null,
+      grid,
+      agent: el.querySelector(".t2s-agent button.on")?.textContent ?? null,
+      start: el.querySelector<HTMLButtonElement>(".t2s-foot button.primary")?.textContent ?? null,
+      startDisabled: el.querySelector<HTMLButtonElement>(".t2s-foot button.primary")?.disabled ?? null,
+      error: el.querySelector(".t2s-err")?.textContent ?? null,
+      release: !!el.querySelector(".t2s-err button.link"),
+      inWindow: (() => {
+        const r = el.getBoundingClientRect();
+        return r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight;
+      })(),
+    };
+  };
+  const starts = () => calls.filter((c) => c.fn === "houseStartSession").map((c) => c.args[1]);
+  (async () => {
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < 100 && !card(146); i++) await sleep(50);
+    await sleep(300);
+    out.buttons = [146, 141, 151, 143].map((n) => !!card(n)?.querySelector(".house-start"));
+    if (mode === "detail") {
+      card(146)!.click();
+      for (let i = 0; i < 60 && !document.querySelector(".house-acts button.primary"); i++) await sleep(50);
+      out.detailButton = document.querySelector(".house-acts button.primary")?.textContent?.trim() ?? null;
+      document.querySelector<HTMLElement>(".house-acts button.primary")!.click();
+    } else {
+      out.takenMenu = await menuOf(141);
+      await closeMenu();
+      out.menu = await menuOf(146);
+      [...document.querySelectorAll<HTMLElement>(".mb-ctx button")].find((x) => x.textContent?.includes("Start session"))?.click();
+    }
+    for (let i = 0; i < 60 && !document.querySelector(".t2s-grid"); i++) await sleep(50);
+    await sleep(100);
+    out.pop = pop();
+    if (mode !== "detail") {
+      [...document.querySelectorAll<HTMLElement>(".t2s-agent button")].find((x) => x.textContent === "Codex")?.click();
+      await sleep(50);
+    }
+    out.agentPicked = pop()?.agent ?? null;
+    document.querySelector<HTMLElement>(".t2s-foot button.primary")?.click();
+    await sleep(1200);
+    out.after = {
+      pop: pop(),
+      board: !!document.querySelector(".house-modal"),
+      starts: starts(),
+      house: { claim: houseTickets[146].claim ? { by: houseTickets[146].claim!.by, branch: houseTickets[146].claim!.branch } : null, history: (houseHistory[146] ?? []).map((e) => e.kind) },
+      session: sessions.filter((x) => x.title.startsWith("#146")).map((x) => ({ title: x.title, group: x.taskGroup, agent: x.agent })),
+      shown: !!document.querySelector(".pane .pane-title, .pane-header") && [...document.querySelectorAll(".pane-header")].some((h) => h.textContent?.includes("#146")),
+    };
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-house-start-audit";
+    tag.textContent = JSON.stringify(out).replace(/</g, "\\u003c");
+    document.body.appendChild(tag);
+  })();
+}
 // ?help opens the guide (⌘/)
 if (params.has("help")) waitFor(".statusbar .help-link", (el) => el.click());
 // ?measure=<selector> (repeatable) writes where each match sits into the page once the fixtures have landed, for
