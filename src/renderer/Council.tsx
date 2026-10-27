@@ -24,6 +24,7 @@ import { ModelSelect, ModelsSection } from "./CollabModels";
 import { MenuButton, Pick, Select } from "./Menu";
 import { PanelRightIcon } from "./Icons";
 import { RepoPick } from "./RepoPick";
+import { CouncilTicketsDialog } from "./CouncilTickets";
 import { useAction, type RunAction } from "./useAction";
 import { usePersisted } from "./prefs";
 
@@ -582,6 +583,7 @@ function Inspector({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
+  const [tickets, setTickets] = useState(false);
   const planMsg = [...room.messages].reverse().find((m) => m.kind === "plan" || (room.plan && m.text === room.plan.text && m.speaker === room.plan.by));
   return (
     <div className="collab-inspector-wrap" style={{ width }}>
@@ -677,9 +679,27 @@ function Inspector({
                 planMsg && <button className="outline strong" onClick={() => call("approve", () => window.mb.collabApprove(room.id, planMsg.id))}>Approve plan</button>
               )}
             </div>
+            {room.plan.approved && (
+              <div className="ins-actions">
+                <button className="outline council-tix-open" onClick={() => setTickets(true)} title="Split the plan into Radley House tickets, review them, then create them with your builder token">
+                  {room.ticketDrafts?.drafts.length ? `House tickets — ${room.ticketDrafts.drafts.length} draft${room.ticketDrafts.drafts.length === 1 ? "" : "s"}…` : "Create House tickets…"}
+                </button>
+              </div>
+            )}
+            {!!room.houseTickets?.length && (
+              <div className="council-tix-made">
+                <span className="ins-note">In the House:</span>
+                {room.houseTickets.map((t) => (
+                  <button key={`${t.project}-${t.n}`} className="link" title={`${t.title} — open in the House (${t.project})`} onClick={() => call("openTicket", () => window.mb.collabOpenTicket(room.id, t.n))}>
+                    #{t.n}
+                  </button>
+                ))}
+              </div>
+            )}
           </>
         )}
       </section>
+      {tickets && room.plan?.approved && <CouncilTicketsDialog room={room} onClose={() => setTickets(false)} />}
 
       <section className="ins-foot">
         <button

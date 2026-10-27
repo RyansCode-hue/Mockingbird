@@ -28,6 +28,8 @@ import { parseMentions, unreadCounts, type ChatEntry, type ReadMarks } from "../
 // team rooms: take-over
 import { NOT_PUSHED, type RoomSessionBackupView, type TakeoverPlan, type TakeoverView } from "../shared/team/takeover";
 import type { AuditEntry } from "../shared/team/audit";
+// Council: an approved plan as House tickets
+import { draftsFromModel, splitPlan, wholePlanDraft, type CouncilCreateResult, type CouncilHouseTargets, type TicketDraft } from "../shared/collabTickets";
 // team rooms: live panes
 import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
 // team rooms: artifacts
@@ -819,6 +821,47 @@ const councils: CollabRoom[] = [
   },
 ];
 
+// ?councilTickets: the council's plan is written up and approved, and its "Create House tickets…" opens. Its repo is
+// in room #5101, whose project is atticus-backoffice (=consent: your token isn't allowed for it yet; =projects: not in
+// a room, two projects with token files; =prose: a plan with no steps to split by). ?councilTicketsFail: the fixture
+// House refuses the second ticket. Nothing reaches a House: the tickets are numbered here from #160.
+const ticketsQ = new URLSearchParams(location.search);
+const ticketsMode = ticketsQ.get("councilTickets") ?? ticketsQ.get("councilTicketsAudit");
+const TICKETS_PLAN = `## Goal
+Export the donor list to CSV, respecting the user's filters, for up to 200k rows.
+
+## Steps to implement
+1. **Streaming endpoint** — GET /api/donors/export.csv takes the list's filter DTO and streams rows as they're read (high).
+   - Acceptance: every filter the list has is honoured
+   - Acceptance: 200k rows stream without buffering the file
+2. Page the donor query 5k rows at a time (high)
+   Keyset pagination on (org_id, id).
+3. Export button in the donor list toolbar
+4. Timing check on the largest org
+   - Acceptance: a note with the timing on the ticket
+5. Spike: background export job, only if the timing check times out
+
+## Risks
+- Timeouts behind the load balancer`;
+if (ticketsMode !== null) {
+  const k1 = councils[0];
+  const text = ticketsMode === "prose" ? "Stream the export for everyone, measure the biggest org, and add a background job only if it times out." : TICKETS_PLAN;
+  k1.messages.push({ id: "m6", speaker: "opus", round: 2, at: now - 3_000_000, kind: "plan", text });
+  k1.messages.push({ id: "m7", speaker: "system", round: 2, at: now - 2_900_000, text: "Plan approved: Claude Opus 5.5's write-up." });
+  k1.plan = { text, by: "opus", approved: true, at: now - 2_900_000 };
+}
+let ticketTargets: CouncilHouseTargets =
+  ticketsMode === "projects"
+    ? { inRoom: false, targets: [{ kind: "project", project: "atticus-backoffice", connection: "connected" }, { kind: "project", project: "radley-tools", connection: "consent" }] }
+    : { inRoom: true, targets: [{ kind: "room", roomId: "R5101aaaaaaaaaaaaaaaaa", room: "#5101 Org dropdowns remember the last org", project: "atticus-backoffice", admin: "You", connection: ticketsMode === "consent" ? "consent" : "connected" }] };
+let nextTicket = 160;
+const councilById = (id: string) => councils.find((c) => c.id === id);
+const councilChanged = (c: CollabRoom) => {
+  emit("onCollabChanged", clone(c));
+  return clone(c);
+};
+const councilNote = (c: CollabRoom, text: string) => c.messages.push({ id: `n${c.messages.length}`, speaker: "system", text, round: c.round, at: Date.now() });
+
 // ---- event plumbing ------------------------------------------------------------
 
 const listeners: Record<string, Set<(...a: any[]) => void>> = {};
@@ -1006,6 +1049,60 @@ const api: Record<string, (...a: any[]) => any> = {
   debugSessions: async () => [],
   debugBreakpoints: async () => ({ breakpoints: {} }),
   collabList: async () => councils,
+  // an approved plan as House tickets: split with the app's own rules; created in no House (numbered here)
+  collabTicketDrafts: async (id: string) => {
+    const c = councilById(id);
+    if (!c?.plan?.approved) return err("Approve a plan first");
+    if (c.ticketDrafts?.drafts.length) return { room: clone(c), found: true };
+    const split = splitPlan(c.plan.text, { council: c.title });
+    if (!split) return { room: clone(c), found: false };
+    c.ticketDrafts = { drafts: split.drafts, how: split.how, at: Date.now() };
+    return later({ room: councilChanged(c), found: true });
+  },
+  collabSaveTicketDrafts: async (id: string, drafts: TicketDraft[] | null) => {
+    const c = councilById(id)!;
+    c.ticketDrafts = drafts ? { ...(c.ticketDrafts ?? { how: "manual" as const }), drafts: clone(drafts), at: Date.now() } : null;
+    return councilChanged(c);
+  },
+  collabWholePlanTicket: async (id: string) => {
+    const c = councilById(id)!;
+    c.ticketDrafts = { drafts: [wholePlanDraft(c.plan!.text, c.title)], how: "manual", at: Date.now() };
+    return councilChanged(c);
+  },
+  collabSplitWithModel: async (id: string, key: string) => {
+    const c = councilById(id)!;
+    const label = c.participants.find((p) => p.key === key)?.label ?? key;
+    const reply = JSON.stringify([
+      { title: "Stream the donor export", detail: "One endpoint, the list's filters, rows streamed.", acceptance: "- Filters honoured", priority: "high" },
+      { title: "Measure the biggest org", detail: "Time the export on the largest org.", priority: "medium" },
+    ]);
+    c.ticketDrafts = { drafts: draftsFromModel(reply, c.title), how: "model", by: label, at: Date.now() };
+    councilNote(c, `${label} split the approved plan into 2 draft House tickets for you to review.`);
+    return later(councilChanged(c), 600);
+  },
+  collabTicketTargets: async () => later(clone(ticketTargets)),
+  collabTicketConsent: async (_id: string, target: { roomId?: string; project?: string }, allow: boolean) => {
+    ticketTargets = { ...ticketTargets, targets: ticketTargets.targets.map((t) => (("roomId" in t && t.roomId === target.roomId) || (t.kind === "project" && t.project === target.project) ? { ...t, connection: allow ? "connected" : "declined" } : t)) };
+    return clone(ticketTargets);
+  },
+  collabCreateTickets: async (id: string, target: { roomId?: string; project?: string }, drafts: TicketDraft[]) => {
+    const c = councilById(id)!;
+    const t = ticketTargets.targets.find((x) => ("roomId" in x ? x.roomId === target.roomId : x.project === target.project))!;
+    const project = t.kind === "room" ? t.project! : t.project;
+    const result: CouncilCreateResult = { project, room: t.kind === "room" ? t.room : null, created: [], failed: null, notSent: [] };
+    drafts.forEach((d, i) => {
+      if (result.failed) result.notSent.push({ draftId: d.id, title: d.title });
+      else if (i === 1 && ticketsQ.has("councilTicketsFail")) result.failed = { draftId: d.id, title: d.title, error: "The House answered 422: A work item titled like that already exists" };
+      else result.created.push({ draftId: d.id, n: nextTicket++, title: d.title });
+    });
+    c.houseTickets = [...(c.houseTickets ?? []), ...result.created.map((x) => ({ n: x.n, title: x.title, project, roomId: t.kind === "room" ? t.roomId : null, room: result.room, at: Date.now() }))];
+    const made = new Set(result.created.map((x) => x.draftId));
+    const left = drafts.filter((d) => !made.has(d.id));
+    c.ticketDrafts = left.length ? { drafts: left, how: c.ticketDrafts?.how ?? "manual", at: Date.now() } : null;
+    if (result.created.length) councilNote(c, `Created ${result.created.length} House tickets in ${project} from the plan: ${result.created.map((x) => `#${x.n} ${x.title}`).join("; ")}.`);
+    return later({ room: councilChanged(c), result }, 400);
+  },
+  collabOpenTicket: async (_id: string, n: number) => console.info(`[preview] would open #${n} in the House`),
   collabModels: async () => {
     const presets = [
       { key: "opus", label: "Claude Opus", agent: "claude", model: "opus" },
@@ -1855,6 +1952,12 @@ if (params.has("council")) {
   const list = params.get("council");
   if (list === "list" || list === "rail") set("mb.collab.list", list === "list");
   if (list === "new") setTimeout(() => click(".collab-rail-new, .collab-new"), 500);
+}
+// ?councilTickets (see the fixture above) opens the Council on its approved plan and its "Create House tickets…"
+if (ticketsMode !== null) {
+  set("mb.tab", "collaborate");
+  set("mb.collab.inspector", true);
+  setTimeout(() => waitFor(".council-tix-open", (el) => el.click()));
 }
 // ?new opens New session, as ⌘N does; ?new=connected switches it to the first team room;
 // ?new=room opens it from the first shared group's + instead
@@ -2788,6 +2891,81 @@ if (params.has("houseBoardAudit")) {
     const tag = document.createElement("script");
     tag.type = "application/json";
     tag.id = "mb-house-audit";
+    tag.textContent = JSON.stringify(out).replace(/</g, "\\u003c");
+    document.body.appendChild(tag);
+  })();
+}
+// ?councilTicketsAudit reviews the approved plan's drafts as a person would — edits a title and tags, merges two,
+// removes one, moves one up — then creates them, and writes what it saw into <script id="mb-council-tix-audit"> for
+// test/uiCouncilTickets.test.ts: the rows after each step, the create button's label and whether it's enabled, and
+// the create calls made (none before the click). =consent starts with the token not allowed; with ?councilTicketsFail
+// the fixture House refuses the second ticket.
+if (params.has("councilTicketsAudit")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const rows = () => [...document.querySelectorAll<HTMLElement>(".council-tix-row .t")].map((e) => e.textContent ?? "");
+  const row = (i: number) => document.querySelectorAll<HTMLElement>(".council-tix-row")[i];
+  const button = () => document.querySelector<HTMLButtonElement>(".council-tix-create");
+  const creates = () => calls.filter((c) => c.fn === "collabCreateTickets").map((c) => (c.args[2] as TicketDraft[]).map((d) => ({ title: d.title, priority: d.priority, tags: d.tags })));
+  const setText = (el: HTMLInputElement | HTMLTextAreaElement | null, text: string) => {
+    if (!el) return;
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")?.set?.call(el, text);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const toolbar = (label: RegExp) => [...document.querySelectorAll<HTMLButtonElement>(".council-tix-tools button")].find((b) => label.test(b.textContent ?? b.getAttribute("aria-label") ?? ""));
+  const state = () => ({ rows: rows(), label: button()?.textContent ?? null, enabled: !!button() && !button()!.disabled, creates: creates().length });
+  (async () => {
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < 100 && rows().length < 5; i++) await sleep(50);
+    await sleep(300);
+    out.start = state();
+    if (params.get("councilTicketsAudit") === "consent") {
+      out.consentAsk = document.querySelector(".council-tix-consent span")?.textContent ?? null;
+      document.querySelector<HTMLButtonElement>(".council-tix-consent button.strong")?.click();
+      await sleep(200);
+      out.allowed = { ...state(), asking: !!document.querySelector(".council-tix-consent") };
+    }
+    // edit the third ticket's title and its tags
+    row(2).click();
+    await sleep(50);
+    setText(document.querySelector<HTMLInputElement>("#ctx-title"), "Export button in the toolbar");
+    setText(document.querySelector<HTMLInputElement>("#ctx-tags"), "needs-agent, frontend");
+    await sleep(50);
+    out.edited = { ...state(), tags: [...row(2).querySelectorAll(".chip.tag")].map((t) => t.textContent) };
+    // merge the third and fourth
+    row(2).querySelector<HTMLInputElement>("input")!.click();
+    row(3).querySelector<HTMLInputElement>("input")!.click();
+    await sleep(50);
+    out.mergeLabel = toolbar(/^Merge/)?.textContent ?? null;
+    toolbar(/^Merge/)?.click();
+    await sleep(50);
+    row(2).click();
+    await sleep(50);
+    out.merged = { ...state(), detail: document.querySelector<HTMLTextAreaElement>("#ctx-detail")?.value ?? null, acceptance: document.querySelector<HTMLTextAreaElement>("#ctx-acc")?.value ?? null };
+    // remove the last, the spike
+    row(3).click();
+    await sleep(50);
+    toolbar(/^Remove/)?.click();
+    await sleep(50);
+    out.removed = state();
+    // move the merged one up
+    row(2).click();
+    await sleep(50);
+    document.querySelector<HTMLButtonElement>('.council-tix-tools button[aria-label="Move up"]')?.click();
+    await sleep(50);
+    out.moved = state();
+    // and create them
+    button()?.click();
+    await sleep(900);
+    out.created = {
+      ...state(),
+      sent: creates(),
+      result: document.querySelector<HTMLElement>(".council-tix-result")?.innerText.replace(/\s+/g, " ").trim() ?? null,
+      links: [...document.querySelectorAll(".council-tix-made button.link")].map((b) => b.textContent),
+      note: [...document.querySelectorAll(".collab-thread, .collab-body")].map((e) => e.textContent ?? "").join(" ").includes("Created "),
+    };
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-council-tix-audit";
     tag.textContent = JSON.stringify(out).replace(/</g, "\\u003c");
     document.body.appendChild(tag);
   })();
