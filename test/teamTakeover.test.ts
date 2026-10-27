@@ -6,13 +6,16 @@ import { git, makeRepo, tempDir, write } from "./helpers";
 import { loopbackRoom, until, type LoopbackMember } from "../src/main/team/loopback";
 import { liveRoomHost, TakeoverService, TRANSCRIPT_CHUNK } from "../src/main/team/takeover";
 import { ROOM_LIMITS } from "../src/main/team/roomLimits";
+import { RoomStore } from "../src/main/team/rooms";
 import { TurnFeed } from "../src/main/team/roomSessions";
 import { agentFor } from "../src/main/agents";
 import { claudeProjectDir, codexRolloutPath, realpathOr } from "../src/main/agentFiles";
 import { publicUrl, repoIdentity, withoutCredentials } from "../src/main/git";
 import { rebaseTranscript } from "../src/main/transcripts";
 import { worktreeAt } from "../src/main/worktrees";
-import { awayGrantFor, grantProblem, signGrant } from "../src/main/team/takeoverGrants";
+import { grantProblem, signGrant } from "../src/main/team/takeoverGrants";
+import { offlineTakeoverRefusal } from "../src/main/team/takeover";
+import { ConnectionLog, connectedThen, CONNECTED_KEEP_MS } from "../src/main/team/connectionLog";
 import { backupFreshness, HANDOVER_GRANT_MS, NOT_ALLOWED, NOT_PUSHED, remoteLabel, type TakeoverGrant, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
 import type { NewSessionRequest, SessionInfo } from "../src/shared/types";
 
@@ -61,11 +64,12 @@ function session(o: Partial<SessionInfo> & { id: string; cwd: string; repoPath: 
 }
 
 /** A member's take-over service over fakes for the app: its sessions, its repositories, a launch that only records. */
-function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessions?: SessionInfo[]; now?: () => number; askMs?: number }) {
+function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessions?: SessionInfo[]; now?: () => number; askMs?: number; skew?: number }) {
   const sessions = new Map((o.sessions ?? []).map((s) => [s.id, s]));
   const turnEnds = new Set<(id: string) => void>();
   const launched: NewSessionRequest[] = [];
   const takenOver: string[] = [];
+  const refused: string[] = [];
   const logs: string[] = [];
   /** Sessions whose agent was stopped, the room chat lines posted, and the requests to hand over that were shown. */
   const stopped: string[] = [];
@@ -112,10 +116,12 @@ function takeover(m: LoopbackMember, roomId: string, o: { repos: string[]; sessi
       return s;
     },
     onTakenOver: (id, by) => takenOver.push(`${id} by ${by}`),
+    onRefused: (id, owner, title) => refused.push(`${id}: ${owner} refused “${title}”`),
+    offlineSkewMs: o.skew,
     claudeProjects,
     codexSessions,
   });
-  return { svc, sessions, launched, takenOver, logs, stopped, chat, asks, received, claudeProjects, codexSessions, turnEnd: (id: string) => turnEnds.forEach((cb) => cb(id)) };
+  return { svc, sessions, launched, takenOver, refused, logs, stopped, chat, asks, received, claudeProjects, codexSessions, turnEnd: (id: string) => turnEnds.forEach((cb) => cb(id)) };
 }
 
 /** Ryan's Claude transcript for the session, in his fake ~/.claude. */
@@ -150,7 +156,7 @@ function files(root: string): Record<string, string> {
  * backups on origin, so the room's admin (Ryan) turns those on, unless
  * `backupsToOrigin: false` keeps the room as every room starts: peer to peer.
  */
-async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number; nickNow?: () => number; backupsToOrigin?: boolean; consent?: boolean; away?: boolean } = {}) {
+async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryanNow?: () => number; nickNow?: () => number; backupsToOrigin?: boolean; consent?: boolean; skew?: number } = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(names, { dir: tempDir("team") });
   const [ryanM, nickM, samM] = members;
@@ -158,16 +164,11 @@ async function setup(names = ["Ryan", "Nick"], o: { nickHasClone?: boolean; ryan
     ryanM.team.publish(roomId, "room.settings", { backupsToOrigin: true });
     await until(() => members.every((m) => m.team.room(roomId)?.ext.settings?.backupsToOrigin === true), "everyone to hear the room backs up to origin");
   }
-  const ryan = takeover(ryanM, roomId, { repos: [r.ryanClone], sessions: [session({ id: "s1", cwd: r.wt, repoPath: r.ryanClone })], now: o.ryanNow });
+  const ryan = takeover(ryanM, roomId, { repos: [r.ryanClone], sessions: [session({ id: "s1", cwd: r.wt, repoPath: r.ryanClone })], now: o.ryanNow, skew: o.skew });
   const nick = takeover(nickM, roomId, { repos: o.nickHasClone === false ? [] : [r.nickClone], now: o.nickNow });
   const sam = samM ? takeover(samM, roomId, { repos: [] }) : null;
   // backing up to origin needs each member's own consent too: here, everyone allowed it
   if (o.consent !== false) for (const m of [ryan, nick, sam]) m?.svc.setBackupConsent(roomId, true);
-  // a take-over with the owner offline needs their away grant: here, everyone allowed it for all their sessions, unless `away: false`
-  if (o.away !== false) {
-    for (const m of [ryan, nick, sam]) m?.svc.setAwayGrant(roomId, { hours: 168, sessions: null });
-    await until(() => members.every((m) => Object.keys(m.team.room(roomId)?.ext.takeover?.away ?? {}).length === members.length), "everyone to hear the away grants");
-  }
   const transcript = claudeTranscript(ryan.claudeProjects, r.wt, [userLine(r.wt, "Add the donor entity"), agentLine(r.wt, "Added src/b.ts and started on a.ts")]);
   return { ...r, roomId, net, ryanM, nickM, samM, ryan, nick, sam, transcript };
 }
@@ -973,7 +974,7 @@ describe("backups kept peer to peer (every room's default)", () => {
     t.ryanM.team.setAdmin(t.roomId, t.nickM.id, true);
     await until(() => !!t.nickM.team.room(t.roomId)!.roles?.admins.includes(t.nickM.id), "Nick to be an admin at his");
     expect(() => t.nick.svc.setBackupsToOrigin(t.roomId, true)).toThrow(/^Only the room's owner \(Ryan\) can change where its backups go/);
-    expect(t.nick.svc.view().rooms).toEqual([{ roomId: t.roomId, toOrigin: false, consent: true, away: { sessions: null, expiresAt: expect.any(Number) }, changed: null, adminName: "Ryan", canChange: false, remote: "origin" }]);
+    expect(t.nick.svc.view().rooms).toEqual([{ roomId: t.roomId, toOrigin: false, consent: true, changed: null, adminName: "Ryan", canChange: false, remote: "origin" }]);
     expect(t.ryan.svc.view().rooms[0]).toMatchObject({ canChange: true, adminName: "Ryan" });
     // a Mockingbird that doesn't cooperate signs one anyway: every member applies it as nothing
     t.nickM.team.publish(t.roomId, "room.settings", { backupsToOrigin: true });
@@ -1086,7 +1087,7 @@ describe("backups to origin (the admin's opt-in)", () => {
   });
 });
 
-describe("take-over needs the owner's signed grant", () => {
+describe("take-over: the owner's hand-over when they're online, none when they're offline", () => {
   /** Ryan's s1 backed up and copied to Nick, then Ryan's laptop shut. */
   async function ryanAway(o: Parameters<typeof setup>[1] = {}) {
     const t = await setup(["Ryan", "Nick"], o);
@@ -1104,64 +1105,166 @@ describe("take-over needs the owner's signed grant", () => {
   const caughtUp = (t: Awaited<ReturnType<typeof setup>>) =>
     until(() => (t.ryanM.team.room(t.roomId)?.events ?? 0) === t.nickM.team.room(t.roomId)!.events, "both to hold the same events");
 
-  it("refuses a take-over while the owner is away without their away grant, saying why and whom to ask — then allows it with one", async () => {
-    const t = await ryanAway({ away: false });
-    const plan = await t.nick.svc.plan(t.roomId, "s1");
-    expect(plan.grant).toEqual({ kind: "none", why: expect.stringMatching(/^Ryan hasn't allowed take-overs while they're away\. Ask Ryan to hand it over when they're back online, or to allow take-overs while they're away \(Settings → Team\)\.$/) });
-    expect(viewOf(t.nick.svc)).toMatchObject({ ownerOnline: false, awayUntil: null });
-    await expect(t.nick.svc.takeOver(t.roomId, "s1")).rejects.toThrow(/^“Donor entities” can't be taken over: Ryan hasn't allowed take-overs while they're away\. Ask Ryan/);
-    expect(t.nick.launched).toEqual([]);
-    expect(backupIn(t.nickM, t.roomId)!.takenOver).toBeNull();
-    // Ryan, back, allows it for this session for 8 hours, and leaves again
-    await back(t);
-    t.ryan.svc.setAwayGrant(t.roomId, { hours: 8, sessions: ["s1"] });
-    expect(t.ryan.svc.view().rooms[0].away).toEqual({ sessions: ["s1"], expiresAt: expect.any(Number) });
-    await until(() => !!t.nickM.team.room(t.roomId)?.ext.takeover?.away?.[t.ryanM.id], "Nick to hear the grant");
+  it("with the owner offline, any member takes it over with no grant, and every log agrees on who holds it", async () => {
+    const t = await setup(["Ryan", "Nick", "Sam"]);
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    await until(() => !!refIn(t.nickClone, roomBackupRef(t.roomId, "s1")), "Nick's copy");
+    expect(backupIn(t.nickM, t.roomId)).toMatchObject({ grants: true, offline: true });
     t.net.setOnline(t.ryanM.id, false);
-    await until(() => t.nickM.team.presence(t.roomId).length === 0, "Ryan to drop");
-    const until8h = t.nickM.team.room(t.roomId)!.ext.takeover!.away![t.ryanM.id].expiresAt;
-    expect(until8h - Date.now()).toBeGreaterThan(7.9 * 3_600_000);
-    expect((await t.nick.svc.plan(t.roomId, "s1")).grant).toEqual({ kind: "away", expiresAt: until8h });
-    expect(viewOf(t.nick.svc).awayUntil).toBe(until8h);
+    await until(() => !t.nickM.team.presence(t.roomId).includes(t.ryanM.id), "Ryan to drop");
+    expect((await t.nick.svc.plan(t.roomId, "s1")).grant).toEqual({ kind: "offline" });
+    expect(viewOf(t.nick.svc)).toMatchObject({ ownerOnline: false, offlineTakeover: true });
     const r = await t.nick.svc.takeOver(t.roomId, "s1");
-    expect(backupIn(t.nickM, t.roomId)!.takenOver).toMatchObject({ by: t.nickM.id, newSessionId: r.sessionId, grant: "away" });
-    // Ryan's Mac checks the grant itself, and stops its copy
-    await back(t);
+    await until(() => backupIn(t.samM!, t.roomId)?.takenOver?.newSessionId === r.sessionId, "Sam to hear of it");
+    // Ryan's Mac, back, was offline when it happened: it honours it, and stops its copy
+    t.net.setOnline(t.ryanM.id, true);
     await until(() => t.ryan.stopped.includes("s1"), "Ryan's copy to stop");
-    expect(backupIn(t.ryanM, t.roomId)!.takenOver).toMatchObject({ by: t.nickM.id, grant: "away" });
+    const all = [t.ryanM, t.nickM, t.samM!];
+    await until(() => new Set(all.map((m) => m.team.room(t.roomId)!.events)).size === 1, "every log to hold the same events");
+    for (const m of all) expect(backupIn(m, t.roomId)).toMatchObject({ takenOver: { by: t.nickM.id, newSessionId: r.sessionId, grant: "offline" } });
+    for (const m of all) expect(backupIn(m, t.roomId)!.refusals).toBeUndefined();
+    expect(t.ryan.chat).toEqual([]);
+    expect(t.ryan.takenOver).toEqual(["s1 by Nick"]);
+    expect(t.nick.refused).toEqual([]);
+    expect(t.ryan.svc.relaunchRefusal("s1")).toMatch(/continues on Nick's laptop/);
   }, 30_000);
 
-  it("away grants cover only the sessions named, expire, and can be withdrawn", async () => {
-    const t = await setup(["Ryan", "Nick"], { away: false });
+  it("an offline take-over stamped while the owner's Mac was connected to the taker is refused: every log puts the session back, the taker's copy stops", async () => {
+    // no leeway, so a take-over moments after connecting falls inside the connection
+    const t = await setup(["Ryan", "Nick", "Sam"], { skew: 0 });
     await t.ryan.svc.turnEnded("s1");
-    const room = () => t.nickM.team.room(t.roomId)!;
-    const heard = (pred: () => boolean) => until(pred, "Nick to hear Ryan's grant");
-    // another session of Ryan's only
-    expect(() => t.ryan.svc.setAwayGrant(t.roomId, { hours: 8, sessions: ["s9"] })).toThrow(/s9 isn't one of yours/);
-    expect(() => t.ryan.svc.setAwayGrant(t.roomId, { hours: 5, sessions: null })).toThrow(/Choose one of 8, 24, 72, 168 hours/);
-    // an expired one (signed with times past): it counts for nothing
-    const past = Date.now() - 10 * 3_600_000;
-    const expired = signGrant(t.ryanM.team, { kind: "away", roomId: t.roomId, sessions: null, to: null, sha: null, issuedAt: past, expiresAt: past + 8 * 3_600_000 });
-    t.ryanM.team.publish(t.roomId, "session.awayGrant", { grant: expired });
-    await heard(() => room().ext.takeover?.away?.[t.ryanM.id]?.id === expired.id);
-    expect(awayGrantFor(room(), t.ryanM.id, "Ryan", "s1", Date.now())).toEqual({ problem: "Ryan's grant expired" });
-    // forced through anyway by a Mockingbird that doesn't check: the room takes it as nothing
-    t.nickM.team.publish(t.roomId, "session.takenOver", { sessionId: "s1", from: t.ryanM.id, newSessionId: "forced1", snapshot: { sha: room().ext.takeover!.sessions.s1.latest.sha, takenAt: 1, source: "peer" }, conversation: "none", branch: null, grant: expired });
+    await t.ryan.svc.settled();
+    const all = [t.ryanM, t.nickM, t.samM!];
+    const caught = () => until(() => new Set(all.map((m) => m.team.room(t.roomId)!.events)).size === 1, "every log to hold the same events");
+    await caught();
+    // Nick's Mac, connected to Ryan's, publishes a take-over as if Ryan were offline (a modified Mockingbird, or a stale view): its copy is running
+    t.nick.sessions.set("n5", session({ id: "n5", cwd: t.nickClone, repoPath: t.nickClone }));
+    const sha = backupIn(t.nickM, t.roomId)!.latest.sha;
+    t.nickM.team.publish(t.roomId, "session.takenOver", { sessionId: "s1", from: t.ryanM.id, newSessionId: "n5", snapshot: { sha, takenAt: backupIn(t.nickM, t.roomId)!.latest.takenAt, source: "peer" }, conversation: "none", branch: "feature-x", offline: 1 });
+    await until(() => t.ryan.chat.length === 1, "Ryan's Mac to refuse it");
+    await caught();
+    for (const m of all) {
+      expect(backupIn(m, t.roomId)).toMatchObject({ owner: t.ryanM.id, takenOver: null, dropped: null, refusals: [{ by: t.nickM.id, newSessionId: "n5", reason: "connected" }] });
+    }
+    expect(t.ryan.stopped).toEqual([]); // Ryan's agent never stopped
+    expect(t.ryan.takenOver).toEqual([]);
+    expect(t.ryan.chat[0]).toBe("“Donor entities” stays on Ryan's laptop: Nick's take-over was refused (Ryan's Mac was connected to Nick's then, so Nick should have asked). Ask Ryan to hand it over.");
+    expect(t.ryan.logs.some((l) => /refused Nick's offline take-over of session s1/.test(l))).toBe(true);
+    // Nick's copy stops, says why, and doesn't run again
+    await until(() => t.nick.stopped.includes("n5"), "Nick's copy to stop");
+    expect(t.nick.refused).toEqual(["n5: Ryan refused “Donor entities”"]);
+    expect(t.nick.svc.relaunchRefusal("n5")).toMatch(/^Ryan's Mac refused this take-over of “Donor entities”: the session stayed theirs/);
+    expect(t.ryan.svc.relaunchRefusal("s1")).toBeNull();
+    // Ryan's session goes on backing up as his, on every log
+    write(t.wt, { "src/a.ts": "Ryan keeps typing\n" });
+    await t.ryan.svc.turnEnded("s1");
+    await caught();
+    for (const m of all) expect(backupIn(m, t.roomId)).toMatchObject({ owner: t.ryanM.id, takenOver: null, latest: { sha: expect.not.stringMatching(sha) } });
+    // and a take-over by the hand-over still works afterwards
+    const asked = t.nick.svc.takeOver(t.roomId, "s1");
+    await until(() => t.ryan.asks.length === 1, "Ryan to be asked");
+    t.ryan.svc.answerAsk(t.ryan.asks[0].askId, "handover");
+    const r = await asked;
+    await caught();
+    for (const m of all) expect(backupIn(m, t.roomId)!.takenOver).toMatchObject({ by: t.nickM.id, newSessionId: r.sessionId, grant: "handover" });
+  }, 40_000);
+
+  it("is refused by the owner only for a taker it was connected to: cut off from Nick but not from Sam, Ryan's session is Nick's to take", async () => {
+    const t = await setup(["Ryan", "Nick", "Sam"], { skew: 0 });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    await until(() => !!refIn(t.nickClone, roomBackupRef(t.roomId, "s1")), "Nick's copy");
+    t.net.partition(t.ryanM.id, t.nickM.id);
+    await until(() => !t.nickM.team.presence(t.roomId).includes(t.ryanM.id) && !t.ryanM.team.presence(t.roomId).includes(t.nickM.id), "the partition");
+    expect((await t.nick.svc.plan(t.roomId, "s1")).grant).toEqual({ kind: "offline" });
+    const r = await t.nick.svc.takeOver(t.roomId, "s1");
+    // Ryan hears of it through Sam: his Mac wasn't connected to Nick's then, so it counts
+    await until(() => t.ryan.stopped.includes("s1"), "Ryan's copy to stop");
+    const all = [t.ryanM, t.nickM, t.samM!];
+    await until(() => new Set(all.map((m) => m.team.room(t.roomId)!.events)).size === 1, "every log to hold the same events");
+    for (const m of all) expect(backupIn(m, t.roomId)!.takenOver).toMatchObject({ by: t.nickM.id, newSessionId: r.sessionId, grant: "offline" });
+    expect(t.ryan.chat).toEqual([]);
+  }, 30_000);
+
+  it("still asks an online owner first — when the room's owner or an admin takes over a member's session too", async () => {
+    const t = await setup(["Ryan", "Nick", "Sam"]);
+    // Ryan owns the room and makes Sam an admin; Nick's session n1
+    t.ryanM.team.setAdmin(t.roomId, t.samM!.id, true);
+    await until(() => !!t.samM!.team.room(t.roomId)!.roles?.admins.includes(t.samM!.id), "Sam to be an admin at his");
+    t.nick.sessions.set("n1", session({ id: "n1", cwd: t.nickClone, repoPath: t.nickClone, title: "Gift export", conversation: undefined }));
+    await t.nick.svc.turnEnded("n1");
+    await until(() => !!backupIn(t.ryanM, t.roomId, "n1") && !!backupIn(t.samM!, t.roomId, "n1"), "Ryan and Sam to hear of Nick's session");
+    for (const taker of [t.ryan, t.sam!]) {
+      expect((await taker.svc.plan(t.roomId, "n1")).grant).toEqual({ kind: "ask" });
+      // Sam has no clone among his repositories: he picks Ryan's (any clone of the repository does)
+      const asked = taker.svc.takeOver(t.roomId, "n1", t.ryanClone);
+      await until(() => t.nick.asks.length === 1, "Nick to be asked");
+      t.nick.svc.answerAsk(t.nick.asks[0].askId, "keep");
+      await expect(asked).rejects.toThrow(/Nick kept/);
+      t.nick.asks.length = 0;
+    }
+    expect(t.nick.stopped).toEqual([]);
+    expect(backupIn(t.nickM, t.roomId, "n1")!.takenOver).toBeNull();
+  }, 30_000);
+
+  it("waits for a 1.5 owner to come back: their sessions aren't taken over while they're offline, and a forced take-over changes nothing", async () => {
+    const t = await setup(["Ryan", "Nick"]);
+    await t.ryan.svc.turnEnded("s1");
     await caughtUp(t);
-    for (const m of [t.ryanM, t.nickM]) expect(m.team.room(t.roomId)!.ext.takeover!.sessions.s1).toMatchObject({ takenOver: null, ungranted: { by: t.nickM.id, newSessionId: "forced1" } });
-    expect(t.ryan.stopped).toEqual([]);
-    // a current one, withdrawn: nothing again
-    t.ryan.svc.setAwayGrant(t.roomId, { hours: 24, sessions: null });
-    await heard(() => room().ext.takeover?.away?.[t.ryanM.id]?.id !== expired.id);
-    expect("grant" in awayGrantFor(room(), t.ryanM.id, "Ryan", "s1", Date.now())).toBe(true);
-    t.ryan.svc.setAwayGrant(t.roomId, null);
-    await heard(() => !room().ext.takeover?.away?.[t.ryanM.id]);
-    expect(t.ryan.svc.view().rooms[0].away).toBeNull();
-    expect(awayGrantFor(room(), t.ryanM.id, "Ryan", "s1", Date.now())).toEqual({ problem: "Ryan hasn't allowed take-overs while they're away" });
-  });
+    // what a 1.5 Mockingbird of Ryan's publishes: a backup that signs grants, without taking offline take-overs
+    const sha = backupIn(t.nickM, t.roomId)!.latest.sha;
+    const at = Date.now();
+    t.ryanM.team.publish(t.roomId, "session.backup", { sessionId: "old1", sha, takenAt: at, push: { ok: false, at, error: NOT_PUSHED }, toOrigin: false, session: { title: "Older one", agent: "claude", branch: "feature-x", originUrl: t.bare, cwd: t.wt, conversationId: null }, transcriptBytes: null, grants: 1 });
+    await until(() => !!backupIn(t.nickM, t.roomId, "old1"), "Nick to hear of it");
+    expect(backupIn(t.nickM, t.roomId, "old1")!.offline).toBeUndefined();
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => !t.nickM.team.presence(t.roomId).includes(t.ryanM.id), "Ryan to drop");
+    const why = /^Ryan's Mockingbird needs an update \(1\.6\.0\) before their sessions can be taken over while they're offline\. Take it over once Ryan is back online/;
+    expect((await t.nick.svc.plan(t.roomId, "old1")).grant).toEqual({ kind: "none", why: expect.stringMatching(why) });
+    expect(viewOf(t.nick.svc, "old1").offlineTakeover).toBe(false);
+    await expect(t.nick.svc.takeOver(t.roomId, "old1")).rejects.toThrow(/can't be taken over: Ryan's Mockingbird needs an update \(1\.6\.0\)/);
+    expect(t.nick.launched).toEqual([]);
+    // forced through anyway, it's held as ungranted: nothing changes, on Nick's log as on the 1.5 owner's
+    t.nickM.team.publish(t.roomId, "session.takenOver", { sessionId: "old1", from: t.ryanM.id, newSessionId: "forced1", snapshot: { sha, takenAt: at, source: "peer" }, conversation: "none", branch: null, offline: 1 });
+    expect(backupIn(t.nickM, t.roomId, "old1")).toMatchObject({ takenOver: null, ungranted: { by: t.nickM.id, newSessionId: "forced1" } });
+    // while s1, whose owner's Mockingbird takes them, is Nick's to take
+    expect(viewOf(t.nick.svc).offlineTakeover).toBe(true);
+  }, 30_000);
+
+  it("loads logs with 1.5's away grants: the take-overs they granted still count, on reload too", async () => {
+    const t = await ryanAway();
+    // what 1.5 did: Ryan allowed take-overs while away (signed before he left), and Nick took s1 over under it
+    const now = Date.now();
+    const grant = signGrant(t.ryanM.team, { kind: "away", roomId: t.roomId, sessions: null, to: null, sha: null, issuedAt: now - 60_000, expiresAt: now + 8 * 3_600_000 });
+    await back(t);
+    t.ryanM.team.publish(t.roomId, "session.awayGrant", { grant });
+    await caughtUp(t);
+    t.net.setOnline(t.ryanM.id, false);
+    await until(() => !t.nickM.team.presence(t.roomId).includes(t.ryanM.id), "Ryan to drop");
+    const latest = backupIn(t.nickM, t.roomId)!.latest;
+    t.nickM.team.publish(t.roomId, "session.takenOver", { sessionId: "s1", from: t.ryanM.id, newSessionId: "away1", snapshot: { ...latest, source: "peer" }, conversation: "none", branch: "feature-x", grant });
+    await back(t);
+    await until(() => t.ryan.stopped.includes("s1"), "Ryan's copy to stop");
+    await caughtUp(t);
+    for (const m of [t.ryanM, t.nickM]) expect(backupIn(m, t.roomId)!.takenOver).toMatchObject({ by: t.nickM.id, newSessionId: "away1", grant: "away" });
+    expect(t.ryan.chat).toEqual([]);
+    // read back from disk, the same
+    for (const m of [t.ryanM, t.nickM]) {
+      const store = new RoomStore(m.store.dir).load();
+      expect(store.problems).toEqual([]);
+      const state = store.get(t.roomId)!.state!;
+      expect(state.ext.takeover!.away![t.ryanM.id].id).toBe(grant.id);
+      expect(state.ext.takeover!.sessions.s1.takenOver).toMatchObject({ by: t.nickM.id, newSessionId: "away1", grant: "away" });
+    }
+    // withdrawn the 1.5 way: still parses, and changes nothing that counted
+    t.ryanM.team.publish(t.roomId, "session.awayGrant", { grant: null });
+    await caughtUp(t);
+    expect(backupIn(t.nickM, t.roomId)!.takenOver).toMatchObject({ grant: "away" });
+  }, 40_000);
 
   it("checks every grant against the owner's key, the session, the taker and the snapshot", async () => {
-    const t = await setup(["Ryan", "Nick", "Sam"], { away: false });
+    const t = await setup(["Ryan", "Nick", "Sam"]);
     await t.ryan.svc.turnEnded("s1");
     await until(() => !!backupIn(t.samM!, t.roomId), "Sam to hear of the backup");
     const room = t.nickM.team.room(t.roomId)!;
@@ -1189,7 +1292,7 @@ describe("take-over needs the owner's signed grant", () => {
   });
 
   it("an ungranted take-over changes nothing on the owner's Mac (M3) — not even the room admin's: the session runs on, and the room is told once", async () => {
-    const t = await setup(["Ryan", "Nick"], { away: false });
+    const t = await setup(["Ryan", "Nick"]);
     // Nick's session n1; Ryan is the room's admin
     t.nick.sessions.set("n1", session({ id: "n1", cwd: t.nickClone, repoPath: t.nickClone, title: "Gift export", conversation: undefined }));
     await t.nick.svc.turnEnded("n1");
@@ -1222,7 +1325,7 @@ describe("take-over needs the owner's signed grant", () => {
   });
 
   it("tells an older Mockingbird asking for a session that it needs an update — and a taker whose owner's Mockingbird is older", async () => {
-    const t = await setup(["Ryan", "Nick"], { away: false });
+    const t = await setup(["Ryan", "Nick"]);
     await t.ryan.svc.turnEnded("s1");
     await caughtUp(t);
     // an older Mockingbird asks the old way: it would take over without Ryan's hand-over
@@ -1238,7 +1341,7 @@ describe("take-over needs the owner's signed grant", () => {
   });
 
   it("accepts, on the owner's first start with grants, a take-over from before them that it had already honoured", async () => {
-    const t = await ryanAway({ away: false });
+    const t = await ryanAway();
     // what an older Nick did: a take-over with no grant
     const sha = backupIn(t.nickM, t.roomId)!.latest.sha;
     t.nickM.team.publish(t.roomId, "session.takenOver", { sessionId: "s1", from: t.ryanM.id, newSessionId: "old1", snapshot: { sha, takenAt: 1, source: "peer" }, conversation: "full", branch: "feature-x" });
@@ -1260,7 +1363,7 @@ describe("take-over needs the owner's signed grant", () => {
     expect(again.stopped).toEqual(["s1"]);
     expect(again.chat).toEqual([]);
     // an ungranted take-over this Mac never honoured is never accepted
-    const u = await ryanAway({ away: false });
+    const u = await ryanAway();
     u.nickM.team.publish(u.roomId, "session.takenOver", { sessionId: "s1", from: u.ryanM.id, newSessionId: "old2", snapshot: { sha: backupIn(u.nickM, u.roomId)!.latest.sha, takenAt: 1, source: "peer" }, conversation: "full", branch: null });
     u.ryan.svc.close();
     await back(u);
@@ -1390,6 +1493,47 @@ describe("each member's consent to backups to origin", () => {
   });
 });
 
+describe("the owner's record of connections, and the offline take-over rule", () => {
+  const MIN = 60_000;
+  it("refuses a take-over stamped inside a connection, with leeway at both ends, and one stamped before its snapshot", () => {
+    const spans: [number, number | null][] = [[100 * MIN, 200 * MIN], [300 * MIN, null]];
+    const rule = (at: number, snapshotAt = 0) => offlineTakeoverRefusal({ at, snapshotAt, connected: spans, skew: 2 * MIN });
+    expect(rule(150 * MIN)).toBe("connected");
+    expect(rule(101 * MIN)).toBeNull(); // just after connecting: the taker may not have seen it yet
+    expect(rule(199 * MIN)).toBeNull(); // just before it dropped: the owner may have been gone already
+    expect(rule(250 * MIN)).toBeNull(); // apart
+    expect(rule(302 * MIN)).toBe("connected"); // still connected now: any later time
+    expect(rule(10_000 * MIN)).toBe("connected");
+    expect(rule(250 * MIN, 260 * MIN)).toBe("before-snapshot");
+    expect(rule(250 * MIN, 251 * MIN)).toBeNull(); // within the leeway of the snapshot's time
+    expect(offlineTakeoverRefusal({ at: 150 * MIN, snapshotAt: 0, connected: [], skew: 2 * MIN })).toBeNull(); // never connected: it counts
+    expect(connectedThen(spans, 150 * MIN, 0)).toBe(true);
+  });
+
+  it("keeps spans across a restart, ending one left open at its last heartbeat, and lets old ones go", () => {
+    const dir = tempDir("connections");
+    let now = 1_000 * MIN;
+    const log = new ConnectionLog({ dir, now: () => now, log: (c) => c });
+    log.update("room1", ["nick", "sam"]);
+    now += 10 * MIN;
+    log.update("room1", ["sam"]);
+    expect(log.spans("room1", "nick")).toEqual([[1_000 * MIN, 1_010 * MIN]]);
+    now += 5 * MIN;
+    log.beat(); // Sam is still connected at 1015
+    now += 30 * MIN; // the app dies without closing
+    const again = new ConnectionLog({ dir, now: () => now, log: (c) => c });
+    expect(again.spans("room1", "sam")).toEqual([[1_000 * MIN, 1_015 * MIN]]);
+    expect(fs.statSync(path.join(dir, "room1", "connected.json")).mode & 0o777).toBe(0o600);
+    // a month on, the old spans are let go at the next write
+    now += CONNECTED_KEEP_MS;
+    again.update("room1", ["sam"]);
+    expect(again.spans("room1", "nick")).toEqual([]);
+    expect(again.spans("room1", "sam")).toEqual([[now, null]]);
+    again.close();
+    expect(again.spans("room1", "sam")).toEqual([[now, now]]);
+  });
+});
+
 describe("take-over pieces", () => {
   it("names the remote backups would go to", () => {
     expect(remoteLabel(["git@github.com:acme/app.git", "https://github.com/acme/other"])).toBe("GitHub");
@@ -1504,7 +1648,7 @@ describe("take-over pieces", () => {
       self: false,
       takenOverByName: null,
       peerCopy: null,
-      awayUntil: null,
+      offlineTakeover: false,
       heldBy: [],
       transcript: null,
       problem: null,

@@ -606,8 +606,8 @@ const runDownload = (roomId: string, a: ArtifactSummary) => {
 // snapshot was copied here. 5110 keeps backups peer to peer (the default; Nick is its admin): one of yours taken over by Nick.
 // ?p2p: 5101 keeps its backups peer to peer too — Sam's copy here is older than his last turn
 const p2p = teamQuery.has("p2p");
-// ?noAway: Sam (offline) didn't allow take-overs while he's away, so his session can't be taken over; ?refused: Nick's older Mockingbird took over s2 without your hand-over
-const noAway = teamQuery.has("noAway");
+// ?olderSam: Sam (offline) runs a Mockingbird from before offline take-overs, so his session can't be taken over until he's back; ?refused: Nick's older Mockingbird took over s2 without your hand-over
+const olderSam = teamQuery.has("olderSam");
 const takeoverView: TakeoverView = (() => {
   const sha = (c: string) => c.repeat(40).slice(0, 40);
   const base = (o: Partial<RoomSessionBackupView> & Pick<RoomSessionBackupView, "sessionId" | "owner" | "ownerName">): RoomSessionBackupView => {
@@ -625,7 +625,7 @@ const takeoverView: TakeoverView = (() => {
       self: false,
       takenOverByName: null,
       peerCopy: { sha: sha("a1"), takenAt: now - 2 * min },
-      awayUntil: null,
+      offlineTakeover: false,
       heldBy: [],
       transcript: { have: 412_000, of: 412_000 },
       problem: null,
@@ -654,8 +654,8 @@ const takeoverView: TakeoverView = (() => {
         peerCopy: p2p ? { sha: sha("c3"), takenAt: now - 31 * min } : { sha: sha("b2"), takenAt: now - 4 * min },
         transcriptBytes: 980_000,
         transcript: { have: 640_000, of: 980_000 },
-        // Sam allowed take-overs while he's away, for six more hours (?noAway: he didn't)
-        awayUntil: noAway ? null : now + 6 * 60 * min,
+        // Sam is offline: his session can be taken over without asking (?olderSam: his Mockingbird is too old for that)
+        offlineTakeover: !olderSam,
       }),
       base({
         roomId: "R5110bbbbbbbbbbbbbbbbb",
@@ -672,9 +672,8 @@ const takeoverView: TakeoverView = (() => {
     ],
     rooms: [
       // ?backupConsent: you haven't answered whether your own 5101 sessions back up to origin, so the window asks
-      // you allowed take-overs of all your 5101 sessions while you're away, until tomorrow
-      { roomId: "R5101aaaaaaaaaaaaaaaaa", toOrigin: !p2p, consent: teamQuery.has("backupConsent") ? null : true, away: { sessions: null, expiresAt: now + 20 * 60 * min }, changed: { byName: "You", self: true, at: now - 3 * 24 * 60 * min }, adminName: "You", canChange: true, remote: "Azure DevOps" },
-      { roomId: "R5110bbbbbbbbbbbbbbbbb", toOrigin: false, consent: null, away: null, changed: null, adminName: "Nick Smith", canChange: false, remote: "GitHub" },
+      { roomId: "R5101aaaaaaaaaaaaaaaaa", toOrigin: !p2p, consent: teamQuery.has("backupConsent") ? null : true, changed: { byName: "You", self: true, at: now - 3 * 24 * 60 * min }, adminName: "You", canChange: true, remote: "Azure DevOps" },
+      { roomId: "R5110bbbbbbbbbbbbbbbbb", toOrigin: false, consent: null, changed: null, adminName: "Nick Smith", canChange: false, remote: "GitHub" },
     ],
     unbacked: [],
     cleanup: [{ roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "s0", title: "Spike: org cache", problem: "remote: TF401027: You need the Git 'ForcePush' permission to delete the backup" }],
@@ -787,9 +786,9 @@ let phoneStatus: PhoneStatus = {
   dev: phoneQ === "dev",
 };
 
-const samGrant: TakeoverPlan["grant"] = noAway
-  ? { kind: "none", why: "Sam hasn't allowed take-overs while they're away. Ask Sam to hand it over when they're back online, or to allow take-overs while they're away (Settings → Team)." }
-  : { kind: "away", expiresAt: now + 6 * 60 * min };
+const samGrant: TakeoverPlan["grant"] = olderSam
+  ? { kind: "none", why: "Sam's Mockingbird needs an update (1.6.0) before their sessions can be taken over while they're offline. Take it over once Sam is back online: they're asked to hand it over." }
+  : { kind: "offline" };
 const takeoverPlans: Record<string, TakeoverPlan> = {
   n1: { roomId: "R5101aaaaaaaaaaaaaaaaa", sessionId: "n1", title: "Donor export: CSV writer", agent: "claude", branch: "5101-csvExport", ownerName: "Nick Smith", ownerOnline: true, originUrl: "https://dev.azure.com/acme/Backoffice/_git/backoffice", clone: REPO, snapshot: { sha: "a1".repeat(20), takenAt: now - 2 * min, source: p2p ? "peer" : "origin", skipped: [] }, other: null, toOrigin: !p2p, originProblem: null, latestMissing: false, conversation: { kind: "full", bytes: 412_000 }, resumesOwn: false, grant: { kind: "ask" } },
   // ?p2p: only the copy that reached this Mac half an hour ago, a turn behind Sam's laptop
@@ -1817,13 +1816,6 @@ const api: Record<string, (...a: any[]) => any> = {
     for (const s of takeoverView.sessions) if (s.roomId === roomId) s.toOrigin = on;
     takeoverChanged();
     return later(null, 400);
-  },
-  teamSetAwayGrant: async (roomId: string, away: { hours: number; sessions: string[] | null } | null) => {
-    const r = takeoverView.rooms.find((x) => x.roomId === roomId);
-    if (!r) return err("You're not in that room");
-    r.away = away ? { sessions: away.sessions, expiresAt: Date.now() + away.hours * 3_600_000 } : null;
-    takeoverChanged();
-    return later(null, 300);
   },
   teamSetBackupConsent: async (roomId: string, allow: boolean) => {
     const r = takeoverView.rooms.find((x) => x.roomId === roomId);

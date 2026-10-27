@@ -55,21 +55,25 @@ export interface TakenOver {
   snapshot: { sha: string; takenAt: number; source: SnapshotSource };
   conversation: ConversationCarried;
   /**
-   * The owner's consent it carried: their hand-over, their away grant, or
-   * "accepted" — a take-over from before grants that the owner's
-   * Mockingbird had already honoured, accepted once it updated. Absent on
-   * an ungranted one (RoomSessionBackup.ungranted).
+   * What let it count: the owner's hand-over; "offline" — taken while the
+   * owner was offline, which needs no grant (the owner's Mac may still refuse
+   * it, session.takeoverRefused); an away grant (1.5, no longer given); or
+   * "accepted" — a take-over from before grants that the owner's Mockingbird
+   * had already honoured, accepted once it updated. Absent on an ungranted
+   * one (RoomSessionBackup.ungranted).
    */
-  grant?: TakeoverGrant["kind"] | "accepted";
+  grant?: TakeoverGrant["kind"] | "offline" | "accepted";
 }
 
 /**
  * A session owner's signed consent to a take-over (src/main/team/takeoverGrants.ts):
  *   - "handover": answering a teammate's request, for one session, that
  *     teammate (`to`) and the snapshot handed over (`sha`), for HANDOVER_GRANT_MS;
- *   - "away": ahead of time, for the owner's sessions in the room (`sessions`,
- *     or null for all of them), any teammate, until `expiresAt` (at most
- *     AWAY_GRANT_MAX_MS). Published as `session.awayGrant`; only the latest counts.
+ *   - "away": 1.5 only, no longer given (take-overs while the owner is offline
+ *     need no grant from 1.6): ahead of time, for the owner's sessions in the
+ *     room (`sessions`, or null for all of them), any teammate, until
+ *     `expiresAt` (at most AWAY_GRANT_MAX_MS). Published as
+ *     `session.awayGrant`; logs keep them, and take-overs they granted still count.
  * `sig` is the owner's key over the rest (grantInput).
  */
 export interface TakeoverGrant {
@@ -91,8 +95,14 @@ export const HANDOVER_GRANT_MS = 30 * 60_000;
 export const AWAY_GRANT_MAX_MS = 7 * 86_400_000;
 /** How far ahead of a take-over a grant's issue time may be (clocks differ between laptops). */
 export const GRANT_SKEW_MS = 5 * 60_000;
-/** What Settings → Team offers for "while I'm away", in hours. */
-export const AWAY_HOURS = [8, 24, 72, 168] as const;
+/**
+ * The leeway an offline take-over's time gets against the owner's record of
+ * when it was connected to the taker: clocks differ between laptops, and each
+ * side notices a dropped or new connection a little after the other. A
+ * take-over stamped within this of a connection starting or ending counts as
+ * taken while apart.
+ */
+export const OFFLINE_TAKEOVER_SKEW_MS = 2 * 60_000;
 
 /** One room session's backup as the room knows it. */
 export interface RoomSessionBackup {
@@ -116,6 +126,8 @@ export interface RoomSessionBackup {
   transcriptBytes: number | null;
   /** Its owner's Mockingbird signs take-over grants (its latest backup said so): one that doesn't needs an update before the session can be taken over. */
   grants?: true;
+  /** Its owner's Mockingbird takes take-overs while it's offline, and refuses one taken while it was connected to the taker (1.6; its latest backup said so). */
+  offline?: true;
   takenOver: TakenOver | null;
   /**
    * A take-over that carried no valid grant from the owner (an older
@@ -128,7 +140,23 @@ export interface RoomSessionBackup {
   ungrantedDrop?: { at: number; by: MemberId; reason: DroppedBecause } | null;
   /** Its backup was deleted from origin and members' clones (or its owner left the room); a later backup by its owner revives it. */
   dropped: { at: number; by: MemberId; reason: DroppedBecause } | null;
+  /** Offline take-overs its owner's Mac refused (session.takeoverRefused), newest last, at most MAX_REFUSALS: the takers' copies don't run. */
+  refusals?: OfflineRefusal[];
 }
+
+/** An offline take-over the session's owner refused: their Mac was connected to the taker when it was stamped. */
+export interface OfflineRefusal {
+  by: MemberId;
+  newSessionId: string;
+  /** The take-over's time (the taker's clock), and the refusal's (the owner's). */
+  takenAt: number;
+  at: number;
+  reason: OfflineRefusalReason;
+}
+/** connected: the owner's Mac was connected to the taker then; before-snapshot: stamped before the snapshot it continues from was taken. */
+export type OfflineRefusalReason = "connected" | "before-snapshot";
+export const OFFLINE_REFUSAL_REASONS: OfflineRefusalReason[] = ["connected", "before-snapshot"];
+export const MAX_REFUSALS = 20;
 
 /** Why a backup counts as deleted: a DropReason its owner published, or "left-room" (its owner left or was removed: they delete it). */
 export type DroppedBecause = DropReason | "left-room";
@@ -145,7 +173,7 @@ export const STALE_BACKUP_MS = 14 * 86_400_000;
 
 export interface TakeoverRoomState {
   sessions: Record<string, RoomSessionBackup>;
-  /** Each member's current away grant (session.awayGrant): their sessions that may be taken over while they're away, until it expires. */
+  /** Each member's latest away grant (session.awayGrant, 1.5): kept so the take-overs they granted still count. */
   away?: Record<MemberId, TakeoverGrant>;
 }
 
@@ -199,6 +227,8 @@ declare module "./types" {
       transcriptBytes: number | null;
       /** 1: the owner's Mockingbird signs take-over grants. Absent from older ones. */
       grants?: 1;
+      /** 1: the owner's Mockingbird takes take-overs while it's offline (1.6). Absent from older ones. */
+      offline?: 1;
     };
     "session.takenOver": {
       sessionId: string;
@@ -208,11 +238,15 @@ declare module "./types" {
       snapshot: { sha: string; takenAt: number; source: SnapshotSource };
       conversation: ConversationCarried;
       branch: string | null;
-      /** The owner's consent. Without a valid one the take-over changes nothing (an older Mockingbird sends none). */
+      /** The owner's consent: their hand-over. Without a valid one (and not `offline`) the take-over changes nothing (an older Mockingbird sends none). */
       grant?: TakeoverGrant;
+      /** 1: taken while the owner was offline, with no grant (1.6). Counts when the owner's Mockingbird takes those; its Mac may refuse it after. */
+      offline?: 1;
     };
-    /** A member allows take-overs of their sessions while they're away (or, with null, withdraws that). */
+    /** 1.5: a member allowed take-overs of their sessions while they're away (or, with null, withdrew that). No longer published; kept in logs. */
     "session.awayGrant": { grant: TakeoverGrant | null };
+    /** The session's owner refuses an offline take-over: their Mac was connected to the taker when it was stamped. Every member's state puts the session back. */
+    "session.takeoverRefused": { sessionId: string; by: MemberId; newSessionId: string; reason: OfflineRefusalReason };
     /** A session's owner accepts a take-over that carried no grant: one its Mockingbird honoured before it signed grants. */
     "session.takeoverAccepted": { sessionId: string; by: MemberId; newSessionId: string };
     /** The session's current owner deleted its backup ref on origin: members delete their copies. */
@@ -237,8 +271,8 @@ export interface RoomSessionBackupView extends RoomSessionBackup {
   takenOverByName: string | null;
   /** The newest snapshot copied into this Mac's clone peer to peer. */
   peerCopy: { sha: string; takenAt: number } | null;
-  /** A teammate's session: its owner's away grant lets it be taken over while they're offline, until then; null when it doesn't. */
-  awayUntil: number | null;
+  /** A teammate's session whose owner is offline and whose Mockingbird takes take-overs then: Take over leads. */
+  offlineTakeover: boolean;
   /** This install's session: the teammates whose clones hold its newest snapshot, by name, as heard since Mockingbird started. */
   heldBy: string[];
   /** The conversation copied to this Mac: bytes held, of the size last announced (null: unknown). */
@@ -264,8 +298,6 @@ export interface RoomBackupSetting {
   adminName: string | null;
   /** This install is the room's owner. */
   canChange: boolean;
-  /** This member's current away grant in the room (their sessions teammates may take over while they're away), or null. */
-  away: { sessions: string[] | null; expiresAt: number } | null;
   /** Where backups would go, for the switch's label: "GitHub", "Azure DevOps", a host name, or "origin" when the room's repositories differ or none is known. */
   remote: string;
 }
@@ -440,11 +472,11 @@ export interface TakeoverPlan {
   /** It was this Mac's own session (taken back): this Mac's own conversation resumes, the brief telling it what the teammate did. Otherwise a new conversation starts from the brief. */
   resumesOwn: boolean;
   /**
-   * The owner's consent this take-over would carry: asked for now (they're
-   * online), their away grant (until when), or none — and why, naming who
-   * to ask. Without one it can't go ahead.
+   * How this take-over goes: the owner is asked now (they're online), it goes
+   * ahead without asking (they're offline: their Mac refuses it only if it
+   * was connected to this one then), or it can't — and why.
    */
-  grant: { kind: "ask" } | { kind: "away"; expiresAt: number } | { kind: "none"; why: string };
+  grant: { kind: "ask" } | { kind: "offline" } | { kind: "none"; why: string };
 }
 
 export interface TakeoverResult {

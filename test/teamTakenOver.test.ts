@@ -136,7 +136,7 @@ function app(m: LoopbackMember, clone: string, takeoverOpts: Partial<TakeoverDep
 }
 
 /** Ryan's room session with Nick; the room backs up to origin (its admin, Ryan, turned that on) unless `backupsToOrigin: false` keeps it peer to peer, as every room starts. */
-async function setup(takeoverOpts: Partial<TakeoverDeps> = {}, o: { backupsToOrigin?: boolean; away?: boolean } = {}) {
+async function setup(takeoverOpts: Partial<TakeoverDeps> = {}, o: { backupsToOrigin?: boolean } = {}) {
   const r = repos();
   const { members, roomId, net } = await loopbackRoom(["Ryan", "Nick"], { dir: tempDir("team") });
   const [ryanM, nickM] = members;
@@ -150,11 +150,6 @@ async function setup(takeoverOpts: Partial<TakeoverDeps> = {}, o: { backupsToOri
   const nickRun = nick.startLive();
   // backing up to origin needs each member's own consent too: both allowed it (kept on their Macs, across restarts)
   if (o.backupsToOrigin !== false) for (const run of [ryanRun, nickRun]) run.tk.setBackupConsent(roomId, true);
-  // taking over while the owner is offline needs their away grant: both allowed it for all their sessions, unless `away: false`
-  if (o.away !== false) {
-    for (const run of [ryanRun, nickRun]) run.tk.setAwayGrant(roomId, { hours: 168, sessions: null });
-    await until(() => [ryanM, nickM].every((m) => Object.keys(m.team.room(roomId)?.ext.takeover?.away ?? {}).length === 2), "both to hear the away grants");
-  }
   // Ryan's room session, with a conversation on disk for its transcript
   const s = await ryan.sessions.create({ repoPath: r.ryanClone, cwd: r.wt, branchName: "feature-x", useWorktree: false, agent: "claude", taskGroup: "5110", title: "Donor entities" });
   const file = path.join(claudeProjectDir(r.wt, ryan.claudeProjects), `${CONV}.jsonl`);

@@ -30,10 +30,10 @@ import { TakeOverIcon } from "../Icons";
  * row: this Mac's sessions that couldn't be backed up, and backups it
  * couldn't delete.
  *
- * A take-over needs the owner's signed consent: a connected owner is asked
- * first (HandOverPrompt is theirs); an offline owner's session can be taken
- * over only under the away grant they gave before leaving (Settings → Team),
- * and the dialog says why not, and whom to ask, without one. A copy a
+ * A connected owner is asked first and signs the hand-over (HandOverPrompt is
+ * theirs); an offline owner's session is taken over without asking — their
+ * Mac refuses it after only if it was connected to the taker's then — and the
+ * dialog says why not when their Mockingbird is too old for that. A copy a
  * teammate continued is stopped here and shows LeftCopyPanel (its pane) and
  * LeftCopyLine (its row): Take it back, and Send the changes the teammate
  * lacks. Changes sent that way land on the teammate's session as
@@ -108,7 +108,7 @@ export function TakeOverButton({ view, onOpen, asking }: { view: RoomSessionBack
   }
   return (
     <button
-      className={`tk-btn ${view.ownerOnline || !view.awayUntil ? "outline" : "primary"}`}
+      className={`tk-btn ${view.offlineTakeover ? "primary" : "outline"}`}
       title={takeOverTitle(view)}
       onClick={(e) => {
         e.stopPropagation();
@@ -141,17 +141,17 @@ export function takeOverAction(view: RoomSessionBackupView | null, onOpen: (view
     label: "Take over",
     menuLabel: "Take over…",
     icon: <TakeOverIcon />,
-    primary: !view.ownerOnline && !!view.awayUntil,
+    primary: view.offlineTakeover,
     title: takeOverTitle(view),
     onPick: () => onOpen(view),
   };
 }
 
-/** What Take over does for this session now: ask its connected owner, use their away grant, or nothing until they're back. */
+/** What Take over does for this session now: ask its connected owner, go ahead while they're offline, or nothing until they're back. */
 function takeOverTitle(view: RoomSessionBackupView): string {
   if (view.ownerOnline) return `Ask ${view.ownerName} to hand this session over to your Mac (they're connected)`;
-  if (view.awayUntil) return `${view.ownerName} is away and allowed take-overs until ${clock(view.awayUntil)} — continue this session on your Mac`;
-  return `${view.ownerName} is offline and hasn't allowed take-overs while away: ask them to hand it over when they're back`;
+  if (view.offlineTakeover) return `${view.ownerName} is offline — continue this session on your Mac`;
+  return `${view.ownerName}'s Mockingbird needs an update before their sessions can be taken over while they're offline: ask them to hand it over when they're back`;
 }
 
 /** A time to the minute, with the day when it isn't today. */
@@ -271,7 +271,7 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
       <div className="sub-h">
         {online
           ? `${view.ownerName} is connected, so they're asked first: their turn in progress finishes, and the session continues here from exactly where it stopped on their laptop. If they keep it or don't answer within 2 minutes, it stays with them.`
-          : `${view.ownerName} is offline. A take-over needs their consent: the hand-over they allowed while away. Their copy stops when their Mockingbird is back, and keeps its files.`}{" "}
+          : `${view.ownerName} is offline, so it goes ahead without asking. Their copy stops when their Mockingbird is back, and keeps its files — unless their Mac was connected to yours when you took it, which it refuses.`}{" "}
         The session continues on this Mac under your account, in a worktree of your clone on its branch.
       </div>
       {p?.grant.kind === "none" && <div className="err tk-grant">Can't be taken over: {p.grant.why}</div>}
@@ -348,7 +348,7 @@ export function TakeOverDialog({ view, asking, onClose, takeBack }: { view: Room
           <dt>Consent</dt>
           <dd>
             {p.grant.kind === "ask" && <>{p.ownerName} is asked to hand it over; their Mockingbird signs the hand-over.</>}
-            {p.grant.kind === "away" && <>{p.ownerName} allowed take-overs while they're away, until {clock(p.grant.expiresAt)}.</>}
+            {p.grant.kind === "offline" && <>None needed: {p.ownerName} is offline.</>}
             {p.grant.kind === "none" && <span className="warn">None: {p.grant.why}</span>}
           </dd>
         </dl>

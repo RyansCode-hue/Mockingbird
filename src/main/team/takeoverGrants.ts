@@ -5,26 +5,28 @@ import { AWAY_GRANT_MAX_MS, GRANT_SKEW_MS, HANDOVER_GRANT_MS, SESSION_ID_RE, typ
 import type { MemberId, RoomState } from "../../shared/team/types";
 
 /**
- * A session's owner's consent to a take-over (security review R6, M3): a
- * grant the owner's key signs, carried in the `session.takenOver` event. Two
- * kinds:
+ * A session's owner's consent to a take-over while they're online (security
+ * review R6, M3): a grant the owner's key signs, carried in the
+ * `session.takenOver` event. Two kinds:
  *
  *   - "handover": the owner's Mockingbird answered a teammate's request with
  *     Hand over: for that one session, that teammate, that snapshot, for
  *     HANDOVER_GRANT_MS;
- *   - "away": the owner allowed take-overs while they're away, ahead of time,
- *     for some of their sessions in the room or all of them, until it expires
- *     (at most AWAY_GRANT_MAX_MS). Published as `session.awayGrant`, and only
- *     the owner's latest one counts: publishing none withdraws it.
+ *   - "away" (1.5, no longer given): the owner allowed take-overs while they
+ *     were away, ahead of time, for some of their sessions in the room or all
+ *     of them, until it expired (at most AWAY_GRANT_MAX_MS). Published as
+ *     `session.awayGrant`, the owner's latest one counting. Logs keep them, so
+ *     the take-overs they granted still count. From 1.6 a take-over while the
+ *     owner is offline needs no grant (takeover.ts: `offline`, and the owner's
+ *     Mac refusing one taken while it was connected to the taker).
  *
  * Every member checks the grant the same way where the take-over falls in the
  * room's order (grantProblem, from the reducer), so the owner's Mac stops its
  * session only for a take-over its owner granted — whoever's Mockingbird
  * published it — and the taker's Mac checks before it starts anything.
  *
- * No role gets past this: the room's admin can't take a session over without
- * its owner's grant either. (The planned Room roles may add an emergency
- * path; it would be a separate, explicit, logged event, not an exception here.)
+ * No role gets past this: the room's owner or an admin can't take an online
+ * member's session over without that member's hand-over either.
  *
  * The times compared are the take-over event's own (its author's clock), the
  * only time every member agrees on: a taker whose clock is wrong on purpose
@@ -105,15 +107,4 @@ export function grantProblem(state: RoomState, grant: unknown, use: { owner: Mem
     if (current?.id !== g.id) return `${use.ownerName} withdrew that grant`;
   }
   return null;
-}
-
-/**
- * The owner's away grant that covers a session now, or why there's none (in
- * words for the taker: who to ask).
- */
-export function awayGrantFor(state: RoomState, owner: MemberId, ownerName: string, sessionId: string, now: number): { grant: TakeoverGrant } | { problem: string } {
-  const g = state.ext.takeover?.away?.[owner];
-  if (!g) return { problem: `${ownerName} hasn't allowed take-overs while they're away` };
-  const why = grantProblem(state, g, { owner, ownerName, sessionId, taker: "", at: now });
-  return why ? { problem: why } : { grant: g };
 }

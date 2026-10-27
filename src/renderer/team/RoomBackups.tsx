@@ -1,13 +1,12 @@
 import { useState } from "react";
 import { Modal } from "../Modal";
-import { Pick } from "../Menu";
 import { SetRow } from "../SetRow";
 import { Toggle } from "../Toggle";
 import { settled } from "../settled";
 import { useTakeover } from "./TakeOver";
 import { ago } from "../../shared/format";
 import { isErr } from "../../shared/types";
-import { AWAY_HOURS, type RoomBackupSetting } from "../../shared/team/takeover";
+import type { RoomBackupSetting } from "../../shared/team/takeover";
 import type { TeamRoomSummary } from "../../shared/team/types";
 
 /**
@@ -142,7 +141,7 @@ export function BackupConsentPrompt({ setting: s, roomName, onLater }: { setting
         <li className="warn">
           <b>Anyone with read access to the repository</b> can fetch it, not only this room's members.
         </li>
-        <li>A teammate can then take your session over while your laptop is off (when you've allowed that while you're away).</li>
+        <li>A teammate can then take your session over while your laptop is off, from the newest backup.</li>
         <li>You can turn it off in Settings → Team; what you pushed is deleted then.</li>
       </ul>
       {error && <div className="err">{error}</div>}
@@ -155,75 +154,5 @@ export function BackupConsentPrompt({ setting: s, roomName, onLater }: { setting
         </button>
       </div>
     </Modal>
-  );
-}
-
-const HOURS_LABEL: Record<(typeof AWAY_HOURS)[number], string> = { 8: "8 hours", 24: "a day", 72: "3 days", 168: "a week" };
-
-/**
- * Settings → Team, per room: "While I'm away" — this member allows teammates
- * to take over their room sessions (all of them, or one) while they're
- * offline, until it expires. A grant their Mockingbird signs; without one an
- * offline member's sessions can't be taken over at all. Stop withdraws it.
- */
-export function RoomAwaySetting({ room }: { room: TeamRoomSummary }) {
-  const view = useTakeover();
-  const [hours, setHours] = useState<(typeof AWAY_HOURS)[number]>(24);
-  const [scope, setScope] = useState("all");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  if (!view || isErr(view)) return null;
-  const s = view.rooms.find((r) => r.roomId === room.id);
-  if (!s) return null;
-  const mine = view.sessions.filter((v) => v.roomId === room.id && v.self && !v.takenOver && !v.dropped);
-  const titleOf = (id: string) => mine.find((v) => v.sessionId === id)?.session.title ?? "a session that's gone";
-  const set = async (away: { hours: number; sessions: string[] | null } | null) => {
-    setBusy(true);
-    setError("");
-    const r = await settled(window.mb.teamSetAwayGrant(room.id, away), away ? "Couldn't allow take-overs while you're away" : "Couldn't stop allowing take-overs");
-    setBusy(false);
-    if (isErr(r)) setError(r.error);
-  };
-  const until = s.away ? new Date(s.away.expiresAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) : "";
-  const which = s.away ? (s.away.sessions === null ? "all your sessions" : s.away.sessions.map((id) => `“${titleOf(id)}”`).join(", ")) : "";
-  return (
-    <>
-      <SetRow
-        title="While I'm away"
-        note={
-          s.away
-            ? `Teammates may take over ${which} in this room while you're offline, until ${until}. Your Mockingbird signed it; it stops then, or now with Stop.`
-            : "Off: while you're offline, nobody can take over your sessions in this room. Online, you're always asked first (Hand over / Keep it). Allow it before you leave, for all your sessions or one."
-        }
-      >
-        {s.away ? (
-          <button className="outline" disabled={busy} onClick={() => void set(null)}>
-            Stop
-          </button>
-        ) : (
-          <>
-            <Pick title={`Which of your sessions in ${room.name}`} value={scope} disabled={busy} onChange={(e) => setScope(e.target.value)}>
-              <option value="all">All my sessions</option>
-              {mine.map((v) => (
-                <option key={v.sessionId} value={v.sessionId}>
-                  {v.session.title}
-                </option>
-              ))}
-            </Pick>
-            <Pick title="For how long" value={hours} disabled={busy} onChange={(e) => setHours(Number(e.target.value) as (typeof AWAY_HOURS)[number])}>
-              {AWAY_HOURS.map((h) => (
-                <option key={h} value={h}>
-                  for {HOURS_LABEL[h]}
-                </option>
-              ))}
-            </Pick>
-            <button className="outline" disabled={busy} onClick={() => void set({ hours, sessions: scope === "all" ? null : [scope] })}>
-              Allow
-            </button>
-          </>
-        )}
-      </SetRow>
-      {error && <div className="err">{error}</div>}
-    </>
   );
 }

@@ -252,6 +252,7 @@ function startTakeover(): TakeoverService | null {
       teamChanges.refreshSoon(); // a teammate's snapshot may have arrived: their uncommitted work
     },
     onTakenOver: (id, by) => notifySession(id, "Taken over", `${by} continues ${titleOfSession(id)} on their Mac: it stopped here`),
+    onRefused: (id, owner, title) => notifySession(id, "Take-over refused", `${owner}'s Mac refused your take-over of “${title}”, so it stays theirs: this copy stopped. The room's chat says why.`),
     // asked to hand a session over: told even when its pane's notifications were just shown (no coalescing)
     onAsk: (a) => {
       if (!shouldNotify({ settings: store.settings, kind: "other", now: new Date() })) return;
@@ -1141,11 +1142,6 @@ handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(
 handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [], refused: [] });
 handle("team:setBackupsToOrigin", (roomId, on) => needTakeover().setBackupsToOrigin(String(roomId), on === true));
 handle("team:setBackupConsent", (roomId, allow) => needTakeover().setBackupConsent(String(roomId), allow === true));
-handle("team:setAwayGrant", (roomId, away) => {
-  if (away === null) return needTakeover().setAwayGrant(String(roomId), null);
-  const a = away as { hours?: unknown; sessions?: unknown };
-  return needTakeover().setAwayGrant(String(roomId), { hours: Number(a?.hours), sessions: Array.isArray(a?.sessions) ? a.sessions.map(String) : null });
-});
 // team rooms: migration number reservations and the admin's settings for them
 handle("teamChanges:view", (roomId) => teamChanges.view(String(roomId)));
 handle("teamChanges:setCheck", (roomId, on) => teamChanges.setCheck(String(roomId), on === true));
