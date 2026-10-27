@@ -42,6 +42,20 @@ const u = (text: string): Change => ({ kind: "ui", text });
 /** Newest first. */
 export const CHANGELOG: Release[] = [
   {
+    version: "1.6.0",
+    date: "2026-10-27",
+    items: [
+      n("Start a session from a House ticket: it's claimed, gets its worktree and a briefed agent in one go"),
+      n("Rooms have roles: owner, admins and members — right-click a teammate to change theirs"),
+      n("Take over an offline teammate's session without a grant; an online one is still asked first"),
+      n("Turn an approved Council plan into House tickets: review the drafts, then create them in one click"),
+      n("Phone alerts: an iMessage when a session waits on you while you're away (off until you turn it on)"),
+      n("A pane warns before its context fills up, with Compact or a fresh session from a brief"),
+      n("Token usage per group and per ticket, and a cost check before resuming a big, cold conversation"),
+      p("Smoother motion: usage bars, teammates coming online, chat arrivals, hand-overs; offline take-overs need 1.6.0"),
+    ],
+  },
+  {
     version: "1.5.0",
     date: "2026-10-23",
     items: [
@@ -330,12 +344,12 @@ export const CHANGELOG: Release[] = [
 
 /** What's being built next, in the user's words (the README's roadmap has the detail). */
 export const COMING_NEXT: ComingNext[] = [
-  { title: "Room roles", text: "Owner, Admin and Member in a team room, each with clear powers" },
   { title: "Tooling profiles", text: "Choose per project which room tools and guards your agents get" },
-  { title: "Ticket → session", text: "Claim a ticket and start an agent on it, branch and worktree included, in one click" },
-  { title: "Away mode", text: "A take-over brief ready before you leave, so a teammate can carry on in one click" },
-  { title: "Context warnings", text: "A nudge to compact or start fresh before a session runs out of context" },
-  { title: "Usage per ticket", text: "What each session and ticket costs, with a warning before an expensive step" },
+  { title: "Closing a room", text: "The room's owner closes it for everyone in one step" },
+  { title: "House status follows the PR", text: "A ticket moves to review when its PR opens and onward when it merges" },
+  { title: "Pipeline stages that update themselves", text: "Ticket stages follow the work and ADO, each move saying why" },
+  { title: "Review requests", text: "Ask a teammate to review a session's changes; their comments go to your agent" },
+  { title: "A prompt queue", text: "Line up instructions that send when a session goes idle" },
   { title: "Room tabs", text: "A team room gets tabs: Chat, Sessions, Artifacts and Board" },
 ];
 
