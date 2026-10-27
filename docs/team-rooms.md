@@ -110,8 +110,11 @@ should stop more members joining later.
 ## Joining
 
 Decided with Ryan, 2026-10-08: joins have to be accepted, by the room's
-admin only — its creator, or the longest-standing member once the creator
-has left (`roomAdmin`). Before this, a valid code let anyone in at once: the
+admin only. Since 1.6 that's the room's owner or any of its admins (Room
+roles, below): wherever this section says "the admin", read "the owner or an
+admin" — a request is passed on to each of them whose Mockingbird is
+connected, whoever's around answers, and a decline by one answers it on the
+others. Before this, a valid code let anyone in at once: the
 inviter's Mockingbird checked the code and added them, and the signaling
 Worker admitted their key as soon as the join key matched.
 
@@ -235,11 +238,12 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
 - **Who's in the room** is decided by the room log, the same on every member:
   an event counts only if its author is a member at that point in the room's
   order. `member.removed { member, reason }` takes someone out: a member may
-  remove themselves (they **leave**); only the room's **admin** removes someone
-  else. The admin is the room's creator while a member, else the
-  longest-standing member (the earliest `member.added`, in room order, of those
-  still in it) — `roomAdmin` in `src/main/team/rooms.ts`. A removal by anyone
-  else is kept in the log but changes nothing.
+  remove themselves (they **leave**); who removes someone else is up to their
+  roles (Room roles, below: the owner removes anyone, an admin removes
+  members) — `mayRemove` in `src/main/team/rooms.ts`. Before 1.6 it was the
+  room's single admin: its creator while a member, else the longest-standing
+  member (`legacyAdmin`, which older Mockingbirds and the Worker without roles
+  still use). A removal by anyone else is kept in the log but changes nothing.
 - **After a removal** the member is a *former* member (`state.former`, so their
   name still shows on what they wrote): what they did before still counts,
   anything they write after — written before they heard, or by a Mockingbird
@@ -343,6 +347,106 @@ Decided with Ryan, 2026-10-08: members can be removed, and a room that's left
   - Leaving waits for the cleanup, including deleting any backups on origin
     (each push has its own timeout): with an unreachable origin the dialog
     takes a while, then lists what's left there.
+
+## Room roles
+
+Decided with Ryan (README roadmap, 2026-10); shipped in 1.6. Owner, Admin and
+Member replace the single admin (creator, else longest-standing member).
+
+- **Owner** — one per room, the creator to begin with: everything an admin
+  can do, plus making and removing admins, handing over ownership, and the
+  owner-only settings: where backups go (`room.settings { backupsToOrigin }`)
+  and the House project (`house.project`). Closing the room is the owner's
+  too, but isn't built yet.
+- **Admin** — accepts or declines joins, removes members, and sets the
+  room's rules: the migration check and folders (`room.settings
+  { migrationCheck, migrationFolders }`), releasing a reservation, and
+  later tooling. A `room.settings` from an admin applies its migration fields
+  and ignores `backupsToOrigin`.
+- **Member** — uses the room.
+- **Removing** (`mayRemove`): anyone may leave; the owner removes anyone; an
+  admin removes members, never the owner or another admin.
+- **Events** (`src/main/team/rooms.ts`), each counting only if its author
+  holds the role it needs at its place in the room's order, the same on every
+  Mac — so a Mockingbird that doesn't cooperate signs them for nothing:
+  - `role.admin { member, admin }` — the owner makes an admin or takes it back.
+  - `role.owner { member }` — the owner hands over; the old owner stays an
+    admin (the new owner can change that).
+  - `role.claim {}` and `role.contest {}` — below.
+  Every change that counts is announced in the room's chat ("Ryan made Nick
+  an admin", "Ryan handed ownership of the room to Nick", "Nick claimed
+  ownership of the room: Ryan hadn't been heard from in it for 14 days, and
+  can take it back", "Ryan took ownership of the room back from Nick").
+  Role events are membership events: always taken past an author's share,
+  and part of what a removed member is given to see their own removal.
+- **The owner leaving.** Leave room… as the owner asks whom to hand
+  ownership to first, and the transport refuses an owner's leave while
+  anyone else is in the room. An owner who leaves anyway (an older
+  Mockingbird lets them) hands the room on as before roles: to the
+  longest-standing admin, else the longest-standing member ("Nick owns the
+  room now").
+- **An owner gone for good** (not just away): the room's **claimant** — its
+  longest-standing admin, or with no admins its longest-standing member — may
+  publish `role.claim` once the owner hasn't been heard from in the room for
+  **14 days** (`OWNER_CLAIM_WAIT_MS`): no event of theirs, of any type, dated
+  within 14 days before the claim (`roles.ownerSeenAt`). Fourteen days is
+  longer than a week off or a fortnight's holiday with the laptop shut is
+  likely to run, so an owner who is only away isn't claimed from, yet short
+  enough that a room isn't left a month with nobody to make admins, set
+  backups or pick its House project. A claim dated ahead of the receiving
+  Mac's clock (by more than 10 minutes) is refused, so a clock set forward
+  can't hurry it; the claimant's Mockingbird also refuses while the owner is
+  connected. The claim is announced; the claimant owns the room, and the old
+  owner becomes a member who **can take it back** (`role.contest`) whenever
+  they're back — the claimant returns to admin (if it was one), and whoever
+  owned it since becomes an admin. The old owner **can't be removed for 14
+  days after the claim** (by anyone), so a claim can't be followed at once by
+  removing the one person who could contest it; after that, the new owner
+  can remove them (a stolen or abandoned key).
+- **Take-over** is unchanged: no role takes a session over without its
+  owner's grant (a hand-over or an away grant). An emergency path for an
+  owner gone for good is a TODO (Not in this release).
+- **The window.** A role chip (owner, admin) by each name in the Team tab's
+  member strip and Settings → Team. Right-click a teammate in the Team tab
+  for Make admin / Remove as admin / Hand over ownership… / Remove from the
+  room… (only what your role allows); Settings → Team has the same as links.
+  A claim shows as a notice above the room ("Nick claimed ownership of the
+  room while you were away" · Take it back; "Ryan hasn't been heard from in
+  it for 14 days" · Claim ownership…). The two other options mocked (a role
+  dropdown in Settings only; a Members & roles dialog) weren't built.
+- **The Worker** (feature `roles`, `signaling/src/room.ts`): the owner,
+  admins and the Worker's own admin send `roles { owner, admins }`; it keeps
+  them only from the owner it knows (with none yet, its `signalingAdmin`),
+  from the claimant naming itself owner once the owner hasn't connected for
+  14 days by the Worker's own clock (a member's `seenAt`, written on hello
+  and on close), or from the owner a claim took it from, taking it back.
+  Then the owner and admins admit and deny joiners, the owner revokes anyone,
+  an admin only members, and nobody revokes a claimed-from owner for 14 days.
+  A refused `roles` is answered `roles-ignored` and logged, nothing more.
+- **Compatibility** (a minor, 1.6.0; no one is forced to update):
+  - Existing rooms get roles by replaying their log (adding the role
+    reducers re-reduces every snapshot): the creator owns the room. Where the
+    creator had already left, today's admin — the longest-standing member —
+    owns it, as it already held every power an owner has; no admins.
+  - An older Mockingbird (1.5) keeps role events and passes them on (unknown
+    types), and normal room use — sessions, chat, artifacts, take-over,
+    joining, leaving — works with it. It goes on taking `legacyAdmin` (the
+    creator while a member) for the admin: after a hand-over it still thinks
+    the creator decides, and it ignores what an admin who isn't that member
+    does — a join an admin accepts, or a member they remove, doesn't count on
+    the older Mac until it updates (its log has the events; updating replays
+    them). A newer Mac never takes an admin action from someone without the
+    role, whatever an older Mac does: the creator after handing over and
+    being made a member can't remove, accept, change settings or the House
+    project there (`teamRoles.test.ts` reduces the same log with 1.5.0's room
+    log to show both sides).
+  - A Worker without `roles` (deployed before 1.6) still takes admits,
+    denies and revokes only from its admin (the creator while a member): an
+    admin's accept reaches it through that member's Mockingbird (every Mac
+    admits its log's members; only the Worker admin's counts), and an admin's
+    removal is cut off there by the owner's or that member's Mockingbird on
+    its next connection. Settings → Team says to redeploy. Redeploying is the
+    only change that needs doing; teammates don't have to update together.
 
 ## Sessions in a room
 
@@ -772,7 +876,7 @@ consent (below: "The owner's consent").
   first backup has been taken (and, in a room backing up to origin, pushed).
   A deletion that fails is shown and retried.
 
-### Also back up to GitHub (the admin's opt-in)
+### Also back up to GitHub (the owner's opt-in)
 
 - **Settings → Team, per room:** a switch, "Also back up to GitHub" (or the
   remote's name: Azure DevOps, GitLab, a host, or "origin" when the room's
@@ -796,9 +900,9 @@ consent (below: "The owner's consent").
   sessions. Allowing it pushes their newest snapshots at once; turning their
   own off deletes from origin what they pushed (as the admin's switch turning
   off does), a failure shown and retried.
-- **The admin's alone.** It's a replicated room setting: `room.settings
+- **The owner's alone** (an admin's `backupsToOrigin` is ignored; before 1.6, the single admin's). It's a replicated room setting: `room.settings
   { backupsToOrigin }`, signed like every event, reduced on every member. Only
-  the room's admin at that point in the room's order (`roomAdmin`) changes
+  the room's owner at that point in the room's order (`roomOwner`) changes
   anything; anyone else's event is kept in the log and changes nothing, and
   the switch is disabled for them, naming the admin. A room with no settings
   event — every room made before this — is off.
@@ -838,7 +942,7 @@ consent (below: "The owner's consent").
   under `refs/mockingbird/rooms-origin/<room>/<session>`. The taker's Mac also
   has the conversation in the new worktree's `.mockingbird/takeover/` while
   the continued session needs it.
-- **Origin:** nothing, unless the room's admin turned on backups to origin;
+- **Origin:** nothing, unless the room's owner turned on backups to origin;
   then each session's newest snapshot under
   `refs/mockingbird/rooms/<room>/<session>` (never a branch, never fetched by
   default). The conversation is never there.
@@ -1039,8 +1143,8 @@ of record; the room keeps only what the House doesn't. Once the live check
 had read the real House the same day, Ryan decided the board leads with the
 House's **open backlog**.
 
-- **Which project:** the room's admin chooses it on the board (`house.project`,
-  admin-only like `room.settings`: anyone else's is refused locally and
+- **Which project:** the room's owner chooses it on the board (`house.project`,
+  owner-only like `room.settings`: anyone else's is refused locally and
   ignored by every reducer). It names the project, e.g. `atticus-backoffice`;
   each member's Mockingbird reads its **own** `~/.config/radley-house/<project>.env`
   (mode 600: `HOUSE_API_URL`, `HOUSE_PROJECT_ID`, `HOUSE_BUILD_TOKEN`, or the
@@ -1335,7 +1439,7 @@ same file, and tools for agents to see what teammates change.
   (`migrations`, `migrate`, `db`, `schema`, `sql`, `versions`, `flyway`…) or
   holding two or more numbered `.sql` files; never under `node_modules`,
   `vendor`, build output or the top folder. Its padding and prefix come from
-  most of its files. Where detection is wrong, the room's admin names a
+  most of its files. Where detection is wrong, the room's owner or an admin names a
   repository's folders in Settings → Team (`room.settings { migrationFolders:
   { <origin key>: [...] } }`; an empty list goes back to detection).
 - **Reserving:** `reserve_migration_number(folder?)` — the folder only when
@@ -1359,7 +1463,7 @@ same file, and tools for agents to see what teammates change.
   the first in the room's order holds it, the same on every member; the other
   is kept, marked `clash`, holds nothing, and its owner's agent is told to
   reserve again (and is held back if it uses that number). Released: by its
-  member or the room's admin (`migration.released { reservation, reason }`),
+  member or the room's owner or an admin (`migration.released { reservation, reason }`),
   when its member leaves or is removed, and by its member's Mockingbird once a
   file with that number is on the base branch (`merged`) or its branch exists
   neither here nor on origin (`branch-gone`; a branch it can't check is kept,
@@ -1398,8 +1502,8 @@ same file, and tools for agents to see what teammates change.
   credentials, and the caps and plausibility bound what an agent approving
   its own calls can do. Claude asks as its permission mode says (the tool
   isn't pre-allowed).
-- **The hold-back** (on by default; the room's admin turns it off in Settings →
-  Team, `room.settings { migrationCheck }`, admin-only like backups): the hook
+- **The hold-back** (on by default; the room's owner or an admin turns it off in Settings →
+  Team, `room.settings { migrationCheck }`, a room rule: the owner's or an admin's): the hook
   reads `migrations.json`; creating a file that doesn't exist yet in one of
   the folders, with a number reserved by someone else or by nobody, is held
   back once per conversation and file with the reason and what to do ("…
@@ -1544,10 +1648,12 @@ be taken.
 
 ## Not in this release
 
-- Roles/permissions beyond "member" and the admin who lets people in, removes
-  them and makes backups to origin available. No role takes over a session
-  without its owner's grant; an emergency path for an owner gone for good is
-  left to Room roles (README), as an explicit logged event.
+- Closing a room (the owner's, per Room roles): not built; the owner removes
+  everyone and leaves.
+- Emergency take-over (TODO): no role takes over a session without its
+  owner's grant; a path for a session whose owner is gone for good would be
+  its own explicit, announced and logged event, never a bypass of the grant
+  check.
 - An audit log of remote actions on this Mac (security review R5): take-over
   asks, hand-overs, away grants and refused take-overs are marked
   `TODO(audit-log)` in `takeover.ts` for it.
