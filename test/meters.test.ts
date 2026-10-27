@@ -49,6 +49,33 @@ describe("token meters", () => {
     expect(m.sessions.A.window).toBeNull();
   });
 
+  it("sums a group's and a ticket's sessions over their conversations, each conversation once", () => {
+    const window = [row("a1", "claude-opus-5-5", 1000, 1000), row("b1", "claude-opus-5-5", 1000, 1000), row("z1", "claude-opus-5-5", 2000, 2000)];
+    const m = computeMeters({
+      sessions: [
+        // ticket 5101: its own pane, one in a sub-group, and a closed one that shares a conversation with the first
+        { id: "A", agent: "claude", taskGroup: "5101", ticketId: "#5101", conversations: ["a0", "a1"] },
+        { id: "B", agent: "claude", taskGroup: "5101/api", conversations: ["b1"] },
+        { id: "A2", agent: "claude", taskGroup: "5101", conversations: ["a1"] },
+        // a group not named after a ticket, with a session of ticket 5102 in it
+        { id: "Z", agent: "claude", taskGroup: "spikes", ticketId: "5102", conversations: ["z1"] },
+        { id: "N", agent: "claude", taskGroup: "5101" }, // no conversation yet: nothing to count
+      ],
+      rows: [row("a0", "claude-opus-5-5", 500, 100), ...window],
+      windowRows: { claude: window },
+      todayRows: [],
+      report: report(40),
+      now,
+    });
+    expect(m.groups!["5101"]).toMatchObject({ sessions: 3, tokens: { input: 2500, output: 2100, replies: 3 } }); // a1 once, not twice
+    expect(m.groups!["5101"].window.claude).toEqual({ tokens: 4000, sharePct: 20 }); // half of what the window's 40% holds
+    expect(m.groups!.spikes.tokens).toMatchObject({ input: 2000, output: 2000 });
+    expect(m.tickets!["5101"]).toMatchObject({ sessions: 3, tokens: { input: 2500, output: 2100 } }); // A by its ticket, B and A2 by their group
+    expect(m.tickets!["5102"]).toMatchObject({ sessions: 1, tokens: { input: 2000 } });
+    expect(m.tickets!.spikes).toBeUndefined();
+    expect(m.tickets!["5101"].window.claude!.sharePct! + m.tickets!["5102"].window.claude!.sharePct!).toBeCloseTo(40);
+  });
+
   it("formats counts compactly", () => {
     expect([980, 34_200, 1_240_000, 15_600_000, 2_100_000_000].map(formatTokens)).toEqual(["980", "34k", "1.2M", "16M", "2.1B"]);
   });

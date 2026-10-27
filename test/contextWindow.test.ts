@@ -64,6 +64,22 @@ describe("a Claude session's context window", () => {
     write({ session_id: ID, context_window: contextWindow(150_000, 200_000) });
     expect(claudeContext(ID)).toMatchObject({ state: "reading", tokens: 150_000, window: 200_000 });
   });
+  it("reads the model, the prompt cache and the running cost as Claude Code 2.1.3xx reports them, and leaves out what's missing", () => {
+    // the fields of 2.1.310's payload: model.id, prompt_cache (epoch seconds), cost.total_cost_usd
+    write({
+      session_id: ID,
+      model: { id: "claude-opus-5-5", display_name: "Opus 5.5" },
+      context_window: contextWindow(150_000, 200_000),
+      cost: { total_cost_usd: 4.21, total_duration_ms: 1, total_api_duration_ms: 1, total_lines_added: 0, total_lines_removed: 0 },
+      prompt_cache: { warm: true, caching_observed: true, ttl: "5m", expires_at: 1_792_000_000, requests: 9, misses: 0, recache_tokens_if_cold: 149_200 },
+    });
+    expect(claudeContext(ID)).toMatchObject({ model: "claude-opus-5-5", costUsd: 4.21, cache: { warm: true, expiresAt: 1_792_000_000_000, recacheTokens: 149_200 } });
+    // an older CLI: no prompt_cache, no cost
+    write({ session_id: ID, context_window: contextWindow(150_000, 200_000), prompt_cache: { warm: "yes" } });
+    const r = claudeContext(ID);
+    expect(r).not.toHaveProperty("cache");
+    expect(r).not.toHaveProperty("costUsd");
+  });
   it("says there's been no reply yet when the conversation has no messages", () => {
     write({ session_id: ID, context_window: contextWindow(0, 200_000) });
     expect(claudeContext(ID)).toEqual({ state: "none", why: "No reply yet in this conversation" });

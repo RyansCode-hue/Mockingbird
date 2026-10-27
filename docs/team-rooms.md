@@ -645,6 +645,11 @@ consent (below: "The owner's consent").
   own conversation resumes — on its own account, moved to the new worktree —
   and its first input is the brief of what the teammate did meanwhile. The
   dialog says which it will be.
+- **The same brief outside rooms:** a context warning's **Fresh session with a
+  brief** builds it in its `refresh` mode for a session on this Mac near its
+  context limit — no teammate, room or snapshot; the files as they are now,
+  and the original transcript's path — and starts a new session in the same
+  worktree from it.
 - Take-over creates the session's branch/worktree on the taker's laptop from
   the newest snapshot it has **that the owner signed** (security review N6):
   only a commit the room log's `session.backup` names (its newest, or the one

@@ -192,3 +192,45 @@ describe("an agent message never answers a permission prompt", () => {
     expect(agent.answers).toEqual(["approved"]); // its person's, only
   });
 });
+
+describe("Compact from a context warning goes only to an idle prompt", () => {
+  /** A pane at its prompt, idle. */
+  async function idlePane() {
+    installHooks(null);
+    const store = { settings: { claudeBin: "/bin/echo", codexBin: "/bin/echo" }, state: { sessions: [] as any[] }, upsertSession() {}, removeSession() {}, save() {} };
+    const m = new SessionManager(store as any);
+    stops.push(watchEvents(m, () => {}));
+    const s = await m.create({ repoPath: null, useWorktree: false, agent: "claude", title: "Long session" });
+    await hook("SessionStart", s.id, { source: "startup" });
+    await until("the pane at its prompt", () => m.list().find((x) => x.id === s.id)?.status === "idle");
+    await until("its prompt drawn", () => m.compactRefusal(s.id) === null);
+    return { m, s, agent: agents.get(s.id)! };
+  }
+
+  it("is refused while the agent asks for permission, and nothing reaches the prompt", async () => {
+    const { m, s, agent } = await askingPane();
+    expect(() => m.compact(s.id)).toThrow(/asking for permission/);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(agent.pastes).toEqual([]);
+    expect(agent.answers).toEqual([]);
+  });
+
+  it("is refused mid-turn and onto an unsent draft; at an idle prompt it's submitted once", async () => {
+    const { m, s, agent } = await idlePane();
+    m.statusFromHook({ status: "working", paneId: s.id });
+    expect(() => m.compact(s.id)).toThrow(/mid-turn/);
+    m.statusFromHook({ status: "idle", paneId: s.id });
+    m.write(s.id, "half a thought");
+    expect(() => m.compact(s.id)).toThrow(/unsent text/);
+    m.write(s.id, "\r"); // its person sends it; the turn ends
+    await until("the draft sent", () => agent.submitted.length === 1);
+    await Promise.all(turns);
+    await until("the turn's end", () => m.list().find((x) => x.id === s.id)?.status === "idle");
+    expect(agent.pastes).toEqual([]);
+    m.compact(s.id);
+    await until("/compact submitted", () => agent.submitted.includes("/compact"));
+    expect(agent.pastes).toEqual(["/compact"]);
+    // a compaction reports no turn of its own: a second click while it runs is refused
+    expect(() => m.compact(s.id)).toThrow(/just sent/);
+  });
+});
