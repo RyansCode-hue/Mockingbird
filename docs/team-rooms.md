@@ -1177,6 +1177,19 @@ House's **open backlog**.
   (`POST work-items`, then `PATCH {tags}` if it has any). Only staff close a
   ticket as done or dropped; the board never offers it, and its Done and
   Dropped columns refuse a dragged card.
+- **A Council's approved plan** becomes tickets through the same create path
+  (`POST work-items {title, detail, acceptance, priority}`, then its tags),
+  only from the user's click on "Create N tickets in <project>" in the
+  Council's review (README, Council). A council whose repository a room's
+  sessions work in (by origin) creates in that room's project, with the
+  room's own token answer, and the tickets are put on the board
+  (`house.track`) unless the user unticks it; the nudge carries no `via`, as
+  it's the user's own write. A council outside any room picks a project from
+  the names of `~/.config/radley-house/*.env` (nothing in them is read until
+  creating), with its own answer per project, kept in `house-consent.json`
+  under the key `council`. Every draft and the env file are checked before
+  the first write; the first ticket the House refuses stops the rest, and the
+  answer lists created, failed (the House's words) and not sent.
 - **Agents** in a room get the mockingbird MCP tools `list_house_tickets`
   (no filter: the board — the open backlog, then the room's tickets outside
   it; `filter`: `open`, `tracked` (the room's own) or `all` (everything the

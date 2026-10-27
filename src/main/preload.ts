@@ -68,6 +68,14 @@ const api = {
   collabSynthesize: (id: string, key: string) => ipcRenderer.invoke("collab:synthesize", id, key),
   collabApprove: (id: string, messageId: string) => ipcRenderer.invoke("collab:approve", id, messageId),
   collabImplement: (id: string, key: string) => ipcRenderer.invoke("collab:implement", id, key),
+  collabTicketDrafts: (id: string) => ipcRenderer.invoke("collab:ticketDrafts", id),
+  collabSaveTicketDrafts: (id: string, drafts: unknown) => ipcRenderer.invoke("collab:saveTicketDrafts", id, drafts),
+  collabWholePlanTicket: (id: string) => ipcRenderer.invoke("collab:wholePlanTicket", id),
+  collabSplitWithModel: (id: string, key: string) => ipcRenderer.invoke("collab:splitWithModel", id, key),
+  collabTicketTargets: (id: string) => ipcRenderer.invoke("collab:ticketTargets", id),
+  collabTicketConsent: (id: string, target: unknown, allow: boolean) => ipcRenderer.invoke("collab:ticketConsent", id, target, allow),
+  collabCreateTickets: (id: string, target: unknown, drafts: unknown, track: boolean) => ipcRenderer.invoke("collab:createTickets", id, target, drafts, track),
+  collabOpenTicket: (id: string, n: number) => ipcRenderer.invoke("collab:openTicket", id, n),
   onCollabChanged: (cb: (room: unknown) => void) => {
     const h = (_e: unknown, r: unknown) => cb(r);
     ipcRenderer.on("collab:changed", h);

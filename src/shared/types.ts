@@ -1,6 +1,7 @@
 import type { LspRange, LspTextEdit } from "./textEdits";
 // team rooms: live panes
 import type { RoomSessionTag } from "./team/livePanes";
+import type { CouncilHouseTicket, CouncilTicketDrafts } from "./collabTickets";
 
 /** Which coding-agent CLI a session runs. */
 export type AgentKind = "claude" | "codex";
@@ -788,6 +789,10 @@ export interface CollabRoom {
   allowKinds?: string[];
   /** How long a model's request waits for the user before it counts as no (default 10). */
   askTimeoutMin?: number;
+  /** The approved plan split into House ticket drafts, while the user reviews them before creating them. */
+  ticketDrafts?: CouncilTicketDrafts | null;
+  /** House tickets created from the approved plan, linked from the discussion. */
+  houseTickets?: CouncilHouseTicket[];
   createdAt: number;
 }
 

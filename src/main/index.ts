@@ -24,6 +24,7 @@ import { generateCommitMessage } from "./commitMessage";
 import { Messaging } from "./messaging";
 import { setupStatus } from "./setup";
 import { CollabRooms, COLLAB_DIR, COLLAB_MODELS, COLLAB_EFFORTS, cliTurnRunner } from "./collab";
+import { CouncilTickets } from "./collabTickets";
 import { userShell, userShellWithInput, which, quote } from "./shell";
 import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
@@ -951,6 +952,21 @@ handle("collab:mode", (id, mode, rounds) => collab.setMode(id, mode, rounds));
 handle("collab:synthesize", (id, key) => collab.synthesize(id, key));
 handle("collab:approve", (id, messageId) => collab.approve(id, messageId));
 handle("collab:implement", (id, key) => collab.implement(id, key));
+// an approved plan as Radley House tickets: created only from the user's click, with their own builder token
+const councilTickets = new CouncilTickets(collab, teamHouse);
+handle("collab:ticketDrafts", (id) => collab.ticketDrafts(String(id)));
+handle("collab:saveTicketDrafts", (id, drafts) => collab.setTicketDrafts(String(id), drafts ?? null));
+handle("collab:wholePlanTicket", (id) => collab.wholePlanTicket(String(id)));
+handle("collab:splitWithModel", (id, key) => collab.splitPlanWithModel(String(id), String(key)));
+handle("collab:ticketTargets", (id) => councilTickets.targets(String(id)));
+handle("collab:ticketConsent", (id, target, allow) => councilTickets.consent(String(id), target, allow === true));
+handle("collab:createTickets", (id, target, drafts, track) => councilTickets.create(String(id), target, drafts, track === true));
+handle("collab:openTicket", async (id, n) => {
+  const { url, problem } = await councilTickets.url(String(id), Number(n));
+  if (!externalUrlAllowed(url)) throw new Error(`The House's address isn't an https link (${url.slice(0, 80)})`);
+  await shell.openExternal(url);
+  return problem ? { note: problem } : {};
+});
 handle("setup:status", () => setupStatus(store, { binFor: (kind) => sessions.binFor(kind), refresh: () => lookUpBins(true) }));
 handle("settings:get", () => store.settings);
 handle("settings:set", (s) => {

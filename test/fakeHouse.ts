@@ -78,6 +78,8 @@ export async function fakeHouse(builders: Record<string, string>, o: { tls?: { k
     echoToken: false,
     /** Refuse a status change a builder asks for (an event with a status), with this message; null lets it through. */
     refuseStatus: null as ((it: FakeItem, to: string, builder: string) => string | null) | null,
+    /** Refuse a new work item (POST work-items) with this message; null lets it through. */
+    refuseCreate: null as ((body: any, builder: string) => string | null) | null,
   };
   const at = () => new Date().toISOString();
   const item = (n: number, over: Partial<FakeItem> = {}): FakeItem => {
@@ -157,6 +159,8 @@ export async function fakeHouse(builders: Record<string, string>, o: { tls?: { k
         }
         if (method === "POST") {
           if (!body?.title) return fail(422, "title is required");
+          const refused = state.refuseCreate?.(body, builder);
+          if (refused) return fail(422, refused);
           const it = item(state.next, { title: body.title, detail: body.detail ?? "", acceptance: body.acceptance ?? "", kind: body.kind ?? "engineering", priority: body.priority ?? "medium", created_by: builder });
           it.history.push({ at: at(), actor: builder, event: "created", to_status: "parked" });
           return send(201, it);
