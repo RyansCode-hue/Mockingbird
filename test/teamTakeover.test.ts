@@ -1232,7 +1232,7 @@ describe("take-over: the owner's hand-over when they're online, none when they'r
     expect(viewOf(t.nick.svc).offlineTakeover).toBe(true);
   }, 30_000);
 
-  it("loads logs with 1.5's away grants: the take-overs they granted still count, on reload too", async () => {
+  it("loads logs with 1.5's away grants: a take-over under one while the owner was really offline still counts, on reload too", async () => {
     const t = await ryanAway();
     // what 1.5 did: Ryan allowed take-overs while away (signed before he left), and Nick took s1 over under it
     const now = Date.now();
@@ -1248,6 +1248,8 @@ describe("take-over: the owner's hand-over when they're online, none when they'r
     await until(() => t.ryan.stopped.includes("s1"), "Ryan's copy to stop");
     await caughtUp(t);
     for (const m of [t.ryanM, t.nickM]) expect(backupIn(m, t.roomId)!.takenOver).toMatchObject({ by: t.nickM.id, newSessionId: "away1", grant: "away" });
+    // Ryan's Mac checked it like an offline one: it wasn't connected to Nick's then, so nothing was refused
+    for (const m of [t.ryanM, t.nickM]) expect(backupIn(m, t.roomId)!.refusals).toBeUndefined();
     expect(t.ryan.chat).toEqual([]);
     // read back from disk, the same
     for (const m of [t.ryanM, t.nickM]) {
@@ -1262,6 +1264,89 @@ describe("take-over: the owner's hand-over when they're online, none when they'r
     await caughtUp(t);
     expect(backupIn(t.nickM, t.roomId)!.takenOver).toMatchObject({ grant: "away" });
   }, 40_000);
+
+  /** Ryan's away grant from 1.5, for all his sessions and never withdrawn (1.6 has no way to), in the room's log. */
+  async function awayGrantInLog(t: Awaited<ReturnType<typeof setup>>) {
+    const now = Date.now();
+    const grant = signGrant(t.ryanM.team, { kind: "away", roomId: t.roomId, sessions: null, to: null, sha: null, issuedAt: now - 60_000, expiresAt: now + 8 * 3_600_000 });
+    t.ryanM.team.publish(t.roomId, "session.awayGrant", { grant });
+    return grant;
+  }
+
+  it("holds a take-over under a 1.5 away grant to the offline rule: stamped while the owner's Mac was connected to the taker, every log puts the session back", async () => {
+    const t = await setup(["Ryan", "Nick", "Sam"], { skew: 0 });
+    await t.ryan.svc.turnEnded("s1");
+    await t.ryan.svc.settled();
+    const all = [t.ryanM, t.nickM, t.samM!];
+    const caught = () => until(() => new Set(all.map((m) => m.team.room(t.roomId)!.events)).size === 1, "every log to hold the same events");
+    const grant = await awayGrantInLog(t);
+    await caught();
+    // Nick's Mac, connected to Ryan's, takes s1 over under the grant (a modified Mockingbird, free to pick the take-over's time): its copy runs
+    t.nick.sessions.set("n5", session({ id: "n5", cwd: t.nickClone, repoPath: t.nickClone }));
+    const latest = backupIn(t.nickM, t.roomId)!.latest;
+    t.nickM.team.publish(t.roomId, "session.takenOver", { sessionId: "s1", from: t.ryanM.id, newSessionId: "n5", snapshot: { ...latest, source: "peer" }, conversation: "none", branch: "feature-x", grant });
+    await until(() => t.ryan.chat.length === 1, "Ryan's Mac to refuse it");
+    await caught();
+    for (const m of all) {
+      expect(backupIn(m, t.roomId)).toMatchObject({ owner: t.ryanM.id, takenOver: null, dropped: null, refusals: [{ by: t.nickM.id, newSessionId: "n5", reason: "connected" }] });
+    }
+    expect(t.ryan.stopped).toEqual([]); // Ryan's agent never stopped
+    expect(t.ryan.takenOver).toEqual([]);
+    expect(t.ryan.chat[0]).toMatch(/^“Donor entities” stays on Ryan's laptop: Nick's take-over was refused \(Ryan's Mac was connected to Nick's then/);
+    expect(t.ryan.logs.some((l) => /refused Nick's take-over \(under a 1\.5 away grant\) of session s1/.test(l))).toBe(true);
+    await until(() => t.nick.stopped.includes("n5"), "Nick's copy to stop");
+    expect(t.nick.refused).toEqual(["n5: Ryan refused “Donor entities”"]);
+    // Ryan's session goes on backing up as his, on every log
+    write(t.wt, { "src/a.ts": "Ryan keeps typing\n" });
+    await t.ryan.svc.turnEnded("s1");
+    await caught();
+    for (const m of all) expect(backupIn(m, t.roomId)).toMatchObject({ owner: t.ryanM.id, takenOver: null, latest: { sha: expect.not.stringMatching(latest.sha) } });
+  }, 40_000);
+
+  it("on start, leaves an away-granted take-over the owner's Mac honoured before it checked them as it counted, and checks one it never stopped for", async () => {
+    // left: the copy it stopped is on record (takeover.json); here: the session is still on this Mac
+    for (const c of [
+      { left: true, here: true, refused: false },
+      { left: false, here: false, refused: false },
+      { left: false, here: true, refused: true },
+    ]) {
+      const t = await setup(["Ryan", "Nick"], { skew: 0 });
+      await t.ryan.svc.turnEnded("s1");
+      await t.ryan.svc.settled();
+      const grant = await awayGrantInLog(t);
+      await caughtUp(t);
+      // Ryan's Mockingbird isn't running when Nick takes s1 over under the grant
+      t.ryan.svc.close();
+      const latest = backupIn(t.nickM, t.roomId)!.latest;
+      t.nickM.team.publish(t.roomId, "session.takenOver", { sessionId: "s1", from: t.ryanM.id, newSessionId: "away1", snapshot: { ...latest, source: "peer" }, conversation: "none", branch: "feature-x", grant });
+      await caughtUp(t);
+      // what an older Ryan kept: connected to Nick's all along (1.6.0's record of connections), and the copy it stopped
+      const dir = path.join(t.ryanM.store.dir, t.roomId);
+      const end = Date.now() + 60_000;
+      fs.writeFileSync(path.join(dir, "connected.json"), JSON.stringify({ v: 1, seen: end, members: { [t.nickM.id]: [[end - 3_600_000, end]] } }));
+      if (c.left) {
+        const file = path.join(dir, "takeover.json");
+        const local = JSON.parse(fs.readFileSync(file, "utf8"));
+        local.left = { s1: { base: latest.sha, repo: t.ryanClone, cwd: t.wt, title: "Donor entities", at: Date.now() } };
+        fs.writeFileSync(file, JSON.stringify(local));
+      }
+      const again = takeover(t.ryanM, t.roomId, { repos: [t.ryanClone], sessions: c.here ? [session({ id: "s1", cwd: t.wt, repoPath: t.ryanClone })] : [], skew: 0 });
+      await caughtUp(t);
+      if (c.refused) {
+        for (const m of [t.ryanM, t.nickM]) expect(backupIn(m, t.roomId)).toMatchObject({ takenOver: null, refusals: [{ by: t.nickM.id, newSessionId: "away1", reason: "connected" }] });
+        expect(again.stopped).toEqual([]);
+        expect(again.chat).toHaveLength(1);
+      } else {
+        for (const m of [t.ryanM, t.nickM]) {
+          expect(backupIn(m, t.roomId)!.takenOver).toMatchObject({ by: t.nickM.id, newSessionId: "away1", grant: "away" });
+          expect(backupIn(m, t.roomId)!.refusals).toBeUndefined();
+        }
+        expect(again.stopped).toEqual(c.here ? ["s1"] : []);
+        expect(again.chat).toEqual([]);
+      }
+      again.svc.close();
+    }
+  }, 90_000);
 
   it("checks every grant against the owner's key, the session, the taker and the snapshot", async () => {
     const t = await setup(["Ryan", "Nick", "Sam"]);

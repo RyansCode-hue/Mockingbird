@@ -846,7 +846,19 @@ owner's Mac was connected to the taker's then, which it refuses (below:
   and under the room's warnings.
 - **Away grants (1.5)** are no longer given: Settings → Team's **While I'm
   away** is gone. Logs keep the `session.awayGrant` events, still reduced, so
-  take-overs they granted still count, on every member and on reload.
+  take-overs they granted still count, on every member and on reload. Since
+  1.6 can't withdraw one, and its window is checked against the take-over's
+  own time (which the taker picks), the owner's Mac (after 1.6.0) holds a
+  take-over under an away grant to the offline rule above: stamped while it
+  was connected to the taker, or before its snapshot, it's refused with
+  `session.takeoverRefused`, which every member's reducer applies to an
+  away-granted take-over as to an offline one. So a grant left over from 1.5
+  gets a taker no further than an offline take-over does, with the same
+  limit (a time picked inside a real gap in the connection). One the owner's Mac had already
+  honoured stays as it counted: on starting it checks an away-granted
+  take-over only while the session is still on that Mac and it has no record
+  of stopping its copy (`takeover.json`'s `left`). A 1.6.0 Mac ignores such a
+  refusal, so it keeps the take-over on its log until it updates.
 - **Mixed versions.** Offline take-overs need **both teammates on 1.6.0**: a
   1.5 owner's backups don't say `offline: 1`, so their offline sessions can't
   be taken over until they're back and asked ("Ryan's Mockingbird needs an

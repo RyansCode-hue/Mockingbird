@@ -529,8 +529,10 @@ agreed direction, **Later** is worth doing once the foundations settle.
     (Leave room… asks to whom). An owner gone for good: once they haven't been
     heard from in the room for 14 days, the longest-standing admin can claim
     ownership, announced to everyone; the old owner can take it back whenever
-    they're back, and can't be removed for 14 days after the claim. No role
-    takes a session over without its owner's grant.
+    they're back, and can't be removed for 14 days after the claim. Roles
+    give no way past a session's owner: an online owner is always asked
+    first, and a session is any member's to take — whatever their role — only
+    while its owner is offline (below).
   - **Joining needs the owner or an admin:** any member hands out codes, but
     only the room's owner or an admin lets someone in. They get a notification
     and a prompt — "Nick wants to join #5101", with Nick's fingerprint to
@@ -628,7 +630,8 @@ agreed direction, **Later** is worth doing once the foundations settle.
     the owner's Mac, which keeps when it was connected to each teammate,
     refuses one taken while it was connected to the taker (2 minutes' leeway
     for clocks), and every member's log puts the session back — their agent
-    never stopped, the taker's copy stops. Every Mac checks the hand-over, so
+    never stopped, the taker's copy stops. A take-over under a 1.5 away grant
+    is checked the same way. Every Mac checks the hand-over, so
     a take-over with neither — an older Mockingbird's, say — changes nothing on
     the owner's Mac, which says so in the room. Taking over an offline owner's
     session needs both on 1.6. The snapshot it starts from is one the owner's signed room log

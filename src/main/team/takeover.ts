@@ -30,6 +30,7 @@ import {
   MAX_REFUSALS,
   OFFLINE_REFUSAL_REASONS,
   OFFLINE_TAKEOVER_SKEW_MS,
+  ownerChecks,
   type OfflineRefusalReason,
   HANDOVER_GRANT_MS,
   type RefusedTakeover,
@@ -127,7 +128,10 @@ import type { MemberId, RoomEvent, RoomId, RoomState } from "../../shared/team/t
  * so in the room; take-overs from before grants that this Mac had already
  * honoured are accepted once (`session.takeoverAccepted`), so updating changes
  * no history. 1.5's away grants (`session.awayGrant`) are no longer given;
- * logs keep them and the take-overs they granted.
+ * logs keep them and the take-overs they granted. A take-over carrying one is
+ * checked by the owner's Mac like an offline one (ownerChecks): the grant's
+ * window is read against the take-over's own time, which the taker picks, and
+ * it can't be withdrawn any more.
  *
  * The snapshot a take-over starts from is one the owner signed: the commit a
  * `session.backup` (or the hand-over) names. The peer copy is what the
@@ -339,9 +343,9 @@ defineEventType("session.takeoverRefused", {
   reduce(state, e) {
     const b = e.body;
     const s = state.ext.takeover?.sessions[b.sessionId];
-    // only the session's owner refuses, and only the offline take-over the room holds now
+    // only the session's owner refuses, and only the offline or away-granted take-over the room holds now
     const t = s?.takenOver;
-    if (!s || !t || t.grant !== "offline" || e.author !== s.owner || t.by !== b.by || t.newSessionId !== b.newSessionId) return;
+    if (!s || !t || !ownerChecks(t) || e.author !== s.owner || t.by !== b.by || t.newSessionId !== b.newSessionId) return;
     s.takenOver = null;
     // the taker's drop of the old backup went with the take-over
     if (s.dropped?.by === t.by) s.dropped = null;
@@ -723,11 +727,14 @@ export class TakeoverService {
       }
     }
     // take-overs this install already knows of (heard before it last quit, or kept in the room log): their copies stay stopped —
-    // an offline one it hasn't stopped for yet is checked first, as when it's heard
+    // an offline one it hasn't stopped for yet is checked first, as when it's heard. An away-granted one only while its
+    // session is still here: one this Mac honoured before it checked those (1.5, 1.6.0) has a `left` record, or its
+    // session was closed here before it was heard, and keeps counting
     for (const room of t.rooms()) {
       for (const e of Object.values(room.ext.takeover?.sessions ?? {})) {
         if (!e.takenOver || e.owner !== t.self.id) continue;
-        if (e.takenOver.grant === "offline" && !this.local(room.id).left[e.sessionId] && this.refuseOffline(room, e)) continue;
+        const unchecked = !this.local(room.id).left[e.sessionId] && (e.takenOver.grant === "offline" || (e.takenOver.grant === "away" && !!this.d.host.session(e.sessionId)));
+        if (unchecked && this.refuseOffline(room, e)) continue;
         this.leave(room.id, e.sessionId);
       }
     }
@@ -1467,8 +1474,8 @@ export class TakeoverService {
     const s = room.ext.takeover?.sessions[e.body.sessionId];
     // only the take-over the room settled on counts: one its owner granted
     if (s?.takenOver?.by === e.author && e.body.from === this.d.team.self.id) {
-      // taken while this Mac was offline: unless it was connected to the taker then, after all
-      if (s.takenOver.grant === "offline" && this.refuseOffline(room, s)) return this.changed();
+      // taken while this Mac was offline (or under an away grant): unless it was connected to the taker then, after all
+      if (ownerChecks(s.takenOver) && this.refuseOffline(room, s)) return this.changed();
       // TODO(audit-log): a teammate took over this install's session, with its grant (s.takenOver.grant)
       this.honour(room, e.body.sessionId, e.author);
     } else if (s && !s.takenOver && s.ungranted?.by === e.author && s.owner === this.d.team.self.id && e.body.from === s.owner) {
@@ -1518,15 +1525,15 @@ export class TakeoverService {
   }
 
   /**
-   * An offline take-over of this install's session `s`: refused — the room
-   * told, so every member puts the session back, and this Mac's agent never
-   * stopped — when this Mac was connected to the taker at the take-over's
-   * time, or it's stamped before the snapshot it continues from was taken.
-   * True when refused.
+   * An offline or away-granted take-over (ownerChecks) of this install's
+   * session `s`: refused — the room told, so every member puts the session
+   * back, and this Mac's agent never stopped — when this Mac was connected to
+   * the taker at the take-over's time, or it's stamped before the snapshot it
+   * continues from was taken. True when refused.
    */
   private refuseOffline(room: RoomState, s: RoomSessionBackup): boolean {
     const t = s.takenOver;
-    if (!t || t.grant !== "offline" || s.owner !== this.d.team.self.id) return false;
+    if (!t || !ownerChecks(t) || s.owner !== this.d.team.self.id) return false;
     // the snapshot's time as this Mac signed it, when it's the newest; else as the taker says
     const snapshotAt = s.latest.sha === t.snapshot.sha ? s.latest.takenAt : t.snapshot.takenAt;
     const reason = offlineTakeoverRefusal({ at: t.at, snapshotAt, connected: this.connections.spans(room.id, t.by), skew: this.offlineSkewMs });
@@ -1535,18 +1542,19 @@ export class TakeoverService {
     const by = this.nameOf(room.id, t.by);
     const why = reason === "connected" ? `${me}'s Mac was connected to ${by}'s then, so ${by} should have asked` : `it's dated before the snapshot it continues from`;
     // TODO(audit-log): an offline take-over of this install's session refused (who, which session, why)
-    this.d.log(`team: refused ${by}'s offline take-over of session ${s.sessionId}`, why);
+    const kind = t.grant === "away" ? "take-over (under a 1.5 away grant)" : "offline take-over";
+    this.d.log(`team: refused ${by}'s ${kind} of session ${s.sessionId}`, why);
     try {
       this.d.team.publish(room.id, "session.takeoverRefused", { sessionId: s.sessionId, by: t.by, newSessionId: t.newSessionId, reason });
     } catch (err) {
       // the room still holds the take-over: this copy stops like any other's, rather than run beside the taker's
-      this.d.log(`team: refusing ${by}'s offline take-over of session ${s.sessionId}`, err);
+      this.d.log(`team: refusing ${by}'s ${kind} of session ${s.sessionId}`, err);
       return false;
     }
     try {
       this.d.chat(room.id, `“${s.session.title}” stays on ${me}'s laptop: ${by}'s take-over was refused (${why}). Ask ${me} to hand it over.`);
     } catch (err) {
-      this.d.log(`team: telling room ${room.id} an offline take-over was refused`, err);
+      this.d.log(`team: telling room ${room.id} that ${by}'s ${kind} was refused`, err);
     }
     // the turns made while the room held the take-over weren't backed up: back up now
     if (this.d.host.session(s.sessionId)) void this.track(this.turnEnded(s.sessionId));

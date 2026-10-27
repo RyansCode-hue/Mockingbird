@@ -66,6 +66,16 @@ export interface TakenOver {
 }
 
 /**
+ * Whether the session's owner's Mac checks a take-over against when it was
+ * connected to the taker, and may refuse it (session.takeoverRefused): an
+ * offline one, and one a 1.5 away grant let count. An away grant's window is
+ * checked against the take-over's own time, which the taker picks, and the
+ * grant can't be withdrawn any more, so it is held to the offline rule. A
+ * hand-over names its taker and snapshot and is never refused.
+ */
+export const ownerChecks = (t: Pick<TakenOver, "grant"> | null | undefined): boolean => t?.grant === "offline" || t?.grant === "away";
+
+/**
  * A session owner's signed consent to a take-over (src/main/team/takeoverGrants.ts):
  *   - "handover": answering a teammate's request, for one session, that
  *     teammate (`to`) and the snapshot handed over (`sha`), for HANDOVER_GRANT_MS;
@@ -140,11 +150,11 @@ export interface RoomSessionBackup {
   ungrantedDrop?: { at: number; by: MemberId; reason: DroppedBecause } | null;
   /** Its backup was deleted from origin and members' clones (or its owner left the room); a later backup by its owner revives it. */
   dropped: { at: number; by: MemberId; reason: DroppedBecause } | null;
-  /** Offline take-overs its owner's Mac refused (session.takeoverRefused), newest last, at most MAX_REFUSALS: the takers' copies don't run. */
+  /** Offline and away-granted take-overs its owner's Mac refused (session.takeoverRefused, ownerChecks), newest last, at most MAX_REFUSALS: the takers' copies don't run. */
   refusals?: OfflineRefusal[];
 }
 
-/** An offline take-over the session's owner refused: their Mac was connected to the taker when it was stamped. */
+/** An offline (or away-granted) take-over the session's owner refused: their Mac was connected to the taker when it was stamped, or it predates its snapshot. */
 export interface OfflineRefusal {
   by: MemberId;
   newSessionId: string;

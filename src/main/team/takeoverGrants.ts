@@ -31,7 +31,10 @@ import type { MemberId, RoomState } from "../../shared/team/types";
  * The times compared are the take-over event's own (its author's clock), the
  * only time every member agrees on: a taker whose clock is wrong on purpose
  * can use a grant past its expiry, but never without the owner having signed
- * one for that session.
+ * one for that session. An away grant, which can't be withdrawn any more, gets
+ * no further than an offline take-over: the owner's Mac refuses a take-over
+ * under one stamped while it was connected to the taker (takeover.ts,
+ * ownerChecks).
  */
 
 const GRANT_ID_RE = /^[0-9a-f]{16,64}$/;
