@@ -1759,8 +1759,8 @@ if (!view && params.has("chatMenu")) {
   set("mb.sideView", "room");
   if (!params.get("chat")) set("mb.roomChat.room", "R5101aaaaaaaaaaaaaaaaa");
 }
-// ?ctx=row|pane|tab|artifact opens that element's right-click menu: the first teammate's session row in the Team
-// view (=row), the first pane's header, the first workspace tab, the first artifact (with view=room); ?ctxKeys
+// ?ctx=row|pane|tab|artifact|member opens that element's right-click menu: the first teammate's session row in the Team
+// view (=row), the first pane's header, the first workspace tab, the first artifact (with view=room), the room's second member (=member); ?ctxKeys
 // presses ↓ twice in it, from the keyboard
 // ?paneControls shows every pane header's controls as a hover does, and every session row's actions, for screenshots
 if (params.has("paneControls")) {
@@ -1772,7 +1772,7 @@ const ctxOn = params.get("ctx");
 if (ctxOn) {
   if (!view) set("mb.sideView", "room");
   if (!view && !params.get("chat")) set("mb.roomChat.room", ctxOn === "row" ? "" : "R5101aaaaaaaaaaaaaaaaa");
-  const target = { row: ".room-sess-body .sess-item.remote", pane: ".pane-header", tab: ".ws-tab", artifact: ".art-row" }[ctxOn] ?? ctxOn;
+  const target = { row: ".room-sess-body .sess-item.remote", pane: ".pane-header", tab: ".ws-tab", artifact: ".art-row", member: ".rc-members .rc-member + .rc-member" }[ctxOn] ?? ctxOn;
   let tries = 0;
   const t = setInterval(() => {
     const el = document.querySelector(target) as HTMLElement | null;
