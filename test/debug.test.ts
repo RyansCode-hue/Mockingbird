@@ -582,7 +582,8 @@ describe("debugging a real .NET program", () => {
     const runs = new RunManager({
       spawn: (command, o) => pty.spawn("/bin/sh", ["-c", command], { name: "xterm-256color", cols: 120, rows: 30, cwd: o.cwd, env: o.env }),
       emit: (ch, ...a) => events.push([ch, ...a]),
-      baseEnv: () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME!, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1" }),
+      // the SDK's first run takes a named lock under TMPDIR; without it the build fails before compiling
+      baseEnv: () => ({ PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME!, TMPDIR: os.tmpdir(), DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1" }),
       docker: async () => "docker",
       runShell,
       profileFor: () => validateProfile({ services: [{ name: "app", command: "dotnet run --project app" }] }, dir),
