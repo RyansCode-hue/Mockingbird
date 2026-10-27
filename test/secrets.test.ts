@@ -3,6 +3,7 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { knownSecretFiles, roomSecretReads, SECRET_FILE_GLOBS, SECRET_READS, secretPathspecs } from "../src/main/secrets";
 import { snapshotCommit } from "../src/main/snapshots";
+import { codexRoomPermissions } from "../src/main/codexRoomSandbox";
 import { git, makeRepo, tempDir, write } from "./helpers";
 import { ORDINARY, SECRETS, workTracker } from "./secretFixtures";
 
@@ -21,6 +22,15 @@ describe("the secret file list", () => {
     expect(rules).toContain(`Read(/${path.join(wt, "secrets/ado.pat")})`);
     expect(rules).toContain("Read(~/.ssh/**)");
     expect(rules).toContain("Read(~/.mockingbird/team/**)");
+  });
+
+  it("keeps room agents out of Messages and Mail, which Full Disk Access for phone replies opens to everything Mockingbird runs", () => {
+    const { rules } = roomSecretReads(tempDir("none"));
+    expect(rules).toContain("Read(~/Library/Messages/**)");
+    expect(rules).toContain("Read(~/Library/Mail/**)");
+    const profile = codexRoomPermissions({ workTrackerPath: tempDir("none"), git: null, hooks: [] }).config.join("\n");
+    expect(profile).toContain(`"~/Library/Messages"="deny"`);
+    expect(profile).toContain(`"~/Library/Mail"="deny"`);
   });
 
   it("says when the PAT file can't be worked out, and still denies everything else", () => {

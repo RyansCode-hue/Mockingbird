@@ -23,7 +23,7 @@ function places(over: Partial<CodexRoomPlaces> = {}): CodexRoomPlaces {
 }
 
 describe("a Codex room session's permission profile", () => {
-  it("is selected per launch and denies the secret file list: in the session's folders, anywhere on disk but certificate bundles, home credentials, logins and the ADO PAT file", () => {
+  it("is selected per launch and denies the secret file list: in the session's folders, anywhere on disk but certificate bundles, home credentials, logins, Messages, Mail and the ADO PAT file", () => {
     const p = places({ codexHome: "/elsewhere/codex" });
     const { config, problem } = codexRoomPermissions(p);
     expect(problem).toBeNull();
@@ -36,7 +36,7 @@ describe("a Codex room session's permission profile", () => {
     for (const g of SECRET_FILE_GLOBS) expect(profile).toContain(`"**/${g}"="deny"`);
     for (const g of SECRET_FILE_GLOBS.filter((g) => g !== "*.pem")) expect(profile).toContain(`"/**/${g}"="deny"`);
     expect(profile).not.toContain(`"/**/*.pem"`);
-    for (const x of ["~/.ssh", "~/.aws", "~/.config/gh", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team", "~/Library/Keychains", "~/.codex/auth.json", "/elsewhere/codex/auth.json"]) {
+    for (const x of ["~/.ssh", "~/.aws", "~/.config/gh", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team", "~/Library/Keychains", "~/Library/Messages", "~/Library/Mail", "~/.codex/auth.json", "/elsewhere/codex/auth.json"]) {
       expect(profile).toContain(`"${x}"="deny"`);
     }
     expect(profile).toContain(`${JSON.stringify(path.join(p.workTrackerPath, "secrets/ado.pat"))}="deny"`);
@@ -142,7 +142,7 @@ describe.skipIf(!realCodex)("the installed Codex in a room session's sandbox", (
     if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
   });
 
-  it("can't read secret files or logins, while ordinary files and certificate bundles stay readable", async () => {
+  it("can't read secret files, logins, Messages or Mail, while ordinary files and certificate bundles stay readable", async () => {
     const home = outsideTmp("home");
     const repo = makeRepo(Object.fromEntries([...SECRETS, ...ORDINARY].map((f) => [f, `${f}\n`])));
     const hooks = [path.join(home, ".mockingbird/team/githooks"), path.join(home, ".mockingbird/team/coauthors")];
@@ -152,7 +152,7 @@ describe.skipIf(!realCodex)("the installed Codex in a room session's sandbox", (
     const elsewhere = outsideTmp("other-repo");
     write(elsewhere, { ".env": "OTHER=1\n", "server.key": "key\n", "notes.md": "notes\n" });
     write(codexHome, { "auth.json": "{}\n" });
-    const inHome = [".ssh/id_ed25519", ".git-credentials", ".config/git/credentials", ".config/gh/hosts.yml", ".aws/credentials", ".netrc", ".codex/auth.json", "Library/Keychains/login.keychain-db", ".mockingbird/team/identity.json"];
+    const inHome = [".ssh/id_ed25519", ".git-credentials", ".config/git/credentials", ".config/gh/hosts.yml", ".aws/credentials", ".netrc", ".codex/auth.json", "Library/Keychains/login.keychain-db", "Library/Messages/chat.db", "Library/Mail/V10/MailData/Envelope Index", ".mockingbird/team/identity.json"];
     write(home, { ...Object.fromEntries(inHome.map((f) => [f, "secret\n"])), ".mockingbird/team/githooks/pre-commit": "#!/bin/sh\n", ".mockingbird/team/coauthors/s1": "Nick\n" });
     const denied = [...SECRETS, path.join(p.workTrackerPath, "secrets/ado.pat"), path.join(elsewhere, ".env"), path.join(elsewhere, "server.key"), path.join(codexHome, "auth.json"), ...inHome.map((f) => path.join(home, f))];
     const readable = [

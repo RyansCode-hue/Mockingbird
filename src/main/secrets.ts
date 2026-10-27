@@ -51,6 +51,14 @@ export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 /** Credentials outside any repository, and this install's own team keys and invite tokens. */
 export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**"];
 
+/**
+ * Personal mail and messages in home: Messages' history and attachments, and
+ * Mail's store. macOS keeps them from apps without Full Disk Access, but
+ * phone-alert replies need it, and everything Mockingbird runs inherits it.
+ * Denied to room agents beside HOME_SECRETS.
+ */
+export const HOME_PRIVATE_DATA = ["~/Library/Messages/**", "~/Library/Mail/**"];
+
 /** Credential stores in home: HOME_SECRETS, and the folder of the House's env files (each member's builder token). */
 const HOME_SECRET_PLACES = [...HOME_SECRETS, `~/${HOUSE_CONFIG_DIR}/**`];
 
@@ -88,14 +96,16 @@ export function knownSecretFiles(workTrackerPath: string): { files: string[]; pr
 /**
  * The deny rules a team room session starts with: SECRET_READS (also
  * anywhere on disk, not only under its folder), the known credential folders
- * in home, and the known secret files (knownSecretFiles). `problem` says what
- * couldn't be worked out — the rules still hold everything else.
+ * in home, Messages and Mail (HOME_PRIVATE_DATA), and the known secret files
+ * (knownSecretFiles). They gate Claude's file tools, not its shell commands.
+ * `problem` says what couldn't be worked out — the rules still hold
+ * everything else.
  */
 export function roomSecretReads(workTrackerPath: string): { rules: string[]; problem: string | null } {
   const anywhere = SECRET_FILE_GLOBS.map((g) => `Read(//**/${g})`);
   const known = knownSecretFiles(workTrackerPath);
   // "//" starts an absolute path in a permission rule
-  const rules = [...SECRET_READS, ...anywhere, ...HOME_SECRETS.map((p) => `Read(${p})`), ...known.files.map((f) => `Read(/${f})`)];
+  const rules = [...SECRET_READS, ...anywhere, ...[...HOME_SECRETS, ...HOME_PRIVATE_DATA].map((p) => `Read(${p})`), ...known.files.map((f) => `Read(/${f})`)];
   return { rules, problem: notDeniedByPath(known.problem) };
 }
 

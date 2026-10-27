@@ -1,7 +1,7 @@
 import * as os from "os";
 import * as path from "path";
 import { git } from "./git";
-import { HOME_SECRETS, knownSecretFiles, notDeniedByPath, SECRET_FILE_GLOBS } from "./secrets";
+import { HOME_PRIVATE_DATA, HOME_SECRETS, knownSecretFiles, notDeniedByPath, SECRET_FILE_GLOBS } from "./secrets";
 
 /**
  * The sandbox a Codex team room session runs in (docs/team-rooms.md,
@@ -108,8 +108,8 @@ export interface CodexRoomPlaces {
  *   fetches), all but gitWrites' read-only parts, and to TOOL_CACHES;
  * - SECRET_FILE_GLOBS denied in the session's folders and, but for
  *   certificate bundles, anywhere on disk, plus the credential folders in
- *   home, CREDENTIAL_STORES and the known secret files. Denied means
- *   neither read nor written.
+ *   home, CREDENTIAL_STORES, Messages and Mail (HOME_PRIVATE_DATA) and the
+ *   known secret files. Denied means neither read nor written.
  * `problem` as in roomSecretReads.
  */
 export function codexRoomPermissions(p: CodexRoomPlaces): { config: string[]; problem: string | null } {
@@ -123,7 +123,7 @@ export function codexRoomPermissions(p: CodexRoomPlaces): { config: string[]; pr
     ...entries("write", [...gitDirs.write, ...TOOL_CACHES]),
     ...entries("read", [...gitDirs.read, ...p.hooks]),
     ...entries("deny", SECRET_FILE_GLOBS.filter((g) => !CERT_BUNDLE_GLOBS.has(g)).map((g) => `/**/${g}`)),
-    ...entries("deny", [...HOME_SECRETS.map((x) => x.replace(/\/\*\*$/, "")), ...CREDENTIAL_STORES, ...codexAuth]),
+    ...entries("deny", [...[...HOME_SECRETS, ...HOME_PRIVATE_DATA].map((x) => x.replace(/\/\*\*$/, "")), ...CREDENTIAL_STORES, ...codexAuth]),
     ...entries("deny", known.files.map((f) => path.resolve(f))),
   ];
   const profile = [
@@ -157,7 +157,7 @@ export function codexHomeOf(env: Record<string, string | undefined>): string | u
  */
 export const CODEX_ROOM_SANDBOX_NOTE =
   "This Mockingbird team room session runs every command in the room's sandbox, and approving a command doesn't lift it. " +
-  "Secret files (.env files, keys, certificates, credential files) and logins (SSH keys, the keychain, git and GitHub credentials) can't be read. " +
+  "Secret files (.env files, keys, certificates, credential files), logins (SSH keys, the keychain, git and GitHub credentials) and the user's Messages and Mail can't be read. " +
   "Commands can write this folder, temp folders, package caches and this repository's git data, so commits, branches and stashes work — but not git config or hooks. " +
   "Nothing that needs a login works from here: pushing, or fetching from a private remote. When work is ready to push, tell the user, who pushes from Mockingbird's Source Control or with a `!` command in this pane. " +
   "Don't request escalation for any of this.";

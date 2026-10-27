@@ -524,7 +524,12 @@ Member replace the single admin (creator, else longest-standing member).
   makes those rules, Codex's room sandbox (below) and what backups leave out,
   so nothing in it is ever sent over the connection or pushed. Teammates swap
   `.env` files by hand. The same list decides which room artifacts agents
-  may not read (Artifacts, below).
+  may not read (Artifacts, below). Room sessions are also denied
+  `~/Library/Messages` and `~/Library/Mail` (`HOME_PRIVATE_DATA`): phone
+  replies need Full Disk Access, which everything Mockingbird runs inherits,
+  and macOS otherwise keeps both from apps. Claude's rules gate its file
+  tools only: a shell command a Claude session runs can still read them, as
+  it can any secret file (M9). Codex's sandbox (below) covers its commands.
 - **Codex room sessions** (Codex 0.138 or later) run in the room's sandbox:
   a permission profile, `mockingbird-room` (`src/main/codexRoomSandbox.ts`),
   defined and selected entirely by `-c` settings on that launch
@@ -544,7 +549,8 @@ Member replace the single admin (creator, else longest-standing member).
     `~/.git-credentials`, `~/.config/git/credentials`, the login keychain
     (`~/Library/Keychains`: git's osxkeychain helper and gh's token),
     Codex's own `auth.json` (the CLI reads it itself, outside the sandbox),
-    `~/.mockingbird/team` and the ADO PAT file. Mockingbird's co-author hooks
+    `~/.mockingbird/team` and the ADO PAT file; and the user's
+    `~/Library/Messages` and `~/Library/Mail`. Mockingbird's co-author hooks
     inside that team folder stay readable, so commits get their trailers.
   - **Writes:** the session's folders and temp folders (Codex's `:workspace`);
     the repository's git data — the common git folder and a worktree's own —

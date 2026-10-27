@@ -215,7 +215,9 @@ agreed direction, **Later** is worth doing once the foundations settle.
   what it waits on, never what an agent wrote. One per session per 10
   minutes, one per prompt, close ones batched; quiet hours and muted sessions
   apply. Opt-in replies (they need Full Disk Access — for Mockingbird and
-  everything its panes run — said before it's granted): `K4 1` allows that prompt once, `K4 2` denies it, `K4` and a
+  everything its panes run — said before it's granted; room sessions' agents
+  are denied `~/Library/Messages` and `~/Library/Mail`, though a Claude
+  session's shell commands aren't covered yet): `K4 1` allows that prompt once, `K4 2` denies it, `K4` and a
   message types into a finished session — only from your conversation with
   yourself, only after the alert, only while it's the same prompt; each in the
   remote-activity log and shown in the pane. Settings were mocked as three
