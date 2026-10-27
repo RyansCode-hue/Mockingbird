@@ -369,3 +369,46 @@ export function asDraft(v: unknown): TicketDraft | null {
   if (!isPriority(x.priority) || !Array.isArray(x.tags) || !x.tags.every((t) => typeof t === "string")) return null;
   return { id: x.id.slice(0, 40), title: x.title, detail: x.detail, acceptance: x.acceptance, priority: x.priority, tags: x.tags };
 }
+
+/** The most tickets a model's split may make (a plan that needs more is split by hand). */
+export const MAX_MODEL_TICKETS = 30;
+
+/** The whole plan as one draft: what the review offers when the plan has no steps to split by. */
+export function wholePlanDraft(plan: string, council: string, tags: string[] = [NEEDS_AGENT]): TicketDraft {
+  return { id: draftId(), title: council.replace(/\s+/g, " ").trim().slice(0, 200), detail: `${plan.trim()}\n\n${councilLine(council)}`, acceptance: "", priority: "medium", tags: [...tags] };
+}
+
+/**
+ * A model's split, read as the JSON list it was asked for (a fenced block or
+ * prose around it is allowed): each ticket's title, detail, acceptance and
+ * priority, as drafts with the council line and the default tags. Throws,
+ * saying what was wrong, when it isn't such a list.
+ */
+export function draftsFromModel(reply: string, council: string, tags: string[] = [NEEDS_AGENT]): TicketDraft[] {
+  const start = reply.indexOf("[");
+  const end = reply.lastIndexOf("]");
+  if (start < 0 || end < start) throw new Error("The model didn't answer with a list of tickets");
+  let list: unknown;
+  try {
+    list = JSON.parse(reply.slice(start, end + 1));
+  } catch (err) {
+    throw new Error(`The model's list of tickets isn't valid JSON: ${(err as Error).message}`);
+  }
+  if (!Array.isArray(list) || !list.length) throw new Error("The model's answer has no tickets in it");
+  if (list.length > MAX_MODEL_TICKETS) throw new Error(`The model split the plan into ${list.length} tickets; at most ${MAX_MODEL_TICKETS} can be reviewed at once`);
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : Array.isArray(v) ? v.filter((x) => typeof x === "string").map((x) => `- ${x}`).join("\n") : "");
+  return list.map((t, i) => {
+    const x = (t ?? {}) as Record<string, unknown>;
+    const title = str(x.title).replace(/\s+/g, " ");
+    if (!title) throw new Error(`Ticket ${i + 1} in the model's answer has no title`);
+    const p = typeof x.priority === "string" ? x.priority.toLowerCase().trim() : "";
+    return {
+      id: draftId(),
+      title: title.slice(0, 200),
+      detail: [str(x.detail ?? x.description), councilLine(council)].filter(Boolean).join("\n\n"),
+      acceptance: str(x.acceptance ?? x.acceptance_criteria),
+      priority: isPriority(p) ? p : "medium",
+      tags: [...tags],
+    };
+  });
+}
