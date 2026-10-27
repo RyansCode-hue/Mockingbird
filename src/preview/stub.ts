@@ -199,6 +199,8 @@ const meters: Meters = {
   tickets: {
     "5101": { sessions: 3, tokens: tokens(1_420_000, 196_000, 28_700_000), window: { claude: { tokens: 7_000_000, sharePct: 16.4 }, codex: { tokens: 310_000, sharePct: 2.1 } } },
     "5102": { sessions: 2, tokens: tokens(610_000, 88_000, 11_200_000), window: { claude: { tokens: 1_900_000, sharePct: 4.8 } } },
+    // the House's #143, claimed by you
+    "143": { sessions: 1, tokens: tokens(240_000, 41_000, 5_300_000), window: { claude: { tokens: 900_000, sharePct: 2.2 } } },
   },
 };
 
@@ -2467,6 +2469,67 @@ if (whatsNewQ !== null && whatsNewQ !== "updated") {
 // opening moves focus into a named dialog whose body scrolls inside a bounded height, Esc closes it and gives focus
 // back to the label, as does a click outside — and writes the results into <script id="mb-wn-audit"> for
 // test/uiWhatsNew.test.ts. With ?whatsNew=updated it starts from the label's "Updated to" state.
+// ?ctxAudit (real time: pageResult) drives the context warning as a person does and writes what it saw into
+// <script id="mb-ctx-audit"> for test/uiContextWarning.test.ts. =idle: s5, past 75% and idle — Compact is sent on the
+// click only, and the warning clears once the smaller context is reported. =waiting: s2, past 90% while asking for
+// permission — Compact is held back; Dismiss hides it and is remembered. =resume: the crashed s6, whose cold
+// conversation asks before resuming — Cancel leaves it, Continue resumes it.
+if (params.get("ctxAudit")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const banner = () => document.querySelector(".ctx-banner") as HTMLElement | null;
+  const button = (root: Element | null, text: string) => [...(root?.querySelectorAll("button") ?? [])].find((b) => b.textContent === text) as HTMLButtonElement | undefined;
+  const count = (fn: string) => calls.filter((c) => c.fn === fn).length;
+  const until = async (ok: () => boolean, ms: number) => {
+    for (const end = Date.now() + ms; !ok() && Date.now() < end; ) await sleep(100);
+    return ok();
+  };
+  (async () => {
+    const out: Record<string, unknown> = {};
+    const mode = params.get("ctxAudit");
+    if (mode === "resume") {
+      await until(() => !!document.querySelector(".pane.st-dead .dead-body"), 5000);
+      const resume = () => (document.querySelector(".pane.st-dead .dead-body button.outline.strong") as HTMLElement | null)?.click();
+      resume();
+      out.asked = await until(() => !!document.querySelector(".cost-dlg"), 3000);
+      out.say = document.querySelector(".cost-dlg .cost-say")?.textContent ?? null;
+      out.why = document.querySelector(".cost-dlg .cost-why")?.textContent ?? null;
+      button(document.querySelector(".cost-dlg"), "Cancel")?.click();
+      await sleep(400);
+      out.afterCancel = { dialog: !!document.querySelector(".cost-dlg"), killed: count("killSession"), relaunched: count("relaunchSession") };
+      resume();
+      await until(() => !!document.querySelector(".cost-dlg"), 3000);
+      button(document.querySelector(".cost-dlg"), "Continue")?.click();
+      await until(() => count("relaunchSession") > 0, 3000);
+      out.afterContinue = { dialog: !!document.querySelector(".cost-dlg"), relaunched: count("relaunchSession") };
+    } else {
+      out.shown = await until(() => !!banner(), 5000);
+      out.tone = banner()?.classList.contains("firm") ? "firm" : banner()?.classList.contains("heads") ? "heads" : null;
+      out.text = banner()?.querySelector(".reason")?.textContent ?? null;
+      const compact = button(banner(), "Compact");
+      out.compactDisabled = !!compact?.disabled;
+      out.compactTitle = compact?.title ?? null;
+      out.sentBeforeClick = count("contextCompact");
+      out.typedBeforeClick = count("sessionWrite");
+      compact?.click();
+      await sleep(400);
+      out.sentAfterClick = count("contextCompact");
+      if (mode === "idle") {
+        out.compactingLabel = button(banner(), "Compacting…") ? "Compacting…" : (banner()?.querySelector(".reason")?.textContent ?? null);
+        out.clearedAfterCompact = await until(() => !banner(), 15_000);
+      } else {
+        button(banner(), "✕")?.click();
+        await sleep(300);
+        out.dismissedGone = !banner();
+        out.dismissal = JSON.parse(localStorage.getItem("mb.ctxDismissed") ?? "null");
+      }
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-ctx-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  })();
+}
 if (params.has("wnAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const label = () => document.querySelector(".brand .ver") as HTMLButtonElement | null;

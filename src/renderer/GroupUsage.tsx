@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AGENT_NAME, formatShare, formatTokens, isErr, totalTokens, type AgentKind, type GroupMeter, type Meters } from "../shared/types";
 import { readPref } from "./prefs";
-import { tokenBreakdown } from "./TerminalPane";
+import { tokenBreakdown } from "./usageFormat";
 
 /**
  * A group's or ticket's usage: its sessions' tokens over all their

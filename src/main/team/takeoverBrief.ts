@@ -152,7 +152,7 @@ export function takeoverBrief(o: BriefInput): string {
   const taker = named(o.taker, 60);
   const refresh = o.mode === "refresh";
   const intro = refresh
-    ? `You're continuing ${quoted(o.title, 300)}, a ${agent} session on this Mac whose conversation was getting close to its context limit. ${taker} started you as a new session in the same worktree, from this brief rather than from the whole conversation.`
+    ? `You're continuing ${quoted(o.title, 300)}, a ${agent} session on this Mac whose conversation was getting close to its context limit. ${taker.charAt(0).toUpperCase()}${taker.slice(1)} started you as a new session in the same worktree, from this brief rather than from the whole conversation.`
     : o.mode === "fresh"
       ? `You're continuing ${quoted(o.title, 300)}, a ${agent} session ${owner} was running on their laptop. ${taker} took it over on this one: you're a new session on ${taker}'s account, starting from this brief rather than from the whole conversation.`
       : `${taker} took this session back from ${owner}. After your last turn here, ${owner} continued it on their laptop in a session of their own; you're resuming your own conversation, and the work in front of you is now ${owner}'s.`;

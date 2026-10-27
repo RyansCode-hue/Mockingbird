@@ -6,6 +6,7 @@ import { ActionBar, tidyMenu, useContextMenu, type Action, type MenuEntry } from
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { tokenBreakdown } from "./usageFormat";
 import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
@@ -179,17 +180,6 @@ export async function resyncTerm(id: string): Promise<void> {
     return;
   }
   repaintTerm(entry, (cols, rows) => window.mb.sessionResize(id, cols, rows));
-}
-
-/** "52k new input · 12k output · 1.1M read from cache · 30k written to cache · 41 replies". */
-export function tokenBreakdown(t: TokenCounts): string {
-  return [
-    `${formatTokens(t.input)} new input`,
-    `${formatTokens(t.output)} output`,
-    `${formatTokens(t.cacheRead)} read from cache`,
-    ...(t.cacheWrite ? [`${formatTokens(t.cacheWrite)} written to cache`] : []),
-    `${t.replies.toLocaleString()} replies`,
-  ].join(" · ");
 }
 
 function meterTitle(m: SessionMeter): string {
