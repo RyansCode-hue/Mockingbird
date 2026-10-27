@@ -46,7 +46,7 @@ export function MigrationsLine({ roomId }: { roomId: string }) {
   return (
     <>
       {view.reservations.length > 0 && (
-        <div className="mig-line" title={view.check ? "Agents reserve a number before adding a migration; an unreserved new one is held back once." : "The room's admin turned the migration check off: agents still reserve, nothing holds an unreserved one back."}>
+        <div className="mig-line" title={view.check ? "Agents reserve a number before adding a migration; an unreserved new one is held back once." : "The room's owner or an admin turned the migration check off: agents still reserve, nothing holds an unreserved one back."}>
           <b>Migrations:</b>{" "}
           {view.reservations.map((r, i) => (
             <span key={r.id} className={r.clash ? "mig-clash" : undefined} title={`${r.folder} in ${r.repo} · ${r.session}${r.branch ? ` · ${r.branch}` : ""}${r.clash ? " · reserved by someone else first: reserve again" : ""}`}>
@@ -93,20 +93,20 @@ export function RoomMigrationsSetting({ roomId }: { roomId: string }) {
     if (isErr(r)) return setError(r.error);
     setEditing(null);
   };
-  const who = view.canChange ? "It applies to everyone's agents in the room." : `Only ${view.adminName ?? "the room's admin"}, the room's admin, can change it.`;
+  const who = view.canChange ? "It applies to everyone's agents in the room." : `Only the room's owner or an admin (${view.adminName ?? "nobody now"}) can change it.`;
   return (
     <>
       <SetRow
         title="Hold back unreserved migrations"
         note={`Agents reserve the next migration number (reserve_migration_number) before adding a numbered migration; with this on, an agent's new migration file whose number isn't reserved for its user is held back once and told to reserve. ${who}`}
       >
-        <Toggle label="Hold back unreserved migrations" on={view.check} disabled={!view.canChange || busy} title={view.canChange ? undefined : `Only ${view.adminName ?? "the room's admin"}, the room's admin, can change this`} onChange={(on) => void set(on)} />
+        <Toggle label="Hold back unreserved migrations" on={view.check} disabled={!view.canChange || busy} title={view.canChange ? undefined : `Only the room's owner or an admin (${view.adminName ?? "nobody now"}) can change this`} onChange={(on) => void set(on)} />
       </SetRow>
       {view.repos.map((r) => (
         <SetRow
           key={r.key}
           title={`Migration folders · ${r.label}`}
-          note={r.problem ? `Couldn't be read here: ${r.problem}` : r.override ? `Set by the room's admin (Mockingbird found ${r.detected.join(", ") || "none"}).` : r.detected.length ? "Found by Mockingbird: folders whose files mostly start with a number." : "Mockingbird found none here."}
+          note={r.problem ? `Couldn't be read here: ${r.problem}` : r.override ? `Set by the room's owner or an admin (Mockingbird found ${r.detected.join(", ") || "none"}).` : r.detected.length ? "Found by Mockingbird: folders whose files mostly start with a number." : "Mockingbird found none here."}
         >
           {editing?.key === r.key ? (
             <span className="mig-edit">

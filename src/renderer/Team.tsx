@@ -14,6 +14,8 @@ import { OLD_WORKER_APPROVE, pendingJoinText, RoomJoinRequests } from "./team/Jo
 import type { ConnectedSummary } from "./team/connectedModel";
 import { ChatIcon as TeamIcon } from "./Icons";
 import { plural } from "../shared/format";
+import { tidyMenu, type MenuEntry } from "./ContextMenu";
+import { canRemove, claimState, myRole, roleChanges, roleIn, rolesLine } from "./team/rolesModel";
 
 /**
  * Team rooms in the window (stage 1): Settings → Team, sharing a group as a
@@ -149,15 +151,16 @@ export function InviteCode({ invite, warning }: { invite: string; warning?: stri
   );
 }
 
-/** Who lets a code's holder in: the room's admin (this install, or the teammate it's sent to for approval). */
+/** Who lets a code's holder in: the room's owner or an admin (this install, or the teammates it's sent to for approval). */
 function AdminAccepts({ room, self }: { room: TeamRoomSummary; self?: string }) {
-  const admin = room.members.find((m) => m.id === room.admin);
+  const role = myRole(room);
+  const deciders = [room.owner, ...(room.admins ?? [])].map((id) => room.members.find((m) => m.id === id && !m.self)?.name).filter(Boolean);
   return (
     <>
       <div className="hint">
-        {admin?.self
-          ? "You're the room's admin: when they use it, Mockingbird asks you to accept them."
-          : `When they use it, it's sent to ${admin?.name ?? "the room's admin"} (the room's admin) for approval.`}
+        {role === "owner" || role === "admin"
+          ? `You're the room's ${role}: when they use it, Mockingbird asks you to accept them${deciders.length ? ` (or ${deciders.join(" or ")} does)` : ""}.`
+          : `When they use it, it's sent to ${deciders.join(" or ") || "the room's owner"} for approval.`}
       </div>
       {room.workerApprove === false && <div className="hint warn">{OLD_WORKER_APPROVE}</div>}
       <RoomJoinRequests room={room} self={self} />
@@ -273,27 +276,180 @@ export function JoinRoomDialog({ onClose }: { onClose: () => void }) {
 
 const OLD_WORKER = "Your signaling Worker is older and can't cut members off: update it (cd signaling && npx wrangler deploy) to also cut them off at the Worker.";
 
-/** Who the admin is, in words: the creator, or the longest-standing member once the creator has left. */
-export function adminLine(room: TeamRoomSummary): string {
-  const admin = room.members.find((m) => m.id === room.admin);
-  const role = room.admin && room.admin === room.creator ? "its creator" : "its longest-standing member, since the creator left";
-  if (!admin) return "Nobody can remove members of this room.";
-  return admin.self ? `You're this room's admin (${role}): you can remove members.` : `${admin.name} is this room's admin (${role}) and can remove members.`;
+const OLD_WORKER_ROLES = "Your signaling Worker is older and only knows the room's first admin: joins an admin accepts and removals they make reach it through that admin's Mockingbird, when it's online. Update it (cd signaling && npx wrangler deploy).";
+
+/** A member's role as a chip: owner or admin (members have none). */
+export function RoleChip({ room, id, className = "team-role" }: { room: TeamRoomSummary; id: string; className?: string }) {
+  const role = roleIn(room, id);
+  if (role !== "owner" && role !== "admin") return null;
+  const title = role === "owner" ? "Owns the room: makes admins, hands over ownership, sets where backups go and the House project" : "Admin: accepts or declines joins, removes members, sets the room's rules";
+  return (
+    <span className={`${className} ${role}`} title={title}>
+      {role}
+    </span>
+  );
 }
 
-/** Leave a room: what happens on each side, then what did. */
+/**
+ * What this install can do to a teammate's role and membership — one list,
+ * for the Team tab's right-click menu and Settings → Team's buttons — and the
+ * dialogs those open. The room log checks each again (rooms.ts).
+ */
+export function useMemberActions(room: TeamRoomSummary) {
+  const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null);
+  const [handing, setHanding] = useState<{ id: string; name: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const setAdmin = async (m: { id: string; name: string }, admin: boolean) => {
+    setError(null);
+    const r: unknown = await window.mb.teamSetAdmin(room.id, m.id, admin);
+    if (isErr(r)) setError(`Couldn't change ${m.name}'s role: ${r.error}`);
+  };
+  const actionsFor = (m: { id: string; name: string }): MenuEntry[] => {
+    const can = roleChanges(room, m.id);
+    return tidyMenu([
+      can.makeAdmin && { key: "admin", label: "Make admin", title: `${m.name} can then accept joins, remove members and set the room's rules`, onPick: () => void setAdmin(m, true) },
+      can.removeAdmin && { key: "unadmin", label: "Remove admin", menuLabel: "Remove as admin", title: `${m.name} goes back to being a member`, onPick: () => void setAdmin(m, false) },
+      can.handOver && { key: "owner", label: "Hand over…", menuLabel: "Hand over ownership…", title: `Make ${m.name} the room's owner; you stay an admin`, onPick: () => setHanding(m) },
+      "-",
+      canRemove(room, m.id) && { key: "remove", label: "Remove…", menuLabel: "Remove from the room…", danger: true, onPick: () => setRemoving(m) },
+    ]);
+  };
+  const dialogs = (
+    <>
+      {removing && <RemoveMemberDialog room={room} member={removing} onClose={() => setRemoving(null)} />}
+      {handing && <HandOverDialog room={room} member={handing} onClose={() => setHanding(null)} />}
+    </>
+  );
+  return { actionsFor, dialogs, error, clearError: () => setError(null) };
+}
+
+/** Hand ownership to a teammate (the owner only): what changes, then done. */
+export function HandOverDialog({ room, member, onClose }: { room: TeamRoomSummary; member: { id: string; name: string }; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handOver = async () => {
+    setBusy(true);
+    setError(null);
+    const r: unknown = await window.mb.teamHandOver(room.id, member.id);
+    setBusy(false);
+    if (isErr(r)) setError(r.error);
+    else onClose();
+  };
+  return (
+    <Modal className="modal team-dlg" onClose={busy ? undefined : onClose}>
+      <h3>
+        Hand {room.name} over to {member.name}?
+      </h3>
+      <div className="sub-h">Only {member.name} can hand it back.</div>
+      <ul className="team-effects">
+        <li>
+          <b>{member.name}</b> becomes the room's owner: makes and removes admins, hands ownership on, and sets where backups go and the room's House project.
+        </li>
+        <li>
+          <b>You</b> stay an admin: you can still accept joins, remove members and set the room's rules — until {member.name} changes that.
+        </li>
+        <li>Everyone sees it in the room's chat.</li>
+      </ul>
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        <button className="outline" disabled={busy} onClick={onClose}>
+          Cancel
+        </button>
+        <button className="primary" disabled={busy} onClick={handOver}>
+          {busy ? "Handing over…" : `Hand over to ${member.name}`}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * The ownership claim, where it concerns this install: a claim took the room
+ * from you (take it back), or you may claim it from an owner who hasn't been
+ * heard from for 14 days. `detail` also says when a claim opens (Settings).
+ */
+export function RoleNotice({ room, detail = false }: { room: TeamRoomSummary; detail?: boolean }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const c = claimState(room);
+  if (!c) return null;
+  const run = async (call: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    const r = await call();
+    setBusy(false);
+    if (isErr(r)) setError(r.error);
+    else setAsking(false);
+  };
+  if (c.kind === "claimed") return detail ? <div className="set-row-note">{c.by} claimed ownership of the room from {c.from}, who can take it back.</div> : null;
+  if (c.kind === "waiting") return detail ? <div className="set-row-note">If {c.owner} isn't heard from in the room by {new Date(c.opensAt).toLocaleDateString()}, you can claim its ownership.</div> : null;
+  return (
+    <div className="role-notice">
+      {c.kind === "contest" ? (
+        <>
+          <span>{c.by} claimed ownership of the room while you were away.</span>
+          <button className="outline" disabled={busy} onClick={() => run(() => window.mb.teamContestClaim(room.id))}>
+            {busy ? "Taking it back…" : "Take it back"}
+          </button>
+        </>
+      ) : (
+        <>
+          <span>{c.owner}, the room's owner, hasn't been heard from in it for 14 days.</span>
+          <button className="outline" disabled={busy} onClick={() => setAsking(true)}>
+            Claim ownership…
+          </button>
+        </>
+      )}
+      {error && <div className="err">{error}</div>}
+      {asking && c.kind === "can-claim" && (
+        <Modal className="modal team-dlg" onClose={busy ? undefined : () => setAsking(false)}>
+          <h3>Claim ownership of {room.name}?</h3>
+          <div className="sub-h">For a room whose owner is gone for good. If {c.owner} is only away, ask them to hand it over instead.</div>
+          <ul className="team-effects">
+            <li>
+              <b>You</b> become the owner: you make admins and set where backups go and the room's House project.
+            </li>
+            <li>
+              <b>Everyone</b> sees the claim in the room's chat. {c.owner} can take ownership back whenever they're next online, and can't be removed from the room for 14 days.
+            </li>
+          </ul>
+          {error && <div className="err">{error}</div>}
+          <div className="row">
+            <button className="outline" disabled={busy} onClick={() => setAsking(false)}>
+              Cancel
+            </button>
+            <button className="primary" disabled={busy} onClick={() => run(() => window.mb.teamClaimOwnership(room.id))}>
+              {busy ? "Claiming…" : "Claim ownership"}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/** Leave a room: what happens on each side, then what did. The owner hands ownership to a teammate first. */
 export function LeaveRoomDialog({ room, onClose }: { room: TeamRoomSummary; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<LeaveOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const others = room.members.filter((m) => !m.self);
   const names = others.map((m) => m.name).join(", ");
-  // leaving as the admin hands it on: to the creator if still here, else the longest-standing member
-  const isAdmin = room.members.some((m) => m.self && m.id === room.admin);
-  const nextAdmin = isAdmin ? (others.find((m) => m.id === room.creator) ?? others[0]) : undefined;
+  const owner = myRole(room) === "owner" && others.length > 0;
+  // the longest-standing admin is the likely heir; any teammate can be picked
+  const [heir, setHeir] = useState(() => (room.admins ?? []).find((id) => others.some((m) => m.id === id)) ?? others[0]?.id ?? "");
+  const heirName = others.find((m) => m.id === heir)?.name ?? "";
   const leave = async () => {
     setBusy(true);
     setError(null);
+    if (owner) {
+      const h: unknown = await window.mb.teamHandOver(room.id, heir);
+      if (isErr(h)) {
+        setBusy(false);
+        return setError(`Couldn't hand ownership to ${heirName}, so you're still in the room: ${h.error}`);
+      }
+    }
     const r: LeaveOutcome | { error: string } = await window.mb.teamLeaveRoom(room.id);
     setBusy(false);
     if (isErr(r)) setError(r.error);
@@ -343,12 +499,24 @@ export function LeaveRoomDialog({ room, onClose }: { room: TeamRoomSummary; onCl
             <>
               <b>{names}</b> {others.length === 1 ? "sees" : "see"} you leave: your sessions disappear from {others.length === 1 ? "their" : "each"} Mockingbird and the chat says you
               left. {others.length === 1 ? "Their copy of the room stays." : "Their copies of the room stay."}
-              {nextAdmin && ` ${nextAdmin.name} becomes the admin, who can remove members.`}
             </>
           ) : (
             <>You're the room's last member: nobody else has it.</>
           )}
         </li>
+        {owner && (
+          <li>
+            <b>You own the room</b>, so ownership goes to a teammate first — they make admins and set where backups go and the room's House project:{" "}
+            <select className="team-heir" aria-label="Hand ownership to" value={heir} disabled={busy} onChange={(e) => setHeir(e.target.value)}>
+              {others.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                  {roleIn(room, m.id) === "admin" ? " (admin)" : ""}
+                </option>
+              ))}
+            </select>
+          </li>
+        )}
         <li>
           <b>The signaling Worker</b> cuts your key off: no more connections, invites or relay for this room.
         </li>
@@ -359,8 +527,8 @@ export function LeaveRoomDialog({ room, onClose }: { room: TeamRoomSummary; onCl
         <button className="outline" disabled={busy} onClick={onClose}>
           Cancel
         </button>
-        <button className="outline danger-btn" disabled={busy} onClick={leave}>
-          {busy ? "Leaving…" : "Leave room"}
+        <button className="outline danger-btn" disabled={busy || (owner && !heir)} onClick={leave}>
+          {busy ? "Leaving…" : owner ? `Hand over to ${heirName} and leave` : "Leave room"}
         </button>
       </div>
     </Modal>
@@ -482,9 +650,9 @@ export function TeamNotices({ notices }: { notices: TeamNotice[] | undefined }) 
   );
 }
 
-/** A room's members in Settings → Team: who's the admin, and Remove… for the admin. */
-function RoomMembers({ room, onRemove }: { room: TeamRoomSummary; onRemove: (m: { id: string; name: string }) => void }) {
-  const isAdmin = room.members.some((m) => m.self && m.id === room.admin);
+/** A room's members in Settings → Team: each one's role, and what this install's role lets it change. */
+function RoomMembers({ room }: { room: TeamRoomSummary }) {
+  const acts = useMemberActions(room);
   return (
     <div className="team-members">
       {room.members.map((m) => (
@@ -494,19 +662,29 @@ function RoomMembers({ room, onRemove }: { room: TeamRoomSummary; onRemove: (m: 
             {m.name}
             {m.self ? " (you)" : ""}
           </span>
-          {m.id === room.admin && <span className="team-admin" title={adminLine(room)}>admin</span>}
+          <RoleChip room={room} id={m.id} />
           {room.online.includes(m.id) && <span className="team-link direct">connected</span>}
-          {isAdmin && !m.self && (
-            <button className="link danger" onClick={() => onRemove(m)}>
-              Remove…
-            </button>
+          {!m.self && (
+            <span className="team-member-acts">
+              {acts.actionsFor(m).map((a) =>
+                a === "-" ? null : (
+                  <button key={a.key} className={`link ${a.danger ? "danger" : ""}`} title={a.title} onClick={() => a.onPick()}>
+                    {a.label}
+                  </button>
+                )
+              )}
+            </span>
           )}
         </div>
       ))}
       <div className="set-row-note">
-        {adminLine(room)}
+        {rolesLine(room)}
         {room.former?.length ? ` Left: ${room.former.map((f) => f.name).join(", ")}.` : ""}
       </div>
+      {room.workerRoles === false && (room.admins?.length ?? 0) > 0 && <div className="set-row-note warn">{OLD_WORKER_ROLES}</div>}
+      <RoleNotice room={room} detail />
+      {acts.error && <div className="err">{acts.error}</div>}
+      {acts.dialogs}
     </div>
   );
 }
@@ -519,7 +697,6 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
   const [check, setCheck] = useState<{ ok: boolean; msg: string } | null>(null);
   const [dialog, setDialog] = useState<"join" | { groupKey: string; title: string } | null>(null);
   const [leaving, setLeaving] = useState<TeamRoomSummary | null>(null);
-  const [removing, setRemoving] = useState<{ room: TeamRoomSummary; member: { id: string; name: string } } | null>(null);
   const [note, copy] = useCopyNote();
   const st = status && !isErr(status) ? status : null;
 
@@ -619,7 +796,7 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
           <RoomBackupsSetting room={r} />
           <RoomAwaySetting room={r} />
           <RoomMigrationsSetting roomId={r.id} />
-          <RoomMembers room={r} onRemove={(member) => setRemoving({ room: r, member })} />
+          <RoomMembers room={r} />
           <RoomJoinRequests room={r} self={st?.self?.id} />
         </div>
       ))}
@@ -650,7 +827,6 @@ export function TeamSection({ settings, onChange }: { settings: Settings; onChan
       {dialog === "join" && <JoinRoomDialog onClose={() => setDialog(null)} />}
       {dialog && dialog !== "join" && <ShareRoomDialog groupKey={dialog.groupKey} title={dialog.title} onClose={() => setDialog(null)} />}
       {leaving && <LeaveRoomDialog room={leaving} onClose={() => setLeaving(null)} />}
-      {removing && <RemoveMemberDialog room={removing.room} member={removing.member} onClose={() => setRemoving(null)} />}
     </>
   );
 }

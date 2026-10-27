@@ -1,4 +1,4 @@
-import { defineEventType, onMemberRemoved, roomAdmin } from "./rooms";
+import { defineEventType, isRoomAdmin, onMemberRemoved } from "./rooms";
 import { CONTROL_CHARS_RE } from "../../shared/team/agentText";
 import { BRANCH_RE } from "../../shared/team/house";
 import { SESSION_ID_RE } from "../../shared/team/takeover";
@@ -85,8 +85,8 @@ defineEventType("migration.released", {
   reduce(state, e) {
     const r = state.ext.migrations?.reservations[e.body.reservation];
     if (!r || r.released) return;
-    // its member, or the room's admin (a reservation whose member's Mac is gone for good)
-    if (e.author !== r.by && e.author !== roomAdmin(state)) return;
+    // its member, or the room's owner or an admin (a reservation whose member's Mac is gone for good)
+    if (e.author !== r.by && !isRoomAdmin(state, e.author)) return;
     r.released = { by: e.author, at: e.at, reason: e.body.reason };
   },
 });

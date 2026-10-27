@@ -2,7 +2,7 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { defineEventType, onMemberRemoved, roomAdmin } from "./rooms";
+import { defineEventType, isRoomAdmin, onMemberRemoved, roomOwner } from "./rooms";
 import { awayGrantFor, grantProblem, grantShapeProblem, grantSigned, signGrant } from "./takeoverGrants";
 import { checkRepoKey } from "./migrations";
 import { checkFolder } from "../../shared/team/migrations";
@@ -355,15 +355,18 @@ defineEventType("room.settings", {
     if (b.migrationFolders !== undefined) checkMigrationFolders(b.migrationFolders);
   },
   reduce(state, e) {
-    // the room's admin at this point in its order decides, the same on every member
-    if (roomAdmin(state) !== e.author) return;
+    // roles at this point in the room's order decide, the same on every member: where backups go is
+    // the owner's alone, the migration check (a room rule) its owner's or an admin's
+    if (!isRoomAdmin(state, e.author)) return;
+    const owner = roomOwner(state) === e.author;
+    if (!owner && e.body.migrationCheck === undefined && e.body.migrationFolders === undefined) return;
     const was = state.ext.settings;
     const check = e.body.migrationCheck ?? was?.migrationCheck;
     // a repository given no folders goes back to detection
     const folders = { ...(was?.migrationFolders ?? {}), ...(e.body.migrationFolders ?? {}) };
     for (const [k, v] of Object.entries(folders)) if (!v.length) delete folders[k];
     state.ext.settings = {
-      backupsToOrigin: e.body.backupsToOrigin ?? was?.backupsToOrigin ?? false,
+      backupsToOrigin: (owner ? e.body.backupsToOrigin : undefined) ?? was?.backupsToOrigin ?? false,
       ...(check !== undefined ? { migrationCheck: check } : {}),
       ...(Object.keys(folders).length ? { migrationFolders: folders } : {}),
       by: e.author,
@@ -978,7 +981,7 @@ export class TakeoverService {
   }
 
   /**
-   * Turn backups to origin on or off for a room: its admin's choice alone (a
+   * Turn backups to origin on or off for a room: its owner's choice alone (a
    * room event every member applies; anyone else's changes nothing). Off is
    * the default.
    */
@@ -986,8 +989,8 @@ export class TakeoverService {
     if (typeof on !== "boolean") throw new Error("Say on or off");
     const room = this.d.team.room(roomId);
     if (!room) throw new Error("You're not in that room");
-    const admin = roomAdmin(room);
-    if (admin !== this.d.team.self.id) throw new Error(`Only the room's admin${admin ? ` (${this.nameOf(roomId, admin)})` : ""} can change where its backups go`);
+    const owner = roomOwner(room);
+    if (owner !== this.d.team.self.id) throw new Error(`Only the room's owner${owner ? ` (${this.nameOf(roomId, owner)})` : ""} can change where its backups go`);
     if (backupsToOrigin(room) === on) return;
     this.d.team.publish(roomId, "room.settings", { backupsToOrigin: on });
   }
@@ -2366,7 +2369,7 @@ export class TakeoverService {
 
   /** A room's backup setting for Settings → Team: on or off, who changed it, who may, and what the remote is called. */
   private backupSetting(room: RoomState): RoomBackupSetting {
-    const admin = roomAdmin(room);
+    const owner = roomOwner(room);
     const s = room.ext.settings;
     const urls = [
       ...Object.values(room.ext.takeover?.sessions ?? {}).map((b) => b.session.originUrl),
@@ -2379,8 +2382,8 @@ export class TakeoverService {
       consent: this.backupConsent(room.id),
       away: away && away.expiresAt > Date.now() ? { sessions: away.sessions, expiresAt: away.expiresAt } : null,
       changed: s ? { byName: this.nameOf(room.id, s.by), self: s.by === this.d.team.self.id, at: s.at } : null,
-      adminName: admin ? this.nameOf(room.id, admin) : null,
-      canChange: admin === this.d.team.self.id,
+      adminName: owner ? this.nameOf(room.id, owner) : null,
+      canChange: owner === this.d.team.self.id,
       remote: remoteLabel(urls),
     };
   }

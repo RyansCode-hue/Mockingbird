@@ -3,7 +3,7 @@ import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { tempDir } from "./helpers";
 import { loadIdentity, randomToken, roomIdFor, type Identity } from "../src/main/team/identity";
-import { eventIdOf, eventPayload, roomAdmin, RoomLog } from "../src/main/team/rooms";
+import { eventIdOf, eventPayload, legacyAdmin, RoomLog, roomOwner } from "../src/main/team/rooms";
 import { TeamChat } from "../src/main/team/chat";
 import "../src/main/team/roomSessions";
 import { LoopbackNetwork, loopbackMember, loopbackRoom, until } from "../src/main/team/loopback";
@@ -36,14 +36,14 @@ const add = (log: RoomLog, by: Identity, who: Identity, name: string) => log.cre
 const names = (s: RoomState | null | undefined) => s?.members.map((m) => m.name);
 
 describe("who's in a room: leaving and removal in the room log", () => {
-  it("the admin is the creator while a member, else the longest-standing member", () => {
+  it("Mockingbirds from before roles take the creator for the admin while a member, else the longest-standing member", () => {
     const m = (id: string) => ({ id });
-    expect(roomAdmin({ creator: "c", members: [m("c"), m("a"), m("b")] as any })).toBe("c");
-    expect(roomAdmin({ creator: "c", members: [m("a"), m("b")] as any })).toBe("a");
-    expect(roomAdmin({ creator: "c", members: [] })).toBeNull();
+    expect(legacyAdmin({ creator: "c", members: [m("c"), m("a"), m("b")] as any })).toBe("c");
+    expect(legacyAdmin({ creator: "c", members: [m("a"), m("b")] as any })).toBe("a");
+    expect(legacyAdmin({ creator: "c", members: [] })).toBeNull();
   });
 
-  it("anyone may leave; only the admin removes someone else", () => {
+  it("anyone may leave; a member who isn't the owner or an admin removes nobody else", () => {
     const [ryan, nick, sam] = [newId("ryan"), newId("nick"), newId("sam")];
     const { log } = newRoom(ryan);
     add(log, ryan, nick, "Nick");
@@ -66,15 +66,15 @@ describe("who's in a room: leaving and removal in the room log", () => {
     expect(log.isMember(sam.id)).toBe(false);
   });
 
-  it("once the creator has left, the longest-standing member is the admin", () => {
+  it("once the creator has left (from an older Mockingbird), the longest-standing member owns the room", () => {
     const [ryan, nick, sam] = [newId("ryan"), newId("nick"), newId("sam")];
     const { log } = newRoom(ryan);
     add(log, ryan, nick, "Nick");
     add(log, nick, sam, "Sam"); // a room from before joins needed accepting: any member's add counts
     log.create(sam, "member.removed", { member: nick.id }); // not the admin: nothing
-    expect(roomAdmin(log.state!)).toBe(ryan.id);
+    expect(roomOwner(log.state!)).toBe(ryan.id);
     log.create(ryan, "member.removed", { member: ryan.id, reason: "left" });
-    expect(roomAdmin(log.state!)).toBe(nick.id);
+    expect(roomOwner(log.state!)).toBe(nick.id);
     log.create(nick, "member.removed", { member: sam.id, reason: "removed" });
     expect(names(log.state)).toEqual(["Nick"]);
   });
@@ -121,7 +121,7 @@ describe("who's in a room: leaving and removal in the room log", () => {
     expect(log.state!.former).toEqual([]);
     log.create(nick, "member.renamed", { name: "Nick" });
     expect(names(log.state)).toEqual(["Ryan", "Sam", "Nick"]);
-    expect(roomAdmin(log.state!)).toBe(ryan.id);
+    expect(roomOwner(log.state!)).toBe(ryan.id);
   });
 
   it("the member's room sessions leave the room with them", () => {
@@ -164,7 +164,7 @@ describe("leaving and removal between Mockingbirds", () => {
   it("only the admin can remove members, and nothing changes when someone else tries", async () => {
     const { members, roomId } = await loopbackRoom(["Ryan", "Nick", "Sam"], { dir: tempDir("team") });
     const [ryan, nick, sam] = members;
-    await expect(nick.team.removeMember(roomId, sam.id)).rejects.toThrow(/Only the room's admin \(Ryan\) can remove members/);
+    await expect(nick.team.removeMember(roomId, sam.id)).rejects.toThrow(/Only the room's owner or an admin removes members: Ryan owns/);
     await expect(ryan.team.removeMember(roomId, ryan.id)).rejects.toThrow(/Leave room/);
     expect(names(ryan.team.room(roomId))).toEqual(["Ryan", "Nick", "Sam"]);
   });

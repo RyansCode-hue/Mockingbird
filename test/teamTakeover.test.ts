@@ -762,6 +762,7 @@ describe("leaving the room", () => {
     const otherRoom = roomBackupRef("O".repeat(22), "s7");
     for (const r of [leftRef, sentRef, otherRoom]) sh(t.ryanClone, "update-ref", r, head);
 
+    t.ryanM.team.handOver(t.roomId, t.nickM.id); // the owner hands over before leaving
     const out = await t.ryanM.team.leave(t.roomId);
     expect(await t.ryan.svc.roomLeft(out.room)).toEqual([]);
     expect(refIn(t.bare, ref)).toBeNull();
@@ -779,6 +780,7 @@ describe("leaving the room", () => {
     await t.ryan.svc.turnEnded("s1");
     await t.ryan.svc.settled();
     rejectPushes(t.bare, true);
+    t.ryanM.team.handOver(t.roomId, t.nickM.id); // the owner hands over before leaving
     const out = await t.ryanM.team.leave(t.roomId);
     const problems = await t.ryan.svc.roomLeft(out.room);
     expect(problems).toEqual([expect.stringMatching(/^The backup of “Donor entities” couldn't be deleted from origin \(refs\/mockingbird\/rooms\/.*\/s1\): .*switched off/)]);
@@ -966,9 +968,11 @@ describe("backups kept peer to peer (every room's default)", () => {
     expect(originRefs(t.bare)).toBe("");
   });
 
-  it("is the admin's alone to change: anyone else's change is refused here and changes nothing in the room", async () => {
+  it("is the owner's alone to change: anyone else's change — an admin's too — is refused here and changes nothing in the room", async () => {
     const t = await setup(["Ryan", "Nick"], { backupsToOrigin: false });
-    expect(() => t.nick.svc.setBackupsToOrigin(t.roomId, true)).toThrow(/^Only the room's admin \(Ryan\) can change where its backups go/);
+    t.ryanM.team.setAdmin(t.roomId, t.nickM.id, true);
+    await until(() => !!t.nickM.team.room(t.roomId)!.roles?.admins.includes(t.nickM.id), "Nick to be an admin at his");
+    expect(() => t.nick.svc.setBackupsToOrigin(t.roomId, true)).toThrow(/^Only the room's owner \(Ryan\) can change where its backups go/);
     expect(t.nick.svc.view().rooms).toEqual([{ roomId: t.roomId, toOrigin: false, consent: true, away: { sessions: null, expiresAt: expect.any(Number) }, changed: null, adminName: "Ryan", canChange: false, remote: "origin" }]);
     expect(t.ryan.svc.view().rooms[0]).toMatchObject({ canChange: true, adminName: "Ryan" });
     // a Mockingbird that doesn't cooperate signs one anyway: every member applies it as nothing
@@ -978,7 +982,8 @@ describe("backups kept peer to peer (every room's default)", () => {
     await t.ryan.svc.turnEnded("s1");
     expect(originRefs(t.bare)).toBe("");
     expect(() => t.ryanM.team.publish(t.roomId, "room.settings", { backupsToOrigin: "yes" } as never)).toThrow(/backupsToOrigin must be true or false/);
-    // once the creator leaves, the longest-standing member is the admin, and their change counts
+    // once the owner hands the room over (and leaves), the new owner's change counts
+    t.ryanM.team.handOver(t.roomId, t.nickM.id);
     await t.ryanM.team.leave(t.roomId);
     await until(() => !t.nickM.team.room(t.roomId)!.members.some((m) => m.id === t.ryanM.id), "Ryan gone at Nick's");
     t.nick.svc.setBackupsToOrigin(t.roomId, true);

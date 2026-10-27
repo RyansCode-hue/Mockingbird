@@ -7,7 +7,7 @@ import { agentContextText, excludePlanDir, pruneWarned, removeRoomCopy, worktree
 import { HouseClient, HouseSetupError, readHouseEnv, scrub, type HouseEnv } from "./house";
 import { checkTags, houseToolOp, type HouseListFilter, type HouseToolOp } from "./houseTools";
 import { TEAM_DIR } from "./identity";
-import { roomAdmin } from "./rooms";
+import { roomOwner } from "./rooms";
 import type { Team, Unsubscribe } from "./transport";
 import { readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { BASE_NAMES, currentBranch, originUrl } from "../git";
@@ -363,7 +363,7 @@ export class HouseService {
     const team = this.need();
     const h = houseOfRoom(room);
     const c = this.cache(roomId);
-    const admin = roomAdmin(room);
+    const admin = roomOwner(room);
     const open = this.openOf(c);
     const inOpen = new Set(open);
     const addedBy = new Map(h.tracked.map((t) => [t.n, t.by]));
@@ -402,7 +402,7 @@ export class HouseService {
   /**
    * This member's answer to "use your <project> builder token for this
    * room?", for the room's current project: kept on this Mac, and asked again
-   * when the room's admin points it at another project.
+   * when the room's owner points it at another project.
    */
   consent(roomId: RoomId, allow: boolean): HouseView {
     const room = this.room(roomId);
@@ -427,7 +427,7 @@ export class HouseService {
     return team.rooms().flatMap((room) => {
       const project = houseOfRoom(room).project;
       if (!project || this.consentOf(room.id, project) !== null) return [];
-      const admin = roomAdmin(room);
+      const admin = roomOwner(room);
       return [{ roomId: room.id, room: room.name, project, admin: admin ? this.nameOf(room, admin) : null }];
     });
   }
@@ -452,7 +452,7 @@ export class HouseService {
     const project = houseOfRoom(room).project;
     if (!project || this.consentOf(room.id, project) !== null || this.asked.has(`${room.id}\n${project}`)) return;
     this.asked.add(`${room.id}\n${project}`);
-    const admin = roomAdmin(room);
+    const admin = roomOwner(room);
     this.d.emit("house:consent", { roomId: room.id, room: room.name, project, admin: admin ? this.nameOf(room, admin) : null } satisfies HouseConsentAsk);
   }
 
@@ -558,11 +558,11 @@ export class HouseService {
     const team = this.need();
     switch (w.kind) {
       case "project": {
-        const admin = roomAdmin(room);
-        if (admin !== team.self.id) throw new Error(`Only the room's admin${admin ? ` (${this.nameOf(room, admin)})` : ""} chooses its House project`);
+        const admin = roomOwner(room);
+        if (admin !== team.self.id) throw new Error(`Only the room's owner${admin ? ` (${this.nameOf(room, admin)})` : ""} chooses its House project`);
         const project = w.project === null ? null : String(w.project).trim();
         if (project !== null && !HOUSE_PROJECT_RE.test(project)) throw new Error(`${JSON.stringify(project)} isn't a House project name (letters, digits, ".", "_" and "-", as in ~/.config/radley-house/<project>.env)`);
-        // the admin choosing a project here is their answer for their own token; every other member is asked
+        // the owner choosing a project here is their answer for their own token; every other member is asked
         if (project) this.setConsent(roomId, project, true);
         team.publish(roomId, "house.project", { project });
         return { message: project ? `The room works in ${project} now` : "The room isn't connected to a House project any more" };
@@ -872,7 +872,7 @@ export class HouseService {
       for (const room of key ? this.team.rooms() : []) {
         if (!this.records(room).some((r) => r.repo && originKey(r.repo) === key)) continue;
         const project = houseOfRoom(room).project;
-        const admin = roomAdmin(room);
+        const admin = roomOwner(room);
         rooms.push({ kind: "room", roomId: room.id, room: room.name, project, admin: admin ? this.nameOf(room, admin) : null, connection: project ? this.connectionOf(room.id, project) : "consent" });
       }
     }
@@ -1263,8 +1263,8 @@ export class HouseService {
   private projectOf(room: RoomState): string {
     const project = houseOfRoom(room).project;
     if (project) return project;
-    const admin = roomAdmin(room);
-    throw new Error(`The room's admin${admin ? ` (${this.nameOf(room, admin)})` : ""} hasn't connected a Radley House project yet — on the room's board (▦).`);
+    const admin = roomOwner(room);
+    throw new Error(`The room's owner${admin ? ` (${this.nameOf(room, admin)})` : ""} hasn't connected a Radley House project yet — on the room's board (▦).`);
   }
 
   private records(room: RoomState): RoomSessionState[] {

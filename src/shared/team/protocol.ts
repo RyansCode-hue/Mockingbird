@@ -259,8 +259,18 @@ export interface SignalingPeer {
  *            list beyond its inviter, no invites or admits) until the room's
  *            admin admits it, or denies it; the knock expires with the
  *            invite. Only the admin's admit adds keys.
+ *   roles    the room's owner and admins (a `roles` message from whom the
+ *            server trusts: signaling/src/room.ts) admit and deny joiners;
+ *            the owner revokes anyone, an admin only members.
  */
-export const SIGNALING_FEATURES = ["revoke", "approve"] as const;
+export const SIGNALING_FEATURES = ["revoke", "approve", "roles"] as const;
+
+/**
+ * How long a room's owner must go unheard from before its claimant may take
+ * ownership: in the room's log (src/main/team/rooms.ts, which says why 14
+ * days) and, by its own clock, at the signaling server.
+ */
+export const OWNER_CLAIM_WAIT_MS = 14 * 24 * 3_600_000;
 export type SignalingFeature = (typeof SIGNALING_FEATURES)[number];
 /** The largest signed room event a revoke carries for the server to pass on. */
 export const MAX_REVOKE_EVENT = 8 * 1024;
@@ -280,6 +290,14 @@ export type ClientMessage =
   | { t: "revoke"; member: string; event?: unknown }
   /** Drop a key knocking at the door (the room's admin declined its join): its connections close; the invite it used stays used. */
   | { t: "deny"; member: string }
+  /**
+   * The room's roles, from its log (feature "roles"). Kept only from whom the
+   * server trusts with them: the owner it knows (before it knows one, its
+   * admin as signalingAdmin has it); the claimant, naming itself owner, once
+   * that owner hasn't connected for OWNER_GONE_MS; the owner a claim took it
+   * from, taking it back. Anyone else's is ignored (`roles-ignored`).
+   */
+  | { t: "roles"; owner: string; admins: string[] }
   | { t: "ping" };
 
 export type SignalingErrorCode =
@@ -312,6 +330,9 @@ export type ServerMessage =
   | { t: "admitted"; ids: string[] }
   | { t: "revoked"; member: string }
   | { t: "denied"; member: string }
+  /** A `roles` message was kept, or ignored (`reason`: why the server doesn't take them from this key). */
+  | { t: "roles-set"; owner: string; admins: string[] }
+  | { t: "roles-ignored"; reason: string }
   /** `declined`: this key was knocking, and the room's admin declined it. */
   | { t: "error"; code: SignalingErrorCode; message: string; serverProtocol?: number; to?: string; member?: string; revoked?: boolean; declined?: boolean; event?: unknown }
   | { t: "pong" };

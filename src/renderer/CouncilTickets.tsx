@@ -319,7 +319,7 @@ export function CouncilTicketsDialog({ room, onClose }: { room: CollabRoom; onCl
       </div>
       {targetErr && <div className="fp-note err">Where the tickets can go couldn't be read: {targetErr}</div>}
       {chosen && chosen.kind === "room" && !chosen.project && (
-        <div className="fp-note warn">The room's admin{chosen.admin ? ` (${chosen.admin})` : ""} hasn't chosen its House project yet — on the room's board.</div>
+        <div className="fp-note warn">The room's owner{chosen.admin ? ` (${chosen.admin})` : ""} hasn't chosen its House project yet — on the room's board.</div>
       )}
       {chosen && project && chosen.connection !== "connected" && (
         <div className="council-tix-consent" role="group" aria-label="Allow your builder token">

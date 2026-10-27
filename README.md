@@ -77,21 +77,21 @@ from a claimed ticket's branch), artifacts (files between members by hash —
 from whoever has them, resumed, a corrupted copy refused — notes crossing
 across a partition, repo references in a teammate's clone, the agents' tools
 and secrets withheld), backups (peer to peer by default, never reaching
-origin; the admin's opt-in to origin, its pre-push hook, and turning it off
+origin; the owner's opt-in to origin, its pre-push hook, and turning it off
 again) and
 take-over with the owner online (Hand over, Keep,
 no answer, dropping offline mid-request), away or restarted, the old copy
 stopping, its unsent changes sent and applied, and Take it back; take-over
 only with the owner's signed grant (refused without an away grant, expired,
-withdrawn, forged, the admin's own, an older Mockingbird told to update,
+withdrawn, forged, the owner's or an admin's own, an older Mockingbird told to update,
 take-overs from before grants accepted once), from a snapshot the owner
 recorded (a planted ref on origin ignored and logged, a peer copy kept only
 as the commit it named); backups to origin only for members who allowed it;
 leaving and
 removal (who may remove whom, what each Mac deletes, the Worker's revoke, and
-an older Worker); joining (only the admin's add counts, rooms from before
-keeping theirs; accept, decline, a request passed on to an offline admin,
-expiry; the Worker's door — knocking, the admin's admit, deny — and an older
+an older Worker); room roles (each rule allowed and refused on receipt, migration of existing rooms, hand-over, the gone-owner claim and its contest, the chat's announcements, a 1.5.0 Mac beside a newer one, the Worker's roles); joining (only the owner's or an admin's add counts, rooms from before
+keeping theirs; accept, decline, a request passed on to an admin while the owner is offline,
+expiry; the Worker's door — knocking, the owner's or an admin's admit, deny — and an older
 Worker); teammates' changes and migration numbers (folder detection, the next
 number above every source, reservations clashing across a partition the same
 on every member, the hook's hold-back and heads-up, the agents' tools fenced
@@ -99,7 +99,7 @@ with secrets withheld, release when merged or the branch is gone).
 `test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer
 hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
 `test/teamLiveApp.e2e.test.ts` run two real Mockingbird instances in throwaway
-homes (their windows open while they run): share, join (the admin accepting
+homes (their windows open while they run): share, join (the owner accepting; then Nick made an admin from Ryan's right-click menu, accepting a third instance and removing it — at the Worker too — but refused removing Ryan
 from its prompt), a terminal watched and typed into, chat, a package claimed,
 a turn of a Claude stand-in backed up peer to peer (nothing on origin), a
 session handed over from the owner's prompt, Take over refused once the owner
@@ -480,26 +480,42 @@ agreed direction, **Later** is worth doing once the foundations settle.
     starts the session in it, then shows the invite code; Join a room… — in the
     Team tab, New/Import Session → Connected, or ⌘K — takes a teammate's code);
     every member keeps its signed, ordered event log and merges it on reconnect.
-  - **Joining needs the admin:** any member hands out codes, but only the
-    room's admin lets someone in. The admin gets a notification and a prompt —
-    "Nick wants to join #5101", with Nick's fingerprint to check with him and
-    who invited him — to **Accept** or **Decline** (or answer later from
-    Settings → Team, where requests wait under the room). A code from a
-    teammate who isn't the admin is sent to the admin for approval (held until
-    the admin's Mockingbird is online); the joiner sees "Waiting for Ryan to
-    accept", then joins or is told it was declined, and gets nothing of the
-    room meanwhile. The signaling Worker holds joiners at its door until the
-    admin admits them (redeploy it to get this; an older Worker still works,
-    and the app says so). The chat says "Ryan accepted Nick", and members are
-    notified.
+  - **Room roles:** each room has one **owner** — its creator, until they
+    hand it over — any number of **admins** the owner makes, and members. The
+    owner does everything an admin does, makes and removes admins, hands over
+    ownership, and alone sets where backups go and the room's House project.
+    Admins accept or decline joins, remove members (never the owner or another
+    admin) and set the room's rules (the migration check). Roles show as chips
+    by each name in the Team tab and Settings → Team; right-click a teammate in
+    the Team tab (or use the links in Settings → Team) for **Make admin**,
+    **Remove as admin**, **Hand over ownership…** and **Remove from the
+    room…**. Every change is a signed room event each Mac checks, and the chat
+    says so ("Ryan made Nick an admin"). The owner hands over before leaving
+    (Leave room… asks to whom). An owner gone for good: once they haven't been
+    heard from in the room for 14 days, the longest-standing admin can claim
+    ownership, announced to everyone; the old owner can take it back whenever
+    they're back, and can't be removed for 14 days after the claim. No role
+    takes a session over without its owner's grant.
+  - **Joining needs the owner or an admin:** any member hands out codes, but
+    only the room's owner or an admin lets someone in. They get a notification
+    and a prompt — "Nick wants to join #5101", with Nick's fingerprint to
+    check with him and who invited him — to **Accept** or **Decline** (or
+    answer later from Settings → Team, where requests wait under the room). A
+    code from a member is sent to the owner and admins for approval (held
+    until one of their Mockingbirds is online; whoever's around answers); the
+    joiner sees "Waiting for Ryan or Nick to accept", then joins or is told it
+    was declined, and gets nothing of the room meanwhile. The signaling Worker
+    holds joiners at its door until the owner or an admin admits them
+    (redeploy it to get this, and for admins' admits and removals to count
+    there; an older Worker still works, and the app says so). The chat says
+    "Ryan accepted Nick", and members are notified.
   - **Leaving and removing:** **Leave room…** (Settings → Team, or the Team
     tab's ⋯) tells the teammates online, has the signaling Worker cut your key
     off, and deletes the room from your Mac — its folder, chat read marks,
     mutes, the room's files in your worktrees, its artifacts, hidden refs and
     any backups you pushed to origin; the group stays
-    as an ordinary one, its sessions running. The room's admin — its creator,
-    or the longest-standing member once the creator has left — can
-    **Remove…** a teammate: every Mockingbird drops them and forgets what it
+    as an ordinary one, its sessions running. The room's owner, or an admin
+    (for members), can **Remove…** a teammate: every Mockingbird drops them and forgets what it
     had of their sessions, theirs deletes the room when it hears, and the
     Worker cuts them off (an older Worker says to redeploy it). Coming back
     takes a new invite; what couldn't be cleaned up is listed in a notice.
@@ -549,13 +565,13 @@ agreed direction, **Later** is worth doing once the foundations settle.
     (ignored and secret files left out) is snapshotted to a hidden ref,
     `refs/mockingbird/rooms/<room>/<session>`, and sent peer to peer to
     connected teammates with its conversation, which never goes to git.
-    Backups stay off GitHub by default: only the room's admin can turn on
+    Backups stay off GitHub by default: only the room's owner can turn on
     **Also back up to GitHub** (Settings → Team, per room, after a warning),
     which makes it available; each member is then asked once — **Back up my
     room sessions to GitHub (origin)?** Allow / Not now, kept on their Mac —
     and only those who allow it push their snapshots to that hidden ref on
     origin, through the repository's pre-push hook, so a session can be taken
-    over while its owner's laptop is off; turned off, by the admin or by a
+    over while its owner's laptop is off; turned off, by the room's owner or by a
     member for their own, what was pushed is deleted.
     Rows and panes say where each backup is ("copied to Nick 2m ago",
     "backed up 2m ago"). **Take over** continues a teammate's session on your
@@ -569,7 +585,7 @@ agreed direction, **Later** is worth doing once the foundations settle.
     closed, its backup dropped, 14 days without a turn, or you leaving the
     room); taking your own session back resumes your own conversation,
     briefed on what they did. **Nobody takes over a session without its
-    owner's signed consent** — not the room's admin either. A connected owner
+    owner's signed consent** — not the room's owner or an admin either. A connected owner
     is asked first ("Nick wants to take over “Export API”": **Hand over** /
     **Keep it**, kept after 2 minutes unanswered): handing over lets their
     turn finish, sends that exact backup straight to you with their signed
@@ -611,7 +627,7 @@ agreed direction, **Later** is worth doing once the foundations settle.
     artifact doesn't take it back: the room log keeps its name and every note
     text, for later joiners too.
   - **Radley House board** (the kanban-board icon: **Board** on a room in the
-    Team room view and in the group bar): the room's House project (its admin's
+    Team room view and in the group bar): the room's House project (its owner's
     choice) as columns like the Dashboard's — Ready, In progress, Review,
     Validating, Done (folded), with Parked folded into a row above and
     Dropped behind a toggle — holding the open backlog (every ticket not done
@@ -668,7 +684,7 @@ agreed direction, **Later** is worth doing once the foundations settle.
     for its user is held back once. Reservations are signed room events,
     shown on the House board ("Migrations: 0025 Nick (#447), 0026 Ryan
     (#453)"), released by hand or once their number is on the base branch or
-    their branch is gone. The room's admin can turn the hold-back off, or name
+    their branch is gone. The room's owner or an admin can turn the hold-back off, or name
     a repository's migration folders, in Settings → Team. Live reservations
     are capped (5 per member and folder, 20 per member, 100 per room), one
     more than 20 above the folder's highest migration is ignored, and Codex
@@ -688,32 +704,20 @@ running (1.4.12), motion measured in the real app (1.4.12).
 - Context warnings: suggest /compact or a fresh session with a brief before a session nears its limit.
 - Usage per session and per ticket, with a warning before an expensive action (like a cold resume).
 
-**Room roles** — Owner, Admin, Member, replacing today's single admin (the
-creator, else the longest-standing member). Decided:
-- **Owner** (one per room, the creator): everything an admin can do, plus
-  making or demoting admins, handing over ownership, and the owner-only
-  settings — backups to GitHub, the House project, closing the room.
-- **Admin**: accepts or declines joins, removes members, sets the room's rules
-  (tooling, guard strength — security-relevant ones included — migrations).
-- **Member**: uses the room; quiets notes for their own agents only.
-- Removing: admins remove members; only the owner removes an admin (or the
-  owner), and an admin can't remove another admin.
-- The owner hands over before leaving. If the owner is gone for good (removed
-  from the Worker's allow list or never back), the longest-standing admin can
-  claim ownership after a waiting period, announced to everyone.
-- Role changes are signed room events every Mac checks, announced in the chat
-  ("Ryan made Nick an admin"). Tooling profiles build on these roles.
-- Take-over stays the session owner's to grant (a hand-over or an away
-  grant): no role can take a session over without it. An emergency path for
-  an owner who's gone for good would be its own explicit, announced and
-  logged event, never a bypass of the grant check.
+**Room roles, the rest** (roles themselves shipped in 1.6):
+- **Closing the room** (the owner's): not built yet — today the owner removes
+  everyone and leaves.
+- **Emergency take-over** (TODO): take-over stays the session owner's to grant
+  (a hand-over or an away grant), and no role gets past it. A path for a
+  session whose owner is gone for good would be its own explicit, announced
+  and logged event, never a bypass of the grant check.
 
 **Tooling profiles** — what Mockingbird adds to an agent, adjustable per project
 so rules that fit one repo don't get in the way in another. Decided:
 - Covers normal sessions and rooms. Settings live on this Mac (per repo) and in
   the room (signed, admin-set); a committed repo file (`.mockingbird/tooling.json`)
   is a later option, kept in mind but not built.
-- The room's admin sets the room's rules; each person can quiet notes and
+- The room's owner and admins set the room's rules; each person can quiet notes and
   heads-ups for their own agents only, never loosen a guard for anyone.
 - Editable: **tools** on/off (House, artifacts, migrations, teammate changes,
   messaging); **guard strength** per guard (off · note · hold back once · block —

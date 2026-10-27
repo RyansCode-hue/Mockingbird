@@ -5,7 +5,7 @@ import { REPLACED, REPLACED_ADVICE } from "./signalingClient";
 import { encodeFrame, MAX_STREAM_CHUNK, Reassembler, splitText, type StreamFrame, type TeamFrame } from "./frames";
 import { fingerprintOf, joinProof, randomToken, roomIdFor, sameSecret, signalingJoinKey, signalingTokenHash, verifySignature, type Identity } from "./identity";
 import { oneLine } from "../../shared/team/agentText";
-import { roomAdmin, type JoinRequestRecord, type PendingJoin, type RoomLog, type RoomStore, type StoredInvite } from "./rooms";
+import { claimantOf, claimOpensAt, isRoomAdmin, OWNER_CLAIM_WAIT_MS, ROLE_TYPES, legacyAdmin, mayRemove, roleOf, roomAdmins, roomDeciders, roomOwner, roomRoles, type JoinRequestRecord, type PendingJoin, type RoomLog, type RoomStore, type StoredInvite } from "./rooms";
 
 /**
  * The team transport: what every stage after the foundation uses to share a
@@ -162,6 +162,12 @@ export interface WireRoom {
    * before, or happened while the server was older, is made again).
    */
   revoke?: { member: MemberId; event: RoomEvent | null }[];
+  /**
+   * The room's roles, for a signaling Worker that knows them (feature
+   * "roles"): sent by the owner, the admins and whom the Worker takes for
+   * the admin; it keeps them from whichever of those it trusts.
+   */
+  roles?: { owner: MemberId | null; admins: MemberId[] };
 }
 
 /** What the signaling server said to a revoke. */
@@ -230,6 +236,8 @@ export interface RoomSignalingState {
   revoke?: boolean;
   /** The server holds joiners at the door until the admin admits them; absent until it has welcomed this install. */
   approve?: boolean;
+  /** The server knows the room's roles (its admins admit and remove there too); absent until it has welcomed this install. */
+  roles?: boolean;
   /** This install is a joiner at the door: it can only talk to its inviter until the admin admits it. */
   knocking?: boolean;
 }
@@ -595,14 +603,81 @@ export class TeamCore implements Team {
 
   // ---- leaving and removing ---------------------------------------------------------------------
 
-  /** Who can remove members of a room this install is in (see roomAdmin). */
-  admin(roomId: RoomId): MemberId | null {
-    const room = this.room(roomId);
-    return room ? roomAdmin(room) : null;
+  // ---- roles: the owner makes admins and hands over; a gone owner's room can be claimed ----------
+
+  /**
+   * Make a member an admin, or take the role back (the owner only). A signed
+   * room event every member checks; the chat says so.
+   */
+  setAdmin(roomId: RoomId, member: MemberId, admin: boolean): void {
+    const state = this.memberLog(roomId).state!;
+    this.asOwner(state, admin ? "makes admins" : "takes the admin role back");
+    if (member === this.self.id) throw new Error("You're the room's owner: hand over ownership to stop being it");
+    const role = roleOf(state, member);
+    if (!role) throw new Error(`${this.nameOf(member)} isn't in ${state.name}`);
+    if ((role === "admin") === admin) return;
+    this.publish(roomId, "role.admin", { member, admin });
+    this.log(`${admin ? "made" : "took back"} ${this.nameOf(member)}'s admin role in ${state.name}`);
+  }
+
+  /** Hand ownership of a room to another member (the owner only): this install stays an admin. */
+  handOver(roomId: RoomId, member: MemberId): void {
+    const state = this.memberLog(roomId).state!;
+    this.asOwner(state, "hands over ownership");
+    if (member === this.self.id) throw new Error("You already own the room");
+    if (!roleOf(state, member)) throw new Error(`${this.nameOf(member)} isn't in ${state.name}`);
+    this.publish(roomId, "role.owner", { member });
+    this.log(`handed ownership of ${state.name} to ${this.nameOf(member)}`);
   }
 
   /**
-   * Remove a teammate (the room's admin only). The removal is published and
+   * Take ownership of a room whose owner hasn't been heard from for
+   * OWNER_CLAIM_WAIT_MS (the room's claimant only: its longest-standing
+   * admin, else its longest-standing member). Announced to everyone; the
+   * owner can contest it when they're back.
+   */
+  claimOwnership(roomId: RoomId): void {
+    const state = this.memberLog(roomId).state!;
+    const owner = roomOwner(state);
+    if (!owner || owner === this.self.id) throw new Error(`You already own ${state.name}`);
+    const claimant = claimantOf(state);
+    if (claimant !== this.self.id) throw new Error(`Only ${claimant ? this.nameIn(state, claimant) : "nobody"}, the room's longest-standing admin, can claim ownership of ${state.name}`);
+    if (this.hellos.has(owner)) throw new Error(`${this.nameIn(state, owner)} is connected now: ask them to hand ownership over instead`);
+    const opens = claimOpensAt(state)!;
+    if (this.now() < opens) throw new Error(`${this.nameIn(state, owner)} was last heard from in the room ${new Date(roomRoles(state).ownerSeenAt).toLocaleDateString()}: ownership can be claimed from ${new Date(opens).toLocaleDateString()}`);
+    this.publish(roomId, "role.claim", {});
+    this.log(`claimed ownership of ${state.name} from ${this.nameIn(state, owner)}`);
+  }
+
+  /** Take back ownership a claim took from this install (only while the claim stands). */
+  contestClaim(roomId: RoomId): void {
+    const state = this.memberLog(roomId).state!;
+    const claim = roomRoles(state).claim;
+    if (!claim || claim.from !== this.self.id) throw new Error(`Nobody claimed ownership of ${state.name} from you`);
+    this.publish(roomId, "role.contest", {});
+    this.log(`took back ownership of ${state.name}`);
+  }
+
+  private asOwner(state: RoomState, what: string): void {
+    const owner = roomOwner(state);
+    if (owner !== this.self.id) throw new Error(`Only the room's owner (${owner ? this.nameIn(state, owner) : "nobody"}) ${what}`);
+  }
+
+  /** Why this install may not remove `member` (by its role), or null when it may. */
+  private removeRefusal(state: RoomState, member: MemberId): string | null {
+    if (mayRemove(state, this.self.id, member, this.now())) return null;
+    const mine = roleOf(state, this.self.id);
+    const theirs = roleOf(state, member);
+    const owner = roomOwner(state);
+    const ownerName = owner ? this.nameIn(state, owner) : "nobody";
+    const claim = roomRoles(state).claim;
+    if (claim?.from === member) return `${this.nameIn(state, member)} can contest the claim on ${state.name}'s ownership until ${new Date(claim.at + OWNER_CLAIM_WAIT_MS).toLocaleDateString()}: they can't be removed before then`;
+    if (mine === "admin") return `Only the room's owner (${ownerName}) removes ${theirs === "owner" ? "the owner" : "an admin"}`;
+    return `Only the room's owner or an admin removes members: ${ownerName} owns ${state.name}`;
+  }
+
+  /**
+   * Remove a teammate: the owner removes anyone; an admin removes members (not an admin or the owner). The removal is published and
    * sent to them while they're still connected (each Mockingbird drops them
    * from the room), then the signaling server cuts their key off. Someone
    * already removed is only cut off at the server again: a revoke that
@@ -615,8 +690,9 @@ export class TeamCore implements Team {
     if (member === this.self.id) throw new Error("To leave the room yourself, use Leave room");
     const target = state.members.find((m) => m.id === member);
     if (!target && !log.wasMember(member)) throw new Error(`${this.nameOf(member)} isn't in ${state.name}`);
-    const admin = roomAdmin(state);
-    if (admin !== this.self.id) throw new Error(`Only the room's admin (${admin ? this.nameOf(admin) : "nobody"}) can remove members: its creator, or the longest-standing member once the creator has left`);
+    // someone already out: only asking the Worker again, which the owner and admins may
+    const refusal = target ? this.removeRefusal(state, member) : isRoomAdmin(state, this.self.id) ? null : this.removeRefusal(state, member);
+    if (refusal) throw new Error(refusal);
     let delivered = false;
     let event: RoomEvent | null = log.removalOf(member);
     let revoke: RevokeOutcome;
@@ -647,6 +723,8 @@ export class TeamCore implements Team {
    */
   async leave(roomId: RoomId, o: { ackMs?: number; revokeMs?: number } = {}): Promise<{ told: MemberId[]; missed: MemberId[]; revoke: RevokeOutcome; room: RoomState }> {
     const log = this.memberLog(roomId);
+    // the owner hands over first, unless nobody else is left to own it
+    if (roomOwner(log.state!) === this.self.id && log.state!.members.length > 1) throw new Error(`You own ${log.state!.name}: hand ownership over to a teammate before you leave`);
     const spec = this.wireRoomOf(log);
     const others = log.state!.members.filter((m) => m.id !== this.self.id).map((m) => m.id);
     const online = this.presence(roomId);
@@ -804,8 +882,8 @@ export class TeamCore implements Team {
   }
 
   /**
-   * Accept or decline someone's request to join (the room's admin only).
-   * Accepting adds them (member.added); declining tells the inviter
+   * Accept or decline someone's request to join (the room's owner or an
+   * admin). Accepting adds them (member.added); declining tells the inviter
    * (join.declined), who tells the joiner, and the signaling server drops
    * them at the door. Throws before anything changed; `worker` says when the
    * server couldn't drop a declined joiner.
@@ -813,8 +891,7 @@ export class TeamCore implements Team {
   async answerJoin(roomId: RoomId, joiner: MemberId, accept: boolean, o: { denyMs?: number } = {}): Promise<{ name: string; accepted: boolean; worker: RevokeOutcome | null }> {
     const log = this.memberLog(roomId);
     const state = log.state!;
-    const admin = roomAdmin(state);
-    if (admin !== this.self.id) throw new Error(`Only the room's admin (${admin ? this.nameOf(admin) : "nobody"}) can accept or decline joins`);
+    if (!isRoomAdmin(state, this.self.id)) throw new Error(`Only the room's owner or an admin (${this.decidersIn(state)}) can accept or decline joins`);
     const requests = this.store.joinRequests(roomId);
     const r = requests.filter((x) => x.id === joiner && !x.decision).at(-1);
     if (!r) {
@@ -843,15 +920,15 @@ export class TeamCore implements Team {
   }
 
   /**
-   * From here in the room's order joins need the admin's acceptance: a room
-   * created before that switches over with its admin's room.approval (later
-   * in a microtask, unless `now`: publishing inside an applied event would
-   * re-enter the log).
+   * From here in the room's order joins need accepting: a room created
+   * before that switches over with its owner's or an admin's room.approval
+   * (later in a microtask, unless `now`: publishing inside an applied event
+   * would re-enter the log).
    */
   private ensureApproval(log: RoomLog, now = false): void {
     const run = () => {
       const state = log.state;
-      if (this.closed || !state || state.joinApproval || roomAdmin(state) !== this.self.id || !log.isMember(this.self.id) || this.leaving.has(log.roomId)) return;
+      if (this.closed || !state || state.joinApproval || !isRoomAdmin(state, this.self.id) || this.leaving.has(log.roomId)) return;
       try {
         this.publish(log.roomId, "room.approval", {});
         this.log(`joins of ${state.name} need accepting from now on`);
@@ -863,11 +940,18 @@ export class TeamCore implements Team {
     else queueMicrotask(run);
   }
 
+  /** The room's owner and admins by name ("Ryan or Nick"): who answers join requests. */
+  private decidersIn(state: RoomState): string {
+    const names = roomDeciders(state).map((id) => this.nameIn(state, id));
+    return names.length ? names.join(" or ") : "nobody";
+  }
+
   /** A forwarded or own request, as the window shows it. */
   private requestSummary(state: RoomState, r: JoinRequestRecord): JoinRequestSummary {
-    const admin = roomAdmin(state);
-    const role = admin === this.self.id ? "admin" : "inviter";
-    const state_: JoinRequestSummary["state"] = r.decision ?? (role === "inviter" && r.forwardedTo !== admin ? "forwarding" : "waiting");
+    const deciders = roomDeciders(state);
+    const role = deciders.includes(this.self.id) ? "admin" : "inviter";
+    const reached = !!r.forwardedTo && deciders.includes(r.forwardedTo);
+    const state_: JoinRequestSummary["state"] = r.decision ?? (role === "inviter" && !reached ? "forwarding" : "waiting");
     return {
       roomId: state.id,
       id: r.id,
@@ -875,8 +959,8 @@ export class TeamCore implements Team {
       fingerprint: formatFingerprint(r.id),
       inviter: r.inviter,
       inviterName: this.nameIn(state, r.inviter),
-      admin,
-      adminName: admin ? this.nameIn(state, admin) : "nobody",
+      admin: deciders[0] ?? null,
+      adminName: this.decidersIn(state),
       role,
       state: state_,
       ...(r.problem && !r.decision ? { problem: r.problem } : {}),
@@ -885,23 +969,23 @@ export class TeamCore implements Team {
     };
   }
 
-  /** The requests the window shows for a room: the admin's to answer; the inviter's passed on (and how they went, for a day). */
+  /** The requests the window shows for a room: the owner's and admins' to answer; the inviter's passed on (and how they went, for a day). */
   private requestsOf(state: RoomState): JoinRequestSummary[] {
     const now = this.now();
-    const admin = roomAdmin(state);
+    const decides = isRoomAdmin(state, this.self.id);
     return this.store
       .joinRequests(state.id)
-      .filter((r) => (admin === this.self.id ? !r.decision && r.expiresAt > now && !state.members.some((m) => m.id === r.id) : r.inviter === this.self.id && (r.decision ? (r.decidedAt ?? 0) > now - REQUEST_KEEP_MS : r.expiresAt > now)))
+      .filter((r) => (decides ? !r.decision && r.expiresAt > now && !state.members.some((m) => m.id === r.id) : r.inviter === this.self.id && (r.decision ? (r.decidedAt ?? 0) > now - REQUEST_KEEP_MS : r.expiresAt > now)))
       .map((r) => this.requestSummary(state, r));
   }
 
-  /** Keep a request this install answers, or passes on: the admin is told of a new one. Returns false when it was already held. */
+  /** Keep a request this install answers, or passes on: as the owner or an admin it's told of a new one. Returns false when it was already held. */
   private holdRequest(roomId: RoomId, r: JoinRequestRecord): boolean {
     const requests = this.store.joinRequests(roomId);
     if (requests.some((x) => x.id === r.id && x.invite === r.invite)) return false;
     this.store.saveJoinRequests(roomId, [...requests, r]);
     const state = this.room(roomId);
-    if (state && roomAdmin(state) === this.self.id) {
+    if (state && isRoomAdmin(state, this.self.id)) {
       const summary = this.requestSummary(state, r);
       for (const h of this.joinRequestHandlers) this.safely("a join-request handler", () => h(summary));
     }
@@ -910,15 +994,15 @@ export class TeamCore implements Team {
   }
 
   /**
-   * The admin's side of a request an inviter passed on: checked (the
-   * inviter's signature, the joiner's key, the expiry) and held for the
-   * admin to answer. Answers whether it was decided already.
+   * The owner's or an admin's side of a request an inviter passed on:
+   * checked (the inviter's signature, the joiner's key, the expiry) and held
+   * to answer. Answers whether it was decided already.
    */
   private onForwardedRequest(p: any, ctx: RequestContext): { received: true; decision?: "accepted" | "declined" } {
     if (!ctx.roomId) throw new Error("a join request names its room");
     const log = this.memberLog(ctx.roomId);
     const state = log.state!;
-    if (roomAdmin(state) !== this.self.id) throw new Error(`this Mockingbird isn't ${state.name}'s admin`);
+    if (!isRoomAdmin(state, this.self.id)) throw new Error(`this Mockingbird isn't ${state.name}'s owner or an admin`);
     const r = joinRequestOf(p, ctx.roomId);
     if (!r) throw new Error("a malformed join request");
     if (r.inviter !== ctx.from) throw new Error("a join request is passed on by its inviter");
@@ -935,34 +1019,41 @@ export class TeamCore implements Team {
     return { received: true };
   }
 
-  /** Pass the requests this install took as the inviter on to the room's admin, when the admin's Mockingbird is connected and doesn't have them yet. */
+  /**
+   * Pass the requests this install took as the inviter on to the room's
+   * owner and admins whose Mockingbirds are connected and don't have them
+   * yet: whichever of them is around answers.
+   */
   private forwardRequests(roomId: RoomId): void {
     const state = this.room(roomId);
     if (!state) return;
-    const admin = roomAdmin(state);
-    if (!admin || admin === this.self.id || !this.hellos.has(admin) || !this.allowed(admin, roomId)) return;
     const now = this.now();
-    for (const r of this.store.joinRequests(roomId)) {
-      const k = key(roomId, r.id, r.invite);
-      if (r.inviter !== this.self.id || r.decision || r.expiresAt <= now || r.forwardedTo === admin || this.forwarding.has(k) || state.members.some((m) => m.id === r.id)) continue;
-      this.forwarding.add(k);
-      const { decision: _d, decidedAt: _t, forwardedTo: _f, problem: _p, ...fields } = r;
-      this.request<{ received?: boolean }>(admin, JOIN_REQUEST, fields, { roomId })
-        .then(
-          (answer) => {
-            if (!answer?.received) throw new Error("the admin's Mockingbird didn't take it");
-            this.updateRequest(roomId, r, { forwardedTo: admin, problem: undefined });
-            this.log(`passed ${r.name}'s request to join ${state.name} on to ${this.nameOf(admin)}`);
-          },
-          (err: TeamError) => {
-            // an admin on an older Mockingbird can't take requests: said, and asked again when it reconnects
-            const problem = err.code === "no-handler" ? `${this.nameOf(admin)}'s Mockingbird needs an update to accept joins` : undefined;
-            if (problem) this.updateRequest(roomId, r, { problem });
-            this.log(`couldn't pass ${r.name}'s request to join ${state.name} on to ${this.nameOf(admin)}: ${err.message}`);
-          }
-        )
-        .catch((err) => this.log(`passing on ${r.name}'s request to join ${state.name} failed: ${(err as Error).message}`))
-        .finally(() => this.forwarding.delete(k));
+    for (const to of roomDeciders(state)) {
+      if (to === this.self.id || !this.hellos.has(to) || !this.allowed(to, roomId)) continue;
+      for (const r of this.store.joinRequests(roomId)) {
+        const k = key(roomId, r.id, r.invite, to);
+        if (r.inviter !== this.self.id || r.decision || r.expiresAt <= now || r.sentTo?.includes(to) || this.forwarding.has(k) || state.members.some((m) => m.id === r.id)) continue;
+        this.forwarding.add(k);
+        const { decision: _d, decidedAt: _t, forwardedTo: _f, problem: _p, sentTo: _s, ...fields } = r;
+        this.request<{ received?: boolean }>(to, JOIN_REQUEST, fields, { roomId })
+          .then(
+            (answer) => {
+              if (!answer?.received) throw new Error("their Mockingbird didn't take it");
+              const held = this.store.joinRequests(roomId).find((x) => x.id === r.id && x.invite === r.invite);
+              this.updateRequest(roomId, r, { forwardedTo: held?.forwardedTo ?? to, sentTo: [...new Set([...(held?.sentTo ?? []), to])], problem: undefined });
+              this.log(`passed ${r.name}'s request to join ${state.name} on to ${this.nameOf(to)}`);
+            },
+            (err: TeamError) => {
+              // a Mockingbird from before join requests can't take them: said (unless someone else has it), and asked again when it reconnects
+              const problem = err.code === "no-handler" ? `${this.nameOf(to)}'s Mockingbird needs an update to accept joins` : undefined;
+              const held = this.store.joinRequests(roomId).find((x) => x.id === r.id && x.invite === r.invite);
+              if (problem && !held?.forwardedTo) this.updateRequest(roomId, r, { problem });
+              this.log(`couldn't pass ${r.name}'s request to join ${state.name} on to ${this.nameOf(to)}: ${err.message}`);
+            }
+          )
+          .catch((err) => this.log(`passing on ${r.name}'s request to join ${state.name} failed: ${(err as Error).message}`))
+          .finally(() => this.forwarding.delete(k));
+      }
     }
   }
 
@@ -1000,6 +1091,19 @@ export class TeamCore implements Team {
     this.wire
       .introduce(log.roomId, joiner, decision === "accepted" ? "join-accepted" : "join-rejected", { publicKey: this.self.publicKey, name: this.o.name(), ...extra })
       .catch((err) => this.log(`couldn't tell ${mine[0].name} yet that ${this.nameIn(state, by)} ${decision} them (they hear it when they ask again): ${(err as Error).message}`));
+    this.changedSoon();
+  }
+
+  /** Another of the owner and admins declined a request this install holds to answer: it's answered here too. */
+  private decidedElsewhere(roomId: RoomId, joiner: MemberId, invite: string): void {
+    const requests = this.store.joinRequests(roomId);
+    const held = requests.filter((r) => r.id === joiner && r.invite === invite && !r.decision);
+    if (!held.length) return;
+    for (const r of held) {
+      r.decision = "declined";
+      r.decidedAt = this.now();
+    }
+    this.store.saveJoinRequests(roomId, requests);
     this.changedSoon();
   }
 
@@ -1068,12 +1172,17 @@ export class TeamCore implements Team {
     const rooms: TeamRoomSummary[] = this.rooms().map((r) => {
       const meta = this.store.meta(r.id);
       const sig = signaling.get(r.id);
+      const claim = roomRoles(r).claim;
       return {
         id: r.id,
         name: r.name,
         groupKey: meta?.groupKey ?? r.groupKey,
         members: r.members.map((m) => ({ id: m.id, name: m.name, self: m.id === this.self.id })),
-        admin: roomAdmin(r),
+        owner: roomOwner(r),
+        admins: roomAdmins(r),
+        admin: legacyAdmin(r),
+        ...(claim ? { claim: { from: claim.from, by: claim.by, at: claim.at } } : {}),
+        claimOpensAt: claimantOf(r) === this.self.id ? claimOpensAt(r) : null,
         creator: r.creator,
         former: (r.former ?? []).map((m) => ({ id: m.id, name: m.name })),
         online: this.presence(r.id),
@@ -1082,6 +1191,7 @@ export class TeamCore implements Team {
         ...(sig?.problem ? { problem: sig.problem } : {}),
         ...(sig?.revoke !== undefined ? { workerRevoke: sig.revoke } : {}),
         ...(sig?.approve !== undefined ? { workerApprove: sig.approve } : {}),
+        ...(sig?.roles !== undefined ? { workerRoles: sig.roles } : {}),
         requests: this.requestsOf(r),
         ...(this.warnings.get(r.id)?.size ? { warnings: [...this.warnings.get(r.id)!.values()] } : {}),
       };
@@ -1516,17 +1626,18 @@ export class TeamCore implements Team {
       match.usedBy = from;
       this.store.saveInvites(roomId, invites);
     }
-    const admin = roomAdmin(state);
-    const adminName = admin ? this.nameIn(state, admin) : "the room's admin";
+    // whoever of the owner and admins answers: the joiner is told their names
+    const admin = roomDeciders(state)[0] ?? null;
+    const adminName = admin ? this.decidersIn(state) : "the room's owner";
     let r = this.store.joinRequests(roomId).find((x) => x.id === from && x.invite === match.tokenHash);
     if (!r) {
       const name = oneLine(typeof body.name === "string" ? body.name : "", 100) || "teammate";
       const fields: JoinRequestFields = { roomId, id: from, publicKey: body.publicKey, name, inviter: this.self.id, invite: match.tokenHash, at: now, expiresAt: Math.min(match.expiresAt, now + MAX_INVITE_MS) };
       r = { ...fields, sig: this.identity.sign(joinRequestPayload(fields)) };
       this.holdRequest(roomId, r);
-      this.log(`${name} (${from}) asks to join ${state.name}${admin === this.self.id ? "" : `: passing it on to ${adminName}`}`);
+      this.log(`${name} (${from}) asks to join ${state.name}${isRoomAdmin(state, this.self.id) ? "" : `: passing it on to ${adminName}`}`);
     }
-    if (r.decision === "declined") return refuse(`${adminName} declined your request to join ${state.name}`, { declined: true });
+    if (r.decision === "declined") return refuse(`Your request to join ${state.name} was declined`, { declined: true });
     // let in once with this code, and not a member now (removed since): it's used
     if (r.decision === "accepted") return refuse("That room code was already used — ask for a new one");
     if (r.expiresAt <= now) return refuse(`The code expired before ${adminName} accepted — ask for a new one`);
@@ -1574,18 +1685,26 @@ export class TeamCore implements Team {
       const former = state?.former?.find((f) => f.id === member);
       if (member !== this.self.id && former && !log.isMember(member) && this.hellos.has(member)) this.depart(log.roomId, member, former.publicKey, this.departGraceMs);
       if (member === this.self.id && former && !this.leaving.has(log.roomId)) this.linger(log.roomId, e.id);
-      this.ensureApproval(log); // this install may be the admin now
+      this.ensureApproval(log); // this install may own the room now
     }
-    // the admin decided a join this install took as the inviter: the joiner hears it from here
+    const roleEvent = (ROLE_TYPES as readonly string[]).includes(e.type);
+    if (roleEvent) {
+      this.ensureApproval(log); // this install may be an admin now
+      this.forwardRequests(log.roomId); // a new admin is given the requests waiting
+    }
+    // the owner or an admin decided a join this install took as the inviter: the joiner hears it from here
     if (e.type === "member.added") {
       const added = (e.body as RoomEventBodies["member.added"])?.id;
       if (added && log.isMember(added)) this.relayDecision(log, added, "accepted", e.author);
     }
-    if (e.type === "join.declined" && state && roomAdmin(state) === e.author) {
+    if (e.type === "join.declined" && state && isRoomAdmin(state, e.author)) {
       const b = e.body as RoomEventBodies["join.declined"];
-      if (b?.inviter === this.self.id && !log.isMember(b.id)) this.relayDecision(log, b.id, "declined", e.author);
+      if (b && !log.isMember(b.id)) {
+        if (b.inviter === this.self.id) this.relayDecision(log, b.id, "declined", e.author);
+        else this.decidedElsewhere(log.roomId, b.id, b.invite);
+      }
     }
-    if (e.type === "member.added" || e.type === "room.created" || e.type === "member.removed") this.syncWire();
+    if (e.type === "member.added" || e.type === "room.created" || e.type === "member.removed" || roleEvent) this.syncWire();
     this.checkLeft(log);
     this.changedSoon();
   }
@@ -1684,7 +1803,11 @@ export class TeamCore implements Team {
     const invites: StoredInvite[] = this.store.invites(log.roomId);
     const departing = [...(this.departing.get(log.roomId) ?? [])].filter(([id]) => !state.members.some((m) => m.id === id)).map(([id, d]) => ({ id, publicKey: d.publicKey }));
     // (someone being removed right now is revoked by removeMember itself)
-    const revoke = roomAdmin(state) === this.self.id ? (state.former ?? []).filter((f) => !this.removing.has(key(log.roomId, f.id))).map((f) => ({ member: f.id, event: log.removalOf(f.id) })) : [];
+    // whom the Worker trusts to cut members off: the owner, once it knows the roles; before that (or an older Worker), whom it takes for the admin
+    const keeper = roomOwner(state) === this.self.id || legacyAdmin(state) === this.self.id;
+    const revoke = keeper ? (state.former ?? []).filter((f) => !this.removing.has(key(log.roomId, f.id))).map((f) => ({ member: f.id, event: log.removalOf(f.id) })) : [];
+    // the Worker takes the roles from whichever of these it trusts (signaling/src/room.ts roles)
+    const roles = keeper || isRoomAdmin(state, this.self.id) ? { owner: roomOwner(state), admins: roomAdmins(state) } : null;
     return {
       roomId: log.roomId,
       url: meta.signalingUrl,
@@ -1693,6 +1816,7 @@ export class TeamCore implements Team {
       ...(state.creator === this.self.id && created ? { create: created.body.salt } : {}),
       invites: invites.filter((i) => !i.usedAt && i.expiresAt > now).map((i) => ({ tokenHash: i.tokenHash, expiresAt: i.expiresAt })),
       ...(revoke.length ? { revoke } : {}),
+      ...(roles ? { roles } : {}),
     };
   }
 

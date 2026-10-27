@@ -1026,6 +1026,10 @@ handle("team:cancelJoin", (roomId) => team.cancelJoin(String(roomId)));
 handle("team:leaveRoom", (roomId) => team.leaveRoom(String(roomId)));
 handle("team:removeMember", (roomId, memberId) => team.removeMember(String(roomId), String(memberId)));
 handle("team:answerJoin", (roomId, joinerId, accept) => team.answerJoin(String(roomId), String(joinerId), accept === true));
+handle("team:setAdmin", (roomId, memberId, admin) => team.setAdmin(String(roomId), String(memberId), admin === true));
+handle("team:handOver", (roomId, memberId) => team.handOver(String(roomId), String(memberId)));
+handle("team:claimOwnership", (roomId) => team.claimOwnership(String(roomId)));
+handle("team:contestClaim", (roomId) => team.contestClaim(String(roomId)));
 handle("team:dismissNotice", (id) => team.dismissNotice(String(id)));
 handle("team:checkSignaling", (url) => TeamService.checkSignaling(String(url ?? "")));
 // team rooms: the Radley House board — every House call is made here, with this builder's token

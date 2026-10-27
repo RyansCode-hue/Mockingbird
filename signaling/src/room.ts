@@ -7,6 +7,7 @@ import {
   MAX_REVOKE_EVENT,
   MAX_SIGNALING_MESSAGE,
   MEMBER_ID_RE,
+  OWNER_CLAIM_WAIT_MS,
   PUBLIC_KEY_RE,
   roomIdInput,
   SIGNALING_FEATURES,
@@ -229,7 +230,14 @@ export function turnDailyLimit(value: string | undefined): number {
 }
 
 interface RoomRecord {
-  members: Record<string, { publicKey: string; addedAt: number }>;
+  /** `seenAt`: when the key last said hello or closed a connection (at most an hour stale): a claim reads it (roles). */
+  members: Record<string, { publicKey: string; addedAt: number; seenAt?: number }>;
+  /**
+   * The room's roles as the app's log has them (feature "roles"), from whom
+   * this server trusts (rolesRefusal). `claimedFrom`: the owner a claim took
+   * ownership from, who may take it back.
+   */
+  roles?: { owner: string; admins: string[]; claimedFrom?: string; claimedAt?: number };
   invites: Record<string, { expiresAt: number; by: string; usedAt?: number }>;
   /** The room's creator, once its hello proved the salt (absent in rooms created before revoke, until then). */
   creator?: string;
@@ -263,6 +271,36 @@ export function signalingAdmin(rec: { creator?: string; members: Record<string, 
   let best: [string, number] | null = null;
   for (const [id, m] of Object.entries(rec.members)) if (!best || m.addedAt < best[1] || (m.addedAt === best[1] && id < best[0])) best = [id, m.addedAt];
   return best?.[0] ?? null;
+}
+
+/**
+ * How long a room's owner must have stayed away from this server (not
+ * connected, no hello) before its claimant's roles naming itself owner are
+ * taken: the app's OWNER_CLAIM_WAIT_MS (src/main/team/rooms.ts), measured
+ * here by this server's own clock.
+ */
+export const OWNER_GONE_MS = OWNER_CLAIM_WAIT_MS;
+const MAX_ROLE_ADMINS = 64;
+/** A member's seenAt is written at most this often (a hello is frequent; storage writes aren't free). */
+const SEEN_EVERY_MS = 3_600_000;
+
+/**
+ * The room's owner as this server knows it: the owner the roles name while
+ * it's a member here; with no roles yet, its admin (signalingAdmin); once
+ * the owner is gone (revoked: it left), the longest-standing admin still a
+ * member, as the app hands ownership on.
+ */
+function workerOwner(rec: RoomRecord): string | null {
+  if (!rec.roles) return signalingAdmin(rec);
+  if (rec.members[rec.roles.owner]) return rec.roles.owner;
+  return rec.roles.admins.find((id) => rec.members[id]) ?? signalingAdmin(rec);
+}
+
+/** Who admits and denies joiners here: the owner and the admins (with no roles yet, signalingAdmin alone). */
+function workerDeciders(rec: RoomRecord): string[] {
+  const owner = workerOwner(rec);
+  const admins = rec.roles ? rec.roles.admins.filter((id) => id !== owner && rec.members[id]) : [];
+  return [...(owner ? [owner] : []), ...admins];
 }
 
 export const TURN_API = "https://rtc.live.cloudflare.com/v1/turn/keys";
@@ -355,6 +393,9 @@ export class SignalingRoom {
       case "deny":
         if (this.approves()) return this.deny(sock, me, msg);
         return this.error(sock, "bad-message", "unknown message deny");
+      case "roles":
+        if (this.knowsRoles()) return this.roles(sock, me, msg);
+        return this.error(sock, "bad-message", "unknown message roles");
       default:
         return this.error(sock, "bad-message", `unknown message ${String((msg as { t: unknown }).t).slice(0, 20)}`);
     }
@@ -366,6 +407,7 @@ export class SignalingRoom {
     if (!me) return;
     const still = this.members().some((s) => s.cid !== sock.cid && s.state()?.member?.id === me.id);
     if (!still) this.presence(sock.cid, me, false);
+    if (!me.knocking) this.seen(me.id).catch((err) => this.log(`room ${this.deps.roomId}: noting when ${me.id} was last here failed: ${(err as Error).message}`));
   }
 
   /** Member ids the room admits (for tests and diagnostics). */
@@ -383,6 +425,15 @@ export class SignalingRoom {
 
   private approves(): boolean {
     return this.features.includes("approve");
+  }
+
+  private knowsRoles(): boolean {
+    return this.features.includes("roles");
+  }
+
+  /** The room's roles, as this server keeps them (for tests and diagnostics). */
+  async rolesOf(): Promise<RoomRecord["roles"] | null> {
+    return (await this.load()).roles ?? null;
   }
 
   // ---- messages --------------------------------------------------------------------
@@ -487,6 +538,7 @@ export class SignalingRoom {
     this.send(sock, this.welcome(sock, state.member, rec, now));
     this.presence(sock.cid, state.member, true);
     this.closeStale(now, rec);
+    if (!knock) await this.seen(id);
   }
 
   /**
@@ -571,10 +623,10 @@ export class SignalingRoom {
     const ids: string[] = [];
     const promoted: { id: string; publicKey: string }[] = [];
     let changed = false;
-    // a member who hasn't heard of a removal yet would admit the key again: only the admin brings a revoked key back
+    // a member who hasn't heard of a removal yet would admit the key again: only the owner or an admin brings a revoked key back
     const known = signalingAdmin(rec);
-    const admin = known === me.id;
-    // approve: only the admin adds keys (with no known admin — a room from before revoke — any member, as before)
+    const admin = this.knowsRoles() ? workerDeciders(rec).includes(me.id) : known === me.id;
+    // approve: only the owner and admins add keys (with no known admin — a room from before revoke — any member, as before)
     const mayAdd = !this.approves() || admin || known === null;
     for (const k of msg.publicKeys) {
       const id = toHex(await this.crypto.sha256(fromBase64Url(k))).slice(0, 32);
@@ -587,7 +639,7 @@ export class SignalingRoom {
         changed = true;
       }
       if (!rec.members[id] && !mayAdd) {
-        this.log(`room ${this.deps.roomId}: ignored ${me.id}'s admit of ${id}: only the room's admin (${known}) adds keys${rec.knocking?.[id] ? "; it waits at the door" : ""}`);
+        this.log(`room ${this.deps.roomId}: ignored ${me.id}'s admit of ${id}: only the room's owner or an admin (${this.knowsRoles() ? workerDeciders(rec).join(", ") : known}) adds keys${rec.knocking?.[id] ? "; it waits at the door" : ""}`);
         continue;
       }
       ids.push(id);
@@ -633,8 +685,9 @@ export class SignalingRoom {
     const rec = await this.load();
     const target = msg.member;
     const admin = signalingAdmin(rec);
-    if (admin !== null && admin !== me.id) {
-      const why = `only the room's admin can decline joins, and this server sees ${admin} as the admin`;
+    const deciders = this.knowsRoles() ? workerDeciders(rec) : admin !== null ? [admin] : [];
+    if (admin !== null && !deciders.includes(me.id)) {
+      const why = `only the room's owner or an admin can decline joins, and this server sees ${deciders.join(", ") || "nobody"} as them`;
       this.log(`room ${this.deps.roomId}: refused ${me.id}'s deny of ${target}: ${why}`);
       return this.send(sock, { t: "error", code: "forbidden", message: why, member: target });
     }
@@ -678,11 +731,8 @@ export class SignalingRoom {
     const rec = await this.load();
     const target = msg.member;
     if (target !== me.id) {
-      const admin = signalingAdmin(rec);
-      if (admin !== me.id) {
-        const why = !rec.creator
-          ? "this signaling server doesn't know the room's creator yet (a room from before removal existed, whose creator hasn't connected since): only leaving works here"
-          : `only the room's admin can remove members, and this server sees ${admin ?? "nobody"} as the admin`;
+      const why = this.revokeRefusal(rec, me.id, target);
+      if (why) {
         this.log(`room ${this.deps.roomId}: refused ${me.id}'s revoke of ${target}: ${why}`);
         return this.send(sock, { t: "error", code: "forbidden", message: why, member: target });
       }
@@ -706,6 +756,91 @@ export class SignalingRoom {
       s.close(CLOSE.notMember, "revoked");
     }
     if (had) this.presence("", { id: target }, false);
+  }
+
+  /**
+   * Why `by` may not cut `target` off, or null: the owner (signalingAdmin
+   * until the server knows the roles) cuts anyone off, an admin only someone
+   * who's neither the owner nor an admin — the app's rule (rooms.ts mayRemove)
+   * as far as the server knows the roles.
+   */
+  private revokeRefusal(rec: RoomRecord, by: string, target: string): string | null {
+    if (!rec.creator && !rec.roles) return "this signaling server doesn't know the room's creator yet (a room from before removal existed, whose creator hasn't connected since): only leaving works here";
+    const owner = this.knowsRoles() ? workerOwner(rec) : signalingAdmin(rec);
+    const claim = this.knowsRoles() ? rec.roles : undefined;
+    if (claim?.claimedFrom === target && this.now() - (claim.claimedAt ?? 0) < OWNER_GONE_MS) return "the owner a claim took the room from can't be removed while they may still contest it";
+    if (owner === by) return null;
+    const admins = this.knowsRoles() ? workerDeciders(rec).slice(1) : [];
+    if (admins.includes(by)) return target === owner || admins.includes(target) ? "an admin can't remove the room's owner or another admin" : null;
+    return `only the room's owner or an admin can remove members, and this server sees ${owner ?? "nobody"} as the owner`;
+  }
+
+  /**
+   * The room's roles from a member's Mockingbird (every admin's sends them;
+   * see the protocol's `roles`): kept when they come from whom this server
+   * trusts with them (rolesRefusal), ignored otherwise.
+   */
+  private async roles(sock: RoomSocket, me: NonNullable<ConnState["member"]>, msg: Extract<ClientMessage, { t: "roles" }>): Promise<void> {
+    if (typeof msg.owner !== "string" || !MEMBER_ID_RE.test(msg.owner) || !Array.isArray(msg.admins) || msg.admins.length > MAX_ROLE_ADMINS || msg.admins.some((a) => typeof a !== "string" || !MEMBER_ID_RE.test(a))) {
+      return this.error(sock, "bad-message", "malformed roles");
+    }
+    const rec = await this.load();
+    const owner = msg.owner;
+    const admins = [...new Set(msg.admins)].filter((id) => id !== owner);
+    if (!rec.members[owner]) return this.send(sock, { t: "roles-ignored", reason: "its owner isn't a member here" });
+    const why = this.rolesRefusal(rec, me.id, owner);
+    if (why) {
+      this.log(`room ${this.deps.roomId}: ignored ${me.id}'s roles (owner ${owner}): ${why}`);
+      return this.send(sock, { t: "roles-ignored", reason: why });
+    }
+    const was = rec.roles;
+    const current = workerOwner(rec);
+    // a claim: the claimant names itself owner, and the owner it took it from may take it back (a contest), or be handed it
+    let claim = was?.claimedFrom ? { claimedFrom: was.claimedFrom, claimedAt: was.claimedAt ?? 0 } : null;
+    if (current && current !== me.id && owner === me.id && was?.claimedFrom !== me.id) claim = { claimedFrom: current, claimedAt: this.now() };
+    if (claim?.claimedFrom === owner) claim = null;
+    rec.roles = { owner, admins, ...(claim ?? {}) };
+    if (JSON.stringify(was) !== JSON.stringify(rec.roles)) {
+      await this.save();
+      this.log(`room ${this.deps.roomId}: roles from ${me.id}: owner ${owner}, admins ${admins.join(", ") || "none"}`);
+    }
+    this.send(sock, { t: "roles-set", owner, admins });
+  }
+
+  /**
+   * Why this server won't take roles naming `owner` from `by`, or null. It
+   * takes them from the owner it knows; with no roles yet, from its admin
+   * (signalingAdmin); from the longest-standing admin (or, with none, the
+   * longest-standing member) naming itself owner once the owner hasn't been
+   * connected for OWNER_GONE_MS — a claim — and from the owner a claim took
+   * it from, taking it back.
+   */
+  private rolesRefusal(rec: RoomRecord, by: string, owner: string): string | null {
+    const current = workerOwner(rec);
+    if (current === by) return null;
+    if (rec.roles?.claimedFrom === by && owner === by) return null;
+    if (!current) return "this server doesn't know the room's owner yet";
+    if (owner !== by) return `this server takes the room's roles from its owner (${current})`;
+    const claimant = rec.roles ? (rec.roles.admins.find((id) => id !== current && rec.members[id]) ?? null) : null;
+    const longest = Object.entries(rec.members)
+      .filter(([id]) => id !== current)
+      .sort(([a, x], [b, y]) => x.addedAt - y.addedAt || (a < b ? -1 : 1))[0]?.[0];
+    if ((claimant ?? longest) !== by) return `only the room's longest-standing admin can claim its ownership here`;
+    const connected = this.members().some((s) => s.state()?.member?.id === current);
+    const seen = rec.members[current]?.seenAt ?? rec.members[current]?.addedAt ?? 0;
+    if (connected || this.now() - seen < OWNER_GONE_MS) return `the owner (${current}) was connected here less than ${Math.round(OWNER_GONE_MS / 86_400_000)} days ago`;
+    return null;
+  }
+
+  /** Note that a member was here (hello, or a connection closing), at most once an hour. */
+  private async seen(id: string): Promise<void> {
+    if (!this.knowsRoles()) return;
+    const now = this.now(); // when it happened, not when storage answered
+    const rec = await this.load();
+    const m = rec.members[id];
+    if (!m || now - (m.seenAt ?? 0) < SEEN_EVERY_MS) return;
+    m.seenAt = now;
+    await this.save();
   }
 
   private async turn(sock: RoomSocket, state: ConnState): Promise<void> {
