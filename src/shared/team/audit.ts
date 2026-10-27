@@ -32,7 +32,11 @@ export type AuditKind =
   /** A teammate fetched a room artifact's file from this Mac: `n` pieces, `bytes` in all. */
   | "artifact.served"
   /** A backup of one of this Mac's sessions went to a teammate's Mac, where their agents can read its files and diffs. */
-  | "backup.sent";
+  | "backup.sent"
+  /** Phone alerts: an iMessage to the user's own handle about `n` sessions (`session`/`title`: the first), `outcome` sent or why not. */
+  | "phone.alert"
+  /** Phone alerts: a reply from the user's phone, and what Mockingbird did with it (`outcome`; `bytes` of text for a message). */
+  | "phone.reply";
 
 export interface AuditEntry {
   /** When (for an aggregate: the last of it). */
@@ -105,5 +109,9 @@ export function auditWords(e: AuditEntry): string {
       return `${who} fetched ${e.title ? `“${e.title}”` : "a room file"} from this Mac: ${size(e.bytes)}${span}`;
     case "backup.sent":
       return `A backup of ${what} went to ${who}'s Mac (${size(e.bytes)}): their agents can read its files and diffs`;
+    case "phone.alert":
+      return `Phone alert about ${what}${(e.n ?? 1) > 1 ? ` and ${times((e.n ?? 1) - 1, "more session")}` : ""}: ${e.outcome ?? "sent"}`;
+    case "phone.reply":
+      return `From your phone, ${what}: ${e.outcome ?? "no outcome"}${e.bytes ? ` (${size(e.bytes)})` : ""}`;
   }
 }

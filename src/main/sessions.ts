@@ -648,6 +648,14 @@ export class SessionManager {
     this.emitChanged();
   }
 
+  /** What a reply from the user's phone did to this session (phone alerts), for its pane; null clears it. */
+  setPhoneNote(id: string, text: string | null): void {
+    const s = this.live.get(id);
+    if (!s) return;
+    s.info.phoneNote = text ? { text, at: Date.now() } : null;
+    this.emitChanged();
+  }
+
   /** A teammate's session runs on their Mockingbird: only its owner can do `what` to it. */
   private ownOnly(id: string, what: string): void {
     if (isRemotePaneId(id)) throw new Error(`That's a teammate's session: only its owner can ${what}`);

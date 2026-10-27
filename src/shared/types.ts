@@ -2,6 +2,7 @@ import type { LspRange, LspTextEdit } from "./textEdits";
 // team rooms: live panes
 import type { RoomSessionTag } from "./team/livePanes";
 import type { CouncilHouseTicket, CouncilTicketDrafts } from "./collabTickets";
+import type { PhoneAlertSettings } from "./phoneAlerts";
 
 /** Which coding-agent CLI a session runs. */
 export type AgentKind = "claude" | "codex";
@@ -43,6 +44,8 @@ export interface SessionInfo {
   hooksSilent?: boolean;
   /** No notifications from this session. */
   muted?: boolean;
+  /** What a reply from the user's phone did to this session last (phone alerts), shown in its pane until dismissed. */
+  phoneNote?: { text: string; at: number } | null;
   // team rooms: live panes
   /** Set in the window on a session in a shared group: its room, owner, and who's looking at it. */
   room?: RoomSessionTag;
@@ -309,6 +312,8 @@ export interface Settings {
   quietHours?: QuietHours;
   /** Notify when a session finishes its turn, not only when it needs you (default on). */
   notifyFinished?: boolean;
+  /** iMessages to the user's own handle while they're away from the Mac (src/shared/phoneAlerts.ts). */
+  phoneAlerts?: PhoneAlertSettings;
   /** Team rooms: the name teammates see (default: the macOS user name). */
   teamName?: string;
   /** Team rooms: the signaling Worker's URL (signaling/README.md); new rooms use it, invite codes carry it. */

@@ -82,6 +82,7 @@ import { artifactViewer } from "./team/artifactViewer";
 import { isRemotePaneId } from "../shared/team/livePanes";
 import { guardNavigation } from "./navigation";
 import { externalUrlAllowed } from "../shared/links";
+import { PRIVACY_PANES, startPhoneService, type PhoneService } from "./phone/service";
 
 const LOG = path.join(MB_DIR, "main.log");
 function logError(context: string, err: unknown): string {
@@ -277,6 +278,9 @@ const needTakeover = (): TakeoverService => {
 
 // team rooms: one log of what teammates did on this Mac (~/.mockingbird/team/audit.log)
 const remoteAudit = new RemoteAudit({ log: logError });
+
+// phone alerts: started once the app is ready (powerMonitor needs it)
+let phone: PhoneService | null = null;
 
 // team rooms: live panes — sessions in shared groups, streamed to teammates, typed into with their owner's consent
 const livePanes = new LivePanes({
@@ -535,6 +539,17 @@ app.whenReady().then(() => {
   // team rooms: a room left or removed from whose cleanup didn't finish (Mockingbird quit) is cleaned up now
   void team.finishLeftRooms().catch((err) => logError("team: finishing rooms left before", err));
   powerMonitor.on("resume", () => team.wake());
+  // phone alerts: iMessages while you're away, and replies to them (Settings → Notifications)
+  phone = startPhoneService({
+    packaged: app.isPackaged,
+    monitor: powerMonitor,
+    sessions,
+    settings: () => store.settings,
+    audit: remoteAudit,
+    log: logError,
+    notify: (title, body) => new Notification({ title, body }).show(),
+    onChanged: (s) => toWindow("phone:changed", s),
+  });
   // find claude/codex in the background now, so the first session doesn't block on a login shell
   void lookUpBins();
   startTranscriptIndex();
@@ -628,6 +643,7 @@ app.whenReady().then(() => {
         : `${info.title} is done responding`,
       status === "waiting" ? "waiting" : "finished"
     );
+    if (status === "waiting" || status === "idle") phone?.alerts.sessionStatus(info, status);
   }, (info, prompt) => {
     // the files before this turn, so it can be undone (agent panes in a repository only)
     if (info.shell || !info.repoPath) return;
@@ -666,6 +682,7 @@ const quit = new QuitSequence({
   steps: [
     { name: "saving scrollback", run: () => sessions.saveScrollback(true) },
     { name: "stopping team rooms", run: () => stopTeam() },
+    { name: "stopping phone alerts", run: () => phone?.stop() },
     // whatever debug session outlasted the services' bounded stop: its adapter's process group ends now
     { name: "ending debug sessions", run: () => debug.endAll() },
     { name: "stopping language servers", run: () => void lsp.stopAll().catch((err) => logError("lsp:stopAll on quit", err)) },
@@ -976,8 +993,20 @@ handle("settings:set", (s) => {
   if (binSettingsChanged(before, store.settings)) void lookUpBins(true);
   team.settingsChanged(before, store.settings);
   livePanes.settingsChanged(before, store.settings);
+  phone?.alerts.settingsChanged();
   return store.settings;
 });
+
+// ---- Phone alerts ----
+const needPhone = (): PhoneService => {
+  if (!phone) throw new Error("Phone alerts haven't started yet — try again in a moment");
+  return phone;
+};
+handle("phone:status", () => needPhone().alerts.status());
+handle("phone:test", () => needPhone().alerts.test());
+handle("phone:checkReplies", () => needPhone().alerts.checkReplies());
+handle("phone:openPrivacy", (which) => shell.openExternal(which === "fullDiskAccess" ? PRIVACY_PANES.fullDiskAccess : PRIVACY_PANES.automation));
+handle("sessions:clearPhoneNote", (id) => sessions.setPhoneNote(String(id), null));
 handle("debrief:run", (kind) => runDebrief(kind, sessions, store));
 // recent conversations of both agents come from the transcript index; without
 // it (it couldn't open), Claude's are still read from its own folder

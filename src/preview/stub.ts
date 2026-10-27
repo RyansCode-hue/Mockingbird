@@ -32,6 +32,7 @@ import { NOT_PUSHED, type RoomSessionBackupView, type TakeoverPlan, type Takeove
 import type { AuditEntry } from "../shared/team/audit";
 // Council: an approved plan as House tickets
 import { draftsFromModel, splitPlan, wholePlanDraft, type CouncilCreateResult, type CouncilHouseTargets, type TicketDraft } from "../shared/collabTickets";
+import type { PhoneStatus } from "../shared/phoneAlerts";
 // team rooms: live panes
 import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
 // team rooms: artifacts
@@ -159,6 +160,13 @@ const board: AdoBoard = {
 };
 
 let settings: Settings = { ...DEFAULT_SETTINGS, setupDone: true, teamName: "You", signalingUrl: "https://mockingbird-signaling.you.workers.dev", presets: [{ id: "p-review", name: "Review on dev", launch: "claude", repoPath: REPO, branch: { mode: "new", pattern: "review-{date}", base: "dev" }, useWorktree: true, kickoff: "Review the latest changes on dev for bugs and missing tests." }] };
+// ?phone=…: phone alerts set up (the status they report is below, by the audit log)
+{
+  const q = new URLSearchParams(location.search).get("phone");
+  if (q) settings.phoneAlerts = { enabled: true, handle: "you@icloud.com", idleMinutes: 10, finished: true, replies: q === "replies" || q === "nofda" || q === "dev" };
+  // a reply from the phone answered s1's last prompt
+  if (q === "replies") sessions = sessions.map((s) => (s.id === "s1" ? { ...s, phoneNote: { text: "Answered from your phone: allow once", at: now - 3 * 60_000 } } : s));
+}
 
 const pipelines: Record<string, TicketPipeline> = {
   "5101": {
@@ -726,6 +734,37 @@ const auditEntries: AuditEntry[] = [
   { at: now - 63 * min, kind: "backup.sent", room: "#5101 Org dropdowns", member: "Nick Smith", session: "s1", title: "Org dropdowns remember the last org", n: 3, bytes: 88_000, since: now - 80 * min },
   { at: now - 3 * 60 * min, kind: "takeover", room: "#5110 Donor entities", member: "Nick Smith", session: "y1", title: "Donor entity model" },
 ];
+
+// phone alerts (Settings → Notifications): ?phone=on (alerts on, replies off) · replies (reading works, an
+// alert waiting for a reply) · nofda (replies on, Full Disk Access not granted) · denied (Messages refused
+// the last alert: Automation not allowed) · dev (a development build). Absent: off, as a fresh install is.
+const phoneQ = new URLSearchParams(location.search).get("phone");
+const phoneOn = !!phoneQ;
+const phoneReplies = phoneQ === "replies" || phoneQ === "nofda" || phoneQ === "dev";
+if (phoneQ === "replies") {
+  auditEntries.unshift(
+    { at: now - 3 * min, kind: "phone.reply", session: "s2", title: "API: last org per user", outcome: "allow once" },
+    { at: now - 6 * min, kind: "phone.alert", session: "s2", title: "API: last org per user", n: 1, bytes: 132, outcome: "sent" }
+  );
+}
+let phoneStatus: PhoneStatus = {
+  away: phoneOn ? { away: true, why: "locked", idleSeconds: 0 } : { away: false, why: null, idleSeconds: 40 },
+  last:
+    phoneQ === "denied"
+      ? { at: now - 6 * min, ok: false, detail: "Mockingbird isn't allowed to control Messages. Allow it in System Settings → Privacy & Security → Automation → Mockingbird → Messages.", test: false }
+      : phoneOn
+        ? { at: now - 6 * min, ok: true, detail: "About “API: last org per user”", test: false }
+        : null,
+  replies: !phoneReplies
+    ? { state: "off", detail: "" }
+    : phoneQ === "nofda"
+      ? { state: "no-access", detail: "macOS won't let Mockingbird read Messages: grant it Full Disk Access in System Settings → Privacy & Security → Full Disk Access, then check again." }
+      : phoneQ === "dev"
+        ? { state: "dev", detail: "A development build never reads Messages: replies work in the installed app." }
+        : { state: "ok", detail: "" },
+  open: phoneQ === "replies" ? 1 : 0,
+  dev: phoneQ === "dev",
+};
 
 const samGrant: TakeoverPlan["grant"] = noAway
   ? { kind: "none", why: "Sam hasn't allowed take-overs while they're away. Ask Sam to hand it over when they're back online, or to allow take-overs while they're away (Settings → Team)." }
@@ -1797,6 +1836,24 @@ const api: Record<string, (...a: any[]) => any> = {
     return null;
   },
   teamAuditRecent: async () => JSON.parse(JSON.stringify(auditEntries)),
+  // phone alerts: nothing is sent or read here; the test alert answers as Messages would
+  phoneStatus: async () => clone(phoneStatus),
+  phoneTest: async () => {
+    if (!settings.phoneAlerts?.handle) return err("Enter your iMessage handle first: your Apple ID email, or your number with its country code");
+    if (phoneQ === "denied") return later(err("Mockingbird isn't allowed to control Messages. Allow it in System Settings → Privacy & Security → Automation → Mockingbird → Messages."), 400);
+    phoneStatus = { ...phoneStatus, last: { at: Date.now(), ok: true, detail: "Test alert sent", test: true } };
+    return later({ detail: "Sent — check your phone" }, 400);
+  },
+  phoneCheckReplies: async () => {
+    if (settings.phoneAlerts?.replies && phoneStatus.replies.state === "off") phoneStatus = { ...phoneStatus, replies: { state: "no-access", detail: "macOS won't let Mockingbird read Messages: grant it Full Disk Access in System Settings → Privacy & Security → Full Disk Access, then check again." } };
+    return later(clone(phoneStatus.replies), 300);
+  },
+  phoneOpenPrivacy: async () => undefined,
+  clearPhoneNote: async (id: string) => {
+    const s = byId(id);
+    if (s) s.phoneNote = null;
+    sessionsChanged();
+  },
   teamPaneResync: async (id: string) => emit("onSessionData", id, `\x1bc${buffers[id] ?? ""}`),
 };
 

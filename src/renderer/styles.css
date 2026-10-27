@@ -2075,6 +2075,31 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 /* quiet hours turned off: the times read as set aside, not as fields waiting for input */
 .quiet-hours:has(input:disabled) > :not(.toggle) { opacity: .45; }
 .quiet-hours input[type=time]:disabled { background: transparent; border-style: dashed; cursor: default; }
+/* Settings → Notifications → Phone alerts: the settings, and beside them the conversation they make */
+.phone-grid { display: grid; grid-template-columns: minmax(0, 1fr) 232px; gap: 24px; align-items: start; }
+@media (max-width: 1100px) { .phone-grid { grid-template-columns: minmax(0, 1fr); } }
+.phone-rows { min-width: 0; }
+.set-body input[type=text].phone-handle { width: 220px; }
+.phone-handle[aria-invalid=true] { border-color: var(--red); }
+.phone-ok { color: var(--teal-text); }
+.phone-bad { color: var(--red); }
+.phone-preview { position: sticky; top: 0; margin-top: 11px; padding: 12px 10px 14px; border: 1px solid var(--line-med); border-radius: 18px; background: var(--bg-pane); display: flex; flex-direction: column; gap: 8px; }
+.phone-to { font: 500 9.5px var(--ui); letter-spacing: .4px; color: var(--text-4); text-align: center; padding-bottom: 4px; border-bottom: 1px solid var(--line-soft); }
+.bubble { max-width: 88%; padding: 7px 10px; border-radius: 14px; font: 400 11px/1.45 var(--ui); white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble.out { align-self: flex-start; background: var(--fill-selected); color: var(--text-1); border-bottom-left-radius: 4px; }
+.bubble.in { align-self: flex-end; background: var(--chip-on-bg); color: var(--chip-on-fg); border-bottom-right-radius: 4px; font-weight: 500; }
+.phone-what { font: 400 10px/1.5 var(--ui); color: var(--text-3); padding: 0 2px; }
+.phone-problem { display: flex; align-items: center; gap: 8px; padding: 9px 0 11px; border-bottom: 1px solid var(--line-soft); font: 400 11px/1.5 var(--ui); color: var(--red); }
+.phone-problem > span { flex: 1; min-width: 0; }
+.phone-problem button { flex-shrink: 0; }
+.phone-fda { margin: 10px 0 4px; padding: 12px 14px; border: 1px solid var(--line-strong2); border-left: 3px solid var(--amber); border-radius: 6px; background: var(--fill-subtle); }
+.phone-fda-title { font: 600 12px var(--ui); color: var(--text-1); margin-bottom: 6px; }
+.phone-fda p { font: 400 11px/1.55 var(--ui); color: var(--text-2); margin: 0 0 8px; }
+.phone-fda p b { color: var(--text-1); }
+.phone-fda .row { display: flex; gap: 8px; justify-content: flex-end; }
+/* a pane's note of what a reply from the phone did */
+.team-pane-note.phone-note { display: flex; align-items: center; gap: 6px; }
+.team-pane-note.phone-note .reason { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* weekly rollup */
 .rollup-dlg { width: 760px; }
 .rollup-md { margin: 10px 0 6px; max-height: 56vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--bg-pane); font: 400 11px/1.55 var(--mono); color: var(--text-2); white-space: pre-wrap; }

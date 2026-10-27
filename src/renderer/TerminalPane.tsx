@@ -11,6 +11,7 @@ import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
 import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneScroll";
 import { isViewControl } from "../shared/termInput";
+import { shortReason } from "../shared/phoneAlerts";
 import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
 import { anchorToContent, attachTerm, dataPump, fitTerm, followFixedSize, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
@@ -217,14 +218,8 @@ export interface PaneResize {
   reset?: () => void; // double-click a handle → even the grid back out
 }
 
-/** Shorten hook Notification messages to banner-sized reasons. */
-export function shortReason(reason: string | null): string {
-  if (!reason) return "waiting for you";
-  const perm = reason.match(/needs your permission to (?:use )?(.+)/i);
-  if (perm) return `permission: ${perm[1]}`;
-  if (/waiting for your input/i.test(reason)) return "waiting for you";
-  return reason;
-}
+/** Shorten hook Notification messages to banner-sized reasons (phone alerts say them the same way). */
+export { shortReason };
 
 /**
  * A room session of this Mac's that teammates see but that runs without the
@@ -1151,6 +1146,23 @@ export function TerminalPane({
               </div>
             )}
             {teamNotice}
+            {session.phoneNote && !remote && (
+              <div className="team-pane-note phone-note" title="A reply to a phone alert (Settings → Notifications → Phone alerts). Each one is in Settings → Team → Recent remote activity.">
+                <span className="reason">
+                  {session.phoneNote.text} · {ago(session.phoneNote.at)}
+                </span>
+                <button
+                  className="icon"
+                  aria-label="Dismiss"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void settled(window.mb.clearPhoneNote(session.id)).then((r) => isErr(r) && console.error("[mockingbird] couldn't dismiss the phone note:", r.error));
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             {remote && (!remote.online || remote.problem) && (
               <div className="team-pane-note" title={remote.problem ?? undefined}>
                 {!remote.online ? `${remote.ownerName}'s Mockingbird is offline — this is what it last sent` : remote.problem}
