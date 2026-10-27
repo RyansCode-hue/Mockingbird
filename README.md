@@ -99,7 +99,7 @@ with secrets withheld, release when merged or the branch is gone).
 `test/teamWebrtc.e2e.test.ts` runs real WebRTC between two peer
 hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
 `test/teamLiveApp.e2e.test.ts` run two real Mockingbird instances in throwaway
-homes (their windows open while they run): share, join (the owner accepting
+homes (their windows open while they run): share, join (the owner accepting; then Nick made an admin from Ryan's right-click menu, accepting a third instance and removing it — at the Worker too — but refused removing Ryan
 from its prompt), a terminal watched and typed into, chat, a package claimed,
 a turn of a Claude stand-in backed up peer to peer (nothing on origin), a
 session handed over from the owner's prompt, Take over refused once the owner

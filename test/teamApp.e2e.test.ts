@@ -115,4 +115,65 @@ describe("team rooms between two Mockingbird instances", () => {
     },
     180_000
   );
+
+  it.skipIf(!appE2E)(
+    "room roles: Ryan makes Nick an admin; Nick then accepts a join and removes a member — at the Worker too — but can't remove Ryan",
+    async () => {
+      execFileSync(process.execPath, ["esbuild.mjs"], { cwd: root, stdio: "ignore" });
+      const signal = await e2eSignaling();
+      const ryan = await launchApp("Ryan", signal.url, { home: signal.creatorHome });
+      const nick = await launchApp("Nick", signal.url);
+      const lee = await launchApp("Lee", signal.url);
+      try {
+        const share = await ryan.evaluate<{ roomId: string; invite: string; error?: string }>(`window.mb.teamShareGroup("5110", "#5110 Donor entities")`);
+        expect(share.error).toBeUndefined();
+        const rid = JSON.stringify(share.roomId);
+        await untilTrue("Ryan's signaling", async () => (await ryan.status()).rooms[0]?.signaling === "online");
+        await nick.evaluate(`window.mb.teamJoin(${JSON.stringify(share.invite)})`);
+        await acceptInWindow(ryan, nick, share.roomId);
+        await untilTrue("Ryan and Nick connected", async () => (await ryan.status()).rooms[0]?.online.length === 1 && (await nick.status()).rooms[0]?.online.length === 1, 60_000);
+        const nickId = (await nick.status()).self!.id;
+        const ryanId = (await ryan.status()).self!.id;
+        expect((await nick.status()).rooms[0]).toMatchObject({ owner: ryanId, admins: [] });
+
+        // Ryan right-clicks Nick in the Team room: Make admin
+        await ryan.evaluate(`document.querySelector('.ab-btn[aria-label="Team room"]')?.click()`);
+        await untilTrue("Nick in Ryan's member strip", async () => await ryan.evaluate<boolean>(`[...document.querySelectorAll(".rc-member")].some((m) => m.textContent.toLowerCase().includes("nick"))`), 30_000);
+        await ryan.evaluate(`(() => {
+          const m = [...document.querySelectorAll(".rc-member")].find((x) => x.textContent.toLowerCase().includes("nick"));
+          const r = m.getBoundingClientRect();
+          m.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 4, clientY: r.top + 4 }));
+        })()`);
+        await untilTrue("the member menu", async () => await ryan.evaluate<boolean>(`[...document.querySelectorAll(".mb-ctx button, .mb-ctx [role=menuitem]")].some((b) => b.textContent.includes("Make admin"))`), 10_000);
+        await ryan.evaluate(`[...document.querySelectorAll(".mb-ctx button, .mb-ctx [role=menuitem]")].find((b) => b.textContent.includes("Make admin")).click()`);
+        await untilTrue("Nick an admin at Nick's", async () => (await nick.status()).rooms[0]?.admins?.includes(nickId) === true, 30_000);
+        await nick.evaluate(`document.querySelector('.ab-btn[aria-label="Team room"]')?.click()`);
+        await untilTrue("the announcement in Nick's chat", async () => (await nick.evaluate<string>(`[...document.querySelectorAll(".rc-member-note")].map((n) => n.textContent).join("|")`)).includes("Ryan made you an admin"), 30_000);
+
+        // Lee joins with Nick's code, and Nick — an admin — accepts him from his prompt
+        const code = await nick.evaluate<{ invite: string }>(`window.mb.teamCreateInvite(${rid})`);
+        await lee.evaluate(`window.mb.teamJoin(${JSON.stringify(code.invite)})`);
+        await acceptInWindow(nick, lee, share.roomId);
+        await untilTrue("Lee in, and connected", async () => (await lee.status()).rooms[0]?.members.length === 3 && (await lee.status()).rooms[0]?.online.length === 2, 60_000);
+        const leeId = (await lee.status()).self!.id;
+        expect((await ryan.status()).rooms[0].members.map((m) => m.name)).toEqual(["Ryan", "Nick", "Lee"]);
+
+        // Nick can't remove Ryan, the owner
+        const refused = await nick.evaluate<{ error?: string }>(`window.mb.teamRemoveMember(${rid}, ${JSON.stringify(ryanId)})`);
+        expect(refused.error).toMatch(/Only the room's owner \(Ryan\) removes the owner/);
+        // he removes Lee: every Mac drops him, Lee's deletes the room, and the Worker cuts him off on Nick's word
+        const removed = await nick.evaluate<{ name: string; delivered: boolean; worker: string | null; error?: string }>(`window.mb.teamRemoveMember(${rid}, ${JSON.stringify(leeId)})`);
+        expect(removed).toMatchObject({ name: "Lee", delivered: true });
+        if (!signal.real) expect(removed.worker).toBeNull();
+        await untilTrue("Lee's copy of the room to go", async () => (await lee.status()).rooms.length === 0, 60_000);
+        await untilTrue("Ryan to see Lee go", async () => (await ryan.status()).rooms[0]?.members.length === 2, 30_000);
+        expect((await ryan.status()).rooms[0]).toMatchObject({ owner: ryanId, admins: [nickId], former: [{ name: "Lee" }] });
+      } finally {
+        for (const a of [ryan, nick, lee]) a.close();
+        await Promise.all([quitApp(ryan.child), quitApp(nick.child), quitApp(lee.child)]);
+        await signal.close();
+      }
+    },
+    240_000
+  );
 });
