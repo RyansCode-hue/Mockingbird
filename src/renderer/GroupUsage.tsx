@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { AGENT_NAME, formatShare, formatTokens, isErr, totalTokens, type AgentKind, type GroupMeter, type Meters } from "../shared/types";
-import { readPref } from "./prefs";
 import { tokenBreakdown } from "./usageFormat";
 
 /**
@@ -8,18 +7,6 @@ import { tokenBreakdown } from "./usageFormat";
  * conversations (each counted once), measured from the transcripts, and the
  * estimated share of each agent's current 5-hour limit.
  */
-
-/**
- * Where a group's usage shows. groupbar (the default): a cell on the bar over
- * the grid. sidebar: a count on the group's row in the session list. both.
- * Kept switchable (`mb.usagePlace` in the window's storage) while it's decided.
- */
-export type UsagePlace = "groupbar" | "sidebar" | "both";
-export const USAGE_PLACE_KEY = "mb.usagePlace";
-export const usagePlace = (): UsagePlace => {
-  const v = readPref<string>(USAGE_PLACE_KEY, "groupbar");
-  return v === "sidebar" || v === "both" ? v : "groupbar";
-};
 
 /** "≈14% of Claude's 5h", "≈14% Claude · 3% Codex", or "" when no share is known. */
 export function shareText(g: GroupMeter): string {
@@ -39,20 +26,13 @@ export function usageTitle(g: GroupMeter, what: string): string {
   return lines.join("\n");
 }
 
-/** A group's usage, in the group bar ("bar"), the session list ("row") or a ticket's detail ("detail"). */
-export function GroupUsage({ g, kind, what }: { g: GroupMeter | undefined; kind: "bar" | "row" | "detail"; what: string }) {
+/** A group's usage, in the group bar ("bar") or a ticket's detail ("detail"). */
+export function GroupUsage({ g, kind = "bar", what }: { g: GroupMeter | undefined; kind?: "bar" | "detail"; what: string }) {
   if (!g || totalTokens(g.tokens) === 0) {
     return kind === "detail" ? <div className="tk-usage none">No usage yet: no session of this ticket has replied.</div> : null;
   }
   const share = shareText(g);
   const title = usageTitle(g, what);
-  if (kind === "row") {
-    return (
-      <span className="gl-usage" title={title}>
-        {formatTokens(totalTokens(g.tokens))}
-      </span>
-    );
-  }
   if (kind === "bar") {
     return (
       <span className="gb-usage" title={title}>

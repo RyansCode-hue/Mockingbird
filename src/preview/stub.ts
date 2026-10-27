@@ -1743,10 +1743,6 @@ const motionQ = params.get("motion") ?? (params.has("shot") || params.has("measu
 if (motionQ === "off") (window as unknown as { __mbMotion?: string }).__mbMotion = "off";
 else if (motionQ === "reduce" || motionQ === "full" || motionQ === "os") set("mb.motion", motionQ);
 if (shown) set("mb.shown", shown.split(","));
-// context warnings: ?ctxWarn=chip or =meter shows the warning in one of its other looks; ?usageAt=sidebar or =both
-// puts a group's usage in the session list (ContextWarning.tsx, GroupUsage.tsx)
-if (params.get("ctxWarn")) set("mb.ctxWarnLook", params.get("ctxWarn"));
-if (params.get("usageAt")) set("mb.usagePlace", params.get("usageAt"));
 // team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared);
 // ?chat=list shows the room list, each room with its sessions
 if (params.get("chat")) set("mb.roomChat.room", params.get("chat") === "list" ? "" : params.get("chat"));
@@ -1861,10 +1857,11 @@ if (params.has("usagePop")) {
     setTimeout(() => click(".statusbar .usage"), 200);
   }, 600);
 }
-// ?ctxPop opens the first pane's context-warning chip (with ?ctxWarn=chip); ?ctxBrief opens Fresh session with a
-// brief from the first warning; ?ctxResume resumes the crashed session s6, whose cold conversation asks first
-if (params.has("ctxPop")) setTimeout(() => click(".ctx-chip"), 900);
-if (params.has("ctxBrief")) setTimeout(() => ([...document.querySelectorAll(".ctx-banner button, .ctx-meter button")].find((b) => b.textContent === "Fresh session with a brief") as HTMLElement | undefined)?.click(), 900);
+// ?ctxPop opens the first pane's context-warning chip; ?ctxBrief goes on to Fresh session with a brief; ?ctxResume
+// resumes the crashed session s6, whose cold conversation asks first
+const ctxButton = (text: string) => [...document.querySelectorAll(".ctx-pop button")].find((b) => b.textContent === text) as HTMLElement | undefined;
+if (params.has("ctxPop") || params.has("ctxBrief")) setTimeout(() => click(".ctx-chip"), 900);
+if (params.has("ctxBrief")) setTimeout(() => ctxButton("Fresh session with a brief")?.click(), 1200);
 if (params.has("ctxResume")) setTimeout(() => click(".pane.st-dead .dead-body button.outline.strong"), 900);
 /** Type into an input as a person would, so React sees the change. */
 const typeInto = (selector: string, text: string) => {
@@ -2470,13 +2467,14 @@ if (whatsNewQ !== null && whatsNewQ !== "updated") {
 // back to the label, as does a click outside — and writes the results into <script id="mb-wn-audit"> for
 // test/uiWhatsNew.test.ts. With ?whatsNew=updated it starts from the label's "Updated to" state.
 // ?ctxAudit (real time: pageResult) drives the context warning as a person does and writes what it saw into
-// <script id="mb-ctx-audit"> for test/uiContextWarning.test.ts. =idle: s5, past 75% and idle — Compact is sent on the
-// click only, and the warning clears once the smaller context is reported. =waiting: s2, past 90% while asking for
-// permission — Compact is held back; Dismiss hides it and is remembered. =resume: the crashed s6, whose cold
-// conversation asks before resuming — Cancel leaves it, Continue resumes it.
+// <script id="mb-ctx-audit"> for test/uiContextWarning.test.ts. =idle: s5, past 75% and idle — an amber chip whose
+// popover's Compact is sent on the click only, and the chip goes once the smaller context is reported. =waiting: s2,
+// past 90% while asking for permission — a red chip, Compact held back; Dismiss hides it and is remembered. =resume:
+// the crashed s6, whose cold conversation asks before resuming — Cancel leaves it, Continue resumes it.
 if (params.get("ctxAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const banner = () => document.querySelector(".ctx-banner") as HTMLElement | null;
+  const chip = () => document.querySelector(".ctx-chip") as HTMLElement | null;
+  const pop = () => document.querySelector(".ctx-pop") as HTMLElement | null;
   const button = (root: Element | null, text: string) => [...(root?.querySelectorAll("button") ?? [])].find((b) => b.textContent === text) as HTMLButtonElement | undefined;
   const count = (fn: string) => calls.filter((c) => c.fn === fn).length;
   const until = async (ok: () => boolean, ms: number) => {
@@ -2502,24 +2500,33 @@ if (params.get("ctxAudit")) {
       await until(() => count("relaunchSession") > 0, 3000);
       out.afterContinue = { dialog: !!document.querySelector(".cost-dlg"), relaunched: count("relaunchSession") };
     } else {
-      out.shown = await until(() => !!banner(), 5000);
-      out.tone = banner()?.classList.contains("firm") ? "firm" : banner()?.classList.contains("heads") ? "heads" : null;
-      out.text = banner()?.querySelector(".reason")?.textContent ?? null;
-      const compact = button(banner(), "Compact");
+      out.shown = await until(() => !!chip(), 5000);
+      out.tone = chip()?.classList.contains("firm") ? "firm" : chip()?.classList.contains("heads") ? "heads" : null;
+      out.chip = chip()?.textContent ?? null;
+      out.inHeader = !!chip()?.closest(".pane-header");
+      out.popBeforeClick = !!pop();
+      chip()?.click();
+      await until(() => !!pop(), 2000);
+      out.popTone = pop()?.classList.contains("firm") ? "firm" : "heads";
+      out.headline = pop()?.querySelector(".ctx-pop-h")?.textContent ?? null;
+      out.sub = pop()?.querySelector(".ctx-pop-sub")?.textContent ?? null;
+      const compact = button(pop(), "Compact");
       out.compactDisabled = !!compact?.disabled;
       out.compactTitle = compact?.title ?? null;
+      out.hasBrief = !!button(pop(), "Fresh session with a brief");
+      out.note = pop()?.querySelector(".ctx-pop-note")?.textContent ?? null;
       out.sentBeforeClick = count("contextCompact");
       out.typedBeforeClick = count("sessionWrite");
       compact?.click();
       await sleep(400);
       out.sentAfterClick = count("contextCompact");
       if (mode === "idle") {
-        out.compactingLabel = button(banner(), "Compacting…") ? "Compacting…" : (banner()?.querySelector(".reason")?.textContent ?? null);
-        out.clearedAfterCompact = await until(() => !banner(), 15_000);
+        out.compactingChip = chip()?.textContent ?? null;
+        out.clearedAfterCompact = await until(() => !chip(), 15_000);
       } else {
-        button(banner(), "✕")?.click();
+        button(pop(), "Dismiss")?.click();
         await sleep(300);
-        out.dismissedGone = !banner();
+        out.dismissedGone = !chip() && !pop();
         out.dismissal = JSON.parse(localStorage.getItem("mb.ctxDismissed") ?? "null");
       }
     }

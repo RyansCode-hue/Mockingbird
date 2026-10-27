@@ -60,8 +60,8 @@ import { RunView } from "./RunView";
 import { Popover } from "./Popover";
 import { PipelineDialog, StageChip, usePipelines } from "./TicketPipeline";
 import { HandoffDialog } from "./Handoff";
-import { BriefDialog, ContextWarning, ctxLook, useCostGate } from "./ContextWarning";
-import { GroupUsage, usagePlace } from "./GroupUsage";
+import { BriefDialog, ContextWarning, useCostGate } from "./ContextWarning";
+import { GroupUsage } from "./GroupUsage";
 import { UndoTurnDialog } from "./UndoTurn";
 import { MessageLogDialog, useAgentMessages } from "./AgentMessages";
 import { RollupDialog } from "./Rollup";
@@ -202,8 +202,6 @@ function App() {
   // context warnings: a fresh session from a brief, and asking before an expensive resume
   const [briefFor, setBriefFor] = useState<SessionInfo | null>(null);
   const costGate = useCostGate();
-  const [ctxWarnLook] = useState(ctxLook);
-  const [usageAt] = useState(usagePlace);
   // "undo a turn" for this session
   const [undoFor, setUndoFor] = useState<SessionInfo | null>(null);
   // agent messaging: the log, how messages arrive per group, and a group's status check
@@ -2281,7 +2279,6 @@ function App() {
                       <ChevronIcon open={!collapsed.has(key)} />
                     </span>
                     <span className="txt">{groupTitle(key, list)}</span>
-                    {usageAt !== "groupbar" && <GroupUsage g={meters?.groups?.[key]} kind="row" what={groupTitle(key, list)} />}
                     {/* team rooms: your sessions here; teammates' are in the Team view */}
                     {shared && <span className="gl-shared" title="A team room's group: your sessions in it are listed here, and the whole room — teammates' sessions too — in the Team view">Shared room</span>}
                     {key !== "ungrouped" && key !== "assistant" && (
@@ -2401,7 +2398,7 @@ function App() {
                       Pipeline
                     </button>
                   ))}
-                {usageAt !== "sidebar" && <GroupUsage g={meters?.groups?.[activeGroup]} kind="bar" what={groupTitle(activeGroup, topSessions)} />}
+                <GroupUsage g={meters?.groups?.[activeGroup]} what={groupTitle(activeGroup, topSessions)} />
                 {/* team rooms: team chat */}
                 {(() => {
                   const room = roomOfGroup(teamStatus, activeGroup);
@@ -2540,8 +2537,7 @@ function App() {
                       return l && <LeftCopyPanel left={l} onTakeBack={() => takeBack(l)} onClose={() => requestClose(s)} />;
                     })()}
                     teamNotice={<ReceivedNotice received={receivedFor(s)} onReview={setReviewing} />}
-                    contextNote={ctxWarnLook !== "chip" && !s.shell && !isRemote(s) ? <ContextWarning session={s} place="notes" look={ctxWarnLook} onBrief={() => setBriefFor(s)} /> : undefined}
-                    contextChip={ctxWarnLook === "chip" && !s.shell && !isRemote(s) ? <ContextWarning session={s} place="header" look={ctxWarnLook} onBrief={() => setBriefFor(s)} /> : undefined}
+                    contextChip={!s.shell && !isRemote(s) ? <ContextWarning session={s} onBrief={() => setBriefFor(s)} /> : undefined}
                     messages={(() => {
                       const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
                       return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;

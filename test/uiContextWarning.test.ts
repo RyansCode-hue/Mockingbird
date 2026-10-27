@@ -18,25 +18,36 @@ async function audit(query: string): Promise<Record<string, any>> {
 }
 
 describe.skipIf(!local)("a pane's context warning", () => {
-  it("past 75% and idle: a heads-up on the pane; /compact goes on the click only, and the warning clears once the context drops", async () => {
+  it("past 75% and idle: an amber chip in the pane header; its popover's Compact sends /compact on the click only, and the chip goes once the context drops", async () => {
     const a = await audit("shown=s5&ctxAudit=idle");
     expect(a.shown).toBe(true);
+    expect(a.inHeader).toBe(true);
     expect(a.tone).toBe("heads");
-    expect(a.text).toBe("Context 79% full · 760k of 967k before Claude compacts by itself");
+    expect(a.chip).toBe("ctx 79%");
+    expect(a.popBeforeClick).toBe(false); // nothing opens by itself
+    expect(a.popTone).toBe("heads");
+    expect(a.headline).toBe("Context 79% full");
+    expect(a.sub).toMatch(/^760k of 967k before Claude compacts by itself\. Left alone, Claude compacts by itself/);
+    expect(a.hasBrief).toBe(true);
+    expect(a.note).toBeNull();
     expect(a.compactDisabled).toBe(false);
     expect(a.sentBeforeClick).toBe(0); // nothing reaches the session by itself
     expect(a.typedBeforeClick).toBe(0);
     expect(a.sentAfterClick).toBe(1);
-    expect(a.compactingLabel).toBe("Compacting…");
+    expect(a.compactingChip).toBe("compacting…");
     expect(a.clearedAfterCompact).toBe(true);
   }, 120_000);
 
-  it("past 90% while asking for permission: firm, Compact held back with the reason; Dismiss hides it at that level", async () => {
+  it("past 90% while asking for permission: a red chip, Compact held back with the reason; Dismiss hides it at that level", async () => {
     const a = await audit("shown=s2,s1&ctxAudit=waiting");
     expect(a.tone).toBe("firm");
-    expect(a.text).toMatch(/^Context 91% full: it compacts by itself soon · 152k of 167k/);
+    expect(a.chip).toBe("ctx 91%");
+    expect(a.popTone).toBe("firm");
+    expect(a.headline).toBe("Context 91% full: it compacts by itself soon");
+    expect(a.sub).toMatch(/^152k of 167k before Claude compacts by itself\./);
     expect(a.compactDisabled).toBe(true);
     expect(a.compactTitle).toMatch(/asking for permission/);
+    expect(a.note).toBe("Compact waits: it's asking for permission: answer that first.");
     expect(a.sentAfterClick).toBe(0);
     expect(a.dismissedGone).toBe(true);
     expect(a.dismissal).toEqual({ s2: { level: 2 } });

@@ -21,25 +21,11 @@ import { useAction } from "./useAction";
 
 /**
  * A pane's context warning: before its session reaches its context limit (and,
- * for Claude, compacts by itself), a note on the pane suggests compacting or
+ * for Claude, compacts by itself), a chip in its pane header suggests compacting or
  * continuing in a fresh session from a brief. Nothing is typed into the
  * session unless Compact is clicked, and Compact goes only to a session idle
  * at its prompt (compactBlocker, checked again by the main process).
  */
-
-/**
- * How the warning shows. banner (the default): a note over the top of the
- * terminal, like the pane's other notes. chip: a chip in the pane header that
- * opens the actions. meter: a context meter strip with the actions on it.
- * Kept switchable (Settings doesn't offer it; `mb.ctxWarnLook` in the
- * window's storage) while the look is decided.
- */
-export type CtxLook = "banner" | "chip" | "meter";
-export const CTX_LOOK_KEY = "mb.ctxWarnLook";
-export const ctxLook = (): CtxLook => {
-  const v = readPref<string>(CTX_LOOK_KEY, "banner");
-  return v === "chip" || v === "meter" ? v : "banner";
-};
 
 const POLL_MS = 10_000;
 const COMPACT_WAIT_MS = 3 * 60_000;
@@ -195,78 +181,74 @@ function Actions({ w, agent, onBrief }: { w: WarningState; agent: AgentKind; onB
 }
 
 /**
- * The warning on a pane. `place` says where this copy sits: "notes" (over the
- * terminal: the banner and meter looks) or "header" (the chip look); it shows
- * only where the current look puts it.
+ * The warning on a pane: a chip in its header ("ctx 79%"), amber from 75% of
+ * where the agent compacts by itself, red from 90%. It opens a popover with
+ * what that means and the actions: Compact, Fresh session with a brief, and
+ * Dismiss (until the next threshold).
  */
-export function ContextWarning({ session, place, look, onBrief }: { session: SessionInfo; place: "notes" | "header"; look: CtxLook; onBrief: () => void }) {
+export function ContextWarning({ session, onBrief }: { session: SessionInfo; onBrief: () => void }) {
   const cw = useContextReading(session);
   const w = useWarning(session, cw);
   const [open, setOpen] = useState(false);
   if (!w || cw?.state !== "reading") return null;
-  if ((look === "chip") !== (place === "header")) return null;
   const { budget: b } = w;
   const agent = cw.agent;
   // Compacting shows until it's done, even once dismissed
   if (!w.level && !w.compacting) return null;
   const level = (w.level || b.level || 1) as 1 | 2;
   const tone = level === 2 ? "firm" : "heads";
-  const tip = explain(agent, b);
-  const dismiss = (
-    <button
-      className="icon"
-      title={level === 2 ? "Dismiss — it comes back only after the context drops and fills again" : "Dismiss — it comes back at 90%"}
-      onClick={(e) => {
-        e.stopPropagation();
-        w.dismiss();
-      }}
-    >
-      ✕
-    </button>
-  );
-  if (look === "chip") {
-    return (
-      <span className="ctx-chip-wrap">
-        <button className={`chip ctx-chip ${tone}`} title={tip} onClick={() => setOpen((o) => !o)}>
-          ctx {Math.min(100, Math.round(b.pct))}%
-        </button>
-        {open && (
-          <Popover className="ctx-pop" onClose={() => setOpen(false)} label="Context">
-            <div className="ctx-pop-h">{headline(b, level)}</div>
-            <div className="ctx-pop-sub">{amount(b, agent)}.</div>
-            <div className="ctx-acts">
-              <Actions w={w} agent={agent} onBrief={onBrief} />
-              <span style={{ flex: 1 }} />
-              {dismiss}
-            </div>
-            {w.error && <div className="err">{w.error}</div>}
-          </Popover>
-        )}
-      </span>
-    );
-  }
-  if (look === "meter") {
-    return (
-      <div className={`ctx-meter ${tone}`} title={tip} role="status">
-        <span className="ctx-meter-fill" style={{ width: `${Math.min(100, b.pct)}%` }} />
-        <span className="ctx-meter-t">
-          {headline(b, level)} · {roughTokens(b.tokens)}/{roughTokens(b.usable)}
-        </span>
-        {w.error && <span className="ctx-err">{w.error}</span>}
-        <Actions w={w} agent={agent} onBrief={onBrief} />
-        {dismiss}
-      </div>
-    );
-  }
   return (
-    <div className={`ctx-banner ${tone}`} title={tip} role="status">
-      <span className="ctx-dot" />
-      <span className="reason">
-        {w.error ? `Couldn't compact: ${w.error}` : w.compacting ? "Compacting — the warning clears once the agent reports the smaller context" : `${headline(b, level)} · ${amount(b, agent)}`}
-      </span>
-      <Actions w={w} agent={agent} onBrief={onBrief} />
-      {dismiss}
-    </div>
+    <span className="ctx-chip-wrap">
+      <button
+        className={`chip ctx-chip ${tone}`}
+        title={explain(agent, b)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((o) => !o);
+        }}
+      >
+        {w.compacting ? "compacting…" : `ctx ${Math.min(100, Math.round(b.pct))}%`}
+      </button>
+      {open && (
+        <Popover className={`ctx-pop ${tone}`} onClose={() => setOpen(false)} label="Context">
+          <div className="ctx-pop-h">{headline(b, level)}</div>
+          <div className="ctx-pop-sub">
+            {amount(b, agent)}.{" "}
+            {w.compacting
+              ? "Compacting: this clears once the agent reports the smaller context."
+              : b.autoCompacts
+                ? `Left alone, ${AGENT_NAME[agent]} compacts by itself near the limit, keeping only its own summary.`
+                : "Compact, or carry on in a fresh session, before it runs out."}
+          </div>
+          <div className="ctx-acts">
+            <Actions
+              w={w}
+              agent={agent}
+              onBrief={() => {
+                setOpen(false);
+                onBrief();
+              }}
+            />
+            <span style={{ flex: 1 }} />
+            <button
+              className="outline"
+              title={level === 2 ? "Hide it until the context drops and fills again" : "Hide it until 90%"}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen(false);
+                w.dismiss();
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+          {w.blocked && !w.compacting && <div className="ctx-pop-note">Compact waits: {w.blocked.charAt(0).toLowerCase() + w.blocked.slice(1)}.</div>}
+          {w.error && <div className="err">Couldn't compact: {w.error}</div>}
+        </Popover>
+      )}
+    </span>
   );
 }
 
