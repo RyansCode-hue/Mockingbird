@@ -2978,6 +2978,81 @@ if (params.get("ctxAudit")) {
     document.body.appendChild(tag);
   })();
 }
+// ?copyAudit prints a long command and a long sentence into panes the way their programs do — Claude Code (s1), a
+// teammate's copy of a Claude session and Codex (s3) wrap them at the pane's width themselves, cutting the path
+// mid-word; a shell (s4) leaves the wrapping to the terminal — then selects them and copies, as a native selection's
+// release (copy-on-select) and as ⌘C. It writes what each copy put on the clipboard into
+// <script id="mb-copy-audit"> for test/uiTerminal.test.ts.
+if (params.has("copyAudit")) {
+  set("mb.shown", ["s1", "s3", "s4", NICK_PANE]);
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const terms = () => w.__mbTerms as Map<string, { term: import("@xterm/xterm").Terminal }> | undefined;
+  const say = (id: string, text: string) => {
+    buffers[id] = (buffers[id] ?? "") + text;
+    emit("onSessionData", id, text);
+  };
+  const written: string[] = [];
+  Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async (text: string) => void written.push(text) });
+  const PATH = "/private/tmp/claude-501/-Users-alex-Code-backoffice/1234abcd-5678-90ef-aaaa-bbbbccccdddd/scratchpad/add-portal-users-keys.sh";
+  const SENTENCE = "That script reads every portal user from the database, generates a key pair for each one that doesn't have one yet, and writes the public half back so the next login picks it up.";
+  // an agent's rows: the box two columns in, a word longer than it cut at its edge
+  const agentRows = (text: string, cols: number) => {
+    const width = cols - 2;
+    const rows = [""];
+    for (const word of text.split(" ")) {
+      const row = rows[rows.length - 1];
+      if (word.length > width) {
+        let rest = row ? `${row} ${word}` : word;
+        rows.pop();
+        for (; rest.length > width; rest = rest.slice(width)) rows.push(rest.slice(0, width));
+        rows.push(rest);
+      } else if (row && row.length + 1 + word.length > width) rows.push(word);
+      else rows[rows.length - 1] = row ? `${row} ${word}` : word;
+    }
+    return rows.map((r) => `  ${r}`);
+  };
+  waitFor(".grid > [data-cell=s1] .xterm", async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(800);
+      const copies: Record<string, { cols: number; mouse: string; onSelect: string[]; copyEvent: string[] }> = {};
+      for (const id of ["s1", NICK_PANE, "s3", "s4"]) {
+        const term = terms()?.get(id)?.term;
+        if (!term?.element) throw new Error(`the audit found no terminal for ${id}`);
+        const cols = term.cols;
+        copies[id] = { cols, mouse: term.modes.mouseTrackingMode, onSelect: [], copyEvent: [] };
+        const texts = id === "s4" ? [`$ bash ${PATH}`] : [`! bash ${PATH}`, SENTENCE];
+        for (const text of texts) {
+          say(id, "\x1b[0m\r\n" + (id === "s4" ? text : agentRows(text, cols).join("\r\n")) + "\r\n");
+          await sleep(150);
+          const b = term.buffer.active;
+          const last = b.baseY + b.cursorY - 1;
+          let first = last;
+          const head = (y: number) => b.getLine(y)?.translateToString(true).trim() ?? "";
+          while (first > 0 && !text.startsWith(head(first))) first--;
+          term.select(0, first, (last - first + 1) * cols);
+          term.element.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
+          window.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true }));
+          await sleep(50);
+          copies[id].onSelect.push(written.pop() ?? "(nothing)");
+          const data = new DataTransfer();
+          term.textarea?.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true }));
+          copies[id].copyEvent.push(data.getData("text/plain"));
+          term.clearSelection();
+        }
+      }
+      out.copies = copies;
+      out.expected = { agent: [`  ! bash ${PATH}`, `  ${SENTENCE}`], shell: [`$ bash ${PATH}`] };
+    } catch (err) {
+      out.error = String(err);
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-copy-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  });
+}
 if (params.has("wnAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const label = () => document.querySelector(".brand .ver") as HTMLButtonElement | null;

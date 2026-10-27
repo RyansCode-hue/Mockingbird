@@ -7,9 +7,10 @@ import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { tokenBreakdown } from "./usageFormat";
-import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
+import { formatShare, formatTokens, isErr, totalTokens, AGENT_NAME, otherAgent, ticketIdOf, type AgentKind, type FileOverlap, type PrState, type PrStatus, type SessionInfo, type SessionMeter, type TokenCounts, type WorktreeStateInfo, type IpcResult } from "../shared/types";
 import { mousePolicyFor, selectsNatively, stripMouseEnables, type MouseModeState } from "./mouseModes";
 import { classifyTermInput, forwardTermInput, pasteRoute } from "./inputGuard";
+import { agentSelection, trackPrintWidths } from "./agentWraps";
 import { anchorLine, pageKey, scrollCopy, viewAnchor, wheelLines } from "./paneScroll";
 import { isViewControl } from "../shared/termInput";
 import { shortReason } from "../shared/phoneAlerts";
@@ -55,6 +56,10 @@ interface TermEntry extends CachedTerm, MouseModeState, SizedTerm {
   hold: string[] | null; // output parked during a native selection drag
   holdStart: number;
   wheelAcc: number; // accumulated wheel pixels not yet emitted as scroll lines
+  /** The agent CLI whose own line wrapping a copy undoes (agentWraps.ts); null in a terminal. */
+  wrapAgent: AgentKind | null;
+  printWidth: (line: number) => number;
+  columnSelect: boolean; // the last press started a column (rectangular) selection
   refit?: () => void; // a teammate's session: fit its owner's size again (the size or the pane's density changed)
 }
 const terms = new Map<string, TermEntry>();
@@ -84,6 +89,23 @@ const REPLY_LOOP_WINDOW_MS = 5000;
 // CLI draws itself (Claude with mouse reporting on) never park output.
 const HOLD_MAX_MS = 15_000;
 const HOLD_MAX_BYTES = 400_000;
+
+/**
+ * What copying the selection puts on the clipboard: in an agent's pane, with the agent's own line
+ * wrapping undone. Copy-on-select runs this before the pane resumes its parked output, so a fault
+ * in it falls back to the rows as drawn rather than leaving the pane frozen.
+ */
+function selectionText(e: TermEntry, id: string): string {
+  if (e.wrapAgent && !e.columnSelect) {
+    try {
+      const joined = agentSelection(e.term, e.wrapAgent, e.printWidth);
+      if (joined !== null) return joined;
+    } catch (err) {
+      console.error(`[mockingbird] undoing ${e.wrapAgent}'s line wrapping in pane ${id}'s selection failed; copying the rows as drawn`, err);
+    }
+  }
+  return e.term.getSelection();
+}
 
 function flushHold(e: TermEntry): void {
   if (!e.hold) return;
@@ -527,6 +549,9 @@ export function TerminalPane({
         tracking: 0,
         buttonHeld: false,
         wheelAcc: 0,
+        wrapAgent: session.shell ? null : (session.agent ?? "claude"),
+        printWidth: trackPrintWidths(term),
+        columnSelect: false,
       };
       // the side panel appears and disappears with output; recheck at most
       // twice a second so the header's "hide diff" button tracks it
@@ -630,6 +655,8 @@ export function TerminalPane({
       const t = terms.get(session.id);
       if (!t) return;
       const native = selectsNatively(t.term.modes.mouseTrackingMode, ev, IS_MAC, !!t.term.options.macOptionClickForcesSelection);
+      // xterm's own test for a column selection
+      t.columnSelect = ev.altKey && !(IS_MAC && !!t.term.options.macOptionClickForcesSelection);
       t.dragging = native;
       t.buttonHeld = !native;
     };
@@ -644,7 +671,7 @@ export function TerminalPane({
       // the pane resumes immediately. The highlight is never cleared by us —
       // it stays until a click elsewhere or the CLI redraws over it.
       // A failed copy leaves the selection standing for ⌘C.
-      const text = t.term.getSelection();
+      const text = selectionText(t, session.id);
       if (text) copy(text, `pane ${session.id}'s selection`);
       flushHold(t);
     };
@@ -668,8 +695,17 @@ export function TerminalPane({
       e.stopPropagation();
       writeSession(session.id, "\x16");
     };
+    // ⌘C (Edit ▸ Copy) copies what copy-on-select did, rather than xterm's rows as drawn
+    const onCopy = (ev: ClipboardEvent) => {
+      const t = terms.get(session.id);
+      if (!t?.wrapAgent || !t.term.hasSelection() || !ev.clipboardData || !t.term.element?.contains(ev.target as Node)) return;
+      ev.clipboardData.setData("text/plain", selectionText(t, session.id));
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
     const el = holder.current;
     el?.addEventListener("paste", onPaste, true);
+    el?.addEventListener("copy", onCopy, true);
     const onClick = (ev: MouseEvent) => {
       const t = terms.get(session.id);
       // xterm reporting the mouse delivers the click itself; Option (a native
@@ -745,6 +781,7 @@ export function TerminalPane({
       stopFollowing();
       stopFollowNote();
       el?.removeEventListener("paste", onPaste, true);
+      el?.removeEventListener("copy", onCopy, true);
       el?.removeEventListener("pointerdown", onDown, true);
       el?.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
       el?.removeEventListener("click", onClick, true);

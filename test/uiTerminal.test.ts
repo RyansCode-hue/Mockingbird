@@ -40,6 +40,34 @@ async function scrollAudit(motion: "full" | "off"): Promise<ScrollAudit> {
   return JSON.parse(json);
 }
 
+type CopyAudit = {
+  copies: Record<string, { cols: number; mouse: string; onSelect: string[]; copyEvent: string[] }>;
+  expected: { agent: string[]; shell: string[] };
+  error?: string;
+};
+
+describe.skipIf(!local)("copying a pane's selection", () => {
+  it("gives an agent's long command and sentence back whole, on release and with ⌘C, and a shell's as before", async () => {
+    // @ts-expect-error — a plain .mjs build script, no type declarations
+    const { pageResult } = await import("../scripts/ui-preview.mjs");
+    const json: string | null = await pageResult({ size: "1400x900", query: "copyAudit", outDir: path.join(tempDir("copy"), "out"), read: `document.getElementById("mb-copy-audit")?.textContent ?? null` });
+    if (!json) throw new Error("the preview didn't finish its copy audit");
+    const a: CopyAudit = JSON.parse(json);
+    expect(a.error).toBeUndefined();
+    const ids = Object.keys(a.copies);
+    expect(ids).toEqual(["s1", expect.stringMatching(/^r~/), "s3", "s4"]);
+    for (const id of ids) {
+      const c = a.copies[id];
+      // narrow enough that the agent had to cut the path, and nothing tracking the mouse: the selection is xterm's
+      expect(c.cols, id).toBeLessThan(120);
+      expect(c.mouse, id).toBe("none");
+      const expected = id === "s4" ? a.expected.shell : a.expected.agent;
+      expect(c.onSelect, id).toEqual(expected);
+      expect(c.copyEvent, id).toEqual(expected);
+    }
+  }, 120_000);
+});
+
 describe.skipIf(!local)("terminals following their output", () => {
   for (const motion of ["full", "off"] as const) {
     it(`stay at the bottom through every action unless the user scrolled up, with nothing to scroll below the program's last line: motion ${motion}`, async () => {

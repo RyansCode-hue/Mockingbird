@@ -1,0 +1,39 @@
+7[r8[?25h[?25l[?2004h[?2031h[?1004h]0;✳ Claude Code[38;5;174m ▐[48;5;16m▛███▛█[12G[39m[49m[1mClaude[19GCode[24G[22m[38;5;246mv2.1.311[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[12G[38;5;246mOpus[17G4.5[21G·[23GAPI[27GUsage[33GBilling[39m
+[38;5;174m ▝▝[7G▝▝[12G[38;5;246m/…/00000000-1111-2222-3333-444444444444/scratchpad/cc/proj[39m
+
+[38;5;220m⚠[3GRemote[10Gmanaged[18Gsettings[27Gfailed[34Gto[37Gload[42G(authentication[58Grejected[67G(401))[74G·[76Gno[79Gremote[86Gpolicy[93Gapplied[38;5;246m [39m
+[3G[38;5;246m·[5G/status[13Gfor[17Gdetails[39m
+
+[48;5;237m[38;5;246m❯ [38;5;231mHow do I add the keys? Please explain it in some detail so that the answer wraps.[39m                 [49m
+
+[38;5;114m⏺[3G[39m[1mBash[22m(git[12Glog[16G--oneline[26G-3[29G&&[32Ggrep[37G-n[40GgetSelection[53Gsrc/renderer/TerminalPane.tsx
+[7G/private/tmp/claude-501/-Users-alex-Code-backoffice-portal/scratchpad/x)
+[38;5;246m [3G⎿[5G [39me3e7ee1[14GTests:[21Gthe[25Greal[30G.NET[35Gdebug[41Gtest[46Ggives[52Gthe[56Gservice[64Ga[66GTMPDIR,[74Gwhich[80Gthe[84GSDK's[90Gfirst
+[6Grun[10Gneeds[16Gfor[20Gits[24Glock
+[6G4907cc3[14G1.6.0
+[6G[2m…[8G+2[11Glines[17G(ctrl+o[25Gto[28Gexpand)[22m
+
+[38;5;231m⏺[3G[39mRun[7Gthis[12Gto[15Gadd[19Gthe[23Gportal[30Gusers'[37Gkeys:
+
+[3G![5Gbash[10G/private/tmp/claude-501/-Users-alex-Code-backoffice-portal/1234abcd-5678-90ef-aaaa-bbbbcccc
+[3Gdddd/scratchpad/add-portal-users-keys.sh
+
+[3GThat[8Gscript[15Greads[21Gevery[27Gportal[34Guser[39Gfrom[44Gthe[48Gdatabase,[58Ggenerates[68Ga[70Gkey[74Gpair[79Gfor[83Geach[88Gone[92Gthat
+[3Gdoesn't[11Ghave[16Gone[20Gyet,[25Gand[29Gwrites[36Gthe[40Gpublic[47Ghalf[52Gback[57Gso[60Gthe[64Gnext[69Glogin[75Gpicks[81Git[84Gup[87Gwithout[95Ganyone
+[3Gneeding[11Gto[14Grestart[22Gthe[26Gservice.
+
+[3G-[5Gfirst[11Gbullet[18Gthat[23Gis[26Glong[31Genough[38Gto[41Gwrap[46Gacross[53Gthe[57Gpane[62Gwidth[68Gwhen[73Git[76Gis[79Gnarrow
+[3G-[5Gsecond[12Gbullet
+
+[3G1.[6GStop[11Gthe[15Gportal[22Gservice[30Gbefore[37Grunning[45Git,[49Gbecause[57Gthe[61Gkeys[66Gare[70Gcached[77Gin[80Gmemory
+[3G2.[6GStart[12Git[15Gagain
+
+[3G[36mexport[10G[39mFOO=bar
+[3Gnpm[7Grun[11Gbuild[17G--[20G--mode[27Gproduction[38G--out-dir[48G/private/tmp/somewhere/really/long/for/this/example
+
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────[39m
+❯ [7m [27m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────[39m
+[3G[38;5;246m⏸[5Gmanual[12Gmode[17Gon[20G·[22G?[24Gfor[28Gshortcuts[38G·[40G←[42Gfor[46Gagents[83G●[85Ghigh[90G·[92G/effort[39m
+[2C[3A[>0q[?u]7501;?[c
