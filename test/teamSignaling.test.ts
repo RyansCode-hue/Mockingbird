@@ -2,7 +2,7 @@ import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 import { tempDir } from "./helpers";
 import { loadIdentity, randomToken, roomIdFor, signalingJoinKey, signalingTokenHash, type Identity } from "../src/main/team/identity";
-import { DailyCounter, SignalingRoom, mintTurnCredentials, turnDailyLimit, DEFAULT_TURN_DAILY_LIMIT, type ConnState, type RoomSocket, type RoomLimits, type TurnQuota } from "../signaling/src/room";
+import { DailyCounter, OWNER_GONE_MS, SignalingRoom, mintTurnCredentials, turnDailyLimit, DEFAULT_TURN_DAILY_LIMIT, type ConnState, type RoomSocket, type RoomLimits, type TurnQuota } from "../signaling/src/room";
 import { healthBody } from "../signaling/src/config";
 import { startLocalSignaling } from "../signaling/src/local/server";
 import { allowCreatorsCommand, CLOSE, formatFingerprint, helloPayload, parseAllowedCreators, SIGNALING_PING, SIGNALING_PONG, SIGNALING_PROTOCOL, signalingSocketUrl, TEAM_PROTOCOL, type ServerMessage, type SignalingFeature } from "../src/shared/team/protocol";
@@ -588,6 +588,93 @@ describe("signaling room: joiners at the door (approve)", () => {
     expect(await h.room.memberIds()).toContain(lee.id);
     await h.say(c, { t: "deny", member: lee.id });
     expect(c.last("error")).toMatchObject({ code: "bad-message", message: "unknown message deny" });
+  });
+});
+
+describe("signaling room: the room's roles (roles)", () => {
+  /** The creator (its owner), Nick and Sam as members, Lee knocking with Sam's invite; `features` [] plays an older Worker. */
+  async function roles(o: { features?: readonly SignalingFeature[] } = {}) {
+    let now = 1_000_000;
+    const h = harness({ now: () => now, features: o.features });
+    const c = await h.connect(h.creator, { create: h.salt });
+    const [nick, sam, lee] = [newId("nick"), newId("sam"), newId("lee")];
+    await h.say(c, { t: "admit", publicKeys: [nick.publicKey] });
+    now += 1;
+    await h.say(c, { t: "admit", publicKeys: [sam.publicKey] });
+    const n = await h.connect(nick);
+    const s = await h.connect(sam);
+    const token = randomToken();
+    await h.say(s, { t: "invite", tokenHash: signalingTokenHash(token), expiresAt: now + 3_600_000 });
+    const l = await h.connect(lee, { join: signalingJoinKey(token) });
+    return { h, c, n, s, l, nick, sam, lee, later: (ms: number) => (now += ms) };
+  }
+
+  it("takes the roles from the owner only; an admin then admits, denies and removes members — never the owner or another admin", async () => {
+    const { h, c, n, s, nick, sam, lee } = await roles();
+    await h.say(n, { t: "roles", owner: nick.id, admins: [] }); // not the owner: ignored
+    expect(n.last("roles-ignored")).toBeDefined();
+    expect(await h.room.rolesOf()).toBeNull();
+    await h.say(c, { t: "roles", owner: h.creator.id, admins: [nick.id] });
+    expect(c.last("roles-set")).toEqual({ t: "roles-set", owner: h.creator.id, admins: [nick.id] });
+    // Nick lets Lee in from the door, as the owner could
+    await h.say(n, { t: "admit", publicKeys: [lee.publicKey] });
+    expect(n.last("admitted")).toEqual({ t: "admitted", ids: [lee.id] });
+    expect(await h.room.memberIds()).toContain(lee.id);
+    // and removes a member, but not the owner
+    await h.say(n, { t: "revoke", member: h.creator.id });
+    expect(n.last("error")).toMatchObject({ code: "forbidden", message: expect.stringMatching(/an admin can't remove the room's owner or another admin/) });
+    await h.say(n, { t: "revoke", member: lee.id });
+    expect(n.last("revoked")).toEqual({ t: "revoked", member: lee.id });
+    // another admin is the owner's to remove
+    await h.say(c, { t: "roles", owner: h.creator.id, admins: [nick.id, sam.id] });
+    await h.say(n, { t: "revoke", member: sam.id });
+    expect(n.last("error")).toMatchObject({ code: "forbidden" });
+    await h.say(s, { t: "roles", owner: sam.id, admins: [] }); // an admin can't make themselves owner
+    expect(s.last("roles-ignored")).toBeDefined();
+    await h.say(c, { t: "revoke", member: sam.id });
+    expect(c.last("revoked")).toEqual({ t: "revoked", member: sam.id });
+  });
+
+  it("after a hand-over, the new owner's roles count and the old owner's don't", async () => {
+    const { h, c, n, nick } = await roles();
+    await h.say(c, { t: "roles", owner: nick.id, admins: [h.creator.id] });
+    expect(await h.room.rolesOf()).toEqual({ owner: nick.id, admins: [h.creator.id] });
+    await h.say(c, { t: "roles", owner: h.creator.id, admins: [] });
+    expect(c.last("roles-ignored")).toBeDefined();
+    await h.say(n, { t: "roles", owner: nick.id, admins: [] });
+    expect(n.last("roles-set")).toBeDefined();
+  });
+
+  it("the claimant takes ownership only once the owner hasn't been here for 14 days; the old owner can take it back", async () => {
+    const { h, c, n, nick, later } = await roles();
+    await h.say(c, { t: "roles", owner: h.creator.id, admins: [nick.id] });
+    await h.say(n, { t: "roles", owner: nick.id, admins: [] });
+    expect(n.last("roles-ignored")).toMatchObject({ reason: expect.stringMatching(/connected here less than 14 days ago/) });
+    c.close(1000, "laptop shut");
+    h.room.close(c);
+    later(OWNER_GONE_MS - 60_000);
+    await h.say(n, { t: "roles", owner: nick.id, admins: [] });
+    expect(n.last("roles-ignored")).toBeDefined();
+    later(120_000);
+    await h.say(n, { t: "roles", owner: nick.id, admins: [] });
+    expect(n.sent.at(-1)).toMatchObject({ t: "roles-set" });
+    expect(await h.room.rolesOf()).toMatchObject({ owner: nick.id, claimedFrom: h.creator.id });
+    // nobody can cut the old owner off while they may contest it
+    await h.say(n, { t: "revoke", member: h.creator.id });
+    expect(n.last("error")).toMatchObject({ code: "forbidden", message: expect.stringMatching(/may still contest it/) });
+    // back: they take it back
+    const back = await h.connect(h.creator, { create: h.salt });
+    await h.say(back, { t: "roles", owner: h.creator.id, admins: [nick.id] });
+    expect(back.last("roles-set")).toBeDefined();
+    expect(await h.room.rolesOf()).toEqual({ owner: h.creator.id, admins: [nick.id] });
+  });
+
+  it("an older Worker doesn't know roles: only its admin admits and removes, as before", async () => {
+    const { h, c, n, lee } = await roles({ features: ["revoke", "approve"] });
+    await h.say(c, { t: "roles", owner: h.creator.id, admins: [] });
+    expect(c.last("error")).toMatchObject({ code: "bad-message", message: "unknown message roles" });
+    await h.say(n, { t: "admit", publicKeys: [lee.publicKey] });
+    expect(n.last("admitted")).toEqual({ t: "admitted", ids: [] });
   });
 });
 

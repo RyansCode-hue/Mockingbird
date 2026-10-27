@@ -835,9 +835,9 @@ export class SignalingRoom {
   /** Note that a member was here (hello, or a connection closing), at most once an hour. */
   private async seen(id: string): Promise<void> {
     if (!this.knowsRoles()) return;
+    const now = this.now(); // when it happened, not when storage answered
     const rec = await this.load();
     const m = rec.members[id];
-    const now = this.now();
     if (!m || now - (m.seenAt ?? 0) < SEEN_EVERY_MS) return;
     m.seenAt = now;
     await this.save();
