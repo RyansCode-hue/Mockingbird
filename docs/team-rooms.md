@@ -49,7 +49,8 @@ should stop more members joining later.
   `room.approval`, `join.declined` (joining, below);
   `session.upsert` / `session.removed` (room sessions);
   `session.backup`, `session.takenOver`, `session.backupDropped`,
-  `session.awayGrant`, `session.takeoverAccepted` (take-over);
+  `session.takeoverRefused`, `session.takeoverAccepted`, and 1.5's
+  `session.awayGrant`, no longer published (take-over);
   `room.settings` (the admin's: backups to origin, the migration check and
   migration folders); `migration.reserved`, `migration.released` (migration
   numbers, below);
@@ -403,9 +404,9 @@ Member replace the single admin (creator, else longest-standing member).
   days after the claim** (by anyone), so a claim can't be followed at once by
   removing the one person who could contest it; after that, the new owner
   can remove them (a stolen or abandoned key).
-- **Take-over** is unchanged: no role takes a session over without its
-  owner's grant (a hand-over or an away grant). An emergency path for an
-  owner gone for good is a TODO (Not in this release).
+- **Take-over** gives no role a way past the owner: an online member is
+  asked first whoever takes their session over, the room's owner and admins
+  too; an offline member's session is any member's to take (see Take-over).
 - **The window.** A role chip (owner, admin) by each name in the Team tab's
   member strip and Settings → Team. Right-click a teammate in the Team tab
   for Make admin / Remove as admin / Hand over ownership… / Remove from the
@@ -676,9 +677,11 @@ Team → **Recent remote activity** shows its last 50 entries in words.
 
 ## Take-over
 
-When the owner is away, a member clicks **Take over** and the session continues
-on their laptop under their own account — only with the owner's signed
-consent (below: "The owner's consent").
+A member clicks **Take over** and the session continues on their laptop
+under their own account: asking the owner first when they're online (a
+signed hand-over), and without asking when they're offline — unless the
+owner's Mac was connected to the taker's then, which it refuses (below:
+"Owner online", "Owner offline").
 
 - **Work:** after every agent turn (the agent going from working or waiting
   to idle, or exiting: the same turns Co-authored-by counts), Mockingbird
@@ -782,27 +785,6 @@ consent (below: "The owner's consent").
   record, stops streaming it, refuses teammates' typing into it and stops
   backing it up, as soon as it learns of the take-over — at once, or when it's
   next online or started. Until then, teammates hide the stale record.
-- **The owner's consent** (security review R6, M3; 1.5). A take-over counts
-  only with a grant the session's owner signed with their identity key
-  (`src/main/team/takeoverGrants.ts`), carried in `session.takenOver`. Every
-  member's reducer checks it where the take-over falls in the room's order —
-  the owner's key as the room knows it, the session, the taker and (for a
-  hand-over) the snapshot, the event's time within the grant's — so the
-  owner's Mac stops its session only for a take-over its owner granted, from
-  whichever Mockingbird it came, and the taker's Mac checks the same before it
-  starts anything. **No role gets past it**: the room's admin can't take a
-  session over without its owner's grant either. (Room roles may later add an
-  emergency path for an owner gone for good; it would be its own explicit,
-  announced and logged event, not an exception to this check.) A take-over
-  without a valid grant changes nothing — the owner's session runs on and
-  keeps backing up — and is kept in the room's state as `ungranted`, so the
-  owner's Mac can say so: once per taker, in the room's chat ("“Export API”
-  keeps running on Ryan's laptop: Nick's Mockingbird needs to update to take
-  over…") — the only way to reach an older Mockingbird, which believes it took
-  the session over — in the log, and under the room's warnings. Times are the
-  take-over event's own (its author's clock, the only one every member
-  agrees on): a taker whose clock is set wrong on purpose can use a grant past
-  its expiry, but never without the owner having signed one for that session.
 - **Owner online → asked first** (decided with Ryan, 2026-10-07). If the owner
   is connected when a teammate clicks Take over, it doesn't happen at once:
   the owner gets a prompt (and a notification), "<Nick> wants to take over
@@ -815,36 +797,72 @@ consent (below: "The owner's consent").
   exactly that snapshot, good for 30 minutes. The take-over then uses exactly
   it. Keep, no answer within 2 minutes, or the owner dropping offline
   mid-request: the taker is told, and nothing is taken over. The taker's
-  dialog shows the request's progress.
-- **Owner away → only with their away grant.** Before leaving, the owner
-  allows it: Settings → Team, per room, **While I'm away** — all their
-  sessions in the room, or one, for 8 hours, a day, 3 days or a week (at
-  most). Their Mockingbird signs an **away grant** and publishes it
-  (`session.awayGrant`); only their latest counts, it ends by itself, and
-  **Stop** withdraws it (publishing none). With it, Take over works while
-  they're offline from the newest signed backup, as above; the button leads
-  and its title says until when. Without one, an offline owner's session
-  can't be taken over: the dialog says why and whom to ask ("Ryan hasn't
-  allowed take-overs while they're away. Ask Ryan to hand it over when
-  they're back online, or to allow take-overs while they're away (Settings →
-  Team).") and Take over is disabled. Online, they're asked first whatever
-  their away grant says.
-- **Mixed versions** (both teammates need 1.5 for take-over; the rest of the
-  room works with older peers as before). An older taker's request
-  (`takeover.ask`) is refused: "Nick needs to update Mockingbird to take over
-  “Export API”: take-overs now need Ryan's signed hand-over". An older owner
-  can't be asked (there's no `takeover.handover` there): "Ryan needs to update
-  Mockingbird to hand “Export API” over". An older owner's offline sessions
-  can't be taken over (they can't sign an away grant; their backups lack
-  `grants: 1`, and the dialog says they need an update). An older taker's
-  take-over while the owner is away changes nothing on a newer owner's Mac
-  (above), though that older Mac believes it took the session over until it's
-  updated. Take-overs from before grants: a newer Mac replays the room's log,
-  so an old take-over without a grant would no longer count; the owner's
-  Mockingbird, on its first start with grants, accepts each one it had
-  already honoured (it kept a record of each copy it stopped: `takeover.json`'s
-  `left`) with `session.takeoverAccepted`, with the old backup's drop if the
-  taker made one — and never one it didn't honour.
+  dialog shows the request's progress. **No role gets past it**: the room's
+  owner or an admin taking over an online member's session is asked too.
+- **The hand-over is checked everywhere** (security review R6, M3; 1.5). It's
+  a grant the session's owner signed with their identity key
+  (`src/main/team/takeoverGrants.ts`), carried in `session.takenOver`. Every
+  member's reducer checks it where the take-over falls in the room's order —
+  the owner's key as the room knows it, the session, the taker and the
+  snapshot, the event's time within the grant's — and the taker's Mac checks
+  the same before it starts anything. Times are the take-over event's own
+  (its author's clock, the only one every member agrees on).
+- **Owner offline → no grant needed** (decided with Ryan for 1.6; 1.5 needed
+  an away grant). When the owner isn't connected to the taker, Take over
+  leads and goes ahead without asking, from the newest signed backup, as
+  above; `session.takenOver` says `offline: 1` and carries no grant. Every
+  member's reducer lets it count at once — when the owner's Mockingbird takes
+  offline take-overs (its backups say `offline: 1`).
+- **The owner's Mac guards a session they're in.** It keeps when it was
+  connected to each teammate (`<room>/connected.json`: spans of connection in
+  its own clock, written as they open and close and once a minute while they
+  last, so one left open by a crash ends at the last write; kept 30 days).
+  When it learns of an offline take-over — at once, on reconnecting or on
+  starting — it refuses one whose time falls while it was connected to that
+  taker, or before the snapshot it continues from was taken. Each check
+  allows 2 minutes of leeway for the two clocks and for each side noticing a
+  connection come or go a little after the other: a take-over stamped just
+  after the owner connected or just before they dropped counts as taken while
+  apart. Refusing, it publishes **`session.takeoverRefused`** (signed like
+  every room event), and every member's reducer applies it: the session is
+  the owner's again on every log, the taker's drop of its backup is undone,
+  and `refusals` records it. The owner's agent never stopped; it backs up at
+  once (turns made meanwhile weren't). The room's chat says so ("“Export API”
+  stays on Ryan's laptop: Nick's take-over was refused (Ryan's Mac was
+  connected to Nick's then, so Nick should have asked)"). The taker's Mac
+  stops the copy it started (its folder kept, its backup dropped), notifies,
+  and never runs it again. The check is per taker: an owner cut off from Nick
+  but still connected to Sam doesn't refuse Nick's take-over. What it can't
+  tell apart is a taker who stamps their take-over inside a real gap in the
+  connection; it stops the honest mistake and the race, not a teammate set on
+  it.
+- **Without either** — no valid hand-over and not `offline` (an older
+  Mockingbird's take-over, or a forged one) — a take-over changes nothing:
+  the owner's session runs on and keeps backing up, and it's kept in the
+  room's state as `ungranted`, so the owner's Mac can say so: once per taker,
+  in the room's chat ("“Export API” keeps running on Ryan's laptop: Nick's
+  Mockingbird needs to update to take over…") — the only way to reach an
+  older Mockingbird, which believes it took the session over — in the log,
+  and under the room's warnings.
+- **Away grants (1.5)** are no longer given: Settings → Team's **While I'm
+  away** is gone. Logs keep the `session.awayGrant` events, still reduced, so
+  take-overs they granted still count, on every member and on reload.
+- **Mixed versions.** Offline take-overs need **both teammates on 1.6.0**: a
+  1.5 owner's backups don't say `offline: 1`, so their offline sessions can't
+  be taken over until they're back and asked ("Ryan's Mockingbird needs an
+  update (1.6.0) before their sessions can be taken over while they're
+  offline"), and a 1.5 Mac takes a 1.6 offline take-over as ungranted. A room
+  with a third member still on 1.5 sees such a take-over as ungranted on that
+  Mac only, until it updates. An older taker's request (`takeover.ask`) is
+  refused: "Nick needs to update Mockingbird to take over “Export API”:
+  take-overs now need Ryan's signed hand-over". An older owner can't be asked
+  (there's no `takeover.handover` there): "Ryan needs to update Mockingbird to
+  hand “Export API” over". Take-overs from before grants: a newer Mac replays
+  the room's log, so an old take-over without a grant would no longer count;
+  the owner's Mockingbird, on its first start with grants, accepts each one it
+  had already honoured (it kept a record of each copy it stopped:
+  `takeover.json`'s `left`) with `session.takeoverAccepted`, with the old
+  backup's drop if the taker made one — and never one it didn't honour.
 - **The old copy stops.** When the owner's Mockingbird learns of a take-over
   (at once, on reconnecting, or on starting — even after relaunching the
   session before the room caught up), it ends that session's agent and never
@@ -1231,11 +1249,14 @@ House's **open backlog**.
     branch picked as it picks it (your room session's on that ticket, or
     `feature/<n>-<slug>`); Cancel or Esc puts it back.
   - **In progress → Ready**, claimed: a **release**.
-  - **any other move**: a status change, written the way the House's own CLI
-    and the ticket's Status change write it — `POST …/events {event:
-    "progress", note: "Moved from Review to Validating on the room's board.",
-    status}` — with one of the statuses a builder may set (parked, ready, in
-    progress, review, validating).
+  - **any other move**: a status change — the board's write is a `status`
+    event (`houseColumns.ts` `moveWrite`: `{kind: "event", event: "status",
+    status, text: "Moved from Review to Validating on the room's board."}`),
+    the same write as the ticket's Status change, and the room hears "Ryan
+    changed the status of #143". Mockingbird sends it the way the House's own
+    CLI does, `POST …/events {event: "progress", note, status}`, with one of
+    the statuses a builder may set (parked, ready, in progress, review,
+    validating).
   - **into Done or Dropped: refused.** Only staff close tickets; those
     columns outline in red and the label says "Only House staff close
     tickets", and nothing is written.
@@ -1279,8 +1300,9 @@ House's **open backlog**.
   and statuses are never copied into the room log; the chat's agent updates
   say only "Ryan claimed #143", or "Ryan's agent (Export API) claimed #143".
 - **Writing** (from the board or an agent, as that member): claim
-  (`POST …/claim {branch}`), release, progress and status changes
-  (`POST …/events {event: "progress", note, status?, reference?}`), a
+  (`POST …/claim {branch}`), release, progress and status changes (the
+  `progress` and `status` writes; both go to the House as
+  `POST …/events {event: "progress", note, status?, reference?}`), a
   question (`{event: "question"}`, then the handoff tags: `needs-human` on,
   `needs-agent` off), a comment (`PATCH …/work-items/<n> {note}`), a new ticket
   (`POST work-items`, then `PATCH {tags}` if it has any). Only staff close a
@@ -1736,13 +1758,12 @@ be taken.
 
 - Closing a room (the owner's, per Room roles): not built; the owner removes
   everyone and leaves.
-- Emergency take-over (TODO): no role takes over a session without its
-  owner's grant; a path for a session whose owner is gone for good would be
-  its own explicit, announced and logged event, never a bypass of the grant
-  check.
-- An audit log of remote actions on this Mac (security review R5): take-over
-  asks, hand-overs, away grants and refused take-overs are marked
-  `TODO(audit-log)` in `takeover.ts` for it.
+- Refused take-overs in the remote-activity log: the log is built (1.5.0,
+  Remote activity above) and has take-over asks with their answers and every
+  take-over of this Mac's sessions; the take-overs this Mac refused
+  (ungranted ones, and offline ones taken while it was connected to the
+  taker) are logged to the app's log and said in the room's chat, not yet in
+  the audit log (marked `TODO(audit-log)` in `takeover.ts`).
 - Other transports (Tailscale, a self-hosted relay): designed for, not built.
 - Running sessions on an always-on shared host.
 
@@ -1789,12 +1810,19 @@ be taken.
   failed backup); turned off, each owner deletes what it pushed (a failure
   shown and retried by the prune); a room from before the setting behaves as
   off, its owner deleting its old backups from origin on start.
-- The owner's consent (`test/teamTakeover.test.ts`, `test/teamTakenOver.test.ts`):
-  refused while the owner is away without an away grant (saying why and whom
-  to ask, nothing launched or published), then allowed for the session named
-  and stopped on the owner's Mac; away grants covering only the sessions
-  named, an expired one forced through anyway counting for nothing, withdrawn;
-  every grant checked against the owner's key, the session, the taker, the
+- Who may take over (`test/teamTakeover.test.ts`, `test/teamTakenOver.test.ts`):
+  with the owner offline, a member taking it over with no grant, honoured by
+  the owner's Mac when it's back, every log agreeing; an offline take-over
+  stamped while the owner's Mac was connected to the taker refused, every log
+  putting the session back, the owner's agent never stopped, the taker's copy
+  stopped and refused a relaunch, a hand-over working after; cut off from the
+  taker but not from a third member, the owner honouring it; an online owner
+  asked first when the room's owner or an admin takes over; a 1.5 owner's
+  sessions not taken over while offline, a forced one changing nothing; logs
+  with 1.5's away grants loading, the take-overs they granted counting, on
+  reload too; the rule's leeway at each end of a connection and against the
+  snapshot's time, and the record of connections across a restart; every
+  grant checked against the owner's key, the session, the taker, the
   snapshot, the room and its lifetime (forged and edited ones refused); an
   ungranted take-over — the room admin's own — changing nothing on the owner's
   Mac, which says so in the chat once; an older taker's `takeover.ask` told to
@@ -1986,10 +2014,8 @@ be taken.
   until Ryan allows it from the prompt on his pane, then arriving), chat,
   board claim, a turn backed up peer to peer (nothing on origin), a hand-over
   from the owner's prompt (their agent stopped, the taker continuing, the
-  room recording the signed hand-over), a take-over refused with the owner
-  quit without an away grant (the dialog saying why, Take over disabled),
-  then — the owner back, allowing take-overs while away (its IPC), and
-  quitting — a take-over from the peer copy under that grant,
+  room recording the signed hand-over), the owner quitting and a take-over
+  from the peer copy with no grant (Take over leading while they're offline),
   and the owner's app stopping its copy when it starts again; a migration
   number reserved through the agents' tool socket on one instance seen,
   stepped over and held back on the other, released, and each side's

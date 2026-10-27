@@ -83,9 +83,12 @@ again) and
 take-over with the owner online (Hand over, Keep,
 no answer, dropping offline mid-request), away or restarted, the old copy
 stopping, its unsent changes sent and applied, and Take it back; take-over
-only with the owner's signed grant (refused without an away grant, expired,
-withdrawn, forged, the owner's or an admin's own, an older Mockingbird told to update,
-take-overs from before grants accepted once), from a snapshot the owner
+with the owner's signed hand-over when they're online (forged, expired or
+someone else's refused; the room's owner and admins asked too; an older
+Mockingbird told to update; take-overs from before grants accepted once) and
+none when they're offline (honoured on every log; one stamped while the
+owner's Mac was connected to the taker refused and put back on every log; a
+1.5 owner's sessions left alone; 1.5 away grants still loading), from a snapshot the owner
 recorded (a planted ref on origin ignored and logged, a peer copy kept only
 as the commit it named); backups to origin only for members who allowed it;
 leaving and
@@ -103,9 +106,9 @@ hosts (skipped in CI). With `MB_E2E_APP=1`, `test/teamApp.e2e.test.ts` and
 homes (their windows open while they run): share, join (the owner accepting; then Nick made an admin from Ryan's right-click menu, accepting a third instance and removing it — at the Worker too — but refused removing Ryan
 from its prompt), a terminal watched and typed into, chat, a package claimed,
 a turn of a Claude stand-in backed up peer to peer (nothing on origin), a
-session handed over from the owner's prompt, Take over refused once the owner
-has quit without allowing it while away, and allowed from the copy that
-reached the taker under the away grant they gave, their copy stopping when it starts again; and
+session handed over from the owner's prompt, and taken over with no grant
+once the owner has quit, from the copy that reached the taker, their copy
+stopping when it starts again; and
 migration numbers reserved through the agents' tools on one instance holding
 back the other's file, with each side's uncommitted work a heads-up on the other. `MB_E2E_SIGNALING_URL=https://…` runs
 them against a deployed Worker — allow the fingerprint `npm run
@@ -197,6 +200,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
 
 ### Shipped recently
 
+- **Take-over while the owner is offline, with no grant** (1.6.0) — any room
+  member takes over an offline teammate's session without asking; an online
+  owner is still asked first, whoever takes it. The owner's Mac keeps when
+  it was connected to each teammate and refuses a take-over stamped while it
+  was connected to the taker, with a signed event every member's log applies,
+  so they all agree who holds the session. Settings → Team's **While I'm
+  away** grant is gone; logs with 1.5's grants still load. Needs both
+  teammates on 1.6.0.
 - **Phone alerts** (for 1.6.0) — an iMessage to yourself when a session
   waits on you (a permission prompt or a question) or finishes while you're
   away: the screen locked, or no input for 5–60 minutes. Sent through
@@ -608,18 +619,19 @@ agreed direction, **Later** is worth doing once the foundations settle.
     needs detail (deleted once that session is done with it: taken back,
     closed, its backup dropped, 14 days without a turn, or you leaving the
     room); taking your own session back resumes your own conversation,
-    briefed on what they did. **Nobody takes over a session without its
-    owner's signed consent** — not the room's owner or an admin either. A connected owner
-    is asked first ("Nick wants to take over “Export API”": **Hand over** /
-    **Keep it**, kept after 2 minutes unanswered): handing over lets their
-    turn finish, sends that exact backup straight to you with their signed
-    hand-over and stops their agent. An offline owner's session can be taken
-    over only if they allowed it before leaving (Settings → Team, **While I'm
-    away**: all their sessions in the room or one, for 8 hours to a week);
-    otherwise Take over says why and to ask them. Every Mac checks the grant,
-    so a take-over without one — an older Mockingbird's, say — changes nothing
-    on the owner's Mac, which says so in the room; both teammates need 1.5 to
-    take over. The snapshot it starts from is one the owner's signed room log
+    briefed on what they did. **A connected owner is always asked first**
+    — whoever takes over, the room's owner or an admin too ("Nick wants to
+    take over “Export API”": **Hand over** / **Keep it**, kept after 2
+    minutes unanswered): handing over lets their turn finish, sends that exact
+    backup straight to you with their signed hand-over and stops their agent.
+    **An offline owner's session is any member's to take**, without asking;
+    the owner's Mac, which keeps when it was connected to each teammate,
+    refuses one taken while it was connected to the taker (2 minutes' leeway
+    for clocks), and every member's log puts the session back — their agent
+    never stopped, the taker's copy stops. Every Mac checks the hand-over, so
+    a take-over with neither — an older Mockingbird's, say — changes nothing on
+    the owner's Mac, which says so in the room. Taking over an offline owner's
+    session needs both on 1.6. The snapshot it starts from is one the owner's signed room log
     names: a backup ref someone else pushed to origin is ignored.
     An owner who was away stops their copy as soon as their Mockingbird is back
     (or started): its worktree stays untouched, its pane says "Continued on
@@ -724,15 +736,10 @@ Settings checks that hung on "checking…" (1.4.12), tests leaving nothing
 running (1.4.12), motion measured in the real app (1.4.12).
 
 **Phase 2 — the daily workflow**
-- Away mode, the rest: the take-over brief is ready before you leave, and your sessions say a teammate can take over in one click. (Allowing take-overs while you're away — a signed, expiring grant — shipped in 1.5.)
 
 **Room roles, the rest** (roles themselves shipped in 1.6):
 - **Closing the room** (the owner's): not built yet — today the owner removes
   everyone and leaves.
-- **Emergency take-over** (TODO): take-over stays the session owner's to grant
-  (a hand-over or an away grant), and no role gets past it. A path for a
-  session whose owner is gone for good would be its own explicit, announced
-  and logged event, never a bypass of the grant check.
 
 **Tooling profiles** — what Mockingbird adds to an agent, adjustable per project
 so rules that fit one repo don't get in the way in another. Decided:
@@ -788,6 +795,10 @@ The rest of the 1.4.7 UI review (its ids in brackets). Decided: a room gets tabs
 
 ### Later
 
+- **Away mode** (parked): the take-over brief ready before you leave, and
+  your sessions saying a teammate can take over in one click. Taking over
+  while the owner is offline needs no grant from 1.6, so the 1.5 away grant
+  is gone.
 - **Signed + notarized builds.** Updating is covered by the in-app Update
   (pull, build, restart). What's left needs an Apple Developer ID: no
   right-click→Open for new users, and updates that install in the background.
