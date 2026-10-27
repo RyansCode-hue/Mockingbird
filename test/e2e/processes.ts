@@ -19,6 +19,15 @@ function processTable(): Map<number, number> {
   return table;
 }
 
+/** A process's command line, or why it couldn't be read (it may have exited). */
+function commandOf(pid: number): string {
+  try {
+    return execFileSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).trim() || "(gone)";
+  } catch (err) {
+    return `(unreadable: ${(err as Error).message.split("\n")[0]})`;
+  }
+}
+
 /** The processes descended from `pid`, now. */
 export function descendants(pid: number): number[] {
   const children = new Map<number, number[]>();
@@ -61,6 +70,8 @@ export function killTree(pid: number): void {
 export function killOrphans(pids: number[]): number[] {
   const table = processTable();
   const left = pids.filter((p) => table.get(p) === 1);
+  // what each one was, so a failure says what outlived its parent, not only a pid
+  for (const p of left) console.warn(`[e2e] orphan ${p}: ${commandOf(p)}`);
   for (const p of left) kill(p);
   return left;
 }
