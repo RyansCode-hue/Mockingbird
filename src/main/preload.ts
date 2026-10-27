@@ -319,6 +319,10 @@ const api = {
   houseWrite: (roomId: string, w: unknown) => ipcRenderer.invoke("house:write", roomId, w),
   /** Open the ticket in the House's web UI. */
   houseOpen: (roomId: string, n: number) => ipcRenderer.invoke("house:open", roomId, n),
+  /** What Start session on ticket `n` would do (TicketSessionPlan): who has it, its branch, the clones to start in. */
+  houseSessionPlan: (roomId: string, n: number) => ipcRenderer.invoke("house:sessionPlan", roomId, n),
+  /** Claim the ticket, make its worktree and start an agent there briefed on it (TicketSessionRequest → TicketSessionResult). */
+  houseStartSession: (roomId: string, req: unknown) => ipcRenderer.invoke("house:startSession", roomId, req),
   /** This member's answer to "use your builder token for this room's project?" (kept on this Mac). Answers the board. */
   houseConsent: (roomId: string, allow: boolean) => ipcRenderer.invoke("house:consent", roomId, allow),
   /** The rooms whose House project this member hasn't answered for (HouseConsentAsk[]). */

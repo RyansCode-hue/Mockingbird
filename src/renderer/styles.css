@@ -2266,6 +2266,46 @@ button.link.house-change { margin-left: 8px; font-size: 10.5px; }
 .house-event.k-question { box-shadow: inset 2px 0 0 var(--amber); padding-left: 8px; }
 .house-event-text { white-space: pre-wrap; margin-top: 2px; }
 .house-when { font: 400 10px var(--mono); color: var(--text-4); margin-right: 6px; }
+/* Start session on a ticket (TicketStart.tsx): the card's button, shown while the card is hovered or focused, and
+   the confirmation over the board, in a portal above the dialog (the board's columns scroll and would clip it) */
+.house-card .house-start {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 4px;
+  font: 500 10px var(--ui); letter-spacing: 0; text-transform: none; color: var(--teal-text);
+  background: color-mix(in srgb, var(--teal) 12%, transparent); border: 1px solid color-mix(in srgb, var(--teal) 35%, transparent);
+  opacity: 0;
+}
+.house-card:hover .house-start, .house-card:focus-within .house-start { opacity: 1; }
+.house-card .house-start:hover { background: color-mix(in srgb, var(--teal) 22%, transparent); color: var(--text-1); }
+.house-card .house-start .ico, .house-acts .ico { margin: 0 2px 0 0; }
+.t2s-back { position: fixed; inset: 0; z-index: 55; }
+.t2s-pop {
+  position: fixed; z-index: 56; width: 370px; max-width: calc(100vw - 16px); overflow-y: auto;
+  display: flex; flex-direction: column; gap: 9px; padding: 12px 14px;
+  background: var(--bg-pane-header); border: 1px solid var(--line-strong2); border-radius: 8px; box-shadow: 0 14px 34px rgba(0, 0, 0, .5);
+  font: 400 11px/1.45 var(--ui); color: var(--text-2);
+}
+.t2s-pop:focus { outline: none; }
+.t2s-h { font: 600 12px var(--ui); color: var(--text-1); }
+.t2s-title { margin-top: -6px; color: var(--text-2); overflow-wrap: anywhere; }
+.t2s-grid { display: grid; grid-template-columns: 50px minmax(0, 1fr); gap: 8px 10px; align-items: center; }
+.t2s-k { font: 500 8.5px var(--ui); letter-spacing: .6px; text-transform: uppercase; color: var(--text-4); }
+.t2s-mono { font: 400 10.5px var(--mono); color: var(--text-1); overflow-wrap: anywhere; }
+.t2s-branch { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.t2s-branch input[type=text] {
+  width: 100%; background: var(--bg-pane); color: var(--text-1); border: 1px solid var(--line-strong); border-radius: 5px;
+  padding: 5px 8px; font: 400 10.5px var(--mono); caret-color: var(--amber);
+}
+.t2s-branch input[type=text]:focus { outline: none; border-color: var(--line-btn-hover); }
+.mb-select.t2s-select { padding: 4px 8px; font-size: 11px; }
+.t2s-agent { justify-self: start; }
+.t2s-dim { font-size: 10px; color: var(--text-4); }
+.t2s-what { line-height: 1.45; }
+.t2s-bad { color: var(--red); }
+.t2s-note { font-size: 10.5px; color: var(--amber-text); overflow-wrap: anywhere; }
+.t2s-err { font-size: 10.5px; color: var(--red); overflow-wrap: anywhere; }
+.t2s-err .link { margin-left: 6px; font-size: 10.5px; }
+.t2s-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.t2s-foot .t2s-dim { margin-right: auto; }
 /* claim warnings from the agents' hooks */
 .house-toasts { position: fixed; right: 16px; bottom: 36px; z-index: 60; display: flex; flex-direction: column; gap: 6px; width: 390px; max-width: calc(100vw - 32px); }
 .house-toast {

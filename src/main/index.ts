@@ -60,6 +60,7 @@ import { TeamService, type RoomCleanup } from "./team/service";
 import { configureWebRtc } from "./team/peerHost";
 // team rooms: the Radley House board (importing it registers the board's room events, before any room log loads)
 import { HouseService } from "./team/houseService";
+import { TicketSessions } from "./team/ticketSession";
 import { TeamChanges } from "./team/teamChanges";
 import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 // team rooms: team chat
@@ -169,6 +170,18 @@ const teamHouse: HouseService = new HouseService({
   },
   worktreeFiles: (o) => teamChanges.worktreeFiles(o),
   migrationFolders: (roomId) => teamChanges.migrationFolders(roomId),
+});
+// team rooms: a session from a House ticket — the board's claim, New session's worktree and launch, in that order
+const ticketSessions = new TicketSessions({
+  house: teamHouse,
+  knownRepos: () => indexRepos(store.settings.repoRoots).map((r) => r.path),
+  createSession: async (req) => {
+    const info = await sessions.create(req);
+    if (info.repoPath) overlapsSoon(info.cwd);
+    return info;
+  },
+  baseOf: async (repo) => (await listBranches(repo)).defaultBase,
+  log: logError,
 });
 // team rooms: what teammates' sessions on other Macs change (their pushed branches and the snapshots
 // take-over copies here), for the overlap heads-up and the agents' tools; migration number reservations
@@ -976,6 +989,8 @@ handle("house:watch", (roomId, open) => teamHouse.watch(String(roomId), open ===
 handle("house:refresh", (roomId) => teamHouse.refreshNow(String(roomId)));
 handle("house:ticket", (roomId, n) => teamHouse.ticket(String(roomId), Number(n)));
 handle("house:write", (roomId, w) => teamHouse.write(String(roomId), w));
+handle("house:sessionPlan", (roomId, n) => ticketSessions.plan(String(roomId), Number(n)));
+handle("house:startSession", (roomId, req) => ticketSessions.start(String(roomId), req ?? {}));
 handle("house:consent", (roomId, allow) => teamHouse.consent(String(roomId), allow === true));
 handle("house:pendingConsents", () => teamHouse.pendingConsents());
 handle("house:open", async (roomId, n) => {

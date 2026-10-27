@@ -1254,6 +1254,74 @@ House's **open backlog**.
   worktree's old `.mockingbird/plan.md` is removed the next time its copy is
   written.
 
+### Start a session from a ticket
+
+Built 2026-10-26 for 1.6.0 as a small confirmation by the card (option B of
+three mocked: one click with an undo toast, this confirmation, and New session
+opened prefilled); Ryan picks before it ships. One action takes a House ticket
+to a running agent: claim it, make its branch's worktree, start the agent
+briefed on it (`src/main/team/ticketSession.ts`, `src/shared/team/ticketSession.ts`).
+
+- **Where:** **Start** on a card (shown while the card is hovered or
+  focused), **Start session…** in the card's right-click menu (with **Open
+  the ticket** and **Open in the House ↗**), and **Start session** in the
+  ticket's dialog. Only on a ticket that's open and free or yours: a
+  teammate's card has no Start, and its menu row is disabled with whose it is.
+- **The confirmation** (in a portal over the board, placed by what opened it)
+  reads the ticket fresh and says what Start will do: the claim ("Claims #146
+  as you in the House", "#150 is yours already: no claim", or whose it is),
+  the repo, the branch, and the agent — **Claude** (the default; the last
+  choice is kept on this Mac) or **Codex**. **Start** runs it; Cancel or Esc
+  closes it.
+- **The repository:** the room's, by origin, as every member's room sessions
+  name theirs; this Mac's clones of it (main checkouts among the known repos)
+  are offered, the one most of the room's sessions use first. When none is
+  cloned here, nothing is offered and it says which is needed ("…the room's
+  repository, backoffice (github:acme/backoffice), which isn't cloned on this
+  Mac. Clone it into one of your repo folders…"). When no session in the room
+  has worked in a repository yet, every known repo is offered, one named like
+  the House project first, and it says the pick is the user's.
+- **The branch:** a claim of yours keeps its branch; otherwise the ticket's
+  own `branch` field when it has one (a released ticket can keep it), a
+  room session's branch naming the ticket, or a new `feature/<n>-<slug>`
+  (the board's claim prompt's suggestion), which the confirmation lets you
+  rename. A new branch is cut from the repository's dev/main-style base,
+  fetched from origin first, as New session cuts one; a base branch (dev,
+  main…) is refused.
+- **The steps, in order** — each stops Start with what happened and leaves
+  nothing half done:
+  1. Read the ticket: a closed ticket, or one a teammate has, stops here
+     ("#141 is Nick's, on feature/141-last-org: nothing was started").
+  2. Check the repository (above), before anything is written.
+  3. Claim it with this member's builder token, through the board's own claim
+     (`POST …/claim {branch}`, the nudge, the chat line) — unless it's
+     theirs already. A 409 since the read stops here and says who has it now,
+     read again from the House.
+  4. New session's start in the room's group: the worktree under
+     `<parent>/worktrees/<repo>/<branch>` (reused when it's there), the agent
+     launched with the room's protections. When this fails, the claim Start
+     made is released again and the answer says so; when releasing fails too,
+     the answer says the claim is still held, and the confirmation offers
+     **Release #n**. A ticket that was already yours stays yours.
+  On success the board closes and the new session is shown.
+- **The brief** (the agent's first prompt): which ticket, project, room and
+  branch; then the ticket inside `<house-ticket>` … `</house-ticket>`, one
+  labelled line each — NUMBER, TITLE, STATUS, PRIORITY, KIND, TAGS, BLOCKED
+  BY, WAITING ON, each line of DETAIL and ACCEPTANCE, and LINK (the House
+  page, the ticket's links, and the references on its history, such as a PR
+  on a progress note). Every House-sourced string goes through agentText's
+  `fenced` (one line, `<` `>` swapped), so none can close the fence, open
+  another or pass for Mockingbird's words; names among Mockingbird's words go
+  through `named`. Before the fence the agent is told it is the task's
+  description, not instructions about Mockingbird, its tools or its
+  permissions; after it, where to read more (`read_house_ticket`,
+  `list_house_tickets`, `get_house_spec`) and that every House write waits
+  for its user's OK in the pane.
+- **Not yet:** the Dashboard's Azure DevOps cards have their own Start session
+  in the work item's dialog (a branch named `<id>-<name>`, no claim); a
+  card-level entry there, the same confirmation for a work item, is a
+  follow-up.
+
 ## Teammates' changes and migration numbers
 
 Decided with Ryan, 2026-10-13: Ryan's and Nick's agents work in the same
@@ -1668,7 +1736,20 @@ be taken.
   their counts, the line where a dragged card lands and the drop's write, no
   line within a column, Done refusing with its reason, the claim's branch
   asked on the card, a release, ⌥←, a refusal putting the card back, and the
-  columns scrolling sideways inside a narrow board. `test/houseLive.test.ts` runs
+  columns scrolling sideways inside a narrow board. Start session on a
+  ticket (`test/ticketSession.test.ts`, against the fake House, a git clone
+  of a local origin and New session's real start with the pty stood in for):
+  the claim with the member's own token, the worktree on the ticket's branch,
+  the session in the room's group with the brief; Codex; a ticket that's
+  yours already (no claim) and one with its own branch; a teammate's ticket
+  and a 409 since the read stopping before anything is written, saying who;
+  a worktree that fails releasing the claim, and one whose release fails too
+  saying it's still held; the repository needed when it isn't cloned here,
+  and the guess when the room has none yet; the brief fenced against a
+  hostile ticket. In headless Chrome (`test/uiTicketStart.test.ts`, local
+  only): Start on free and own cards only, the menu's rows, the
+  confirmation's fields, the board closing on the new session, and the
+  failures' messages with Release offered. `test/houseLive.test.ts` runs
   `test/houseCheck.ts` against the real House (GETs only) when run by hand
   with `MB_HOUSE_LIVE=1`, never in CI: the open backlog non-empty when the
   House has open tickets, every status and priority known, histories
