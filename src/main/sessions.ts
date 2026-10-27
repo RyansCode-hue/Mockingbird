@@ -13,6 +13,7 @@ import { which, whichSync, quote } from "./shell";
 import { mcpLaunch } from "./messaging";
 import { conversationsOf, withConversation } from "./meters";
 import { writeFileAtomic } from "./fileOps";
+import { compactBlocker } from "../shared/contextBudget";
 import { isRemotePaneId, type PaneSnapshot } from "../shared/team/livePanes";
 
 const BUFFER_MAX = 400_000; // bytes of scrollback kept per session for re-render
@@ -150,6 +151,7 @@ interface LiveSession {
   hookEvents: number; // hook events routed to this pty since it started
   kickoff: boolean; // its initial prompt is still to be typed in
   startTimer: NodeJS.Timeout | null; // delivers queued messages once a just-started agent has drawn its prompt
+  compactSentAt: number | null; // when Compact (usage warnings) last sent /compact here
 }
 
 export class SessionManager {
@@ -456,6 +458,7 @@ export class SessionManager {
       hookEvents: 0,
       kickoff: false,
       startTimer: null,
+      compactSentAt: null,
     };
     sess.total = sess.buffer.length;
     this.live.set(info.id, sess);
@@ -1029,6 +1032,35 @@ export class SessionManager {
     // pasted now, its Enter would answer the prompt
     if (s.info.status === "waiting") return "queued: its agent is asking for permission, and it's delivered once that's answered";
     return "queued until its current turn ends";
+  }
+
+  /** Why Compact can't go to a session now (compactBlocker), or null when it can. */
+  compactRefusal(id: string): string | null {
+    if (isRemotePaneId(id)) return compactBlocker({ status: "idle", remote: true });
+    const s = this.live.get(id);
+    if (!s) return "The session isn't running";
+    return compactBlocker({
+      status: s.info.status,
+      shell: !!s.info.shell,
+      draft: s.draft,
+      starting: s.kickoff || !!s.startTimer,
+      compactSentAt: s.compactSentAt,
+    });
+  }
+
+  /**
+   * Send /compact to a session, on the user's click — never queued: refused
+   * unless the session is idle at its prompt with nothing typed there
+   * (compactBlocker). A compaction reports no turn of its own (no Stop, and
+   * its SessionStart says nothing), so the session's status is left as it is.
+   */
+  compact(id: string): void {
+    const refusal = this.compactRefusal(id);
+    if (refusal) throw new Error(refusal);
+    const s = this.live.get(id)!;
+    s.compactSentAt = Date.now();
+    this.sendMessage(id, "/compact", true);
+    console.log(`[sessions] ${id}: /compact sent from its context warning`);
   }
 
   /** Broadcast to sessions; queue for busy ones (delivered on the next idle).

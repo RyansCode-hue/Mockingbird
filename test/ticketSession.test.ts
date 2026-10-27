@@ -9,6 +9,7 @@ import { HouseService } from "../src/main/team/houseService";
 import { TicketSessions, type TicketSessionDeps } from "../src/main/team/ticketSession";
 import { recordFor } from "../src/main/team/roomSessions";
 import { SessionManager } from "../src/main/sessions";
+import { ticketOfSession } from "../src/main/meters";
 import { listBranches, worktreeRoot } from "../src/main/worktrees";
 import { ticketBrief, TICKET_FENCE, type TicketSessionFailure } from "../src/shared/team/ticketSession";
 import type { HouseTicketDetail } from "../src/shared/team/house";
@@ -140,7 +141,9 @@ describe("Start session on a House ticket", () => {
     expect(writes()).toEqual(["POST work-items/146/claim"]);
     // the worktree, on the ticket's branch, where New session puts it
     const wt = path.join(worktreeRoot(real(clone)), "feature/146-donor-export-skips-archived-donors");
-    expect(r.session).toMatchObject({ branch: "feature/146-donor-export-skips-archived-donors", taskGroup: GROUP, agent: "claude", title: "#146 — Donor export skips archived donors" });
+    expect(r.session).toMatchObject({ branch: "feature/146-donor-export-skips-archived-donors", taskGroup: GROUP, agent: "claude", ticketId: "146", title: "#146 — Donor export skips archived donors" });
+    // its usage counts as the ticket's, which the House ticket's detail shows
+    expect(ticketOfSession(r.session)).toBe("146");
     expect([real(r.session.cwd), real(r.session.repoPath!)]).toEqual([wt, real(clone)]);
     expect(branchAt(wt)).toBe("feature/146-donor-export-skips-archived-donors");
     expect(real(spawned.at(-1)!.cwd)).toBe(wt);

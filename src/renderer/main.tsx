@@ -60,6 +60,8 @@ import { RunView } from "./RunView";
 import { Popover } from "./Popover";
 import { PipelineDialog, StageChip, usePipelines } from "./TicketPipeline";
 import { HandoffDialog } from "./Handoff";
+import { BriefDialog, ContextWarning, useCostGate } from "./ContextWarning";
+import { GroupUsage } from "./GroupUsage";
 import { UndoTurnDialog } from "./UndoTurn";
 import { MessageLogDialog, useAgentMessages } from "./AgentMessages";
 import { RollupDialog } from "./Rollup";
@@ -199,6 +201,9 @@ function App() {
   const [pipelineFor, setPipelineFor] = useState<{ id: string; title: string } | null>(null);
   // "continue in the other agent" for this session
   const [handoffFor, setHandoffFor] = useState<SessionInfo | null>(null);
+  // context warnings: a fresh session from a brief, and asking before an expensive resume
+  const [briefFor, setBriefFor] = useState<SessionInfo | null>(null);
+  const costGate = useCostGate();
   // "undo a turn" for this session
   const [undoFor, setUndoFor] = useState<SessionInfo | null>(null);
   // agent messaging: the log, how messages arrive per group, and a group's status check
@@ -1331,10 +1336,29 @@ function App() {
     setCloseDlg({ session: s, wt: st });
   };
 
+  /** A session continued in a new one (a handoff, or a fresh session from a brief): beside it, or in its place when it's closed. */
+  const placeContinuation = async (old: SessionInfo, next: SessionInfo, closeOld: boolean) => {
+    await refresh();
+    const [oldKey, nextKey] = [cellKeyOfSession(old), cellKeyFor(next.id, next.taskGroup)];
+    // the old one is kept under Previous; its worktree is the new session's
+    if (closeOld && !failed(`Couldn't close ${titleOf(old)}`, await window.mb.killSession(old.id, false))) {
+      disposeTerm(old.id);
+      expectPane(nextKey, (t) => rename(t, oldKey, nextKey)); // the new session takes the old one's place
+      setShown((p) => (p.includes(old.id) ? p.map((x) => (x === old.id ? next.id : x)) : [...p, next.id]));
+      refresh();
+    } else {
+      expectPane(nextKey, (t) => t && insertBeside(t, oldKey, "right", nextKey));
+      setShown((p) => placeBeside(p.includes(next.id) ? p : [...p, next.id], next.id, old.id, "after"));
+    }
+    setFocused(next.id);
+    setTimeout(() => focusTerm(next.id), 50);
+  };
+
   const resumeDead = async (s: SessionInfo) => {
     // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed)
     if (s.room?.takenOver) return alert(`${s.room.takenOver.byName} continues ${titleOf(s)} on their laptop — take it back rather than resuming this copy.`);
     // drop the dead pty, keep the store entry
+    if (!(await costGate.resume(s))) return;
     if (failed(`Couldn't resume ${titleOf(s)}`, await window.mb.killSession(s.id, false))) return;
     disposeTerm(s.id);
     const info = await window.mb.relaunchSession(s.id);
@@ -2321,6 +2345,7 @@ function App() {
                     <button
                       title="Relaunch, resuming the conversation"
                       onClick={async () => {
+                        if (!(await costGate.resume(s))) return;
                         const info = await window.mb.relaunchSession(s.id);
                         if (isErr(info)) return alert(`Couldn't relaunch: ${info.error}`);
                         if (info) {
@@ -2375,6 +2400,7 @@ function App() {
                       Pipeline
                     </button>
                   ))}
+                <GroupUsage g={meters?.groups?.[activeGroup]} what={groupTitle(activeGroup, topSessions)} />
                 {/* team rooms: team chat */}
                 {(() => {
                   const room = roomOfGroup(teamStatus, activeGroup);
@@ -2514,6 +2540,7 @@ function App() {
                       return l && <LeftCopyPanel left={l} onTakeBack={() => takeBack(l)} onClose={() => requestClose(s)} />;
                     })()}
                     teamNotice={<ReceivedNotice received={receivedFor(s)} onReview={setReviewing} />}
+                    contextChip={!s.shell && !isRemote(s) ? <ContextWarning session={s} onBrief={() => setBriefFor(s)} /> : undefined}
                     messages={(() => {
                       const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
                       return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
@@ -2887,26 +2914,25 @@ function App() {
         <HandoffDialog
           session={handoffFor}
           onClose={() => setHandoffFor(null)}
-          onStarted={async (next, closeOld) => {
+          onStarted={(next, closeOld) => {
             const old = handoffFor;
             setHandoffFor(null);
-            await refresh();
-            const [oldKey, nextKey] = [cellKeyOfSession(old), cellKeyFor(next.id, next.taskGroup)];
-            // the old one is kept under Previous; its worktree is the new session's
-            if (closeOld && !failed(`Couldn't close ${titleOf(old)}`, await window.mb.killSession(old.id, false))) {
-              disposeTerm(old.id);
-              expectPane(nextKey, (t) => rename(t, oldKey, nextKey)); // the new session takes the old one's place
-              setShown((p) => (p.includes(old.id) ? p.map((x) => (x === old.id ? next.id : x)) : [...p, next.id]));
-              refresh();
-            } else {
-              expectPane(nextKey, (t) => t && insertBeside(t, oldKey, "right", nextKey));
-              setShown((p) => placeBeside(p.includes(next.id) ? p : [...p, next.id], next.id, old.id, "after"));
-            }
-            setFocused(next.id);
-            setTimeout(() => focusTerm(next.id), 50);
+            void placeContinuation(old, next, closeOld);
           }}
         />
       )}
+      {briefFor && (
+        <BriefDialog
+          session={briefFor}
+          onClose={() => setBriefFor(null)}
+          onStarted={(next, closeOld) => {
+            const old = briefFor;
+            setBriefFor(null);
+            void placeContinuation(old, next, closeOld);
+          }}
+        />
+      )}
+      {costGate.dialog}
 
       {pipelineFor && (
         <PipelineDialog

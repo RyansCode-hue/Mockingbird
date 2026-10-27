@@ -117,6 +117,9 @@ export class TicketSessions {
         branchName: branch,
         ...(base ? { baseBranch: base } : {}),
         taskGroup: ctx.group,
+        // the ticket's usage (the meters' tickets) and the pane's ticket chip count this session as the ticket's
+        ticketId: String(n),
+        ticketTitle: v.detail.title,
         agent,
         title: ticketSessionTitle(n, v.detail.title),
         initialPrompt: ticketBrief({ detail: v.detail, project: ctx.project, room: ctx.room, branch, claimed }),

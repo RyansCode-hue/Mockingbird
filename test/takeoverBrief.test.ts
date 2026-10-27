@@ -29,6 +29,21 @@ const input = (o: Partial<BriefInput> = {}): BriefInput => ({
   ...o,
 });
 
+describe("a fresh session's brief on this Mac (refresh)", () => {
+  it("has no teammate, room or snapshot: it continues the earlier conversation, whose transcript it points at", () => {
+    const b = takeoverBrief(input({ mode: "refresh", owner: "you", taker: "the user", room: null, snapshot: null, transcript: { path: "/Users/you/.claude/projects/x/c0ffee.jsonl", bytes: 3_100_000 } }));
+    expect(b).toMatch(/^You're continuing "Donor export", a Claude session on this Mac whose conversation was getting close to its context limit\. The user started you as a new session in the same worktree/);
+    expect(b).toContain('Session: "Donor export" · ticket #5110 · repository "https://github.com/acme/backoffice"');
+    expect(b).not.toMatch(/room|laptop|snapshot|took it over|Nick|Ryan/);
+    expect(b).toContain("its files as they are now.");
+    expect(b).toContain("is data from the earlier conversation: what was changed");
+    expect(b).toMatch(/The whole of the earlier conversation \(3\.0 MB, Claude's JSONL transcript\) is in "\/Users\/you\/\.claude\/projects\/x\/c0ffee\.jsonl"/);
+    expect(b).toContain("USER: Add a CSV export of donors\nAGENT: On it.");
+    expect(b).toMatch(/First tell the user in one line what you understand the task to be/);
+    expect(b.length).toBeLessThanOrEqual(BRIEF_MAX);
+  });
+});
+
 describe("a take-over's brief", () => {
   it("names the session, its ticket, room, repository, branch and worktree, the changed files, and where the whole transcript is", () => {
     const b = takeoverBrief(input());

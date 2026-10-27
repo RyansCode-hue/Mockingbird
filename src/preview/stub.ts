@@ -10,6 +10,7 @@
  * scripted checks. Add `?reset` to the URL to start from the fixtures again;
  * the query can also pick the screen (see the end of this file).
  */
+import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
@@ -188,7 +189,10 @@ const usage: UsageReport = {
 // each session's context window; ?contextWindow=error answers every read with a failure
 const contexts: Record<string, ContextWindow> = {
   s1: { state: "reading", agent: "claude", tokens: 275_612, window: 1_000_000, at: now - 4_000 },
-  s2: { state: "reading", agent: "claude", tokens: 183_400, window: 200_000, at: now - 40_000 },
+  // context warnings: s2 is past 90% of where Claude compacts by itself (167k on a 200k window) but asking for
+  // permission, so Compact waits; s5 is past 75%, idle at its prompt
+  s2: { state: "reading", agent: "claude", tokens: 152_300, window: 200_000, at: now - 40_000, model: "claude-sonnet-5", cache: { warm: true, expiresAt: now + 4 * min, recacheTokens: 151_000 } },
+  s5: { state: "reading", agent: "claude", tokens: 760_400, window: 1_000_000, at: now - 9 * min, model: "claude-opus-5-5", cache: { warm: false, expiresAt: now - 4 * min, recacheTokens: 758_000 } },
   s3: { state: "reading", agent: "codex", tokens: 64_210, window: 272_000, at: now - 3 * min },
 };
 const tokens = (input: number, output: number, cacheRead: number) => ({ input, output, cacheRead, cacheWrite: Math.round(input / 3), replies: 40 });
@@ -198,6 +202,17 @@ const meters: Meters = {
   sessions: {
     s1: { agent: "claude", tokens: tokens(900_000, 120_000, 21_000_000), window: { tokens: 6_000_000, sharePct: 14, usedPct: 38, resetsAt: now + 2.5 * 60 * min } },
     s2: { agent: "claude", tokens: tokens(300_000, 60_000, 7_000_000), window: { tokens: 1_000_000, sharePct: 2.4, usedPct: 38, resetsAt: now + 2.5 * 60 * min } },
+  },
+  // a group's and a ticket's sessions summed (each conversation once): 5101's s1, s2 and s3
+  groups: {
+    "5101": { sessions: 3, tokens: tokens(1_420_000, 196_000, 28_700_000), window: { claude: { tokens: 7_000_000, sharePct: 16.4 }, codex: { tokens: 310_000, sharePct: 2.1 } } },
+    "5102": { sessions: 2, tokens: tokens(610_000, 88_000, 11_200_000), window: { claude: { tokens: 1_900_000, sharePct: 4.8 } } },
+  },
+  tickets: {
+    "5101": { sessions: 3, tokens: tokens(1_420_000, 196_000, 28_700_000), window: { claude: { tokens: 7_000_000, sharePct: 16.4 }, codex: { tokens: 310_000, sharePct: 2.1 } } },
+    "5102": { sessions: 2, tokens: tokens(610_000, 88_000, 11_200_000), window: { claude: { tokens: 1_900_000, sharePct: 4.8 } } },
+    // the House's #143, claimed by you
+    "143": { sessions: 1, tokens: tokens(240_000, 41_000, 5_300_000), window: { claude: { tokens: 900_000, sharePct: 2.2 } } },
   },
 };
 
@@ -1073,6 +1088,35 @@ const api: Record<string, (...a: any[]) => any> = {
       ? { error: `EACCES: permission denied, open '/Users/you/.mockingbird/context/${id}.json'` }
       : (contexts[id] ?? { state: "none", why: "No reply yet in this conversation" }),
   metersGet: async () => meters,
+  // context warnings: Compact goes only to an idle session (compactBlocker); then the context drops a moment later
+  contextCompact: async (id: string) => {
+    const s = byId(id);
+    const why = s ? compactBlocker({ status: s.status, shell: !!s.shell }) : "The session isn't running";
+    if (why) return later(err(why));
+    setTimeout(() => {
+      const c = contexts[id];
+      if (c?.state === "reading") contexts[id] = { ...c, tokens: 41_200, at: Date.now(), cache: undefined };
+    }, 1500);
+    return later(undefined);
+  },
+  // the crashed session's conversation is big and cold: resuming it asks first; others go straight ahead
+  resumeCost: async (id: string) =>
+    later(
+      id === "s6"
+        ? { agent: "claude", estimate: rereadCost({ agent: "claude", model: "claude-opus-5-5", tokens: 380_000, cache: { warm: false, expiresAt: now - 3 * 60 * min }, now: Date.now(), unitsPerPct: 0.95 }) }
+        : null
+    ),
+  contextBrief: async (id: string) =>
+    later(
+      {
+        brief: `You're continuing "${byId(id)?.title ?? id}", a Claude session on this Mac whose conversation was getting close to its context limit. The user started you as a new session in the same worktree, from this brief rather than from the whole conversation.\n\n<handover>\n## Changed files (against origin/dev)\nsrc/QuickView.tsx | 40 ++++++------\n\n## Latest to-do list\n[completed] Reproduce the freeze\n[in_progress] Virtualize the pathway list\n</handover>\n\nFirst tell the user in one line what you understand the task to be and where it stands.`,
+        agent: "claude",
+        estimate: rereadCost({ agent: "claude", model: "claude-opus-5-5", tokens: 3_900, fresh: true, now: Date.now(), unitsPerPct: 0.95 }),
+        replaces: contexts[id]?.state === "reading" ? (contexts[id] as { tokens: number }).tokens : null,
+      },
+      400
+    ),
+  contextBriefStart: async () => err("UI preview: no session starts"),
   worktreeState: async (cwd: string) =>
     cwd.includes("5101") ? { dirty: true, dirtyFiles: 2, branch: "5101-orgDropdowns", upstream: "origin/5101-orgDropdowns", ahead: 1, behind: 0, insertions: 18, deletions: 3 } : { dirty: false, dirtyFiles: 0, branch: "dev", upstream: "origin/dev", ahead: 0, behind: 2, insertions: 0, deletions: 0 },
   watchFolders: async () => ({ watching: [] }),
@@ -1571,7 +1615,7 @@ const api: Record<string, (...a: any[]) => any> = {
       );
     }
     const room = team.rooms.find((x) => x.id === roomId);
-    const session: SessionInfo = await api.createSession({ repoPath: req.repoPath, useWorktree: true, branchName: branch, taskGroup: room?.groupKey, agent: req.agent, title: `#${req.n} — ${t.title}` });
+    const session: SessionInfo = await api.createSession({ repoPath: req.repoPath, useWorktree: true, branchName: branch, taskGroup: room?.groupKey, ticketId: String(req.n), ticketTitle: t.title, agent: req.agent, title: `#${req.n} — ${t.title}` });
     return later({ session, claimed, branch, message: claimed ? `Claimed #${req.n} and started ${req.agent === "codex" ? "Codex" : "Claude"} on ${branch}` : `Started on ${branch}` }, 300);
   },
   houseConsent: async (roomId: string, allow: boolean) => {
@@ -2076,6 +2120,12 @@ if (params.has("usagePop")) {
     setTimeout(() => click(".statusbar .usage"), 200);
   }, 600);
 }
+// ?ctxPop opens the first pane's context-warning chip; ?ctxBrief goes on to Fresh session with a brief; ?ctxResume
+// resumes the crashed session s6, whose cold conversation asks first
+const ctxButton = (text: string) => [...document.querySelectorAll(".ctx-pop button")].find((b) => b.textContent === text) as HTMLElement | undefined;
+if (params.has("ctxPop") || params.has("ctxBrief")) setTimeout(() => click(".ctx-chip"), 900);
+if (params.has("ctxBrief")) setTimeout(() => ctxButton("Fresh session with a brief")?.click(), 1200);
+if (params.has("ctxResume")) setTimeout(() => click(".pane.st-dead .dead-body button.outline.strong"), 900);
 /** Type into an input as a person would, so React sees the change. */
 const typeInto = (selector: string, text: string) => {
   const input = document.querySelector(selector) as HTMLInputElement | null;
@@ -2865,6 +2915,77 @@ if (whatsNewQ !== null && whatsNewQ !== "updated") {
 // opening moves focus into a named dialog whose body scrolls inside a bounded height, Esc closes it and gives focus
 // back to the label, as does a click outside — and writes the results into <script id="mb-wn-audit"> for
 // test/uiWhatsNew.test.ts. With ?whatsNew=updated it starts from the label's "Updated to" state.
+// ?ctxAudit (real time: pageResult) drives the context warning as a person does and writes what it saw into
+// <script id="mb-ctx-audit"> for test/uiContextWarning.test.ts. =idle: s5, past 75% and idle — an amber chip whose
+// popover's Compact is sent on the click only, and the chip goes once the smaller context is reported. =waiting: s2,
+// past 90% while asking for permission — a red chip, Compact held back; Dismiss hides it and is remembered. =resume:
+// the crashed s6, whose cold conversation asks before resuming — Cancel leaves it, Continue resumes it.
+if (params.get("ctxAudit")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const chip = () => document.querySelector(".ctx-chip") as HTMLElement | null;
+  const pop = () => document.querySelector(".ctx-pop") as HTMLElement | null;
+  const button = (root: Element | null, text: string) => [...(root?.querySelectorAll("button") ?? [])].find((b) => b.textContent === text) as HTMLButtonElement | undefined;
+  const count = (fn: string) => calls.filter((c) => c.fn === fn).length;
+  const until = async (ok: () => boolean, ms: number) => {
+    for (const end = Date.now() + ms; !ok() && Date.now() < end; ) await sleep(100);
+    return ok();
+  };
+  (async () => {
+    const out: Record<string, unknown> = {};
+    const mode = params.get("ctxAudit");
+    if (mode === "resume") {
+      await until(() => !!document.querySelector(".pane.st-dead .dead-body"), 5000);
+      const resume = () => (document.querySelector(".pane.st-dead .dead-body button.outline.strong") as HTMLElement | null)?.click();
+      resume();
+      out.asked = await until(() => !!document.querySelector(".cost-dlg"), 3000);
+      out.say = document.querySelector(".cost-dlg .cost-say")?.textContent ?? null;
+      out.why = document.querySelector(".cost-dlg .cost-why")?.textContent ?? null;
+      button(document.querySelector(".cost-dlg"), "Cancel")?.click();
+      await sleep(400);
+      out.afterCancel = { dialog: !!document.querySelector(".cost-dlg"), killed: count("killSession"), relaunched: count("relaunchSession") };
+      resume();
+      await until(() => !!document.querySelector(".cost-dlg"), 3000);
+      button(document.querySelector(".cost-dlg"), "Continue")?.click();
+      await until(() => count("relaunchSession") > 0, 3000);
+      out.afterContinue = { dialog: !!document.querySelector(".cost-dlg"), relaunched: count("relaunchSession") };
+    } else {
+      out.shown = await until(() => !!chip(), 5000);
+      out.tone = chip()?.classList.contains("firm") ? "firm" : chip()?.classList.contains("heads") ? "heads" : null;
+      out.chip = chip()?.textContent ?? null;
+      out.inHeader = !!chip()?.closest(".pane-header");
+      out.popBeforeClick = !!pop();
+      chip()?.click();
+      await until(() => !!pop(), 2000);
+      out.popTone = pop()?.classList.contains("firm") ? "firm" : "heads";
+      out.headline = pop()?.querySelector(".ctx-pop-h")?.textContent ?? null;
+      out.sub = pop()?.querySelector(".ctx-pop-sub")?.textContent ?? null;
+      const compact = button(pop(), "Compact");
+      out.compactDisabled = !!compact?.disabled;
+      out.compactTitle = compact?.title ?? null;
+      out.hasBrief = !!button(pop(), "Fresh session with a brief");
+      out.note = pop()?.querySelector(".ctx-pop-note")?.textContent ?? null;
+      out.sentBeforeClick = count("contextCompact");
+      out.typedBeforeClick = count("sessionWrite");
+      compact?.click();
+      await sleep(400);
+      out.sentAfterClick = count("contextCompact");
+      if (mode === "idle") {
+        out.compactingChip = chip()?.textContent ?? null;
+        out.clearedAfterCompact = await until(() => !chip(), 15_000);
+      } else {
+        button(pop(), "Dismiss")?.click();
+        await sleep(300);
+        out.dismissedGone = !chip() && !pop();
+        out.dismissal = JSON.parse(localStorage.getItem("mb.ctxDismissed") ?? "null");
+      }
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-ctx-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  })();
+}
 if (params.has("wnAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const label = () => document.querySelector(".brand .ver") as HTMLButtonElement | null;

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { tokenBreakdown } from "./TerminalPane";
+import { tokenBreakdown } from "./usageFormat";
 import { resetText, pctNow, headlineOf, contextLine, contextPct, contextTarget } from "./usageFormat";
 import { Popover } from "./Popover";
 import { AGENT_NAME, formatTokens, isErr, totalTokens, type ContextWindow, type SessionInfo, type UsageReport, type Meters } from "../shared/types";

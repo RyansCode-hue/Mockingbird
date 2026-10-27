@@ -180,6 +180,10 @@ const api = {
     ipcRenderer.invoke("files:diff", id, rel, scope, untracked),
   usageGet: () => ipcRenderer.invoke("usage:get"),
   contextWindow: (sessionId: string) => ipcRenderer.invoke("usage:context", sessionId),
+  contextCompact: (sessionId: string) => ipcRenderer.invoke("usage:compact", sessionId),
+  resumeCost: (sessionId: string) => ipcRenderer.invoke("usage:resumeCost", sessionId),
+  contextBrief: (sessionId: string) => ipcRenderer.invoke("usage:brief", sessionId),
+  contextBriefStart: (sessionId: string, brief: string) => ipcRenderer.invoke("usage:briefStart", sessionId, brief),
   onUsageChanged: (cb: (u: unknown) => void) => {
     const h = (_e: unknown, u: unknown) => cb(u);
     ipcRenderer.on("usage:changed", h);

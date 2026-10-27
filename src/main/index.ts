@@ -17,6 +17,7 @@ import { debugTargetFor } from "./dap/targets";
 import * as pty from "node-pty";
 import { installHooks, hooksInstalled, watchEvents, ensureHookScript } from "./hooks";
 import { readUsage, watchUsage, setClaudePlan, readContextWindow } from "./usage";
+import { planRateOf, refreshBrief, resumeEstimate, type RefreshBrief, type ResumeEstimate } from "./contextActions";
 import { listDir, readFile, writeFile, gitChanges, fileDiff, applyFileEdits, resolveIn, baseRef, inside } from "./files";
 import { scmStatus, scmStage, scmUnstage, scmDiscard, scmCommit, scmPush, scmPull, scmFetch, scmGraph, scmCommitFiles, scmCommitDiff, scmDiff } from "./scm";
 import { listAllFiles, searchFiles } from "./find";
@@ -907,6 +908,41 @@ handle("usage:context", (id: string): ContextWindow => {
   const s = sessions.list().find((x) => x.id === id);
   return s ? readContextWindow(s) : { state: "none", why: "This session isn't running" };
 });
+// the context warning's actions: Compact (only at an idle prompt), a fresh session from a brief, and cost estimates
+handle("usage:compact", (id: string) => sessions.compact(String(id)));
+/** Weighted units per 1% of `agent`'s 5-hour limit, from this Mac's use of the window; null without a reading. */
+function planRate(agent: AgentKind): number | null {
+  const w = fiveHourWindows(readUsage(), Date.now())[agent];
+  if (!w || !transcripts) return null;
+  return planRateOf(transcripts.usage({ since: w.start }).filter((r) => r.agent === agent), w.usedPct);
+}
+handle("usage:resumeCost", (id: string): ResumeEstimate | null => {
+  const s = sessions.list().find((x) => x.id === id) ?? sessions.resumable().find((x) => x.id === id);
+  if (!s || s.shell) return null;
+  const cw = readContextWindow(s);
+  return cw.state === "reading" ? resumeEstimate(cw, planRate(cw.agent), Date.now()) : null;
+});
+handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
+  const s = sessionOf(String(id));
+  if (s.shell) throw new Error("A terminal has no conversation to brief from");
+  const conv = s.conversation?.id ?? conversationsOf(s).at(-1);
+  if (!conv) throw new Error("Couldn't read the conversation: Mockingbird hasn't seen this session's conversation yet");
+  if (!transcripts) throw new Error(`Couldn't read the conversation: the conversation index isn't available${transcriptsProblem ? ` (${transcriptsProblem})` : ""}`);
+  await syncTranscripts(transcripts);
+  const agent: AgentKind = s.agent ?? "claude";
+  try {
+    return await refreshBrief(s, { files: transcripts.filesOf(conv), conversationId: conv, context: readContextWindow(s), rate: planRate(agent), now: Date.now() });
+  } catch (err) {
+    throw new Error(`Couldn't read the conversation: ${(err as Error).message}`);
+  }
+});
+// a session of the same agent in the same folder and group, started from the brief
+handle("usage:briefStart", (id: string, brief: string) => {
+  const s = sessionOf(String(id));
+  const text = String(brief ?? "").trim();
+  if (!text) throw new Error("The brief is empty");
+  return companionSession(s, s.agent ?? "claude", `${s.ticketTitle ?? s.title} · fresh`, text);
+});
 handle("hooks:installed", async () => hooksInstalled(await installedBin("codex")));
 handle("hooks:install", async () => installHooks(await installedBin("codex")));
 handle("app:version", () => app.getVersion());
@@ -1697,7 +1733,9 @@ async function syncTranscripts(index: TranscriptIndex): Promise<void> {
 let metersTimer: NodeJS.Timeout | null = null;
 function metersNow(): Meters {
   const now = Date.now();
-  const list = sessions.list();
+  // closed but resumable sessions too: a group's or ticket's usage counts them
+  const live = sessions.list();
+  const list = [...live, ...sessions.resumable().filter((r) => !live.some((s) => s.id === r.id))];
   if (!transcripts) return { sessions: {}, today: {}, at: now };
   const convs = [...new Set(list.flatMap(conversationsOf))];
   const report = readUsage(); // reads Codex's session files: once per recompute

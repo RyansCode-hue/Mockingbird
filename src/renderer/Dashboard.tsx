@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { TicketUsage } from "./GroupUsage";
 import { useRepos } from "./RepoPick";
 import { Pick } from "./Menu";
 import { cardMove, columnOf, orderColumns, pickBoard, COLUMN_PREFS_KEY, legacyColumnPrefs, type ColumnPrefs } from "./boardView";
@@ -719,6 +720,7 @@ export function DashboardBoard({
                   </button>
                 </div>
               )}
+              <TicketUsage ticket={String(detail.id)} />
               <label htmlFor="bd-tag-in">Tags</label>
               {detail.tags.length ? (
                 <TagChips

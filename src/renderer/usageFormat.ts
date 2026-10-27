@@ -1,4 +1,15 @@
-import type { SessionInfo, UsageLimit } from "../shared/types";
+import { formatTokens, type SessionInfo, type TokenCounts, type UsageLimit } from "../shared/types";
+
+/** "52k new input · 12k output · 1.1M read from cache · 30k written to cache · 41 replies". */
+export function tokenBreakdown(t: TokenCounts): string {
+  return [
+    `${formatTokens(t.input)} new input`,
+    `${formatTokens(t.output)} output`,
+    `${formatTokens(t.cacheRead)} read from cache`,
+    ...(t.cacheWrite ? [`${formatTokens(t.cacheWrite)} written to cache`] : []),
+    `${t.replies.toLocaleString()} replies`,
+  ].join(" · ");
+}
 
 /** "Resets in 4 hr 18 min" within a day, else "Resets Sun 2:00 PM". */
 export function resetText(resetsAt: number | null, now: number): string {
