@@ -45,15 +45,17 @@ const specs = (...keys: string[]): CollabParticipantSpec[] =>
 /** A council whose plan is written up and approved, with scripted turns (no model). */
 function council(repoPath: string | null, reply: (prompt: string) => string = () => "Plan.") {
   const prompts: string[] = [];
+  const seats: { conversationId: string | null; readsCode: boolean; runsCommands?: boolean }[] = [];
   const runTurn: TurnRunner = async (p, prompt) => {
     prompts.push(prompt);
+    seats.push({ conversationId: p.conversationId, readsCode: p.readsCode, runsCommands: p.runsCommands });
     return { text: reply(prompt), conversationId: `${p.key}-conv` };
   };
   const c = new CollabRooms(tempDir("collab"), runTurn, () => {}, vi.fn() as any, () => "dev");
   const room = c.create({ title: "CSV export", brief: "Export donors to CSV", repoPath, participants: specs("opus", "fable") });
   room.messages.push({ id: "plan1", speaker: "opus", text: PLAN, round: 1, at: Date.now(), kind: "plan" });
   c.approve(room.id, "plan1");
-  return { c, room, prompts };
+  return { c, room, prompts, seats };
 }
 
 function houseService(home: string, o: { team?: Parameters<HouseService["start"]>[0]; roomId?: string; sessions?: () => SessionInfo[]; knownRepos?: () => string[] } = {}) {
@@ -204,14 +206,15 @@ describe("a model's split of the plan", () => {
       { title: "Endpoint", detail: "Stream rows", acceptance: ["filters honoured"], priority: "HIGH" },
       { title: "Button", detail: "In the toolbar", priority: "urgent" },
     ]);
-    const { c, room, prompts } = council(null, () => `Here you go:\n\`\`\`json\n${answer}\n\`\`\``);
+    const { c, room, prompts, seats } = council(null, () => `Here you go:\n\`\`\`json\n${answer}\n\`\`\``);
     const seat = room.participants.find((p) => p.key === "opus")!;
     seat.conversationId = "opus-discussion";
     const before = prompts.length;
     const after = await c.splitPlanWithModel(room.id, "opus");
     expect(prompts.length).toBe(before + 1);
     expect(prompts.at(-1)).toBe(splitInstruction(PLAN));
-    // the discussion's own conversation is left as it was
+    // a fresh conversation that can't read the code; the discussion's own is left as it was
+    expect(seats.at(-1)).toEqual({ conversationId: null, readsCode: false, runsCommands: false });
     expect(seat.conversationId).toBe("opus-discussion");
     expect(after.ticketDrafts).toMatchObject({ how: "model", by: "Claude Opus 5.5" });
     expect(after.ticketDrafts!.drafts.map((d: TicketDraft) => [d.title, d.priority, d.acceptance])).toEqual([
