@@ -5,12 +5,23 @@ import { Popover } from "./Popover";
 import { AGENT_NAME, formatTokens, isErr, totalTokens, type ContextWindow, type SessionInfo, type UsageReport, type Meters } from "../shared/types";
 import { fmtElapsed } from "../shared/format";
 import { usePersisted } from "./prefs";
+import { useFill } from "./motion";
 
 /** The status bar's plan-usage meter and its popover. */
 
 type UsageShow = "claude" | "codex" | "both";
 
 const CONTEXT_POLL_MS = 2000;
+
+/** A 0–100 bar; it springs to a new value only on a real change of `of` (useFill), never on a poll that moved nothing. */
+function Bar({ pct, of }: { pct: number; of?: string }) {
+  const fill = useFill<HTMLSpanElement>(pct, of);
+  return (
+    <div className="usage-bar">
+      <span ref={fill} className={pct >= 90 ? "hot" : ""} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
 
 /** The focused session's context window, re-read while the popover is open. */
 function ContextRow({ session }: { session: SessionInfo | null }) {
@@ -49,9 +60,7 @@ function ContextRow({ session }: { session: SessionInfo | null }) {
           {v.state === "reading" && <span className="usage-pct">{contextLine(v.tokens, v.window)}</span>}
         </div>
         {v.state === "reading" ? (
-          <div className="usage-bar">
-            <span className={pct >= 90 ? "hot" : ""} style={{ width: `${pct}%` }} />
-          </div>
+          <Bar pct={pct} of={id ?? ""} />
         ) : (
           <div className={`usage-empty${v.state === "error" ? " bad" : ""}`}>{v.why}</div>
         )}
@@ -141,9 +150,7 @@ export function UsageMeter({ usage, meters, focused }: { usage: UsageReport | nu
                           </span>
                           <span className="usage-pct">{l.note ? "—" : `${Math.round(pct)}%`}</span>
                         </div>
-                        <div className="usage-bar">
-                          <span className={pct >= 90 ? "hot" : ""} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
-                        </div>
+                        <Bar pct={Math.min(100, Math.max(0, pct))} />
                       </div>
                     );
                   })}

@@ -172,6 +172,8 @@ function App() {
   const takeoverView = useTakeover();
   const tkView = takeoverView && !isErr(takeoverView) ? takeoverView : null;
   const backupFor = (s: SessionInfo): RoomSessionBackupView | null => (tkView ? backupOf(tkView, s.room) : null);
+  /** When this Mac took over the teammate's session that `s` continues, if it does. */
+  const tookOverAt = (s: SessionInfo): number | null => tkView?.sessions.find((v) => v.takenOver?.newSessionId === s.id)?.takenOver?.at ?? null;
   const [takeOverFor, setTakeOverFor] = useState<(RoomSessionBackupView & { back?: boolean }) | null>(null);
   // a copy of this Mac's that a teammate continued (stopped here), and changes a teammate sent for one of this Mac's sessions
   const leftFor = (s: SessionInfo): LeftCopy | null => (tkView && !isRemote(s) ? tkView.left.find((l) => l.sessionId === s.id) ?? null : null);
@@ -2506,6 +2508,7 @@ function App() {
                     onOpenBoard={setBoardDlg}
                     backup={backupFor(s)}
                     onTakeOver={setTakeOverFor}
+                    tookOverAt={tookOverAt(s)}
                     leftCopy={(() => {
                       const l = leftFor(s);
                       return l && <LeftCopyPanel left={l} onTakeBack={() => takeBack(l)} onClose={() => requestClose(s)} />;

@@ -26,6 +26,7 @@ import { ago, fmtElapsed, plural } from "../shared/format";
 import { baseName } from "../shared/paths";
 import { settled } from "./settled";
 import { StatusDot } from "./StatusDot";
+import { useHandover } from "./motion";
 
 export { applyTermTheme } from "./cachedTerm";
 
@@ -330,6 +331,7 @@ export function TerminalPane({
   onOpenBoard,
   backup,
   onTakeOver,
+  tookOverAt,
   leftCopy,
   teamNotice,
   onRestart,
@@ -383,6 +385,8 @@ export function TerminalPane({
   /** A room session's backup (team rooms), and taking a teammate's over. */
   backup?: RoomSessionBackupView | null;
   onTakeOver?: (view: RoomSessionBackupView) => void;
+  /** When this Mac took this session over from a teammate (it continues one of theirs), if it did. */
+  tookOverAt?: number | null;
   /** A teammate continues this session (team rooms): what its stopped copy shows instead of the dead pane's Resume. */
   leftCopy?: React.ReactNode;
   /** A line over the terminal from team rooms (changes a teammate sent, to review). */
@@ -402,6 +406,9 @@ export function TerminalPane({
   // team rooms: a teammate's session runs on their Mockingbird; this pane is its copy, at its owner's size
   const room = session.room ?? null;
   const remote = room?.remote ? room : null;
+  // a session that just changed hands — handed over to a teammate, or taken over here — marks its pane once
+  const paneEl = useRef<HTMLDivElement>(null);
+  useHandover(paneEl, room?.takenOver?.at ?? tookOverAt);
   const ownerSize = useRef({ cols: room?.cols ?? 120, rows: room?.rows ?? 32 });
   ownerSize.current = { cols: room?.cols ?? 120, rows: room?.rows ?? 32 };
   const densityNow = useRef(density);
@@ -831,6 +838,7 @@ export function TerminalPane({
 
   return (
     <div
+      ref={paneEl}
       className={[
         "pane",
         `density-${density}`,
@@ -1138,7 +1146,7 @@ export function TerminalPane({
             {room && <TypingAsks session={session} room={room} />}
             {room && <TypingRefused session={session} room={room} />}
             {room?.takenOver && !remote && (
-              <div className="team-pane-note" title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
+              <div className="team-pane-note" data-handover title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
                 Continued on {room.takenOver.byName}'s laptop {ago(room.takenOver.at)} — this copy is stopping; its files stay as they are
               </div>
             )}

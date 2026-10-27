@@ -377,6 +377,12 @@ button.chip.changes:hover { color: var(--text-1); background: var(--fill-selecte
 /* the focused pane: a neutral ring outside its border and a lifted header; a waiting pane keeps its amber
    border and glow, and shows the ring too when it's also the focused one */
 .pane.focused, .ws-pane:has(.pane.focused) { outline: 1.5px solid var(--pane-focus); outline-offset: 2px; }
+/* a session that just changed hands: this ring over the whole pane pulses once (handoverPulse in motion.ts).
+   Only its opacity is ever animated, and it sits above the terminal, which never moves under it. */
+.pane::after {
+  content: ""; position: absolute; inset: 0; z-index: 9; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 2px var(--teal); opacity: 0;
+}
 .pane.focused:not(.st-waiting) > .pane-header { background: var(--bg-pane-header-focus); }
 .pane.focused:not(.st-waiting) > .pane-header .controls { box-shadow: -12px 0 10px -4px var(--bg-pane-header-focus); }
 
@@ -1298,7 +1304,8 @@ body.fp-resizing { cursor: col-resize; user-select: none; }
 .usage-reset { font: 400 11px var(--ui); color: var(--text-3); }
 .usage-pct { font: 500 11px var(--mono); color: var(--text-2); min-width: 32px; text-align: right; }
 .usage-bar { height: 4px; border-radius: 2px; background: var(--fill-selected); margin-top: 5px; overflow: hidden; }
-.usage-bar span { display: block; height: 100%; background: var(--teal); border-radius: 2px; }
+/* a fill springs to a new value as a transform from its old width, anchored at its start (useFill in motion.ts) */
+.usage-bar span { display: block; height: 100%; background: var(--teal); border-radius: 2px; transform-origin: left center; }
 .usage-bar span.hot { background: var(--red); }
 .usage-foot { font: 400 10px var(--mono); color: var(--text-4); }
 .usage-show { display: flex; align-items: center; justify-content: center; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); font: 400 11px var(--ui); color: var(--text-3); }

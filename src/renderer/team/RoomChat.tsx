@@ -5,6 +5,7 @@ import { initialsOf, LeaveRoomDialog, roomOfGroup, RoomWarnings, TeamNotices } f
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type MenuEntry } from "../ContextMenu";
 import { BackIcon, ChatIcon, ChevronIcon, CloseIcon, GridIcon, InviteIcon, KanbanIcon, PlusIcon } from "../Icons";
 import { roomPresence } from "./connectedModel";
+import { presenceTurn, useChatArrivals, useTurns } from "../motion";
 import { chatSegments } from "./chatText";
 import { renderSegment, type InlineContext } from "./markdownView";
 import { ArtifactChip, ArtifactShelf, useArtifactActions, useArtifacts, useFileDrop } from "./Artifacts";
@@ -336,6 +337,10 @@ function RoomChat({
   const [newFrom, setNewFrom] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  // a teammate connecting or leaving turns their initials; a teammate's new message slides in
+  const membersRef = useRef<HTMLDivElement>(null);
+  useTurns(membersRef, ".rc-member", "data-member", (el) => el.classList.contains("on"), (el, on) => presenceTurn(el, el.querySelector(".rc-initials"), on));
+  useChatArrivals(listRef, view?.entries ?? null, view?.self ?? "");
   const [leaving, setLeaving] = useState(false);
   const arts = useArtifacts(room.id);
   const actions = useArtifactActions(room.id);
@@ -447,11 +452,11 @@ function RoomChat({
           </button>
         )}
         <RoomHead room={room} hooks={hooks} onLeave={() => setLeaving(true)} />
-        <div className="rc-members">
+        <div className="rc-members" ref={membersRef}>
           {room.members.map((m) => {
             const on = m.self || room.online.includes(m.id);
             return (
-              <span key={m.id} className={`rc-member ${on ? "on" : ""}`} title={`${m.name}${m.self ? " (you)" : on ? " · connected" : " · offline"}`}>
+              <span key={m.id} data-member={m.id} className={`rc-member ${on ? "on" : ""}`} title={`${m.name}${m.self ? " (you)" : on ? " · connected" : " · offline"}`}>
                 <span className="rc-initials">{initialsOf(m.name)}</span>
                 {m.self ? "you" : mentionHandle(m.name)}
               </span>
@@ -541,7 +546,7 @@ function Entry({
 }) {
   if (e.kind === "update") {
     return (
-      <div className="rc-update">
+      <div className="rc-update" data-entry={e.id}>
         <div className="rc-update-head">
           <span>agents · {e.author === self ? "your laptop" : `${nameOf(e.author)}'s laptop`}</span>
           <span className="rc-when">{when(e.at)}</span>
@@ -557,7 +562,7 @@ function Entry({
   }
   if (e.kind === "member") {
     return (
-      <div className="rc-member-note">
+      <div className="rc-member-note" data-entry={e.id}>
         <span>{memberLine(e, nameOf)}</span>
         <span className="rc-when">{when(e.at)}</span>
       </div>
@@ -567,7 +572,7 @@ function Entry({
     const q = entries.find((x) => x.id === e.replyTo);
     const stale = e.state === "thinking" && Date.now() - e.at > THINKING_STALE_MS;
     return (
-      <div className={`rc-assist ${e.state ?? ""}`}>
+      <div className={`rc-assist ${e.state ?? ""}`} data-entry={e.id}>
         <div className="rc-msg-head">
           <span className="rc-who">assistant</span>
           <span className="rc-via">via {e.author === self ? "you" : nameOf(e.author)}</span>
@@ -590,7 +595,7 @@ function Entry({
   }
   const continued = prev?.kind === "message" && prev.author === e.author && e.at - prev.at < 5 * 60_000;
   return (
-    <div className={`rc-msg ${continued ? "cont" : ""} ${mentionsOf(e, self) ? "for-me" : ""}`}>
+    <div className={`rc-msg ${continued ? "cont" : ""} ${mentionsOf(e, self) ? "for-me" : ""}`} data-entry={e.id}>
       {!continued && (
         <div className="rc-msg-head">
           <span className="rc-who">{nameOf(e.author)}</span>

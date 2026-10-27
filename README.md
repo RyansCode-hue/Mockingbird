@@ -143,7 +143,9 @@ Motion: `?motion=off|reduce|full` picks how much moves; screenshots and
 `?measure` default to off, so they never catch a box mid-animation.
 `?motionAudit` plays the animated moments (minimize into the folder and back, a
 dialog, a toast), finishing each animation instead of waiting, and reports the
-end states; `test/uiMotion.test.ts` reads them through `pageResult`, which runs
+end states; `?motionMoments` does the same for the usage bars, teammates
+connecting, chat arrivals and a session changing hands, logging every
+animation started; `test/uiMotion.test.ts` reads them through `pageResult`, which runs
 Chrome in real time (virtual time doesn't run View Transitions).
 `?termAudit` does what re-fits or moves terminals (side bar, bottom panel,
 fullscreen, group switch, minimize and restore, a pane opened, a tab switched,
@@ -259,6 +261,14 @@ agreed direction, **Later** is worth doing once the foundations settle.
   terminals never animate and re-fit once; the side bar and file panel no
   longer animate width. **Settings → Motion**: Follow macOS / Reduce (fades of
   120 ms or less, no View Transitions, no loops) / Full.
+  Round two (1.6.0): the usage popover's bars spring to a new value only on a
+  real change of a point or more, never on a poll that moved nothing; a
+  teammate connecting or leaving turns the Connected line's dot and their
+  initials in the room's chat, and their pane's owner badge crossfades; a
+  teammate's new chat message slides up (your own, history and a burst of
+  catching up just appear); a session that just changed hands — handed over,
+  or taken over here — pulses its pane's ring once, over the terminal, and the
+  note saying so eases in. Under Reduce those are fades or nothing.
 - **UI review, first batch** — primary buttons and the focus ring are neutral,
   so amber means only "waiting on you" [G1]; every text colour keeps 4.5:1 on
   its surface in both themes, checked from the tokens [G5]; one disabled-button
@@ -727,7 +737,6 @@ The rest of the 1.4.7 UI review (its ids in brackets). Decided: a room gets tabs
 - [SET1] Where Control room lives (a Broadcast action, or Settings → Tools).
 
 **Extras**
-- Motion, round two: usage bars, teammates coming online, chat arrivals, take-over.
 - An approved Council plan becomes House tickets.
 - Phone alerts when an agent is waiting on you and you're away.
 

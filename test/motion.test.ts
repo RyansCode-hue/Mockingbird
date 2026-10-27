@@ -1,6 +1,6 @@
 import { readFileSync } from "fs";
 import { describe, expect, it } from "vitest";
-import { D, GHOST, REDUCED_MS, SPRING, motionMode, spring } from "../src/renderer/motion";
+import { ARRIVALS_MAX, D, FILL_STEP, GHOST, HANDOVER_FRESH_MS, REDUCED_MS, SPRING, chatArrivals, fillMoves, handoverFresh, motionMode, spring } from "../src/renderer/motion";
 import { OVERLAYS } from "../src/renderer/keys";
 
 const css = readFileSync(new URL("../src/renderer/styles.css", import.meta.url), "utf8");
@@ -79,6 +79,51 @@ describe("the stylesheet's motion", () => {
   });
   it("keys reduced motion off the root's data-motion, so Settings can override macOS", () => {
     expect(css).not.toMatch(/prefers-reduced-motion/);
+  });
+});
+
+describe("values that change in place", () => {
+  it("move a bar only on a real change of a point or more, never on its first reading or a poll that moved nothing", () => {
+    expect(fillMoves(null, 64)).toBe(false);
+    expect(fillMoves(38, 38)).toBe(false);
+    expect(fillMoves(38, 38.4)).toBe(false);
+    expect(fillMoves(38.4, 37.9)).toBe(false);
+    expect(fillMoves(38, 38 + FILL_STEP)).toBe(true);
+    expect(fillMoves(38, 64)).toBe(true);
+    expect(fillMoves(64, 0)).toBe(true);
+    expect(FILL_STEP).toBeGreaterThanOrEqual(1);
+  });
+  it("slide in a chat's new entries by others, never its history, one's own, a replaced list or a burst of catching up", () => {
+    const e = (id: string, author = "nick") => ({ id, author });
+    const seen = ["c1", "c2"];
+    expect(chatArrivals(null, [e("c1"), e("c2")], "me")).toEqual([]);
+    expect(chatArrivals(seen, [e("c1"), e("c2"), e("c3")], "me")).toEqual(["c3"]);
+    expect(chatArrivals(seen, [e("c1"), e("c2"), e("c3", "me")], "me")).toEqual([]);
+    expect(chatArrivals(seen, [e("c1"), e("c2"), e("c3", "me"), e("c4")], "me")).toEqual(["c4"]);
+    expect(chatArrivals(seen, [e("c1"), e("c2")], "me")).toEqual([]);
+    // an older entry synced into the middle, or a different chat altogether
+    expect(chatArrivals(seen, [e("c0"), e("c1"), e("c2")], "me")).toEqual([]);
+    expect(chatArrivals(seen, [e("x1"), e("x2")], "me")).toEqual([]);
+    // the first message in an empty chat is news
+    expect(chatArrivals([], [e("c1")], "me")).toEqual(["c1"]);
+    const burst = Array.from({ length: ARRIVALS_MAX + 1 }, (_, i) => e(`n${i}`));
+    expect(chatArrivals(seen, [e("c1"), e("c2"), ...burst], "me")).toEqual([]);
+    expect(chatArrivals(seen, [e("c1"), e("c2"), ...burst.slice(0, ARRIVALS_MAX)], "me")).toHaveLength(ARRIVALS_MAX);
+  });
+  it("mark a session that changed hands moments ago, not one from before its pane was drawn", () => {
+    const now = 1_000_000_000;
+    expect(handoverFresh(now - 200, now)).toBe(true);
+    expect(handoverFresh(now - HANDOVER_FRESH_MS + 1, now)).toBe(true);
+    expect(handoverFresh(now - HANDOVER_FRESH_MS, now)).toBe(false);
+    expect(handoverFresh(now - 12 * 60_000, now)).toBe(false);
+    expect(handoverFresh(null, now)).toBe(false);
+    expect(handoverFresh(undefined, now)).toBe(false);
+  });
+  it("ring a pane by its ::after, only ever by opacity, above the terminal", () => {
+    const ring = rule(".pane::after");
+    expect(ring).toMatch(/opacity:\s*0/);
+    expect(ring).toMatch(/pointer-events:\s*none/);
+    expect(ring).not.toMatch(/transition|animation/);
   });
 });
 

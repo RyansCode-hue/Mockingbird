@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { presenceTurn, useChange } from "./motion";
 import { Modal } from "./Modal";
 import { SetRow } from "./SetRow";
 import { Toggle } from "./Toggle";
@@ -66,6 +67,9 @@ export function roomOfGroup(status: TeamStatus | { error: string } | null, group
  * the Team view — the only room's, or the room list.
  */
 export function ConnectedLine({ summary, onOpen }: { summary: ConnectedSummary; onOpen: () => void }) {
+  // a teammate connecting or leaving turns the presence dot (the line's ::before)
+  const sub = useRef<HTMLSpanElement>(null);
+  useChange(summary.online.length, (was, now) => sub.current && presenceTurn(sub.current, null, now > was, "::before"));
   return (
     <button
       type="button"
@@ -76,7 +80,9 @@ export function ConnectedLine({ summary, onOpen }: { summary: ConnectedSummary; 
       <TeamIcon />
       <span className="cl-text">
         <span className="cl-title">{summary.title}</span>
-        <span className={`cl-sub ${summary.online.length ? "on" : ""}`}>{summary.sub}</span>
+        <span ref={sub} className={`cl-sub ${summary.online.length ? "on" : ""}`}>
+          {summary.sub}
+        </span>
       </span>
       <span className="cl-go" aria-hidden="true">
         ›

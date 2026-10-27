@@ -2051,6 +2051,186 @@ if (params.has("motionAudit")) {
     document.body.appendChild(tag);
   });
 }
+// ?motionMoments (with ?motion=full, reduce or off) plays motion's second round: the usage popover's bars through a
+// report and a context poll that change nothing, then real changes; Sam connecting and leaving (the Connected
+// line's dot, his pane's owner badge, his initials in the room's chat); the chat loading its history, a teammate's
+// message, your own, and a burst of catching up; your s1 handed over to Nick and s4 continuing one of Nick's. It logs
+// every animation started (what it moved, which properties, how long), finishes them rather than waiting, and writes
+// what it saw into <script id="mb-motion-moments"> for test/uiMotion.test.ts.
+if (params.has("motionMoments")) {
+  set("mb.shown", ["s1", "s4", SAM_PANE]);
+  set("mb.sideView", "sessions");
+  set("mb.roomChat.room", ROOM_5101);
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const what = (el: Element): string => {
+    if (el.closest(".usage-bar")) return el.closest(".usage-ctx") ? "bar:context" : "bar:usage";
+    if (el.matches(".cl-sub")) return "connected";
+    if (el.matches(".team-owner")) return el.classList.contains("mb-ghost") ? "badge:old" : "badge";
+    if (el.matches(".rc-initials")) return `dot:${el.closest("[data-member]")?.getAttribute("data-member")}`;
+    if (el.matches("[data-member]")) return `member:${el.getAttribute("data-member")}`;
+    if (el.matches("[data-entry]")) return `chat:${el.getAttribute("data-entry")}`;
+    if (el.matches("[data-handover]")) return `note:${el.closest(".pane")?.getAttribute("data-cell")}`;
+    if (el.matches(".pane")) return `pane:${el.getAttribute("data-cell")}`;
+    if (el.closest(".term-holder")) return "terminal";
+    return el.className?.toString() || el.tagName;
+  };
+  type Started = { what: string; pseudo: string | null; props: string[]; ms: number };
+  const started: Started[] = [];
+  const animate = Element.prototype.animate;
+  Element.prototype.animate = function (this: Element, frames: Keyframe[] | PropertyIndexedKeyframes | null, o?: number | KeyframeAnimationOptions) {
+    const props = new Set<string>();
+    for (const f of Array.isArray(frames) ? frames : frames ? [frames] : []) for (const k of Object.keys(f)) if (!["offset", "easing", "composite"].includes(k)) props.add(k);
+    const opts = typeof o === "object" ? o : { duration: o };
+    started.push({ what: what(this), pseudo: opts.pseudoElement ?? null, props: [...props].sort(), ms: Number(opts.duration ?? 0) });
+    return animate.call(this, frames, o);
+  };
+  const since = (mark: number, prefix: string) => started.slice(mark).filter((s) => s.what.startsWith(prefix));
+  const until = (selector: string) =>
+    new Promise<void>((ok, fail) => {
+      let tries = 60;
+      const t = setInterval(() => {
+        if (!document.querySelector(selector) && --tries > 0) return;
+        clearInterval(t);
+        if (document.querySelector(selector)) ok();
+        else fail(new Error(`the audit found no ${selector}`));
+      }, 100);
+    });
+  const settle = async () => {
+    for (let i = 0; i < 6; i++) {
+      await sleep(40);
+      for (const a of document.getAnimations()) if (Number.isFinite(a.effect?.getComputedTiming().activeDuration ?? Infinity)) a.finish();
+    }
+    await sleep(40);
+  };
+  const left = () => ({
+    ghosts: document.querySelectorAll(".mb-ghost").length,
+    holding: document.getAnimations().filter((a) => a.playState === "finished").length,
+    running: document.getAnimations().filter((a) => a.playState === "running" && Number.isFinite(a.effect?.getComputedTiming().activeDuration ?? Infinity)).length,
+  });
+  // a bar's drawn fill, as a share of its track, to a tenth of a percent
+  const bars = () =>
+    [...document.querySelectorAll<HTMLElement>(".usage-bar span")].map((s) => Math.round((s.getBoundingClientRect().width / s.parentElement!.getBoundingClientRect().width) * 1000) / 10);
+  const setOnline = (ids: string[]) => {
+    team.rooms[0].online = ids;
+    teamChanged();
+    live.remote = live.remote.map((s) => (s.id === SAM_PANE ? { ...s, room: { ...s.room!, online: ids.includes(SAM) } } : s));
+    emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+  };
+  const claude5h = () => usage.claude!.limits[0];
+  // Sam's session shows as the "api" workspace's tab
+  const samBadge = () => document.querySelector(".grid .team-owner:not(.mb-ghost)");
+  waitFor(".grid > [data-cell=s1] .xterm", async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(400);
+      // ---- bars ----
+      document.querySelector(".grid > [data-cell=s1]")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+      await sleep(100);
+      (document.querySelector(".statusbar .usage") as HTMLElement).click();
+      await sleep(400);
+      let mark = started.length;
+      out.barsOpened = { started: since(mark, "bar").length, drawn: bars() };
+      // a report that moves a limit by less than a point, and a context poll (every 2 s) that reads the same
+      claude5h().usedPct = 38.4;
+      emit("onUsageChanged", JSON.parse(JSON.stringify(usage)));
+      await sleep(2300);
+      out.barsTick = { started: since(mark, "bar") };
+      // real changes: the 5-hour limit 38 → 64%, s1's context 27.6 → 52%
+      mark = started.length;
+      claude5h().usedPct = 64;
+      emit("onUsageChanged", JSON.parse(JSON.stringify(usage)));
+      contexts.s1 = { ...contexts.s1, tokens: 520_000, at: Date.now() } as ContextWindow;
+      await sleep(2300);
+      await settle();
+      out.barsChanged = { started: since(mark, "bar"), drawn: bars(), ...left() };
+      (document.querySelector(".statusbar .usage") as HTMLElement).click();
+      await sleep(200);
+      await settle();
+      // ---- presence ----
+      mark = started.length;
+      setOnline([NICK, SAM]);
+      await sleep(60);
+      const ghostBadges = document.querySelectorAll(".team-owner.mb-ghost").length;
+      await settle();
+      out.samOnline = { started: started.slice(mark), ghostBadges, badge: samBadge()?.className ?? null, ...left() };
+      mark = started.length;
+      setOnline([NICK]);
+      await sleep(60);
+      await settle();
+      out.samOffline = { started: started.slice(mark), badge: samBadge()?.className ?? null, ...left() };
+      // ---- the room's chat ----
+      mark = started.length;
+      // the Connected line opens the room list (there are two rooms), and 5101's name its chat
+      (document.querySelector(".connected-line") as HTMLElement).click();
+      await until("button.room-name");
+      ([...document.querySelectorAll<HTMLElement>("button.room-name")].find((b) => b.textContent?.startsWith("#5101")) ?? null)?.click();
+      await until(".rc-list [data-entry]");
+      await sleep(400);
+      out.history = { entries: document.querySelectorAll(".rc-list [data-entry]").length, started: since(mark, "chat") };
+      mark = started.length;
+      setOnline([NICK, SAM]);
+      await sleep(60);
+      await settle();
+      out.memberOnline = { started: started.slice(mark).filter((s) => s.what.endsWith(SAM)), ...left() };
+      const say = (author: string, text: string) => {
+        const e = chatEntry({ kind: "message", author, at: Date.now(), text, mentions: [] });
+        chats[ROOM_5101].push(e);
+        return e.id;
+      };
+      mark = started.length;
+      const nick = say(NICK, "Pushed the dropdown fix — have a look?");
+      chatChanged(ROOM_5101);
+      await sleep(200);
+      await settle();
+      const el = document.querySelector<HTMLElement>(`[data-entry="${nick}"]`);
+      out.arrival = { id: nick, started: since(mark, "chat"), opacity: el ? getComputedStyle(el).opacity : null, transform: el ? getComputedStyle(el).transform : null, ...left() };
+      // your own, sent from the composer
+      mark = started.length;
+      const area = document.querySelector<HTMLTextAreaElement>(".rc-bar textarea")!;
+      typeArea(area, "Looking now");
+      await sleep(50);
+      area.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      await sleep(300);
+      out.own = { sent: chats[ROOM_5101].at(-1)?.author === ME && chats[ROOM_5101].at(-1)?.text === "Looking now", started: since(mark, "chat") };
+      // catching up: five at once
+      mark = started.length;
+      for (let i = 0; i < 5; i++) say(NICK, `Catching up ${i + 1}`);
+      chatChanged(ROOM_5101);
+      await sleep(200);
+      out.burst = { started: since(mark, "chat") };
+      await settle();
+      // ---- changing hands ----
+      // s1 handed over to Nick: it continues on his laptop
+      mark = started.length;
+      live.own.s1 = { ...live.own.s1, takenOver: { by: NICK, byName: "Nick Smith", at: Date.now() } };
+      emit("onTeamLive", JSON.parse(JSON.stringify(live)));
+      await sleep(100);
+      await settle();
+      out.handedOver = { started: started.slice(mark), note: !!document.querySelector(".grid > [data-cell=s1] [data-handover]"), ...left() };
+      // s4 continues one of Nick's sessions, taken over here just now
+      mark = started.length;
+      const nicks = takeoverView.sessions.find((v) => !v.self && !v.takenOver)!;
+      nicks.takenOver = { by: ME, at: Date.now(), newSessionId: "s4", snapshot: { sha: nicks.latest.sha, takenAt: nicks.latest.takenAt, source: "peer" }, conversation: "full" };
+      nicks.takenOverByName = "You";
+      takeoverChanged();
+      await sleep(100);
+      await settle();
+      out.tookOver = { started: started.slice(mark), ...left() };
+      out.terminal = started.filter((s) => s.what === "terminal" || (s.what.startsWith("pane:") && s.pseudo !== "::after")).length;
+      out.props = [...new Set(started.flatMap((s) => s.props))].sort();
+      out.longest = Math.max(0, ...started.map((s) => s.ms));
+      out.total = started.length;
+    } catch (err) {
+      out.error = String((err as Error)?.stack ?? err);
+    }
+    out.mode = document.documentElement.dataset.motion;
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-motion-moments";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  });
+}
 // ?termAudit (with ?motion=full or off) does what re-fits or moves terminals — the side bar and the bottom panel
 // shown and hidden, fullscreen and back, a group switch and back, a workspace minimized and restored, a pane opened,
 // a workspace tab switched, a waiting banner and a stall banner each shown and gone — with panes full of history and output streaming, then

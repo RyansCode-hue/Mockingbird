@@ -6,6 +6,7 @@ import { initialsOf } from "../Team";
 import { followPlan, mergeRoomSessions, sameList } from "./roomLiveModel";
 import { firstName } from "./connectedModel";
 import { ReadIcon } from "../Icons";
+import { useCrossfade } from "../motion";
 
 /**
  * Team rooms in the window, stage 2 (live panes): teammates' room sessions
@@ -106,10 +107,13 @@ export function useFollow(o: {
 
 /** The owner's initials on a teammate's session (its sidebar row and pane header). */
 export function OwnerTag({ room }: { room: RoomSessionTag }) {
+  // whose it is and whether they're there: a change of either crossfades the badge
+  const fade = useCrossfade<HTMLSpanElement>();
   if (!room.remote) return null;
   const where = !room.online ? " — their Mockingbird is offline" : !room.live ? " — closed there (they can resume it)" : "";
+  const away = !(room.online && room.live);
   return (
-    <span className={`team-owner ${room.online && room.live ? "" : "away"}`} title={`${room.ownerName}'s session: it runs on ${room.ownerName}'s Mockingbird${where}. You can watch it; typing into it needs ${room.ownerName}'s OK.`}>
+    <span key={`${room.owner}:${away}`} ref={fade} className={`team-owner ${away ? "away" : ""}`} title={`${room.ownerName}'s session: it runs on ${room.ownerName}'s Mockingbird${where}. You can watch it; typing into it needs ${room.ownerName}'s OK.`}>
       {initialsOf(room.ownerName)}
     </span>
   );
