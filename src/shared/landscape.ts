@@ -7,6 +7,10 @@
  * Coordinates are landscape pixels at 100% zoom, absolute (not relative to an
  * area). Membership is never stored here: a workspace is in an area, or a
  * stack, because its session's group says so; an area's key is that group.
+ *
+ * Records are keyed by session ids and groups, which can be any string,
+ * "constructor" and "__proto__" included: read an entry with own() and set
+ * one with put(), never with `r[k]`.
  */
 import type { AgentKind, SessionInfo } from "./types";
 import { splitGroupKey } from "./types";
@@ -24,9 +28,8 @@ export interface Size {
 
 /**
  * Where one workspace sits. A hint: a session without one is placed by
- * placeNew. It can lie outside its own area (a pinned pane read in from the
- * grid sits loose beside the first area), since the session's group, not the
- * rectangle, says which area it belongs to.
+ * placeNew. Which area it's in is its session's group's to say, never where
+ * the rectangle lies.
  */
 export type Placement = Rect;
 
@@ -270,6 +273,20 @@ export function fitView(rects: readonly Rect[], viewport: Size, opts: { padding?
   return { x: b.x + b.w / 2 - viewport.w / (2 * zoom), y: b.y + b.h / 2 - viewport.h / (2 * zoom), zoom };
 }
 
+// ---- records keyed by ids and groups ------------------------------------------------------
+
+/**
+ * An entry of a record keyed by a session id or a group, or undefined. Any
+ * string can be one, "constructor" or "__proto__" included, and `r[k]` on a
+ * plain object finds what Object.prototype has under those names.
+ */
+export const own = <T>(r: Readonly<Record<string, T>>, k: string): T | undefined => (Object.hasOwn(r, k) ? r[k] : undefined);
+
+/** Set `r[k]` as an entry of its own: `r[k] = v` with k "__proto__" would replace the record's prototype instead. */
+export function put<T>(r: Record<string, T>, k: string, v: T): void {
+  Object.defineProperty(r, k, { value: v, writable: true, enumerable: true, configurable: true });
+}
+
 // ---- checking what comes from disk or another process ----------------------------------
 
 /** A landscape, or a patch for one, that isn't one: the message names the field. */
@@ -280,42 +297,58 @@ export class LandscapeShapeError extends Error {
   }
 }
 
+/** Furthest a position goes from the origin, and the largest size: well past any real layout, short of what breaks the arithmetic. */
+export const MAX_COORD = 1e7;
+export const MAX_EXTENT = 1e5;
+
 type Check<T> = (v: unknown, where: string) => T;
+/** The fields one part of the stored format has, how each is checked, and which it must have. */
+interface Part {
+  checks: Record<string, Check<unknown>>;
+  required: readonly string[];
+}
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const fail = (where: string, what: string): never => {
   throw new LandscapeShapeError(where, what);
 };
 const num: Check<number> = (v, where) => (typeof v === "number" && Number.isFinite(v) ? v : fail(where, "is not a number"));
-const extent: Check<number> = (v, where) => (num(v, where) > 0 ? (v as number) : fail(where, "is not above 0"));
+const coord: Check<number> = (v, where) => (Math.abs(num(v, where)) <= MAX_COORD ? (v as number) : fail(where, `is beyond ±${MAX_COORD}`));
+const extent: Check<number> = (v, where) => {
+  const n = num(v, where);
+  return n <= 0 ? fail(where, "is not above 0") : n > MAX_EXTENT ? fail(where, `is over ${MAX_EXTENT}`) : n;
+};
 const str: Check<string> = (v, where) => (typeof v === "string" ? v : fail(where, "is not a string"));
 const name: Check<string> = (v, where) => (str(v, where) ? (v as string) : fail(where, "is empty"));
-const strOrNull: Check<string | null> = (v, where) => (v === null ? null : str(v, where));
 const bool: Check<boolean> = (v, where) => (typeof v === "boolean" ? v : fail(where, "is not true or false"));
 const agentKind: Check<AgentKind> = (v, where) => (v === "claude" || v === "codex" ? v : fail(where, "is not claude or codex"));
+const orNull =
+  <T>(each: Check<T>): Check<T | null> =>
+  (v, where) =>
+    v === null ? null : each(v, where);
 
-/** An object whose keys can be used as ids: not empty, and not __proto__, which would replace a record's prototype. */
+/** An object to read entries from: an empty key is never a session or a group. */
 function record(v: unknown, where: string): Record<string, unknown> {
   if (!isObj(v)) fail(where, "is not an object");
-  for (const k of Object.keys(v as object)) if (!k || k === "__proto__") fail(where, `has a key that can't be used (${JSON.stringify(k)})`);
+  for (const k of Object.keys(v as object)) if (!k) fail(where, `has a key that can't be used (${JSON.stringify(k)})`);
   return v as Record<string, unknown>;
 }
 
 /**
- * An object with exactly these fields: each one there is checked, `required`
- * ones must be, and one this version doesn't know is refused rather than
- * dropped. An undefined field counts as absent. `where` is its path for its
- * fields' errors ("" at the top), `self` its name in its own.
+ * An object with exactly the part's fields: each one there is checked, the
+ * required ones must be, and one this version doesn't know is refused rather
+ * than dropped. An undefined field counts as absent. `where` is its path for
+ * its fields' errors ("" at the top), `self` its name in its own.
  */
-function fields<T>(v: unknown, where: string, checks: Record<string, Check<unknown>>, required: readonly string[], self = where): T {
+function fields<T>(v: unknown, where: string, part: Part, partial = false, self = where): T {
   const at = (k: string) => (where ? `${where}.${k}` : k);
   const o = record(v, self);
   const out: Record<string, unknown> = {};
   for (const [k, x] of Object.entries(o)) {
-    if (!Object.hasOwn(checks, k)) fail(self, `has a field this version doesn't know (${k})`);
-    if (x !== undefined) out[k] = checks[k](x, at(k));
+    if (!Object.hasOwn(part.checks, k)) fail(self, `has a field this version doesn't know (${k})`);
+    if (x !== undefined) out[k] = part.checks[k](x, at(k));
   }
-  for (const k of required) if (out[k] === undefined) fail(at(k), "is missing");
+  if (!partial) for (const k of part.required) if (out[k] === undefined) fail(at(k), "is missing");
   return out as T;
 }
 
@@ -324,13 +357,34 @@ const list =
   (v, where) =>
     Array.isArray(v) ? v.map((x, i) => each(x, `${where}[${i}]`)) : fail(where, "is not a list");
 
-const RECT_CHECKS: Record<keyof Rect, Check<unknown>> = { x: num, y: num, w: extent, h: extent };
-const RECT_KEYS = ["x", "y", "w", "h"] as const;
-const rect: Check<Rect> = (v, where) => fields(v, where, RECT_CHECKS, RECT_KEYS);
+/** A record's keys: what they must be, as `check` says; any non-empty string when there's none. */
+type KeyCheck = (k: string) => string | null;
+/** An area's key is a top-level group: no sub-group in it, and not the loose bucket. */
+const areaKey: KeyCheck = (k) => (k.includes("/") ? "has a sub-group in it" : k === LOOSE_GROUP ? `is ${LOOSE_GROUP}, which is loose, not an area` : null);
+/** A stack's key is a "top/sub" group, as stackKeyOf writes it. */
+const stackKey: KeyCheck = (k) => (stackKeyOf({ taskGroup: k }) === k ? null : 'isn\'t a "group/sub-group"');
 
-const repo: Check<AreaRepo> = (v, where) => fields(v, where, { path: name, base: strOrNull }, ["path", "base"]);
+/**
+ * A record of entries, each checked, keyed as the error names them. An
+ * undefined entry counts as absent, as an undefined field does.
+ */
+function entries<T>(v: unknown, where: string, each: Check<T>, key?: KeyCheck): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [k, x] of Object.entries(record(v, where))) {
+    const bad = key?.(k);
+    if (bad) fail(where, `has a key that ${bad} (${JSON.stringify(k)})`);
+    if (x !== undefined) put(out, k, each(x, `${where}[${JSON.stringify(k)}]`));
+  }
+  return out;
+}
+
+const RECT_CHECKS = { x: coord, y: coord, w: extent, h: extent } satisfies Record<keyof Rect, Check<unknown>>;
+const PLACEMENT: Part = { checks: RECT_CHECKS, required: ["x", "y", "w", "h"] };
+const rect: Check<Rect> = (v, where) => fields(v, where, PLACEMENT);
+
+const REPO: Part = { checks: { path: name, base: orNull(name) } satisfies Record<keyof AreaRepo, Check<unknown>>, required: ["path", "base"] };
 const repos: Check<AreaRepo[]> = (v, where) => {
-  const out = list(repo)(v, where);
+  const out = list<AreaRepo>((x, w) => fields(x, w, REPO))(v, where);
   const seen = new Set<string>();
   for (const r of out) {
     if (seen.has(r.path)) fail(where, `lists ${r.path} twice`);
@@ -338,67 +392,80 @@ const repos: Check<AreaRepo[]> = (v, where) => {
   }
   return out;
 };
-const AREA_CHECKS: Record<keyof Area, Check<unknown>> = { ...RECT_CHECKS, repos, collapsed: bool, locked: bool, autoCreate: bool };
-const AREA_KEYS = [...RECT_KEYS, "repos"] as const;
-const area: Check<Area> = (v, where) => fields(v, where, AREA_CHECKS, AREA_KEYS);
-
-const STACK_CHECKS: Record<keyof Stack, Check<unknown>> = { active: name, placement: rect };
-const STACK_KEYS = ["active", "placement"] as const;
-const stack: Check<Stack> = (v, where) => fields(v, where, STACK_CHECKS, STACK_KEYS);
-
-const conversation: Check<{ agent: AgentKind; id: string }> = (v, where) => fields(v, where, { agent: agentKind, id: name }, ["agent", "id"]);
-const ghostAgent: Check<Ghost["agent"]> = (v, where) => (v === "terminal" ? v : v === "claude" || v === "codex" ? v : fail(where, "is not claude, codex or terminal"));
-const GHOST_CHECKS: Record<keyof Ghost, Check<unknown>> = {
-  title: str,
-  agent: ghostAgent,
-  cwd: str,
-  repoPath: strOrNull,
-  branch: str,
-  ticketId: str,
-  conversation,
-  summary: str,
-  worktreeRemoved: bool,
-  placement: rect,
-  group: name,
-  closedAt: str,
+const AREA: Part = {
+  checks: { ...RECT_CHECKS, repos, collapsed: bool, locked: bool, autoCreate: bool } satisfies Record<keyof Area, Check<unknown>>,
+  required: [...PLACEMENT.required, "repos"],
 };
-const ghost: Check<Ghost> = (v, where) => fields(v, where, GHOST_CHECKS, ["title", "agent", "cwd", "repoPath", "placement", "group", "closedAt"]);
+const area: Check<Area> = (v, where) => fields(v, where, AREA);
 
-/** A record of entries, each checked, keyed as the error names them. */
-function entries<T>(v: unknown, where: string, each: Check<T>): Record<string, T> {
-  const out: Record<string, T> = {};
-  for (const [k, x] of Object.entries(record(v, where))) out[k] = each(x, `${where}[${JSON.stringify(k)}]`);
-  return out;
-}
+const STACK: Part = { checks: { active: name, placement: rect } satisfies Record<keyof Stack, Check<unknown>>, required: ["active", "placement"] };
+const stack: Check<Stack> = (v, where) => fields(v, where, STACK);
+
+const CONVERSATION: Part = { checks: { agent: agentKind, id: name } satisfies Record<keyof NonNullable<Ghost["conversation"]>, Check<unknown>>, required: ["agent", "id"] };
+const ghostAgent: Check<Ghost["agent"]> = (v, where) => (v === "terminal" ? v : v === "claude" || v === "codex" ? v : fail(where, "is not claude, codex or terminal"));
+const GHOST: Part = {
+  checks: {
+    title: str,
+    agent: ghostAgent,
+    cwd: str,
+    repoPath: orNull(str),
+    branch: str,
+    ticketId: str,
+    conversation: (v, where) => fields(v, where, CONVERSATION),
+    summary: str,
+    worktreeRemoved: bool,
+    placement: rect,
+    group: name,
+    closedAt: str,
+  } satisfies Record<keyof Ghost, Check<unknown>>,
+  required: ["title", "agent", "cwd", "repoPath", "placement", "group", "closedAt"],
+};
+const ghost: Check<Ghost> = (v, where) => fields(v, where, GHOST);
 
 /** The version a stored landscape says it is, when it says: a newer one can't be read here, and isn't corrupt. */
 export function versionOf(v: unknown): number | null {
   return isObj(v) && typeof v.v === "number" ? v.v : null;
 }
 
-const LANDSCAPE_CHECKS: Record<keyof Landscape, Check<unknown>> = {
-  v: (v, where) => (v === LANDSCAPE_VERSION ? v : fail(where, `is ${JSON.stringify(v)}, not ${LANDSCAPE_VERSION}`)),
-  migratedAt: str,
-  tourDone: bool,
-  workspaces: (v, where) => entries(v, where, rect),
-  areas: (v, where) => entries(v, where, area),
-  stacks: (v, where) => entries(v, where, stack),
-  ghosts: (v, where) => entries(v, where, ghost),
+const LANDSCAPE: Part = {
+  checks: {
+    v: (v, where) => (v === LANDSCAPE_VERSION ? v : fail(where, `is ${JSON.stringify(v)}, not ${LANDSCAPE_VERSION}`)),
+    migratedAt: str,
+    tourDone: bool,
+    workspaces: (v, where) => entries(v, where, rect),
+    areas: (v, where) => entries(v, where, area, areaKey),
+    stacks: (v, where) => entries(v, where, stack, stackKey),
+    ghosts: (v, where) => entries(v, where, ghost),
+  } satisfies Record<keyof Landscape, Check<unknown>>,
+  required: ["v", "workspaces", "areas", "stacks", "ghosts"],
 };
+
+/**
+ * The stored format as this version checks it: each part's fields and the
+ * ones it requires. A test pins it under LANDSCAPE_VERSION, so the format
+ * can't change without the version being raised.
+ */
+export const LANDSCAPE_FORMAT: Record<string, { fields: string[]; required: string[] }> = Object.fromEntries(
+  Object.entries({ landscape: LANDSCAPE, placement: PLACEMENT, area: AREA, repo: REPO, stack: STACK, ghost: GHOST, conversation: CONVERSATION }).map(([k, p]) => [
+    k,
+    { fields: Object.keys(p.checks).sort(), required: [...p.required].sort() },
+  ])
+);
 
 /** A landscape read from disk, checked whole: throws LandscapeShapeError naming the first field that's wrong. */
 export function parseLandscape(v: unknown): Landscape {
-  return fields(v, "", LANDSCAPE_CHECKS, ["v", "workspaces", "areas", "stacks", "ghosts"], "the landscape");
+  return fields(v, "", LANDSCAPE, false, "the landscape");
 }
 
 // ---- patches ----------------------------------------------------------------------------
 
 /**
  * One change to the landscape, as a window sends it: only what changed.
- * A null entry removes it (one that isn't there is left as it is). Areas and
- * stacks merge field by field (collapsing an area leaves its repos alone), so
- * a new one has to come whole; a placement or a ghost is replaced whole.
- * `migratedAt: null` clears it, so the grid's layout is read in again.
+ * A null entry removes it (one that isn't there is left as it is), and an
+ * undefined entry or field changes nothing. Areas and stacks merge field by
+ * field (collapsing an area leaves its repos alone), so a new one has to come
+ * whole; a placement or a ghost is replaced whole. `migratedAt: null` clears
+ * it, so the grid's layout is read in again.
  */
 export interface LandscapePatch {
   workspaces?: Record<string, Placement | null>;
@@ -409,36 +476,39 @@ export interface LandscapePatch {
   tourDone?: boolean;
 }
 
-const orNull =
-  <T>(each: Check<T>): Check<T | null> =>
-  (v, where) =>
-    v === null ? null : each(v, where);
-
-const PATCH_CHECKS: Record<keyof LandscapePatch, Check<unknown>> = {
-  workspaces: (v, where) => entries(v, where, orNull(rect)),
-  areas: (v, where) => entries(v, where, orNull((x, w) => fields<Partial<Area>>(x, w, AREA_CHECKS, []))),
-  stacks: (v, where) => entries(v, where, orNull((x, w) => fields<Partial<Stack>>(x, w, STACK_CHECKS, []))),
-  ghosts: (v, where) => entries(v, where, orNull(ghost)),
-  migratedAt: orNull(str),
-  tourDone: bool,
+const PATCH: Part = {
+  checks: {
+    workspaces: (v, where) => entries(v, where, orNull(rect)),
+    areas: (v, where) => entries(v, where, orNull((x, w) => fields<Partial<Area>>(x, w, AREA, true)), areaKey),
+    stacks: (v, where) => entries(v, where, orNull((x, w) => fields<Partial<Stack>>(x, w, STACK, true)), stackKey),
+    ghosts: (v, where) => entries(v, where, orNull(ghost)),
+    migratedAt: orNull(str),
+    tourDone: bool,
+  } satisfies Record<keyof LandscapePatch, Check<unknown>>,
+  required: [],
 };
 
 /** A patch from another process, checked: throws LandscapeShapeError naming what's wrong. Whether a new area or stack is whole is applyPatch's to check. */
 export function parsePatch(v: unknown): LandscapePatch {
-  return fields(v, "", PATCH_CHECKS, [], "the patch");
+  return fields(v, "", PATCH, true, "the patch");
 }
 
-function merged<T>(cur: Record<string, T>, changes: Record<string, unknown> | undefined, where: string, check: Check<T>, partial: boolean): Record<string, T> {
+const defined = (o: object): Record<string, unknown> => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined));
+
+function merged<T>(cur: Record<string, T>, changes: Record<string, unknown> | undefined, where: string, check: Check<T>, partial: boolean, key?: KeyCheck): Record<string, T> {
   if (!changes) return cur;
   const out = { ...cur };
   for (const [k, change] of Object.entries(record(changes, where))) {
     const at = `${where}[${JSON.stringify(k)}]`;
+    const bad = key?.(k);
+    if (bad) fail(where, `has a key that ${bad} (${JSON.stringify(k)})`);
+    if (change === undefined) continue;
     if (change === null) delete out[k];
-    else if (partial && Object.hasOwn(out, k)) out[k] = check({ ...out[k], ...(change as object) }, at);
-    else if (!partial) out[k] = check(change, at);
+    else if (!partial) put(out, k, check(change, at));
+    else if (Object.hasOwn(out, k)) put(out, k, check({ ...out[k], ...defined(record(change, at)) }, at));
     else {
       try {
-        out[k] = check(change, at);
+        put(out, k, check(defined(record(change, at)), at));
       } catch (err) {
         if (!(err instanceof LandscapeShapeError)) throw err;
         throw new LandscapeShapeError(at, `isn't on the landscape, so the patch has to give all of it (${err.message})`);
@@ -452,14 +522,15 @@ function merged<T>(cur: Record<string, T>, changes: Record<string, unknown> | un
  * The landscape after `patch`, as a new object (the old one is untouched).
  * Every entry it makes or changes is checked whole; throws
  * LandscapeShapeError, changing nothing, when one isn't: a new area needs its
- * rectangle and repos, a new stack its tab and placement.
+ * rectangle and repos, a new stack its tab and placement. Undefined entries
+ * and fields change nothing, as they do once parsePatch has read them.
  */
 export function applyPatch(l: Landscape, patch: LandscapePatch): Landscape {
   const out: Landscape = {
     ...l,
     workspaces: merged(l.workspaces, patch.workspaces, "workspaces", rect, false),
-    areas: merged(l.areas, patch.areas, "areas", area, true),
-    stacks: merged(l.stacks, patch.stacks, "stacks", stack, true),
+    areas: merged(l.areas, patch.areas, "areas", area, true, areaKey),
+    stacks: merged(l.stacks, patch.stacks, "stacks", stack, true, stackKey),
     ghosts: merged(l.ghosts, patch.ghosts, "ghosts", ghost, false),
   };
   if (patch.migratedAt === null) delete out.migratedAt;
@@ -468,18 +539,33 @@ export function applyPatch(l: Landscape, patch: LandscapePatch): Landscape {
   return out;
 }
 
+/** The same value: objects by their entries in any order, arrays in order. */
+function same(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => same(x, b[i]));
+  if (!isObj(a) || !isObj(b)) return false;
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && same(a[k], b[k]));
+}
+
+/** Whether two landscapes hold the same: a patch that leaves one so changes nothing. */
+export const sameLandscape = (a: Landscape, b: Landscape): boolean => same(a, b);
+
 // ---- what crosses IPC ---------------------------------------------------------------------
 
 /**
  * Something wrong with landscape.json that the window shows as a banner:
  * - corrupt: it wasn't a landscape; it was moved to `movedTo` and the layout starts over;
- * - unreadable: it couldn't be read; moved to `movedTo` and the layout starts over;
+ * - unreadable: reading it failed (the disk, or too many open files): it's left as it is, read again with the
+ *   next change, and the layout shown meanwhile is a stand-in, empty, whose changes aren't saved; nothing should
+ *   be migrated into it;
+ * - dropped: it could be read again, and the changes made to the stand-in were dropped for the file's layout;
  * - newer: a newer Mockingbird wrote it; it's left as it is;
  * - save: the latest changes couldn't be written; they're kept and tried again with the next change and on quit.
  * With `readOnly`, the file is left as it is: changes this run are kept in memory and never written.
  */
 export interface LandscapeProblem {
-  kind: "corrupt" | "unreadable" | "newer" | "save";
+  kind: "corrupt" | "unreadable" | "dropped" | "newer" | "save";
   message: string;
   file: string;
   movedTo?: string;
@@ -489,7 +575,8 @@ export interface LandscapeProblem {
 /**
  * `landscape:get`'s answer, and `landscape:update`'s. `rev` counts the
  * changes made since the app started. `problems` holds at most one problem
- * from reading the file and one from the latest save.
+ * from reading the file, one from dropping a stand-in's changes, and one
+ * from the latest save.
  */
 export interface LandscapeState {
   landscape: Landscape;
@@ -498,13 +585,15 @@ export interface LandscapeState {
 }
 
 /**
- * `landscape:changed`, sent to every window: the patch that made revision
- * `rev` (applied with applyPatch, in order), or none when only `problems`
+ * `landscape:changed`, sent to every window. Revision `rev` was made by
+ * `patch` (applied with applyPatch, in order), or by replacing the landscape
+ * whole with `landscape` (the file read again); with neither, only `problems`
  * changed. A window that sees a gap in `rev` has missed one and gets the
  * landscape again.
  */
 export interface LandscapeChange {
   rev: number;
   patch: LandscapePatch | null;
+  landscape?: Landscape;
   problems: LandscapeProblem[];
 }

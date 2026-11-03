@@ -5,7 +5,11 @@ import {
   AREA_PAD,
   CELL_ESTIMATE,
   GAP,
+  LANDSCAPE_FORMAT,
+  LANDSCAPE_VERSION,
   LandscapeShapeError,
+  MAX_COORD,
+  MAX_EXTENT,
   SIZE_PRESETS,
   WORKSPACE_SIZES,
   applyPatch,
@@ -15,10 +19,13 @@ import {
   fitAreaTo,
   fitView,
   overlaps,
+  own,
   parseLandscape,
   parsePatch,
   placeNew,
   presetSize,
+  put,
+  sameLandscape,
   sizeFor,
   snap,
   snapUp,
@@ -353,7 +360,6 @@ describe("patches", () => {
       [{ workspaces: { a: { x: 0, y: 0, w: 1 } } }, /workspaces\["a"\]\.h is missing/],
       [{ workspaces: { a: { x: 0, y: 0, w: 1, h: 1, z: 3 } } }, /workspaces\["a"\] has a field this version doesn't know \(z\)/],
       [{ workspaces: { "": { x: 0, y: 0, w: 1, h: 1 } } }, /key that can't be used/],
-      [JSON.parse('{"workspaces":{"__proto__":{"x":0,"y":0,"w":1,"h":1}}}'), /key that can't be used \("__proto__"\)/],
       [{ areas: { "5101": { collapsed: "yes" } } }, /areas\["5101"\]\.collapsed is not true or false/],
       [{ areas: { "5101": { colour: "red" } } }, /areas\["5101"\] has a field this version doesn't know \(colour\)/],
       [{ areas: { "5101": { repos: "/r" } } }, /repos is not a list/],
@@ -372,8 +378,86 @@ describe("patches", () => {
 
   it("check what a typed caller hands applyPatch too, not only what came over IPC", () => {
     expect(() => applyPatch(base(), { workspaces: { a: { x: 0, y: 0, w: -1, h: 1 } } })).toThrow(/w is not above 0/);
-    const proto = JSON.parse('{"__proto__":{"x":0,"y":0,"w":1,"h":1}}');
-    expect(() => applyPatch(base(), { workspaces: proto })).toThrow(/key that can't be used/);
+    expect(() => applyPatch(base(), { areas: { "5101/api": { collapsed: true } } })).toThrow(/sub-group/);
+  });
+
+  it("read an undefined entry or field as no change, whether parsed first (main) or applied directly (a window)", () => {
+    const l = patched(base(), { areas: { "5101": { collapsed: true } } });
+    const p = { workspaces: { a: undefined }, areas: { "5101": { collapsed: undefined, x: undefined } }, stacks: { "5101/api": { active: undefined } } } as never;
+    expect(applyPatch(l, p)).toEqual(l);
+    expect(applyPatch(l, parsePatch(p))).toEqual(l);
+    expect(parsePatch(p)).toEqual({ workspaces: {}, areas: { "5101": {} }, stacks: { "5101/api": {} } });
+    // a new area's undefined fields are left out of it
+    expect(applyPatch(l, { areas: { "5102": { x: 0, y: 0, w: 1, h: 1, repos: [], locked: undefined } } }).areas["5102"]).toEqual({ x: 0, y: 0, w: 1, h: 1, repos: [] });
+  });
+
+  it("refuse positions and sizes no layout has: beyond ±1e7, or over 1e5", () => {
+    const at = (r: object) => () => parsePatch({ workspaces: { a: { x: 0, y: 0, w: 1, h: 1, ...r } } });
+    expect(at({ x: MAX_COORD, y: -MAX_COORD, w: MAX_EXTENT, h: MAX_EXTENT })).not.toThrow();
+    expect(at({ x: MAX_COORD + 1 })).toThrow(/x is beyond ±10000000/);
+    expect(at({ y: -1e308 })).toThrow(/y is beyond/);
+    expect(at({ w: MAX_EXTENT + 1 })).toThrow(/w is over 100000/);
+    expect(at({ h: 1e308 })).toThrow(/h is over/);
+    expect(() => parsePatch({ areas: { "5101": { w: 2e5 } } })).toThrow(/areas\["5101"\]\.w is over/);
+  });
+
+  it("refuse an area key that isn't a top-level group, a stack key that isn't top/sub, and an empty base", () => {
+    expect(() => parsePatch({ areas: { "5101/api": null } })).toThrow(/areas has a key that has a sub-group in it \("5101\/api"\)/);
+    expect(() => parsePatch({ areas: { ungrouped: null } })).toThrow(/is ungrouped, which is loose, not an area/);
+    for (const k of ["5101", "/api", "5101/", "5101/ api", "ungrouped"]) expect(() => parsePatch({ stacks: { [k]: null } }), k).toThrow(/stacks has a key that isn't a "group\/sub-group"/);
+    for (const k of ["5101/api", "ungrouped/x", "5101/api/v2"]) expect(() => parsePatch({ stacks: { [k]: null } }), k).not.toThrow();
+    expect(() => parsePatch({ areas: { "5101": { repos: [{ path: "/r", base: "" }] } } })).toThrow(/repos\[0\]\.base is empty/);
+    expect(parsePatch({ areas: { "5101": { repos: [{ path: "/r", base: null }] } } }).areas!["5101"]!.repos).toEqual([{ path: "/r", base: null }]);
+  });
+});
+
+describe("records keyed by ids and groups", () => {
+  const NAMES = ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"];
+
+  it("take a group or session named like an Object.prototype member as an entry of its own, never its prototype's", () => {
+    for (const k of NAMES) {
+      const raw = JSON.parse(`{"workspaces":{${JSON.stringify(k)}:{"x":0,"y":0,"w":8,"h":8}},"areas":{${JSON.stringify(k)}:{"x":0,"y":0,"w":8,"h":8,"repos":[]}},"stacks":{${JSON.stringify(`${k}/${k}`)}:{"active":${JSON.stringify(k)},"placement":{"x":0,"y":0,"w":8,"h":8}}},"ghosts":{${JSON.stringify(k)}:${JSON.stringify(ghost({ group: k }))}}}`);
+      const l = applyPatch(emptyLandscape(), parsePatch(raw));
+      for (const r of [l.workspaces, l.areas, l.stacks, l.ghosts]) {
+        expect(Object.getPrototypeOf(r), k).toBe(Object.prototype);
+        expect(Object.keys(r), k).toHaveLength(1);
+      }
+      expect(own(l.workspaces, k), k).toEqual({ x: 0, y: 0, w: 8, h: 8 });
+      expect(own(l.areas, k)?.repos, k).toEqual([]);
+      expect(own(l.stacks, `${k}/${k}`)?.active, k).toBe(k);
+      // stored and read back, over IPC and from disk alike
+      expect(parseLandscape(JSON.parse(JSON.stringify(l))), k).toEqual(l);
+      expect(parseLandscape(structuredClone(l)), k).toEqual(l);
+      // a partial change merges into its entry; one to a missing entry of that name has to come whole
+      expect(own(applyPatch(l, { areas: JSON.parse(`{${JSON.stringify(k)}:{"locked":true}}`) }).areas, k)?.locked, k).toBe(true);
+      expect(() => applyPatch(emptyLandscape(), { areas: JSON.parse(`{${JSON.stringify(k)}:{"locked":true}}`) }), k).toThrow(/isn't on the landscape/);
+      expect(Object.keys(applyPatch(l, { workspaces: JSON.parse(`{${JSON.stringify(k)}:null}`) }).workspaces), k).toEqual([]);
+    }
+  });
+
+  it("read nothing for a name the record doesn't hold, whatever Object.prototype has under it", () => {
+    const l = emptyLandscape();
+    for (const k of NAMES) {
+      expect(own(l.workspaces, k), k).toBeUndefined();
+      expect(own(l.areas, k), k).toBeUndefined();
+    }
+  });
+
+  it("set an entry named __proto__ without touching the record's prototype", () => {
+    const r: Record<string, number> = {};
+    put(r, "__proto__", 1);
+    expect([Object.getPrototypeOf(r), Object.keys(r), JSON.stringify(r)]).toEqual([Object.prototype, ["__proto__"], '{"__proto__":1}']);
+  });
+});
+
+describe("sameLandscape", () => {
+  it("compares what landscapes hold, not the order their entries were made in", () => {
+    const a = base();
+    const b = { ...base(), stacks: base().stacks, areas: { "5101": { repos: [{ base: "dev", path: "/r" }], h: 400, w: 500, y: 0, x: 0 } }, workspaces: base().workspaces };
+    expect(sameLandscape(a, b)).toBe(true);
+    expect(sameLandscape(a, patched(a, { areas: { "5101": { collapsed: false } } }))).toBe(false);
+    expect(sameLandscape(a, patched(a, { areas: { "5101": { repos: [{ path: "/r", base: "main" }] } } }))).toBe(false);
+    expect(sameLandscape(a, patched(a, { workspaces: { gone: null }, areas: { "5101": { x: 0 } } }))).toBe(true);
   });
 });
 
@@ -393,5 +477,39 @@ describe("a stored landscape", () => {
   it("is refused with a field this version doesn't know, rather than losing it on the next save", () => {
     expect(() => parseLandscape({ ...base(), wires: {} })).toThrow(/the landscape has a field this version doesn't know \(wires\)/);
     expect(() => parseLandscape({ ...base(), areas: { "5101": { ...base().areas["5101"], budget: 5 } } })).toThrow(/budget/);
+  });
+
+  it("is refused with keys a window couldn't have written", () => {
+    expect(() => parseLandscape({ ...base(), areas: { ungrouped: base().areas["5101"] } })).toThrow(/ungrouped/);
+    expect(() => parseLandscape({ ...base(), stacks: { api: base().stacks["5101/api"] } })).toThrow(/group\/sub-group/);
+  });
+});
+
+/**
+ * The stored format, version by version. A field added, removed or made
+ * required changes what an older Mockingbird can read, so it needs a new
+ * LANDSCAPE_VERSION and its format pinned here; the old ones stay as they were.
+ */
+const FORMATS: Record<number, typeof LANDSCAPE_FORMAT> = {
+  1: {
+    landscape: { fields: ["areas", "ghosts", "migratedAt", "stacks", "tourDone", "v", "workspaces"], required: ["areas", "ghosts", "stacks", "v", "workspaces"] },
+    placement: { fields: ["h", "w", "x", "y"], required: ["h", "w", "x", "y"] },
+    area: { fields: ["autoCreate", "collapsed", "h", "locked", "repos", "w", "x", "y"], required: ["h", "repos", "w", "x", "y"] },
+    repo: { fields: ["base", "path"], required: ["base", "path"] },
+    stack: { fields: ["active", "placement"], required: ["active", "placement"] },
+    ghost: {
+      fields: ["agent", "branch", "closedAt", "conversation", "cwd", "group", "placement", "repoPath", "summary", "ticketId", "title", "worktreeRemoved"],
+      required: ["agent", "closedAt", "cwd", "group", "placement", "repoPath", "title"],
+    },
+    conversation: { fields: ["agent", "id"], required: ["agent", "id"] },
+  },
+};
+
+describe("the stored format", () => {
+  it("is the one pinned for its LANDSCAPE_VERSION", () => {
+    expect(
+      LANDSCAPE_FORMAT,
+      `landscape.json's format isn't the one pinned for LANDSCAPE_VERSION ${LANDSCAPE_VERSION}. A changed format needs LANDSCAPE_VERSION raised, so an older Mockingbird leaves the new file alone instead of moving it aside, and the new format pinned under the new version in FORMATS (test/landscape.test.ts)`
+    ).toEqual(FORMATS[LANDSCAPE_VERSION]);
   });
 });
