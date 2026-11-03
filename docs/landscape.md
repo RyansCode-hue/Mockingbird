@@ -267,6 +267,24 @@ MCP server, at three levels:
   again.
 - The browser workspace shows the latest comparison as a small thumbnail.
 
+**Look** (design option J, with pieces of I and K):
+
+- **Header and toolbar.** A browser workspace is a viewport frame with an
+  address bar, **Desktop 1440 · Tablet 768 · Phone 390** viewport buttons, and
+  a "Builder looking" badge while an agent reads it.
+- **A browser can be paired with its design** (a Figma browser): a dashed
+  link between the two. The app browser then gets four views:
+  - **Live**: the page itself;
+  - **Design**: the paired frame;
+  - **Diff**: the page, with the regions that differ washed red;
+  - **Slider**: design and app on one page, with a handle you drag across.
+- **What the agent last looked at** is outlined in dashed amber, with when.
+- **Compare history** runs along the bottom: the share that differs now, a
+  line of every compare so far, and the regions that still differ, crossed off
+  as they're fixed. Clicking a region points the slider at it.
+- **More views of the same page** (e.g. Phone 390 beside Desktop) are small
+  second views of the same browser, not separate workspaces.
+
 **Later, not in the first version:**
 
 - an onion-skin overlay of the design on the app, for you;
