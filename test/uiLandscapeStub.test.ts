@@ -19,7 +19,9 @@ interface Probe {
 async function probe(query = ""): Promise<Probe> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
+  // polled until it answers: the stub's window.mb may not be there on the first poll, and a probe started without it would never answer
   const read = `(() => {
+    if (!window.mb?.landscapeGet) return null;
     window.__lsProbe ??= (async () => {
       const changes = [];
       window.mb.onLandscapeChanged((c) => changes.push(c));

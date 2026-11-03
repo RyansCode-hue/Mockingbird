@@ -117,6 +117,10 @@ default until S7.
   - **Zoom:** at any zoom the terminal is scaled as `followFixedSize` does.
 - **Focus:**
   - Enter or ⌘E fills the window and Esc returns, restoring the camera;
+  - your own workspace **reflows** in focus: its pty is resized to the
+    window's cols and rows, and Esc resizes it back to its placement's size.
+    A teammate's workspace is only **scaled** (`followFixedSize`), because
+    resizing it would change their terminal;
   - double-click a header to focus;
   - ⌥ plus the arrow keys moves to the nearest workspace in that direction.
 - **Keys:** landscape keys work only while the landscape itself has focus,
@@ -268,5 +272,9 @@ default until S7.
   laptop screen at 100%, and two side by side fit at about 70%, which is still
   live and read-only.
 - **The Collaborate tab** stays until phase 2 moves collabs onto the landscape.
+- **Focus reflows your own workspaces and scales teammates'.** In focus, an
+  own workspace's terminal takes the window's size and redraws; leaving focus
+  puts the placement's size back. Teammates' workspaces keep their owner's
+  size and are scaled to fit.
 - **Development flag:** the work goes behind a Labs flag while it's in
   progress, so `main` can take each slice without changing what you use.
