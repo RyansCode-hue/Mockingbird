@@ -462,7 +462,8 @@ group order.
 
 - A group's split tree becomes the workspaces' positions: `toGrid` fractions
   times a default area size.
-- Pinned panes become loose workspaces next to the first area.
+- Pinned panes go in their own area like any other workspace: everything is
+  on the landscape at once, so pinning has no meaning there.
 - Layout moves from localStorage (`mb.trees`, `mb.shown`…) to
   `~/.mockingbird/landscape.json`, because wires and room layout are data, not
   view preferences.

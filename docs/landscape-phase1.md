@@ -64,8 +64,8 @@ interface Ghost { title: string; agent: "claude" | "codex" | "terminal"; cwd: st
 
 ## Main process (`src/main/landscape.ts`)
 
-- **Reading and writing.** Load on start; atomic write (temp file + rename),
-  debounced to 300 ms.
+- **Reading and writing.** Load on first use; atomic write (temp file +
+  rename), within 300 ms of the first unsaved change.
   - Each write is a small patch over IPC (`landscape:update`), not the whole
     file.
   - `landscape:changed` broadcasts the patch to every window.
@@ -74,6 +74,12 @@ interface Ghost { title: string; agent: "claude" | "codex" | "terminal"; cwd: st
     with its path.
   - A banner says the layout was reset and where the old file is.
   - It's never silently replaced by an empty layout.
+- **A file that can't be read is left alone.** A read error (the disk, too
+  many open files) says nothing about what the file holds: it isn't moved, an
+  empty stand-in is shown and never saved, and the file is read again with the
+  next change. Once it reads, its layout replaces the stand-in, and changes
+  made to the stand-in are dropped with a banner, because they were made
+  against an empty layout and could put defaults over real placements.
 - **Ghosts.** Closing a session writes its ghost, removing a worktree marks it,
   and **Reopen** resumes the conversation through the existing resume path into
   the ghost's spot.
@@ -94,11 +100,12 @@ default until S7.
   - its split tree becomes placements (`toGrid` fractions × the area's size,
     snapped);
   - sub-groups become stacks;
-  - pinned panes become loose workspaces next to the first area.
+  - pinned panes go in their own area like any other: everything is on the
+    landscape at once, so pinning has no meaning there.
   The legacy keys are left in place.
 - Tests:
-  - migration from real-shaped prefs: one group, sub-groups, pinned panes, an
-    empty layout, legacy `mb.cols`/`mb.zones`;
+  - migration from real-shaped prefs: one group, sub-groups, pinned panes
+    (placed in their own area), an empty layout, legacy `mb.cols`/`mb.zones`;
   - a corrupt file;
   - patch merging;
   - `placeNew` and `snap`.
@@ -125,6 +132,9 @@ default until S7.
   - ⌥ plus the arrow keys moves to the nearest workspace in that direction.
 - **Keys:** landscape keys work only while the landscape itself has focus,
   never inside a terminal.
+- **`landscape:update`'s reply** is the whole landscape for now. S2 may switch
+  it to `{ rev, problems }` once there's a consumer: `landscape:changed`
+  already carries each patch.
 - Tests:
   - camera math and `colsRows`;
   - a UI test that zooming leaves `sessionResize` uncalled (`window.__mbCalls`),
