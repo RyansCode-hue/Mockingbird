@@ -7,6 +7,7 @@ import {
   areaKeyOf,
   kindOf,
   overlaps,
+  own,
   parseLandscape,
   presetSize,
   stackKeyOf,
@@ -71,12 +72,13 @@ const M = presetSize("agent", "M");
 const S = presetSize("agent", "S");
 const ST = presetSize("terminal", "S");
 
-const contains = (a: Rect, r: Rect) => r.x >= a.x + AREA_PAD && r.y >= a.y + AREA_HEADER && r.x + r.w <= a.x + a.w - AREA_PAD && r.y + r.h <= a.y + a.h - AREA_PAD;
-const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+/** The areas in the order they're laid out: row by row, left to right. */
+const laidOut = (l: Landscape) => Object.keys(l.areas).sort((a, b) => own(l.areas, a)!.y - own(l.areas, b)!.y || own(l.areas, a)!.x - own(l.areas, b)!.x);
+const contains = (a: Rect | undefined, r: Rect) => !!a && r.x >= a.x + AREA_PAD && r.y >= a.y + AREA_HEADER && r.x + r.w <= a.x + a.w - AREA_PAD && r.y + r.h <= a.y + a.h - AREA_PAD;
 
 function migrate(prefs: LegacyPrefs, sessions: SessionInfo[]) {
   const m = migrateLayout(prefs, sessions, { now: NOW });
-  checkInvariants(m.landscape, sessions, new Set(strings(prefs.pinned)));
+  checkInvariants(m.landscape, sessions);
   return { l: m.landscape, ignored: m.ignored, stale: m.stale };
 }
 
@@ -85,18 +87,19 @@ function migrate(prefs: LegacyPrefs, sessions: SessionInfo[]) {
  * session (debriefs aside) has exactly one place, its own or its stack's;
  * nothing overlaps; everything is on the grid and at least preset S; each
  * group is an area holding its sessions' repos once each, and its workspaces
- * sit inside it, except pinned and ungrouped ones, which sit outside every area.
+ * sit inside it, pinned ones too; ungrouped ones sit outside every area.
  */
-function checkInvariants(l: Landscape, sessions: SessionInfo[], pinned: Set<string>): void {
+function checkInvariants(l: Landscape, sessions: SessionInfo[]): void {
   expect(parseLandscape(JSON.parse(JSON.stringify(l)))).toEqual(l);
+  for (const r of [l.workspaces, l.areas, l.stacks, l.ghosts]) expect(Object.getPrototypeOf(r)).toBe(Object.prototype);
   const live = sessions.filter((s) => !s.debrief);
   const placeOf = (s: SessionInfo): Rect | undefined => {
     const stack = stackKeyOf(s);
-    return stack ? l.stacks[stack]?.placement : l.workspaces[s.id];
+    return stack ? own(l.stacks, stack)?.placement : own(l.workspaces, s.id);
   };
   for (const s of live) {
     expect(placeOf(s), `${s.id} has no place`).toBeDefined();
-    if (stackKeyOf(s)) expect(l.workspaces[s.id], `${s.id} is a stack's tab and has a placement of its own`).toBeUndefined();
+    if (stackKeyOf(s)) expect(own(l.workspaces, s.id), `${s.id} is a stack's tab and has a placement of its own`).toBeUndefined();
   }
   for (const [k, st] of Object.entries(l.stacks)) expect(live.some((s) => s.id === st.active && stackKeyOf(s) === k), `${k}'s front tab ${st.active} isn't in it`).toBe(true);
   const ids = new Set(live.map((s) => s.id));
@@ -115,9 +118,8 @@ function checkInvariants(l: Landscape, sessions: SessionInfo[], pinned: Set<stri
     const members = live.filter((x) => (stackKeyOf(s) ? stackKeyOf(x) === stackKeyOf(s) : x.id === s.id));
     const min = presetSize(members.some((x) => kindOf(x) === "agent") ? "agent" : "terminal", "S");
     expect(p.w >= min.w && p.h >= min.h, `${s.id} is smaller than preset S`).toBe(true);
-    const loose = areaKeyOf(s) === "ungrouped" || members.some((x) => pinned.has(x.id));
-    if (loose) expect(areas.some((a) => overlaps(a, p)), `loose ${s.id} is in an area`).toBe(false);
-    else expect(contains(l.areas[areaKeyOf(s)], p), `${s.id} isn't inside its area`).toBe(true);
+    if (areaKeyOf(s) === "ungrouped") expect(areas.some((a) => overlaps(a, p)), `loose ${s.id} is in an area`).toBe(false);
+    else expect(contains(own(l.areas, areaKeyOf(s)), p), `${s.id} isn't inside its area`).toBe(true);
   }
 }
 
@@ -268,28 +270,27 @@ describe("migrating sub-groups", () => {
 describe("migrating pinned panes", () => {
   const sessions = [sess("a", "5101"), sess("b", "5101"), sess("p", "5102"), sess("q", null), sess("r", "5102")];
 
-  it("makes them loose workspaces in a column next to the first area, their groups unchanged", () => {
-    const { l } = migrate({ shown: ["a", "p", "b", "q"], pinned: ["p", "q"], activeGroup: "5101", trees: { "5101": row(["a", "p", "b", "q"]) } }, sessions);
-    const first = l.areas["5101"];
-    const { p, q, a, b } = l.workspaces;
-    expect(p.x + p.w).toBe(first.x - AREA_GAP);
-    expect([q.x, p.y]).toEqual([p.x, first.y]);
-    expect(q.y).toBe(p.y + p.h + GAP);
-    // the group's tree without them: a and b share the area half and half
+  it("puts them in their own areas like any other: everything is on the landscape at once", () => {
+    const { l } = migrate({ shown: ["a", "p", "b", "q"], pinned: ["p", "q"], activeGroup: "5101", trees: { "5101": row(["a", "p", "b", "q"]), "5102": row(["p", "r"]) }, groupLayouts: { "5102": ["p", "r"] } }, sessions);
+    const { p, q, a, b, r } = l.workspaces;
+    // 5101's tree without the visitors from other groups: a and b share it half and half
     expect(b.x).toBeGreaterThan(a.x);
     expect(a.w).toBe(b.w);
-    // 5102 is still an area, p still in its group, only placed outside it
-    expect(Object.keys(l.areas)).toEqual(["5101", "5102"]);
+    // p in 5102's tree, where its own group had it; q loose, as ungrouped
+    expect(contains(l.areas["5102"], p)).toBe(true);
+    expect([p.x < r.x, p.y]).toEqual([true, r.y]);
+    expect(Object.values(l.areas).some((x) => overlaps(x, q))).toBe(false);
   });
 
-  it("moves a pinned stack member's whole stack, since its members share one placement", () => {
+  it("keeps a pinned stack member's stack in its area", () => {
     const { l } = migrate({ pinned: ["s2"] }, [sess("a", "5101"), sess("s1", "5101/x"), sess("s2", "5101/x")]);
-    expect(l.stacks["5101/x"].placement.x + l.stacks["5101/x"].placement.w).toBe(l.areas["5101"].x - AREA_GAP);
+    expect(contains(l.areas["5101"], l.stacks["5101/x"].placement)).toBe(true);
   });
 
-  it("puts them below the ungrouped workspaces when those are loose there too", () => {
-    const { l } = migrate({ pinned: ["p"] }, [sess("u", null), ...sessions.filter((s) => s.id !== "q")]);
-    expect(l.workspaces.p.y).toBeGreaterThanOrEqual(l.workspaces.u.y + l.workspaces.u.h + GAP);
+  it("still reads which group the grid showed as the grid did: a pinned visitor doesn't make its group the one on screen", () => {
+    // 5102 was last shown, but only its pinned p is on screen now: 5101 is the group on screen, with c as the grid has it
+    const { l } = migrate({ shown: ["p", "a", "b"], pinned: ["p"], activeGroup: "5102", trees: { "5101": row(["b", "a"]) }, groupLayouts: { "5101": ["a"] } }, sessions);
+    expect(l.workspaces.b.x).toBeLessThan(l.workspaces.a.x);
   });
 });
 
@@ -425,10 +426,10 @@ describe("migrating a team room's group", () => {
   const n1 = remote(NICK, "n1", "5101");
   const n7 = remote(NICK, "n7", "5110");
   const m1 = remote(SAM, "m1", "5101/api");
-  const own = [sess("a", "5101", { room: tag({ owner: "me", sessionId: "a", remote: false }) }), sess("b", "5101/api"), sess("c", "5102")];
+  const mine = [sess("a", "5101", { room: tag({ owner: "me", sessionId: "a", remote: false }) }), sess("b", "5101/api"), sess("c", "5102")];
 
   it("is an area like any other: teammates' sessions in it keep their places in its tree", () => {
-    const { l } = migrate({ shown: ["a", n1.id, "b"], activeGroup: "5101", trees: { "5101": row(["a", n1.id, "ws:5101/api"]) } }, [...own, n1, m1]);
+    const { l } = migrate({ shown: ["a", n1.id, "b"], activeGroup: "5101", trees: { "5101": row(["a", n1.id, "ws:5101/api"]) } }, [...mine, n1, m1]);
     const { a } = l.workspaces;
     const n = l.workspaces[n1.id];
     expect(a.x).toBeLessThan(n.x);
@@ -440,11 +441,44 @@ describe("migrating a team room's group", () => {
   });
 
   it("places teammates' sessions the layout doesn't name in the room's area, and a room only a teammate is in after this Mac's groups", () => {
-    const { l } = migrate({ shown: ["c"], activeGroup: "5102" }, [n7, ...own, n1]);
-    expect(Object.keys(l.areas)).toEqual(["5101", "5102", "5110"]);
+    const { l } = migrate({ shown: ["c"], activeGroup: "5102" }, [n7, sess("d", "5199"), ...mine, n1]);
+    // 5110 holds only a teammate's session, so it comes after this Mac's groups though its session is listed first
+    expect(laidOut(l)).toEqual(["5199", "5101", "5102", "5110"]);
     expect(l.areas["5110"].repos).toEqual([]);
     expect(contains(l.areas["5110"], l.workspaces[n7.id])).toBe(true);
     expect(contains(l.areas["5101"], l.workspaces[n1.id])).toBe(true);
+  });
+});
+
+describe("migrating groups and sessions named like Object.prototype members", () => {
+  const NAMES = ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"];
+  /** Prefs as localStorage hands them back: JSON, so a key named __proto__ is a key, not a prototype. */
+  const prefsOf = (v: unknown): LegacyPrefs => JSON.parse(JSON.stringify(v).replaceAll("PROTO", "__proto__"));
+  const as = (k: string) => (k === "__proto__" ? "PROTO" : k);
+
+  it("makes each such group an area, keeps its tree, stacks and front tab, and loses no session", () => {
+    for (const g of NAMES) {
+      const sessions = [sess("a", g), sess("b", g), sess("s1", `${g}/${g}`), sess("s2", `${g}/${g}`), sess("o", "5101")];
+      const prefs = prefsOf({ shown: ["b", "a", "s1"], activeGroup: as(g), trees: { [as(g)]: row(["b", "a", `ws:${as(g)}/${as(g)}`]) }, groupLayouts: { [as(g)]: ["b", "a", "s1"] }, wsTabs: { [`${as(g)}/${as(g)}`]: "s2" } });
+      const { l, ignored, stale } = migrate(prefs, sessions);
+      expect([ignored, stale], g).toEqual([[], []]);
+      expect(laidOut(l), g).toEqual([g, "5101"]);
+      const { a, b } = { a: own(l.workspaces, "a")!, b: own(l.workspaces, "b")! };
+      expect(b.x, g).toBeLessThan(a.x);
+      expect(own(l.stacks, `${g}/${g}`)?.active, g).toBe("s2");
+      expect(own(l.stacks, `${g}/${g}`)!.placement.x, g).toBeGreaterThan(a.x);
+    }
+  });
+
+  it("places each such session id from the tree, as a stack's front tab, and as a pin", () => {
+    for (const id of NAMES) {
+      const sessions = [sess(id, "5101"), sess("a", "5101"), sess(`${id}-tab`, "5101/x"), sess(id === "__proto__" ? "p2" : "__proto__", "5101/x")];
+      const prefs = prefsOf({ shown: ["a", as(id)], pinned: [as(id)], activeGroup: "5101", trees: { "5101": row(["a", as(id)]) }, wsTabs: { "5101/x": `${as(id)}-tab` } });
+      const { l } = migrate(prefs, sessions);
+      expect(Object.keys(l.workspaces).sort(), id).toEqual(["a", id].sort());
+      expect(own(l.workspaces, id)!.x, id).toBeGreaterThan(own(l.workspaces, "a")!.x);
+      expect(own(l.stacks, "5101/x")?.active, id).toBe(`${id}-tab`);
+    }
   });
 });
 

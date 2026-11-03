@@ -26,6 +26,7 @@ import {
   kindOf,
   placeNew,
   presetSize,
+  put,
   snapUp,
   stackKeyOf,
   type Cell,
@@ -126,9 +127,15 @@ function trackSizes(fractions: number[], total: number, needs: { from: number; t
  * gets no rectangle here, so the caller places it.
  */
 function treeRects(tree: LayoutNode, kindOfKey: (key: string) => WorkspaceKind, cell: Cell): { rects: Map<string, Rect>; w: number; h: number } {
-  const g = toGrid(tree);
-  const m = presetSize(keysOf(tree).some((k) => kindOfKey(k) === "agent") ? "agent" : "terminal", "M", cell);
-  const spans = Object.entries(g.areas).map(([key, a]) => {
+  // toGrid keeps panes in a plain object, where a pane keyed "__proto__" would be lost: it reads the tree under
+  // stand-in names, which no session id has (a NUL in them)
+  const keys = keysOf(tree);
+  let named: LayoutNode = tree;
+  keys.forEach((k, i) => (named = rename(named, k, `\u0000${i}`)!));
+  const g = toGrid(named);
+  const m = presetSize(keys.some((k) => kindOfKey(k) === "agent") ? "agent" : "terminal", "M", cell);
+  const spans = Object.entries(g.areas).map(([alias, a]) => {
+    const key = keys[Number(alias.slice(1))];
     const [r0, c0, r1, c1] = a.split("/").map((n) => Number(n) - 1);
     return { key, r0, c0, r1, c1, min: presetSize(kindOfKey(key), "S", cell) };
   });
@@ -151,9 +158,10 @@ function treeRects(tree: LayoutNode, kindOfKey: (key: string) => WorkspaceKind, 
  *   times the area's size, snapped, every workspace at least preset S;
  * - sub-groups are stacks, one placement for all their members, their front
  *   tab from `wsTabs`;
- * - ungrouped sessions are loose workspaces, kept in their tree's shape, and
- *   pinned panes a column of loose workspaces, both just left of the first
- *   area; their groups stay as they are;
+ * - ungrouped sessions are loose workspaces, kept in their tree's shape, just
+ *   left of the first area;
+ * - pinned panes go in their own area like any other: everything is on the
+ *   landscape at once, so pinning means nothing there;
  * - sessions the layout doesn't name are placed with placeNew in their area;
  * - ids that name no session are dropped (`stale`).
  *
@@ -185,7 +193,7 @@ export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo
     return s && tiles.get(tileKeyOf(s));
   };
 
-  const pinnedKeys = new Set(read.pinned.flatMap((id) => tileNamed(id)?.key ?? []));
+  // the group the grid shows, as it decides it: a pinned pane visiting from another group never makes that one active
   const active = activeGroupOf(read.shown, (id) => (byId.has(id) ? areaKeyOf(byId.get(id)!) : undefined), new Set(read.pinned), read.activeGroup);
   const groups = unique([...sessionOutline(list, [], false).flatMap((e) => (e.kind === "group" ? [e.key] : [])), ...list.map(areaKeyOf)]);
 
@@ -201,7 +209,7 @@ export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo
 
   /** A group's workspaces laid out in its own frame (corner at 0, 0): its tree's, then the rest by placeNew below them. */
   const layOut = (g: string): { frame: Rect; at: Map<string, Rect> } => {
-    const mine = [...tiles.values()].filter((t) => t.group === g && !pinnedKeys.has(t.key));
+    const mine = [...tiles.values()].filter((t) => t.group === g);
     const mineKeys = new Set(mine.map((t) => t.key));
     const ownOf = (ids: readonly string[]) => unique(ids.flatMap((id) => tileNamed(id)?.key ?? []).filter((k) => mineKeys.has(k)));
     const saved = read.trees[g] ? canonical(read.trees[g]) : null;
@@ -235,34 +243,28 @@ export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo
     if (g === LOOSE_GROUP) continue;
     const { frame, at } = layOut(g);
     if (row.x > 0 && row.x + frame.w > ROW_WIDTH) row = { x: 0, y: row.y + row.h + AREA_GAP, h: 0 };
-    out.areas[g] = { x: row.x, y: row.y, w: frame.w, h: frame.h, repos: unique(list.filter((s) => areaKeyOf(s) === g && s.repoPath).map((s) => s.repoPath!)).map((path) => ({ path, base: null })) };
+    put(out.areas, g, { x: row.x, y: row.y, w: frame.w, h: frame.h, repos: unique(list.filter((s) => areaKeyOf(s) === g && s.repoPath).map((s) => s.repoPath!)).map((path) => ({ path, base: null })) });
     move(at, row.x, row.y);
     row = { x: row.x + frame.w + AREA_GAP, y: row.y, h: Math.max(row.h, frame.h) };
   }
 
-  // loose workspaces go just left of the first area (at the origin when there's none): ungrouped ones in their tree's shape, then the pinned in a column
+  // ungrouped workspaces are loose, in their tree's shape, just left of the first area (at the origin when there's none)
   const first = groups.find((g) => g !== LOOSE_GROUP);
-  const near = first ? out.areas[first] : null;
+  const near = first === undefined ? null : out.areas[first];
   if (groups.includes(LOOSE_GROUP)) {
     const { at } = layOut(LOOSE_GROUP);
     const b = boundsOf([...at.values()]);
     if (b) move(at, near ? near.x - AREA_GAP - (b.x + b.w) : -b.x, near ? near.y - b.y : -b.y);
   }
-  const occupied = [...Object.values(out.areas), ...placed.values()];
-  for (const t of [...tiles.values()].filter((t) => pinnedKeys.has(t.key))) {
-    const p = placeNew(presetSize(tileKind(t), "M", cell), occupied, null, near);
-    placed.set(t.key, p);
-    occupied.push(p);
-  }
 
   for (const t of tiles.values()) {
     const p = placed.get(t.key);
-    // every tile's group is laid out above, or it's pinned: one without a place is a bug here, never a session to lose quietly
+    // every tile's group is laid out above: one without a place is a bug here, never a session to lose quietly
     if (!p) throw new Error(`migrateLayout gave ${t.key} (group ${t.group}) no place`);
-    if (!t.stack) out.workspaces[t.members[0].id] = p;
+    if (!t.stack) put(out.workspaces, t.members[0].id, p);
     else {
       const front = read.wsTabs[t.stack];
-      out.stacks[t.stack] = { active: t.members.some((s) => s.id === front) ? front : t.members[0].id, placement: p };
+      put(out.stacks, t.stack, { active: t.members.some((s) => s.id === front) ? front : t.members[0].id, placement: p });
     }
   }
   const stale = unique(read.named()).filter((k) => !tileNamed(k)).sort();
@@ -302,15 +304,16 @@ function readPrefs(p: LegacyPrefs, ignored: string[]): ReadPrefs {
     return {};
   };
 
-  const trees: Record<string, LayoutNode> = {};
+  // null-prototype records: a group named "constructor" or "__proto__" is a key like any other
+  const trees: Record<string, LayoutNode> = Object.create(null);
   for (const [g, t] of Object.entries(rec("trees"))) {
     const tree = asTree(t);
     if (tree) trees[g] = tree;
     else skip("trees", "isn't a layout tree", g);
   }
-  const groupLayouts: Record<string, string[]> = {};
+  const groupLayouts: Record<string, string[]> = Object.create(null);
   for (const [g, ids] of Object.entries(rec("groupLayouts"))) groupLayouts[g] = strings("groupLayouts", ids, g);
-  const wsTabs: Record<string, string> = {};
+  const wsTabs: Record<string, string> = Object.create(null);
   for (const [k, id] of Object.entries(rec("wsTabs"))) {
     if (typeof id === "string") wsTabs[k] = id;
     else skip("wsTabs", "isn't a session id", k);
@@ -322,12 +325,12 @@ function readPrefs(p: LegacyPrefs, ignored: string[]): ReadPrefs {
   if (typeof p.cols === "number" && p.cols >= 1) cols = p.cols;
   else if (p.cols !== undefined && p.cols !== null && p.cols !== "auto") skip("cols", "isn't a column count");
   // read as the grid's readLegacyLayout reads them: an empty zone is null
-  const templates: Record<string, string> = {};
+  const templates: Record<string, string> = Object.create(null);
   for (const [g, id] of Object.entries(rec("layout"))) {
     if (typeof id === "string") templates[g] = id;
     else skip("layout", "isn't a layout's name", g);
   }
-  const seats: Record<string, (string | null)[]> = {};
+  const seats: Record<string, (string | null)[]> = Object.create(null);
   for (const [g, z] of Object.entries(rec("zones"))) {
     if (Array.isArray(z)) seats[g] = z.map((k) => (typeof k === "string" ? k : null));
     else skip("zones", "isn't a list of zones", g);
