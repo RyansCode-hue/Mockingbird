@@ -39,7 +39,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 // team rooms: artifacts
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
-import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
+import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, colsRows, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -163,6 +163,8 @@ const board: AdoBoard = {
 };
 
 let settings: Settings = { ...DEFAULT_SETTINGS, setupDone: true, teamName: "You", signalingUrl: "https://mockingbird-signaling.you.workers.dev", presets: [{ id: "p-review", name: "Review on dev", launch: "claude", repoPath: REPO, branch: { mode: "new", pattern: "review-{date}", base: "dev" }, useWorktree: true, kickoff: "Review the latest changes on dev for bugs and missing tests." }] };
+// ?labs=landscape: Settings → Labs → Landscape is on, so the Sessions tab shows the landscape
+if (new URLSearchParams(location.search).get("labs")?.split(",").includes("landscape")) settings.labs = { landscape: true };
 // ?phone=…: phone alerts set up (the status they report is below, by the audit log)
 {
   const q = new URLSearchParams(location.search).get("phone");
@@ -893,13 +895,18 @@ const landscapeFixture = (): Landscape => {
 };
 let landscape = landscapeFixture();
 let landscapeRev = 0;
-// ?landscape=corrupt: landscape.json wasn't JSON at start, so it was moved aside and the layout starts over
+// ?landscape=corrupt: landscape.json wasn't JSON at start, so it was moved aside and the layout starts over;
+// =unreadable: reading it failed, so an empty stand-in is shown; =fresh: there's no landscape.json yet, so the
+// grid's layout is read in the first time the landscape is shown
 const LANDSCAPE_FILE = "/Users/you/.mockingbird/landscape.json";
+const landscapeQ = new URLSearchParams(location.search).get("landscape");
 const landscapeProblems: LandscapeProblem[] =
-  new URLSearchParams(location.search).get("landscape") === "corrupt"
+  landscapeQ === "corrupt"
     ? [{ kind: "corrupt", message: `${LANDSCAPE_FILE} isn't valid JSON (Unexpected end of JSON input). It was moved to ${LANDSCAPE_FILE}.bad-1730000000000, and the layout starts over.`, file: LANDSCAPE_FILE, movedTo: `${LANDSCAPE_FILE}.bad-1730000000000` }]
-    : [];
-if (landscapeProblems.length) landscape = emptyLandscape();
+    : landscapeQ === "unreadable"
+      ? [{ kind: "unreadable", message: `${LANDSCAPE_FILE} couldn't be read (EMFILE: too many open files). It's left as it is and read again with the next change; until then the layout is an empty stand-in, and changes to it aren't saved.`, file: LANDSCAPE_FILE, readOnly: true }]
+      : [];
+if (landscapeProblems.length || landscapeQ === "fresh") landscape = emptyLandscape();
 
 // ---- Council: a discussion two rounds in --------------------------------------
 
@@ -2060,6 +2067,12 @@ const motionQ = params.get("motion") ?? (params.has("shot") || params.has("measu
 if (motionQ === "off") (window as unknown as { __mbMotion?: string }).__mbMotion = "off";
 else if (motionQ === "reduce" || motionQ === "full" || motionQ === "os") set("mb.motion", motionQ);
 if (shown) set("mb.shown", shown.split(","));
+// the window's hint of the Labs flag (main.tsx), as a window that had it on keeps it
+if (settings.labs?.landscape) set("mb.labs.landscape", true);
+// the landscape: ?lsCamera=x,y,zoom puts the camera there (else it fits everything); ?lsFocus=<id> selects that
+// session's workspace and presses Enter on the landscape, which fills the window with it
+const lsCamera = params.get("lsCamera")?.split(",").map(Number);
+if (lsCamera?.length === 3 && lsCamera.every(Number.isFinite)) set("mb.landscape.camera", { x: lsCamera[0], y: lsCamera[1], zoom: lsCamera[2] });
 // team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared);
 // ?chat=list shows the room list, each room with its sessions
 if (params.get("chat")) set("mb.roomChat.room", params.get("chat") === "list" ? "" : params.get("chat"));
@@ -2284,6 +2297,14 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
     if (el) then(el);
   }, 100);
 };
+const lsFocus = params.get("lsFocus");
+if (lsFocus) {
+  const at = `.ls-world [data-front="${CSS.escape(lsFocus)}"]`;
+  waitFor(`${at} .xterm, ${at} .dead-body`, () => {
+    document.querySelector<HTMLElement>(`${at} .ls-head`)?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    setTimeout(() => document.querySelector<HTMLElement>(".ls-viewport")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })), 100);
+  });
+}
 const typeArea = (area: HTMLTextAreaElement, text: string) => {
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(area, text);
   area.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2747,6 +2768,196 @@ if (params.has("termAudit")) {
     const tag = document.createElement("script");
     tag.type = "application/json";
     tag.id = "mb-term-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  });
+}
+// ?landscapeAudit (with ?labs=landscape) works the landscape as a person would and writes what each step did into
+// <script id="mb-landscape-audit"> for test/uiLandscape.test.ts: every own workspace's terminal and pty against
+// colsRows of its placement with the terminal's measured cell; the pty sizes sent while it's panned (wheel, Space-
+// and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
+// and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
+// terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
+if (params.has("landscapeAudit")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  type Term = import("@xterm/xterm").Terminal & { _core: { _renderService: { dimensions: { css: { cell: { width: number; height: number } } } } } };
+  const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
+  const resizes = () => calls.filter((c) => c.fn === "sessionResize").map((c) => `${c.args[0]} ${c.args[1]}×${c.args[2]}`);
+  const vp = () => document.querySelector<HTMLElement>(".ls-viewport")!;
+  const node = (id: string, where = ".ls-world") => document.querySelector<HTMLElement>(`${where} [data-front="${CSS.escape(id)}"]`);
+  const camera = () => {
+    const m = /scale\(([-\d.e]+)\) translate\(([-\d.e]+)px, ([-\d.e]+)px\)/.exec(document.querySelector<HTMLElement>(".ls-world")?.style.transform ?? "");
+    return m ? { zoom: Number(m[1]), x: -Number(m[2]), y: -Number(m[3]) } : null;
+  };
+  const want = (id: string, size: { w: number; h: number }) => {
+    const c = term(id)!._core._renderService.dimensions.css.cell;
+    const t = colsRows(size.w, size.h, c.width, c.height);
+    return `${t.cols}×${t.rows}`;
+  };
+  const sizeOf = (id: string) => `${term(id)?.cols}×${term(id)?.rows}`;
+  const at = (el: Element, dx = 0.5, dy = 0.5) => {
+    const r = el.getBoundingClientRect();
+    return { clientX: r.left + r.width * dx, clientY: r.top + r.height * dy };
+  };
+  const wheel = (el: Element, init: WheelEventInit) => el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ...at(el, 0.3, 0.3), ...init }));
+  // with its keyCode, which xterm reads keys by: a key typed into a terminal is one xterm acts on
+  const CODES: Record<string, number> = { Escape: 27, Enter: 13, " ": 32, ArrowRight: 39, ArrowLeft: 37, "0": 48, "1": 49, "=": 187, e: 69 };
+  const key = (el: Element, k: string, mods: KeyboardEventInit = {}) => {
+    const ev = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...mods });
+    Object.defineProperty(ev, "keyCode", { get: () => CODES[k] ?? 0 });
+    return el.dispatchEvent(ev);
+  };
+  const keyUp = (el: Element, k: string) => el.dispatchEvent(new KeyboardEvent("keyup", { key: k, bubbles: true, cancelable: true }));
+  const pointer = (el: Element, type: string, init: PointerEventInit) => el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 7, ...init }));
+  const drag = (el: Element, button: number) => {
+    const p = at(el);
+    pointer(el, "pointerdown", { ...p, button, buttons: button === 1 ? 4 : 1 });
+    pointer(vp(), "pointermove", { clientX: p.clientX - 140, clientY: p.clientY - 90 });
+    pointer(vp(), "pointerup", { clientX: p.clientX - 140, clientY: p.clientY - 90, button });
+  };
+  const pick = async (id: string) => {
+    pointer(node(id)!.querySelector(".ls-head")!, "pointerdown", { button: 0 });
+    await sleep(150);
+  };
+  const ownShown = ["s1", "s2", "s4", "s5", "s7", "s8"];
+  waitFor('.ls-world [data-front="s1"] .xterm', async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(800);
+      out.placed = ownShown.map((id) => {
+        const s = sessions.find((x) => x.id === id)!;
+        const stack = stackKeyOf(s);
+        const p = stack ? landscape.stacks[stack].placement : landscape.workspaces[id];
+        const holder = term(id)?.element?.parentElement;
+        return { id, want: want(id, p), term: sizeOf(id), pty: resizes().filter((r) => r.startsWith(`${id} `)).pop() ?? null, holder: holder ? `${holder.clientWidth}×${holder.clientHeight}` : null, room: `${p.w - 16}×${p.h - 40}` };
+      });
+
+      // pan and zoom
+      let mark = resizes().length;
+      const cam0 = camera();
+      wheel(vp(), { deltaX: 40, deltaY: 120 });
+      const afterWheel = camera();
+      // a wheel over a workspace that isn't selected moves the landscape too
+      wheel(node("s8")!.querySelector(".term-holder")!, { deltaY: 90 });
+      const afterWheelOver = camera();
+      vp().focus();
+      key(vp(), " ");
+      drag(node("s4")!.querySelector(".term-holder")!, 0);
+      keyUp(vp(), " ");
+      const afterSpace = camera();
+      drag(node("s5")!.querySelector(".term-holder")!, 1);
+      const afterMiddle = camera();
+      // a pinch about a point: the landscape point under it stays under it
+      const r = vp().getBoundingClientRect();
+      const p = { x: 420, y: 260 };
+      const under = (c: ReturnType<typeof camera>) => c && { x: c.x + p.x / c.zoom, y: c.y + p.y / c.zoom };
+      const before = under(camera());
+      vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: r.left + p.x, clientY: r.top + p.y, deltaY: -30, ctrlKey: true }));
+      const pinched = camera();
+      const afterPinch = under(pinched);
+      vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: r.left + p.x, clientY: r.top + p.y, deltaY: 200, metaKey: true }));
+      const cmdScrolled = camera();
+      vp().focus();
+      key(vp(), "0", { metaKey: true });
+      const fitted = camera();
+      key(vp(), "1", { metaKey: true });
+      const hundred = camera();
+      await sleep(400);
+      out.panZoom = {
+        resized: resizes().slice(mark),
+        wheel: JSON.stringify(afterWheel) !== JSON.stringify(cam0),
+        wheelOver: JSON.stringify(afterWheelOver) !== JSON.stringify(afterWheel),
+        space: JSON.stringify(afterSpace) !== JSON.stringify(afterWheelOver),
+        middle: JSON.stringify(afterMiddle) !== JSON.stringify(afterSpace),
+        pinch: { zoomIn: (pinched?.zoom ?? 0) > (afterMiddle?.zoom ?? 0), drift: before && afterPinch ? Math.hypot(before.x - afterPinch.x, before.y - afterPinch.y) : null },
+        cmdScroll: (cmdScrolled?.zoom ?? 1) < (pinched?.zoom ?? 0),
+        fit: fitted?.zoom ?? null,
+        hundred: hundred?.zoom ?? null,
+        // nothing re-fitted the terminals: each still holds its placement's size
+        sizes: ownShown.map((id) => sizeOf(id)),
+      };
+
+      // keys and a wheel inside a terminal are the terminal's
+      await pick("s1");
+      const area = node("s1")!.querySelector("textarea")!;
+      area.focus();
+      const cam1 = camera();
+      key(area, "0", { metaKey: true });
+      key(area, "1", { metaKey: true });
+      key(area, "=", { metaKey: true });
+      key(area, "Enter");
+      key(area, "ArrowRight", { altKey: true });
+      key(area, " ");
+      wheel(node("s1")!.querySelector(".term-holder")!, { deltaY: 100 });
+      await sleep(200);
+      out.typing = { camera: JSON.stringify(camera()) === JSON.stringify(cam1), focused: !!document.querySelector(".ls-focus"), selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-ws") ?? null };
+
+      // a placement changed: its pty is told once
+      mark = resizes().length;
+      const p1 = landscape.workspaces.s1;
+      const bigger = { ...p1, w: p1.w + 160, h: p1.h + 84 };
+      await api.landscapeUpdate({ workspaces: { s1: bigger } });
+      await sleep(400);
+      out.placement = { sent: resizes().slice(mark), want: `s1 ${want("s1", bigger)}`, term: sizeOf("s1") };
+
+      // focus on your own workspace: it reflows to the window, and back to its placement
+      await pick("s1");
+      vp().focus();
+      mark = resizes().length;
+      key(vp(), "Enter");
+      await sleep(400);
+      const v = { w: vp().clientWidth, h: vp().clientHeight };
+      const inFocus = () => !!document.querySelector(".ls-focus .ls-node");
+      out.focusOwn = { entered: inFocus(), sent: resizes().slice(mark), want: `s1 ${want("s1", v)}`, keyboard: !!document.activeElement?.closest(".ls-focus .xterm") };
+      // Esc typed in its terminal is the terminal's
+      const writes = () => calls.filter((c) => c.fn === "sessionWrite" && c.args[0] === "s1" && c.args[1] === "\x1b").length;
+      const w0 = writes();
+      const fArea = document.querySelector<HTMLTextAreaElement>(".ls-focus textarea")!;
+      fArea.focus();
+      key(fArea, "Escape");
+      await sleep(200);
+      out.escInTerminal = { stillFocused: inFocus(), wroteEsc: writes() - w0 };
+      mark = resizes().length;
+      key(fArea, "Escape", { metaKey: true });
+      await sleep(400);
+      out.back = { left: !inFocus(), sent: resizes().slice(mark), want: `s1 ${want("s1", bigger)}`, keyboard: document.activeElement === vp() };
+      // ⌘E in, Esc outside the terminal out
+      await pick("s1");
+      key(vp(), "e", { metaKey: true });
+      await sleep(300);
+      const viaCmdE = inFocus();
+      pointer(document.querySelector(".ls-focus .ls-head")!, "pointerdown", { button: 0 });
+      await sleep(100);
+      key(document.activeElement ?? document.body, "Escape");
+      await sleep(300);
+      out.cmdE = { entered: viaCmdE, leftByEsc: !inFocus() };
+
+      // focus on a teammate's workspace: only scaled, never resized
+      await sleep(200);
+      mark = resizes().length;
+      const fontBefore = term(NICK_PANE)?.options.fontSize ?? null;
+      const ownerSize = sizeOf(NICK_PANE);
+      await pick(NICK_PANE);
+      key(vp(), "Enter");
+      await sleep(500);
+      const remoteIn = { entered: inFocus(), font: term(NICK_PANE)?.options.fontSize ?? null, size: sizeOf(NICK_PANE) };
+      key(document.activeElement ?? document.body, "Escape");
+      await sleep(400);
+      out.focusRemote = { id: NICK_PANE, ...remoteIn, fontBefore, ownerSize, left: !inFocus(), sent: resizes().slice(mark), fontAfter: term(NICK_PANE)?.options.fontSize ?? null };
+
+      // ⌥→ from s1: the nearest workspace to its right, brought to the middle
+      await pick("s1");
+      vp().focus();
+      const cam2 = camera();
+      key(vp(), "ArrowRight", { altKey: true });
+      await sleep(200);
+      out.nearest = { selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-ws") ?? null, moved: JSON.stringify(camera()) !== JSON.stringify(cam2) };
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-landscape-audit";
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
   });
