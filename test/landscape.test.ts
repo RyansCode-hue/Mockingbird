@@ -108,14 +108,23 @@ describe("size presets", () => {
       }
   });
 
-  it("default to M: an agent of 140 × 42, about 1050 × 760 px", () => {
+  // What xterm measures for a cell at LANDSCAPE_FONT and line height 1.4, on 1× and 2× screens.
+  const MEASURED = [{ w: 7.528169014084507, h: 21 }, { w: 7.5286, h: 21 }, { w: 7.525, h: 21 }];
+
+  it("hold exactly their cols × rows at the cell xterm really measures", () => {
+    for (const cell of MEASURED)
+      for (const kind of ["agent", "terminal"] as const)
+        for (const p of SIZE_PRESETS) {
+          const s = presetSize(kind, p);
+          expect(colsRows(s.w, s.h, cell.w, cell.h), `${kind} ${p} at ${cell.w}`).toEqual(WORKSPACE_SIZES[kind][p]);
+        }
+  });
+
+  it("default to M: an agent of 140 × 42 at 1072 × 928 px", () => {
     expect(presetSize("agent")).toEqual(presetSize("agent", "M"));
-    const m = presetSize("agent");
-    expect(m.w).toBeGreaterThan(1050);
-    expect(m.w).toBeLessThan(1100);
-    expect(m.h).toBeGreaterThan(760);
-    expect(m.h).toBeLessThan(820);
+    expect(presetSize("agent")).toEqual({ w: 1072, h: 928 });
     expect(WORKSPACE_SIZES.terminal.M).toEqual({ cols: 120, rows: 24 });
+    expect(presetSize("terminal")).toEqual({ w: 920, h: 544 });
   });
 });
 

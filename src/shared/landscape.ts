@@ -160,11 +160,14 @@ export const WORKSPACE_SIZES: Record<WorkspaceKind, Record<SizePreset, TermSize>
 };
 
 /**
- * A terminal cell at the landscape's 12.5 px mono, for sizing before a
- * terminal exists to measure (migration, a new workspace's first placement).
- * Once a workspace has a live terminal its real cell decides cols and rows.
+ * A terminal cell at the landscape's 12.5 px mono and the terminals' 1.4
+ * line height, for sizing before a terminal exists to measure (migration, a
+ * new workspace's first placement). xterm measures it at 7.525–7.529 × 21
+ * on 1× and 2× screens; the width here is a hair over that, so a preset sized
+ * by it holds exactly its cols × rows at the cell the terminal really has.
+ * Once a workspace has a live terminal, that cell decides cols and rows.
  */
-export const CELL_ESTIMATE: Cell = { w: 7.5, h: 18 };
+export const CELL_ESTIMATE: Cell = { w: 7.53, h: 21 };
 
 /** The landscape's terminal font, in px: a workspace's terminal keeps it at every zoom, which only scales it. */
 export const LANDSCAPE_FONT = 12.5;
