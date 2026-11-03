@@ -304,6 +304,23 @@ function cellOf(term: Terminal): { width: number; height: number } | null {
   return cell?.width && cell.height ? cell : null;
 }
 
+/**
+ * The cell a terminal sized by its landscape workspace counts in (followPlacement): its font's, as xterm's DOM
+ * renderer lays a cell out (the character's width, and the line height in device pixels), whichever renderer
+ * draws it. The WebGL renderer floors the character's width to device pixels (7.5 px at 2×, 7 at 1× for the
+ * landscape's 12.5 px), so its own cell would give more columns, and a terminal moving between renderers (past
+ * the WebGL cap, or a lost context) must never have its pty resized. Not public API: the drawn cell when xterm's
+ * character measure isn't there, and null before it has measured.
+ */
+function fontCell(term: Terminal): { width: number; height: number } | null {
+  const core = (term as unknown as { _core?: { _charSizeService?: { width?: number; height?: number }; _coreBrowserService?: { dpr?: number } } })._core;
+  const char = core?._charSizeService;
+  if (!char) return cellOf(term);
+  if (!char.width || !char.height) return null;
+  const dpr = core?._coreBrowserService?.dpr || window.devicePixelRatio || 1;
+  return { width: char.width, height: Math.floor(Math.ceil(char.height * dpr) * (term.options.lineHeight ?? 1)) / dpr };
+}
+
 /** How long after a wheel, touch or key a scroll counts as the user's. */
 export const USER_SCROLL_MS = 300;
 
@@ -443,7 +460,7 @@ export function followPlacement(
   let on = true;
   const sizeTo = (want: (cell: { w: number; h: number }) => { cols: number; rows: number } | null) => {
     // not measured until it's open in a laid-out holder: the first render and the font arriving fit it again
-    const cell = cellOf(e.term);
+    const cell = fontCell(e.term);
     const t = cell && want({ w: cell.width, h: cell.height });
     if (!t) return;
     const { cols, rows } = t;
@@ -495,9 +512,29 @@ export function followPlacement(
   };
 }
 
-/** A terminal's cell in CSS pixels as xterm measured it for its font; null before it has. */
+/**
+ * The last `max` lines of a terminal's buffer as plain text, a row wrapped onto the next joined with it: what a
+ * landscape card reads its line from. Reads the buffer only, so it works for a terminal that isn't open.
+ */
+export function tailLines(term: Pick<Terminal, "buffer">, max = 40): string[] {
+  const b = term.buffer.active;
+  const out: string[] = [];
+  let row = "";
+  for (let y = b.length - 1; y >= 0 && out.length < max; y--) {
+    const line = b.getLine(y);
+    if (!line) continue;
+    row = line.translateToString(true) + row;
+    if (line.isWrapped) continue;
+    out.push(row);
+    row = "";
+  }
+  if (row) out.push(row);
+  return out.reverse();
+}
+
+/** The cell a landscape terminal's pty is sized by, in CSS pixels, as xterm measured its font (fontCell); null before it has. */
 export function measuredCell(term: Terminal): { w: number; h: number } | null {
-  const c = cellOf(term);
+  const c = fontCell(term);
   return c ? { w: c.width, h: c.height } : null;
 }
 

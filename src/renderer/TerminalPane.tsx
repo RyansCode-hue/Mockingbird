@@ -30,7 +30,8 @@ import { baseName } from "../shared/paths";
 import { settled } from "./settled";
 import { StatusDot } from "./StatusDot";
 import { useHandover } from "./motion";
-import { colsRows } from "../shared/landscape";
+import { CELL_ESTIMATE, LANDSCAPE_FONT, colsRows } from "../shared/landscape";
+import { webglOff, webglOn } from "./termGl";
 
 export { applyTermTheme } from "./cachedTerm";
 
@@ -306,6 +307,139 @@ const overlapCount = (list: FileOverlap[]) => new Set(list.flatMap((o) => o.file
 
 const PR_LABEL: Record<PrState["state"], string> = { draft: "draft", open: "open", approved: "approved", changes: "changes requested", merged: "merged", closed: "closed" };
 
+/**
+ * A session's cached terminal, made the first time it's asked for (its saved output replayed, and from then on
+ * fed by the data pump whether or not a pane shows it) and made again when the session was relaunched under its
+ * id. Opened only when a pane attaches it, so a landscape card can read a terminal nothing shows.
+ */
+function termFor(session: SessionInfo, fontSize: number): TermEntry {
+  ensureDataPump();
+  let entry = terms.get(session.id);
+  const remoteEntry = isRemotePaneId(session.id);
+  // relaunched in place (Restore all, a dead pane's Relaunch): the cached terminal holds the old
+  // process's screen and modes, and fits only when its own size changes, so the new pty would keep
+  // the size it started at. A teammate's copy is redrawn from its owner's scrollback instead.
+  if (entry && !remoteEntry && entry.startedAt !== session.createdAt) {
+    disposeTerm(session.id);
+    entry = undefined;
+  }
+  if (!entry) {
+    // a session id keeps its agent and shell flag through restarts, and a
+    // resumed pane gets a fresh entry, so the policy is fixed per entry
+    const mousePolicy = mousePolicyFor(session, remoteEntry);
+    const { term, fit } = makeTerm({
+      fontSize,
+      lineHeight: 1.4,
+      scrollback: 8000,
+      allowProposedApi: true,
+      // Option-drag selects natively while Claude has the mouse. Option-click
+      // must not also move the prompt cursor: a short native gesture would
+      // otherwise type arrow keys into the prompt.
+      ...(mousePolicy === "claude" ? { macOptionClickForcesSelection: true, altClickMovesCursor: false } : {}),
+    });
+    // an agent's inline frame leaves blank rows below it (bottomLine); a shell's cleared screen keeps its prompt at the top
+    if (!session.shell) anchorToContent(term);
+    const e: TermEntry = {
+      term,
+      fit,
+      startedAt: session.createdAt,
+      replayed: false,
+      ready: false,
+      onPanel: null,
+      onFullScreen: null,
+      lastInput: 0,
+      lastReply: "",
+      lastReplyCount: 0,
+      lastReplyStart: 0,
+      mousePolicy,
+      carry: "",
+      dragging: false,
+      hold: null,
+      holdStart: 0,
+      // Only the CLI's own mode sequences turn this on. An inline CLI keeps its
+      // history in the terminal's scrollback, so the wheel must scroll that
+      // and selection can span it (click, scroll, shift-click). Assuming mouse
+      // mode sent wheel reports to a CLI that never asked, leaving the pane
+      // unscrollable.
+      wantsMouse: false,
+      tracking: 0,
+      buttonHeld: false,
+      wheelAcc: 0,
+      wrapAgent: session.shell ? null : (session.agent ?? "claude"),
+      printWidth: trackPrintWidths(term),
+      columnSelect: false,
+    };
+    // the side panel appears and disappears with output; recheck at most
+    // twice a second so the header's "hide diff" button tracks it
+    let panelCheck: ReturnType<typeof setTimeout> | null = null;
+    term.onWriteParsed(() => {
+      if (panelCheck) return;
+      panelCheck = setTimeout(() => {
+        panelCheck = null;
+        e.onPanel?.(e.wantsMouse ? findPanelClose(term) : null);
+      }, 500);
+    });
+    term.onData((d) => {
+      const now = Date.now();
+      const source = classifyTermInput(d, now - e.lastInput, term.modes.mouseTrackingMode);
+      const action = forwardTermInput(source, remoteEntry);
+      if (action === "send" && source !== "reply") return writeSession(session.id, d);
+      // no user input behind this: it is either an answer to a query the
+      // program asked for, or something that has no business being typed
+      if (action === "audit") {
+        window.mb.auditWrite(session.id, "dropped-unattributed", d);
+        return;
+      }
+      if (action === "drop") return;
+      if (d === e.lastReply && now - e.lastReplyStart < REPLY_LOOP_WINDOW_MS) {
+        e.lastReplyCount++;
+        if (e.lastReplyCount > REPLY_LOOP_COUNT) {
+          window.mb.auditWrite(session.id, "suppressed-reply-loop", d);
+          return;
+        }
+      } else {
+        e.lastReply = d;
+        e.lastReplyCount = 1;
+        e.lastReplyStart = now;
+      }
+      writeSession(session.id, d);
+    });
+    // Shift+Enter = newline in the Claude prompt. Terminals send plain CR for
+    // both Enter and Shift+Enter, so we translate to ESC+CR (what Option+Enter
+    // sends), which the Claude CLI treats as "insert newline, don't submit".
+    term.attachCustomKeyEventHandler((ev) => {
+      // a teammate's session: PageUp/PageDown page this copy, never the owner's view
+      const page = remoteEntry ? pageKey(ev) : 0;
+      if (page) {
+        ev.preventDefault();
+        if (ev.type !== "keydown") return false;
+        noteUserScroll(term);
+        if (scrollCopy(term, page * Math.max(1, term.rows - 1)) === "full-screen") e.onFullScreen?.();
+        return false;
+      }
+      if (ev.type === "keydown" || ev.type === "keypress") e.lastInput = Date.now();
+      if (
+        ev.type === "keydown" &&
+        ev.key === "Enter" &&
+        ev.shiftKey &&
+        !ev.metaKey &&
+        !ev.ctrlKey &&
+        !ev.altKey
+      ) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        writeSession(session.id, "\x1b\r");
+        return false;
+      }
+      return true;
+    });
+    entry = e;
+    terms.set(session.id, e);
+    void replay(e, window.mb.sessionBuffer(session.id), () => terms.get(session.id) === e, (buf) => stripMouseEnables(e, buf));
+  }
+  return entry;
+}
+
 /** One xterm attached to a PTY session. Terminals are cached so re-layout keeps scrollback. */
 export function TerminalPane({
   session,
@@ -510,130 +644,8 @@ export function TerminalPane({
 
   useEffect(() => {
     if (dead) return; // dead panes show the resume body instead of the terminal
-    ensureDataPump();
-    let entry = terms.get(session.id);
+    const entry = termFor(session, fontSizeFor(density));
     const remoteEntry = isRemotePaneId(session.id);
-    // relaunched in place (Restore all, a dead pane's Relaunch): the cached terminal holds the old
-    // process's screen and modes, and fits only when its own size changes, so the new pty would keep
-    // the size it started at. A teammate's copy is redrawn from its owner's scrollback instead.
-    if (entry && !remoteEntry && entry.startedAt !== session.createdAt) {
-      disposeTerm(session.id);
-      entry = undefined;
-    }
-    if (!entry) {
-      // a session id keeps its agent and shell flag through restarts, and a
-      // resumed pane gets a fresh entry, so the policy is fixed per entry
-      const mousePolicy = mousePolicyFor(session, remoteEntry);
-      const { term, fit } = makeTerm({
-        fontSize: fontSizeFor(density),
-        lineHeight: 1.4,
-        scrollback: 8000,
-        allowProposedApi: true,
-        // Option-drag selects natively while Claude has the mouse. Option-click
-        // must not also move the prompt cursor: a short native gesture would
-        // otherwise type arrow keys into the prompt.
-        ...(mousePolicy === "claude" ? { macOptionClickForcesSelection: true, altClickMovesCursor: false } : {}),
-      });
-      // an agent's inline frame leaves blank rows below it (bottomLine); a shell's cleared screen keeps its prompt at the top
-      if (!session.shell) anchorToContent(term);
-      const e: TermEntry = {
-        term,
-        fit,
-        startedAt: session.createdAt,
-        replayed: false,
-        ready: false,
-        onPanel: null,
-        onFullScreen: null,
-        lastInput: 0,
-        lastReply: "",
-        lastReplyCount: 0,
-        lastReplyStart: 0,
-        mousePolicy,
-        carry: "",
-        dragging: false,
-        hold: null,
-        holdStart: 0,
-        // Only the CLI's own mode sequences turn this on. An inline CLI keeps its
-        // history in the terminal's scrollback, so the wheel must scroll that
-        // and selection can span it (click, scroll, shift-click). Assuming mouse
-        // mode sent wheel reports to a CLI that never asked, leaving the pane
-        // unscrollable.
-        wantsMouse: false,
-        tracking: 0,
-        buttonHeld: false,
-        wheelAcc: 0,
-        wrapAgent: session.shell ? null : (session.agent ?? "claude"),
-        printWidth: trackPrintWidths(term),
-        columnSelect: false,
-      };
-      // the side panel appears and disappears with output; recheck at most
-      // twice a second so the header's "hide diff" button tracks it
-      let panelCheck: ReturnType<typeof setTimeout> | null = null;
-      term.onWriteParsed(() => {
-        if (panelCheck) return;
-        panelCheck = setTimeout(() => {
-          panelCheck = null;
-          e.onPanel?.(e.wantsMouse ? findPanelClose(term) : null);
-        }, 500);
-      });
-      term.onData((d) => {
-        const now = Date.now();
-        const source = classifyTermInput(d, now - e.lastInput, term.modes.mouseTrackingMode);
-        const action = forwardTermInput(source, remoteEntry);
-        if (action === "send" && source !== "reply") return writeSession(session.id, d);
-        // no user input behind this: it is either an answer to a query the
-        // program asked for, or something that has no business being typed
-        if (action === "audit") {
-          window.mb.auditWrite(session.id, "dropped-unattributed", d);
-          return;
-        }
-        if (action === "drop") return;
-        if (d === e.lastReply && now - e.lastReplyStart < REPLY_LOOP_WINDOW_MS) {
-          e.lastReplyCount++;
-          if (e.lastReplyCount > REPLY_LOOP_COUNT) {
-            window.mb.auditWrite(session.id, "suppressed-reply-loop", d);
-            return;
-          }
-        } else {
-          e.lastReply = d;
-          e.lastReplyCount = 1;
-          e.lastReplyStart = now;
-        }
-        writeSession(session.id, d);
-      });
-      // Shift+Enter = newline in the Claude prompt. Terminals send plain CR for
-      // both Enter and Shift+Enter, so we translate to ESC+CR (what Option+Enter
-      // sends), which the Claude CLI treats as "insert newline, don't submit".
-      term.attachCustomKeyEventHandler((ev) => {
-        // a teammate's session: PageUp/PageDown page this copy, never the owner's view
-        const page = remoteEntry ? pageKey(ev) : 0;
-        if (page) {
-          ev.preventDefault();
-          if (ev.type !== "keydown") return false;
-          noteUserScroll(term);
-          if (scrollCopy(term, page * Math.max(1, term.rows - 1)) === "full-screen") e.onFullScreen?.();
-          return false;
-        }
-        if (ev.type === "keydown" || ev.type === "keypress") e.lastInput = Date.now();
-        if (
-          ev.type === "keydown" &&
-          ev.key === "Enter" &&
-          ev.shiftKey &&
-          !ev.metaKey &&
-          !ev.ctrlKey &&
-          !ev.altKey
-        ) {
-          ev.preventDefault();
-          ev.stopPropagation();
-          writeSession(session.id, "\x1b\r");
-          return false;
-        }
-        return true;
-      });
-      entry = e;
-      terms.set(session.id, entry);
-      void replay(e, window.mb.sessionBuffer(session.id), () => terms.get(session.id) === e, (buf) => stripMouseEnables(e, buf));
-    }
     const { term } = entry;
     // the header's "hide diff" button follows the panel for whichever pane shows this terminal now
     const onPanel = (found: { col: number; row: number } | null) =>
@@ -657,7 +669,8 @@ export function TerminalPane({
       const placed = followPlacement(
         entry,
         (cell) => {
-          const l = landscapeNow.current ?? { w: 0, h: 0 };
+          const l = landscapeNow.current ?? { w: 0, h: 0, font: 0 };
+          if (l.font === LANDSCAPE_FONT) landscapeCell = cell;
           return colsRows(l.w, l.h, cell.w, cell.h);
         },
         (cols, rows) => window.mb.sessionResize(session.id, cols, rows),
@@ -675,6 +688,9 @@ export function TerminalPane({
       if (term.options.fontSize !== fontSizeFor(densityNow.current)) term.options.fontSize = fontSizeFor(densityNow.current);
       stopFollowing = followSize(entry, holder.current, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
     }
+    // a landscape workspace's terminal draws with WebGL while it's attached (termGl.ts); the grid's keep the DOM renderer
+    const gl = !!landscapeNow.current;
+    if (gl) webglOn(term, session.id);
 
     const stamp = () => {
       const t = terms.get(session.id);
@@ -815,6 +831,7 @@ export function TerminalPane({
     return () => {
       stopFollowing();
       stopFollowNote();
+      if (gl) webglOff(term, session.id);
       el?.removeEventListener("paste", onPaste, true);
       el?.removeEventListener("copy", onCopy, true);
       el?.removeEventListener("pointerdown", onDown, true);
@@ -1344,8 +1361,69 @@ export function TerminalPane({
 }
 
 export function disposeTerm(id: string): void {
-  terms.get(id)?.term.dispose();
+  const e = terms.get(id);
+  if (e) webglOff(e.term, id);
+  e?.term.dispose();
   terms.delete(id);
+}
+
+/** The cell landscape terminals were last measured at, at LANDSCAPE_FONT; the estimate until one has been. */
+let landscapeCell: { w: number; h: number } | null = null;
+
+/** A session's cached terminal for a landscape card to read: made, and its saved output replayed, if it isn't yet. */
+export function landscapeTerm(session: SessionInfo): Terminal {
+  return termFor(session, LANDSCAPE_FONT).term;
+}
+
+/**
+ * Keep the terminal of a workspace nothing shows (a card, or off screen) at the size its workspace gives it, as
+ * followPlacement does for one that's attached: colsRows of `size` at the cell landscape terminals measure, the
+ * pty told only when that differs from what it has. So a card's buffer is the width the agent draws for, and
+ * attaching it again (zooming in, panning back) finds its pty at that size already: a band change never resizes
+ * one. A teammate's session keeps its owner's size, and a terminal a pane follows is left to the pane.
+ */
+export function holdSize(session: SessionInfo, size: { w: number; h: number }): void {
+  if (session.status === "dead" || isRemotePaneId(session.id)) return;
+  const e = termFor(session, LANDSCAPE_FONT);
+  if (e.refit) return;
+  const cell = landscapeCell ?? CELL_ESTIMATE;
+  const { cols, rows } = colsRows(size.w, size.h, cell.w, cell.h);
+  if (e.term.cols !== cols || e.term.rows !== rows) e.term.resize(cols, rows);
+  if (e.ptySize?.cols === cols && e.ptySize.rows === rows) return;
+  e.ptySize = { cols, rows };
+  window.mb.sessionResize(session.id, cols, rows);
+}
+
+/** A session's cached terminal's screen as plain text, its rows as they show now: a peeked workspace's stand-in. */
+export function screenText(id: string): string | null {
+  const term = terms.get(id)?.term;
+  if (!term) return null;
+  const b = term.buffer.active;
+  const rows: string[] = [];
+  for (let y = 0; y < term.rows; y++) rows.push(b.getLine(b.viewportY + y)?.translateToString(true) ?? "");
+  return rows.join("\n");
+}
+
+/**
+ * Show a session's cached terminal in `holder` (a landscape peek) at its own size, its font fitted to the holder
+ * up to `maxFont` (followFixedSize): its pty is never resized, and the terminal is never given the keyboard.
+ * Returns the hand-back, which puts its font back while it's still in the page (xterm measures a font only in
+ * the page, and the next pane sizes its pty by that measure) and gives its WebGL context up; null when the
+ * session has no cached terminal.
+ */
+export function lendTerm(id: string, holder: HTMLElement, maxFont: number): (() => void) | null {
+  const e = terms.get(id);
+  if (!e) return null;
+  const { term } = e;
+  const font = term.options.fontSize;
+  attachTerm(term, holder);
+  const fixed = followFixedSize(e, holder, () => ({ cols: term.cols, rows: term.rows }), () => maxFont);
+  webglOn(term, id);
+  return () => {
+    fixed.stop();
+    if (term.options.fontSize !== font) term.options.fontSize = font;
+    webglOff(term, id);
+  };
 }
 
 export function focusTerm(id: string): void {

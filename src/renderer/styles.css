@@ -3092,6 +3092,72 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 }
 .pane.ls-body .term-holder { padding: 0; }
 .ls-away { flex: 1; display: flex; align-items: center; justify-content: center; font: 400 11px var(--ui); color: var(--text-4); }
+/* nothing attached (off screen, or behind focus): the terminal's ground, so a workspace coming into view before its
+   terminal does shows no hole */
+.ls-still { flex: 1; min-height: 0; background: var(--bg-pane); }
+/* a read-only workspace whose terminal is in its peek: its screen as it was, as text, in the terminal's type */
+.ls-snap {
+  flex: 1; min-height: 0; margin: 0; overflow: hidden; white-space: pre; pointer-events: none;
+  font: 400 12.5px/21px "JetBrains Mono", "SF Mono", Menlo, monospace; color: var(--text-3);
+}
+
+/* zoomed out (design C): areas are solid patches, and workspaces compact status cards whose type keeps its size on
+   screen at any zoom in the cards band (--ls-inv is 1 / zoom, kept current as the camera moves) */
+:root { --ls-patch: rgba(255, 255, 255, .035); }
+:root[data-theme="light"] { --ls-patch: rgba(0, 0, 0, .045); }
+.ls-viewport.ls-band-cards .ls-area { background: var(--ls-patch); border-style: solid; border-color: transparent; }
+.ls-node.card {
+  --u: calc(1px * var(--ls-inv, 1));
+  display: block; border-radius: calc(10 * var(--u));
+  box-shadow: 0 0 0 var(--u) var(--line-strong2), 0 calc(4 * var(--u)) calc(14 * var(--u)) rgba(0, 0, 0, .22);
+}
+.ls-node.card.selected { box-shadow: 0 0 0 calc(2 * var(--u)) var(--pane-focus), 0 calc(4 * var(--u)) calc(14 * var(--u)) rgba(0, 0, 0, .26); }
+.ls-node.card.st-waiting { box-shadow: 0 0 0 calc(1.5 * var(--u)) var(--amber), 0 0 0 calc(5 * var(--u)) var(--fill-waiting-glow); }
+/* three rows: the title, what it did, and the footer with the agent, its status and tokens. A small card gives up
+   lines of the middle one first, the one it cuts fading out rather than ending mid-glyph */
+.ls-card {
+  display: flex; flex-direction: column; gap: calc(6 * var(--u)); box-sizing: border-box; height: 100%; overflow: hidden;
+  padding: calc(9 * var(--u)) calc(11 * var(--u)); user-select: none;
+}
+.ls-card-head { display: flex; align-items: center; gap: calc(7 * var(--u)); min-width: 0; flex-shrink: 0; }
+.ls-card-head .dot { width: calc(8 * var(--u)); height: calc(8 * var(--u)); }
+.ls-card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 calc(12.5 * var(--u))/1.25 var(--ui); color: var(--text-1); }
+.ls-node.st-dead .ls-card-title { color: var(--text-3); }
+.ls-card-ticket { flex-shrink: 0; font: 400 calc(10 * var(--u)) var(--mono); color: var(--text-3); }
+.ls-card-line {
+  --lh: calc(10.5 * var(--u) * 1.45);
+  flex: 1 1 0; min-height: 0; overflow: hidden; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4;
+  font: 400 calc(10.5 * var(--u))/var(--lh) var(--mono); color: var(--text-2);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 0.6 * var(--lh)), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 0.6 * var(--lh)), transparent);
+}
+.ls-card-line.bad { color: var(--red); }
+.ls-card-foot {
+  display: flex; align-items: center; gap: calc(7 * var(--u)); flex-shrink: 0; min-width: 0; overflow: hidden;
+  white-space: nowrap; font: 500 calc(10 * var(--u)) var(--ui); color: var(--text-3);
+}
+.ls-card-foot .chip { flex-shrink: 0; font-size: calc(9.5 * var(--u)); padding: calc(2 * var(--u)) calc(5 * var(--u)); border-radius: calc(3 * var(--u)); }
+.ls-card-status.st-working { color: var(--teal-text); }
+.ls-card-status.st-waiting { color: var(--amber-text); }
+.ls-card-status.st-dead { color: var(--red); }
+.ls-card-stack, .ls-card-owner { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ls-card-tokens { flex-shrink: 0; margin-left: auto; font: 400 calc(10 * var(--u)) var(--mono); }
+
+/* the hover peek: a workspace's terminal, live and read-only, over the landscape below 75% */
+.ls-peek {
+  position: absolute; z-index: 8; display: flex; flex-direction: column; overflow: hidden; border-radius: 10px; cursor: pointer;
+  background: var(--bg-pane); box-shadow: 0 0 0 1px var(--line-strong2), 0 18px 48px rgba(0, 0, 0, .42);
+}
+.ls-peek.pinned { box-shadow: 0 0 0 1.5px var(--pane-focus), 0 18px 48px rgba(0, 0, 0, .42); }
+.ls-peek-head {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0; height: 30px; padding: 0 10px 0 12px; min-width: 0;
+  background: var(--bg-pane-header); border-bottom: 1px solid var(--line-soft);
+}
+.ls-peek-head .chip { flex-shrink: 0; }
+.ls-peek-keys { flex-shrink: 0; font: 400 10.5px var(--ui); color: var(--text-4); }
+.ls-peek-term { flex: 1; min-height: 0; padding: 6px 8px 8px; overflow: hidden; }
+.ls-peek-term .xterm { pointer-events: none; }
 /* focus: the workspace fills the window over the landscape, whose camera stays where it was */
 .ls-focus { position: absolute; inset: 0; z-index: 20; background: var(--bg-app); outline: none; }
 .ls-hud {

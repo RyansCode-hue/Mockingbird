@@ -20,7 +20,7 @@ interface Placed {
 interface Audit {
   placed: Placed[];
   presets: { s1: string; s4: string };
-  panZoom: { resized: string[]; wheel: boolean; wheelOver: boolean; space: boolean; middle: boolean; pinch: { zoomIn: boolean; drift: number | null }; cmdScroll: boolean; fit: number | null; hundred: number | null; sizes: string[] };
+  panZoom: { cardsAtFit: number; resized: string[]; wheel: boolean; wheelOver: boolean; space: boolean; middle: boolean; pinch: { zoomIn: boolean; drift: number | null }; cmdScroll: boolean; fit: number | null; hundred: number | null; sizes: string[] };
   typing: { camera: boolean; focused: boolean; selected: string | null };
   placement: { sent: string[]; want: string; term: string };
   focusOwn: { entered: boolean; sent: string[]; want: string; keyboard: boolean };
@@ -55,6 +55,8 @@ describe.skipIf(!local)("the landscape", () => {
     expect(pz.pinch.drift).toBeLessThan(0.05);
     expect(pz.fit).toBeLessThan(1);
     expect(pz.hundred).toBe(1);
+    // the fit went through the cards band and back, which resized nothing either
+    expect(pz.cardsAtFit).toBeGreaterThan(8);
 
     // each of your workspaces: colsRows of its placement at the measured cell, told to its pty, and its holder exactly
     // the room the frame leaves (WORKSPACE_CHROME matches WorkspaceNode); still so after all that panning and zooming
@@ -120,8 +122,9 @@ describe.skipIf(!local)("the landscape", () => {
     for (const zoom of [0.5, 1.5]) {
       const m = await at(zoom);
       expect(m.error).toBeUndefined();
-      // the press lands on the terminal's holder, never xterm: the workspace is selected and the keyboard goes to its terminal
-      expect(m.drag, `at ${zoom}`).toEqual({ zoom, on: "holder", selection: null, selected: "s1", keyboard: true });
+      // the press lands on the terminal's holder, never xterm: the workspace is selected, and the keyboard goes to its
+      // terminal where terminals take keys (75% and up); at 50%, read-only, the landscape keeps it
+      expect(m.drag, `at ${zoom}`).toEqual({ zoom, on: "holder", selection: null, selected: "s1", keyboard: zoom >= 0.75 });
       // a program that asked for the mouse is sent nothing
       expect(m.report, `at ${zoom}`).toEqual({ mode: "vt200", sent: [] });
       expect(m.hint, `at ${zoom}`).toEqual({ text: "Zoom to 100% or focus to select text", over: "1", off: "0" });
@@ -140,7 +143,7 @@ describe.skipIf(!local)("the landscape", () => {
   it("is there only with the Labs flag on, and never reads landscape.json with it off: the grid renders as before", async () => {
     const read = `(() => {
       const start = (window.__lsStart ??= Date.now());
-      if (!document.querySelector(".grid .xterm, .ls-world .xterm") && Date.now() - start < 20000) return null;
+      if (!document.querySelector(".grid .xterm, .ls-world .ls-node") && Date.now() - start < 20000) return null;
       if (Date.now() - start < 1500) return null;
       return JSON.stringify({
         grid: [...document.querySelectorAll(".grid > [data-cell]")].map((e) => e.getAttribute("data-cell")),
@@ -178,7 +181,7 @@ describe.skipIf(!local)("the landscape", () => {
           tab("Sessions").click();
           return was;
         };
-        await until(() => document.querySelector(".ls-world .xterm"));
+        await until(() => document.querySelector(".ls-world .ls-node"));
         await sleep(800);
         const whileOn = prefs();
         const wasOn = await flip();
@@ -187,7 +190,7 @@ describe.skipIf(!local)("the landscape", () => {
         const afterOff = prefs();
         const grid = [...document.querySelectorAll(".grid > [data-cell]")].map((e) => e.getAttribute("data-cell"));
         const wasOff = await flip();
-        await until(() => document.querySelector(".ls-world .xterm"));
+        await until(() => document.querySelector(".ls-world .ls-node"));
         await sleep(800);
         window.__lsResult = JSON.stringify({
           wasOn,
@@ -297,7 +300,7 @@ describe.skipIf(!local)("the landscape", () => {
     })()`;
     type Reread = { before: { title: string; actions: string[] }[]; reread: number; after: string[]; migrations: number; fileLayout: string[] | false; s1: boolean };
     // asked again every so often (shortened here): it comes back once it can be read, and the stand-in's change is dropped, said so
-    const timer = await page<Reread>("labs=landscape&landscape=unreadable&lsRereadMs=300", read(true), "ls-reread");
+    const timer = await page<Reread>("labs=landscape&landscape=unreadable&lsRereadMs=300&lsCamera=0,0,0.5", read(true), "ls-reread");
     expect(timer.before).toEqual([
       { title: "The layout file can't be read", actions: ["Read it again"] },
       { title: "Your grid's layout isn't read in yet", actions: [] },
@@ -307,7 +310,7 @@ describe.skipIf(!local)("the landscape", () => {
     // the file's layout, already read in, shown as it was saved
     expect(timer).toMatchObject({ migrations: 0, fileLayout: ["5101", "5102", "5110"], s1: true });
     // Read it again: at once, and with nothing changed meanwhile nothing is dropped
-    const button = await page<Reread>("labs=landscape&landscape=unreadable", read(false), "ls-read-again");
+    const button = await page<Reread>("labs=landscape&landscape=unreadable&lsCamera=0,0,0.5", read(false), "ls-read-again");
     expect(button.reread).toBe(0);
     expect(button).toMatchObject({ after: [], migrations: 0, fileLayout: ["5101", "5102", "5110"], s1: true });
   }, 180_000);

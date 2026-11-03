@@ -2176,6 +2176,26 @@ if (settings.labs?.landscape) set("mb.labs.landscape", true);
 // session's workspace and presses Enter on the landscape, which fills the window with it
 const lsCamera = params.get("lsCamera")?.split(",").map(Number);
 if (lsCamera?.length === 3 && lsCamera.every(Number.isFinite)) set("mb.landscape.camera", { x: lsCamera[0], y: lsCamera[1], zoom: lsCamera[2] });
+// the landscape audit starts at 100% on s1: a fitted landscape is cards, with no terminal to measure
+else if (params.has("landscapeAudit")) set("mb.landscape.camera", { x: 0, y: 0, zoom: 1 });
+// WebGL for the landscape's terminals (termGl.ts): ?glMax=<n> lowers the cap on how many draw with it at once;
+// ?glFail makes every WebGL2 context fail to be made, as on a machine without one
+if (Number(params.get("glMax")) > 0) w.__mbGlMax = Number(params.get("glMax"));
+if (params.has("glFail")) {
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, kind: string, ...rest: unknown[]) {
+    return kind === "webgl2" ? null : (getContext as (...a: unknown[]) => unknown).call(this, kind, ...rest);
+  } as typeof getContext;
+}
+// what the app says on the console as it goes, for the audits to read back: warnings and errors
+const said: string[] = (w.__mbSaid = []);
+for (const level of ["warn", "error"] as const) {
+  const was = console[level].bind(console);
+  console[level] = (...a: unknown[]) => {
+    said.push(a.map((x) => (x instanceof Error ? x.message : String(x))).join(" "));
+    was(...a);
+  };
+}
 // team rooms: team chat — ?chat=<room id> picks the room the Team room view shows (when the grid's group isn't shared);
 // ?chat=list shows the room list, each room with its sessions
 if (params.get("chat")) set("mb.roomChat.room", params.get("chat") === "list" ? "" : params.get("chat"));
@@ -2403,14 +2423,22 @@ const waitFor = (selector: string, then: (el: HTMLElement) => void, tries = 60) 
 const lsFocus = params.get("lsFocus");
 if (lsFocus) {
   const at = `.ls-world [data-front="${CSS.escape(lsFocus)}"]`;
-  waitFor(`${at} .xterm, ${at} .dead-body`, () => {
-    document.querySelector<HTMLElement>(`${at} .ls-head`)?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+  // a workspace is a card when zoomed out, or a bare frame off screen: its header, else the card
+  waitFor(at, (el) => {
+    (el.querySelector<HTMLElement>(".ls-head") ?? el).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
     setTimeout(() => document.querySelector<HTMLElement>(".ls-viewport")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })), 100);
   });
 }
 // ?lsHover=<id>: the pointer over that session's terminal, so a screenshot away from 100% shows the hint
 const lsHover = params.get("lsHover");
 if (lsHover) waitFor(`.ls-world [data-front="${CSS.escape(lsHover)}"] .term-holder`, (el) => el.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })));
+// ?lsPeek=<id> (below 75%): the pointer resting on that session's workspace, so its peek opens; =<id>,pin keeps it open
+const lsPeek = params.get("lsPeek")?.split(",");
+if (lsPeek?.[0])
+  waitFor(`.ls-world [data-front="${CSS.escape(lsPeek[0])}"]`, (el) => {
+    setTimeout(() => (el.querySelector(".ls-card, .ls-term") ?? el).dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })), 600);
+    if (lsPeek[1] === "pin") setTimeout(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })), 1200);
+  });
 const typeArea = (area: HTMLTextAreaElement, text: string) => {
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(area, text);
   area.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2884,7 +2912,7 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
+if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit"].some((k) => params.has(k))) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
@@ -2908,7 +2936,7 @@ if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
   };
   const wheel = (el: Element, init: WheelEventInit) => el.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ...at(el, 0.3, 0.3), ...init }));
   // with its keyCode, which xterm reads keys by: a key typed into a terminal is one xterm acts on
-  const CODES: Record<string, number> = { Escape: 27, Enter: 13, " ": 32, ArrowRight: 39, ArrowLeft: 37, "0": 48, "1": 49, "=": 187, e: 69 };
+  const CODES: Record<string, number> = { Escape: 27, Enter: 13, " ": 32, ArrowRight: 39, ArrowLeft: 37, "0": 48, "1": 49, "=": 187, e: 69, a: 65 };
   const key = (el: Element, k: string, mods: KeyboardEventInit = {}) => {
     const ev = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...mods });
     Object.defineProperty(ev, "keyCode", { get: () => CODES[k] ?? 0 });
@@ -2922,22 +2950,32 @@ if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
     pointer(vp(), "pointermove", { clientX: p.clientX - 140, clientY: p.clientY - 90 });
     pointer(vp(), "pointerup", { clientX: p.clientX - 140, clientY: p.clientY - 90, button });
   };
+  // a press on a workspace's header (a card's anywhere): it's selected, and the landscape keeps the keyboard
   const pick = async (id: string) => {
-    pointer(node(id)!.querySelector(".ls-head")!, "pointerdown", { button: 0 });
+    pointer(node(id)!.querySelector(".ls-head") ?? node(id)!, "pointerdown", { button: 0 });
     await sleep(150);
+  };
+  // its side bar row: selected, and brought into view (only workspaces on screen have a terminal attached)
+  const reveal = async (id: string) => {
+    document.querySelector<HTMLElement>(`.sess-item[data-sid="${CSS.escape(id)}"]`)!.click();
+    await sleep(400);
   };
   const ownShown = ["s1", "s2", "s4", "s5", "s7", "s8"];
   if (params.has("landscapeAudit")) waitFor('.ls-world [data-front="s1"] .xterm', async () => {
     const out: Record<string, unknown> = {};
     try {
       await sleep(800);
-      out.placed = ownShown.map((id) => {
+      out.placed = [];
+      for (const id of ownShown) {
+        await reveal(id);
         const s = sessions.find((x) => x.id === id)!;
         const stack = stackKeyOf(s);
         const p = stack ? landscape.stacks[stack].placement : landscape.workspaces[id];
         const holder = term(id)?.element?.parentElement;
-        return { id, want: want(id, p), term: sizeOf(id), pty: resizes().filter((r) => r.startsWith(`${id} `)).pop() ?? null, holder: holder ? `${holder.clientWidth}×${holder.clientHeight}` : null, room: `${p.w - 16}×${p.h - 40}` };
-      });
+        (out.placed as unknown[]).push({ id, want: want(id, p), term: sizeOf(id), pty: resizes().filter((r) => r.startsWith(`${id} `)).pop() ?? null, holder: holder ? `${holder.clientWidth}×${holder.clientHeight}` : null, room: `${p.w - 16}×${p.h - 40}` });
+      }
+      // s8 in view with s4 beside it, and s4 selected: s8's terminal is one whose workspace isn't
+      await pick("s4");
       // the fixture places every workspace at its M preset: an agent of 140 × 42 and a terminal of 120 × 24
       out.presets = { s1: sizeOf("s1"), s4: sizeOf("s4") };
 
@@ -2954,7 +2992,7 @@ if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
       drag(node("s4")!.querySelector(".term-holder")!, 0);
       keyUp(vp(), " ");
       const afterSpace = camera();
-      drag(node("s5")!.querySelector(".term-holder")!, 1);
+      drag(node("s8")!.querySelector(".term-holder")!, 1);
       const afterMiddle = camera();
       // a pinch about a point: the landscape point under it stays under it
       const r = vp().getBoundingClientRect();
@@ -2969,10 +3007,14 @@ if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
       vp().focus();
       key(vp(), "0", { metaKey: true });
       const fitted = camera();
+      // long enough for the cards band to take over, so coming back attaches terminals again
+      await sleep(400);
+      const cardsAtFit = document.querySelectorAll(".ls-world .ls-node.card").length;
       key(vp(), "1", { metaKey: true });
       const hundred = camera();
       await sleep(400);
       out.panZoom = {
+        cardsAtFit,
         resized: resizes().slice(mark),
         wheel: JSON.stringify(afterWheel) !== JSON.stringify(cam0),
         wheelOver: JSON.stringify(afterWheelOver) !== JSON.stringify(afterWheel),
@@ -3044,9 +3086,10 @@ if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
       // focus on a teammate's workspace: only scaled, never resized
       await sleep(200);
       mark = resizes().length;
+      // picked first: selected, its terminal is attached wherever it is
+      await pick(NICK_PANE);
       const fontBefore = term(NICK_PANE)?.options.fontSize ?? null;
       const ownerSize = sizeOf(NICK_PANE);
-      await pick(NICK_PANE);
       key(vp(), "Enter");
       await sleep(500);
       const remoteIn = { entered: inFocus(), font: term(NICK_PANE)?.options.fontSize ?? null, size: sizeOf(NICK_PANE) };
@@ -3090,6 +3133,8 @@ if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
       const fromSidebar = document.querySelector(".ls-focus .ls-node")?.getAttribute("data-front") ?? null;
       key(document.activeElement ?? document.body, "Escape", { metaKey: true });
       await sleep(400);
+      // s8 in view, then s1 selected
+      await reveal("s8");
       await pick("s1");
       const other = node("s8")!.querySelector("textarea")!;
       other.focus();
@@ -3202,6 +3247,254 @@ if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
     tag.id = "mb-landscape-mouse-audit";
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
+  });
+
+  const report = (id: string, out: Record<string, unknown>) => {
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = id;
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  };
+  const zoomNow = () => camera()?.zoom ?? NaN;
+  /** A pinch about viewport point `p` (the viewport's centre unless given) until the zoom is `z`, as few events as the camera allows. */
+  const pinchTo = async (z: number, p?: { x: number; y: number }) => {
+    const r = vp().getBoundingClientRect();
+    const at = p ?? { x: r.width / 2, y: r.height / 2 };
+    for (let i = 0; i < 40 && Math.abs(zoomNow() - z) > 1e-4; i++) {
+      vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: r.left + at.x, clientY: r.top + at.y, ctrlKey: true, deltaY: Math.max(-69, Math.min(69, -Math.log(z / zoomNow()) / 0.01)) }));
+      await sleep(16);
+    }
+  };
+  const keyOf = (el: Element) => el.closest<HTMLElement>(".ls-node")?.dataset.ws ?? "";
+  /** The workspaces with an xterm attached, and those on screen, partly or wholly, and within a quarter of the viewport past its edges. */
+  const where = () => {
+    const v = vp().getBoundingClientRect();
+    const mx = v.width * 0.25;
+    const my = v.height * 0.25;
+    const nodes = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node")];
+    const hit = (n: HTMLElement, m: { x: number; y: number }) => {
+      const r = n.getBoundingClientRect();
+      return r.right > v.left - m.x && r.left < v.right + m.x && r.bottom > v.top - m.y && r.top < v.bottom + m.y;
+    };
+    return {
+      zoom: zoomNow(),
+      attached: nodes.filter((n) => n.querySelector(".xterm")).map(keyOf),
+      panes: document.querySelectorAll(".ls-world .pane").length,
+      cards: document.querySelectorAll(".ls-world .ls-node.card").length,
+      visible: nodes.filter((n) => hit(n, { x: 0, y: 0 })).map(keyOf),
+      near: nodes.filter((n) => hit(n, { x: mx, y: my })).map(keyOf),
+      selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-ws") ?? null,
+      webgl: (w.__mbWebglCount as (() => number) | undefined)?.() ?? null,
+      canvases: [...document.querySelectorAll(".ls-world .xterm-screen")].filter((s) => s.querySelector("canvas")).length,
+    };
+  };
+  const linesOf = (t: Term) => {
+    const b = t.buffer.active;
+    const out: string[] = [];
+    for (let y = 0; y < b.length; y++) out.push(b.getLine(y)?.translateToString(true) ?? "");
+    while (out.length && !out[out.length - 1]) out.pop();
+    return out;
+  };
+  const writesTo = (id: string) => calls.filter((c) => c.fn === "sessionWrite" && c.args[0] === id).map((c) => String(c.args[1]));
+
+  // ?landscapeZoomAudit (with ?landscapeMany=30): which workspaces get an xterm at fit, 60% and 100% and after a pan;
+  // the pty sizes sent across all of it (none); a terminal detached at fit, written to while it's a card and
+  // attached again; keys typed into a terminal at 60%, and one that had the keyboard as the zoom went down; and how
+  // many draw with WebGL (with ?glMax or ?glFail, what's said about the rest). Into <script id="mb-landscape-zoom-audit">.
+  if (params.has("landscapeZoomAudit")) waitFor(".ls-world .ls-node", async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(1500);
+      out.fit = where();
+      const mark = resizes().length;
+      await pinchTo(0.6);
+      await sleep(700);
+      out.readonly = where();
+      await pinchTo(1);
+      await sleep(700);
+      out.live = where();
+      // a pan of one and a half screens to the right at 100%, a trackpad's events at a time
+      for (let i = 0; i < 40; i++) {
+        vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaX: (vp().clientWidth * 1.5) / 40 }));
+        await sleep(16);
+      }
+      await sleep(500);
+      out.panned = where();
+
+      // an agent's terminal in view, idle if there's one (nothing redraws its last line): its buffer before it's detached
+      const seen = (out.panned as ReturnType<typeof where>).visible.map((k) => sessions.find((s) => s.id === k)!).filter((s) => !s.shell);
+      const id = (seen.find((s) => s.status === "idle") ?? seen[0]).id;
+      const t0 = term(id)!;
+      const before = linesOf(t0);
+      const atBefore = t0.element?.closest(".ls-node")?.getAttribute("data-ws") ?? null;
+      key(vp(), "0", { metaKey: true });
+      await sleep(700);
+      out.fitAgain = where();
+      const more = `\r\nwhile it was a card: line ${Date.now()}\r\n`;
+      buffers[id] += more;
+      emit("onSessionData", id, more);
+      await sleep(300);
+      const detached = !t0.element?.isConnected;
+      // back to 100% about its workspace
+      const r = node(id)!.getBoundingClientRect();
+      const v = vp().getBoundingClientRect();
+      await pinchTo(1, { x: r.left + r.width / 2 - v.left, y: r.top + r.height / 2 - v.top });
+      await sleep(700);
+      const t1 = term(id)!;
+      const after = linesOf(t1);
+      out.scrollback = {
+        id,
+        atBefore,
+        detached,
+        same: t1 === t0,
+        attachedTo: t1.element?.isConnected ? (t1.element.closest(".ls-node")?.getAttribute("data-ws") ?? null) : null,
+        inHolder: !!t1.element?.parentElement?.classList.contains("term-holder"),
+        // every line it had (but a spinner's, which redraws itself), where it was
+        kept: before.length > 20 && before.slice(0, -1).every((l, i) => after[i] === l),
+        added: after.some((l) => l.startsWith("while it was a card")),
+      };
+      out.crossed = resizes().slice(mark);
+
+      // 60%: a press on a terminal selects its workspace and the landscape keeps the keyboard; keys reaching a
+      // terminal that had it are the landscape's, never the terminal's
+      await pinchTo(0.6, { x: r.left + r.width / 2 - v.left, y: r.top + r.height / 2 - v.top });
+      await sleep(700);
+      const w0 = writesTo(id).length;
+      pointer(node(id)!.querySelector(".term-holder")!, "pointerdown", { button: 0 });
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+      await sleep(150);
+      const clickKeyboard = document.activeElement === vp() ? "landscape" : document.activeElement?.closest(".xterm") ? "terminal" : String(document.activeElement?.tagName);
+      term(id)!.textarea!.focus();
+      const typedIn = document.activeElement === term(id)!.textarea;
+      key(term(id)!.textarea!, "a");
+      key(term(id)!.textarea!, "Enter");
+      await sleep(150);
+      out.readonlyKeys = { selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-ws") === id, clickKeyboard, typedIn, wrote: writesTo(id).slice(w0), keyboard: document.activeElement === vp() ? "landscape" : "elsewhere" };
+      // 100%: the terminal takes keys; zoomed down with the keyboard in it, the landscape takes the keyboard back
+      await pinchTo(1, { x: r.left + r.width / 2 - v.left, y: r.top + r.height / 2 - v.top });
+      await sleep(500);
+      term(id)!.textarea!.focus();
+      key(term(id)!.textarea!, "Enter");
+      await sleep(100);
+      const liveWrote = writesTo(id).slice(w0);
+      await pinchTo(0.6, { x: r.left + r.width / 2 - v.left, y: r.top + r.height / 2 - v.top });
+      await sleep(500);
+      out.zoomedDown = { liveWrote, keyboard: document.activeElement === vp() ? "landscape" : document.activeElement?.closest(".xterm") ? "terminal" : String(document.activeElement?.tagName) };
+      out.said = said.filter((m) => m.includes("DOM renderer") || m.includes("WebGL"));
+      out.resizedAtAll = resizes().slice(mark);
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-zoom-audit", out);
+  });
+
+  // ?landscapePeekAudit (with ?motion=full or reduce): the peek of s1's card at fit (when it opens, where its terminal
+  // goes, its motion's end state, Space keeping it open, moving away and Esc), the peek of s1 read-only at 50% (the
+  // stand-in its workspace shows, the terminal handed back with its scrollback and size), a click on it focusing s1,
+  // and none while Space is held. Into <script id="mb-landscape-peek-audit">.
+  if (params.has("landscapePeekAudit")) waitFor('.ls-world [data-front="s1"] .ls-card', async () => {
+    const out: Record<string, unknown> = {};
+    const peekEl = () => document.querySelector<HTMLElement>(".ls-peek");
+    const over = (el: Element) => el.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+    const inPeek = (id: string) => !!term(id)?.element?.isConnected && !!term(id)?.element?.closest(".ls-peek");
+    /** What the peek's animations leave once finished, and how many there were. */
+    const motionOf = (el: HTMLElement | null) => {
+      const running = el?.getAnimations() ?? [];
+      const n = running.length;
+      running.forEach((a) => a.finish());
+      const cs = el ? getComputedStyle(el) : null;
+      return { animations: n, opacity: cs?.opacity ?? null, transform: cs?.transform ?? null, holding: el?.getAnimations().filter((a) => a.playState === "finished").length ?? null };
+    };
+    try {
+      await sleep(1200);
+      const mark = resizes().length;
+      const card = node("s1")!.querySelector(".ls-card")!;
+      over(card);
+      await sleep(120);
+      const early = !!peekEl();
+      await sleep(260);
+      const el = peekEl();
+      out.cards = { early, opened: el?.dataset.peek ?? null, termIn: inPeek("s1"), stillCard: !!node("s1")?.classList.contains("card"), motion: motionOf(el) };
+
+      // Space keeps it open: moving onto another card leaves it, and opens no other
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      await sleep(80);
+      const pinned = !!peekEl()?.classList.contains("pinned");
+      over(node("s5")!.querySelector(".ls-card")!);
+      await sleep(450);
+      const keptOpen = peekEl()?.dataset.peek ?? null;
+      over(vp());
+      await sleep(100);
+      const keptOffIt = peekEl()?.dataset.peek ?? null;
+      // Space again lets it go: moving away now closes it, and resting on another card opens that one's
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      await sleep(80);
+      over(node("s5")!.querySelector(".ls-card")!);
+      await sleep(80);
+      const closedOnMove = !peekEl();
+      await sleep(400);
+      const other = peekEl()?.dataset.peek ?? null;
+      // Esc closes it
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await sleep(80);
+      out.space = { pinned, keptOpen, keptOffIt, closedOnMove, other, escClosed: !peekEl(), backFromPeek: !inPeek("s1") && !inPeek("s5"), font: term("s1")?.options.fontSize ?? null };
+
+      // 50%, read-only: s1's terminal attached in its workspace, then lent to its peek
+      const r = node("s1")!.getBoundingClientRect();
+      const v = vp().getBoundingClientRect();
+      over(vp());
+      await pinchTo(0.5, { x: r.left + r.width / 2 - v.left, y: r.top + r.height / 2 - v.top });
+      await sleep(700);
+      const t = term("s1")!;
+      const size = `${t.cols}×${t.rows}`;
+      const lines = linesOf(t);
+      const inNode = !!t.element?.closest('.ls-world [data-front="s1"] .term-holder');
+      over(node("s1")!.querySelector(".ls-term")!);
+      await sleep(450);
+      const lent = {
+        opened: peekEl()?.dataset.peek ?? null,
+        termIn: inPeek("s1"),
+        snapshot: node("s1")?.querySelector(".ls-snap")?.textContent?.includes("Make the org dropdown remember") ?? false,
+        font: t.options.fontSize ?? null,
+        size: `${t.cols}×${t.rows}`,
+        motion: motionOf(peekEl()),
+      };
+      over(vp());
+      await sleep(400);
+      const back = {
+        closed: !peekEl(),
+        inNode: !!t.element?.closest('.ls-world [data-front="s1"] .term-holder'),
+        same: term("s1") === t,
+        size: `${t.cols}×${t.rows}`,
+        font: t.options.fontSize ?? null,
+        kept: lines.length > 3 && lines.every((l, i) => linesOf(t)[i] === l),
+      };
+      out.readonly = { inNode, size, lent, back };
+      // no peek, open or closed, resized a pty
+      out.resized = resizes().slice(mark);
+
+      // a click on the peek focuses its workspace (which reflows it to the window, and back as it leaves)
+      over(node("s1")!.querySelector(".ls-term")!);
+      await sleep(450);
+      peekEl()?.click();
+      await sleep(300);
+      out.click = { focused: document.querySelector(".ls-focus .ls-node")?.getAttribute("data-front") ?? null, peek: !!peekEl() };
+      key(document.activeElement ?? document.body, "Escape", { metaKey: true });
+      await sleep(400);
+
+      // never while Space is held to pan
+      vp().focus();
+      key(vp(), " ");
+      over(node("s1")!.querySelector(".ls-term")!);
+      await sleep(450);
+      const whileSpace = !!peekEl();
+      keyUp(vp(), " ");
+      out.panning = { whileSpace };
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-peek-audit", out);
   });
 }
 // ?landscapePerf (with ?landscapeMany=<n>): frame times while the landscape is panned and pinch-zoomed at 100%, 60%
@@ -3617,7 +3910,11 @@ if (params.get("ctxAudit")) {
 // teammate's copy of a Claude session and Codex (s3) wrap them at the pane's width themselves, cutting the path
 // mid-word; a shell (s4) leaves the wrapping to the terminal — then selects them and copies, as a native selection's
 // release (copy-on-select) and as ⌘C. It writes what each copy put on the clipboard into
-// <script id="mb-copy-audit"> for test/uiTerminal.test.ts.
+// <script id="mb-copy-audit"> for test/uiTerminal.test.ts. With ?labs=landscape it does the same in landscape
+// workspaces at 100%, where terminals draw with WebGL (each one's renderer is said), the path long enough to wrap
+// their wider screens; s3, a stack's tab behind s2, is left out.
+const copyInLandscape = params.has("copyAudit") && !!settings.labs?.landscape;
+if (copyInLandscape && !lsCamera) set("mb.landscape.camera", { x: 0, y: 0, zoom: 1 });
 if (params.has("copyAudit")) {
   set("mb.shown", ["s1", "s3", "s4", NICK_PANE]);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -3628,7 +3925,7 @@ if (params.has("copyAudit")) {
   };
   const written: string[] = [];
   Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async (text: string) => void written.push(text) });
-  const PATH = "/private/tmp/claude-501/-Users-alex-Code-backoffice/1234abcd-5678-90ef-aaaa-bbbbccccdddd/scratchpad/add-portal-users-keys.sh";
+  const PATH = `/private/tmp/claude-501/-Users-alex-Code-backoffice/1234abcd-5678-90ef-aaaa-bbbbccccdddd/scratchpad/${copyInLandscape ? "landscape-checks/a-folder-deep-enough-for-a-wide-workspace/" : ""}add-portal-users-keys.sh`;
   const SENTENCE = "That script reads every portal user from the database, generates a key pair for each one that doesn't have one yet, and writes the public half back so the next login picks it up.";
   // an agent's rows: the box two columns in, a word longer than it cut at its edge
   const agentRows = (text: string, cols: number) => {
@@ -3646,16 +3943,23 @@ if (params.has("copyAudit")) {
     }
     return rows.map((r) => `  ${r}`);
   };
-  waitFor(".grid > [data-cell=s1] .xterm", async () => {
+  waitFor(copyInLandscape ? '.ls-world [data-front="s1"] .xterm' : ".grid > [data-cell=s1] .xterm", async () => {
     const out: Record<string, unknown> = {};
     try {
       await sleep(800);
-      const copies: Record<string, { cols: number; mouse: string; onSelect: string[]; copyEvent: string[] }> = {};
-      for (const id of ["s1", NICK_PANE, "s3", "s4"]) {
+      const copies: Record<string, { cols: number; mouse: string; renderer: string; rows: number[]; onSelect: string[]; copyEvent: string[] }> = {};
+      for (const id of copyInLandscape ? ["s1", NICK_PANE, "s4"] : ["s1", NICK_PANE, "s3", "s4"]) {
+        if (copyInLandscape) {
+          // selected, so its terminal is attached wherever its workspace is
+          document.querySelector(`.ls-world [data-front="${CSS.escape(id)}"] .ls-head`)?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+          await sleep(500);
+        }
         const term = terms()?.get(id)?.term;
-        if (!term?.element) throw new Error(`the audit found no terminal for ${id}`);
+        if (!term?.element?.isConnected) throw new Error(`the audit found no terminal for ${id}`);
         const cols = term.cols;
-        copies[id] = { cols, mouse: term.modes.mouseTrackingMode, onSelect: [], copyEvent: [] };
+        // the WebGL renderer draws on a canvas of its own beside xterm's link layer; the DOM renderer has neither
+        const gl = [...term.element.querySelectorAll(".xterm-screen canvas")].some((c) => !c.classList.contains("xterm-link-layer"));
+        copies[id] = { cols, mouse: term.modes.mouseTrackingMode, renderer: gl ? "webgl" : "dom", rows: [], onSelect: [], copyEvent: [] };
         const texts = id === "s4" ? [`$ bash ${PATH}`] : [`! bash ${PATH}`, SENTENCE];
         for (const text of texts) {
           say(id, "\x1b[0m\r\n" + (id === "s4" ? text : agentRows(text, cols).join("\r\n")) + "\r\n");
@@ -3665,6 +3969,7 @@ if (params.has("copyAudit")) {
           let first = last;
           const head = (y: number) => b.getLine(y)?.translateToString(true).trim() ?? "";
           while (first > 0 && !text.startsWith(head(first))) first--;
+          copies[id].rows.push(last - first + 1);
           term.select(0, first, (last - first + 1) * cols);
           term.element.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
           window.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true }));

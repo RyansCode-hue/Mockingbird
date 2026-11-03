@@ -99,6 +99,82 @@ export function cameraFrom(v: unknown): Camera | null {
 /** The CSS transform that puts landscape point (x, y) at the viewport's top-left at `zoom`. */
 export const worldTransform = (cam: Camera): string => `scale(${cam.zoom}) translate(${-cam.x}px, ${-cam.y}px)`;
 
+// ---- semantic zoom -------------------------------------------------------------------------
+
+/**
+ * What workspaces are at a zoom (docs/landscape.md, semantic zoom): `live`, terminals the keyboard types into;
+ * `readonly`, terminals still drawing live but taking no keys; `cards`, C's compact status cards, with no xterm.
+ */
+export type Band = "live" | "readonly" | "cards";
+/** Live from this zoom up. */
+export const BAND_LIVE = 0.75;
+/** Read-only from this zoom up to BAND_LIVE; cards below it. */
+export const BAND_CARDS = 0.35;
+/**
+ * A band is kept until the zoom is this share below its lower edge, while entering one takes its own edge: a pinch
+ * resting on an edge can't flip it back and forth, and 75% and up is always live.
+ */
+export const BAND_SLACK = 0.04;
+/** How long a new band waits for the zoom to stay in it: a pinch through a band and out of it again changes nothing. */
+export const BAND_SETTLE_MS = 150;
+
+const RANK: Record<Band, number> = { cards: 0, readonly: 1, live: 2 };
+const FLOOR: Record<Band, number> = { cards: 0, readonly: BAND_CARDS, live: BAND_LIVE };
+
+/** The band a zoom is in, its edges taken as they are. */
+export const bandOf = (zoom: number): Band => (zoom >= BAND_LIVE ? "live" : zoom >= BAND_CARDS ? "readonly" : "cards");
+
+/** The band at `zoom` coming from `cur`: zooming in, the band of the zoom; zooming out, `cur` until the zoom is past its edge by BAND_SLACK. */
+export function nextBand(zoom: number, cur: Band | null): Band {
+  const at = bandOf(zoom);
+  if (!cur || RANK[at] >= RANK[cur]) return at;
+  return zoom >= FLOOR[cur] * (1 - BAND_SLACK) ? cur : at;
+}
+
+/** Whether workspaces in this band have a terminal attached. */
+export const attaches = (b: Band): boolean => b !== "cards";
+/** Whether the keyboard reaches their terminals. */
+export const takesKeys = (b: Band): boolean => b === "live";
+
+/** Workspaces this share of the viewport past its edges count as on screen: attached before they come into view. */
+export const ON_SCREEN_MARGIN = 0.25;
+
+/** Whether any of `r` is on screen, the viewport grown by `margin` of its size on every side. */
+export function onScreen(cam: Camera, viewport: Size, r: Rect, margin = ON_SCREEN_MARGIN): boolean {
+  const mx = (viewport.w * margin) / cam.zoom;
+  const my = (viewport.h * margin) / cam.zoom;
+  const x0 = cam.x - mx;
+  const y0 = cam.y - my;
+  const x1 = cam.x + viewport.w / cam.zoom + mx;
+  const y1 = cam.y + viewport.h / cam.zoom + my;
+  return r.x < x1 && r.x + r.w > x0 && r.y < y1 && r.y + r.h > y0;
+}
+
+/** The keys of the workspaces on screen (onScreen), in layout order. */
+export const keysOnScreen = (tiles: readonly { key: string; rect: Rect }[], cam: Camera, viewport: Size, margin = ON_SCREEN_MARGIN): string[] =>
+  tiles.filter((t) => onScreen(cam, viewport, t.rect, margin)).map((t) => t.key);
+
+/** How long the pointer rests on a card or a read-only workspace before its peek opens. */
+export const PEEK_HOVER_MS = 300;
+/** The share of the viewport a peek may take, and how far it keeps from the viewport's edges. */
+export const PEEK_SHARE = { w: 0.8, h: 0.86 };
+export const PEEK_EDGE = 16;
+
+/**
+ * Where a workspace's peek goes, in viewport px: the workspace at its size at 100%, made smaller to fit
+ * PEEK_SHARE of the viewport (never larger), centred on where the workspace is on screen and kept inside the
+ * viewport. A peek scales the terminal; it never resizes it.
+ */
+export function peekBox(cam: Camera, viewport: Size, r: Rect): Rect {
+  const k = Math.min(1, (viewport.w * PEEK_SHARE.w) / r.w, (viewport.h * PEEK_SHARE.h) / r.h);
+  const w = Math.round(r.w * k);
+  const h = Math.round(r.h * k);
+  const cx = (r.x + r.w / 2 - cam.x) * cam.zoom;
+  const cy = (r.y + r.h / 2 - cam.y) * cam.zoom;
+  const clamp = (v: number, size: number, room: number) => Math.round(Math.min(Math.max(v, PEEK_EDGE), Math.max(PEEK_EDGE, room - size - PEEK_EDGE)));
+  return { x: clamp(cx - w / 2, w, viewport.w), y: clamp(cy - h / 2, h, viewport.h), w, h };
+}
+
 // ---- moving between workspaces -------------------------------------------------------------
 
 export type Direction = "left" | "right" | "up" | "down";

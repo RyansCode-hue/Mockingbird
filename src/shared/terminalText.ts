@@ -50,3 +50,42 @@ export function terminalLines(raw: string): string[] {
   lines.push(line.join("").trimEnd());
   return lines;
 }
+
+/** Box-drawing characters: frames, rules and the sides of an input box. */
+const BOX = /[\u2500-\u257f]/g;
+/** A line that is only a rule, or a box's top or bottom edge. */
+const RULE = /^[\s\u2500-\u257f]*[\u2500-\u257f]{8,}[\s\u2500-\u257f]*$/;
+/** How far up from an agent's last line its prompt box (or the rule over its input) may start. */
+const FRAME_ROWS = 14;
+
+/** The lowest rule from `from` up, at most FRAME_ROWS lines up; -1 when there's none. */
+function ruleAbove(lines: readonly string[], from: number): number {
+  for (let y = from; y >= 0 && y > from - FRAME_ROWS; y--) if (RULE.test(lines[y])) return y;
+  return -1;
+}
+
+/**
+ * The last line of a terminal's output worth showing on its own (a landscape card's "what it did" line): the
+ * newest with a letter or a digit in it, so blank lines, spinner-only lines (a frame of Claude Code's ✻ or a
+ * braille spinner), rules and empty boxes are passed over. For an agent, its CLI's own frame at the bottom (the
+ * prompt box or the rules around its input, and the hints under it) is left out first, so the line is the
+ * agent's output rather than its prompt. Box sides around the line are trimmed off; null when nothing qualifies.
+ */
+export function lastMeaningfulLine(lines: readonly string[], o: { agent?: boolean } = {}): string | null {
+  let end = lines.length;
+  if (o.agent) {
+    let last = end - 1;
+    while (last >= 0 && !lines[last].trim()) last--;
+    // the lowest rule near the bottom ends the output, or the one over it when the input sits between two
+    const low = ruleAbove(lines, last);
+    if (low >= 0) {
+      const top = ruleAbove(lines, low - 1);
+      end = top >= 0 ? top : low;
+    }
+  }
+  for (let y = end - 1; y >= 0; y--) {
+    const text = lines[y].replace(/^[\s\u2500-\u257f]+|[\s\u2500-\u257f]+$/g, "");
+    if (/[\p{L}\p{N}]/u.test(text.replace(BOX, ""))) return text;
+  }
+  return null;
+}
