@@ -5,6 +5,7 @@ import { LEGACY_PREF_KEYS, migrateLayout, type LegacyPrefs } from "../shared/lan
 import { afterChange, migrationPatch, migrationStep, newer, type ListsLoaded, type MigrationStep } from "./landscapeModel";
 import { readPref } from "./prefs";
 import { settled } from "./settled";
+import { isRemotePaneId } from "../shared/team/livePanes";
 
 export interface LandscapeStore {
   /** The landscape as the main process has it; null until it's been read. */
@@ -15,6 +16,10 @@ export interface LandscapeStore {
   update: (patch: LandscapePatch, what: string) => Promise<string | null>;
   reload: () => void;
 }
+
+/** How often a layout file that couldn't be read is read again; the UI preview shortens it. */
+const REREAD_MS = 20_000;
+const rereadMs = () => (globalThis as { __mbLandscapeRereadMs?: number }).__mbLandscapeRereadMs ?? REREAD_MS;
 
 /**
  * This window's copy of the landscape (~/.mockingbird/landscape.json, owned
@@ -53,6 +58,14 @@ export function useLandscape(on: boolean): LandscapeStore {
     reload();
     return off;
   }, [on]);
+  // main reads the file again with each get while it holds only a stand-in: ask now and then, so the file's layout
+  // comes back once it can be read without waiting for a change
+  const unreadable = !!state?.problems.some((p) => p.kind === "unreadable");
+  useEffect(() => {
+    if (!on || !unreadable) return;
+    const t = setInterval(reload, rereadMs());
+    return () => clearInterval(t);
+  }, [on, unreadable]);
   const update = useCallback(async (patch: LandscapePatch, what: string): Promise<string | null> => {
     const r = await settled(window.mb.landscapeUpdate(patch));
     if (isErr(r)) {
@@ -79,6 +92,14 @@ export interface Migrating {
   /** Why the last attempt failed; it's tried again with retry(). */
   failed: string | null;
   retry: () => void;
+  /**
+   * Why teammates' sessions couldn't be read, while reading in waits for them:
+   * retryRemote() asks again, and withoutRemote() reads in without them. Their
+   * workspaces are then placed where there's room as they come, like any new one.
+   */
+  remoteFailed: string | null;
+  retryRemote: () => void;
+  withoutRemote: () => void;
 }
 
 /**
@@ -96,8 +117,14 @@ export function useLandscapeMigration(o: {
   live: SessionInfo[];
   resumable: SessionInfo[];
   remote: SessionInfo[];
+  /** Why teammates' sessions couldn't be read, and asking again. */
+  remoteError: string | null;
+  retryRemote: () => void;
 }): Migrating {
-  const step: MigrationStep = o.on ? migrationStep(o.store.state, o.lists) : { kind: "wait", why: "the landscape is off" };
+  const [skipRemote, setSkipRemote] = useState(false);
+  const lists = skipRemote ? { ...o.lists, remote: true } : o.lists;
+  const step: MigrationStep = o.on ? migrationStep(o.store.state, lists) : { kind: "wait", why: "the landscape is off" };
+  const remoteFailed = step.kind === "wait" && !lists.remote && o.remoteError ? o.remoteError : null;
   const [failed, setFailed] = useState<string | null>(null);
   const [tries, setTries] = useState(0);
   const started = useRef(-1);
@@ -108,7 +135,11 @@ export function useLandscapeMigration(o: {
     try {
       const m = migrateLayout(readLegacyPrefs(), [...o.live, ...o.resumable, ...o.remote]);
       if (m.ignored.length) console.warn("[mockingbird] reading the grid's layout into the landscape, left out prefs not in the grid's shape:", m.ignored);
-      if (m.stale.length) console.info("[mockingbird] reading the grid's layout into the landscape, dropped ids that name no session now:", m.stale);
+      // read in without teammates' sessions, theirs name no session yet without being stale
+      const later = skipRemote && !o.lists.remote ? m.stale.filter(isRemotePaneId) : [];
+      const stale = m.stale.filter((id) => !later.includes(id));
+      if (later.length) console.info("[mockingbird] reading the grid's layout into the landscape without teammates' sessions, which are placed as they come:", later);
+      if (stale.length) console.info("[mockingbird] reading the grid's layout into the landscape, dropped ids that name no session now:", stale);
       patch = migrationPatch(m.landscape);
     } catch (err) {
       console.error("[mockingbird] couldn't read the grid's layout into the landscape:", err);
@@ -121,5 +152,6 @@ export function useLandscapeMigration(o: {
     setFailed(null);
     setTries((n) => n + 1);
   }, []);
-  return { step, failed, retry };
+  const withoutRemote = useCallback(() => setSkipRemote(true), []);
+  return { step, failed, retry, remoteFailed, retryRemote: o.retryRemote, withoutRemote };
 }

@@ -415,9 +415,10 @@ export function TerminalPane({
    * The terminal of a landscape workspace (WorkspaceNode), which draws the header: no header or rail here. The
    * workspace is `w` × `h` at 100%, and its terminal as many cells of the measured cell at `font` as that holds
    * (colsRows); the pty is told only when that changes, never by fitting the holder. A teammate's session keeps
-   * its owner's size instead, scaled to fit at up to `font`.
+   * its owner's size instead, scaled to fit at up to `font`. In focus, filling the window, `home` is the
+   * workspace's own size: the terminal goes back to it when it leaves the window.
    */
-  landscape?: { w: number; h: number; font: number };
+  landscape?: { w: number; h: number; font: number; home?: { w: number; h: number } };
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const chips = useMemo(() => overlapChips(overlaps), [overlaps]);
@@ -659,7 +660,11 @@ export function TerminalPane({
           const l = landscapeNow.current ?? { w: 0, h: 0 };
           return colsRows(l.w, l.h, cell.w, cell.h);
         },
-        (cols, rows) => window.mb.sessionResize(session.id, cols, rows)
+        (cols, rows) => window.mb.sessionResize(session.id, cols, rows),
+        (cell) => {
+          const h = landscapeNow.current?.home;
+          return h && terms.get(session.id) === sized ? colsRows(h.w, h.h, cell.w, cell.h) : null;
+        }
       );
       entry.refit = placed.refit;
       stopFollowing = () => {

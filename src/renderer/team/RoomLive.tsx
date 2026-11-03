@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isErr, type SessionInfo } from "../../shared/types";
 import type { LivePanesState, MemberView, RoomSessionTag } from "../../shared/team/livePanes";
 import type { MemberId } from "../../shared/team/types";
@@ -7,6 +7,7 @@ import { followPlan, mergeRoomSessions, sameList } from "./roomLiveModel";
 import { firstName } from "./connectedModel";
 import { ReadIcon } from "../Icons";
 import { useCrossfade } from "../motion";
+import { settled } from "../settled";
 
 /**
  * Team rooms in the window, stage 2 (live panes): teammates' room sessions
@@ -20,27 +21,55 @@ import { useCrossfade } from "../motion";
  * shows and which pane is focused, for teammates' presence initials, Follow,
  * and which teammates' sessions to stream here.
  */
-export function useRoomLive(own: SessionInfo[], shown: string[], focused: string | null): { sessions: SessionInfo[]; state: LivePanesState | null } {
+export function useRoomLive(own: SessionInfo[], shown: string[], focused: string | null): RoomLive {
   const [state, setState] = useState<LivePanesState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tries, setTries] = useState(0);
   useEffect(() => {
     let alive = true;
-    window.mb.teamLive().then((s: LivePanesState | { error: string }) => {
+    void settled(window.mb.teamLive()).then((s: LivePanesState | { error: string }) => {
       if (!alive) return;
-      if (isErr(s)) console.error("[mockingbird] couldn't read the room sessions:", s.error);
-      else setState(s);
+      if (isErr(s)) {
+        console.error("[mockingbird] couldn't read the room sessions:", s.error);
+        setError(s.error);
+      } else {
+        setError(null);
+        setState(s);
+      }
     });
-    const off = window.mb.onTeamLive((s: LivePanesState) => setState(s));
     return () => {
       alive = false;
-      off();
     };
-  }, []);
+  }, [tries]);
+  useEffect(
+    () =>
+      window.mb.onTeamLive((s: LivePanesState) => {
+        setError(null);
+        setState(s);
+      }),
+    []
+  );
+  const retry = useCallback(() => setTries((n) => n + 1), []);
   const sessions = useMemo(() => mergeRoomSessions(own, state), [own, state]);
   const shownKey = shown.join(",");
   useEffect(() => {
     window.mb.teamLiveView({ shown, focused });
   }, [shownKey, focused]);
-  return { sessions, state };
+  return { sessions, state, error, retry };
+}
+
+export interface RoomLive {
+  sessions: SessionInfo[];
+  /**
+   * The room sessions as the main process has them; null until they're read.
+   * Main indexes teammates' sessions from the saved rooms as it starts, before
+   * any window can ask, so once this is set they're all in it (none when no
+   * room is joined, or team rooms couldn't start: `problems` says which).
+   */
+  state: LivePanesState | null;
+  /** Why they couldn't be read; retry() asks again. */
+  error: string | null;
+  retry: () => void;
 }
 
 export interface Follow {

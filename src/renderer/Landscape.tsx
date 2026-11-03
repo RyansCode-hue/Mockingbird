@@ -3,6 +3,7 @@ import type { SessionInfo, SessionMeter } from "../shared/types";
 import type { Camera, LandscapeProblem, Size } from "../shared/landscape";
 import type { Migrating } from "./useLandscape";
 import {
+  REVEAL_WAIT_MS,
   ZOOM_MAX,
   ZOOM_MIN,
   cameraFrom,
@@ -12,11 +13,13 @@ import {
   inView,
   nearestInDirection,
   panBy,
+  revealTile,
   wheelPixels,
   wheelZoomFactor,
   worldTransform,
   zoomAbout,
   type Direction,
+  type PendingReveal,
   type ResolvedLayout,
   type Tile,
 } from "./landscapeModel";
@@ -30,6 +33,12 @@ import { isRemote } from "./team/RoomLive";
 export const CAMERA_PREF = "mb.landscape.camera";
 const CAMERA_SAVE_MS = 250;
 const ARROWS: Record<string, Direction> = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
+/**
+ * Whether a workspace's terminal takes the mouse at `zoom`: only at 100%. Scaled, xterm would put a press on the
+ * wrong cell (it measures the scaled screen against its unscaled cell), so a selection or a click reported to the
+ * program would land elsewhere; a press there selects the workspace instead, and focus gives the mouse back.
+ */
+export const mouseAt = (zoom: number): boolean => Math.abs(zoom - 1) <= 0.001;
 /** The dot grid's spacing in landscape px; four times that when zoomed far out, so it stays a texture. */
 const DOTS = 32;
 
@@ -65,8 +74,8 @@ export function Landscape({
   areaTitle: (key: string) => string;
   stackName: (stack: string) => string;
   meters?: Record<string, SessionMeter>;
-  /** A session's terminal at `size`, filling the window when `focus`. */
-  body: (s: SessionInfo, size: Size, focus: boolean) => React.ReactNode;
+  /** A session's terminal at `size`; in focus, filling the window, `home` is its workspace's own size, which it goes back to. */
+  body: (s: SessionInfo, size: Size, home: Size | null) => React.ReactNode;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -108,6 +117,7 @@ export function Landscape({
       for (const a of w.querySelectorAll<HTMLElement>(".ls-area")) a.style.setProperty("--ls-inv", String(1 / next.zoom));
     }
     if (v) {
+      v.classList.toggle("ls-mouse-off", !mouseAt(next.zoom));
       const step = DOTS * next.zoom * (next.zoom < 0.4 ? 4 : 1);
       v.style.backgroundSize = `${step}px ${step}px`;
       v.style.backgroundPosition = `${-next.x * next.zoom}px ${-next.y * next.zoom}px`;
@@ -168,6 +178,8 @@ export function Landscape({
     // the terminal's element moves back into its workspace on the next render; the keyboard comes back here
     setTimeout(() => viewport.current?.focus({ preventScroll: true }), 0);
   };
+  const selectRef = useRef(select);
+  selectRef.current = select;
   const enterRef = useRef(enterFocus);
   enterRef.current = enterFocus;
   const leaveRef = useRef(leaveFocus);
@@ -177,14 +189,30 @@ export function Landscape({
     if (focusKey && !focusTile) setFocusKey(null);
   }, [focusKey, focusTile]);
 
-  // reveal: the sidebar, ⌘K or a notification picked a session
+  // reveal: the sidebar, ⌘K or a notification picked a session. One made a moment ago may not be in the layout
+  // yet: the reveal waits for it, tried again as the layout changes, and is given up (and said) after a while.
+  const pendingReveal = useRef<PendingReveal | null>(null);
+  const gaveUp = (p: PendingReveal) => console.warn(`[mockingbird] the landscape couldn't bring ${p.id} into view: no workspace holds it after ${REVEAL_WAIT_MS} ms`);
   useEffect(() => {
     if (!reveal) return;
-    const t = tileOf(reveal.id);
-    if (!t) return;
+    const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
+    const t = setTimeout(() => {
+      if (pendingReveal.current !== p) return;
+      pendingReveal.current = null;
+      gaveUp(p);
+    }, REVEAL_WAIT_MS + 50);
+    return () => clearTimeout(t);
+  }, [reveal?.n]);
+  useEffect(() => {
+    const p = pendingReveal.current;
+    if (!p) return;
+    const t = revealTile(p, layout.tiles, Date.now());
+    if (t === "wait") return;
+    pendingReveal.current = null;
+    if (t === "expired") return gaveUp(p);
     if (focusNow.current && focusNow.current !== t.key) setFocusKey(null);
     if (vpNow.current.w && !inView(cam.current, t.rect, vpNow.current)) apply(centreOn(cam.current, t.rect, vpNow.current));
-  }, [reveal?.n]);
+  }, [reveal?.n, layout]);
 
   const move = (dir: Direction) => {
     const tiles = layoutNow.current.tiles;
@@ -230,23 +258,21 @@ export function Landscape({
     }
   };
 
-  // ⌘E focuses the selected workspace, or leaves focus, also from inside its terminal (like the grid's ⌘E);
-  // ⌘Esc leaves focus from anywhere. Both are taken before xterm sees them, which would type Esc.
+  // ⌘E focuses a workspace, or leaves focus, from anywhere in the window, as the grid's does: from inside a
+  // workspace (its terminal, say) that one, from anywhere else (the side bar just picked a session) the selected
+  // one. ⌘Esc leaves focus from anywhere. Both are taken before xterm sees them, which would type Esc.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       const esc = e.key === "Escape";
       if (!esc && e.key.toLowerCase() !== "e") return;
       if (document.querySelector(OVERLAYS)) return;
-      const t = e.target as Node | null;
-      const v = viewport.current;
-      if (!v || !(t === document.body || (t && v.contains(t)))) return;
       const focused = focusNow.current;
       if (esc && !focused) return;
-      const tile = focused ? null : layoutNow.current.tiles.find((x) => x.key === selKey.current);
-      // outside focus, ⌘E is for the surface and the selected workspace, not a terminal elsewhere
-      const node = tile && v.querySelector(`.ls-world [data-ws="${CSS.escape(tile.key)}"]`);
-      if (!focused && !(tile && (t === v || t === document.body || node?.contains(t)))) return;
+      const within = (e.target instanceof Element ? e.target : null)?.closest<HTMLElement>(".ls-world .ls-node");
+      const key = within?.dataset.ws ?? selKey.current;
+      const tile = focused ? null : layoutNow.current.tiles.find((x) => x.key === key);
+      if (!focused && !tile) return;
       e.preventDefault();
       e.stopPropagation();
       if (focused) leaveRef.current();
@@ -268,12 +294,18 @@ export function Landscape({
     const v = viewport.current;
     if (!v) return;
     const inFocus = (t: EventTarget | null) => !!(t as Element | null)?.closest?.(".ls-focus");
+    /** The workspace whose terminal `e` is on, while terminals on the landscape don't take the mouse (mouseAt). */
+    const offTerm = (e: MouseEvent): HTMLElement | null => {
+      if (mouseAt(cam.current.zoom)) return null;
+      const t = e.target as Element | null;
+      return t?.closest?.(".ls-world .ls-term") ? t.closest<HTMLElement>(".ls-node") : null;
+    };
     const onWheel = (e: WheelEvent) => {
       if (inFocus(e.target)) return;
       const zooming = e.ctrlKey || e.metaKey;
       const node = (e.target as Element | null)?.closest?.(".ls-node") as HTMLElement | null;
-      // the selected workspace's terminal scrolls its own history; any other wheel moves the landscape
-      if (!zooming && node && node.dataset.ws === selKey.current && (e.target as Element).closest(".term-holder")) return;
+      // the selected workspace's terminal scrolls its own history while it takes the mouse; any other wheel moves the landscape
+      if (!zooming && mouseAt(cam.current.zoom) && node && node.dataset.ws === selKey.current && (e.target as Element).closest(".term-holder")) return;
       e.preventDefault();
       e.stopPropagation();
       const page = vpNow.current.h || 800;
@@ -312,19 +344,52 @@ export function Landscape({
         grab("on");
         return;
       }
-      // a press on the landscape between workspaces gives it the keyboard
       const t = e.target as Element;
+      const off = offTerm(e);
+      if (off) {
+        // the terminal never sees it: its workspace is selected and the keyboard goes to it, as a click on it would
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.button !== 0) return;
+        const tile = layoutNow.current.tiles.find((x) => x.key === off.dataset.ws);
+        if (!tile) return;
+        selectRef.current(tile);
+        setTimeout(() => (tile.front.status !== "dead" ? focusTerm(tile.front.id) : surface()), 0);
+        return;
+      }
+      // a press on the landscape between workspaces gives it the keyboard
       if (e.button === 0 && !t.closest(".ls-node, .ls-hud, .ls-banners")) surface();
     };
+    // the rest of a press on a terminal that doesn't take the mouse: nothing reaches xterm or the pane, so nothing is
+    // selected, reported to the program or clicked; a double-click focuses the workspace, as on its header
+    const offMouse = (e: MouseEvent) => {
+      const off = offTerm(e);
+      if (!off) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type !== "dblclick" || e.button !== 0) return;
+      const tile = layoutNow.current.tiles.find((x) => x.key === off.dataset.ws);
+      if (tile) enterRef.current(tile);
+    };
+    const MOUSE = ["mousedown", "mouseup", "click", "dblclick", "auxclick"] as const;
+    // the hint for a terminal that doesn't take the mouse, while the pointer is over one
+    const onOver = (e: PointerEvent) => v.classList.toggle("ls-term-hover", !!(e.target as Element | null)?.closest?.(".ls-world .ls-term"));
+    const onLeave = () => v.classList.remove("ls-term-hover");
     // a middle-button press would otherwise paste (Linux) or start autoscroll
     const onAux = (e: MouseEvent) => e.button === 1 && !inFocus(e.target) && e.preventDefault();
     v.addEventListener("wheel", onWheel, { capture: true, passive: false });
     v.addEventListener("pointerdown", onDown, true);
     v.addEventListener("auxclick", onAux, true);
+    for (const type of MOUSE) v.addEventListener(type, offMouse, true);
+    v.addEventListener("pointerover", onOver);
+    v.addEventListener("pointerleave", onLeave);
     return () => {
       v.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
       v.removeEventListener("pointerdown", onDown, true);
       v.removeEventListener("auxclick", onAux, true);
+      for (const type of MOUSE) v.removeEventListener(type, offMouse, true);
+      v.removeEventListener("pointerover", onOver);
+      v.removeEventListener("pointerleave", onLeave);
       window.removeEventListener("pointermove", onMove, true);
       window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("pointercancel", onUp, true);
@@ -353,7 +418,7 @@ export function Landscape({
       onFocus={enterFocus}
       onBack={leaveFocus}
       onTab={onTab}
-      body={(s, sz) => body(s, sz, mode === "focus")}
+      body={(s, sz) => body(s, sz, mode === "focus" ? { w: t.rect.w, h: t.rect.h } : null)}
     />
   );
 
@@ -382,6 +447,9 @@ export function Landscape({
           </div>
         )}
         <CameraHud listeners={listeners.current} cam={cam} onFit={fit} onZoom={zoomTo} />
+        <div className="ls-hint" aria-hidden="true">
+          Zoom to 100% or focus to select text
+        </div>
         {focusTile && vp && (
           <div
             ref={overlay}
@@ -418,10 +486,29 @@ const PROBLEM_TITLE: Record<LandscapeProblem["kind"], string> = {
 export function LandscapeBanners({ problems, error, onReload, migration }: { problems: LandscapeProblem[]; error: string | null; onReload: () => void; migration: Migrating }) {
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const step = migration.step;
-  const rows: { key: string; tone: "bad" | "info"; title: string; text: string; action?: { label: string; run: () => void } }[] = [
-    ...problems.map((p) => ({ key: `${p.kind}:${p.message}`, tone: "bad" as const, title: PROBLEM_TITLE[p.kind], text: p.message })),
-    ...(error ? [{ key: `error:${error}`, tone: "bad" as const, title: "Layout", text: error, action: { label: "Read it again", run: onReload } }] : []),
-    ...(migration.failed ? [{ key: `migration:${migration.failed}`, tone: "bad" as const, title: "Your grid's layout wasn't read in", text: `${migration.failed}. Workspaces are placed where there's room meanwhile, and nothing is saved until it's read in.`, action: { label: "Try again", run: migration.retry } }] : []),
+  type Action = { label: string; run: () => void };
+  const rows: { key: string; tone: "bad" | "info"; title: string; text: string; actions?: Action[] }[] = [
+    ...problems.map((p) => ({
+      key: `${p.kind}:${p.message}`,
+      tone: "bad" as const,
+      title: PROBLEM_TITLE[p.kind],
+      text: p.message,
+      actions: p.kind === "unreadable" ? [{ label: "Read it again", run: onReload }] : undefined,
+    })),
+    ...(error ? [{ key: `error:${error}`, tone: "bad" as const, title: "Layout", text: error, actions: [{ label: "Read it again", run: onReload }] }] : []),
+    ...(migration.remoteFailed
+      ? [{
+          key: `remote:${migration.remoteFailed}`,
+          tone: "bad" as const,
+          title: "Teammates' sessions didn't load",
+          text: `${migration.remoteFailed}. Reading your grid's layout in waits for them; without them, their workspaces are placed where there's room as they come.`,
+          actions: [
+            { label: "Try again", run: migration.retryRemote },
+            { label: "Continue without teammates' sessions", run: migration.withoutRemote },
+          ],
+        }]
+      : []),
+    ...(migration.failed ? [{ key: `migration:${migration.failed}`, tone: "bad" as const, title: "Your grid's layout wasn't read in", text: `${migration.failed}. Workspaces are placed where there's room meanwhile, and those places aren't saved until it's read in.`, actions: [{ label: "Try again", run: migration.retry }] }] : []),
     ...(step.kind === "blocked" ? [{ key: `blocked:${step.why}`, tone: "info" as const, title: "Your grid's layout isn't read in yet", text: "Not while the layout file has the problem above: workspaces are placed where there's room meanwhile, and their places aren't saved." }] : []),
   ];
   const shown = rows.filter((r) => !hidden.has(r.key));
@@ -432,11 +519,11 @@ export function LandscapeBanners({ problems, error, onReload, migration }: { pro
         <div key={r.key} className={`ls-banner ${r.tone}`}>
           <span className="t">{r.title}</span>
           <span className="m">{r.text}</span>
-          {r.action && (
-            <button className="outline" onClick={r.action.run}>
-              {r.action.label}
+          {r.actions?.map((a) => (
+            <button key={a.label} className="outline" onClick={a.run}>
+              {a.label}
             </button>
-          )}
+          ))}
           <button className="icon" aria-label="Dismiss" title="Hide this until it changes" onClick={() => setHidden((h) => new Set([...h, r.key]))}>
             ✕
           </button>

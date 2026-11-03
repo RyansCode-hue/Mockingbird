@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  REVEAL_WAIT_MS,
   ZOOM_MAX,
   ZOOM_MIN,
   afterChange,
@@ -14,7 +15,9 @@ import {
   nearestInDirection,
   newer,
   panBy,
+  readProblem,
   resolveLayout,
+  revealTile,
   toLandscape,
   wheelPixels,
   wheelZoomFactor,
@@ -22,7 +25,7 @@ import {
   zoomAbout,
   type ListsLoaded,
 } from "../src/renderer/landscapeModel";
-import { AREA_PAD, GAP, WORKSPACE_CHROME, applyPatch, colsRows, emptyLandscape, overlaps, parseLandscape, presetSize, sizeFor, type Landscape, type LandscapeProblem, type LandscapeState, type Rect } from "../src/shared/landscape";
+import { AREA_PAD, GAP, MAX_COORD, WORKSPACE_CHROME, applyPatch, colsRows, emptyLandscape, overlaps, parseLandscape, presetSize, sizeFor, type Landscape, type LandscapeProblem, type LandscapeState, type Rect } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -111,6 +114,8 @@ describe("the landscape's camera", () => {
   it("reads a kept camera only when it's one, and puts it on the world as a transform", () => {
     expect(cameraFrom({ x: 1, y: -2, zoom: 0.5 })).toEqual({ x: 1, y: -2, zoom: 0.5 });
     expect(cameraFrom({ x: 1, y: 2, zoom: 40 })).toEqual({ x: 1, y: 2, zoom: ZOOM_MAX });
+    // kept inside the landscape: a camera saved past MAX_COORD comes back at its edge
+    expect(cameraFrom({ x: 1e300, y: -1e300, zoom: 1 })).toEqual({ x: MAX_COORD, y: -MAX_COORD, zoom: 1 });
     for (const bad of [null, "x", { x: 1, y: 2 }, { x: NaN, y: 0, zoom: 1 }, { x: 0, y: 0, zoom: 0 }, { x: 0, y: 0, zoom: -1 }]) expect(cameraFrom(bad)).toBeNull();
     expect(worldTransform({ x: 10, y: -20, zoom: 0.5 })).toBe("scale(0.5) translate(-10px, 20px)");
   });
@@ -227,6 +232,18 @@ describe("where each session's workspace sits", () => {
     expect(loose.x + loose.w).toBeLessThanOrEqual(l.areas.A.x);
     expect(r.tiles.find((t) => t.key === "loose")!.area).toBe("ungrouped");
   });
+  it("brings a session picked before its workspace exists into view once it does, within REVEAL_WAIT_MS", () => {
+    const p = { id: "n1", until: 1000 + REVEAL_WAIT_MS };
+    const before = resolveLayout(base(), [session("a1", { taskGroup: "A" })]);
+    expect(revealTile(p, before.tiles, 1000)).toBe("wait");
+    expect(revealTile(p, before.tiles, 1000 + REVEAL_WAIT_MS)).toBe("wait");
+    const after = resolveLayout(base(), [session("a1", { taskGroup: "A" }), session("n1", { taskGroup: "A" })]);
+    expect((revealTile(p, after.tiles, 1000 + REVEAL_WAIT_MS) as { key: string }).key).toBe("n1");
+    // a stack's member is brought in with its stack
+    const stack = resolveLayout(base(), [session("a2", { taskGroup: "A/api" }), session("a3", { taskGroup: "A/api" })]);
+    expect((revealTile({ id: "a2", until: 0 }, stack.tiles, 1) as { key: string }).key).toBe("ws:A/api");
+    expect(revealTile(p, before.tiles, 1001 + REVEAL_WAIT_MS)).toBe("expired");
+  });
   it("keys a group or session named like Object.prototype's members as any other", () => {
     const l = emptyLandscape();
     const r = resolveLayout(l, [session("__proto__", { taskGroup: "constructor" }), session("toString", { taskGroup: "constructor/__proto__" })]);
@@ -286,6 +303,14 @@ describe("reading the grid's layout in on first use", () => {
     }
     // a failed save, or a stand-in's changes dropped once the file read again, aren't read problems
     for (const kind of ["save", "dropped"] as const) expect(migrationStep(loaded({}, [{ kind, message: "m", file: "f" }]), all)).toEqual({ kind: "run" });
+  });
+  it("reads it in, and saves places, when a corrupt file was moved aside, but not when it couldn't be", () => {
+    const moved: LandscapeProblem = { kind: "corrupt", message: "moved", file: "f", movedTo: "f.bad-1" };
+    expect(migrationStep(loaded({}, [moved]), all)).toEqual({ kind: "run" });
+    expect(readProblem(loaded({}, [moved]))).toBeUndefined();
+    const stuck: LandscapeProblem = { kind: "corrupt", message: "stuck", file: "f", readOnly: true };
+    expect(migrationStep(loaded({}, [stuck]), all)).toEqual({ kind: "blocked", why: "stuck", problem: stuck });
+    expect(readProblem(loaded({}, [moved, stuck]))).toBe(stuck);
   });
   it("doesn't read it in again once migratedAt is set", () => {
     expect(migrationStep(loaded({ migratedAt: "2026-11-01T00:00:00.000Z" }), all)).toEqual({ kind: "done" });

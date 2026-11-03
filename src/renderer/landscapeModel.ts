@@ -16,6 +16,7 @@ import {
   boundsOf,
   fitAreaTo,
   fitView,
+  MAX_COORD,
   kindOf,
   own,
   placeNew,
@@ -86,12 +87,13 @@ export function inView(cam: Camera, r: Rect, viewport: Size): boolean {
   return r.x >= v.x && r.y >= v.y && r.x + r.w <= v.x + v.w && r.y + r.h <= v.y + v.h;
 }
 
-/** A camera kept between launches, or null when what was kept isn't one. */
+/** A camera kept between launches, inside the landscape's bounds (MAX_COORD) and zoom limits; null when what was kept isn't one. */
 export function cameraFrom(v: unknown): Camera | null {
   if (!v || typeof v !== "object") return null;
   const { x, y, zoom } = v as Record<string, unknown>;
   const ok = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
-  return ok(x) && ok(y) && ok(zoom) && zoom > 0 ? { x, y, zoom: clampZoom(zoom) } : null;
+  const bound = (n: number) => Math.min(MAX_COORD, Math.max(-MAX_COORD, n));
+  return ok(x) && ok(y) && ok(zoom) && zoom > 0 ? { x: bound(x), y: bound(y), zoom: clampZoom(zoom) } : null;
 }
 
 /** The CSS transform that puts landscape point (x, y) at the viewport's top-left at `zoom`. */
@@ -144,6 +146,21 @@ export interface Tile {
 export interface AreaView {
   key: string;
   rect: Area;
+}
+
+/** How long a reveal waits for its session's workspace: a session just made reaches the layout a moment after it's picked. */
+export const REVEAL_WAIT_MS = 5000;
+
+/** A session picked to be brought into view, waiting until `until` for its workspace. */
+export interface PendingReveal {
+  id: string;
+  until: number;
+}
+
+/** A pending reveal against the layout now: the workspace holding its session, "wait" while there's none yet, "expired" once there's been none for too long. */
+export function revealTile(p: PendingReveal, tiles: readonly Tile[], now: number): Tile | "wait" | "expired" {
+  const t = tiles.find((x) => x.members.some((m) => m.id === p.id));
+  return t ?? (now > p.until ? "expired" : "wait");
 }
 
 export interface ResolvedLayout {
@@ -250,11 +267,16 @@ export const newer = (cur: LandscapeState | null, next: LandscapeState): Landsca
 
 // ---- reading the grid's layout in ---------------------------------------------------------------
 
-/** Problems reading landscape.json: while one stands, nothing is migrated or placed into what's shown instead. */
-const READ_PROBLEMS: ReadonlySet<LandscapeProblem["kind"]> = new Set(["corrupt", "unreadable", "newer"]);
+/**
+ * Problems reading landscape.json that leave what's shown standing in for the
+ * file: while one stands, nothing is migrated or placed into it. A corrupt
+ * file that was moved aside isn't one: the layout really starts over, and is
+ * saved; only one that couldn't be moved is left in place, read-only.
+ */
+const standsIn = (p: LandscapeProblem): boolean => p.kind === "unreadable" || p.kind === "newer" || (p.kind === "corrupt" && !p.movedTo);
 
-/** The problem reading landscape.json, while there is one. */
-export const readProblem = (state: LandscapeState | null): LandscapeProblem | undefined => state?.problems.find((p) => READ_PROBLEMS.has(p.kind));
+/** The problem reading landscape.json, while there is one that blocks reading in and saving places. */
+export const readProblem = (state: LandscapeState | null): LandscapeProblem | undefined => state?.problems.find(standsIn);
 
 /** The session lists migration reads: this Mac's live sessions, the previous run's resumable ones, and teammates'. */
 export interface ListsLoaded {

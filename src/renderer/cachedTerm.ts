@@ -429,33 +429,67 @@ export function followFixedSize(e: { term: Terminal }, holder: HTMLElement | nul
  * size never decides it, so nothing that moves or scales the holder (the
  * landscape's zoom, a banner, a ResizeObserver firing) makes the agent
  * redraw; `refit` is for when the workspace's size or the font changes.
+ * `home`, when it gives a size, is where the terminal goes when this stops:
+ * one that filled the window in focus goes back to its workspace's size as
+ * it leaves, so a stack's member that left the front isn't left at the
+ * window's while hidden.
  */
-export function followPlacement(e: SizedTerm, size: (cell: { w: number; h: number }) => { cols: number; rows: number }, resize: (cols: number, rows: number) => void): { stop: () => void; refit: () => void } {
+export function followPlacement(
+  e: SizedTerm,
+  size: (cell: { w: number; h: number }) => { cols: number; rows: number },
+  resize: (cols: number, rows: number) => void,
+  home?: (cell: { w: number; h: number }) => { cols: number; rows: number } | null
+): { stop: () => void; refit: () => void } {
   let on = true;
-  const refit = () => {
-    if (!on) return;
+  const sizeTo = (want: (cell: { w: number; h: number }) => { cols: number; rows: number } | null) => {
     // not measured until it's open in a laid-out holder: the first render and the font arriving fit it again
     const cell = cellOf(e.term);
-    if (!cell) return;
-    const { cols, rows } = size({ w: cell.width, h: cell.height });
+    const t = cell && want({ w: cell.width, h: cell.height });
+    if (!t) return;
+    const { cols, rows } = t;
     if (cols !== e.term.cols || rows !== e.term.rows) e.term.resize(cols, rows);
     if (e.ptySize?.cols !== cols || e.ptySize?.rows !== rows) {
       e.ptySize = { cols, rows };
       resize(cols, rows);
     }
+  };
+  const refit = () => {
+    if (!on) return;
+    sizeTo(size);
     syncViewport(e.term);
+  };
+  /** Fit again once xterm next draws: it has measured its cell by then. */
+  let drawn: { dispose: () => void } | null = null;
+  const afterDraw = () => {
+    drawn?.dispose();
+    const d = (drawn = e.term.onRender(() => {
+      d.dispose();
+      refit();
+    }));
   };
   refit();
   // the terminal font may still be loading: its proportions decide the cell
   void document.fonts?.ready.then(refit);
-  const first = e.term.onRender(() => {
-    first.dispose();
-    refit();
-  });
+  afterDraw();
+  // a window moved to a screen of another scale has its cell measured anew there (a hair wider or narrower)
+  let scale: MediaQueryList | null = null;
+  const onScale = () => {
+    watchScale();
+    afterDraw();
+    requestAnimationFrame(refit);
+  };
+  const watchScale = () => {
+    scale?.removeEventListener("change", onScale);
+    scale = typeof matchMedia === "function" ? matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`) : null;
+    scale?.addEventListener("change", onScale);
+  };
+  watchScale();
   return {
     stop: () => {
       on = false;
-      first.dispose();
+      drawn?.dispose();
+      scale?.removeEventListener("change", onScale);
+      if (home) sizeTo(home);
     },
     refit,
   };

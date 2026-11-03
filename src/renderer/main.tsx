@@ -627,9 +627,11 @@ function App() {
   // the grid is group-exclusive at the TOP level: every shown session belongs
   // to the active group (pinned panes excepted); sub-groups act as tabs within it
   const activeGroup = useMemo(() => activeGroupOf(shown, groupOfId, pinnedSet, lastGroup), [shown, sessions, pinnedSet, lastGroup]);
+  // the grid's own bookkeeping, here and below, stands still while the landscape shows instead: the grid comes back
+  // with the layout prefs it left
   useEffect(() => {
-    if (activeGroup && activeGroup !== lastGroup) setLastGroup(activeGroup);
-  }, [activeGroup]);
+    if (!landscapeOn && activeGroup && activeGroup !== lastGroup) setLastGroup(activeGroup);
+  }, [activeGroup, landscapeOn]);
 
   /** Carry a group's remembered UI state across a rename — these registries are
    *  keyed by group path, so without this a rename silently loses the group's
@@ -661,7 +663,7 @@ function App() {
   // record the active group's visible subset whenever it changes (its own
   // panes only — pinned visitors from other groups aren't part of its layout)
   useEffect(() => {
-    if (!activeGroup) return;
+    if (landscapeOn || !activeGroup) return;
     const own = layoutToRemember(shown, groupOfId, activeGroup);
     if (own.length === 0) return;
     setGroupLayouts((prev) => {
@@ -669,7 +671,7 @@ function App() {
       if (cur && cur.length === own.length && cur.every((id, i) => id === own[i])) return prev;
       return { ...prev, [activeGroup]: own };
     });
-  }, [shown, activeGroup]);
+  }, [shown, activeGroup, landscapeOn]);
 
   /** A group's remembered layout, pruned to sessions that still exist in it. */
   const rememberedLayout = (g: string): string[] => {
@@ -880,8 +882,8 @@ function App() {
   // one group on screen: a pane whose session moved to another group (or a stale
   // persisted layout) leaves the grid, unless it's pinned
   useEffect(() => {
-    setShown((prev) => pruneToGroup(prev, groupOfId, pinnedSet, activeGroup));
-  }, [sessions, pinnedSet, activeGroup]);
+    if (!landscapeOn) setShown((prev) => pruneToGroup(prev, groupOfId, pinnedSet, activeGroup));
+  }, [sessions, pinnedSet, activeGroup, landscapeOn]);
 
   // debrief sessions live on the WorkTracker tab, everything else on the grid
   const workSessions = useMemo(() => sessions.filter((s) => !s.debrief), [sessions]);
@@ -894,10 +896,13 @@ function App() {
   const migration = useLandscapeMigration({
     on: landscapeOn,
     store: landscapeStore,
+    // set means teammates' sessions are all in it: main indexes them from the saved rooms as it starts
     lists: { ...listsLoaded, remote: roomLive.state !== null },
     live: liveOwn,
     resumable,
     remote: liveRemote,
+    remoteError: roomLive.error,
+    retryRemote: roomLive.retry,
   });
   const landscapeState = landscapeStore.state;
   // shown once the grid's layout is read in, or once it can't be: a layout made up before that would be redrawn
@@ -1002,7 +1007,7 @@ function App() {
 
   // the tree is saved as drawn, so panes added by the default rule keep their places
   useEffect(() => {
-    if (!tree) return;
+    if (!tree || landscapeOn) return;
     for (const k of keysOf(tree)) expected.current.delete(k);
     // shown but not running: ids a relaunch brings back (by session, or by workspace)
     const awaiting = new Set(
@@ -1011,7 +1016,7 @@ function App() {
         .flatMap((id) => [id, cellKeyFor(id, resumable.find((r) => r.id === id)?.taskGroup)])
     );
     setTrees((p) => (worthSaving(asTree(p[seatKey]), tree, awaiting) ? { ...p, [seatKey]: tree } : p));
-  }, [tree, seatKey]);
+  }, [tree, seatKey, landscapeOn]);
 
   /** Change the active group's layout, starting from the tree as drawn. */
   const commitTree = (fn: (t: LayoutNode) => LayoutNode | null) => {
@@ -1563,7 +1568,7 @@ function App() {
   }, []);
 
   /** A session's terminal in its landscape workspace: the pane's body, sized by the workspace (TerminalPane `landscape`). */
-  const landscapeBody = (s: SessionInfo, size: Size, focus: boolean) => (
+  const landscapeBody = (s: SessionInfo, size: Size, home: Size | null) => (
     <TerminalPane
       key={termKey(s.id)}
       session={s}
@@ -1572,7 +1577,7 @@ function App() {
       density="min"
       paneIndex={99}
       // a teammate's session is only scaled: in focus it may grow past the landscape's font to fill the window
-      landscape={{ w: size.w, h: size.h, font: focus && isRemote(s) ? FOCUS_MAX_FONT : LANDSCAPE_FONT }}
+      landscape={{ w: size.w, h: size.h, font: home && isRemote(s) ? FOCUS_MAX_FONT : LANDSCAPE_FONT, home: home ?? undefined }}
       onFocus={() => setFocused(s.id)}
       onClose={() => requestClose(s)}
       onResume={() => resumeDead(s)}
@@ -1858,10 +1863,13 @@ function App() {
     const inGrid = shown.includes(s.id);
     const pinned = pinnedSet.has(s.id);
     const b = isRemote(s) ? backupFor(s) : null;
+    // the grid's show, hide and pin mean nothing on the landscape, where every session is on screen
+    const grid = !landscapeOn;
     return tidyMenu([
-      inGrid
-        ? { key: "show", label: "Hide", menuLabel: "Hide from the grid", icon: <MinusIcon />, title: "Take its pane off the grid — the session keeps running", onPick: () => minimizePane(s) }
-        : { key: "show", label: "Show", menuLabel: "Show in the grid", icon: <GridIcon />, onPick: () => showSession(s) },
+      grid &&
+        (inGrid
+          ? { key: "show", label: "Hide", menuLabel: "Hide from the grid", icon: <MinusIcon />, title: "Take its pane off the grid — the session keeps running", onPick: () => minimizePane(s) }
+          : { key: "show", label: "Show", menuLabel: "Show in the grid", icon: <GridIcon />, onPick: () => showSession(s) }),
       "-",
       // team rooms: take-over
       takeOverAction(b, setTakeOverFor, b && tkView?.asking.find((a) => a.roomId === b.roomId && a.sessionId === b.sessionId)),
@@ -1875,7 +1883,7 @@ function App() {
         title: s.muted ? "Notifications muted — click to hear from this session again" : "Notifies you when it needs you — click to mute",
         onPick: () => toggleMute(s),
       },
-      {
+      grid && {
         key: "pin",
         label: pinned ? "Pinned" : "Pin",
         menuLabel: pinned ? "Unpin" : "Pin to the screen",

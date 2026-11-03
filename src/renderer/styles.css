@@ -3105,6 +3105,15 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-hud-btn:hover:not(:disabled) { color: var(--text-1); background: var(--fill-subtle); }
 .ls-hud-btn:disabled { opacity: .4; cursor: default; }
 .ls-hud-btn.pct { min-width: 46px; font-variant-numeric: tabular-nums; }
+/* away from 100% a terminal on the landscape takes no mouse (Landscape.tsx, mouseAt): no I-beam, no hover reports */
+.ls-viewport.ls-mouse-off .ls-world .ls-term .xterm { pointer-events: none; }
+.ls-hint {
+  position: absolute; left: 50%; bottom: 12px; z-index: 5; transform: translateX(-50%); padding: 4px 10px; border-radius: 6px;
+  font: 500 11px var(--ui); color: var(--text-2); white-space: nowrap; pointer-events: none;
+  background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2), 0 4px 14px rgba(0, 0, 0, .22);
+  opacity: 0; transition: opacity var(--dur-2) var(--ease-enter);
+}
+.ls-viewport.ls-mouse-off.ls-term-hover .ls-hint { opacity: 1; }
 .ls-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; pointer-events: none; font: 400 12px var(--ui); color: var(--text-3); }
 .ls-empty .dim { color: var(--text-4); font-size: 11px; }
 .ls-banners { display: flex; flex-direction: column; flex-shrink: 0; }

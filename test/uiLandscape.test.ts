@@ -19,6 +19,7 @@ interface Placed {
 }
 interface Audit {
   placed: Placed[];
+  presets: { s1: string; s4: string };
   panZoom: { resized: string[]; wheel: boolean; wheelOver: boolean; space: boolean; middle: boolean; pinch: { zoomIn: boolean; drift: number | null }; cmdScroll: boolean; fit: number | null; hundred: number | null; sizes: string[] };
   typing: { camera: boolean; focused: boolean; selected: string | null };
   placement: { sent: string[]; want: string; term: string };
@@ -26,7 +27,9 @@ interface Audit {
   escInTerminal: { stillFocused: boolean; wroteEsc: number };
   back: { left: boolean; sent: string[]; want: string; keyboard: boolean };
   cmdE: { entered: boolean; leftByEsc: boolean };
-  focusRemote: { id: string; entered: boolean; font: number | null; size: string; fontBefore: number | null; ownerSize: string; left: boolean; sent: string[]; fontAfter: number | null };
+  focusRemote: { id: string; entered: boolean; font: number | null; size: string; fontBefore: number | null; ownerSize: string; ownerRoom: string | null; left: boolean; sent: string[]; fontAfter: number | null };
+  stackTab: { front: string | null; left: boolean; sent: string[]; want: string[]; sizes: string[]; stackSize: string };
+  cmdEAnywhere: { fromSidebar: string | null; fromTerminal: string | null; left: boolean };
   nearest: { selected: string | null; moved: boolean };
   error?: string;
 }
@@ -62,6 +65,8 @@ describe.skipIf(!local)("the landscape", () => {
       expect(p.holder, p.id).toBe(p.room);
     }
     expect(pz.sizes).toEqual(a.placed.map((p) => p.want));
+    // the M presets hold exactly their sizes at the cell xterm measures
+    expect(a.presets).toEqual({ s1: "140×42", s4: "120×24" });
 
     // keys typed in a terminal, and the wheel over the selected workspace's, are the terminal's
     expect(a.typing).toEqual({ camera: true, focused: false, selected: "s1" });
@@ -83,14 +88,54 @@ describe.skipIf(!local)("the landscape", () => {
     const r = a.focusRemote;
     expect(r.id).toMatch(/^r~/);
     expect([r.entered, r.left]).toEqual([true, true]);
-    expect(r.size).toBe(r.ownerSize);
+    expect(r.size).toBe(r.ownerRoom);
+    expect(r.ownerSize).toBe(r.ownerRoom);
     expect(r.font!).toBeGreaterThan(r.fontBefore!);
     expect(r.fontAfter).toBe(r.fontBefore);
     expect(r.sent).toEqual([]);
 
+    // a stack's tab switched in focus: the member leaving the front goes back to the stack's size at once, the one
+    // coming in fills the window, and leaving focus puts it back too
+    const st = a.stackTab;
+    expect([st.front, st.left]).toEqual(["s3", true]);
+    expect(st.sent).toEqual(st.want);
+    expect(st.sizes).toEqual([st.stackSize, st.stackSize]);
+
+    // ⌘E from anywhere: right after picking a session in the side bar, and from a terminal whose workspace isn't selected
+    expect(a.cmdEAnywhere).toEqual({ fromSidebar: "s5", fromTerminal: "s8", left: true });
+
     // ⌥→ from s1: the stack to its right, brought into the middle
     expect(a.nearest).toEqual({ selected: "ws:5101/api", moved: true });
   }, 120_000);
+
+  it("gives a terminal the mouse only at 100%: away from it a press selects its workspace, and nothing is selected or reported", async () => {
+    interface Mouse {
+      drag: { zoom: number | null; on: string; selection: { start: { col: number; row: number }; end: { col: number; row: number } } | null; selected: string | null; keyboard: boolean };
+      report: { mode: string; sent: string[] };
+      hint: { text: string | null; over: string | null; off: string | null };
+      dblclick: { focused: boolean };
+      error?: string;
+    }
+    const at = (zoom: number) => page<Mouse>(`labs=landscape&lsCamera=0,0,${zoom}&landscapeMouseAudit`, `document.getElementById("mb-landscape-mouse-audit")?.textContent ?? null`, `ls-mouse-${zoom}`);
+    for (const zoom of [0.5, 1.5]) {
+      const m = await at(zoom);
+      expect(m.error).toBeUndefined();
+      // the press lands on the terminal's holder, never xterm: the workspace is selected and the keyboard goes to its terminal
+      expect(m.drag, `at ${zoom}`).toEqual({ zoom, on: "holder", selection: null, selected: "s1", keyboard: true });
+      // a program that asked for the mouse is sent nothing
+      expect(m.report, `at ${zoom}`).toEqual({ mode: "vt200", sent: [] });
+      expect(m.hint, `at ${zoom}`).toEqual({ text: "Zoom to 100% or focus to select text", over: "1", off: "0" });
+      expect(m.dblclick, `at ${zoom}`).toEqual({ focused: true });
+    }
+    const m = await at(1);
+    expect(m.error).toBeUndefined();
+    // at 100%, a drag selects the cells it went across, and a click is reported at the cell it was on (1-based)
+    expect(m.drag).toEqual({ zoom: 1, on: "xterm", selection: { start: { col: 60, row: 6 }, end: { col: 80, row: 9 } }, selected: "s1", keyboard: true });
+    expect(m.report).toEqual({ mode: "vt200", sent: ["\x1b[<0;11;4M", "\x1b[<0;11;4m"] });
+    expect(m.hint.over).toBe("0");
+    // and a double-click is the terminal's (a word selected), not focus
+    expect(m.dblclick).toEqual({ focused: false });
+  }, 180_000);
 
   it("is there only with the Labs flag on, and never reads landscape.json with it off: the grid renders as before", async () => {
     const read = `(() => {
@@ -114,41 +159,70 @@ describe.skipIf(!local)("the landscape", () => {
     expect(on.read).toContain("landscapeGet");
   }, 120_000);
 
-  it("turned off in Settings → Labs, brings the grid back as it was, its layout prefs untouched", async () => {
+  it("turned off and on again in Settings → Labs, brings the grid back as it was, the grid's layout prefs untouched", async () => {
     const read = `(() => {
       window.__lsFlip ??= (async () => {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         const until = async (f) => { for (let i = 0; i < 100 && !f(); i++) await sleep(100); return f(); };
-        const prefs = () => Object.fromEntries(["mb.shown", "mb.trees", "mb.groupLayouts", "mb.pinned", "mb.wsTabs"].map((k) => [k, localStorage.getItem(k)]));
-        await until(() => document.querySelector(".ls-world .xterm"));
-        await sleep(500);
-        const before = prefs();
+        const prefs = () => Object.fromEntries(Object.keys(window.__mbPrefsAtLoad).map((k) => [k, localStorage.getItem(k)]));
         const tab = (t) => [...document.querySelectorAll(".tabs .tab")].find((b) => b.textContent.startsWith(t));
-        tab("Settings").click();
-        await until(() => document.querySelector(".set-nav"));
-        [...document.querySelectorAll(".set-nav button")].find((b) => b.textContent === "Labs").click();
-        await until(() => document.querySelector('[role=switch][aria-label="Landscape"]'));
-        const sw = document.querySelector('[role=switch][aria-label="Landscape"]');
-        const wasOn = sw.getAttribute("aria-checked");
-        sw.click();
-        await sleep(300);
-        tab("Sessions").click();
+        const flip = async () => {
+          tab("Settings").click();
+          await until(() => document.querySelector(".set-nav"));
+          [...document.querySelectorAll(".set-nav button")].find((b) => b.textContent === "Labs").click();
+          await until(() => document.querySelector('[role=switch][aria-label="Landscape"]'));
+          const sw = document.querySelector('[role=switch][aria-label="Landscape"]');
+          const was = sw.getAttribute("aria-checked");
+          sw.click();
+          await sleep(300);
+          tab("Sessions").click();
+          return was;
+        };
+        await until(() => document.querySelector(".ls-world .xterm"));
+        await sleep(800);
+        const whileOn = prefs();
+        const wasOn = await flip();
         await until(() => document.querySelector(".grid .xterm"));
+        await sleep(800);
+        const afterOff = prefs();
+        const grid = [...document.querySelectorAll(".grid > [data-cell]")].map((e) => e.getAttribute("data-cell"));
+        const wasOff = await flip();
+        await until(() => document.querySelector(".ls-world .xterm"));
         await sleep(800);
         window.__lsResult = JSON.stringify({
           wasOn,
+          wasOff,
           saved: window.__mbCalls.filter((c) => c.fn === "setSettings").map((c) => c.args[0]),
-          grid: [...document.querySelectorAll(".grid > [data-cell]")].map((e) => e.getAttribute("data-cell")),
+          grid,
           landscape: !!document.querySelector(".ls-viewport"),
-          prefsKept: JSON.stringify(prefs()) === JSON.stringify(before),
+          atLoad: window.__mbPrefsAtLoad,
+          whileOn,
+          afterOff,
+          afterOn: prefs(),
           hint: localStorage.getItem("mb.labs.landscape"),
         });
       })();
       return window.__lsResult ?? null;
     })()`;
     const r = await page<Record<string, unknown>>("labs=landscape", read, "ls-flip");
-    expect(r).toEqual({ wasOn: "true", saved: [{ labs: { landscape: false } }], grid: ["s1", "ws:5101/api", "s4"], landscape: false, prefsKept: true, hint: "false" });
-  }, 120_000);
+    expect(r).toMatchObject({ wasOn: "true", wasOff: "false", saved: [{ labs: { landscape: false } }, { labs: { landscape: true } }], grid: ["s1", "ws:5101/api", "s4"], landscape: true, hint: "true" });
+    // the landscape writes none of the grid's prefs, from the page's load on: only the empty defaults the app writes at
+    // start for one that isn't there, grid or not
+    const set = (p: unknown) => Object.fromEntries(Object.entries(p as Record<string, string | null>).flatMap(([k, v]) => (v === null || ["null", "[]", "{}"].includes(v) ? [] : [[k, JSON.parse(v)]])));
+    expect(set(r.whileOn)).toEqual(set(r.atLoad));
+    expect(r.afterOn).toEqual(r.afterOff);
+    // and the grid, back, keeps them as it does with the landscape never shown
+    const gridOnly = await page<Record<string, string | null>>(
+      "",
+      `(() => {
+        const start = (window.__lsStart ??= Date.now());
+        if (!document.querySelector(".grid .xterm") || Date.now() - start < 3000) return null;
+        return JSON.stringify(Object.fromEntries(Object.keys(window.__mbPrefsAtLoad).map((k) => [k, localStorage.getItem(k)])));
+      })()`,
+      "ls-grid-prefs"
+    );
+    expect(r.afterOff).toEqual(gridOnly);
+  }, 180_000);
 
   it("reads the grid's layout in the first time, once, and shows a stand-in's read problem as a banner without reading it in", async () => {
     const read = `(() => {
@@ -178,5 +252,118 @@ describe.skipIf(!local)("the landscape", () => {
     expect(unreadable.others).toBe(0);
     expect(unreadable.workspaces).toBeGreaterThan(8);
     expect(unreadable.banners).toEqual(["The layout file can't be read", "Your grid's layout isn't read in yet"]);
+
+    // a corrupt file moved aside: the layout really starts over, so the grid's is read in, and only the reset is said
+    const corrupt = await page<{ migrations: unknown[]; others: number; workspaces: number; banners: string[] }>("labs=landscape&landscape=corrupt", read, "ls-corrupt");
+    expect(corrupt.migrations).toHaveLength(1);
+    expect(corrupt.banners).toEqual(["The layout was reset"]);
   }, 120_000);
+
+  it("reads a file it couldn't read again on its own, and on Read it again, dropping what was changed meanwhile", async () => {
+    const read = (change: boolean) => `(() => {
+      window.__lsReread ??= (async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const until = async (f) => { for (let i = 0; i < 150 && !f(); i++) await sleep(100); return f(); };
+        const banners = () => [...document.querySelectorAll(".ls-banner")].map((b) => ({ title: b.querySelector(".t").textContent, actions: [...b.querySelectorAll("button.outline")].map((x) => x.textContent) }));
+        const gets = () => window.__mbCalls.filter((c) => c.fn === "landscapeGet").length;
+        await until(() => banners().some((b) => b.title === "The layout file can't be read") && document.querySelector(".ls-world .ls-tab"));
+        await sleep(300);
+        const before = banners();
+        if (${change}) {
+          // a change made to the stand-in: a stack's other tab to the front
+          const tab = [...document.querySelectorAll(".ls-world .ls-tab")].find((t) => !t.classList.contains("on"));
+          tab.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+          tab.click();
+          await sleep(300);
+        }
+        const g0 = gets();
+        await sleep(1200);
+        const reread = gets() - g0;
+        window.__lsFileReadable = true;
+        if (!${change}) [...document.querySelectorAll(".ls-banner button.outline")].find((b) => b.textContent === "Read it again").click();
+        await until(() => !banners().some((b) => b.title === "The layout file can't be read"));
+        await sleep(500);
+        const l = (await window.mb.landscapeGet()).landscape;
+        window.__lsResult = JSON.stringify({
+          before,
+          reread,
+          after: banners().map((b) => b.title),
+          migrations: window.__mbCalls.filter((c) => c.fn === "landscapeUpdate" && c.args[0].migratedAt).length,
+          fileLayout: !!l.migratedAt && Object.keys(l.areas).sort(),
+          s1: document.querySelector('.ls-world [data-front="s1"]')?.style.left === l.workspaces.s1.x + "px",
+        });
+      })();
+      return window.__lsResult ?? null;
+    })()`;
+    type Reread = { before: { title: string; actions: string[] }[]; reread: number; after: string[]; migrations: number; fileLayout: string[] | false; s1: boolean };
+    // asked again every so often (shortened here): it comes back once it can be read, and the stand-in's change is dropped, said so
+    const timer = await page<Reread>("labs=landscape&landscape=unreadable&lsRereadMs=300", read(true), "ls-reread");
+    expect(timer.before).toEqual([
+      { title: "The layout file can't be read", actions: ["Read it again"] },
+      { title: "Your grid's layout isn't read in yet", actions: [] },
+    ]);
+    expect(timer.reread).toBeGreaterThanOrEqual(2);
+    expect(timer.after).toEqual(["Layout changes were dropped"]);
+    // the file's layout, already read in, shown as it was saved
+    expect(timer).toMatchObject({ migrations: 0, fileLayout: ["5101", "5102", "5110"], s1: true });
+    // Read it again: at once, and with nothing changed meanwhile nothing is dropped
+    const button = await page<Reread>("labs=landscape&landscape=unreadable", read(false), "ls-read-again");
+    expect(button.reread).toBe(0);
+    expect(button).toMatchObject({ after: [], migrations: 0, fileLayout: ["5101", "5102", "5110"], s1: true });
+  }, 180_000);
+
+  it("waits for teammates' sessions to read the grid's layout in, and says so when they don't load: tried again, or read in without them", async () => {
+    const read = (choice: string) => `(() => {
+      window.__lsTeam ??= (async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const until = async (f) => { for (let i = 0; i < 150 && !f(); i++) await sleep(100); return f(); };
+        const banners = () => [...document.querySelectorAll(".ls-banner")].map((b) => ({ title: b.querySelector(".t").textContent, actions: [...b.querySelectorAll("button.outline")].map((x) => x.textContent) }));
+        const updates = () => window.__mbCalls.filter((c) => c.fn === "landscapeUpdate").map((c) => c.args[0]);
+        const infos = [];
+        const info = console.info;
+        console.info = (...a) => (infos.push(a), info.apply(console, a));
+        await until(() => banners().some((b) => b.title === "Teammates' sessions didn't load"));
+        await sleep(500);
+        const waiting = { banners: banners(), migrations: updates().filter((p) => p.migratedAt).length, loading: document.querySelector(".ls-loading")?.textContent ?? null };
+        [...document.querySelectorAll(".ls-banner button.outline")].find((b) => b.textContent === "${choice}").click();
+        await until(() => updates().some((p) => p.migratedAt));
+        await sleep(500);
+        const m = updates().find((p) => p.migratedAt);
+        const later = { remote: Object.keys(m.workspaces).filter((id) => id.startsWith("r~")).sort(), banners: banners().map((b) => b.title) };
+        const n = updates().length;
+        window.__mbTeamLiveBack();
+        await sleep(800);
+        window.__lsResult = JSON.stringify({
+          waiting,
+          later,
+          logs: infos.map((a) => [String(a[0]), a[1]]),
+          placedLater: updates().slice(n).flatMap((p) => Object.keys(p.workspaces ?? {})).filter((id) => id.startsWith("r~")).sort(),
+        });
+      })();
+      return window.__lsResult ?? null;
+    })()`;
+    type Team = { waiting: { banners: { title: string; actions: string[] }[]; migrations: number; loading: string | null }; later: { remote: string[]; banners: string[] }; logs: [string, string[]][]; placedLater: string[] };
+    // the grid showed Nick's session (the stub's remotePaneId(NICK, "n1")), so its layout names it
+    const nick = "r~0f1e2d3c4b5a~n1";
+    const shownNick = `shown=s1,s2,s3,s4,${nick}`;
+    const tried = await page<Team>(`labs=landscape&landscape=fresh&teamLiveFail&${shownNick}`, read("Try again"), "ls-team-retry");
+    expect(tried.waiting.banners).toEqual([{ title: "Teammates' sessions didn't load", actions: ["Try again", "Continue without teammates' sessions"] }]);
+    expect(tried.waiting.migrations).toBe(0);
+    expect(tried.waiting.loading).toMatch(/waiting for teammates' sessions/);
+    // read again, they're read in with everything else
+    expect(tried.later.remote.length).toBeGreaterThan(0);
+    expect(tried.later.banners).toEqual([]);
+    expect(tried.placedLater).toEqual([]);
+
+    const without = await page<Team>(`labs=landscape&landscape=fresh&teamLiveFail=always&${shownNick}`, read("Continue without teammates' sessions"), "ls-team-without");
+    expect(without.waiting.migrations).toBe(0);
+    expect(without.later).toEqual({ remote: [], banners: [] });
+    // the grid's places for them aren't counted as gone: they're placed where there's room once they come
+    const dropped = without.logs.find(([m]) => m.includes("dropped ids that name no session"));
+    expect(dropped?.[1] ?? []).not.toEqual(expect.arrayContaining([expect.stringMatching(/^r~/)]));
+    const placedAsTheyCome = without.logs.find(([m]) => m.includes("without teammates' sessions"));
+    expect(placedAsTheyCome?.[1]).toEqual([nick]);
+    expect(tried.later.remote).toContain(nick);
+    expect(without.placedLater).toEqual(tried.later.remote);
+  }, 180_000);
 });

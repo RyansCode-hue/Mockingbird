@@ -14,7 +14,7 @@ import { compactBlocker, rereadCost } from "../shared/contextBudget";
 import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
-import { bottomLine, fitSize, followsBottom } from "../renderer/cachedTerm";
+import { bottomLine, fitSize, followsBottom, measuredCell } from "../renderer/cachedTerm";
 import type { SuggestProblem } from "../shared/suggestions";
 import { changedTags, parseCardRules, type TagChange } from "../shared/cardRules";
 import type { MigrationsView } from "../shared/team/migrations";
@@ -39,6 +39,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 // team rooms: artifacts
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
+import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
 import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, colsRows, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
@@ -896,11 +897,37 @@ const landscapeFixture = (): Landscape => {
 let landscape = landscapeFixture();
 let landscapeRev = 0;
 // ?landscape=corrupt: landscape.json wasn't JSON at start, so it was moved aside and the layout starts over;
-// =unreadable: reading it failed, so an empty stand-in is shown; =fresh: there's no landscape.json yet, so the
-// grid's layout is read in the first time the landscape is shown
+// =unreadable: reading it failed, so an empty stand-in is shown, and the file is read again with each get or update
+// as main does: it reads once a script sets window.__lsFileReadable, bringing the fixture's layout back and dropping
+// changes made to the stand-in, with a problem saying so (?lsRereadMs=<ms> shortens how often the window asks);
+// =fresh: there's no landscape.json yet, so the grid's layout is read in the first time the landscape is shown
 const LANDSCAPE_FILE = "/Users/you/.mockingbird/landscape.json";
 const landscapeQ = new URLSearchParams(location.search).get("landscape");
-const landscapeProblems: LandscapeProblem[] =
+let standIn = landscapeQ === "unreadable";
+let standInChanges = 0;
+/** The file read again while only a stand-in is held, as LandscapeStore.load does; `pending` are changes in hand made against the stand-in. */
+const readAgain = (pending: number) => {
+  if (!standIn || !w.__lsFileReadable) return;
+  standIn = false;
+  const dropped = standInChanges + pending;
+  const what = `${dropped} layout change${dropped === 1 ? "" : "s"} made to the empty stand-in while it couldn't be read`;
+  landscape = landscapeFixture();
+  landscapeProblems = dropped ? [{ kind: "dropped", message: `${LANDSCAPE_FILE} could be read again, and its layout is back. Dropped: ${what}.`, file: LANDSCAPE_FILE }] : [];
+  landscapeRev++;
+  emit("onLandscapeChanged", clone({ rev: landscapeRev, patch: null, landscape, problems: landscapeProblems }));
+};
+const rereadMs = Number(new URLSearchParams(location.search).get("lsRereadMs"));
+if (rereadMs > 0) w.__mbLandscapeRereadMs = rereadMs;
+// ?teamLiveFail: reading teammates' room sessions fails the first time (=always: until a script calls
+// window.__mbTeamLiveBack(), which also sends them as main would once team rooms come up)
+const teamLiveFails = new URLSearchParams(location.search).has("teamLiveFail") ? new URLSearchParams(location.search).get("teamLiveFail") || "once" : null;
+let teamLiveCalls = 0;
+let teamLiveBack = false;
+w.__mbTeamLiveBack = () => {
+  teamLiveBack = true;
+  emit("onTeamLive", clone(live));
+};
+let landscapeProblems: LandscapeProblem[] =
   landscapeQ === "corrupt"
     ? [{ kind: "corrupt", message: `${LANDSCAPE_FILE} isn't valid JSON (Unexpected end of JSON input). It was moved to ${LANDSCAPE_FILE}.bad-1730000000000, and the layout starts over.`, file: LANDSCAPE_FILE, movedTo: `${LANDSCAPE_FILE}.bad-1730000000000` }]
     : landscapeQ === "unreadable"
@@ -1331,7 +1358,10 @@ const api: Record<string, (...a: any[]) => any> = {
     tickets.forEach((x, i) => (x.rank = (i + 1) * 1000));
     return later({ id, rank: t.rank ?? null }, 200);
   },
-  landscapeGet: async (): Promise<LandscapeState> => clone({ landscape, rev: landscapeRev, problems: landscapeProblems }),
+  landscapeGet: async (): Promise<LandscapeState> => {
+    readAgain(0);
+    return clone({ landscape, rev: landscapeRev, problems: landscapeProblems });
+  },
   // read as main reads it: IPC hands main a structured clone, which keeps NaN and undefined where JSON wouldn't,
   // so a patch main refuses answers { error } here too, and one that changes nothing isn't a revision
   landscapeUpdate: async (raw: unknown): Promise<LandscapeState | { error: string }> => {
@@ -1344,9 +1374,14 @@ const api: Record<string, (...a: any[]) => any> = {
       if (!(e instanceof LandscapeShapeError)) throw e;
       return err(e.message);
     }
+    // a patch made against the stand-in, arriving as the file can be read again, goes with the stand-in's other changes
+    const held = standIn;
+    readAgain(held && !sameLandscape(next, landscape) ? 1 : 0);
+    if (held && !standIn) return clone({ landscape, rev: landscapeRev, problems: landscapeProblems });
     if (!sameLandscape(next, landscape)) {
       landscape = next;
       landscapeRev++;
+      if (standIn) standInChanges++;
       emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
     }
     return clone({ landscape, rev: landscapeRev, problems: landscapeProblems });
@@ -1974,6 +2009,7 @@ const api: Record<string, (...a: any[]) => any> = {
 
   // team rooms: live panes — Nick's session is a fixture; typing into it echoes like the others
   teamLive: async () => {
+    if (teamLiveFails && !teamLiveBack && (teamLiveFails === "always" || teamLiveCalls++ === 0)) return err("team rooms: the room sessions couldn't be read (EIO)");
     const state: LivePanesState = JSON.parse(JSON.stringify(live));
     for (const tag of Object.values(state.own)) tag.inlineOnStart = settings.roomSessionsInline !== false; // as main answers
     return state;
@@ -2305,6 +2341,9 @@ if (lsFocus) {
     setTimeout(() => document.querySelector<HTMLElement>(".ls-viewport")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })), 100);
   });
 }
+// ?lsHover=<id>: the pointer over that session's terminal, so a screenshot away from 100% shows the hint
+const lsHover = params.get("lsHover");
+if (lsHover) waitFor(`.ls-world [data-front="${CSS.escape(lsHover)}"] .term-holder`, (el) => el.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })));
 const typeArea = (area: HTMLTextAreaElement, text: string) => {
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(area, text);
   area.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2778,9 +2817,9 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (params.has("landscapeAudit")) {
+if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  type Term = import("@xterm/xterm").Terminal & { _core: { _renderService: { dimensions: { css: { cell: { width: number; height: number } } } } } };
+  type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
   const resizes = () => calls.filter((c) => c.fn === "sessionResize").map((c) => `${c.args[0]} ${c.args[1]}×${c.args[2]}`);
   const vp = () => document.querySelector<HTMLElement>(".ls-viewport")!;
@@ -2790,8 +2829,9 @@ if (params.has("landscapeAudit")) {
     return m ? { zoom: Number(m[1]), x: -Number(m[2]), y: -Number(m[3]) } : null;
   };
   const want = (id: string, size: { w: number; h: number }) => {
-    const c = term(id)!._core._renderService.dimensions.css.cell;
-    const t = colsRows(size.w, size.h, c.width, c.height);
+    const c = measuredCell(term(id)!);
+    if (!c) return `${id} isn't measured`;
+    const t = colsRows(size.w, size.h, c.w, c.h);
     return `${t.cols}×${t.rows}`;
   };
   const sizeOf = (id: string) => `${term(id)?.cols}×${term(id)?.rows}`;
@@ -2820,7 +2860,7 @@ if (params.has("landscapeAudit")) {
     await sleep(150);
   };
   const ownShown = ["s1", "s2", "s4", "s5", "s7", "s8"];
-  waitFor('.ls-world [data-front="s1"] .xterm', async () => {
+  if (params.has("landscapeAudit")) waitFor('.ls-world [data-front="s1"] .xterm', async () => {
     const out: Record<string, unknown> = {};
     try {
       await sleep(800);
@@ -2831,6 +2871,8 @@ if (params.has("landscapeAudit")) {
         const holder = term(id)?.element?.parentElement;
         return { id, want: want(id, p), term: sizeOf(id), pty: resizes().filter((r) => r.startsWith(`${id} `)).pop() ?? null, holder: holder ? `${holder.clientWidth}×${holder.clientHeight}` : null, room: `${p.w - 16}×${p.h - 40}` };
       });
+      // the fixture places every workspace at its M preset: an agent of 140 × 42 and a terminal of 120 × 24
+      out.presets = { s1: sizeOf("s1"), s4: sizeOf("s4") };
 
       // pan and zoom
       let mark = resizes().length;
@@ -2943,7 +2985,53 @@ if (params.has("landscapeAudit")) {
       const remoteIn = { entered: inFocus(), font: term(NICK_PANE)?.options.fontSize ?? null, size: sizeOf(NICK_PANE) };
       key(document.activeElement ?? document.body, "Escape");
       await sleep(400);
-      out.focusRemote = { id: NICK_PANE, ...remoteIn, fontBefore, ownerSize, left: !inFocus(), sent: resizes().slice(mark), fontAfter: term(NICK_PANE)?.options.fontSize ?? null };
+      const room = live.remote.find((x) => x.id === NICK_PANE)?.room;
+      out.focusRemote = { id: NICK_PANE, ...remoteIn, fontBefore, ownerSize, ownerRoom: room ? `${room.cols}×${room.rows}` : null, left: !inFocus(), sent: resizes().slice(mark), fontAfter: term(NICK_PANE)?.options.fontSize ?? null };
+
+      // a stack's tab switched in focus: the member leaving the front goes back to the stack's size, and the one
+      // coming in fills the window until focus ends
+      await pick("s2");
+      vp().focus();
+      mark = resizes().length;
+      key(vp(), "Enter");
+      await sleep(500);
+      const tab = [...document.querySelectorAll<HTMLElement>(".ls-focus .ls-tab")].find((t) => !t.classList.contains("on"));
+      pointer(tab!, "pointerdown", { button: 0 });
+      tab!.click();
+      await sleep(600);
+      const front = document.querySelector(".ls-focus .ls-node")?.getAttribute("data-front") ?? null;
+      key(document.querySelector(".ls-focus")!, "Escape", { metaKey: true });
+      await sleep(500);
+      const stack = landscape.stacks["5101/api"].placement;
+      const win = { w: vp().clientWidth, h: vp().clientHeight };
+      out.stackTab = {
+        front,
+        left: !inFocus(),
+        sent: resizes().slice(mark),
+        want: [`s2 ${want("s2", win)}`, `s2 ${want("s2", stack)}`, `s3 ${want("s3", win)}`, `s3 ${want("s3", stack)}`],
+        sizes: [sizeOf("s2"), sizeOf("s3")],
+        stackSize: want("s3", stack),
+      };
+
+      // ⌘E from anywhere: a session just picked in the side bar, and a terminal whose workspace isn't selected
+      const row = document.querySelector<HTMLElement>(`.sess-item[data-sid="s5"]`)!;
+      row.focus();
+      row.click();
+      await sleep(300);
+      key(row, "e", { metaKey: true });
+      await sleep(400);
+      const fromSidebar = document.querySelector(".ls-focus .ls-node")?.getAttribute("data-front") ?? null;
+      key(document.activeElement ?? document.body, "Escape", { metaKey: true });
+      await sleep(400);
+      await pick("s1");
+      const other = node("s8")!.querySelector("textarea")!;
+      other.focus();
+      key(other, "e", { metaKey: true });
+      await sleep(400);
+      const fromTerminal = document.querySelector(".ls-focus .ls-node")?.getAttribute("data-front") ?? null;
+      key(document.activeElement ?? document.body, "Escape", { metaKey: true });
+      await sleep(400);
+      out.cmdEAnywhere = { fromSidebar, fromTerminal, left: !inFocus() };
 
       // ⌥→ from s1: the nearest workspace to its right, brought to the middle
       await pick("s1");
@@ -2958,6 +3046,93 @@ if (params.has("landscapeAudit")) {
     const tag = document.createElement("script");
     tag.type = "application/json";
     tag.id = "mb-landscape-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  });
+
+  // ?landscapeMouseAudit (with ?lsCamera=0,0,<zoom>): a drag across s1's terminal, a click with the mouse reported
+  // to its program, the hint over a terminal and a double-click, each pressed where a person would, at the cell's
+  // centre on screen and on whatever is there (elementFromPoint), into <script id="mb-landscape-mouse-audit">
+  if (params.has("landscapeMouseAudit")) waitFor('.ls-world [data-front="s1"] .xterm', async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(800);
+      const t = term("s1")!;
+      const cellAt = (col: number, row: number) => {
+        const r = t.element!.querySelector(".xterm-screen")!.getBoundingClientRect();
+        return { clientX: r.left + ((col + 0.5) * r.width) / t.cols, clientY: r.top + ((row + 0.5) * r.height) / t.rows };
+      };
+      const there = (p: { clientX: number; clientY: number }) => document.elementFromPoint(p.clientX, p.clientY)!;
+      const mouse = (type: string, p: { clientX: number; clientY: number }, buttons: number) => {
+        const el = there(p);
+        if (type === "mousedown") el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, composed: true, pointerId: 1, pointerType: "mouse", isPrimary: true, button: 0, buttons, ...p }));
+        if (type === "mouseup") el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, composed: true, pointerId: 1, pointerType: "mouse", isPrimary: true, button: 0, buttons, ...p }));
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons, detail: type === "dblclick" ? 2 : 1, ...p }));
+        return el;
+      };
+      const reports = () => calls.filter((c) => c.fn === "sessionWrite" && c.args[0] === "s1" && String(c.args[1]).includes("\x1b[<")).map((c) => String(c.args[1]));
+      const rel = (pos: { x: number; y: number }) => ({ col: pos.x, row: pos.y - t.buffer.active.viewportY });
+      const zoom = camera()?.zoom ?? null;
+
+      // a drag from cell (60, 6) to (80, 9), 0-based
+      const from = cellAt(60, 6);
+      const to = cellAt(80, 9);
+      const pressed = mouse("mousedown", from, 1);
+      mouse("mousemove", cellAt(70, 8), 1);
+      mouse("mousemove", to, 1);
+      mouse("mouseup", to, 0);
+      mouse("click", to, 0);
+      await sleep(200);
+      const sel = t.hasSelection() ? t.getSelectionPosition() : undefined;
+      out.drag = {
+        zoom,
+        on: pressed.closest(".xterm") ? "xterm" : pressed.closest(".term-holder") ? "holder" : pressed.className,
+        selection: sel ? { start: rel(sel.start), end: rel(sel.end) } : null,
+        selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-ws") ?? null,
+        keyboard: !!document.activeElement?.closest('.ls-world [data-front="s1"] .xterm'),
+      };
+      t.clearSelection();
+
+      // the program asks for the mouse (SGR reports): a click is reported to it only where it lands right
+      t.write("\x1b[?1000h\x1b[?1006h");
+      await sleep(150);
+      const r0 = reports().length;
+      mouse("mousedown", cellAt(10, 3), 1);
+      mouse("mouseup", cellAt(10, 3), 0);
+      mouse("click", cellAt(10, 3), 0);
+      await sleep(200);
+      out.report = { mode: t.modes.mouseTrackingMode, sent: reports().slice(r0) };
+      t.write("\x1b[?1000l\x1b[?1006l");
+
+      // the hint, over a terminal and off it
+      const hint = document.querySelector<HTMLElement>(".ls-hint");
+      there(cellAt(30, 4)).dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse", ...cellAt(30, 4) }));
+      await sleep(50);
+      // read where its fade ends, never mid-way
+      const settled = () => hint?.getAnimations().forEach((a) => a.finish());
+      settled();
+      const over = hint ? getComputedStyle(hint).opacity : null;
+      vp().dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+      await sleep(50);
+      settled();
+      out.hint = { text: hint?.textContent ?? null, over, off: hint ? getComputedStyle(hint).opacity : null };
+
+      // a double-click: focus away from 100%, a word selected at it
+      mouse("mousedown", cellAt(2, 1), 1);
+      mouse("mouseup", cellAt(2, 1), 0);
+      mouse("click", cellAt(2, 1), 0);
+      mouse("mousedown", cellAt(2, 1), 1);
+      mouse("mouseup", cellAt(2, 1), 0);
+      mouse("click", cellAt(2, 1), 0);
+      mouse("dblclick", cellAt(2, 1), 0);
+      await sleep(400);
+      out.dblclick = { focused: !!document.querySelector(".ls-focus .ls-node") };
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-landscape-mouse-audit";
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
   });
@@ -3890,3 +4065,5 @@ if (params.has("reset")) {
   params.delete("reset");
   history.replaceState(null, "", `${location.pathname}${params.size ? `?${params}` : ""}`);
 }
+// the grid's layout prefs as they were before the app ran: what checks that the landscape leaves them alone compare with
+w.__mbPrefsAtLoad = Object.fromEntries(Object.values(LEGACY_PREF_KEYS).map((k) => [k, localStorage.getItem(k)]));
