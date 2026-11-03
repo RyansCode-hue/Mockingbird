@@ -1,4 +1,5 @@
-import type { UiCommand, WorktreeCleanupMode } from "../shared/types";
+import type { IpcResult, UiCommand, WorktreeCleanupMode } from "../shared/types";
+import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 const api = {
@@ -265,6 +266,14 @@ const api = {
   pipelinePrDescribe: (sessionId: string, ticketId: string, title: string, base: string) => ipcRenderer.invoke("pipeline:pr:describe", sessionId, ticketId, title, base),
   pipelinePrCreate: (sessionId: string, ticketId: string, req: unknown) => ipcRenderer.invoke("pipeline:pr:create", sessionId, ticketId, req),
   pipelineComms: (ticketId: string, title: string, details: string) => ipcRenderer.invoke("pipeline:comms", ticketId, title, details),
+  // the landscape: where workspaces and areas sit
+  landscapeGet: (): Promise<IpcResult<LandscapeState>> => ipcRenderer.invoke("landscape:get"),
+  landscapeUpdate: (patch: LandscapePatch): Promise<IpcResult<LandscapeState>> => ipcRenderer.invoke("landscape:update", patch),
+  onLandscapeChanged: (cb: (change: LandscapeChange) => void) => {
+    const h = (_e: unknown, change: LandscapeChange) => cb(change);
+    ipcRenderer.on("landscape:changed", h);
+    return () => ipcRenderer.removeListener("landscape:changed", h);
+  },
   onPipelineChanged: (cb: (all: unknown) => void) => {
     const h = (_e: unknown, all: unknown) => cb(all);
     ipcRenderer.on("pipeline:changed", h);

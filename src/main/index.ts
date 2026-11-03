@@ -31,6 +31,7 @@ import { runDebrief, startScheduler } from "./debrief";
 import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, reorderWorkItem, adoRequest, setWorkItemTags, projectTags } from "./ado";
 import { PipelineStore } from "./pipeline";
+import { LandscapeStore } from "./landscape";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
@@ -127,6 +128,9 @@ const sessions = new SessionManager(store);
 let mainWindow: BrowserWindow | null = null;
 const appWindow = (): BrowserWindow | null => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null);
 const toWindow = (channel: string, ...args: unknown[]) => appWindow()?.webContents.send(channel, ...args);
+
+// the landscape (docs/landscape.md): where workspaces and areas sit
+const landscape = new LandscapeStore({ file: path.join(MB_DIR, "landscape.json"), emit: (change) => toWindow("landscape:changed", change), log: logError });
 
 // Team rooms (docs/team-rooms.md): identity, rooms and the WebRTC transport
 configureWebRtc(app);
@@ -683,6 +687,7 @@ const quit = new QuitSequence({
   },
   steps: [
     { name: "saving scrollback", run: () => sessions.saveScrollback(true) },
+    { name: "saving the landscape", run: () => landscape.flush() },
     { name: "stopping team rooms", run: () => stopTeam() },
     { name: "stopping phone alerts", run: () => phone?.stop() },
     // whatever debug session outlasted the services' bounded stop: its adapter's process group ends now
@@ -1247,6 +1252,10 @@ handle("mcp:remove", (name) => {
 });
 handle("ado:comments", (id) => listComments(store, id));
 handle("ado:comment:add", (id, text) => addComment(store, id, text));
+
+// ---- the landscape: patches from a window, merged and sent on to every window ----
+handle("landscape:get", () => landscape.get());
+handle("landscape:update", (patch) => landscape.update(patch));
 
 // ---- ticket pipeline: each ticket's stage, PRs, feedback and drafted comments ----
 const pipeline = new PipelineStore(path.join(MB_DIR, "pipeline.json"));
