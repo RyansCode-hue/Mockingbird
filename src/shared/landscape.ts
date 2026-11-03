@@ -166,6 +166,9 @@ export const WORKSPACE_SIZES: Record<WorkspaceKind, Record<SizePreset, TermSize>
  */
 export const CELL_ESTIMATE: Cell = { w: 7.5, h: 18 };
 
+/** The landscape's terminal font, in px: a workspace's terminal keeps it at every zoom, which only scales it. */
+export const LANDSCAPE_FONT = 12.5;
+
 /** What a workspace's frame takes around its terminal: side padding (w) and the header bar plus bottom padding (h). */
 export const WORKSPACE_CHROME: Size = { w: 16, h: 40 };
 
