@@ -1,6 +1,7 @@
 # Landscape, phase 1: build plan
 
-Status: S1 (model, store, migration) built; S2 next. The spec is
+Status: S1 (model, store, migration) and S2 (the surface, behind Settings →
+Labs → Landscape) built; S3 next. The spec is
 [landscape.md](landscape.md); this file is how its phase 1 gets built.
 
 Phase 1 replaces the grid with the landscape: workspaces, areas, stacks, the
@@ -140,6 +141,23 @@ default until S7.
   - a UI test that zooming leaves `sessionResize` uncalled (`window.__mbCalls`),
     while resizing a workspace calls it once;
   - focus there and back.
+- **As built:**
+  - **Esc in focus.** Esc typed in the focused workspace's terminal is the
+    terminal's: agents use it to interrupt, and nothing can tell when they
+    need it. ⌘Esc, ⌘E or the header's back button leave focus from
+    anywhere, and plain Esc does when the terminal doesn't have the keyboard
+    (after a click on the header), as the grid's fullscreen does. ⌘E and ⌘Esc
+    are the only landscape keys that work from inside a terminal: no terminal
+    program gets ⌘ keys.
+  - **The wheel.** Over the selected workspace's terminal it scrolls that
+    terminal's history; anywhere else it pans.
+  - **The measured cell** at 12.5 px with the terminals' 1.4 line height is
+    about 7.53 × 21 px, not `CELL_ESTIMATE`'s 7.5 × 18, so an M agent placed
+    by the estimate holds 140 × 36, not 140 × 42.
+  - **Places.** A session with no placement gets one from `placeNew` (its
+    group gets an area beside the others when it has none) and it's saved,
+    except while the grid's layout hasn't been read in or the file has a read
+    problem.
 
 ### S3 · Semantic zoom and peek
 - **Zoom bands:**
