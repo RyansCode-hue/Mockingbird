@@ -3,7 +3,7 @@ import { Pick } from "./Menu";
 import { reachesBroadcast, titleOf } from "./appModel";
 import { PresetsSection } from "./Presets";
 import { getFormatOnSave, setFormatOnSave } from "./CodeEditor";
-import { isErr, OPTIONAL_TABS, type AgentCheck, type BroadcastOutcome, type SetupStatus, type SessionInfo, type SessionPreset, type Settings, type WorktreeEntry, type OptionalTab } from "../shared/types";
+import { isErr, OPTIONAL_TABS, type AgentCheck, type BroadcastOutcome, type LabsFlags, type SetupStatus, type SessionInfo, type SessionPreset, type Settings, type WorktreeEntry, type OptionalTab } from "../shared/types";
 import { TAB_LABELS } from "./tabs";
 import { plural } from "../shared/format";
 import { baseName } from "../shared/paths";
@@ -396,6 +396,7 @@ const SETTINGS_SECTIONS = [
   { id: "team", label: "Team" },
   { id: "debriefs", label: "Debriefs" },
   { id: "control", label: "Control room" },
+  { id: "labs", label: "Labs" },
   { id: "about", label: "About" },
 ] as const;
 export type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
@@ -432,6 +433,7 @@ export function SettingsView({
   onUpdate,
   jump,
   onHiddenTabs,
+  onLabs,
   presets,
   onPresets,
   onMsgDefaultSend,
@@ -446,6 +448,8 @@ export function SettingsView({
   /** Open a specific section, e.g. the control room from ⌘⇧B. */
   jump: { section: SettingsSection; n: number } | null;
   onHiddenTabs: (tabs: OptionalTab[]) => void;
+  /** Labs flags as saved, so the window follows a change at once. */
+  onLabs: (labs: LabsFlags) => void;
   /** The App's preset list, which ⌘N's "Save as preset" also changes while this view is open. */
   presets: SessionPreset[];
   onPresets: (presets: SessionPreset[]) => void;
@@ -531,11 +535,12 @@ export function SettingsView({
   // every change saves immediately — there is no Save button to forget. Only the
   // patch is sent: the store merges it, so settings written elsewhere since this
   // view loaded (update folder, presets, per-group message modes) are kept
-  const upd = async (patch: Partial<Settings>) => {
+  const upd = async (patch: Partial<Settings>): Promise<boolean> => {
     setS((cur) => cur && { ...cur, ...patch });
     const r = await settled(window.mb.setSettings(patch));
     setSaveState(isErr(r) ? { ok: false, msg: `Couldn't save: ${r.error}` } : { ok: true, msg: "Saved" });
     if (patch.repoRoots || patch.claudeBin || patch.codexBin) loadStatus();
+    return !isErr(r);
   };
   /** A path from the system picker; null when it was cancelled, or failed (said beside the section list). */
   const pick = async (opts: { file?: boolean; defaultPath?: string }): Promise<string | null> => {
@@ -938,6 +943,26 @@ export function SettingsView({
             <div className="set-card p0">
               <ControlRoomPanel sessions={sessions} />
             </div>
+          </>
+        )}
+
+        {section === "labs" && (
+          <>
+            <h2>Labs</h2>
+            <p className="set-lede">Features still being built. They're off until you turn them on, and may change before they're finished.</p>
+            <SetRow
+              title="Landscape"
+              note="The Sessions tab shows your sessions on a surface you pan and zoom, instead of the grid. The first time, your grid's layout is read in; turning this off brings the grid back as it was."
+            >
+              <Toggle
+                label="Landscape"
+                on={s.labs?.landscape === true}
+                onChange={async (v) => {
+                  const labs = { ...s.labs, landscape: v };
+                  if (await upd({ labs })) onLabs(labs);
+                }}
+              />
+            </SetRow>
           </>
         )}
 

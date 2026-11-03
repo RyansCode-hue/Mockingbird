@@ -3021,3 +3021,98 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .tk-usage .dim { color: var(--text-3); }
 .tk-usage.none { color: var(--text-4); }
 .ctx-pop-note { margin-top: 8px; font: 400 10.5px var(--ui); color: var(--text-4); white-space: normal; }
+
+/* ---- the landscape (Settings → Labs; Landscape.tsx): a surface panned and zoomed. Its world is one layer moved
+   by a CSS transform, so neither changes any layout; the viewport clips rather than scrolls, so a terminal taking
+   the keyboard can't scroll the world out from under the camera ---- */
+:root { --ls-dot: rgba(255, 255, 255, .075); }
+:root[data-theme="light"] { --ls-dot: rgba(0, 0, 0, .09); }
+.ls-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ls-viewport {
+  position: relative; flex: 1; min-height: 0; overflow: clip; outline: none; touch-action: none;
+  background-color: var(--bg-app); background-image: radial-gradient(circle, var(--ls-dot) 1px, transparent 1.25px);
+}
+.ls-viewport.grab-ready, .ls-viewport.grab-ready * { cursor: grab !important; }
+.ls-viewport.grab-on, .ls-viewport.grab-on * { cursor: grabbing !important; user-select: none; }
+.ls-world { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; }
+/* an area, faintly: its rectangle and its name just above it, both the same size on screen at any zoom
+   (--ls-inv is 1 / zoom); S4 gives it its header */
+.ls-area {
+  position: absolute; pointer-events: none; border-radius: 14px;
+  border: calc(1px * var(--ls-inv, 1)) dashed var(--line-strong2);
+}
+.ls-area-name {
+  position: absolute; left: 0; bottom: calc(100% + 6px * var(--ls-inv, 1)); white-space: nowrap;
+  font: 600 calc(12px * var(--ls-inv, 1)) var(--ui); color: var(--text-3);
+}
+/* a workspace (design B): a card, its header bar over its terminal. Its outline is a shadow, never a border,
+   so the frame is exactly WORKSPACE_CHROME and the terminal's holder the room colsRows counts */
+.ls-node {
+  position: absolute; display: grid; background: var(--bg-pane); border-radius: 8px; overflow: hidden;
+  box-shadow: 0 0 0 1px var(--line-strong2), 0 8px 22px rgba(0, 0, 0, .2);
+}
+.ls-node.selected { box-shadow: 0 0 0 1.5px var(--pane-focus), 0 8px 22px rgba(0, 0, 0, .24); }
+.ls-node.st-waiting { box-shadow: 0 0 0 1px var(--amber), 0 0 0 4px var(--fill-waiting-glow); }
+.ls-node.st-waiting.selected { box-shadow: 0 0 0 1.5px var(--amber), 0 0 0 5px var(--fill-waiting-glow); }
+.ls-node.st-dead { background: var(--bg-pane-dead); }
+.ls-node.placeholder { opacity: .55; }
+.ls-node.focus { left: 0; top: 0; border-radius: 0; box-shadow: none; }
+.ls-head {
+  display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 8px 0 11px; user-select: none;
+  background: var(--bg-pane-header); border-bottom: 1px solid var(--line-soft);
+}
+.ls-node.st-waiting .ls-head { background: var(--bg-pane-waiting); }
+.ls-node.selected:not(.st-waiting) .ls-head { background: var(--bg-pane-header-focus); }
+.ls-title { font: 500 12px var(--ui); color: var(--text-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ls-node.st-dead .ls-title { color: var(--text-3); }
+.ls-head .chip { flex-shrink: 0; }
+.ls-spacer { flex: 1; min-width: 4px; }
+.ls-tokens { flex-shrink: 0; font: 400 10px var(--mono); color: var(--text-3); }
+.ls-focus-btn, .ls-back {
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  padding: 0; border: none; border-radius: 5px; background: none; color: var(--text-3); cursor: pointer;
+}
+.ls-focus-btn:hover, .ls-back:hover { color: var(--text-1); background: var(--fill-subtle); }
+.ls-focus-btn { opacity: 0; }
+.ls-node:hover .ls-focus-btn, .ls-node.selected .ls-focus-btn, .ls-focus-btn:focus-visible { opacity: 1; }
+.ls-back { margin-left: -4px; }
+.ls-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+.ls-stack-name { flex-shrink: 0; padding-right: 6px; font: 500 9px var(--ui); letter-spacing: .8px; text-transform: uppercase; color: var(--text-4); }
+.ls-tab {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 220px; padding: 4px 9px;
+  border: none; border-radius: 5px; background: transparent; font: 500 11px var(--ui); color: var(--text-3); cursor: pointer;
+}
+.ls-tab .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-tab:hover { color: var(--text-1); background: var(--fill-subtle); }
+.ls-tab.on { color: var(--text-1); background: var(--fill-selected); }
+.ls-term { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* the pane's body inside a workspace: the card is its frame, and its terminal starts at the holder's corner */
+.pane.ls-body, .pane.ls-body.st-waiting, .pane.ls-body.st-dead, .pane.ls-body.kind-assistant {
+  flex: 1; border: none; border-radius: 0; background: transparent; box-shadow: none; outline: none;
+}
+.pane.ls-body .term-holder { padding: 0; }
+.ls-away { flex: 1; display: flex; align-items: center; justify-content: center; font: 400 11px var(--ui); color: var(--text-4); }
+/* focus: the workspace fills the window over the landscape, whose camera stays where it was */
+.ls-focus { position: absolute; inset: 0; z-index: 20; background: var(--bg-app); outline: none; }
+.ls-hud {
+  position: absolute; right: 12px; bottom: 12px; z-index: 5; display: flex; gap: 2px; padding: 3px; border-radius: 8px;
+  background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2), 0 4px 14px rgba(0, 0, 0, .22);
+}
+.ls-hud-btn {
+  min-width: 24px; height: 22px; padding: 0 7px; border: none; border-radius: 5px; background: none;
+  font: 500 11px var(--ui); color: var(--text-2); cursor: pointer;
+}
+.ls-hud-btn:hover:not(:disabled) { color: var(--text-1); background: var(--fill-subtle); }
+.ls-hud-btn:disabled { opacity: .4; cursor: default; }
+.ls-hud-btn.pct { min-width: 46px; font-variant-numeric: tabular-nums; }
+.ls-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; pointer-events: none; font: 400 12px var(--ui); color: var(--text-3); }
+.ls-empty .dim { color: var(--text-4); font-size: 11px; }
+.ls-banners { display: flex; flex-direction: column; flex-shrink: 0; }
+.ls-banner {
+  display: flex; align-items: center; gap: 10px; padding: 6px 12px; font: 400 11px var(--ui); color: var(--text-2);
+  background: var(--bg-chrome); border-bottom: 1px solid var(--line-soft);
+}
+.ls-banner .t { flex-shrink: 0; font-weight: 600; color: var(--text-1); }
+.ls-banner.bad .t { color: var(--red); }
+.ls-banner .m { flex: 1; min-width: 0; }
+.ls-banner button.outline { flex-shrink: 0; padding: 2px 8px; font-size: 10.5px; }

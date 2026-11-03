@@ -70,7 +70,7 @@ import { BottomPanel } from "./BottomPanel";
 import { addOutput, onStopped } from "./debugStore";
 import { installTooltips } from "./tooltips";
 import { dirtyKeys } from "./CodeEditor";
-import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
+import { AGENT_NAME, otherAgent, isErr, sanitizeSegment, splitGroupKey, topOfKey, groupUngrouped, groupKey, isWorkItemId, ticketIdOf, UI_COMMANDS, type LabsFlags, type SessionInfo, type SessionPreset, type SessionStatus, type Settings, type WorktreeStateInfo, type UsageReport, type UpdateProgress, type UpdateOutcome, type CollabRoom, type TranscriptHit, type RunServiceState, type DebugFrame, type Meters, type LspLocation, type FileOverlap, type AgentUpdateNotice, type MessageMode, type OptionalTab } from "../shared/types";
 import { openLink } from "./uiUtil";
 import { type Tab, TAB_LABELS } from "./tabs";
 import { CommandPalette, HelpModal } from "./Palette";
@@ -110,6 +110,11 @@ import { usePersisted, readPref, writePref } from "./prefs";
 import { D, EASE, initMotion, motion, play, useFlipRows } from "./motion";
 import { StatusDot } from "./StatusDot";
 import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
+// the landscape (Settings → Labs)
+import { FOCUS_MAX_FONT, Landscape, LandscapeBanners } from "./Landscape";
+import { useLandscape, useLandscapeMigration } from "./useLandscape";
+import { readProblem, resolveLayout } from "./landscapeModel";
+import { LANDSCAPE_FONT, type Size } from "../shared/landscape";
 
 initMotion();
 
@@ -146,6 +151,9 @@ function LayoutThumb({ tree }: { tree: LayoutNode }) {
   );
 }
 
+/** The Labs landscape flag as this window last read it from settings: only a first-paint hint, settings decide. */
+const LABS_LANDSCAPE_PREF = "mb.labs.landscape";
+
 /** How long a pane the main process is about to add or rekey waits for its place (see `expected` in App). */
 const EXPECT_MS = 10_000;
 const SIDE_WORDS: Record<EdgeSide, string> = { left: "to the left of", right: "to the right of", top: "above", bottom: "below" };
@@ -165,6 +173,9 @@ function readLegacyLayout(): LegacyLayout {
 function App() {
   const [ownSessions, setSessions] = useState<SessionInfo[]>([]);
   const [resumable, setResumable] = useState<SessionInfo[]>([]);
+  // which session lists have been read at least once (the landscape reads the grid's layout in only once they have)
+  const [listsLoaded, setListsLoaded] = useState({ live: false, resumable: false });
+  const listLoaded = (which: "live" | "resumable") => setListsLoaded((p) => (p[which] ? p : { ...p, [which]: true }));
   const [shown, setShown] = usePersisted<string[]>("mb.shown", []);
   const [focused, setFocused] = useState<string | null>(null);
   // team rooms: live panes — teammates' room sessions are sessions here too (session.room says whose)
@@ -278,6 +289,15 @@ function App() {
   // tabs turned off in Settings leave the top bar (and the palette); one opened
   // anyway — by a notification or a search hit — shows while it's the active tab
   const [hiddenTabs, setHiddenTabs] = useState<OptionalTab[]>([]);
+  // Settings → Labs. Until settings are read, the flag as this window last saw it, so the Sessions tab doesn't
+  // draw the grid only to swap it for the landscape (each fitting every terminal) a moment later
+  const [labs, setLabsNow] = useState<LabsFlags>(() => ({ landscape: readPref<unknown>(LABS_LANDSCAPE_PREF, false) === true }));
+  const setLabs = (next: LabsFlags) => {
+    setLabsNow(next);
+    // kept only once it differs from the default, so a window that never turns it on stores nothing new
+    if ((readPref<unknown>(LABS_LANDSCAPE_PREF, false) === true) !== (next.landscape === true)) writePref(LABS_LANDSCAPE_PREF, next.landscape === true);
+  };
+  const landscapeOn = labs.landscape === true;
   // one-click session setups (Settings → Presets), and one being saved from New session
   const [presets, setPresets] = useState<SessionPreset[]>([]);
   const [presetDraft, setPresetDraft] = useState<SessionPreset | null>(null);
@@ -530,11 +550,17 @@ function App() {
   const refresh = async (): Promise<SessionInfo[]> => {
     const live: SessionInfo[] | { error: string } = await window.mb.listSessions();
     if (isErr(live)) readFailed("the session list", live);
-    else setSessions(live);
+    else {
+      setSessions(live);
+      listLoaded("live");
+    }
     const previous: SessionInfo[] | { error: string } = await window.mb.resumableSessions();
     if (isErr(previous)) readFailed("the previous sessions", previous);
     // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
-    else setResumable(previous.filter((s) => !s.debrief));
+    else {
+      setResumable(previous.filter((s) => !s.debrief));
+      listLoaded("resumable");
+    }
     return isErr(live) ? ownSessions : live;
   };
 
@@ -542,7 +568,12 @@ function App() {
   // popup was already seen) are marked set up without being interrupted.
   useEffect(() => {
     window.mb.getSettings().then(async (s: Settings | { error: string }) => {
-      if (isErr(s)) return readFailed("settings", s);
+      if (isErr(s)) {
+        // the grid, as Labs flags are off until settings say otherwise
+        setLabsNow({});
+        return readFailed("settings", s);
+      }
+      setLabs(s.labs ?? {});
       const hidden = s.hiddenTabs ?? [];
       setHiddenTabs(hidden);
       setPresets(s.presets ?? []);
@@ -563,7 +594,10 @@ function App() {
     window.mb.hooksInstalled().then(unlessError("whether the status hooks are installed", (ok: unknown) => setHooksOk(ok === true)));
     // note: `shown` is deliberately NOT pruned against the live list — relaunch
     // reuses session ids, so a restored session lands back in its old grid slot
-    const off = window.mb.onSessionsChanged((s: SessionInfo[]) => setSessions(s));
+    const off = window.mb.onSessionsChanged((s: SessionInfo[]) => {
+      setSessions(s);
+      listLoaded("live");
+    });
     const offUi = window.mb.onUiCommand((cmd: string, arg?: string) => {
       if (cmd === UI_COMMANDS.newSession) setModal("new");
       if (cmd === UI_COMMANDS.update) setModal("update"); // the update notification was clicked
@@ -809,6 +843,10 @@ function App() {
   const jumpToSession = (s: SessionInfo) => {
     if (s.debrief) {
       setTab("worktracker"); // debriefs live on their own tab, not the grid
+    } else if (landscapeOn) {
+      // every workspace is on the landscape at once: this brings the session's into view, and the grid stays as it was
+      setTab("sessions");
+      revealWorkspace(s.id);
     } else {
       setTab("sessions");
       showSession(s);
@@ -848,6 +886,32 @@ function App() {
   // debrief sessions live on the WorkTracker tab, everything else on the grid
   const workSessions = useMemo(() => sessions.filter((s) => !s.debrief), [sessions]);
   const debriefSessions = useMemo(() => sessions.filter((s) => s.debrief), [sessions]);
+
+  // ---- the landscape (Settings → Labs): the Sessions tab's surface instead of the grid ----
+  const landscapeStore = useLandscape(landscapeOn);
+  const liveOwn = useMemo(() => sessions.filter((s) => !isRemote(s)), [sessions]);
+  const liveRemote = useMemo(() => sessions.filter(isRemote), [sessions]);
+  const migration = useLandscapeMigration({
+    on: landscapeOn,
+    store: landscapeStore,
+    lists: { ...listsLoaded, remote: roomLive.state !== null },
+    live: liveOwn,
+    resumable,
+    remote: liveRemote,
+  });
+  const landscapeState = landscapeStore.state;
+  // shown once the grid's layout is read in, or once it can't be: a layout made up before that would be redrawn
+  // (and every terminal resized) when the migration lands
+  const landscapeShown = landscapeOn && !!landscapeState && (migration.step.kind === "done" || migration.step.kind === "blocked" || !!migration.failed);
+  const landscapeLayout = useMemo(() => (landscapeShown && landscapeState ? resolveLayout(landscapeState.landscape, workSessions) : null), [landscapeShown, landscapeState, workSessions]);
+  // new workspaces keep the places they were given: saved, unless the file has a problem (what's shown stands in for it)
+  // or the grid's layout isn't read in yet (it would place them)
+  const placesToSave = landscapeLayout?.patch && migration.step.kind === "done" && !readProblem(landscapeState) ? JSON.stringify(landscapeLayout.patch) : null;
+  useEffect(() => {
+    if (placesToSave) void landscapeStore.update(JSON.parse(placesToSave), "new workspaces' places");
+  }, [placesToSave]);
+  const [reveal, setReveal] = useState<{ id: string; n: number } | null>(null);
+  const revealWorkspace = (id: string) => setReveal((r) => ({ id, n: (r?.n ?? 0) + 1 }));
 
   const visible = useMemo(() => {
     const q = filter.toLowerCase();
@@ -1452,14 +1516,23 @@ function App() {
       openControlRoom();
       return;
     }
-    if (cmd && !e.shiftKey && e.key === "e" && (focused || zoomed)) {
+    // the grid's own keys; the landscape has its own (Landscape.tsx), which take ⌘E and ⌘1 differently
+    const grid = !landscapeOn;
+    if (grid && cmd && !e.shiftKey && e.key === "e" && (focused || zoomed)) {
       handled();
       zoomTo(zoomed ? null : focused);
       return;
     }
-    if (e.key === "Escape" && zoomed && escapeLeavesFullscreen(e.target as Element, !!document.querySelector(OVERLAYS))) {
+    if (grid && e.key === "Escape" && zoomed && escapeLeavesFullscreen(e.target as Element, !!document.querySelector(OVERLAYS))) {
       handled();
       zoomTo(null);
+      return;
+    }
+    if (!grid) {
+      if (e.altKey && e.key === "Tab") {
+        handled();
+        cycleWaiting();
+      }
       return;
     }
     if (cmd && e.ctrlKey && /^[1-4]$/.test(e.key)) {
@@ -1488,6 +1561,69 @@ function App() {
     window.addEventListener("keydown", h, true);
     return () => window.removeEventListener("keydown", h, true);
   }, []);
+
+  /** A session's terminal in its landscape workspace: the pane's body, sized by the workspace (TerminalPane `landscape`). */
+  const landscapeBody = (s: SessionInfo, size: Size, focus: boolean) => (
+    <TerminalPane
+      key={termKey(s.id)}
+      session={s}
+      focused={focused === s.id}
+      zoomed={false}
+      density="min"
+      paneIndex={99}
+      // a teammate's session is only scaled: in focus it may grow past the landscape's font to fill the window
+      landscape={{ w: size.w, h: size.h, font: focus && isRemote(s) ? FOCUS_MAX_FONT : LANDSCAPE_FONT }}
+      onFocus={() => setFocused(s.id)}
+      onClose={() => requestClose(s)}
+      onResume={() => resumeDead(s)}
+      onCleanup={() => requestClose(s)}
+      meter={meters?.sessions[s.id]}
+      backup={backupFor(s)}
+      onTakeOver={setTakeOverFor}
+      tookOverAt={tookOverAt(s)}
+      leftCopy={(() => {
+        const l = leftFor(s);
+        return l && <LeftCopyPanel left={l} onTakeBack={() => takeBack(l)} onClose={() => requestClose(s)} />;
+      })()}
+      teamNotice={<ReceivedNotice received={receivedFor(s)} onReview={setReviewing} />}
+      onRestart={async () => {
+        const r = await window.mb.sessionRestart(s.id);
+        if (isErr(r)) alert(`Couldn't restart ${titleOf(s)}: ${r.error}`);
+        else freshTerms([s.id]);
+        refresh();
+      }}
+    />
+  );
+  const landscapeMain = () => (
+    <>
+      <LandscapeBanners
+        problems={landscapeState?.problems ?? []}
+        error={landscapeStore.error}
+        onReload={landscapeStore.reload}
+        migration={migration}
+      />
+      {landscapeLayout ? (
+        <Landscape
+          layout={landscapeLayout}
+          selected={focused}
+          onSelect={setFocused}
+          onTab={(t, id) => {
+            setFocused(id);
+            if (t.stack) void landscapeStore.update({ stacks: { [t.stack]: { active: id, placement: t.rect } } }, "the stack's front tab");
+          }}
+          reveal={reveal}
+          areaTitle={(key) => groupTitle(key, workSessions.filter((s) => topOf(s) === key))}
+          stackName={(stack) => splitGroupKey(stack).sub ?? stack}
+          meters={meters?.sessions}
+          body={landscapeBody}
+        />
+      ) : (
+        <div className="empty ls-loading">
+          {!landscapeState ? (landscapeStore.error ? "The layout couldn't be read" : "Loading the layout…") : `Reading your grid's layout in${migration.step.kind === "wait" ? `, ${migration.step.why}` : ""}…`}
+        </div>
+      )}
+    </>
+  );
 
   const editInput = (
     <input
@@ -1759,6 +1895,12 @@ function App() {
   const sessionRow = (s: SessionInfo) => {
     const idx = shown.indexOf(s.id);
     const acts = sessionActions(s);
+    // on the landscape every session is on screen: its row brings it into view
+    const open = () => {
+      if (!landscapeOn) return idx >= 0 ? minimizePane(s) : showSession(s);
+      setFocused(s.id);
+      revealWorkspace(s.id);
+    };
     return (
       <div
         key={s.id}
@@ -1766,11 +1908,11 @@ function App() {
         data-flip={`s:${s.id}`}
         className={`sess-item ${idx >= 0 ? "shown" : ""} ${focused === s.id ? "focused" : ""} ${pinnedSet.has(s.id) ? "pinned" : ""} ${s.muted ? "muted" : ""} ${isRemote(s) ? "remote" : ""}`}
         tabIndex={0}
-        onClick={() => (idx >= 0 ? minimizePane(s) : showSession(s))}
+        onClick={open}
         onKeyDown={(e) => {
           if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
-            idx >= 0 ? minimizePane(s) : showSession(s);
+            open();
           }
         }}
         title={`${s.cwd} — double-click name to rename · drag onto a group to move, or onto a pane to open it as a tab there · right-click for more`}
@@ -1957,6 +2099,7 @@ function App() {
         <span className="spacer" />
         {tab === "sessions" && (
           <>
+            {!landscapeOn && (
             <span className="lay-wrap">
               <button
                 className="outline"
@@ -1997,6 +2140,7 @@ function App() {
                 </Popover>
               )}
             </span>
+            )}
             <button className="outline" onClick={() => setModal("import")}>Import</button>
           </>
         )}
@@ -2029,6 +2173,7 @@ function App() {
             onUpdate={() => setModal("update")}
             jump={settingsJump}
             onHiddenTabs={setHiddenTabs}
+            onLabs={setLabs}
             presets={presets}
             onPresets={setPresets}
             onMsgDefaultSend={setMsgDefaultSend}
@@ -2387,6 +2532,10 @@ function App() {
         />
 
         <div className="main">
+          {landscapeOn ? (
+            landscapeMain()
+          ) : (
+          <>
           {activeGroup && (() => {
             const topSessions = workSessions.filter((s) => topOf(s) === activeGroup);
             return (
@@ -2652,6 +2801,8 @@ function App() {
               })}
               <GridPreview on={previewOn} tree={preview.tree} hot={preview.hot} title={paneName} />
             </div>
+          )}
+          </>
           )}
           {panelOpen && (
             <BottomPanel
