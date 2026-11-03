@@ -118,9 +118,10 @@ export async function pageDom({ size = "1400x900", query = "", outDir } = {}) {
 /**
  * Render the preview in headless Chrome in real time (no virtual time: animations and View Transitions only
  * run in real frames) and return what the page's expression `read` gives, once it gives anything but null —
- * for checks a page script reports on, like the motion audit (src/preview/stub.ts).
+ * for checks a page script reports on, like the motion audit (src/preview/stub.ts). `scale` sets the device pixel
+ * ratio (2 for a Retina screen's raster costs).
  */
-export async function pageResult({ size = "1400x900", query = "", outDir, read }) {
+export async function pageResult({ size = "1400x900", query = "", outDir, read, scale = null }) {
   let devtools = null;
   let result = null;
   let ws = null;
@@ -138,7 +139,7 @@ export async function pageResult({ size = "1400x900", query = "", outDir, read }
       ws.send(JSON.stringify({ id: n, method, params }));
     });
   try {
-    await inChrome({ size, query, outDir, budget: null, args: ["--remote-debugging-port=0"], what: "the page's result", onStderr: (text) => (devtools ??= text.match(/DevTools listening on (ws:\/\/\S+)/)?.[1] ?? null) }, async () => {
+    await inChrome({ size, query, outDir, budget: null, args: ["--remote-debugging-port=0", ...(scale ? [`--force-device-scale-factor=${scale}`] : [])], what: "the page's result", onStderr: (text) => (devtools ??= text.match(/DevTools listening on (ws:\/\/\S+)/)?.[1] ?? null) }, async () => {
       if (!devtools) return false;
       if (!ws) {
         const pages = await (await fetch(`http://127.0.0.1:${new URL(devtools).port}/json`)).json();

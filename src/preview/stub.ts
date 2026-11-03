@@ -855,6 +855,56 @@ buffers[SAM_PANE] = `${C.dim}codex${C.reset}\r\n› Cover the last-org endpoint'
 buffers[remotePaneId(NICK, "n7")] = `${C.bold}> Carry on with the donor entity: add the gift aid flag${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Update(src/donors/entity.ts)\r\n`;
 buffers[NICK_PANE] = `${C.bold}> Write the donor CSV export (UTF-8 BOM, one row per gift)${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Write(src/donors/exportCsv.ts)\r\n  ⎿  Wrote 64 lines\r\n\r\n${C.amber}✻${C.reset} Running the export tests… ${C.dim}(18s · esc to interrupt)${C.reset}\r\n`;
 
+// ?landscapeMany=<n> (with ?labs=landscape): the landscape holds n workspaces of yours and nothing else, in areas of
+// six: agents with a screenful of transcript each and terminals with test output, a third of them working, whose
+// spinner lines redraw a few times a second as Claude Code's do. For what many terminals cost (?landscapePerf) and
+// which of them get an xterm where.
+const manyQ = Math.max(0, Math.min(60, Math.floor(Number(new URLSearchParams(location.search).get("landscapeMany")) || 0)));
+const MANY_PER_AREA = 6;
+if (manyQ) {
+  const tasks = ["Org dropdowns remember the last org", "Donor CSV export", "Receipt PDFs cut off long names", "Login redirect loops on Safari", "Tag filter freezes the quick view", "Gift aid flag on donors", "Archived donors skip the export", "Portal users get key pairs", "Pathways list paginates", "Audit log for role changes"];
+  const files = ["src/org/Dropdown.tsx", "src/donors/exportCsv.ts", "src/receipts/pdf.ts", "src/auth/redirect.ts", "src/pathways/QuickView.tsx", "src/donors/entity.ts", "src/api/orgs.py", "src/portal/keys.ts"];
+  const agentScreen = (i: number) => {
+    const out = [`${C.bold}> ${tasks[i % tasks.length]}: start from the failing case${C.reset}`, ""];
+    for (let k = 0; k < 7; k++) {
+      const f = files[(i + k) % files.length];
+      out.push(`${C.teal}⏺${C.reset} Read(${f})`, `  ⎿  Read ${40 + ((i * 7 + k * 13) % 160)} lines`, "");
+      out.push(`${C.teal}⏺${C.reset} Update(${f})`, `  ⎿  Updated ${f} with ${2 + ((i + k) % 9)} additions and ${(i * k) % 4} removals`);
+      out.push(`      ${30 + k}  ${C.red}-  const value = load(${k});${C.reset}`, `      ${30 + k}  ${C.green}+  const value = load(${k}) ?? fallback(${k});${C.reset}`, "");
+    }
+    out.push(`${C.teal}⏺${C.reset} ${tasks[(i + 3) % tasks.length]} next: the tests cover it now.`, "");
+    return out.join("\r\n");
+  };
+  const shellScreen = (i: number) =>
+    [`you@mac backoffice % npm test -- ${files[i % files.length]}`, "", ...files.map((f, k) => ` ${k === i % 5 ? `${C.red}✗` : `${C.green}✓`}${C.reset} ${f.replace(/\.tsx?$|\.py$/, ".test.ts")} (${3 + k})`), "", ` Test Files  ${files.length} run`, `      Tests  ${40 + i} passed`, ""].join("\r\n");
+  sessions = Array.from({ length: manyQ }, (_, i) => {
+    const id = `w${String(i + 1).padStart(2, "0")}`;
+    const shell = i % 5 === 4;
+    const agent = shell ? undefined : i % 4 === 1 ? ("codex" as const) : ("claude" as const);
+    const status = i % 7 === 3 && !shell ? ("waiting" as const) : i % 3 === 0 ? ("working" as const) : ("idle" as const);
+    buffers[id] = shell ? shellScreen(i) : agentScreen(i);
+    return session(id, {
+      title: shell ? `tests ${i + 1}` : tasks[i % tasks.length], taskGroup: `60${Math.floor(i / MANY_PER_AREA) + 1}`, shell, agent, status, branch: `60${Math.floor(i / MANY_PER_AREA) + 1}-task${i + 1}`, cwd: WT(`task${i + 1}`), createdAt: now - (i + 1) * min,
+      ...(status === "waiting" ? { waitingReason: "Claude needs your permission to use Bash", waitingSince: now - 2 * min } : {}),
+    });
+  });
+  live.remote = [];
+  live.own = {};
+  live.views = [];
+  // the working agents' status lines, redrawn in place as Claude Code's spinner is
+  const spin = ["·", "✢", "✳", "✶", "✻", "✽"];
+  let tick = 0;
+  setInterval(() => {
+    tick++;
+    for (const s of sessions) {
+      if (s.status !== "working" || s.shell) continue;
+      const text = `\r\x1b[2K${C.amber}${spin[tick % spin.length]}${C.reset} Working… ${C.dim}(${Math.floor((tick * 120) / 1000)}s · esc to interrupt)${C.reset}`;
+      buffers[s.id] += text;
+      emit("onSessionData", s.id, text);
+    }
+  }, 120);
+}
+
 // ---- the landscape: three areas, 5101 holding the 5101/api stack and Nick's session, a ghost in 5102, the assistant loose ----
 
 const landscapeFixture = (): Landscape => {
@@ -881,6 +931,23 @@ const landscapeFixture = (): Landscape => {
     for (const [id, g] of Object.entries(ghosts)) l.ghosts[id] = { ...g, group: key, placement: put(M) };
     return (l.areas[key] = fitAreaTo(frame, inside));
   };
+  if (manyQ) {
+    // three areas to a row
+    let x = 0;
+    let y = 0;
+    let rowH = 0;
+    for (let a = 0; a * MANY_PER_AREA < sessions.length; a++) {
+      if (a && a % 3 === 0) {
+        x = 0;
+        y += rowH + AREA_GAP;
+        rowH = 0;
+      }
+      const made = area(`60${a + 1}`, x, y, sessions.slice(a * MANY_PER_AREA, (a + 1) * MANY_PER_AREA).map((s) => s.id));
+      x += made.w + AREA_GAP;
+      rowH = Math.max(rowH, made.h);
+    }
+    return l;
+  }
   const a5101 = area("5101", 0, 0, ["s1", "s2", "s3", SAM_PANE, NICK_PANE, "s4", "s8"]);
   const a5102 = area("5102", a5101.w + AREA_GAP, 0, ["s5", "s6"], {
     g1: {
@@ -3133,6 +3200,117 @@ if (params.has("landscapeAudit") || params.has("landscapeMouseAudit")) {
     const tag = document.createElement("script");
     tag.type = "application/json";
     tag.id = "mb-landscape-mouse-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  });
+}
+// ?landscapePerf (with ?landscapeMany=<n>): frame times while the landscape is panned and pinch-zoomed at 100%, 60%
+// and 30% (=<zoom>,… picks others), then zoomed from 100% to 25% and back in one sweep, into
+// <script id="mb-landscape-perf">. Each step is one wheel event a frame, as a trackpad sends them. For every frame it
+// keeps the interval since the last (rAF to rAF: what a person sees drop) and its main-thread time (from rAF to the
+// first task after the frame, so past style, layout and paint), and with each zoom what was attached meanwhile and
+// how busy the main thread is at rest there. Frames of 50 ms and more (long animation frames) are counted too, from
+// the page's load on.
+if (params.has("landscapePerf")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const zooms = (params.get("landscapePerf") || "1,0.6,0.3").split(",").map(Number).filter((z) => z > 0);
+  const vp = () => document.querySelector<HTMLElement>(".ls-viewport")!;
+  const zoomNow = () => Number(/scale\(([-\d.e]+)\)/.exec(document.querySelector<HTMLElement>(".ls-world")?.style.transform ?? "")?.[1] ?? NaN);
+  const frame = () => new Promise<number>((r) => requestAnimationFrame(r));
+  const after = () => new Promise<number>((r) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => r(performance.now());
+    ch.port2.postMessage(null);
+  });
+  const wheelAt = (init: WheelEventInit) => {
+    const r = vp().getBoundingClientRect();
+    vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, ...init }));
+  };
+  // a pinch (Electron's ctrl-wheel, 0.01 a pixel) about the viewport's centre, at most ×2 an event as the camera takes it
+  const pinchBy = (factor: number) => wheelAt({ deltaY: Math.max(-69, Math.min(69, -Math.log(factor) / 0.01)), ctrlKey: true });
+  const zoomTo = async (z: number) => {
+    for (let i = 0; i < 40 && Math.abs(zoomNow() - z) > 1e-4; i++) {
+      pinchBy(z / zoomNow());
+      await frame();
+    }
+  };
+  const round = (n: number) => Math.round(n * 10) / 10;
+  const stats = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b);
+    const q = (p: number) => round(s[Math.min(s.length - 1, Math.floor(p * s.length))] ?? NaN);
+    return { frames: s.length, mean: round(s.reduce((a, b) => a + b, 0) / (s.length || 1)), p50: q(0.5), p95: q(0.95), max: round(s[s.length - 1] ?? NaN), over25: s.filter((x) => x > 25).length };
+  };
+  const longFrames: { start: number; duration: number }[] = [];
+  if (PerformanceObserver.supportedEntryTypes?.includes("long-animation-frame"))
+    new PerformanceObserver((list) => longFrames.push(...list.getEntries().map((e) => ({ start: e.startTime, duration: e.duration })))).observe({ type: "long-animation-frame", buffered: true });
+  /** `steps` frames, `step(i)` dispatched at the start of each. */
+  const run = async (steps: number, step: (i: number) => void) => {
+    const intervals: number[] = [];
+    const busy: number[] = [];
+    const from = performance.now();
+    let last = await frame();
+    for (let i = 0; i < steps; i++) {
+      const t = await frame();
+      intervals.push(t - last);
+      last = t;
+      step(i);
+      busy.push((await after()) - t);
+    }
+    const long = longFrames.filter((f) => f.start >= from);
+    return { interval: stats(intervals), main: stats(busy), longFrames: long.length, longMs: round(long.reduce((a, f) => a + f.duration, 0)) };
+  };
+  /**
+   * The main thread at rest for `ms` (the working agents' spinners still redrawing): a chain of zero-delay tasks,
+   * each gap past a millisecond counted as other work (output parsed and drawn, timers, frames), per second.
+   */
+  const rest = async (ms: number) => {
+    const from = performance.now();
+    let busy = 0;
+    let last = from;
+    while (last - from < ms) {
+      const t = await after();
+      if (t - last > 1) busy += t - last;
+      last = t;
+    }
+    const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize;
+    return { busyMsPerS: round((busy * 1000) / (last - from)), domNodes: document.getElementsByTagName("*").length, heapMB: heap ? round(heap / 1048576) : null };
+  };
+  const attached = () => ({
+    xterms: document.querySelectorAll(".ls-world .xterm").length,
+    panes: document.querySelectorAll(".ls-world .pane").length,
+    webgl: [...document.querySelectorAll(".ls-world .xterm-screen")].filter((s) => s.querySelector("canvas")).length,
+    nodes: document.querySelectorAll(".ls-world .ls-node").length,
+  });
+  waitFor(".ls-world .ls-node", async () => {
+    const out: Record<string, unknown> = { size: `${vp().clientWidth}×${vp().clientHeight}`, dpr: devicePixelRatio, workspaces: document.querySelectorAll(".ls-world .ls-node").length };
+    try {
+      await sleep(2500);
+      out.startup = { longFrames: longFrames.length, longMs: round(longFrames.reduce((a, f) => a + f.duration, 0)) };
+      out.zooms = [];
+      for (const z of zooms) {
+        await zoomTo(z);
+        await sleep(1500);
+        const before = attached();
+        const idle = await rest(3000);
+        const pan = await run(180, (i) => wheelAt({ deltaX: i < 90 ? 14 : -14, deltaY: i < 90 ? 5 : -5 }));
+        await sleep(800);
+        // ±8% about z: 30 frames in, 60 out, 30 back in
+        const pinch = await run(120, (i) => pinchBy(i < 30 || i >= 90 ? Math.exp(0.0025) : Math.exp(-0.0025)));
+        await sleep(800);
+        (out.zooms as unknown[]).push({ zoom: z, reached: round(zoomNow() * 1000) / 1000, attached: before, idle, pan, pinch });
+      }
+      await zoomTo(1);
+      await sleep(1500);
+      // 100% to 25% and back, crossing every band: 60 frames each way
+      const k = Math.exp(Math.log(0.25) / 60);
+      out.sweep = await run(120, (i) => pinchBy(i < 60 ? k : 1 / k));
+      out.sweepEnd = round(zoomNow() * 1000) / 1000;
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-landscape-perf";
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
   });
