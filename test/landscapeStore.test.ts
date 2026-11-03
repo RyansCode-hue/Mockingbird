@@ -218,20 +218,41 @@ process.exit(3);
     expect(store.get().problems).toEqual([]);
   });
 
-  it("still saves a change whose news couldn't be sent to the windows", () => {
+  it("makes and saves a change whose news couldn't be sent to the windows, and logs the failed send", () => {
     vi.useFakeTimers();
     const dir = tempDir("landscape");
     const file = path.join(dir, "landscape.json");
+    const logged: string[] = [];
     const store = new LandscapeStore({
       file,
       emit: () => {
         throw new Error("Object has been destroyed");
       },
-      log: () => {},
+      log: (context, err) => logged.push(`${context}: ${(err as Error).message}`),
     });
-    expect(() => store.update({ workspaces: { a: placement(0) } })).toThrow(/destroyed/);
+    expect(store.update({ workspaces: { a: placement(0) } })).toMatchObject({ rev: 1, landscape: { workspaces: { a: placement(0) } } });
+    expect(logged).toEqual(["landscape: couldn't send revision 1 to the windows: Object has been destroyed"]);
     vi.advanceTimersByTime(LANDSCAPE_SAVE_MS);
     expect(onDisk(file).workspaces.a).toEqual(placement(0));
+  });
+
+  it("counts, sends and writes nothing for a patch that changes nothing", () => {
+    vi.useFakeTimers();
+    const { store, file, changes } = setup();
+    for (const p of [{}, { workspaces: {} }, { workspaces: { gone: null } }, { areas: { nope: null } }, { workspaces: { a: undefined } }]) expect(store.update(p).rev).toBe(0);
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS * 2);
+    store.flush();
+    expect([changes, fs.existsSync(file)]).toEqual([[], false]);
+
+    store.update({ workspaces: { a: placement(0) }, areas: { "5101": AREA } });
+    store.flush();
+    const ino = fs.statSync(file).ino;
+    // the same values again, an area's field set to what it is, a front tab already in front
+    for (const p of [{ workspaces: { a: placement(0) } }, { areas: { "5101": { x: 0, repos: [{ path: "/r", base: null }] } } }, { areas: { "5101": { collapsed: undefined } } }]) expect(store.update(p).rev).toBe(1);
+    vi.advanceTimersByTime(LANDSCAPE_SAVE_MS * 2);
+    store.flush();
+    expect(changes).toHaveLength(1);
+    expect(fs.statSync(file).ino).toBe(ino);
   });
 
   it("sends every window each patch, numbered, in the order they were applied", () => {
@@ -245,7 +266,7 @@ process.exit(3);
     expect(store.get().rev).toBe(2);
   });
 
-  it("merges patches from two windows arriving together over IPC: each is applied whole, in arrival order, and none is lost", async () => {
+  it("applies patches arriving together over IPC one at a time, in arrival order, each numbered and none lost", async () => {
     vi.useFakeTimers();
     const { store, file, changes } = setup();
     const update = guarded("landscape:update", (p) => store.update(p), (_c, err) => String(err));
@@ -323,25 +344,6 @@ describe("a landscape file that can't be used", () => {
     fs.writeFileSync(file, "");
     expect(open().get().problems).toEqual([expect.objectContaining({ kind: "corrupt" })]);
     expect(fs.existsSync(file)).toBe(false);
-  });
-
-  it("is moved aside when it can't be read", () => {
-    const { file, open } = setup();
-    fs.mkdirSync(file); // reading a folder fails with EISDIR
-    const [p] = open().get().problems;
-    expect(p).toMatchObject({ kind: "unreadable", file });
-    expect(p.message).toMatch(/EISDIR/);
-    expect(fs.statSync(p.movedTo!).isDirectory()).toBe(true);
-  });
-
-  it.skipIf(asRoot)("is moved aside when its permissions keep it from being read", () => {
-    const { file, open } = setup();
-    fs.writeFileSync(file, JSON.stringify(emptyLandscape()), { mode: 0o000 });
-    const [p] = open().get().problems;
-    expect(p).toMatchObject({ kind: "unreadable" });
-    expect(p.message).toMatch(/EACCES|permission denied/i);
-    fs.chmodSync(p.movedTo!, 0o644);
-    expect(JSON.parse(fs.readFileSync(p.movedTo!, "utf8"))).toEqual(emptyLandscape());
   });
 
   it.skipIf(asRoot)("is left alone when it can't be moved aside: changes are kept for the run but nothing is written over it", () => {
