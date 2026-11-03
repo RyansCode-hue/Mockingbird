@@ -1,7 +1,7 @@
 # Landscape, phase 1: build plan
 
-Status: plan, not started. The spec is [landscape.md](landscape.md); this file
-is how its phase 1 gets built.
+Status: S1 (model, store, migration) built; S2 next. The spec is
+[landscape.md](landscape.md); this file is how its phase 1 gets built.
 
 Phase 1 replaces the grid with the landscape: workspaces, areas, stacks, the
 Needs you tray and migration. It has **no wires**; those are phases 2–3.
@@ -27,33 +27,40 @@ breaks for a teammate who hasn't updated.
 
 ```ts
 interface Landscape {
-  v: 1;
+  v: 1;                         // raised whenever a field is added (see below)
   migratedAt?: string;          // set once the grid layout has been read in
   tourDone?: boolean;
-  workspaces: Record<string, Placement>;   // by session id
+  workspaces: Record<string, Placement>;   // by session id; a stack's members have none
   areas: Record<string, Area>;             // by group key
-  stacks: Record<string, { active: string }>; // by "top/sub" group key
+  stacks: Record<string, Stack>;           // by "top/sub" group key
   ghosts: Record<string, Ghost>;           // closed workspaces, by old session id
 }
-interface Placement { x: number; y: number; w: number; h: number } // landscape px at 100%
+interface Placement { x: number; y: number; w: number; h: number } // landscape px at 100%, absolute
 interface Area {
   x: number; y: number; w: number; h: number;
-  repos: { path: string; base: string }[];
+  repos: { path: string; base: string | null }[];  // null: the repo's own default
   collapsed?: boolean; locked?: boolean;
   autoCreate?: boolean;         // phase 2: agent proposals without asking
 }
-interface Ghost { title: string; agent: string; branch?: string; cwd: string;
-  conversation?: string; summary?: string; placement: Placement; group: string; closedAt: string }
+interface Stack { active: string; placement: Placement } // its members share the one placement
+interface Ghost { title: string; agent: "claude" | "codex" | "terminal"; cwd: string;
+  repoPath: string | null; branch?: string; ticketId?: string;
+  conversation?: { agent: "claude" | "codex"; id: string }; summary?: string;
+  worktreeRemoved?: boolean; placement: Placement; group: string; closedAt: string }
 ```
 
+- **The file is checked whole.** A field this version doesn't know makes it
+  unreadable, so it's moved aside rather than losing the field on the next
+  save. A version that adds a field raises `v`; an older Mockingbird then
+  leaves the newer file as it is and keeps that run's changes in memory.
 - An area **is** a group: its key is the `taskGroup`, and renaming an area is
   `renameGroup`. Membership is never stored twice; a workspace is in an area
   because its session's group says so.
 - **Placement is a hint.** A session with no placement (new, imported, a
   teammate's) is placed by `placeNew` in its area's first free spot.
 - **Geometry helpers** go in the same file, as pure functions:
-  `snap`, `edgeGuides`, `placeNew`, `fitView`, `colsRows(w, h, font)` and
-  `tidy`.
+  `snap`, `edgeGuides`, `placeNew`, `fitView`, `colsRows(w, h, cellW, cellH)`
+  with its inverse `sizeFor`, and `tidy`.
 
 ## Main process (`src/main/landscape.ts`)
 
