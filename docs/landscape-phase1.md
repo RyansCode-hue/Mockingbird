@@ -148,16 +148,46 @@ default until S7.
     anywhere, and plain Esc does when the terminal doesn't have the keyboard
     (after a click on the header), as the grid's fullscreen does. ⌘E and ⌘Esc
     are the only landscape keys that work from inside a terminal: no terminal
-    program gets ⌘ keys.
-  - **The wheel.** Over the selected workspace's terminal it scrolls that
-    terminal's history; anywhere else it pans.
+    program gets ⌘ keys. ⌘E works from anywhere in the window, as the grid's
+    does: from inside a workspace (its terminal, say) it focuses that one,
+    from anywhere else (the side bar just picked a session) the selected one.
+  - **The mouse.** A terminal on the landscape takes the mouse (selection,
+    clicks and the wheel reported to its program, its own scrolling) only at
+    100% or in focus. Scaled, xterm puts a press on the wrong cell: it
+    measures the scaled screen against its unscaled cell. Away from 100% a
+    press on a terminal selects its workspace and gives its terminal the
+    keyboard, a double-click focuses it, and nothing reaches xterm or the
+    pane; a hint over the terminal says to zoom to 100% or focus.
+  - **The wheel.** Over the selected workspace's terminal at 100% it scrolls
+    that terminal's history; anywhere else, and at any other zoom, it pans.
   - **The measured cell** at 12.5 px with the terminals' 1.4 line height is
-    about 7.53 × 21 px, not `CELL_ESTIMATE`'s 7.5 × 18, so an M agent placed
-    by the estimate holds 140 × 36, not 140 × 42.
+    7.525–7.529 × 21 px on 1× and 2× screens. `CELL_ESTIMATE` is 7.53 × 21,
+    so every preset holds exactly its cols × rows at the real cell (an M
+    agent is 1072 × 928 px for 140 × 42); `test/landscape.test.ts` pins it
+    against the measured cells.
+  - **A stack's member leaving the front** goes back to the stack's size: in
+    focus, the member that filled the window is resized back as another tab
+    comes to the front, and the one in front as focus ends.
   - **Places.** A session with no placement gets one from `placeNew` (its
     group gets an area beside the others when it has none) and it's saved,
     except while the grid's layout hasn't been read in or the file has a read
-    problem.
+    problem. A corrupt file that was moved aside isn't one: the layout really
+    starts over, so the grid's is read in and places are saved.
+  - **A file that can't be read** is asked for again every 20 s while its
+    problem stands, and on the banner's Read it again; once it reads, the
+    store drops the stand-in's changes and says so (S1's rule).
+  - **Teammates' sessions that don't load** hold up reading the grid's layout
+    in, with a banner: Try again, or Continue without teammates' sessions.
+    Without them, their workspaces are placed by `placeNew` as they come,
+    and the grid's places for them aren't counted as stale. Once
+    `team:live` answers, every teammate's session is in it: main indexes them
+    from the saved rooms as it starts.
+  - **A reveal** (the side bar, ⌘K, a notification) of a session whose
+    workspace isn't in the layout yet, one just made, is kept and tried again
+    as the layout changes, for 5 s.
+  - **The grid's prefs** (`mb.shown`, `mb.trees` and the rest) aren't written
+    while the landscape shows, and its show, hide and pin actions are hidden:
+    turning the landscape off brings the grid back as it left it.
 
 ### S3 · Semantic zoom and peek
 - **Zoom bands:**
@@ -178,6 +208,13 @@ default until S7.
   - peek attaching the terminal and handing it back.
 - **Performance check:** 30 workspaces at 100%, 60%, and 30% → frame time
   measured with `?measure`.
+- **Left from S2:**
+  - every workspace mounts a whole `TerminalPane`, each with its own timers
+    (git and PR reads are off at density "min", but each pane keeps its
+    ticker). Cards and off-screen detaching should mount far fewer;
+  - the mouse at zoom other than 100%: correcting xterm's coordinates for the
+    scale (instead of turning the mouse off there) is a possible later
+    improvement, once the live and read-only bands settle where it matters.
 
 ### S4 · Areas
 - `AreaFrame.tsx`:
@@ -198,7 +235,10 @@ default until S7.
 - **Rooms:**
   - a room's group is an area like any other, its layout local in phase 1;
   - a teammate's sessions appear in it through `placeNew`;
-  - Follow keeps following the teammate's focused workspace.
+  - Follow keeps following the teammate's focused workspace;
+  - `teamLiveView` still reports the grid's `shown` while the landscape
+    shows (left from S2): it should report the workspaces on screen, which
+    decides which teammates' sessions stream here.
 - **Tests:**
   - marquee → area → `setGroup` calls;
   - dragging across an edge;
@@ -224,6 +264,8 @@ default until S7.
   along wires. Undo puts the old placements back.
 - **Ghost cards:** they show the title, summary, branch and Reopen. An area
   menu has **Clear ghosts**.
+  - Left from S2: a closed session's placement stays in `workspaces` (it may
+    be resumed); closing should turn it into a ghost, or they pile up.
 - **Tests:**
   - snapping and guides;
   - stack create, switch and unstack;
