@@ -16,7 +16,7 @@ import { isViewControl } from "../shared/termInput";
 import { shortReason } from "../shared/phoneAlerts";
 import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
-import { anchorToContent, attachTerm, dataPump, fitTerm, followFixedSize, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
+import { anchorToContent, attachTerm, dataPump, fitTerm, followFixedSize, followPlacement, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
 import { TypingAsks, TypingChip, TypingRefused, Typists, typingOn } from "./team/Typing";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
@@ -30,6 +30,7 @@ import { baseName } from "../shared/paths";
 import { settled } from "./settled";
 import { StatusDot } from "./StatusDot";
 import { useHandover } from "./motion";
+import { colsRows } from "../shared/landscape";
 
 export { applyTermTheme } from "./cachedTerm";
 
@@ -60,7 +61,8 @@ interface TermEntry extends CachedTerm, MouseModeState, SizedTerm {
   wrapAgent: AgentKind | null;
   printWidth: (line: number) => number;
   columnSelect: boolean; // the last press started a column (rectangular) selection
-  refit?: () => void; // a teammate's session: fit its owner's size again (the size or the pane's density changed)
+  /** Fit again: a teammate's session to its owner's size (it or the largest font changed), a landscape workspace to its size. */
+  refit?: () => void;
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
@@ -346,6 +348,7 @@ export function TerminalPane({
   messages,
   onShowMessages,
   menuExtras,
+  landscape,
 }: {
   session: SessionInfo;
   focused: boolean;
@@ -408,6 +411,13 @@ export function TerminalPane({
   onShowMessages?: () => void;
   /** The session's own actions (rename, notifications, move, close…), after the pane's in its header's right-click menu. */
   menuExtras?: MenuEntry[];
+  /**
+   * The terminal of a landscape workspace (WorkspaceNode), which draws the header: no header or rail here. The
+   * workspace is `w` × `h` at 100%, and its terminal as many cells of the measured cell at `font` as that holds
+   * (colsRows); the pty is told only when that changes, never by fitting the holder. A teammate's session keeps
+   * its owner's size instead, scaled to fit at up to `font`.
+   */
+  landscape?: { w: number; h: number; font: number };
 }) {
   const holder = useRef<HTMLDivElement>(null);
   const chips = useMemo(() => overlapChips(overlaps), [overlaps]);
@@ -423,6 +433,8 @@ export function TerminalPane({
   ownerSize.current = { cols: room?.cols ?? 120, rows: room?.rows ?? 32 };
   const densityNow = useRef(density);
   densityNow.current = density;
+  const landscapeNow = useRef(landscape);
+  landscapeNow.current = landscape;
   const [editTitle, setEditTitle] = useState<string | null>(null);
   const [copyNote, copy] = useCopyNote();
   const [fullScreenNote, flashFullScreen] = useFlash(2500);
@@ -633,11 +645,29 @@ export function TerminalPane({
     setScrolledUp(!followsBottom(term));
     const stopFollowNote = onFollowChange(term, (atBottom) => setScrolledUp(!atBottom));
     let stopFollowing: () => void;
+    const sized = entry;
     if (remoteEntry) {
-      const fixed = followFixedSize(entry, holder.current, () => ownerSize.current, () => fontSizeFor(densityNow.current));
+      const fixed = followFixedSize(entry, holder.current, () => ownerSize.current, () => landscapeNow.current?.font ?? fontSizeFor(densityNow.current));
       entry.refit = fixed.refit;
       stopFollowing = fixed.stop;
+    } else if (landscapeNow.current) {
+      // the terminal is cached across the grid and the landscape, each with its own font
+      if (term.options.fontSize !== landscapeNow.current.font) term.options.fontSize = landscapeNow.current.font;
+      const placed = followPlacement(
+        entry,
+        (cell) => {
+          const l = landscapeNow.current ?? { w: 0, h: 0 };
+          return colsRows(l.w, l.h, cell.w, cell.h);
+        },
+        (cols, rows) => window.mb.sessionResize(session.id, cols, rows)
+      );
+      entry.refit = placed.refit;
+      stopFollowing = () => {
+        placed.stop();
+        if (sized.refit === placed.refit) sized.refit = undefined;
+      };
     } else {
+      if (term.options.fontSize !== fontSizeFor(densityNow.current)) term.options.fontSize = fontSizeFor(densityNow.current);
       stopFollowing = followSize(entry, holder.current, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
     }
 
@@ -798,15 +828,19 @@ export function TerminalPane({
     };
   }, [session.id, dead, session.createdAt]);
 
-  // a teammate's session follows its owner's terminal size; its font fits it to the pane
-  useEffect(() => {
-    if (remote) terms.get(session.id)?.refit?.();
-  }, [remote?.cols, remote?.rows, density, session.id]);
-
-  // terminal body steps up in the instrumented tier (design 1b)
+  // a teammate's session follows its owner's terminal size, its font fitting it to the pane; a landscape
+  // workspace's terminal follows the workspace's size
   useEffect(() => {
     const entry = terms.get(session.id);
-    if (!entry || remote || entry.term.options.fontSize === fontSizeFor(density)) return;
+    if (!entry || (!remote && !landscape)) return;
+    if (landscape && !remote && entry.term.options.fontSize !== landscape.font) entry.term.options.fontSize = landscape.font;
+    entry.refit?.();
+  }, [remote?.cols, remote?.rows, density, session.id, landscape?.w, landscape?.h, landscape?.font]);
+
+  // terminal body steps up in the instrumented tier (design 1b); a landscape workspace's font stays as it is
+  useEffect(() => {
+    const entry = terms.get(session.id);
+    if (!entry || remote || landscapeNow.current || entry.term.options.fontSize === fontSizeFor(density)) return;
     entry.term.options.fontSize = fontSizeFor(density);
     fitTerm(entry, (cols, rows) => window.mb.sessionResize(session.id, cols, rows));
     syncViewport(entry.term);
@@ -868,6 +902,7 @@ export function TerminalPane({
         "pane",
         `density-${density}`,
         embedded ? "embedded" : "",
+        landscape ? "ls-body" : "",
         focused ? "focused" : "",
         waiting ? "st-waiting" : "",
         dead ? "st-dead" : "",
@@ -878,6 +913,7 @@ export function TerminalPane({
       data-cell={cell}
       onMouseDown={onFocus}
     >
+      {!landscape && (
       <div
         className="pane-header"
         draggable={editTitle === null}
@@ -1008,8 +1044,9 @@ export function TerminalPane({
         <ActionBar className="controls" actions={controls} />
         {headerMenu.menu}
       </div>
+      )}
 
-      {density === "max" && !dead && (
+      {density === "max" && !dead && !landscape && (
         <div className="rail">
           <div className="cell">
             <span className="k">Elapsed</span>

@@ -422,6 +422,51 @@ export function followFixedSize(e: { term: Terminal }, holder: HTMLElement | nul
   return { stop: () => ro.disconnect(), refit };
 }
 
+/**
+ * Keep a terminal at the size its landscape workspace gives it, from now on:
+ * `size` turns the terminal's measured cell into its columns and rows, and
+ * the pty is told only when that differs from what it has. The holder's own
+ * size never decides it, so nothing that moves or scales the holder (the
+ * landscape's zoom, a banner, a ResizeObserver firing) makes the agent
+ * redraw; `refit` is for when the workspace's size or the font changes.
+ */
+export function followPlacement(e: SizedTerm, size: (cell: { w: number; h: number }) => { cols: number; rows: number }, resize: (cols: number, rows: number) => void): { stop: () => void; refit: () => void } {
+  let on = true;
+  const refit = () => {
+    if (!on) return;
+    // not measured until it's open in a laid-out holder: the first render and the font arriving fit it again
+    const cell = cellOf(e.term);
+    if (!cell) return;
+    const { cols, rows } = size({ w: cell.width, h: cell.height });
+    if (cols !== e.term.cols || rows !== e.term.rows) e.term.resize(cols, rows);
+    if (e.ptySize?.cols !== cols || e.ptySize?.rows !== rows) {
+      e.ptySize = { cols, rows };
+      resize(cols, rows);
+    }
+    syncViewport(e.term);
+  };
+  refit();
+  // the terminal font may still be loading: its proportions decide the cell
+  void document.fonts?.ready.then(refit);
+  const first = e.term.onRender(() => {
+    first.dispose();
+    refit();
+  });
+  return {
+    stop: () => {
+      on = false;
+      first.dispose();
+    },
+    refit,
+  };
+}
+
+/** A terminal's cell in CSS pixels as xterm measured it for its font; null before it has. */
+export function measuredCell(term: Terminal): { w: number; h: number } | null {
+  const c = cellOf(term);
+  return c ? { w: c.width, h: c.height } : null;
+}
+
 /** Keep a terminal fitted to its holder from now on; returns the stop. */
 export function followSize(e: SizedTerm, holder: HTMLElement | null, resize: (cols: number, rows: number) => void): () => void {
   // a re-fit changes what the viewport measured, and a holder shown again after display:none comes back
