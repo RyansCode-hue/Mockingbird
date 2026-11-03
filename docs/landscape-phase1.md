@@ -248,8 +248,18 @@ default until S7.
 
 ## Decisions taken for phase 1
 
-- **Default workspace size:** M = 100×30 cells for agents, 80×12 for
-  terminals.
+- **Workspace sizes** are big enough to read a session at 100%, about what one
+  pane shows today in a wide window:
+
+  | Preset | Agents | Terminals |
+  | --- | --- | --- |
+  | S | 110 × 32 | 90 × 16 |
+  | **M (default)** | **140 × 42** | **120 × 24** |
+  | L | 180 × 52 | 160 × 36 |
+
+  At 12.5 px mono, M is roughly 1050 × 760 px. One M workspace fills most of a
+  laptop screen at 100%, and two side by side fit at about 70%, which is still
+  live and read-only.
 - **The Collaborate tab** stays until phase 2 moves collabs onto the landscape.
 - **Development flag:** the work goes behind a Labs flag while it's in
   progress, so `main` can take each slice without changing what you use.
