@@ -13,6 +13,8 @@ interface Probe {
   got: LandscapeState;
   updated: LandscapeState | { error: string };
   refused: LandscapeState | { error: string };
+  nan: LandscapeState | { error: string };
+  unset: LandscapeState | { error: string };
   changes: LandscapeChange[];
 }
 
@@ -28,7 +30,10 @@ async function probe(query = ""): Promise<Probe> {
       const got = await window.mb.landscapeGet();
       const updated = await window.mb.landscapeUpdate({ areas: { "5101": { collapsed: true } } });
       const refused = await window.mb.landscapeUpdate({ areas: { "9999": { collapsed: true } } });
-      window.__lsResult = JSON.stringify({ got, updated, refused, changes });
+      // what JSON would turn into a removal (NaN to null) or drop (undefined), main reads as it is
+      const nan = await window.mb.landscapeUpdate({ workspaces: { s1: { x: NaN, y: 0, w: 8, h: 8 } } });
+      const unset = await window.mb.landscapeUpdate({ workspaces: { s1: undefined }, areas: { "5101": { collapsed: undefined } } });
+      window.__lsResult = JSON.stringify({ got, updated, refused, nan, unset, changes });
     })();
     return window.__lsResult ?? null;
   })()`;
@@ -41,7 +46,7 @@ const inside = (a: Rect, r: Rect) => r.x >= a.x && r.y >= a.y && r.x + r.w <= a.
 
 describe.skipIf(!local)("the UI preview's landscape", () => {
   it("has three areas, one holding a stack and a teammate's session, a ghost and a loose workspace, and takes patches as main does", async () => {
-    const { got, updated, refused, changes } = await probe();
+    const { got, updated, refused, nan, unset, changes } = await probe();
     expect(parseLandscape(got.landscape)).toEqual(got.landscape);
     expect([got.rev, got.problems]).toEqual([0, []]);
     const l = got.landscape;
@@ -59,6 +64,9 @@ describe.skipIf(!local)("the UI preview's landscape", () => {
 
     expect(updated).toMatchObject({ rev: 1, landscape: { areas: { "5101": { collapsed: true } } } });
     expect(refused).toEqual({ error: expect.stringContaining('areas["9999"] isn\'t on the landscape') });
+    expect(nan).toEqual({ error: 'workspaces["s1"].x is not a number' });
+    // undefined changes nothing: s1 keeps its place, 5101 stays collapsed, and it isn't a revision
+    expect(unset).toMatchObject({ rev: 1, landscape: { workspaces: { s1: l.workspaces.s1 }, areas: { "5101": { collapsed: true } } } });
     expect(changes).toEqual([{ rev: 1, patch: { areas: { "5101": { collapsed: true } } }, problems: [] }]);
   });
 

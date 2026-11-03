@@ -39,7 +39,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 // team rooms: artifacts
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
-import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
+import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -1325,18 +1325,23 @@ const api: Record<string, (...a: any[]) => any> = {
     return later({ id, rank: t.rank ?? null }, 200);
   },
   landscapeGet: async (): Promise<LandscapeState> => clone({ landscape, rev: landscapeRev, problems: landscapeProblems }),
-  // a patch main would refuse answers { error }, as main's does
+  // read as main reads it: IPC hands main a structured clone, which keeps NaN and undefined where JSON wouldn't,
+  // so a patch main refuses answers { error } here too, and one that changes nothing isn't a revision
   landscapeUpdate: async (raw: unknown): Promise<LandscapeState | { error: string }> => {
     let patch: LandscapePatch;
+    let next: Landscape;
     try {
-      patch = parsePatch(clone(raw));
-      landscape = applyPatch(landscape, patch);
+      patch = parsePatch(structuredClone(raw));
+      next = applyPatch(landscape, patch);
     } catch (e) {
       if (!(e instanceof LandscapeShapeError)) throw e;
       return err(e.message);
     }
-    landscapeRev++;
-    emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
+    if (!sameLandscape(next, landscape)) {
+      landscape = next;
+      landscapeRev++;
+      emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
+    }
     return clone({ landscape, rev: landscapeRev, problems: landscapeProblems });
   },
   pipelineAll: async () => JSON.parse(JSON.stringify(pipelines)),
