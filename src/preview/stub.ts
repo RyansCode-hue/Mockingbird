@@ -38,6 +38,8 @@ import type { PhoneStatus } from "../shared/phoneAlerts";
 import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../shared/team/livePanes";
 // team rooms: artifacts
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
+// the landscape
+import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -850,6 +852,55 @@ buffers[SAM_PANE] = `${C.dim}codex${C.reset}\r\n› Cover the last-org endpoint'
 buffers[remotePaneId(NICK, "n7")] = `${C.bold}> Carry on with the donor entity: add the gift aid flag${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Update(src/donors/entity.ts)\r\n`;
 buffers[NICK_PANE] = `${C.bold}> Write the donor CSV export (UTF-8 BOM, one row per gift)${C.reset}\r\n\r\n${C.teal}⏺${C.reset} Write(src/donors/exportCsv.ts)\r\n  ⎿  Wrote 64 lines\r\n\r\n${C.amber}✻${C.reset} Running the export tests… ${C.dim}(18s · esc to interrupt)${C.reset}\r\n`;
 
+// ---- the landscape: three areas, 5101 holding the 5101/api stack and Nick's session, a ghost in 5102, the assistant loose ----
+
+const landscapeFixture = (): Landscape => {
+  const l = emptyLandscape();
+  l.migratedAt = new Date(now - 2 * 24 * 60 * min).toISOString();
+  l.tourDone = true;
+  const M = presetSize("agent");
+  const everyone = [...sessions, ...live.remote];
+  /** An area two M workspaces wide at (x, y): `ids` in reading order (a stack once, its first member in front), then its ghosts. */
+  const area = (key: string, x: number, y: number, ids: string[], ghosts: Record<string, Omit<Ghost, "placement" | "group">> = {}): Area => {
+    const inside: Rect[] = [];
+    const frame: Area = { x, y, w: 2 * AREA_PAD + 2 * M.w + GAP, h: AREA_PAD, repos: [{ path: REPO, base: "dev" }] };
+    const put = (size: { w: number; h: number }) => {
+      const p = placeNew(size, inside, frame);
+      inside.push(p);
+      return p;
+    };
+    for (const id of ids) {
+      const s = everyone.find((x) => x.id === id)!;
+      const stack = stackKeyOf(s);
+      if (!stack) l.workspaces[id] = put(presetSize(kindOf(s)));
+      else l.stacks[stack] ??= { active: id, placement: put(presetSize(kindOf(s))) };
+    }
+    for (const [id, g] of Object.entries(ghosts)) l.ghosts[id] = { ...g, group: key, placement: put(M) };
+    return (l.areas[key] = fitAreaTo(frame, inside));
+  };
+  const a5101 = area("5101", 0, 0, ["s1", "s2", "s3", SAM_PANE, NICK_PANE, "s4", "s8"]);
+  const a5102 = area("5102", a5101.w + AREA_GAP, 0, ["s5", "s6"], {
+    g1: {
+      title: "Profile the tag list", agent: "codex", cwd: WT("5102-quickViewFreeze"), repoPath: REPO, branch: "5102-quickViewFreeze", ticketId: "5102",
+      conversation: { agent: "codex", id: "conv-g1" }, summary: "Memoizing the tag list keeps typing under 16 ms a key.", closedAt: new Date(now - 50 * min).toISOString(),
+    },
+  });
+  area("5110", a5102.x, a5102.y + a5102.h + AREA_GAP, ["y1", remotePaneId(NICK, "n7")]);
+  // the assistant is ungrouped: loose, next to the first area
+  const placed = [...Object.values(l.areas), ...Object.values(l.workspaces)];
+  l.workspaces.s7 = placeNew(M, placed, null, a5101);
+  return l;
+};
+let landscape = landscapeFixture();
+let landscapeRev = 0;
+// ?landscape=corrupt: landscape.json wasn't JSON at start, so it was moved aside and the layout starts over
+const LANDSCAPE_FILE = "/Users/you/.mockingbird/landscape.json";
+const landscapeProblems: LandscapeProblem[] =
+  new URLSearchParams(location.search).get("landscape") === "corrupt"
+    ? [{ kind: "corrupt", message: `${LANDSCAPE_FILE} isn't valid JSON (Unexpected end of JSON input). It was moved to ${LANDSCAPE_FILE}.bad-1730000000000, and the layout starts over.`, file: LANDSCAPE_FILE, movedTo: `${LANDSCAPE_FILE}.bad-1730000000000` }]
+    : [];
+if (landscapeProblems.length) landscape = emptyLandscape();
+
 // ---- Council: a discussion two rounds in --------------------------------------
 
 const seat = (key: string, label: string, agent: "claude" | "codex", model: string, color: number, readsCode: boolean): CollabParticipant => ({
@@ -1272,6 +1323,21 @@ const api: Record<string, (...a: any[]) => any> = {
     tickets.splice(after >= 0 ? after + 1 : before >= 0 ? before : from, 0, t);
     tickets.forEach((x, i) => (x.rank = (i + 1) * 1000));
     return later({ id, rank: t.rank ?? null }, 200);
+  },
+  landscapeGet: async (): Promise<LandscapeState> => clone({ landscape, rev: landscapeRev, problems: landscapeProblems }),
+  // a patch main would refuse answers { error }, as main's does
+  landscapeUpdate: async (raw: unknown): Promise<LandscapeState | { error: string }> => {
+    let patch: LandscapePatch;
+    try {
+      patch = parsePatch(clone(raw));
+      landscape = applyPatch(landscape, patch);
+    } catch (e) {
+      if (!(e instanceof LandscapeShapeError)) throw e;
+      return err(e.message);
+    }
+    landscapeRev++;
+    emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
+    return clone({ landscape, rev: landscapeRev, problems: landscapeProblems });
   },
   pipelineAll: async () => JSON.parse(JSON.stringify(pipelines)),
   pipelineStage: async (id: string, stage: TicketStage) => setStage(id, stage),
