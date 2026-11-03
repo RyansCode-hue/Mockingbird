@@ -46,6 +46,10 @@ together so work and context flow between them.
   controls: roles, approvals, take-over and guardrails. A collab in a room is a
   room session like any other.
 - **Event triggers** (a PR opens, tests pass) wait for a later phase.
+- **Browser workspaces.** A workspace can be a browser, and an agent wired to
+  it can see it (below). All browser workspaces share one Mockingbird browser
+  profile, kept separate from your Chrome. By default a wire lets the agent
+  see and navigate; clicking and typing ask first.
 - **Agents can build the landscape.** An agent can propose a new workspace and
   its wire when it sees the need (below).
 
@@ -61,7 +65,7 @@ together so work and context flow between them.
 ## Workspaces
 
 - **Create.** Right-click empty landscape → New workspace: **Claude**,
-  **Codex**, **Terminal**, **Collab**, **From a ticket…** (today's ticket
+  **Codex**, **Terminal**, **Collab**, **Browser**, **From a ticket…** (today's ticket
   popover), **Import…**. It's created where you clicked. Inside an area, it joins that
   area's group and defaults to the area's repo.
 - **Size is the terminal's size.** A workspace's width and height at 100% zoom
@@ -219,6 +223,65 @@ Council moved onto the landscape.
     count and the document's status.
 - **Under the hood** it uses Council's engine (`collab.ts`), with participants
   as headless sessions rather than panes.
+
+## Browser workspaces
+
+A browser workspace is a real web page on the landscape: an embedded Chromium
+view with its own address bar. The motivating case is turning a design into an
+app:
+
+- one browser shows the Figma frame;
+- another shows the app's dev server (e.g. `localhost:5173`);
+- a builder is wired to both, so it can look at them instead of being told
+  what's off.
+
+**Profile.** Every browser workspace shares one Mockingbird browser profile,
+so you sign in to Figma once.
+
+- It's separate from Chrome and from your other browsers.
+- You sign in yourself, and agents never see cookies or passwords.
+- Settings has **Sign out everywhere** for the profile.
+
+**The "sees" wire** (agent → browser) gives the agent tools on the messaging
+MCP server, at three levels:
+
+| Level | Tools | Default |
+| --- | --- | --- |
+| **See** | `browser_screenshot` (at a chosen viewport), `browser_read` (page text and accessibility tree), `browser_console` (errors and logs) | on |
+| **Navigate** | `browser_open(url)`, scroll, resize the viewport, reload | on |
+| **Drive** | click, type, fill forms, press keys | asks once per wire; localhost only unless a site is allowed on that wire |
+
+- **Signed-in pages.** An agent driving a signed-in page acts as you, which is
+  why Drive is off by default and limited to localhost.
+- **Downloads, uploads and pop-ups** always ask.
+- **Rooms.** A browser in a room's shared area shows its page to the room, but
+  only its owner's agents can be wired to it.
+
+**Compare.** An agent wired to two browsers can call
+`compare({ design, app, viewport })`.
+
+- Both pages are screenshotted at the same viewport.
+- The agent gets the pair plus a diff image and the share of pixels that
+  differ.
+- That gives a loop to work in: fix, let the dev server hot-reload, compare
+  again.
+- The browser workspace shows the latest comparison as a small thumbnail.
+
+**Later, not in the first version:**
+
+- an onion-skin overlay of the design on the app, for you;
+- exact spacing, colours and type from the Figma MCP server when it's
+  connected;
+- a "Design check" pipeline step that won't pass until the app matches.
+
+**Built on:**
+
+- Electron's `WebContentsView`, with one persistent session partition for the
+  profile;
+- the page's DevTools protocol (`webContents.debugger`) for screenshots, the
+  accessibility tree, console and input.
+
+No external Chrome is involved.
 
 ## Agents that build the landscape
 
@@ -413,7 +476,8 @@ group order.
    - shared worktree terminals and context links, through the messaging MCP
      server;
    - collab workspaces built on Council's engine;
-   - agent proposals for workspaces and wires.
+   - agent proposals for workspaces and wires;
+   - browser workspaces, the "sees" wire and `compare`.
 3. **Pipelines:**
    - handoff, feedback loop, gates and wire states, `finish_step`;
    - pipeline templates and the pipeline strip in focus;
