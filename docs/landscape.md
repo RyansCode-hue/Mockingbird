@@ -1,6 +1,7 @@
 # The landscape
 
-Status: draft spec, under discussion. Nothing here is built.
+Status: phase 1 in progress behind Settings → Labs → Landscape; see
+[landscape-phase1.md](landscape-phase1.md) for what's built.
 
 The Sessions tab's grid becomes a **landscape**: an infinite surface you pan
 and zoom, like a Figma canvas. Sessions are **workspaces** placed on it,
@@ -52,6 +53,14 @@ together so work and context flow between them.
   see and navigate; clicking and typing ask first.
 - **Agents can build the landscape.** An agent can propose a new workspace and
   its wire when it sees the need (below).
+- **Tools are windows** (design O). Files, Changes, Search, Run & debug,
+  Artifacts and room chat open as windows on the landscape, beside the
+  workspace they serve, and can be docked to the window's edge (below).
+- **Artifacts are a tool window, in every area.** Not a menu in the area
+  header, and not only in rooms: a room's area shares its artifacts with the
+  room, any other area keeps them on this Mac.
+- **Nothing from the sidebar or the room panels is lost.** Every control has a
+  home on the landscape (the table under Tools).
 
 ## Vocabulary
 
@@ -345,8 +354,15 @@ for. **Create** starts it, and **Dismiss** tells the agent no.
   Clicking one pans and zooms the view to fit it, with a short motion
   (immediate under reduced motion).
 - **Area header.** Today's group bar moves onto the area's top edge:
-  - the name, the stage chip and usage;
-  - Ask for status, Follow, and the room chat and Board.
+  - the name, repo chips, the stage chip (or Pipeline for a ticket with no
+    stage yet) and usage;
+  - Ask for status and Follow;
+  - in a room's area: Chat (opens the chat window), Board, and **Members ▾**
+    (design P's menu: presence, Make or remove admin, Hand over ownership,
+    Remove, claiming ownership, join requests, backup state, Invite, Follow a
+    member, Leave room);
+  - **⋯**: Rename, Collapse, Lock, Clear ghosts, Reopen all, the agent-message
+    mode, the message log, and Share as a room (Invite for a room).
 - **No nested areas.** Today's sub-groups (`top/sub`, the tabbed workspace
   cell) become stacks. A group within a group is a second area beside the
   first.
@@ -356,6 +372,68 @@ for. **Create** starts it, and **Dismiss** tells the agent no.
   click. Context links and collabs can read across all of the area's repos.
 - A workspace belongs to at most one area. Workspaces outside every area are
   loose (today's "ungrouped").
+- **The area tree** replaces the Sessions view in the side bar (designs L and
+  M): areas with their waiting counts, their stacks and workspaces, room areas
+  marked as shared with who's online. Clicking an area flies there; clicking a
+  workspace focuses it. ⌘\ collapses it to the rail.
+
+## Tools
+
+The rail keeps today's views and badges. On the landscape each opens as a
+**tool window** (design O) instead of a side bar view:
+
+- **Where it opens.** Beside the selected workspace, scoped to it: Changes and
+  Run work on its worktree, Files on its folder. A window opened from an area
+  is scoped to the area.
+- **Placed or docked.** A placed window sits in its area and moves with it. ⊟
+  docks a window to the window's edge, where it stays put while you pan and
+  follows the selected workspace; ⧉ places a docked one back on the landscape.
+- **The windows:**
+  - **Files** (today's Explorer), **Changes** (Source Control, with Second
+    opinion, Branch vs base and the graph), **Search** (conversations or the
+    workspace's files) and **Run & debug** (services, the debugger, run setup);
+  - **Artifacts**: the area's artifacts. Add a file, note, repo file or link;
+    per item Open, Mention, Rename, Download, Remove, and **Place**, which puts
+    an artifact card in the area. A card opens or mentions it; phase 2 wires it
+    to a workspace as a context link;
+  - **Chat**: the room's chat, for a room's area;
+  - **Editor**: today's editor column, docked right by default.
+- **Global stays global.** The log panel (⌘J), the agent message log and
+  Broadcast stay where they are.
+
+**The workspace** carries what the pane header and its rail carry today
+(design N):
+
+- **Header chips:** branch, ▶ runs (opens Run), Δ changes (opens Changes),
+  model and effort, ticket, the context warning (opens Brief), overlap chips
+  (open the Board), the guard chip, muted, backup freshness, the owner,
+  lookers and typists, and Take over on a teammate's workspace.
+- **Footer cells:** elapsed, git, PR, messages, repo, folder (opens Files),
+  queued and tokens.
+- **⋯ menu, also on right-click:** Rename, Mute, Move to area, Size S/M/L,
+  Repaint, Hide the agent's diff panel, Undo the last turn, Continue in the
+  other agent, Fresh session from a brief, Second opinion, Take over / Take it
+  back / Send the changes / Review, Close.
+- **Notes stay on the workspace:** the stall and waiting banners, typing asks,
+  the phone note, and dropping files to type their paths.
+- **A dead workspace** stays where it was as a card with Resume and Close &
+  clean up.
+
+**Where the rest goes:**
+
+| Today | On the landscape |
+| --- | --- |
+| Sessions view (groups, sub-groups, rows, filter) | The area tree |
+| Connected line, the Team view's room list | Room areas in the area tree, marked shared, with who's online |
+| Room header: Show, Invite, New session, Join, Leave | The area header and its ⋯ and Members menus; right-click create |
+| A room's artifact shelf | The Artifacts window, in every area |
+| Members and roles (chat header, Settings → Team) | Members ▾ in the area header; Settings → Team unchanged |
+| Join requests | The Needs you tray and Members ▾; the admin prompt unchanged |
+| Backups: freshness, failures, consent | Freshness on the workspace header, failures on the area header, consent unchanged |
+| Take-over, Take it back, Send, Review | The workspace's header and ⋯ menu; a ghost continued on a teammate's Mac shows Take it back |
+| Previous: relaunch, forget, restore all | Ghost cards (Reopen, Clear ghosts) and Reopen all in the area ⋯ |
+| Group bar: message mode, message log | The area ⋯ |
+| Council: Open the implementing session | Focuses that workspace on the landscape |
 
 ## Connections
 
@@ -484,8 +562,10 @@ group order.
 
 1. **Landscape:**
    - workspaces, pan and zoom, semantic zoom, focus, minimap;
-   - areas (marquee, go-to, area header, badges, collapse, lock),
-     right-click create;
+   - areas (marquee, go-to, area header, badges, collapse, lock), the area
+     tree, right-click create;
+   - tool windows, the Artifacts window in every area, the workspace header
+     and ⋯ menu;
    - stacks, Tidy, hover peek, card badges;
    - the Needs you tray (permission prompts and finished workspaces for now);
    - migration with its tour, the shortcuts sheet, the empty landscape.
@@ -512,7 +592,12 @@ The design options and idea mocks are on the canvas "Mockingbird Landscape
 options":
 
 - the first row holds the three directions: A Frames, B Cards, C Map;
-- the second row holds the chosen ideas (D–H).
+- the second row holds the chosen ideas (D–H);
+- the third, browser workspaces (I–K);
+- the fourth, the area tree sidebar open and collapsed (L, M);
+- the fifth, where the tools go (N–P).
 
 The look described above, combining all three directions, is the one
-chosen.
+chosen. For the tools, O is chosen with two changes: Artifacts is a tool
+window rather than a header menu, and the area header takes P's Members menu.
+N's workspace header, footer and ⋯ menu are kept.

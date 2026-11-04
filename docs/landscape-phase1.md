@@ -4,8 +4,8 @@ Status: S1 (model, store, migration), S2 (the surface, behind Settings →
 Labs → Landscape) and S3 (semantic zoom and peek) built; S4 next. The spec is
 [landscape.md](landscape.md); this file is how its phase 1 gets built.
 
-Phase 1 replaces the grid with the landscape: workspaces, areas, stacks, the
-Needs you tray and migration. It has **no wires**; those are phases 2–3.
+Phase 1 replaces the grid with the landscape: workspaces, areas, tool
+windows, stacks, the Needs you tray and migration. It has **no wires**; those are phases 2–3.
 It ships as a minor release (1.7.0). `landscape.json` is new data, and an older
 version ignores it and still finds its grid layout in localStorage, so nothing
 breaks for a teammate who hasn't updated.
@@ -15,7 +15,7 @@ breaks for a teammate who hasn't updated.
 | Today | Phase 1 |
 | --- | --- |
 | `mb.trees`, `mb.shown`, `mb.pinned`, `mb.groupLayouts` (localStorage, `main.tsx:166-312`) | `~/.mockingbird/landscape.json`, owned by the main process |
-| `layoutTree.ts`, `gridModel.ts`, `drawTree` (`main.tsx:928`) | removed at the end (S7); kept until the grid is switched off |
+| `layoutTree.ts`, `gridModel.ts`, `drawTree` (`main.tsx:928`) | removed at the end (S8); kept until the grid is switched off |
 | A group (`taskGroup` string) | An area: a rectangle, repos and options, keyed by that group string |
 | A sub-group cell `ws:<top/sub>` with tabs | A stack, the same `top/sub` group, so rooms and usage need no changes |
 | The group bar (`main.tsx:2389-2440`) | The area header (the same component, moved out of `main.tsx`) |
@@ -23,6 +23,10 @@ breaks for a teammate who hasn't updated.
 | `fit()` → `sessionResize` (`cachedTerm.ts:113,431`) | The workspace's size sets cols/rows; zoom never resizes the pty |
 | `followFixedSize` scaling (`cachedTerm.ts:409`) | How every workspace renders at zoom ≠ 100% |
 | `terms` cache (`TerminalPane.tsx:65`) | Unchanged; cards and peek read it, live nodes attach it |
+| The Sessions side view (`main.tsx:2370-2530`) | The area tree (S4) |
+| Explorer, Source Control, Search, Run and Debug, room chat (side views) | Tool windows (S5); the same components inside a window frame |
+| A room's artifact shelf (`Artifacts.tsx`) | The Artifacts window, in every area (S5) |
+| The pane header and its rail (`TerminalPane.tsx:899-1175`) | The workspace header, footer and ⋯ menu (S5) |
 
 ## Data model (`src/shared/landscape.ts`)
 
@@ -92,7 +96,12 @@ interface Ghost { title: string; agent: "claude" | "codex" | "terminal"; cwd: st
 
 Each slice lands on `main` behind **Settings → Labs → Landscape** (off by
 default) with its tests, so `main` stays shippable and the grid stays the
-default until S7.
+default until S8.
+
+From S4 on, each slice is also checked against its design boards on the
+canvas "Mockingbird Landscape options": screenshots of the preview beside the
+boards, with the differences either fixed or listed in the slice's as-built
+notes.
 
 ### S1 · Model, store, migration (no UI)
 - `landscape.ts` (shared and main), IPC, the preview stub.
@@ -355,42 +364,110 @@ default until S7.
       go-to-area fly should go through `apply` so the band and what's on
       screen follow it (a fly through the read-only band attaches only where
       it ends);
-    - S4's marquee and S5's drags start with a press, which already ends a
+    - S4's marquee and S6's drags start with a press, which already ends a
       peek and its hover; they should also hold the peek off while they run;
-    - S6's badges and its transcript-based "what it did" line go on the card;
+    - S7's badges and its transcript-based "what it did" line go on the card;
     - correcting xterm's mouse coordinates for the scale (left from S2).
 
 ### S4 · Areas
 - `AreaFrame.tsx`:
   - a solid patch when zoomed out, a dashed outline and header at 100%;
   - the group bar is extracted from `main.tsx` into `GroupBar.tsx` and becomes
-    the area header;
-  - repo chips (several repos per area), the stage chip and usage.
+    the area header: the name, repo chips (several repos per area), the stage
+    chip or Pipeline button, usage, Ask for status and Follow;
+  - in a room's area: Chat, Board and **Members ▾** (design P: presence, Make
+    or remove admin, Hand over ownership, Remove, claiming ownership, join
+    requests, backup state and failures, Invite, Follow a member, Leave room),
+    the same actions as `Team.tsx` and `RoomChat.tsx`, not copies of them;
+  - **⋯**: Rename, Collapse, Lock, the agent-message mode, the message log,
+    and Share as a room (Invite for a room). Clear ghosts and Reopen all join
+    it in S6.
 - **Make an area:**
   - a marquee selection, then M or the **Make area…** button, gives a name, and
     `setGroup` moves the selection into it;
   - dragging a workspace across an area's edge sets its group, with the area
-    highlighted on hover.
-- **Go to an area:** the sidebar's area tree, the area switcher and ⌘K "Go
-  to…" fly the camera there, ending immediately under reduced motion. Check it
-  with `?motionAudit`.
+    highlighted on hover;
+  - the marquee holds the peek off while it runs (left from S3).
+- **The area tree** (designs L and M) replaces the Sessions view while the
+  landscape shows: areas with waiting counts, their stacks and workspaces;
+  room areas marked shared with who's online (today's Connected line); the
+  filter box. Clicking an area flies there, clicking a workspace focuses it,
+  ⌘\ collapses it to the rail. The grid keeps the Sessions view.
+- **Go to an area:** the area tree, the area switcher and ⌘K "Go to…" fly the
+  camera there through `apply` (left from S3), ending immediately under
+  reduced motion. Check it with `?motionAudit`.
+- **Minimap** in a corner: areas as outlines, workspaces as status dots, the
+  view as a rectangle you can drag.
 - **The area's hover toolbar:** Collapse (to a pill that keeps its counts),
-  Lock and Tidy (S5).
+  Lock and Tidy (S6). A collapsed area's workspaces count as off screen (left
+  from S3).
 - **Rooms:**
   - a room's group is an area like any other, its layout local in phase 1;
   - a teammate's sessions appear in it through `placeNew`;
   - Follow keeps following the teammate's focused workspace;
-  - `teamLiveView` still reports the grid's `shown` while the landscape
-    shows (left from S2): it should report the workspaces on screen, which
-    decides which teammates' sessions stream here.
+  - `teamLiveView` reports the workspaces on screen (`keysOnScreen`), not the
+    grid's `shown` (left from S2), since that decides which teammates'
+    sessions stream here.
+- **Overlap:** areas don't overlap; making or moving one that would is pushed
+  clear, and the migration's rows already keep them apart.
 - **Tests:**
   - marquee → area → `setGroup` calls;
   - dragging across an edge;
   - rename;
   - collapse and lock;
-  - a remote session landing in a room area.
+  - a remote session landing in a room area;
+  - the area tree's contents and its fly-to;
+  - Members ▾ actions reaching the same room calls as the Team view;
+  - `teamLiveView` following what's on screen.
 
-### S5 · Creating and arranging
+### S5 · Tools and the workspace header
+Design O, with Artifacts as a window, and N's workspace header.
+- **Tool windows.** On the landscape the rail opens Files, Changes, Search,
+  Run & debug, Artifacts and Chat as windows instead of side bar views:
+  - the window frame (`ToolWindow.tsx`) hosts today's components
+    (`FilePanel`, `SourceControl`, `SearchView`, `RunView` with
+    `DebugPanel`, `Artifacts`, `RoomChat`), unchanged inside;
+  - it opens beside the selected workspace, scoped to it (or to an area when
+    opened from one), and names its scope in its title;
+  - placed, it sits in its area and moves with it; ⊟ docks it to the window's
+    edge, where it follows the selected workspace; ⧉ places it again;
+  - the editor column stays docked right, as today;
+  - the rail keeps its badges; ⌘B, ⇧⌘E, ⌃⇧G, ⇧⌘F, ⇧⌘D open or close the
+    matching window;
+  - placements and docking are saved in `landscape.json` (a new field: raise
+    `v`).
+- **Artifacts in every area:**
+  - a room's area shows the room's artifacts, as today;
+  - any other area keeps its own on this Mac, by area key, under
+    `~/.mockingbird/artifacts/`. Renaming the area moves them; sharing the area
+    as a room offers to share them;
+  - Add (file, note, repo file, link), Open, Mention, Rename, Download, Remove,
+    and **Place**: an artifact card in the area that opens or mentions it.
+    Link to a workspace shows as "coming" until phase 2's context links.
+- **The workspace header** (design N), on `WorkspaceNode`:
+  - chips: branch, ▶ runs (opens Run), Δ changes (opens Changes), model and
+    effort, ticket, the context warning (opens Brief), overlap chips (open the
+    Board), the guard chip, muted, backup freshness, owner, lookers and
+    typists, and Take over;
+  - a footer with today's rail cells: elapsed, git, PR, messages, repo, folder
+    (opens Files), queued, tokens;
+  - **⋯ and right-click:** `sessionActions` plus the pane header's controls:
+    Rename, Mute, Move to area, Size S/M/L, Repaint, Hide the agent's diff
+    panel, Undo the last turn, Continue in the other agent, Fresh session from
+    a brief, Second opinion, Take over / Take it back / Send / Review, Close.
+    `landscapeBody` passes the pane header's handlers it doesn't pass today.
+  - **A dead workspace** stays in place as a card with Resume and Close &
+    clean up.
+- **Tests:**
+  - each tool opens beside the selected workspace and works on its worktree;
+  - dock, place, and both surviving a reload;
+  - a placed window moving with its area;
+  - local artifacts: add, rename the area, remove; a room area still shows
+    the room's;
+  - every `sessionActions` item reachable from ⋯ and right-click;
+  - the dead workspace card's Resume and Close & clean up.
+
+### S6 · Creating and arranging
 - **Right-click on empty landscape:** Claude, Codex, Terminal, From a ticket…,
   Import….
   - Collab… and Pipeline from a ticket… show as "coming".
@@ -406,8 +483,9 @@ default until S7.
   - dragging a tab out unstacks that workspace.
 - **Tidy** (T) packs an area in creation order for now. Phase 3 lays it out
   along wires. Undo puts the old placements back.
-- **Ghost cards:** they show the title, summary, branch and Reopen. An area
-  menu has **Clear ghosts**.
+- **Ghost cards:** they show the title, summary, branch and Reopen. The area
+  ⋯ has **Clear ghosts** and **Reopen all** (today's restore all). A ghost
+  continued on a teammate's Mac shows Take it back.
   - Left from S2: a closed session's placement stays in `workspaces` (it may
     be resumed); closing should turn it into a ghost, or they pile up.
 - **Tests:**
@@ -416,7 +494,7 @@ default until S7.
   - Tidy and its undo;
   - ghost written on close and resumed on Reopen.
 
-### S6 · Needs you
+### S7 · Needs you
 - **The tray** drops down from the top-bar button. Phase 1 items:
   - waiting permission prompts (amber status);
   - finished workspaces that are now idle;
@@ -441,9 +519,12 @@ default until S7.
   - a badge whose source fails shows "—" plus a logged reason, never a
     stale value.
 
-### S7 · First run and switching over
+### S8 · First run and switching over
 - **The migration tour** (4 steps, spotlighting the real landscape), the
   shortcuts sheet on `?`, and the empty landscape.
+- **The top bar** (designs N and O): the Landscape tab in place of Sessions,
+  Dashboard, WorkTracker, Council and Settings, the Needs you button, and
+  **+ New**, which opens the right-click create menu at the view's centre.
 - **The switch:**
   - turn the Labs flag on by default and remove it;
   - delete the grid code (`layoutTree.ts`, `gridModel.ts`, `drawTree`,
@@ -492,3 +573,7 @@ default until S7.
   size and are scaled to fit.
 - **Development flag:** the work goes behind a Labs flag while it's in
   progress, so `main` can take each slice without changing what you use.
+- **Tools are windows on the landscape** (design O), with Artifacts as a
+  window in every area rather than a header menu, P's Members menu in a room
+  area's header, and N's workspace header, footer and ⋯ menu. Every sidebar
+  and room control has a home (landscape.md, Tools).
