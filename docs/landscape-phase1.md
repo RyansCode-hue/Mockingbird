@@ -767,6 +767,12 @@ Design O, with Artifacts as a window, and N's workspace header.
   - the dead workspace card's Resume and Close & clean up.
 
 ### S6 · Creating and arranging
+- **The selection bar** (designs Q and Q2; landscape.md, Tools): selecting an
+  area, a workspace or several shows their actions at normal size at every
+  zoom, drawn from S5's action lists. Its width comes from its buttons; in a
+  narrow window buttons fold behind » in priority order and » extends it onto
+  a second row, remembered until « Less. Room tools only for rooms. Esc
+  clears the selection.
 - **Right-click on empty landscape:** Claude, Codex, Terminal, From a ticket…,
   Import….
   - Collab… and Pipeline from a ticket… show as "coming".
@@ -876,6 +882,8 @@ Design O, with Artifacts as a window, and N's workspace header.
   size and are scaled to fit.
 - **Development flag:** the work goes behind a Labs flag while it's in
   progress, so `main` can take each slice without changing what you use.
+- **Actions at any zoom come from the selection bar** (design Q), never from
+  zooming in; room tools show only for areas that are rooms.
 - **Tools are windows on the landscape** (design O), with Artifacts as a
   window in every area rather than a header menu, P's Members menu in a room
   area's header, and N's workspace header, footer and ⋯ menu. Every sidebar

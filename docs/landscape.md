@@ -61,6 +61,11 @@ together so work and context flow between them.
   room, any other area keeps them on this Mac.
 - **Nothing from the sidebar or the room panels is lost.** Every control has a
   home on the landscape (the table under Tools).
+- **Actions at any zoom: the selection bar** (design Q). Selecting an area, a
+  workspace or several shows a bar of their actions at normal size, however
+  far out the view is, so acting never needs zooming in (below).
+- **Room tools only in rooms.** Chat, Board, Members and Follow show only for
+  an area that is a room, created as one or shared as one later.
 
 ## Vocabulary
 
@@ -357,7 +362,7 @@ for. **Create** starts it, and **Dismiss** tells the agent no.
   - the name, repo chips, the stage chip (or Pipeline for a ticket with no
     stage yet) and usage;
   - Ask for status and Follow;
-  - in a room's area: Chat (opens the chat window), Board, and **Members ▾**
+  - only in a room's area: Chat (opens the chat window), Board, and **Members ▾**
     (design P's menu: presence, Make or remove admin, Hand over ownership,
     Remove, claiming ownership, join requests, backup state, Invite, Follow a
     member, Leave room);
@@ -400,6 +405,28 @@ The rail keeps today's views and badges. On the landscape each opens as a
   - **Editor**: today's editor column, docked right by default.
 - **Global stays global.** The log panel (⌘J), the agent message log and
   Broadcast stay where they are.
+
+**The selection bar** (designs Q and Q2) carries the actions of whatever is
+selected, at every zoom:
+
+- **Selecting.** Click an area's patch, name or tree row, a workspace or its
+  tree row, or drag a marquee over several. Esc clears the selection.
+- **What it shows.**
+  - An area: its name and status, the room tools if it's a room (Chat,
+    Board, Members ▾, Follow), Ask for status, Tools ▾ and ⋯.
+  - A workspace: Focus, Changes, Run, Files, Artifacts and ⋯.
+  - Several workspaces: Make area…, Stack, Move to area ▾ and Close….
+- **Size.** Its width comes from its buttons, never from the selection's width
+  on screen. It sits just above the selection at normal size and slides to
+  stay inside the window, so far out it overhangs a small area.
+- **When it doesn't fit.** In a narrow window, buttons fold behind **» n more**
+  in priority order (an area's room tools stay; Follow, Ask for status and
+  Tools fold first; a workspace's Focus, Changes and Run stay; ⋯ never folds).
+  » extends the bar onto a second row until « Less, and the choice is
+  remembered.
+- **Right-click** gives the same actions as a menu, at every zoom.
+- The bar, the headers, the ⋯ menus and right-click all draw from one list of
+  actions per area and per workspace.
 
 **The workspace** carries what the pane header and its rail carry today
 (design N):
@@ -595,9 +622,11 @@ options":
 - the second row holds the chosen ideas (D–H);
 - the third, browser workspaces (I–K);
 - the fourth, the area tree sidebar open and collapsed (L, M);
-- the fifth, where the tools go (N–P).
+- the fifth, where the tools go (N–P);
+- the sixth, actions at any zoom (Q–S, and Q2 for how the bar sizes).
 
 The look described above, combining all three directions, is the one
 chosen. For the tools, O is chosen with two changes: Artifacts is a tool
 window rather than a header menu, and the area header takes P's Members menu.
-N's workspace header, footer and ⋯ menu are kept.
+N's workspace header, footer and ⋯ menu are kept. For actions at any zoom, Q
+(the selection bar) is chosen.
