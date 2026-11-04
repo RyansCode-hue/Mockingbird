@@ -26,6 +26,8 @@ interface Where {
   near: string[];
   selected: string | null;
   webgl: number | null;
+  /** WebGL contexts made and not lost: what Chromium counts against its limit, whether a terminal still draws with it or not. */
+  glAlive: number | null;
   canvases: number;
 }
 interface ZoomAudit {
@@ -40,6 +42,10 @@ interface ZoomAudit {
   zoomedDown: { liveWrote: string[]; keyboard: string };
   said: string[];
   resizedAtAll: string[];
+  cellAtFit: { w: number; h: number } | null;
+  cellMeasured: { w: number; h: number } | null;
+  pinchOut: { from: number; most: number; made: number; end: Where };
+  ptySizes: string[];
   error?: string;
 }
 // one run of each audit, read by the tests below that check its parts
@@ -72,9 +78,30 @@ describe.skipIf(!local)("the landscape's semantic zoom", () => {
       expect(w.cards, label).toBe(0);
     }
     expect(a.panned.attached).not.toEqual(a.live.attached);
-    // fit → 60% → 100% → a pan → fit → 100% → 60% → 100% → 60%: no pty resized
+    // fit → 60% → 100% → a pan → fit → 100% → 60% → 100% → 60% → 100% → 25%: no pty resized
     expect(a.crossed).toEqual([]);
     expect(a.resizedAtAll).toEqual([]);
+  }, 120_000);
+
+  it("sizes a card's pty by the cell its terminal measures once attached, so each pty is told one size from the start", async () => {
+    const a = await zoomAudit();
+    expect(a.error).toBeUndefined();
+    // measured before anything was attached, and what an attached terminal measures
+    expect(a.cellAtFit).not.toBeNull();
+    expect(a.cellAtFit).toEqual(a.cellMeasured);
+    const ids = a.ptySizes.map((r) => r.split(" ")[0]);
+    expect(new Set(ids).size, a.ptySizes.join(", ")).toBe(ids.length);
+    expect(ids.length).toBe(30);
+  }, 120_000);
+
+  it("attaches nothing a pinch out from 100% to 25% passes, and makes no WebGL context on the way", async () => {
+    const { pinchOut: p, error } = await zoomAudit();
+    expect(error).toBeUndefined();
+    expect(p.from).toBeGreaterThan(0);
+    // what was attached at 100%, at most, until the cards band lets them go
+    expect(p.most).toBeLessThanOrEqual(p.from);
+    expect(p.made).toBe(0);
+    expect([p.end.zoom, p.end.attached, p.end.webgl, p.end.glAlive]).toEqual([0.25, [], 0, 0]);
   }, 120_000);
 
   it("detaches a terminal at fit and attaches it again with its scrollback, and what it wrote meanwhile", async () => {
@@ -96,6 +123,8 @@ describe.skipIf(!local)("the landscape's semantic zoom", () => {
     expect(a.error).toBeUndefined();
     for (const w of [a.readonly, a.live, a.panned]) expect(w.webgl).toBe(w.attached.length);
     expect([a.fit.webgl, a.fitAgain.webgl]).toEqual([0, 0]);
+    // a context given up is lost at once, not left for the garbage collector: Chromium counts only those drawing
+    for (const w of [a.fit, a.readonly, a.live, a.panned, a.fitAgain]) expect(w.glAlive).toBe(w.webgl);
     expect(a.said).toEqual([]);
   }, 120_000);
 
@@ -104,6 +133,7 @@ describe.skipIf(!local)("the landscape's semantic zoom", () => {
     expect(a.error).toBeUndefined();
     expect(a.readonly.attached.length).toBeGreaterThan(3);
     for (const w of [a.readonly, a.live, a.panned]) expect(w.webgl).toBe(Math.min(3, w.attached.length));
+    for (const w of [a.readonly, a.live, a.panned, a.fitAgain]) expect(w.glAlive).toBe(w.webgl);
     const capped = a.said.filter((m) => m.includes("3 terminals already draw with WebGL, the most at once"));
     expect(capped.length).toBeGreaterThan(0);
     expect(capped).toEqual(a.said);
@@ -166,13 +196,23 @@ interface PeekAudit {
   resized: string[];
   click: { focused: string | null; peek: boolean };
   panning: { whileSpace: boolean };
+  jump: { wid: string; selected: string | null; pinned: boolean; lent: boolean; afterJump: string; afterFocus: string; tabIndex: number; wrote: string[] };
+  overlay: { dialog: boolean; closed: boolean; peek: string | null; pinned: boolean };
+  front: { ws: string; opened: string | null; front: string | null; peek: boolean; strays: number; oldIn: boolean };
+  kept: { peek: string | null; mode: string | null; snap: boolean };
   error?: string;
 }
+
+const peekAudits = new Map<string, Promise<PeekAudit>>();
+const peekAudit = (motion: "full" | "reduce") => {
+  if (!peekAudits.has(motion)) peekAudits.set(motion, page<PeekAudit>(`labs=landscape&motion=${motion}&landscapePeekAudit`, "mb-landscape-peek-audit", `ls-peek-${motion}`));
+  return peekAudits.get(motion)!;
+};
 
 describe.skipIf(!local)("the hover peek", () => {
   for (const motion of ["full", "reduce"] as const) {
     it(`opens on a card or a read-only workspace after a rest, lends it its terminal and hands it back, kept open by Space: motion ${motion}`, async () => {
-      const a = await page<PeekAudit>(`labs=landscape&motion=${motion}&landscapePeekAudit`, "mb-landscape-peek-audit", `ls-peek-${motion}`);
+      const a = await peekAudit(motion);
       expect(a.error).toBeUndefined();
       // not at once: after the pointer has rested; the terminal goes into it, and the workspace stays a card
       expect(a.cards).toMatchObject({ early: false, opened: "s1", termIn: true, stillCard: true });
@@ -196,4 +236,57 @@ describe.skipIf(!local)("the hover peek", () => {
       expect(a.panning).toEqual({ whileSpace: false });
     }, 120_000);
   }
+
+  it("never gives its terminal the keyboard: a jump to the session (⌥⇥) leaves it with the landscape, and nothing typed reaches the session", async () => {
+    const a = await peekAudit("reduce");
+    expect(a.error).toBeUndefined();
+    const { wid } = a.jump;
+    expect(wid).toBeTruthy();
+    // the jump selects it, and the peek stays open with its terminal; focusing the terminal itself lands on the landscape too
+    expect(a.jump).toEqual({ wid, selected: wid, pinned: true, lent: true, afterJump: "landscape", afterFocus: "landscape", tabIndex: -1, wrote: [] });
+    // a dialog opened over it has Space and Esc first
+    expect(a.overlay).toEqual({ dialog: true, closed: true, peek: a.front.ws, pinned: true });
+    // its stack bringing another tab to the front ends it, with no terminal left in it
+    expect(a.front).toMatchObject({ opened: a.front.ws, peek: false, strays: 0, oldIn: false });
+    expect(a.front.front).not.toBe(wid);
+    // kept open from a card into the read-only band, its workspace shows the screen rather than nothing
+    expect(a.kept).toEqual({ peek: "s1", mode: "snapshot", snap: true });
+  }, 120_000);
+});
+
+describe.skipIf(!local)("a teammate's workspace on the landscape", () => {
+  it("keeps its terminal at its owner's size as a card, peeked and attached, following each resize, and resizes no pty of theirs", async () => {
+    type Remote = {
+      atFit: { sizes: Record<string, string>; owners: Record<string, string>; attached: boolean };
+      card: { size: string; attached: boolean; endAt: number };
+      peek: { opened: string | null; inPeek: boolean; size: string; fits: boolean };
+      live: { inNode: boolean; size: string; followed: string };
+      away: { attached: boolean; size: string };
+      resized: string[];
+      error?: string;
+    };
+    const a = await page<Remote>("labs=landscape&landscapeRemoteAudit", "mb-landscape-remote-audit", "ls-remote");
+    expect(a.error).toBeUndefined();
+    // made by its card, never attached: at its owner's size from the first byte
+    expect(Object.keys(a.atFit.sizes).length).toBeGreaterThan(0);
+    for (const [id, size] of Object.entries(a.atFit.sizes)) expect(size, id).toBe(a.atFit.owners[id]);
+    expect(a.atFit.attached).toBe(false);
+    // the owner narrows their window while it's a card: it follows, and their column 90 is column 90 here
+    expect(a.card).toEqual({ size: "96×28", attached: false, endAt: 89 });
+    const nick = a.peek.opened!;
+    expect(a.peek).toEqual({ opened: nick, inPeek: true, size: "104×30", fits: true });
+    expect(a.live).toEqual({ inNode: true, size: "104×30", followed: "100×30" });
+    expect(a.away).toEqual({ attached: false, size: "90×26" });
+    expect(a.resized).toEqual([]);
+  }, 120_000);
+});
+
+describe.skipIf(!local)("Restart all on the landscape", () => {
+  it("gives the restarted sessions new terminals, and their cards follow them", async () => {
+    type Restart = { restart: { label: string | null; restarted: boolean; newTerm: boolean; lineBefore: string | null; lineAfter: string | null }; error?: string };
+    const a = await page<Restart>("labs=landscape&landscapeRestartAudit", "mb-landscape-restart-audit", "ls-restart");
+    expect(a.error).toBeUndefined();
+    expect(a.restart).toMatchObject({ restarted: true, newTerm: true, lineAfter: "⏺ After the restart: the tag list is memoized" });
+    expect(a.restart.lineBefore).toContain("tag list");
+  }, 120_000);
 });

@@ -56,9 +56,15 @@ const DOTS = 32;
 
 type CameraListener = (cam: Camera) => void;
 
-/** A workspace's peek: its box in the viewport and, for a read-only one, its screen as text for the workspace to show meanwhile; both as they were when it opened. */
+/**
+ * A workspace's peek: its box in the viewport as it was when it opened and, while the band attaches terminals, the
+ * screen as text for the workspace to show meanwhile. It's of one terminal: a stack's front changing, or the session
+ * given a new terminal (termKey), ends it.
+ */
 interface Peeked {
   key: string;
+  front: string;
+  gen: string;
   /** Space kept it open: moving away no longer closes it. */
   pinned: boolean;
   box: Rect;
@@ -90,6 +96,7 @@ export function Landscape({
   areaTitle,
   stackName,
   meters,
+  termKey,
   body,
 }: {
   layout: ResolvedLayout;
@@ -102,6 +109,8 @@ export function Landscape({
   areaTitle: (key: string) => string;
   stackName: (stack: string) => string;
   meters?: Record<string, SessionMeter>;
+  /** A session's terminal's generation: it changes when a restart gives the session a new terminal. */
+  termKey: (id: string) => string;
   /** A session's terminal at `size`; in focus, filling the window, `home` is its workspace's own size, which it goes back to. */
   body: (s: SessionInfo, size: Size, home: Size | null) => React.ReactNode;
 }) {
@@ -137,7 +146,9 @@ export function Landscape({
   // semantic zoom: the band the camera's zoom is in, changed only once a new one has held for a moment
   const [band, setBand] = useState<Band>(() => nextBand(cam.current.zoom, null));
   const bandNow = useRef(band);
-  const bandWait = useRef<{ want: Band; timer: ReturnType<typeof setTimeout> } | null>(null);
+  /** The zoom is moving: the timer that settles the band, and looks at what's on screen, once it rests. */
+  const bandWait = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const zoomWas = useRef(cam.current.zoom);
   // the workspaces on screen (with a margin), as one string so a pan that changes nothing re-renders nothing
   const [seen, setSeen] = useState("");
   const seenNow = useRef(seen);
@@ -158,35 +169,34 @@ export function Landscape({
     bandNow.current = b;
     markBand(b);
     // a terminal that had the keyboard keeps it no longer: the landscape takes it
-    if (!takesKeys(b) && document.activeElement?.closest(".ls-world .xterm")) viewport.current?.focus({ preventScroll: true });
-    if (b === "live" && peekNow.current) setPeek(null);
+    if (!takesKeys(b) && document.activeElement?.closest(".ls-world .xterm, .ls-peek .xterm")) viewport.current?.focus({ preventScroll: true });
+    const p = peekNow.current;
+    // a peek kept open across the change: its workspace's stand-in is the screen while terminals attach, a card otherwise
+    if (p) setPeek(b === "live" ? null : { ...p, snap: attaches(b) ? screenText(p.front) : null });
     setBand(b);
   };
   /**
-   * Into cards at once: that only lets terminals go, and waiting would attach every workspace a zoom-out brought on
-   * screen for nothing (a first fit, ⌘0). Into a band with terminals once the zoom has stayed in it (BAND_SETTLE_MS),
-   * so a pinch through it attaches nothing until it rests.
+   * The zoom changed. Into cards at once: that only lets terminals go, and waiting would attach every workspace a
+   * zoom-out brought on screen for nothing (a first fit, ⌘0). Any other band once the zoom has rested for
+   * BAND_SETTLE_MS since it last moved, and only then is what's on screen looked at (`looked`): a pinch attaches
+   * nothing it passes, in any band, until it rests.
    */
-  const settleBand = (zoom: number) => {
+  const zoomed = (zoom: number) => {
     const want = nextBand(zoom, bandNow.current);
-    const w = bandWait.current;
-    if (w && w.want === want) return;
-    if (w) clearTimeout(w.timer);
-    bandWait.current = null;
-    if (want === bandNow.current) return;
-    if (!attaches(want)) return commitBand(want);
-    bandWait.current = {
-      want,
-      timer: setTimeout(() => {
-        bandWait.current = null;
-        commitBand(nextBand(cam.current.zoom, bandNow.current));
-      }, BAND_SETTLE_MS),
-    };
+    if (!attaches(want)) commitBand(want);
+    if (bandWait.current) clearTimeout(bandWait.current);
+    bandWait.current = setTimeout(() => {
+      bandWait.current = null;
+      commitBand(nextBand(cam.current.zoom, bandNow.current));
+      looked();
+    }, BAND_SETTLE_MS);
   };
   const looked = () => {
     const v = vpNow.current;
     // before a window's first fit the camera is a stand-in: nothing is on screen until it's placed
     if (!v.w || !placed.current) return;
+    // cards cost no terminal, so they follow a zoom as it moves; terminals wait for it to rest
+    if (bandWait.current && attaches(bandNow.current)) return;
     const keys = keysOnScreen(layoutNow.current.tiles, cam.current, v).join("\n");
     if (keys === seenNow.current) return;
     seenNow.current = keys;
@@ -216,7 +226,10 @@ export function Landscape({
       v.style.backgroundSize = `${step}px ${step}px`;
       v.style.backgroundPosition = `${-next.x * next.zoom}px ${-next.y * next.zoom}px`;
     }
-    settleBand(next.zoom);
+    if (next.zoom !== zoomWas.current) {
+      zoomWas.current = next.zoom;
+      zoomed(next.zoom);
+    }
     looked();
     // a peek belongs to where the pointer rested: moving the landscape ends it, unless Space kept it
     stopHover();
@@ -227,7 +240,7 @@ export function Landscape({
   }, []);
   useEffect(
     () => () => {
-      if (bandWait.current) clearTimeout(bandWait.current.timer);
+      if (bandWait.current) clearTimeout(bandWait.current);
       stopHover();
     },
     []
@@ -304,15 +317,18 @@ export function Landscape({
     if (focusKey && !focusTile) setFocusKey(null);
   }, [focusKey, focusTile]);
   const peekTile = peek ? layout.tiles.find((t) => t.key === peek.key) : undefined;
+  // its workspace left or exited, its stack brought another tab to the front, or its session got a new terminal
+  const peekGone = !!peek && (!peekTile || peekTile.front.status === "dead" || peekTile.front.id !== peek.front || termKey(peek.front) !== peek.gen);
   useEffect(() => {
-    if (peek && (!peekTile || peekTile.front.status === "dead")) setPeek(null);
-  }, [peek, peekTile]);
+    if (peekGone) setPeek(null);
+  }, [peekGone]);
 
   /** Open a workspace's peek: below 75%, not in focus, and never for one that has exited (it has no live terminal). */
   const openPeek = (key: string) => {
     const t = layoutNow.current.tiles.find((x) => x.key === key);
     if (!t || takesKeys(bandNow.current) || focusNow.current || t.front.status === "dead" || !vpNow.current.w) return;
-    setPeek({ key, pinned: false, box: peekBox(cam.current, vpNow.current, t.rect), snap: attaches(bandNow.current) ? screenText(t.front.id) : null });
+    const front = t.front.id;
+    setPeek({ key, front, gen: termKey(front), pinned: false, box: peekBox(cam.current, vpNow.current, t.rect), snap: attaches(bandNow.current) ? screenText(front) : null });
   };
   const openPeekRef = useRef(openPeek);
   openPeekRef.current = openPeek;
@@ -386,13 +402,14 @@ export function Landscape({
     }
   };
 
-  // A peek's keys, wherever the keyboard is but a text field: Space keeps it open (or lets it go again), Esc closes it.
+  // A peek's keys, wherever the keyboard is but a text field, a menu or a dialog: Space keeps it open (or lets it go
+  // again), Esc closes it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const p = peekNow.current;
       if (!p || e.metaKey || e.ctrlKey || e.altKey || (e.key !== " " && e.key !== "Escape")) return;
       const t = e.target instanceof Element ? e.target : null;
-      if (t?.closest("input, textarea:not(.xterm-helper-textarea), select, [contenteditable]")) return;
+      if (t?.closest("input, textarea:not(.xterm-helper-textarea), select, [contenteditable]") || document.querySelector(OVERLAYS)) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.key === "Escape") setPeek(null);
@@ -509,10 +526,11 @@ export function Landscape({
       // a press on the landscape between workspaces gives it the keyboard
       if (e.button === 0 && !t.closest(".ls-node, .ls-hud, .ls-banners, .ls-peek")) surface();
     };
-    // Below 75% a terminal on the landscape takes no keys: one that still has the keyboard (it had it as the zoom
-    // went down) gives it to the landscape, before xterm sees the key.
+    // Below 75% a terminal on the landscape takes no keys, nor ever one lent to a peek: one that still has the
+    // keyboard (it had it as the zoom went down) gives it to the landscape, before xterm sees the key.
     const offKeys = (e: KeyboardEvent) => {
-      if (takesKeys(bandNow.current) || !(e.target as Element | null)?.closest?.(".ls-world .xterm")) return;
+      const t = e.target as Element | null;
+      if (!t?.closest?.(".ls-peek .xterm") && (takesKeys(bandNow.current) || !t?.closest?.(".ls-world .xterm"))) return;
       e.preventDefault();
       e.stopPropagation();
       surface();
@@ -602,7 +620,7 @@ export function Landscape({
    */
   const modeOf = (t: Tile): NodeMode => {
     if (t.key === focusNow.current) return "placeholder";
-    if (peek?.key === t.key) return band === "cards" ? "card" : "snapshot";
+    if (peek?.key === t.key && !peekGone) return band === "cards" ? "card" : "snapshot";
     if (focusNow.current) return "still";
     if (attaches(band) && (seenSet.has(t.key) || (takesKeys(band) && t.key === sel?.key))) return "live";
     return band === "cards" && seenSet.has(t.key) ? "card" : "still";
@@ -618,6 +636,7 @@ export function Landscape({
       meters={meters}
       snapshot={mode === "snapshot" ? peek?.snap : null}
       inv={1 / cam.current.zoom}
+      gen={termKey(t.front.id)}
       onSelect={pick}
       onFocus={enterFocus}
       onBack={leaveFocus}
@@ -644,7 +663,7 @@ export function Landscape({
           ))}
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}
         </div>
-        {peek && peekTile && !focusTile && (
+        {peek && peekTile && !peekGone && !focusTile && (
           <Peek
             key={peek.key}
             tile={peekTile}
@@ -652,6 +671,7 @@ export function Landscape({
             pinned={peek.pinned}
             meters={meters}
             onFocus={() => enterFocus(peekTile)}
+            onKeys={surface}
           />
         )}
         {!layout.tiles.length && (
@@ -778,10 +798,11 @@ function CameraHud({ listeners, cam, onFit, onZoom }: { listeners: Set<CameraLis
 
 /**
  * A workspace's hover peek: a large, read-only live view of it over the landscape, below 75%. Its cached terminal
- * is lent here at its own size, its font fitted to the box (lendTerm), so its pty is never resized; a click
- * focuses the workspace. It appears at once under reduced motion.
+ * is lent here at its own size, its font fitted to the box (lendTerm), so its pty is never resized, and it never
+ * takes the keyboard: whatever asks for it (a jump to the session, say) gives it to `onKeys`. A click focuses the
+ * workspace. It appears at once under reduced motion.
  */
-function Peek({ tile, box, pinned, meters, onFocus }: { tile: Tile; box: Rect; pinned: boolean; meters?: Record<string, SessionMeter>; onFocus: () => void }) {
+function Peek({ tile, box, pinned, meters, onFocus, onKeys }: { tile: Tile; box: Rect; pinned: boolean; meters?: Record<string, SessionMeter>; onFocus: () => void; onKeys: () => void }) {
   const el = useRef<HTMLDivElement>(null);
   const holder = useRef<HTMLDivElement>(null);
   const back = useRef<(() => void) | null>(null);
@@ -791,7 +812,7 @@ function Peek({ tile, box, pinned, meters, onFocus }: { tile: Tile; box: Rect; p
   // and handed back while the peek is still in the page (a layout effect's cleanup), where xterm can measure the font
   // it gets back
   useEffect(() => {
-    back.current = holder.current ? lendTerm(s.id, holder.current, LANDSCAPE_FONT) : null;
+    back.current = holder.current ? lendTerm(s.id, holder.current, LANDSCAPE_FONT, onKeys) : null;
     if (!back.current) {
       console.warn(`[mockingbird] the peek of ${s.id} found no terminal to show`);
       setMissing(true);

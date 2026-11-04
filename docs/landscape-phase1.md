@@ -221,8 +221,8 @@ default until S7.
     band is kept zooming out until the zoom is `BAND_SLACK` (4%) past its
     edge. Into cards is at once, since it only lets terminals go (a first
     fit or ⌘0 would otherwise attach everything a zoom-out brings on screen);
-    into a band with terminals waits `BAND_SETTLE_MS` (150 ms) for the zoom
-    to rest there, so a pinch through 35–75% attaches nothing. The band is a
+    any other band once the zoom has rested `BAND_SETTLE_MS` (150 ms) since it
+    last moved, the timer starting again with every change. The band is a
     class on the viewport (`ls-band-live|readonly|cards`).
   - **What attaches.** A workspace gets a `TerminalPane` (and its xterm) only
     in the live and read-only bands and only while on screen, counting a
@@ -231,7 +231,12 @@ default until S7.
     away. The focused one is always live, and while one is focused nothing
     behind the overlay is attached. Everything else is a card (cards band,
     on screen) or a bare frame (`still`). Only a band change or a workspace
-    coming on screen or leaving it re-renders the workspaces.
+    coming on screen or leaving it re-renders the workspaces. What's on
+    screen is looked at as the camera pans, but while the zoom moves in a
+    band with terminals it waits for the zoom to rest: a pinch attaches
+    nothing it passes, in any band (from 100% to 25% at most the 5 attached
+    at 100% stay until the cards band lets them go; with the wait taken out,
+    16 were attached on the way).
   - **Nothing unmounted runs a timer.** The ticker, git and PR reads and the
     folder watch belong to the `TerminalPane`, which cards and frames don't
     mount. The terminal itself is made apart from any pane (`termFor`), so a
@@ -239,33 +244,56 @@ default until S7.
     buffer current.
   - **No band change resizes a pty.** A terminal nothing attaches is kept at
     its workspace's size by `holdSize` (colsRows at the cell landscape
-    terminals last measured, `CELL_ESTIMATE` before any), so attaching it
-    finds its pty at that size. And a landscape pty is sized by the font's
-    cell as the DOM renderer lays it out (`fontCell`), whichever renderer
-    draws it: WebGL floors the character's width to device pixels (7.5 px at
-    2×, 7 at 1×), which would otherwise give more columns.
+    terminals measure), so attaching it finds its pty at that size. Before
+    any has been attached, that cell is measured once in a terminal opened
+    off screen at the same font (`landscapeCellReady`) rather than guessed,
+    so each pty is told one size from the start. And a landscape pty is sized
+    by the font's cell as the DOM renderer lays it out (`fontCell`), whichever
+    renderer draws it: WebGL floors the character's width to device pixels
+    (7.5 px at 2×, 7 at 1×), which would otherwise give more columns.
+  - **A teammate's terminal is at its owner's size** whatever shows it: made
+    at it (`termFor`), and kept there as the owner resizes by `followOwners`
+    (from `main.tsx`, on every session list) when no pane follows it: as a
+    card, peeked, off screen, or in a hidden grid group. Their output is
+    drawn for that width; parsed at xterm's default 80 × 24 its cursor
+    moves landed in the wrong cells for good. Their pty is never resized.
+  - **A restart's new terminal reaches the card.** Restart all (and a pane's
+    restart) disposes the session's terminal and bumps `termKey`; the card
+    and its size hold are keyed by it, so they take up the new terminal
+    rather than reading the disposed one.
   - **Cards (C)** show the status dot, title and ticket; the "what it did"
     line; and the agent chip, status, a stack's tab count or a teammate's
     name, and tokens. Their type keeps its size on screen (`--ls-inv`, set
     with the areas'), and areas are solid patches in the cards band until S4's
     `AreaFrame`. The line is `lastMeaningfulLine` of the cached buffer's last
     40 lines, read again 500 ms after output arrives: the newest line with a
-    letter or digit (so no blank, spinner-only, rule or empty-box line), an
-    agent's own frame (its prompt box or the rules around its input, and the
-    hints under them) left out first. An exited session's card reads its
+    letter or digit (so no blank, spinner-only, rule or empty-box line), the
+    agent's own frame left out first. That frame is found by the CLI's prompt
+    mark, so a draft of any height is left out: Claude Code's input is the
+    rule over a line starting `❯` (or `>`, after a box's side) down, with a
+    status pinned right over it when it runs full screen; Codex's composer is
+    the lowest line starting `›` down (a draft or the placeholder, and the
+    footer). Without a mark, the rules near the bottom, as before. Checked on
+    the real Claude Code (inline at 60 and 100 columns, full screen) and Codex
+    screens in `test/fixtures/agentWraps`. An exited session's card reads its
     saved output once, and says so when that fails.
   - **WebGL** (`termGl.ts`) draws every attached landscape terminal and the
-    peek; the grid keeps the DOM renderer. At most `GL_MAX` (12) at once;
-    past that a terminal draws with the DOM renderer and takes the next
-    context given up. A context that can't be made, or is lost, means the DOM
-    renderer too. Each is said once per session and reason, with the session
-    id. A terminal whose context couldn't be made isn't tried again: the
-    addon leaves its link layer's canvas and listeners behind on a failure
-    (the canvas is taken out). The preview's headless Chrome has WebGL2
-    (ANGLE on Metal), so the WebGL path is what the tests run; `?glMax=<n>`
-    and `?glFail` exercise the cap and the fallback. Copy-on-select and the
-    agent wrap-join read the buffer, so they're the same under WebGL
-    (`?copyAudit` with `?labs=landscape`).
+    peek; the grid keeps the DOM renderer. At most `GL_MAX` (12) at once, and
+    at most `GL_PER_FRAME` (2) made a frame, so a band change attaching eight
+    terminals spreads their contexts over four frames (they draw with the DOM
+    renderer meanwhile). Past the cap a terminal draws with the DOM renderer
+    and takes the next context given up. A context given up is lost at once
+    (`WEBGL_lose_context`): the addon's dispose leaves it to the garbage
+    collector, and Chromium counts it against its ~16 until then. A context
+    that can't be made, or is lost, means the DOM renderer too. Each is said
+    once per session and reason, with the session id. A terminal whose
+    context couldn't be made isn't tried again: the addon leaves its link
+    layer's canvas and listeners behind on a failure (the canvas is taken
+    out). The preview's headless Chrome has WebGL2 (ANGLE on Metal), so the
+    WebGL path is what the tests run; `?glMax=<n>` and `?glFail` exercise the
+    cap and the fallback, and the preview counts the contexts not yet lost.
+    Copy-on-select and the agent wrap-join read the buffer, so they're the
+    same under WebGL (`?copyAudit` with `?labs=landscape`).
   - **The read-only band** takes no keys: a press on a terminal selects its
     workspace and the landscape keeps the keyboard, a double-click focuses,
     and a terminal that had the keyboard as the zoom went down gives it back.
@@ -279,11 +307,19 @@ default until S7.
     pane has let it go, at its own cols × rows with its font fitted to the
     box, and handed back while the peek is still in the page, its font put
     back where xterm can measure it. A read-only workspace shows its screen
-    as text meanwhile; a card stays a card. Space keeps it open (and lets it
-    go again); Esc, moving onto another workspace or the bare landscape, a
-    press elsewhere, or moving the camera closes it; a click focuses the
-    workspace. It fades and scales in under full motion and appears at once
-    under reduce.
+    as text meanwhile, taken again when a kept-open peek crosses into the
+    read-only band; a card stays a card. Space keeps it open (and lets it go
+    again); Esc, moving onto another workspace or the bare landscape, a
+    press elsewhere, or moving the camera closes it; a dialog or menu open
+    over it has Space and Esc first. Its stack bringing another tab to the
+    front, or a restart giving the session a new terminal, ends it. A click
+    focuses the workspace. It fades and scales in under full motion and
+    appears at once under reduce.
+  - **A lent terminal never takes the keyboard.** `focusTerm` (a jump to the
+    session: ⌥⇥, ⌘K, a notification) gives it to the landscape instead; the
+    terminal can't be tabbed to; a focus that reaches it anyway is stopped
+    before xterm sees it (xterm would send a focus report to a program that
+    asked for them); and a key aimed at it is the landscape's.
   - **Performance**, 30 workspaces (`?landscapeMany=30`, seven agents' spinners
     redrawing) in headless Chrome at 1400 × 900 (`?landscapePerf`), two runs
     each at 1× and 2×, S2 (5fae805) against S3:
@@ -293,22 +329,25 @@ default until S7.
     | xterms mounted at 30% / 60% / 100% | 30 / 30 / 30 | 0 / 8 / 4 |
     | DOM elements at 30% / 60% / 100% | 4878 | 1131 / 1281 / 1229 |
     | panning and pinching: frame interval p95 / max | 16.8 / 16.8 ms | 16.8 / 16.8 ms |
-    | panning: main thread per frame, mean / p95 | 2.2–2.9 / 3.2–3.8 ms | 2.5–2.8 / 4.5–8.8 ms |
-    | at rest: main thread per frame, p95 | 2.4–4.2 ms | 2.8–3.2 ms |
-    | startup: long frames | 3, 350–420 ms in all | 1, 74–81 ms |
-    | sweep 100% → 30% → 100%: worst frame | 16.8 ms | 58–75 ms |
+    | panning: main thread per frame, mean / p95 | 2.0–3.2 / 3.2–5.2 ms | 2.7–4.0 / 5.5–11.8 ms |
+    | at rest: main thread per frame, p95 | 2.3–5.0 ms | 2.6–4.1 ms |
+    | startup: long frames | 3, 340–345 ms in all | 1–2, 62–150 ms in all |
+    | sweep 100% → 30% → 100%: worst frame | 16.8 ms | 16.8 ms |
 
     Both hold the display's 60 Hz while panning and pinching at every zoom,
     so this machine shows the gain as headroom (a quarter of the DOM, a
     fraction of the terminals) and a quicker start, not as faster frames.
-    The one long frame in S3's sweep is the settle into a band attaching its
-    terminals and making their WebGL contexts at once; with `?glFail` it's
-    gone (16.8 ms). Spreading those across frames is left for later.
+    A pan at 60% or 100% costs S3 more main thread at the 95th percentile:
+    it attaches the workspaces it brings on screen. The sweep had one long
+    frame (58–75 ms) before a band waited for the zoom to rest and contexts
+    came two a frame: the zoom-out had attached what it passed (16 to 19
+    terminals) and made their contexts at once.
   - **Preview:** `?landscapeMany=<n>`, `?landscapePerf`,
-    `?landscapeZoomAudit`, `?landscapePeekAudit`, `?lsPeek=<id>[,pin]`,
-    `?glMax`, `?glFail`. The S2 audits start at 100% and bring each workspace
-    into view before measuring it, since only workspaces on screen have a
-    terminal.
+    `?landscapeZoomAudit`, `?landscapePeekAudit`, `?landscapeRemoteAudit`,
+    `?landscapeRestartAudit`, `?lsPeek=<id>[,pin]`, `?glMax`, `?glFail`.
+    Restart all relaunches sessions in place, as main's does. The S2 audits
+    start at 100% and bring each workspace into view before measuring it,
+    since only workspaces on screen have a terminal.
   - **Left for S4 and later:**
     - `teamLiveView` should report the workspaces on screen: `keysOnScreen`
       (`seen` in `Landscape`) is that list;

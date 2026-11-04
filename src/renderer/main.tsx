@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { TerminalPane, disposeTerm, focusTerm, applyTermTheme, type PaneDensity, type PaneResize } from "./TerminalPane";
+import { TerminalPane, disposeTerm, focusTerm, followOwners, applyTermTheme, type PaneDensity, type PaneResize } from "./TerminalPane";
 import { EditorDock, ExplorerTree } from "./FilePanel";
 import { SourceControl, type DiffSource } from "./SourceControl";
 import { SearchView, type SearchState } from "./SearchView";
@@ -181,6 +181,7 @@ function App() {
   // team rooms: live panes — teammates' room sessions are sessions here too (session.room says whose)
   const roomLive = useRoomLive(ownSessions, shown, focused);
   const sessions = roomLive.sessions;
+  useEffect(() => followOwners(sessions), [sessions]);
   // team rooms: take-over — each room session's backup, shown on its row and pane; Take over opens one dialog
   const takeoverView = useTakeover();
   const tkView = takeoverView && !isErr(takeoverView) ? takeoverView : null;
@@ -1620,6 +1621,7 @@ function App() {
           areaTitle={(key) => groupTitle(key, workSessions.filter((s) => topOf(s) === key))}
           stackName={(stack) => splitGroupKey(stack).sub ?? stack}
           meters={meters?.sessions}
+          termKey={termKey}
           body={landscapeBody}
         />
       ) : (

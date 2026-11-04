@@ -1219,7 +1219,22 @@ const api: Record<string, (...a: any[]) => any> = {
     if (!s) return err("Session is no longer running");
     return api.relaunchSession(id);
   },
-  restartAllSessions: async () => ({ restarted: sessions.filter((s) => !s.shell).map((s) => s.id), skipped: [], failed: [] }),
+  // as main's: each agent session relaunched in place (a new createdAt) unless it's busy, then the list sent once
+  restartAllSessions: async (includeBusy: boolean) => {
+    const restarted: string[] = [];
+    const skipped: string[] = [];
+    for (const s of [...sessions]) {
+      if (s.shell || s.status === "dead") continue;
+      if (!includeBusy && (s.status === "working" || s.status === "waiting")) {
+        skipped.push(s.id);
+        continue;
+      }
+      sessions = sessions.map((x) => (x.id === s.id ? { ...x, status: "idle" as const, createdAt: Date.now() } : x));
+      restarted.push(s.id);
+    }
+    sessionsChanged();
+    return { restarted, skipped, failed: [] };
+  },
   // main's rule: idle panes are given it, busy ones queue it, terminals and debriefs never get it
   broadcast: async (req: { message: string; sessionIds: string[] }) =>
     (req.sessionIds.length ? req.sessionIds : sessions.filter((s) => s.kind === "work" && !s.shell).map((s) => s.id)).map((id) => {
@@ -2186,6 +2201,18 @@ if (params.has("glFail")) {
   HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, kind: string, ...rest: unknown[]) {
     return kind === "webgl2" ? null : (getContext as (...a: unknown[]) => unknown).call(this, kind, ...rest);
   } as typeof getContext;
+} else {
+  // every WebGL2 context made, to count those still holding one of Chromium's (`__mbGlAlive`): not lost yet, whether
+  // or not their terminal still draws with it
+  const made = new Set<WebGL2RenderingContext>();
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, kind: string, ...rest: unknown[]) {
+    const c = (getContext as (...a: unknown[]) => unknown).call(this, kind, ...rest);
+    if (kind === "webgl2" && c) made.add(c as WebGL2RenderingContext);
+    return c;
+  } as typeof getContext;
+  w.__mbGlAlive = () => [...made].filter((gl) => !gl.isContextLost()).length;
+  w.__mbGlMade = () => made.size;
 }
 // what the app says on the console as it goes, for the audits to read back: warnings and errors
 const said: string[] = (w.__mbSaid = []);
@@ -2912,7 +2939,7 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit"].some((k) => params.has(k))) {
+if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit"].some((k) => params.has(k))) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
@@ -3257,13 +3284,18 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     document.body.appendChild(tag);
   };
   const zoomNow = () => camera()?.zoom ?? NaN;
-  /** A pinch about viewport point `p` (the viewport's centre unless given) until the zoom is `z`, as few events as the camera allows. */
-  const pinchTo = async (z: number, p?: { x: number; y: number }) => {
+  /**
+   * A pinch about viewport point `p` (the viewport's centre unless given) until the zoom is `z`, at most `step` (×2)
+   * an event, an event a frame; `each` after every one.
+   */
+  const pinchTo = async (z: number, p?: { x: number; y: number }, o: { step?: number; each?: () => void } = {}) => {
     const r = vp().getBoundingClientRect();
     const at = p ?? { x: r.width / 2, y: r.height / 2 };
-    for (let i = 0; i < 40 && Math.abs(zoomNow() - z) > 1e-4; i++) {
-      vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: r.left + at.x, clientY: r.top + at.y, ctrlKey: true, deltaY: Math.max(-69, Math.min(69, -Math.log(z / zoomNow()) / 0.01)) }));
+    const most = o.step ? Math.log(o.step) / 0.01 : 69;
+    for (let i = 0; i < 80 && Math.abs(zoomNow() - z) > 1e-4; i++) {
+      vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, clientX: r.left + at.x, clientY: r.top + at.y, ctrlKey: true, deltaY: Math.max(-most, Math.min(most, -Math.log(z / zoomNow()) / 0.01)) }));
       await sleep(16);
+      o.each?.();
     }
   };
   const keyOf = (el: Element) => el.closest<HTMLElement>(".ls-node")?.dataset.ws ?? "";
@@ -3286,6 +3318,8 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       near: nodes.filter((n) => hit(n, { x: mx, y: my })).map(keyOf),
       selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-ws") ?? null,
       webgl: (w.__mbWebglCount as (() => number) | undefined)?.() ?? null,
+      // contexts made and not lost: what Chromium counts against its limit, given up or not
+      glAlive: (w.__mbGlAlive as (() => number) | undefined)?.() ?? null,
       canvases: [...document.querySelectorAll(".ls-world .xterm-screen")].filter((s) => s.querySelector("canvas")).length,
     };
   };
@@ -3307,6 +3341,8 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     try {
       await sleep(1500);
       out.fit = where();
+      // the cell the cards' ptys were sized by, with nothing attached yet
+      out.cellAtFit = (w.__mbLandscapeCell as (() => { w: number; h: number } | null) | undefined)?.() ?? null;
       const mark = resizes().length;
       await pinchTo(0.6);
       await sleep(700);
@@ -3381,8 +3417,24 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       await pinchTo(0.6, { x: r.left + r.width / 2 - v.left, y: r.top + r.height / 2 - v.top });
       await sleep(500);
       out.zoomedDown = { liveWrote, keyboard: document.activeElement === vp() ? "landscape" : document.activeElement?.closest(".xterm") ? "terminal" : String(document.activeElement?.tagName) };
+      out.cellMeasured = measuredCell(term(id)!);
+
+      // a pinch out from 100% to 25%, a frame at a time: what it attaches on the way, and the WebGL contexts it makes
+      await pinchTo(1, { x: r.left + r.width / 2 - v.left, y: r.top + r.height / 2 - v.top });
+      await sleep(700);
+      const from = where();
+      const madeBefore = (w.__mbGlMade as (() => number) | undefined)?.() ?? 0;
+      let most = 0;
+      const count = () => (most = Math.max(most, document.querySelectorAll(".ls-world .xterm").length));
+      await pinchTo(0.25, undefined, { step: 1.06, each: count });
+      const madeOnTheWay = ((w.__mbGlMade as (() => number) | undefined)?.() ?? 0) - madeBefore;
+      await sleep(700);
+      out.pinchOut = { from: from.attached.length, most, made: madeOnTheWay, end: where() };
+
       out.said = said.filter((m) => m.includes("DOM renderer") || m.includes("WebGL"));
       out.resizedAtAll = resizes().slice(mark);
+      // from the page's start: every pty told one size, at most
+      out.ptySizes = resizes();
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);
     }
@@ -3491,10 +3543,162 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const whileSpace = !!peekEl();
       keyUp(vp(), " ");
       out.panning = { whileSpace };
+
+      // a jump to the session whose terminal a kept-open peek has (⌥⇥ to the one that needs you) leaves the keyboard
+      // with the landscape: nothing typed after it, nor into its terminal focused directly, reaches the session
+      const wid = document.querySelector<HTMLElement>(".ls-world .ls-node.st-waiting")?.dataset.front ?? "";
+      const rw = node(wid)!.getBoundingClientRect();
+      const vw = vp().getBoundingClientRect();
+      over(vp());
+      await pinchTo(0.5, { x: rw.left + rw.width / 2 - vw.left, y: rw.top + rw.height / 2 - vw.top });
+      await sleep(700);
+      over(node(wid)!.querySelector(".ls-term") ?? node(wid)!);
+      await sleep(450);
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      await sleep(80);
+      const w1 = writesTo(wid).length;
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", altKey: true, bubbles: true, cancelable: true }));
+      await sleep(400);
+      const keyboardOf = () => (document.activeElement === vp() ? "landscape" : document.activeElement?.closest(".ls-peek") ? "peek" : document.activeElement?.closest(".xterm") ? "terminal" : String(document.activeElement?.tagName));
+      const afterJump = keyboardOf();
+      // (Enter on the landscape would focus the selected workspace, which takes keys: that's not typing into the peek)
+      key(document.activeElement ?? document.body, "a");
+      term(wid)!.focus();
+      const afterFocus = keyboardOf();
+      key(term(wid)!.textarea!, "a");
+      key(term(wid)!.textarea!, "Enter");
+      await sleep(150);
+      out.jump = { wid, selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-front") ?? null, pinned: !!peekEl()?.classList.contains("pinned"), lent: inPeek(wid), afterJump, afterFocus, tabIndex: term(wid)!.textarea!.tabIndex, wrote: writesTo(wid).slice(w1) };
+
+      // a dialog open over a kept-open peek has Space and Esc first: Esc closes the dialog, and the peek stays
+      document.querySelector<HTMLElement>(".help-link")!.click();
+      await sleep(300);
+      const dialog = !!document.querySelector(".modal-back:not(.mb-ghost)");
+      const target = document.activeElement ?? document.body;
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await sleep(400);
+      out.overlay = { dialog, closed: !document.querySelector(".modal-back:not(.mb-ghost)"), peek: peekEl()?.dataset.peek ?? null, pinned: !!peekEl()?.classList.contains("pinned") };
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await sleep(150);
+
+      // the peeked stack brings another tab to the front: the peek ends, and leaves no terminal behind in it
+      const stackNode = node(wid)!;
+      const ws = stackNode.dataset.ws ?? "";
+      over(vp());
+      over(stackNode.querySelector(".ls-term") ?? stackNode);
+      await sleep(450);
+      const stackPeek = peekEl()?.dataset.peek ?? null;
+      const tab = stackNode.querySelector<HTMLElement>(".ls-tab:not(.on)");
+      tab?.click();
+      await sleep(400);
+      out.front = { ws, opened: stackPeek, front: document.querySelector(`.ls-world [data-ws="${CSS.escape(ws)}"]`)?.getAttribute("data-front") ?? null, peek: !!peekEl(), strays: document.querySelectorAll(".ls-peek .xterm").length, oldIn: inPeek(wid) };
+
+      // kept open from a card, then zoomed into the read-only band: the workspace shows its screen, not a blank
+      over(vp());
+      key(vp(), "0", { metaKey: true });
+      await sleep(600);
+      over(node("s1")!.querySelector(".ls-card")!);
+      await sleep(450);
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      await sleep(80);
+      const r1 = node("s1")!.getBoundingClientRect();
+      const v1 = vp().getBoundingClientRect();
+      await pinchTo(0.5, { x: r1.left + r1.width / 2 - v1.left, y: r1.top + r1.height / 2 - v1.top });
+      await sleep(700);
+      out.kept = { peek: peekEl()?.dataset.peek ?? null, mode: node("s1")?.classList.contains("snapshot") ? "snapshot" : node("s1")?.className ?? null, snap: node("s1")?.querySelector(".ls-snap")?.textContent?.includes("Make the org dropdown remember") ?? false };
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);
     }
     report("mb-landscape-peek-audit", out);
+  });
+
+  // ?landscapeRemoteAudit: a teammate's terminal at its owner's size whatever shows it: as a card at fit (made by the
+  // card, never by a pane), as the owner resizes while it's a card and while it's peeked, and attached at 100%; what
+  // the owner draws at a column only their width has lands there; no pty of theirs is resized from here. Into
+  // <script id="mb-landscape-remote-audit">.
+  if (params.has("landscapeRemoteAudit")) waitFor(`.ls-world [data-front="${CSS.escape(NICK_PANE)}"] .ls-card`, async () => {
+    const out: Record<string, unknown> = {};
+    const remotes = live.remote.map((s) => s.id);
+    const sizes = () => Object.fromEntries(remotes.filter((id) => term(id)).map((id) => [id, sizeOf(id)]));
+    const owners = () => Object.fromEntries(live.remote.map((s) => [s.id, `${s.room!.cols}×${s.room!.rows}`]));
+    const ownerResize = (cols: number, rows: number) => {
+      const nick = live.remote.find((s) => s.id === NICK_PANE)!;
+      nick.room = { ...nick.room!, cols, rows };
+      emit("onTeamLive", clone(live));
+    };
+    const peekEl = () => document.querySelector<HTMLElement>(".ls-peek");
+    const attached = () => !!term(NICK_PANE)?.element?.isConnected;
+    try {
+      await sleep(1200);
+      out.atFit = { sizes: sizes(), owners: owners(), attached: attached() };
+      // the owner's window narrows while it's a card, and they draw at column 90
+      ownerResize(96, 28);
+      await sleep(300);
+      const draw = "\r\n\x1b[90Gend";
+      buffers[NICK_PANE] += draw;
+      emit("onSessionData", NICK_PANE, draw);
+      await sleep(200);
+      out.card = { size: sizeOf(NICK_PANE), attached: attached(), endAt: (linesOf(term(NICK_PANE)!).at(-1) ?? "").indexOf("end") };
+      // peeked, and the owner's window widens meanwhile: it follows, still fitted to the peek
+      node(NICK_PANE)!.querySelector(".ls-card")!.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+      await sleep(450);
+      const opened = peekEl()?.dataset.peek ?? null;
+      ownerResize(104, 30);
+      await sleep(300);
+      const screen = term(NICK_PANE)?.element?.querySelector(".xterm-screen")?.getBoundingClientRect();
+      const box = peekEl()?.querySelector(".ls-peek-term")?.getBoundingClientRect();
+      out.peek = { opened, inPeek: !!term(NICK_PANE)?.element?.closest(".ls-peek"), size: sizeOf(NICK_PANE), fits: !!screen && !!box && screen.width <= box.width + 1 && screen.height <= box.height + 1 };
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await sleep(150);
+      // 100% about its workspace: attached at its owner's size, and following it there too
+      const r = node(NICK_PANE)!.getBoundingClientRect();
+      const v = vp().getBoundingClientRect();
+      vp().dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+      await pinchTo(1, { x: r.left + r.width / 2 - v.left, y: r.top + r.height / 2 - v.top });
+      await sleep(700);
+      const inNode = !!term(NICK_PANE)?.element?.closest(`.ls-world [data-front="${CSS.escape(NICK_PANE)}"] .term-holder`);
+      const atLive = sizeOf(NICK_PANE);
+      ownerResize(100, 30);
+      await sleep(300);
+      out.live = { inNode, size: atLive, followed: sizeOf(NICK_PANE) };
+      // and back to fit, where nothing shows it: the owner resizes once more
+      key(vp(), "0", { metaKey: true });
+      await sleep(600);
+      ownerResize(90, 26);
+      await sleep(300);
+      out.away = { attached: attached(), size: sizeOf(NICK_PANE) };
+      out.resized = resizes().filter((x) => remotes.some((id) => x.startsWith(`${id} `)));
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-remote-audit", out);
+  });
+
+  // ?landscapeRestartAudit: Restart all (the status bar's button and its dialog) at fit gives the restarted sessions
+  // new terminals; output after it still reaches their cards. Into <script id="mb-landscape-restart-audit">.
+  if (params.has("landscapeRestartAudit")) waitFor('.ls-world [data-front="s5"] .ls-card', async () => {
+    const out: Record<string, unknown> = {};
+    const line = () => node("s5")?.querySelector(".ls-card-line")?.textContent ?? null;
+    try {
+      await sleep(1200);
+      const before = term("s5");
+      const lineBefore = line();
+      document.querySelector<HTMLElement>(".sb-update")!.click();
+      await sleep(300);
+      const confirm = document.querySelector<HTMLElement>(".close-dlg .primary");
+      const label = confirm?.textContent ?? null;
+      confirm!.click();
+      await sleep(800);
+      const more = "\r\n⏺ After the restart: the tag list is memoized\r\n";
+      buffers.s5 += more;
+      emit("onSessionData", "s5", more);
+      await sleep(900);
+      out.restart = { label, restarted: calls.some((c) => c.fn === "restartAllSessions"), newTerm: !!term("s5") && term("s5") !== before, lineBefore, lineAfter: line() };
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-restart-audit", out);
   });
 }
 // ?landscapePerf (with ?landscapeMany=<n>): frame times while the landscape is panned and pinch-zoomed at 100%, 60%

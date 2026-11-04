@@ -9,17 +9,26 @@ import type { Terminal } from "@xterm/xterm";
  * and says why. Which renderer draws a terminal never changes its pty's size (cachedTerm.ts, fontCell).
  */
 export const GL_MAX = 12;
+/**
+ * How many contexts are made in one frame. Making one costs a few milliseconds, and a band change attaches every
+ * workspace on screen at once: the rest draw with the DOM renderer for the frames they wait.
+ */
+export const GL_PER_FRAME = 2;
 /** The UI preview lowers the cap to check what happens past it. */
 const glMax = () => (globalThis as { __mbGlMax?: number }).__mbGlMax ?? GL_MAX;
 
-export type Renderer = "webgl" | "dom";
-
-const live = new Map<Terminal, WebglAddon>();
-/** Attached terminals past the cap, in the order they came: the first gets the next context given up. */
+interface Live {
+  addon: WebglAddon;
+  /** The canvases the addon put in the terminal's screen: its WebGL context is one of theirs. */
+  canvases: HTMLCanvasElement[];
+}
+const live = new Map<Terminal, Live>();
+/** Attached terminals waiting for a context, in the order they asked: those past the cap wait for one to be given up. */
 const waiting = new Map<Terminal, string>();
 /** Terminals whose WebGL context couldn't be made: they keep the DOM renderer. */
 const failed = new WeakSet<Terminal>();
 const said = new Set<string>();
+let frame = 0;
 
 /** Why a session's terminal draws with the DOM renderer, said once per session and reason. */
 function domBecause(id: string, why: string): void {
@@ -29,18 +38,38 @@ function domBecause(id: string, why: string): void {
   console.warn(`[mockingbird] terminal ${id} draws with the DOM renderer: ${why}`);
 }
 
-/** Draw an open terminal with WebGL, unless the cap is reached or no context can be made: which renderer it got. */
-export function webglOn(term: Terminal, id: string): Renderer {
-  if (live.has(term)) return "webgl";
-  if (!term.element || failed.has(term)) return "dom";
-  if (live.size >= glMax()) {
-    waiting.set(term, id);
-    domBecause(id, `${glMax()} terminals already draw with WebGL, the most at once (Chromium drops WebGL contexts past about 16); it takes the next one given up`);
-    return "dom";
+/**
+ * Draw an open terminal with WebGL once a context can be had for it: within GL_PER_FRAME a frame, and only while
+ * fewer than the cap draw with it. Meanwhile, and for good when no context can be made, it draws with the DOM.
+ */
+export function webglOn(term: Terminal, id: string): void {
+  if (live.has(term) || waiting.has(term) || !term.element || failed.has(term)) return;
+  if (live.size + waiting.size >= glMax()) domBecause(id, `${glMax()} terminals already draw with WebGL, the most at once (Chromium drops WebGL contexts past about 16); it takes the next one given up`);
+  waiting.set(term, id);
+  schedule();
+}
+
+function schedule(): void {
+  if (!frame && waiting.size && live.size < glMax()) frame = requestAnimationFrame(pump);
+}
+
+function pump(): void {
+  frame = 0;
+  let made = 0;
+  for (const [term, id] of waiting) {
+    if (made >= GL_PER_FRAME || live.size >= glMax()) break;
+    waiting.delete(term);
+    // webglOff takes a terminal that leaves the page out of the queue: one still here but not in the page was disposed
+    if (!term.element?.isConnected) continue;
+    made++;
+    make(term, id);
   }
-  waiting.delete(term);
+  schedule();
+}
+
+function make(term: Terminal, id: string): void {
   const addon = new WebglAddon();
-  const screen = term.element.querySelector(".xterm-screen");
+  const screen = term.element?.querySelector(".xterm-screen");
   const had = new Set(screen?.querySelectorAll("canvas"));
   try {
     term.loadAddon(addon);
@@ -52,14 +81,14 @@ export function webglOn(term: Terminal, id: string): Renderer {
     failed.add(term);
     domBecause(id, `its WebGL context couldn't be made (${err instanceof Error ? err.message : String(err)})`);
     disposeAddon(addon, id);
-    return "dom";
+    return;
   }
-  live.set(term, addon);
+  live.set(term, { addon, canvases: [...(screen?.querySelectorAll("canvas") ?? [])].filter((c) => !had.has(c)) });
   addon.onContextLoss(() => {
+    if (live.get(term)?.addon !== addon) return;
     console.warn(`[mockingbird] terminal ${id} lost its WebGL context; it draws with the DOM renderer until it's attached again`);
     webglOff(term, id);
   });
-  return "webgl";
 }
 
 /**
@@ -68,13 +97,30 @@ export function webglOn(term: Terminal, id: string): Renderer {
  */
 export function webglOff(term: Terminal, id: string): void {
   waiting.delete(term);
-  const addon = live.get(term);
-  if (!addon) return;
+  const gl = live.get(term);
+  if (!gl) return;
   live.delete(term);
-  disposeAddon(addon, id);
-  for (const [next, nextId] of waiting) {
-    waiting.delete(next);
-    if (next.element?.isConnected && webglOn(next, nextId) === "webgl") break;
+  loseContexts(gl.canvases);
+  disposeAddon(gl.addon, id);
+  schedule();
+}
+
+let noLoseContext = false;
+/**
+ * Free a given-up context now. The addon's dispose leaves it to the garbage collector, and until then Chromium
+ * counts it against its limit, so the cap alone wouldn't keep a live terminal's context from being dropped.
+ */
+function loseContexts(canvases: HTMLCanvasElement[]): void {
+  for (const c of canvases) {
+    // null for the link layer's 2D canvas
+    const gl = c.getContext("webgl2") as WebGL2RenderingContext | null;
+    if (!gl || gl.isContextLost()) continue;
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+    else if (!noLoseContext) {
+      noLoseContext = true;
+      console.warn("[mockingbird] WEBGL_lose_context isn't there: a terminal's WebGL context, given up, is freed only when it's garbage collected");
+    }
   }
 }
 

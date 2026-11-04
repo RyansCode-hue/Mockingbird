@@ -42,6 +42,7 @@ export function WorkspaceNode({
   meters,
   snapshot,
   inv,
+  gen,
   onSelect,
   onFocus,
   onBack,
@@ -60,6 +61,8 @@ export function WorkspaceNode({
   snapshot?: string | null;
   /** 1 / the camera's zoom when it rendered, which a card's type is sized by (the landscape keeps it current as it zooms). */
   inv: number;
+  /** The front session's terminal's generation (main.tsx's termKey): a restart gives it a new terminal, which whatever reads the old one must take up. */
+  gen: string;
   /** A press on it; `header` when it was on the header (or a card), which leaves the keyboard with the landscape. */
   onSelect: (tile: Tile, header: boolean) => void;
   onFocus: (tile: Tile) => void;
@@ -73,9 +76,7 @@ export function WorkspaceNode({
   const tokens = meter ? totalTokens(meter.tokens) : 0;
   const waiting = tile.members.some((m) => m.status === "waiting");
   const away = mode === "card" || mode === "still" || mode === "snapshot";
-  useEffect(() => {
-    if (away) holdSize(s, size);
-  }, [away, s.id, s.createdAt, s.status === "dead", size.w, size.h]);
+  useEffect(() => (away ? holdSize(s, size) : undefined), [away, s.id, s.createdAt, s.status === "dead", size.w, size.h, gen]);
   const style: React.CSSProperties =
     mode === "focus"
       ? { width: size.w, height: size.h }
@@ -91,7 +92,7 @@ export function WorkspaceNode({
       onDoubleClick={card ? () => onFocus(tile) : undefined}
     >
       {card ? (
-        <WorkspaceCard tile={tile} name={name} meters={meters} />
+        <WorkspaceCard key={gen} tile={tile} name={name} meters={meters} />
       ) : (
         <>
           <div

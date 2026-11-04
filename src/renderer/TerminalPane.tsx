@@ -16,7 +16,7 @@ import { isViewControl } from "../shared/termInput";
 import { shortReason } from "../shared/phoneAlerts";
 import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
-import { anchorToContent, attachTerm, dataPump, fitTerm, followFixedSize, followPlacement, followSize, followsBottom, jumpToLatest, makeTerm, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
+import { anchorToContent, attachTerm, dataPump, fitTerm, followFixedSize, followPlacement, followSize, followsBottom, jumpToLatest, makeTerm, measuredCell, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
 import { TypingAsks, TypingChip, TypingRefused, Typists, typingOn } from "./team/Typing";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
@@ -30,7 +30,7 @@ import { baseName } from "../shared/paths";
 import { settled } from "./settled";
 import { StatusDot } from "./StatusDot";
 import { useHandover } from "./motion";
-import { CELL_ESTIMATE, LANDSCAPE_FONT, colsRows } from "../shared/landscape";
+import { LANDSCAPE_FONT, colsRows } from "../shared/landscape";
 import { webglOff, webglOn } from "./termGl";
 
 export { applyTermTheme } from "./cachedTerm";
@@ -64,6 +64,8 @@ interface TermEntry extends CachedTerm, MouseModeState, SizedTerm {
   columnSelect: boolean; // the last press started a column (rectangular) selection
   /** Fit again: a teammate's session to its owner's size (it or the largest font changed), a landscape workspace to its size. */
   refit?: () => void;
+  /** Lent to a landscape peek (lendTerm): it takes no keyboard, and a request for it goes here instead. */
+  lent?: () => void;
 }
 const terms = new Map<string, TermEntry>();
 (window as any).__mbTerms = terms; // diagnostics: inspect a pane's terminal from devtools
@@ -327,8 +329,12 @@ function termFor(session: SessionInfo, fontSize: number): TermEntry {
     // a session id keeps its agent and shell flag through restarts, and a
     // resumed pane gets a fresh entry, so the policy is fixed per entry
     const mousePolicy = mousePolicyFor(session, remoteEntry);
+    // a teammate's session prints for its owner's terminal, from its first byte: parsed at another width, its
+    // redraws land in the wrong cells for good (followOwners keeps it there)
+    const owner = remoteEntry && session.room ? { cols: session.room.cols, rows: session.room.rows } : {};
     const { term, fit } = makeTerm({
       fontSize,
+      ...owner,
       lineHeight: 1.4,
       scrollback: 8000,
       allowProposedApi: true,
@@ -662,7 +668,11 @@ export function TerminalPane({
     if (remoteEntry) {
       const fixed = followFixedSize(entry, holder.current, () => ownerSize.current, () => landscapeNow.current?.font ?? fontSizeFor(densityNow.current));
       entry.refit = fixed.refit;
-      stopFollowing = fixed.stop;
+      stopFollowing = () => {
+        fixed.stop();
+        // unattached, followOwners keeps it at its owner's size
+        if (sized.refit === fixed.refit) sized.refit = undefined;
+      };
     } else if (landscapeNow.current) {
       // the terminal is cached across the grid and the landscape, each with its own font
       if (term.options.fontSize !== landscapeNow.current.font) term.options.fontSize = landscapeNow.current.font;
@@ -1367,8 +1377,51 @@ export function disposeTerm(id: string): void {
   terms.delete(id);
 }
 
-/** The cell landscape terminals were last measured at, at LANDSCAPE_FONT; the estimate until one has been. */
-let landscapeCell: { w: number; h: number } | null = null;
+/**
+ * Keep each teammate's cached terminal at its owner's size, whatever shows it: a pane follows it itself (its
+ * refit), and a card, a peek or nothing at all is resized here. Their output is drawn for that size; parsed at
+ * another, its cursor-relative redraws stay mangled in the buffer. Their pty is never resized from here.
+ */
+export function followOwners(sessions: readonly SessionInfo[]): void {
+  for (const s of sessions) {
+    const room = s.room?.remote ? s.room : null;
+    const e = room ? terms.get(s.id) : undefined;
+    if (!room || !e || e.refit || (e.term.cols === room.cols && e.term.rows === room.rows)) continue;
+    e.term.resize(room.cols, room.rows);
+  }
+}
+
+type Cell = { w: number; h: number };
+/** The cell landscape terminals measure at LANDSCAPE_FONT: by the first one attached, or by landscapeCellReady's probe. */
+let landscapeCell: Cell | null = null;
+let cellProbe: Promise<Cell | null> | null = null;
+(window as { __mbLandscapeCell?: () => Cell | null }).__mbLandscapeCell = () => landscapeCell; // the UI preview's checks
+
+/**
+ * The cell for sizing the pty of a workspace nothing has attached yet. Before any landscape terminal has been
+ * attached it's measured in one opened off screen for the purpose, at the same font, once the fonts are in: a
+ * guess would cost the pty a resize when its terminal is attached and measures the real one.
+ */
+function landscapeCellReady(): Promise<Cell | null> {
+  if (landscapeCell) return Promise.resolve(landscapeCell);
+  cellProbe ??= (document.fonts?.ready ?? Promise.resolve()).then(() => {
+    if (landscapeCell) return landscapeCell;
+    const host = document.createElement("div");
+    host.style.cssText = "position: fixed; left: -10000px; top: 0; width: 400px; height: 200px; visibility: hidden; pointer-events: none";
+    document.body.appendChild(host);
+    const { term } = makeTerm({ fontSize: LANDSCAPE_FONT, lineHeight: 1.4 });
+    try {
+      term.open(host);
+      landscapeCell ??= measuredCell(term);
+    } finally {
+      term.dispose();
+      host.remove();
+    }
+    if (!landscapeCell) console.warn("[mockingbird] couldn't measure the landscape's terminal cell off screen: a workspace's pty keeps its size until its terminal is attached");
+    return landscapeCell;
+  });
+  return cellProbe;
+}
 
 /** A session's cached terminal for a landscape card to read: made, and its saved output replayed, if it isn't yet. */
 export function landscapeTerm(session: SessionInfo): Terminal {
@@ -1380,18 +1433,24 @@ export function landscapeTerm(session: SessionInfo): Terminal {
  * followPlacement does for one that's attached: colsRows of `size` at the cell landscape terminals measure, the
  * pty told only when that differs from what it has. So a card's buffer is the width the agent draws for, and
  * attaching it again (zooming in, panning back) finds its pty at that size already: a band change never resizes
- * one. A teammate's session keeps its owner's size, and a terminal a pane follows is left to the pane.
+ * one. A teammate's session keeps its owner's size (followOwners), and a terminal a pane follows is left to the
+ * pane. Returns the stop, for a hold still waiting for the cell to be measured.
  */
-export function holdSize(session: SessionInfo, size: { w: number; h: number }): void {
-  if (session.status === "dead" || isRemotePaneId(session.id)) return;
+export function holdSize(session: SessionInfo, size: { w: number; h: number }): () => void {
+  if (session.status === "dead" || isRemotePaneId(session.id)) return () => undefined;
   const e = termFor(session, LANDSCAPE_FONT);
-  if (e.refit) return;
-  const cell = landscapeCell ?? CELL_ESTIMATE;
-  const { cols, rows } = colsRows(size.w, size.h, cell.w, cell.h);
-  if (e.term.cols !== cols || e.term.rows !== rows) e.term.resize(cols, rows);
-  if (e.ptySize?.cols === cols && e.ptySize.rows === rows) return;
-  e.ptySize = { cols, rows };
-  window.mb.sessionResize(session.id, cols, rows);
+  let on = true;
+  const hold = (cell: Cell | null) => {
+    if (!on || !cell || e.refit || terms.get(session.id) !== e) return;
+    const { cols, rows } = colsRows(size.w, size.h, cell.w, cell.h);
+    if (e.term.cols !== cols || e.term.rows !== rows) e.term.resize(cols, rows);
+    if (e.ptySize?.cols === cols && e.ptySize.rows === rows) return;
+    e.ptySize = { cols, rows };
+    window.mb.sessionResize(session.id, cols, rows);
+  };
+  if (landscapeCell) hold(landscapeCell);
+  else void landscapeCellReady().then(hold);
+  return () => void (on = false);
 }
 
 /** A session's cached terminal's screen as plain text, its rows as they show now: a peeked workspace's stand-in. */
@@ -1406,26 +1465,49 @@ export function screenText(id: string): string | null {
 
 /**
  * Show a session's cached terminal in `holder` (a landscape peek) at its own size, its font fitted to the holder
- * up to `maxFont` (followFixedSize): its pty is never resized, and the terminal is never given the keyboard.
- * Returns the hand-back, which puts its font back while it's still in the page (xterm measures a font only in
- * the page, and the next pane sizes its pty by that measure) and gives its WebGL context up; null when the
- * session has no cached terminal.
+ * up to `maxFont` (followFixedSize), and fitted again when its size changes (its owner's, for a teammate's): its
+ * pty is never resized. It never takes the keyboard while lent: focusTerm sends a request for it to `onKeys`, it
+ * can't be tabbed to, and a focus that reaches it anyway goes to `onKeys` before xterm sees it (xterm would tell a
+ * program that asked for focus reports). Returns the hand-back, which puts its font back while it's still in the
+ * page (xterm measures a font only in the page, and the next pane sizes its pty by that measure) and gives its
+ * WebGL context up; null when the session has no cached terminal.
  */
-export function lendTerm(id: string, holder: HTMLElement, maxFont: number): (() => void) | null {
+export function lendTerm(id: string, holder: HTMLElement, maxFont: number, onKeys: () => void): (() => void) | null {
   const e = terms.get(id);
   if (!e) return null;
   const { term } = e;
   const font = term.options.fontSize;
+  const area = term.textarea;
+  if (area && document.activeElement === area) onKeys();
+  e.lent = onKeys;
+  const tab = area?.tabIndex;
+  if (area) area.tabIndex = -1;
+  const refuse = (ev: FocusEvent) => {
+    if (ev.target !== area) return;
+    ev.stopPropagation();
+    if (ev.type === "focus") onKeys();
+  };
+  holder.addEventListener("focus", refuse, true);
+  holder.addEventListener("blur", refuse, true);
   attachTerm(term, holder);
   const fixed = followFixedSize(e, holder, () => ({ cols: term.cols, rows: term.rows }), () => maxFont);
+  const resized = term.onResize(() => fixed.refit());
   webglOn(term, id);
   return () => {
+    resized.dispose();
     fixed.stop();
+    holder.removeEventListener("focus", refuse, true);
+    holder.removeEventListener("blur", refuse, true);
+    if (area && tab !== undefined) area.tabIndex = tab;
+    if (e.lent === onKeys) e.lent = undefined;
     if (term.options.fontSize !== font) term.options.fontSize = font;
     webglOff(term, id);
   };
 }
 
+/** Give a session's terminal the keyboard; one lent to a peek sends the request on instead (lendTerm). */
 export function focusTerm(id: string): void {
-  terms.get(id)?.term.focus();
+  const e = terms.get(id);
+  if (e?.lent) return e.lent();
+  e?.term.focus();
 }
