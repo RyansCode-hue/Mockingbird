@@ -1,7 +1,7 @@
 # Landscape, phase 1: build plan
 
-Status: S1 (model, store, migration) and S2 (the surface, behind Settings →
-Labs → Landscape) built; S3 next. The spec is
+Status: S1 (model, store, migration), S2 (the surface, behind Settings →
+Labs → Landscape) and S3 (semantic zoom and peek) built; S4 next. The spec is
 [landscape.md](landscape.md); this file is how its phase 1 gets built.
 
 Phase 1 replaces the grid with the landscape: workspaces, areas, stacks, the
@@ -215,6 +215,111 @@ default until S7.
   - the mouse at zoom other than 100%: correcting xterm's coordinates for the
     scale (instead of turning the mouse off there) is a possible later
     improvement, once the live and read-only bands settle where it matters.
+- **As built:**
+  - **The bands** live in `landscapeModel.ts`: `BAND_LIVE` 0.75, `BAND_CARDS`
+    0.35. Entering a band takes its own edge (75% and up is always live); a
+    band is kept zooming out until the zoom is `BAND_SLACK` (4%) past its
+    edge. Into cards is at once, since it only lets terminals go (a first
+    fit or ⌘0 would otherwise attach everything a zoom-out brings on screen);
+    into a band with terminals waits `BAND_SETTLE_MS` (150 ms) for the zoom
+    to rest there, so a pinch through 35–75% attaches nothing. The band is a
+    class on the viewport (`ls-band-live|readonly|cards`).
+  - **What attaches.** A workspace gets a `TerminalPane` (and its xterm) only
+    in the live and read-only bands and only while on screen, counting a
+    quarter of the viewport past each edge (`ON_SCREEN_MARGIN`); at 75% and
+    up the selected one too, so the keyboard stays in it while it's panned
+    away. The focused one is always live, and while one is focused nothing
+    behind the overlay is attached. Everything else is a card (cards band,
+    on screen) or a bare frame (`still`). Only a band change or a workspace
+    coming on screen or leaving it re-renders the workspaces.
+  - **Nothing unmounted runs a timer.** The ticker, git and PR reads and the
+    folder watch belong to the `TerminalPane`, which cards and frames don't
+    mount. The terminal itself is made apart from any pane (`termFor`), so a
+    card can read one no pane has opened, and the data pump keeps every
+    buffer current.
+  - **No band change resizes a pty.** A terminal nothing attaches is kept at
+    its workspace's size by `holdSize` (colsRows at the cell landscape
+    terminals last measured, `CELL_ESTIMATE` before any), so attaching it
+    finds its pty at that size. And a landscape pty is sized by the font's
+    cell as the DOM renderer lays it out (`fontCell`), whichever renderer
+    draws it: WebGL floors the character's width to device pixels (7.5 px at
+    2×, 7 at 1×), which would otherwise give more columns.
+  - **Cards (C)** show the status dot, title and ticket; the "what it did"
+    line; and the agent chip, status, a stack's tab count or a teammate's
+    name, and tokens. Their type keeps its size on screen (`--ls-inv`, set
+    with the areas'), and areas are solid patches in the cards band until S4's
+    `AreaFrame`. The line is `lastMeaningfulLine` of the cached buffer's last
+    40 lines, read again 500 ms after output arrives: the newest line with a
+    letter or digit (so no blank, spinner-only, rule or empty-box line), an
+    agent's own frame (its prompt box or the rules around its input, and the
+    hints under them) left out first. An exited session's card reads its
+    saved output once, and says so when that fails.
+  - **WebGL** (`termGl.ts`) draws every attached landscape terminal and the
+    peek; the grid keeps the DOM renderer. At most `GL_MAX` (12) at once;
+    past that a terminal draws with the DOM renderer and takes the next
+    context given up. A context that can't be made, or is lost, means the DOM
+    renderer too. Each is said once per session and reason, with the session
+    id. A terminal whose context couldn't be made isn't tried again: the
+    addon leaves its link layer's canvas and listeners behind on a failure
+    (the canvas is taken out). The preview's headless Chrome has WebGL2
+    (ANGLE on Metal), so the WebGL path is what the tests run; `?glMax=<n>`
+    and `?glFail` exercise the cap and the fallback. Copy-on-select and the
+    agent wrap-join read the buffer, so they're the same under WebGL
+    (`?copyAudit` with `?labs=landscape`).
+  - **The read-only band** takes no keys: a press on a terminal selects its
+    workspace and the landscape keeps the keyboard, a double-click focuses,
+    and a terminal that had the keyboard as the zoom went down gives it back.
+    Between 75% and 100% a press still gives the terminal the keyboard, as in
+    S2; below 75% it no longer does, and the S2 mouse audit expects that.
+  - **The peek** opens after the pointer rests 300 ms on a card or a
+    read-only workspace (never while dragging, panning with Space or a
+    button held, never at 75% and up, never for an exited session). It's the
+    workspace at its 100% size, shrunk to fit 80% × 86% of the viewport and
+    centred on it. Its terminal is lent (`lendTerm`) once the workspace's
+    pane has let it go, at its own cols × rows with its font fitted to the
+    box, and handed back while the peek is still in the page, its font put
+    back where xterm can measure it. A read-only workspace shows its screen
+    as text meanwhile; a card stays a card. Space keeps it open (and lets it
+    go again); Esc, moving onto another workspace or the bare landscape, a
+    press elsewhere, or moving the camera closes it; a click focuses the
+    workspace. It fades and scales in under full motion and appears at once
+    under reduce.
+  - **Performance**, 30 workspaces (`?landscapeMany=30`, seven agents' spinners
+    redrawing) in headless Chrome at 1400 × 900 (`?landscapePerf`), two runs
+    each at 1× and 2×, S2 (5fae805) against S3:
+
+    | | S2 | S3 |
+    | --- | --- | --- |
+    | xterms mounted at 30% / 60% / 100% | 30 / 30 / 30 | 0 / 8 / 4 |
+    | DOM elements at 30% / 60% / 100% | 4878 | 1131 / 1281 / 1229 |
+    | panning and pinching: frame interval p95 / max | 16.8 / 16.8 ms | 16.8 / 16.8 ms |
+    | panning: main thread per frame, mean / p95 | 2.2–2.9 / 3.2–3.8 ms | 2.5–2.8 / 4.5–8.8 ms |
+    | at rest: main thread per frame, p95 | 2.4–4.2 ms | 2.8–3.2 ms |
+    | startup: long frames | 3, 350–420 ms in all | 1, 74–81 ms |
+    | sweep 100% → 30% → 100%: worst frame | 16.8 ms | 58–75 ms |
+
+    Both hold the display's 60 Hz while panning and pinching at every zoom,
+    so this machine shows the gain as headroom (a quarter of the DOM, a
+    fraction of the terminals) and a quicker start, not as faster frames.
+    The one long frame in S3's sweep is the settle into a band attaching its
+    terminals and making their WebGL contexts at once; with `?glFail` it's
+    gone (16.8 ms). Spreading those across frames is left for later.
+  - **Preview:** `?landscapeMany=<n>`, `?landscapePerf`,
+    `?landscapeZoomAudit`, `?landscapePeekAudit`, `?lsPeek=<id>[,pin]`,
+    `?glMax`, `?glFail`. The S2 audits start at 100% and bring each workspace
+    into view before measuring it, since only workspaces on screen have a
+    terminal.
+  - **Left for S4 and later:**
+    - `teamLiveView` should report the workspaces on screen: `keysOnScreen`
+      (`seen` in `Landscape`) is that list;
+    - a collapsed area's workspaces should count as off screen, and the
+      go-to-area fly should go through `apply` so the band and what's on
+      screen follow it (a fly through the read-only band attaches only where
+      it ends);
+    - S4's marquee and S5's drags start with a press, which already ends a
+      peek and its hover; they should also hold the peek off while they run;
+    - S6's badges and its transcript-based "what it did" line go on the card;
+    - correcting xterm's mouse coordinates for the scale (left from S2).
 
 ### S4 · Areas
 - `AreaFrame.tsx`:

@@ -386,9 +386,6 @@ export function Landscape({
     }
   };
 
-  // ⌘E focuses a workspace, or leaves focus, from anywhere in the window, as the grid's does: from inside a
-  // workspace (its terminal, say) that one, from anywhere else (the side bar just picked a session) the selected
-  // one. ⌘Esc leaves focus from anywhere. Both are taken before xterm sees them, which would type Esc.
   // A peek's keys, wherever the keyboard is but a text field: Space keeps it open (or lets it go again), Esc closes it.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -405,6 +402,9 @@ export function Landscape({
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
+  // ⌘E focuses a workspace, or leaves focus, from anywhere in the window, as the grid's does: from inside a
+  // workspace (its terminal, say) that one, from anywhere else (the side bar just picked a session) the selected
+  // one. ⌘Esc leaves focus from anywhere. Both are taken before xterm sees them, which would type Esc.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;

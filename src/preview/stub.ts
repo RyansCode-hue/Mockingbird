@@ -3553,20 +3553,20 @@ if (params.has("landscapePerf")) {
     return { interval: stats(intervals), main: stats(busy), longFrames: long.length, longMs: round(long.reduce((a, f) => a + f.duration, 0)) };
   };
   /**
-   * The main thread at rest for `ms` (the working agents' spinners still redrawing): a chain of zero-delay tasks,
-   * each gap past a millisecond counted as other work (output parsed and drawn, timers, frames), per second.
+   * The landscape at rest for `ms`, the working agents' spinners still redrawing: each frame's main-thread time
+   * (rAF to the first task after it, so the terminals' drawing in it), the terminals' renders a second, and the
+   * page's size. Output is parsed into every cached terminal either way, attached or not, so it isn't counted.
    */
   const rest = async (ms: number) => {
+    let renders = 0;
+    const subs = [...((w.__mbTerms as Map<string, { term: import("@xterm/xterm").Terminal }> | undefined)?.values() ?? [])].map((e) => e.term.onRender(() => renders++));
+    const busy: number[] = [];
     const from = performance.now();
-    let busy = 0;
-    let last = from;
-    while (last - from < ms) {
-      const t = await after();
-      if (t - last > 1) busy += t - last;
-      last = t;
-    }
+    for (let t = await frame(); t - from < ms; t = await frame()) busy.push((await after()) - t);
+    const took = performance.now() - from;
+    subs.forEach((s) => s.dispose());
     const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize;
-    return { busyMsPerS: round((busy * 1000) / (last - from)), domNodes: document.getElementsByTagName("*").length, heapMB: heap ? round(heap / 1048576) : null };
+    return { frameMs: stats(busy), mainMsPerS: round((busy.reduce((a, b) => a + b, 0) * 1000) / took), rendersPerS: round((renders * 1000) / took), domNodes: document.getElementsByTagName("*").length, heapMB: heap ? round(heap / 1048576) : null };
   };
   const attached = () => ({
     xterms: document.querySelectorAll(".ls-world .xterm").length,
