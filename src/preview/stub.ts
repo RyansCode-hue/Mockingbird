@@ -40,7 +40,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
-import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, colsRows, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
+import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -962,6 +962,9 @@ const landscapeFixture = (): Landscape => {
   return l;
 };
 let landscape = landscapeFixture();
+// ?lsCollapsed=<key,…> and ?lsLocked=<key,…>: those areas collapsed to pills, or locked, as the file has them
+for (const [q, flag] of [["lsCollapsed", "collapsed"], ["lsLocked", "locked"]] as const)
+  for (const key of new URLSearchParams(location.search).get(q)?.split(",") ?? []) if (Object.hasOwn(landscape.areas, key)) landscape.areas[key][flag] = true;
 let landscapeRev = 0;
 // ?landscape=corrupt: landscape.json wasn't JSON at start, so it was moved aside and the layout starts over;
 // =unreadable: reading it failed, so an empty stand-in is shown, and the file is read again with each get or update
@@ -1176,8 +1179,16 @@ const api: Record<string, (...a: any[]) => any> = {
     sessionsChanged();
   },
   renameGroup: async (from: string, to: string) => {
+    const members = sessions.filter((s) => areaKeyOf(s) === from).map((s) => s.id);
     sessions = sessions.map((s) => (s.taskGroup === from || s.taskGroup?.startsWith(`${from}/`) ? { ...s, taskGroup: to + s.taskGroup.slice(from.length) } : s));
+    // the sessions' change goes out first, then the area's, as main's renameGroup sends them (LandscapeStore.groupRenamed)
     sessionsChanged();
+    const patch = standIn ? null : renameAreaPatch(landscape, from, to, members);
+    if (patch) {
+      landscape = applyPatch(landscape, patch);
+      landscapeRev++;
+      emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
+    }
   },
   killSession: async (id: string) => {
     sessions = sessions.filter((s) => s.id !== id);
@@ -2466,6 +2477,40 @@ if (lsPeek?.[0])
     setTimeout(() => (el.querySelector(".ls-card, .ls-term") ?? el).dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })), 600);
     if (lsPeek[1] === "pin") setTimeout(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })), 1200);
   });
+// areas (S4): ?side=closed puts the side bar away, so the area switcher stands in for the area tree (design M);
+// ?lsTools=<key> shows that area's hover toolbar; ?lsMenu=members|more opens the first room area's Members ▾, or the
+// first area's ⋯; ?lsPick=<id,…> picks those workspaces as a marquee would, and ?lsMakeArea=<name> then makes them an
+// area by that name
+if (params.get("side") === "closed") set("mb.side", true);
+const lsTools = params.get("lsTools");
+if (lsTools) {
+  const style = document.createElement("style");
+  style.textContent = `.ls-area[data-area="${CSS.escape(lsTools)}"] .ls-area-tools { opacity: 1; pointer-events: auto; }`;
+  document.head.appendChild(style);
+}
+const lsMenu = params.get("lsMenu");
+if (lsMenu === "members") waitFor(".ls-ah .ls-ah-btn[aria-haspopup]", (el) => setTimeout(() => el.click(), 300));
+if (lsMenu === "more") waitFor(".ls-ah .ls-ah-more", (el) => setTimeout(() => el.click(), 300));
+const lsPick = params.get("lsPick")?.split(",");
+if (lsPick)
+  waitFor(".ls-world .ls-node", () =>
+    setTimeout(() => {
+      for (const id of lsPick) {
+        const el = document.querySelector<HTMLElement>(`.ls-world [data-front="${CSS.escape(id)}"]`);
+        (el?.querySelector(".ls-head") ?? el)?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, shiftKey: true, pointerId: 3 }));
+      }
+      const name = params.get("lsMakeArea");
+      if (!name) return;
+      setTimeout(() => click(".ls-pickbar button.primary"), 150);
+      setTimeout(() => {
+        const input = document.querySelector<HTMLInputElement>(".modal input[type=text]");
+        if (!input) return console.error("[preview] ?lsMakeArea found no name field");
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, name);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      }, 450);
+    }, 400)
+  );
 const typeArea = (area: HTMLTextAreaElement, text: string) => {
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(area, text);
   area.dispatchEvent(new Event("input", { bubbles: true }));
@@ -2497,7 +2542,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx"))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu"))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {
@@ -2527,8 +2572,9 @@ if (composerText) waitFor(".rc-bar textarea", (el) => setTimeout(() => typeArea(
 // its folder and restoring it, a dialog, a toast — finishing every animation rather than waiting on real time, then
 // writes what's left into <script id="mb-motion-audit"> for test/uiMotion.test.ts (real time: pageResult): the folder's state after each
 // step, the panes in the grid, copies left behind, animations left holding a frame, View Transitions started, and
-// the longest animation that ran
-if (params.has("motionAudit")) {
+// the longest animation that ran. With ?labs=landscape it plays the landscape's flight instead (?landscapeFlyAudit).
+const flyAudit = params.has("landscapeFlyAudit") || (params.has("motionAudit") && !!settings.labs?.landscape);
+if (params.has("motionAudit") && !settings.labs?.landscape) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const finite = () => document.getAnimations().filter((a) => Number.isFinite(a.effect?.getComputedTiming().activeDuration ?? Infinity));
   // the longest one-shot animation (the waiting pulse repeats, and is checked on its own)
@@ -2939,7 +2985,7 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit"].some((k) => params.has(k))) {
+if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeFlyAudit"].some((k) => params.has(k)) || flyAudit) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
@@ -2982,9 +3028,21 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     pointer(node(id)!.querySelector(".ls-head") ?? node(id)!, "pointerdown", { button: 0 });
     await sleep(150);
   };
-  // its side bar row: selected, and brought into view (only workspaces on screen have a terminal attached)
+  // its row in the area tree (the Sessions view while the landscape shows), its area opened first when it's closed
+  const treeRow = async (id: string) => {
+    const find = () => document.querySelector<HTMLElement>(`.area-tree .lt-ws[data-sid="${CSS.escape(id)}"]`);
+    const s = sessions.find((x) => x.id === id);
+    if (!find() && s) {
+      document.querySelector<HTMLElement>(`.area-tree .lt-area[data-area="${CSS.escape(areaKeyOf(s))}"] .lt-chev`)?.click();
+      await sleep(50);
+    }
+    const row = find();
+    if (!row) throw new Error(`${id} has no row in the area tree`);
+    return row;
+  };
+  // its tree row: selected, and brought into view (only workspaces on screen have a terminal attached)
   const reveal = async (id: string) => {
-    document.querySelector<HTMLElement>(`.sess-item[data-sid="${CSS.escape(id)}"]`)!.click();
+    (await treeRow(id)).click();
     await sleep(400);
   };
   const ownShown = ["s1", "s2", "s4", "s5", "s7", "s8"];
@@ -3151,7 +3209,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       };
 
       // ⌘E from anywhere: a session just picked in the side bar, and a terminal whose workspace isn't selected
-      const row = document.querySelector<HTMLElement>(`.sess-item[data-sid="s5"]`)!;
+      const row = await treeRow("s5");
       row.focus();
       row.click();
       await sleep(300);
@@ -3699,6 +3757,338 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       out.error = String(err instanceof Error ? err.stack : err);
     }
     report("mb-landscape-restart-audit", out);
+  });
+
+  // ---- areas (S4) ----
+  const box = (sel: string) => document.querySelector(sel)?.getBoundingClientRect() ?? null;
+  const areaEl = (key: string) => `.ls-area[data-area="${CSS.escape(key)}"]`;
+  const inRect = (r: Rect, a: Rect) => r.x >= a.x && r.y >= a.y && r.x + r.w <= a.x + a.w && r.y + r.h <= a.y + a.h;
+  const apartAll = () => {
+    const as = Object.values(landscape.areas);
+    return as.every((a, i) => as.every((b, j) => i === j || a.x + a.w + AREA_GAP <= b.x + 1e-6 || b.x + b.w + AREA_GAP <= a.x + 1e-6 || a.y + a.h + AREA_GAP <= b.y + 1e-6 || b.y + b.h + AREA_GAP <= a.y + 1e-6));
+  };
+  // a drag as a mouse makes one: a press where the pointer is, moves in steps, and the release
+  const PID = 9;
+  /** A press at (x, y), on what's there or on `on` (what's there may be the minimap or the HUD over it). */
+  const pressAt = (x: number, y: number, on?: Element) =>
+    (on ?? document.elementFromPoint(x, y) ?? vp()).dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: PID, button: 0, buttons: 1, clientX: x, clientY: y }));
+  const moveTo = (x: number, y: number) => window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, cancelable: true, pointerId: PID, buttons: 1, clientX: x, clientY: y }));
+  const upAt = (x: number, y: number) => window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, pointerId: PID, button: 0, clientX: x, clientY: y }));
+  const dragAlong = async (from: { x: number; y: number }, to: { x: number; y: number }, during?: () => void, on?: Element) => {
+    pressAt(from.x, from.y, on);
+    for (let i = 1; i <= 6; i++) {
+      moveTo(from.x + ((to.x - from.x) * i) / 6, from.y + ((to.y - from.y) * i) / 6);
+      await sleep(16);
+    }
+    during?.();
+    upAt(to.x, to.y);
+    await sleep(700);
+  };
+  const mid = (r: DOMRect) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+  const menuItem = (text: string) => [...document.querySelectorAll<HTMLElement>(".mb-menu [role=menuitem], .mb-menu button")].find((b) => b.textContent?.includes(text));
+  const nameIt = async (name: string) => {
+    const input = document.querySelector<HTMLInputElement>(".modal input[type=text]");
+    if (!input) throw new Error(`no name field to type ${name} into`);
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, name);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(30);
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await sleep(900);
+  };
+  const tools = (key: string, label: string) => [...document.querySelectorAll<HTMLButtonElement>(`${areaEl(key)} .ls-area-tools button`)].find((b) => b.textContent === label);
+  const changes = (from: number) => calls.slice(from).filter((c) => ["landscapeUpdate", "setGroup", "renameGroup"].includes(c.fn)).map((c) => ({ fn: c.fn, args: c.args }));
+  const views = () => calls.filter((c) => c.fn === "teamLiveView").map((c) => c.args[0] as { shown: string[]; focused: string | null });
+  const lastView = () => views().at(-1)?.shown ?? [];
+  const noteText = () => document.querySelector(".ls-note")?.textContent ?? null;
+  const N7 = remotePaneId(NICK, "n7");
+  const fitView = async () => {
+    [...document.querySelectorAll<HTMLElement>(".ls-hud-btn")].find((b) => b.textContent === "Fit")!.click();
+    await sleep(400);
+  };
+
+  // ?landscapeAreasAudit (with ?motion=off): the area tree and its fly-to; what teammates stream following what's on
+  // screen, a collapsed area's off it; a marquee made into an area; a workspace dragged across an edge into another
+  // area, and one refused; locking; renaming; a teammate's session landing in its room's area; an area dragged; the
+  // switcher; and Members ▾'s actions reaching the same room calls as the room view's. Into
+  // <script id="mb-landscape-areas-audit">.
+  if (params.has("landscapeAreasAudit")) waitFor(".ls-world .ls-node", async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(900);
+      out.tree = [...document.querySelectorAll<HTMLElement>(".area-tree .lt-area")].map((a) => ({
+        key: a.dataset.area,
+        title: a.querySelector(".lt-head .lt-t")?.textContent ?? null,
+        waiting: a.querySelector(".lt-head .lt-badge")?.textContent ?? null,
+        count: a.querySelector(".lt-head .lt-n")?.textContent ?? null,
+        online: [...a.querySelectorAll(".lt-head .lt-av")].map((x) => x.textContent),
+        rows: [...a.querySelectorAll<HTMLElement>(".lt-ws")].map((r) => r.dataset.sid),
+      }));
+      out.atFit = { streams: lastView() };
+
+      // the tree's area row flies there: the area whole in view, and teammates stream what's on screen
+      document.querySelector<HTMLElement>('.area-tree .lt-area[data-area="5110"] .lt-head')!.click();
+      await sleep(500);
+      const view = vp().getBoundingClientRect();
+      const a5110 = box(areaEl("5110"))!;
+      out.flyTree = {
+        inView: a5110.left >= view.left - 1 && a5110.right <= view.right + 1 && a5110.top >= view.top - 40 && a5110.bottom <= view.bottom + 1,
+        centred: Math.abs(mid(a5110).x - mid(view).x) < 2,
+        streams: lastView(),
+      };
+
+      // collapsed: a pill keeping its counts, its workspaces off screen and no longer streamed; a click opens it
+      tools("5110", "Collapse")!.click();
+      await sleep(500);
+      const pill = document.querySelector<HTMLElement>('.ls-area-pill[data-area="5110"]');
+      out.collapse = {
+        stored: landscape.areas["5110"].collapsed === true,
+        pill: pill?.textContent ?? null,
+        hidden: [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node.hidden")].map((n) => n.dataset.front).sort(),
+        streams: lastView(),
+        tree: document.querySelector('.area-tree .lt-area[data-area="5110"] .lt-head')?.getAttribute("title") ?? null,
+      };
+      pill!.click();
+      await sleep(500);
+      out.expand = { stored: landscape.areas["5110"].collapsed, hidden: document.querySelectorAll(".ls-world .ls-node.hidden").length, streams: lastView() };
+
+      // the switcher (⌘\ puts the tree away) ends with Loose while a workspace is in no area, and goes to it
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true, bubbles: true, cancelable: true }));
+      await sleep(400);
+      const swLoose = document.querySelector<HTMLElement>(".ls-switcher .ls-sw:last-child");
+      swLoose?.click();
+      await sleep(500);
+      const s7b = node("s7")?.getBoundingClientRect();
+      const vl = vp().getBoundingClientRect();
+      out.switcherLoose = {
+        last: swLoose ? { area: swLoose.dataset.area ?? null, text: swLoose.textContent } : null,
+        on: document.querySelector(".ls-switcher .ls-sw.on")?.getAttribute("data-area") ?? null,
+        centred: !!s7b && Math.abs(mid(s7b).x - mid(vl).x) < 2,
+        clearOfIt: !!s7b && s7b.top >= box(".ls-switcher")!.bottom - 1,
+      };
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true, bubbles: true, cancelable: true }));
+      await sleep(400);
+
+      // a marquee round the loose assistant, then M and a name: the area's place is saved, then its group set
+      await fitView();
+      const s7 = node("s7")!.getBoundingClientRect();
+      let mark = calls.length;
+      pressAt(s7.left - 10, s7.top - 10);
+      for (let i = 1; i <= 5; i++) {
+        moveTo(s7.left - 10 + ((s7.width + 20) * i) / 5, s7.top - 10 + ((s7.height + 20) * i) / 5);
+        await sleep(16);
+      }
+      const during = { marquee: !document.querySelector<HTMLElement>(".ls-marquee")!.hidden, picked: [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node.picked")].map((n) => n.dataset.front) };
+      upAt(s7.right + 10, s7.bottom + 10);
+      await sleep(200);
+      const bar = document.querySelector(".ls-pickbar")?.textContent ?? null;
+      key(vp(), "m");
+      await sleep(300);
+      const dialog = document.querySelector(".modal h3")?.textContent ?? null;
+      await nameIt("Spike");
+      out.make = {
+        during,
+        bar,
+        dialog,
+        changes: changes(mark),
+        area: landscape.areas.Spike ?? null,
+        inside: !!landscape.areas.Spike && inRect(landscape.workspaces.s7, landscape.areas.Spike),
+        group: sessions.find((s) => s.id === "s7")?.taskGroup ?? null,
+        drawn: !!document.querySelector(areaEl("Spike")),
+        cleared: !document.querySelector(".ls-pickbar"),
+        apart: apartAll(),
+      };
+
+      // the test runner's card dragged into 5102: 5102 lights up under it, then its place is saved and its group set
+      await fitView();
+      mark = calls.length;
+      const s4 = node("s4")!.getBoundingClientRect();
+      const a5102 = box(areaEl("5102"))!;
+      let hot = false;
+      await dragAlong(mid(s4), { x: a5102.left + a5102.width * 0.3, y: a5102.bottom - 12 }, () => (hot = !!document.querySelector(`${areaEl("5102")}.drop-on`)));
+      out.dragIn = {
+        hot,
+        changes: changes(mark),
+        inside: inRect(landscape.workspaces.s4, landscape.areas["5102"]),
+        group: sessions.find((s) => s.id === "s4")?.taskGroup ?? null,
+        translate: node("s4")?.style.translate ?? null,
+        apart: apartAll(),
+      };
+
+      // a teammate's workspace can't go to another area: refused, said, and back where it was
+      await fitView();
+      mark = calls.length;
+      const n7 = node(N7)!.getBoundingClientRect();
+      const a5101 = box(areaEl("5101"))!;
+      await dragAlong(mid(n7), { x: a5101.left + 20, y: a5101.bottom - 12 });
+      out.refused = { note: noteText(), changes: changes(mark), translate: node(N7)?.style.translate ?? null, group: live.remote.find((s) => s.id === N7)?.taskGroup ?? null };
+
+      // locked: its workspaces don't move (said), and it unlocks again
+      tools("5101", "Lock")!.click();
+      await sleep(400);
+      const lockedStored = landscape.areas["5101"].locked === true;
+      mark = calls.length;
+      const s1 = node("s1")!.getBoundingClientRect();
+      await dragAlong(mid(s1), { x: mid(s1).x + 60, y: mid(s1).y + 40 });
+      out.lock = { stored: lockedStored, note: noteText(), changes: changes(mark), translate: node("s1")?.style.translate ?? null, locked: !!document.querySelector(`${areaEl("5101")}.locked`) };
+      tools("5101", "Locked")!.click();
+      await sleep(400);
+      (out.lock as Record<string, unknown>).unlocked = !landscape.areas["5101"].locked;
+
+      // renamed from its ⋯ (right-click on its name zoomed out): the area keeps its place, folded and locked as it was,
+      // under the new name, whichever of the sessions' change and the area's comes first
+      await fitView();
+      mark = calls.length;
+      const before = { ...landscape.areas["5102"] };
+      const title = document.querySelector<HTMLElement>(`${areaEl("5102")} .ls-area-title`)!;
+      const t = title.getBoundingClientRect();
+      title.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: t.left + 10, clientY: t.top + 5 }));
+      await sleep(200);
+      const items = [...document.querySelectorAll<HTMLElement>(".mb-menu [role=menuitem]")].map((b) => b.textContent?.trim() ?? "");
+      menuItem("Rename")!.click();
+      await sleep(300);
+      await nameIt("Pathways");
+      const after = landscape.areas.Pathways;
+      out.rename = {
+        items,
+        changes: changes(mark).map((c) => c.fn),
+        same: !!after && after.x === before.x && after.y === before.y && after.w === before.w && after.h === before.h,
+        gone: !Object.hasOwn(landscape.areas, "5102"),
+        drawn: !!document.querySelector(areaEl("Pathways")),
+        s5: inRect(landscape.workspaces.s5, after ?? before),
+        apart: apartAll(),
+      };
+
+      // a teammate's new session in a room lands in its area, and its place is saved
+      mark = calls.length;
+      const N9 = remotePaneId(NICK, "n9");
+      live.remote.push(session(N9, { title: "Gift aid flag", taskGroup: "5110", repoPath: null, cwd: "(on Nick Smith's Mockingbird) backoffice", status: "working", room: roomTag({ roomId: ROOM_5110, sessionId: "n9", owner: NICK, ownerName: "Nick Smith", remote: true }) }));
+      emit("onTeamLive", clone(live));
+      await sleep(700);
+      out.remoteLands = { saved: !!landscape.workspaces[N9], inside: !!landscape.workspaces[N9] && inRect(landscape.workspaces[N9], landscape.areas["5110"]), drawn: !!node(N9), apart: apartAll() };
+
+      // an area dragged by its name: it moves on the grid with its workspaces, clear of the others
+      await fitView();
+      const was = { ...landscape.areas["5110"] };
+      const y1Was = { ...landscape.workspaces.y1 };
+      const nameEl = document.querySelector(`${areaEl("5110")} .ls-area-title .n`)!;
+      const name5110 = nameEl.getBoundingClientRect();
+      await dragAlong(mid(name5110), { x: mid(name5110).x + 120, y: mid(name5110).y + 90 }, undefined, nameEl);
+      const now5110 = landscape.areas["5110"];
+      out.areaMove = {
+        moved: now5110.x !== was.x || now5110.y !== was.y,
+        withIt: landscape.workspaces.y1.x - y1Was.x === now5110.x - was.x && landscape.workspaces.y1.y - y1Was.y === now5110.y - was.y,
+        onGrid: now5110.x % 8 === 0 && now5110.y % 8 === 0,
+        apart: apartAll(),
+        translate: document.querySelector<HTMLElement>(areaEl("5110"))?.style.translate ?? null,
+      };
+
+      // the side bar put away (⌘\): the switcher stands in for the tree, and goes to an area too; ⌘\ brings the tree back
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true, bubbles: true, cancelable: true }));
+      await sleep(400);
+      const sw = [...document.querySelectorAll<HTMLElement>(".ls-switcher .ls-sw")].map((b) => b.dataset.area);
+      document.querySelector<HTMLElement>('.ls-switcher .ls-sw[data-area="5101"]')!.click();
+      await sleep(500);
+      const a5101b = box(areaEl("5101"))!;
+      const v2 = vp().getBoundingClientRect();
+      out.switcher = {
+        tree: !!document.querySelector(".sidebar:not(.collapsed) .area-tree"),
+        areas: sw,
+        on: document.querySelector(".ls-switcher .ls-sw.on")?.getAttribute("data-area") ?? null,
+        centred: Math.abs(mid(a5101b).x - mid(v2).x) < 2,
+        clearOfIt: a5101b.top >= box(".ls-switcher")!.bottom - 1 || a5101b.left >= box(".ls-switcher")!.right,
+      };
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "\\", metaKey: true, bubbles: true, cancelable: true }));
+      await sleep(400);
+      (out.switcher as Record<string, unknown>).back = !!document.querySelector(".sidebar:not(.collapsed) .area-tree") && !document.querySelector(".ls-switcher");
+
+      // Members ▾ in 5101's header, at 100%: presence and roles, then its actions
+      document.querySelector<HTMLElement>('.area-tree .lt-area[data-area="5101"] .lt-head')!.click();
+      await sleep(300);
+      document.querySelector<HTMLElement>(".ls-hud-btn.pct")!.click();
+      await sleep(600);
+      const membersBtn = () => document.querySelector<HTMLElement>(`${areaEl("5101")} .ls-ah .ls-ah-btn[aria-haspopup]`);
+      membersBtn()!.click();
+      await sleep(300);
+      const rows = [...document.querySelectorAll<HTMLElement>(".ls-members .lsm-member")].map((r) => ({ id: r.dataset.member, role: r.querySelector(".lsm-role")?.textContent ?? null, presence: r.querySelector(".lsm-presence")?.textContent?.trim() ?? null }));
+      const buttons = [...document.querySelectorAll<HTMLElement>(".ls-members .lsm-buttons button")].map((b) => b.textContent?.trim());
+      const lines = [...document.querySelectorAll<HTMLElement>(".ls-members .lsm-row")].map((r) => r.textContent?.trim());
+      mark = calls.length;
+      [...document.querySelectorAll<HTMLElement>(".ls-members .lsm-acts button")].find((b) => b.textContent === "Remove as admin")!.click();
+      await sleep(400);
+      const fromMenu = calls.slice(mark).find((c) => c.fn === "teamSetAdmin") ?? null;
+      // the room view's own member menu, for the same teammate
+      [...document.querySelectorAll<HTMLElement>(`${areaEl("5101")} .ls-ah .ls-ah-btn`)].find((b) => b.textContent?.startsWith("Chat"))!.click();
+      await sleep(700);
+      const rc = document.querySelector<HTMLElement>(`.rc-members .rc-member[data-member="${NICK}"]`)!;
+      const rr = rc.getBoundingClientRect();
+      rc.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: rr.left + 4, clientY: rr.top + 4 }));
+      await sleep(200);
+      mark = calls.length;
+      menuItem("Make admin")!.click();
+      await sleep(400);
+      const fromRoomView = calls.slice(mark).find((c) => c.fn === "teamSetAdmin") ?? null;
+      // hand over ownership, through the Team view's own dialog
+      membersBtn()!.click();
+      await sleep(300);
+      [...document.querySelectorAll<HTMLElement>(".ls-members .lsm-acts button")].find((b) => b.textContent === "Hand over ownership…")!.click();
+      await sleep(300);
+      mark = calls.length;
+      document.querySelector<HTMLElement>(".modal.team-dlg button.primary")!.click();
+      await sleep(500);
+      const handOver = calls.slice(mark).find((c) => c.fn === "teamHandOver") ?? null;
+      document.querySelector<HTMLElement>(".modal.team-dlg button.primary")?.click();
+      await sleep(300);
+      // and leave, through the Team view's own dialog
+      membersBtn()!.click();
+      await sleep(300);
+      [...document.querySelectorAll<HTMLElement>(".ls-members .lsm-buttons button")].find((b) => b.textContent === "Leave room…")!.click();
+      await sleep(300);
+      mark = calls.length;
+      document.querySelector<HTMLElement>(".modal.team-dlg button.danger-btn")!.click();
+      await sleep(1100);
+      const leave = calls.slice(mark).find((c) => c.fn === "teamLeaveRoom") ?? null;
+      out.members = { rows, buttons, lines, fromMenu, fromRoomView, handOver, leave, roomGone: !team.rooms.some((r) => r.id === ROOM_5101) };
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-areas-audit", out);
+  });
+
+  // ?landscapeFlyAudit, or ?motionAudit with ?labs=landscape (with ?motion=full or reduce): going to an area from the tree flies the camera there; the
+  // flight's clock animation finished (as the motion audit finishes every animation, never reading a frame in flight)
+  // ends it where it was going; a wheel during one stops it where it is; under reduce it's there at once. Into
+  // <script id="mb-landscape-fly-audit">.
+  if (flyAudit) waitFor(".ls-world .ls-node", async () => {
+    const out: Record<string, unknown> = {};
+    const finite = () => document.getAnimations().filter((a) => Number.isFinite(a.effect?.getComputedTiming().activeDuration ?? Infinity));
+    const flying = () => vp().hasAttribute("data-flying");
+    const centred = (key: string) => Math.abs(mid(box(areaEl(key))!).x - mid(vp().getBoundingClientRect()).x) < 2;
+    try {
+      await sleep(900);
+      const goTo = (key: string) => document.querySelector<HTMLElement>(`.area-tree .lt-area[data-area="${key}"] .lt-head`)!.click();
+      const camAt = camera();
+      goTo("5110");
+      await sleep(40);
+      const clocks = () => document.getAnimations().filter((a) => (a.effect as KeyframeEffect | null)?.target?.classList?.contains("ls-clock"));
+      const inFlight = { flying: flying(), clock: clocks().length, clockMs: Number(clocks()[0]?.effect?.getComputedTiming().activeDuration ?? 0), moved: JSON.stringify(camera()) !== JSON.stringify(camAt) };
+      for (let i = 0; i < 4; i++) {
+        for (const a of finite()) a.finish();
+        await sleep(40);
+      }
+      await sleep(250);
+      out.flight = { inFlight, landed: centred("5110"), flying: flying(), clocks: clocks().length, band: [...vp().classList].find((c) => c.startsWith("ls-band-")) ?? null, zoom: camera()?.zoom ?? null };
+      // a wheel during a flight stops it where it is
+      goTo("5101");
+      await sleep(60);
+      const wasFlying = flying();
+      vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 10, ...at(vp(), 0.5, 0.5) }));
+      await sleep(40);
+      out.stopped = { wasFlying, flying: flying(), clocks: clocks().length, landed: centred("5101") };
+      out.mode = document.documentElement.dataset.motion;
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-fly-audit", out);
   });
 }
 // ?landscapePerf (with ?landscapeMany=<n>): frame times while the landscape is panned and pinch-zoomed at 100%, 60%

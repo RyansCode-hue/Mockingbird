@@ -193,3 +193,45 @@ describe.skipIf(!local)("the interface's motion, round two", () => {
     expect(m.total).toBe(0);
   }, 120_000);
 });
+
+// ?motionAudit with ?labs=landscape (src/preview/stub.ts) goes to an area from the area tree, finishes the flight's
+// clock animation rather than waiting on it, and reads where the camera ended; then flies again and stops it with
+// the wheel.
+type Flight = {
+  flight: { inFlight: { flying: boolean; clock: number; clockMs: number; moved: boolean }; landed: boolean; flying: boolean; clocks: number; band: string | null; zoom: number | null };
+  stopped: { wasFlying: boolean; flying: boolean; clocks: number; landed: boolean };
+  mode: string;
+  error?: string;
+};
+async function flight(motion: "full" | "reduce"): Promise<Flight> {
+  // @ts-expect-error — a plain .mjs build script, no type declarations
+  const { pageResult } = await import("../scripts/ui-preview.mjs");
+  const json: string | null = await pageResult({ size: "1400x900", query: `labs=landscape&motion=${motion}&motionAudit`, outDir: path.join(tempDir("fly"), "out"), read: `document.getElementById("mb-landscape-fly-audit")?.textContent ?? null` });
+  if (!json) throw new Error("the preview didn't finish its flight audit");
+  return JSON.parse(json);
+}
+const bandAt = (zoom: number) => (zoom >= 0.75 ? "ls-band-live" : zoom >= 0.35 ? "ls-band-readonly" : "ls-band-cards");
+
+describe.skipIf(!local)("the landscape's flight to an area", () => {
+  it("flies over D.l through apply, ends where it was going with its band, and stops for the wheel", async () => {
+    const f = await flight("full");
+    expect(f.error).toBeUndefined();
+    expect(f.mode).toBe("full");
+    expect(f.flight.inFlight).toEqual({ flying: true, clock: 1, clockMs: D.l, moved: true });
+    // finished: at the area, nothing left running or holding, the band the zoom's
+    expect(f.flight).toMatchObject({ landed: true, flying: false, clocks: 0 });
+    expect(f.flight.band).toBe(bandAt(f.flight.zoom!));
+    // the wheel takes the camera from a flight: it stops where it is
+    expect(f.stopped).toEqual({ wasFlying: true, flying: false, clocks: 0, landed: false });
+  }, 120_000);
+
+  it("under reduce, is there at once: no flight, no clock", async () => {
+    const f = await flight("reduce");
+    expect(f.error).toBeUndefined();
+    expect(f.mode).toBe("reduce");
+    expect(f.flight.inFlight).toEqual({ flying: false, clock: 0, clockMs: 0, moved: true });
+    expect(f.flight).toMatchObject({ landed: true, flying: false, clocks: 0 });
+    expect(f.flight.band).toBe(bandAt(f.flight.zoom!));
+    expect(f.stopped).toMatchObject({ wasFlying: false, flying: false, clocks: 0, landed: true });
+  }, 120_000);
+});

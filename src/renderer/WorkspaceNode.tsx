@@ -39,6 +39,7 @@ export function WorkspaceNode({
   mode,
   size,
   selected,
+  picked = false,
   meters,
   snapshot,
   inv,
@@ -56,6 +57,8 @@ export function WorkspaceNode({
   /** Its size at 100%: its placement's, or the window's in focus. */
   size: Size;
   selected: boolean;
+  /** In the marquee's selection, which Make area… takes. */
+  picked?: boolean;
   meters?: Record<string, SessionMeter>;
   /** In `snapshot`: the screen's rows as text when its terminal was lent. */
   snapshot?: string | null;
@@ -84,7 +87,7 @@ export function WorkspaceNode({
   const card = mode === "card";
   return (
     <div
-      className={["ls-node", mode, selected ? "selected" : "", waiting ? "st-waiting" : "", s.status === "dead" ? "st-dead" : "", isRemote(s) ? "remote" : ""].filter(Boolean).join(" ")}
+      className={["ls-node", mode, selected ? "selected" : "", picked ? "picked" : "", tile.hidden && mode !== "focus" ? "hidden" : "", waiting ? "st-waiting" : "", s.status === "dead" ? "st-dead" : "", isRemote(s) ? "remote" : ""].filter(Boolean).join(" ")}
       style={card ? { ...style, ["--ls-inv" as string]: inv } : { ...style, gridTemplateRows: `${HEAD}px minmax(0, 1fr)` }}
       data-ws={tile.key}
       data-front={s.id}

@@ -81,21 +81,26 @@ export function TeamRoomIcon() {
   );
 }
 
-/** A shared group's chip in the group bar: opens its room's chat. */
-export function RoomChatChip({ room, onOpen }: { room: TeamRoomSummary; onOpen: () => void }) {
+/** A shared group's chip in the group bar: opens its room's chat. `area`: the landscape's area header's "Chat · 3". */
+export function RoomChatChip({ room, onOpen, area }: { room: TeamRoomSummary; onOpen: () => void; area?: boolean }) {
   const u = useChatUnread()[room.id];
+  const n = u?.unread ? (u.mentions ? `@${u.mentions}` : String(u.unread)) : null;
+  const open = () => {
+    openTeamView(room.id);
+    onOpen();
+  };
+  if (area) {
+    return (
+      <button type="button" className={`ls-ah-btn ${n ? "teal" : ""}`} data-tip="The team room's chat — teammates, their agents' updates, and @assistant" onClick={open}>
+        Chat{n ? ` · ${n}` : ""}
+      </button>
+    );
+  }
   return (
-    <button
-      className={`gb-btn ${u?.unread ? "teal" : ""}`}
-      data-tip="The team room's chat — teammates, their agents' updates, and @assistant"
-      onClick={() => {
-        openTeamView(room.id);
-        onOpen();
-      }}
-    >
+    <button className={`gb-btn ${u?.unread ? "teal" : ""}`} data-tip="The team room's chat — teammates, their agents' updates, and @assistant" onClick={open}>
       <ChatIcon />
       <span className="gb-t">Room chat</span>
-      {u?.unread ? <span className="gb-n">{u.mentions ? `@${u.mentions}` : u.unread}</span> : null}
+      {n ? <span className="gb-n">{n}</span> : null}
     </button>
   );
 }

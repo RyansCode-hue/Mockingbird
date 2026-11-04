@@ -32,6 +32,7 @@ import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, reorderWorkItem, adoRequest, setWorkItemTags, projectTags } from "./ado";
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
+import { areaKeyOf } from "../shared/landscape";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
@@ -1055,8 +1056,16 @@ handle("debrief:run", (kind) => runDebrief(kind, sessions, store));
 handle("import:list", () => importable(transcripts?.recentConversations() ?? listClaudeConversations(), sessions.list(), collab.list()));
 handle("sessions:rename", (id, title) => sessions.rename(id, title));
 handle("sessions:renameGroup", (oldKey, newKey) => {
+  const [from, to] = [String(oldKey), String(newKey)];
+  const members = sessions.list().filter((s) => areaKeyOf(s) === from).map((s) => s.id);
   sessions.renameGroup(oldKey, newKey);
-  team.groupRenamed(String(oldKey), String(newKey)); // a shared group stays its room
+  team.groupRenamed(from, to); // a shared group stays its room
+  // its area on the landscape follows; the rename itself is done, so a failure here is logged rather than refused
+  try {
+    landscape.groupRenamed(from, to, members);
+  } catch (err) {
+    logError(`landscape: moving ${from}'s area to ${to}`, err);
+  }
 });
 
 // ---- Team rooms ----

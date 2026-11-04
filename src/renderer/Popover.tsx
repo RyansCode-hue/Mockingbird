@@ -1,6 +1,65 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
+import { placeMenu } from "./ContextMenu";
+
+/**
+ * A popover under an element anywhere, even one inside a scaled layer (the landscape's world): it's drawn over
+ * everything, at the element's place on screen, so it keeps its own size. A press or a wheel outside it, Escape, or
+ * the window resizing or losing focus closes it. It's named for screen readers and takes the keyboard as it opens.
+ */
+export function AnchoredPopover({ anchor, className, label, onClose, children }: { anchor: HTMLElement; className: string; label: string; onClose: () => void; children: ReactNode }) {
+  useEscape(onClose);
+  const box = useRef<HTMLDivElement | null>(null);
+  const presence = usePresence<HTMLDivElement>("menu", { also: box });
+  const [pos, setPos] = useState<{ left: number; top: number; maxHeight: number } | null>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const r = anchor.getBoundingClientRect();
+    setPos(placeMenu({ x: r.left, y: r.bottom + 4 }, { width: el.offsetWidth, height: el.scrollHeight }, { width: window.innerWidth, height: window.innerHeight }));
+  }, [anchor]);
+  useEffect(() => {
+    box.current?.focus({ preventScroll: true });
+    const outside = (e: Event) => {
+      const t = e.target as Node;
+      if (!box.current?.contains(t) && !anchor.contains(t)) close.current();
+    };
+    const away = () => close.current();
+    document.addEventListener("mousedown", outside, true);
+    window.addEventListener("wheel", outside, { capture: true, passive: true });
+    window.addEventListener("resize", away);
+    window.addEventListener("blur", away);
+    return () => {
+      document.removeEventListener("mousedown", outside, true);
+      window.removeEventListener("wheel", outside, { capture: true });
+      window.removeEventListener("resize", away);
+      window.removeEventListener("blur", away);
+    };
+  }, [anchor]);
+  return createPortal(
+    <div
+      ref={presence}
+      className={`mb-menu ${className}`}
+      role="dialog"
+      aria-label={label}
+      tabIndex={-1}
+      style={pos ? { left: pos.left, top: pos.top, maxHeight: pos.maxHeight } : { left: -9999, top: -9999 } /* measured first, then placed */}
+      // a portal's events reach its component tree: a press here isn't a press on the landscape under the button
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
+    >
+      {children}
+    </div>,
+    document.body
+  );
+}
 
 /**
  * A popover anchored by its wrapper's CSS (`className` places it): a click

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { formatTokens, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
-import { LANDSCAPE_FONT, type Camera, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
+import { formatTokens, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
+import { LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
 import type { Migrating } from "./useLandscape";
 import {
   BAND_SETTLE_MS,
@@ -8,35 +8,65 @@ import {
   REVEAL_WAIT_MS,
   ZOOM_MAX,
   ZOOM_MIN,
+  accentOf,
+  accentsOf,
+  areaAt,
+  areaCamera,
+  areaCounts,
+  areaInView,
+  areaShown,
+  areaSummary,
   attaches,
   cameraFrom,
   centreOn,
+  centredAt,
   contentRects,
-  fitAll,
+  fitBelow,
+  flightAt,
+  fromMinimap,
   inView,
   keysOnScreen,
+  looseStop,
+  minimapFit,
   nearestInDirection,
   nextBand,
   panBy,
   peekBox,
+  planMakeArea,
+  planMoveArea,
+  planMoveTile,
+  rectFrom,
   revealTile,
+  sessionsOnScreen,
+  shortAreaName,
   takesKeys,
+  tilesIn,
+  toLandscape,
+  toMinimap,
   wheelPixels,
   wheelZoomFactor,
   worldTransform,
   zoomAbout,
+  type AreaCounts,
+  type AreaPlan,
+  type AreaView,
   type Band,
   type Direction,
+  type GroupMove,
   type PendingReveal,
+  type Point,
   type ResolvedLayout,
   type Tile,
 } from "./landscapeModel";
 import { WorkspaceNode, type NodeMode } from "./WorkspaceNode";
 import { kindLabel } from "./WorkspaceCard";
+import { AreaFrame } from "./AreaFrame";
+import { AreaSwitcher } from "./AreaTree";
+import type { MenuEntry } from "./ContextMenu";
 import { focusTerm, lendTerm, screenText } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
-import { D, EASE, motion, play } from "./motion";
+import { D, EASE, fromKeyboard, motion, play } from "./motion";
 import { OVERLAYS, escapeLeavesFullscreen } from "./keys";
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
@@ -55,6 +85,58 @@ export const mouseAt = (zoom: number): boolean => Math.abs(zoom - 1) <= 0.001;
 const DOTS = 32;
 
 type CameraListener = (cam: Camera) => void;
+
+/** What the landscape asks its owner (main.tsx) for each area: the group's own bar and chips, and its ⋯ menu. */
+export interface AreaHooks {
+  /** Its header bar (GroupBar.tsx's AreaHeader); a press on its bare part calls `onGrab`, which moves the area. */
+  header: (a: AreaView, counts: AreaCounts, onGrab: (e: React.PointerEvent) => void) => React.ReactNode;
+  /** Beside its name zoomed out: its ticket's "#5101 · Local test", and "Shared room with Nick" for a room's. */
+  info: (key: string) => { ticketChip: string | null; shared: string | null };
+  menu: (key: string) => MenuEntry[];
+}
+
+/** A gesture's plan that can be carried out. */
+export type ReadyPlan = Exclude<AreaPlan, { refused: string }>;
+
+/** How far a press moves before it's a drag (a marquee, a workspace or an area moving) rather than a click. */
+const DRAG_PX = 4;
+/** The area switcher's strip along the view's top (styles.css .ls-switcher: 14px down, 32px tall), and a gap under it. */
+const SWITCHER_STRIP = 56;
+/** How long a note about a gesture (why it was refused, what it left out) stays up. */
+const NOTE_MS = 5000;
+/** How long a dropped workspace or area waits, where it was dropped, for the layout that has it there. */
+const SETTLE_MS = 1500;
+
+/**
+ * A press that may become a drag: a marquee over the bare landscape, a workspace by its header (or a card), or an
+ * area by its header. `on` once it has moved DRAG_PX; `els` are what move with it until the layout has them there.
+ */
+interface Gesture {
+  kind: "marquee" | "tile" | "area";
+  id: number;
+  x0: number;
+  y0: number;
+  /** The workspace's or the area's key ("" for a marquee). */
+  key: string;
+  /** A marquee with Shift held adds to the selection, `base` as it was when it started. */
+  add: boolean;
+  base: string[];
+  on: boolean;
+  els: HTMLElement[];
+}
+
+/** A drop waiting for the layout: its elements keep their drag offset until `moved` says the layout has them there. */
+interface Settling {
+  els: HTMLElement[];
+  moved: () => boolean;
+}
+
+const release = (els: readonly HTMLElement[]) => {
+  for (const el of els) {
+    el.style.translate = "";
+    el.classList.remove("dragging");
+  }
+};
 
 /**
  * A workspace's peek: its box in the viewport as it was when it opened and, while the band attaches terminals, the
@@ -86,33 +168,66 @@ interface Peeked {
  * read-only bands; the rest are cards or bare frames, their terminals kept
  * current by the data pump and at their workspaces' sizes (holdSize), so
  * attaching one again is instant and resizes nothing.
+ *
+ * Areas (S4): each group's area is drawn by AreaFrame, its header the group's
+ * bar; it collapses to a pill (its workspaces then off screen) and locks. A
+ * marquee over the bare landscape picks workspaces for Make area… (M); a
+ * workspace dragged by its header, or an area by its own, moves, and a
+ * workspace dropped in another area joins its group. Going to an area flies
+ * the camera there through `apply`, so the band and what's on screen follow
+ * it; the minimap and the switcher (with the area tree hidden) go there too.
  */
 export function Landscape({
   layout,
+  stored,
   selected,
   onSelect,
   onTab,
   reveal,
+  goTo,
   areaTitle,
   stackName,
+  areas: areaHooks,
   meters,
   termKey,
   body,
+  onPatch,
+  onMoves,
+  askAreaName,
+  onSeen,
+  switcher,
+  onShowTree,
 }: {
   layout: ResolvedLayout;
+  /** landscape.json as this window has it: what gestures' plans are made against. */
+  stored: Stored;
   /** The selected session (the window's focused one); its workspace is selected. */
   selected: string | null;
   onSelect: (id: string) => void;
   onTab: (tile: Tile, id: string) => void;
-  /** Bring this session's workspace into view and select it; `n` repeats it. */
-  reveal: { id: string; n: number } | null;
+  /** Bring this session's workspace into view and select it, with `focus` filling the window with it; `n` repeats it. */
+  reveal: { id: string; n: number; focus?: boolean } | null;
+  /** Fly to this area; `n` repeats it. */
+  goTo: { area: string; n: number } | null;
   areaTitle: (key: string) => string;
   stackName: (stack: string) => string;
+  areas: AreaHooks;
   meters?: Record<string, SessionMeter>;
   /** A session's terminal's generation: it changes when a restart gives the session a new terminal. */
   termKey: (id: string) => string;
   /** A session's terminal at `size`; in focus, filling the window, `home` is its workspace's own size, which it goes back to. */
   body: (s: SessionInfo, size: Size, home: Size | null) => React.ReactNode;
+  /** Change landscape.json; why it was refused (also in the banners), or null once it's made. */
+  onPatch: (patch: LandscapePatch, what: string) => Promise<string | null>;
+  /** Set these sessions' groups, in order; why one couldn't be, or null. */
+  onMoves: (moves: readonly GroupMove[], what: string) => Promise<string | null>;
+  /** A name for the area Make area… makes of `count` workspaces; null when it's cancelled. */
+  askAreaName: (count: number) => Promise<string | null>;
+  /** The sessions on screen, for teamLiveView: each workspace's on screen and the one in focus, never a collapsed area's. */
+  onSeen: (ids: string[]) => void;
+  /** The area switcher over the landscape, while the area tree is hidden (design M). */
+  switcher: boolean;
+  onShowTree: () => void;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -142,6 +257,29 @@ export function Landscape({
   focusNow.current = focusTile ? focusKey : null;
   const layoutNow = useRef(layout);
   layoutNow.current = layout;
+  const storedNow = useRef(stored);
+  storedNow.current = stored;
+  const asks = useRef({ onPatch, onMoves, askAreaName, areaTitle, onSeen });
+  asks.current = { onPatch, onMoves, askAreaName, areaTitle, onSeen };
+
+  // areas: the marquee's selection, the area a dragged workspace would join, and a note on the last gesture
+  const [picked, setPicked] = useState<string[]>([]);
+  const pickedNow = useRef(picked);
+  pickedNow.current = picked;
+  const [hot, setHot] = useState<string | null>(null);
+  const [note, setNote] = useState<{ text: string; n: number } | null>(null);
+  const say = (text: string) => setNote((p) => ({ text, n: (p?.n ?? 0) + 1 }));
+  useEffect(() => {
+    if (!note) return;
+    const t = setTimeout(() => setNote(null), NOTE_MS);
+    return () => clearTimeout(t);
+  }, [note?.n]);
+  const gesture = useRef<Gesture | null>(null);
+  const marquee = useRef<HTMLDivElement>(null);
+  const settling = useRef<Settling[]>([]);
+  // a flight to an area: the clock animation whose progress moves the camera, and the frame that reads it
+  const flight = useRef<{ anim: Animation; raf: number } | null>(null);
+  const clock = useRef<HTMLDivElement>(null);
 
   // semantic zoom: the band the camera's zoom is in, changed only once a new one has held for a moment
   const [band, setBand] = useState<Band>(() => nextBand(cam.current.zoom, null));
@@ -195,8 +333,8 @@ export function Landscape({
     const v = vpNow.current;
     // before a window's first fit the camera is a stand-in: nothing is on screen until it's placed
     if (!v.w || !placed.current) return;
-    // cards cost no terminal, so they follow a zoom as it moves; terminals wait for it to rest
-    if (bandWait.current && attaches(bandNow.current)) return;
+    // cards cost no terminal, so they follow a zoom or a flight as it moves; terminals wait for it to rest
+    if ((bandWait.current || flight.current) && attaches(bandNow.current)) return;
     const keys = keysOnScreen(layoutNow.current.tiles, cam.current, v).join("\n");
     if (keys === seenNow.current) return;
     seenNow.current = keys;
@@ -210,15 +348,26 @@ export function Landscape({
     hover.current = { key: null, timer: null };
   };
 
+  /**
+   * Areas' outlines, headers and names, pills, and cards' type keep their screen size: --ls-inv is 1/zoom, and
+   * --ls-hs that never below 1 (an area's header and pill, which don't shrink past 100% zoomed in). Set on each,
+   * never on the world, whose terminals would all have their styles recalculated.
+   */
+  const paintScale = (zoom: number) => {
+    const inv = String(1 / zoom);
+    const hs = String(Math.max(1, 1 / zoom));
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card") ?? []) {
+      el.style.setProperty("--ls-inv", inv);
+      el.style.setProperty("--ls-hs", hs);
+    }
+  };
   const apply = useCallback((next: Camera) => {
     cam.current = next;
     const w = world.current;
     const v = viewport.current;
     if (w) {
       w.style.transform = worldTransform(next);
-      // areas' outlines and names, and cards' type, keep their screen size; set on each, never the world, whose
-      // terminals would all have their styles recalculated
-      for (const a of w.querySelectorAll<HTMLElement>(".ls-area, .ls-node.card")) a.style.setProperty("--ls-inv", String(1 / next.zoom));
+      paintScale(next.zoom);
     }
     if (v) {
       v.classList.toggle("ls-mouse-off", !mouseAt(next.zoom));
@@ -274,9 +423,67 @@ export function Landscape({
     return () => ro.disconnect();
   }, []);
 
+  // ---- flying: going to an area, or to a workspace out of view ----
+  const endFlight = () => {
+    const f = flight.current;
+    if (!f) return null;
+    flight.current = null;
+    cancelAnimationFrame(f.raf);
+    viewport.current?.removeAttribute("data-flying");
+    return f;
+  };
+  /** A flight stopped where it is: the user took the camera (a wheel, a press, a key). */
+  const stopFly = () => {
+    const f = endFlight();
+    if (!f) return;
+    f.anim.cancel();
+    looked();
+  };
+  /**
+   * Move the camera to `to` through `apply`, eased over D.l: the band and what's on screen follow it, and a band that
+   * attaches terminals attaches only where it ends (looked waits, and the band waits for the zoom to rest). Under
+   * reduced motion, or after a key (the palette, the switcher by keyboard), it's there at once. The camera follows a
+   * clock animation's progress, so finishing that animation (as the motion audit does) ends the flight at `to`.
+   */
+  const flyTo = (to: Camera) => {
+    stopFly();
+    const v = vpNow.current;
+    const el = clock.current;
+    if (!el || !v.w || motion() !== "full" || fromKeyboard() || document.hidden || typeof el.animate !== "function") return apply(to);
+    const from = cam.current;
+    const anim = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: D.l, easing: EASE.move });
+    const f = { anim, raf: 0 };
+    flight.current = f;
+    viewport.current?.setAttribute("data-flying", "");
+    const step = () => {
+      if (flight.current !== f) return;
+      const p = anim.effect?.getComputedTiming().progress;
+      apply(flightAt(from, to, v, typeof p === "number" ? p : 0));
+      f.raf = requestAnimationFrame(step);
+    };
+    f.raf = requestAnimationFrame(step);
+    // cancelled by stopFly or a newer flight, which left the camera where it wanted it; cancelled by anything else
+    // (the animation taken away), it ends at `to` as finishing would
+    const done = () => {
+      if (flight.current !== f) return;
+      endFlight();
+      apply(to);
+    };
+    anim.finished.then(done, done);
+  };
+  const flyRef = useRef(flyTo);
+  flyRef.current = flyTo;
+  const stopFlyRef = useRef(stopFly);
+  stopFlyRef.current = stopFly;
+  useEffect(() => () => void endFlight()?.anim.cancel(), []);
+
+  /** The strip along the view's top that fitting and going to an area leave clear: the area switcher's, while it shows. */
+  const topNow = useRef(0);
+  topNow.current = switcher ? SWITCHER_STRIP : 0;
   const fit = useCallback(() => {
+    stopFlyRef.current();
     const rects = contentRects(layoutNow.current);
-    if (rects.length && vpNow.current.w) apply(fitAll(rects, vpNow.current));
+    if (rects.length && vpNow.current.w) apply(fitBelow(rects, vpNow.current, topNow.current));
   }, []);
   // a window that has never shown the landscape starts with everything in view
   useEffect(() => {
@@ -285,10 +492,23 @@ export function Landscape({
     fit();
   }, [vp, layout.tiles.length]);
 
-  // workspaces added, moved or resized come on screen or leave it
-  useLayoutEffect(looked, [layout]);
+  // workspaces and areas added, moved, resized, collapsed or opened: what's on screen, their type's scale, and drops
+  // the layout now has where they were dropped
+  useLayoutEffect(() => {
+    paintScale(cam.current.zoom);
+    looked();
+    settling.current = settling.current.filter((s) => {
+      if (!s.moved()) return true;
+      release(s.els);
+      return false;
+    });
+  }, [layout]);
+  useLayoutEffect(() => paintScale(cam.current.zoom), [band]);
 
-  const zoomTo = (zoom: number, at?: { x: number; y: number }) => apply(zoomAbout(cam.current, at ?? { x: vpNow.current.w / 2, y: vpNow.current.h / 2 }, zoom));
+  const zoomTo = (zoom: number, at?: { x: number; y: number }) => {
+    stopFly();
+    apply(zoomAbout(cam.current, at ?? { x: vpNow.current.w / 2, y: vpNow.current.h / 2 }, zoom));
+  };
 
   const select = (t: Tile) => onSelect(t.front.id);
   /** The keyboard to the landscape: the surface, or in focus the focused workspace's frame (so Esc reaches it). */
@@ -336,9 +556,12 @@ export function Landscape({
   // reveal: the sidebar, ⌘K or a notification picked a session. One made a moment ago may not be in the layout
   // yet: the reveal waits for it, tried again as the layout changes, and is given up (and said) after a while.
   const pendingReveal = useRef<PendingReveal | null>(null);
+  /** The pending reveal ends in focus. */
+  const revealFocus = useRef(false);
   const gaveUp = (p: PendingReveal) => console.warn(`[mockingbird] the landscape couldn't bring ${p.id} into view: no workspace holds it after ${REVEAL_WAIT_MS} ms`);
   useEffect(() => {
     if (!reveal) return;
+    revealFocus.current = !!reveal.focus;
     const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
     const t = setTimeout(() => {
       if (pendingReveal.current !== p) return;
@@ -347,27 +570,119 @@ export function Landscape({
     }, REVEAL_WAIT_MS + 50);
     return () => clearTimeout(t);
   }, [reveal?.n]);
+  /** The collapsed area a reveal opened, while the layout doesn't have it open yet. */
+  const opening = useRef<string | null>(null);
   useEffect(() => {
     const p = pendingReveal.current;
     if (!p) return;
     const t = revealTile(p, layout.tiles, Date.now());
     if (t === "wait") return;
+    if (t !== "expired" && t.hidden) {
+      // in a collapsed area: the area opens, and the reveal goes on once the layout has it open
+      if (opening.current === t.area) return;
+      opening.current = t.area;
+      const title = asks.current.areaTitle(t.area);
+      void asks.current.onPatch({ areas: { [t.area]: { collapsed: false } } }, `${title} opened`).then((error) => {
+        if (!error || pendingReveal.current !== p) return;
+        pendingReveal.current = null;
+        opening.current = null;
+        say(`${title} couldn't be opened to show the workspace: ${error}`);
+      });
+      return;
+    }
     pendingReveal.current = null;
+    opening.current = null;
     if (t === "expired") return gaveUp(p);
+    const seen = !vpNow.current.w || inView(cam.current, t.rect, vpNow.current);
+    if (revealFocus.current) {
+      // under the focus overlay, so there's no flight to see: the landscape is there when focus ends
+      if (!seen) {
+        stopFly();
+        apply(centreOn(cam.current, t.rect, vpNow.current));
+      }
+      return enterFocus(t);
+    }
     if (focusNow.current && focusNow.current !== t.key) setFocusKey(null);
-    if (vpNow.current.w && !inView(cam.current, t.rect, vpNow.current)) apply(centreOn(cam.current, t.rect, vpNow.current));
+    if (!seen) flyTo(centreOn(cam.current, t.rect, vpNow.current));
   }, [reveal?.n, layout]);
+
+  // going to an area: the tree, the switcher, ⌘K (one asked before this landscape was shown isn't its to follow)
+  const wentTo = useRef(goTo?.n);
+  useEffect(() => {
+    if (!goTo || goTo.n === wentTo.current) return;
+    wentTo.current = goTo.n;
+    const a = layoutNow.current.areas.find((x) => x.key === goTo.area);
+    if (!a) return console.warn(`[mockingbird] the landscape has no area ${goTo.area} to go to`);
+    if (!vpNow.current.w) return console.warn(`[mockingbird] the landscape couldn't go to ${goTo.area}: it has no size yet`);
+    placed.current = true;
+    if (focusNow.current) setFocusKey(null);
+    flyTo(areaCamera(a, vpNow.current, topNow.current));
+  }, [goTo?.n]);
+
+  // what's on screen, for teamLiveView
+  const seenIds = useMemo(() => sessionsOnScreen(layout.tiles, seenSet, focusTile ? focusTile.key : null).join("\n"), [layout.tiles, seenSet, focusTile?.key]);
+  useEffect(() => asks.current.onSeen(seenIds ? seenIds.split("\n") : []), [seenIds]);
 
   const move = (dir: Direction) => {
     const tiles = layoutNow.current.tiles;
     const v = vpNow.current;
     const from = sel?.rect ?? { x: cam.current.x + v.w / (2 * cam.current.zoom), y: cam.current.y + v.h / (2 * cam.current.zoom), w: 0, h: 0 };
-    const key = nearestInDirection(from, tiles.filter((t) => t.key !== sel?.key), dir);
+    const key = nearestInDirection(from, tiles.filter((t) => t.key !== sel?.key && !t.hidden), dir);
     const t = key ? tiles.find((x) => x.key === key) : undefined;
     if (!t) return;
     select(t);
+    stopFly();
     apply(centreOn(cam.current, t.rect, v));
   };
+
+  // ---- areas: collapse and lock, the marquee's Make area…, and carrying out a gesture's plan ----
+  const setAreaFlag = (key: string, flag: "collapsed" | "locked", on: boolean) => {
+    const title = areaTitle(key);
+    const what = flag === "collapsed" ? `${title} ${on ? "collapsed" : "opened"}` : `${title} ${on ? "locked" : "unlocked"}`;
+    void onPatch({ areas: { [key]: flag === "collapsed" ? { collapsed: on } : { locked: on } } }, what).then((error) => error && say(`${what}: not saved, ${error}`));
+  };
+  /**
+   * A plan carried out: its patch, the sessions' groups, then `after` (AreaPlan). `settle`, a drop's elements, keeps
+   * them where they were dropped until the layout has them there. Whatever fails is said, and nothing after it is done.
+   */
+  const carryOut = async (plan: ReadyPlan, what: string, settle?: Settling): Promise<boolean> => {
+    const unsettle = () => {
+      if (!settle) return;
+      settling.current = settling.current.filter((s) => s !== settle);
+      release(settle.els);
+    };
+    if (settle) settling.current.push(settle);
+    const error = plan.patch ? await asks.current.onPatch(plan.patch, what) : null;
+    if (error || !plan.patch) unsettle();
+    else setTimeout(unsettle, SETTLE_MS);
+    if (error) {
+      say(`${what}: not saved, ${error}`);
+      return false;
+    }
+    if (plan.moves.length) {
+      const moveError = await asks.current.onMoves(plan.moves, what);
+      if (moveError) {
+        say(moveError);
+        return false;
+      }
+    }
+    const afterError = plan.after ? await asks.current.onPatch(plan.after, what) : null;
+    if (afterError) say(`${what}: its stack's old place wasn't let go, ${afterError}`);
+    if (plan.note) say(plan.note);
+    return !afterError;
+  };
+  const makeArea = async () => {
+    const keys = pickedNow.current;
+    if (!keys.length) return;
+    const name = await asks.current.askAreaName(keys.length);
+    if (name === null) return;
+    const key = sanitizeSegment(name);
+    const plan = planMakeArea(storedNow.current, layoutNow.current, keys, key, asks.current.areaTitle);
+    if ("refused" in plan) return say(plan.refused);
+    if (await carryOut(plan, `the area ${key}`)) setPicked([]);
+  };
+  const makeRef = useRef(makeArea);
+  makeRef.current = makeArea;
 
   // the surface's own keys: only while it has the keyboard itself
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -399,6 +714,12 @@ export function Landscape({
     } else if (e.altKey && !e.metaKey && !e.ctrlKey && ARROWS[e.key]) {
       handled();
       move(ARROWS[e.key]);
+    } else if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "m" && pickedNow.current.length) {
+      handled();
+      void makeArea();
+    } else if (e.key === "Escape" && !e.metaKey && pickedNow.current.length) {
+      handled();
+      setPicked([]);
     }
   };
 
@@ -450,6 +771,175 @@ export function Landscape({
     };
   }, []);
 
+  // ---- gestures: the marquee, and moving a workspace or an area ----
+  /** A client point in landscape px. */
+  const atPoint = (e: { clientX: number; clientY: number }): Point => {
+    const r = viewport.current!.getBoundingClientRect();
+    return toLandscape(cam.current, { x: e.clientX - r.left, y: e.clientY - r.top });
+  };
+  const nodeEl = (key: string) => world.current?.querySelector<HTMLElement>(`.ls-node[data-ws="${CSS.escape(key)}"]`) ?? null;
+  /** Where a dragged workspace would go: the area under the pointer, LOOSE_GROUP over the bare landscape. */
+  const dropArea = (e: PointerEvent): string => areaAt(layoutNow.current.areas, atPoint(e))?.key ?? LOOSE_GROUP;
+  /** A drag starting: what moves with it, or false when it can't (said). */
+  const begin = (g: Gesture): boolean => {
+    const l = layoutNow.current;
+    if (g.kind === "marquee") {
+      if (marquee.current) marquee.current.hidden = false;
+      return true;
+    }
+    if (g.kind === "tile") {
+      const t = l.tiles.find((x) => x.key === g.key);
+      const a = t && l.areas.find((x) => x.key === t.area);
+      if (!t) return false;
+      if (a?.rect.locked) {
+        say(`${areaTitle(a.key)} is locked: unlock it to move its workspaces`);
+        return false;
+      }
+      g.els = [nodeEl(t.key)].filter((x): x is HTMLElement => !!x);
+    } else {
+      const a = l.areas.find((x) => x.key === g.key);
+      if (!a) return false;
+      if (a.rect.locked) {
+        say(`${areaTitle(a.key)} is locked: unlock it to move it`);
+        return false;
+      }
+      const frame = world.current?.querySelector<HTMLElement>(`.ls-area[data-area="${CSS.escape(a.key)}"]`);
+      g.els = [frame, ...l.tiles.filter((t) => t.area === a.key).map((t) => nodeEl(t.key))].filter((x): x is HTMLElement => !!x);
+    }
+    for (const el of g.els) el.classList.add("dragging");
+    return true;
+  };
+  const gestureMove = (e: PointerEvent) => {
+    const g = gesture.current;
+    if (!g || e.pointerId !== g.id) return;
+    const dx = e.clientX - g.x0;
+    const dy = e.clientY - g.y0;
+    if (!g.on) {
+      if (Math.hypot(dx, dy) < DRAG_PX) return;
+      if (!begin(g)) return endGesture();
+      g.on = true;
+    }
+    e.preventDefault();
+    if (g.kind === "marquee") {
+      const r = viewport.current!.getBoundingClientRect();
+      const box = rectFrom({ x: g.x0 - r.left, y: g.y0 - r.top }, { x: e.clientX - r.left, y: e.clientY - r.top });
+      const m = marquee.current;
+      if (m) Object.assign(m.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
+      const keys = tilesIn(layoutNow.current.tiles, rectFrom(atPoint({ clientX: g.x0, clientY: g.y0 }), atPoint(e)));
+      const next = g.add ? [...new Set([...g.base, ...keys])] : keys;
+      if (next.join("\n") !== pickedNow.current.join("\n")) setPicked(next);
+      return;
+    }
+    const z = cam.current.zoom;
+    for (const el of g.els) el.style.translate = `${dx / z}px ${dy / z}px`;
+    if (g.kind === "tile") {
+      const t = layoutNow.current.tiles.find((x) => x.key === g.key);
+      const target = dropArea(e);
+      const a = layoutNow.current.areas.find((x) => x.key === target);
+      setHot(t && a && target !== t.area && !a.rect.locked ? target : null);
+    }
+  };
+  const gestureUp = (e: PointerEvent) => {
+    const g = gesture.current;
+    if (!g || e.pointerId !== g.id) return;
+    endGesture();
+    if (e.type === "pointercancel") return release(g.els);
+    const l = layoutNow.current;
+    const z = cam.current.zoom;
+    const dx = (e.clientX - g.x0) / z;
+    const dy = (e.clientY - g.y0) / z;
+    if (g.kind === "marquee") {
+      // a click on the bare landscape lets the selection go
+      if (!g.on && !g.add) setPicked([]);
+      return;
+    }
+    if (!g.on) return;
+    if (g.kind === "tile") {
+      const t = l.tiles.find((x) => x.key === g.key);
+      if (!t) return release(g.els);
+      const plan = planMoveTile(storedNow.current, l, t.key, { x: t.rect.x + dx, y: t.rect.y + dy }, dropArea(e), areaTitle);
+      if ("refused" in plan) {
+        release(g.els);
+        return say(plan.refused);
+      }
+      const from = t.rect;
+      const front = t.front.id;
+      void carryOut(plan, `${titleOf(t.front)}'s place`, {
+        els: g.els,
+        moved: () => {
+          const now = layoutNow.current.tiles.find((x) => x.members.some((m) => m.id === front));
+          return !now || now.rect.x !== from.x || now.rect.y !== from.y;
+        },
+      });
+      return;
+    }
+    const a = l.areas.find((x) => x.key === g.key);
+    if (!a) return release(g.els);
+    const plan = planMoveArea(storedNow.current, l, a.key, dx, dy, areaTitle);
+    if ("refused" in plan) {
+      release(g.els);
+      return say(plan.refused);
+    }
+    const from = a.rect;
+    void carryOut(plan, `${areaTitle(a.key)}'s place`, {
+      els: g.els,
+      moved: () => {
+        const now = layoutNow.current.areas.find((x) => x.key === a.key);
+        return !now || now.rect.x !== from.x || now.rect.y !== from.y;
+      },
+    });
+  };
+  const gestureKey = (e: KeyboardEvent) => {
+    const g = gesture.current;
+    if (e.key !== "Escape" || !g?.on) return;
+    e.preventDefault();
+    e.stopPropagation();
+    endGesture();
+    release(g.els);
+    if (g.kind === "marquee" && !g.add) setPicked([]);
+  };
+  const handlers = useRef({ move: gestureMove, up: gestureUp, key: gestureKey });
+  handlers.current = { move: gestureMove, up: gestureUp, key: gestureKey };
+  // the window's listeners for a gesture, the same functions for its whole life so they can be taken off again
+  const [listen] = useState(() => ({
+    move: (e: PointerEvent) => handlers.current.move(e),
+    up: (e: PointerEvent) => handlers.current.up(e),
+    key: (e: KeyboardEvent) => handlers.current.key(e),
+  }));
+  function endGesture() {
+    gesture.current = null;
+    if (marquee.current) marquee.current.hidden = true;
+    setHot(null);
+    viewport.current?.classList.remove("ls-gesture");
+    window.removeEventListener("pointermove", listen.move, true);
+    window.removeEventListener("pointerup", listen.up, true);
+    window.removeEventListener("pointercancel", listen.up, true);
+    window.removeEventListener("keydown", listen.key, true);
+  }
+  /** A press that may become a drag. It holds the peek off while it lasts: a press already ended any peek and its hover. */
+  const startGesture = (g: Omit<Gesture, "on" | "els">) => {
+    if (gesture.current) {
+      release(gesture.current.els);
+      endGesture();
+    }
+    stopFly();
+    stopHover();
+    closePeek();
+    gesture.current = { ...g, on: false, els: [] };
+    viewport.current?.classList.add("ls-gesture");
+    window.addEventListener("pointermove", listen.move, true);
+    window.addEventListener("pointerup", listen.up, true);
+    window.addEventListener("pointercancel", listen.up, true);
+    window.addEventListener("keydown", listen.key, true);
+  };
+  const startRef = useRef(startGesture);
+  startRef.current = startGesture;
+  useEffect(() => () => endGesture(), []);
+  const grabArea = (key: string, e: React.PointerEvent) => {
+    if (e.button !== 0 || space.current || e.shiftKey) return;
+    startGesture({ kind: "area", id: e.pointerId, x0: e.clientX, y0: e.clientY, key, add: false, base: [] });
+  };
+
   // pan and zoom: the wheel and pointer, taken before a terminal sees them
   useEffect(() => {
     const v = viewport.current;
@@ -469,6 +959,7 @@ export function Landscape({
       if (!zooming && mouseAt(cam.current.zoom) && node && node.dataset.ws === selKey.current && (e.target as Element).closest(".term-holder")) return;
       e.preventDefault();
       e.stopPropagation();
+      stopFlyRef.current();
       const page = vpNow.current.h || 800;
       if (zooming) {
         const r = v.getBoundingClientRect();
@@ -494,6 +985,13 @@ export function Landscape({
     const onDown = (e: PointerEvent) => {
       if (inFocus(e.target)) return;
       stopHover();
+      // a press takes the camera from a flight, and ends a gesture still going (its release never came)
+      stopFlyRef.current();
+      const g = gesture.current;
+      if (g) {
+        release(g.els);
+        endGesture();
+      }
       // a press on its peek focuses the workspace (the peek's click); anywhere else ends the peek, kept or not
       const onPeek = !!(e.target as Element | null)?.closest?.(".ls-peek");
       if (!onPeek) closePeek();
@@ -523,8 +1021,20 @@ export function Landscape({
         setTimeout(() => (tile.front.status !== "dead" && takesKeys(bandNow.current) ? focusTerm(tile.front.id) : surface()), 0);
         return;
       }
+      if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const node = t.closest<HTMLElement>(".ls-world .ls-node");
+        const press = { id: e.pointerId, x0: e.clientX, y0: e.clientY, add: e.shiftKey, base: pickedNow.current };
+        if (node && (node.classList.contains("card") || t.closest(".ls-head")) && !t.closest("button")) {
+          const key = node.dataset.ws!;
+          // Shift-click picks it for Make area…, or lets it go; otherwise its header (or its card) moves it
+          if (e.shiftKey) setPicked((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
+          else startRef.current({ ...press, kind: "tile", key });
+        } else if (!node && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-pickbar, .ls-note, .ls-empty")) {
+          startRef.current({ ...press, kind: "marquee", key: "" });
+        }
+      }
       // a press on the landscape between workspaces gives it the keyboard
-      if (e.button === 0 && !t.closest(".ls-node, .ls-hud, .ls-banners, .ls-peek")) surface();
+      if (e.button === 0 && !t.closest(".ls-node, .ls-hud, .ls-banners, .ls-peek, .ls-switcher, .ls-minimap, .ls-pickbar")) surface();
     };
     // Below 75% a terminal on the landscape takes no keys, nor ever one lent to a peek: one that still has the
     // keyboard (it had it as the zoom went down) gives it to the landscape, before xterm sees the key.
@@ -538,6 +1048,8 @@ export function Landscape({
     // The peek: the pointer resting on a card or a read-only workspace opens it, never while dragging, panning or a
     // button is held; moving onto another workspace or the bare landscape closes it, unless Space kept it open.
     const onHover = (e: PointerEvent) => {
+      // a marquee or a drag holds the peek off while it lasts
+      if (gesture.current) return;
       const t = e.target as Element | null;
       if (t?.closest?.(".ls-peek")) {
         if (hover.current.timer) clearTimeout(hover.current.timer);
@@ -620,11 +1132,25 @@ export function Landscape({
    */
   const modeOf = (t: Tile): NodeMode => {
     if (t.key === focusNow.current) return "placeholder";
+    // in a collapsed area: not drawn, and nothing attached
+    if (t.hidden) return "still";
     if (peek?.key === t.key && !peekGone) return band === "cards" ? "card" : "snapshot";
     if (focusNow.current) return "still";
     if (attaches(band) && (seenSet.has(t.key) || (takesKeys(band) && t.key === sel?.key))) return "live";
     return band === "cards" && seenSet.has(t.key) ? "card" : "still";
   };
+  const pickedSet = useMemo(() => new Set(picked), [picked]);
+  // a workspace picked that has left (closed, or its area collapsed) is no longer in the selection
+  const pickable = useMemo(() => new Set(layout.tiles.filter((t) => !t.hidden).map((t) => t.key)), [layout.tiles]);
+  const pickedCount = picked.filter((k) => pickable.has(k)).length;
+  useEffect(() => {
+    if (picked.some((k) => !pickable.has(k))) setPicked((p) => p.filter((k) => pickable.has(k)));
+  }, [pickable]);
+  const accents = useMemo(() => accentsOf(layout.areas.map((a) => a.key)), [layout.areas]);
+  const areaViews = layout.areas.map((a) => ({ a, accent: accents.get(a.key) ?? accentOf(a.key), counts: areaCounts(layout.tiles, a.key), title: areaTitle(a.key), info: areaHooks.info(a.key) }));
+  const loose = useMemo(() => (switcher ? looseStop(layout.tiles) : null), [switcher, layout]);
+  const stops = useMemo(() => (loose ? [...layout.areas, loose] : layout.areas), [loose, layout]);
+
   const node = (t: Tile, mode: NodeMode, size: Size) => (
     <WorkspaceNode
       key={mode === "focus" ? `focus:${t.key}` : t.key}
@@ -633,6 +1159,7 @@ export function Landscape({
       mode={mode}
       size={size}
       selected={sel?.key === t.key}
+      picked={mode !== "focus" && pickedSet.has(t.key)}
       meters={meters}
       snapshot={mode === "snapshot" ? peek?.snap : null}
       inv={1 / cam.current.zoom}
@@ -656,13 +1183,29 @@ export function Landscape({
         onBlur={(e) => e.target === viewport.current && space.current && dropSpace()}
       >
         <div ref={world} className="ls-world">
-          {layout.areas.map((a) => (
-            <div key={a.key} className="ls-area" data-area={a.key} style={{ left: a.rect.x, top: a.rect.y, width: a.rect.w, height: a.rect.h, ["--ls-inv" as string]: 1 / cam.current.zoom }}>
-              <span className="ls-area-name">{areaTitle(a.key)}</span>
-            </div>
+          {areaViews.map(({ a, accent, counts, title, info }) => (
+            <AreaFrame
+              key={a.key}
+              area={a}
+              accent={accent}
+              band={band}
+              title={title}
+              header={band === "cards" || a.rect.collapsed ? null : areaHooks.header(a, counts, (e) => grabArea(a.key, e))}
+              ticketChip={info.ticketChip}
+              shared={info.shared}
+              summary={areaSummary(counts)}
+              counts={counts}
+              hot={hot === a.key}
+              menu={() => areaHooks.menu(a.key)}
+              onCollapse={(on) => setAreaFlag(a.key, "collapsed", on)}
+              onLock={(on) => setAreaFlag(a.key, "locked", on)}
+              onGrab={(e) => grabArea(a.key, e)}
+            />
           ))}
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}
         </div>
+        <div ref={marquee} className="ls-marquee" hidden aria-hidden="true" />
+        <div ref={clock} className="ls-clock" aria-hidden="true" />
         {peek && peekTile && !peekGone && !focusTile && (
           <Peek
             key={peek.key}
@@ -680,7 +1223,51 @@ export function Landscape({
             <div className="dim">New sessions land in their group's area.</div>
           </div>
         )}
+        {switcher && (
+          <LiveSwitcher
+            stops={stops}
+            listeners={listeners.current}
+            cam={cam}
+            vp={vp}
+            areas={[
+              ...areaViews.map(({ a, accent, counts, title }) => ({ key: a.key, name: shortAreaName(a.key, title), title, accent, waiting: counts.waiting })),
+              ...(loose ? [{ key: LOOSE_GROUP, name: "Loose", title: "the workspaces in no area", accent: null, waiting: areaCounts(layout.tiles, LOOSE_GROUP).waiting }] : []),
+            ]}
+            onArea={(key) => {
+              const a = stops.find((x) => x.key === key);
+              if (a && vpNow.current.w) flyTo(areaCamera(a, vpNow.current, topNow.current));
+            }}
+            onShowTree={onShowTree}
+          />
+        )}
+        {pickedCount > 0 && (
+          <div className="ls-pickbar" role="toolbar" aria-label="Selected workspaces">
+            <span className="n">{pickedCount} selected</span>
+            <button type="button" className="primary" onClick={() => void makeArea()} title="Make an area of them (M)">
+              Make area… <kbd>M</kbd>
+            </button>
+            <button type="button" className="icon" aria-label="Clear the selection" title="Clear the selection (Esc)" onClick={() => setPicked([])}>
+              ✕
+            </button>
+          </div>
+        )}
+        {note && (
+          <div key={note.n} className="ls-note" role="status">
+            {note.text}
+          </div>
+        )}
         <CameraHud listeners={listeners.current} cam={cam} onFit={fit} onZoom={zoomTo} />
+        <Minimap
+          layout={layout}
+          accents={accents}
+          listeners={listeners.current}
+          cam={cam}
+          vp={vp}
+          onCentre={(p) => {
+            stopFly();
+            apply(centredAt(cam.current, p, vpNow.current));
+          }}
+        />
         <div className="ls-hint" aria-hidden="true">
           Zoom to 100% or focus to select text
         </div>
@@ -793,6 +1380,88 @@ function CameraHud({ listeners, cam, onFit, onZoom }: { listeners: Set<CameraLis
         Fit
       </button>
     </div>
+  );
+}
+
+/** The area switcher (AreaTree.tsx), its current stop the one most of the view shows, followed without re-rendering the landscape. */
+function LiveSwitcher({
+  stops,
+  listeners,
+  cam,
+  vp,
+  ...rest
+}: { stops: readonly AreaView[]; listeners: Set<CameraListener>; cam: React.MutableRefObject<Camera>; vp: Size | null } & Omit<React.ComponentProps<typeof AreaSwitcher>, "current">) {
+  const here = (c: Camera) => (vp ? areaInView(stops, c, vp) : null);
+  const [current, setCurrent] = useState(() => here(cam.current));
+  useEffect(() => {
+    setCurrent(here(cam.current));
+    const l: CameraListener = (c) => setCurrent(here(c));
+    listeners.add(l);
+    return () => void listeners.delete(l);
+  }, [listeners, stops, vp]);
+  return <AreaSwitcher {...rest} current={current} />;
+}
+
+/** The minimap's box, in px. */
+const MINIMAP: Size = { w: 196, h: 124 };
+
+/**
+ * The minimap (bottom right): areas as outlines in their accents, workspaces as status dots, and the view as a
+ * rectangle. A press or a drag on it moves the view there. The view's rectangle follows the camera directly, so
+ * panning re-renders none of it.
+ */
+function Minimap({ layout, accents, listeners, cam, vp, onCentre }: { layout: ResolvedLayout; accents: Map<string, number>; listeners: Set<CameraListener>; cam: React.MutableRefObject<Camera>; vp: Size | null; onCentre: (p: Point) => void }) {
+  const view = useRef<SVGRectElement>(null);
+  const bounds = useMemo(() => boundsOf(contentRects(layout)), [layout]);
+  const fit = useMemo(() => (bounds ? minimapFit(bounds, MINIMAP) : null), [bounds]);
+  useEffect(() => {
+    if (!fit || !vp) return;
+    const draw: CameraListener = (c) => {
+      const el = view.current;
+      if (!el) return;
+      const at = toMinimap(fit, { x: c.x, y: c.y });
+      el.setAttribute("x", String(at.x));
+      el.setAttribute("y", String(at.y));
+      el.setAttribute("width", String((vp.w / c.zoom) * fit.k));
+      el.setAttribute("height", String((vp.h / c.zoom) * fit.k));
+    };
+    draw(cam.current);
+    listeners.add(draw);
+    return () => void listeners.delete(draw);
+  }, [fit, vp, listeners]);
+  if (!fit || !vp) return null;
+  const centre = (e: React.PointerEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    onCentre(fromMinimap(fit, { x: e.clientX - r.left, y: e.clientY - r.top }));
+  };
+  return (
+    <svg
+      className="ls-minimap"
+      width={MINIMAP.w}
+      height={MINIMAP.h}
+      role="img"
+      aria-label="Minimap: click or drag to move the view"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        centre(e);
+      }}
+      onPointerMove={(e) => e.buttons === 1 && e.currentTarget.hasPointerCapture(e.pointerId) && centre(e)}
+    >
+      {layout.areas.map((a) => {
+        const r = areaShown(a);
+        const p = toMinimap(fit, r);
+        return <rect key={a.key} className={`area a${accents.get(a.key) ?? accentOf(a.key)}`} data-area={a.key} x={p.x} y={p.y} width={Math.max(2, r.w * fit.k)} height={Math.max(2, r.h * fit.k)} rx={2} />;
+      })}
+      {layout.tiles
+        .filter((t) => !t.hidden)
+        .map((t) => {
+          const p = toMinimap(fit, { x: t.rect.x + t.rect.w / 2, y: t.rect.y + t.rect.h / 2 });
+          return <circle key={t.key} className={`dot ${t.front.status}`} data-ws={t.key} cx={p.x} cy={p.y} r={2.5} />;
+        })}
+      <rect ref={view} className="view" rx={2} />
+    </svg>
   );
 }
 

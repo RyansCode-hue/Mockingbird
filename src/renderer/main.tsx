@@ -53,15 +53,13 @@ import {
 import { GridPreview } from "./GridPreview";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
 import { cellKeyFor, cellKeyOf, frontOf, groupChoices, inReadingOrder, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
-import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon, MinusIcon, GridIcon, PencilIcon, MoveIcon, CloseIcon, KanbanIcon, AskIcon, PlusIcon } from "./Icons";
+import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon, MinusIcon, GridIcon, PencilIcon, MoveIcon, CloseIcon, PlusIcon } from "./Icons";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type MenuEntry } from "./ContextMenu";
-import { Select } from "./Menu";
 import { RunView } from "./RunView";
 import { Popover } from "./Popover";
-import { PipelineDialog, StageChip, usePipelines } from "./TicketPipeline";
+import { PipelineDialog, usePipelines } from "./TicketPipeline";
 import { HandoffDialog } from "./Handoff";
 import { BriefDialog, ContextWarning, useCostGate } from "./ContextWarning";
-import { GroupUsage } from "./GroupUsage";
 import { UndoTurnDialog } from "./UndoTurn";
 import { MessageLogDialog, useAgentMessages } from "./AgentMessages";
 import { RollupDialog } from "./Rollup";
@@ -83,8 +81,8 @@ import { adminRequests, JoinRequestPrompt } from "./team/JoinRequests";
 // team rooms: the Radley House board
 import { HouseBoardDialog, HouseWarnings } from "./team/HouseBoard";
 // team rooms: team chat
-import { RoomChatChip, RoomChatPanel, TeamRoomIcon, openTeamView, useRoomChatOpen, type TeamViewHooks } from "./team/RoomChat";
-import { connectedSummary, roomRowLine } from "./team/connectedModel";
+import { RoomChatPanel, TeamRoomIcon, openTeamView, useRoomChatOpen, type TeamViewHooks } from "./team/RoomChat";
+import { connectedSummary, firstName, listNames, roomRowLine } from "./team/connectedModel";
 // team rooms: take-over
 import {
   BackupFreshness,
@@ -101,7 +99,7 @@ import {
 import { backupOf, type LeftCopy, type ReceivedChanges, type RoomSessionBackupView } from "../shared/team/takeover";
 import { BackupConsentPrompt } from "./team/RoomBackups";
 // team rooms: live panes
-import { FollowControls, LiveProblems, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
+import { LiveProblems, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { roomRepoNames } from "./newSessionModel";
 import { ago, fmtElapsed, plural } from "../shared/format";
@@ -111,10 +109,14 @@ import { D, EASE, initMotion, motion, play, useFlipRows } from "./motion";
 import { StatusDot } from "./StatusDot";
 import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
 // the landscape (Settings → Labs)
-import { FOCUS_MAX_FONT, Landscape, LandscapeBanners } from "./Landscape";
+import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
-import { readProblem, resolveLayout } from "./landscapeModel";
-import { LANDSCAPE_FONT, type Size } from "../shared/landscape";
+import { accentOf, accentsOf, areaCounts, areaSummary, readProblem, resolveLayout, type GroupMove } from "./landscapeModel";
+import { LANDSCAPE_FONT, own, type Size } from "../shared/landscape";
+import { AreaHeader, GroupBar, messageModeEntries, stageChip, type GroupBarProps } from "./GroupBar";
+import { AreaTree, treeCounts, treeOf, type TreeArea } from "./AreaTree";
+import { MembersMenu } from "./team/MembersMenu";
+import { settled } from "./settled";
 
 initMotion();
 
@@ -178,8 +180,21 @@ function App() {
   const listLoaded = (which: "live" | "resumable") => setListsLoaded((p) => (p[which] ? p : { ...p, [which]: true }));
   const [shown, setShown] = usePersisted<string[]>("mb.shown", []);
   const [focused, setFocused] = useState<string | null>(null);
+  // Settings → Labs. Until settings are read, the flag as this window last saw it, so the Sessions tab doesn't
+  // draw the grid only to swap it for the landscape (each fitting every terminal) a moment later
+  const [labs, setLabsNow] = useState<LabsFlags>(() => ({ landscape: readPref<unknown>(LABS_LANDSCAPE_PREF, false) === true }));
+  const setLabs = (next: LabsFlags) => {
+    setLabsNow(next);
+    // kept only once it differs from the default, so a window that never turns it on stores nothing new
+    if ((readPref<unknown>(LABS_LANDSCAPE_PREF, false) === true) !== (next.landscape === true)) writePref(LABS_LANDSCAPE_PREF, next.landscape === true);
+  };
+  const landscapeOn = labs.landscape === true;
+  // the sessions on the landscape's screen (Landscape's onSeen): what teammates stream here while it shows, as the
+  // grid's panes are without it
+  const [lsSeen, setLsSeen] = useState<string[]>([]);
+  const onLsSeen = useCallback((ids: string[]) => setLsSeen((p) => (p.join("\n") === ids.join("\n") ? p : ids)), []);
   // team rooms: live panes — teammates' room sessions are sessions here too (session.room says whose)
-  const roomLive = useRoomLive(ownSessions, shown, focused);
+  const roomLive = useRoomLive(ownSessions, landscapeOn ? lsSeen : shown, focused);
   const sessions = roomLive.sessions;
   useEffect(() => followOwners(sessions), [sessions]);
   // team rooms: take-over — each room session's backup, shown on its row and pane; Take over opens one dialog
@@ -290,15 +305,6 @@ function App() {
   // tabs turned off in Settings leave the top bar (and the palette); one opened
   // anyway — by a notification or a search hit — shows while it's the active tab
   const [hiddenTabs, setHiddenTabs] = useState<OptionalTab[]>([]);
-  // Settings → Labs. Until settings are read, the flag as this window last saw it, so the Sessions tab doesn't
-  // draw the grid only to swap it for the landscape (each fitting every terminal) a moment later
-  const [labs, setLabsNow] = useState<LabsFlags>(() => ({ landscape: readPref<unknown>(LABS_LANDSCAPE_PREF, false) === true }));
-  const setLabs = (next: LabsFlags) => {
-    setLabsNow(next);
-    // kept only once it differs from the default, so a window that never turns it on stores nothing new
-    if ((readPref<unknown>(LABS_LANDSCAPE_PREF, false) === true) !== (next.landscape === true)) writePref(LABS_LANDSCAPE_PREF, next.landscape === true);
-  };
-  const landscapeOn = labs.landscape === true;
   // one-click session setups (Settings → Presets), and one being saved from New session
   const [presets, setPresets] = useState<SessionPreset[]>([]);
   const [presetDraft, setPresetDraft] = useState<SessionPreset | null>(null);
@@ -868,13 +874,25 @@ function App() {
   const jumpToRef = useRef(jumpTo);
   jumpToRef.current = jumpTo;
 
-  // team rooms: live panes — Follow mirrors a teammate's shown room sessions and focus
+  // team rooms: live panes — Follow mirrors a teammate's shown room sessions and focus. On the landscape, where every
+  // workspace is on screen at once, it brings the one they focus (or the first they show) into view and selects it,
+  // and picking another one stops it: the selection is what it watches there, not what's on screen, which a flight
+  // or a pan changes
+  const followFocus = useMemo(() => (focused ? [focused] : []), [focused]);
   const follow = useFollow({
     views: roomLive.state?.views ?? [],
     sessions,
-    shown,
+    shown: landscapeOn ? followFocus : shown,
     groupOf: topOf,
     show: (g, ids, f) => {
+      if (landscapeOn) {
+        const id = f ?? ids[0];
+        if (id) {
+          revealWorkspace(id);
+          setFocused(id);
+        }
+        return;
+      }
       switchGrid(g, ids);
       if (f) setFocused(f);
     },
@@ -916,8 +934,15 @@ function App() {
   useEffect(() => {
     if (placesToSave) void landscapeStore.update(JSON.parse(placesToSave), "new workspaces' places");
   }, [placesToSave]);
-  const [reveal, setReveal] = useState<{ id: string; n: number } | null>(null);
-  const revealWorkspace = (id: string) => setReveal((r) => ({ id, n: (r?.n ?? 0) + 1 }));
+  const [reveal, setReveal] = useState<{ id: string; n: number; focus?: boolean } | null>(null);
+  /** Bring a session's workspace into view on the landscape, and with `focus` fill the window with it. */
+  const revealWorkspace = (id: string, focus = false) => setReveal((r) => ({ id, n: (r?.n ?? 0) + 1, focus }));
+  // going to an area on the landscape: the area tree, the switcher, ⌘K
+  const [goTo, setGoTo] = useState<{ area: string; n: number } | null>(null);
+  const goToArea = (area: string) => {
+    setTab("sessions");
+    setGoTo((g) => ({ area, n: (g?.n ?? 0) + 1 }));
+  };
 
   const visible = useMemo(() => {
     const q = filter.toLowerCase();
@@ -1483,6 +1508,13 @@ function App() {
       setSideCollapsed((c) => !c);
       return;
     }
+    // the landscape's area tree to the rail and back (design M); the area switcher stands in for it meanwhile
+    if (cmd && !e.shiftKey && !e.ctrlKey && !e.altKey && e.key === "\\" && tab === "sessions" && landscapeOn) {
+      handled();
+      if (sideCollapsed || sideView !== "sessions") showView("sessions");
+      else setSideCollapsed(true);
+      return;
+    }
     if (cmd && !e.ctrlKey && e.key.toLowerCase() === "p" && !modal) {
       handled();
       if (e.shiftKey) setPaletteOpen(true);
@@ -1600,6 +1632,135 @@ function App() {
       }}
     />
   );
+  // ---- the landscape's areas (S4): each group's bar, ⋯ menu and tree row, and what its gestures ask ----
+  const sessionsOfGroup = (key: string) => workSessions.filter((s) => topOf(s) === key);
+  const areaTitle = (key: string) => groupTitle(key, sessionsOfGroup(key));
+  /** A group's bar, on the grid over its panes and on the landscape as its area's header: the same parts and handlers. */
+  const groupBarProps = (key: string): GroupBarProps => {
+    const ticket = ticketOfGroup(key);
+    return {
+      group: key,
+      title: areaTitle(key),
+      ticket,
+      pipeline: pipelines[key],
+      onPipeline: () => setPipelineFor(ticket),
+      meter: meters?.groups?.[key],
+      room: roomOfGroup(teamStatus, key),
+      onChat: () => showView("room"),
+      onBoard: setBoardDlg,
+      follow,
+      onAsk: () => askGroupStatus(key),
+    };
+  };
+  /** Join requests for `roomId` this install answers: shown again now, any put off with Later included. */
+  const reviewJoins = (roomId: string) => {
+    setLaterJoins((l) => l.filter((k) => !k.startsWith(`${roomId}:`)));
+    const ask = joinAsks.find((a) => a.request.roomId === roomId);
+    if (ask) setJoinShown(ask);
+  };
+  /** An area's ⋯ (and right-click): everything its header has no button for. */
+  const areaMenu = (key: string): MenuEntry[] => {
+    const title = areaTitle(key);
+    const a = landscapeState ? own(landscapeState.landscape.areas, key) : undefined;
+    const room = roomOfGroup(teamStatus, key);
+    const flag = (fields: { collapsed: boolean } | { locked: boolean }, what: string) => void landscapeStore.update({ areas: { [key]: fields } }, what);
+    return tidyMenu([
+      { key: "rename", label: "Rename", menuLabel: "Rename…", onPick: () => setRenameDlg({ kind: "group", key, initial: key }) },
+      a && { key: "collapse", label: a.collapsed ? "Open" : "Collapse", menuLabel: a.collapsed ? "Open the area" : "Collapse to a pill", onPick: () => flag({ collapsed: !a.collapsed }, `${title} ${a.collapsed ? "opened" : "collapsed"}`) },
+      a && { key: "lock", label: a.locked ? "Locked" : "Lock", menuLabel: a.locked ? "Unlock its layout" : "Lock its layout", pressed: !!a.locked, onPick: () => flag({ locked: !a.locked }, `${title} ${a.locked ? "unlocked" : "locked"}`) },
+      "-",
+      ...messageModeEntries(msgModes[key], msgDefaultSend, (mode) => void setMsgMode(key, mode)),
+      { key: "log", label: "Message log", menuLabel: "Agent message log…", title: "What sessions told each other", onPick: () => setMsgLogFor({}) },
+      "-",
+      { key: "share", label: room ? "Invite" : "Share", menuLabel: room ? "Invite a teammate…" : "Share as a team room…", onPick: () => setShareDlg({ key, title }) },
+      { key: "new", label: "New session", menuLabel: room ? "New connected session here…" : "New session here…", onPick: () => newSessionIn(key) },
+      { key: "ask", label: "Ask for status", onPick: () => askGroupStatus(key) },
+      // an area outlives its sessions (their ghosts come back to it); one with none can go
+      a && !sessionsOfGroup(key).length && "-",
+      a && !sessionsOfGroup(key).length && { key: "remove", label: "Remove", menuLabel: "Remove the area", danger: true, onPick: () => void landscapeStore.update({ areas: { [key]: null } }, `removing ${title}`) },
+    ]);
+  };
+  const areaHooks: AreaHooks = {
+    header: (a, counts, onGrab) => {
+      const p = groupBarProps(a.key);
+      return (
+        <AreaHeader
+          {...p}
+          repos={a.rect.repos}
+          summary={areaSummary(counts, { workspaces: false })}
+          locked={!!a.rect.locked}
+          members={
+            p.room && (
+              <MembersMenu
+                room={p.room}
+                views={roomLive.state?.views ?? []}
+                peers={teamStatus && !isErr(teamStatus) ? teamStatus.peers : []}
+                sessions={sessions}
+                follow={follow}
+                takeover={takeoverView}
+                onInvite={() => setShareDlg({ key: a.key, title: p.title })}
+                onReviewJoins={() => reviewJoins(p.room!.id)}
+                onSettings={() => {
+                  setSettingsJump((j) => ({ section: "team", n: (j?.n ?? 0) + 1 }));
+                  setTab("settings");
+                }}
+              />
+            )
+          }
+          menu={() => areaMenu(a.key)}
+          onGrab={onGrab}
+        />
+      );
+    },
+    info: (key) => {
+      const ticket = ticketOfGroup(key);
+      const stage = pipelines[key];
+      const room = roomOfGroup(teamStatus, key);
+      const others = room?.members.filter((m) => !m.self).map((m) => firstName(m.name)) ?? [];
+      return {
+        ticketChip: ticket && stage ? stageChip(areaTitle(key), ticket.id, stage) : null,
+        shared: room ? (others.length ? `Shared room with ${listNames(others)}` : "Shared room") : null,
+      };
+    },
+    menu: areaMenu,
+  };
+  /** A gesture's sessions moved into their groups, one at a time; the first that can't be is said and the rest left. */
+  const runMoves = async (moves: readonly GroupMove[], what: string): Promise<string | null> => {
+    for (const [i, m] of moves.entries()) {
+      const r = await settled(window.mb.setGroup(m.id, m.group));
+      if (!isErr(r)) continue;
+      const s = sessions.find((x) => x.id === m.id);
+      console.error(`[mockingbird] ${what}: couldn't move ${m.id} to ${m.group ?? "no group"}:`, r.error);
+      return `${what}: ${s ? titleOf(s) : m.id} couldn't be moved (${r.error})${i ? `; ${i} of ${moves.length} moved` : ""}`;
+    }
+    return null;
+  };
+  // Make area…'s name, asked with the rename dialog; the landscape waits for it
+  const [areaNameAsk, setAreaNameAsk] = useState<{ count: number; answer: (name: string | null) => void } | null>(null);
+  const askAreaName = (count: number) => new Promise<string | null>((answer) => setAreaNameAsk({ count, answer }));
+  // the area tree: areas in the landscape's order, each with its workspaces (those the filter keeps)
+  const treeAreas = useMemo((): TreeArea[] => {
+    const order = landscapeLayout?.areas.map((a) => a.key) ?? [];
+    const accents = accentsOf(order);
+    const all = new Map(treeOf(workSessions, order).map((g) => [g.key, g.items]));
+    const shownItems = new Map(treeOf(visible, order).map((g) => [g.key, g.items]));
+    return [...all.keys()].map((key): TreeArea => {
+      const a = landscapeLayout?.areas.find((x) => x.key === key);
+      const room = roomOfGroup(teamStatus, key);
+      const others = room?.members.filter((m) => !m.self && room.online.includes(m.id)) ?? [];
+      return {
+        key,
+        // the sessions in no group are the landscape's loose workspaces
+        title: key === "ungrouped" ? "Loose" : areaTitle(key),
+        accent: a ? (accents.get(key) ?? accentOf(key)) : null,
+        collapsed: !!a?.rect.collapsed,
+        online: room ? others.map((m) => ({ id: m.id, name: m.name })) : null,
+        counts: treeCounts(all.get(key) ?? []),
+        items: shownItems.get(key) ?? [],
+      };
+    });
+  }, [landscapeLayout, workSessions, visible, teamStatus]);
+
   const landscapeMain = () => (
     <>
       <LandscapeBanners
@@ -1608,9 +1769,10 @@ function App() {
         onReload={landscapeStore.reload}
         migration={migration}
       />
-      {landscapeLayout ? (
+      {landscapeLayout && landscapeState ? (
         <Landscape
           layout={landscapeLayout}
+          stored={landscapeState.landscape}
           selected={focused}
           onSelect={setFocused}
           onTab={(t, id) => {
@@ -1618,11 +1780,19 @@ function App() {
             if (t.stack) void landscapeStore.update({ stacks: { [t.stack]: { active: id, placement: t.rect } } }, "the stack's front tab");
           }}
           reveal={reveal}
-          areaTitle={(key) => groupTitle(key, workSessions.filter((s) => topOf(s) === key))}
+          goTo={goTo}
+          areaTitle={areaTitle}
           stackName={(stack) => splitGroupKey(stack).sub ?? stack}
+          areas={areaHooks}
           meters={meters?.sessions}
           termKey={termKey}
           body={landscapeBody}
+          onPatch={landscapeStore.update}
+          onMoves={runMoves}
+          askAreaName={askAreaName}
+          onSeen={onLsSeen}
+          switcher={sideCollapsed || sideView !== "sessions"}
+          onShowTree={() => showView("sessions")}
         />
       ) : (
         <div className="empty ls-loading">
@@ -1970,27 +2140,84 @@ function App() {
               <span className="nm">{titleOf(s)}</span>
               <ActionBar className="sr-acts" actions={pickActions(acts, isRemote(s) ? ["takeover", "notify", "pin"] : ["notify", "pin", "close"])} more={acts} label={titleOf(s)} />
             </span>
-            {/* team rooms: live panes — whose session it is and who's looking, in words */}
-            {s.room && <span className="br who">{roomRowLine(s.room)}</span>}
-            {(s.branch || s.agent === "codex") && (
-              <span className="br">
-                {s.agent === "codex" ? "codex · " : ""}
-                {s.branch && s.branch !== titleOf(s) ? s.branch : (s.repoPath ? baseName(s.repoPath) : "")}
-              </span>
-            )}
-            {/* team rooms: take-over — how fresh this room session's backup is; or, continued by a teammate, what's left of this copy */}
-            {(() => {
-              const l = leftFor(s);
-              if (l) return <LeftCopyLine left={l} onTakeBack={() => takeBack(l)} />;
-              const b = backupFor(s);
-              return b && <span className="br fresh"><BackupFreshness view={b} /></span>;
-            })()}
-            <ReceivedNotice received={receivedFor(s)} onReview={setReviewing} compact />
+            {rowLines(s)}
           </span>
         )}
       </div>
     );
   };
+  /** The previous run's sessions, each to relaunch or forget: under the Sessions view, and under the area tree. */
+  const previousList = () =>
+    resumable.length > 0 && (
+      <>
+        <h2 data-flip="previous">
+          <span>Previous</span>
+          <button className="icon" title="Relaunch every previous session, resuming its conversation" onClick={restoreAll}>
+            ↺ restore all
+          </button>
+        </h2>
+        {resumable.map((s) => {
+          // team rooms: a teammate continued it, so this copy doesn't run again — it can be taken back instead
+          const taken = roomLive.state?.own[s.id]?.takenOver;
+          const left = leftFor(s);
+          return (
+          <div key={s.id} data-flip={`p:${s.id}`} className="sess-item" title={taken ? `${s.cwd} — ${taken.byName} continued this session on their laptop, so this copy doesn't run again here.` : s.cwd}>
+            <span className="dot dead" />
+            <span className="name">
+              <span className="nm">{s.title}</span>
+              {left ? <LeftCopyLine left={left} onTakeBack={() => takeBack(left)} /> : taken && <span className="br tk-fresh muted">continued on {taken.byName}'s laptop {ago(taken.at)}</span>}
+            </span>
+            {!taken && (
+            <button
+              title="Relaunch, resuming the conversation"
+              onClick={async () => {
+                if (!(await costGate.resume(s))) return;
+                const info = await window.mb.relaunchSession(s.id);
+                if (isErr(info)) return alert(`Couldn't relaunch: ${info.error}`);
+                if (info) {
+                  await refresh();
+                  jumpTo(info.id);
+                }
+              }}
+            >
+              ↺
+            </button>
+            )}
+            <button
+              className="danger"
+              onClick={async () => {
+                failed(`Couldn't forget ${s.title}`, await window.mb.killSession(s.id, true));
+                refresh();
+              }}
+            >
+              ✕
+            </button>
+          </div>
+          );
+        })}
+      </>
+    );
+  /** What a session's row says under its name, in the Sessions view and the area tree. */
+  const rowLines = (s: SessionInfo) => (
+    <>
+      {/* team rooms: live panes — whose session it is and who's looking, in words */}
+      {s.room && <span className="br who">{roomRowLine(s.room)}</span>}
+      {(s.branch || s.agent === "codex") && (
+        <span className="br">
+          {s.agent === "codex" ? "codex · " : ""}
+          {s.branch && s.branch !== titleOf(s) ? s.branch : (s.repoPath ? baseName(s.repoPath) : "")}
+        </span>
+      )}
+      {/* team rooms: take-over — how fresh this room session's backup is; or, continued by a teammate, what's left of this copy */}
+      {(() => {
+        const l = leftFor(s);
+        if (l) return <LeftCopyLine left={l} onTakeBack={() => takeBack(l)} />;
+        const b = backupFor(s);
+        return b && <span className="br fresh"><BackupFreshness view={b} /></span>;
+      })()}
+      <ReceivedNotice received={receivedFor(s)} onReview={setReviewing} compact />
+    </>
+  );
 
   /** A top-level group's sessions: loose rows, then its workspaces' folders with theirs. */
   const groupBody = (key: string, list: SessionInfo[]) => (
@@ -2367,7 +2594,8 @@ function App() {
               onOpenRepoFile={openRepoFile}
             />
           )}
-          {sideView === "sessions" && (
+          {/* the landscape's area tree stands in for this list while the landscape shows */}
+          {sideView === "sessions" && !landscapeOn && (
           <div className="scroll" ref={sessionList}>
             <div className="filter-row">
               <input
@@ -2477,56 +2705,46 @@ function App() {
               );
             })}
 
-            {resumable.length > 0 && (
-              <>
-                <h2 data-flip="previous">
-                  <span>Previous</span>
-                  <button className="icon" title="Relaunch every previous session, resuming its conversation" onClick={restoreAll}>
-                    ↺ restore all
-                  </button>
-                </h2>
-                {resumable.map((s) => {
-                  // team rooms: a teammate continued it, so this copy doesn't run again — it can be taken back instead
-                  const taken = roomLive.state?.own[s.id]?.takenOver;
-                  const left = leftFor(s);
-                  return (
-                  <div key={s.id} data-flip={`p:${s.id}`} className="sess-item" title={taken ? `${s.cwd} — ${taken.byName} continued this session on their laptop, so this copy doesn't run again here.` : s.cwd}>
-                    <span className="dot dead" />
-                    <span className="name">
-                      <span className="nm">{s.title}</span>
-                      {left ? <LeftCopyLine left={left} onTakeBack={() => takeBack(left)} /> : taken && <span className="br tk-fresh muted">continued on {taken.byName}'s laptop {ago(taken.at)}</span>}
-                    </span>
-                    {!taken && (
-                    <button
-                      title="Relaunch, resuming the conversation"
-                      onClick={async () => {
-                        if (!(await costGate.resume(s))) return;
-                        const info = await window.mb.relaunchSession(s.id);
-                        if (isErr(info)) return alert(`Couldn't relaunch: ${info.error}`);
-                        if (info) {
-                          await refresh();
-                          jumpTo(info.id);
-                        }
-                      }}
-                    >
-                      ↺
-                    </button>
-                    )}
-                    <button
-                      className="danger"
-                      onClick={async () => {
-                        failed(`Couldn't forget ${s.title}`, await window.mb.killSession(s.id, true));
-                        refresh();
-                      }}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  );
-                })}
-              </>
-            )}
+            {previousList()}
           </div>
+          )}
+          {sideView === "sessions" && landscapeOn && (
+            <AreaTree
+              areas={treeAreas}
+              filter={filter}
+              onFilter={setFilter}
+              selected={focused}
+              onArea={goToArea}
+              onPick={(s) => {
+                setFocused(s.id);
+                revealWorkspace(s.id);
+              }}
+              onFocus={(s) => {
+                setFocused(s.id);
+                revealWorkspace(s.id, true);
+              }}
+              onHide={() => setSideCollapsed(true)}
+              sub={rowLines}
+              menuFor={sessionActions}
+              areaMenu={(key) => (key === "ungrouped" ? null : areaMenu(key))}
+              footer={
+                <>
+                  {resumable.length > 0 && <div className="lt-previous">{previousList()}</div>}
+                  {/* team rooms: the way into the Team view, as in the Sessions view */}
+                  {teamRooms.length > 0 && (
+                    <div className="lt-connected">
+                      <ConnectedLine
+                        summary={connected}
+                        onOpen={() => {
+                          openTeamView(connected.roomId);
+                          showView("room");
+                        }}
+                      />
+                    </div>
+                  )}
+                </>
+              }
+            />
           )}
           </div>
           <div className="side-grip" onPointerDown={startSideResize} />
@@ -2547,60 +2765,16 @@ function App() {
           ) : (
           <>
           {activeGroup && (() => {
-            const topSessions = workSessions.filter((s) => topOf(s) === activeGroup);
+            const visitors = gridSessions.filter((s) => topOf(s) !== activeGroup).length;
             return (
-              <div className="groupbar">
-                <span className="gb-name">{groupTitle(activeGroup, topSessions)}</span>
-                {ticketOfGroup(activeGroup) &&
-                  (pipelines[activeGroup] ? (
-                    <StageChip p={pipelines[activeGroup]} onClick={() => setPipelineFor(ticketOfGroup(activeGroup))} />
-                  ) : (
-                    <button className="gb-btn" data-tip="Ticket pipeline — track this ticket from coding to done" onClick={() => setPipelineFor(ticketOfGroup(activeGroup))}>
-                      Pipeline
-                    </button>
-                  ))}
-                <GroupUsage g={meters?.groups?.[activeGroup]} what={groupTitle(activeGroup, topSessions)} />
-                {/* team rooms: team chat */}
-                {(() => {
-                  const room = roomOfGroup(teamStatus, activeGroup);
-                  return room ? (
-                    <>
-                      <RoomChatChip room={room} onOpen={() => showView("room")} />
-                      {/* team rooms: the House board */}
-                      <button className="gb-btn" data-tip="House board — the room's Radley House tickets and who has each" onClick={() => setBoardDlg(room.id)}>
-                        <KanbanIcon />
-                        <span className="gb-t">Board</span>
-                      </button>
-                    </>
-                  ) : null;
-                })()}
-                {/* team rooms: live panes */}
-                <FollowControls follow={follow} shared={!!roomOfGroup(teamStatus, activeGroup)} />
-                <span style={{ marginLeft: "auto" }} />
-                {statusNote && <span className="flbl-info">{statusNote}</span>}
-                <Select
-                  className="gb-btn gb-msg"
-                  value={msgModes[activeGroup] ?? ""}
-                  title="How messages from other agents arrive in this group's sessions: sent as a prompt, or typed in and left for you to send"
-                  onChange={(v) => setMsgMode(activeGroup, v as MessageMode | "")}
-                  options={[
-                    { value: "", label: `Agent messages: ${msgDefaultSend ? "Auto-send" : "Leave in prompt"} (default)`, description: "What Settings → Agents says, for every group" },
-                    { value: "send", label: "Agent messages: Auto-send", description: "Sent as a prompt as soon as it arrives" },
-                    { value: "prompt", label: "Agent messages: Leave in prompt", description: "Typed into the prompt; you press Enter" },
-                  ]}
-                />
-                <button className="gb-btn" data-tip="Ask every agent session in this group for a three-line status report — each answers when its current turn ends" onClick={() => askGroupStatus(activeGroup)}>
-                  <AskIcon />
-                  <span className="gb-t">Ask this group for status</span>
-                </button>
-                <span className="flbl-info gb-count">
-                  Showing {gridSessions.filter((s) => topOf(s) === activeGroup).length} of {topSessions.length}
-                  {(() => {
-                    const visitors = gridSessions.filter((s) => topOf(s) !== activeGroup).length;
-                    return visitors ? ` · ${visitors} pinned from other groups` : "";
-                  })()}
-                </span>
-              </div>
+              <GroupBar
+                {...groupBarProps(activeGroup)}
+                statusNote={statusNote}
+                msgMode={msgModes[activeGroup]}
+                msgDefaultSend={msgDefaultSend}
+                onMsgMode={(mode) => void setMsgMode(activeGroup, mode)}
+                count={`Showing ${gridSessions.filter((s) => topOf(s) === activeGroup).length} of ${sessionsOfGroup(activeGroup).length}${visitors ? ` · ${visitors} pinned from other groups` : ""}`}
+              />
             );
           })()}
           {gridSessions.length === 0 ? (
@@ -2958,7 +3132,10 @@ function App() {
             { label: "Agent message log — what sessions told each other", run: () => setMsgLogFor({}) },
             { label: "Weekly rollup — time per ticket and outcomes", run: () => setRollupOpen(true) },
             { label: "Setup — agents, hooks, repos, Azure DevOps", run: () => setModal("setup") },
-            { label: "Sessions grid", run: () => setTab("sessions") },
+            { label: landscapeOn ? "Sessions landscape" : "Sessions grid", run: () => setTab("sessions") },
+            // the landscape: each area to fly to
+            ...(landscapeOn ? (landscapeLayout?.areas ?? []).map((a) => ({ label: `Go to ${areaTitle(a.key)} — its area on the landscape`, run: () => goToArea(a.key) })) : []),
+            ...(landscapeOn ? [{ label: sideCollapsed || sideView !== "sessions" ? "Show the area tree" : "Hide the area tree", kbd: "⌘\\", run: () => (sideCollapsed || sideView !== "sessions" ? showView("sessions") : setSideCollapsed(true)) }] : []),
             ...(shownTab("dashboard") ? [{ label: "Dashboard — ticket board", run: () => setTab("dashboard") }] : []),
             { label: "Broadcast / CLAUDE.md (control room)", kbd: "⌘⇧B", run: openControlRoom },
             { label: "Go to file…", kbd: "⌘P", run: () => { setTab("sessions"); setModal("quickopen"); } },
@@ -3171,6 +3348,20 @@ function App() {
       })()}
       <HouseWarnings onJump={jumpTo} onOpenBoard={setBoardDlg} boardRoomId={boardDlg} />
 
+      {areaNameAsk && (
+        <RenameDialog
+          title={`Make an area of ${plural(areaNameAsk.count, "workspace")}`}
+          initial=""
+          onSave={(name) => {
+            areaNameAsk.answer(name);
+            setAreaNameAsk(null);
+          }}
+          onClose={() => {
+            areaNameAsk.answer(null);
+            setAreaNameAsk(null);
+          }}
+        />
+      )}
       {renameDlg && (
         <RenameDialog
           title={renameDlg.kind === "session" ? "Rename session" : renameDlg.kind === "sub" ? "Rename workspace" : renameDlg.key === "ungrouped" ? "Name this group" : "Rename group"}

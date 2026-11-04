@@ -258,6 +258,87 @@ export function fitAreaTo(area: Area, rects: readonly Rect[]): Area {
   return w === area.w && h === area.h ? area : { ...area, w, h };
 }
 
+// ---- areas apart ---------------------------------------------------------------------------
+
+/** `r` moved by `dx`, `dy`. */
+export const shifted = <T extends Rect>(r: T, dx: number, dy: number): T => ({ ...r, x: r.x + dx, y: r.y + dy });
+
+/** The area that holds `rects` (workspaces): its padding around them, and its header's band above, on the grid. */
+export function areaAround(rects: readonly Rect[]): Rect | null {
+  const b = boundsOf(rects);
+  if (!b) return null;
+  const x = snapDown(b.x - AREA_PAD);
+  const y = snapDown(b.y - AREA_HEADER);
+  return { x, y, w: snapUp(b.x + b.w + AREA_PAD) - x, h: snapUp(b.y + b.h + AREA_PAD) - y };
+}
+
+/** The most moves clearOf tries before it gives up on a near spot and goes below everything. */
+const CLEAR_TRIES = 400;
+
+/**
+ * The smallest move, on the grid, that leaves `r` at least `gap` clear of every one of `others`; { 0, 0 } when it's
+ * clear already. From each spot it tries each way out of every rectangle it still comes too close to, nearest
+ * first (a way out of one can land on another); past CLEAR_TRIES spots, straight down below all of them, which is
+ * always clear. Areas use it so that one made or moved never overlaps another.
+ */
+export function clearOf(r: Rect, others: readonly Rect[], gap = AREA_GAP): { dx: number; dy: number } {
+  const near = (dx: number, dy: number) => others.filter((o) => overlaps(shifted(r, dx, dy), o, gap - 1e-6));
+  const seen = new Set<string>();
+  const queue: { dx: number; dy: number; d: number }[] = [{ dx: 0, dy: 0, d: 0 }];
+  for (let tries = 0; queue.length && tries < CLEAR_TRIES; tries++) {
+    queue.sort((a, b) => a.d - b.d);
+    const at = queue.shift()!;
+    const hit = near(at.dx, at.dy);
+    if (!hit.length) return { dx: at.dx + 0, dy: at.dy + 0 };
+    for (const o of hit) {
+      for (const [dx, dy] of [
+        [snapUp(o.x + o.w + gap) - r.x, at.dy],
+        [snapDown(o.x - gap - r.w) - r.x, at.dy],
+        [at.dx, snapUp(o.y + o.h + gap) - r.y],
+        [at.dx, snapDown(o.y - gap - r.h) - r.y],
+      ]) {
+        const k = `${dx},${dy}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        queue.push({ dx, dy, d: Math.hypot(dx, dy) });
+      }
+    }
+  }
+  const bottom = Math.max(...others.map((o) => o.y + o.h));
+  return { dx: 0, dy: snapUp(bottom + gap) - r.y };
+}
+
+/**
+ * Rectangles moved out of the way of `key`'s, which stays where it is (an area that grew): each that comes closer
+ * than `gap` to one that's fixed or already moved goes right or down, whichever is the shorter way, and pushes on in
+ * turn. Only rightward and downward, so it always ends. The moves made, by key; none when nothing was in the way.
+ */
+export function pushAside(rects: Readonly<Record<string, Rect>>, key: string, gap = AREA_GAP): Record<string, { dx: number; dy: number }> {
+  const at: Record<string, Rect> = {};
+  for (const [k, r] of Object.entries(rects)) put(at, k, r);
+  const moves: Record<string, { dx: number; dy: number }> = {};
+  const queue = [key];
+  for (let n = 0; queue.length; n++) {
+    // every push moves a rectangle right or down past another, so this ends; a loop that doesn't is a bug here
+    if (n > 100 * (Object.keys(at).length + 1)) throw new Error(`pushAside didn't settle pushing ${Object.keys(at).length} rectangles away from ${key}`);
+    const k = queue.shift()!;
+    const a = own(at, k)!;
+    for (const j of Object.keys(at)) {
+      if (j === k || j === key) continue;
+      const b = own(at, j)!;
+      if (!overlaps(a, b, gap - 1e-6)) continue;
+      const right = snapUp(a.x + a.w + gap) - b.x;
+      const down = snapUp(a.y + a.h + gap) - b.y;
+      const [dx, dy] = right <= down ? [right, 0] : [0, down];
+      put(at, j, shifted(b, dx, dy));
+      const m = own(moves, j) ?? { dx: 0, dy: 0 };
+      put(moves, j, { dx: m.dx + dx, dy: m.dy + dy });
+      queue.push(j);
+    }
+  }
+  return moves;
+}
+
 /** The view: the landscape point at the viewport's top-left, and the zoom (1 = 100%). */
 export interface Camera {
   x: number;
@@ -543,6 +624,39 @@ export function applyPatch(l: Landscape, patch: LandscapePatch): Landscape {
   else if (patch.migratedAt !== undefined) out.migratedAt = str(patch.migratedAt, "migratedAt");
   if (patch.tourDone !== undefined) out.tourDone = bool(patch.tourDone, "tourDone");
   return out;
+}
+
+/**
+ * What renaming group `from` to `to` does to the landscape, as renameGroup renames (prefix-aware: "from/sub" becomes
+ * "to/sub"): its area and stacks are keyed by the new name where they sit, and its ghosts' groups follow. Renaming
+ * onto a group that has an area already merges into it: `from`'s area goes, and the places of its workspaces
+ * (`members`: the sessions that were in it) and stacks are dropped, so each is placed in the area it joined as a new
+ * one is. A name that can't key an area (loose, or a sub-group) drops the area and leaves the places. Null when the
+ * landscape holds nothing of `from`'s.
+ */
+export function renameAreaPatch(l: Landscape, from: string, to: string, members: readonly string[]): LandscapePatch | null {
+  const remap = (g: string) => (g === from ? to : g.startsWith(`${from}/`) ? to + g.slice(from.length) : g);
+  const patch: Required<Pick<LandscapePatch, "workspaces" | "areas" | "stacks" | "ghosts">> = { workspaces: {}, areas: {}, stacks: {}, ghosts: {} };
+  const area = own(l.areas, from);
+  const merge = !!area && Object.hasOwn(l.areas, to);
+  if (area && from !== to) {
+    put(patch.areas, from, null);
+    if (!merge && areaKey(to) === null) put(patch.areas, to, area);
+    if (merge) for (const id of members) if (Object.hasOwn(l.workspaces, id)) put(patch.workspaces, id, null);
+  }
+  for (const [k, s] of Object.entries(l.stacks)) {
+    const nk = remap(k);
+    if (nk === k) continue;
+    put(patch.stacks, k, null);
+    if (!merge && stackKeyOf({ taskGroup: nk }) === nk && !Object.hasOwn(l.stacks, nk)) put(patch.stacks, nk, s);
+  }
+  for (const [id, g] of Object.entries(l.ghosts)) {
+    const ng = remap(g.group);
+    if (ng !== g.group) put(patch.ghosts, id, { ...g, group: ng });
+  }
+  const out: LandscapePatch = {};
+  for (const k of ["workspaces", "areas", "stacks", "ghosts"] as const) if (Object.keys(patch[k]).length) Object.assign(out, { [k]: patch[k] });
+  return Object.keys(out).length ? out : null;
 }
 
 /** The same value: objects by their entries in any order, arrays in order. */

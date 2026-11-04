@@ -6,6 +6,7 @@ import {
   emptyLandscape,
   parseLandscape,
   parsePatch,
+  renameAreaPatch,
   sameLandscape,
   versionOf,
   type Landscape,
@@ -108,6 +109,20 @@ export class LandscapeStore {
     }
     this.tell({ rev: this.rev, patch, problems: this.problems() });
     return this.state(l);
+  }
+
+  /**
+   * Group `from` was renamed to `to` (renameGroup): its area, stacks and ghosts follow it (renameAreaPatch), and
+   * `members`, the sessions that were in it, are placed again when it merges into an area that's there already. Only
+   * once the landscape has been read this run: one no window has turned on isn't read for this, and a window that
+   * shows it later finds the group without an area, which resolveLayout forms around its workspaces. Throws
+   * LandscapeShapeError, as update does, if the patch can't be made.
+   */
+  groupRenamed(from: string, to: string, members: readonly string[]): void {
+    const l = this.loaded;
+    if (!l || l.standIn) return;
+    const patch = renameAreaPatch(l.landscape, from, to, members);
+    if (patch) this.update(patch);
   }
 
   /** Write what hasn't been yet, now (quitting). Throws when it can't be written; the changes stay unsaved and reported. */

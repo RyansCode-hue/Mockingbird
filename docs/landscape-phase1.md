@@ -1,8 +1,9 @@
 # Landscape, phase 1: build plan
 
 Status: S1 (model, store, migration), S2 (the surface, behind Settings →
-Labs → Landscape) and S3 (semantic zoom and peek) built; S4 next. The spec is
-[landscape.md](landscape.md); this file is how its phase 1 gets built.
+Labs → Landscape), S3 (semantic zoom and peek) and S4 (areas) built; S5 next.
+The spec is [landscape.md](landscape.md); this file is how its phase 1 gets
+built.
 
 Phase 1 replaces the grid with the landscape: workspaces, areas, tool
 windows, stacks, the Needs you tray and migration. It has **no wires**; those are phases 2–3.
@@ -419,6 +420,233 @@ notes.
   - the area tree's contents and its fly-to;
   - Members ▾ actions reaching the same room calls as the Team view;
   - `teamLiveView` following what's on screen.
+- **As built:**
+  - **An area** (`AreaFrame.tsx`) is drawn three ways. In the live and
+    read-only bands it's a dashed outline in its accent with the header bar
+    along its top edge (B). In the cards band it's a solid patch (7.5% of the
+    accent) with its name line just above it (C). Collapsed, it's a pill (E)
+    with its workspace count, waiting badge, lock and ▸; a click opens it
+    again. Its type keeps its size on screen: the header and the pill scale by
+    `--ls-hs` (1 / zoom, never below 1) and the name line by `--ls-inv`, set
+    by `paintScale` with the camera. Zoomed out, the header grows up from the
+    area's top edge rather than down over its workspaces. The accent is one of
+    six (`ACCENTS`), given by `accentsOf`. Each area takes its key's hashed
+    colour (`accentOf`) unless an area whose key sorts before it already has
+    that colour; then it takes the next free one. So up to six areas all
+    differ, every window with the same areas agrees, and the area, the tree,
+    the switcher and the minimap all use the same colour.
+  - **The header** (`GroupBar.tsx`): the grid's group bar was moved out of
+    `main.tsx`. The grid's `GroupBar` and the landscape's `AreaHeader` take the
+    same `GroupBarProps`, built once by `groupBarProps` in `main.tsx`.
+    `AreaHeader` shows:
+    - the name and a lock when locked;
+    - the area's repo chips;
+    - the stage chip (`stageChip`, which drops the ticket number when the
+      title already starts with it) or Pipeline;
+    - what its sessions are doing;
+    - for a room: Chat · n (`RoomChatChip`'s area form), Board and Members ▾;
+    - Follow, the usage, Ask for status and ⋯.
+
+    A container query hides the usage and the summary when the header is
+    under 820 px, and the repos under 560 px. The name keeps at least 80 px.
+    A press on the header's bare part moves the area.
+  - **⋯ and right-click** (`areaMenu` in `main.tsx`, also on the tree's area
+    rows) offer:
+    - Rename…, Collapse to a pill (or Open the area), Lock its layout;
+    - the three agent-message modes (the current one ticked) and Agent
+      message log…;
+    - Share as a team room… (Invite a teammate… for a room);
+    - New session here… and Ask for status;
+    - Remove the area, once no session is in it.
+
+    The menu has no Artifacts entry; that's S5.
+  - **Members ▾** (`team/MembersMenu.tsx`, design P) lists the room's
+    members, each with:
+    - presence: "online · watching <title>" from the room's live views, or
+      "offline 2h" from the peers;
+    - a role chip.
+
+    Clicking a member shows the actions `Team.tsx`'s `useMemberActions` gives
+    it: Make or remove admin, Hand over ownership, Remove from the room…. The
+    room view's member list uses the same hook. `RoleNotice` handles claiming
+    ownership. Below the members:
+    - join requests (Review opens the join dialog) and requests passed to an
+      admin;
+    - the backup line and `RoomBackupWarnings`;
+    - Invite…, Follow <name> and Leave room… (`LeaveRoomDialog`).
+
+    It opens in `AnchoredPopover` (`Popover.tsx`), drawn over everything at the
+    button's place on screen, so it keeps its size while the button sits in
+    the scaled world. A press or wheel outside, Escape, a resize or the window
+    losing focus closes it.
+  - **Gestures** start from one capture `pointerdown` on the viewport:
+    - over the bare landscape, a marquee (Shift adds to the selection; a
+      Shift-click toggles one workspace);
+    - on a workspace's header or a card, a workspace drag;
+    - on an area's bare header or name line, an area drag.
+
+    A press becomes a drag after `DRAG_PX` (4 px), followed by window
+    listeners. The elements move by `translate` until the layout has them
+    where they were dropped (`Settling`, or `SETTLE_MS` at most), so nothing
+    jumps back while the store's write goes round. Esc cancels. A new press
+    ends a gesture whose release was lost. While a gesture runs, the peek and
+    its hover are held off (left from S3).
+  - **Plans** (`landscapeModel.ts`): `planMakeArea`, `planMoveTile` and
+    `planMoveArea` each return an `AreaPlan`, applied in three steps:
+    1. a landscape patch with every new place;
+    2. the `setGroup` calls;
+    3. `after`, which lets a stack's old key go.
+
+    The patch goes first because a workspace whose group changed first would
+    be placed again by `resolveLayout`, and that place saved, racing the
+    gesture's. A plan can also be refused, with a note shown for `NOTE_MS`.
+    A refused move leaves the workspace where it was:
+    - a teammate's workspace into another area ("Nick Smith's workspace
+      moves to another area only on their Mac");
+    - anything into, out of or around a locked area;
+    - a stack going loose.
+
+    The `setGroup` calls (`runMoves`) go one at a time, and the first failure
+    is said with how many had moved.
+  - **Areas never overlap or nest** (`shared/landscape.ts`):
+    - `areaAround` forms an area around workspaces;
+    - `clearOf` moves an area to the nearest clear spot on the grid;
+    - `pushAside` pushes the areas in a growing area's way aside, with their
+      workspaces and ghosts.
+
+    A workspace dropped past an area's right or bottom edge grows the area. A
+    loose workspace dropped over the bare landscape is kept clear of the
+    areas.
+  - **Make area…:** a marquee picks every workspace any part of which it
+    touches, as in Figma. A bar then says "N selected · Make area… M · ✕".
+    M or the button asks for a name in the rename dialog ("Make an area of N
+    workspaces"), sanitized as a group name is. A name that's already an
+    area's joins that area, placed as new workspaces are, and the area grows
+    to hold them.
+  - **Renaming keeps the area.** Main's `renameGroup` calls
+    `LandscapeStore.groupRenamed` (`renameAreaPatch`), which re-keys the area,
+    its stacks and ghosts; renaming into an area that's already there places
+    the members again. A failure there is logged, and the rename itself still
+    goes through. The renderer can see the new session list before that
+    patch, so `resolveLayout` also:
+    - adopts an orphaned area: the old key, holding none of the shown
+      sessions and all of the renamed group's places;
+    - finds a stack's old key.
+
+    Both agree with main's patch when it lands.
+  - **Collapse and lock** are saved in `landscape.json` (`collapsed`,
+    `locked`). A collapsed area's workspaces are `hidden`: not drawn, nothing
+    attached, and off screen for `keysOnScreen` and `sessionsOnScreen` (left
+    from S3). A fit uses the area's pill. A locked area draws a solid outline
+    and a lock, can't be dragged, and nothing moves into, out of or within it.
+  - **Going to an area** goes through `flyTo`. It plays a hidden `.ls-clock`
+    element's animation (`D.l`, 460 ms, `EASE.move`), and each frame applies
+    `flightAt` at that animation's progress through `apply`. The band, the
+    minimap and what's on screen follow the flight. In bands with terminals,
+    what's on screen is looked at only once it lands, so a flight through the
+    read-only band attaches only where it ends (left from S3). It ends at once
+    under reduced motion, when started from the keyboard (⌘K) and in a hidden
+    window. A wheel, a press or a zoom key stops it. `areaCamera` fits the
+    area below the switcher's strip (`SWITCHER_STRIP`), never past 100%.
+  - **The area tree** (`AreaTree.tsx`, designs L and M) replaces the Sessions
+    view while the landscape shows. It lists the areas in the landscape's
+    order, then Loose (closed at first; which ones are closed is kept). Each
+    area row has its accent, its title, its online teammates' initials, a
+    waiting badge and a count. Under it are its workspaces, and each stack
+    once, as its front tab's row, opening to its tabs. Each row has the
+    Sessions view's second line (who's in it, backups, Take it back).
+    - The filter box narrows the rows; ↑ and ↓ walk them.
+    - Clicking an area flies there.
+    - Clicking a workspace selects it, flying to it when it isn't on screen;
+      a double-click or Enter focuses it.
+    - Right-clicking an area row opens the area's menu, and a workspace row
+      the session's menu.
+    - ⇤ or ⌘\ hides the tree.
+
+    Previous and the Connected line stay at its foot.
+  - **The area switcher** (design M) shows over the landscape's corner while
+    the tree is hidden: "⇥ Areas", each area's short name (`shortAreaName`)
+    with its waiting badge, and Loose last while any workspace is in no area
+    (`looseStop`). The current area is the one most of the view shows
+    (`areaInView`), followed by the camera without re-rendering the landscape.
+  - **The minimap** (196 × 124, bottom right) draws areas as dashed outlines
+    in their accents, workspaces as status dots and the view as a rectangle.
+    A press or drag centres the view there.
+  - **Rooms.** On the landscape, `teamLiveView` reports `sessionsOnScreen`
+    (passed up through `onSeen`) instead of the grid's `shown`, so teammates
+    stream what's on screen here; `useRoomLive` now comes after the Labs flag
+    it reads. Follow on the landscape brings the teammate's focused workspace
+    into view and selects it; picking another workspace stops following
+    (`followFocus`). A teammate's new session lands in its room's area through
+    `placeNew`, and its place is saved.
+  - **⌘K** has a "Go to <area>" entry per area; ⌘\ toggles the tree.
+  - **Differences from the designs left, and why:**
+    - the cards band's name line is on one line above the patch. C has a
+      24 px name and a summary inside the patch's top. `AREA_HEADER` (48) and
+      `AREA_PAD` (24) leave no room inside for type kept at screen size at
+      20–35%, and making them larger would move every workspace;
+    - the hover toolbar (Tidy, Collapse, Lock) floats over the header's right
+      end, or over the name line's right end zoomed out. In E it sits inside
+      the patch's top right. In a narrow area, while hovered, it covers the
+      end of the name;
+    - a workspace click in the tree selects it rather than focusing it
+      (the plan says it focuses). Focus takes the window, and the landscape
+      itself works this way: a click selects, a double-click focuses;
+    - ⌘K's Go to lands at once: a keyboard-started flight doesn't animate,
+      per the motion rules;
+    - Make area… asks for the name in a dialog, not inline;
+    - the header has B's repo chips and summary as well as O's room buttons,
+      and gives up the usage, the summary and the repos when it's narrow;
+    - accents come from the group's key, not a choice saved with the area.
+      Renaming an area can change its colour, and so can an area whose key
+      sorts before it coming or going. The fixture's colours aren't the
+      boards';
+    - the tree's rows have the Sessions view's second lines (L shows titles
+      only);
+    - Members ▾ says "Remove from the room…" (P says "Remove…"), as the room
+      view does;
+    - the minimap has status dots; B's has only outlines;
+    - drags snap to the grid only. Snapping to neighbours, guides and Tidy
+      are S6;
+    - the top bar (Landscape tab, Needs you, Go to…, + New) is unchanged:
+      that's S7–S8.
+  - **Preview:**
+    - `?side=closed` (the switcher);
+    - `?lsCollapsed=<keys>` and `?lsLocked=<keys>`;
+    - `?lsTools=<key>` (its hover toolbar shown);
+    - `?lsMenu=members|more` (5101's Members ▾ or ⋯ open);
+    - `?lsPick=<ids>` (a marquee selection);
+    - `?lsMakeArea=<name>`;
+    - `?landscapeAreasAudit`;
+    - `?landscapeFlyAudit`, which `?motionAudit` with `labs=landscape` also
+      runs.
+
+    The stub's `renameGroup` changes the sessions before it patches the
+    landscape, the order main's events can arrive in.
+  - **Tests:**
+    - `test/landscapeAreas.test.ts` covers the model: `areaAround`,
+      `clearOf`, `pushAside`, `renameAreaPatch`, `resolveLayout`'s forming,
+      adopting and pushing, collapsed areas off screen, the three plans and
+      their refusals, `flightAt`, `areaCamera`, the minimap's mapping,
+      `accentsOf`, counts and summaries, `treeOf`, `looseStop`,
+      `presenceLine` and `backupLine`, and `LandscapeStore.groupRenamed`;
+    - `test/uiLandscapeAreas.test.ts` works the areas in Chrome as a person
+      would, with the main-process calls each step makes: the tree and its
+      fly, collapse, the switcher's Loose, a marquee to a new area, a drag
+      across an edge, a refused move, lock, rename, a teammate's session
+      landing, an area drag, the switcher, and Members ▾ reaching the same
+      `teamSetAdmin` as the room view;
+    - `test/uiMotion.test.ts` checks the flight to an area: under full motion
+      it's in flight on its clock and lands with the band matching its zoom,
+      and a wheel stops it; under reduced motion it lands at once.
+  - **Left for S5 and later:**
+    - Artifacts and the tool windows (S5);
+    - Tidy, neighbour snapping and guides, and Clear ghosts and Reopen all
+      in ⋯ (S6);
+    - the Needs you tray and badges (S7);
+    - a room area's layout is local; sharing it is phase 2;
+    - `useRoomLive`'s `teamLiveView` call ignores its result, as before S4, so
+      a failure to report what's on screen goes unsaid.
 
 ### S5 · Tools and the workspace header
 Design O, with Artifacts as a window, and N's workspace header.
