@@ -76,7 +76,7 @@ import { UsageMeter } from "./UsageMeter";
 import { DashboardBoard } from "./Dashboard";
 import { RenameDialog, GroupDialog, RestartAllDialog, CloseSessionDialog } from "./Dialogs";
 import { SettingsView, type SettingsSection } from "./Settings";
-import { ConnectedLine, JoinRoomDialog, ShareRoomDialog, roomOfGroup, useTeamStatus } from "./Team";
+import { ConnectedLine, JoinRoomDialog, MemberDialogs, ShareRoomDialog, roomOfGroup, useTeamStatus, type MemberDialog } from "./Team";
 import { adminRequests, JoinRequestPrompt } from "./team/JoinRequests";
 // team rooms: the Radley House board
 import { HouseBoardDialog, HouseWarnings } from "./team/HouseBoard";
@@ -109,9 +109,9 @@ import { D, EASE, initMotion, motion, play, useFlipRows } from "./motion";
 import { StatusDot } from "./StatusDot";
 import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } from "./gridMotion";
 // the landscape (Settings → Labs)
-import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks } from "./Landscape";
+import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type MovesFailed } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
-import { accentOf, accentsOf, areaCounts, areaSummary, readProblem, resolveLayout, type GroupMove } from "./landscapeModel";
+import { accentOf, accentsOf, areaCounts, areaSummary, readProblem, renameSettled, resolveLayout, type GroupMove, type PendingRename } from "./landscapeModel";
 import { LANDSCAPE_FONT, own, type Size } from "../shared/landscape";
 import { AreaHeader, GroupBar, messageModeEntries, stageChip, type GroupBarProps } from "./GroupBar";
 import { AreaTree, treeCounts, treeOf, type TreeArea } from "./AreaTree";
@@ -343,6 +343,8 @@ function App() {
   const teamStatus = useTeamStatus();
   const teamRooms = useMemo(() => (teamStatus && !isErr(teamStatus) ? teamStatus.rooms : []), [teamStatus]);
   const [shareDlg, setShareDlg] = useState<{ key: string; title: string } | null>(null);
+  // a room dialog asked for from an area's Members ▾: shown here, so it outlives the header it came from
+  const [memberDlg, setMemberDlg] = useState<MemberDialog | null>(null);
   const [joinDlg, setJoinDlg] = useState(false);
   // team rooms: join requests this install answers as a room's admin, one prompt at a time, oldest first;
   // Later puts one off for this window (it stays in Settings → Team)
@@ -389,7 +391,12 @@ function App() {
       await migrateGroupKeys(renameDlg.key, next);
     } else if (next !== renameDlg.key) {
       expectRename(renameDlg.key, next);
-      if (failed("Couldn't rename the group", await window.mb.renameGroup(renameDlg.key, next))) return;
+      const pending: PendingRename = { from: renameDlg.key, to: next };
+      setLsRenames((r) => [...r.filter((x) => x.from !== pending.from), pending]);
+      if (failed("Couldn't rename the group", await window.mb.renameGroup(renameDlg.key, next))) {
+        setLsRenames((r) => r.filter((x) => x !== pending));
+        return;
+      }
       await migrateGroupKeys(renameDlg.key, next);
     }
     setRenameDlg(null);
@@ -927,21 +934,40 @@ function App() {
   // shown once the grid's layout is read in, or once it can't be: a layout made up before that would be redrawn
   // (and every terminal resized) when the migration lands
   const landscapeShown = landscapeOn && !!landscapeState && (migration.step.kind === "done" || migration.step.kind === "blocked" || !!migration.failed);
-  const landscapeLayout = useMemo(() => (landscapeShown && landscapeState ? resolveLayout(landscapeState.landscape, workSessions) : null), [landscapeShown, landscapeState, workSessions]);
+  // groups renamed here whose changes (the session list, the landscape's re-keying, teammates' sessions) haven't all
+  // arrived: the layout keeps each under the key the landscape holds it under meanwhile
+  const [lsRenames, setLsRenames] = useState<PendingRename[]>([]);
+  useEffect(() => {
+    if (!lsRenames.length || !landscapeState) return;
+    const left = lsRenames.filter((r) => !renameSettled(r, landscapeState.landscape, workSessions));
+    if (left.length !== lsRenames.length) setLsRenames(left);
+  }, [lsRenames, landscapeState, workSessions]);
+  const landscapeLayout = useMemo(
+    () => (landscapeShown && landscapeState ? resolveLayout(landscapeState.landscape, workSessions, undefined, lsRenames) : null),
+    [landscapeShown, landscapeState, workSessions, lsRenames]
+  );
   // new workspaces keep the places they were given: saved, unless the file has a problem (what's shown stands in for it)
   // or the grid's layout isn't read in yet (it would place them)
   const placesToSave = landscapeLayout?.patch && migration.step.kind === "done" && !readProblem(landscapeState) ? JSON.stringify(landscapeLayout.patch) : null;
   useEffect(() => {
     if (placesToSave) void landscapeStore.update(JSON.parse(placesToSave), "new workspaces' places");
   }, [placesToSave]);
+  // asks of the landscape (bring a workspace into view, go to an area), each held until the landscape takes it up
+  // (onHandled): one asked from another tab waits for the landscape to mount, and none is taken up twice when the
+  // landscape mounts again
+  const asked = useRef(0);
   const [reveal, setReveal] = useState<{ id: string; n: number; focus?: boolean } | null>(null);
   /** Bring a session's workspace into view on the landscape, and with `focus` fill the window with it. */
-  const revealWorkspace = (id: string, focus = false) => setReveal((r) => ({ id, n: (r?.n ?? 0) + 1, focus }));
+  const revealWorkspace = (id: string, focus = false) => setReveal({ id, n: ++asked.current, focus });
   // going to an area on the landscape: the area tree, the switcher, ⌘K
   const [goTo, setGoTo] = useState<{ area: string; n: number } | null>(null);
   const goToArea = (area: string) => {
     setTab("sessions");
-    setGoTo((g) => ({ area, n: (g?.n ?? 0) + 1 }));
+    setGoTo({ area, n: ++asked.current });
+  };
+  const landscapeHandled = (n: number) => {
+    setReveal((r) => (r?.n === n ? null : r));
+    setGoTo((g) => (g?.n === n ? null : g));
   };
 
   const visible = useMemo(() => {
@@ -1704,6 +1730,7 @@ function App() {
                   setSettingsJump((j) => ({ section: "team", n: (j?.n ?? 0) + 1 }));
                   setTab("settings");
                 }}
+                onDialog={setMemberDlg}
               />
             )
           }
@@ -1725,13 +1752,13 @@ function App() {
     menu: areaMenu,
   };
   /** A gesture's sessions moved into their groups, one at a time; the first that can't be is said and the rest left. */
-  const runMoves = async (moves: readonly GroupMove[], what: string): Promise<string | null> => {
+  const runMoves = async (moves: readonly GroupMove[], what: string): Promise<MovesFailed | null> => {
     for (const [i, m] of moves.entries()) {
       const r = await settled(window.mb.setGroup(m.id, m.group));
       if (!isErr(r)) continue;
       const s = sessions.find((x) => x.id === m.id);
       console.error(`[mockingbird] ${what}: couldn't move ${m.id} to ${m.group ?? "no group"}:`, r.error);
-      return `${what}: ${s ? titleOf(s) : m.id} couldn't be moved (${r.error})${i ? `; ${i} of ${moves.length} moved` : ""}`;
+      return { said: `${what}: ${s ? titleOf(s) : m.id} couldn't be moved (${r.error})${i ? `; ${i} of ${moves.length} moved` : ""}`, moved: i };
     }
     return null;
   };
@@ -1781,6 +1808,7 @@ function App() {
           }}
           reveal={reveal}
           goTo={goTo}
+          onHandled={landscapeHandled}
           areaTitle={areaTitle}
           stackName={(stack) => splitGroupKey(stack).sub ?? stack}
           areas={areaHooks}
@@ -2516,7 +2544,8 @@ function App() {
         <div className={`sidebar ${sideCollapsed ? "collapsed" : ""}`} style={{ width: sideCollapsed ? 0 : sideW }}>
           <div className="side-inner" ref={sideInner} style={{ width: sideW }}>
           <div className="side-head">
-            <span className="side-title">{SIDE_VIEWS.find((v) => v.id === sideView)?.label}</span>
+            {/* the Sessions view is the area tree while the landscape shows (designs B and L) */}
+            <span className="side-title">{sideView === "sessions" && landscapeOn ? "Landscape" : SIDE_VIEWS.find((v) => v.id === sideView)?.label}</span>
           </div>
           {sideView === "explorer" && (
             <ExplorerTree
@@ -2614,6 +2643,7 @@ function App() {
                   <div key="connected" data-flip="connected">
                   <ConnectedLine
                     summary={connected}
+                    problem={roomLive.viewError}
                     onOpen={() => {
                       openTeamView(connected.roomId);
                       showView("room");
@@ -2735,6 +2765,7 @@ function App() {
                     <div className="lt-connected">
                       <ConnectedLine
                         summary={connected}
+                        problem={roomLive.viewError}
                         onOpen={() => {
                           openTeamView(connected.roomId);
                           showView("room");
@@ -3299,6 +3330,7 @@ function App() {
       )}
 
       {shareDlg && <ShareRoomDialog groupKey={shareDlg.key} title={shareDlg.title} onClose={() => setShareDlg(null)} />}
+      <MemberDialogs dialog={memberDlg} rooms={teamRooms} onClose={() => setMemberDlg(null)} />
       {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
       {/* team rooms: the House board */}
       {boardDlg && (

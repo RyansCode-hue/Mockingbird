@@ -1,4 +1,5 @@
-import type { SessionInfo } from "../../shared/types";
+import { isErr, type SessionInfo } from "../../shared/types";
+import { settled } from "../settled";
 import type { LivePanesState, MemberView } from "../../shared/team/livePanes";
 
 /**
@@ -41,3 +42,14 @@ export function followPlan(view: MemberView | undefined, sessions: SessionInfo[]
 }
 
 export const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * Tell the main process what this window shows (teamLiveView), which decides which teammates' sessions stream here
+ * and what teammates see you watching: why it couldn't be told, logged with what was being told, or null.
+ */
+export async function tellLiveView(send: () => unknown, view: { shown: readonly string[]; focused: string | null }): Promise<string | null> {
+  const r = await settled(send());
+  if (!isErr(r)) return null;
+  console.error(`[mockingbird] team rooms: couldn't say what's on screen here (${view.shown.length} sessions, focused ${view.focused ?? "none"}):`, r.error);
+  return r.error;
+}

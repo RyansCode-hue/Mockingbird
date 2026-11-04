@@ -43,6 +43,7 @@ import {
   tilesIn,
   toLandscape,
   toMinimap,
+  undoOf,
   wheelPixels,
   wheelZoomFactor,
   worldTransform,
@@ -97,6 +98,12 @@ export interface AreaHooks {
 
 /** A gesture's plan that can be carried out. */
 export type ReadyPlan = Exclude<AreaPlan, { refused: string }>;
+
+/** Setting a gesture's groups stopped: what to say, and how many of its moves were made first. */
+export interface MovesFailed {
+  said: string;
+  moved: number;
+}
 
 /** How far a press moves before it's a drag (a marquee, a workspace or an area moving) rather than a click. */
 const DRAG_PX = 4;
@@ -185,6 +192,7 @@ export function Landscape({
   onTab,
   reveal,
   goTo,
+  onHandled,
   areaTitle,
   stackName,
   areas: areaHooks,
@@ -205,10 +213,12 @@ export function Landscape({
   selected: string | null;
   onSelect: (id: string) => void;
   onTab: (tile: Tile, id: string) => void;
-  /** Bring this session's workspace into view and select it, with `focus` filling the window with it; `n` repeats it. */
+  /** Bring this session's workspace into view and select it, with `focus` filling the window with it. */
   reveal: { id: string; n: number; focus?: boolean } | null;
-  /** Fly to this area; `n` repeats it. */
+  /** Fly to this area. */
   goTo: { area: string; n: number } | null;
+  /** A reveal or a go-to (by its `n`) has been taken up: the owner lets go of it, so a landscape mounted again doesn't repeat it. */
+  onHandled: (n: number) => void;
   areaTitle: (key: string) => string;
   stackName: (stack: string) => string;
   areas: AreaHooks;
@@ -219,8 +229,8 @@ export function Landscape({
   body: (s: SessionInfo, size: Size, home: Size | null) => React.ReactNode;
   /** Change landscape.json; why it was refused (also in the banners), or null once it's made. */
   onPatch: (patch: LandscapePatch, what: string) => Promise<string | null>;
-  /** Set these sessions' groups, in order; why one couldn't be, or null. */
-  onMoves: (moves: readonly GroupMove[], what: string) => Promise<string | null>;
+  /** Set these sessions' groups, in order, stopping at the first that can't be: what to say and how many were, or null. */
+  onMoves: (moves: readonly GroupMove[], what: string) => Promise<MovesFailed | null>;
   /** A name for the area Make area… makes of `count` workspaces; null when it's cancelled. */
   askAreaName: (count: number) => Promise<string | null>;
   /** The sessions on screen, for teamLiveView: each workspace's on screen and the one in focus, never a collapsed area's. */
@@ -259,8 +269,8 @@ export function Landscape({
   layoutNow.current = layout;
   const storedNow = useRef(stored);
   storedNow.current = stored;
-  const asks = useRef({ onPatch, onMoves, askAreaName, areaTitle, onSeen });
-  asks.current = { onPatch, onMoves, askAreaName, areaTitle, onSeen };
+  const asks = useRef({ onPatch, onMoves, askAreaName, areaTitle, onSeen, onHandled });
+  asks.current = { onPatch, onMoves, askAreaName, areaTitle, onSeen, onHandled };
 
   // areas: the marquee's selection, the area a dragged workspace would join, and a note on the last gesture
   const [picked, setPicked] = useState<string[]>([]);
@@ -559,16 +569,20 @@ export function Landscape({
   /** The pending reveal ends in focus. */
   const revealFocus = useRef(false);
   const gaveUp = (p: PendingReveal) => console.warn(`[mockingbird] the landscape couldn't bring ${p.id} into view: no workspace holds it after ${REVEAL_WAIT_MS} ms`);
+  const revealTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => void (revealTimer.current && clearTimeout(revealTimer.current)), []);
   useEffect(() => {
     if (!reveal) return;
+    // taken up: the owner lets go of it, so this landscape mounted again (another tab and back) doesn't repeat it
+    asks.current.onHandled(reveal.n);
     revealFocus.current = !!reveal.focus;
     const p = (pendingReveal.current = { id: reveal.id, until: Date.now() + REVEAL_WAIT_MS });
-    const t = setTimeout(() => {
+    if (revealTimer.current) clearTimeout(revealTimer.current);
+    revealTimer.current = setTimeout(() => {
       if (pendingReveal.current !== p) return;
       pendingReveal.current = null;
       gaveUp(p);
     }, REVEAL_WAIT_MS + 50);
-    return () => clearTimeout(t);
   }, [reveal?.n]);
   /** The collapsed area a reveal opened, while the layout doesn't have it open yet. */
   const opening = useRef<string | null>(null);
@@ -606,18 +620,18 @@ export function Landscape({
     if (!seen) flyTo(centreOn(cam.current, t.rect, vpNow.current));
   }, [reveal?.n, layout]);
 
-  // going to an area: the tree, the switcher, ⌘K (one asked before this landscape was shown isn't its to follow)
-  const wentTo = useRef(goTo?.n);
+  // going to an area: the tree, the switcher, ⌘K. One asked from another tab waits for this landscape's size; taken
+  // up, the owner lets go of it
+  const hasSize = vp !== null;
   useEffect(() => {
-    if (!goTo || goTo.n === wentTo.current) return;
-    wentTo.current = goTo.n;
+    if (!goTo || !hasSize) return;
+    asks.current.onHandled(goTo.n);
     const a = layoutNow.current.areas.find((x) => x.key === goTo.area);
     if (!a) return console.warn(`[mockingbird] the landscape has no area ${goTo.area} to go to`);
-    if (!vpNow.current.w) return console.warn(`[mockingbird] the landscape couldn't go to ${goTo.area}: it has no size yet`);
     placed.current = true;
     if (focusNow.current) setFocusKey(null);
     flyTo(areaCamera(a, vpNow.current, topNow.current));
-  }, [goTo?.n]);
+  }, [goTo?.n, hasSize]);
 
   // what's on screen, for teamLiveView
   const seenIds = useMemo(() => sessionsOnScreen(layout.tiles, seenSet, focusTile ? focusTile.key : null).join("\n"), [layout.tiles, seenSet, focusTile?.key]);
@@ -652,6 +666,7 @@ export function Landscape({
       release(settle.els);
     };
     if (settle) settling.current.push(settle);
+    const before = storedNow.current;
     const error = plan.patch ? await asks.current.onPatch(plan.patch, what) : null;
     if (error || !plan.patch) unsettle();
     else setTimeout(unsettle, SETTLE_MS);
@@ -660,9 +675,13 @@ export function Landscape({
       return false;
     }
     if (plan.moves.length) {
-      const moveError = await asks.current.onMoves(plan.moves, what);
-      if (moveError) {
-        say(moveError);
+      const failed = await asks.current.onMoves(plan.moves, what);
+      if (failed) {
+        // the places went first: put back those of the sessions still in their old groups (everything, when none moved),
+        // or they'd sit in an area they aren't in
+        const back = plan.patch && undoOf(before, plan.patch, failed.moved ? plan.moves.slice(failed.moved).map((m) => m.id) : undefined);
+        const undoError = back ? await asks.current.onPatch(back, `${what} (putting it back)`) : null;
+        say(undoError ? `${failed.said}; and its places couldn't be put back: ${undoError}` : failed.said);
         return false;
       }
     }

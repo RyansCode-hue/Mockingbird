@@ -19,10 +19,12 @@ import {
   planMakeArea,
   planMoveArea,
   planMoveTile,
+  renameSettled,
   resolveLayout,
   sessionsOnScreen,
   shortAreaName,
   toMinimap,
+  undoOf,
   type AreaPlan,
   type ResolvedLayout,
 } from "../src/renderer/landscapeModel";
@@ -37,10 +39,12 @@ import {
   areaAround,
   clearOf,
   emptyLandscape,
+  fixedInWay,
   overlaps,
   parseLandscape,
   presetSize,
   pushAside,
+  sameLandscape,
   renameAreaPatch,
   type Area,
   type Landscape,
@@ -121,6 +125,22 @@ describe("areas' rectangles", () => {
     expect(pushAside({ a: area(0, 0, 100, 100), b: area(400, 0, 100, 100) }, "a")).toEqual({});
   });
 
+  it("never pushes a fixed (locked) rectangle: one pushed into it goes on past it, and the grown one's own clash is reported", () => {
+    // b is pushed right, into locked c: c stays, b goes past it
+    const rects = { a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400), c: area(1490, 0, 300, 300) };
+    const m = pushAside(rects, "a", AREA_GAP, new Set(["c"]));
+    expect(m.c).toBeUndefined();
+    const b = shiftedBy(rects.b, m.b);
+    expect(overlaps(b, rects.c, AREA_GAP - 1e-6)).toBe(false);
+    expect(overlaps(b, rects.a, AREA_GAP - 1e-6)).toBe(false);
+    // a grown into locked b itself: pushAside can't help, fixedInWay says which
+    expect(fixedInWay({ a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400) }, "a", new Set(["b"]))).toBe("b");
+    expect(fixedInWay({ a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400) }, "a", new Set())).toBeNull();
+    function shiftedBy(r: Rect, d: { dx: number; dy: number } | undefined) {
+      return d ? { ...r, x: r.x + d.dx, y: r.y + d.dy } : r;
+    }
+  });
+
   it("follows a group's rename: its area, stacks and ghosts under the new name, folded and locked as they were", () => {
     const l = emptyLandscape();
     l.areas["5101"] = area(0, 0, 2000, 900, { collapsed: true, locked: true });
@@ -150,6 +170,24 @@ describe("areas' rectangles", () => {
     expect(p.stacks).toEqual({ "A/api": null });
     expect(renameAreaPatch(emptyLandscape(), "A", "B", [])).toBeNull();
   });
+
+  it("folding into another area also lets go of the places of teammates' and resumable sessions inside the old one", () => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 2000, 900);
+    l.areas.B = area(2100, 0, 2000, 900);
+    l.workspaces.a1 = { x: 24, y: 48, w: 800, h: 600 };
+    // Nick's room session and one waiting to be resumed: main's session list names neither
+    l.workspaces.n1 = { x: 900, y: 48, w: 600, h: 400 };
+    l.workspaces.prev = { x: 24, y: 700, w: 400, h: 150 };
+    l.workspaces.b1 = { x: 2124, y: 48, w: 800, h: 600 };
+    const p = renameAreaPatch(l, "A", "B", ["a1"])!;
+    expect(p.workspaces).toEqual({ a1: null, n1: null, prev: null });
+    // placed again in B, they land inside it
+    const merged = applyPatch(l, p);
+    const r = resolveLayout(merged, [session("a1", { taskGroup: "B" }), session("b1", { taskGroup: "B" }), theirs("n1", "B")]);
+    const b = r.areas.find((x) => x.key === "B")!.rect;
+    for (const t of r.tiles) expect(inside(t.rect, b)).toBe(true);
+  });
 });
 
 describe("areas in the layout", () => {
@@ -171,28 +209,61 @@ describe("areas in the layout", () => {
     expect(resolveLayout(saved, [session("a1", { taskGroup: "A" }), session("n1", { taskGroup: "N" }), session("n2", { taskGroup: "N" })]).patch).toBeNull();
   });
 
-  it("gives a renamed group its old area and stacks, folded and locked as they were, when the rename's own change hasn't come", () => {
+  it("keeps a group renamed here in its area while the rename's changes arrive, whichever comes first, saving nothing", () => {
     const l = emptyLandscape();
     l.areas.Old = area(0, 0, 2000, 900, { collapsed: true });
     l.areas.Other = area(2100, 0, 1000, 900);
     l.workspaces.s1 = { x: 24, y: 48, w: 800, h: 600 };
+    l.workspaces.n1 = { x: 24, y: 700, w: 400, h: 150 };
     l.stacks["Old/api"] = { active: "s2", placement: { x: 900, y: 48, w: 800, h: 600 } };
-    l.ghosts.g = { title: "g", agent: "claude", cwd: "/r", repoPath: null, placement: { x: 24, y: 700, w: 400, h: 100 }, group: "Old", closedAt: "x" };
+    l.ghosts.g = { title: "g", agent: "claude", cwd: "/r", repoPath: null, placement: { x: 500, y: 700, w: 400, h: 100 }, group: "Old", closedAt: "x" };
     l.workspaces.o1 = { x: 2124, y: 48, w: 800, h: 600 };
-    const shown = [session("s1", { taskGroup: "New" }), session("s2", { taskGroup: "New/api" }), session("s3", { taskGroup: "New/api" }), session("o1", { taskGroup: "Other" })];
-    const r = resolveLayout(l, shown);
-    expect(r.areas.find((a) => a.key === "New")?.rect).toEqual(l.areas.Old);
-    expect(r.areas.some((a) => a.key === "Old")).toBe(false);
-    expect(r.tiles.find((t) => t.key === "ws:New/api")!.rect).toEqual(l.stacks["Old/api"].placement);
-    expect(r.tiles.every((t) => t.area !== "New" || t.hidden)).toBe(true);
-    expect(r.patch?.areas).toEqual({ Old: null, New: l.areas.Old });
-    expect(r.patch?.stacks).toEqual({ "New/api": { active: "s2", placement: l.stacks["Old/api"].placement }, "Old/api": null });
-    expect(r.patch?.ghosts?.g?.group).toBe("New");
-    // saved, it's settled: nothing more to save, and the rename's own change, coming after, changes nothing more
-    const saved = applyPatch(l, r.patch!);
-    expect(resolveLayout(saved, shown).patch).toBeNull();
-    const late = renameAreaPatch(saved, "Old", "New", ["s1", "s2", "s3"]);
-    expect(late === null || !late.areas).toBe(true);
+    const renames = [{ from: "Old", to: "New" }];
+    const mine = [session("s1", { taskGroup: "New" }), session("s2", { taskGroup: "New/api" }), session("s3", { taskGroup: "New/api" }), session("o1", { taskGroup: "Other" })];
+    // the session list first, a teammate's room session still under the old name: all of it stays in the old area
+    const lagging = [...mine, theirs("n1", "Old")];
+    const first = resolveLayout(l, lagging, undefined, renames);
+    expect(first.patch).toBeNull();
+    expect(first.tiles.filter((t) => t.key !== "o1").map((t) => [t.key, t.area, t.hidden])).toEqual([
+      ["s1", "Old", true],
+      ["ws:Old/api", "Old", true],
+      ["n1", "Old", true],
+    ]);
+    // then main's re-keying: the same, under the new name, the teammate's still lagging
+    const rekeyed = applyPatch(l, renameAreaPatch(l, "Old", "New", ["s1", "s2", "s3"])!);
+    const second = resolveLayout(rekeyed, lagging, undefined, renames);
+    expect(second.patch).toBeNull();
+    expect(second.tiles.filter((t) => t.key !== "o1").map((t) => [t.key, t.area, t.rect])).toEqual([
+      ["s1", "New", l.workspaces.s1],
+      ["ws:New/api", "New", l.stacks["Old/api"].placement],
+      ["n1", "New", l.workspaces.n1],
+    ]);
+    expect(renameSettled(renames[0], rekeyed, lagging)).toBe(false);
+    // and the teammate's: settled
+    const all = [...mine, theirs("n1", "New")];
+    expect(resolveLayout(rekeyed, all, undefined, renames).patch).toBeNull();
+    expect(renameSettled(renames[0], rekeyed, all)).toBe(true);
+    // without knowing of the rename, the renamed group's own area would be formed clear of the old one, moving its
+    // workspaces out and saving that over the re-keyed area: the race the pending rename prevents
+    const blind = resolveLayout(l, lagging);
+    expect(blind.patch?.areas?.New).toBeDefined();
+    expect(inside(blind.tiles.find((t) => t.key === "s1")!.rect, l.areas.Old)).toBe(false);
+  });
+
+  it("forms the area of a group a workspace was moved to clear of the old one, which keeps its ghosts, lock and folds", () => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 1000, 800, { locked: true, collapsed: true, repos: [{ path: "/r", base: "dev" }] });
+    l.workspaces.w1 = { x: 24, y: 48, w: 800, h: 600 };
+    l.ghosts.g1 = { title: "g", agent: "claude", cwd: "/r", repoPath: null, placement: { x: 24, y: 660, w: 400, h: 100 }, group: "A", closedAt: "x" };
+    const r = resolveLayout(l, [session("w1", { taskGroup: "B" })]);
+    expect(r.patch?.areas?.A).toBeUndefined();
+    expect(r.patch?.ghosts).toBeUndefined();
+    const b = r.areas.find((a) => a.key === "B")!.rect;
+    expect(b.locked).toBeUndefined();
+    expect(b.collapsed).toBeUndefined();
+    expect(overlaps(b, l.areas.A, AREA_GAP - 1)).toBe(false);
+    expect(inside(r.tiles[0].rect, b)).toBe(true);
+    apart(r);
   });
 
   it("doesn't take a stack's old place for a sub-group of the same name moved to another area", () => {
@@ -418,6 +489,91 @@ describe("making and moving areas", () => {
       return !overlaps(n.areas.A, n.areas.B, AREA_GAP - 1e-6);
     }
   });
+
+  it("moves the places of an area's sessions waiting to be resumed with it, so one relaunched comes back inside it", () => {
+    const l = base();
+    l.areas.A.h += M.h + GAP;
+    // `prev` (closed, to be resumed) and the stack `A/old` (none of whose sessions run) aren't shown
+    l.workspaces.prev = { x: AREA_PAD, y: AREA_HEADER + M.h + GAP, ...M };
+    l.stacks["A/old"] = { active: "x1", placement: { x: AREA_PAD + M.w + GAP, y: AREA_HEADER + M.h + GAP, ...M } };
+    const layout = resolveLayout(l, shown);
+    const p = ready(planMoveArea(l, layout, "A", 3000, 0, (k) => k));
+    const moved = applyPatch(l, p.patch!);
+    expect(moved.workspaces.prev).toEqual({ ...l.workspaces.prev, x: l.workspaces.prev.x + 3000 });
+    expect(moved.stacks["A/old"].placement.x).toBe(l.stacks["A/old"].placement.x + 3000);
+    // relaunched under its id, it's where it was in the area
+    const back = resolveLayout(moved, [...shown, session("prev", { taskGroup: "A" })]);
+    expect(inside(back.tiles.find((t) => t.key === "prev")!.rect, moved.areas.A)).toBe(true);
+    expect(back.patch).toBeNull();
+  });
+
+  it("moves the places of sessions not shown with an area pushed aside, and joins workspaces clear of them", () => {
+    const l = emptyLandscape();
+    const tight = area(0, 0, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+    l.areas.A = tight;
+    l.workspaces.a1 = { x: AREA_PAD, y: AREA_HEADER, ...M };
+    l.areas.B = area(0, tight.h + AREA_GAP, tight.w, tight.h);
+    l.workspaces.prev = { x: AREA_PAD, y: l.areas.B.y + AREA_HEADER, ...M };
+    // a new session in A grows it, which pushes B with the place `prev` keeps in it
+    const r = resolveLayout(l, [session("a1", { taskGroup: "A" }), session("a2", { taskGroup: "A" })]);
+    const b = r.areas.find((x) => x.key === "B")!.rect;
+    expect(r.patch?.workspaces?.prev).toBeDefined();
+    expect(inside(r.patch!.workspaces!.prev!, b)).toBe(true);
+    // joining B: placed clear of `prev`'s place, which stays taken
+    const l2 = emptyLandscape();
+    l2.areas.B = area(0, 0, 2 * AREA_PAD + 2 * M.w + GAP, AREA_HEADER + M.h + AREA_PAD);
+    l2.workspaces.prev = { x: AREA_PAD, y: AREA_HEADER, ...M };
+    l2.workspaces.loose1 = { x: -M.w - 200, y: 0, ...M };
+    const layout2 = resolveLayout(l2, [session("loose1")]);
+    const p = ready(planMakeArea(l2, layout2, ["loose1"], "B", (k) => k));
+    expect(overlaps(p.patch!.workspaces!.loose1!, l2.workspaces.prev)).toBe(false);
+  });
+
+  it("never pushes a locked area aside: a drop that would grow into one is refused, and an area growing into one moves clear", () => {
+    const l = base();
+    const a = l.areas.A;
+    l.areas.L = area(a.x + a.w + AREA_GAP, 0, 1000, a.h, { locked: true });
+    l.workspaces.l1 = { x: l.areas.L.x + AREA_PAD, y: AREA_HEADER, ...M };
+    const layout = resolveLayout(l, shown);
+    // dropped past A's right edge, A would grow into L
+    expect(planMoveTile(l, layout, "loose1", { x: a.x + a.w - 100, y: AREA_HEADER }, "A", (k) => `area ${k}`)).toEqual({
+      refused: "area L is locked, so area A can't grow into its space: drop it further in, or unlock area L",
+    });
+    // a new session in a full A grows it downward, into locked L below: L stays, and A moves clear with its workspaces
+    l.areas.L = area(0, a.y + a.h + AREA_GAP, a.w, a.h, { locked: true });
+    l.workspaces.l1 = { x: AREA_PAD, y: l.areas.L.y + AREA_HEADER, ...M };
+    const grown = resolveLayout(l, [...shown, session("a9", { taskGroup: "A" }), session("l1", { taskGroup: "L" })]);
+    apart(grown);
+    expect(grown.patch?.areas?.L).toBeUndefined();
+    expect(grown.patch?.workspaces?.l1).toBeUndefined();
+    const ga = grown.areas.find((x) => x.key === "A")!.rect;
+    expect(ga.h).toBeGreaterThan(a.h);
+    for (const t of grown.tiles.filter((x) => x.area === "A")) expect(inside(t.rect, ga)).toBe(true);
+  });
+
+  it("keeps a workspace dropped loose clear of a collapsed area's whole rectangle, not only its pill", () => {
+    const l = base();
+    l.areas.A.collapsed = true;
+    const layout = resolveLayout(l, shown);
+    // over A's rectangle, below its pill: areaAt doesn't see a collapsed area there, so the drop is loose
+    const p = ready(planMoveTile(l, layout, "loose1", { x: AREA_PAD, y: AREA_HEADER + 40 }, "ungrouped", (k) => k));
+    expect(overlaps(p.patch!.workspaces!.loose1!, l.areas.A, GAP - 1e-6)).toBe(false);
+  });
+
+  it("puts back what a plan changed when the groups couldn't be set: all of it, or the places of those not moved", () => {
+    const l = base();
+    l.areas.B = area(l.areas.A.w + AREA_GAP, 0, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+    const layout = resolveLayout(l, shown);
+    // a drop past B's edge: places, B grown, nothing else
+    const p = ready(planMakeArea(l, layout, ["loose1", "loose2"], "B", (k) => k));
+    const undo = undoOf(l, p.patch!)!;
+    expect(sameLandscape(applyPatch(applyPatch(l, p.patch!), undo), l)).toBe(true);
+    // a new area put back is gone again
+    const q = ready(planMakeArea(l, layout, ["loose1"], "Spike", (k) => k));
+    expect(Object.hasOwn(applyPatch(applyPatch(l, q.patch!), undoOf(l, q.patch!)!).areas, "Spike")).toBe(false);
+    // limited to the sessions not moved: only their own places
+    expect(undoOf(l, p.patch!, ["loose2"])).toEqual({ workspaces: { loose2: l.workspaces.loose2 } });
+  });
 });
 
 describe("flying, the minimap and the switcher", () => {
@@ -601,5 +757,25 @@ describe("the landscape store following a group's rename", () => {
     const n = changes.length;
     store.groupRenamed("Nope", "Still", []);
     expect(changes.length).toBe(n);
+  });
+
+  it("re-keys the area even when no window has read the landscape this run, and writes nothing when there's no file", () => {
+    const dir = tempDir("landscape-rename-unread");
+    const file = path.join(dir, "landscape.json");
+    const saved = emptyLandscape();
+    saved.areas.A = area(0, 0, 2000, 900);
+    saved.workspaces.a1 = { x: 24, y: 48, w: 800, h: 600 };
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const store = new LandscapeStore({ file, emit: () => {}, log: () => {} });
+    store.groupRenamed("A", "Org", ["a1"]);
+    store.flush();
+    const onDisk = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(onDisk.areas.Org).toEqual(saved.areas.A);
+    expect(Object.hasOwn(onDisk.areas, "A")).toBe(false);
+    const none = path.join(dir, "none.json");
+    const empty = new LandscapeStore({ file: none, emit: () => {}, log: () => {} });
+    empty.groupRenamed("A", "Org", []);
+    empty.flush();
+    expect(fs.existsSync(none)).toBe(false);
   });
 });

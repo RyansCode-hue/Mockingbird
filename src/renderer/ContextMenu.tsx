@@ -133,6 +133,9 @@ function ContextMenuView({ state, setState, label }: { state: MenuState; setStat
     const outside = (e: Event) => {
       if (!ref.current?.contains(e.target as Node)) close();
     };
+    // pointerdown too: a press the landscape takes (a pan, a scaled terminal, the minimap) calls preventDefault on it,
+    // and the browser then sends no mousedown
+    document.addEventListener("pointerdown", outside, true);
     document.addEventListener("mousedown", outside, true);
     document.addEventListener("contextmenu", outside, true);
     window.addEventListener("resize", close);
@@ -140,6 +143,7 @@ function ContextMenuView({ state, setState, label }: { state: MenuState; setStat
     // a wheel outside, not any scroll: panes and the chat scroll themselves as output arrives
     window.addEventListener("wheel", outside, { capture: true, passive: true });
     return () => {
+      document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("mousedown", outside, true);
       document.removeEventListener("contextmenu", outside, true);
       window.removeEventListener("resize", close);

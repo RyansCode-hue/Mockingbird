@@ -3,7 +3,7 @@ import { isErr, type SessionInfo } from "../../shared/types";
 import type { LivePanesState, MemberView, RoomSessionTag } from "../../shared/team/livePanes";
 import type { MemberId } from "../../shared/team/types";
 import { initialsOf } from "../Team";
-import { followPlan, mergeRoomSessions, sameList } from "./roomLiveModel";
+import { followPlan, mergeRoomSessions, sameList, tellLiveView } from "./roomLiveModel";
 import { firstName } from "./connectedModel";
 import { ReadIcon } from "../Icons";
 import { useCrossfade } from "../motion";
@@ -52,10 +52,15 @@ export function useRoomLive(own: SessionInfo[], shown: string[], focused: string
   const retry = useCallback(() => setTries((n) => n + 1), []);
   const sessions = useMemo(() => mergeRoomSessions(own, state), [own, state]);
   const shownKey = shown.join(",");
+  const [viewError, setViewError] = useState<string | null>(null);
   useEffect(() => {
-    window.mb.teamLiveView({ shown, focused });
-  }, [shownKey, focused]);
-  return { sessions, state, error, retry };
+    let alive = true;
+    void tellLiveView(() => window.mb.teamLiveView({ shown, focused }), { shown, focused }).then((e) => alive && setViewError(e));
+    return () => {
+      alive = false;
+    };
+  }, [shownKey, focused, tries]);
+  return { sessions, state, error, viewError, retry };
 }
 
 export interface RoomLive {
@@ -69,6 +74,8 @@ export interface RoomLive {
   state: LivePanesState | null;
   /** Why they couldn't be read; retry() asks again. */
   error: string | null;
+  /** Why the main process couldn't be told what's on screen here, so teammates' sessions may not stream; retry() tells it again. */
+  viewError: string | null;
   retry: () => void;
 }
 

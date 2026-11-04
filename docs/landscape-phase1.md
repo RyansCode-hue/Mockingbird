@@ -478,7 +478,19 @@ notes.
     It opens in `AnchoredPopover` (`Popover.tsx`), drawn over everything at the
     button's place on screen, so it keeps its size while the button sits in
     the scaled world. A press or wheel outside, Escape, a resize or the window
-    losing focus closes it.
+    losing focus closes it. It listens for `pointerdown` as well as
+    `mousedown`, and so does the ⋯ menu (`ContextMenu.tsx`). A press the
+    landscape takes for itself (a pan, a scaled terminal, the minimap) calls
+    `preventDefault` on it, and the browser then sends no `mousedown`.
+
+    Its dialogs (Remove from the room…, Hand over ownership…, Leave room…,
+    Claim ownership…) are shown by `main.tsx`, not by the menu. Inside the
+    header they'd be inside the landscape's scaled world, under its later
+    workspaces, and gone with the header when the zoom or a collapse takes it
+    away. `useMemberActions(room, open)` and `RoleNotice`'s `onClaim` hand the
+    dialog to `MemberDialogs` (`Team.tsx`). That shows the Team view's own
+    dialogs, `ClaimOwnershipDialog` included (taken out of `RoleNotice`). Each
+    gets the room as it is now, or as it was asked for once it's gone.
   - **Gestures** start from one capture `pointerdown` on the viewport:
     - over the bare landscape, a marquee (Shift adds to the selection; a
       Shift-click toggles one workspace);
@@ -507,16 +519,29 @@ notes.
     - a stack going loose.
 
     The `setGroup` calls (`runMoves`) go one at a time, and the first failure
-    is said with how many had moved.
+    is said with how many had moved. Its places are then put back (`undoOf`):
+    everything the patch changed when none had moved, otherwise the places of
+    the sessions still in their old groups. Left alone, they'd sit inside an
+    area they aren't in.
   - **Areas never overlap or nest** (`shared/landscape.ts`):
     - `areaAround` forms an area around workspaces;
     - `clearOf` moves an area to the nearest clear spot on the grid;
     - `pushAside` pushes the areas in a growing area's way aside, with their
       workspaces and ghosts.
 
+    An area moves with everything inside it. That includes the places of
+    sessions that aren't shown (waiting to be resumed) and of stacks none of
+    whose sessions are, so a relaunched session comes back inside its area.
+    Those places also stay taken when workspaces join an area.
+
+    A locked area never moves. `pushAside` takes it as fixed: an area pushed
+    into it goes on past it. A gesture that would grow an area into a locked
+    one is refused, and says so. An area growing to hold a new session moves
+    clear of everything instead.
+
     A workspace dropped past an area's right or bottom edge grows the area. A
     loose workspace dropped over the bare landscape is kept clear of the
-    areas.
+    areas, a collapsed one's whole rectangle included, not only its pill.
   - **Make area…:** a marquee picks every workspace any part of which it
     touches, as in Figma. A bar then says "N selected · Make area… M · ✕".
     M or the button asks for a name in the rename dialog ("Make an area of N
@@ -525,15 +550,27 @@ notes.
     to hold them.
   - **Renaming keeps the area.** Main's `renameGroup` calls
     `LandscapeStore.groupRenamed` (`renameAreaPatch`), which re-keys the area,
-    its stacks and ghosts; renaming into an area that's already there places
-    the members again. A failure there is logged, and the rename itself still
-    goes through. The renderer can see the new session list before that
-    patch, so `resolveLayout` also:
-    - adopts an orphaned area: the old key, holding none of the shown
-      sessions and all of the renamed group's places;
-    - finds a stack's old key.
+    its stacks and ghosts.
+    - If no window has read `landscape.json` this run (the landscape is off),
+      it's read for this. With no file, nothing is written; a file that can't
+      be read is logged and left alone.
+    - Renaming onto an area that's already there merges into it. The places
+      of the old group's sessions are dropped, and so is every place inside
+      the old area (teammates' and resumable sessions', which main's list
+      doesn't name), so each is placed in the merged area.
+    - A failure here is logged, and the rename itself still goes through.
 
-    Both agree with main's patch when it lands.
+    The renderer gets the new session list before the re-keying, and a
+    teammate's room sessions take the new name later still. So the window
+    keeps its renames as pending (`PendingRename`, in `main.tsx`) until
+    `renameSettled`. Meanwhile `resolveLayout` keeps the group's area and
+    stacks under whichever key the landscape holds them; formed anew, the area
+    would be pushed clear of its own old one, and that place saved over the
+    re-keyed one.
+
+    Nothing guesses at renames from the layout. A group whose only workspace
+    was moved to a new group (Move to group…) gets an area of its own, clear
+    of the old one, which keeps its ghosts, lock and folds.
   - **Collapse and lock** are saved in `landscape.json` (`collapsed`,
     `locked`). A collapsed area's workspaces are `hidden`: not drawn, nothing
     attached, and off screen for `keysOnScreen` and `sessionsOnScreen` (left
@@ -548,9 +585,15 @@ notes.
     under reduced motion, when started from the keyboard (⌘K) and in a hidden
     window. A wheel, a press or a zoom key stops it. `areaCamera` fits the
     area below the switcher's strip (`SWITCHER_STRIP`), never past 100%.
+
+    A go-to and a reveal are held by `main.tsx` until the landscape takes them
+    up (`onHandled`). One asked from another tab waits for the landscape to
+    mount and have its size, and none is repeated when it mounts again: a tree
+    row's double-click focuses once.
   - **The area tree** (`AreaTree.tsx`, designs L and M) replaces the Sessions
-    view while the landscape shows. It lists the areas in the landscape's
-    order, then Loose (closed at first; which ones are closed is kept). Each
+    view while the landscape shows, and the side bar is headed Landscape. It
+    lists the areas in the landscape's order, then Loose (closed at first;
+    which ones are closed is kept). Each
     area row has its accent, its title, its online teammates' initials, a
     waiting badge and a count. Under it are its workspaces, and each stack
     once, as its front tab's row, opening to its tabs. Each row has the
@@ -578,13 +621,25 @@ notes.
     it reads. Follow on the landscape brings the teammate's focused workspace
     into view and selects it; picking another workspace stops following
     (`followFocus`). A teammate's new session lands in its room's area through
-    `placeNew`, and its place is saved.
+    `placeNew`, and its place is saved. `teamLiveView` is now a call that
+    answers (`ipcRenderer.invoke`). A failure is logged with what was being
+    said (`tellLiveView`) and shown on the Connected line: teammates'
+    sessions on screen here may not stream.
+  - **Cards** are drawn inset in their places by `--ci` (5 px on screen at
+    any zoom). Zoomed out, the gaps between placements (`GAP`, 16) and an
+    area's padding (`AREA_PAD`, 24) are a pixel or two otherwise.
   - **⌘K** has a "Go to <area>" entry per area; ⌘\ toggles the tree.
   - **Differences from the designs left, and why:**
     - the cards band's name line is on one line above the patch. C has a
       24 px name and a summary inside the patch's top. `AREA_HEADER` (48) and
       `AREA_PAD` (24) leave no room inside for type kept at screen size at
       20–35%, and making them larger would move every workspace;
+    - C's spacing in the cards band: its patches have clear inner padding and
+      clear gaps between them. Here the cards' inset gives the padding (about
+      9 px at 18%). Areas are `AREA_GAP` (64) apart, 12–22 px at the band's
+      zooms. So an area's name line, kept at screen size above it, can sit on
+      the bottom edge of the area above. Matching C means a larger
+      `AREA_GAP`, which moves every saved area;
     - the hover toolbar (Tidy, Collapse, Lock) floats over the header's right
       end, or over the name line's right end zoomed out. In E it sits inside
       the patch's top right. In a narrow area, while hovered, it covers the
@@ -602,7 +657,8 @@ notes.
       sorts before it coming or going. The fixture's colours aren't the
       boards';
     - the tree's rows have the Sessions view's second lines (L shows titles
-      only);
+      only). They go to one line in S5, once the workspace header says what
+      they say;
     - Members ▾ says "Remove from the room…" (P says "Remove…"), as the room
       view does;
     - the minimap has status dots; B's has only outlines;
@@ -618,6 +674,12 @@ notes.
     - `?lsPick=<ids>` (a marquee selection);
     - `?lsMakeArea=<name>`;
     - `?landscapeAreasAudit`;
+    - `?landscapeAreaEdgesAudit` (with `?claim`, `?liveViewFail` and
+      `?setGroupFail=s4`): room dialogs, presses the landscape takes, go-to
+      from another tab, a reveal once, a failed move put back, the heading,
+      the cards' inset;
+    - `?setGroupFail=<id>` (that session's group can't be set) and
+      `?liveViewFail` (main can't take what's on screen);
     - `?landscapeFlyAudit`, which `?motionAudit` with `labs=landscape` also
       runs.
 
@@ -625,11 +687,17 @@ notes.
     landscape, the order main's events can arrive in.
   - **Tests:**
     - `test/landscapeAreas.test.ts` covers the model: `areaAround`,
-      `clearOf`, `pushAside`, `renameAreaPatch`, `resolveLayout`'s forming,
-      adopting and pushing, collapsed areas off screen, the three plans and
-      their refusals, `flightAt`, `areaCamera`, the minimap's mapping,
-      `accentsOf`, counts and summaries, `treeOf`, `looseStop`,
-      `presenceLine` and `backupLine`, and `LandscapeStore.groupRenamed`;
+      `clearOf`, `pushAside` (locked areas fixed), `renameAreaPatch` (merges
+      letting go of every place inside), `resolveLayout`'s forming, pending
+      renames and pushing (resumable places moved, locked areas not),
+      collapsed areas off screen, the three plans and their refusals (growing
+      into a locked area, resumable places moved and kept taken, loose drops
+      clear of collapsed areas), `undoOf`, `flightAt`, `areaCamera`, the
+      minimap's mapping, `accentsOf`, counts and summaries, `treeOf`,
+      `looseStop`, `presenceLine` and `backupLine`, and
+      `LandscapeStore.groupRenamed` (also with the landscape unread);
+    - `test/teamLiveModel.test.ts`: `tellLiveView`'s failures said;
+    - `test/uiLandscapeAreaEdges.test.ts` runs the edges audit;
     - `test/uiLandscapeAreas.test.ts` works the areas in Chrome as a person
       would, with the main-process calls each step makes: the tree and its
       fly, collapse, the switcher's Loose, a marquee to a new area, a drag
@@ -645,11 +713,14 @@ notes.
       in ⋯ (S6);
     - the Needs you tray and badges (S7);
     - a room area's layout is local; sharing it is phase 2;
-    - `useRoomLive`'s `teamLiveView` call ignores its result, as before S4, so
-      a failure to report what's on screen goes unsaid.
+    - ghosts keep their places when a rename merges their group into another
+      area (they're re-grouped, and drawn from S6, whose Reopen places them).
 
 ### S5 · Tools and the workspace header
 Design O, with Artifacts as a window, and N's workspace header.
+- **The area tree's rows** go down to L's single line once the workspace
+  header and its ⋯ carry what they say now (backups, Take it back, Send,
+  Review and the rest).
 - **Tool windows.** On the landscape the rail opens Files, Changes, Search,
   Run & debug, Artifacts and Chat as windows instead of side bar views:
   - the window frame (`ToolWindow.tsx`) hosts today's components
@@ -716,6 +787,10 @@ Design O, with Artifacts as a window, and N's workspace header.
   continued on a teammate's Mac shows Take it back.
   - Left from S2: a closed session's placement stays in `workspaces` (it may
     be resumed); closing should turn it into a ghost, or they pile up.
+  - Previous and the Connected line leave the area tree's foot once ghost
+    cards and Reopen all are on the landscape (left from S4).
+  - Ghosts whose group a rename merged into another area keep their old
+    places (left from S4): Reopen places them, or they're moved in.
 - **Tests:**
   - snapping and guides;
   - stack create, switch and unstack;

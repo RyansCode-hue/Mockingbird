@@ -68,7 +68,7 @@ export function roomOfGroup(status: TeamStatus | { error: string } | null, group
  * be listed: how many of teammates' sessions run and who's online. It opens
  * the Team view — the only room's, or the room list.
  */
-export function ConnectedLine({ summary, onOpen }: { summary: ConnectedSummary; onOpen: () => void }) {
+export function ConnectedLine({ summary, onOpen, problem = null }: { summary: ConnectedSummary; onOpen: () => void; problem?: string | null }) {
   // a teammate connecting or leaving turns the presence dot (the line's ::before)
   const sub = useRef<HTMLSpanElement>(null);
   useChange(summary.online.length, (was, now) => sub.current && presenceTurn(sub.current, null, now > was, "::before"));
@@ -76,7 +76,7 @@ export function ConnectedLine({ summary, onOpen }: { summary: ConnectedSummary; 
     <button
       type="button"
       className="connected-line"
-      title={`${plural(summary.live, "teammate's session")} running in ${plural(summary.rooms, "team room")}${summary.online.length ? ` · online: ${summary.online.join(", ")}` : ""} — open the Team view`}
+      title={`${plural(summary.live, "teammate's session")} running in ${plural(summary.rooms, "team room")}${summary.online.length ? ` · online: ${summary.online.join(", ")}` : ""}${problem ? ` · teammates' sessions on screen here may not stream: ${problem}` : ""} — open the Team view`}
       onClick={onOpen}
     >
       <TeamIcon />
@@ -85,6 +85,7 @@ export function ConnectedLine({ summary, onOpen }: { summary: ConnectedSummary; 
         <span ref={sub} className={`cl-sub ${summary.online.length ? "on" : ""}`}>
           {summary.sub}
         </span>
+        {problem && <span className="cl-problem">Couldn't say what's on screen here: {problem}</span>}
       </span>
       <span className="cl-go" aria-hidden="true">
         ›
@@ -295,9 +296,12 @@ export function RoleChip({ room, id, className = "team-role" }: { room: TeamRoom
  * for the Team tab's right-click menu and Settings → Team's buttons — and the
  * dialogs those open. The room log checks each again (rooms.ts).
  */
-export function useMemberActions(room: TeamRoomSummary) {
-  const [removing, setRemoving] = useState<{ id: string; name: string } | null>(null);
-  const [handing, setHanding] = useState<{ id: string; name: string } | null>(null);
+export function useMemberActions(room: TeamRoomSummary, open?: (d: MemberDialog) => void) {
+  const [removing, setRemovingHere] = useState<{ id: string; name: string } | null>(null);
+  const [handing, setHandingHere] = useState<{ id: string; name: string } | null>(null);
+  // with `open`, the dialogs are its owner's to show (MemberDialogs), so they outlive what opened them
+  const setRemoving = (m: { id: string; name: string }) => (open ? open({ kind: "remove", room, member: m }) : setRemovingHere(m));
+  const setHanding = (m: { id: string; name: string }) => (open ? open({ kind: "handover", room, member: m }) : setHandingHere(m));
   const [error, setError] = useState<string | null>(null);
   const setAdmin = async (m: { id: string; name: string }, admin: boolean) => {
     setError(null);
@@ -316,11 +320,30 @@ export function useMemberActions(room: TeamRoomSummary) {
   };
   const dialogs = (
     <>
-      {removing && <RemoveMemberDialog room={room} member={removing} onClose={() => setRemoving(null)} />}
-      {handing && <HandOverDialog room={room} member={handing} onClose={() => setHanding(null)} />}
+      {removing && <RemoveMemberDialog room={room} member={removing} onClose={() => setRemovingHere(null)} />}
+      {handing && <HandOverDialog room={room} member={handing} onClose={() => setHandingHere(null)} />}
     </>
   );
   return { actionsFor, dialogs, error, clearError: () => setError(null) };
+}
+
+/** A room dialog asked for from somewhere that may go before it's answered (an area's Members ▾ on the landscape). */
+export type MemberDialog =
+  | { kind: "remove" | "handover"; room: TeamRoomSummary; member: { id: string; name: string } }
+  | { kind: "leave" | "claim"; room: TeamRoomSummary };
+
+/**
+ * The room dialogs MemberDialog asks for, the Team view's own: shown by the app, outside whatever asked, so they're
+ * drawn over everything at their own size and stay open as the asker goes. The room as `rooms` has it now, or as it
+ * was asked for once it's gone (leaving it says what it did).
+ */
+export function MemberDialogs({ dialog, rooms, onClose }: { dialog: MemberDialog | null; rooms: readonly TeamRoomSummary[]; onClose: () => void }) {
+  if (!dialog) return null;
+  const room = rooms.find((r) => r.id === dialog.room.id) ?? dialog.room;
+  if (dialog.kind === "remove") return <RemoveMemberDialog room={room} member={dialog.member} onClose={onClose} />;
+  if (dialog.kind === "handover") return <HandOverDialog room={room} member={dialog.member} onClose={onClose} />;
+  if (dialog.kind === "leave") return <LeaveRoomDialog room={room} onClose={onClose} />;
+  return <ClaimOwnershipDialog room={room} onClose={onClose} />;
 }
 
 /** Hand ownership to a teammate (the owner only): what changes, then done. */
@@ -367,8 +390,9 @@ export function HandOverDialog({ room, member, onClose }: { room: TeamRoomSummar
  * The ownership claim, where it concerns this install: a claim took the room
  * from you (take it back), or you may claim it from an owner who hasn't been
  * heard from for 14 days. `detail` also says when a claim opens (Settings).
+ * With `onClaim`, the claim's dialog is its owner's to show (MemberDialogs).
  */
-export function RoleNotice({ room, detail = false }: { room: TeamRoomSummary; detail?: boolean }) {
+export function RoleNotice({ room, detail = false, onClaim }: { room: TeamRoomSummary; detail?: boolean; onClaim?: () => void }) {
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -380,7 +404,6 @@ export function RoleNotice({ room, detail = false }: { room: TeamRoomSummary; de
     const r = await call();
     setBusy(false);
     if (isErr(r)) setError(r.error);
-    else setAsking(false);
   };
   if (c.kind === "claimed") return detail ? <div className="set-row-note">{c.by} claimed ownership of the room from {c.from}, who can take it back.</div> : null;
   if (c.kind === "waiting") return detail ? <div className="set-row-note">If {c.owner} isn't heard from in the room by {new Date(c.opensAt).toLocaleDateString()}, you can claim its ownership.</div> : null;
@@ -396,36 +419,53 @@ export function RoleNotice({ room, detail = false }: { room: TeamRoomSummary; de
       ) : (
         <>
           <span>{c.owner}, the room's owner, hasn't been heard from in it for 14 days.</span>
-          <button className="outline" disabled={busy} onClick={() => setAsking(true)}>
+          <button className="outline" onClick={() => (onClaim ? onClaim() : setAsking(true))}>
             Claim ownership…
           </button>
         </>
       )}
       {error && <div className="err">{error}</div>}
-      {asking && c.kind === "can-claim" && (
-        <Modal className="modal team-dlg" onClose={busy ? undefined : () => setAsking(false)}>
-          <h3>Claim ownership of {room.name}?</h3>
-          <div className="sub-h">For a room whose owner is gone for good. If {c.owner} is only away, ask them to hand it over instead.</div>
-          <ul className="team-effects">
-            <li>
-              <b>You</b> become the owner: you make admins and set where backups go and the room's House project.
-            </li>
-            <li>
-              <b>Everyone</b> sees the claim in the room's chat. {c.owner} can take ownership back whenever they're next online, and can't be removed from the room for 14 days.
-            </li>
-          </ul>
-          {error && <div className="err">{error}</div>}
-          <div className="row">
-            <button className="outline" disabled={busy} onClick={() => setAsking(false)}>
-              Cancel
-            </button>
-            <button className="primary" disabled={busy} onClick={() => run(() => window.mb.teamClaimOwnership(room.id))}>
-              {busy ? "Claiming…" : "Claim ownership"}
-            </button>
-          </div>
-        </Modal>
-      )}
+      {asking && c.kind === "can-claim" && <ClaimOwnershipDialog room={room} onClose={() => setAsking(false)} />}
     </div>
+  );
+}
+
+/** Claim a room's ownership from an owner who hasn't been heard from for 14 days: what changes, then done. */
+export function ClaimOwnershipDialog({ room, onClose }: { room: TeamRoomSummary; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const c = claimState(room);
+  const owner = c && "owner" in c ? c.owner : "its owner";
+  const claim = async () => {
+    setBusy(true);
+    setError(null);
+    const r: unknown = await window.mb.teamClaimOwnership(room.id);
+    setBusy(false);
+    if (isErr(r)) setError(r.error);
+    else onClose();
+  };
+  return (
+    <Modal className="modal team-dlg" onClose={busy ? undefined : onClose}>
+      <h3>Claim ownership of {room.name}?</h3>
+      <div className="sub-h">For a room whose owner is gone for good. If {owner} is only away, ask them to hand it over instead.</div>
+      <ul className="team-effects">
+        <li>
+          <b>You</b> become the owner: you make admins and set where backups go and the room's House project.
+        </li>
+        <li>
+          <b>Everyone</b> sees the claim in the room's chat. {owner} can take ownership back whenever they're next online, and can't be removed from the room for 14 days.
+        </li>
+      </ul>
+      {error && <div className="err">{error}</div>}
+      <div className="row">
+        <button className="outline" disabled={busy} onClick={onClose}>
+          Cancel
+        </button>
+        <button className="primary" disabled={busy} onClick={claim}>
+          {busy ? "Claiming…" : "Claim ownership"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 

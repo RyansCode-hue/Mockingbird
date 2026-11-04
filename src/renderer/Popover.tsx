@@ -29,11 +29,15 @@ export function AnchoredPopover({ anchor, className, label, onClose, children }:
       if (!box.current?.contains(t) && !anchor.contains(t)) close.current();
     };
     const away = () => close.current();
+    // pointerdown too: a press the landscape takes (a pan, a scaled terminal, the minimap) calls preventDefault on it,
+    // and the browser then sends no mousedown
+    document.addEventListener("pointerdown", outside, true);
     document.addEventListener("mousedown", outside, true);
     window.addEventListener("wheel", outside, { capture: true, passive: true });
     window.addEventListener("resize", away);
     window.addEventListener("blur", away);
     return () => {
+      document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("mousedown", outside, true);
       window.removeEventListener("wheel", outside, { capture: true });
       window.removeEventListener("resize", away);

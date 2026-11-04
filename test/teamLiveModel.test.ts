@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { followPlan, mergeRoomSessions } from "../src/renderer/team/roomLiveModel";
+import { describe, expect, it, vi } from "vitest";
+import { followPlan, mergeRoomSessions, tellLiveView } from "../src/renderer/team/roomLiveModel";
 import { classifyTermInput, forwardTermInput } from "../src/renderer/inputGuard";
 import { isTermReply, isViewControl } from "../src/shared/termInput";
 import type { SessionInfo } from "../src/shared/types";
@@ -93,6 +93,22 @@ describe("input that only moves a view", () => {
       "",
     ]) {
       expect(isViewControl(d), JSON.stringify(d)).toBe(false);
+    }
+  });
+});
+
+describe("telling the main process what's on screen", () => {
+  it("says why it couldn't, refused or failing, logged with what it was telling; null once told", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const view = { shown: ["s1", "n1"], focused: "s1" };
+      expect(await tellLiveView(() => Promise.resolve(undefined), view)).toBeNull();
+      expect(await tellLiveView(() => Promise.resolve({ error: "team rooms aren't running" }), view)).toBe("team rooms aren't running");
+      expect(log).toHaveBeenLastCalledWith(expect.stringMatching(/couldn't say what's on screen here \(2 sessions, focused s1\)/), "team rooms aren't running");
+      expect(await tellLiveView(() => Promise.reject(new Error("the window is closing")), view)).toBe("the window is closing");
+      expect(log).toHaveBeenLastCalledWith(expect.stringMatching(/couldn't say what's on screen here/), "the window is closing");
+    } finally {
+      log.mockRestore();
     }
   });
 });

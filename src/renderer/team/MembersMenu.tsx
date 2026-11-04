@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { AnchoredPopover } from "../Popover";
-import { initialsOf, LeaveRoomDialog, RoleNotice, RoomWarnings, useMemberActions } from "../Team";
+import { initialsOf, RoleNotice, RoomWarnings, useMemberActions, type MemberDialog } from "../Team";
 import { RoomBackupWarnings } from "./TakeOver";
 import { roleIn } from "./rolesModel";
 import { firstName } from "./connectedModel";
@@ -54,6 +54,7 @@ export function MembersMenu({
   onInvite,
   onReviewJoins,
   onSettings,
+  onDialog,
 }: {
   room: TeamRoomSummary;
   /** Connected teammates' views (team:live): what each is looking at. */
@@ -67,11 +68,16 @@ export function MembersMenu({
   onReviewJoins: () => void;
   /** Settings → Team, where the room's backups are set. */
   onSettings: () => void;
+  /**
+   * Show one of the room's dialogs (remove, hand over, leave, claim): the app's (MemberDialogs), never this menu's. In
+   * the header it would be inside the landscape's scaled world, and gone with the header as the zoom or a collapse
+   * takes it away.
+   */
+  onDialog: (d: MemberDialog) => void;
 }) {
   const btn = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  const [leaving, setLeaving] = useState(false);
-  const acts = useMemberActions(room);
+  const acts = useMemberActions(room, onDialog);
   const close = () => setOpen(false);
   /** Closed first, so a dialog the action opens isn't closed with the menu. */
   const run = (f: () => void) => () => {
@@ -140,7 +146,7 @@ export function MembersMenu({
               </div>
             );
           })}
-          <RoleNotice room={room} />
+          <RoleNotice room={room} onClaim={run(() => onDialog({ kind: "claim", room }))} />
           {acts.error && <div className="err lsm-err">{acts.error}</div>}
           <div className="lsm-sep" />
           {asked.length > 0 && (
@@ -183,14 +189,12 @@ export function MembersMenu({
                 </button>
               ))
             )}
-            <button type="button" className="link danger lsm-leave" onClick={run(() => setLeaving(true))}>
+            <button type="button" className="link danger lsm-leave" onClick={run(() => onDialog({ kind: "leave", room }))}>
               Leave room…
             </button>
           </div>
         </AnchoredPopover>
       )}
-      {acts.dialogs}
-      {leaving && <LeaveRoomDialog room={room} onClose={() => setLeaving(false)} />}
     </>
   );
 }

@@ -18,6 +18,7 @@ import {
   boundsOf,
   clearOf,
   fitAreaTo,
+  fixedInWay,
   fitView,
   MAX_COORD,
   kindOf,
@@ -31,6 +32,7 @@ import {
   snap,
   snapUp,
   stackKeyOf,
+  within,
   type Area,
   type AreaRepo,
   type Camera,
@@ -263,9 +265,24 @@ export interface ResolvedLayout {
   patch: LandscapePatch | null;
 }
 
+/**
+ * A group this window renamed (`from` → `to`, either a top-level group or a sub-group) whose change hasn't reached
+ * everything yet: until the landscape has re-keyed it and no session shown is under `from`, resolveLayout keeps its
+ * area and stacks under whichever key the landscape holds them.
+ */
+export interface PendingRename {
+  from: string;
+  to: string;
+}
+
+/** Whether a pending rename is over: the landscape holds nothing under `from` any more, and no session shown is in it. */
+export function renameSettled(r: PendingRename, l: Landscape, sessions: readonly SessionInfo[]): boolean {
+  const under = (k: string) => k === r.from || k.startsWith(`${r.from}/`);
+  return !Object.keys(l.areas).some(under) && !Object.keys(l.stacks).some(under) && !sessions.some((s) => under(s.taskGroup ?? LOOSE_GROUP));
+}
+
 const tileKind = (members: readonly SessionInfo[]): WorkspaceKind => (members.some((s) => kindOf(s) === "agent") ? "agent" : "terminal");
 
-const within = (r: Rect, a: Rect): boolean => r.x >= a.x && r.y >= a.y && r.x + r.w <= a.x + a.w && r.y + r.h <= a.y + a.h;
 
 /** The repos an area's sessions work in, each once, in order: what an area made around them starts with. */
 const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(members.map((s) => s.repoPath).filter((p): p is string => !!p))].map((path) => ({ path, base: null }));
@@ -279,21 +296,41 @@ const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(mem
  * under its id finds its place free. `sessions` are the ones shown, in order.
  *
  * A group with no area whose workspaces already have places (loose ones just
- * named a group) gets its area around them; one renamed while this window's
- * landscape didn't follow takes over its old area, and its stacks their old
- * keys' places. Areas never overlap: one formed so is moved clear of the others
- * (clearOf), its workspaces with it, and one that grows to hold a new workspace
- * pushes the areas in its way aside (pushAside), theirs with them.
+ * named a group) gets its area around them. Areas never overlap: one formed so
+ * is moved clear of the others (clearOf), its workspaces with it, and one that
+ * grows to hold a new workspace pushes the areas in its way aside (pushAside),
+ * theirs with them, every place stored inside them included. A locked area
+ * never moves: one that grows into it moves clear of everything instead.
+ *
+ * `renames` are this window's renames still on their way (PendingRename).
  */
-export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], cell: Cell = CELL_ESTIMATE): ResolvedLayout {
+export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], cell: Cell = CELL_ESTIMATE, renames: readonly PendingRename[] = []): ResolvedLayout {
+  /**
+   * A group key under a rename still on its way: the key the landscape holds it under, the old one or the new. The
+   * session list and the landscape's re-keying (main's renameAreaPatch) arrive one after the other, and a teammate's
+   * room sessions take the new name later still, so for a while the two disagree; formed anew, the group's area would
+   * be pushed clear of its own old one, and that place saved over the re-keyed one.
+   */
+  const held = (key: string, has: (k: string) => boolean): string => {
+    if (has(key)) return key;
+    for (const { from, to } of renames) {
+      const other = key === to || key.startsWith(`${to}/`) ? from + key.slice(to.length) : key === from || key.startsWith(`${from}/`) ? to + key.slice(from.length) : null;
+      if (other !== null && has(other)) return other;
+    }
+    return key;
+  };
   const groups = new Map<string, { area: string; stack: string | null; members: SessionInfo[] }>();
   for (const s of sessions) {
-    const stack = stackKeyOf(s);
+    const sk = stackKeyOf(s);
+    const stack = sk && held(sk, (k) => Object.hasOwn(l.stacks, k));
     const key = stack ? `ws:${stack}` : s.id;
     const g = groups.get(key);
     if (g) g.members.push(s);
-    else groups.set(key, { area: areaKeyOf(s), stack, members: [s] });
+    else groups.set(key, { area: held(areaKeyOf(s), (k) => Object.hasOwn(l.areas, k)), stack, members: [s] });
   }
+  /** The sessions and stacks shown: a place stored for any other (a session waiting to be resumed) stays taken, and moves with its area. */
+  const shownIds = new Set(sessions.map((s) => s.id));
+  const shownStacks = new Set([...groups.values()].map((g) => g.stack).filter((k): k is string => !!k));
 
   const areas = new Map<string, Area>(Object.entries(l.areas));
   const patch: Required<Pick<LandscapePatch, "workspaces" | "areas" | "stacks" | "ghosts">> = { workspaces: {}, areas: {}, stacks: {}, ghosts: {} };
@@ -303,26 +340,11 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     put(patch.areas, key, Object.hasOwn(l.areas, key) ? { ...(own(patch.areas, key) ?? {}), ...fields } : a);
   };
 
-  // each workspace's stored place: its stack's; for a sub-group with no stack under its key, one left under an old
-  // key by a rename (the same sub-group, its old key holding none of the sessions shown, found by its front tab, and
-  // inside the new key's area if it has one), else where its first member sat on its own
+  // each workspace's stored place: its stack's, else where its first member sat on its own
   const stored = new Map<string, Rect | undefined>();
   const fronts = new Map<string, SessionInfo>();
-  /** Stacks found under an old key: new key → old. */
-  const restacked = new Map<string, string>();
   for (const [key, g] of groups) {
-    let st = g.stack ? own(l.stacks, g.stack) : undefined;
-    if (g.stack && !st) {
-      const sub = splitGroupKey(g.stack).sub;
-      const into = areas.get(g.area);
-      const old = Object.entries(l.stacks).find(
-        ([k, s]) => !groups.has(`ws:${k}`) && splitGroupKey(k).sub === sub && g.members.some((m) => m.id === s.active) && (!into || within(s.placement, into))
-      );
-      if (old) {
-        st = old[1];
-        restacked.set(g.stack, old[0]);
-      }
-    }
+    const st = g.stack ? own(l.stacks, g.stack) : undefined;
     const front = (st && g.members.find((s) => s.id === st.active)) || g.members[0];
     fronts.set(key, front);
     stored.set(key, st?.placement ?? (g.stack ? g.members.map((s) => own(l.workspaces, s.id)).find(Boolean) : own(l.workspaces, front.id)));
@@ -341,19 +363,6 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     if (key === LOOSE_GROUP || areas.has(key)) continue;
     const keys = [...groups].filter(([, g]) => g.area === key).map(([k]) => k);
     const rects = keys.map((k) => stored.get(k)).filter((r): r is Rect => !!r);
-    // A group renamed while this window's landscape didn't follow (it was off, or the rename's own change is still on
-    // its way): its old area, holding none of the sessions shown now and around all of these, is theirs under the new
-    // name. Formed anew instead, it would be pushed clear of the old one, their workspaces with it.
-    const old = rects.length ? [...areas].find(([k, a]) => !live.has(k) && rects.every((r) => within(r, a))) : undefined;
-    if (old) {
-      const [was, a] = old;
-      areas.delete(was);
-      put(patch.areas, was, null);
-      setArea(key, a, a);
-      const regroup = (g: string) => (g === was ? key : g.startsWith(`${was}/`) ? key + g.slice(was.length) : g);
-      for (const [id, gh] of Object.entries(l.ghosts)) if (regroup(gh.group) !== gh.group) put(patch.ghosts, id, { ...gh, group: regroup(gh.group) });
-      continue;
-    }
     const around = areaAround(rects);
     if (!around) continue;
     const { dx, dy } = clearOf(around, [...areas.values()]);
@@ -412,16 +421,36 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     tiles.push({ key, area: g.area, stack: g.stack, members: g.members, front: fronts.get(key)!, rect, hidden: false });
   }
 
-  // an area that grew moves the ones in its way aside, with their workspaces and ghosts
+  /** Area `k` moved by `dx`, `dy`, with everything in it: its workspaces, its ghosts, and the places stored inside it for sessions not shown. */
+  const moveAreaBy = (k: string, dx: number, dy: number) => {
+    const was = areas.get(k)!;
+    const a = shifted(was, dx, dy);
+    setArea(k, a, { x: a.x, y: a.y });
+    for (const t of tiles) if (t.area === k) shiftTile(t.key, dx, dy);
+    for (const [id, gh] of Object.entries(l.ghosts)) {
+      if (areaKeyOf({ taskGroup: gh.group }) === k) put(patch.ghosts, id, { ...gh, placement: shifted(own(patch.ghosts, id)?.placement ?? gh.placement, dx, dy) });
+    }
+    for (const [id, r] of Object.entries(l.workspaces)) {
+      const at = own(patch.workspaces, id) ?? r;
+      if (!shownIds.has(id) && within(at, was)) put(patch.workspaces, id, shifted(at, dx, dy));
+    }
+    for (const [sk, st] of Object.entries(l.stacks)) {
+      const at = own(patch.stacks, sk)?.placement ?? st.placement;
+      if (!shownStacks.has(sk) && within(at, was)) put(patch.stacks, sk, { ...st, placement: shifted(at, dx, dy) });
+    }
+  };
+  // an area that grew moves the ones in its way aside, with everything in them; a locked one stays where it is, and an
+  // area that grew into one moves clear of everything instead
+  const locked = new Set([...areas].filter(([, a]) => a.locked).map(([k]) => k));
   for (const key of grew) {
     const rects: Record<string, Rect> = {};
     for (const [k, a] of areas) put(rects, k, a);
-    for (const [k, m] of Object.entries(pushAside(rects, key))) {
-      const a = shifted(areas.get(k)!, m.dx, m.dy);
-      setArea(k, a, { x: a.x, y: a.y });
-      for (const t of tiles) if (t.area === k) shiftTile(t.key, m.dx, m.dy);
-      for (const [id, gh] of Object.entries(l.ghosts)) if (areaKeyOf({ taskGroup: gh.group }) === k) put(patch.ghosts, id, { ...gh, placement: shifted(gh.placement, m.dx, m.dy) });
+    if (fixedInWay(rects, key, locked)) {
+      const { dx, dy } = clearOf(areas.get(key)!, [...areas].filter(([k]) => k !== key).map(([, a]) => a));
+      moveAreaBy(key, dx, dy);
+      continue;
     }
+    for (const [k, m] of Object.entries(pushAside(rects, key, AREA_GAP, locked))) moveAreaBy(k, m.dx, m.dy);
   }
 
   for (const t of tiles) {
@@ -431,8 +460,6 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     const save = placed.has(t.key) || movedTiles.has(t.key);
     if (g.stack && (!own(l.stacks, g.stack) || movedTiles.has(t.key))) put(patch.stacks, g.stack, { active: t.front.id, placement: t.rect });
     else if (!g.stack && save) put(patch.workspaces, t.front.id, t.rect);
-    const old = g.stack ? restacked.get(g.stack) : undefined;
-    if (old) put(patch.stacks, old, null);
   }
   const out: LandscapePatch = {};
   for (const k of ["workspaces", "areas", "stacks", "ghosts"] as const) if (Object.keys(patch[k]).length) Object.assign(out, { [k]: patch[k] });
@@ -683,11 +710,48 @@ const finish = (p: FullPatch): LandscapePatch | null => {
   for (const k of ["workspaces", "areas", "stacks", "ghosts"] as const) if (Object.keys(p[k]).length) Object.assign(out, { [k]: p[k] });
   return Object.keys(out).length ? out : null;
 };
+/**
+ * What puts back what `patch` changed in `l`: each workspace, area, stack and ghost it touched as `l` had it, or gone
+ * where `l` had none. Limited to `ids` (session ids), only those sessions' own places: what a gesture takes back for
+ * the sessions whose group couldn't be set, when others' was.
+ */
+export function undoOf(l: Landscape, patch: LandscapePatch, ids?: readonly string[]): LandscapePatch | null {
+  const p = emptyPatch();
+  for (const k of ["workspaces", "areas", "stacks", "ghosts"] as const) {
+    const from = patch[k];
+    if (!from || (ids && k !== "workspaces")) continue;
+    const had = l[k] as Record<string, unknown>;
+    for (const key of Object.keys(from)) if (!ids || ids.includes(key)) put(p[k] as Record<string, unknown>, key, own(had, key) ?? null);
+  }
+  return finish(p);
+}
+
 const isTheirs = (s: SessionInfo) => !!s.room?.remote;
 const subOf = (t: Tile) => splitGroupKey(t.stack!).sub!;
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
-/** Move area `key` by `dx`, `dy` in `p`, with its workspaces (a collapsed one's too, never those in `leaving`) and its ghosts. */
+/** The sessions and stacks a layout shows. A place stored for any other (a session waiting to be resumed) stays taken, and moves with the area it's in. */
+function shownIn(layout: ResolvedLayout): { ids: Set<string>; stacks: Set<string> } {
+  const ids = new Set<string>();
+  const stacks = new Set<string>();
+  for (const t of layout.tiles) {
+    for (const s of t.members) ids.add(s.id);
+    if (t.stack) stacks.add(t.stack);
+  }
+  return { ids, stacks };
+}
+
+/** The places stored for sessions and stacks the layout doesn't show: taken, as resolveLayout keeps them. */
+const unshownPlaces = (l: Landscape, layout: ResolvedLayout): Rect[] => {
+  const shown = shownIn(layout);
+  return [...Object.entries(l.workspaces).filter(([id]) => !shown.ids.has(id)).map(([, r]) => r), ...Object.entries(l.stacks).filter(([k]) => !shown.stacks.has(k)).map(([, s]) => s.placement)];
+};
+
+/**
+ * Move area `key` by `dx`, `dy` in `p`, with everything in it: its workspaces (a collapsed one's too, never those in
+ * `leaving`), its ghosts, and the places stored inside it for sessions and stacks not shown, so a session resumed
+ * later comes back inside it.
+ */
 function moveArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, dx: number, dy: number, leaving: ReadonlySet<string> = new Set()): void {
   const a = layout.areas.find((x) => x.key === key)!.rect;
   const was = own(p.areas, key);
@@ -702,18 +766,32 @@ function moveArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: strin
     if (areaKeyOf({ taskGroup: g.group }) !== key) continue;
     put(p.ghosts, id, { ...g, placement: shifted(own(p.ghosts, id)?.placement ?? g.placement, dx, dy) });
   }
+  const shown = shownIn(layout);
+  for (const [id, r] of Object.entries(l.workspaces)) {
+    if (!shown.ids.has(id) && within(r, a)) put(p.workspaces, id, shifted(own(p.workspaces, id) ?? r, dx, dy));
+  }
+  for (const [sk, st] of Object.entries(l.stacks)) {
+    if (!shown.stacks.has(sk) && within(st.placement, a)) put(p.stacks, sk, { ...st, placement: shifted(own(p.stacks, sk)?.placement ?? st.placement, dx, dy) });
+  }
 }
 
 /**
- * Area `key` now `grown`: the areas in its way pushed aside (pushAside), with their workspaces and ghosts, but not
- * the workspaces in `leaving`, which are moving into it and have their places in `p` already.
+ * Area `key` now `grown`: the areas in its way pushed aside (pushAside), with everything in them, but not the
+ * workspaces in `leaving`, which are moving into it and have their places in `p` already. A locked area doesn't move:
+ * growing into one is refused, with the locked area's key returned; null once it's done.
  */
-function growArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, grown: Area, leaving: ReadonlySet<string>): void {
-  put(p.areas, key, { ...(own(p.areas, key) ?? {}), w: grown.w, h: grown.h });
+function growArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, grown: Area, leaving: ReadonlySet<string>): string | null {
   const rects: Record<string, Rect> = {};
   for (const a of layout.areas) put(rects, a.key, a.key === key ? grown : a.rect);
-  for (const [k, m] of Object.entries(pushAside(rects, key))) moveArea(p, l, layout, k, m.dx, m.dy, leaving);
+  const locked = new Set(layout.areas.filter((a) => a.rect.locked).map((a) => a.key));
+  const blocked = fixedInWay(rects, key, locked);
+  if (blocked) return blocked;
+  put(p.areas, key, { ...(own(p.areas, key) ?? {}), w: grown.w, h: grown.h });
+  for (const [k, m] of Object.entries(pushAside(rects, key, AREA_GAP, locked))) moveArea(p, l, layout, k, m.dx, m.dy, leaving);
+  return null;
 }
+/** Why a growth into a locked area is refused. */
+const lockedInWay = (titleOf: (key: string) => string, locked: string, key: string) => `${titleOf(locked)} is locked, so ${titleOf(key)} can't grow into its space: drop it further in, or unlock ${titleOf(locked)}`;
 
 /** A stack moving to area `area`: its new key, and its old one let go after the move (AreaPlan). */
 function restack(p: FullPatch, after: FullPatch, l: Landscape, t: Tile, area: string, r: Rect): void {
@@ -753,7 +831,7 @@ export function planMakeArea(l: Landscape, layout: ResolvedLayout, picked: reado
   if (target) {
     // each placed in it as a new workspace is, among everything that stays where it is
     const moving = new Set(tiles.map((t) => t.key));
-    const occupied = [...layout.tiles.filter((t) => !moving.has(t.key)).map((t) => t.rect), ...Object.values(l.ghosts).map((g) => g.placement)];
+    const occupied = [...layout.tiles.filter((t) => !moving.has(t.key)).map((t) => t.rect), ...unshownPlaces(l, layout), ...Object.values(l.ghosts).map((g) => g.placement)];
     let area: Area = target.rect;
     for (const t of tiles) {
       const r = placeNew({ w: t.rect.w, h: t.rect.h }, occupied, area);
@@ -761,7 +839,8 @@ export function planMakeArea(l: Landscape, layout: ResolvedLayout, picked: reado
       area = fitAreaTo(area, [r]);
       place(t, r);
     }
-    if (area !== target.rect) growArea(p, l, layout, key, area, moving);
+    const blocked = area !== target.rect ? growArea(p, l, layout, key, area, moving) : null;
+    if (blocked) return { refused: lockedInWay(titleOf, blocked, key) };
   } else {
     const around = areaAround(tiles.map((t) => t.rect))!;
     const { dx, dy } = clearOf(around, layout.areas.map((a) => a.rect));
@@ -801,10 +880,12 @@ export function planMoveTile(l: Landscape, layout: ResolvedLayout, tileKey: stri
   if (into) {
     r = { ...r, x: Math.max(r.x, snapUp(into.x + AREA_PAD)), y: Math.max(r.y, snapUp(into.y + AREA_HEADER)) };
     const grown = fitAreaTo(into, [r]);
-    if (grown !== into) growArea(p, l, layout, target, grown, new Set([t.key]));
+    const blocked = grown !== into ? growArea(p, l, layout, target, grown, new Set([t.key])) : null;
+    if (blocked) return { refused: lockedInWay(titleOf, blocked, target) };
   } else {
-    // a loose workspace stays out of every area: one dropped partly over an area's edge is moved clear of it
-    const { dx, dy } = clearOf(r, layout.areas.map((a) => areaShown(a)), GAP);
+    // a loose workspace stays out of every area, a collapsed one's whole rectangle too (it's all there once it opens):
+    // one dropped partly over an area's edge is moved clear of it
+    const { dx, dy } = clearOf(r, layout.areas.map((a) => a.rect), GAP);
     r = shifted(r, dx, dy);
   }
   if (t.stack && crossing) restack(p, after, l, t, target, r);

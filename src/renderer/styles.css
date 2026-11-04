@@ -2784,6 +2784,7 @@ button.connected-line:hover { color: var(--text-1); border-color: var(--line-btn
 .connected-line .cl-title, .connected-line .cl-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .connected-line .cl-sub { display: flex; align-items: center; gap: 5px; font: 400 10px var(--ui); color: var(--text-3); }
 .connected-line .cl-sub::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--idle); flex-shrink: 0; }
+.connected-line .cl-problem { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 10px var(--ui); color: var(--amber-text); }
 .connected-line .cl-sub.on::before { background: var(--teal); }
 .connected-line .cl-go { color: var(--text-4); font-size: 14px; line-height: 1; flex-shrink: 0; }
 
@@ -3351,6 +3352,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
    cards band (--ls-inv is 1 / zoom, kept current as the camera moves); areas are patches (above) */
 .ls-node.card {
   --u: calc(1px * var(--ls-inv, 1));
+  --ci: calc(5 * var(--u));
   display: block; border-radius: calc(10 * var(--u));
   box-shadow: 0 0 0 var(--u) var(--line-strong2), 0 calc(4 * var(--u)) calc(14 * var(--u)) rgba(0, 0, 0, .22);
 }

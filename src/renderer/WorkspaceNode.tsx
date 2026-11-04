@@ -83,7 +83,11 @@ export function WorkspaceNode({
   const style: React.CSSProperties =
     mode === "focus"
       ? { width: size.w, height: size.h }
-      : { left: tile.rect.x, top: tile.rect.y, width: size.w, height: size.h };
+      : mode === "card"
+        ? // drawn inset by --ci (a few px on screen, styles.css), so cards stand apart and clear of their area's edge
+          // zoomed out, where the gaps between placements are a pixel or two
+          { left: `calc(${tile.rect.x}px + var(--ci))`, top: `calc(${tile.rect.y}px + var(--ci))`, width: `calc(${size.w}px - 2 * var(--ci))`, height: `calc(${size.h}px - 2 * var(--ci))` }
+        : { left: tile.rect.x, top: tile.rect.y, width: size.w, height: size.h };
   const card = mode === "card";
   return (
     <div

@@ -113,14 +113,18 @@ export class LandscapeStore {
 
   /**
    * Group `from` was renamed to `to` (renameGroup): its area, stacks and ghosts follow it (renameAreaPatch), and
-   * `members`, the sessions that were in it, are placed again when it merges into an area that's there already. Only
-   * once the landscape has been read this run: one no window has turned on isn't read for this, and a window that
-   * shows it later finds the group without an area, which resolveLayout forms around its workspaces. Throws
-   * LandscapeShapeError, as update does, if the patch can't be made.
+   * `members`, the sessions that were in it, are placed again when it merges into an area that's there already. The
+   * file is read for this if no window has asked for it yet (the landscape is off this run), so a later run doesn't
+   * find the group without its area; with no file there's nothing to change and nothing is written. A file that
+   * can't be read is left as it is and said: the rename can't follow it. Throws LandscapeShapeError, as update does,
+   * if the patch can't be made.
    */
   groupRenamed(from: string, to: string, members: readonly string[]): void {
-    const l = this.loaded;
-    if (!l || l.standIn) return;
+    const l = this.load();
+    if (l.standIn) {
+      this.o.log(`landscape: ${from}'s area couldn't follow its rename to ${to}`, new Error("landscape.json couldn't be read"));
+      return;
+    }
     const patch = renameAreaPatch(l.landscape, from, to, members);
     if (patch) this.update(patch);
   }

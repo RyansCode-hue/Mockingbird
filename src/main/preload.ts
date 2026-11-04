@@ -432,7 +432,7 @@ const api = {
   /** Teammates' room sessions, tags for this install's own, and teammates' views: LivePanesState. */
   teamLive: () => ipcRenderer.invoke("team:live"),
   /** What this window shows and which pane it's in, for teammates' presence initials and Follow. */
-  teamLiveView: (view: { shown: string[]; focused: string | null }) => ipcRenderer.send("team:liveView", view),
+  teamLiveView: (view: { shown: string[]; focused: string | null }) => ipcRenderer.invoke("team:liveView", view),
   /** Fetch a teammate's session's scrollback again and redraw its pane. */
   teamPaneResync: (id: string) => ipcRenderer.invoke("team:paneResync", id),
   /** Ask a teammate to let this Mac type into their session (its pane id here). */

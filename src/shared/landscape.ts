@@ -201,6 +201,9 @@ export function overlaps(a: Rect, b: Rect, gap = 0): boolean {
   return a.x < b.x + b.w + gap && b.x < a.x + a.w + gap && a.y < b.y + b.h + gap && b.y < a.y + a.h + gap;
 }
 
+/** Whether `r` lies wholly inside `a`: a place inside an area is that area's, since areas never overlap. */
+export const within = (r: Rect, a: Rect): boolean => r.x >= a.x && r.y >= a.y && r.x + r.w <= a.x + a.w && r.y + r.h <= a.y + a.h;
+
 /** The smallest rectangle around all of `rects`; null for none. */
 export function boundsOf(rects: readonly Rect[]): Rect | null {
   if (!rects.length) return null;
@@ -311,12 +314,25 @@ export function clearOf(r: Rect, others: readonly Rect[], gap = AREA_GAP): { dx:
 /**
  * Rectangles moved out of the way of `key`'s, which stays where it is (an area that grew): each that comes closer
  * than `gap` to one that's fixed or already moved goes right or down, whichever is the shorter way, and pushes on in
- * turn. Only rightward and downward, so it always ends. The moves made, by key; none when nothing was in the way.
+ * turn. Those in `fixed` (locked areas) never move: one pushed into them, or back into `key`'s, goes on past. Only rightward
+ * and downward, so it always ends. The moves made, by key; none when nothing was in the way. `key`'s own rectangle
+ * coming too close to a fixed one is the caller's to prevent (fixedInWay).
  */
-export function pushAside(rects: Readonly<Record<string, Rect>>, key: string, gap = AREA_GAP): Record<string, { dx: number; dy: number }> {
+export function pushAside(rects: Readonly<Record<string, Rect>>, key: string, gap = AREA_GAP, fixed: ReadonlySet<string> = new Set()): Record<string, { dx: number; dy: number }> {
   const at: Record<string, Rect> = {};
   for (const [k, r] of Object.entries(rects)) put(at, k, r);
   const moves: Record<string, { dx: number; dy: number }> = {};
+  const push = (j: string, dx: number, dy: number) => {
+    put(at, j, shifted(own(at, j)!, dx, dy));
+    const m = own(moves, j) ?? { dx: 0, dy: 0 };
+    put(moves, j, { dx: m.dx + dx, dy: m.dy + dy });
+  };
+  /** The shorter way, right or down, that takes `b` clear of `a`. */
+  const away = (a: Rect, b: Rect): [number, number] => {
+    const right = snapUp(a.x + a.w + gap) - b.x;
+    const down = snapUp(a.y + a.h + gap) - b.y;
+    return right <= down ? [right, 0] : [0, down];
+  };
   const queue = [key];
   for (let n = 0; queue.length; n++) {
     // every push moves a rectangle right or down past another, so this ends; a loop that doesn't is a bug here
@@ -324,19 +340,27 @@ export function pushAside(rects: Readonly<Record<string, Rect>>, key: string, ga
     const k = queue.shift()!;
     const a = own(at, k)!;
     for (const j of Object.keys(at)) {
-      if (j === k || j === key) continue;
+      if (j === k) continue;
       const b = own(at, j)!;
       if (!overlaps(a, b, gap - 1e-6)) continue;
-      const right = snapUp(a.x + a.w + gap) - b.x;
-      const down = snapUp(a.y + a.h + gap) - b.y;
-      const [dx, dy] = right <= down ? [right, 0] : [0, down];
-      put(at, j, shifted(b, dx, dy));
-      const m = own(moves, j) ?? { dx: 0, dy: 0 };
-      put(moves, j, { dx: m.dx + dx, dy: m.dy + dy });
+      if (j === key || fixed.has(j)) {
+        if (k === key || fixed.has(k)) continue;
+        // pushed into one that stays (a fixed one, or `key`'s): on past it, and it pushes on from there
+        push(k, ...away(b, a));
+        queue.push(k);
+        break;
+      }
+      push(j, ...away(a, b));
       queue.push(j);
     }
   }
   return moves;
+}
+
+/** The first of `fixed` (locked areas) other than `key` that `key`'s rectangle comes closer than `gap` to: pushAside can't move it. */
+export function fixedInWay(rects: Readonly<Record<string, Rect>>, key: string, fixed: ReadonlySet<string>, gap = AREA_GAP): string | null {
+  const r = own(rects, key);
+  return (r && [...fixed].find((k) => k !== key && Object.hasOwn(rects, k) && overlaps(r, own(rects, k)!, gap - 1e-6))) || null;
 }
 
 /** The view: the landscape point at the viewport's top-left, and the zoom (1 = 100%). */
@@ -629,10 +653,11 @@ export function applyPatch(l: Landscape, patch: LandscapePatch): Landscape {
 /**
  * What renaming group `from` to `to` does to the landscape, as renameGroup renames (prefix-aware: "from/sub" becomes
  * "to/sub"): its area and stacks are keyed by the new name where they sit, and its ghosts' groups follow. Renaming
- * onto a group that has an area already merges into it: `from`'s area goes, and the places of its workspaces
- * (`members`: the sessions that were in it) and stacks are dropped, so each is placed in the area it joined as a new
- * one is. A name that can't key an area (loose, or a sub-group) drops the area and leaves the places. Null when the
- * landscape holds nothing of `from`'s.
+ * onto a group that has an area already merges into it: `from`'s area goes, and the places of its workspaces and
+ * stacks are dropped, so each is placed in the area it joined as a new one is. Those are `members` (the sessions that
+ * were in it, wherever they sit) and every place inside its area: teammates' sessions and ones waiting to be resumed,
+ * which `members` can't name, included. A name that can't key an area (loose, or a sub-group) drops the area and
+ * leaves the places. Null when the landscape holds nothing of `from`'s.
  */
 export function renameAreaPatch(l: Landscape, from: string, to: string, members: readonly string[]): LandscapePatch | null {
   const remap = (g: string) => (g === from ? to : g.startsWith(`${from}/`) ? to + g.slice(from.length) : g);
@@ -642,7 +667,7 @@ export function renameAreaPatch(l: Landscape, from: string, to: string, members:
   if (area && from !== to) {
     put(patch.areas, from, null);
     if (!merge && areaKey(to) === null) put(patch.areas, to, area);
-    if (merge) for (const id of members) if (Object.hasOwn(l.workspaces, id)) put(patch.workspaces, id, null);
+    if (merge) for (const [id, r] of Object.entries(l.workspaces)) if (members.includes(id) || within(r, area)) put(patch.workspaces, id, null);
   }
   for (const [k, s] of Object.entries(l.stacks)) {
     const nk = remap(k);

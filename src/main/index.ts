@@ -1180,7 +1180,7 @@ handle("team:decideTyping", (sessionId, member, choice) => {
   livePanes.decideTyping(String(sessionId), String(member), choice);
 });
 handle("team:auditRecent", (n) => remoteAudit.recent(Math.min(500, Math.max(1, Number(n) || 50))));
-ipcMain.on("team:liveView", (_e, view) => livePanes.setView(view));
+handle("team:liveView", (view) => livePanes.setView(view));
 handle("sessions:setGroup", (id, group) => sessions.setGroup(id, group));
 handle("sessions:clearWaiting", (id) => sessions.clearWaiting(id));
 
