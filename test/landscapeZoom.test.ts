@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
 
 // xterm's fit addon looks for a browser global as it loads
@@ -148,13 +150,45 @@ describe("a card's last meaningful line", () => {
 
   it("leaves an agent's own frame out: its prompt box or the rules around its input, and the hints under them", () => {
     const claude = ["⏺ The tag list re-renders on every keystroke.", "", "────────────────────────────", "> make it faster", "────────────────────────────", "  ⏵⏵ accept edits on (shift+tab to cycle)"];
-    expect(lastMeaningfulLine(claude, { agent: true })).toBe("⏺ The tag list re-renders on every keystroke.");
+    expect(lastMeaningfulLine(claude, { agent: "claude" })).toBe("⏺ The tag list re-renders on every keystroke.");
     const boxed = ["⏺ Added Donor and Gift.", "╭──────────────────────────╮", "│ > half-typed prompt      │", "╰──────────────────────────╯", "  ? for shortcuts"];
-    expect(lastMeaningfulLine(boxed, { agent: true })).toBe("⏺ Added Donor and Gift.");
+    expect(lastMeaningfulLine(boxed, { agent: "claude" })).toBe("⏺ Added Donor and Gift.");
     // a terminal's output is all its own: the same lines read as they are
     expect(lastMeaningfulLine(boxed)).toBe("? for shortcuts");
-    // Codex's empty prompt is passed over like any line without words
-    expect(lastMeaningfulLine(["• Added tests/api/test_last_org.py (4 tests)", "• All passing", "", "› "], { agent: true })).toBe("• All passing");
+    expect(lastMeaningfulLine(["• Added tests/api/test_last_org.py (4 tests)", "• All passing", "", "› "], { agent: "codex" })).toBe("• All passing");
+  });
+
+  it("leaves Codex's composer out by its prompt mark: a half-typed draft, the placeholder, any height of draft, and the footer", () => {
+    const footer = "  100% context left · ? for shortcuts";
+    expect(lastMeaningfulLine(["• Added 3 tests for 404 and 403", "", "› fix the te", "", footer], { agent: "codex" })).toBe("• Added 3 tests for 404 and 403");
+    expect(lastMeaningfulLine(["• All passing", "", "› Ask Codex to do anything", "", "  gpt-5 high · ~/backoffice"], { agent: "codex" })).toBe("• All passing");
+    const tall = ["• Done: the export skips archived donors", "", "› first line of a long draft", ...Array.from({ length: 20 }, (_, i) => `  more of the draft, line ${i + 2}`), "", footer];
+    expect(lastMeaningfulLine(tall, { agent: "codex" })).toBe("• Done: the export skips archived donors");
+    // the transcript marks your own messages with it too: the lowest is the composer
+    expect(lastMeaningfulLine(["› How do I add the keys?", "", "• Run the script", "", "› ", "", footer], { agent: "codex" })).toBe("• Run the script");
+  });
+
+  it("leaves Claude Code's input out however many lines the draft takes, and the status pinned over it full screen", () => {
+    const rule = "─".repeat(60);
+    const tall = ["⏺ Wrote the migration.", "", rule, "❯ first line of a long draft", ...Array.from({ length: 20 }, (_, i) => `  more of the draft, line ${i + 2}`), rule, "  ? for shortcuts"];
+    expect(lastMeaningfulLine(tall, { agent: "claude" })).toBe("⏺ Wrote the migration.");
+    const full = ["⏺ Wrote the migration.", "", "", `${" ".repeat(42)}● high · /effort`, rule, "❯ ", rule, "  ⏸ manual mode on · ? for shortcuts"];
+    expect(lastMeaningfulLine(full, { agent: "claude" })).toBe("⏺ Wrote the migration.");
+  });
+
+  it("reads the real agents' screens, inline and full screen, to their last line of output", async () => {
+    const cases = [
+      ["codex-inline-60", "codex", 60, 40, "- second bullet"],
+      ["claude-inline-60", "claude", 60, 50, "/private/tmp/somewhere/really/long/for/this/example"],
+      ["claude-inline-100", "claude", 100, 50, "npm run build -- --mode production --out-dir /private/tmp/somewhere/really/long/for/this/example"],
+      ["claude-full-60", "claude", 60, 60, "/private/tmp/somewhere/really/long/for/this/example"],
+    ] as const;
+    for (const [name, agent, cols, rows, want] of cases) {
+      const term = new Terminal({ allowProposedApi: true, cols, rows, scrollback: 1000 });
+      await new Promise<void>((r) => term.write(fs.readFileSync(path.join(__dirname, "fixtures", "agentWraps", `${name}.txt`), "utf8"), r));
+      expect(lastMeaningfulLine(tailLines(term), { agent }), name).toBe(want);
+      term.dispose();
+    }
   });
 
   it("reads a terminal's buffer with a row wrapped onto the next joined to it", async () => {
@@ -162,7 +196,7 @@ describe("a card's last meaningful line", () => {
     await new Promise<void>((r) => term.write("first line\r\n" + "x".repeat(25) + " end\r\n\r\n✻\r\n", r));
     const lines = tailLines(term);
     expect(lines.filter(Boolean)).toEqual(["first line", "x".repeat(25) + " end", "✻"]);
-    expect(lastMeaningfulLine(lines, { agent: true })).toBe("x".repeat(25) + " end");
+    expect(lastMeaningfulLine(lines, { agent: "claude" })).toBe("x".repeat(25) + " end");
     // the last `max` lines only
     expect(tailLines(term, 2)).toHaveLength(2);
     term.dispose();

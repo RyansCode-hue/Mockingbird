@@ -1,3 +1,5 @@
+import type { AgentKind } from "./types";
+
 /**
  * Terminal output as plain lines, for showing outside a terminal (a dead
  * pane's last words). Escape sequences are dropped, but moves along a line
@@ -55,8 +57,14 @@ export function terminalLines(raw: string): string[] {
 const BOX = /[\u2500-\u257f]/g;
 /** A line that is only a rule, or a box's top or bottom edge. */
 const RULE = /^[\s\u2500-\u257f]*[\u2500-\u257f]{8,}[\s\u2500-\u257f]*$/;
-/** How far up from an agent's last line its prompt box (or the rule over its input) may start. */
+/** How far up from an agent's last line the rules around its input are looked for, when its prompt mark isn't found. */
 const FRAME_ROWS = 14;
+/** The first line of Claude Code's input: its prompt mark, after a box's side when it draws one. */
+const CLAUDE_PROMPT = /^[\s─-╿]*[❯>](\s|$)/;
+/** Codex's composer: its prompt mark, then the draft or the placeholder. Its transcript marks your messages the same way. */
+const CODEX_PROMPT = /^[\s─-╿]*›(\s|$)/;
+/** A status pinned to the right edge, as Claude Code's effort is over its input when it runs full screen. */
+const RIGHT_PINNED = /^\s{20,}\S/;
 
 /** The lowest rule from `from` up, at most FRAME_ROWS lines up; -1 when there's none. */
 function ruleAbove(lines: readonly string[], from: number): number {
@@ -65,24 +73,39 @@ function ruleAbove(lines: readonly string[], from: number): number {
 }
 
 /**
+ * Where an agent CLI's own frame at the bottom of its output starts (its input, whatever's typed in it, and the
+ * hints and status around it); lines.length when there's none. Found by the CLI's prompt mark, so a draft of any
+ * height is left out: Claude Code's input is between two rules, its mark on the line under the upper one, with
+ * hints under the lower and, full screen, a status pinned right over the upper; Codex's composer is the lowest
+ * line starting with its mark, with its footer under it. Without a mark, the lowest rule near the bottom ends the
+ * output, or the one over it when the input sits between two.
+ */
+function frameStart(lines: readonly string[], agent: AgentKind): number {
+  let last = lines.length - 1;
+  while (last >= 0 && !lines[last].trim()) last--;
+  if (last < 0) return lines.length;
+  if (agent === "codex") {
+    for (let y = last; y >= 0; y--) if (CODEX_PROMPT.test(lines[y])) return y;
+  }
+  const low = ruleAbove(lines, last);
+  if (low < 0) return lines.length;
+  for (let y = low - 1; y > 0; y--) {
+    if (!CLAUDE_PROMPT.test(lines[y]) || !RULE.test(lines[y - 1])) continue;
+    return y > 1 && RIGHT_PINNED.test(lines[y - 2]) ? y - 2 : y - 1;
+  }
+  const top = ruleAbove(lines, low - 1);
+  return top >= 0 ? top : low;
+}
+
+/**
  * The last line of a terminal's output worth showing on its own (a landscape card's "what it did" line): the
  * newest with a letter or a digit in it, so blank lines, spinner-only lines (a frame of Claude Code's ✻ or a
- * braille spinner), rules and empty boxes are passed over. For an agent, its CLI's own frame at the bottom (the
- * prompt box or the rules around its input, and the hints under it) is left out first, so the line is the
- * agent's output rather than its prompt. Box sides around the line are trimmed off; null when nothing qualifies.
+ * braille spinner), rules and empty boxes are passed over. For an agent, its CLI's own frame at the bottom
+ * (frameStart) is left out first, so the line is the agent's output rather than its prompt, a draft or a footer.
+ * Box sides around the line are trimmed off; null when nothing qualifies.
  */
-export function lastMeaningfulLine(lines: readonly string[], o: { agent?: boolean } = {}): string | null {
-  let end = lines.length;
-  if (o.agent) {
-    let last = end - 1;
-    while (last >= 0 && !lines[last].trim()) last--;
-    // the lowest rule near the bottom ends the output, or the one over it when the input sits between two
-    const low = ruleAbove(lines, last);
-    if (low >= 0) {
-      const top = ruleAbove(lines, low - 1);
-      end = top >= 0 ? top : low;
-    }
-  }
+export function lastMeaningfulLine(lines: readonly string[], o: { agent?: AgentKind | null } = {}): string | null {
+  const end = o.agent ? frameStart(lines, o.agent) : lines.length;
   for (let y = end - 1; y >= 0; y--) {
     const text = lines[y].replace(/^[\s\u2500-\u257f]+|[\s\u2500-\u257f]+$/g, "");
     if (/[\p{L}\p{N}]/u.test(text.replace(BOX, ""))) return text;

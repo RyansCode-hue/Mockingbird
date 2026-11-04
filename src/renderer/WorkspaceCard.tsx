@@ -24,7 +24,7 @@ export const kindLabel = (s: SessionInfo): string => (s.shell ? "Terminal" : AGE
 function useLastLine(s: SessionInfo): { line: string | null; error: string | null } {
   const [got, setGot] = useState<{ line: string | null; error: string | null }>({ line: null, error: null });
   const dead = s.status === "dead";
-  const agent = !s.shell;
+  const agent = s.shell ? null : (s.agent ?? "claude");
   useEffect(() => {
     if (dead) {
       let alive = true;
