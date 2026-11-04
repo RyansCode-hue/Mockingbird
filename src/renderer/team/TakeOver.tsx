@@ -546,6 +546,42 @@ export function LeftCopyLine({ left, onTakeBack }: { left: LeftCopy; onTakeBack:
   );
 }
 
+/**
+ * A left copy's actions as a menu lists them (a landscape workspace's ⋯): Take it back, and Send when this copy has
+ * changes whoever continues it lacks. `onSent` gets Send's failure, or null.
+ */
+export function leftCopyActions(left: LeftCopy | null, onTakeBack: () => void, onSent: (error: string | null) => void): Action[] {
+  if (!left || left.now.self) return [];
+  const n = left.unsent && !("error" in left.unsent) ? left.unsent.files.length : 0;
+  const out: Action[] = [
+    {
+      key: "takeback",
+      label: "Take it back",
+      disabled: !left.takeBack,
+      title: left.takeBack ? `Continue ${left.now.ownerName}'s copy here, from their newest backup` : `Offered once ${left.now.ownerName}'s copy has a backup`,
+      icon: <TakeOverIcon />,
+      onPick: onTakeBack,
+    },
+  ];
+  if (n > 0)
+    out.push({
+      key: "send",
+      label: "Send",
+      menuLabel: left.sending ? "Sending…" : `Send ${plural(n, "changed file")} to ${left.now.ownerName}`,
+      disabled: left.sending || !left.now.online,
+      title: left.now.online ? `Send them to ${left.now.ownerName}: they land on their session as a patch to review and apply` : `${left.now.ownerName} is offline`,
+      onPick: () => void sendLeft(left).then(onSent),
+    });
+  return out;
+}
+
+/** Review, for each set of changes a teammate sent this session that isn't applied yet. */
+export function receivedActions(received: readonly ReceivedChanges[], onReview: (r: ReceivedChanges) => void): Action[] {
+  return received
+    .filter((r) => !r.applied)
+    .map((r) => ({ key: `review:${r.id}`, label: "Review", menuLabel: `Review ${r.fromName}'s ${plural(r.files.length, "changed file")}…`, title: `${r.fromName}'s copy of “${r.title}” had these after you continued it`, onPick: () => onReview(r) }));
+}
+
 /** Changes a teammate sent for one of this Mac's sessions, waiting to be reviewed: on its pane and row. */
 export function ReceivedNotice({ received, onReview, compact }: { received: ReceivedChanges[]; onReview: (r: ReceivedChanges) => void; compact?: boolean }) {
   const open = received.filter((r) => !r.applied);

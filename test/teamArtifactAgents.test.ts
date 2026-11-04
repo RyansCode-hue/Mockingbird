@@ -158,7 +158,7 @@ describe("room agents' artifact tools", () => {
 
   it("refuse secrets, and sessions outside rooms", async () => {
     const { roomId, sides: [ryan, nick], dir } = await sides(["Ryan", "Nick"]);
-    nick.sessions.push(session("s1", { cwd: dir }), session("outside", { cwd: dir }));
+    nick.sessions.push(session("s1", { cwd: dir }), session("outside", { cwd: dir, taskGroup: null }));
     nick.rooms.set("s1", roomId);
     const call = messagingFor(nick);
     const env = await ryan.arts.addBytes(roomId, ".env", new Uint8Array(Buffer.from("TOKEN=x")), true);
@@ -176,7 +176,7 @@ describe("room agents' artifact tools", () => {
       ["notes.txt", false, true],
       [".env", false, true],
     ]);
-    expect((await call("outside", "list_room_artifacts")).error).toBe("This session isn't in a shared team room, so it has no room artifacts.");
+    expect((await call("outside", "list_room_artifacts")).error).toBe("This session isn't in an area or a shared team room, so it has no artifacts.");
   });
 
   it("are pointed at in what room agents start with", () => {

@@ -297,7 +297,7 @@ describe("migrating pinned panes", () => {
 describe("migrating an empty layout", () => {
   it("is an empty landscape, marked migrated, when there's nothing at all", () => {
     const { l, ignored, stale } = migrate({}, []);
-    expect(l).toEqual({ v: 1, migratedAt: NOW.toISOString(), workspaces: {}, areas: {}, stacks: {}, ghosts: {} });
+    expect(l).toEqual({ v: 2, migratedAt: NOW.toISOString(), workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} });
     expect([ignored, stale]).toEqual([[], []]);
   });
 

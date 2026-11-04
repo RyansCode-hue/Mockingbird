@@ -17,6 +17,7 @@ import {
   areaSummary,
   attaches,
   cameraFrom,
+  cameraForOpened,
   centreOn,
   centredAt,
   contentRects,
@@ -32,8 +33,10 @@ import {
   nextBand,
   panBy,
   peekBox,
+  planDockWindow,
   planMakeArea,
   planMoveArea,
+  planMoveExtra,
   planMoveTile,
   rectFrom,
   revealTile,
@@ -52,18 +55,23 @@ import {
   type AreaPlan,
   type AreaView,
   type Band,
+  type CardView,
   type Direction,
   type GroupMove,
   type PendingReveal,
   type Point,
   type ResolvedLayout,
   type Tile,
+  type WindowView,
 } from "./landscapeModel";
-import { WorkspaceNode, type NodeMode } from "./WorkspaceNode";
+import { WorkspaceNode, type NodeMode, type WorkspaceChrome } from "./WorkspaceNode";
+import { ToolWindow } from "./ToolWindow";
+import { LiftOut } from "./lift";
+import { menuOf, type ModelAction } from "./workspaceActions";
 import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
 import { AreaSwitcher } from "./AreaTree";
-import type { MenuEntry } from "./ContextMenu";
+import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { focusTerm, lendTerm, screenText, scrollTerm } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
@@ -119,11 +127,11 @@ const SETTLE_MS = 1500;
  * area by its header. `on` once it has moved DRAG_PX; `els` are what move with it until the layout has them there.
  */
 interface Gesture {
-  kind: "marquee" | "tile" | "area";
+  kind: "marquee" | "tile" | "area" | "window" | "card";
   id: number;
   x0: number;
   y0: number;
-  /** The workspace's or the area's key ("" for a marquee). */
+  /** The workspace's or the area's key, a window's or a card's id ("" for a marquee). */
   key: string;
   /** A marquee with Shift held adds to the selection, `base` as it was when it started. */
   add: boolean;
@@ -205,6 +213,12 @@ export function Landscape({
   onSeen,
   switcher,
   onShowTree,
+  actionsFor,
+  chromeFor,
+  windowFor,
+  onCloseWindow,
+  cardFor,
+  notice,
 }: {
   layout: ResolvedLayout;
   /** landscape.json as this window has it: what gestures' plans are made against. */
@@ -238,6 +252,17 @@ export function Landscape({
   /** The area switcher over the landscape, while the area tree is hidden (design M). */
   switcher: boolean;
   onShowTree: () => void;
+  /** A workspace's actions (its front session's): what its chips, ⋯ and right-click offer, in every band. */
+  actionsFor: (t: Tile) => ModelAction[];
+  /** Something to say over the landscape, as a gesture's refusal is said (a resize or a tool window refused); a new `n` says it again. */
+  notice: { text: string; n: number } | null;
+  /** What a workspace's header chips and footer show. */
+  chromeFor: (s: SessionInfo) => WorkspaceChrome;
+  /** A placed tool window's scope, as its title names it, and what it hosts. */
+  windowFor: (w: WindowView) => { scope: string | null; body: React.ReactNode };
+  onCloseWindow: (id: string) => void;
+  /** An artifact card's face; `inv` is 1 / the camera's zoom, which a card zoomed out sizes its type by. */
+  cardFor: (c: CardView, inv: number) => React.ReactNode;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -279,6 +304,11 @@ export function Landscape({
   const [hot, setHot] = useState<string | null>(null);
   const [note, setNote] = useState<{ text: string; n: number } | null>(null);
   const say = (text: string) => setNote((p) => ({ text, n: (p?.n ?? 0) + 1 }));
+  // a workspace's ⋯ and right-click, and an area's right-click on its patch zoomed out
+  const ctx = useContextMenu("Landscape");
+  useEffect(() => {
+    if (notice) say(notice.text);
+  }, [notice?.n]);
   useEffect(() => {
     if (!note) return;
     const t = setTimeout(() => setNote(null), NOTE_MS);
@@ -620,6 +650,16 @@ export function Landscape({
     if (!seen) flyTo(centreOn(cam.current, t.rect, vpNow.current));
   }, [reveal?.n, layout]);
 
+  // a tool window just opened or placed again comes into view, with its workspace when both fit
+  const placedWindows = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const before = placedWindows.current;
+    placedWindows.current = new Set(layout.windows.map((w) => w.id));
+    if (!before || !vpNow.current.w || focusNow.current) return;
+    const to = cameraForOpened(before, layout, cam.current, vpNow.current);
+    if (to) flyTo(to);
+  }, [layout]);
+
   // going to an area: the tree, the switcher, ⌘K. One asked from another tab waits for this landscape's size; taken
   // up, the owner lets go of it
   const hasSize = vp !== null;
@@ -809,7 +849,18 @@ export function Landscape({
       if (marquee.current) marquee.current.hidden = false;
       return true;
     }
-    if (g.kind === "tile") {
+    if (g.kind === "window" || g.kind === "card") {
+      const v = g.kind === "window" ? l.windows.find((x) => x.id === g.key) : l.cards.find((x) => x.id === g.key);
+      if (!v) return false;
+      const key = "win" in v ? v.area : v.card.area;
+      const a = key === null ? undefined : l.areas.find((x) => x.key === key);
+      if (a?.rect.locked) {
+        say(`${areaTitle(a.key)} is locked: unlock it to move what's in it`);
+        return false;
+      }
+      const el = world.current?.querySelector<HTMLElement>(g.kind === "window" ? `.ls-window[data-win="${CSS.escape(g.key)}"]` : `.ls-acard[data-card="${CSS.escape(g.key)}"]`);
+      g.els = el ? [el] : [];
+    } else if (g.kind === "tile") {
       const t = l.tiles.find((x) => x.key === g.key);
       const a = t && l.areas.find((x) => x.key === t.area);
       if (!t) return false;
@@ -876,6 +927,25 @@ export function Landscape({
       return;
     }
     if (!g.on) return;
+    if (g.kind === "window" || g.kind === "card") {
+      const v = g.kind === "window" ? l.windows.find((x) => x.id === g.key) : l.cards.find((x) => x.id === g.key);
+      if (!v) return release(g.els);
+      const plan = planMoveExtra(storedNow.current, l, g.kind, g.key, { x: v.rect.x + dx, y: v.rect.y + dy }, dropArea(e), areaTitle);
+      if ("refused" in plan) {
+        release(g.els);
+        return say(plan.refused);
+      }
+      const from = v.rect;
+      const id = g.key;
+      void carryOut(plan, g.kind === "window" ? "the window's place" : "the card's place", {
+        els: g.els,
+        moved: () => {
+          const now = (g.kind === "window" ? layoutNow.current.windows : layoutNow.current.cards).find((x) => x.id === id);
+          return !now || now.rect.x !== from.x || now.rect.y !== from.y;
+        },
+      });
+      return;
+    }
     if (g.kind === "tile") {
       const t = l.tiles.find((x) => x.key === g.key);
       if (!t) return release(g.els);
@@ -977,6 +1047,8 @@ export function Landscape({
       if (inFocus(e.target)) return;
       const zooming = e.ctrlKey || e.metaKey;
       const node = (e.target as Element | null)?.closest?.(".ls-node") as HTMLElement | null;
+      // a tool window's body scrolls itself in the live band, as a side bar view would; zoomed out the wheel pans
+      if (!zooming && takesKeys(bandNow.current) && (e.target as Element | null)?.closest?.(".ls-world .ls-win-body")) return;
       // the selected workspace's terminal scrolls its own history while it takes the mouse; any other wheel moves the landscape
       if (!zooming && mouseAt(cam.current.zoom) && node && node.dataset.ws === selKey.current && (e.target as Element).closest(".term-holder")) return;
       e.preventDefault();
@@ -1052,17 +1124,24 @@ export function Landscape({
       if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const node = t.closest<HTMLElement>(".ls-world .ls-node");
         const press = { id: e.pointerId, x0: e.clientX, y0: e.clientY, add: e.shiftKey, base: pickedNow.current };
+        const win = t.closest<HTMLElement>(".ls-world .ls-window");
+        const card = t.closest<HTMLElement>(".ls-world .ls-acard");
         if (node && (node.classList.contains("card") || t.closest(".ls-head")) && !t.closest("button")) {
           const key = node.dataset.ws!;
           // Shift-click picks it for Make area…, or lets it go; otherwise its header (or its card) moves it
           if (e.shiftKey) setPicked((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
           else startRef.current({ ...press, kind: "tile", key });
-        } else if (!node && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-pickbar, .ls-note, .ls-empty")) {
+        } else if (win && (win.classList.contains("compact") || t.closest(".ls-win-head")) && !t.closest("button")) {
+          // a tool window moves by its head (or, zoomed out, by its whole compact self)
+          startRef.current({ ...press, kind: "window", key: win.dataset.win! });
+        } else if (card && !t.closest("button, a, input")) {
+          startRef.current({ ...press, kind: "card", key: card.dataset.card! });
+        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-pickbar, .ls-note, .ls-empty")) {
           startRef.current({ ...press, kind: "marquee", key: "" });
         }
       }
       // a press on the landscape between workspaces gives it the keyboard
-      if (e.button === 0 && !t.closest(".ls-node, .ls-hud, .ls-banners, .ls-peek, .ls-switcher, .ls-minimap, .ls-pickbar")) surface();
+      if (e.button === 0 && !t.closest(".ls-node, .ls-window, .ls-acard, .ls-hud, .ls-banners, .ls-peek, .ls-switcher, .ls-minimap, .ls-pickbar")) surface();
     };
     // Below 75% a terminal on the landscape takes no keys, nor ever one lent to a peek: one that still has the
     // keyboard (it had it as the zoom went down) gives it to the landscape, before xterm sees the key.
@@ -1188,6 +1267,36 @@ export function Landscape({
   const loose = useMemo(() => (switcher ? looseStop(layout.tiles) : null), [switcher, layout]);
   const stops = useMemo(() => (loose ? [...layout.areas, loose] : layout.areas), [loose, layout]);
 
+  const tileActions = (t: Tile): ModelAction[] => actionsFor(t);
+  /**
+   * Right-click anywhere on the landscape that has no menu of its own: on a workspace (header, footer, card, or its
+   * terminal while that doesn't take the mouse), its actions; zoomed out to cards, on an area's patch, the area's.
+   */
+  const onContextMenu = (e: React.MouseEvent) => {
+    const t = e.target as Element;
+    const el = t.closest<HTMLElement>(".ls-node");
+    if (el) {
+      // a terminal that takes the mouse (at 100%, and in focus) keeps its own right-click
+      if ((mouseAt(cam.current.zoom) || el.closest(".ls-focus")) && t.closest(".term-holder")) return;
+      const tile = (focusNow.current && el.closest(".ls-focus") ? layout.tiles.find((x) => x.key === focusNow.current) : null) ?? layout.tiles.find((x) => x.key === el.dataset.ws);
+      if (!tile) return;
+      e.preventDefault();
+      select(tile);
+      ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(tileActions(tile)));
+      return;
+    }
+    if (bandNow.current !== "cards" || t.closest(".ls-window, .ls-acard, .ls-hud, .ls-minimap, .ls-switcher, .ls-peek, .ls-pickbar, .ls-banners")) return;
+    const a = areaAt(layout.areas, atPoint(e));
+    if (!a) return;
+    e.preventDefault();
+    ctx.openAt({ x: e.clientX, y: e.clientY }, areaHooks.menu(a.key));
+  };
+  const dockWindow = (id: string) => {
+    const plan = planDockWindow(storedNow.current, id);
+    if ("refused" in plan) return say(plan.refused);
+    void carryOut(plan, "docking the window");
+  };
+
   const node = (t: Tile, mode: NodeMode, size: Size) => (
     <WorkspaceNode
       key={mode === "focus" ? `focus:${t.key}` : t.key}
@@ -1205,6 +1314,12 @@ export function Landscape({
       onFocus={enterFocus}
       onBack={leaveFocus}
       onTab={onTab}
+      actions={tileActions(t)}
+      chrome={chromeFor(t.front)}
+      onMore={(tile, from) => {
+        select(tile);
+        ctx.openBelow(from, menuOf(tileActions(tile)));
+      }}
       body={(s, sz) => body(s, sz, mode === "focus" ? { w: t.rect.w, h: t.rect.h } : null)}
     />
   );
@@ -1217,8 +1332,10 @@ export function Landscape({
         tabIndex={0}
         aria-label="Landscape — scroll to pan, ⌘-scroll or pinch to zoom, ⌘0 fits everything, ⌘1 is 100%, ⌥-arrows move between workspaces, Enter focuses"
         onKeyDown={onKeyDown}
+        onContextMenu={onContextMenu}
         onBlur={(e) => e.target === viewport.current && space.current && dropSpace()}
       >
+        <LiftOut.Provider value={true}>
         <div ref={world} className="ls-world">
           {areaViews.map(({ a, accent, counts, title, info }) => (
             <AreaFrame
@@ -1240,7 +1357,34 @@ export function Landscape({
             />
           ))}
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}
+          {layout.windows.map((w) => {
+            if (w.hidden) return null;
+            const { scope, body: inner } = windowFor(w);
+            return (
+              <ToolWindow
+                key={w.id}
+                id={w.id}
+                tool={w.win.tool}
+                scope={scope}
+                docked={false}
+                compact={band === "cards"}
+                style={{ left: w.rect.x, top: w.rect.y, width: w.rect.w, height: w.rect.h, ["--ls-inv" as string]: 1 / cam.current.zoom }}
+                onDock={() => dockWindow(w.id)}
+                onClose={() => onCloseWindow(w.id)}
+              >
+                {inner}
+              </ToolWindow>
+            );
+          })}
+          {layout.cards.map((c) =>
+            c.hidden ? null : (
+              <div key={c.id} className="ls-acard" data-card={c.id} style={{ left: c.rect.x, top: c.rect.y, width: c.rect.w, height: c.rect.h }}>
+                {cardFor(c, 1 / cam.current.zoom)}
+              </div>
+            )
+          )}
         </div>
+        </LiftOut.Provider>
         <div ref={marquee} className="ls-marquee" hidden aria-hidden="true" />
         <div ref={clock} className="ls-clock" aria-hidden="true" />
         {peek && peekTile && !peekGone && !focusTile && (
@@ -1295,6 +1439,7 @@ export function Landscape({
           </div>
         )}
         <CameraHud listeners={listeners.current} cam={cam} onFit={fit} onZoom={zoomTo} />
+        {ctx.menu}
         <Minimap
           layout={layout}
           accents={accents}

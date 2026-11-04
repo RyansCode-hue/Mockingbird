@@ -32,7 +32,7 @@ import { listClaudeConversations } from "./importer";
 import { listWorkItems, workItemStates, updateWorkItem, listComments, addComment, adoIdentity, resetAdoCache, teamBoards, moveToBoardColumn, reorderWorkItem, adoRequest, setWorkItemTags, projectTags } from "./ado";
 import { PipelineStore } from "./pipeline";
 import { LandscapeStore } from "./landscape";
-import { areaKeyOf } from "../shared/landscape";
+import { areaKeyOf, LOOSE_GROUP } from "../shared/landscape";
 import { openPr, prBaseProblem, prDescriptionPrompt, prError, prPreflight, summaryOf, type PrDeps } from "./pullRequests";
 import { askAgent, cleanReply } from "./headless";
 import { currentBranch, originUrl, parseRemote, remoteName } from "./git";
@@ -81,6 +81,7 @@ import { stopTeamRooms } from "./team/shutdown";
 // team rooms: artifacts (importing it registers the artifacts' room events, before any room log loads)
 import { TeamArtifacts } from "./team/artifacts";
 import { assistantArtifacts } from "./team/artifactTools";
+import { AreaArtifacts, artifactShelves } from "./areaArtifacts";
 import { artifactViewer } from "./team/artifactViewer";
 import { isRemotePaneId } from "../shared/team/livePanes";
 import { guardNavigation } from "./navigation";
@@ -216,7 +217,21 @@ const teamArtifacts = new TeamArtifacts({
   emit: (roomId) => toWindow("artifacts:changed", roomId),
   log: logError,
 });
-const artifactUi = artifactViewer(teamArtifacts, {
+// areas' artifacts on this Mac: an area that isn't a room's keeps its own, by its key
+const areaArtifacts = new AreaArtifacts({
+  root: MB_DIR,
+  sessions: () => sessions.list(),
+  knownRepos: knownRoomRepos,
+  secretFiles: () => knownSecretFiles(store.settings.workTrackerPath).files,
+  neverAdd: [path.join(MB_DIR, "team")],
+  emit: (shelf) => toWindow("artifacts:changed", shelf),
+  roomOfArea: (key) => team.status().rooms.find((r) => r.groupKey === key)?.id ?? null,
+  log: logError,
+});
+areaArtifacts.start();
+// the window's artifact calls name a shelf: a room's id, or an area's (shared/areaArtifacts.ts)
+const shelves = artifactShelves(teamArtifacts, areaArtifacts);
+const artifactUi = artifactViewer(shelves, {
   previewFile: (file, name) => appWindow()?.previewFile(file, name || undefined),
   showItemInFolder: (file) => shell.showItemInFolder(file),
   saveDialog: async (defaultName) => {
@@ -226,7 +241,7 @@ const artifactUi = artifactViewer(teamArtifacts, {
   },
   openFilesDialog: async () => {
     const win = appWindow();
-    const opts = { title: "Add to the room", buttonLabel: "Add", properties: ["openFile", "multiSelections"] as ("openFile" | "multiSelections")[] };
+    const opts = { title: "Add artifacts", buttonLabel: "Add", properties: ["openFile", "multiSelections"] as ("openFile" | "multiSelections")[] };
     const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
     return r.canceled || !r.filePaths.length ? null : r.filePaths;
   },
@@ -1066,6 +1081,17 @@ handle("sessions:renameGroup", (oldKey, newKey) => {
   } catch (err) {
     logError(`landscape: moving ${from}'s area to ${to}`, err);
   }
+  // its artifacts on this Mac go with it; likewise logged rather than refused (they stay where they were)
+  if (from === to || from.includes("/") || from === LOOSE_GROUP) return;
+  if (to.includes("/") || to === LOOSE_GROUP) {
+    if (areaArtifacts.has(from)) logError(`area artifacts: ${from} became ${to}, which isn't an area`, new Error(`${from}'s artifacts stay on this Mac under ${from}: name an area ${from} again to see them`));
+    return;
+  }
+  try {
+    areaArtifacts.areaRenamed(from, to);
+  } catch (err) {
+    logError(`area artifacts: moving ${from}'s to ${to}`, err);
+  }
 });
 
 // ---- Team rooms ----
@@ -1100,23 +1126,26 @@ handle("house:open", async (roomId, n) => {
   return problem ? { note: problem } : {};
 });
 // team rooms: artifacts (src/shared/team/artifacts.ts); Quick Look, Reveal and Save as act on paths main makes
-handle("artifacts:list", (roomId) => teamArtifacts.list(String(roomId)));
+// each names a shelf: a room's id, or `area:<key>` for an area's on this Mac
+handle("artifacts:list", (shelf) => shelves.list(String(shelf)));
 handle("artifacts:pickFiles", () => artifactUi.pickFiles());
-handle("artifacts:addFiles", (roomId, paths, confirmSecret) => teamArtifacts.addFiles(String(roomId), Array.isArray(paths) ? paths.map(String) : [], confirmSecret === true));
-handle("artifacts:addBytes", (roomId, name, bytes, confirmSecret) => teamArtifacts.addBytes(String(roomId), String(name ?? ""), bytes, confirmSecret === true));
-handle("artifacts:addNote", (roomId, name, text, confirmSecret) => teamArtifacts.newNote(String(roomId), String(name ?? ""), String(text ?? ""), confirmSecret === true));
-handle("artifacts:addRepo", (roomId, req) => teamArtifacts.addRepo(String(roomId), req ?? {}));
-handle("artifacts:addLink", (roomId, url, title) => teamArtifacts.addLink(String(roomId), String(url ?? ""), String(title ?? "")));
-handle("artifacts:rename", (roomId, id, name) => teamArtifacts.rename(String(roomId), String(id), String(name ?? "")));
-handle("artifacts:remove", (roomId, id) => teamArtifacts.remove(String(roomId), String(id)));
-handle("artifacts:saveNote", (roomId, id, text, base, mode, confirmSecret) => teamArtifacts.saveNote(String(roomId), String(id), String(text ?? ""), String(base ?? ""), mode, confirmSecret === true));
-handle("artifacts:read", (roomId, id) => teamArtifacts.read(String(roomId), String(id)));
-handle("artifacts:download", (roomId, id) => teamArtifacts.download(String(roomId), String(id)));
-handle("artifacts:resolveRepo", (roomId, id, preferSessionId) => teamArtifacts.resolveRepo(String(roomId), String(id), preferSessionId ? String(preferSessionId) : null));
-handle("artifacts:quickLook", (roomId, id) => artifactUi.quickLook(String(roomId), String(id)));
-handle("artifacts:reveal", (roomId, id) => artifactUi.reveal(String(roomId), String(id)));
-handle("artifacts:saveAs", (roomId, id) => artifactUi.saveAs(String(roomId), String(id)));
-handle("artifacts:dismissNotice", (roomId, noticeId) => teamArtifacts.dismissNotice(String(roomId), String(noticeId)));
+handle("artifacts:addFiles", (shelf, paths, confirmSecret) => shelves.addFiles(String(shelf), Array.isArray(paths) ? paths.map(String) : [], confirmSecret === true));
+handle("artifacts:addBytes", (shelf, name, bytes, confirmSecret) => shelves.addBytes(String(shelf), String(name ?? ""), bytes, confirmSecret === true));
+handle("artifacts:addNote", (shelf, name, text, confirmSecret) => shelves.newNote(String(shelf), String(name ?? ""), String(text ?? ""), confirmSecret === true));
+handle("artifacts:addRepo", (shelf, req) => shelves.addRepo(String(shelf), req ?? {}));
+handle("artifacts:addLink", (shelf, url, title) => shelves.addLink(String(shelf), String(url ?? ""), String(title ?? "")));
+handle("artifacts:rename", (shelf, id, name) => shelves.rename(String(shelf), String(id), String(name ?? "")));
+handle("artifacts:remove", (shelf, id) => shelves.remove(String(shelf), String(id)));
+handle("artifacts:saveNote", (shelf, id, text, base, mode, confirmSecret) => shelves.saveNote(String(shelf), String(id), String(text ?? ""), String(base ?? ""), mode, confirmSecret === true));
+handle("artifacts:read", (shelf, id) => shelves.read(String(shelf), String(id)));
+handle("artifacts:download", (shelf, id) => shelves.download(String(shelf), String(id)));
+handle("artifacts:resolveRepo", (shelf, id, preferSessionId) => shelves.resolveRepo(String(shelf), String(id), preferSessionId ? String(preferSessionId) : null));
+handle("artifacts:quickLook", (shelf, id) => artifactUi.quickLook(String(shelf), String(id)));
+handle("artifacts:reveal", (shelf, id) => artifactUi.reveal(String(shelf), String(id)));
+handle("artifacts:saveAs", (shelf, id) => artifactUi.saveAs(String(shelf), String(id)));
+handle("artifacts:dismissNotice", (shelf, noticeId) => shelves.dismissNotice(String(shelf), String(noticeId)));
+// an area shared as a room: its artifacts on this Mac copied into the room, when asked
+handle("artifacts:shareArea", (key, roomId) => areaArtifacts.shareTo(String(key ?? ""), teamArtifacts, String(roomId ?? "")));
 // team rooms: team chat — each room's chat, its agent updates, the @assistant
 // (on this laptop, under this user's account), and agent messaging across laptops
 const teamRoom = new TeamRoom({

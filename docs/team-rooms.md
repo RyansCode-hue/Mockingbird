@@ -1147,6 +1147,15 @@ lines) in the room's repository, and links — for people and agents alike.
   form. **@assistant** gets them in its prompt the same way: the list (a
   withheld link or reference without its url or path), then what the
   question names, notes, text files and repo excerpts within a budget.
+- **Area agents** (the landscape, S5): a session in an area that isn't a
+  room's gets the same two tools, on that area's artifacts on this Mac
+  (`~/.mockingbird/artifacts/areas/`), and nothing wider. The same checks,
+  copies and fence apply, and the content is labelled as files its user kept
+  in the area rather than a teammate's. A room session reads only its room's,
+  a session in no area gets none, none gets an area's while the team rooms
+  aren't running (a room session couldn't be told apart), and room agents
+  can't read the area folders (they're with the home folder's private data). The tools are pre-allowed
+  only in room sessions, so Claude asks before an area agent's first call.
 - **Secrets:** agents never reach the store — it's under
   `~/.mockingbird/team`, which Claude's deny rules and Codex's room sandbox
   keep unreadable — only copies the tool makes after checking. An artifact is

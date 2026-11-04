@@ -26,6 +26,8 @@ import {
   own,
   placeNew,
   presetSize,
+  SIZE_PRESETS,
+  type SizePreset,
   pushAside,
   put,
   shifted,
@@ -33,8 +35,13 @@ import {
   snapUp,
   stackKeyOf,
   within,
+  PATCH_RECORDS,
+  isWorkspaceTool,
   type Area,
   type AreaRepo,
+  type ArtifactCard,
+  type ToolKind,
+  type ToolWindow,
   type Camera,
   type Cell,
   type Landscape,
@@ -258,12 +265,52 @@ export function revealTile(p: PendingReveal, tiles: readonly Tile[], now: number
   return t ?? (now > p.until ? "expired" : "wait");
 }
 
+/** A tool window placed on the landscape: its area (null: loose) and where it sits. */
+export interface WindowView {
+  id: string;
+  win: ToolWindow;
+  area: string | null;
+  rect: Rect;
+  /** Its area is collapsed: it isn't drawn. */
+  hidden: boolean;
+}
+
+/** An artifact's card on the landscape. */
+export interface CardView {
+  id: string;
+  card: ArtifactCard;
+  rect: Rect;
+  hidden: boolean;
+}
+
 export interface ResolvedLayout {
   tiles: Tile[];
   areas: AreaView[];
+  /** Placed tool windows; docked ones are in `docked`, in the order they were docked. */
+  windows: WindowView[];
+  docked: { id: string; win: ToolWindow }[];
+  cards: CardView[];
   /** Places made here for workspaces that had none, and areas added or grown to hold them; null when there were none. */
   patch: LandscapePatch | null;
 }
+
+/** A tool window's size when it opens, in px at 100%: as tall as the workspace it opens beside, within these. */
+export const TOOL_WIDTH: Record<ToolKind, number> = { files: 360, changes: 384, search: 400, run: 440, artifacts: 384, chat: 440 };
+export const TOOL_HEIGHT = { min: 480, max: 960, plain: 640 };
+/** An artifact card's size at 100% (design O). */
+export const CARD_SIZE: Size = { w: 240, h: 128 };
+
+/** The size a tool window opens at: `beside`'s height (a workspace's) within TOOL_HEIGHT, on the grid. */
+export const toolSize = (tool: ToolKind, beside: Rect | null): Size => ({
+  w: TOOL_WIDTH[tool],
+  h: snapUp(beside ? Math.min(TOOL_HEIGHT.max, Math.max(TOOL_HEIGHT.min, beside.h)) : TOOL_HEIGHT.plain),
+});
+
+/** The places tool windows and artifact cards take: what new workspaces and moved ones keep clear of. */
+const extraPlaces = (l: Landscape, except?: string): Rect[] => [
+  ...Object.entries(l.tools).flatMap(([id, t]) => (id !== except && !t.docked && t.placement ? [t.placement] : [])),
+  ...Object.entries(l.cards).flatMap(([id, c]) => (id !== except && c.placement ? [c.placement] : [])),
+];
 
 /**
  * A group this window renamed (`from` → `to`, either a top-level group or a sub-group) whose change hasn't reached
@@ -333,7 +380,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   const shownStacks = new Set([...groups.values()].map((g) => g.stack).filter((k): k is string => !!k));
 
   const areas = new Map<string, Area>(Object.entries(l.areas));
-  const patch: Required<Pick<LandscapePatch, "workspaces" | "areas" | "stacks" | "ghosts">> = { workspaces: {}, areas: {}, stacks: {}, ghosts: {} };
+  const patch: FullPatch = emptyPatch();
   /** An area's change: the fields that changed for one stored, the whole of a new one. */
   const setArea = (key: string, a: Area, fields: Partial<Area>) => {
     areas.set(key, a);
@@ -384,6 +431,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     ...Object.entries(l.stacks).filter(([k]) => !movedStacks.has(k)).map(([, s]) => s.placement),
     ...Object.values(l.ghosts).map((g) => g.placement),
     ...[...movedTiles].map((k) => stored.get(k)!),
+    ...extraPlaces(l),
   ];
 
   /** A new area for `key`, right of everything: a group made since the grid's layout was read in. */
@@ -438,7 +486,34 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
       const at = own(patch.stacks, sk)?.placement ?? st.placement;
       if (!shownStacks.has(sk) && within(at, was)) put(patch.stacks, sk, { ...st, placement: shifted(at, dx, dy) });
     }
+    moveExtras(patch, l, k, dx, dy);
   };
+  // a tool window or an artifact card with no place (its area was merged into another by a rename) is placed in its
+  // area as a new workspace is; one whose area isn't here any more is placed loose
+  const placeExtra = (area: string | null, size: Size): Rect => {
+    const a = area === null ? undefined : areas.get(area);
+    if (!a) return placeNew(size, [...occupied, ...areas.values()], null, firstArea());
+    const r = placeNew(size, occupied, a);
+    const grown = fitAreaTo(a, [r]);
+    if (grown !== a) {
+      setArea(area!, grown, { w: grown.w, h: grown.h });
+      grew.add(area!);
+    }
+    return r;
+  };
+  for (const [id, t] of Object.entries(l.tools)) {
+    if (t.docked || t.placement) continue;
+    const r = placeExtra(t.area ?? null, toolSize(t.tool, null));
+    occupied.push(r);
+    put(patch.tools, id, { ...t, placement: r });
+  }
+  for (const [id, c] of Object.entries(l.cards)) {
+    if (c.placement) continue;
+    const r = placeExtra(c.area, CARD_SIZE);
+    occupied.push(r);
+    put(patch.cards, id, { ...c, placement: r });
+  }
+
   // an area that grew moves the ones in its way aside, with everything in them; a locked one stays where it is, and an
   // area that grew into one moves clear of everything instead
   const locked = new Set([...areas].filter(([, a]) => a.locked).map(([k]) => k));
@@ -461,9 +536,23 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     if (g.stack && (!own(l.stacks, g.stack) || movedTiles.has(t.key))) put(patch.stacks, g.stack, { active: t.front.id, placement: t.rect });
     else if (!g.stack && save) put(patch.workspaces, t.front.id, t.rect);
   }
-  const out: LandscapePatch = {};
-  for (const k of ["workspaces", "areas", "stacks", "ghosts"] as const) if (Object.keys(patch[k]).length) Object.assign(out, { [k]: patch[k] });
-  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), patch: Object.keys(out).length ? out : null };
+
+  const windows: WindowView[] = [];
+  const docked: { id: string; win: ToolWindow }[] = [];
+  for (const [id, stored] of Object.entries(l.tools)) {
+    const win = own(patch.tools, id) ?? stored;
+    if (win.docked) docked.push({ id, win });
+    else if (win.placement) {
+      const area = win.area && areas.has(win.area) ? win.area : null;
+      windows.push({ id, win, area, rect: win.placement, hidden: !!area && areas.get(area)?.collapsed === true });
+    }
+  }
+  const cards: CardView[] = [];
+  for (const [id, stored] of Object.entries(l.cards)) {
+    const card = own(patch.cards, id) ?? stored;
+    if (card.placement) cards.push({ id, card, rect: card.placement, hidden: areas.get(card.area)?.collapsed === true });
+  }
+  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), windows, docked, cards, patch: finish(patch) };
 }
 
 /** How big a collapsed area's pill counts for fitting the view and the minimap, in landscape px at 100%. */
@@ -719,13 +808,28 @@ export interface GroupMove {
  */
 export type AreaPlan = { patch: LandscapePatch | null; moves: GroupMove[]; after: LandscapePatch | null; note?: string } | { refused: string };
 
-type FullPatch = Required<Pick<LandscapePatch, "workspaces" | "areas" | "stacks" | "ghosts">>;
-const emptyPatch = (): FullPatch => ({ workspaces: {}, areas: {}, stacks: {}, ghosts: {} });
+type FullPatch = Required<Pick<LandscapePatch, (typeof PATCH_RECORDS)[number]>>;
+const emptyPatch = (): FullPatch => ({ workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} });
 const finish = (p: FullPatch): LandscapePatch | null => {
   const out: LandscapePatch = {};
-  for (const k of ["workspaces", "areas", "stacks", "ghosts"] as const) if (Object.keys(p[k]).length) Object.assign(out, { [k]: p[k] });
+  for (const k of PATCH_RECORDS) if (Object.keys(p[k]).length) Object.assign(out, { [k]: p[k] });
   return Object.keys(out).length ? out : null;
 };
+
+/** The tool windows and artifact cards placed in area `key`, moved by `dx`, `dy` in `p` (from where `p` has them already). */
+function moveExtras(p: FullPatch, l: Landscape, key: string, dx: number, dy: number): void {
+  if (!dx && !dy) return;
+  for (const [id, t] of Object.entries(l.tools)) {
+    const now = own(p.tools, id) ?? t;
+    if (!now || now.docked || now.area !== key || !now.placement) continue;
+    put(p.tools, id, { ...now, placement: shifted(now.placement, dx, dy) });
+  }
+  for (const [id, c] of Object.entries(l.cards)) {
+    const now = own(p.cards, id) ?? c;
+    if (!now || now.area !== key || !now.placement) continue;
+    put(p.cards, id, { ...now, placement: shifted(now.placement, dx, dy) });
+  }
+}
 /**
  * What puts back what `patch` changed in `l`: each workspace, area, stack and ghost it touched as `l` had it, or gone
  * where `l` had none. Limited to `ids` (session ids), only those sessions' own places: what a gesture takes back for
@@ -733,7 +837,7 @@ const finish = (p: FullPatch): LandscapePatch | null => {
  */
 export function undoOf(l: Landscape, patch: LandscapePatch, ids?: readonly string[]): LandscapePatch | null {
   const p = emptyPatch();
-  for (const k of ["workspaces", "areas", "stacks", "ghosts"] as const) {
+  for (const k of PATCH_RECORDS) {
     const from = patch[k];
     if (!from || (ids && k !== "workspaces")) continue;
     const had = l[k] as Record<string, unknown>;
@@ -789,6 +893,7 @@ function moveArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: strin
   for (const [sk, st] of Object.entries(l.stacks)) {
     if (!shown.stacks.has(sk) && within(st.placement, a)) put(p.stacks, sk, { ...st, placement: shifted(own(p.stacks, sk)?.placement ?? st.placement, dx, dy) });
   }
+  moveExtras(p, l, key, dx, dy);
 }
 
 /**
@@ -847,7 +952,7 @@ export function planMakeArea(l: Landscape, layout: ResolvedLayout, picked: reado
   if (target) {
     // each placed in it as a new workspace is, among everything that stays where it is
     const moving = new Set(tiles.map((t) => t.key));
-    const occupied = [...layout.tiles.filter((t) => !moving.has(t.key)).map((t) => t.rect), ...unshownPlaces(l, layout), ...Object.values(l.ghosts).map((g) => g.placement)];
+    const occupied = [...layout.tiles.filter((t) => !moving.has(t.key)).map((t) => t.rect), ...unshownPlaces(l, layout), ...Object.values(l.ghosts).map((g) => g.placement), ...extraPlaces(l)];
     let area: Area = target.rect;
     for (const t of tiles) {
       const r = placeNew({ w: t.rect.w, h: t.rect.h }, occupied, area);
@@ -925,3 +1030,261 @@ export function planMoveArea(l: Landscape, layout: ResolvedLayout, key: string, 
   moveArea(p, l, layout, key, mx, my);
   return { patch: finish(p), moves: [], after: null };
 }
+
+// ---- tool windows, artifact cards and a workspace's size (S5) ---------------------------------------------------
+
+/** Everything placed but `except` (a window's or a card's id, or a workspace's key): what something placed keeps clear of. */
+function placedBut(l: Landscape, layout: ResolvedLayout, except: string | null): Rect[] {
+  return [...layout.tiles.filter((t) => t.key !== except).map((t) => t.rect), ...unshownPlaces(l, layout), ...Object.values(l.ghosts).map((g) => g.placement), ...extraPlaces(l, except ?? undefined)];
+}
+
+/** Something placed in an area, and how a patch moves it: what making room beside a workspace shifts along. */
+type Placed = { rect: Rect; move: (p: FullPatch, r: Rect) => void };
+
+/** Everything placed in area `key` but workspace `except`: its workspaces, windows, cards, ghosts, and the places it keeps for sessions not shown. */
+function placedIn(l: Landscape, layout: ResolvedLayout, key: string, except: string): Placed[] {
+  const a = layout.areas.find((x) => x.key === key)!.rect;
+  const out: Placed[] = [];
+  for (const t of layout.tiles) {
+    if (t.area !== key || t.key === except) continue;
+    out.push({ rect: t.rect, move: (p, r) => (t.stack ? put(p.stacks, t.stack, { active: t.front.id, placement: r }) : put(p.workspaces, t.front.id, r)) });
+  }
+  for (const w of layout.windows) if (w.area === key) out.push({ rect: w.rect, move: (p, r) => put(p.tools, w.id, { ...w.win, placement: r }) });
+  for (const c of layout.cards) if (c.card.area === key) out.push({ rect: c.rect, move: (p, r) => put(p.cards, c.id, { ...c.card, placement: r }) });
+  for (const [id, g] of Object.entries(l.ghosts)) if (areaKeyOf({ taskGroup: g.group }) === key) out.push({ rect: g.placement, move: (p, r) => put(p.ghosts, id, { ...g, placement: r }) });
+  const shown = shownIn(layout);
+  for (const [id, r] of Object.entries(l.workspaces)) if (!shown.ids.has(id) && within(r, a)) out.push({ rect: r, move: (p, to) => put(p.workspaces, id, to) });
+  for (const [sk, st] of Object.entries(l.stacks)) if (!shown.stacks.has(sk) && within(st.placement, a)) out.push({ rect: st.placement, move: (p, to) => put(p.stacks, sk, { ...st, placement: to }) });
+  return out;
+}
+
+/**
+ * Room for `size` just right of workspace `t`, top-aligned, in its (unlocked) area, made by moving along what's to its
+ * right: what starts at or past its right edge and is in the way, and what that then runs into, all by the same step
+ * so they keep their places relative to each other. Written into `p`; the spot made, or null when something reaching
+ * in from the left is in the way, which moving right can't clear.
+ */
+function makeRoomRight(p: FullPatch, l: Landscape, layout: ResolvedLayout, t: Tile, size: Size): Rect | null {
+  const spot: Rect = { x: snapUp(t.rect.x + t.rect.w + GAP), y: t.rect.y, ...size };
+  const edge = t.rect.x + t.rect.w;
+  const items = placedIn(l, layout, t.area, t.key);
+  const inWay = (r: Rect) => overlaps(r, spot, GAP - 1e-6);
+  if (items.some((i) => i.rect.x < edge && inWay(i.rect))) return null;
+  const right = items.filter((i) => i.rect.x >= edge);
+  const blocking = right.filter((i) => inWay(i.rect));
+  if (!blocking.length) return spot;
+  const dx = snapUp(spot.x + spot.w + GAP - Math.min(...blocking.map((i) => i.rect.x)));
+  const moved = new Set(blocking);
+  for (let more = true; more; ) {
+    more = false;
+    for (const i of right) {
+      if (moved.has(i) || ![...moved].some((m) => overlaps(shifted(m.rect, dx, 0), i.rect, GAP - 1e-6))) continue;
+      moved.add(i);
+      more = true;
+    }
+  }
+  for (const i of moved) i.move(p, shifted(i.rect, dx, 0));
+  return spot;
+}
+
+/**
+ * Where something of `size` goes in `area` (null: loose) beside `beside`, the workspace it serves: just right of it,
+ * top-aligned; else just below it; else the area's first free spot, as a new workspace's (placeNew), the area growing
+ * to take it. Loose: right of `beside`, moved clear of every area (`others`). In a locked area only a spot inside it
+ * will do: null when there's none.
+ */
+function spotBeside(occupied: readonly Rect[], area: Area | null, size: Size, beside: Rect | null, others: readonly Rect[], makeRoom?: () => Rect | null): Rect | null {
+  const free = (r: Rect) => !occupied.some((o) => overlaps(r, o, GAP - 1e-6));
+  const candidates: Rect[] = beside
+    ? [
+        { x: snapUp(beside.x + beside.w + GAP), y: beside.y, ...size },
+        { x: beside.x, y: snapUp(beside.y + beside.h + GAP), ...size },
+      ]
+    : [];
+  if (!area) {
+    for (const c of candidates) {
+      const { dx, dy } = clearOf(c, others, GAP);
+      const r = shifted(c, dx, dy);
+      if (free(r)) return r;
+    }
+    return placeNew(size, [...occupied, ...others], null, others[0] ?? null);
+  }
+  const room = { x: area.x + AREA_PAD, y: area.y + AREA_HEADER, w: area.w - 2 * AREA_PAD, h: area.h - AREA_HEADER - AREA_PAD };
+  const inside = (r: Rect) => r.x >= room.x && r.y >= room.y;
+  for (const c of candidates) if (inside(c) && free(c) && (!area.locked || within(c, room))) return c;
+  const made = !area.locked && makeRoom ? makeRoom() : null;
+  if (made) return made;
+  const r = placeNew(size, occupied, area);
+  return !area.locked || within(r, room) ? r : null;
+}
+
+/**
+ * Workspace `t`'s size as its Size S/M/L offer it: the preset its placement is (null when none is), and why it can't
+ * be resized here (a teammate's, the size their terminal is; one in a locked area), or null.
+ */
+export function tileSize(t: Tile, layout: ResolvedLayout, titleOf: (key: string) => string): { current: SizePreset | null; blocked: string | null } {
+  const kind = tileKind(t.members);
+  const current = SIZE_PRESETS.find((p) => {
+    const s = presetSize(kind, p);
+    return s.w === t.rect.w && s.h === t.rect.h;
+  });
+  const theirs = t.members.find(isTheirs);
+  const area = t.area === LOOSE_GROUP ? undefined : layout.areas.find((a) => a.key === t.area);
+  const blocked = theirs ? `${theirs.room!.ownerName}'s workspace is the size their terminal is` : area?.rect.locked ? `${titleOf(area.key)} is locked: unlock it to resize its workspaces` : null;
+  return { current: current ?? null, blocked };
+}
+
+/** A new id for a tool window ("w…") or a card ("c…"), unique among the landscape's. */
+export function newExtraId(l: Landscape, prefix: "w" | "c", rand: () => number = Math.random): string {
+  for (;;) {
+    const id = `${prefix}${Date.now().toString(36)}${Math.floor(rand() * 36 ** 4).toString(36)}`;
+    if (!Object.hasOwn(l.tools, id) && !Object.hasOwn(l.cards, id)) return id;
+  }
+}
+
+/** What a tool window opens on: a workspace's session (the workspace tools), or an area (Artifacts, Chat). */
+export type ToolScope = { session: string } | { area: string };
+
+/**
+ * Open tool window `id` (new, or a docked one placed again) as `tool` on `scope`. A workspace's window opens beside
+ * its workspace, in its area (grown to take it, pushing the areas in its way aside, as a workspace dropped past its
+ * edge does), or loose beside a loose one. With its right and below taken, what's to its right moves along to make
+ * room (not in a locked area). An area's opens in its first free spot. A locked area takes it only where it has
+ * room: refused otherwise, so the caller can dock it instead.
+ */
+export function planOpenWindow(l: Landscape, layout: ResolvedLayout, id: string, tool: ToolKind, scope: ToolScope, titleOf: (key: string) => string): AreaPlan {
+  if ("session" in scope !== isWorkspaceTool(tool)) return { refused: `${tool} is ${isWorkspaceTool(tool) ? "a workspace's" : "an area's"} tool` };
+  const tile = "session" in scope ? layout.tiles.find((t) => t.members.some((m) => m.id === scope.session)) : undefined;
+  if ("session" in scope && !tile) return { refused: "That workspace isn't on the landscape any more" };
+  const key = tile ? (tile.area === LOOSE_GROUP ? null : tile.area) : (scope as { area: string }).area;
+  const area = key === null ? null : layout.areas.find((a) => a.key === key);
+  if (key !== null && !area) return { refused: `${titleOf(key)} isn't on the landscape any more` };
+  if (area?.rect.collapsed) return { refused: `${titleOf(area.key)} is collapsed: open it to place a window in it` };
+  const size = toolSize(tool, tile?.rect ?? null);
+  const p = emptyPatch();
+  const makeRoom = tile && area ? () => makeRoomRight(p, l, layout, tile, size) : undefined;
+  const r = spotBeside(placedBut(l, layout, id), area?.rect ?? null, size, tile?.rect ?? null, layout.areas.map((a) => a.rect), makeRoom);
+  if (!r) return { refused: `${titleOf(area!.key)} is locked and has no room for the window` };
+  put(p.tools, id, { tool, docked: false, ...("session" in scope ? { session: scope.session } : {}), area: key, placement: r });
+  if (area) {
+    const movedAlong = [...Object.values(p.workspaces), ...Object.values(p.stacks).map((s) => s?.placement), ...Object.values(p.tools).map((w) => w?.placement), ...Object.values(p.cards).map((c) => c?.placement), ...Object.values(p.ghosts).map((g) => g?.placement)];
+    const grown = fitAreaTo(area.rect, [r, ...movedAlong.filter((x): x is Rect => !!x)]);
+    const blocked = grown !== area.rect ? growArea(p, l, layout, area.key, grown, new Set()) : null;
+    if (blocked) return { refused: lockedInWay(titleOf, blocked, area.key) };
+  }
+  return { patch: finish(p), moves: [], after: null };
+}
+
+/**
+ * Where the camera goes to show a tool window just opened or placed again: one in `layout` that `before` (the ids
+ * placed before) didn't have. Its workspace comes into view with it when both fit; null when it's in view already, or
+ * nothing is new.
+ */
+export function cameraForOpened(before: ReadonlySet<string>, layout: ResolvedLayout, cam: Camera, viewport: Size): Camera | null {
+  const w = layout.windows.find((x) => !before.has(x.id) && !x.hidden);
+  if (!w || inView(cam, w.rect, viewport)) return null;
+  const t = w.win.session ? layout.tiles.find((x) => x.members.some((m) => m.id === w.win.session)) : undefined;
+  const both = t ? boundsOf([w.rect, t.rect]) : null;
+  const fits = !!both && both.w * cam.zoom <= viewport.w && both.h * cam.zoom <= viewport.h;
+  return centreOn(cam, fits ? both! : w.rect, viewport);
+}
+
+/** Dock tool window `id` to the window's edge: it gives up its scope and place, and follows the selected workspace. */
+export function planDockWindow(l: Landscape, id: string): AreaPlan {
+  const t = own(l.tools, id);
+  if (!t) return { refused: "That window isn't open any more" };
+  return t.docked ? { patch: null, moves: [], after: null } : { patch: { tools: { [id]: { tool: t.tool, docked: true } } }, moves: [], after: null };
+}
+
+/**
+ * A placed window or card (`kind`) dragged to `at` and dropped over area `target` (LOOSE_GROUP: no area), as a
+ * workspace is (planMoveTile): snapped, kept inside the area's padding, and growing it past its right or bottom edge.
+ * A card, and an area's window (Artifacts, Chat), are the area's: they stay in it. A workspace's window may go to
+ * another area or loose. Nothing moves into, out of or within a locked area.
+ */
+export function planMoveExtra(l: Landscape, layout: ResolvedLayout, kind: "window" | "card", id: string, at: Point, target: string, titleOf: (key: string) => string): AreaPlan {
+  const w = kind === "window" ? layout.windows.find((x) => x.id === id) : undefined;
+  const c = kind === "card" ? layout.cards.find((x) => x.id === id) : undefined;
+  if (!w && !c) return { refused: `That ${kind} isn't on the landscape any more` };
+  const fromKey = w ? w.area : c!.card.area;
+  const rect = w ? w.rect : c!.rect;
+  const areaOf = (k: string | null) => (k === null ? undefined : layout.areas.find((a) => a.key === k)?.rect);
+  const toKey = target === LOOSE_GROUP ? null : target;
+  const into = areaOf(toKey);
+  if (toKey !== null && !into) return { refused: `${titleOf(toKey)} isn't on the landscape any more` };
+  const crossing = toKey !== fromKey;
+  if (crossing && (c || !isWorkspaceTool(w!.win.tool))) {
+    const what = c ? "An artifact's card" : `${titleOf(fromKey!)}'s ${w!.win.tool === "chat" ? "chat" : "artifacts"}`;
+    return { refused: `${what} stays in ${titleOf(fromKey!)}${w ? ": dock it to take it along" : ""}` };
+  }
+  if (areaOf(fromKey)?.locked) return { refused: `${titleOf(fromKey!)} is locked: unlock it to move what's in it` };
+  if (crossing && into?.locked) return { refused: `${titleOf(toKey!)} is locked: unlock it to add to it` };
+  let r: Rect = { ...rect, x: snap(at.x), y: snap(at.y) };
+  const p = emptyPatch();
+  if (into) {
+    r = { ...r, x: Math.max(r.x, snapUp(into.x + AREA_PAD)), y: Math.max(r.y, snapUp(into.y + AREA_HEADER)) };
+    const grown = fitAreaTo(into, [r]);
+    const blocked = grown !== into ? growArea(p, l, layout, toKey!, grown, new Set()) : null;
+    if (blocked) return { refused: lockedInWay(titleOf, blocked, toKey!) };
+  } else {
+    const { dx, dy } = clearOf(r, layout.areas.map((a) => a.rect), GAP);
+    r = shifted(r, dx, dy);
+  }
+  if (w) put(p.tools, id, { ...w.win, area: toKey, placement: r });
+  else put(p.cards, id, { ...c!.card, placement: r });
+  return { patch: finish(p), moves: [], after: null };
+}
+
+/**
+ * Place artifact `artifact` of area `key` as card `id` (Place, in the Artifacts window): beside `beside` (the window
+ * it was placed from) when there's room, else in the area's first free spot, the area growing to take it. Refused in
+ * a collapsed area, and in a locked one with no room.
+ */
+export function planPlaceCard(l: Landscape, layout: ResolvedLayout, id: string, key: string, artifact: string, beside: Rect | null, titleOf: (key: string) => string): AreaPlan {
+  const area = layout.areas.find((a) => a.key === key);
+  if (!area) return { refused: `${titleOf(key)} isn't on the landscape any more` };
+  if (area.rect.collapsed) return { refused: `${titleOf(key)} is collapsed: open it to place the artifact` };
+  const r = spotBeside(placedBut(l, layout, id), area.rect, CARD_SIZE, beside, layout.areas.map((a) => a.rect));
+  if (!r) return { refused: `${titleOf(key)} is locked and has no room for the card` };
+  const p = emptyPatch();
+  put(p.cards, id, { area: key, artifact, placement: r });
+  const grown = fitAreaTo(area.rect, [r]);
+  const blocked = grown !== area.rect ? growArea(p, l, layout, key, grown, new Set()) : null;
+  if (blocked) return { refused: lockedInWay(titleOf, blocked, key) };
+  return { patch: finish(p), moves: [], after: null };
+}
+
+/**
+ * Workspace `key` at a preset's `size` (Size S/M/L): where it is when that keeps it clear of everything else, else at
+ * its area's first free spot (placeNew), the area growing to take it. Its terminal follows its new size. Refused in a
+ * locked area, and for a teammate's workspace, which is the size its owner's terminal is.
+ */
+export function planResizeTile(l: Landscape, layout: ResolvedLayout, key: string, size: Size, titleOf: (key: string) => string): AreaPlan {
+  const t = layout.tiles.find((x) => x.key === key);
+  if (!t) return { refused: "That workspace isn't on the landscape any more" };
+  const theirs = t.members.find(isTheirs);
+  if (theirs) return { refused: `${theirs.room!.ownerName}'s workspace is the size their terminal is` };
+  const area = t.area === LOOSE_GROUP ? undefined : layout.areas.find((a) => a.key === t.area);
+  if (area?.rect.locked) return { refused: `${titleOf(t.area)} is locked: unlock it to resize its workspaces` };
+  if (size.w === t.rect.w && size.h === t.rect.h) return { patch: null, moves: [], after: null };
+  const occupied = placedBut(l, layout, key);
+  const others = layout.areas.map((a) => a.rect);
+  let r: Rect = { ...t.rect, ...size };
+  if (occupied.some((o) => overlaps(r, o, GAP - 1e-6))) r = area ? placeNew(size, occupied, area.rect) : placeNew(size, [...occupied, ...others], null, others[0] ?? null);
+  else if (!area) {
+    const { dx, dy } = clearOf(r, others, GAP);
+    r = shifted(r, dx, dy);
+  }
+  const p = emptyPatch();
+  if (t.stack) put(p.stacks, t.stack, { active: t.front.id, placement: r });
+  else put(p.workspaces, t.front.id, r);
+  if (area) {
+    const grown = fitAreaTo(area.rect, [r]);
+    const blocked = grown !== area.rect ? growArea(p, l, layout, area.key, grown, new Set([key])) : null;
+    if (blocked) return { refused: lockedInWay(titleOf, blocked, area.key) };
+  }
+  return { patch: finish(p), moves: [], after: null };
+}
+
+/** The size preset `p` for workspace `t`: an agent's, or a terminal's when it holds only terminals. */
+export const presetFor = (t: Tile, p: SizePreset): Size => presetSize(tileKind(t.members), p);

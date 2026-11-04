@@ -77,8 +77,43 @@ export interface Ghost {
   closedAt: string;
 }
 
+/**
+ * A tool window (docs/landscape.md, Tools; design O). The first four work on a workspace: its folder (Files, Search)
+ * or its worktree (Changes, Run). Artifacts and Chat work on an area (Chat only a room's).
+ */
+export type ToolKind = "files" | "changes" | "search" | "run" | "artifacts" | "chat";
+export const TOOL_KINDS: readonly ToolKind[] = ["files", "changes", "search", "run", "artifacts", "chat"];
+/** The tools scoped to a workspace; the others are scoped to an area. */
+export const WORKSPACE_TOOLS: readonly ToolKind[] = ["files", "changes", "search", "run"];
+export const isWorkspaceTool = (t: ToolKind): boolean => WORKSPACE_TOOLS.includes(t);
+
+/**
+ * One tool window. Docked, it sits at the window's edge and follows the selected workspace, so it has no scope or
+ * place of its own. Placed, it sits in `area` (null: loose, beside a loose workspace) and moves with it, scoped to
+ * `session`'s workspace (the workspace tools) or to `area` itself (Artifacts, Chat). A placed one without a
+ * `placement` is placed anew in its area, as a new workspace is (an area merged into another by a rename).
+ */
+export interface ToolWindow {
+  tool: ToolKind;
+  docked: boolean;
+  session?: string;
+  area?: string | null;
+  placement?: Placement;
+}
+
+/**
+ * An artifact placed on the landscape (Place, in the Artifacts window): a card in `area` that opens or mentions
+ * `artifact`, one of that area's artifacts (a room's area: the room's). Without a `placement` it's placed anew in its
+ * area, as a tool window is.
+ */
+export interface ArtifactCard {
+  area: string;
+  artifact: string;
+  placement?: Placement;
+}
+
 export interface Landscape {
-  v: 1;
+  v: 2;
   /** Set once the grid's layout has been read in. */
   migratedAt?: string;
   tourDone?: boolean;
@@ -90,6 +125,10 @@ export interface Landscape {
   stacks: Record<string, Stack>;
   /** By the closed session's id. */
   ghosts: Record<string, Ghost>;
+  /** By window id, docked ones in the order they were docked. */
+  tools: Record<string, ToolWindow>;
+  /** By card id. */
+  cards: Record<string, ArtifactCard>;
 }
 
 /**
@@ -97,10 +136,12 @@ export interface Landscape {
  * unreadable here, so a version that adds one raises this: an older
  * Mockingbird then leaves the newer file alone instead of dropping the field
  * on its next save.
+ *
+ * 2 added tool windows and artifact cards (`tools`, `cards`); a version 1 file is read as one with none.
  */
-export const LANDSCAPE_VERSION = 1;
+export const LANDSCAPE_VERSION = 2;
 
-export const emptyLandscape = (): Landscape => ({ v: 1, workspaces: {}, areas: {}, stacks: {}, ghosts: {} });
+export const emptyLandscape = (): Landscape => ({ v: 2, workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} });
 
 // ---- what a session is on the landscape ---------------------------------------------
 
@@ -172,8 +213,11 @@ export const CELL_ESTIMATE: Cell = { w: 7.53, h: 21 };
 /** The landscape's terminal font, in px: a workspace's terminal keeps it at every zoom, which only scales it. */
 export const LANDSCAPE_FONT = 12.5;
 
-/** What a workspace's frame takes around its terminal: side padding (w) and the header bar plus bottom padding (h). */
-export const WORKSPACE_CHROME: Size = { w: 16, h: 40 };
+/** A workspace's header bar (design N's chips) and its footer (the rail's cells), in px at 100%. */
+export const WORKSPACE_HEAD = 32;
+export const WORKSPACE_FOOT = 24;
+/** What a workspace's frame takes around its terminal: side padding (w), and the header bar and the footer (h). */
+export const WORKSPACE_CHROME: Size = { w: 16, h: WORKSPACE_HEAD + WORKSPACE_FOOT };
 
 /** The terminal size a workspace of `w` × `h` holds. */
 export function colsRows(w: number, h: number, cellW: number, cellH: number, chrome: Size = WORKSPACE_CHROME): TermSize {
@@ -533,22 +577,66 @@ const GHOST: Part = {
 };
 const ghost: Check<Ghost> = (v, where) => fields(v, where, GHOST);
 
+const toolKind: Check<ToolKind> = (v, where) => (TOOL_KINDS.includes(v as ToolKind) ? (v as ToolKind) : fail(where, `is not one of ${TOOL_KINDS.join(", ")}`));
+/** An area's key where one is named: a top-level group, never the loose bucket. */
+const areaName: Check<string> = (v, where) => {
+  const k = name(v, where);
+  const bad = areaKey(k);
+  return bad ? fail(where, bad) : k;
+};
+const TOOL: Part = {
+  checks: { tool: toolKind, docked: bool, session: name, area: orNull(areaName), placement: rect } satisfies Record<keyof ToolWindow, Check<unknown>>,
+  required: ["tool", "docked"],
+};
+/**
+ * A tool window, its fields and what they say together: a docked one has no scope or place (it follows the
+ * selection), and a placed one has its scope, a workspace tool its session and an area tool its area.
+ */
+const toolWindow: Check<ToolWindow> = (v, where) => {
+  const t = fields<ToolWindow>(v, where, TOOL);
+  if (t.docked) {
+    if (t.session !== undefined || t.area !== undefined || t.placement !== undefined) fail(where, "is docked, so it has no session, area or placement");
+  } else if (isWorkspaceTool(t.tool)) {
+    if (t.session === undefined) fail(`${where}.session`, "is missing");
+    if (t.area === undefined) fail(`${where}.area`, "is missing");
+  } else if (typeof t.area !== "string") fail(`${where}.area`, t.area === null ? `is null, but ${t.tool} is an area's` : "is missing");
+  else if (t.session !== undefined) fail(where, `is an area's ${t.tool}, so it has no session`);
+  return t;
+};
+const CARD: Part = {
+  checks: { area: areaName, artifact: name, placement: rect } satisfies Record<keyof ArtifactCard, Check<unknown>>,
+  required: ["area", "artifact"],
+};
+const card: Check<ArtifactCard> = (v, where) => fields(v, where, CARD);
+
 /** The version a stored landscape says it is, when it says: a newer one can't be read here, and isn't corrupt. */
 export function versionOf(v: unknown): number | null {
   return isObj(v) && typeof v.v === "number" ? v.v : null;
 }
 
+const version =
+  (want: number): Check<number> =>
+  (v, where) =>
+    v === want ? want : fail(where, `is ${JSON.stringify(v)}, not ${want}`);
+const V1_CHECKS = {
+  v: version(1),
+  migratedAt: str,
+  tourDone: bool,
+  workspaces: (v: unknown, where: string) => entries(v, where, rect),
+  areas: (v: unknown, where: string) => entries(v, where, area, areaKey),
+  stacks: (v: unknown, where: string) => entries(v, where, stack, stackKey),
+  ghosts: (v: unknown, where: string) => entries(v, where, ghost),
+};
+/** Version 1's landscape: what a file written before tool windows holds, and nothing more. */
+const LANDSCAPE_V1: Part = { checks: V1_CHECKS, required: ["v", "workspaces", "areas", "stacks", "ghosts"] };
 const LANDSCAPE: Part = {
   checks: {
-    v: (v, where) => (v === LANDSCAPE_VERSION ? v : fail(where, `is ${JSON.stringify(v)}, not ${LANDSCAPE_VERSION}`)),
-    migratedAt: str,
-    tourDone: bool,
-    workspaces: (v, where) => entries(v, where, rect),
-    areas: (v, where) => entries(v, where, area, areaKey),
-    stacks: (v, where) => entries(v, where, stack, stackKey),
-    ghosts: (v, where) => entries(v, where, ghost),
+    ...V1_CHECKS,
+    v: version(LANDSCAPE_VERSION),
+    tools: (v, where) => entries(v, where, toolWindow),
+    cards: (v, where) => entries(v, where, card),
   } satisfies Record<keyof Landscape, Check<unknown>>,
-  required: ["v", "workspaces", "areas", "stacks", "ghosts"],
+  required: [...LANDSCAPE_V1.required, "tools", "cards"],
 };
 
 /**
@@ -557,14 +645,22 @@ const LANDSCAPE: Part = {
  * can't change without the version being raised.
  */
 export const LANDSCAPE_FORMAT: Record<string, { fields: string[]; required: string[] }> = Object.fromEntries(
-  Object.entries({ landscape: LANDSCAPE, placement: PLACEMENT, area: AREA, repo: REPO, stack: STACK, ghost: GHOST, conversation: CONVERSATION }).map(([k, p]) => [
+  Object.entries({ landscape: LANDSCAPE, placement: PLACEMENT, area: AREA, repo: REPO, stack: STACK, ghost: GHOST, conversation: CONVERSATION, tool: TOOL, card: CARD }).map(([k, p]) => [
     k,
     { fields: Object.keys(p.checks).sort(), required: [...p.required].sort() },
   ])
 );
 
-/** A landscape read from disk, checked whole: throws LandscapeShapeError naming the first field that's wrong. */
+/**
+ * A landscape read from disk, checked whole: throws LandscapeShapeError naming the first field that's wrong. A
+ * version 1 file is checked as version 1 (a field only a later version has makes it wrong) and read as this version's
+ * with no tool windows or cards: every placement it holds is kept as it is.
+ */
 export function parseLandscape(v: unknown): Landscape {
+  if (versionOf(v) === 1) {
+    const old = fields<Omit<Landscape, "v" | "tools" | "cards">>(v, "", LANDSCAPE_V1, false, "the landscape");
+    return { ...old, v: LANDSCAPE_VERSION, tools: {}, cards: {} };
+  }
   return fields(v, "", LANDSCAPE, false, "the landscape");
 }
 
@@ -575,17 +671,22 @@ export function parseLandscape(v: unknown): Landscape {
  * A null entry removes it (one that isn't there is left as it is), and an
  * undefined entry or field changes nothing. Areas and stacks merge field by
  * field (collapsing an area leaves its repos alone), so a new one has to come
- * whole; a placement or a ghost is replaced whole. `migratedAt: null` clears
- * it, so the grid's layout is read in again.
+ * whole; a placement, a ghost, a tool window or a card is replaced whole.
+ * `migratedAt: null` clears it, so the grid's layout is read in again.
  */
 export interface LandscapePatch {
   workspaces?: Record<string, Placement | null>;
   areas?: Record<string, Partial<Area> | null>;
   stacks?: Record<string, Partial<Stack> | null>;
   ghosts?: Record<string, Ghost | null>;
+  tools?: Record<string, ToolWindow | null>;
+  cards?: Record<string, ArtifactCard | null>;
   migratedAt?: string | null;
   tourDone?: boolean;
 }
+
+/** The records a patch changes entry by entry, in the order a patch is applied. */
+export const PATCH_RECORDS = ["workspaces", "areas", "stacks", "ghosts", "tools", "cards"] as const;
 
 const PATCH: Part = {
   checks: {
@@ -593,6 +694,8 @@ const PATCH: Part = {
     areas: (v, where) => entries(v, where, orNull((x, w) => fields<Partial<Area>>(x, w, AREA, true)), areaKey),
     stacks: (v, where) => entries(v, where, orNull((x, w) => fields<Partial<Stack>>(x, w, STACK, true)), stackKey),
     ghosts: (v, where) => entries(v, where, orNull(ghost)),
+    tools: (v, where) => entries(v, where, orNull(toolWindow)),
+    cards: (v, where) => entries(v, where, orNull(card)),
     migratedAt: orNull(str),
     tourDone: bool,
   } satisfies Record<keyof LandscapePatch, Check<unknown>>,
@@ -643,6 +746,8 @@ export function applyPatch(l: Landscape, patch: LandscapePatch): Landscape {
     areas: merged(l.areas, patch.areas, "areas", area, true, areaKey),
     stacks: merged(l.stacks, patch.stacks, "stacks", stack, true, stackKey),
     ghosts: merged(l.ghosts, patch.ghosts, "ghosts", ghost, false),
+    tools: merged(l.tools, patch.tools, "tools", toolWindow, false),
+    cards: merged(l.cards, patch.cards, "cards", card, false),
   };
   if (patch.migratedAt === null) delete out.migratedAt;
   else if (patch.migratedAt !== undefined) out.migratedAt = str(patch.migratedAt, "migratedAt");
@@ -658,10 +763,14 @@ export function applyPatch(l: Landscape, patch: LandscapePatch): Landscape {
  * were in it, wherever they sit) and every place inside its area: teammates' sessions and ones waiting to be resumed,
  * which `members` can't name, included. A name that can't key an area (loose, or a sub-group) drops the area and
  * leaves the places. Null when the landscape holds nothing of `from`'s.
+ *
+ * Its placed tool windows and artifact cards go with it: their area is the new name, and in a merge they're placed
+ * anew in the area they joined. Where the new name can't key an area, its cards and its Artifacts and Chat windows
+ * go (they're the area's), and its other windows stay where they are, loose.
  */
 export function renameAreaPatch(l: Landscape, from: string, to: string, members: readonly string[]): LandscapePatch | null {
   const remap = (g: string) => (g === from ? to : g.startsWith(`${from}/`) ? to + g.slice(from.length) : g);
-  const patch: Required<Pick<LandscapePatch, "workspaces" | "areas" | "stacks" | "ghosts">> = { workspaces: {}, areas: {}, stacks: {}, ghosts: {} };
+  const patch: Required<Pick<LandscapePatch, (typeof PATCH_RECORDS)[number]>> = { workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} };
   const area = own(l.areas, from);
   const merge = !!area && Object.hasOwn(l.areas, to);
   if (area && from !== to) {
@@ -679,8 +788,25 @@ export function renameAreaPatch(l: Landscape, from: string, to: string, members:
     const ng = remap(g.group);
     if (ng !== g.group) put(patch.ghosts, id, { ...g, group: ng });
   }
+  if (from !== to) {
+    const keyable = areaKey(to) === null;
+    const rehome = <T extends { placement?: Placement }>(x: T): T => {
+      if (!merge) return x;
+      const { placement: _, ...rest } = x;
+      return rest as T;
+    };
+    for (const [id, t] of Object.entries(l.tools)) {
+      if (t.docked || t.area !== from) continue;
+      if (keyable) put(patch.tools, id, rehome({ ...t, area: to }));
+      else put(patch.tools, id, isWorkspaceTool(t.tool) ? { ...t, area: null } : null);
+    }
+    for (const [id, c] of Object.entries(l.cards)) {
+      if (c.area !== from) continue;
+      put(patch.cards, id, keyable ? rehome({ ...c, area: to }) : null);
+    }
+  }
   const out: LandscapePatch = {};
-  for (const k of ["workspaces", "areas", "stacks", "ghosts"] as const) if (Object.keys(patch[k]).length) Object.assign(out, { [k]: patch[k] });
+  for (const k of PATCH_RECORDS) if (Object.keys(patch[k]).length) Object.assign(out, { [k]: patch[k] });
   return Object.keys(out).length ? out : null;
 }
 

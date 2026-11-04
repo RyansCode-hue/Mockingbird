@@ -120,11 +120,11 @@ describe("size presets", () => {
         }
   });
 
-  it("default to M: an agent of 140 × 42 at 1072 × 928 px", () => {
+  it("default to M: an agent of 140 × 42 at 1072 × 944 px, its header and footer around the terminal", () => {
     expect(presetSize("agent")).toEqual(presetSize("agent", "M"));
-    expect(presetSize("agent")).toEqual({ w: 1072, h: 928 });
+    expect(presetSize("agent")).toEqual({ w: 1072, h: 944 });
     expect(WORKSPACE_SIZES.terminal.M).toEqual({ cols: 120, rows: 24 });
-    expect(presetSize("terminal")).toEqual({ w: 920, h: 544 });
+    expect(presetSize("terminal")).toEqual({ w: 920, h: 560 });
   });
 });
 
@@ -478,9 +478,10 @@ describe("a stored landscape", () => {
 
   it("is refused whole, naming the first field that's wrong", () => {
     expect(() => parseLandscape(null)).toThrow(/the landscape is not an object/);
-    expect(() => parseLandscape({ ...base(), v: 2 })).toThrow(/^v is 2, not 1$/);
+    expect(() => parseLandscape({ ...base(), v: 3 })).toThrow(/^v is 3, not 2$/);
     expect(() => parseLandscape({ ...base(), areas: { "5101": { x: 0, y: 0, w: 1, h: 1 } } })).toThrow(/areas\["5101"\]\.repos is missing/);
     expect(() => parseLandscape({ v: 1, workspaces: {}, areas: {}, stacks: {} })).toThrow(/ghosts is missing/);
+    expect(() => parseLandscape({ v: 2, workspaces: {}, areas: {}, stacks: {}, ghosts: {} })).toThrow(/tools is missing/);
   });
 
   it("is refused with a field this version doesn't know, rather than losing it on the next save", () => {
@@ -511,6 +512,20 @@ const FORMATS: Record<number, typeof LANDSCAPE_FORMAT> = {
       required: ["agent", "closedAt", "cwd", "group", "placement", "repoPath", "title"],
     },
     conversation: { fields: ["agent", "id"], required: ["agent", "id"] },
+  },
+  2: {
+    landscape: { fields: ["areas", "cards", "ghosts", "migratedAt", "stacks", "tools", "tourDone", "v", "workspaces"], required: ["areas", "cards", "ghosts", "stacks", "tools", "v", "workspaces"] },
+    placement: { fields: ["h", "w", "x", "y"], required: ["h", "w", "x", "y"] },
+    area: { fields: ["autoCreate", "collapsed", "h", "locked", "repos", "w", "x", "y"], required: ["h", "repos", "w", "x", "y"] },
+    repo: { fields: ["base", "path"], required: ["base", "path"] },
+    stack: { fields: ["active", "placement"], required: ["active", "placement"] },
+    ghost: {
+      fields: ["agent", "branch", "closedAt", "conversation", "cwd", "group", "placement", "repoPath", "summary", "ticketId", "title", "worktreeRemoved"],
+      required: ["agent", "closedAt", "cwd", "group", "placement", "repoPath", "title"],
+    },
+    conversation: { fields: ["agent", "id"], required: ["agent", "id"] },
+    tool: { fields: ["area", "docked", "placement", "session", "tool"], required: ["docked", "tool"] },
+    card: { fields: ["area", "artifact", "placement"], required: ["area", "artifact"] },
   },
 };
 

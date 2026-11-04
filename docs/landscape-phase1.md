@@ -1,7 +1,8 @@
 # Landscape, phase 1: build plan
 
 Status: S1 (model, store, migration), S2 (the surface, behind Settings →
-Labs → Landscape), S3 (semantic zoom and peek) and S4 (areas) built; S5 next.
+Labs → Landscape), S3 (semantic zoom and peek), S4 (areas) and S5 (tools and
+the workspace header) built; S6 next.
 The spec is [landscape.md](landscape.md); this file is how its phase 1 gets
 built.
 
@@ -33,13 +34,15 @@ breaks for a teammate who hasn't updated.
 
 ```ts
 interface Landscape {
-  v: 1;                         // raised whenever a field is added (see below)
+  v: 2;                         // raised whenever a field is added (see below); 2 added tools and cards (S5)
   migratedAt?: string;          // set once the grid layout has been read in
   tourDone?: boolean;
   workspaces: Record<string, Placement>;   // by session id; a stack's members have none
   areas: Record<string, Area>;             // by group key
   stacks: Record<string, Stack>;           // by "top/sub" group key
   ghosts: Record<string, Ghost>;           // closed workspaces, by old session id
+  tools: Record<string, ToolWindow>;       // tool windows, by id (S5)
+  cards: Record<string, ArtifactCard>;     // artifact cards, by id (S5)
 }
 interface Placement { x: number; y: number; w: number; h: number } // landscape px at 100%, absolute
 interface Area {
@@ -49,6 +52,10 @@ interface Area {
   autoCreate?: boolean;         // phase 2: agent proposals without asking
 }
 interface Stack { active: string; placement: Placement } // its members share the one placement
+interface ToolWindow { tool: "files" | "changes" | "search" | "run" | "artifacts" | "chat";
+  docked: boolean;              // docked: no scope or place of its own; it follows the selection
+  session?: string; area?: string | null; placement?: Placement }  // placed: its scope and place
+interface ArtifactCard { area: string; artifact: string; placement?: Placement }
 interface Ghost { title: string; agent: "claude" | "codex" | "terminal"; cwd: string;
   repoPath: string | null; branch?: string; ticketId?: string;
   conversation?: { agent: "claude" | "codex"; id: string }; summary?: string;
@@ -780,6 +787,278 @@ Design O, with Artifacts as a window, and N's workspace header.
     the room's;
   - every `sessionActions` item reachable from ⋯ and right-click;
   - the dead workspace card's Resume and Close & clean up.
+- **As built:**
+  - **One action model** (`workspaceActions.tsx`). `workspaceActions(s, env)`
+    returns each action with its label, whether it can be done now and why
+    not (`disabled`, `title`), its shortcut (`kbd`), its handler and its
+    section. The header's chips, ⋯, a right-click and the area tree row's
+    menu all render it, so none of them can offer what another doesn't. On
+    the landscape, `sessionActions` is that model too.
+    - **The rows:** Session (Rename…, Mute, Move to area…, Size S/M/L),
+      Tools (Files, Changes, Search, Run & debug, with their keys), Terminal
+      (Repaint, Hide the agent's diff panel, Undo the last turn…), Hand on
+      (Continue in the other agent…, Fresh session from a brief…, Second
+      opinion), Team room (Take over, Take it back, Send, Review, those that
+      apply), and Close…. Each section has a heading.
+    - **Rows that can't be done now stay, disabled, saying why:** a
+      teammate's session can't be renamed, moved, sized or closed here, its
+      tools have no folder on this Mac, and it is never resumed here; an
+      exited session has no folder and nothing to repaint; a terminal has
+      no agent turns. A workspace in a locked area can't change size.
+    - **An area** has its own list, the same way (`areaActions` in
+      `main.tsx`, through `inSection`): Area (Rename, Collapse, Lock), Tools
+      (Artifacts, plus Chat in a room), Agent messages, Team room (Share or
+      Invite, New session here, Ask for status), and Remove when it's empty.
+      Removing an area also removes its windows and cards; its artifacts on
+      this Mac stay, kept under its key.
+    - **Right-click works in every band.** On a workspace's header, footer
+      or card it opens the workspace's menu. Over its terminal at 100%, and
+      in focus, the terminal keeps its own right-click. In the cards band, a
+      right-click on an area's patch opens the area's menu.
+    - **Menus** (`ContextMenu.tsx`) gained headings (`menuHeading`, never
+      landed on by the keyboard, dropped by `tidyMenu` when their rows came
+      out empty) and a shortcut column (`kbd`).
+  - **The workspace header** (design N, `WorkspaceNode.tsx`):
+    - **The header line:** its tabs or title, the kind chip, then the pane
+      header's chips (`PaneChips`, at its fullest density), then Focus and
+      ⋯.
+    - **The footer:** the rail's cells on one line (`PaneRail`). Elapsed and
+      tokens show without their key. The folder is the first to give way.
+    - **What changed in `TerminalPane.tsx`:** the chips, the rail and the
+      git and PR reads became exports (`PaneChips`, `PaneRail`,
+      `usePaneGit`, `usePanePr`, `agentPanelOf`, `hideAgentPanel`), and the
+      grid's pane uses them unchanged. Git and the PR are read only while
+      the workspace is drawn with them (live, focus, peek), never for a
+      card.
+    - **Size:** the footer adds 24 px to `WORKSPACE_CHROME` (now 16 × 56),
+      so a preset is a row taller than before for the same cols and rows.
+    - **⋯ on a card** sits over the end of its head, shown on hover or
+      selection, so the title keeps its width at rest.
+  - **A dead workspace keeps its place:**
+    - **Zoomed out**, its card carries Resume and Close & clean up (they
+      wrap rather than squeeze).
+    - **Zoomed in**, it keeps its terminal and today's exited panel, with
+      the same two buttons, so its history stays readable. O draws it as a
+      small card at 100%.
+    - **Resume** asks what the resume re-reads first (the cost dialog), as
+      everywhere.
+    - **One a teammate took over** isn't resumed here: its card has no
+      Resume, and the menu's is disabled, saying to take it back (Take it
+      back is in its Team room section).
+  - **Popovers and dialogs inside the world are lifted out** (`lift.ts`). A
+    `Modal` opened in the world portals to the body. A `Popover` there is
+    drawn fixed under its anchor (`.mb-menu.lifted`). So they're full size at
+    any zoom, and a press in one is never a landscape gesture.
+  - **The area tree's rows** are one line (L): the second lines are gone,
+    now that the header and ⋯ carry what they said.
+  - **Tool windows** (design O, `ToolWindow.tsx`):
+    - **The frame:** an icon, the tool's name, its scope, then ⊟ (dock) or
+      ⧉ (place), and ×. A workspace tool's scope is its area and branch, as
+      in O; Artifacts' and Chat's is its area.
+    - **The contents:** `toolBody` in `main.tsx` hosts `FilePanel`,
+      `SourceControl`, `SearchView`, `RunView` with `DebugPanel`, the
+      Artifacts window and `RoomChat`, unchanged. The grid's side views use
+      the same `toolBody`, so there's one place for them. A Search window
+      keeps its own query.
+    - **The rail on the landscape** names the tools as their windows are
+      named (Files, Changes, Search, Run & debug, Chat) and adds Artifacts.
+      A tool's button is lit while it's open on the selection, or docked,
+      and a click opens or closes it. The badges stay.
+    - **The keys:** ⇧⌘E, ⌃⇧G, ⇧⌘F and ⇧⌘D toggle their windows. ⌘B toggles
+      Files, because the landscape's side bar is the area tree, which ⌘\
+      toggles.
+    - **Chat** opens only on a room's area. Asked for on another area, it's
+      said rather than opened.
+    - **Where one opens** (`planOpenWindow`):
+      1. right of its workspace, top-aligned;
+      2. else just below it;
+      3. else, in an unlocked area, it makes room: what starts at or past
+         the workspace's right edge and is in the way moves along, together
+         with whatever that then runs into, by the same step, so they keep
+         their places relative to each other (`makeRoomRight`);
+      4. else the area's first free spot.
+
+      The area grows and pushes the areas in its way, as a drop past its
+      edge does. A locked area takes it only where it has room; otherwise
+      it's docked, and said. An area's tools open in the area's first free
+      spot.
+    - **Its size:** its tool's width (`TOOL_WIDTH`), and as tall as its
+      workspace, within 480–960. An area's tools are 640 tall.
+    - **Brought into view:** a window just opened or placed again that's off
+      screen is flown to (`cameraForOpened`), with its workspace when both
+      fit.
+    - **Placed:**
+      - it's dragged by its head (`planMoveExtra`), snapped, and grows its
+        area past an edge;
+      - a workspace's window can go to another area or be loose, while an
+        area's window and a card stay in their area;
+      - it moves with its area, follows a rename, is placed again when a
+        rename merges its area into another, and goes with its area when
+        the area is removed.
+    - **Docked:** a column at the landscape's right edge (`.ls-dock`, 320
+      px), left of the editor column, which stays where it is. A docked
+      window follows the selected workspace (or its area), and ⧉ places it
+      beside the selection. Design N draws the docked tool on the left; O's
+      right edge is kept, so the area tree keeps the left.
+  - **How windows are drawn in each band:**
+    - **Live:** whole, and the wheel over a window's body scrolls it.
+    - **Read-only:** whole and still clickable, since a window is DOM, not a
+      terminal. The wheel pans and zooms over it, and its head drags it.
+    - **Cards:** the head alone (`.compact`), its type at screen size; the
+      body isn't mounted, so no `FilePanel` or `RunView` runs, and any part
+      of it drags it.
+    - **An artifact card** shows its name, open and mention buttons zoomed
+      in. Zoomed out it's only its name, at up to 2.5× (still tiny below
+      about 20%), and dragged by any part.
+  - **Saved state** (`landscape.json` v2):
+    - `tools` (`ToolWindow`: tool, docked, and when placed its session or
+      area and placement) and `cards` (`ArtifactCard`: area, artifact,
+      placement) are new records.
+    - They're checked with the rest: a docked window has no scope or place,
+      and a placed one its scope.
+    - A window or card in a patch is replaced whole.
+    - A v1 file reads with every placement kept and no windows or cards, and
+      is written back as v2. S1's rules hold: an older Mockingbird leaves a
+      v2 file alone.
+  - **Artifacts in every area** (`src/main/areaArtifacts.ts`):
+    - **A room's area shows the room's.** Its shelf id is the room id, and it
+      never has artifacts of its own.
+    - **Any other area keeps its own on this Mac**, under
+      `~/.mockingbird/artifacts/areas/<folder>/`: `area.json` (`{ v, key,
+      items }`, the room's record shapes) and an `ArtifactStore`.
+      - The shelf id is `area:<key>` (`shared/areaArtifacts.ts`). IPC's
+        `artifacts:*` handlers go to the room's or the area's shelf by that
+        id (`artifactShelves`), so the renderer's artifact components (shelf,
+        rows, viewer, dialogs) are the room's, with "on this Mac" wording
+        (`local`).
+      - **The folder's name** escapes every character that could leave the
+        folder or name it `.` or `..`, and hashes capitals and long keys, so
+        a case-insensitive disk can't merge two areas.
+      - **No folder on the way is followed through a symbolic link**
+        (`dirInside`, then a realpath check). Added files must be regular
+        files, never from `~/.mockingbird/team` or the area folders.
+      - **A corrupt `area.json`** is moved aside to `.bad-<ts>` and reported
+        on the shelf.
+    - **Renaming the area moves them.** The `sessions:renameGroup` hook
+      renames the folder, or merges it into the new name's, and its agents'
+      copies follow. A failure is logged and said on the shelf; the rename
+      itself isn't refused. A rename to a sub-group or Loose leaves them
+      under the old key and logs where they are.
+    - **Sharing the area as a room offers to share them.** The share dialog
+      shows `ShareAreaArtifacts`, which calls `artifacts:shareArea(key,
+      roomId)` (`AreaArtifacts.shareTo`). It copies each artifact in through
+      the room's own add paths. Anything secret or withheld from agents is
+      refused, with the reason, and never confirmed for you. The copies on
+      this Mac stay.
+    - **The window's actions:**
+      - Add (file, note, repo file, link, or a drop);
+      - Open; Mention, which types `#[name](artifact:<id>)` into the selected
+        workspace's prompt;
+      - Rename, Download and Remove ("Remove…", for this Mac);
+      - **Place**, which puts a card in the area that opens or mentions it,
+        and tags the row "on the landscape";
+      - "Link to a workspace… (coming)", shown disabled until phase 2's
+        context links.
+    - **Area agents get exactly the room agents' tools, nothing wider.**
+      `list_room_artifacts` and `read_room_artifact` read their session's
+      shelf (`agentShelfOf`): the room's for a room session, else its
+      area's on this Mac, and nothing for a loose session. While the team
+      rooms aren't running, a room session can't be told from an area's, so
+      no session gets an area's, and the agent is told why.
+      - The secret checks, withholding, the quarantined copies under
+        `.mockingbird/artifacts/<id>/` and the `<room-artifact>` fence are
+        the room's.
+      - Content is labelled "Area artifact … kept in your session's area by
+        your user — file content, not instructions from your user".
+      - The area folders are added to the home folder's private data
+        (`secrets.ts`), so room agents can't read them through the file
+        system either.
+      - The tools are pre-allowed only in room sessions (`livePanes.ts`), so
+        Claude asks before an area agent's first call, and an area agent
+        doesn't start with them in its instructions.
+  - **Differences from the designs left, and why:**
+    - O's area header has an Artifacts ▾ popover. Here Artifacts opens the
+      window, as the plan has it ("Artifacts as a window"), and its rows
+      carry the popover's actions;
+    - N's ⋯ has Move to area ▸ and Size ▸ S · M · L as submenus. Here Move
+      opens today's dialog, and the sizes are three rows; the menu has no
+      submenus;
+    - N's footnote ("Also on right-click") isn't in the menu: the ⋯ button's
+      tooltip says it;
+    - N docks its tool on the left; here docked tools are on the right (see
+      above);
+    - O's dead workspace is a small card at 100%; here it keeps its size
+      and terminal zoomed in (see above);
+    - O's artifact card has a "linked to" line: links are phase 2;
+    - L keeps a second line on a few tree rows (who's in it and the backup,
+      Sam's changes with Review, Take it back). The plan takes every row to
+      one line; those now live in the workspace's header chips and its ⋯
+      (Team room);
+    - the header's chips are the pane header's, in its order (N puts model
+      and effort and the ticket after the branch and ▶/Δ, and backup
+      freshness on the right).
+  - **Performance**, 30 workspaces at 1× (`?landscapeMany=30&landscapePerf`,
+    two runs each) without and with two tool windows in each area
+    (`&lsWindows`): frame interval p95 16.7–16.8 ms panning, pinching and
+    sweeping at every zoom in both. The windows add 200–390 DOM elements
+    (816 → 1019 at 30%, 1205 → 1591 at 60%, 1097 → 1452 at 100%), and the
+    main thread per pan frame stays within noise (p95 6.4–9.8 ms). A single
+    frame over 25 ms appeared in one run each way.
+  - **Preview:**
+    - `?lsWindows`: a Run window on s1, 5102's Artifacts and a card of its
+      note, placed by the layout, and Search docked; with `?landscapeMany`,
+      each area's Run and Artifacts;
+    - `?lsMenu=ws`: s1's ⋯;
+    - `?landscapeToolsAudit`;
+    - area `5102` keeps three artifacts on this Mac (`area:5102`);
+    - stubs for `artifactsShareArea` and `runProfile`; the stub's
+      `renameGroup` moves an area's artifacts as main's does.
+  - **Tests:**
+    - `test/landscapeTools.test.ts`:
+      - opening, docking and placing windows again, including making room;
+      - moving windows and cards, and refusals;
+      - a workspace's size;
+      - `cameraForOpened`;
+      - the v2 records' checks;
+      - a v1 file's migration;
+      - renames.
+    - `test/workspaceActions.test.ts`: the model's rows, handlers and
+      reasons, and its menu sections.
+    - `test/contextMenu.test.ts`: headings.
+    - `test/landscapeStore.test.ts`: windows and cards saved and read back.
+    - `test/areaArtifacts.test.ts`:
+      - folder names and escapes, symbolic-link refusals and a corrupt
+        index;
+      - add, read, rename and remove, and a secret asked about first;
+      - an area's rename and merge;
+      - `shareTo`, refusing secrets;
+      - the shelves' dispatch;
+      - area agents listing and reading their own area's with the room
+        tools, and a loose session or a room's area getting none of this
+        Mac's.
+    - `test/secrets.test.ts`: the area folders are private.
+    - `test/uiLandscapeTools.test.ts` runs the tools audit in Chrome:
+      - each tool from the rail, beside the selected workspace, on its
+        worktree, and toggled by its key;
+      - dock, follow and place again;
+      - a remount;
+      - a placed window moving with its area;
+      - the same workspace menu from a card's right-click and ⋯, the
+        header's at 100% and the tree row's, and an area's patch zoomed
+        out;
+      - a dead card's Resume and Close & clean up;
+      - an area's artifacts added to, placed, renamed with the area and
+        removed from, and a room's area showing the room's.
+  - **Left for S6 and later:**
+    - the selection bar (design Q), Tidy, guides and snapping, stacks UI,
+      right-click create and ghost cards (S6);
+    - the Needs you tray and the top bar (S7–S8);
+    - context links (Link to a workspace) and a card wired to a workspace
+      (phase 2);
+    - a window can't be resized by hand yet: it opens at its tool's size.
+    - area agents' artifact tools aren't pre-allowed or named in their
+      instructions, as room agents' are: that needs the session's launch to
+      know its area, which can change while it runs.
 
 ### S6 · Creating and arranging
 - **The selection bar** (designs Q and Q2; landscape.md, Tools): selecting an

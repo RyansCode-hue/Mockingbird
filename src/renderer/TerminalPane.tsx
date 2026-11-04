@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openLink } from "./uiUtil";
 import { beginDrag, dragging } from "./drag";
 import { CloseIcon, ExpandIcon, HandoffIcon, MinusIcon, PanelRightIcon, PinIcon, PlusIcon, RepaintIcon, ShrinkIcon, UndoIcon } from "./Icons";
@@ -309,6 +309,299 @@ const overlapCount = (list: FileOverlap[]) => new Set(list.flatMap((o) => o.file
 
 const PR_LABEL: Record<PrState["state"], string> = { draft: "draft", open: "open", approved: "approved", changes: "changes requested", merged: "merged", closed: "closed" };
 
+/** A pane's folder's git state (its header's change count and its rail's Git), read again when the folder changes; panes in one folder share one read in main. */
+export function usePaneGit(session: SessionInfo, on: boolean) {
+  const [gitState, setGit] = useState<WorktreeStateInfo | { error: string } | null>(null);
+  const dead = session.status === "dead";
+  const remote = session.room?.remote ? session.room : null;
+  const gitRoot = on && session.repoPath && !dead ? session.cwd : null;
+  const gitSeq = useRef(0);
+  const readGit = () => {
+    const n = ++gitSeq.current;
+    if (!gitRoot) return setGit(null);
+    settled<IpcResult<WorktreeStateInfo>>(window.mb.worktreeState(gitRoot), "Couldn't read git").then((r) => n === gitSeq.current && setGit(r ?? { error: "no answer" }));
+  };
+  useEffect(readGit, [gitRoot]);
+  useFolderRefresh(gitRoot, readGit, 30_000);
+  // a teammate's session shows its owner's git state, as they last published it
+  const git: WorktreeStateInfo | null = remote ? (remote.git && !dead ? { ...remote.git, dirty: remote.git.dirtyFiles > 0 } : null) : gitState && !isErr(gitState) ? gitState : null;
+  const gitErr = gitState && isErr(gitState) ? gitState.error : null;
+  return { git, gitErr, gitRoot };
+}
+
+/** The pull request of the branch checked out at `root` (main caches lookups for 2 minutes), read again every 3 minutes while shown; `readPr(true)` asks afresh. */
+export function usePanePr(root: string | null, branch: string | null | undefined) {
+  const [pr, setPr] = useState<PrStatus | null>(null);
+  const prSeq = useRef(0);
+  const readPr = (fresh = false) => {
+    const n = ++prSeq.current;
+    if (!root) return setPr(null);
+    const failed = (error: string): PrStatus => ({ branch: null, pr: null, error, at: Date.now() });
+    window.mb.prStatus(root, fresh).then(
+      (r: PrStatus | { error: string }) => n === prSeq.current && setPr(isErr(r) && !("at" in r) ? failed(r.error) : (r as PrStatus)),
+      (err: unknown) => n === prSeq.current && setPr(failed(String(err)))
+    );
+  };
+  useEffect(() => {
+    readPr();
+    if (!root) return;
+    const t = setInterval(() => !document.hidden && readPr(), 180_000);
+    return () => clearInterval(t);
+  }, [root, branch]);
+  return { pr, readPr };
+}
+
+/** What a pane's header chips say, and what pressing them opens (TerminalPane's header, and a landscape workspace's). */
+export interface PaneChipProps {
+  session: SessionInfo;
+  density: PaneDensity;
+  git: WorktreeStateInfo | null;
+  gitErr: string | null;
+  overlaps?: FileOverlap[];
+  runCount?: number;
+  onOpenRun?: () => void;
+  onOpenChanges?: () => void;
+  onJump?: (sessionId: string) => void;
+  onOpenBoard?: (roomId: string) => void;
+  backup?: RoomSessionBackupView | null;
+  onTakeOver?: (view: RoomSessionBackupView) => void;
+  /** The context warning (ContextWarning.tsx), first: a narrow header cuts the other chips before it. */
+  contextChip?: React.ReactNode;
+  pinNote?: string;
+  onRestart?: () => void;
+}
+
+/**
+ * A pane's chips: the context warning, whose session it is and who's looking or typing, its backup and Take over,
+ * its branch, ▶ runs (opens Run), Δ changes (opens Source Control), overlaps (the other worktree, or the room's
+ * Board), model and effort, ticket, kind, muted and the guard chip.
+ */
+export function PaneChips({ session, density, git, gitErr, overlaps, runCount, onOpenRun, onOpenChanges, onJump, onOpenBoard, backup, onTakeOver, contextChip, pinNote, onRestart }: PaneChipProps) {
+  const chips = useMemo(() => overlapChips(overlaps), [overlaps]);
+  const dead = session.status === "dead";
+  const room = session.room ?? null;
+  const remote = room?.remote ? room : null;
+  const assistant = session.kind === "assistant" && !session.shell;
+  return (
+    <>
+      {contextChip}
+      {room && <OwnerTag room={room} />}
+      {room && <Lookers room={room} />}
+      {room && <Typists session={session} room={room} />}
+      {room && <TypingChip session={session} room={room} />}
+      {backup && density !== "min" && <BackupFreshness view={backup} />}
+      {backup && remote && onTakeOver && <TakeOverButton view={backup} onOpen={onTakeOver} />}
+      {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
+      {!!runCount && density !== "min" && (
+        <button
+          className="chip running"
+          title={`${plural(runCount, "service")} of this worktree running — open Run and Debug`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenRun?.();
+          }}
+        >
+          ▶ {runCount}
+        </button>
+      )}
+      {git?.dirty && (
+        <button
+          className="chip changes"
+          title={`${plural(git.dirtyFiles, "uncommitted file")}: +${git.insertions} −${git.deletions} lines in tracked files${remote ? ` on ${remote.ownerName}'s laptop` : " — open Source Control"}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (!remote) onOpenChanges?.();
+          }}
+        >
+          <ChangeCount files={git.dirtyFiles} insertions={git.insertions} deletions={git.deletions} />
+        </button>
+      )}
+      {gitErr && density !== "min" && (
+        <span className="chip" title={`Couldn't read this folder's git state: ${gitErr}`}>
+          git: couldn't read
+        </span>
+      )}
+      {chips.local.length > 0 && density !== "min" && (
+        <button
+          className="chip overlap"
+          title={localOverlapTitle(chips.local)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onJump?.(chips.local[0].other);
+          }}
+        >
+          ⚠ {overlapCount(chips.local)} overlap
+        </button>
+      )}
+      {/* team rooms: a teammate's pushed branch changes the same files — the room's House board shows who has which ticket */}
+      {density !== "min" &&
+        chips.teammates.map((c) => (
+          <button
+            key={c.key}
+            className="chip overlap"
+            title={c.title}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenBoard?.(c.roomId);
+            }}
+          >
+            ⚠ {c.label}
+          </button>
+        ))}
+      {density === "max" && (session.model || session.effort) && (
+        <span className="chip" title="model · effort for this session">
+          {[session.model, session.effort].filter(Boolean).join(" · ")}
+        </span>
+      )}
+      {density === "max" && session.ticketId && (
+        <span className={`chip ${dead ? "" : "teal"}`}>
+          #{ticketIdOf(session.ticketId)}{dead ? "" : " · Active"}
+        </span>
+      )}
+      {assistant && density !== "min" && <span className="chip teal">assistant</span>}
+      {session.shell && density !== "min" && <span className="chip">shell</span>}
+      {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
+      {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
+      {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row, its ⋯ or ⌘K)">muted</span>}
+      {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />}
+    </>
+  );
+}
+
+/** What a pane's rail shows beyond its git state: messages and their log, usage, and what its cells open. */
+export interface PaneRailProps {
+  session: SessionInfo;
+  git: WorktreeStateInfo | null;
+  gitErr: string | null;
+  pr: PrStatus | null;
+  readPr: (fresh?: boolean) => void;
+  messages?: { in: number; out: number };
+  onShowMessages?: () => void;
+  meter?: SessionMeter;
+  onOpenChanges?: () => void;
+  onOpenFiles?: () => void;
+  className?: string;
+}
+
+/** A pane's rail (design 1b): elapsed, git, its PR, messages, repo, folder (opens Files), queued messages and tokens. */
+export function PaneRail({ session, git, gitErr, pr, readPr, messages, onShowMessages, meter, onOpenChanges, onOpenFiles, className = "rail" }: PaneRailProps) {
+  const remote = session.room?.remote ? session.room : null;
+  const gitStr = git ? `${git.upstream ? `↑${git.ahead} ↓${git.behind}` : "not on origin"} · ${git.dirty ? `${git.dirtyFiles} uncommitted` : "clean"}` : null;
+  const gitTitle = git
+    ? [
+        git.upstream
+          ? `Compared with ${git.upstream} as of the last fetch: ↑ ${plural(git.ahead, "commit")} here it doesn't have (to push), ↓ ${plural(git.behind, "commit")} there this branch doesn't have (to pull).`
+          : "This branch doesn't track a remote branch yet.",
+        git.dirty ? `${plural(git.dirtyFiles, "file")} with uncommitted changes (edited or new).` : "No uncommitted changes.",
+        "Click for Source Control — Pull, Push, the graph.",
+      ].join("\n")
+    : "";
+  return (
+    <div className={className}>
+      <div className="cell">
+        <span className="k">Elapsed</span>
+        <span className="v">{fmtElapsed(session.createdAt, true)}</span>
+      </div>
+      {gitStr && (
+        <div className={`cell ${onOpenChanges && !remote ? "click" : ""}`} title={remote ? `On ${remote.ownerName}'s laptop, as they last published it.\n${gitTitle}` : gitTitle} onClick={remote ? undefined : onOpenChanges}>
+          <span className="k">Git</span>
+          <span className={`v ${git!.dirty ? "red" : "teal"}`}>{gitStr}</span>
+        </div>
+      )}
+      {gitErr && (
+        <div className="cell" title={`Couldn't read this folder's git state: ${gitErr}`}>
+          <span className="k">Git</span>
+          <span className="v red">couldn't read</span>
+        </div>
+      )}
+      {pr && (pr.pr || pr.error) && (
+        <div
+          className="cell click"
+          title={
+            pr.pr
+              ? [`${pr.pr.title}`, `${pr.branch} → ${pr.pr.base}`, ...pr.pr.reviews, pr.pr.conflicts ? "It has merge conflicts with its base." : "", "Click to open it."].filter(Boolean).join("\n")
+              : `Couldn't check for a pull request: ${pr.error}\nClick to check again.`
+          }
+          onClick={() => (pr.pr ? openLink(pr.pr.url) : readPr(true))}
+        >
+          <span className="k">PR</span>
+          {pr.pr ? (
+            <span className={`v pr-${pr.pr.conflicts ? "changes" : pr.pr.state}`}>
+              #{pr.pr.id} · {PR_LABEL[pr.pr.state]}
+              {pr.pr.conflicts ? " · conflicts" : ""}
+            </span>
+          ) : (
+            <span className="v dim">couldn't check</span>
+          )}
+        </div>
+      )}
+      {messages && (
+        <div className="cell click" title="Messages from and to other agent sessions — click for the log" onClick={onShowMessages}>
+          <span className="k">Msgs</span>
+          <span className="v">
+            {messages.in}↓ {messages.out}↑
+          </span>
+        </div>
+      )}
+      {session.repoPath && (
+        <div className="cell">
+          <span className="k">Repo</span>
+          <span className="v">{baseName(session.repoPath)}</span>
+        </div>
+      )}
+      {remote ? (
+        <div className="cell" title={`${remote.ownerName}'s session: it runs on their laptop, in their clone${remote.repo ? ` of ${remote.repo}` : ""}`}>
+          <span className="k">Runs on</span>
+          <span className="v">
+            {remote.ownerName}'s Mockingbird{remote.repoName ? ` · ${remote.repoName}` : ""}
+          </span>
+        </div>
+      ) : (
+        <div className="cell folder" title={session.cwd}>
+          <span className="k">Folder</span>
+          <span className="v">
+            <span className="fn">{baseName(session.cwd)}</span>
+            {onOpenFiles && (
+              <button className="mini" title={`Browse ${session.cwd} — files, viewer, diffs (⌘B)`} onClick={onOpenFiles}>
+                Files
+              </button>
+            )}
+          </span>
+        </div>
+      )}
+      {session.queuedCount ? (
+        <div className="cell">
+          <span className="k">Queued</span>
+          <span className="v">{session.queuedCount} msg</span>
+        </div>
+      ) : null}
+      {/* the session's own usage, apart from where it runs: at the far right */}
+      {meter && totalTokens(meter.tokens) > 0 && (
+        <div className="cell meter" title={meterTitle(meter)}>
+          <span className="k">Tokens</span>
+          <span className="v">
+            {formatTokens(totalTokens(meter.tokens))}
+            {meter.window?.sharePct != null && <span className="share"> · ≈{formatShare(meter.window.sharePct)} of 5h</span>}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Where the agent CLI's diff side panel shows its close glyph in this session's terminal, or null when it isn't open. */
+export function agentPanelOf(id: string): { col: number; row: number } | null {
+  const t = terms.get(id);
+  return t?.wantsMouse ? findPanelClose(t.term) : null;
+}
+
+/** Close the agent CLI's diff side panel, as its × would; false when it isn't open. */
+export function hideAgentPanel(id: string): boolean {
+  const at = agentPanelOf(id);
+  if (at) clickCell(id, at);
+  return !!at;
+}
+
 /**
  * A session's cached terminal, made the first time it's asked for (its saved output replayed, and from then on
  * fed by the data pump whether or not a pane shows it) and made again when the session was relaunched under its
@@ -561,7 +854,6 @@ export function TerminalPane({
   landscape?: { w: number; h: number; font: number; home?: { w: number; h: number } };
 }) {
   const holder = useRef<HTMLDivElement>(null);
-  const chips = useMemo(() => overlapChips(overlaps), [overlaps]);
   const dead = session.status === "dead";
   const waiting = session.status === "waiting";
   // team rooms: a teammate's session runs on their Mockingbird; this pane is its copy, at its owner's size
@@ -612,41 +904,10 @@ export function TerminalPane({
     return () => clearInterval(iv);
   }, [waiting]);
 
-  // git state for the header's change count and the rail, read when the folder
-  // changes (panes in one folder share one read in the main process)
-  const [gitState, setGit] = useState<WorktreeStateInfo | { error: string } | null>(null);
-  const gitRoot = density !== "min" && session.repoPath && !dead ? session.cwd : null;
-  const gitSeq = useRef(0);
-  const readGit = () => {
-    const n = ++gitSeq.current;
-    if (!gitRoot) return setGit(null);
-    settled<IpcResult<WorktreeStateInfo>>(window.mb.worktreeState(gitRoot), "Couldn't read git").then((r) => n === gitSeq.current && setGit(r ?? { error: "no answer" }));
-  };
-  useEffect(readGit, [gitRoot]);
-  useFolderRefresh(gitRoot, readGit, 30_000);
-  // a teammate's session shows its owner's git state, as they last published it
-  const git: WorktreeStateInfo | null = remote ? (remote.git && !dead ? { ...remote.git, dirty: remote.git.dirtyFiles > 0 } : null) : gitState && !isErr(gitState) ? gitState : null;
-  const gitErr = gitState && isErr(gitState) ? gitState.error : null;
-
-  // the branch's pull request, for the rail (the main process caches lookups for 2 minutes)
-  const [pr, setPr] = useState<PrStatus | null>(null);
-  const prRoot = density === "max" && gitRoot ? gitRoot : null;
-  const prSeq = useRef(0);
-  const readPr = (fresh = false) => {
-    const n = ++prSeq.current;
-    if (!prRoot) return setPr(null);
-    const failed = (error: string): PrStatus => ({ branch: null, pr: null, error, at: Date.now() });
-    window.mb.prStatus(prRoot, fresh).then(
-      (r: PrStatus | { error: string }) => n === prSeq.current && setPr(isErr(r) && !("at" in r) ? failed(r.error) : (r as PrStatus)),
-      (err: unknown) => n === prSeq.current && setPr(failed(String(err)))
-    );
-  };
-  useEffect(() => {
-    readPr();
-    if (!prRoot) return;
-    const t = setInterval(() => !document.hidden && readPr(), 180_000);
-    return () => clearInterval(t);
-  }, [prRoot, git?.branch]);
+  // git state for the header's change count and the rail; a landscape workspace reads its own (WorkspaceNode)
+  const { git, gitErr, gitRoot } = usePaneGit(session, density !== "min" && !landscape);
+  // the branch's pull request, for the rail
+  const { pr, readPr } = usePanePr(density === "max" ? gitRoot : null, git?.branch);
 
   useEffect(() => {
     if (dead) return; // dead panes show the resume body instead of the terminal
@@ -880,18 +1141,6 @@ export function TerminalPane({
 
   const assistant = session.kind === "assistant" && !session.shell; // repo-less shells aren't assistants
   const shortcut = paneIndex < 9 ? `⌘${paneIndex + 1}` : "";
-  const gitStr = git
-    ? `${git.upstream ? `↑${git.ahead} ↓${git.behind}` : "not on origin"} · ${git.dirty ? `${git.dirtyFiles} uncommitted` : "clean"}`
-    : null;
-  const gitTitle = git
-    ? [
-        git.upstream
-          ? `Compared with ${git.upstream} as of the last fetch: ↑ ${plural(git.ahead, "commit")} here it doesn't have (to push), ↓ ${plural(git.behind, "commit")} there this branch doesn't have (to pull).`
-          : "This branch doesn't track a remote branch yet.",
-        git.dirty ? `${plural(git.dirtyFiles, "file")} with uncommitted changes (edited or new).` : "No uncommitted changes.",
-        "Click for Source Control — Pull, Push, the graph.",
-      ].join("\n")
-    : "";
   const meta = fmtElapsed(session.createdAt);
 
   // the header's labelled controls, and its right-click menu: the same actions, then the session's own
@@ -992,86 +1241,23 @@ export function TerminalPane({
           </span>
         )}
         {/* the context warning sits by the title: a narrow pane cuts its other chips first */}
-        {contextChip}
-        {room && <OwnerTag room={room} />}
-        {room && <Lookers room={room} />}
-        {room && <Typists session={session} room={room} />}
-        {room && <TypingChip session={session} room={room} />}
-        {backup && density !== "min" && <BackupFreshness view={backup} />}
-        {backup && remote && onTakeOver && <TakeOverButton view={backup} onOpen={onTakeOver} />}
-        {density !== "min" && session.branch && <span className="chip">{session.branch}</span>}
-        {!!runCount && density !== "min" && (
-          <button
-            className="chip running"
-            title={`${plural(runCount, "service")} of this worktree running — open Run and Debug`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenRun?.();
-            }}
-          >
-            ▶ {runCount}
-          </button>
-        )}
-        {git?.dirty && (
-          <button
-            className="chip changes"
-            title={`${plural(git.dirtyFiles, "uncommitted file")}: +${git.insertions} −${git.deletions} lines in tracked files${remote ? ` on ${remote.ownerName}'s laptop` : " — open Source Control"}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (!remote) onOpenChanges?.();
-            }}
-          >
-            <ChangeCount files={git.dirtyFiles} insertions={git.insertions} deletions={git.deletions} />
-          </button>
-        )}
-        {gitErr && density === "std" && (
-          <span className="chip" title={`Couldn't read this folder's git state: ${gitErr}`}>
-            git: couldn't read
-          </span>
-        )}
-        {chips.local.length > 0 && density !== "min" && (
-          <button
-            className="chip overlap"
-            title={localOverlapTitle(chips.local)}
-            onClick={(e) => {
-              e.stopPropagation();
-              onJump?.(chips.local[0].other);
-            }}
-          >
-            ⚠ {overlapCount(chips.local)} overlap
-          </button>
-        )}
-        {/* team rooms: a teammate's pushed branch changes the same files — the room's House board shows who has which ticket */}
-        {density !== "min" &&
-          chips.teammates.map((c) => (
-            <button
-              key={c.key}
-              className="chip overlap"
-              title={c.title}
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenBoard?.(c.roomId);
-              }}
-            >
-              ⚠ {c.label}
-            </button>
-          ))}
-        {density === "max" && (session.model || session.effort) && (
-          <span className="chip" title="model · effort for this session">
-            {[session.model, session.effort].filter(Boolean).join(" · ")}
-          </span>
-        )}
-        {density === "max" && session.ticketId && (
-          <span className={`chip ${dead ? "" : "teal"}`}>
-            #{ticketIdOf(session.ticketId)}{dead ? "" : " · Active"}
-          </span>
-        )}
-        {assistant && density !== "min" && <span className="chip teal">assistant</span>}
-        {session.shell && density !== "min" && <span className="chip">shell</span>}
-        {session.agent === "codex" && density !== "min" && <span className="chip">codex</span>}
-        {pinNote && density !== "min" && <span className="chip" title="Pinned here from another group">{pinNote}</span>}
-        {session.muted && density !== "min" && <span className="chip" title="This session's notifications are muted (unmute from its sidebar row or ⌘K)">muted</span>}
-        {room && !remote && !room.takenOver && !dead && density !== "min" && <GuardChip session={session} guards={room.guards} inline={room.inlineOnStart} onRestart={onRestart} />}
+        <PaneChips
+          session={session}
+          density={density}
+          git={git}
+          gitErr={density === "std" ? gitErr : null}
+          overlaps={overlaps}
+          runCount={runCount}
+          onOpenRun={onOpenRun}
+          onOpenChanges={onOpenChanges}
+          onJump={onJump}
+          onOpenBoard={onOpenBoard}
+          backup={backup}
+          onTakeOver={onTakeOver}
+          contextChip={contextChip}
+          pinNote={pinNote}
+          onRestart={onRestart}
+        />
         <span className="meta">{density === "min" ? shortcut : meta}</span>
         <ActionBar className="controls" actions={controls} />
         {headerMenu.menu}
@@ -1079,99 +1265,7 @@ export function TerminalPane({
       )}
 
       {density === "max" && !dead && !landscape && (
-        <div className="rail">
-          <div className="cell">
-            <span className="k">Elapsed</span>
-            <span className="v">{fmtElapsed(session.createdAt, true)}</span>
-          </div>
-          {gitStr && (
-            <div className={`cell ${onOpenChanges && !remote ? "click" : ""}`} title={remote ? `On ${remote.ownerName}'s laptop, as they last published it.\n${gitTitle}` : gitTitle} onClick={remote ? undefined : onOpenChanges}>
-              <span className="k">Git</span>
-              <span className={`v ${git!.dirty ? "red" : "teal"}`}>{gitStr}</span>
-            </div>
-          )}
-          {gitErr && (
-            <div className="cell" title={`Couldn't read this folder's git state: ${gitErr}`}>
-              <span className="k">Git</span>
-              <span className="v red">couldn't read</span>
-            </div>
-          )}
-          {pr && (pr.pr || pr.error) && (
-            <div
-              className="cell click"
-              title={
-                pr.pr
-                  ? [`${pr.pr.title}`, `${pr.branch} → ${pr.pr.base}`, ...pr.pr.reviews, pr.pr.conflicts ? "It has merge conflicts with its base." : "", "Click to open it."].filter(Boolean).join("\n")
-                  : `Couldn't check for a pull request: ${pr.error}\nClick to check again.`
-              }
-              onClick={() => (pr.pr ? openLink(pr.pr.url) : readPr(true))}
-            >
-              <span className="k">PR</span>
-              {pr.pr ? (
-                <span className={`v pr-${pr.pr.conflicts ? "changes" : pr.pr.state}`}>
-                  #{pr.pr.id} · {PR_LABEL[pr.pr.state]}
-                  {pr.pr.conflicts ? " · conflicts" : ""}
-                </span>
-              ) : (
-                <span className="v dim">couldn't check</span>
-              )}
-            </div>
-          )}
-          {messages && (
-            <div className="cell click" title="Messages from and to other agent sessions — click for the log" onClick={onShowMessages}>
-              <span className="k">Msgs</span>
-              <span className="v">
-                {messages.in}↓ {messages.out}↑
-              </span>
-            </div>
-          )}
-          {session.repoPath && (
-            <div className="cell">
-              <span className="k">Repo</span>
-              <span className="v">{baseName(session.repoPath)}</span>
-            </div>
-          )}
-          {remote ? (
-            <div className="cell" title={`${remote.ownerName}'s session: it runs on their laptop, in their clone${remote.repo ? ` of ${remote.repo}` : ""}`}>
-              <span className="k">Runs on</span>
-              <span className="v">
-                {remote.ownerName}'s Mockingbird{remote.repoName ? ` · ${remote.repoName}` : ""}
-              </span>
-            </div>
-          ) : (
-          <div className="cell folder" title={session.cwd}>
-            <span className="k">Folder</span>
-            <span className="v">
-              <span className="fn">{baseName(session.cwd)}</span>
-              {onOpenFiles && (
-                <button
-                  className="mini"
-                  title={`Browse ${session.cwd} — files, viewer, diffs (⌘B)`}
-                  onClick={onOpenFiles}
-                >
-                  Files
-                </button>
-              )}
-            </span>
-          </div>
-          )}
-          {session.queuedCount ? (
-            <div className="cell">
-              <span className="k">Queued</span>
-              <span className="v">{session.queuedCount} msg</span>
-            </div>
-          ) : null}
-          {/* the session's own usage, apart from where it runs: at the far right */}
-          {meter && totalTokens(meter.tokens) > 0 && (
-            <div className="cell meter" title={meterTitle(meter)}>
-              <span className="k">Tokens</span>
-              <span className="v">
-                {formatTokens(totalTokens(meter.tokens))}
-                {meter.window?.sharePct != null && <span className="share"> · ≈{formatShare(meter.window.sharePct)} of 5h</span>}
-              </span>
-            </div>
-          )}
-        </div>
+        <PaneRail session={session} git={git} gitErr={gitErr} pr={pr} readPr={readPr} messages={messages} onShowMessages={onShowMessages} meter={meter} onOpenChanges={onOpenChanges} onOpenFiles={onOpenFiles} />
       )}
 
       {dead && remote ? (

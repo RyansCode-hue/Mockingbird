@@ -27,12 +27,19 @@ export interface Action {
   disabled?: boolean;
   /** The one action the element is for right now (Take over while its owner is offline). */
   primary?: boolean;
+  /** Its keyboard shortcut, shown at the menu row's end ("⌘E"). */
+  kbd?: string;
+  /** Not an action: the name of the set of rows under it ("Terminal"). Never picked. */
+  heading?: boolean;
 }
 
 /** A context menu's rows: actions, with "-" between sets of them. */
 export type MenuEntry = Action | "-";
 
-const isAction = (e: MenuEntry | undefined): e is Action => !!e && e !== "-" && !e.disabled;
+const isAction = (e: MenuEntry | undefined): e is Action => !!e && e !== "-" && !e.disabled && !e.heading;
+
+/** A set of rows' name in a menu: a row that's never picked. */
+export const menuHeading = (label: string): Action => ({ key: `h:${label}`, label, heading: true, disabled: true, onPick: () => {} });
 
 /** The next pickable row from `from` in `dir`, wrapping; -1 when none is. */
 export function nextItem(items: readonly MenuEntry[], from: number, dir: 1 | -1): number {
@@ -188,6 +195,10 @@ function ContextMenuView({ state, setState, label }: { state: MenuState; setStat
       {state.items.map((it, i) =>
         it === "-" ? (
           <div key={`sep${i}`} className="mb-ctx-sep" role="separator" />
+        ) : it.heading ? (
+          <div key={it.key} className="mb-ctx-h" role="presentation">
+            {it.label}
+          </div>
         ) : (
           <button
             key={it.key}
@@ -203,6 +214,7 @@ function ContextMenuView({ state, setState, label }: { state: MenuState; setStat
           >
             <span className="mb-ctx-ico">{it.icon}</span>
             <span className="mb-ctx-t">{it.menuLabel ?? it.label}</span>
+            {it.kbd && <kbd className="mb-ctx-k">{it.kbd}</kbd>}
           </button>
         )
       )}
@@ -303,15 +315,21 @@ export function pickActions(entries: readonly MenuEntry[], keys: readonly string
   return keys.map((k) => byKey.get(k)).filter((a): a is Action => !!a);
 }
 
-/** A menu's rows without separators at its ends or two in a row (where a set of actions came out empty). */
+/**
+ * A menu's rows without separators at its ends or two in a row, and without a heading with no rows under it (where a
+ * set of actions came out empty).
+ */
 export function tidyMenu(entries: readonly (MenuEntry | null | false | undefined)[]): MenuEntry[] {
   const out: MenuEntry[] = [];
+  const bare = (e: MenuEntry | undefined) => e === "-" || !!e?.heading;
   for (const e of entries) {
     if (!e) continue;
+    // a heading's set came out empty: the next separator or heading replaces it
+    if (bare(e) && out.length && out[out.length - 1] !== "-" && (out[out.length - 1] as Action).heading) out.pop();
     if (e === "-" && (!out.length || out[out.length - 1] === "-")) continue;
     out.push(e);
   }
-  while (out[out.length - 1] === "-") out.pop();
+  while (out.length && bare(out[out.length - 1])) out.pop();
   return out;
 }
 

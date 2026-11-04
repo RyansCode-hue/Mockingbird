@@ -77,7 +77,6 @@ export function AreaTree({
   onPick,
   onFocus,
   onHide,
-  sub,
   menuFor,
   areaMenu,
   footer,
@@ -92,8 +91,7 @@ export function AreaTree({
   onFocus: (s: SessionInfo) => void;
   /** Collapse the tree to the rail (⌘\). */
   onHide: () => void;
-  /** A workspace row's second line: who's in it, its backup, what a teammate sent. */
-  sub: (s: SessionInfo) => React.ReactNode;
+  /** A workspace row's right-click: its workspace's actions (its ⋯'s). */
   menuFor: (s: SessionInfo) => MenuEntry[];
   areaMenu: (key: string) => MenuEntry[] | null;
   /** Under the tree: Previous and the Connected line. */
@@ -127,8 +125,8 @@ export function AreaTree({
       requestAnimationFrame(() => list.current?.querySelector<HTMLElement>(`[data-sid="${CSS.escape(next.id)}"]`)?.focus());
     }
   };
+  // one line per workspace (design L): who's in it, its backup and what a teammate sent are on its header and its ⋯
   const wsRow = (s: SessionInfo, depth: 1 | 2, extra?: React.ReactNode, key = s.id) => {
-    const line = sub(s);
     return (
       <div
         key={key}
@@ -149,7 +147,6 @@ export function AreaTree({
           <span className="lt-t">{titleOf(s)}</span>
           {extra ?? (s.status === "dead" ? <span className="lt-tag bad">exited</span> : s.shell ? <span className="lt-tag">terminal</span> : selected === s.id ? <span className="lt-tag" aria-hidden="true">↗</span> : null)}
         </span>
-        {line && <span className="lt-sub">{line}</span>}
       </div>
     );
   };

@@ -11,7 +11,7 @@
  * the query can also pick the screen (see the end of this file).
  */
 import { compactBlocker, rereadCost } from "../shared/contextBudget";
-import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
+import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindow, GraphCommit, Meters, RunProfile, SessionInfo, Settings, TicketPipeline, TicketStage, UsageReport } from "../shared/types";
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, fitSize, followsBottom, measuredCell } from "../renderer/cachedTerm";
@@ -41,7 +41,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
-import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
+import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -310,6 +310,8 @@ const artId = (s: string) => s.padEnd(22, "0");
 const ART = {
   spec: artId("Aspec"), copy: artId("Aspeccopy"), shot: artId("Ashot"), csv: artId("Acsv"), pdf: artId("Apdf"), repo: artId("Arepo"), link: artId("Alink"),
   env: artId("Aenv"), har: artId("Ahar"), mov: artId("Amov"), key: artId("Akey"), dump: artId("Adump"), log: artId("Alog"), gone: artId("Agone"),
+  // area 5102's on this Mac (it isn't a room)
+  tagNotes: artId("Atagnotes"), trace: artId("Atrace"), perf: artId("Aperf"),
 };
 // history as the House records it: { at, actor, event, note?, to_status? } — a status change has a to_status and no note
 const houseEvent = (kind: string, by: string, minsAgo: number, over: Partial<HouseHistoryEntry> = {}): HouseHistoryEntry => ({ kind, text: "", by, at: new Date(now - minsAgo * min).toISOString(), status: null, reference: null, ...over });
@@ -535,9 +537,26 @@ const artifactRooms: Record<string, RoomArtifactsView> = {
   },
   R5110bbbbbbbbbbbbbbbbb: { roomId: "R5110bbbbbbbbbbbbbbbbb", self: ME, items: [], notices: [], problems: [] },
 };
+// an area's artifacts on this Mac (area:<key>, main's areaArtifacts.ts): 5102 keeps three, any other area none yet
+const AREA_SELF = "you";
+const mine = (over: Omit<Parameters<typeof art>[0], "addedBy">) => art({ ...over, addedBy: AREA_SELF, addedByName: "You" });
+artTexts[ART.tagNotes] = "# Tag list profile\n\n- Typing in the tag filter re-renders every row\n- Memoizing `TagRow` keeps a key under 16 ms\n";
+artifactRooms["area:5102"] = {
+  roomId: "area:5102",
+  self: AREA_SELF,
+  items: [
+    mine({ id: ART.tagNotes, kind: "note", name: "Tag list profile", addedAt: now - 2 * 60 * min, rev: "r-tag-1", chars: artTexts[ART.tagNotes].length }),
+    mine({ id: ART.trace, kind: "file", name: "quick-view-trace.png", addedAt: now - 90 * min, size: 212 * KB, local: present("image", "image/png") }),
+    mine({ id: ART.perf, kind: "link", name: "React profiler docs", addedAt: now - 5 * 60 * min, url: "https://react.dev/reference/react/Profiler", host: "react.dev" }),
+  ],
+  notices: [],
+  problems: [],
+};
 const artBytes: Record<string, Uint8Array> = {};
 const artifactsChanged = (roomId: string) => emit("onArtifactsChanged", roomId);
-const artifactRoom = (roomId: string) => artifactRooms[roomId] ?? (team.rooms.some((r) => r.id === roomId) ? (artifactRooms[roomId] = { roomId, self: ME, items: [], notices: [], problems: [] }) : null);
+const artifactRoom = (roomId: string) =>
+  artifactRooms[roomId] ??
+  (roomId.startsWith("area:") || team.rooms.some((r) => r.id === roomId) ? (artifactRooms[roomId] = { roomId, self: roomId.startsWith("area:") ? AREA_SELF : ME, items: [], notices: [], problems: [] }) : null);
 const artifactOf = (roomId: string, id: string) => artifactRoom(roomId)?.items.find((a) => a.id === id);
 let artSeq = 0;
 const newArtId = () => `Anew${++artSeq}`.padEnd(22, "x");
@@ -947,6 +966,14 @@ const landscapeFixture = (): Landscape => {
       x += made.w + AREA_GAP;
       rowH = Math.max(rowH, made.h);
     }
+    // ?lsWindows: each area's Run window on its first agent and its Artifacts window, placed by the layout, so
+    // ?landscapePerf counts tool windows too
+    if (new URLSearchParams(location.search).has("lsWindows"))
+      for (const key of Object.keys(l.areas)) {
+        const first = sessions.find((s) => s.taskGroup === key && !s.shell);
+        if (first) l.tools[`run-${key}`] = { tool: "run", docked: false, session: first.id, area: key };
+        l.tools[`art-${key}`] = { tool: "artifacts", docked: false, area: key };
+      }
     return l;
   }
   const a5101 = area("5101", 0, 0, ["s1", "s2", "s3", SAM_PANE, NICK_PANE, "s4", "s8"]);
@@ -960,6 +987,16 @@ const landscapeFixture = (): Landscape => {
   // the assistant is ungrouped: loose, next to the first area
   const placed = [...Object.values(l.areas), ...Object.values(l.workspaces)];
   l.workspaces.s7 = placeNew(M, placed, null, a5101);
+  // ?lsWindows: tool windows and an artifact card (S5), placed by the layout where the file has no place for them, as
+  // after a rename merged their area: Run on s1 in 5101, 5102's Artifacts and a card of its note, and Search docked
+  if (new URLSearchParams(location.search).has("lsWindows")) {
+    l.tools = {
+      w1: { tool: "run", docked: false, session: "s1", area: "5101" },
+      w2: { tool: "artifacts", docked: false, area: "5102" },
+      w3: { tool: "search", docked: true },
+    };
+    l.cards = { c1: { area: "5102", artifact: ART.tagNotes } };
+  }
   return l;
 };
 let landscape = landscapeFixture();
@@ -1192,6 +1229,15 @@ const api: Record<string, (...a: any[]) => any> = {
       landscapeRev++;
       emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
     }
+    // its artifacts on this Mac go with it, merged into `to`'s when it has some (main's AreaArtifacts.areaRenamed)
+    const shelf = artifactRooms[`area:${from}`];
+    if (shelf && !to.includes("/") && from !== to) {
+      const into = artifactRooms[`area:${to}`];
+      artifactRooms[`area:${to}`] = into ? { ...into, items: [...into.items, ...shelf.items.filter((a) => !into.items.some((m) => m.id === a.id))] } : { ...shelf, roomId: `area:${to}` };
+      delete artifactRooms[`area:${from}`];
+      artifactsChanged(`area:${from}`);
+      artifactsChanged(`area:${to}`);
+    }
   },
   killSession: async (id: string) => {
     sessions = sessions.filter((s) => s.id !== id);
@@ -1319,6 +1365,22 @@ const api: Record<string, (...a: any[]) => any> = {
   },
   groupStatusCheck: async (group: string) => ({ asked: sessions.filter((s) => s.taskGroup?.split("/")[0] === group && !s.shell).length }),
   runStates: async () => [],
+  // the run setup of a session's worktree (main's run:profile): backoffice's api, web and worker, shared by its worktrees
+  runProfile: async (id: string) => {
+    const s = byId(id);
+    if (!s?.cwd || s.shell) return err("This session has no worktree to run");
+    const repo = s.repoPath ?? s.cwd;
+    const profile: RunProfile = {
+      repo,
+      services: [
+        { name: "api", kind: "process", cwd: "api", command: "dotnet watch --urls http://localhost:${port:api}", ports: [{ name: "api", base: 5080, url: "http://localhost:${port}" }] },
+        { name: "web", kind: "process", cwd: "web", command: "npm run dev -- --port ${port:web}", ports: [{ name: "web", base: 5173, url: "http://localhost:${port}" }], dependsOn: ["api"] },
+        { name: "worker", kind: "process", cwd: "worker", command: "dotnet run" },
+      ],
+      sideBySide: { slots: 3, step: 10 },
+    };
+    return later({ worktree: s.cwd, repo, file: `${repo}/.mockingbird/run.json`, profile }, 120);
+  },
   debugSessions: async () => [],
   debugBreakpoints: async () => ({ breakpoints: {} }),
   collabList: async () => councils,
@@ -1978,6 +2040,25 @@ const api: Record<string, (...a: any[]) => any> = {
     if (view === "pdf" || view === "binary") return { view, mime, size: a.size ?? 0 };
     return { view, text: artTexts[id] ?? "", truncated: false };
   },
+  // an area shared as a room: its artifacts on this Mac copied in, nothing secret (main's AreaArtifacts.shareTo)
+  artifactsShareArea: async (key: string, roomId: string) => {
+    const from = artifactRoom(`area:${key}`);
+    const to = artifactRoom(roomId);
+    if (!from || !to) return err("You're not in that room");
+    const out = { shared: 0, refused: [] as { name: string; reason: string }[] };
+    for (const a of from.items) {
+      if (a.agentsBlocked) {
+        out.refused.push({ name: a.name, reason: `${a.agentsBlocked}: add it to the room yourself if teammates should have a copy` });
+        continue;
+      }
+      const id = artId(`S${Math.random().toString(36).slice(2, 10)}`);
+      if (artTexts[a.id] !== undefined) artTexts[id] = artTexts[a.id];
+      to.items.push({ ...a, id, addedBy: ME, addedByName: "You", addedAt: Date.now() });
+      out.shared++;
+    }
+    artifactsChanged(roomId);
+    return later(out, 300);
+  },
   artifactsDownload: async (roomId: string, id: string) => {
     const a = artifactOf(roomId, id);
     if (!a || a.kind !== "file") return err("That file was removed");
@@ -2495,6 +2576,8 @@ if (lsTools) {
 const lsMenu = params.get("lsMenu");
 if (lsMenu === "members") waitFor(".ls-ah .ls-ah-btn[aria-haspopup]", (el) => setTimeout(() => el.click(), 300));
 if (lsMenu === "more") waitFor(".ls-ah .ls-ah-more", (el) => setTimeout(() => el.click(), 300));
+// ?lsMenu=ws: s1's ⋯ (its workspace's actions)
+if (lsMenu === "ws") waitFor('.ls-world [data-front="s1"] .ls-more', (el) => setTimeout(() => el.click(), 300));
 const lsPick = params.get("lsPick")?.split(",");
 if (lsPick)
   waitFor(".ls-world .ls-node", () =>
@@ -2989,7 +3072,7 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit"].some((k) => params.has(k)) || flyAudit) {
+if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit"].some((k) => params.has(k)) || flyAudit) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
@@ -3061,7 +3144,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         const stack = stackKeyOf(s);
         const p = stack ? landscape.stacks[stack].placement : landscape.workspaces[id];
         const holder = term(id)?.element?.parentElement;
-        (out.placed as unknown[]).push({ id, want: want(id, p), term: sizeOf(id), pty: resizes().filter((r) => r.startsWith(`${id} `)).pop() ?? null, holder: holder ? `${holder.clientWidth}×${holder.clientHeight}` : null, room: `${p.w - 16}×${p.h - 40}` });
+        (out.placed as unknown[]).push({ id, want: want(id, p), term: sizeOf(id), pty: resizes().filter((r) => r.startsWith(`${id} `)).pop() ?? null, holder: holder ? `${holder.clientWidth}×${holder.clientHeight}` : null, room: `${p.w - WORKSPACE_CHROME.w}×${p.h - WORKSPACE_CHROME.h}` });
       }
       // s8 in view with s4 beside it, and s4 selected: s8's terminal is one whose workspace isn't
       await pick("s4");
@@ -4465,6 +4548,298 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       out.error = String(err instanceof Error ? err.stack : err);
     }
     report("mb-landscape-fly-audit", out);
+  });
+
+  // ?landscapeToolsAudit (with ?motion=off): tool windows and the workspace's actions (S5). Each workspace tool opened
+  // from the rail beside the selected workspace, on its worktree, and closed and opened again by its key; one docked,
+  // following the selection, and placed again beside it; what's placed and docked kept when the landscape mounts again;
+  // a placed window moving with its area; one action model behind ⋯, right-click (on the header, on a card, in the
+  // area tree) and an area's patch zoomed out; a dead workspace's card; an area's artifacts on this Mac added to,
+  // placed, followed through the area's rename and removed from, and a room's area showing the room's. Into
+  // <script id="mb-landscape-tools-audit">.
+  if (params.has("landscapeToolsAudit")) waitFor(".ls-world .ls-node", async () => {
+    const out: Record<string, unknown> = {};
+    const placedWin = (tool: string) => document.querySelector<HTMLElement>(`.ls-world .ls-window[data-tool="${tool}"]`);
+    const dockedWin = (tool: string) => document.querySelector<HTMLElement>(`.ls-dock .ls-window[data-tool="${tool}"]`);
+    const stored = (tool: string) => Object.entries(landscape.tools).filter(([, w]) => w.tool === tool).map(([id, w]) => ({ id, ...w }));
+    const rail = (label: string) => document.querySelector<HTMLElement>(`.activitybar button[aria-label="${label}"]`);
+    const keyDown = async (k: string, mods: KeyboardEventInit) => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...mods }));
+      await sleep(600);
+    };
+    const styleRect = (el: HTMLElement | null) => (el ? { x: parseFloat(el.style.left), y: parseFloat(el.style.top), w: parseFloat(el.style.width), h: parseFloat(el.style.height) } : null);
+    /** Just right of the workspace, top-aligned, a gap between: where the rail opens a workspace's window. */
+    const besideOf = (id: string, el: HTMLElement | null) => {
+      const r = styleRect(el);
+      const n = styleRect(node(id));
+      return !!r && !!n && r.y === n.y && r.x >= n.x + n.w && r.x - (n.x + n.w) <= 2 * GAP;
+    };
+    const scopeOf = (el: HTMLElement | null) => el?.querySelector(".ls-win-scope")?.textContent ?? null;
+    /** The main-process calls made since `mark` that name a session or a folder: what a tool did with its scope. */
+    const usedSince = (mark: number) => calls.slice(mark).filter((c) => c.fn !== "landscapeUpdate").map((c) => `${c.fn} ${JSON.stringify(c.args)}`);
+    const wholeInView = (el: Element | null) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const v = vp().getBoundingClientRect();
+      return r.left >= v.left - 1 && r.top >= v.top - 1 && r.right <= v.right + 1 && r.bottom <= v.bottom + 1;
+    };
+    const ctxRows = () => {
+      const m = document.querySelector(".mb-ctx");
+      return m
+        ? [...m.children].map((e) =>
+            e.classList.contains("mb-ctx-sep") ? "-" : e.classList.contains("mb-ctx-h") ? `# ${e.textContent}` : `${e.querySelector(".mb-ctx-t")?.textContent ?? ""}${(e as HTMLButtonElement).disabled ? " (off)" : ""}${e.querySelector(".mb-ctx-k") ? ` [${e.querySelector(".mb-ctx-k")!.textContent}]` : ""}`
+          )
+        : null;
+    };
+    const closeCtx = async () => {
+      document.querySelector(".mb-ctx")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await sleep(200);
+    };
+    const rightClick = async (el: Element, dx = 0.5, dy = 0.5) => {
+      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(el, dx, dy) }));
+      await sleep(300);
+      const rows = ctxRows();
+      await closeCtx();
+      return rows;
+    };
+    /** A right-click at (x, y) on `el`: what's at that point on screen may be a window or the dock over it. */
+    const rightClickAt = async (el: Element, x: number, y: number) => {
+      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: x, clientY: y }));
+      await sleep(300);
+      const rows = ctxRows();
+      await closeCtx();
+      return rows;
+    };
+    const ctxPick = async (text: string) => {
+      const b = [...document.querySelectorAll<HTMLButtonElement>(".mb-ctx button")].find((x) => x.querySelector(".mb-ctx-t")?.textContent === text);
+      if (!b) throw new Error(`the menu has no ${text}`);
+      b.click();
+      await sleep(500);
+    };
+    const tab = async (label: string) => {
+      [...document.querySelectorAll<HTMLElement>(".tab")].find((b) => b.textContent?.trim() === label)!.click();
+      await sleep(700);
+    };
+    const at100 = async (key: string) => {
+      document.querySelector<HTMLElement>(`.area-tree .lt-area[data-area="${CSS.escape(key)}"] .lt-head`)!.click();
+      await sleep(400);
+      document.querySelector<HTMLElement>(".ls-hud-btn.pct")!.click();
+      await sleep(700);
+    };
+    const headBtn = (key: string, text: string) => [...document.querySelectorAll<HTMLElement>(`${areaEl(key)} .ls-ah button`)].find((b) => b.textContent?.trim() === text) ?? null;
+    const artRows = (el: HTMLElement | null) => [...(el?.querySelectorAll(".art-row .art-name") ?? [])].map((n) => n.textContent);
+    const setField = async (input: HTMLInputElement, value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      await sleep(50);
+    };
+    try {
+      await sleep(900);
+      const s1 = sessions.find((s) => s.id === "s1")!;
+      const s5 = sessions.find((s) => s.id === "s5")!;
+
+      // the rail on the landscape: the tools by their windows' names, Artifacts with them
+      out.rail = [...document.querySelectorAll<HTMLElement>(".activitybar button")].map((b) => b.getAttribute("aria-label"));
+
+      // each workspace tool from the rail: beside the selected workspace, scoped to it, working on its worktree
+      await pick("s1");
+      const opened: Record<string, unknown> = {};
+      for (const [label, tool] of [["Files", "files"], ["Changes", "changes"], ["Search", "search"], ["Run & debug", "run"]] as const) {
+        const mark = calls.length;
+        rail(label)!.click();
+        await sleep(800);
+        const el = placedWin(tool);
+        const st = stored(tool);
+        const used = usedSince(mark);
+        opened[tool] = {
+          windows: st.length,
+          beside: besideOf("s1", el),
+          scope: scopeOf(el),
+          stored: st[0] ? { session: st[0].session ?? null, area: st[0].area ?? null, docked: st[0].docked } : null,
+          lit: rail(label)!.getAttribute("aria-pressed"),
+          onItsWorktree: used.some((u) => u.includes(`["s1"`) || u.includes(JSON.stringify(s1.cwd))),
+          inView: wholeInView(el),
+          apart: apartAll(),
+        };
+      }
+      out.opened = opened;
+      // the keys close the window open on the selection, and open it again; ⌘B is Files too
+      const keys: Record<string, { closed: boolean; open: boolean }> = {};
+      for (const [name, tool, k, mods] of [
+        ["⇧⌘E", "files", "E", { metaKey: true, shiftKey: true }],
+        ["⌘B", "files", "b", { metaKey: true }],
+        ["⌃⇧G", "changes", "G", { ctrlKey: true, shiftKey: true }],
+        ["⇧⌘F", "search", "F", { metaKey: true, shiftKey: true }],
+        ["⇧⌘D", "run", "D", { metaKey: true, shiftKey: true }],
+      ] as const) {
+        await keyDown(k, mods);
+        const closed = !placedWin(tool) && !stored(tool).length;
+        await keyDown(k, mods);
+        keys[name] = { closed, open: !!placedWin(tool) && stored(tool).length === 1 && besideOf("s1", placedWin(tool)) };
+      }
+      out.keys = keys;
+
+      // docked: it gives up its place and follows the selected workspace; placed again, beside that one
+      document.querySelector<HTMLElement>('.ls-world .ls-window[data-tool="files"] [aria-label="Dock it"]')!.click();
+      await sleep(500);
+      const dockedAt = { inDock: !!dockedWin("files"), placed: !!placedWin("files"), stored: stored("files")[0] ?? null, scope: scopeOf(dockedWin("files")) };
+      let mark = calls.length;
+      await pick("s5");
+      await sleep(400);
+      const follows = { scope: scopeOf(dockedWin("files")), onS5: usedSince(mark).some((u) => u.includes(`["s5"`) || u.includes(JSON.stringify(s5.cwd))) };
+      dockedWin("files")!.querySelector<HTMLElement>('[aria-label="Place it on the landscape"]')!.click();
+      await sleep(800);
+      out.dock = { docked: dockedAt, follows, placedAgain: { beside: besideOf("s5", placedWin("files")), stored: stored("files")[0] ?? null, inDock: !!dockedWin("files") } };
+      // Search docked too, for the mount that follows
+      document.querySelector<HTMLElement>('.ls-world .ls-window[data-tool="search"] [aria-label="Dock it"]')!.click();
+      await sleep(500);
+
+      // mounted again (another tab and back): every window where it was, docked ones docked
+      const shot = () => ({
+        placed: Object.fromEntries([...document.querySelectorAll<HTMLElement>(".ls-world .ls-window")].map((w) => [w.dataset.win, styleRect(w)])),
+        docked: [...document.querySelectorAll<HTMLElement>(".ls-dock .ls-window")].map((w) => w.dataset.win),
+      });
+      const before = shot();
+      const storedBefore = JSON.stringify(landscape.tools);
+      await tab("Dashboard");
+      await tab("Sessions");
+      await sleep(500);
+      out.remount = { before, after: shot(), storedSame: JSON.stringify(landscape.tools) === storedBefore };
+
+      // a placed window moves with its area: Run, placed on s1 in 5101, as 5101 is dragged by its name
+      await fitView();
+      const run = stored("run")[0];
+      const runWas = { ...run.placement! };
+      const areaWas = { ...landscape.areas["5101"] };
+      const nameEl = document.querySelector(`${areaEl("5101")} .ls-area-title .n`)!;
+      const nameBox = nameEl.getBoundingClientRect();
+      await dragAlong(mid(nameBox), { x: mid(nameBox).x + 60, y: mid(nameBox).y + 140 }, undefined, nameEl);
+      const runNow = landscape.tools[run.id].placement!;
+      const areaNow = landscape.areas["5101"];
+      out.withArea = {
+        moved: areaNow.x !== areaWas.x || areaNow.y !== areaWas.y,
+        dx: [areaNow.x - areaWas.x, runNow.x - runWas.x],
+        dy: [areaNow.y - areaWas.y, runNow.y - runWas.y],
+        drawn: styleRect(placedWin("run")),
+        stored: runNow,
+        apart: apartAll(),
+      };
+
+      // one action model: s1's ⋯ and right-click on its card zoomed out, on its header at 100%, and its tree row
+      const cardMenu = await rightClick(node("s1")!);
+      node("s1")!.querySelector<HTMLElement>(".ls-more")!.click();
+      await sleep(300);
+      const cardMore = ctxRows();
+      await closeCtx();
+      // an area's patch zoomed out, in its lower right corner clear of its workspaces: its own model; a room's has
+      // Chat, any other area's doesn't
+      const onPatch = (key: string) => {
+        const a = document.querySelector<HTMLElement>(areaEl(key))!;
+        const r = a.getBoundingClientRect();
+        return rightClickAt(a, r.right - 4, r.bottom - 4);
+      };
+      const area5102 = await onPatch("5102");
+      const area5101 = await onPatch("5101");
+      // the dead workspace's card: Resume and Close & clean up
+      const deadActs = (id: string) => [...(node(id)?.querySelectorAll<HTMLButtonElement>(".ls-card-acts button") ?? [])];
+      const s6Acts = deadActs("s6").map((b) => b.textContent);
+      const y1Acts = deadActs("y1").map((b) => b.textContent);
+      mark = calls.length;
+      deadActs("s6").find((b) => b.textContent === "Resume")!.click();
+      await sleep(600);
+      // what resuming re-reads is asked first, as everywhere a session resumes
+      const cost = document.querySelector<HTMLElement>(".modal.cost-dlg");
+      const costAsked = cost?.querySelector("h3")?.textContent ?? null;
+      cost?.querySelector<HTMLElement>("button.primary")?.click();
+      await sleep(900);
+      const resumed = calls.slice(mark).map((c) => `${c.fn} ${JSON.stringify(c.args)}`).filter((c) => c.includes('"s6"'));
+      mark = calls.length;
+      deadActs("y1").find((b) => b.textContent === "Close & clean up")!.click();
+      await sleep(900);
+      const cleaned = calls.slice(mark).map((c) => `${c.fn} ${JSON.stringify(c.args)}`).filter((c) => c.includes('"y1"') || c.includes("5110-donor-entities"));
+      out.dead = { s6: s6Acts, y1: y1Acts, costAsked, resumed, cleaned, s6Now: sessions.find((s) => s.id === "s6")?.status ?? null, y1Gone: !sessions.some((s) => s.id === "y1") };
+
+      await at100("5101");
+      const head = node("s1")!.querySelector(".ls-head")!;
+      const headMenu = await rightClick(head, 0.3, 0.5);
+      node("s1")!.querySelector<HTMLElement>(".ls-head .ls-more")!.click();
+      await sleep(300);
+      const headMore = ctxRows();
+      await closeCtx();
+      const treeMenu = await rightClick(await treeRow("s1"));
+      // picking from it does it: Mute notifications
+      node("s1")!.querySelector<HTMLElement>(".ls-head .ls-more")!.click();
+      await sleep(300);
+      mark = calls.length;
+      await ctxPick("Mute notifications");
+      const muted = calls.slice(mark).filter((c) => c.fn === "sessionMute").map((c) => c.args);
+      // the header's chips and footer at 100%
+      const s1Node = node("s1")!;
+      const chrome = {
+        chips: [...s1Node.querySelectorAll(".ls-head .ls-chips > *")].length,
+        foot: [...s1Node.querySelectorAll(".ls-foot .cell .k")].map((k) => k.textContent),
+        footShown: [...s1Node.querySelectorAll<HTMLElement>(".ls-foot .cell")].filter((c) => c.offsetWidth > 0).length,
+      };
+      out.actions = { cardMenu, cardMore, headMenu, headMore, treeMenu, muted, area5102, area5101, chrome };
+
+      // an area's artifacts on this Mac: its window lists them; one added, one placed as a card, the area renamed, one removed
+      await at100("5102");
+      mark = calls.length;
+      headBtn("5102", "Artifacts")!.click();
+      await sleep(800);
+      let art = placedWin("artifacts");
+      const listed = { count: art?.querySelector(".art-count")?.textContent ?? null, rows: artRows(art), scope: scopeOf(art), stored: stored("artifacts")[0] ?? null, asked: usedSince(mark).filter((u) => u.startsWith("artifactsList")) };
+      [...art!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "+ Add")!.click();
+      await sleep(300);
+      menuItem("Note")!.click();
+      await sleep(400);
+      const dlg = document.querySelector<HTMLElement>(".modal.art-new-note");
+      const lifted = !!dlg && !dlg.closest(".ls-world");
+      await setField(dlg!.querySelector<HTMLInputElement>("input[type=text]")!, "Perf budget");
+      mark = calls.length;
+      [...dlg!.querySelectorAll<HTMLButtonElement>("button.primary")].find((b) => b.textContent?.startsWith("Add note"))!.click();
+      await sleep(900);
+      const added = { lifted, calls: calls.slice(mark).filter((c) => c.fn.startsWith("artifacts")).map((c) => [c.fn, ...c.args.slice(0, 2)]), rows: artRows(placedWin("artifacts")) };
+      // Place: a card in the area
+      const row = (name: string) => [...placedWin("artifacts")!.querySelectorAll<HTMLElement>(".art-row")].find((r) => r.querySelector(".art-name")?.textContent === name);
+      row("React profiler docs")!.querySelector<HTMLElement>('[data-action="place"]')!.click();
+      await sleep(800);
+      const card = Object.entries(landscape.cards)[0];
+      const placedCard = { stored: card ? card[1] : null, drawn: document.querySelectorAll(".ls-world .ls-acard").length, tag: !!row("React profiler docs")?.querySelector(".art-placed") };
+      // the area renamed: its artifacts, window and card go with it
+      document.querySelector<HTMLElement>(`${areaEl("5102")} .ls-ah .ls-ah-more`)!.click();
+      await sleep(300);
+      await ctxPick("Rename…");
+      await nameIt("Pathways");
+      await sleep(500);
+      art = placedWin("artifacts");
+      const renamed = {
+        rows: artRows(art),
+        scope: scopeOf(art),
+        window: stored("artifacts")[0]?.area ?? null,
+        card: Object.values(landscape.cards)[0]?.area ?? null,
+        shelves: Object.keys(artifactRooms).filter((k) => k.startsWith("area:")),
+      };
+      // removed, after its dialog
+      mark = calls.length;
+      row("Perf budget")!.querySelector<HTMLElement>('[data-action="remove"]')!.click();
+      await sleep(300);
+      const confirm = document.querySelector<HTMLElement>(".modal.close-dlg");
+      const confirmText = confirm?.querySelector("h3")?.textContent ?? null;
+      confirm!.querySelector<HTMLElement>("button.primary")!.click();
+      await sleep(800);
+      const removed = { confirm: confirmText, calls: calls.slice(mark).filter((c) => c.fn === "artifactsRemove").map((c) => c.args[0]), rows: artRows(placedWin("artifacts")) };
+      // a room's area: the room's artifacts, shared with it
+      await at100("5101");
+      headBtn("5101", "Artifacts")!.click();
+      await sleep(800);
+      const roomWin = [...document.querySelectorAll<HTMLElement>('.ls-world .ls-window[data-tool="artifacts"]')].find((w) => w.querySelector(".ls-win-scope")?.textContent?.includes("5101")) ?? null;
+      const room = { count: roomWin?.querySelector(".art-count")?.textContent ?? null, rows: artRows(roomWin), expected: artifactRooms[ROOM_5101]?.items.map((a) => a.name) ?? null };
+      out.artifacts = { listed, added, placedCard, renamed, removed, room };
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-tools-audit", out);
   });
 }
 // ?landscapePerf (with ?landscapeMany=<n>): frame times while the landscape is panned and pinch-zoomed at 100%, 60%

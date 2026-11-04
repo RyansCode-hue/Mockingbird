@@ -52,12 +52,13 @@ export const SECRET_READS = SECRET_FILE_GLOBS.map((g) => `Read(**/${g})`);
 export const HOME_SECRETS = ["~/.ssh/**", "~/.aws/**", "~/.config/gh/**", "~/.netrc", "~/.git-credentials", "~/.mockingbird/team/**"];
 
 /**
- * Personal mail and messages in home: Messages' history and attachments, and
- * Mail's store. macOS keeps them from apps without Full Disk Access, but
- * phone-alert replies need it, and everything Mockingbird runs inherits it.
- * Denied to room agents beside HOME_SECRETS.
+ * Personal data in home: Messages' history and attachments, and Mail's store
+ * (macOS keeps them from apps without Full Disk Access, but phone-alert
+ * replies need it, and everything Mockingbird runs inherits it); and the
+ * artifacts this install's areas keep (areaArtifacts.ts), which aren't any
+ * room's. Denied to room agents beside HOME_SECRETS.
  */
-export const HOME_PRIVATE_DATA = ["~/Library/Messages/**", "~/Library/Mail/**"];
+export const HOME_PRIVATE_DATA = ["~/Library/Messages/**", "~/Library/Mail/**", "~/.mockingbird/artifacts/areas/**"];
 
 /** Credential stores in home: HOME_SECRETS, and the folder of the House's env files (each member's builder token). */
 const HOME_SECRET_PLACES = [...HOME_SECRETS, `~/${HOUSE_CONFIG_DIR}/**`];

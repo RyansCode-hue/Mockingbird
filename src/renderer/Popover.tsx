@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useEscape } from "./useEscape";
 import { usePresence } from "./motion";
 import { placeMenu } from "./ContextMenu";
+import { useLiftOut } from "./lift";
 
 /**
  * A popover under an element anywhere, even one inside a scaled layer (the landscape's world): it's drawn over
@@ -72,6 +73,28 @@ export function AnchoredPopover({ anchor, className, label, onClose, children }:
  * inside it.
  */
 export function Popover({ className, onClose, children, label }: { className: string; onClose: () => void; children: ReactNode; label?: string }) {
+  // inside the landscape's scaled world it's anchored to its wrapper from the body instead (lift.ts)
+  const lift = useLiftOut();
+  const marker = useRef<HTMLSpanElement | null>(null);
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (lift) setAnchor(marker.current?.parentElement ?? null);
+  }, [lift]);
+  if (lift)
+    return (
+      <>
+        <span ref={marker} hidden />
+        {anchor && (
+          <AnchoredPopover anchor={anchor} className={`${className} lifted`} label={label ?? ""} onClose={onClose}>
+            {children}
+          </AnchoredPopover>
+        )}
+      </>
+    );
+  return <PlacedPopover className={className} onClose={onClose} label={label}>{children}</PlacedPopover>;
+}
+
+function PlacedPopover({ className, onClose, children, label }: { className: string; onClose: () => void; children: ReactNode; label?: string }) {
   useEscape(onClose);
   const box = useRef<HTMLDivElement | null>(null);
   const presence = usePresence<HTMLDivElement>("menu", { also: box });

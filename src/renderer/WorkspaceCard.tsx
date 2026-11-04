@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AGENT_NAME, formatTokens, isErr, ticketIdOf, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
 import { lastMeaningfulLine, terminalLines } from "../shared/terminalText";
 import type { Tile } from "./landscapeModel";
@@ -8,6 +8,7 @@ import { StatusDot } from "./StatusDot";
 import { isRemote } from "./team/RoomLive";
 import { titleOf } from "./appModel";
 import { settled } from "./settled";
+import { usable, type ModelAction } from "./workspaceActions";
 
 /** How long a card waits after output arrives to read its line again: a spinner redraws many times a second. */
 export const CARD_LINE_MS = 500;
@@ -58,14 +59,17 @@ function useLastLine(s: SessionInfo): { line: string | null; error: string | nul
 
 /**
  * A workspace zoomed out (design C): a compact status card, its type sized for the screen at any zoom below the
- * cards band (--ls-inv), drawn from the session and its cached terminal's buffer. No xterm is attached.
+ * cards band (--ls-inv), drawn from the session and its cached terminal's buffer. No xterm is attached. One whose
+ * session has exited stays in its place with Resume and Close & clean up (its actions'); `more` is its ⋯.
  */
-export function WorkspaceCard({ tile, name, meters }: { tile: Tile; name: string | null; meters?: Record<string, SessionMeter> }) {
+export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Tile; name: string | null; meters?: Record<string, SessionMeter>; actions: ModelAction[]; more: React.ReactNode }) {
   const s = tile.front;
   const { line, error } = useLastLine(s);
   const meter = meters?.[s.id];
   const tokens = meter ? totalTokens(meter.tokens) : 0;
   const waiting = tile.members.filter((m) => m.status === "waiting").length;
+  const resume = usable(actions, "resume");
+  const close = s.status === "dead" ? usable(actions, "close") : undefined;
   return (
     <div className="ls-card">
       <div className="ls-card-head">
@@ -74,6 +78,7 @@ export function WorkspaceCard({ tile, name, meters }: { tile: Tile; name: string
           {titleOf(s)}
         </span>
         {s.ticketId && <span className="ls-card-ticket">#{ticketIdOf(s.ticketId)}</span>}
+        {more}
       </div>
       <div className={`ls-card-line ${error ? "bad" : ""}`} title={error ?? line ?? undefined}>
         {error ? "Couldn't read its output" : line ?? (s.status === "dead" ? `process exited${typeof s.exitCode === "number" ? ` · code ${s.exitCode}` : ""}` : "No output yet")}
@@ -90,6 +95,20 @@ export function WorkspaceCard({ tile, name, meters }: { tile: Tile; name: string
         {isRemote(s) && s.room && <span className="ls-card-owner">{s.room.ownerName}'s</span>}
         {tokens > 0 && <span className="ls-card-tokens">{formatTokens(tokens)}</span>}
       </div>
+      {s.status === "dead" && (resume || close) && (
+        <div className="ls-card-acts">
+          {resume && (
+            <button type="button" className="outline strong" onClick={(e) => (e.stopPropagation(), resume.onPick())}>
+              Resume
+            </button>
+          )}
+          {close && (
+            <button type="button" className="outline" onClick={(e) => (e.stopPropagation(), close.onPick())}>
+              Close &amp; clean up
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

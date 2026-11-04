@@ -1,22 +1,22 @@
 import { useEffect } from "react";
 import type React from "react";
-import { formatTokens, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
-import { WORKSPACE_CHROME, type Size } from "../shared/landscape";
+import type { SessionInfo, SessionMeter } from "../shared/types";
+import { WORKSPACE_CHROME, WORKSPACE_FOOT, WORKSPACE_HEAD, type Size } from "../shared/landscape";
 import type { Tile } from "./landscapeModel";
 import { StatusDot } from "./StatusDot";
-import { OwnerTag, isRemote } from "./team/RoomLive";
 import { titleOf } from "./appModel";
-import { BackIcon, ExpandIcon } from "./Icons";
+import { BackIcon, ExpandIcon, MoreIcon } from "./Icons";
 import { WorkspaceCard, kindLabel } from "./WorkspaceCard";
-import { holdSize } from "./TerminalPane";
+import { PaneChips, PaneRail, holdSize, usePaneGit, usePanePr, type PaneChipProps, type PaneRailProps } from "./TerminalPane";
+import { isRemote } from "./team/RoomLive";
+import { usable, type ModelAction } from "./workspaceActions";
 
 /**
- * The frame around a workspace's terminal, from the size colsRows takes off: the sides' padding, and the
- * header bar with the padding under the terminal. Drawn from WORKSPACE_CHROME, so the terminal's holder is
- * exactly the room colsRows counts cells in.
+ * The frame around a workspace's terminal, from the size colsRows takes off: the sides' padding, the header bar over
+ * it and the footer under it. Drawn from WORKSPACE_CHROME, so the terminal's holder is exactly the room colsRows
+ * counts cells in.
  */
 const PAD = WORKSPACE_CHROME.w / 2;
-const HEAD = WORKSPACE_CHROME.h - PAD;
 
 /**
  * What a workspace shows (Landscape.tsx decides): `live`, its terminal attached; `focus`, that filling the
@@ -26,12 +26,21 @@ const HEAD = WORKSPACE_CHROME.h - PAD;
  */
 export type NodeMode = "live" | "focus" | "placeholder" | "card" | "still" | "snapshot";
 
+/** What a workspace's header chips and footer show beyond its git state, from its owner (main.tsx). */
+export interface WorkspaceChrome {
+  chips: Omit<PaneChipProps, "session" | "density" | "git" | "gitErr" | "onOpenRun" | "onOpenChanges" | "onTakeOver">;
+  rail: Pick<PaneRailProps, "messages" | "onShowMessages" | "meter">;
+}
+
 /**
- * One workspace on the landscape (design B): a card with a header bar (status dot, title, agent chip,
- * tokens) over its live terminal. A stack shows its front member, with a tab for each. In `focus` it fills
- * the window and its header leads back; as a `placeholder` it keeps the workspace's place while it's in focus.
- * Zoomed out it's C's compact card. Whenever nothing attaches its terminal, the terminal is kept at the
+ * One workspace on the landscape (designs B and N): a header bar (status dot, title, agent, the pane's chips, ⋯) over
+ * its live terminal, and a footer with the pane rail's cells. A stack shows its front member, with a tab for each. In
+ * `focus` it fills the window and its header leads back; as a `placeholder` it keeps the workspace's place while it's
+ * in focus. Zoomed out it's C's compact card. Whenever nothing attaches its terminal, the terminal is kept at the
  * workspace's size (holdSize), so attaching it again resizes nothing.
+ *
+ * Its actions are its owner's model (workspaceActions.tsx): the chips open what they name through it, ⋯ opens its
+ * menu (`onMore`), and right-click opens the same anywhere on it (Landscape.tsx).
  */
 export function WorkspaceNode({
   tile,
@@ -44,10 +53,13 @@ export function WorkspaceNode({
   snapshot,
   inv,
   gen,
+  actions,
+  chrome,
   onSelect,
   onFocus,
   onBack,
   onTab,
+  onMore,
   body,
 }: {
   tile: Tile;
@@ -66,20 +78,28 @@ export function WorkspaceNode({
   inv: number;
   /** The front session's terminal's generation (main.tsx's termKey): a restart gives it a new terminal, which whatever reads the old one must take up. */
   gen: string;
+  /** The front session's actions: what its chips, ⋯ and right-click do. */
+  actions: ModelAction[];
+  chrome: WorkspaceChrome;
   /** A press on it; `header` when it was on the header (or a card), which leaves the keyboard with the landscape. */
   onSelect: (tile: Tile, header: boolean) => void;
   onFocus: (tile: Tile) => void;
   onBack?: () => void;
   onTab: (tile: Tile, id: string) => void;
+  /** ⋯ pressed: its menu, under the button. */
+  onMore: (tile: Tile, from: HTMLElement) => void;
   /** The terminal of the session in front, at this size. */
   body: (s: SessionInfo, size: Size) => React.ReactNode;
 }) {
   const s = tile.front;
-  const meter = meters?.[s.id];
-  const tokens = meter ? totalTokens(meter.tokens) : 0;
   const waiting = tile.members.some((m) => m.status === "waiting");
   const away = mode === "card" || mode === "still" || mode === "snapshot";
   useEffect(() => (away ? holdSize(s, size) : undefined), [away, s.id, s.createdAt, s.status === "dead", size.w, size.h, gen]);
+  // its git state and PR only while it's drawn with them: not as a card, off screen or behind focus
+  const drawn = mode === "live" || mode === "focus" || mode === "snapshot";
+  const { git, gitErr, gitRoot } = usePaneGit(s, drawn);
+  const { pr, readPr } = usePanePr(drawn ? gitRoot : null, git?.branch);
+  const pick = (key: string) => usable(actions, key)?.onPick;
   const style: React.CSSProperties =
     mode === "focus"
       ? { width: size.w, height: size.h }
@@ -89,22 +109,37 @@ export function WorkspaceNode({
           { left: `calc(${tile.rect.x}px + var(--ci))`, top: `calc(${tile.rect.y}px + var(--ci))`, width: `calc(${size.w}px - 2 * var(--ci))`, height: `calc(${size.h}px - 2 * var(--ci))` }
         : { left: tile.rect.x, top: tile.rect.y, width: size.w, height: size.h };
   const card = mode === "card";
+  const more = (
+    <button
+      type="button"
+      className="ls-more"
+      aria-haspopup="menu"
+      aria-label={`${titleOf(s)}: more actions`}
+      data-tip="Its actions — or right-click it"
+      onClick={(e) => {
+        e.stopPropagation();
+        onMore(tile, e.currentTarget);
+      }}
+    >
+      <MoreIcon />
+    </button>
+  );
   return (
     <div
       className={["ls-node", mode, selected ? "selected" : "", picked ? "picked" : "", tile.hidden && mode !== "focus" ? "hidden" : "", waiting ? "st-waiting" : "", s.status === "dead" ? "st-dead" : "", isRemote(s) ? "remote" : ""].filter(Boolean).join(" ")}
-      style={card ? { ...style, ["--ls-inv" as string]: inv } : { ...style, gridTemplateRows: `${HEAD}px minmax(0, 1fr)` }}
+      style={card ? { ...style, ["--ls-inv" as string]: inv } : { ...style, gridTemplateRows: `${WORKSPACE_HEAD}px minmax(0, 1fr) ${WORKSPACE_FOOT}px` }}
       data-ws={tile.key}
       data-front={s.id}
       onPointerDown={(e) => onSelect(tile, card || !!(e.target as Element).closest?.(".ls-head"))}
       onDoubleClick={card ? () => onFocus(tile) : undefined}
     >
       {card ? (
-        <WorkspaceCard key={gen} tile={tile} name={name} meters={meters} />
+        <WorkspaceCard key={gen} tile={tile} name={name} meters={meters} actions={actions} more={more} />
       ) : (
         <>
           <div
             className="ls-head"
-            title={mode === "focus" ? undefined : "double-click to focus"}
+            title={mode === "focus" ? undefined : "double-click to focus · right-click for its actions"}
             onDoubleClick={(e) => {
               if ((e.target as Element).closest("button")) return;
               if (mode !== "focus" && mode !== "placeholder") onFocus(tile);
@@ -140,21 +175,30 @@ export function WorkspaceNode({
                 </span>
               </>
             )}
-            {s.room && <OwnerTag room={s.room} />}
             <span className="chip ls-kind">{kindLabel(s)}</span>
-            <span className="ls-spacer" />
-            {tokens > 0 && (
-              <span className="ls-tokens" title={`This session's conversations: ${formatTokens(tokens)} tokens`}>
-                {formatTokens(tokens)}
+            {mode !== "placeholder" && (
+              <span className="ls-chips">
+                <PaneChips
+                  {...chrome.chips}
+                  session={s}
+                  density="max"
+                  git={git}
+                  gitErr={null}
+                  onOpenRun={pick("tool:run")}
+                  onOpenChanges={pick("tool:changes")}
+                  onTakeOver={pick("takeover") ? () => pick("takeover")?.() : undefined}
+                />
               </span>
             )}
+            <span className="ls-spacer" />
             {mode !== "focus" && mode !== "placeholder" && (
               <button className="ls-focus-btn" data-tip="Focus — fill the window (Enter or ⌘E)" aria-label="Focus" onClick={() => onFocus(tile)}>
                 <ExpandIcon />
               </button>
             )}
+            {more}
           </div>
-          <div className="ls-term" style={{ padding: `0 ${PAD}px ${PAD}px` }}>
+          <div className="ls-term" style={{ padding: `0 ${PAD}px` }}>
             {mode === "placeholder" ? (
               <div className="ls-away">In focus</div>
             ) : mode === "still" ? (
@@ -167,6 +211,11 @@ export function WorkspaceNode({
               body(s, size)
             )}
           </div>
+          {drawn && s.status !== "dead" ? (
+            <PaneRail className="rail ls-foot" session={s} git={git} gitErr={gitErr} pr={pr} readPr={readPr} {...chrome.rail} onOpenChanges={pick("tool:changes")} onOpenFiles={pick("tool:files")} />
+          ) : (
+            <div className="rail ls-foot" />
+          )}
         </>
       )}
     </div>

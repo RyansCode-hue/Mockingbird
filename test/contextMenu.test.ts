@@ -1,7 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ActionBar, LabelledButton, menuKey, nextItem, openMenu, pickActions, placeMenu, tidyMenu, type Action, type MenuEntry } from "../src/renderer/ContextMenu";
+import { ActionBar, LabelledButton, menuHeading, menuKey, nextItem, openMenu, pickActions, placeMenu, tidyMenu, type Action, type MenuEntry } from "../src/renderer/ContextMenu";
 
 const act = (key: string, over: Partial<Action> = {}): Action => ({ key, label: key, onPick: vi.fn(), ...over });
 
@@ -81,6 +81,20 @@ describe("an element's actions", () => {
   it("leave no separator at a menu's ends or two together when a set comes out empty", () => {
     expect(tidyMenu(["-", act("a"), null, "-", false, "-", act("b"), "-", undefined]).map((e) => (e === "-" ? "-" : e.key))).toEqual(["a", "-", "b"]);
     expect(tidyMenu(["-", "-"])).toEqual([]);
+  });
+  it("drop a heading whose rows all came out empty, and one left at the end", () => {
+    const h = (label: string) => menuHeading(label);
+    const tidy = tidyMenu([h("Session"), act("rename"), "-", h("Tools"), null, "-", h("Terminal"), act("repaint"), "-", h("Room")]);
+    expect(tidy.map((e) => (e === "-" ? "-" : e.heading ? `# ${e.label}` : e.key))).toEqual(["# Session", "rename", "-", "# Terminal", "repaint"]);
+  });
+  it("never land the keyboard on a heading", () => {
+    const items: MenuEntry[] = [menuHeading("Tools"), act("files", { kbd: "⇧⌘E" }), "-", menuHeading("Terminal"), act("repaint")];
+    const st = openMenu({ x: 0, y: 0 }, items)!;
+    expect(st.active).toBe(1);
+    expect(menuKey(st, "ArrowDown").state!.active).toBe(4);
+    expect(menuKey(menuKey(st, "ArrowDown").state!, "ArrowDown").state!.active).toBe(1);
+    expect(menuKey(st, "Home").state!.active).toBe(1);
+    expect(openMenu({ x: 0, y: 0 }, [menuHeading("Tools")])).toBeNull();
   });
   it("show a word under every icon, and More for the rest", () => {
     const html = renderToStaticMarkup(React.createElement(ActionBar, { actions: [act("pin", { label: "Pinned", pressed: true, title: "Unpin" })], more: [act("close", { label: "Close" })] }));

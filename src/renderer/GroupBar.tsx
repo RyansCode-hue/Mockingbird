@@ -121,6 +121,8 @@ export function AreaHeader(
     /** The room's Members ▾ (team/MembersMenu.tsx). */
     members: ReactNode;
     menu: () => MenuEntry[];
+    /** Open the area's Artifacts window (the room's, or its own on this Mac). */
+    onArtifacts?: () => void;
     onGrab?: (e: React.PointerEvent) => void;
   }
 ) {
@@ -164,6 +166,11 @@ export function AreaHeader(
           </button>
         ))}
       {p.summary && <span className="ls-ah-summary">{p.summary}</span>}
+      {p.onArtifacts && (
+        <button type="button" className="ls-ah-btn" data-tip={p.room ? "The room's artifacts: files, notes, repo files and links shared with it" : "The area's artifacts: files, notes, repo files and links kept on this Mac"} onClick={p.onArtifacts}>
+          Artifacts
+        </button>
+      )}
       {p.room && (
         <>
           <RoomChatChip room={p.room} onOpen={p.onChat} area />
@@ -173,7 +180,8 @@ export function AreaHeader(
           {p.members}
         </>
       )}
-      <FollowControls follow={p.follow} shared={!!p.room} />
+      {/* room tools only in rooms */}
+      {p.room && <FollowControls follow={p.follow} shared />}
       <span className="ls-ah-gap" />
       <AreaUsage g={p.meter} what={p.title} />
       <button type="button" className="ls-ah-btn" data-tip="Ask every agent session here for a three-line status report — each answers when its current turn ends" onClick={p.onAsk}>

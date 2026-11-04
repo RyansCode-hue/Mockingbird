@@ -48,6 +48,28 @@ describe("the landscape store", () => {
     expect(again.problems).toEqual([]);
   });
 
+  it("saves tool windows, docked or placed, and artifact cards, as the next run reads them", () => {
+    const { store, open, file } = setup();
+    store.update({
+      areas: { "5101": AREA },
+      tools: {
+        w1: { tool: "run", docked: false, session: "s1", area: "5101", placement: { x: 820, y: 0, w: 440, h: 600 } },
+        w2: { tool: "search", docked: true },
+      },
+      cards: { c1: { area: "5101", artifact: "Atagnotesaaaaaaaaaaaaa", placement: { x: 820, y: 620, w: 240, h: 128 } } },
+    });
+    // placed again from the dock: a window is replaced whole, taking the scope and place it's given
+    store.update({ tools: { w2: { tool: "search", docked: false, session: "s2", area: "5101", placement: { x: 1280, y: 0, w: 420, h: 600 } } } });
+    store.flush();
+    expect(onDisk(file).v).toBe(2);
+    const again = open().get().landscape;
+    expect(again.tools).toEqual({
+      w1: { tool: "run", docked: false, session: "s1", area: "5101", placement: { x: 820, y: 0, w: 440, h: 600 } },
+      w2: { tool: "search", docked: false, session: "s2", area: "5101", placement: { x: 1280, y: 0, w: 420, h: 600 } },
+    });
+    expect(again.cards.c1.placement).toEqual({ x: 820, y: 620, w: 240, h: 128 });
+  });
+
   it("writes atomically: a new file renamed over the old, nothing left beside it", () => {
     const { store, file, dir } = setup();
     store.update({ workspaces: { a: placement(0) } });
@@ -371,7 +393,7 @@ describe("a landscape file that can't be used", () => {
   it("is left as it is when a newer Mockingbird wrote it, and changes aren't saved over it", () => {
     vi.useFakeTimers();
     const { file, open, logged } = setup();
-    const newer = JSON.stringify({ v: 2, everything: "else" });
+    const newer = JSON.stringify({ v: 3, everything: "else" });
     fs.writeFileSync(file, newer);
     const store = open();
     const [p] = store.get().problems;

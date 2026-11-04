@@ -132,6 +132,9 @@ export const INLINE_IMAGE_MIME = /^image\/(png|jpeg|gif|webp|bmp|svg\+xml)$/;
  * text (each saved revision) and every name stay there and reach later
  * joiners; only files' bytes are deleted, on the members who had them.
  */
+/** Removing one of an area's artifacts on this Mac (areaArtifacts.ts): nobody else has it. */
+export const REMOVE_LOCAL_ARTIFACT_NOTE = "It's removed from this area on this Mac: a file's bytes are deleted, and agents' copies of it too. A copy saved with Save as… stays where it was saved.";
+
 export const REMOVE_ARTIFACT_NOTE =
   "It's removed for everyone in the room: each member's copy of a file is deleted, agents' copies too, and messages that named it say “(removed)”. " +
   "It isn't taken back: every member's room log keeps its name and, for a note, every saved text, and passes them on to anyone who joins later; " +

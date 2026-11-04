@@ -127,7 +127,7 @@ describe("a workspace's terminal size", () => {
     const m = presetSize("agent", "M");
     expect(colsRows(m.w, m.h, measured.w, measured.h)).toEqual({ cols: Math.floor((m.w - WORKSPACE_CHROME.w) / measured.w), rows: Math.floor((m.h - WORKSPACE_CHROME.h) / measured.h) });
     // the window in focus: the same frame
-    expect(colsRows(1092, 745, measured.w, measured.h)).toEqual({ cols: 142, rows: 33 });
+    expect(colsRows(1092, 745, measured.w, measured.h)).toEqual({ cols: 142, rows: 32 });
     // sizeFor's answer at the measured cell holds exactly what it was asked for, never a column less
     for (const [cols, rows] of [[140, 42], [161, 40], [1, 1]]) {
       const s = sizeFor(cols, rows, measured.w, measured.h);

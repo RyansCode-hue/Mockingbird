@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isErr, type SessionInfo } from "../../shared/types";
 import { plural } from "../../shared/format";
 import { baseName } from "../../shared/paths";
@@ -24,7 +24,9 @@ import { RenameDialog } from "../Dialogs";
 import { QuickOpen } from "../QuickOpen";
 import { ChevronIcon, LockIcon } from "../Icons";
 import { settled } from "../settled";
-import { addedLine, artifactMeta, parseLines, REMOVE_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "./artifactModel";
+import { addedLine, artifactMeta, parseLines, REMOVE_ARTIFACT_NOTE, REMOVE_LOCAL_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "./artifactModel";
+import { areaShelf } from "../../shared/areaArtifacts";
+import { LinkIcon } from "../Icons";
 import type { InlineContext } from "./markdownView";
 import { ArtifactGlyph, ArtifactViewer, NoteBody, WritePreview } from "./ArtifactViewer";
 
@@ -33,7 +35,24 @@ import { ArtifactGlyph, ArtifactViewer, NoteBody, WritePreview } from "./Artifac
  * the collapsible "Artifacts · N" section under the room's header — one row
  * per file, note, repo file or link, + Add, drops onto the tab and pasted
  * screenshots — and the chips chat messages show for #[name] references.
+ *
+ * The same shelf is an area's Artifacts window on the landscape
+ * (docs/landscape.md, Tools): a room's area shows the room's, any other area
+ * its own on this Mac (`local`), by a shelf id (shared/areaArtifacts.ts) the
+ * same calls take.
  */
+
+/** Whose artifacts a shelf shows: a room's (its id), or an area's on this Mac (`area:<key>`). */
+export interface ShelfInfo {
+  id: string;
+  /** The group whose sessions a repo file is picked from. */
+  groupKey: string;
+  /** An area's on this Mac: nobody else has them. */
+  local: boolean;
+}
+
+/** The shelf area `key` shows: its room's when it's shared as one, else its own on this Mac. */
+export const shelfOfArea = (key: string, room: TeamRoomSummary | null): ShelfInfo => (room ? { id: room.id, groupKey: key, local: false } : { id: areaShelf(key), groupKey: key, local: true });
 
 const failed = (what: string, error: string) => `${what}: ${error}`;
 
@@ -43,7 +62,7 @@ export function useArtifacts(roomId: string) {
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
     settled<RoomArtifactsView | { error: string }>(window.mb.artifactsList(roomId)).then((r) => {
-      if (isErr(r)) return setError(failed("Couldn't read the room's artifacts", r.error));
+      if (isErr(r)) return setError(failed(`Couldn't read the ${roomId.startsWith("area:") ? "area" : "room"}'s artifacts`, r.error));
       setView(r);
       setError(null);
     });
@@ -75,7 +94,7 @@ type Refused = AddFilesResult["refused"];
  * the person says so. What wasn't added, and why, stays on the shelf's
  * error line; warnings (a commit not pushed yet) on its note line.
  */
-export function useArtifactActions(roomId: string) {
+export function useArtifactActions(roomId: string, local = false) {
   const [error, setError] = useState<string | null>(null);
   const [notes, setNotes] = useState<string[]>([]);
   const [confirm, setConfirm] = useState<{ refused: Refused; answer: (yes: boolean) => void } | null>(null);
@@ -177,7 +196,7 @@ export function useArtifactActions(roomId: string) {
             <b>{r.name}</b> — {r.reason}
           </div>
         ))}
-        <div className="art-confirm-note">Everyone in the room gets a copy. Agents in the room never read it, whatever it's renamed to.</div>
+        <div className="art-confirm-note">{local ? "It stays on this Mac. Agents never read it, whatever it's renamed to." : "Everyone in the room gets a copy. Agents in the room never read it, whatever it's renamed to."}</div>
       </div>
       <div className="row">
         <button className="outline" onClick={() => (confirm.answer(false), setConfirm(null))}>
@@ -266,7 +285,7 @@ type Adding =
   | { step: "repo-form"; session: SessionInfo; path: string; line: number | null };
 
 export function ArtifactShelf({
-  room,
+  shelf,
   self,
   arts,
   actions,
@@ -277,8 +296,11 @@ export function ArtifactShelf({
   sessions,
   focusedSessionId,
   onOpenRepoFile,
+  inWindow = false,
+  onPlace,
+  placed,
 }: {
-  room: TeamRoomSummary;
+  shelf: ShelfInfo;
   self: string;
   arts: ReturnType<typeof useArtifacts>;
   actions: ArtifactActions;
@@ -289,11 +311,18 @@ export function ArtifactShelf({
   sessions: SessionInfo[];
   focusedSessionId: string | null;
   onOpenRepoFile: (open: NonNullable<RepoResolution["open"]>) => void;
+  /** In a tool window: always open, its list taking the window's height. */
+  inWindow?: boolean;
+  /** Place one on the landscape as a card in its area. */
+  onPlace?: (a: ArtifactSummary) => void;
+  /** The artifacts with a card on the landscape. */
+  placed?: ReadonlySet<string>;
 }) {
-  const [open, setOpen] = usePersisted("mb.roomArtifacts.open", true);
+  const [openPref, setOpen] = usePersisted("mb.roomArtifacts.open", true);
+  const open = inWindow || openPref;
+  const { local } = shelf;
+  const where = local ? "the area" : "the room";
   const [adding, setAdding] = useState<Adding | null>(null);
-  const [renaming, setRenaming] = useState<ArtifactSummary | null>(null);
-  const [removing, setRemoving] = useState<ArtifactSummary | null>(null);
   const view = arts.view;
   const items = [...(view?.items ?? [])].sort((a, b) => b.addedAt - a.addedAt);
 
@@ -305,23 +334,32 @@ export function ArtifactShelf({
     }
     return true;
   };
+  const edits = useArtifactEdits(shelf, call, (id) => viewing === id && setViewing(null));
+  const { setRenaming, setRemoving } = edits;
   const addRepoFile = () => {
-    const options = repoSessionsFor(sessions, focusedSessionId, room.groupKey);
-    if (!options.length) return actions.fail("No session on this Mac is in a repo — open one in this room's group, then reference a file from it.");
+    const options = repoSessionsFor(sessions, focusedSessionId, shelf.groupKey);
+    if (!options.length) return actions.fail(`No session on this Mac is in a repo — open one in this ${local ? "area" : "room's group"}, then reference a file from it.`);
     setAdding(options.length === 1 ? { step: "repo-file", session: options[0] } : { step: "repo-session", options });
   };
 
   return (
-    <div className={`art-shelf ${open ? "open" : ""}`}>
+    <div className={`art-shelf ${open ? "open" : ""} ${inWindow ? "in-window" : ""}`}>
       <div className="art-shelf-head">
-        <button className="art-toggle" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? "Hide the room's artifacts" : "Show the room's artifacts"}>
-          <ChevronIcon open={open} />
-          Artifacts{view ? ` · ${items.length}` : ""}
-        </button>
+        {inWindow ? (
+          <span className="art-toggle art-count">
+            {local ? "On this Mac" : "Shared with the room"}
+            {view ? ` · ${items.length}` : ""}
+          </span>
+        ) : (
+          <button className="art-toggle" aria-expanded={open} onClick={() => setOpen(!open)} title={open ? "Hide the room's artifacts" : "Show the room's artifacts"}>
+            <ChevronIcon open={open} />
+            Artifacts{view ? ` · ${items.length}` : ""}
+          </button>
+        )}
         <MenuButton
           className="rc-new-session"
           label="+ Add"
-          title="Share a file, a note, a repo file or a link with the room"
+          title={local ? "Keep a file, a note, a repo file or a link in this area" : "Share a file, a note, a repo file or a link with the room"}
           items={[
             { key: "file", label: "File…", onPick: () => actions.pick() },
             { key: "note", label: "Note", onPick: () => setAdding({ step: "note" }) },
@@ -365,7 +403,7 @@ export function ArtifactShelf({
                       Open
                     </button>
                   )}
-                  <button className="link" onClick={() => call("dismiss the notice", () => window.mb.artifactsDismissNotice(room.id, n.id))}>
+                  <button className="link" onClick={() => call("dismiss the notice", () => window.mb.artifactsDismissNotice(shelf.id, n.id))}>
                     Dismiss
                   </button>
                 </div>
@@ -373,7 +411,11 @@ export function ArtifactShelf({
             </div>
           )}
           {items.length === 0 ? (
-            <div className="art-empty">Share files, screenshots, notes, repo files and links with the room: + Add, drop files here, or paste a screenshot into the message box.</div>
+            <div className="art-empty">
+              {local
+                ? "Keep files, screenshots, notes, repo files and links in this area, for you and its agents: + Add, or drop files here. They stay on this Mac."
+                : "Share files, screenshots, notes, repo files and links with the room: + Add, drop files here, or paste a screenshot into the message box."}
+            </div>
           ) : (
             <div className="art-list">
               {items.map((a) => (
@@ -381,11 +423,14 @@ export function ArtifactShelf({
                   key={a.id}
                   a={a}
                   self={self}
+                  local={local}
+                  placed={!!placed?.has(a.id)}
                   onOpen={() => setViewing(a.id)}
                   onMention={() => onMention(a)}
                   onRename={() => setRenaming(a)}
                   onRemove={() => setRemoving(a)}
-                  onDownload={() => call("download it", () => window.mb.artifactsDownload(room.id, a.id))}
+                  onPlace={onPlace && (() => onPlace(a))}
+                  onDownload={() => call("download it", () => window.mb.artifactsDownload(shelf.id, a.id))}
                 />
               ))}
             </div>
@@ -396,7 +441,8 @@ export function ArtifactShelf({
       {viewing && (
         <ArtifactViewer
           key={viewing}
-          roomId={room.id}
+          roomId={shelf.id}
+          local={local}
           self={self}
           item={view?.items.find((i) => i.id === viewing)}
           ctx={ctx}
@@ -409,45 +455,13 @@ export function ArtifactShelf({
           onMention={onMention}
         />
       )}
-      {renaming && (
-        <RenameDialog
-          title={`Rename “${renaming.name}”`}
-          initial={renaming.name}
-          onClose={() => setRenaming(null)}
-          onSave={async (name) => {
-            const id = renaming.id;
-            setRenaming(null);
-            await call("rename it", () => window.mb.artifactsRename(room.id, id, name));
-          }}
-        />
-      )}
-      {removing && (
-        <Modal className="modal close-dlg" onClose={() => setRemoving(null)}>
-          <h3>Remove “{removing.name}”?</h3>
-          <div className="sub-h">{REMOVE_ARTIFACT_NOTE}</div>
-          <div className="row">
-            <button className="outline" onClick={() => setRemoving(null)}>
-              Cancel
-            </button>
-            <button
-              className="primary"
-              onClick={async () => {
-                const id = removing.id;
-                setRemoving(null);
-                if (await call("remove it", () => window.mb.artifactsRemove(room.id, id))) if (viewing === id) setViewing(null);
-              }}
-            >
-              Remove for everyone
-            </button>
-          </div>
-        </Modal>
-      )}
-      {adding?.step === "note" && <NewNoteDialog roomId={room.id} ctx={ctx} onClose={() => setAdding(null)} onAdded={(a) => (setAdding(null), setViewing(a.id))} />}
-      {adding?.step === "link" && <LinkDialog roomId={room.id} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />}
+      {edits.dialogs}
+      {adding?.step === "note" && <NewNoteDialog roomId={shelf.id} local={local} ctx={ctx} onClose={() => setAdding(null)} onAdded={(a) => (setAdding(null), setViewing(a.id))} />}
+      {adding?.step === "link" && <LinkDialog roomId={shelf.id} local={local} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />}
       {adding?.step === "repo-session" && (
         <Modal className="modal close-dlg" onClose={() => setAdding(null)}>
           <h3>Reference a file from which session?</h3>
-          <div className="sub-h">The reference is to the file at the session's current commit; teammates open it in their own clone.</div>
+          <div className="sub-h">The reference is to the file at the session's current commit{local ? "." : "; teammates open it in their own clone."}</div>
           <div className="art-pick">
             {adding.options.map((s) => (
               <button key={s.id} className="art-pick-row" onClick={() => setAdding({ step: "repo-file", session: s })}>
@@ -469,12 +483,225 @@ export function ArtifactShelf({
       {adding?.step === "repo-file" && (
         <QuickOpen
           session={adding.session}
-          placeholder={`A file in ${baseName(adding.session.cwd)} to share with the room — name:line for a line`}
+          placeholder={`A file in ${baseName(adding.session.cwd)} to ${local ? "keep in the area" : "share with the room"} — name:line for a line`}
           onClose={() => setAdding((a) => (a?.step === "repo-file" ? null : a))}
           onOpen={(path, line) => setAdding({ step: "repo-form", session: adding.session, path, line })}
         />
       )}
-      {adding?.step === "repo-form" && <RepoFormDialog roomId={room.id} session={adding.session} path={adding.path} line={adding.line} onClose={() => setAdding(null)} onAdded={(a) => (setAdding(null), a.warnings.length && actions.note(a.warnings.join(" · ")))} />}
+      {adding?.step === "repo-form" && <RepoFormDialog roomId={shelf.id} local={local} session={adding.session} path={adding.path} line={adding.line} onClose={() => setAdding(null)} onAdded={(a) => (setAdding(null), a.warnings.length && actions.note(a.warnings.join(" · ")))} />}
+    </div>
+  );
+}
+
+/** Renaming and removing an artifact: the dialogs, and what opens them. `onRemoved` hears of one gone. */
+function useArtifactEdits(shelf: ShelfInfo, call: (what: string, run: () => Promise<unknown>) => Promise<boolean>, onRemoved: (id: string) => void) {
+  const [renaming, setRenaming] = useState<ArtifactSummary | null>(null);
+  const [removing, setRemoving] = useState<ArtifactSummary | null>(null);
+  const dialogs = (
+    <>
+      {renaming && (
+        <RenameDialog
+          title={`Rename “${renaming.name}”`}
+          initial={renaming.name}
+          onClose={() => setRenaming(null)}
+          onSave={async (name) => {
+            const id = renaming.id;
+            setRenaming(null);
+            await call("rename it", () => window.mb.artifactsRename(shelf.id, id, name));
+          }}
+        />
+      )}
+      {removing && (
+        <Modal className="modal close-dlg" onClose={() => setRemoving(null)}>
+          <h3>Remove “{removing.name}”?</h3>
+          <div className="sub-h">{shelf.local ? REMOVE_LOCAL_ARTIFACT_NOTE : REMOVE_ARTIFACT_NOTE}</div>
+          <div className="row">
+            <button className="outline" onClick={() => setRemoving(null)}>
+              Cancel
+            </button>
+            <button
+              className="primary"
+              onClick={async () => {
+                const id = removing.id;
+                setRemoving(null);
+                if (await call("remove it", () => window.mb.artifactsRemove(shelf.id, id))) onRemoved(id);
+              }}
+            >
+              {shelf.local ? "Remove" : "Remove for everyone"}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+  return { setRenaming, setRemoving, dialogs };
+}
+
+/** What a landscape's artifacts surfaces need from their owner (main.tsx). */
+export interface ArtifactSurfaceProps {
+  shelf: ShelfInfo;
+  sessions: SessionInfo[];
+  focusedSessionId: string | null;
+  onOpenRepoFile: (open: NonNullable<RepoResolution["open"]>) => void;
+  /** Mention it to the selected workspace: its reference typed into its prompt. */
+  onMention: (a: ArtifactSummary) => void;
+}
+
+/** An area's Artifacts window on the landscape (docs/landscape.md, Tools): its shelf, kept open, files dropped on it added. */
+export function ArtifactsWindow({ onPlace, placed, ...p }: ArtifactSurfaceProps & { onPlace: (a: ArtifactSummary) => void; placed: ReadonlySet<string> }) {
+  const arts = useArtifacts(p.shelf.id);
+  const actions = useArtifactActions(p.shelf.id, p.shelf.local);
+  const [viewing, setViewing] = useState<string | null>(null);
+  const drop = useFileDrop((files) => void actions.addFiles(files));
+  const ctx = useMemo<InlineContext>(() => ({ artifact: (id, label, key) => <ArtifactChip key={key} item={arts.view?.items.find((a) => a.id === id)} label={label} onOpen={setViewing} /> }), [arts.view]);
+  return (
+    <div className={`art-window ${drop.over ? "drop-on" : ""}`} {...drop.handlers}>
+      <ArtifactShelf
+        shelf={p.shelf}
+        self={arts.view?.self ?? ""}
+        arts={arts}
+        actions={actions}
+        viewing={viewing}
+        setViewing={setViewing}
+        onMention={p.onMention}
+        ctx={ctx}
+        sessions={p.sessions}
+        focusedSessionId={p.focusedSessionId}
+        onOpenRepoFile={p.onOpenRepoFile}
+        inWindow
+        onPlace={onPlace}
+        placed={placed}
+      />
+      {actions.dialog}
+    </div>
+  );
+}
+
+/**
+ * An artifact's card on the landscape (design O), placed from its area's Artifacts window: its kind, name and who
+ * added it when, with Open and Mention; right-click for those, Rename, Remove, and taking the card off. One whose
+ * artifact was removed says so, and offers only taking it off.
+ */
+export function ArtifactCardFace({ artifactId, inv, onRemoveCard, ...p }: ArtifactSurfaceProps & { artifactId: string; inv: number; onRemoveCard: () => void }) {
+  const arts = useArtifacts(p.shelf.id);
+  const a = arts.view?.items.find((x) => x.id === artifactId);
+  // the artifact its viewer shows: the card's, or one the viewer opens from it (a note saved as a copy, the original)
+  const [viewing, setViewing] = useState<string | null>(null);
+  const shown = viewing ? arts.view?.items.find((x) => x.id === viewing) : undefined;
+  const [error, setError] = useState<string | null>(null);
+  const call = async (what: string, run: () => Promise<unknown>) => {
+    const r = await settled(run());
+    if (isErr(r)) setError(failed(`Couldn't ${what}`, r.error));
+    return !isErr(r);
+  };
+  const edits = useArtifactEdits(p.shelf, call, () => setViewing(null));
+  const menu = useContextMenu(a?.name ?? "Artifact card");
+  const acts = tidyMenu([
+    a && { key: "open", label: "Open", icon: <ReadIcon />, onPick: () => setViewing(a.id) },
+    a && { key: "mention", label: "Mention", menuLabel: "Mention to the selected workspace", icon: <HashIcon />, onPick: () => p.onMention(a) },
+    a && { key: "link", label: "Link", menuLabel: "Link to a workspace… (coming)", icon: <LinkIcon />, disabled: true, title: "Linking it to a workspace comes with context links in a later version", onPick: () => {} },
+    a && { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: () => edits.setRenaming(a) },
+    "-",
+    { key: "uncard", label: "Take off", menuLabel: "Take the card off the landscape", title: "The artifact stays in the area's Artifacts", onPick: onRemoveCard },
+    a && { key: "remove", label: "Remove", menuLabel: p.shelf.local ? "Remove the artifact…" : "Remove the artifact for everyone…", icon: <CloseIcon />, danger: true, onPick: () => edits.setRemoving(a) },
+  ]);
+  const self = arts.view?.self ?? "";
+  return (
+    <div
+      className={`art-card ${a ? "" : "gone"}`}
+      style={{ ["--ls-inv" as string]: inv }}
+      title={a ? `${a.name} — double-click to open it, right-click for more` : undefined}
+      {...menu.bind(acts)}
+      onDoubleClick={() => a && setViewing(a.id)}
+    >
+      <div className="art-card-head">
+        {a && <ArtifactGlyph a={a} />}
+        <span className="art-card-name">{a ? a.name : arts.view ? "Removed" : arts.error ? "Couldn't read it" : "Reading…"}</span>
+        {a?.agentsBlocked && (
+          <span className="art-lock" title={`Agents can't read this: ${a.agentsBlocked}`}>
+            <LockIcon />
+          </span>
+        )}
+      </div>
+      <div className={`art-card-meta ${error || (!a && arts.error) ? "bad" : ""}`}>{error ?? (a ? artifactMeta(a, self) : arts.error ?? (arts.view ? "This artifact isn't in the area any more" : ""))}</div>
+      <div className="art-card-acts">
+        {a ? (
+          <>
+            <button type="button" className="outline" onClick={() => setViewing(a.id)}>
+              Open
+            </button>
+            <button type="button" className="outline" onClick={() => p.onMention(a)}>
+              Mention
+            </button>
+          </>
+        ) : (
+          arts.view && (
+            <button type="button" className="outline" onClick={onRemoveCard}>
+              Take the card off
+            </button>
+          )
+        )}
+      </div>
+      {shown && (
+        <ArtifactViewer
+          roomId={p.shelf.id}
+          local={p.shelf.local}
+          self={self}
+          item={shown}
+          ctx={{}}
+          focusedSessionId={p.focusedSessionId}
+          onClose={() => setViewing(null)}
+          onOpen={setViewing}
+          onOpenRepoFile={p.onOpenRepoFile}
+          onRename={edits.setRenaming}
+          onRemove={edits.setRemoving}
+          onMention={p.onMention}
+        />
+      )}
+      {edits.dialogs}
+      {menu.menu}
+    </div>
+  );
+}
+
+/**
+ * Sharing an area as a room (ShareRoomDialog): its artifacts on this Mac offered to the room too, once it exists.
+ * Nothing secret goes (main keeps it back and says so); they all stay on this Mac as well. Nothing shows while the
+ * area has none.
+ */
+export function ShareAreaArtifacts({ areaKey, roomId }: { areaKey: string; roomId: string }) {
+  const arts = useArtifacts(areaShelf(areaKey));
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ shared: number; refused: { name: string; reason: string }[] } | { error: string } | null>(null);
+  const n = arts.view?.items.length ?? 0;
+  if (arts.error) return <div className="err">{arts.error}</div>;
+  if (!n) return null;
+  return (
+    <div className="art-share-offer">
+      {done && !isErr(done) ? (
+        <div className={done.refused.length ? "warn" : "art-quiet"}>
+          {plural(done.shared, "artifact")} shared with the room.
+          {done.refused.length > 0 && ` Not shared — ${done.refused.map((r) => `${r.name}: ${r.reason}`).join("; ")}`}
+        </div>
+      ) : (
+        <>
+          <span>
+            This area keeps {plural(n, "artifact")} on this Mac. Share {n === 1 ? "it" : "them"} with the room too? Teammates get a copy; nothing secret is sent.
+          </span>
+          <button
+            className="outline"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              setDone(await settled(window.mb.artifactsShareArea(areaKey, roomId), "Couldn't share the area's artifacts"));
+              setBusy(false);
+            }}
+          >
+            {busy ? "Sharing…" : `Share ${plural(n, "artifact")}`}
+          </button>
+        </>
+      )}
+      {done && isErr(done) && <div className="err">{done.error}</div>}
     </div>
   );
 }
@@ -482,18 +709,25 @@ export function ArtifactShelf({
 function ArtifactRow({
   a,
   self,
+  local,
+  placed,
   onOpen,
   onMention,
   onRename,
   onRemove,
+  onPlace,
   onDownload,
 }: {
   a: ArtifactSummary;
   self: string;
+  local: boolean;
+  /** It has a card on the landscape. */
+  placed: boolean;
   onOpen: () => void;
   onMention: () => void;
   onRename: () => void;
   onRemove: () => void;
+  onPlace?: () => void;
   onDownload: () => void;
 }) {
   const x = a.kind === "file" ? transferLine(a) : null;
@@ -504,11 +738,17 @@ function ArtifactRow({
   const menu = useContextMenu(a.name);
   const acts = tidyMenu([
     { key: "open", label: "Open", icon: <ReadIcon />, onPick: onOpen },
-    { key: "mention", label: "Mention", menuLabel: "Mention in a message (#)", icon: <HashIcon />, title: "Mention it in a message (#)", onPick: onMention },
+    onPlace
+      ? { key: "mention", label: "Mention", menuLabel: "Mention to the selected workspace", icon: <HashIcon />, title: "Type #[name](artifact:…) into the selected workspace's prompt: its agent reads it with its artifact tools", onPick: onMention }
+      : { key: "mention", label: "Mention", menuLabel: "Mention in a message (#)", icon: <HashIcon />, title: "Mention it in a message (#)", onPick: onMention },
+    !!onPlace && { key: "place", label: "Place", menuLabel: placed ? "Place another card on the landscape" : "Place on the landscape", title: "A card for it in the area, that opens or mentions it", onPick: onPlace },
+    !!onPlace && { key: "link", label: "Link", menuLabel: "Link to a workspace… (coming)", icon: <LinkIcon />, disabled: true, title: "Linking it to a workspace, so its agent always has it, comes with context links in a later version", onPick: () => {} },
     { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: onRename },
     !!x?.action && { key: "download", label: x.action, icon: <DownloadIcon />, title: x.tip, onPick: onDownload },
     "-",
-    { key: "remove", label: "Remove", menuLabel: "Remove for everyone…", icon: <CloseIcon />, danger: true, title: "Remove for everyone in the room", onPick: onRemove },
+    local
+      ? { key: "remove", label: "Remove", menuLabel: "Remove…", icon: <CloseIcon />, danger: true, title: "Remove it from this area", onPick: onRemove }
+      : { key: "remove", label: "Remove", menuLabel: "Remove for everyone…", icon: <CloseIcon />, danger: true, title: "Remove for everyone in the room", onPick: onRemove },
   ]);
   return (
     <div
@@ -530,11 +770,12 @@ function ArtifactRow({
         <div className="art-name-line">
           <span className="art-name">{a.name}</span>
           {a.agentsBlocked && (
-            <span className="art-lock" title={`Agents in the room can't read this: ${a.agentsBlocked}`}>
+            <span className="art-lock" title={`${local ? "Agents" : "Agents in the room"} can't read this: ${a.agentsBlocked}`}>
               <LockIcon />
             </span>
           )}
-          <ActionBar className="art-acts" actions={pickActions(acts, ["mention", "rename", "remove"])} />
+          {placed && <span className="art-placed">on the landscape</span>}
+          <ActionBar className="art-acts" actions={pickActions(acts, onPlace ? ["mention", "place", "remove"] : ["mention", "rename", "remove"])} more={onPlace ? acts : undefined} label={a.name} />
         </div>
         <div className="art-meta">{artifactMeta(a, self)}</div>
         {x && (
@@ -558,7 +799,7 @@ function ArtifactRow({
   );
 }
 
-function NewNoteDialog({ roomId, ctx, onClose, onAdded }: { roomId: string; ctx: InlineContext; onClose: () => void; onAdded: (a: ArtifactAdded) => void }) {
+function NewNoteDialog({ roomId, local, ctx, onClose, onAdded }: { roomId: string; local: boolean; ctx: InlineContext; onClose: () => void; onAdded: (a: ArtifactAdded) => void }) {
   const [name, setName] = useState("");
   const [text, setText] = useState("");
   const [preview, setPreview] = useState(false);
@@ -587,7 +828,7 @@ function NewNoteDialog({ roomId, ctx, onClose, onAdded }: { roomId: string; ctx:
       }}
     >
       <h3>New note</h3>
-      <div className="sub-h">Markdown everyone in the room can read and edit — specs, decisions, checklists. Room agents read it too.</div>
+      <div className="sub-h">{local ? "Markdown kept in this area on this Mac — specs, decisions, checklists. The area's agents read it too." : "Markdown everyone in the room can read and edit — specs, decisions, checklists. Room agents read it too."}</div>
       <label>Name</label>
       <input type="text" autoFocus value={name} maxLength={MAX_ARTIFACT_NAME} placeholder="e.g. Last-org spec" onChange={(e) => setName(e.target.value)} />
       <div className="art-note-bar">
@@ -613,7 +854,7 @@ function NewNoteDialog({ roomId, ctx, onClose, onAdded }: { roomId: string; ctx:
   );
 }
 
-function LinkDialog({ roomId, onClose, onAdded }: { roomId: string; onClose: () => void; onAdded: () => void }) {
+function LinkDialog({ roomId, local, onClose, onAdded }: { roomId: string; local: boolean; onClose: () => void; onAdded: () => void }) {
   const [url, setUrl] = useState("");
   const [title, setTitle] = useState("");
   const [titled, setTitled] = useState(false);
@@ -632,7 +873,7 @@ function LinkDialog({ roomId, onClose, onAdded }: { roomId: string; onClose: () 
   return (
     <Modal className="modal close-dlg art-link-dlg" onClose={onClose}>
       <h3>Add a link</h3>
-      <div className="sub-h">A page the room should have at hand — a ticket, a PR, a design. https only.</div>
+      <div className="sub-h">A page {local ? "this area" : "the room"} should have at hand — a ticket, a PR, a design. https only.</div>
       <label>Link</label>
       <input
         type="text"
@@ -674,6 +915,7 @@ function LinkDialog({ roomId, onClose, onAdded }: { roomId: string; onClose: () 
 
 function RepoFormDialog({
   roomId,
+  local,
   session,
   path,
   line,
@@ -681,6 +923,7 @@ function RepoFormDialog({
   onAdded,
 }: {
   roomId: string;
+  local: boolean;
   session: SessionInfo;
   path: string;
   line: number | null;
@@ -706,7 +949,7 @@ function RepoFormDialog({
     <Modal className="modal close-dlg art-repo-dlg" onClose={onClose}>
       <h3>Reference a repo file</h3>
       <div className="sub-h">
-        <span className="tk-path">{path}</span> in {baseName(session.cwd)}, at its current commit. Teammates open it in their own clone of the repo — nothing is copied.
+        <span className="tk-path">{path}</span> in {baseName(session.cwd)}, at its current commit. {local ? "It opens in your clone" : "Teammates open it in their own clone of the repo"} — nothing is copied.
       </div>
       <label>Lines (optional)</label>
       <input

@@ -1,4 +1,4 @@
-import type { TeamArtifacts } from "./artifacts";
+import type { ArtifactRecord } from "../../shared/team/artifacts";
 import type { RoomId } from "../../shared/team/types";
 
 /**
@@ -28,7 +28,15 @@ export interface ArtifactViewer {
   saveAs(roomId: RoomId, id: string): Promise<{ path: string } | null>;
 }
 
-export function artifactViewer(arts: TeamArtifacts, ui: ViewerUi): ArtifactViewer {
+/** What the viewer needs of a shelf's artifacts: a room's (TeamArtifacts) or an area's on this Mac, by shelf (artifactShelves). */
+export interface ViewedArtifacts {
+  viewFile(shelf: string, id: string): Promise<string>;
+  records(shelf: string): readonly ArtifactRecord[];
+  saveName(shelf: string, id: string): string;
+  exportTo(shelf: string, id: string, dest: string): Promise<string | null>;
+}
+
+export function artifactViewer(arts: ViewedArtifacts, ui: ViewerUi): ArtifactViewer {
   return {
     pickFiles: () => ui.openFilesDialog(),
     async quickLook(roomId, id) {

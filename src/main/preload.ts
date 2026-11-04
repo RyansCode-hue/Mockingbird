@@ -441,7 +441,8 @@ const api = {
   teamDecideTyping: (sessionId: string, member: string, choice: "session" | "minutes" | "deny" | "revoke") => ipcRenderer.invoke("team:decideTyping", sessionId, member, choice),
   /** The audit log's last `n` entries, newest first: AuditEntry[]. */
   teamAuditRecent: (n: number) => ipcRenderer.invoke("team:auditRecent", n),
-  // team rooms: artifacts (src/shared/team/artifacts.ts); every call answers { error } on failure
+  // team rooms' and areas' artifacts (src/shared/team/artifacts.ts); every call answers { error } on failure.
+  // `roomId` names the shelf: a room's id, or `area:<key>` for an area's on this Mac (src/shared/areaArtifacts.ts)
   artifactsList: (roomId: string) => ipcRenderer.invoke("artifacts:list", roomId),
   /** A file picker for files to add; null when cancelled. */
   artifactsPickFiles: () => ipcRenderer.invoke("artifacts:pickFiles"),
@@ -463,6 +464,8 @@ const api = {
   artifactsReveal: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:reveal", roomId, id),
   artifactsSaveAs: (roomId: string, id: string) => ipcRenderer.invoke("artifacts:saveAs", roomId, id),
   artifactsDismissNotice: (roomId: string, noticeId: string) => ipcRenderer.invoke("artifacts:dismissNotice", roomId, noticeId),
+  /** Copy area `key`'s artifacts on this Mac into room `roomId` (it was just shared as that room): { shared, refused }. */
+  artifactsShareArea: (key: string, roomId: string) => ipcRenderer.invoke("artifacts:shareArea", key, roomId),
   onArtifactsChanged: (cb: (roomId: string) => void) => {
     const h = (_e: unknown, roomId: string) => cb(roomId);
     ipcRenderer.on("artifacts:changed", h);

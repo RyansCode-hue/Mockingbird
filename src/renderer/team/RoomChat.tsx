@@ -318,7 +318,8 @@ const DOT_OF: Record<AgentUpdate["kind"], string> = { started: "working", finish
 /** References to the room's artifacts in chat text: chips with each one's current name. */
 const ArtifactRefs = React.createContext<InlineContext>({});
 
-function RoomChat({
+/** One room's chat (and its sessions and artifacts): the Team room view's, and a room area's Chat window on the landscape. */
+export function RoomChat({
   room,
   rooms,
   selfName,
@@ -487,7 +488,7 @@ function RoomChat({
       {memberActs.dialogs}
       <RoomSessions room={room} hooks={hooks} foldable />
       <ArtifactShelf
-        room={room}
+        shelf={{ id: room.id, groupKey: room.groupKey, local: false }}
         self={arts.view?.self ?? view?.self ?? ""}
         arts={arts}
         actions={actions}

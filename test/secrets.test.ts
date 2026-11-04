@@ -33,6 +33,12 @@ describe("the secret file list", () => {
     expect(profile).toContain(`"~/Library/Mail"="deny"`);
   });
 
+  it("keeps room agents out of the artifacts this Mac's areas keep, which are no room's", () => {
+    expect(roomSecretReads(tempDir("none")).rules).toContain("Read(~/.mockingbird/artifacts/areas/**)");
+    const profile = codexRoomPermissions({ workTrackerPath: tempDir("none"), git: null, hooks: [] }).config.join("\n");
+    expect(profile).toContain(`"~/.mockingbird/artifacts/areas"="deny"`);
+  });
+
   it("says when the PAT file can't be worked out, and still denies everything else", () => {
     const wt = tempDir("worktracker");
     fs.writeFileSync(path.join(wt, "config.json"), "{ not json");

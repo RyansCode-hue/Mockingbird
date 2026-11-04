@@ -185,8 +185,12 @@ export function ArtifactViewer({
   onRename,
   onRemove,
   onMention,
+  local = false,
 }: {
+  /** The shelf: a room's id, or an area's (`area:<key>`, shared/areaArtifacts.ts). */
   roomId: string;
+  /** An area's artifacts on this Mac rather than a room's: its words say so. */
+  local?: boolean;
   self: string;
   /** The artifact as the room's view has it now; undefined once it's removed. */
   item: ArtifactSummary | undefined;
@@ -310,7 +314,7 @@ export function ArtifactViewer({
     return (
       <Modal className="modal art-dlg" onClose={onClose}>
         <h3>Removed</h3>
-        <div className="sub-h">This artifact was removed from the room.</div>
+        <div className="sub-h">This artifact was removed from the {local ? "area" : "room"}.</div>
         <div className="row">
           <button className="outline" onClick={onClose}>
             Close
@@ -342,9 +346,9 @@ export function ArtifactViewer({
       label="⋯"
       title="More for this artifact"
       items={[
-        { key: "mention", label: "Mention in a message", onPick: () => (onMention(item), onClose()) },
+        { key: "mention", label: local ? "Mention to the selected workspace" : "Mention in a message", onPick: () => (onMention(item), onClose()) },
         { key: "rename", label: "Rename…", onPick: () => onRename(item) },
-        { key: "remove", label: "Remove for everyone…", onPick: () => onRemove(item) },
+        { key: "remove", label: local ? "Remove…" : "Remove for everyone…", onPick: () => onRemove(item) },
       ]}
     />
   );
@@ -517,7 +521,7 @@ export function ArtifactViewer({
       </div>
       {item.agentsBlocked && (
         <div className="art-banner art-lock-note">
-          <LockIcon /> Agents in the room can't read this: {item.agentsBlocked}
+          <LockIcon /> {local ? "Agents" : "Agents in the room"} can't read this: {item.agentsBlocked}
         </div>
       )}
       {original && (

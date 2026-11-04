@@ -71,7 +71,8 @@ describe.skipIf(!local)("the landscape's semantic zoom", () => {
     expect([a.fit.attached, a.fit.panes, a.fit.cards]).toEqual([[], 0, 30]);
     expect([a.fitAgain.attached, a.fitAgain.panes, a.fitAgain.cards]).toEqual([[], 0, 30]);
     // read-only at 60%, live at 100% and after a pan there: the workspaces on screen, with a margin, and far fewer than 30
-    expect([a.readonly.zoom, a.live.zoom, a.panned.zoom]).toEqual([0.6, 1, 1]);
+    // a pinch reaches its zoom to within a hair, as the steps of a real one do
+    for (const [z, want] of [[a.readonly.zoom, 0.6], [a.live.zoom, 1], [a.panned.zoom, 1]]) expect(z).toBeCloseTo(want, 4);
     for (const [label, w] of [["60%", a.readonly], ["100%", a.live], ["panned", a.panned]] as const) {
       onlyOnScreen(w, label);
       expect(w.attached.length, label).toBeLessThan(12);
