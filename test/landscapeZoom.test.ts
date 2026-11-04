@@ -14,6 +14,7 @@ import {
   BAND_SLACK,
   ON_SCREEN_MARGIN,
   PEEK_EDGE,
+  PEEK_HOVER_MS,
   PEEK_SHARE,
   attaches,
   bandOf,
@@ -110,6 +111,10 @@ describe("what's on screen", () => {
 
 describe("a workspace's peek", () => {
   const vp = { w: 1100, h: 760 };
+  it("opens once the pointer has rested 600 ms (the preview's peek audit times it)", () => {
+    expect(PEEK_HOVER_MS).toBe(600);
+  });
+
   it("is the workspace's size at 100%, made smaller to fit its share of the viewport, centred on it on screen", () => {
     const r = { x: 2000, y: 1000, w: 1072, h: 928 };
     // the workspace's centre near the viewport's: (550, 380) on screen

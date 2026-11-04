@@ -172,7 +172,7 @@ export const keysOnScreen = (tiles: readonly { key: string; rect: Rect; hidden?:
   tiles.filter((t) => !t.hidden && onScreen(cam, viewport, t.rect, margin)).map((t) => t.key);
 
 /** How long the pointer rests on a card or a read-only workspace before its peek opens. */
-export const PEEK_HOVER_MS = 300;
+export const PEEK_HOVER_MS = 600;
 /** The share of the viewport a peek may take, and how far it keeps from the viewport's edges. */
 export const PEEK_SHARE = { w: 0.8, h: 0.86 };
 export const PEEK_EDGE = 16;
@@ -684,6 +684,22 @@ export function minimapFit(bounds: Rect, box: Size, pad = 6): MinimapFit {
 }
 export const toMinimap = (f: MinimapFit, p: Point): Point => ({ x: p.x * f.k + f.ox, y: p.y * f.k + f.oy });
 export const fromMinimap = (f: MinimapFit, p: Point): Point => ({ x: (p.x - f.ox) / f.k, y: (p.y - f.oy) / f.k });
+
+/** One of the minimap's blocks: an area (`key` its key), or a workspace or stack in no area (`key` its tile's). */
+export interface MinimapBlock {
+  key: string;
+  loose: boolean;
+  rect: Rect;
+}
+
+/** What the minimap draws: each area as it's shown (a collapsed one's pill), then each workspace in no area at its place. */
+export function minimapBlocks(r: ResolvedLayout): MinimapBlock[] {
+  const areas = new Set(r.areas.map((a) => a.key));
+  return [
+    ...r.areas.map((a) => ({ key: a.key, loose: false, rect: areaShown(a) })),
+    ...r.tiles.filter((t) => !areas.has(t.area) && !t.hidden).map((t) => ({ key: t.key, loose: true, rect: t.rect })),
+  ];
+}
 
 // ---- changing areas: what a gesture asks of the store and the sessions -----------------------------------
 

@@ -15,6 +15,7 @@ import type { AdoBoard, AdoWorkItem, CollabParticipant, CollabRoom, ContextWindo
 import { DEFAULT_SETTINGS, splitGroupKey } from "../shared/types";
 import { CHANGELOG } from "../shared/changelog";
 import { bottomLine, fitSize, followsBottom, measuredCell } from "../renderer/cachedTerm";
+import { PEEK_HOVER_MS } from "../renderer/landscapeModel";
 import type { SuggestProblem } from "../shared/suggestions";
 import { changedTags, parseCardRules, type TagChange } from "../shared/cardRules";
 import type { MigrationsView } from "../shared/team/migrations";
@@ -2478,7 +2479,7 @@ const lsPeek = params.get("lsPeek")?.split(",");
 if (lsPeek?.[0])
   waitFor(`.ls-world [data-front="${CSS.escape(lsPeek[0])}"]`, (el) => {
     setTimeout(() => (el.querySelector(".ls-card, .ls-term") ?? el).dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" })), 600);
-    if (lsPeek[1] === "pin") setTimeout(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })), 1200);
+    if (lsPeek[1] === "pin") setTimeout(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true })), 600 + PEEK_HOVER_MS + 200);
   });
 // areas (S4): ?side=closed puts the side bar away, so the area switcher stands in for the area tree (design M);
 // ?lsTools=<key> shows that area's hover toolbar; ?lsMenu=members|more opens the first room area's Members ▾, or the
@@ -3502,15 +3503,79 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     report("mb-landscape-zoom-audit", out);
   });
 
-  // ?landscapePeekAudit (with ?motion=full or reduce): the peek of s1's card at fit (when it opens, where its terminal
-  // goes, its motion's end state, Space keeping it open, moving away and Esc), the peek of s1 read-only at 50% (the
-  // stand-in its workspace shows, the terminal handed back with its scrollback and size), a click on it focusing s1,
-  // and none while Space is held. Into <script id="mb-landscape-peek-audit">.
+  // ?landscapePeekAudit (with ?motion=full or reduce): the peek of s1's card at fit (how long the pointer rests before it
+  // opens, where its terminal goes, its motion's end state); the pointer moving over the peek, which covers its card,
+  // off the card onto the bare landscape under it and straight onto another card; Space keeping it open, and closing
+  // it; a click keeping it open, and a press outside closing it; the peek of s1 read-only at 50% (the stand-in its
+  // workspace shows, the terminal handed back with its scrollback and size); a double-click on it, and Enter on a
+  // kept-open one, focusing its workspace; none while Space is held; and a kept-open one's wheel scrolling its
+  // terminal. The pointer's moves and clicks land on what the page hit-tests at their point, as a browser's do. Into
+  // <script id="mb-landscape-peek-audit">.
   if (params.has("landscapePeekAudit")) waitFor('.ls-world [data-front="s1"] .ls-card', async () => {
     const out: Record<string, unknown> = {};
     const peekEl = () => document.querySelector<HTMLElement>(".ls-peek");
     const over = (el: Element) => el.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
     const inPeek = (id: string) => !!term(id)?.element?.isConnected && !!term(id)?.element?.closest(".ls-peek");
+    /** Long enough a rest for a peek to have opened. */
+    const REST = PEEK_HOVER_MS + 150;
+    const space = () => window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    const esc = () => (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    /** The pointer moved to (x, y): what the page hits there gets the move, a peek over a workspace included. */
+    const hoverAt = (x: number, y: number) => {
+      const el = document.elementFromPoint(x, y);
+      for (const type of ["pointerover", "pointermove"]) el?.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "mouse", pointerId: 7, clientX: x, clientY: y }));
+      return el;
+    };
+    /** A click at (x, y) on what the page hits there; `twice`, a double-click. */
+    const clickAt = (x: number, y: number, twice = false) => {
+      const el = document.elementFromPoint(x, y)!;
+      const at = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+      for (let i = 1; i <= (twice ? 2 : 1); i++) {
+        el.dispatchEvent(new PointerEvent("pointerdown", { ...at, pointerType: "mouse", pointerId: 7, buttons: 1 }));
+        el.dispatchEvent(new PointerEvent("pointerup", { ...at, pointerType: "mouse", pointerId: 7 }));
+        el.dispatchEvent(new MouseEvent("click", { ...at, detail: i }));
+      }
+      if (twice) el.dispatchEvent(new MouseEvent("dblclick", { ...at, detail: 2 }));
+      return el;
+    };
+    const centre = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    };
+    /** What the pointer would be over at (x, y) were the peek not there. */
+    const under = (x: number, y: number) => document.elementsFromPoint(x, y).find((e) => !e.closest(".ls-peek")) ?? null;
+    /** A point on the peek over the bare landscape: off its workspace, and off every other one. */
+    const bareUnderPeek = () => {
+      const r = peekEl()?.getBoundingClientRect();
+      if (!r) return null;
+      for (let fy = 0.05; fy < 1; fy += 0.05)
+        for (let fx = 0.05; fx < 1; fx += 0.05) {
+          const x = r.left + r.width * fx;
+          const y = r.top + r.height * fy;
+          if (document.elementFromPoint(x, y)?.closest(".ls-peek") && under(x, y)?.closest(".ls-world") && !under(x, y)?.closest(".ls-node")) return { x, y };
+        }
+      return null;
+    };
+    /** Another card the peek covers at its centre. */
+    const cardUnderPeek = (key: string) =>
+      [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node.card")].find((n) => {
+        const c = centre(n);
+        return n.dataset.ws !== key && !!document.elementFromPoint(c.x, c.y)?.closest(".ls-peek") && under(c.x, c.y)?.closest(".ls-node") === n;
+      });
+    /** A point on the bare landscape off the peek. */
+    const offPeek = () => {
+      const r = peekEl()?.getBoundingClientRect();
+      if (!r) return null;
+      const v = vp().getBoundingClientRect();
+      for (let fy = 0.02; fy < 1; fy += 0.04)
+        for (const fx of [0.01, 0.99, 0.03, 0.97]) {
+          const x = v.left + v.width * fx;
+          const y = v.top + v.height * fy;
+          const el = document.elementFromPoint(x, y);
+          if ((x < r.left || x > r.right || y < r.top || y > r.bottom) && el?.closest(".ls-world, .ls-viewport") && !el.closest(".ls-node, .ls-hud, .ls-minimap, .ls-switcher, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill")) return { x, y };
+        }
+      return null;
+    };
     /** What the peek's animations leave once finished, and how many there were. */
     const motionOf = (el: HTMLElement | null) => {
       const running = el?.getAnimations() ?? [];
@@ -3523,35 +3588,86 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       await sleep(1200);
       const mark = resizes().length;
       const card = node("s1")!.querySelector(".ls-card")!;
+      // not before the pointer has rested PEEK_HOVER_MS: still closed at 450 ms, and how long it took
+      const t0 = performance.now();
       over(card);
-      await sleep(120);
+      await sleep(450);
       const early = !!peekEl();
-      await sleep(260);
+      while (!peekEl() && performance.now() - t0 < 2000) await sleep(5);
+      const delay = Math.round(performance.now() - t0);
       const el = peekEl();
-      out.cards = { early, opened: el?.dataset.peek ?? null, termIn: inPeek("s1"), stillCard: !!node("s1")?.classList.contains("card"), motion: motionOf(el) };
+      out.cards = { early, delay, opened: el?.dataset.peek ?? null, termIn: inPeek("s1"), stillCard: !!node("s1")?.classList.contains("card"), motion: motionOf(el) };
 
-      // Space keeps it open: moving onto another card leaves it, and opens no other
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      // the pointer on the peek where it covers s1's card keeps it; off the card, though still on the peek, closes it
+      const c1 = centre(node("s1")!);
+      const onCard = hoverAt(c1.x + 3, c1.y + 2);
+      await sleep(80);
+      const stays = peekEl()?.dataset.peek ?? null;
+      const bare = bareUnderPeek();
+      const offCard = bare && hoverAt(bare.x, bare.y);
+      await sleep(80);
+      out.leave = { onPeek: !!onCard?.closest(".ls-peek"), stays, bare: !!bare, overPeek: !!offCard?.closest(".ls-peek"), closed: !peekEl() };
+
+      // from s1's card straight onto another the peek covers: s1's closes at once, and the other's opens after its rest
+      hoverAt(c1.x, c1.y);
+      await sleep(REST);
+      const again = peekEl()?.dataset.peek ?? null;
+      const next = cardUnderPeek("s1");
+      const nc = next && centre(next);
+      const across = nc && hoverAt(nc.x, nc.y);
+      await sleep(80);
+      const firstClosed = !peekEl();
+      await sleep(300);
+      const notYet = !peekEl();
+      await sleep(PEEK_HOVER_MS);
+      out.across = { again, to: next?.dataset.ws ?? null, overPeek: !!across?.closest(".ls-peek"), firstClosed, notYet, opened: peekEl()?.dataset.peek ?? null };
+      esc();
+      await sleep(80);
+
+      // Space keeps it open: moving onto another card, onto the bare landscape under it, or off it leaves it open, and
+      // opens no other; Space again closes it, and resting on another card then opens that one's
+      over(card);
+      await sleep(REST);
+      space();
       await sleep(80);
       const pinned = !!peekEl()?.classList.contains("pinned");
       over(node("s5")!.querySelector(".ls-card")!);
-      await sleep(450);
+      await sleep(REST);
       const keptOpen = peekEl()?.dataset.peek ?? null;
+      const b2 = bareUnderPeek();
+      if (b2) hoverAt(b2.x, b2.y);
+      await sleep(80);
+      const keptOverIt = b2 ? (peekEl()?.dataset.peek ?? null) : "no bare landscape under it";
       over(vp());
       await sleep(100);
       const keptOffIt = peekEl()?.dataset.peek ?? null;
-      // Space again lets it go: moving away now closes it, and resting on another card opens that one's
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      space();
       await sleep(80);
+      const spaceClosed = !peekEl();
       over(node("s5")!.querySelector(".ls-card")!);
-      await sleep(80);
-      const closedOnMove = !peekEl();
-      await sleep(400);
+      await sleep(REST);
       const other = peekEl()?.dataset.peek ?? null;
       // Esc closes it
-      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      esc();
       await sleep(80);
-      out.space = { pinned, keptOpen, keptOffIt, closedOnMove, other, escClosed: !peekEl(), backFromPeek: !inPeek("s1") && !inPeek("s5"), font: term("s1")?.options.fontSize ?? null };
+      out.space = { pinned, keptOpen, keptOverIt, keptOffIt, spaceClosed, other, escClosed: !peekEl(), backFromPeek: !inPeek("s1") && !inPeek("s5"), font: term("s1")?.options.fontSize ?? null };
+
+      // a click on it keeps it open as Space does: leaving its card no longer closes it; a press off it does
+      over(card);
+      await sleep(REST);
+      const clicked = clickAt(c1.x, c1.y);
+      await sleep(80);
+      const clickPinned = !!peekEl()?.classList.contains("pinned");
+      const focused = !!document.querySelector(".ls-focus");
+      const b3 = bareUnderPeek();
+      if (b3) hoverAt(b3.x, b3.y);
+      await sleep(80);
+      const kept = peekEl()?.dataset.peek ?? null;
+      const off = offPeek();
+      if (off) clickAt(off.x, off.y);
+      await sleep(80);
+      out.clickKeeps = { onPeek: !!clicked.closest(".ls-peek"), pinned: clickPinned, focused, bare: !!b3, kept, outside: !!off, closed: !peekEl() };
+      if (focused) throw new Error("a click on the peek focused its workspace");
 
       // 50%, read-only: s1's terminal attached in its workspace, then lent to its peek
       const r = node("s1")!.getBoundingClientRect();
@@ -3564,7 +3680,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const lines = linesOf(t);
       const inNode = !!t.element?.closest('.ls-world [data-front="s1"] .term-holder');
       over(node("s1")!.querySelector(".ls-term")!);
-      await sleep(450);
+      await sleep(REST);
       const lent = {
         opened: peekEl()?.dataset.peek ?? null,
         termIn: inPeek("s1"),
@@ -3587,12 +3703,31 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       // no peek, open or closed, resized a pty
       out.resized = resizes().slice(mark);
 
-      // a click on the peek focuses its workspace (which reflows it to the window, and back as it leaves)
+      // a double-click on the peek focuses its workspace (which reflows it to the window, and back as it leaves)
       over(node("s1")!.querySelector(".ls-term")!);
-      await sleep(450);
-      peekEl()?.click();
+      await sleep(REST);
+      const s1c = centre(node("s1")!);
+      clickAt(s1c.x, s1c.y, true);
       await sleep(300);
-      out.click = { focused: document.querySelector(".ls-focus .ls-node")?.getAttribute("data-front") ?? null, peek: !!peekEl() };
+      out.dblclick = { focused: document.querySelector(".ls-focus .ls-node")?.getAttribute("data-front") ?? null, peek: !!peekEl() };
+      key(document.activeElement ?? document.body, "Escape", { metaKey: true });
+      await sleep(400);
+
+      // Enter focuses a kept-open peek's workspace, not the one selected (s1, focused last)
+      const vr = vp().getBoundingClientRect();
+      const peer = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node:not(.st-dead)")].find((n) => {
+        const b = n.getBoundingClientRect();
+        return n.dataset.front !== "s1" && !n.dataset.ws?.startsWith("ws:") && !!n.querySelector(".ls-term .xterm") && b.left >= vr.left && b.right <= vr.right && b.top >= vr.top && b.bottom <= vr.bottom;
+      });
+      if (peer) over(peer.querySelector(".ls-term")!);
+      await sleep(REST);
+      space();
+      await sleep(80);
+      const enterPinned = !!peekEl()?.classList.contains("pinned");
+      const selected = document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-front") ?? null;
+      key(document.activeElement ?? document.body, "Enter");
+      await sleep(300);
+      out.enter = { peer: peer?.dataset.front ?? null, pinned: enterPinned, selected, focused: document.querySelector(".ls-focus .ls-node")?.getAttribute("data-front") ?? null, peek: !!peekEl() };
       key(document.activeElement ?? document.body, "Escape", { metaKey: true });
       await sleep(400);
 
@@ -3600,7 +3735,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       vp().focus();
       key(vp(), " ");
       over(node("s1")!.querySelector(".ls-term")!);
-      await sleep(450);
+      await sleep(REST);
       const whileSpace = !!peekEl();
       keyUp(vp(), " ");
       out.panning = { whileSpace };
@@ -3614,22 +3749,31 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       await pinchTo(0.5, { x: rw.left + rw.width / 2 - vw.left, y: rw.top + rw.height / 2 - vw.top });
       await sleep(700);
       over(node(wid)!.querySelector(".ls-term") ?? node(wid)!);
-      await sleep(450);
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      await sleep(REST);
+      space();
       await sleep(80);
       const w1 = writesTo(wid).length;
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", altKey: true, bubbles: true, cancelable: true }));
       await sleep(400);
       const keyboardOf = () => (document.activeElement === vp() ? "landscape" : document.activeElement?.closest(".ls-peek") ? "peek" : document.activeElement?.closest(".xterm") ? "terminal" : String(document.activeElement?.tagName));
       const afterJump = keyboardOf();
-      // (Enter on the landscape would focus the selected workspace, which takes keys: that's not typing into the peek)
       key(document.activeElement ?? document.body, "a");
       term(wid)!.focus();
       const afterFocus = keyboardOf();
       key(term(wid)!.textarea!, "a");
-      key(term(wid)!.textarea!, "Enter");
       await sleep(150);
       out.jump = { wid, selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-front") ?? null, pinned: !!peekEl()?.classList.contains("pinned"), lent: inPeek(wid), afterJump, afterFocus, tabIndex: term(wid)!.textarea!.tabIndex, wrote: writesTo(wid).slice(w1) };
+      // Enter, even aimed at its terminal, is the kept-open peek's: it focuses the workspace, and reaches the session
+      // no more than the rest did
+      key(term(wid)!.textarea!, "Enter");
+      await sleep(300);
+      out.jumpEnter = { focused: document.querySelector(".ls-focus .ls-node")?.getAttribute("data-ws") ?? null, wrote: writesTo(wid).slice(w1) };
+      key(document.activeElement ?? document.body, "Escape", { metaKey: true });
+      await sleep(400);
+      over(node(wid)!.querySelector(".ls-term") ?? node(wid)!);
+      await sleep(REST);
+      space();
+      await sleep(80);
 
       // a dialog open over a kept-open peek has Space and Esc first: Esc closes the dialog, and the peek stays
       document.querySelector<HTMLElement>(".help-link")!.click();
@@ -3648,7 +3792,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const ws = stackNode.dataset.ws ?? "";
       over(vp());
       over(stackNode.querySelector(".ls-term") ?? stackNode);
-      await sleep(450);
+      await sleep(REST);
       const stackPeek = peekEl()?.dataset.peek ?? null;
       const tab = stackNode.querySelector<HTMLElement>(".ls-tab:not(.on)");
       tab?.click();
@@ -3660,7 +3804,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       key(vp(), "0", { metaKey: true });
       await sleep(600);
       over(node("s1")!.querySelector(".ls-card")!);
-      await sleep(450);
+      await sleep(REST);
       window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
       await sleep(80);
       const r1 = node("s1")!.getBoundingClientRect();
@@ -3668,6 +3812,20 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       await pinchTo(0.5, { x: r1.left + r1.width / 2 - v1.left, y: r1.top + r1.height / 2 - v1.top });
       await sleep(700);
       out.kept = { peek: peekEl()?.dataset.peek ?? null, mode: node("s1")?.classList.contains("snapshot") ? "snapshot" : node("s1")?.className ?? null, snap: node("s1")?.querySelector(".ls-snap")?.textContent?.includes("Make the org dropdown remember") ?? false };
+
+      // a kept-open peek's wheel scrolls its terminal's history, and neither moves the landscape nor reaches the session
+      const more = Array.from({ length: 80 }, (_, i) => `history line ${i}`).join("\r\n") + "\r\n";
+      buffers.s1 += more;
+      emit("onSessionData", "s1", more);
+      await sleep(300);
+      const st = term("s1")!;
+      const from = st.buffer.active.viewportY;
+      const cam0 = JSON.stringify(camera());
+      const w2 = writesTo("s1").length;
+      const holder = peekEl()?.querySelector(".ls-peek-term");
+      holder?.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ...at(holder), deltaY: -300 }));
+      await sleep(400);
+      out.scroll = { pinned: !!peekEl()?.classList.contains("pinned"), from, to: st.buffer.active.viewportY, moved: JSON.stringify(camera()) !== cam0, wrote: writesTo("s1").slice(w2) };
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);
     }
@@ -3703,7 +3861,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       out.card = { size: sizeOf(NICK_PANE), attached: attached(), endAt: (linesOf(term(NICK_PANE)!).at(-1) ?? "").indexOf("end") };
       // peeked, and the owner's window widens meanwhile: it follows, still fitted to the peek
       node(NICK_PANE)!.querySelector(".ls-card")!.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
-      await sleep(450);
+      await sleep(PEEK_HOVER_MS + 150);
       const opened = peekEl()?.dataset.peek ?? null;
       ownerResize(104, 30);
       await sleep(300);
@@ -3827,6 +3985,17 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         rows: [...a.querySelectorAll<HTMLElement>(".lt-ws")].map((r) => r.dataset.sid),
       }));
       out.atFit = { streams: lastView() };
+      // the minimap: a block for each area, and one of its own for each workspace in no area; nothing for the rest
+      const minimap = () => {
+        const mm = document.querySelector(".ls-minimap");
+        return {
+          areas: [...(mm?.querySelectorAll<SVGElement>("rect.area") ?? [])].map((r) => r.dataset.area),
+          loose: [...(mm?.querySelectorAll<SVGElement>("rect.loose") ?? [])].map((r) => r.dataset.ws),
+          dots: mm?.querySelectorAll("circle").length ?? null,
+          marks: mm ? mm.children.length - 1 : null,
+        };
+      };
+      out.minimap = minimap();
 
       // the tree's area row flies there: the area whole in view, and teammates stream what's on screen
       document.querySelector<HTMLElement>('.area-tree .lt-area[data-area="5110"] .lt-head')!.click();
@@ -3899,6 +4068,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         drawn: !!document.querySelector(areaEl("Spike")),
         cleared: !document.querySelector(".ls-pickbar"),
         apart: apartAll(),
+        minimap: minimap(),
       };
 
       // the test runner's card dragged into 5102: 5102 lights up under it, then its place is saved and its group set

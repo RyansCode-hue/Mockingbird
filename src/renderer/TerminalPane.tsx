@@ -1463,6 +1463,25 @@ export function screenText(id: string): string | null {
   return rows.join("\n");
 }
 
+/** What a scroll left short of a whole row, per terminal, so small wheel steps (a trackpad's) still add up. */
+const scrollRest = new WeakMap<object, number>();
+
+/**
+ * Scroll a session's cached terminal's view through its history by `px` on screen, as the user (a kept-open peek's
+ * wheel): its view only, so nothing reaches the program, whatever mouse or scroll modes it asked for.
+ */
+export function scrollTerm(id: string, px: number): void {
+  const term = terms.get(id)?.term;
+  const cell = term && measuredCell(term);
+  if (!term || !cell?.h) return;
+  const rows = (scrollRest.get(term) ?? 0) + px / cell.h;
+  const n = Math.trunc(rows);
+  scrollRest.set(term, rows - n);
+  if (!n) return;
+  noteUserScroll(term);
+  term.scrollLines(n);
+}
+
 /**
  * Show a session's cached terminal in `holder` (a landscape peek) at its own size, its font fitted to the holder
  * up to `maxFont` (followFixedSize), and fitted again when its size changes (its owner's, for a teammate's): its

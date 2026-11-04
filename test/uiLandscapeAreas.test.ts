@@ -17,14 +17,17 @@ const N7 = "r~0f1e2d3c4b5a~n7";
 
 type Change = { fn: string; args: unknown[] };
 type Call = { fn: string; args: unknown[] } | null;
+/** The minimap's areas' keys, its loose workspaces' keys, its dots, and how many marks it has but the view. */
+type Minimap = { areas: string[]; loose: string[]; dots: number | null; marks: number | null };
 interface Audit {
   tree: { key: string; title: string | null; waiting: string | null; count: string | null; online: string[]; rows: string[] }[];
   atFit: { streams: string[] };
+  minimap: Minimap;
   flyTree: { inView: boolean; centred: boolean; streams: string[] };
   collapse: { stored: boolean; pill: string | null; hidden: string[]; streams: string[]; tree: string | null };
   expand: { stored: boolean; hidden: number; streams: string[] };
   switcherLoose: { last: { area: string | null; text: string | null } | null; on: string | null; centred: boolean; clearOfIt: boolean };
-  make: { during: { marquee: boolean; picked: string[] }; bar: string | null; dialog: string | null; changes: Change[]; area: unknown; inside: boolean; group: string | null; drawn: boolean; cleared: boolean; apart: boolean };
+  make: { during: { marquee: boolean; picked: string[] }; bar: string | null; dialog: string | null; changes: Change[]; area: unknown; inside: boolean; group: string | null; drawn: boolean; cleared: boolean; apart: boolean; minimap: Minimap };
   dragIn: { hot: boolean; changes: Change[]; inside: boolean; group: string | null; translate: string | null; apart: boolean };
   refused: { note: string | null; changes: Change[]; translate: string | null; group: string | null };
   lock: { stored: boolean; note: string | null; changes: Change[]; translate: string | null; locked: boolean; unlocked: boolean };
@@ -63,6 +66,9 @@ describe.skipIf(!local)("the landscape's areas", () => {
     expect(a.tree[2].rows).toEqual(["y1", N7]);
     expect(a.tree[3]).toMatchObject({ title: "Loose", count: "1", rows: [] });
 
+    // the minimap: a block per area and one for the loose assistant; no dots, and no mark for a workspace in an area
+    expect(a.minimap).toEqual({ areas: ["5101", "5102", "5110"], loose: ["s7"], dots: 0, marks: 4 });
+
     // teammates stream what's on screen: everything at fit, then what the fly to 5110 shows
     expect(a.atFit.streams).toEqual(expect.arrayContaining([N1, N7, "s1", "y1"]));
     expect(a.flyTree.inView).toBe(true);
@@ -89,6 +95,8 @@ describe.skipIf(!local)("the landscape's areas", () => {
     expect(a.make.changes.map((c) => c.fn)).toEqual(["landscapeUpdate", "setGroup"]);
     expect(a.make.changes[1].args).toEqual(["s7", "Spike"]);
     expect(a.make).toMatchObject({ inside: true, group: "Spike", drawn: true, cleared: true, apart: true });
+    // in an area now, the assistant has no block of its own: its area has one
+    expect(a.make.minimap).toEqual({ areas: ["5101", "5102", "5110", "Spike"], loose: [], dots: 0, marks: 4 });
 
     // dragged across 5102's edge: it lights up, the place is saved, then the group set; areas pushed aside stay apart
     expect(a.dragIn.hot).toBe(true);

@@ -14,7 +14,6 @@ import {
   areaCamera,
   areaCounts,
   areaInView,
-  areaShown,
   areaSummary,
   attaches,
   cameraFrom,
@@ -27,6 +26,7 @@ import {
   inView,
   keysOnScreen,
   looseStop,
+  minimapBlocks,
   minimapFit,
   nearestInDirection,
   nextBand,
@@ -64,7 +64,7 @@ import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
 import { AreaSwitcher } from "./AreaTree";
 import type { MenuEntry } from "./ContextMenu";
-import { focusTerm, lendTerm, screenText } from "./TerminalPane";
+import { focusTerm, lendTerm, screenText, scrollTerm } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
@@ -742,18 +742,21 @@ export function Landscape({
     }
   };
 
-  // A peek's keys, wherever the keyboard is but a text field, a menu or a dialog: Space keeps it open (or lets it go
-  // again), Esc closes it.
+  // A peek's keys, wherever the keyboard is but a text field, a menu or a dialog: Space keeps it open, and closes it
+  // once kept; Esc closes it; Enter focuses a kept-open one's workspace.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const p = peekNow.current;
-      if (!p || e.metaKey || e.ctrlKey || e.altKey || (e.key !== " " && e.key !== "Escape")) return;
+      if (!p || e.metaKey || e.ctrlKey || e.altKey || (e.key !== " " && e.key !== "Escape" && !(e.key === "Enter" && p.pinned))) return;
       const t = e.target instanceof Element ? e.target : null;
       if (t?.closest("input, textarea:not(.xterm-helper-textarea), select, [contenteditable]") || document.querySelector(OVERLAYS)) return;
       e.preventDefault();
       e.stopPropagation();
       if (e.key === "Escape") setPeek(null);
-      else if (!e.repeat) setPeek({ ...p, pinned: !p.pinned });
+      else if (e.key === "Enter") {
+        const tile = layoutNow.current.tiles.find((x) => x.key === p.key);
+        if (tile) enterRef.current(tile);
+      } else if (!e.repeat) setPeek(p.pinned ? null : { ...p, pinned: true });
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -978,8 +981,14 @@ export function Landscape({
       if (!zooming && mouseAt(cam.current.zoom) && node && node.dataset.ws === selKey.current && (e.target as Element).closest(".term-holder")) return;
       e.preventDefault();
       e.stopPropagation();
-      stopFlyRef.current();
       const page = vpNow.current.h || 800;
+      // a kept-open peek scrolls its terminal's history; a zoom over it is the landscape's
+      const p = peekNow.current;
+      if (!zooming && p?.pinned && (e.target as Element | null)?.closest?.(".ls-peek")) {
+        scrollTerm(p.front, wheelPixels(e.deltaY, e.deltaMode, page));
+        return;
+      }
+      stopFlyRef.current();
       if (zooming) {
         const r = v.getBoundingClientRect();
         const c = cam.current;
@@ -1011,7 +1020,7 @@ export function Landscape({
         release(g.els);
         endGesture();
       }
-      // a press on its peek focuses the workspace (the peek's click); anywhere else ends the peek, kept or not
+      // a press on its peek is the peek's (a click keeps it open, a double-click focuses); anywhere else ends it, kept or not
       const onPeek = !!(e.target as Element | null)?.closest?.(".ls-peek");
       if (!onPeek) closePeek();
       if (e.button === 1 || (e.button === 0 && space.current)) {
@@ -1065,21 +1074,24 @@ export function Landscape({
       surface();
     };
     // The peek: the pointer resting on a card or a read-only workspace opens it, never while dragging, panning or a
-    // button is held; moving onto another workspace or the bare landscape closes it, unless Space kept it open.
+    // button is held. Until it's kept open (Space, or a click on it) the pointer leaving that workspace closes it.
+    // It covers its workspace, so over it what counts is what's under it at the pointer: hovering it holds nothing
+    // open, and moving across it onto another workspace closes it and starts that one's rest. A kept-open one stays.
     const onHover = (e: PointerEvent) => {
       // a marquee or a drag holds the peek off while it lasts
       if (gesture.current) return;
-      const t = e.target as Element | null;
+      const p = peekNow.current;
+      const over = e.target as Element | null;
+      const t = p && !p.pinned && over?.closest?.(".ls-peek") ? (document.elementsFromPoint(e.clientX, e.clientY).find((el) => !el.closest(".ls-peek")) ?? null) : over;
       if (t?.closest?.(".ls-peek")) {
         if (hover.current.timer) clearTimeout(hover.current.timer);
-        hover.current = { key: peekNow.current?.key ?? null, timer: null };
+        hover.current = { key: p?.key ?? null, timer: null };
         return;
       }
       const key = t?.closest?.<HTMLElement>(".ls-world .ls-node")?.dataset.ws ?? null;
       if (key === hover.current.key) return;
       stopHover();
       hover.current.key = key;
-      const p = peekNow.current;
       if (p && !p.pinned && p.key !== key) closePeek();
       if (!key || p?.key === key || p?.pinned || takesKeys(bandNow.current) || focusNow.current || drag || space.current || e.buttons) return;
       hover.current.timer = setTimeout(() => {
@@ -1112,6 +1124,10 @@ export function Landscape({
       v.classList.remove("ls-term-hover");
       offHover();
     };
+    // moving over a peek not kept open: it fires no pointerover while the pointer stays on one of its elements
+    const onPeekMove = (e: PointerEvent) => {
+      if (peekNow.current && !peekNow.current.pinned && (e.target as Element | null)?.closest?.(".ls-peek")) onHover(e);
+    };
     // a middle-button press would otherwise paste (Linux) or start autoscroll
     const onAux = (e: MouseEvent) => e.button === 1 && !inFocus(e.target) && e.preventDefault();
     v.addEventListener("wheel", onWheel, { capture: true, passive: false });
@@ -1120,6 +1136,7 @@ export function Landscape({
     v.addEventListener("auxclick", onAux, true);
     for (const type of MOUSE) v.addEventListener(type, offMouse, true);
     v.addEventListener("pointerover", onOver);
+    v.addEventListener("pointermove", onPeekMove);
     v.addEventListener("pointerleave", onLeave);
     return () => {
       v.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
@@ -1128,6 +1145,7 @@ export function Landscape({
       v.removeEventListener("auxclick", onAux, true);
       for (const type of MOUSE) v.removeEventListener(type, offMouse, true);
       v.removeEventListener("pointerover", onOver);
+      v.removeEventListener("pointermove", onPeekMove);
       v.removeEventListener("pointerleave", onLeave);
       window.removeEventListener("pointermove", onMove, true);
       window.removeEventListener("pointerup", onUp, true);
@@ -1232,6 +1250,7 @@ export function Landscape({
             box={peek.box}
             pinned={peek.pinned}
             meters={meters}
+            onKeep={() => setPeek((p) => (p && p.key === peekTile.key && !p.pinned ? { ...p, pinned: true } : p))}
             onFocus={() => enterFocus(peekTile)}
             onKeys={surface}
           />
@@ -1425,9 +1444,9 @@ function LiveSwitcher({
 const MINIMAP: Size = { w: 196, h: 124 };
 
 /**
- * The minimap (bottom right): areas as outlines in their accents, workspaces as status dots, and the view as a
- * rectangle. A press or a drag on it moves the view there. The view's rectangle follows the camera directly, so
- * panning re-renders none of it.
+ * The minimap (bottom right): areas as blocks in their accents, each workspace in no area as a neutral block of its
+ * own, and the view as a rectangle. A press or a drag on it moves the view there. The view's rectangle follows the
+ * camera directly, so panning re-renders none of it.
  */
 function Minimap({ layout, accents, listeners, cam, vp, onCentre }: { layout: ResolvedLayout; accents: Map<string, number>; listeners: Set<CameraListener>; cam: React.MutableRefObject<Camera>; vp: Size | null; onCentre: (p: Point) => void }) {
   const view = useRef<SVGRectElement>(null);
@@ -1468,17 +1487,11 @@ function Minimap({ layout, accents, listeners, cam, vp, onCentre }: { layout: Re
       }}
       onPointerMove={(e) => e.buttons === 1 && e.currentTarget.hasPointerCapture(e.pointerId) && centre(e)}
     >
-      {layout.areas.map((a) => {
-        const r = areaShown(a);
+      {minimapBlocks(layout).map(({ key, loose, rect: r }) => {
         const p = toMinimap(fit, r);
-        return <rect key={a.key} className={`area a${accents.get(a.key) ?? accentOf(a.key)}`} data-area={a.key} x={p.x} y={p.y} width={Math.max(2, r.w * fit.k)} height={Math.max(2, r.h * fit.k)} rx={2} />;
+        const at = { x: p.x, y: p.y, width: Math.max(2, r.w * fit.k), height: Math.max(2, r.h * fit.k), rx: 2 };
+        return loose ? <rect key={`loose:${key}`} className="loose" data-ws={key} {...at} /> : <rect key={key} className={`area a${accents.get(key) ?? accentOf(key)}`} data-area={key} {...at} />;
       })}
-      {layout.tiles
-        .filter((t) => !t.hidden)
-        .map((t) => {
-          const p = toMinimap(fit, { x: t.rect.x + t.rect.w / 2, y: t.rect.y + t.rect.h / 2 });
-          return <circle key={t.key} className={`dot ${t.front.status}`} data-ws={t.key} cx={p.x} cy={p.y} r={2.5} />;
-        })}
       <rect ref={view} className="view" rx={2} />
     </svg>
   );
@@ -1487,10 +1500,10 @@ function Minimap({ layout, accents, listeners, cam, vp, onCentre }: { layout: Re
 /**
  * A workspace's hover peek: a large, read-only live view of it over the landscape, below 75%. Its cached terminal
  * is lent here at its own size, its font fitted to the box (lendTerm), so its pty is never resized, and it never
- * takes the keyboard: whatever asks for it (a jump to the session, say) gives it to `onKeys`. A click focuses the
- * workspace. It appears at once under reduced motion.
+ * takes the keyboard: whatever asks for it (a jump to the session, say) gives it to `onKeys`. A click keeps it open
+ * (`onKeep`, as Space does) and a double-click focuses the workspace. It appears at once under reduced motion.
  */
-function Peek({ tile, box, pinned, meters, onFocus, onKeys }: { tile: Tile; box: Rect; pinned: boolean; meters?: Record<string, SessionMeter>; onFocus: () => void; onKeys: () => void }) {
+function Peek({ tile, box, pinned, meters, onKeep, onFocus, onKeys }: { tile: Tile; box: Rect; pinned: boolean; meters?: Record<string, SessionMeter>; onKeep: () => void; onFocus: () => void; onKeys: () => void }) {
   const el = useRef<HTMLDivElement>(null);
   const holder = useRef<HTMLDivElement>(null);
   const back = useRef<(() => void) | null>(null);
@@ -1526,7 +1539,8 @@ function Peek({ tile, box, pinned, meters, onFocus, onKeys }: { tile: Tile; box:
       data-peek={tile.key}
       role="dialog"
       aria-label={`Peek at ${titleOf(s)}`}
-      onClick={onFocus}
+      onClick={onKeep}
+      onDoubleClick={onFocus}
     >
       <div className="ls-peek-head">
         <StatusDot status={s.status} />
@@ -1534,7 +1548,7 @@ function Peek({ tile, box, pinned, meters, onFocus, onKeys }: { tile: Tile; box:
         <span className="chip ls-kind">{kindLabel(s)}</span>
         {tokens > 0 && <span className="ls-tokens">{formatTokens(tokens)}</span>}
         <span className="ls-spacer" />
-        <span className="ls-peek-keys">{pinned ? "Kept open · Space or Esc closes" : "Space keeps it open · click to focus"}</span>
+        <span className="ls-peek-keys">{pinned ? "Kept open · Enter or double-click focuses · Space or Esc closes" : "Click or Space keeps it open · double-click focuses"}</span>
       </div>
       {missing && <div className="ls-away">Nothing to show yet</div>}
       <div className="ls-peek-term" ref={holder} />

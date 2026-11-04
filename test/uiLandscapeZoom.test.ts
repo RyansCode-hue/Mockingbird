@@ -185,8 +185,11 @@ interface PeekMotion {
   holding: number | null;
 }
 interface PeekAudit {
-  cards: { early: boolean; opened: string | null; termIn: boolean; stillCard: boolean; motion: PeekMotion };
-  space: { pinned: boolean; keptOpen: string | null; keptOffIt: string | null; closedOnMove: boolean; other: string | null; escClosed: boolean; backFromPeek: boolean; font: number | null };
+  cards: { early: boolean; delay: number; opened: string | null; termIn: boolean; stillCard: boolean; motion: PeekMotion };
+  leave: { onPeek: boolean; stays: string | null; bare: boolean; overPeek: boolean; closed: boolean };
+  across: { again: string | null; to: string | null; overPeek: boolean; firstClosed: boolean; notYet: boolean; opened: string | null };
+  space: { pinned: boolean; keptOpen: string | null; keptOverIt: string | null; keptOffIt: string | null; spaceClosed: boolean; other: string | null; escClosed: boolean; backFromPeek: boolean; font: number | null };
+  clickKeeps: { onPeek: boolean; pinned: boolean; focused: boolean; bare: boolean; kept: string | null; outside: boolean; closed: boolean };
   readonly: {
     inNode: boolean;
     size: string;
@@ -194,12 +197,15 @@ interface PeekAudit {
     back: { closed: boolean; inNode: boolean; same: boolean; size: string; font: number | null; kept: boolean };
   };
   resized: string[];
-  click: { focused: string | null; peek: boolean };
+  dblclick: { focused: string | null; peek: boolean };
+  enter: { peer: string | null; pinned: boolean; selected: string | null; focused: string | null; peek: boolean };
   panning: { whileSpace: boolean };
   jump: { wid: string; selected: string | null; pinned: boolean; lent: boolean; afterJump: string; afterFocus: string; tabIndex: number; wrote: string[] };
+  jumpEnter: { focused: string | null; wrote: string[] };
   overlay: { dialog: boolean; closed: boolean; peek: string | null; pinned: boolean };
   front: { ws: string; opened: string | null; front: string | null; peek: boolean; strays: number; oldIn: boolean };
   kept: { peek: string | null; mode: string | null; snap: boolean };
+  scroll: { pinned: boolean; from: number; to: number; moved: boolean; wrote: string[] };
   error?: string;
 }
 
@@ -214,14 +220,16 @@ describe.skipIf(!local)("the hover peek", () => {
     it(`opens on a card or a read-only workspace after a rest, lends it its terminal and hands it back, kept open by Space: motion ${motion}`, async () => {
       const a = await peekAudit(motion);
       expect(a.error).toBeUndefined();
-      // not at once: after the pointer has rested; the terminal goes into it, and the workspace stays a card
+      // not at once: after the pointer has rested PEEK_HOVER_MS (600 ms); the terminal goes into it, and the workspace stays a card
       expect(a.cards).toMatchObject({ early: false, opened: "s1", termIn: true, stillCard: true });
+      expect(a.cards.delay).toBeGreaterThanOrEqual(600);
+      expect(a.cards.delay).toBeLessThan(900);
       // it lands fully shown with nothing held; under reduce it appears at once, with no animation at all
       const landed = { opacity: "1", transform: "none", holding: 0 };
       for (const m of [a.cards.motion, a.readonly.lent.motion]) expect(m).toEqual({ animations: motion === "full" ? 1 : 0, ...landed });
-      // Space keeps it open over another card and the bare landscape, and lets it go again; Esc closes it, and the
-      // terminal leaves it with its own font back
-      expect(a.space).toEqual({ pinned: true, keptOpen: "s1", keptOffIt: "s1", closedOnMove: true, other: "s5", escClosed: true, backFromPeek: true, font: 12.5 });
+      // Space keeps it open over another card, the bare landscape under it and off it; Space again and Esc close it,
+      // and the terminal leaves it with its own font back
+      expect(a.space).toEqual({ pinned: true, keptOpen: "s1", keptOverIt: "s1", keptOffIt: "s1", spaceClosed: true, other: "s5", escClosed: true, backFromPeek: true, font: 12.5 });
       // read-only at 50%: the terminal leaves its workspace for the peek, scaled by its font at its own size, and the
       // workspace shows its screen as text meanwhile; moving away hands it back, the same terminal, its history whole
       const r = a.readonly;
@@ -231,11 +239,36 @@ describe.skipIf(!local)("the hover peek", () => {
       expect(r.back).toEqual({ closed: true, inNode: true, same: true, size: r.size, font: 12.5, kept: true });
       // no peek resized a pty
       expect(a.resized).toEqual([]);
-      // a click on it focuses the workspace; and it never opens while Space is held to pan
-      expect(a.click).toEqual({ focused: "s1", peek: false });
+      // it never opens while Space is held to pan
       expect(a.panning).toEqual({ whileSpace: false });
     }, 120_000);
   }
+
+  it("closes as the pointer leaves its workspace, though the peek covers it: hovering the peek holds nothing open", async () => {
+    const a = await peekAudit("reduce");
+    expect(a.error).toBeUndefined();
+    // over the peek where it covers its card it stays; off the card, on the peek over the bare landscape, it closes
+    expect(a.leave).toEqual({ onPeek: true, stays: "s1", bare: true, overPeek: true, closed: true });
+    // from its card straight onto another under the peek: it closes at once, and the other's opens after its own rest
+    expect(a.across.to).toBeTruthy();
+    expect(a.across).toEqual({ again: "s1", to: a.across.to, overPeek: true, firstClosed: true, notYet: true, opened: a.across.to });
+  }, 120_000);
+
+  it("is kept open by a click on it as by Space, focuses on a double-click or Enter, and a kept-open one scrolls", async () => {
+    const a = await peekAudit("reduce");
+    // a click keeps it open (focusing nothing): leaving its card no longer closes it, and a press off it does
+    expect(a.clickKeeps).toEqual({ onPeek: true, pinned: true, focused: false, bare: true, kept: "s1", outside: true, closed: true });
+    // a double-click on it focuses its workspace
+    expect(a.dblclick).toEqual({ focused: "s1", peek: false });
+    // Enter on a kept-open one focuses its workspace, not the one selected
+    expect(a.enter.peer).toBeTruthy();
+    expect(a.enter).toEqual({ peer: a.enter.peer, pinned: true, selected: "s1", focused: a.enter.peer, peek: false });
+    // its wheel scrolls the terminal's history up, moving neither the landscape nor writing to the session
+    expect(a.error).toBeUndefined();
+    expect(a.scroll.pinned).toBe(true);
+    expect(a.scroll.to).toBeLessThan(a.scroll.from);
+    expect(a.scroll).toMatchObject({ moved: false, wrote: [] });
+  }, 120_000);
 
   it("never gives its terminal the keyboard: a jump to the session (⌥⇥) leaves it with the landscape, and nothing typed reaches the session", async () => {
     const a = await peekAudit("reduce");
@@ -244,6 +277,8 @@ describe.skipIf(!local)("the hover peek", () => {
     expect(wid).toBeTruthy();
     // the jump selects it, and the peek stays open with its terminal; focusing the terminal itself lands on the landscape too
     expect(a.jump).toEqual({ wid, selected: wid, pinned: true, lent: true, afterJump: "landscape", afterFocus: "landscape", tabIndex: -1, wrote: [] });
+    // Enter aimed at its terminal is the kept-open peek's: it focuses the workspace, and is never typed
+    expect(a.jumpEnter).toEqual({ focused: a.front.ws, wrote: [] });
     // a dialog opened over it has Space and Esc first
     expect(a.overlay).toEqual({ dialog: true, closed: true, peek: a.front.ws, pinned: true });
     // its stack bringing another tab to the front ends it, with no terminal left in it

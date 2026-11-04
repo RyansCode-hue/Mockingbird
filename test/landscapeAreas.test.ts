@@ -15,6 +15,7 @@ import {
   fromMinimap,
   keysOnScreen,
   looseStop,
+  minimapBlocks,
   minimapFit,
   planMakeArea,
   planMoveArea,
@@ -615,6 +616,27 @@ describe("flying, the minimap and the switcher", () => {
       expect(back.x).toBeCloseTo(p.x, 6);
       expect(back.y).toBeCloseTo(p.y, 6);
     }
+  });
+
+  it("draws each area as a block in the minimap, and a block of its own only for each workspace or stack in no area", () => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 1200, 900);
+    l.areas.B = area(1300, 0, 1200, 900, { collapsed: true });
+    l.workspaces.a1 = { x: 24, y: 48, w: 1000, h: 800 };
+    l.workspaces.b1 = { x: 1324, y: 48, w: 1000, h: 800 };
+    l.workspaces.l1 = { x: -1400, y: 0, w: 600, h: 400 };
+    const r = resolveLayout(l, [session("a1", { taskGroup: "A" }), session("b1", { taskGroup: "B" }), session("l1")]);
+    const looseStack = { ...r.tiles.find((t) => t.key === "l1")!, key: "ws:x/y", stack: "x/y", rect: { x: -1400, y: 480, w: 600, h: 400 } };
+    const rectOf = (key: string) => r.areas.find((a) => a.key === key)!.rect;
+    // a collapsed area is its pill; the workspaces in areas, folded or not, have none of their own
+    expect(minimapBlocks({ ...r, tiles: [...r.tiles, looseStack] })).toEqual([
+      { key: "A", loose: false, rect: rectOf("A") },
+      { key: "B", loose: false, rect: { x: 1300, y: 0, w: 320, h: 48 } },
+      { key: "l1", loose: true, rect: l.workspaces.l1 },
+      { key: "ws:x/y", loose: true, rect: looseStack.rect },
+    ]);
+    // none loose: the areas only
+    expect(minimapBlocks(resolveLayout(l, [session("a1", { taskGroup: "A" })])).map((b) => b.key)).toEqual(["A", "B"]);
   });
 
   it("knows which area most of the view shows", () => {

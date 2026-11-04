@@ -309,22 +309,32 @@ notes.
     and a terminal that had the keyboard as the zoom went down gives it back.
     Between 75% and 100% a press still gives the terminal the keyboard, as in
     S2; below 75% it no longer does, and the S2 mouse audit expects that.
-  - **The peek** opens after the pointer rests 300 ms on a card or a
-    read-only workspace (never while dragging, panning with Space or a
-    button held, never at 75% and up, never for an exited session). It's the
-    workspace at its 100% size, shrunk to fit 80% × 86% of the viewport and
-    centred on it. Its terminal is lent (`lendTerm`) once the workspace's
-    pane has let it go, at its own cols × rows with its font fitted to the
-    box, and handed back while the peek is still in the page, its font put
-    back where xterm can measure it. A read-only workspace shows its screen
-    as text meanwhile, taken again when a kept-open peek crosses into the
-    read-only band; a card stays a card. Space keeps it open (and lets it go
-    again); Esc, moving onto another workspace or the bare landscape, a
-    press elsewhere, or moving the camera closes it; a dialog or menu open
-    over it has Space and Esc first. Its stack bringing another tab to the
-    front, or a restart giving the session a new terminal, ends it. A click
-    focuses the workspace. It fades and scales in under full motion and
-    appears at once under reduce.
+  - **The peek** opens after the pointer rests `PEEK_HOVER_MS` (600 ms) on a
+    card or a read-only workspace (never while dragging, panning with Space
+    or a button held, never at 75% and up, never for an exited session).
+    It's the workspace at its 100% size, shrunk to fit 80% × 86% of the
+    viewport and centred on it. Its terminal is lent (`lendTerm`) once the
+    workspace's pane has let it go, at its own cols × rows with its font
+    fitted to the box, and handed back while the peek is still in the page,
+    its font put back where xterm can measure it. A read-only workspace
+    shows its screen as text meanwhile, taken again when a kept-open peek
+    crosses into the read-only band; a card stays a card.
+
+    Until it's kept open, the pointer leaving its workspace closes it. The
+    peek covers its workspace, so a move over the peek counts by what's
+    under it at the pointer (`elementsFromPoint`, past the peek): hovering
+    the peek holds nothing open, and moving across it onto another workspace
+    closes it and starts that one's rest. The peek still takes clicks: a
+    click keeps it open, as Space does. A kept-open peek stays as the
+    pointer moves anywhere; its wheel scrolls its terminal's history
+    (`scrollTerm`: the view only, so nothing reaches the program), and a
+    zoom over it is the landscape's. Space again, Esc, a press off it, or
+    (until it's kept open) moving the camera closes it; a dialog or menu
+    open over it has Space and Esc first. Its stack bringing another tab to
+    the front, or a restart giving the session a new terminal, ends it. A
+    double-click on it, or Enter while it's kept open (even aimed at its
+    terminal), focuses the workspace. It fades and scales in under full
+    motion and appears at once under reduce.
   - **A lent terminal never takes the keyboard.** `focusTerm` (a jump to the
     session: ⌥⇥, ⌘K, a notification) gives it to the landscape instead; the
     terminal can't be tabbed to; a focus that reaches it anyway is stopped
@@ -612,9 +622,12 @@ notes.
     with its waiting badge, and Loose last while any workspace is in no area
     (`looseStop`). The current area is the one most of the view shows
     (`areaInView`), followed by the camera without re-rendering the landscape.
-  - **The minimap** (196 × 124, bottom right) draws areas as dashed outlines
-    in their accents, workspaces as status dots and the view as a rectangle.
-    A press or drag centres the view there.
+  - **The minimap** (196 × 124, bottom right) draws blocks (`minimapBlocks`):
+    each area as a dashed outline in its accent (a collapsed one's pill), and
+    each workspace or stack in no area as one of its own, in a neutral
+    colour. Workspaces in areas have no mark of their own, and there are no
+    status dots. The view is a rectangle; a press or drag centres the view
+    there.
   - **Rooms.** On the landscape, `teamLiveView` reports `sessionsOnScreen`
     (passed up through `onSeen`) instead of the grid's `shown`, so teammates
     stream what's on screen here; `useRoomLive` now comes after the Labs flag
@@ -661,7 +674,8 @@ notes.
       they say;
     - Members ▾ says "Remove from the room…" (P says "Remove…"), as the room
       view does;
-    - the minimap has status dots; B's has only outlines;
+    - the minimap has B's outlines, and a neutral one for each workspace in
+      no area;
     - drags snap to the grid only. Snapping to neighbours, guides and Tidy
       are S6;
     - the top bar (Landscape tab, Needs you, Go to…, + New) is unchanged:
@@ -693,7 +707,7 @@ notes.
       collapsed areas off screen, the three plans and their refusals (growing
       into a locked area, resumable places moved and kept taken, loose drops
       clear of collapsed areas), `undoOf`, `flightAt`, `areaCamera`, the
-      minimap's mapping, `accentsOf`, counts and summaries, `treeOf`,
+      minimap's mapping and blocks, `accentsOf`, counts and summaries, `treeOf`,
       `looseStop`, `presenceLine` and `backupLine`, and
       `LandscapeStore.groupRenamed` (also with the landscape unread);
     - `test/teamLiveModel.test.ts`: `tellLiveView`'s failures said;
@@ -703,7 +717,8 @@ notes.
       fly, collapse, the switcher's Loose, a marquee to a new area, a drag
       across an edge, a refused move, lock, rename, a teammate's session
       landing, an area drag, the switcher, and Members ▾ reaching the same
-      `teamSetAdmin` as the room view;
+      `teamSetAdmin` as the room view; and the minimap's blocks, before and
+      after the loose assistant joins an area;
     - `test/uiMotion.test.ts` checks the flight to an area: under full motion
       it's in flight on its clock and lands with the band matching its zoom,
       and a wheel stops it; under reduced motion it lands at once.

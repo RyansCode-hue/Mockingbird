@@ -3193,16 +3193,13 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-sw.on { color: var(--acc-text); background: color-mix(in srgb, var(--acc) 14%, transparent); }
 .ls-sw.loose.on { color: var(--text-1); background: var(--fill-selected); }
 .ls-sw .w { padding: 0 5px; border-radius: 8px; background: var(--amber); font-size: 10.5px; color: var(--bg-app); }
-/* the minimap (bottom right): areas outlined in their accents, workspaces as status dots, the view as a rectangle */
+/* the minimap (bottom right): areas as blocks in their accents, a workspace in no area as a neutral one, the view as a rectangle */
 .ls-minimap {
   position: absolute; right: 12px; bottom: 12px; z-index: 5; border-radius: 8px; cursor: crosshair; touch-action: none;
   background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2), 0 4px 14px rgba(0, 0, 0, .22);
 }
-.ls-minimap .area { fill: color-mix(in srgb, var(--acc) 5%, transparent); stroke: color-mix(in srgb, var(--acc) 70%, transparent); stroke-width: 1; stroke-dasharray: 3 2; }
-.ls-minimap .dot { fill: var(--text-4); }
-.ls-minimap .dot.working { fill: var(--teal); }
-.ls-minimap .dot.waiting { fill: var(--amber); }
-.ls-minimap .dot.dead { fill: var(--red); }
+.ls-minimap .area, .ls-minimap .loose { fill: color-mix(in srgb, var(--acc) 5%, transparent); stroke: color-mix(in srgb, var(--acc) 70%, transparent); stroke-width: 1; stroke-dasharray: 3 2; }
+.ls-minimap .loose { --acc: var(--text-3); }
 .ls-minimap .view { fill: color-mix(in srgb, var(--text-1) 6%, transparent); stroke: var(--text-2); stroke-width: 1; }
 /* a room area's Members ▾ (design P) */
 /* the popover takes the keyboard as it opens (AnchoredPopover), as a context menu does, without a ring round it all */

@@ -104,8 +104,9 @@ together so work and context flow between them.
     direction.
   - ⌘0 fits everything on screen, ⌘1 goes to 100%, and ⌘K → "Go to…" jumps to
     a workspace or an area.
-- **Minimap** in a corner, showing areas as outlines and workspaces as status
-  dots.
+- **Minimap** in a corner, showing each area as a block in its colour and each
+  workspace or stack in no area as a neutral block of its own; workspaces in
+  areas get no mark of their own. The view is a rectangle you can drag.
 - **Ghost cards.** Closing a workspace leaves a faded card on the landscape:
   - it shows the title, the last summary, the ticket and its branch;
   - its wires stay in place;
@@ -135,8 +136,14 @@ together so work and context flow between them.
 
   The area header sums these up ("2 working · 1 waiting · 1 blocked · PR #88
   draft") and shows the area's budget.
-- **Hover peek.** Below 75% zoom, hovering a card shows a large read-only live
-  preview. Space keeps it open, and a click focuses the workspace.
+- **Hover peek.** Below 75% zoom, resting the pointer on a card (or a read-only
+  workspace) for 600 ms shows a large read-only live preview over it. It closes
+  as the pointer leaves that workspace, even while over the preview, which
+  covers it; moving straight onto another workspace starts that one's 600 ms.
+  Space or a click on it keeps it open; then it stays as the pointer moves
+  away, scrolls with the wheel, and closes with Space again, Esc or a click
+  outside it. A double-click on it (or on the card), or Enter while it's kept
+  open, focuses the workspace.
 
 ## Arranging
 
