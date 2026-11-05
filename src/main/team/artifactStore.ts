@@ -215,6 +215,8 @@ export interface Ingested {
 
 export class ArtifactStore {
   readonly dir: string;
+  /** A store this build mustn't change (an area's a newer Mockingbird wrote): what it sniffs is remembered in memory only. */
+  readOnly = false;
   private sniffs: Record<string, Sniff> | null = null;
   private closed = false;
 
@@ -401,7 +403,7 @@ export class ArtifactStore {
   private rememberSniff(sha: string, s: Sniff): void {
     const all = this.loadSniffs();
     all[sha] = s;
-    if (this.closed) return;
+    if (this.closed || this.readOnly) return;
     writeFileAtomic(path.join(this.dir, "sniff.json"), JSON.stringify(all));
   }
 

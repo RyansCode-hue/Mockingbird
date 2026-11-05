@@ -145,18 +145,23 @@ export interface TeamChatDeps {
   notifyGatherMs?: number;
 }
 
+/** The app window page's events that end what it said was on screen: a new page committed, its renderer gone, the window closed. */
+export const PAGE_GONE_EVENTS = ["did-navigate", "render-process-gone", "destroyed"] as const;
+
 /** What forgetViewsWith listens to: the app window's page (Electron's WebContents). */
 export interface PageEvents {
-  on(event: "did-start-loading" | "render-process-gone" | "destroyed", listener: () => void): unknown;
+  on(event: (typeof PAGE_GONE_EVENTS)[number], listener: () => void): unknown;
 }
 
 /**
- * The room chats on screen are the page's to say: when it starts loading again (a reload), its renderer goes, or the
- * window closes, what it said is forgotten (`forget`), and a new page says it again. Otherwise a reload would leave
- * main holding rooms no view shows, and mentions in them would never notify.
+ * The room chats on screen are the page's to say: once another page has replaced it (did-navigate, a reload's
+ * commit), its renderer goes, or the window closes, what it said is forgotten (`forget`), and the new page says it
+ * again as it starts. Otherwise a reload would leave main holding rooms no view shows, and mentions in them would
+ * never notify. Not did-start-loading: it fires for navigations that never replace the page (a reload the quit
+ * question cancels, a dropped file will-navigate refuses), and the page, still there, wouldn't say it again.
  */
 export function forgetViewsWith(page: PageEvents, forget: () => void): void {
-  for (const event of ["did-start-loading", "render-process-gone", "destroyed"] as const) page.on(event, forget);
+  for (const event of PAGE_GONE_EVENTS) page.on(event, forget);
 }
 
 export class TeamChat {

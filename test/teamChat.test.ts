@@ -187,7 +187,7 @@ describe("mentions", () => {
     const page = new EventEmitter();
     forgetViewsWith(page as never, () => ryan.room.chat.setViewing(null));
     ryan.room.chat.setViewing([roomId]);
-    page.emit("did-start-loading");
+    page.emit("did-navigate");
     nick.room.chat.post(roomId, "@Ryan after the reload");
     await until(() => ryan.notes.length === 1, "a notification after the reload");
     expect(ryan.notes[0].body).toMatch(/after the reload/);

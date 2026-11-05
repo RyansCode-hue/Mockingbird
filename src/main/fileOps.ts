@@ -149,8 +149,11 @@ export function dirInside(root: string, relDir: string, createMode?: number): st
   return dir;
 }
 
-/** A regular file's text and mode, never through a link; null when there's no file. Throws for a link or anything else. */
-export function readRegularFile(file: string, root = path.dirname(file)): { text: string; mode: number } | null {
+/**
+ * A regular file's text and mode, never through a link; null when there's no file. Throws for a link or anything
+ * else, and for one larger than `maxBytes`.
+ */
+export function readRegularFile(file: string, root = path.dirname(file), maxBytes = Infinity): { text: string; mode: number } | null {
   let st: fs.Stats;
   try {
     st = fs.lstatSync(file);
@@ -165,6 +168,7 @@ export function readRegularFile(file: string, root = path.dirname(file)): { text
   try {
     const now = fs.fstatSync(fd);
     if (!now.isFile()) throw new Error(`${file} isn't a regular file`);
+    if (now.size > maxBytes) throw new Error(`${file} is ${now.size} bytes, more than it could ever be (${maxBytes})`);
     return { text: fs.readFileSync(fd, "utf8"), mode: now.mode & 0o7777 };
   } finally {
     fs.closeSync(fd);

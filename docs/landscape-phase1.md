@@ -903,11 +903,17 @@ Design O, with Artifacts as a window, and N's workspace header.
       rooms (`TeamChat.viewing`), so two views of a room don't fight, and
       closing one leaves the other's room viewed.
       - **The page's word is the only word.** A page's first report always
-        goes, even "nothing", and one main didn't take goes again with the
-        next change. Main forgets every view when the app window's page
-        starts loading again, its renderer goes, or the window closes
-        (`forgetViewsWith`), so a reload never leaves a room viewed that no
-        view shows, and mentions in it notify.
+        goes, even "nothing", and one main didn't take (a rejection, or the
+        `{ error }` a handler that threw answers) goes again with the next
+        change. The page also sends its whole set as it starts and each time
+        the window gets focus. Main forgets every view once another page
+        replaces the app window's (`did-navigate`), its renderer goes, or the
+        window closes (`forgetViewsWith`), so a reload never leaves a room
+        viewed that no view shows, and mentions in it notify. Not on
+        `did-start-loading`: a reload the quit question cancels, or a dropped
+        file `will-navigate` refuses, starts one that never replaces the
+        page, and the page, still there, wouldn't say its set again until
+        focus.
     - **A mention notification, and the Connected line** (under the area
       tree), go to the room's area, flown to, and open its Chat there. With
       several rooms the Connected line names none, so it shows the Team
@@ -1012,43 +1018,75 @@ Design O, with Artifacts as a window, and N's workspace header.
         folder or name it `.` or `..`, and hashes capitals and long keys, so
         a case-insensitive disk can't merge two areas.
       - **No symbolic link is followed.** The way to an area's folder is
-        checked every time (`dirInside`, then a realpath check); the first
-        time a run opens an area, everything inside its folder is walked and
-        a link anywhere refuses it; `area.json` must be a regular file each
-        time it's read and before each write (lstat: `writeFileAtomic` would
-        write where a link points); and each blob, its blobs folder and the
-        store's folder are checked the same way just before the blob is read
-        or copied (the viewer, Quick Look, Save as, agents' copies, sharing,
-        a merge), so a link planted after the first walk is never followed.
-        Added files must be regular files, never from `~/.mockingbird/team`
-        or the area folders.
+        checked every time it's used, a kept store included (`dirInside`,
+        then a realpath check), so a link swapped in for the folder after
+        it was opened is refused; the first time a run opens an area,
+        everything inside its folder is walked and a link anywhere refuses
+        it; the store's own folders and files (`blobs/`, `partial/`, `tmp/`,
+        `view/`, `sniff.json`) are checked each time the store is used
+        (`checkStore`), and `view/<id>` and its copy before Quick Look opens
+        it; `area.json` and the set-aside copies are read without following
+        a link (`readRegularFile`, at most 256 MB), and `area.json` must be a
+        regular file before each write (`writeFileAtomic` would write where
+        a link points); each blob, its blobs folder and the store's folder
+        are checked just before the blob is read or copied (the viewer,
+        Quick Look, Save as, agents' copies, sharing, a merge), and the
+        reads here open it without following a link. An add checks all of
+        this before it writes a byte, and again before it keeps one. Node
+        has no `openat`, so a link swapped in between a check and a copy
+        isn't caught; one there already always is. Added files must be
+        regular files, never from `~/.mockingbird/team` or the area folders.
       - **`area.json` follows S1's version rule.** It carries `v` (now 1),
         read before its shape. One written by a newer Mockingbird is read as
         far as it can be and never written, whatever its shape: the shelf is
-        read-only (`readOnly` in its view), says to update, and the window
-        offers no Add, Rename or Remove, and refuses a drop; main refuses an
-        add before anything is kept. Nothing is dropped:
+        read-only (`readOnly` in its view), says to update, and the window,
+        its cards and their viewers offer no Add, Rename, Remove or Edit, and
+        refuse a drop; main refuses an add, or a merge into it, before
+        anything is kept or copied, and writes no content types or view
+        copies there (Quick Look and Finder say why). Nothing is dropped:
         - a file that isn't JSON, or has no version or no list of artifacts,
           is moved aside to `.bad-<ts>`, said on the shelf, and the shelf
           starts over; one that can't be moved is left as it is, said, and
           the shelf is read-only until it's moved or fixed;
         - records this version can't read aren't shown, are said, and are
-          written back as they were with every save.
+          written back as they were with every save;
+        - each record it reads is written over its object as the file had
+          it, and the file's own keys besides `v`, `key` and `items` as they
+          were, so the fields a newer build added without raising `v` stay.
       - **What's kept but can't be read keeps its bytes.** Cleaning up after
         a remove (or a failed add) counts as in use every blob hash and
-        artifact id found in the records this version can't read and in the
-        set-aside copies, besides the records it reads; nothing is cleaned
-        up on a read-only shelf, or when a set-aside copy can't be read
-        (said).
+        artifact id found anywhere in `area.json` as it is on disk (records
+        it can't read, fields it doesn't know) and in the set-aside copies,
+        besides the records it reads. Agents' copies go only with an id
+        that's in none of them, or a record agents may not read. Nothing is
+        cleaned up on a read-only shelf, or when one of those files can't be
+        read (said), agents' copies included. A cleanup that fails after a
+        failed add is logged, and the add's own reason is the one said.
+      - **`tmp/` is cleared** (adds cut short by quitting) the first time a
+        run opens an area, unless its shelf can't be changed.
+      - **A file whose bytes aren't in the folder** is said so by name
+        wherever it's asked for (the viewer, Save as, agents, sharing),
+        never as a raw `ENOENT`.
     - **Renaming the area moves them.** The `sessions:renameGroup` hook
       renames the folder, or merges it into the new name's, and its agents'
-      copies follow. A failure is logged and said on the shelf; the rename
-      itself isn't refused. A rename to a sub-group or Loose leaves them
-      under the old key and logs where they are.
+      copies follow (as soon as the folder has moved, so a failure after
+      that doesn't leave them under the old name). A failure is logged and
+      said on the shelf, naming where the artifacts are (still in the old
+      folder, or moved with the new name but its `area.json` not rewritten);
+      the rename itself isn't refused. A rename to a sub-group or Loose
+      leaves them under the old key and logs where they are. An add still
+      reading its file when the area is renamed is refused (each area counts
+      its renames in a run), rather than kept in the old folder; reading an
+      area never makes its folder, so a list still running doesn't make the
+      old name's again.
       - **A merge never loses what it couldn't move.** Each record is copied
         with its file; a file missing from the old folder is skipped and
-        named once on the new shelf, and its record comes along. The old
-        folder is removed only when every record was read and copied and it
+        named once on the new shelf, and its record comes along, with the
+        fields this version doesn't know. A record of an id the new name has
+        already comes along only as the same artifact (rev, name and bytes);
+        another version of it stays in the old folder. The old folder is
+        removed only when every record was read and copied, none was another
+        version, its file has no keys this version doesn't know, and it
         holds nothing else: no set-aside copy (one made before the merge
         too), no blob the merged records don't name. Otherwise it's kept as
         it is, under the old name, and the new shelf says so; the problems of
@@ -1151,10 +1189,13 @@ Design O, with Artifacts as a window, and N's workspace header.
       `compactShifts`.
     - `test/chatViewing.test.ts` and `test/teamChat.test.ts`: viewing per
       view, and mentions notified once no view of their room is seen; a
-      page's first report, a failed one sent again, and main's set forgotten
-      across a reload, the renderer going and the window closing, with the
-      renderer's registry and main's `TeamChat` together, and a mention
-      notifying after a reload.
+      page's first report, a failed one (`{ error }` or a rejection) sent
+      again, the whole set sent as the page starts and on each focus, and
+      main's set forgotten across a reload's commit, the renderer going and
+      the window closing but not a navigation that didn't replace the page,
+      with the renderer's registry and main's `TeamChat` together; a mention
+      notifying after a reload; and the app window wired to it (read from
+      `index.ts`, which can't load under Vitest).
     - `test/landscapeTools.test.ts` also: `selectionFor`; `mentionTarget`'s
       shelf and room-session rules.
     - `test/teamService.test.ts`: sharing a group says whether it made the
@@ -1176,9 +1217,28 @@ Design O, with Artifacts as a window, and N's workspace header.
         no list left as it is; a file that can't be moved aside left as it is,
         read-only; a set-aside made before a merge surviving it; a merge
         source's problems apart from the shelf's own;
-      - links planted after the first walk: at `area.json` on a save and on a
-        merge's read, and at a blob for the viewer, an agent's copy, the
+      - links planted after the first walk: at `area.json` on a save, on a
+        merge's write into it (nothing copied first) and on a merge's read;
+        at the area's own folder; at `tmp/`, `view/` and `sniff.json`; at a
+        set-aside copy; and at a blob for the viewer, an agent's copy, the
         list, sharing and a merge;
+      - a newer build's fields and keys written back, and a blob only they
+        name kept; a record's unknown fields carried along a merge, and an
+        unknown key keeping the old folder;
+      - a merge keeping the old folder for another version of an artifact,
+        and for a blob no record names; letting it go when what it has is
+        the same; refusing a newer Mockingbird's target before copying; and
+        saying where the artifacts are when the folder moved but its file
+        couldn't be written, with agents' copies following;
+      - an add the area was renamed under refused, and a list running
+        across a rename never making the old folder again;
+      - cleanup sweeping nothing and keeping agents' copies when a
+        set-aside copy can't be read, keeping a copy of a record it can't
+        read, and the add's own reason said when cleanup fails too;
+      - `tmp/` cleared on first open, not on a newer Mockingbird's shelf,
+        where nothing writes content types or view copies;
+      - a file whose bytes are gone said so by name for Save as, agents and
+        sharing;
       - add, read, rename and remove, and a secret asked about first;
       - an area's rename and merge;
       - `shareTo`, refusing secrets;
@@ -1201,7 +1261,8 @@ Design O, with Artifacts as a window, and N's workspace header.
         removed from, and a room's area showing the room's.
     - the read-only audit (`?landscapeReadOnlyAudit` with `?areaReadOnly`):
       a newer Mockingbird's area shelf saying why, with Add, Rename and
-      Remove off;
+      Remove off, in the window, on a card and in the viewer from both (no
+      Edit), and a file dropped on the window said and never sent;
     - and the review audit (`=a` and `=b`, two pages, each well inside the
       preview's minute):
       - placed and docked windows and a card through a real reload;

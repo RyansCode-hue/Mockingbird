@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { readJsonFile, readSlice, writeFileAtomic, writeGenerated } from "../src/main/fileOps";
+import { readJsonFile, readRegularFile, readSlice, writeFileAtomic, writeGenerated } from "../src/main/fileOps";
 import { codexRollouts, epochMs } from "../src/main/agentFiles";
 import { tempDir } from "./helpers";
 
@@ -54,6 +54,15 @@ describe("reading a JSON file", () => {
     expect(() => readJsonFile(bad, {})).toThrow(`${bad} is not valid JSON`);
     expect(fs.readFileSync(bad, "utf8")).toBe("{ broken");
     expect(() => readJsonFile(dir, {})).toThrow(/EISDIR/);
+  });
+});
+
+describe("reading a regular file", () => {
+  it("never reads one larger than it could ever be", () => {
+    const file = path.join(tempDir("regular"), "area.json");
+    fs.writeFileSync(file, "12345");
+    expect(readRegularFile(file, path.dirname(file), 5)?.text).toBe("12345");
+    expect(() => readRegularFile(file, path.dirname(file), 4)).toThrow(/is 5 bytes, more than it could ever be \(4\)/);
   });
 });
 

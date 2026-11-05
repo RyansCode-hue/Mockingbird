@@ -6,7 +6,7 @@ import { AgentCopies } from "./team/agentCopies";
 import { RepoRefs, type FetchPolicy } from "./team/artifactRepo";
 import { baseSummary, blockedReasonOf, cleanName, exportArtifact, exportName, fileContent, normalizeText, type TeamArtifacts } from "./team/artifacts";
 import { ArtifactStore, checkAddable, holdsPrivateKey, inside, type Sniff } from "./team/artifactStore";
-import { dirInside, isMissing, writeFileAtomic } from "./fileOps";
+import { dirInside, isMissing, readRegularFile, writeFileAtomic } from "./fileOps";
 import { homeSecretPlace, isSecretFileName } from "./secrets";
 import { AREA_SELF, areaOfShelf, areaShelf } from "../shared/areaArtifacts";
 import { LOOSE_GROUP } from "../shared/landscape";
@@ -78,18 +78,25 @@ interface AreaFile {
 }
 
 /**
- * What's held for an area: the records this version reads; those it can't (`kept`), written back as they were with
- * every save so nothing is ever dropped; why the file mustn't be changed (written by a newer Mockingbird), or null;
- * and whether every record was read (`complete`), which a merge needs before it lets the old folder go.
+ * What's held for an area: the records this version reads, and each one's object as the file had it (`raw`, by id);
+ * those it can't (`kept`); the file's own keys besides v, key and items (`extra`). A save writes each record over its
+ * raw object, and the kept records and the extra keys as they were, so nothing a newer build added is ever dropped.
+ * Also why the file mustn't be changed (written by a newer Mockingbird), or null; and whether every record was read
+ * (`complete`), which a merge needs before it lets the old folder go.
  */
 interface Held {
   items: ArtifactRecord[];
+  raw: ReadonlyMap<string, Record<string, unknown>>;
   kept: unknown[];
+  extra: Record<string, unknown>;
   readOnly: string | null;
   complete: boolean;
 }
 
-const EMPTY: Held = { items: [], kept: [], readOnly: null, complete: true };
+const EMPTY: Held = { items: [], raw: new Map(), kept: [], extra: {}, readOnly: null, complete: true };
+
+/** The largest area.json (or a copy set aside) ever read: 500 notes of 60,000 characters, escaped, and their fields. */
+const MAX_AREA_FILE = 256 * 1024 * 1024;
 
 /** Under the root (~/.mockingbird): the areas' folders. */
 export const AREAS_DIR = path.join("artifacts", "areas");
@@ -124,16 +131,21 @@ function noLinksInside(dir: string): void {
 }
 
 /**
- * Every blob hash and artifact id area `dir`'s files may still name besides the records this version reads: those it
- * keeps but can't read (`held.kept`), and the copies of area.json set aside (`area.json.bad-*`). They're found by their
- * shape anywhere in the text, so a record this version can't parse still keeps its bytes (keeping one too many is
- * harmless; sweeping one is a loss). Throws when a set-aside copy can't be read.
+ * Every blob hash and artifact id area `dir`'s files may name: the records this version reads, and anything in
+ * area.json as it is on disk (records it keeps but can't read, fields of those it reads that it doesn't know, keys of
+ * the file's own) and in the copies of it set aside (`area.json.bad-*`). They're found by their shape anywhere in the
+ * text, so what this version can't parse still keeps its bytes (keeping one too many is harmless; sweeping one is a
+ * loss). Throws when one of the files can't be read: never through a link, never past MAX_AREA_FILE.
  */
 function liveRefs(dir: string, held: Held): { shas: Set<string>; ids: Set<string> } {
   const shas = new Set(held.items.flatMap((a) => (a.kind === "file" ? [a.sha256] : [])));
   const ids = new Set(held.items.map((a) => a.id));
-  const texts = [JSON.stringify(held.kept)];
-  for (const n of fs.readdirSync(dir)) if (n.startsWith("area.json.bad-")) texts.push(fs.readFileSync(path.join(dir, n), "utf8"));
+  const texts: string[] = [];
+  for (const n of fs.readdirSync(dir)) {
+    if (n !== "area.json" && !n.startsWith("area.json.bad-")) continue;
+    const f = readRegularFile(path.join(dir, n), dir, MAX_AREA_FILE);
+    if (f) texts.push(f.text);
+  }
   for (const t of texts) {
     for (const m of t.matchAll(/[0-9a-f]{64}/g)) shas.add(m[0]);
     for (const m of t.matchAll(/"([A-Za-z0-9_-]{22})"/g)) ids.add(m[1]);
@@ -162,6 +174,43 @@ function leftIn(src: string, shas: ReadonlySet<string>): string[] {
   return out;
 }
 
+/**
+ * A store's folder, and the folders and files of its own in it, as they must be (none a link), checked before each
+ * use: a link planted at one since the area's folder was first walked is never followed. Missing ones are fine.
+ */
+function checkStore(store: ArtifactStore): void {
+  for (const [name, folder] of [["", true], ["blobs", true], ["partial", true], ["tmp", true], ["view", true], ["sniff.json", false]] as const) {
+    const at = name ? path.join(store.dir, name) : store.dir;
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(at);
+    } catch (err) {
+      if (!isMissing(err)) throw err;
+      if (!name) return;
+      continue;
+    }
+    if (st.isSymbolicLink()) throw new Error(`${at} is a symbolic link: an area's artifacts are never read or written through one`);
+    if (folder ? !st.isDirectory() : !st.isFile()) throw new Error(`${at} isn't a ${folder ? "folder" : "file"}`);
+  }
+}
+
+/** Up to `length` bytes of the file at `file` from its start, opened without following a link (O_NOFOLLOW). */
+function readNoFollow(file: string, length: number): Buffer {
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    if (!fs.fstatSync(fd).isFile()) throw new Error(`${file} isn't a file`);
+    const buf = Buffer.alloc(length);
+    return buf.subarray(0, fs.readSync(fd, buf, 0, length, 0));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Whether a merge's record and the target's of the same id are one artifact as it is now (same rev, name and bytes). */
+function sameRecord(a: ArtifactRecord, b: ArtifactRecord): boolean {
+  return a.kind === b.kind && a.rev === b.rev && a.name === b.name && (a.kind !== "file" || (b.kind === "file" && a.sha256 === b.sha256 && a.size === b.size));
+}
+
 /** What sharing an area's artifacts into a room adds them with: the room's own adds, and their checks (TeamArtifacts). */
 export interface RoomAdds {
   addBytes(roomId: string, name: string, bytes: Uint8Array, confirmSecret?: boolean): Promise<AddFilesResult>;
@@ -183,6 +232,10 @@ export class AreaArtifacts {
   private readonly linkFree = new Set<string>();
   private readonly problems = new Map<string, string[]>();
   private readonly stores = new Map<string, ArtifactStore>();
+  /** Each area's renames so far in this run: an add that waited across one is refused rather than kept in the old folder. */
+  private readonly gens = new Map<string, number>();
+  /** The areas whose tmp/ (adds cut short by quitting) was cleared in this run. */
+  private readonly tmpCleared = new Set<string>();
   private readonly now: () => number;
 
   constructor(private readonly d: AreaArtifactsDeps) {
@@ -227,20 +280,66 @@ export class AreaArtifacts {
     return dir;
   }
 
-  private store(key: string): ArtifactStore {
+  /**
+   * Area `key`'s store, checked again each time it's used: the way to its folder and that it's inside the areas folder
+   * (dir), and its own folders and files (checkStore). Its folder is made only when `create` (an add, a merge into
+   * it): reading an area that has none finds nothing in it, and never makes one.
+   */
+  private store(key: string, create = false): ArtifactStore {
+    const dir = this.dir(key, create) ?? path.join(this.d.root, AREAS_DIR, folderOf(key));
     let s = this.stores.get(key);
-    if (!s) this.stores.set(key, (s = new ArtifactStore(this.dir(key, true)!)));
+    if (!s || s.dir !== path.join(dir, "artifacts")) this.stores.set(key, (s = new ArtifactStore(dir)));
+    s.readOnly = !!this.file(key).readOnly;
+    checkStore(s);
     return s;
   }
 
-  /** Area `key`'s records, read once and kept. Throws when they can't be read; a file that isn't one is moved aside and said. */
+  /**
+   * Area `key`'s records, read once and kept. Throws when they can't be read; a file that isn't one is moved aside and
+   * said. Its first read in a run clears what adds cut short by quitting left in its tmp/, unless it can't be changed;
+   * only the first, folder or not: a read again (after a rename) mustn't clear an add of this run's still in it.
+   */
   private file(key: string): Held {
     const held = this.files.get(key);
     if (held) return held;
     const dir = this.dir(key, false);
     const f = dir ? this.readFile(key, dir, key) : EMPTY;
     this.files.set(key, f);
+    const first = !this.tmpCleared.has(key);
+    this.tmpCleared.add(key);
+    if (dir && !f.readOnly && first) {
+      try {
+        const store = new ArtifactStore(dir);
+        checkStore(store);
+        store.clearTmp();
+      } catch (err) {
+        this.said(key, "tmp", `What unfinished adds left in its folder couldn't be cleared: ${(err as Error).message}`);
+      }
+    }
     return f;
+  }
+
+  private gen(key: string): number {
+    return this.gens.get(key) ?? 0;
+  }
+
+  /**
+   * Refuses a change to area `key` before anything of it is written: when its file can't be changed (readOnly), or its
+   * folder, its store or its area.json isn't what it must be (a link planted since it was opened). Returns its folder.
+   */
+  private writable(key: string): string {
+    const { readOnly } = this.file(key);
+    if (readOnly) throw new Error(readOnly);
+    const dir = this.dir(key, true)!;
+    this.store(key, true);
+    const at = path.join(dir, "area.json");
+    // writeFileAtomic writes where a link points: one planted at area.json since the folder was checked is refused
+    try {
+      if (!fs.lstatSync(at).isFile()) throw new Error(`${at} isn't a regular file (a symbolic link or a folder): an area's artifacts are never written through one`);
+    } catch (err) {
+      if (!isMissing(err)) throw err;
+    }
+    return dir;
   }
 
   /**
@@ -249,13 +348,11 @@ export class AreaArtifacts {
    */
   private readFile(key: string, dir: string, sayOn: string, tag = ""): Held {
     const at = path.join(dir, "area.json");
-    let text: string | null = null;
+    let text: string | null;
     try {
-      const st = fs.lstatSync(at);
-      if (!st.isFile()) throw new Error("it isn't a regular file");
-      text = fs.readFileSync(at, "utf8");
+      text = readRegularFile(at, dir, MAX_AREA_FILE)?.text ?? null;
     } catch (err) {
-      if (!isMissing(err)) throw new Error(`${at} couldn't be read: ${(err as Error).message}`);
+      throw new Error(`${at} couldn't be read: ${(err as Error).message}`);
     }
     return text === null ? EMPTY : this.parse(key, at, text, sayOn, tag);
   }
@@ -299,14 +396,17 @@ export class AreaArtifacts {
     }
     if (!f || version === null || !Array.isArray(f.items)) return this.unreadable(at, `isn't an area's artifacts list (${version === null ? "no version" : "no list of artifacts"})`, sayOn, tag);
     const items: ArtifactRecord[] = [];
+    const raw = new Map<string, Record<string, unknown>>();
     const kept: unknown[] = [];
     const bad: string[] = [];
+    const extra = Object.fromEntries(Object.entries(f).filter(([k]) => k !== "v" && k !== "key" && k !== "items"));
     for (const [i, x] of (f.items as unknown[]).entries()) {
       try {
         const r = x as Partial<ArtifactRecord>;
         if (typeof r.id !== "string" || !ARTIFACT_ID_RE.test(r.id)) throw new Error("its id isn't an artifact's");
         if (typeof r.addedAt !== "number" || typeof r.rev !== "string") throw new Error("it has no addedAt or rev");
         items.push({ ...checkAdd(x), id: r.id, addedBy: AREA_SELF, addedAt: r.addedAt, lamport: 0, rev: r.rev, ...(typeof r.updatedAt === "number" ? { updatedBy: AREA_SELF, updatedAt: r.updatedAt } : {}) });
+        raw.set(r.id, x as Record<string, unknown>);
       } catch (err) {
         kept.push(x);
         bad.push(`#${i + 1}: ${(err as Error).message}`);
@@ -314,27 +414,22 @@ export class AreaArtifacts {
     }
     this.said(sayOn, `${tag}version`, readOnly);
     this.said(sayOn, `${tag}records`, bad.length ? `${bad.length} of the artifacts in ${at} can't be read here and aren't shown; they're kept in the file as they are (${bad.join("; ")})` : null);
-    return { items, kept, readOnly, complete: !bad.length && !readOnly };
+    return { items, raw, kept, extra, readOnly, complete: !bad.length && !readOnly };
   }
 
   /**
-   * Write area `key`'s records, with those this version can't read written back as they were. Refused for a file a
-   * newer Mockingbird wrote. Throws when they can't be written; what's held in memory is then what was there before.
+   * Write area `key`'s records, each over its object as the file had it (`raw`, or `moreRaw` for records from
+   * elsewhere: a merge's), with those this version can't read and the file's own keys it doesn't know written back as
+   * they were. Refused for a file a newer Mockingbird wrote. Throws when they can't be written; what's held in memory
+   * is then what was there before.
    */
-  private save(key: string, items: ArtifactRecord[]): void {
+  private save(key: string, items: ArtifactRecord[], moreRaw?: ReadonlyMap<string, Record<string, unknown>>): void {
     const held = this.file(key);
-    if (held.readOnly) throw new Error(held.readOnly);
-    const dir = this.dir(key, true)!;
-    const at = path.join(dir, "area.json");
-    // writeFileAtomic writes where a link points: one planted at area.json since the folder was checked is refused
-    try {
-      if (!fs.lstatSync(at).isFile()) throw new Error(`${at} isn't a regular file (a symbolic link or a folder): an area's artifacts are never written through one`);
-    } catch (err) {
-      if (!isMissing(err)) throw err;
-    }
-    const f: AreaFile = { v: AREA_FILE_VERSION, key, items: [...items, ...held.kept] };
+    const at = path.join(this.writable(key), "area.json");
+    const written = items.map((a) => ({ ...(held.raw.get(a.id) ?? moreRaw?.get(a.id) ?? {}), ...a }));
+    const f = { ...held.extra, v: AREA_FILE_VERSION, key, items: [...written, ...held.kept] } satisfies AreaFile;
     writeFileAtomic(at, JSON.stringify(f, null, 2));
-    this.files.set(key, { ...held, items });
+    this.files.set(key, { ...held, items, raw: new Map(items.map((a, i) => [a.id, written[i]])) });
     this.changed(key);
   }
 
@@ -429,10 +524,13 @@ export class AreaArtifacts {
   }
 
   private async ingest(key: string, name: string, source: { file: string } | { bytes: Uint8Array }, confirmSecret: boolean, out: AddFilesResult, credentials: string | null = null): Promise<void> {
-    const { readOnly } = this.file(key);
-    if (readOnly) throw new Error(readOnly);
-    const store = this.store(key);
-    const ing = await store.ingest(source, name);
+    this.writable(key);
+    const gen = this.gen(key);
+    const ing = await this.store(key, true).ingest(source, name);
+    if (this.gen(key) !== gen) {
+      ing.drop();
+      throw new Error(`${key} was renamed while ${name} was being added, so it wasn't: add it again where it is now`);
+    }
     const secret = isSecretFileName(name)
       ? `${name} is named like a secret file`
       : credentials
@@ -445,12 +543,23 @@ export class AreaArtifacts {
       out.refused.push({ name, reason: `${secret}. Agents never read it.`, needsConfirm: "secret" });
       return;
     }
+    // a link planted while it was read in is refused before its bytes are kept
+    try {
+      this.writable(key);
+    } catch (err) {
+      ing.drop();
+      throw err;
+    }
     ing.keep();
     const same = this.file(key).items.find((a) => a.kind === "file" && a.sha256 === ing.sha256);
     try {
       out.added.push(this.add(key, { kind: "file", name, size: ing.size, sha256: ing.sha256, mime: ing.sniff.mime, ...(credentials ? { wasSecret: true as const } : {}) }, same ? [`The same file is already here as ${same.name}`] : []));
     } catch (err) {
-      this.gc(key);
+      try {
+        this.gc(key);
+      } catch (gcErr) {
+        this.d.log(`area artifacts: cleaning up after ${name} wasn't added to ${key}`, gcErr);
+      }
       throw err;
     }
   }
@@ -535,7 +644,9 @@ export class AreaArtifacts {
     }
     const sniff = await this.sniffOf(key, a);
     if (!sniff) return { view: "missing", local: { state: "failed", problem: `${a.name}'s file isn't in this area's folder any more` } };
-    return fileContent(this.store(key), a, sniff);
+    const store = this.store(key);
+    this.blobAt(store, a);
+    return fileContent(store, a, sniff);
   }
 
   /** An area's files are all on this Mac: there's nothing to fetch. */
@@ -555,8 +666,16 @@ export class AreaArtifacts {
     if (a.kind !== "file") throw new Error("Only files open in Quick Look or Finder");
     const sniff = await this.sniffOf(key, a);
     if (!sniff) throw new Error(`${a.name}'s file isn't in this area's folder any more`);
-    this.blobAt(this.store(key), a.sha256);
-    const copy = await this.store(key).viewCopy(a.id, a.sha256, a.name, sniff);
+    const store = this.store(key);
+    if (store.readOnly) throw new Error(`${a.name} can't open in Quick Look or Finder here: they need a copy kept in the area's folder, and ${this.file(key).readOnly}`);
+    this.blobAt(store, a);
+    // view/<id> and the copy in it, checked as the store's own folders are: the copy is opened by its path
+    const folder = path.join(store.dir, "view", a.id);
+    for (const at of [folder, ...(fs.existsSync(folder) ? fs.readdirSync(folder).map((n) => path.join(folder, n)) : [])]) {
+      const st = fs.lstatSync(at, { throwIfNoEntry: false });
+      if (st?.isSymbolicLink()) throw new Error(`${at} is a symbolic link: an area's artifacts are never opened through one`);
+    }
+    const copy = await store.viewCopy(a.id, a.sha256, a.name, sniff);
     if (copy.warning) this.said(key, `quarantine ${a.id}`, copy.warning);
     return copy.path;
   }
@@ -567,7 +686,7 @@ export class AreaArtifacts {
 
   async exportTo(key: string, id: string, dest: string): Promise<string | null> {
     const a = this.item(key, id);
-    if (a.kind === "file") this.blobAt(this.store(key), a.sha256);
+    if (a.kind === "file") this.blobAt(this.store(key), a);
     const warning = await exportArtifact(this.store(key), a, dest);
     if (warning) this.d.log("area artifacts: Save as", warning);
     return warning;
@@ -602,19 +721,17 @@ export class AreaArtifacts {
   async sniffOf(key: string, a: FileRecord): Promise<Sniff | null> {
     const store = this.store(key);
     if (store.blobSize(a.sha256) !== a.size) return null;
-    this.blobAt(store, a.sha256);
+    this.blobAt(store, a);
     return store.sniffOf(a.sha256, a.name);
   }
 
   readText(key: string, a: FileRecord, max: number): { text: string; truncated: boolean } {
-    const store = this.store(key);
-    this.blobAt(store, a.sha256);
-    const buf = store.readBlob(a.sha256, 0, Math.min(a.size, max));
+    const buf = readNoFollow(this.blobAt(this.store(key), a), Math.min(a.size, max));
     return { text: new TextDecoder("utf-8").decode(buf), truncated: a.size > max };
   }
 
   async copyForAgent(key: string, a: FileRecord, root: string, fileName: string): Promise<string> {
-    this.blobAt(this.store(key), a.sha256);
+    this.blobAt(this.store(key), a);
     const { file, warning } = await this.copies.copy(areaShelf(key), this.store(key), a, root, fileName);
     if (warning) this.said(key, `quarantine-agent ${a.id}`, warning);
     return file;
@@ -629,6 +746,8 @@ export class AreaArtifacts {
    */
   areaRenamed(from: string, to: string): void {
     if (from === to) return;
+    // an add to either that's still reading its file in is refused when it's done (ingest)
+    for (const k of [from, to]) this.gens.set(k, this.gen(k) + 1);
     let src: string | null;
     try {
       src = this.dir(from, false);
@@ -639,28 +758,43 @@ export class AreaArtifacts {
     this.files.delete(from);
     this.stores.delete(from);
     this.linkFree.delete(from);
+    // where from's artifacts are: src until its folder is renamed
+    let at = src;
     const fail = (err: unknown) => {
-      const text = `${from}'s artifacts couldn't move to ${to}: ${(err as Error).message}. They're still in ${src}`;
+      const why = (err as Error).message;
+      const text =
+        at === src
+          ? `${from}'s artifacts couldn't move to ${to}: ${why}. They're still in ${src}`
+          : `${from}'s artifacts moved to ${at} with ${to}, but its area.json couldn't be written with the new name (${why}): they're all there, read as ${to}'s`;
       this.said(to, "rename", text);
       this.changed(to);
       return new Error(text);
     };
+    const relabel = () => {
+      const p = this.copies.rename(areaShelf(from), areaShelf(to));
+      if (p) this.said(to, "copies", p);
+    };
     try {
       const dest = this.dir(to, false);
       if (!dest) {
-        fs.renameSync(src, path.join(path.dirname(src), folderOf(to)));
+        const moved = path.join(path.dirname(src), folderOf(to));
+        fs.renameSync(src, moved);
+        at = moved;
         this.files.delete(to);
         this.stores.delete(to);
         this.linkFree.delete(to);
+        // agents' copies follow the folder, so they're to's even when the save below fails
+        relabel();
         // its key written anew; a newer Mockingbird's file is left as it is
         const f = this.file(to);
         if (!f.readOnly && (f.items.length || f.kept.length)) this.save(to, f.items);
-      } else this.merge(from, src, to);
+      } else {
+        this.merge(from, src, to);
+        relabel();
+      }
     } catch (err) {
       throw fail(err);
     }
-    const p = this.copies.rename(areaShelf(from), areaShelf(to));
-    if (p) this.said(to, "copies", p);
     this.changed(from);
     this.changed(to);
   }
@@ -673,43 +807,75 @@ export class AreaArtifacts {
    */
   private merge(from: string, src: string, to: string): void {
     this.files.delete(from);
+    // a target this build can't change, or one not as it must be: nothing is copied into it
+    this.writable(to);
     const tag = `from ${from}: `;
     const theirs = this.readFile(from, src, to, tag);
     const old = new ArtifactStore(src);
-    const store = this.store(to);
+    checkStore(old);
+    const store = this.store(to, true);
     store.ensure();
+    // a record of the same id here already comes along only as the same artifact; another version of it stays in src
+    const mine = this.file(to).items;
+    const taken: ArtifactRecord[] = [];
+    const same: ArtifactRecord[] = [];
+    const clash: string[] = [];
+    for (const a of theirs.items) {
+      const m = mine.find((x) => x.id === a.id);
+      if (!m) taken.push(a);
+      else if (sameRecord(a, m)) same.push(a);
+      else clash.push(a.name);
+    }
     const missing: string[] = [];
     const failed: string[] = [];
-    for (const a of theirs.items) {
+    for (const a of [...taken, ...same]) {
       if (a.kind !== "file" || store.blobSize(a.sha256) === a.size) continue;
       try {
-        fs.copyFileSync(this.blobAt(old, a.sha256), store.blobPath(a.sha256), fs.constants.COPYFILE_FICLONE);
+        fs.copyFileSync(this.blobAt(old, a), store.blobPath(a.sha256), fs.constants.COPYFILE_FICLONE);
       } catch (err) {
         if (isMissing(err)) missing.push(a.name);
         else failed.push(`${a.name}: ${(err as Error).message}`);
       }
     }
-    const mine = this.file(to).items;
-    this.save(to, [...mine, ...theirs.items.filter((a) => !mine.some((m) => m.id === a.id))]);
+    this.save(to, [...mine, ...taken], theirs.raw);
     this.said(to, `${tag}missing`, missing.length ? `${missing.length} of ${from}'s files weren't in its folder, so they came along without their bytes: ${missing.join(", ")}` : null);
-    const left = theirs.complete && !failed.length ? leftIn(src, new Set(theirs.items.flatMap((a) => (a.kind === "file" ? [a.sha256] : [])))) : [];
-    if (theirs.complete && !failed.length && !left.length) {
+    const unknownKeys = Object.keys(theirs.extra);
+    const whole = theirs.complete && !failed.length && !clash.length && !unknownKeys.length;
+    const left = whole ? leftIn(src, new Set([...taken, ...same].flatMap((a) => (a.kind === "file" ? [a.sha256] : [])))) : [];
+    if (whole && !left.length) {
       this.said(to, `${tag}merge`, null);
       return void fs.rmSync(src, { recursive: true, force: true });
     }
-    const why = failed.length ? ` (${failed.join("; ")})` : left.length ? ` (its folder also holds ${left.join(", ")})` : "";
+    const why = failed.length
+      ? ` (${failed.join("; ")})`
+      : clash.length
+        ? ` (${clash.length === 1 ? "one of its artifacts is" : `${clash.length} of its artifacts are`} here already as another version: ${clash.join(", ")})`
+        : unknownKeys.length
+          ? ` (its area.json also holds what this version doesn't read: ${unknownKeys.join(", ")})`
+          : left.length
+            ? ` (its folder also holds ${left.join(", ")})`
+            : "";
     this.said(to, `${tag}merge`, `Not everything of ${from}'s could come along${why}: what could be read is here, and ${src} is kept as it was, under the old name`);
   }
 
   /**
-   * Blob `sha` of `store`, checked just before it's read or copied: the store's folder, its blobs folder and the blob
-   * are what they look like, none a symbolic link (one planted since the area's folder was first checked would
-   * otherwise be followed). Throws when one is, or the blob isn't there.
+   * The blob of file record `a` in `store`, checked just before it's read or copied: the store's folder, its blobs
+   * folder and the blob are what they look like, none a symbolic link (one planted since the area's folder was first
+   * checked would otherwise be followed; the way to the store is checked by store()). Throws when one is, and says
+   * the file isn't here when it isn't (an ENOENT still, for a merge to tell apart). Node has no openat, so a link
+   * swapped in between this check and a copy isn't caught; one there already always is, and a read of the blob here
+   * opens it without following one (readNoFollow).
    */
-  private blobAt(store: ArtifactStore, sha: string): string {
-    const blob = store.blobPath(sha);
+  private blobAt(store: ArtifactStore, a: FileRecord): string {
+    const blob = store.blobPath(a.sha256);
     for (const [at, dir] of [[store.dir, true], [path.dirname(blob), true], [blob, false]] as const) {
-      const st = fs.lstatSync(at);
+      let st: fs.Stats;
+      try {
+        st = fs.lstatSync(at);
+      } catch (err) {
+        if (isMissing(err)) throw Object.assign(new Error(`${a.name}'s file isn't in this area's folder any more`), { code: "ENOENT" });
+        throw err;
+      }
       if (st.isSymbolicLink()) throw new Error(`${at} is a symbolic link: an area's artifacts are never read through one`);
       if (dir ? !st.isDirectory() : !st.isFile()) throw new Error(`${at} isn't a ${dir ? "folder" : "file"}`);
     }
@@ -733,10 +899,14 @@ export class AreaArtifacts {
     } catch (err) {
       problems.push(`nothing was cleaned up, since what's kept couldn't all be read: ${(err as Error).message}`);
     }
-    const store = this.store(key);
-    if (live && fs.existsSync(store.dir)) problems.push(...store.gc(live.shas, live.ids));
-    const byId = new Map(held.items.map((a) => [a.id, a]));
-    problems.push(...this.copies.drop((c) => c.roomId === areaShelf(key) && (!byId.has(c.id) || !!this.blockedReason(key, byId.get(c.id)!))));
+    if (live) {
+      const { ids } = live;
+      const store = this.store(key);
+      if (fs.existsSync(store.dir)) problems.push(...store.gc(live.shas, ids));
+      // an agent's copy goes with its artifact, or once agents may not read it; one of a record kept but not read stays
+      const byId = new Map(held.items.map((a) => [a.id, a]));
+      problems.push(...this.copies.drop((c) => c.roomId === areaShelf(key) && (!ids.has(c.id) || (byId.has(c.id) && !!this.blockedReason(key, byId.get(c.id)!)))));
+    }
     this.said(key, "cleanup", problems.length ? `Some of the area's files couldn't be cleaned up: ${problems.join("; ")}` : null);
   }
 
@@ -754,7 +924,7 @@ export class AreaArtifacts {
         const secret = this.blockedReason(key, a);
         if (secret) throw new Error(`${secret.replace(/: agents never read it.*$/, "")}: add it to the room yourself if teammates should have a copy`);
         if (a.kind === "file") {
-          const r = await room.addBytes(roomId, a.name, new Uint8Array(fs.readFileSync(this.blobAt(this.store(key), a.sha256))), false);
+          const r = await room.addBytes(roomId, a.name, new Uint8Array(readNoFollow(this.blobAt(this.store(key), a), a.size)), false);
           if (r.refused.length) throw new Error(r.refused.map((x) => x.reason).join("; "));
           if (!r.added[0]) throw new Error("the room didn't say it was added");
           out.ids[a.id] = r.added[0].id;

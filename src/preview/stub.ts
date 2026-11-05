@@ -5177,6 +5177,39 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         rowMenu: await rightClick(row),
         rows: artRows(win).length,
       };
+      const noteRow = () => [...placedWin("artifacts")!.querySelectorAll<HTMLElement>(".art-row")].find((r) => r.querySelector(".art-name")?.textContent === "Tag list profile")!;
+      // a viewer: no Edit, and its ⋯ menu's Rename and Remove shown off
+      const viewer = async () => {
+        const acts = document.querySelector<HTMLElement>(".modal.art-dlg .art-head-acts")!;
+        const edit = [...acts.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Edit");
+        acts.querySelector<HTMLElement>(".art-more")!.click();
+        await sleep(300);
+        const more = [...document.querySelectorAll<HTMLButtonElement>(".mb-menu [role=menuitem]")].map((b) => `${b.textContent}${b.disabled ? " (off)" : ""}`);
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await sleep(200);
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await sleep(400);
+        return { edit: edit ? { disabled: edit.disabled, title: edit.title } : null, more, closed: !document.querySelector(".modal.art-dlg") };
+      };
+      noteRow().click();
+      await sleep(700);
+      out.windowViewer = await viewer();
+      // a card of the note: its menu, and its viewer
+      noteRow().querySelector<HTMLElement>('[data-action="place"]')!.click();
+      await sleep(800);
+      const card = document.querySelector<HTMLElement>(".ls-world .ls-acard .acard")!;
+      out.card = { menu: await rightClick(card) };
+      card.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+      await sleep(700);
+      out.cardViewer = await viewer();
+      // a file dropped on the window: refused before anything is sent to main
+      const mark = calls.length;
+      const dt = new DataTransfer();
+      dt.items.add(new File(["dropped"], "dropped.txt", { type: "text/plain" }));
+      const into = placedWin("artifacts")!.querySelector<HTMLElement>(".art-window")!;
+      for (const type of ["dragenter", "dragover", "drop"]) into.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+      await sleep(500);
+      out.drop = { sent: calls.slice(mark).filter((c) => /^artifactsAdd/.test(c.fn)).map((c) => c.fn), said: [...placedWin("artifacts")!.querySelectorAll(".err, .art-line.err")].map((l) => l.textContent), rows: artRows(placedWin("artifacts")).length };
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);
     }

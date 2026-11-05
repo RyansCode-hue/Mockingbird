@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { readFileSync } from "fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TeamChat, forgetViewsWith } from "../src/main/team/chat";
 
@@ -42,19 +43,37 @@ describe("the room chats on screen", () => {
     expect(told.mock.calls).toHaveLength(1);
   });
 
-  it("tell main again after a report it didn't take", async () => {
+  it("tell main again after a report it didn't take: an { error } answer or a rejection", async () => {
     const { chatViewing } = await freshPage();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    told.mockImplementationOnce(async () => {
-      throw new Error("no main");
-    });
-    const a = Symbol("a");
-    chatViewing(a, "R1");
+    // a handler that throws answers { error } (handlers.ts guarded); the IPC itself failing rejects
+    told.mockImplementationOnce((async () => ({ error: "setViewing broke" })) as unknown as typeof told);
+    chatViewing(Symbol("a"), "R1");
     await settle();
     expect(warn).toHaveBeenCalledOnce();
     chatViewing(Symbol("b"), "R1");
     expect(told.mock.calls.map((c) => c[0])).toEqual([["R1"], ["R1"]]);
+    told.mockImplementationOnce(async () => {
+      throw new Error("no main");
+    });
+    chatViewing(Symbol("c"), "R2");
+    await settle();
+    expect(warn).toHaveBeenCalledTimes(2);
+    chatViewing(Symbol("d"), "R2");
+    expect(told.mock.calls.map((c) => c[0])).toEqual([["R1"], ["R1"], ["R1", "R2"], ["R1", "R2"]]);
     warn.mockRestore();
+  });
+
+  it("tell main the whole set again as the page starts and each time the window gets focus", async () => {
+    const page = Object.assign(new EventTarget(), { mb: { teamChatViewing: told } });
+    (globalThis as unknown as { window: unknown }).window = page;
+    const { chatViewing } = await freshPage();
+    await settle();
+    expect(told.mock.calls).toEqual([[[]]]);
+    chatViewing(Symbol("chat"), "R1");
+    page.dispatchEvent(new Event("focus"));
+    page.dispatchEvent(new Event("focus"));
+    expect(told.mock.calls.map((c) => c[0])).toEqual([[], ["R1"], ["R1"], ["R1"]]);
   });
 
   it("leave main holding nothing across a reload, so mentions in a room no longer shown notify", async () => {
@@ -68,8 +87,11 @@ describe("the room chats on screen", () => {
     first.chatViewing(Symbol("chat"), "R1");
     await settle();
     expect(viewed()).toEqual(["R1"]);
-    // the page reloads: main forgets, and the new page's first word (nothing on screen) still reaches it
+    // a navigation that never replaces the page (cancelled, refused) leaves it: the page wouldn't say it again
     page.emit("did-start-loading");
+    expect(viewed()).toEqual(["R1"]);
+    // the page reloads: main forgets, and the new page's first word (nothing on screen) still reaches it
+    page.emit("did-navigate");
     expect(viewed()).toEqual([]);
     chat.setViewing(["R1"]);
     const second = await freshPage();
@@ -82,5 +104,14 @@ describe("the room chats on screen", () => {
       page.emit(event);
       expect(viewed()).toEqual([]);
     }
+  });
+});
+
+describe("the app window's page", () => {
+  // the Electron entry can't load under Vitest, so its wiring is read from its source
+  it("has main forget what it said was on screen (index.ts): forgetViewsWith on its WebContents, before it loads", () => {
+    const src = readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+    const createWindow = src.slice(src.indexOf("function createWindow("), src.indexOf("win.loadFile("));
+    expect(createWindow).toMatch(/forgetViewsWith\(win\.webContents, \(\) => teamRoom\.chat\.setViewing\(null\)\);/);
   });
 });

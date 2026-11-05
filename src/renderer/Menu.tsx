@@ -8,6 +8,9 @@ export interface MenuItem {
   key: string;
   label: React.ReactNode;
   onPick: () => void;
+  /** Shown but not offered; `title` says why. */
+  disabled?: boolean;
+  title?: string;
 }
 
 type Rect = { left: number; top: number; bottom: number };
@@ -119,6 +122,8 @@ export function MenuButton({
               <button
                 key={it.key}
                 role="menuitem"
+                disabled={it.disabled}
+                title={it.title}
                 onClick={() => {
                   setOpen(false);
                   it.onPick();

@@ -459,6 +459,7 @@ export function ArtifactShelf({
           onRename={setRenaming}
           onRemove={setRemoving}
           onMention={onMention}
+          readOnly={readOnly}
         />
       )}
       {edits.dialogs}
@@ -602,6 +603,8 @@ export function ArtifactCardFace({ artifactId, onRemoveCard, ...p }: ArtifactSur
     return !isErr(r);
   };
   const edits = useArtifactEdits(p.shelf, call, () => setViewing(null));
+  const readOnly = arts.view?.readOnly ?? null;
+  const unless = (fn: (x: ArtifactSummary) => void) => (x: ArtifactSummary) => (readOnly ? setError(readOnly) : fn(x));
   const menu = useContextMenu(a?.name ?? "Artifact card");
   const acts = tidyMenu([
     a && { key: "open", label: "Open", icon: <ReadIcon />, onPick: () => setViewing(a.id) },
@@ -661,9 +664,10 @@ export function ArtifactCardFace({ artifactId, onRemoveCard, ...p }: ArtifactSur
           onClose={() => setViewing(null)}
           onOpen={setViewing}
           onOpenRepoFile={p.onOpenRepoFile}
-          onRename={edits.setRenaming}
-          onRemove={edits.setRemoving}
+          onRename={unless(edits.setRenaming)}
+          onRemove={unless(edits.setRemoving)}
           onMention={p.onMention}
+          readOnly={readOnly}
         />
       )}
       {edits.dialogs}

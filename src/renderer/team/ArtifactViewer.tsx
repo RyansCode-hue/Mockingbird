@@ -186,6 +186,7 @@ export function ArtifactViewer({
   onRemove,
   onMention,
   local = false,
+  readOnly = null,
 }: {
   /** The shelf: a room's id, or an area's (`area:<key>`, shared/areaArtifacts.ts). */
   roomId: string;
@@ -204,6 +205,8 @@ export function ArtifactViewer({
   onRename: (a: ArtifactSummary) => void;
   onRemove: (a: ArtifactSummary) => void;
   onMention: (a: ArtifactSummary) => void;
+  /** Why the shelf can't be changed (an area's file a newer Mockingbird wrote), or null: then nothing here offers to. */
+  readOnly?: string | null;
 }) {
   const [content, setContent] = useState<Loaded>(null);
   const [repo, setRepo] = useState<Resolved>(null);
@@ -347,8 +350,8 @@ export function ArtifactViewer({
       title="More for this artifact"
       items={[
         { key: "mention", label: local ? "Mention to the selected workspace" : "Mention in a message", onPick: () => (onMention(item), onClose()) },
-        { key: "rename", label: "Rename…", onPick: () => onRename(item) },
-        { key: "remove", label: local ? "Remove…" : "Remove for everyone…", onPick: () => onRemove(item) },
+        { key: "rename", label: "Rename…", onPick: () => onRename(item), ...(readOnly ? { disabled: true, title: readOnly } : {}) },
+        { key: "remove", label: local ? "Remove…" : "Remove for everyone…", onPick: () => onRemove(item), ...(readOnly ? { disabled: true, title: readOnly } : {}) },
       ]}
     />
   );
@@ -505,7 +508,7 @@ export function ArtifactViewer({
             <>
               {fileActions}
               {item.kind === "note" && (
-                <button className="outline" onClick={startEdit}>
+                <button className="outline" onClick={startEdit} disabled={!!readOnly} title={readOnly ?? undefined}>
                   Edit
                 </button>
               )}

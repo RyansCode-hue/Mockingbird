@@ -171,13 +171,31 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
   }, 120_000);
 
   it("say why an area's shelf a newer Mockingbird wrote can't be changed, and offer nothing that would", async () => {
-    type ReadOnly = { shelf: { add: { disabled: boolean; title: string }; said: string[]; rowMenu: string[] | null; rows: number }; error?: string };
+    type Viewer = { edit: { disabled: boolean; title: string } | null; more: string[]; closed: boolean };
+    type ReadOnly = {
+      shelf: { add: { disabled: boolean; title: string }; said: string[]; rowMenu: string[] | null; rows: number };
+      windowViewer: Viewer;
+      card: { menu: string[] | null };
+      cardViewer: Viewer;
+      drop: { sent: string[]; said: string[]; rows: number };
+      error?: string;
+    };
     const r = await run<ReadOnly>("areaReadOnly=5102&landscapeReadOnlyAudit", "mb-landscape-read-only-audit");
     expect(r.error).toBeUndefined();
     expect(r.shelf.rows).toBe(3);
-    expect(r.shelf.add).toEqual({ disabled: true, title: expect.stringMatching(/newer Mockingbird .* update Mockingbird to change this area's artifacts/) });
+    const why = expect.stringMatching(/newer Mockingbird .* update Mockingbird to change this area's artifacts/);
+    expect(r.shelf.add).toEqual({ disabled: true, title: why });
     expect(r.shelf.said).toEqual([expect.stringMatching(/newer Mockingbird/)]);
     expect(r.shelf.rowMenu).toEqual(expect.arrayContaining(["Rename… (off)", "Remove… (off)"]));
+    // the viewer, from the window and from a card: no Edit, and Rename and Remove shown off
+    for (const v of [r.windowViewer, r.cardViewer]) {
+      expect(v.edit).toEqual({ disabled: true, title: why });
+      expect(v.more).toEqual(expect.arrayContaining(["Rename… (off)", "Remove… (off)"]));
+      expect(v.closed).toBe(true);
+    }
+    expect(r.card.menu).toEqual(expect.arrayContaining(["Rename… (off)", "Remove the artifact… (off)"]));
+    // a file dropped on the window: said, and nothing sent to main
+    expect(r.drop).toEqual({ sent: [], said: [expect.stringMatching(/newer Mockingbird/)], rows: 3 });
   }, 120_000);
 
   it("keep the review's fixes: a reload, a Chat's viewing, routing, one gate, the menus", async () => {
