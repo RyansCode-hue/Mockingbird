@@ -180,8 +180,8 @@ export function AreaHeader(
           {p.members}
         </>
       )}
-      {/* room tools only in rooms */}
-      {p.room && <FollowControls follow={p.follow} shared />}
+      {/* Follow buttons only in a room's area; while following, every area's header says so, with Stop */}
+      <FollowControls follow={p.follow} shared={!!p.room} />
       <span className="ls-ah-gap" />
       <AreaUsage g={p.meter} what={p.title} />
       <button type="button" className="ls-ah-btn" data-tip="Ask every agent session here for a three-line status report — each answers when its current turn ends" onClick={p.onAsk}>

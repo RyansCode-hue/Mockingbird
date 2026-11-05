@@ -24,7 +24,7 @@ import { RenameDialog } from "../Dialogs";
 import { QuickOpen } from "../QuickOpen";
 import { ChevronIcon, LockIcon } from "../Icons";
 import { settled } from "../settled";
-import { addedLine, artifactMeta, parseLines, REMOVE_ARTIFACT_NOTE, REMOVE_LOCAL_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "./artifactModel";
+import { addedLine, artifactKind, artifactMeta, parseLines, REMOVE_ARTIFACT_NOTE, REMOVE_LOCAL_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "./artifactModel";
 import { areaShelf } from "../../shared/areaArtifacts";
 import { LinkIcon } from "../Icons";
 import type { InlineContext } from "./markdownView";
@@ -582,7 +582,7 @@ export function ArtifactsWindow({ onPlace, placed, ...p }: ArtifactSurfaceProps 
  * added it when, with Open and Mention; right-click for those, Rename, Remove, and taking the card off. One whose
  * artifact was removed says so, and offers only taking it off.
  */
-export function ArtifactCardFace({ artifactId, inv, onRemoveCard, ...p }: ArtifactSurfaceProps & { artifactId: string; inv: number; onRemoveCard: () => void }) {
+export function ArtifactCardFace({ artifactId, onRemoveCard, ...p }: ArtifactSurfaceProps & { artifactId: string; onRemoveCard: () => void }) {
   const arts = useArtifacts(p.shelf.id);
   const a = arts.view?.items.find((x) => x.id === artifactId);
   // the artifact its viewer shows: the card's, or one the viewer opens from it (a note saved as a copy, the original)
@@ -608,23 +608,24 @@ export function ArtifactCardFace({ artifactId, inv, onRemoveCard, ...p }: Artifa
   const self = arts.view?.self ?? "";
   return (
     <div
-      className={`art-card ${a ? "" : "gone"}`}
-      style={{ ["--ls-inv" as string]: inv }}
+      className={`acard ${a ? "" : "gone"}`}
       title={a ? `${a.name} — double-click to open it, right-click for more` : undefined}
       {...menu.bind(acts)}
       onDoubleClick={() => a && setViewing(a.id)}
     >
-      <div className="art-card-head">
+      <div className="acard-head">
         {a && <ArtifactGlyph a={a} />}
-        <span className="art-card-name">{a ? a.name : arts.view ? "Removed" : arts.error ? "Couldn't read it" : "Reading…"}</span>
+        <span className="acard-name">{a ? a.name : arts.view ? "Removed" : arts.error ? "Couldn't read it" : "Reading…"}</span>
         {a?.agentsBlocked && (
           <span className="art-lock" title={`Agents can't read this: ${a.agentsBlocked}`}>
             <LockIcon />
           </span>
         )}
       </div>
-      <div className={`art-card-meta ${error || (!a && arts.error) ? "bad" : ""}`}>{error ?? (a ? artifactMeta(a, self) : arts.error ?? (arts.view ? "This artifact isn't in the area any more" : ""))}</div>
-      <div className="art-card-acts">
+      <div className={`acard-meta ${error || (!a && arts.error) ? "bad" : ""}`}>{error ?? (a ? artifactMeta(a, self) : arts.error ?? (arts.view ? "This artifact isn't in the area any more" : ""))}</div>
+      {/* zoomed out, its kind under its name in place of the meta line */}
+      {a && <div className="acard-kind">{artifactKind(a)}</div>}
+      <div className="acard-acts">
         {a ? (
           <>
             <button type="button" className="outline" onClick={() => setViewing(a.id)}>
@@ -664,12 +665,36 @@ export function ArtifactCardFace({ artifactId, inv, onRemoveCard, ...p }: Artifa
   );
 }
 
+/** A card whose shelf is gone (its room was left): why, and taking it off. */
+export function ArtifactCardGone({ why, onRemoveCard }: { why: string; onRemoveCard: () => void }) {
+  return (
+    <div className="acard gone">
+      <div className="acard-head">
+        <span className="acard-name">Not here any more</span>
+      </div>
+      <div className="acard-meta bad">{why}</div>
+      <div className="acard-acts">
+        <button type="button" className="outline" onClick={onRemoveCard}>
+          Take the card off
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** How many artifacts a shelf has, kept current: an Artifacts window's count zoomed out. */
+export function ArtifactsCount({ shelf }: { shelf: string }) {
+  const arts = useArtifacts(shelf);
+  if (arts.error) return <span className="bad" title={arts.error}>!</span>;
+  return <>{arts.view ? arts.view.items.length : "…"}</>;
+}
+
 /**
  * Sharing an area as a room (ShareRoomDialog): its artifacts on this Mac offered to the room too, once it exists.
  * Nothing secret goes (main keeps it back and says so); they all stay on this Mac as well. Nothing shows while the
- * area has none.
+ * area has none. `onShared` gets each copied artifact's id in the room (its cards move to the copies).
  */
-export function ShareAreaArtifacts({ areaKey, roomId }: { areaKey: string; roomId: string }) {
+export function ShareAreaArtifacts({ areaKey, roomId, onShared }: { areaKey: string; roomId: string; onShared: (ids: Record<string, string>) => void }) {
   const arts = useArtifacts(areaShelf(areaKey));
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<{ shared: number; refused: { name: string; reason: string }[] } | { error: string } | null>(null);
@@ -693,8 +718,13 @@ export function ShareAreaArtifacts({ areaKey, roomId }: { areaKey: string; roomI
             disabled={busy}
             onClick={async () => {
               setBusy(true);
-              setDone(await settled(window.mb.artifactsShareArea(areaKey, roomId), "Couldn't share the area's artifacts"));
+              const r = await settled<{ shared: number; refused: { name: string; reason: string }[]; ids: Record<string, string> } | { error: string }>(
+                window.mb.artifactsShareArea(areaKey, roomId),
+                "Couldn't share the area's artifacts",
+              );
+              setDone(r);
               setBusy(false);
+              if (!isErr(r)) onShared(r.ids);
             }}
           >
             {busy ? "Sharing…" : `Share ${plural(n, "artifact")}`}

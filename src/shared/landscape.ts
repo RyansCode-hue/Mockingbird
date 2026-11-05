@@ -12,6 +12,7 @@
  * "constructor" and "__proto__" included: read an entry with own() and set
  * one with put(), never with `r[k]`.
  */
+import { areaShelf } from "./areaArtifacts";
 import type { AgentKind, SessionInfo } from "./types";
 import { splitGroupKey } from "./types";
 
@@ -103,11 +104,13 @@ export interface ToolWindow {
 
 /**
  * An artifact placed on the landscape (Place, in the Artifacts window): a card in `area` that opens or mentions
- * `artifact`, one of that area's artifacts (a room's area: the room's). Without a `placement` it's placed anew in its
- * area, as a tool window is.
+ * `artifact` of `shelf`, where it was placed from: a room's id (the room's artifacts), or `area:<area>` (the area's on
+ * this Mac). The shelf is kept with the card, since an area's shelf changes when it's shared as a room or the room is
+ * left. Without a `placement` it's placed anew in its area, as a tool window is.
  */
 export interface ArtifactCard {
   area: string;
+  shelf: string;
   artifact: string;
   placement?: Placement;
 }
@@ -604,10 +607,16 @@ const toolWindow: Check<ToolWindow> = (v, where) => {
   return t;
 };
 const CARD: Part = {
-  checks: { area: areaName, artifact: name, placement: rect } satisfies Record<keyof ArtifactCard, Check<unknown>>,
-  required: ["area", "artifact"],
+  checks: { area: areaName, shelf: name, artifact: name, placement: rect } satisfies Record<keyof ArtifactCard, Check<unknown>>,
+  required: ["area", "shelf", "artifact"],
 };
-const card: Check<ArtifactCard> = (v, where) => fields(v, where, CARD);
+/** A room's id: 22 base64url characters. */
+const ROOM_SHELF = /^[A-Za-z0-9_-]{22}$/;
+const card: Check<ArtifactCard> = (v, where) => {
+  const c = fields<ArtifactCard>(v, where, CARD);
+  if (c.shelf !== areaShelf(c.area) && !ROOM_SHELF.test(c.shelf)) fail(`${where}.shelf`, `is neither a room's nor area:${c.area}`);
+  return c;
+};
 
 /** The version a stored landscape says it is, when it says: a newer one can't be read here, and isn't corrupt. */
 export function versionOf(v: unknown): number | null {
@@ -802,7 +811,8 @@ export function renameAreaPatch(l: Landscape, from: string, to: string, members:
     }
     for (const [id, c] of Object.entries(l.cards)) {
       if (c.area !== from) continue;
-      put(patch.cards, id, keyable ? rehome({ ...c, area: to }) : null);
+      // an area's own artifacts move with its rename (areaArtifacts.ts), so its cards' shelf does too
+      put(patch.cards, id, keyable ? rehome({ ...c, area: to, shelf: c.shelf === areaShelf(from) ? areaShelf(to) : c.shelf }) : null);
     }
   }
   const out: LandscapePatch = {};

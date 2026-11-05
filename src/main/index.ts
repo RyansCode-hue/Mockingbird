@@ -1180,7 +1180,7 @@ handle("teamChat:view", (roomId) => teamRoom.chat.view(String(roomId)));
 handle("teamChat:post", (roomId, text) => teamRoom.chat.post(String(roomId), String(text ?? "")));
 handle("teamChat:read", (roomId) => teamRoom.chat.markRead(String(roomId)));
 handle("teamChat:unread", () => teamRoom.chat.unread());
-handle("teamChat:viewing", (roomId) => teamRoom.chat.setViewing(roomId ? String(roomId) : null));
+handle("teamChat:viewing", (rooms) => teamRoom.chat.setViewing(Array.isArray(rooms) ? rooms.map(String) : rooms ? String(rooms) : null));
 // team rooms: take-over
 handle("team:takeover", (): TakeoverView => takeover?.view() ?? { sessions: [], rooms: [], unbacked: [], cleanup: [], asks: [], asking: [], left: [], received: [], refused: [] });
 handle("team:setBackupsToOrigin", (roomId, on) => needTakeover().setBackupsToOrigin(String(roomId), on === true));

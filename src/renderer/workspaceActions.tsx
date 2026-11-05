@@ -104,7 +104,8 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
     icon,
     kbd: TOOL_KEYS[t],
     onPick: () => env.tool(t),
-    ...(noFolder && t !== "search" ? { disabled: true, title: noFolder } : {}),
+    // an exited session's Search still looks through its folder and conversations; a teammate's has neither here
+    ...(noFolder && (t !== "search" || !local) ? { disabled: true, title: noFolder } : {}),
   });
   out.push(tool("files", "Files", <FilesIcon />), tool("changes", "Changes", <SourceControlIcon />), tool("search", "Search", <SearchIcon />), tool("run", "Run & debug", <RunDebugIcon />));
   out.push(

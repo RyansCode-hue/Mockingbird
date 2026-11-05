@@ -41,6 +41,7 @@ export function ToolWindow({
   scope,
   docked,
   compact = false,
+  count,
   style,
   onDock,
   onPlace,
@@ -54,6 +55,8 @@ export function ToolWindow({
   docked: boolean;
   /** Zoomed out to cards: its head alone, its body not drawn. */
   compact?: boolean;
+  /** What its compact head counts after its name ("Artifacts · 3"). */
+  count?: React.ReactNode;
   style?: React.CSSProperties;
   onDock?: () => void;
   onPlace?: () => void;
@@ -65,7 +68,10 @@ export function ToolWindow({
     <section className={`ls-window ${docked ? "docked" : "placed"} ${compact ? "compact" : ""}`} data-win={id} data-tool={tool} style={style} aria-label={`${TOOL_NAME[tool]}${scope ? ` — ${scope}` : ""}`}>
       <header className="ls-win-head" title={docked ? undefined : "drag to move it · ⊟ docks it to the window's edge"}>
         <span className="ls-win-ico">{TOOL_ICON[tool]()}</span>
-        <span className="ls-win-t">{TOOL_NAME[tool]}</span>
+        <span className="ls-win-t">
+          {TOOL_NAME[tool]}
+          {compact && count !== undefined && <span className="ls-win-n"> · {count}</span>}
+        </span>
         {scope && (
           <span className="ls-win-scope" title={scope}>
             {scope}

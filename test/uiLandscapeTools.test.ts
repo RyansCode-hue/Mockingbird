@@ -47,17 +47,39 @@ interface Audit {
   error?: string;
 }
 
-async function audit(): Promise<Audit> {
+/** The preview's audit `id`, run with `query` (the landscape at 50%, motion off, besides). */
+async function run<T>(query: string, id: string): Promise<T> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
   const { pageResult } = await import("../scripts/ui-preview.mjs");
   const json: string | null = await pageResult({
     size: "1400x900",
-    query: "labs=landscape&motion=off&lsCamera=0,0,0.5&landscapeToolsAudit",
-    outDir: path.join(tempDir("ls-tools"), "out"),
-    read: `document.getElementById("mb-landscape-tools-audit")?.textContent ?? null`,
+    query: `labs=landscape&motion=off&lsCamera=0,0,0.5&${query}`,
+    outDir: path.join(tempDir(id), "out"),
+    read: `document.getElementById(${JSON.stringify(id)})?.textContent ?? null`,
   });
-  if (!json) throw new Error("the preview didn't finish its tools audit");
+  if (!json) throw new Error(`the preview didn't finish ${id}`);
   return JSON.parse(json);
+}
+const audit = () => run<Audit>("landscapeToolsAudit", "mb-landscape-tools-audit");
+
+type Seen = { band: string | null; partly: boolean; viewing: boolean; reads: number };
+type Gate = { rows: Record<string, { menuOn: boolean; keyOpened: boolean; railOff: boolean }>; railClickOpened: boolean; said: string | null };
+type Head = { tool: string; w: number; h: number; name: string; nameH: number; scope: string | null; inv: number };
+interface Review {
+  reload: { before: unknown; after: { placed: Record<string, R>; docked: string[]; cards: Record<string, R> }; storedSame: boolean; card: string | null };
+  chat: { shown: Seen; offScreen: Seen; zoomedOut: Seen };
+  notified: { before: number; after: number; windowShown: boolean; areaShown: boolean; tab: string | null };
+  gate: { s6: Gate; teammate: Gate };
+  menus: { y1: string[]; s4: string[]; teammate: string[] };
+  dockedFollows: { opened: number; docked: boolean; placed: boolean; scope: string | null };
+  dockedChat: { stillDocked: boolean; said: string | null };
+  staleMenu: { menuOpen: boolean; unchanged: boolean; said: string | null };
+  mention: { refused: { writes: number; said: string | null }; typed: string[][] };
+  cards: { at13: { zoom: number; band: string; windows: Head[]; card: { w: number; h: number; name: string; kind: string | null; nameH: number; inv: number }; apart: boolean }; at16: { zoom: number; windows: number[]; card: number } };
+  share: { shared: { offered: string | null; shelfWas: string; shelf: string; room: string | null; newId: boolean; inRoom: boolean; name: string | null }; invite: { code: boolean; offer: boolean } };
+  team: { list: { title: string | null; rooms: string[] }; left: { leaveRows: string[] | null; roomGone: boolean; card: string | null; why: string | null }; backToTree: boolean };
+  follow: { offered: boolean; on5102: string[]; on5101: number };
+  error?: string;
 }
 
 /** A workspace's menu, as every place that offers it shows it. */
@@ -145,5 +167,98 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     // a room's area: the room's artifacts
     expect(a.artifacts.room.count).toMatch(/^Shared with the room · \d+$/);
     expect([...a.artifacts.room.rows].sort()).toEqual([...(a.artifacts.room.expected ?? [])].sort());
+  }, 120_000);
+
+  it("keep the review's fixes: a reload, a Chat's viewing, routing, one gate, the menus", async () => {
+    const r = await run<Review>("lsPersist&landscapeReviewAudit=a", "mb-landscape-review-audit-a");
+    expect(r.error).toBeUndefined();
+
+    // placed and docked windows and a card, through a real reload: drawn where they were, nothing stored changed
+    expect(r.reload.after).toEqual(r.reload.before);
+    expect([Object.keys(r.reload.after.placed).length, r.reload.after.docked.length, Object.keys(r.reload.after.cards).length]).toEqual([2, 1, 1]);
+    expect(r.reload.storedSame).toBe(true);
+    expect(r.reload.card).toBe("React profiler docs");
+
+    // a Chat window views its room and reads it only on screen in the live band: off screen, or zoomed out to cards
+    // with it on screen, its room isn't viewed (so a mention notifies) and nothing is marked read
+    expect(r.chat.shown).toMatchObject({ band: "live", partly: true, viewing: true });
+    expect(r.chat.shown.reads).toBeGreaterThan(0);
+    expect(r.chat.offScreen).toEqual({ band: "live", partly: false, viewing: false, reads: 0 });
+    expect(r.chat.zoomedOut).toEqual({ band: "cards", partly: true, viewing: false, reads: 0 });
+
+    // a mention notification: its room's area, flown to, with the room's Chat opened in it
+    expect(r.notified).toEqual({ before: 0, after: 1, windowShown: true, areaShown: true, tab: "Sessions" });
+
+    // the keys and the rail do what the selection's menu offers, no more: an exited session's Search only, none of a
+    // teammate's; the rail says why
+    for (const [who, g] of Object.entries(r.gate)) {
+      for (const [k, row] of Object.entries(g.rows)) expect({ who, k, opened: row.keyOpened, railOff: row.railOff }).toEqual({ who, k, opened: row.menuOn, railOff: !row.menuOn });
+      expect(g.railClickOpened).toBe(false);
+    }
+    expect(Object.entries(r.gate.s6.rows).filter(([, x]) => x.menuOn).map(([k]) => k)).toEqual(["search"]);
+    expect(Object.values(r.gate.teammate.rows).some((x) => x.menuOn)).toBe(false);
+    expect(r.gate.s6.said).toBe("Its session has exited");
+    expect(r.gate.teammate.said).toBe("Nick Smith's session has no folder on this Mac");
+
+    // the menus as main.tsx builds them: a session a teammate took over is taken back, not resumed; a terminal and a
+    // teammate's session have no agent to hand on
+    expect(r.menus.y1).toEqual(expect.arrayContaining(["Take it back", "Resume (off)", "Close & clean up…"]));
+    expect(r.menus.y1).not.toContain("Resume");
+    expect(r.menus.s4).toEqual(expect.arrayContaining(["Undo the last turn… (off)", "Continue in Codex… (off)", "Fresh session from a brief… (off)", "Second opinion from Codex (off)"]));
+    expect(r.menus.teammate).toEqual(
+      expect.arrayContaining(["Files (off) [⇧⌘E]", "Changes (off) [⌃⇧G]", "Search (off) [⇧⌘F]", "Run & debug (off) [⇧⌘D]", "Undo the last turn… (off)", "Continue in Codex… (off)", "Close… (off)"])
+    );
+    // a docked Chat's ⧉ keeps the room rule
+    expect(r.dockedChat).toEqual({ stillDocked: true, said: expect.stringMatching(/isn't a team room/) });
+  }, 120_000);
+
+  it("keep the review's fixes: menus picked late, mentions, the cards band, sharing, the room list, following", async () => {
+    const r = await run<Review>("landscapeReviewAudit=b", "mb-landscape-review-audit-b");
+    expect(r.error).toBeUndefined();
+
+    // a tool picked from a workspace's menu while it's docked: the docked one shows that workspace, none is added
+    expect(r.dockedFollows).toEqual({ opened: 0, docked: true, placed: false, scope: "#5101 Org dropdowns remember the last org · 5101-orgDropdowns" });
+
+    // Size L from a menu opened before its area was locked: refused as the area is when it's picked
+    expect(r.staleMenu).toEqual({ menuOpen: true, unchanged: true, said: expect.stringMatching(/is locked/) });
+
+    // a mention goes only to a workspace in the artifact's area
+    expect(r.mention.refused).toEqual({ writes: 0, said: expect.stringMatching(/is in #5101.*, not #5102/) });
+    expect(r.mention.typed).toEqual([["s5", "#[React profiler docs](artifact:…) "]]);
+
+    // zoomed out to cards, each window and the card read as a workspace card does: a head at screen size with the
+    // tool's name and scope (the Artifacts window's count), or the artifact's name and kind; kept so as the camera moves
+    expect(r.cards.at13).toMatchObject({ zoom: 0.13, band: "cards" });
+    expect(r.cards.at13.windows.map((h) => h.name).sort()).toEqual(["Artifacts · 3", "Files"]);
+    for (const h of r.cards.at13.windows) {
+      expect(h.w, h.tool).toBeGreaterThanOrEqual(130);
+      expect(h.nameH, h.tool).toBeGreaterThanOrEqual(13);
+      expect(h.nameH, h.tool).toBeLessThanOrEqual(18);
+      expect(h.scope, h.tool).toMatch(/^#510[12] /);
+      expect(h.inv).toBeCloseTo(1 / 0.13, 2);
+    }
+    expect(r.cards.at13.card).toMatchObject({ name: "React profiler docs", kind: "Link" });
+    expect(r.cards.at13.card.w).toBeGreaterThanOrEqual(130);
+    expect(r.cards.at13.card.nameH).toBeGreaterThanOrEqual(13);
+    // the card placed beside its Artifacts window is drawn under it, neither covering the other's name
+    expect(r.cards.at13.apart).toBe(true);
+    expect(r.cards.at16.zoom).toBe(0.16);
+    for (const inv of [...r.cards.at16.windows, r.cards.at16.card]) expect(inv).toBeCloseTo(1 / 0.16, 2);
+
+    // an area shared as a room: its artifacts offered as the room's made, its card following its artifact to the
+    // room's copy; inviting to it later offers them no more
+    expect(r.share.shared).toMatchObject({ offered: "Share 3 artifacts", shelfWas: "area:5102", newId: true, inRoom: true, name: "React profiler docs" });
+    expect(r.share.shared.shelf).toBe(r.share.shared.room);
+    expect(r.share.invite).toEqual({ code: true, offer: false });
+
+    // the Connected line on the landscape: the Team view's room list in the side bar, Leave there; a card of the room
+    // left says so, and back to the area tree
+    expect(r.team.list).toEqual({ title: "Team rooms", rooms: ["#5101 Org dropdowns remember the last org", "#5110 Donor entities", "#5102 Pathways quick view freezes"] });
+    expect(r.team.left).toMatchObject({ roomGone: true, card: "Not here any more", why: expect.stringMatching(/You left the room/) });
+    expect(r.team.left.leaveRows).toContain("Leave room…");
+    expect(r.team.backToTree).toBe(true);
+
+    // following a teammate is said on an area that isn't a room's too
+    expect(r.follow).toEqual({ offered: true, on5102: ["Following Nick"], on5101: 1 });
   }, 120_000);
 });

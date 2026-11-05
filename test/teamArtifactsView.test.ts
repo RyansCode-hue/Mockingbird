@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MarkdownView, inlineSegments, markdownBlocks } from "../src/renderer/team/markdownView";
-import { artifactCompletions, artifactMeta, mentionLabel, parseCsv, parseLines, REMOVE_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "../src/renderer/team/artifactModel";
+import { artifactCompletions, artifactKind, artifactMeta, mentionLabel, parseCsv, parseLines, REMOVE_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "../src/renderer/team/artifactModel";
 import { TeamSection } from "../src/renderer/Team";
 import type { Settings } from "../src/shared/types";
 import { artifactRef, type ArtifactSummary } from "../src/shared/team/artifacts";
@@ -150,6 +150,14 @@ describe("the Team tab's artifact rows", () => {
     expect(artifactMeta(summary({ kind: "note", updatedByName: "Sam", updatedAt: now - 5 * min }), ME, now)).toBe("Note · edited by Sam · 5m ago");
     expect(artifactMeta(summary({ kind: "repo", path: "src/x.ts", lines: [12, 40], commit: "abc1234def".padEnd(40, "0") }), ME, now)).toBe("src/x.ts:12–40 @ abc1234");
     expect(artifactMeta(summary({ kind: "link", url: "https://dev.azure.com/a", host: "dev.azure.com", label: "ADO #5110" }), ME, now)).toBe("dev.azure.com · ADO #5110");
+  });
+
+  it("name each one's kind in a word or two, as a card zoomed out shows it", () => {
+    expect(artifactKind(summary({ name: "quick-view-trace.png" }))).toBe("PNG file");
+    expect(artifactKind(summary({ name: "README" }))).toBe("File");
+    expect(artifactKind(summary({ kind: "note", name: "Plan.v2" }))).toBe("Note");
+    expect(artifactKind(summary({ kind: "repo" }))).toBe("Repo file");
+    expect(artifactKind(summary({ kind: "link" }))).toBe("Link");
   });
 
   it("show a file's transfer, and what a click can do about it", () => {

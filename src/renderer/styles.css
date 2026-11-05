@@ -225,6 +225,8 @@ button.primary:disabled .kbd { color: var(--text-4); opacity: 1; }
 .ab-btn .ico { width: 20px; height: 20px; }
 .ab-btn:hover { color: var(--text-1); background: none; }
 .ab-btn.on { color: var(--text-1); box-shadow: inset 2px 0 0 var(--teal); }
+/* a tool the selection's menu has off: still clickable, to say why */
+.ab-btn.off { opacity: 0.4; }
 .ab-badge {
   position: absolute; right: 5px; bottom: 5px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px;
   background: var(--teal); color: var(--on-teal); font: 600 9.5px/15px var(--ui); font-variant-numeric: tabular-nums; text-align: center;
@@ -243,6 +245,7 @@ button.primary:disabled .kbd { color: var(--text-4); opacity: 1; }
 .side-grip:hover { background: var(--line-strong); }
 .side-head { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; flex-shrink: 0; white-space: nowrap; }
 .side-title { font: 500 9px var(--ui); letter-spacing: .9px; text-transform: uppercase; color: var(--text-4); }
+.side-back { margin-left: auto; font-size: 11px; }
 .sidebar .scroll { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; }
 .filter {
   width: 100%; background: var(--fill-subtle); color: var(--text-1);
@@ -3439,36 +3442,58 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-win-btn:hover, .ls-win-btn:focus-visible { color: var(--text-1); background: var(--fill-subtle); }
 .ls-win-btn svg { width: 13px; height: 13px; }
 .ls-win-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
-/* zoomed out to cards a window is its head alone, its type at screen size as a workspace card's */
-.ls-window.compact { --u: calc(1px * var(--ls-inv, 1)); border-radius: calc(10 * var(--u)); box-shadow: 0 0 0 var(--u) var(--line-strong2); }
-.ls-window.compact .ls-win-head { height: auto; padding: calc(9 * var(--u)) calc(11 * var(--u)); gap: calc(7 * var(--u)); border: none; background: none; }
-.ls-window.compact .ls-win-t { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12.5 * var(--u)); }
-.ls-window.compact .ls-win-scope { padding: 0; background: none; font-size: calc(10 * var(--u)); }
+/* zoomed out to cards a window is its head alone, as a workspace card is: its name (and count) over its scope, their
+   type at screen size, the window at least that head's size on screen however far out (a window's box alone is a
+   sliver there) */
+.ls-window.compact {
+  --u: calc(1px * var(--ls-inv, 1));
+  min-width: calc(136 * var(--u)); min-height: calc(50 * var(--u));
+  border-radius: calc(10 * var(--u)); box-shadow: 0 0 0 var(--u) var(--line-strong2), 0 calc(4 * var(--u)) calc(14 * var(--u)) rgba(0, 0, 0, .22);
+}
+.ls-window.compact .ls-win-head {
+  height: auto; flex-wrap: wrap; align-content: flex-start; row-gap: calc(4 * var(--u)); column-gap: calc(7 * var(--u));
+  padding: calc(9 * var(--u)) calc(11 * var(--u)); border: none; background: none;
+}
+.ls-window.compact .ls-win-t { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(12.5 * var(--u)); }
+.ls-window.compact .ls-win-scope { flex: 1 0 100%; padding: 0; background: none; font-size: calc(10 * var(--u)); color: var(--text-3); }
 .ls-window.compact .ls-win-ico svg { width: calc(14 * var(--u)); height: calc(14 * var(--u)); }
-.ls-window.compact .ls-win-btn { display: none; }
+.ls-window.compact .ls-win-n { font-weight: 500; color: var(--text-3); }
+.ls-window.compact .ls-win-btn, .ls-window.compact .ls-spacer, .ls-window.compact .ls-win-docked { display: none; }
+/* drawn under one it would cover at that size (compactShifts, Landscape.tsx's paintCompact) */
+.ls-band-cards .ls-window.compact, .ls-band-cards .ls-acard { translate: 0 var(--ls-dy, 0px); }
 .ls-dock { flex: 0 0 auto; width: 320px; display: flex; flex-direction: column; gap: 1px; min-height: 0; background: var(--line-soft); border-left: 1px solid var(--line-soft); }
 .ls-dock .ls-window { position: static; flex: 1 1 0; min-height: 0; border-radius: 0; box-shadow: none; }
 
 /* S5: an artifact's card (design O), placed from its area's Artifacts window */
 .ls-acard { position: absolute; }
-.ls-acard.dragging .art-card { box-shadow: 0 0 0 1.5px var(--pane-focus), 0 18px 40px rgba(0, 0, 0, .38); }
-.art-card {
+.ls-acard.dragging .acard { box-shadow: 0 0 0 1.5px var(--pane-focus), 0 18px 40px rgba(0, 0, 0, .38); }
+.acard {
   box-sizing: border-box; height: 100%; display: flex; flex-direction: column; gap: 6px; overflow: hidden; padding: 10px 12px;
   border-radius: 8px; background: var(--bg-pane); cursor: grab; user-select: none;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--teal) 45%, transparent), 0 8px 22px rgba(0, 0, 0, .2);
 }
-.art-card.gone { box-shadow: 0 0 0 1px var(--line-strong2); }
-.art-card-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.art-card-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12.5px var(--ui); color: var(--text-1); }
-.art-card.gone .art-card-name { color: var(--text-3); }
-.art-card-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 11px var(--ui); color: var(--text-3); }
-.art-card-meta.bad { color: var(--red); }
-.art-card-acts { margin-top: auto; display: flex; gap: 6px; }
-.art-card-acts button { padding: 2px 8px; font-size: 11px; }
-/* zoomed out the card is its name, at up to two and a half times its size, so it reads as a block's label */
-.ls-band-cards .art-card { padding: 6% 7%; }
-.ls-band-cards .art-card-meta, .ls-band-cards .art-card-acts { display: none; }
-.ls-band-cards .art-card-name { font-size: calc(12.5px * min(var(--ls-inv, 1), 2.5)); }
+.acard.gone { box-shadow: 0 0 0 1px var(--line-strong2); }
+.acard-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.acard-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12.5px var(--ui); color: var(--text-1); }
+.acard.gone .acard-name { color: var(--text-3); }
+.acard-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 11px var(--ui); color: var(--text-3); }
+.acard-meta.bad { color: var(--red); }
+.acard-acts { margin-top: auto; display: flex; gap: 6px; }
+.acard-acts button { padding: 2px 8px; font-size: 11px; }
+.acard-kind { display: none; }
+/* zoomed out the card is its name over its kind, as a workspace card is, their type at screen size, and the card at
+   least that size on screen */
+.ls-band-cards .ls-acard { --u: calc(1px * var(--ls-inv, 1)); min-width: calc(136 * var(--u)); min-height: calc(52 * var(--u)); }
+.ls-band-cards .acard {
+  gap: calc(4 * var(--u)); padding: calc(9 * var(--u)) calc(11 * var(--u)); border-radius: calc(10 * var(--u));
+  box-shadow: 0 0 0 var(--u) color-mix(in srgb, var(--teal) 45%, transparent), 0 calc(4 * var(--u)) calc(14 * var(--u)) rgba(0, 0, 0, .22);
+}
+.ls-band-cards .acard-head { gap: calc(7 * var(--u)); }
+.ls-band-cards .acard-head svg { width: calc(14 * var(--u)); height: calc(14 * var(--u)); }
+.ls-band-cards .acard-meta, .ls-band-cards .acard-acts { display: none; }
+.ls-band-cards .acard-name { font-size: calc(12.5 * var(--u)); }
+.ls-band-cards .acard-kind { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 400 calc(10 * var(--u)) var(--ui); color: var(--text-3); }
+.ls-band-cards .acard.gone .acard-meta { display: block; font-size: calc(10 * var(--u)); }
 /* the Artifacts window: the shelf, its list taking the window's height */
 .art-window { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .art-window.drop-on { outline: 2px dashed var(--teal); outline-offset: -4px; }

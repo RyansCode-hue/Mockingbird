@@ -112,7 +112,7 @@ describe("a workspace's actions", () => {
     const acts = workspaceActions(sess({ status: "dead" }), env({ owner: "Nick Smith" }));
     for (const k of ["rename", "move", "close"]) expect(actionOf(acts, k)).toMatchObject({ disabled: true, title: expect.stringContaining("Nick Smith's session") });
     expect(actionOf(acts, "resume")).toBeUndefined();
-    expect(actionOf(acts, "tool:files")).toMatchObject({ disabled: true, title: "Nick Smith's session has no folder on this Mac" });
+    for (const k of ["tool:files", "tool:changes", "tool:search", "tool:run"]) expect(actionOf(acts, k)).toMatchObject({ disabled: true, title: "Nick Smith's session has no folder on this Mac" });
     expect(usable(acts, "notify")).toBeDefined();
   });
 

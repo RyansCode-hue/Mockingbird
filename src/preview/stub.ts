@@ -41,7 +41,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
-import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
+import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Ghost, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -995,7 +995,7 @@ const landscapeFixture = (): Landscape => {
       w2: { tool: "artifacts", docked: false, area: "5102" },
       w3: { tool: "search", docked: true },
     };
-    l.cards = { c1: { area: "5102", artifact: ART.tagNotes } };
+    l.cards = { c1: { area: "5102", shelf: "area:5102", artifact: ART.tagNotes } };
   }
   return l;
 };
@@ -1042,6 +1042,14 @@ let landscapeProblems: LandscapeProblem[] =
       ? [{ kind: "unreadable", message: `${LANDSCAPE_FILE} couldn't be read (EMFILE: too many open files). It's left as it is and read again with the next change; until then the layout is an empty stand-in, and changes to it aren't saved.`, file: LANDSCAPE_FILE, readOnly: true }]
       : [];
 if (landscapeProblems.length || landscapeQ === "fresh") landscape = emptyLandscape();
+// ?lsPersist: the landscape kept in sessionStorage, read back through the file's own checks (parseLandscape) when the
+// page reloads, as main reads landscape.json when the app starts again
+const LS_KEPT = "mb.preview.landscape";
+const lsPersist = new URLSearchParams(location.search).has("lsPersist");
+if (lsPersist) {
+  const kept = sessionStorage.getItem(LS_KEPT);
+  if (kept) landscape = parseLandscape(JSON.parse(kept));
+}
 
 // ---- Council: a discussion two rounds in --------------------------------------
 
@@ -1539,6 +1547,7 @@ const api: Record<string, (...a: any[]) => any> = {
     if (!sameLandscape(next, landscape)) {
       landscape = next;
       landscapeRev++;
+      if (lsPersist) sessionStorage.setItem(LS_KEPT, JSON.stringify(landscape));
       if (standIn) standInChanges++;
       emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
     }
@@ -2045,7 +2054,7 @@ const api: Record<string, (...a: any[]) => any> = {
     const from = artifactRoom(`area:${key}`);
     const to = artifactRoom(roomId);
     if (!from || !to) return err("You're not in that room");
-    const out = { shared: 0, refused: [] as { name: string; reason: string }[] };
+    const out = { shared: 0, refused: [] as { name: string; reason: string }[], ids: {} as Record<string, string> };
     for (const a of from.items) {
       if (a.agentsBlocked) {
         out.refused.push({ name: a.name, reason: `${a.agentsBlocked}: add it to the room yourself if teammates should have a copy` });
@@ -2054,6 +2063,7 @@ const api: Record<string, (...a: any[]) => any> = {
       const id = artId(`S${Math.random().toString(36).slice(2, 10)}`);
       if (artTexts[a.id] !== undefined) artTexts[id] = artTexts[a.id];
       to.items.push({ ...a, id, addedBy: ME, addedByName: "You", addedAt: Date.now() });
+      out.ids[a.id] = id;
       out.shared++;
     }
     artifactsChanged(roomId);
@@ -3072,7 +3082,7 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit"].some((k) => params.has(k)) || flyAudit) {
+if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit", "landscapeReviewAudit"].some((k) => params.has(k)) || flyAudit) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
@@ -4550,6 +4560,82 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     report("mb-landscape-fly-audit", out);
   });
 
+  // ---- tool windows (S5): what the tools and review audits look at and do ----
+  const placedWin = (tool: string) => document.querySelector<HTMLElement>(`.ls-world .ls-window[data-tool="${tool}"]`);
+  const dockedWin = (tool: string) => document.querySelector<HTMLElement>(`.ls-dock .ls-window[data-tool="${tool}"]`);
+  const stored = (tool: string) => Object.entries(landscape.tools).filter(([, w]) => w.tool === tool).map(([id, w]) => ({ id, ...w }));
+  const rail = (label: string) => document.querySelector<HTMLElement>(`.activitybar button[aria-label="${label}"]`);
+  const keyDown = async (k: string, mods: KeyboardEventInit) => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...mods }));
+    await sleep(600);
+  };
+  const styleRect = (el: HTMLElement | null) => (el ? { x: parseFloat(el.style.left), y: parseFloat(el.style.top), w: parseFloat(el.style.width), h: parseFloat(el.style.height) } : null);
+  /** Just right of the workspace, top-aligned, a gap between: where the rail opens a workspace's window. */
+  const besideOf = (id: string, el: HTMLElement | null) => {
+    const r = styleRect(el);
+    const n = styleRect(node(id));
+    return !!r && !!n && r.y === n.y && r.x >= n.x + n.w && r.x - (n.x + n.w) <= 2 * GAP;
+  };
+  const scopeOf = (el: HTMLElement | null) => el?.querySelector(".ls-win-scope")?.textContent ?? null;
+  /** The main-process calls made since `mark` that name a session or a folder: what a tool did with its scope. */
+  const usedSince = (mark: number) => calls.slice(mark).filter((c) => c.fn !== "landscapeUpdate").map((c) => `${c.fn} ${JSON.stringify(c.args)}`);
+  const wholeInView = (el: Element | null) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const v = vp().getBoundingClientRect();
+    return r.left >= v.left - 1 && r.top >= v.top - 1 && r.right <= v.right + 1 && r.bottom <= v.bottom + 1;
+  };
+  const ctxRows = () => {
+    const m = document.querySelector(".mb-ctx");
+    return m
+      ? [...m.children].map((e) =>
+          e.classList.contains("mb-ctx-sep") ? "-" : e.classList.contains("mb-ctx-h") ? `# ${e.textContent}` : `${e.querySelector(".mb-ctx-t")?.textContent ?? ""}${(e as HTMLButtonElement).disabled ? " (off)" : ""}${e.querySelector(".mb-ctx-k") ? ` [${e.querySelector(".mb-ctx-k")!.textContent}]` : ""}`
+        )
+      : null;
+  };
+  const closeCtx = async () => {
+    document.querySelector(".mb-ctx")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await sleep(200);
+  };
+  const rightClick = async (el: Element, dx = 0.5, dy = 0.5) => {
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(el, dx, dy) }));
+    await sleep(300);
+    const rows = ctxRows();
+    await closeCtx();
+    return rows;
+  };
+  /** A right-click at (x, y) on `el`: what's at that point on screen may be a window or the dock over it. */
+  const rightClickAt = async (el: Element, x: number, y: number) => {
+    el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: x, clientY: y }));
+    await sleep(300);
+    const rows = ctxRows();
+    await closeCtx();
+    return rows;
+  };
+  const ctxPick = async (text: string) => {
+    const b = [...document.querySelectorAll<HTMLButtonElement>(".mb-ctx button")].find((x) => x.querySelector(".mb-ctx-t")?.textContent === text);
+    if (!b) throw new Error(`the menu has no ${text}`);
+    b.click();
+    await sleep(500);
+  };
+  const topTab = async (label: string) => {
+    [...document.querySelectorAll<HTMLElement>(".tab")].find((b) => b.textContent?.trim() === label)!.click();
+    await sleep(700);
+  };
+  const at100 = async (key: string) => {
+    document.querySelector<HTMLElement>(`.area-tree .lt-area[data-area="${CSS.escape(key)}"] .lt-head`)!.click();
+    await sleep(400);
+    document.querySelector<HTMLElement>(".ls-hud-btn.pct")!.click();
+    await sleep(700);
+  };
+  const headBtn = (key: string, text: string) => [...document.querySelectorAll<HTMLElement>(`${areaEl(key)} .ls-ah button`)].find((b) => b.textContent?.trim() === text) ?? null;
+  const artRows = (el: HTMLElement | null) => [...(el?.querySelectorAll(".art-row .art-name") ?? [])].map((n) => n.textContent);
+  const setField = async (input: HTMLInputElement, value: string) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(50);
+  };
+
   // ?landscapeToolsAudit (with ?motion=off): tool windows and the workspace's actions (S5). Each workspace tool opened
   // from the rail beside the selected workspace, on its worktree, and closed and opened again by its key; one docked,
   // following the selection, and placed again beside it; what's placed and docked kept when the landscape mounts again;
@@ -4559,80 +4645,6 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   // <script id="mb-landscape-tools-audit">.
   if (params.has("landscapeToolsAudit")) waitFor(".ls-world .ls-node", async () => {
     const out: Record<string, unknown> = {};
-    const placedWin = (tool: string) => document.querySelector<HTMLElement>(`.ls-world .ls-window[data-tool="${tool}"]`);
-    const dockedWin = (tool: string) => document.querySelector<HTMLElement>(`.ls-dock .ls-window[data-tool="${tool}"]`);
-    const stored = (tool: string) => Object.entries(landscape.tools).filter(([, w]) => w.tool === tool).map(([id, w]) => ({ id, ...w }));
-    const rail = (label: string) => document.querySelector<HTMLElement>(`.activitybar button[aria-label="${label}"]`);
-    const keyDown = async (k: string, mods: KeyboardEventInit) => {
-      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...mods }));
-      await sleep(600);
-    };
-    const styleRect = (el: HTMLElement | null) => (el ? { x: parseFloat(el.style.left), y: parseFloat(el.style.top), w: parseFloat(el.style.width), h: parseFloat(el.style.height) } : null);
-    /** Just right of the workspace, top-aligned, a gap between: where the rail opens a workspace's window. */
-    const besideOf = (id: string, el: HTMLElement | null) => {
-      const r = styleRect(el);
-      const n = styleRect(node(id));
-      return !!r && !!n && r.y === n.y && r.x >= n.x + n.w && r.x - (n.x + n.w) <= 2 * GAP;
-    };
-    const scopeOf = (el: HTMLElement | null) => el?.querySelector(".ls-win-scope")?.textContent ?? null;
-    /** The main-process calls made since `mark` that name a session or a folder: what a tool did with its scope. */
-    const usedSince = (mark: number) => calls.slice(mark).filter((c) => c.fn !== "landscapeUpdate").map((c) => `${c.fn} ${JSON.stringify(c.args)}`);
-    const wholeInView = (el: Element | null) => {
-      if (!el) return false;
-      const r = el.getBoundingClientRect();
-      const v = vp().getBoundingClientRect();
-      return r.left >= v.left - 1 && r.top >= v.top - 1 && r.right <= v.right + 1 && r.bottom <= v.bottom + 1;
-    };
-    const ctxRows = () => {
-      const m = document.querySelector(".mb-ctx");
-      return m
-        ? [...m.children].map((e) =>
-            e.classList.contains("mb-ctx-sep") ? "-" : e.classList.contains("mb-ctx-h") ? `# ${e.textContent}` : `${e.querySelector(".mb-ctx-t")?.textContent ?? ""}${(e as HTMLButtonElement).disabled ? " (off)" : ""}${e.querySelector(".mb-ctx-k") ? ` [${e.querySelector(".mb-ctx-k")!.textContent}]` : ""}`
-          )
-        : null;
-    };
-    const closeCtx = async () => {
-      document.querySelector(".mb-ctx")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-      await sleep(200);
-    };
-    const rightClick = async (el: Element, dx = 0.5, dy = 0.5) => {
-      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(el, dx, dy) }));
-      await sleep(300);
-      const rows = ctxRows();
-      await closeCtx();
-      return rows;
-    };
-    /** A right-click at (x, y) on `el`: what's at that point on screen may be a window or the dock over it. */
-    const rightClickAt = async (el: Element, x: number, y: number) => {
-      el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: x, clientY: y }));
-      await sleep(300);
-      const rows = ctxRows();
-      await closeCtx();
-      return rows;
-    };
-    const ctxPick = async (text: string) => {
-      const b = [...document.querySelectorAll<HTMLButtonElement>(".mb-ctx button")].find((x) => x.querySelector(".mb-ctx-t")?.textContent === text);
-      if (!b) throw new Error(`the menu has no ${text}`);
-      b.click();
-      await sleep(500);
-    };
-    const tab = async (label: string) => {
-      [...document.querySelectorAll<HTMLElement>(".tab")].find((b) => b.textContent?.trim() === label)!.click();
-      await sleep(700);
-    };
-    const at100 = async (key: string) => {
-      document.querySelector<HTMLElement>(`.area-tree .lt-area[data-area="${CSS.escape(key)}"] .lt-head`)!.click();
-      await sleep(400);
-      document.querySelector<HTMLElement>(".ls-hud-btn.pct")!.click();
-      await sleep(700);
-    };
-    const headBtn = (key: string, text: string) => [...document.querySelectorAll<HTMLElement>(`${areaEl(key)} .ls-ah button`)].find((b) => b.textContent?.trim() === text) ?? null;
-    const artRows = (el: HTMLElement | null) => [...(el?.querySelectorAll(".art-row .art-name") ?? [])].map((n) => n.textContent);
-    const setField = async (input: HTMLInputElement, value: string) => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      await sleep(50);
-    };
     try {
       await sleep(900);
       const s1 = sessions.find((s) => s.id === "s1")!;
@@ -4701,8 +4713,8 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       });
       const before = shot();
       const storedBefore = JSON.stringify(landscape.tools);
-      await tab("Dashboard");
-      await tab("Sessions");
+      await topTab("Dashboard");
+      await topTab("Sessions");
       await sleep(500);
       out.remount = { before, after: shot(), storedSame: JSON.stringify(landscape.tools) === storedBefore };
 
@@ -4840,6 +4852,278 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       out.error = String(err instanceof Error ? err.stack : err);
     }
     report("mb-landscape-tools-audit", out);
+  });
+
+  // ?landscapeReviewAudit (with ?motion=off&lsPersist): the S5 review's fixes, worked as a person would, in two pages
+  // so each stays well inside the preview's minute. =a: placed and docked windows and a card kept through a real
+  // reload; a Chat window viewing its room only while it's on screen in the live band; a mention notification going to
+  // its room's area and Chat; the rail and keys refusing what the selection's menu has off; the menus of a taken-over
+  // session, a terminal and a teammate's; a docked Chat placed in an area that isn't a room's. =b: Size L picked from a
+  // menu opened before the area was locked; a mention refused outside the artifact's area; zoomed out to cards, the
+  // windows' and card's heads at screen size; sharing an area as a room offering its artifacts once, its card following
+  // them, and gone once the room is left from the Team view's list, which the Connected line opens; the Follow
+  // indicator on an area that isn't a room's. Into <script id="mb-landscape-review-audit-a"> (or -b).
+  if (params.has("landscapeReviewAudit")) waitFor(".ls-world .ls-node", async () => {
+    const part = params.get("landscapeReviewAudit") === "b" ? "b" : "a";
+    const PHASE = "mb.preview.reviewAudit";
+    const was = JSON.parse(sessionStorage.getItem(PHASE) ?? "null") as { shot: unknown; stored: string } | null;
+    const out: Record<string, unknown> = {};
+    const shot = () => ({
+      placed: Object.fromEntries([...document.querySelectorAll<HTMLElement>(".ls-world .ls-window")].map((x) => [x.dataset.win, styleRect(x)])),
+      docked: [...document.querySelectorAll<HTMLElement>(".ls-dock .ls-window")].map((x) => x.dataset.win),
+      cards: Object.fromEntries([...document.querySelectorAll<HTMLElement>(".ls-world .ls-acard")].map((x) => [x.dataset.card, styleRect(x)])),
+    });
+    const kept = () => JSON.stringify({ tools: landscape.tools, cards: landscape.cards });
+    const artRow = (name: string, win = placedWin("artifacts")) => [...(win?.querySelectorAll<HTMLElement>(".art-row") ?? [])].find((r) => r.querySelector(".art-name")?.textContent === name) ?? null;
+    const viewed = () => (calls.filter((c) => c.fn === "teamChatViewing").at(-1)?.args[0] as string[] | undefined) ?? [];
+    const reads = (room: string, from: number) => calls.slice(from).filter((c) => c.fn === "teamChatRead" && c.args[0] === room).length;
+    const says = async (room: string, text: string) => {
+      (chats[room] ??= []).push(chatEntry({ kind: "message", author: NICK, at: Date.now(), text, mentions: [ME] }));
+      chatChanged(room);
+      await sleep(700);
+    };
+    const chatWin = (key: string) => [...document.querySelectorAll<HTMLElement>('.ls-world .ls-window[data-tool="chat"]')].find((x) => landscape.tools[x.dataset.win!]?.area === key) ?? null;
+    const partly = (el: Element | null) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const v = vp().getBoundingClientRect();
+      return r.right > v.left && r.left < v.right && r.bottom > v.top && r.top < v.bottom;
+    };
+    const band = () => ["live", "readonly", "cards"].find((b) => vp().classList.contains(`ls-band-${b}`)) ?? null;
+    const goArea = async (key: string) => {
+      document.querySelector<HTMLElement>(`.area-tree .lt-area[data-area="${CSS.escape(key)}"] .lt-head`)!.click();
+      await sleep(900);
+    };
+    const areaMore = async (key: string, pickText: string) => {
+      document.querySelector<HTMLElement>(`${areaEl(key)} .ls-ah .ls-ah-more`)!.click();
+      await sleep(300);
+      await ctxPick(pickText);
+    };
+    const closeModal = async () => {
+      [...document.querySelectorAll<HTMLButtonElement>(".modal button")].find((b) => b.textContent === "Close")?.click();
+      await sleep(400);
+    };
+    const toolCount = () => Object.keys(landscape.tools).length;
+    try {
+      await sleep(900);
+      if (part === "a" && !was) {
+        // placed (Files beside s1), docked (Search) and a card (5102's link), then the page reloaded
+        await pick("s1");
+        rail("Files")!.click();
+        await sleep(800);
+        rail("Search")!.click();
+        await sleep(800);
+        placedWin("search")!.querySelector<HTMLElement>('[aria-label="Dock it"]')!.click();
+        await sleep(500);
+        await at100("5102");
+        headBtn("5102", "Artifacts")!.click();
+        await sleep(800);
+        artRow("React profiler docs")!.querySelector<HTMLElement>('[data-action="place"]')!.click();
+        await sleep(800);
+        sessionStorage.setItem(PHASE, JSON.stringify({ shot: shot(), stored: kept() }));
+        location.reload();
+        return;
+      }
+      if (part === "a") {
+        sessionStorage.removeItem(PHASE);
+        out.reload = { before: was!.shot, after: shot(), storedSame: kept() === was!.stored, card: document.querySelector(".ls-world .ls-acard .acard-name")?.textContent ?? null };
+
+        // a Chat window views its room, and reads it, only on screen in the live band
+        window.dispatchEvent(new Event("focus"));
+        await at100("5101");
+        let mark = calls.length;
+        [...document.querySelectorAll<HTMLElement>(`${areaEl("5101")} .ls-ah button`)].find((b) => b.textContent?.startsWith("Chat"))!.click();
+        await sleep(1000);
+        await says(ROOM_5101, "@You on screen");
+        const shown = { band: band(), partly: partly(chatWin("5101")), viewing: viewed().includes(ROOM_5101), reads: reads(ROOM_5101, mark) };
+        await at100("5102");
+        mark = calls.length;
+        await says(ROOM_5101, "@You off screen");
+        const offScreen = { band: band(), partly: partly(chatWin("5101")), viewing: viewed().includes(ROOM_5101), reads: reads(ROOM_5101, mark) };
+        await fitView();
+        await pinchTo(0.2);
+        await sleep(500);
+        mark = calls.length;
+        await says(ROOM_5101, "@You zoomed out");
+        const zoomedOut = { band: band(), partly: partly(chatWin("5101")), viewing: viewed().includes(ROOM_5101), reads: reads(ROOM_5101, mark) };
+        out.chat = { shown, offScreen, zoomedOut };
+
+        // a clicked mention notification: its room's area, with its Chat
+        const chatsBefore = Object.values(landscape.tools).filter((t) => t.tool === "chat" && t.area === "5110").length;
+        emit("onTeamChatOpen", ROOM_5110);
+        await sleep(1500);
+        const area5110 = document.querySelector(areaEl("5110"));
+        out.notified = { before: chatsBefore, after: Object.values(landscape.tools).filter((t) => t.tool === "chat" && t.area === "5110").length, windowShown: partly(chatWin("5110")), areaShown: partly(area5110), tab: document.querySelector(".tab.on")?.textContent?.trim() ?? null };
+
+        // the rail and keys against the selection's menu: an exited session (only Search), a teammate's (none)
+        const KEYS = [["files", "E", { metaKey: true, shiftKey: true }], ["changes", "G", { ctrlKey: true, shiftKey: true }], ["search", "F", { metaKey: true, shiftKey: true }], ["run", "D", { metaKey: true, shiftKey: true }], ["files", "b", { metaKey: true }]] as const;
+        const LABEL: Record<string, string> = { files: "Files", changes: "Changes", search: "Search", run: "Run & debug" };
+        dockedWin("search")?.querySelector<HTMLElement>('[aria-label="Close Search"]')?.click();
+        await sleep(400);
+        const gate = async (id: string) => {
+          await fitView();
+          await pick(id);
+          const menu = (await rightClick(node(id)!)) ?? [];
+          const rows: Record<string, unknown> = {};
+          for (const [tool, k, mods] of KEYS) {
+            const was = kept();
+            await keyDown(k, mods);
+            const opened = kept() !== was;
+            // what it opened, closed again by its key, so the next starts from the same place
+            if (opened) await keyDown(k, mods);
+            rows[`${tool}${k === "b" ? " ⌘B" : ""}`] = { menuOn: menu.some((r) => r.startsWith(LABEL[tool]) && !r.includes("(off)")), keyOpened: opened, railOff: rail(LABEL[tool])!.getAttribute("aria-disabled") === "true" };
+          }
+          const before = toolCount();
+          rail("Files")!.click();
+          await sleep(500);
+          return { rows, railClickOpened: toolCount() !== before, said: noteText() };
+        };
+        out.gate = { s6: await gate("s6"), teammate: await gate(NICK_PANE) };
+
+        // the menus of the real wiring: a session a teammate took over, a terminal, a teammate's
+        out.menus = { y1: await rightClick(node("y1")!), s4: await rightClick(node("s4")!), teammate: await rightClick(node(NICK_PANE)!) };
+
+        // a docked Chat placed while an area that isn't a room's is selected: refused, still docked
+        const dockedChat = Object.entries(landscape.tools).find(([, t]) => t.tool === "chat" && t.area === "5110")!;
+        chatWin("5110")!.querySelector<HTMLElement>('[aria-label="Dock it"]')!.click();
+        await sleep(500);
+        await pick("s5");
+        dockedWin("chat")!.querySelector<HTMLElement>('[aria-label="Place it on the landscape"]')!.click();
+        await sleep(500);
+        out.dockedChat = { stillDocked: landscape.tools[dockedChat[0]]?.docked === true, said: noteText() };
+        dockedWin("chat")!.querySelector<HTMLElement>('[aria-label="Close Chat"]')!.click();
+        await sleep(400);
+      } else {
+        // Files beside s1, and a card of 5102's link
+        let mark = calls.length;
+        await pick("s1");
+        rail("Files")!.click();
+        await sleep(800);
+        await at100("5102");
+        headBtn("5102", "Artifacts")!.click();
+        await sleep(800);
+        artRow("React profiler docs")!.querySelector<HTMLElement>('[data-action="place"]')!.click();
+        await sleep(800);
+
+        // Files docked, s5 selected, then Files from s1's ⋯: the docked one follows s1 there, and none opens beside it
+        placedWin("files")!.querySelector<HTMLElement>('[aria-label="Dock it"]')!.click();
+        await sleep(500);
+        await pick("s5");
+        const toolsWere = toolCount();
+        node("s1")!.querySelector<HTMLElement>(".ls-more")!.click();
+        await sleep(300);
+        await ctxPick("Files");
+        out.dockedFollows = { opened: toolCount() - toolsWere, docked: !!dockedWin("files"), placed: !!placedWin("files"), scope: scopeOf(dockedWin("files")) };
+        // placed again, beside s1, for the cards band below
+        dockedWin("files")!.querySelector<HTMLElement>('[aria-label="Place it on the landscape"]')!.click();
+        await sleep(800);
+
+        // Size L from s1's menu, opened before 5101 was locked: refused as the area is when it's picked
+        await at100("5101");
+        const sizesWere = JSON.stringify({ w: landscape.workspaces, s: landscape.stacks });
+        node("s1")!.querySelector<HTMLElement>(".ls-head .ls-more")!.click();
+        await sleep(300);
+        await api.landscapeUpdate({ areas: { "5101": { locked: true } } });
+        await sleep(400);
+        const menuOpen = !!document.querySelector(".mb-ctx");
+        await ctxPick("Size L");
+        out.staleMenu = { menuOpen, unchanged: JSON.stringify({ w: landscape.workspaces, s: landscape.stacks }) === sizesWere, said: noteText() };
+        await api.landscapeUpdate({ areas: { "5101": { locked: false } } });
+        await sleep(400);
+
+        // a mention from 5102's Artifacts with s1 (in 5101) selected: refused; with s5 (in 5102): typed into s5
+        await at100("5102");
+        await pick("s1");
+        mark = calls.length;
+        artRow("React profiler docs")!.querySelector<HTMLElement>('[data-action="mention"]')!.click();
+        await sleep(400);
+        const refused = { writes: calls.slice(mark).filter((c) => c.fn === "sessionWrite").length, said: noteText() };
+        await pick("s5");
+        mark = calls.length;
+        artRow("React profiler docs")!.querySelector<HTMLElement>('[data-action="mention"]')!.click();
+        await sleep(400);
+        out.mention = { refused, typed: calls.slice(mark).filter((c) => c.fn === "sessionWrite").map((c) => [c.args[0], String(c.args[1]).replace(/artifact:\w+/, "artifact:…")]) };
+
+        // zoomed out to cards: each window's head and the card's, at screen size, kept so as the camera moves
+        await fitView();
+        await pinchTo(0.13);
+        await sleep(600);
+        const heads = () =>
+          [...document.querySelectorAll<HTMLElement>(".ls-world .ls-window.compact")].map((x) => {
+            const r = x.getBoundingClientRect();
+            const t = x.querySelector<HTMLElement>(".ls-win-t")!;
+            return { tool: x.dataset.tool, w: Math.round(r.width), h: Math.round(r.height), name: t.textContent, nameH: Math.round(t.getBoundingClientRect().height), scope: x.querySelector(".ls-win-scope")?.textContent ?? null, inv: Number(x.style.getPropertyValue("--ls-inv")) };
+          });
+        const cardFace = () => {
+          const c = document.querySelector<HTMLElement>(".ls-world .ls-acard");
+          const r = c?.getBoundingClientRect();
+          return c ? { w: Math.round(r!.width), h: Math.round(r!.height), name: c.querySelector(".acard-name")?.textContent ?? null, kind: c.querySelector<HTMLElement>(".acard-kind")?.offsetHeight ? c.querySelector(".acard-kind")!.textContent : null, nameH: Math.round(c.querySelector(".acard-name")!.getBoundingClientRect().height), inv: Number(c.style.getPropertyValue("--ls-inv")) } : null;
+        };
+        const drawn = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-window.compact, .ls-world .ls-acard")].map((x) => x.getBoundingClientRect());
+        const apart = drawn.every((a, i) => drawn.every((b, j) => i === j || a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top));
+        const at13 = { zoom: zoomNow(), band: band(), windows: heads(), card: cardFace(), apart };
+        await pinchTo(0.16);
+        await sleep(300);
+        out.cards = { at13, at16: { zoom: zoomNow(), windows: heads().map((h) => h.inv), card: cardFace()?.inv ?? null } };
+
+        // 5102 shared as a room: its artifacts offered, the card moving to the room's copy; an Invite later offers none
+        const cardId = Object.keys(landscape.cards)[0];
+        const cardWas = { ...landscape.cards[cardId] };
+        await at100("5102");
+        await areaMore("5102", "Share as a team room…");
+        await sleep(900);
+        const offer = document.querySelector<HTMLElement>(".modal .art-share-offer");
+        const offered = offer?.querySelector("button")?.textContent ?? null;
+        offer?.querySelector<HTMLElement>("button")?.click();
+        await sleep(1200);
+        const roomId = team.rooms.find((r) => r.groupKey === "5102")?.id ?? null;
+        const cardNow = landscape.cards[cardId];
+        const shared = { offered, said: document.querySelector(".modal .art-share-offer")?.textContent ?? null, shelfWas: cardWas.shelf, shelf: cardNow?.shelf ?? null, room: roomId, newId: cardNow?.artifact !== cardWas.artifact, inRoom: !!roomId && !!artifactRooms[roomId]?.items.some((a) => a.id === cardNow?.artifact), name: document.querySelector(`.ls-acard[data-card="${cardId}"] .acard-name`)?.textContent ?? null };
+        await closeModal();
+        await areaMore("5102", "Invite a teammate…");
+        await sleep(900);
+        const invite = { code: !!document.querySelector(".modal .team-code"), offer: !!document.querySelector(".modal .art-share-offer") };
+        await closeModal();
+        out.share = { shared, invite };
+
+        // the Connected line: the Team view's room list in the side bar; the new room left from it, its card gone
+        document.querySelector<HTMLElement>(".lt-connected .connected-line")!.click();
+        await sleep(600);
+        const list = { title: document.querySelector(".side-title")?.textContent ?? null, rooms: [...document.querySelectorAll(".sidebar .room-list .room-card .room-name")].map((n) => n.textContent) };
+        const card = [...document.querySelectorAll<HTMLElement>(".sidebar .room-list .room-card")].find((c) => c.querySelector(".room-name")?.textContent === "#5102 Pathways quick view freezes" || c.querySelector(".room-name")?.textContent?.startsWith("#5102"));
+        const leaveRows = card ? await (async () => {
+          card.querySelector(".room-head")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(card.querySelector(".room-head")!, 0.5, 0.3) }));
+          await sleep(300);
+          const rows = ctxRows();
+          await ctxPick("Leave room…");
+          await sleep(300);
+          [...document.querySelectorAll<HTMLButtonElement>(".modal button")].find((b) => b.textContent === "Leave room")?.click();
+          await sleep(1200);
+          await closeModal();
+          return rows;
+        })() : null;
+        const left = { leaveRows, roomGone: !team.rooms.some((r) => r.groupKey === "5102"), card: document.querySelector(`.ls-acard[data-card="${cardId}"] .acard-name`)?.textContent ?? null, why: document.querySelector(`.ls-acard[data-card="${cardId}"] .acard-meta`)?.textContent ?? null };
+        document.querySelector<HTMLElement>(".side-head .side-back")?.click();
+        await sleep(400);
+        out.team = { list, left, backToTree: !!document.querySelector(".sidebar .area-tree") };
+
+        // following a teammate: said on an area that isn't a room's too
+        await at100("5101");
+        const follow = [...document.querySelectorAll<HTMLElement>(`${areaEl("5101")} .ls-ah .team-follow button`)].find((b) => b.textContent?.includes("Follow")) ?? null;
+        follow?.click();
+        await sleep(600);
+        out.follow = {
+          offered: !!follow,
+          on5102: [...document.querySelectorAll(`${areaEl("5102")} .ls-ah .team-follow.on`)].map((x) => x.textContent?.replace(/Stop$/, "").trim()),
+          on5101: document.querySelectorAll(`${areaEl("5101")} .ls-ah .team-follow.on`).length,
+        };
+        document.querySelector<HTMLElement>(`${areaEl("5101")} .ls-ah .team-follow.on button`)?.click();
+        await sleep(400);
+      }
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report(`mb-landscape-review-audit-${part}`, out);
   });
 }
 // ?landscapePerf (with ?landscapeMany=<n>): frame times while the landscape is panned and pinch-zoomed at 100%, 60%

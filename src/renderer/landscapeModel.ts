@@ -5,12 +5,15 @@
  * main process, and whether the grid's layout should be read in now.
  */
 import { isWorkItemId, splitGroupKey, type SessionInfo } from "../shared/types";
+import { areaShelf } from "../shared/areaArtifacts";
 import {
   AREA_GAP,
   AREA_HEADER,
   AREA_PAD,
   CELL_ESTIMATE,
+  colsRows,
   GAP,
+  WORKSPACE_SIZES,
   LOOSE_GROUP,
   applyPatch,
   areaAround,
@@ -299,6 +302,34 @@ export const TOOL_WIDTH: Record<ToolKind, number> = { files: 360, changes: 384, 
 export const TOOL_HEIGHT = { min: 480, max: 960, plain: 640 };
 /** An artifact card's size at 100% (design O). */
 export const CARD_SIZE: Size = { w: 240, h: 128 };
+/**
+ * The least a tool window's head and an artifact card take on screen zoomed out to cards, in screen px: a workspace
+ * card's name over its scope (or the artifact's kind). styles.css draws them at least this big (.ls-window.compact,
+ * .ls-band-cards .ls-acard).
+ */
+export const COMPACT_MIN = { window: { w: 136, h: 50 }, card: { w: 136, h: 52 } } as const;
+/** The room kept between two of them drawn one under the other zoomed out, in screen px. */
+const COMPACT_GAP = 4;
+
+/**
+ * How far down each tool window and artifact card is drawn zoomed out to cards, at `zoom`, in landscape px: none,
+ * unless at its compact size (`min`, screen px, from its top-left) it would cover one drawn before it in reading order,
+ * when it's drawn just under that one. A card placed beside its window then reads under it, rather than over its
+ * name. Only how they're drawn: their places don't change.
+ */
+export function compactShifts(items: readonly { id: string; rect: Rect; min: Size }[], zoom: number): Map<string, number> {
+  const out = new Map<string, number>();
+  const drawn: Rect[] = [];
+  const gap = COMPACT_GAP / zoom;
+  for (const it of [...items].sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x)) {
+    const r: Rect = { x: it.rect.x, y: it.rect.y, w: Math.max(it.rect.w, it.min.w / zoom), h: Math.max(it.rect.h, it.min.h / zoom) };
+    // each move puts it below one it covered, so it ends below every one it would cover
+    for (let hit = drawn.find((d) => overlaps(r, d)); hit; hit = drawn.find((d) => overlaps(r, d))) r.y = hit.y + hit.h + gap;
+    drawn.push(r);
+    out.set(it.id, r.y - it.rect.y);
+  }
+  return out;
+}
 
 /** The size a tool window opens at: `beside`'s height (a workspace's) within TOOL_HEIGHT, on the grid. */
 export const toolSize = (tool: ToolKind, beside: Rect | null): Size => ({
@@ -1124,10 +1155,10 @@ function spotBeside(occupied: readonly Rect[], area: Area | null, size: Size, be
  */
 export function tileSize(t: Tile, layout: ResolvedLayout, titleOf: (key: string) => string): { current: SizePreset | null; blocked: string | null } {
   const kind = tileKind(t.members);
-  const current = SIZE_PRESETS.find((p) => {
-    const s = presetSize(kind, p);
-    return s.w === t.rect.w && s.h === t.rect.h;
-  });
+  // a preset is its terminal's cols × rows, so a workspace holding exactly those is at it whatever its pixels (a size
+  // rounded differently, or a hair over); one a row short of it (sized before the footer took its 16 px) isn't
+  const held = colsRows(t.rect.w, t.rect.h, CELL_ESTIMATE.w, CELL_ESTIMATE.h);
+  const current = SIZE_PRESETS.find((p) => WORKSPACE_SIZES[kind][p].cols === held.cols && WORKSPACE_SIZES[kind][p].rows === held.rows);
   const theirs = t.members.find(isTheirs);
   const area = t.area === LOOSE_GROUP ? undefined : layout.areas.find((a) => a.key === t.area);
   const blocked = theirs ? `${theirs.room!.ownerName}'s workspace is the size their terminal is` : area?.rect.locked ? `${titleOf(area.key)} is locked: unlock it to resize its workspaces` : null;
@@ -1240,18 +1271,70 @@ export function planMoveExtra(l: Landscape, layout: ResolvedLayout, kind: "windo
  * it was placed from) when there's room, else in the area's first free spot, the area growing to take it. Refused in
  * a collapsed area, and in a locked one with no room.
  */
-export function planPlaceCard(l: Landscape, layout: ResolvedLayout, id: string, key: string, artifact: string, beside: Rect | null, titleOf: (key: string) => string): AreaPlan {
+export function planPlaceCard(l: Landscape, layout: ResolvedLayout, id: string, key: string, shelf: string, artifact: string, beside: Rect | null, titleOf: (key: string) => string): AreaPlan {
   const area = layout.areas.find((a) => a.key === key);
   if (!area) return { refused: `${titleOf(key)} isn't on the landscape any more` };
   if (area.rect.collapsed) return { refused: `${titleOf(key)} is collapsed: open it to place the artifact` };
   const r = spotBeside(placedBut(l, layout, id), area.rect, CARD_SIZE, beside, layout.areas.map((a) => a.rect));
   if (!r) return { refused: `${titleOf(key)} is locked and has no room for the card` };
   const p = emptyPatch();
-  put(p.cards, id, { area: key, artifact, placement: r });
+  put(p.cards, id, { area: key, shelf, artifact, placement: r });
   const grown = fitAreaTo(area.rect, [r]);
   const blocked = grown !== area.rect ? growArea(p, l, layout, key, grown, new Set()) : null;
   if (blocked) return { refused: lockedInWay(titleOf, blocked, key) };
   return { patch: finish(p), moves: [], after: null };
+}
+
+/** Whether two tool scopes are the same workspace or area (none and none are). */
+export const sameScope = (a: ToolScope | null, b: ToolScope | null): boolean =>
+  !a || !b ? a === b : "session" in a ? "session" in b && a.session === b.session : "area" in b && a.area === b.area;
+
+/**
+ * Who an artifact of area `area` is mentioned to: the selected session `s`, when it's one of this Mac's in that area
+ * and its agent reads the artifact's shelf — a room's area's agents read the room's, so this Mac's copies (`local`)
+ * aren't theirs (`roomArea`). Else why not, to say.
+ */
+export function mentionTarget(
+  s: SessionInfo | null,
+  area: string,
+  local: boolean,
+  roomArea: boolean,
+  titleOf: (key: string) => string,
+  nameOf: (s: SessionInfo) => string
+): { session: string } | { no: string } {
+  if (!s || isTheirs(s)) return { no: "select one of this Mac's workspaces to mention it to" };
+  const its = areaKeyOf(s);
+  if (its !== area) return { no: `${nameOf(s)} is ${its === LOOSE_GROUP ? "in no area" : `in ${titleOf(its)}`}, not ${titleOf(area)}: select a workspace there` };
+  if (local && roomArea) return { no: `it's kept on this Mac, and ${titleOf(area)}'s agents read the room's artifacts: add it to the room first` };
+  return { session: s.id };
+}
+
+/** The shelf a card reads its artifact from (a room's, or its area's on this Mac), or why it can't any more. */
+export type CardShelf = { shelf: { id: string; groupKey: string; local: boolean } } | { gone: string };
+
+/**
+ * Where card `c` reads its artifact: the shelf it was placed from. `rooms`: the ids of the rooms this Mac is in, or
+ * null when they can't be said (the team status isn't read yet, or failed), when a room's shelf is read and what it
+ * says is shown.
+ */
+export function cardShelf(c: ArtifactCard, rooms: ReadonlySet<string> | null): CardShelf {
+  if (c.shelf === areaShelf(c.area)) return { shelf: { id: c.shelf, groupKey: c.area, local: true } };
+  if (rooms && !rooms.has(c.shelf)) return { gone: "You left the room it was shared in: its artifacts went with it" };
+  return { shelf: { id: c.shelf, groupKey: c.area, local: false } };
+}
+
+/**
+ * Sharing area `key` as room `roomId` copied its artifacts (`ids`: each one's id in the room): its cards placed from
+ * this Mac's shelf move to the room's copy, so they show what teammates see. The cards of artifacts it didn't copy
+ * keep reading this Mac's. Null when no card moves.
+ */
+export function cardsAfterShare(l: Landscape, key: string, roomId: string, ids: Readonly<Record<string, string>>): LandscapePatch | null {
+  const cards: Record<string, ArtifactCard> = {};
+  for (const [id, c] of Object.entries(l.cards)) {
+    const to = c.area === key && c.shelf === areaShelf(key) ? own(ids, c.artifact) : undefined;
+    if (to) put(cards, id, { ...c, shelf: roomId, artifact: to });
+  }
+  return Object.keys(cards).length ? { cards } : null;
 }
 
 /**

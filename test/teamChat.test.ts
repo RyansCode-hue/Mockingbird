@@ -161,6 +161,22 @@ describe("mentions", () => {
     await new Promise((r) => setTimeout(r, 80));
     expect(ryan.notes).toHaveLength(1);
   });
+
+  it("notify again once no view of the room is on screen, whichever other rooms' are", async () => {
+    const { roomId, sides } = await setup();
+    const [ryan, nick] = sides;
+    ryan.focused = true;
+    // two views of the room and one of another: the room stays viewed while either of its views is
+    ryan.room.chat.setViewing([roomId, "R".repeat(22)]);
+    nick.room.chat.post(roomId, "@Ryan first");
+    await until(() => ryan.room.chat.unread()[roomId]?.mentions === 1, "the first mention");
+    await new Promise((r) => setTimeout(r, 80));
+    expect(ryan.notes).toEqual([]);
+    ryan.room.chat.setViewing(["R".repeat(22)]);
+    nick.room.chat.post(roomId, "@Ryan second");
+    await until(() => ryan.notes.length === 1, "a notification once it isn't viewed");
+    expect(ryan.notes[0].body).toMatch(/second/);
+  });
 });
 
 describe("agent updates", () => {

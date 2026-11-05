@@ -19,6 +19,8 @@ import {
   cameraFrom,
   cameraForOpened,
   centreOn,
+  compactShifts,
+  COMPACT_MIN,
   centredAt,
   contentRects,
   fitBelow,
@@ -192,6 +194,9 @@ interface Peeked {
  * the camera there through `apply`, so the band and what's on screen follow
  * it; the minimap and the switcher (with the area tree hidden) go there too.
  */
+/** A tool window's key among what's on screen (`seen`), apart from the workspaces'. */
+const WIN_SEEN = "win:";
+
 export function Landscape({
   layout,
   stored,
@@ -258,11 +263,14 @@ export function Landscape({
   notice: { text: string; n: number } | null;
   /** What a workspace's header chips and footer show. */
   chromeFor: (s: SessionInfo) => WorkspaceChrome;
-  /** A placed tool window's scope, as its title names it, and what it hosts. */
-  windowFor: (w: WindowView) => { scope: string | null; body: React.ReactNode };
+  /**
+   * A placed tool window's scope, as its title names it, what it hosts, and what its head counts zoomed out (an
+   * Artifacts window's artifacts). `seen`: it's on screen in the live band, so what it shows is being looked at.
+   */
+  windowFor: (w: WindowView, seen: boolean) => { scope: string | null; body: React.ReactNode; count?: React.ReactNode };
   onCloseWindow: (id: string) => void;
-  /** An artifact card's face; `inv` is 1 / the camera's zoom, which a card zoomed out sizes its type by. */
-  cardFor: (c: CardView, inv: number) => React.ReactNode;
+  /** An artifact card's face. */
+  cardFor: (c: CardView) => React.ReactNode;
 }) {
   const viewport = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
@@ -375,7 +383,10 @@ export function Landscape({
     if (!v.w || !placed.current) return;
     // cards cost no terminal, so they follow a zoom or a flight as it moves; terminals wait for it to rest
     if ((bandWait.current || flight.current) && attaches(bandNow.current)) return;
-    const keys = keysOnScreen(layoutNow.current.tiles, cam.current, v).join("\n");
+    // and the tool windows on screen: what a window shows counts as seen only there (a room's chat marks read, and
+    // holds its mentions, only while it's seen)
+    const wins = layoutNow.current.windows.map((w) => ({ key: `${WIN_SEEN}${w.id}`, rect: w.rect, hidden: w.hidden }));
+    const keys = [...keysOnScreen(layoutNow.current.tiles, cam.current, v), ...keysOnScreen(wins, cam.current, v, 0)].join("\n");
     if (keys === seenNow.current) return;
     seenNow.current = keys;
     setSeen(keys);
@@ -389,16 +400,37 @@ export function Landscape({
   };
 
   /**
-   * Areas' outlines, headers and names, pills, and cards' type keep their screen size: --ls-inv is 1/zoom, and
-   * --ls-hs that never below 1 (an area's header and pill, which don't shrink past 100% zoomed in). Set on each,
-   * never on the world, whose terminals would all have their styles recalculated.
+   * Areas' outlines, headers and names, pills, cards' type, and tool windows' and artifact cards' heads zoomed out
+   * keep their screen size: --ls-inv is 1/zoom, and --ls-hs that never below 1 (an area's header and pill, which don't
+   * shrink past 100% zoomed in). Set on each, never on the world, whose terminals would all have their styles
+   * recalculated; each is drawn with the value of its render, which this keeps current as the camera moves.
    */
   const paintScale = (zoom: number) => {
     const inv = String(1 / zoom);
     const hs = String(Math.max(1, 1 / zoom));
-    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card") ?? []) {
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-area, .ls-area-pill, .ls-node.card, .ls-window, .ls-acard") ?? []) {
       el.style.setProperty("--ls-inv", inv);
       el.style.setProperty("--ls-hs", hs);
+    }
+    if (bandNow.current === "cards") paintCompact(zoom);
+  };
+  /**
+   * Zoomed out to cards, windows and cards are drawn at least their compact size, so one may reach over another: each
+   * is drawn under those before it (compactShifts), by --ls-dy, which React never sets. Outside the cards band it's
+   * unused (styles.css).
+   */
+  const paintCompact = (zoom: number) => {
+    const l = layoutNow.current;
+    const shifts = compactShifts(
+      [
+        ...l.windows.filter((w) => !w.hidden).map((w) => ({ id: `w:${w.id}`, rect: w.rect, min: COMPACT_MIN.window })),
+        ...l.cards.filter((c) => !c.hidden).map((c) => ({ id: `c:${c.id}`, rect: c.rect, min: COMPACT_MIN.card })),
+      ],
+      zoom
+    );
+    for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-window[data-win], .ls-acard[data-card]") ?? []) {
+      const dy = shifts.get(el.dataset.win ? `w:${el.dataset.win}` : `c:${el.dataset.card}`) ?? 0;
+      el.style.setProperty("--ls-dy", `${dy}px`);
     }
   };
   const apply = useCallback((next: Camera) => {
@@ -1359,7 +1391,7 @@ export function Landscape({
           {layout.tiles.map((t) => node(t, modeOf(t), { w: t.rect.w, h: t.rect.h }))}
           {layout.windows.map((w) => {
             if (w.hidden) return null;
-            const { scope, body: inner } = windowFor(w);
+            const { scope, body: inner, count } = windowFor(w, band === "live" && seenSet.has(`${WIN_SEEN}${w.id}`));
             return (
               <ToolWindow
                 key={w.id}
@@ -1368,6 +1400,7 @@ export function Landscape({
                 scope={scope}
                 docked={false}
                 compact={band === "cards"}
+                count={count}
                 style={{ left: w.rect.x, top: w.rect.y, width: w.rect.w, height: w.rect.h, ["--ls-inv" as string]: 1 / cam.current.zoom }}
                 onDock={() => dockWindow(w.id)}
                 onClose={() => onCloseWindow(w.id)}
@@ -1378,8 +1411,8 @@ export function Landscape({
           })}
           {layout.cards.map((c) =>
             c.hidden ? null : (
-              <div key={c.id} className="ls-acard" data-card={c.id} style={{ left: c.rect.x, top: c.rect.y, width: c.rect.w, height: c.rect.h }}>
-                {cardFor(c, 1 / cam.current.zoom)}
+              <div key={c.id} className="ls-acard" data-card={c.id} style={{ left: c.rect.x, top: c.rect.y, width: c.rect.w, height: c.rect.h, ["--ls-inv" as string]: 1 / cam.current.zoom }}>
+                {cardFor(c)}
               </div>
             )
           )}

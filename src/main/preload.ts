@@ -377,7 +377,7 @@ const api = {
   teamChatRead: (roomId: string) => ipcRenderer.invoke("teamChat:read", roomId),
   teamChatUnread: () => ipcRenderer.invoke("teamChat:unread"),
   /** The room the window shows (null: none): its mentions don't notify while the window has focus. */
-  teamChatViewing: (roomId: string | null) => ipcRenderer.invoke("teamChat:viewing", roomId),
+  teamChatViewing: (roomIds: string[]) => ipcRenderer.invoke("teamChat:viewing", roomIds),
   onTeamChatChanged: (cb: (roomId: string) => void) => {
     const h = (_e: unknown, roomId: string) => cb(roomId);
     ipcRenderer.on("teamChat:changed", h);

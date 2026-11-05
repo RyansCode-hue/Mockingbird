@@ -802,9 +802,22 @@ Design O, with Artifacts as a window, and N's workspace header.
       apply), and Close…. Each section has a heading.
     - **Rows that can't be done now stay, disabled, saying why:** a
       teammate's session can't be renamed, moved, sized or closed here, its
-      tools have no folder on this Mac, and it is never resumed here; an
-      exited session has no folder and nothing to repaint; a terminal has
-      no agent turns. A workspace in a locked area can't change size.
+      tools (Search too) have no folder on this Mac, and it is never resumed
+      here; an exited session has no folder (only Search, which still reads
+      its folder and conversations) and nothing to repaint; a terminal has no
+      agent turns. A workspace in a locked area can't change size.
+    - **One gate for every way in** (`toolGate` in `main.tsx`): the rail,
+      the tool keys, a docked window's ⧉ and the menus open a tool only when
+      the selection's model row for it is enabled, and Chat only on a room's
+      area. A refused one is said over the landscape, and the rail's button
+      is dimmed with the reason as its tooltip.
+    - **A pick acts on the landscape as it is then**, not as it was when its
+      menu opened: opening, placing and sizing, and Remove's windows and
+      cards, read the current state (`lsNow`, `layoutNow`).
+    - **A docked window counts as open only where the selection is:** a tool
+      picked from a workspace's menu while it's docked shows that workspace
+      in the dock (the pick selects it), and none is added; asked for on
+      another area (a notification's Chat), a placed one opens there.
     - **An area** has its own list, the same way (`areaActions` in
       `main.tsx`, through `inSection`): Area (Rename, Collapse, Lock), Tools
       (Artifacts, plus Chat in a room), Agent messages, Team room (Share or
@@ -830,8 +843,15 @@ Design O, with Artifacts as a window, and N's workspace header.
       grid's pane uses them unchanged. Git and the PR are read only while
       the workspace is drawn with them (live, focus, peek), never for a
       card.
-    - **Size:** the footer adds 24 px to `WORKSPACE_CHROME` (now 16 × 56),
-      so a preset is a row taller than before for the same cols and rows.
+    - **Size:** the footer takes `WORKSPACE_CHROME` from 16 × 40 to 16 ×
+      56, so a preset is 16 px taller than before for the same cols and
+      rows.
+    - **Existing workspaces lose a terminal row on upgrade.** One sized
+      before S5 keeps its pixels, and the footer's 16 px come out of its
+      terminal, a row at the estimated cell. Size S/M/L name a preset by the
+      cols × rows a workspace holds (`tileSize`), not its pixels, so such a
+      workspace shows none pressed; picking its size again gives the row
+      back. Nothing resizes workspaces by itself on upgrade.
     - **⋯ on a card** sits over the end of its head, shown on hover or
       selection, so the title keeps its width at rest.
   - **A dead workspace keeps its place:**
@@ -869,6 +889,22 @@ Design O, with Artifacts as a window, and N's workspace header.
       toggles.
     - **Chat** opens only on a room's area. Asked for on another area, it's
       said rather than opened.
+    - **A Chat window views its room only while it's seen:** docked, or
+      placed, on screen in the live band and its area open. One off screen,
+      zoomed out or in a collapsed area stays mounted but marks nothing read,
+      and mentions in its room still notify. Each chat view says what it
+      views on its own (`team/chatViewing.ts`); main keeps the set of viewed
+      rooms (`TeamChat.viewing`), so two views of a room don't fight, and
+      closing one leaves the other's room viewed.
+    - **A mention notification, and the Connected line** (under the area
+      tree), go to the room's area, flown to, and open its Chat there. With
+      several rooms the Connected line names none, so it shows the Team
+      view's room list in the side bar instead of the area tree (‹ Areas goes
+      back): each room's Leave, Join, Invite and House board are there, as on
+      the grid. A room's Show goes to its area.
+    - **Following a teammate** is said on every area's header, as on the
+      grid's group bars, with Stop; the Follow buttons are only on a room's
+      area.
     - **Where one opens** (`planOpenWindow`):
       1. right of its workspace, top-aligned;
       2. else just below it;
@@ -904,16 +940,38 @@ Design O, with Artifacts as a window, and N's workspace header.
     - **Live:** whole, and the wheel over a window's body scrolls it.
     - **Read-only:** whole and still clickable, since a window is DOM, not a
       terminal. The wheel pans and zooms over it, and its head drags it.
-    - **Cards:** the head alone (`.compact`), its type at screen size; the
-      body isn't mounted, so no `FilePanel` or `RunView` runs, and any part
-      of it drags it.
+    - **Cards:** the head alone (`.compact`), as a workspace card: the
+      tool's name (an Artifacts window's with its count, "Artifacts · 3")
+      over its scope, at screen size. The window is drawn at least that
+      head's size on screen (136 × 50, `COMPACT_MIN`), however far out, so it
+      may reach past its own place there. The body isn't mounted, so no
+      `FilePanel` or `RunView` runs, and any part of it drags it.
     - **An artifact card** shows its name, open and mention buttons zoomed
-      in. Zoomed out it's only its name, at up to 2.5× (still tiny below
-      about 20%), and dragged by any part.
+      in. Zoomed out it's its name over its kind ("PNG file", "Note",
+      "Link"), at screen size and at least 136 × 52 on screen, and dragged by
+      any part. Its classes are its own (`.acard*`): `.art-card` is the
+      artifact viewer's link and file panel.
+    - **Neither covers another zoomed out:** one that would, at its compact
+      size, cover one drawn before it in reading order is drawn just under
+      that one (`compactShifts`, set each frame as `--ls-dy`), so a card
+      placed beside its window reads under it. Their places don't change. At
+      the far end of the band such a card can reach past its area, over the
+      next area's header.
+    - **Screen size is kept as the camera moves:** windows and cards are set
+      with the areas and workspace cards each frame (`paintScale`), not only
+      when they render.
   - **Saved state** (`landscape.json` v2):
     - `tools` (`ToolWindow`: tool, docked, and when placed its session or
-      area and placement) and `cards` (`ArtifactCard`: area, artifact,
+      area and placement) and `cards` (`ArtifactCard`: area, shelf, artifact,
       placement) are new records.
+    - **A card records its shelf**, the one it was placed from (a room's id,
+      or `area:<area>`), since an area's shelf changes when it's shared as a
+      room or the room is left. Sharing the area moves its cards to the
+      room's copies of their artifacts (`cardsAfterShare`, from `shareTo`'s
+      old → new ids); a card of one that wasn't copied keeps reading this
+      Mac's. A card of a room since left says so and offers only taking it
+      off (`cardShelf`). An area's rename moves its own cards' shelf with
+      it.
     - They're checked with the rest: a docked window has no scope or place,
       and a placed one its scope.
     - A window or card in a patch is replaced whole.
@@ -921,8 +979,10 @@ Design O, with Artifacts as a window, and N's workspace header.
       is written back as v2. S1's rules hold: an older Mockingbird leaves a
       v2 file alone.
   - **Artifacts in every area** (`src/main/areaArtifacts.ts`):
-    - **A room's area shows the room's.** Its shelf id is the room id, and it
-      never has artifacts of its own.
+    - **A room's area shows the room's.** Its shelf id is the room id.
+      Main refuses changes to this Mac's shelf of a room's area (adds,
+      rename, remove, saving a note), so it never gains artifacts of its own
+      once shared; what it kept from before is still read, for its cards.
     - **Any other area keeps its own on this Mac**, under
       `~/.mockingbird/artifacts/areas/<folder>/`: `area.json` (`{ v, key,
       items }`, the room's record shapes) and an `ArtifactStore`.
@@ -934,26 +994,47 @@ Design O, with Artifacts as a window, and N's workspace header.
       - **The folder's name** escapes every character that could leave the
         folder or name it `.` or `..`, and hashes capitals and long keys, so
         a case-insensitive disk can't merge two areas.
-      - **No folder on the way is followed through a symbolic link**
-        (`dirInside`, then a realpath check). Added files must be regular
-        files, never from `~/.mockingbird/team` or the area folders.
-      - **A corrupt `area.json`** is moved aside to `.bad-<ts>` and reported
-        on the shelf.
+      - **No symbolic link is followed.** The way to an area's folder is
+        checked every time (`dirInside`, then a realpath check); the first
+        time a run opens an area, everything inside its folder is walked and
+        a link anywhere refuses it; and `area.json` must be a regular file
+        each time it's read (lstat). Added files must be regular files,
+        never from `~/.mockingbird/team` or the area folders.
+      - **`area.json` follows S1's version rule.** It carries `v` (now 1).
+        One written by a newer Mockingbird is read but never written: the
+        shelf is read-only and says to update. Nothing is dropped:
+        - a file that isn't JSON, has no list of artifacts or no version is
+          moved aside to `.bad-<ts>`, said on the shelf, and the shelf
+          starts over;
+        - records this version can't read aren't shown, are said, and are
+          written back as they were with every save.
     - **Renaming the area moves them.** The `sessions:renameGroup` hook
       renames the folder, or merges it into the new name's, and its agents'
       copies follow. A failure is logged and said on the shelf; the rename
       itself isn't refused. A rename to a sub-group or Loose leaves them
       under the old key and logs where they are.
-    - **Sharing the area as a room offers to share them.** The share dialog
-      shows `ShareAreaArtifacts`, which calls `artifacts:shareArea(key,
-      roomId)` (`AreaArtifacts.shareTo`). It copies each artifact in through
-      the room's own add paths. Anything secret or withheld from agents is
-      refused, with the reason, and never confirmed for you. The copies on
-      this Mac stay.
+      - **A merge never loses what it couldn't move.** Each record is copied
+        with its file; a file missing from the old folder is skipped and
+        named once on the new shelf, and its record comes along. The old
+        folder is removed only when every record was read and copied;
+        otherwise it's kept as it is (its `.bad` copies with it) and the new
+        shelf says so.
+    - **Sharing the area as a room offers to share them, once.** The share
+      dialog shows `ShareAreaArtifacts` only when it makes the room (an
+      Invite to the room later doesn't offer them again). It calls
+      `artifacts:shareArea(key, roomId)` (`AreaArtifacts.shareTo`), which
+      copies each artifact in through the room's own add paths and answers
+      what it shared, what the room refused and why (each by itself), and
+      each copy's id. Anything secret or withheld from agents is refused,
+      with the reason, and never confirmed for you. The copies on this Mac
+      stay.
     - **The window's actions:**
       - Add (file, note, repo file, link, or a drop);
       - Open; Mention, which types `#[name](artifact:<id>)` into the selected
-        workspace's prompt;
+        workspace's prompt, only when that's one of this Mac's in the
+        artifact's area whose agent reads that shelf (`mentionTarget`: a
+        room's area's agents read the room's, not this Mac's copies);
+        otherwise it's said why;
       - Rename, Download and Remove ("Remove…", for this Mac);
       - **Place**, which puts a card in the area that opens or mentions it,
         and tags the row "on the landscape";
@@ -1010,6 +1091,9 @@ Design O, with Artifacts as a window, and N's workspace header.
       each area's Run and Artifacts;
     - `?lsMenu=ws`: s1's ⋯;
     - `?landscapeToolsAudit`;
+    - `?landscapeReviewAudit` (with `?lsPersist`, which keeps the stub's
+      landscape in sessionStorage and reads it back through
+      `parseLandscape`, so a real reload is tested);
     - area `5102` keeps three artifacts on this Mac (`area:5102`);
     - stubs for `artifactsShareArea` and `runProfile`; the stub's
       `renameGroup` moves an area's artifacts as main's does.
@@ -1024,11 +1108,22 @@ Design O, with Artifacts as a window, and N's workspace header.
       - renames.
     - `test/workspaceActions.test.ts`: the model's rows, handlers and
       reasons, and its menu sections.
+    - `test/landscapeTools.test.ts` also: presets by cols × rows, a card's
+      shelf and its cards following a share, `mentionTarget`, `sameScope`,
+      `compactShifts`.
+    - `test/chatViewing.test.ts` and `test/teamChat.test.ts`: viewing per
+      view, and mentions notified once no view of their room is seen.
     - `test/contextMenu.test.ts`: headings.
     - `test/landscapeStore.test.ts`: windows and cards saved and read back.
     - `test/areaArtifacts.test.ts`:
-      - folder names and escapes, symbolic-link refusals and a corrupt
-        index;
+      - folder names and escapes, symbolic-link refusals (on the way, inside
+        the folder) and a corrupt index;
+      - `area.json`'s version rule: a newer `v` read-only, a file with no
+        list set aside, unreadable records written back;
+      - a merge from a corrupt, partly unreadable or missing-file source;
+      - `shareTo`'s ids, and a room refusing some items;
+      - a room's area refusing changes to this Mac's shelf, and still
+        reading it;
       - add, read, rename and remove, and a secret asked about first;
       - an area's rename and merge;
       - `shareTo`, refusing secrets;
@@ -1049,6 +1144,25 @@ Design O, with Artifacts as a window, and N's workspace header.
       - a dead card's Resume and Close & clean up;
       - an area's artifacts added to, placed, renamed with the area and
         removed from, and a room's area showing the room's.
+    - and the review audit (`=a` and `=b`, two pages, each well inside the
+      preview's minute):
+      - placed and docked windows and a card through a real reload;
+      - a Chat window viewing and reading its room on screen in the live
+        band, and not off screen or zoomed out to cards;
+      - a mention notification going to its room's area and Chat;
+      - the keys and rail against the menu for an exited session and a
+        teammate's, and a docked Chat's ⧉ in an area that isn't a room's;
+      - the menus `main.tsx` builds for a taken-over session (Resume off),
+        a terminal and a teammate's (nothing to hand on);
+      - Size L picked from a menu opened before the area was locked;
+      - a tool picked from a workspace's menu while it's docked;
+      - a mention refused outside the artifact's area;
+      - the cards band's window and card heads at screen size, neither
+        covering another, kept as the camera moves;
+      - sharing an area offering its artifacts once, its card following
+        them; the Connected line's room list, Leave there, and the card of
+        the room left;
+      - the Follow indicator on an area that isn't a room's.
   - **Left for S6 and later:**
     - the selection bar (design Q), Tidy, guides and snapping, stacks UI,
       right-click create and ghost cards (S6);

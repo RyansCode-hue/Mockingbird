@@ -13,6 +13,12 @@ import {
   planPlaceCard,
   planResizeTile,
   resolveLayout,
+  cardShelf,
+  cardsAfterShare,
+  compactShifts,
+  mentionTarget,
+  sameScope,
+  tileSize,
   toolSize,
   type AreaPlan,
 } from "../src/renderer/landscapeModel";
@@ -28,6 +34,7 @@ import {
   parsePatch,
   presetSize,
   renameAreaPatch,
+  WORKSPACE_CHROME,
   type Area,
   type Landscape,
   type Rect,
@@ -203,7 +210,7 @@ describe("a placed window or card", () => {
   it("moves with its area when the area is dragged", () => {
     const { l, sessions } = twoAreas();
     let next = apply(l, planOpenWindow(l, resolveLayout(l, sessions), "w1", "files", { session: "s1" }, title));
-    next = apply(next, planPlaceCard(next, resolveLayout(next, sessions), "c1", "a", "A".repeat(22), null, title));
+    next = apply(next, planPlaceCard(next, resolveLayout(next, sessions), "c1", "a", "area:a", "A".repeat(22), null, title));
     const [w, c, a] = [next.tools.w1.placement!, next.cards.c1.placement!, next.areas.a];
     const moved = apply(next, planMoveArea(next, resolveLayout(next, sessions), "a", 0, 2000, title));
     const dy = moved.areas.a.y - a.y;
@@ -215,13 +222,13 @@ describe("a placed window or card", () => {
   it("is placed again in its area when a rename merges its area into another", () => {
     const { l, sessions } = twoAreas();
     let next = apply(l, planOpenWindow(l, resolveLayout(l, sessions), "w1", "artifacts", { area: "b" }, title));
-    next = apply(next, planPlaceCard(next, resolveLayout(next, sessions), "c1", "b", "A".repeat(22), next.tools.w1.placement!, title));
+    next = apply(next, planPlaceCard(next, resolveLayout(next, sessions), "c1", "b", "area:b", "A".repeat(22), next.tools.w1.placement!, title));
     const before = { w: next.tools.w1.placement!, c: next.cards.c1.placement! };
     // a rename that merges b into a: b's window and card lose their places, and the layout places them again in a
     const merged = applyPatch(next, parsePatch(renameAreaPatch(next, "b", "a", [])!));
     expect(merged.tools.w1).toMatchObject({ area: "a" });
     expect(merged.tools.w1.placement).toBeUndefined();
-    expect(merged.cards.c1).toEqual({ area: "a", artifact: "A".repeat(22) });
+    expect(merged.cards.c1).toEqual({ area: "a", shelf: "area:a", artifact: "A".repeat(22) });
     const layout = resolveLayout(merged, sessions);
     const w = layout.windows.find((x) => x.id === "w1")!;
     const c = layout.cards.find((x) => x.id === "c1")!;
@@ -235,7 +242,7 @@ describe("a placed window or card", () => {
     const { l, sessions } = twoAreas();
     let next = apply(l, planOpenWindow(l, resolveLayout(l, sessions), "w1", "files", { session: "s1" }, title));
     next = apply(next, planOpenWindow(next, resolveLayout(next, sessions), "w2", "artifacts", { area: "a" }, title));
-    next = apply(next, planPlaceCard(next, resolveLayout(next, sessions), "c1", "a", "A".repeat(22), null, title));
+    next = apply(next, planPlaceCard(next, resolveLayout(next, sessions), "c1", "a", "area:a", "A".repeat(22), null, title));
     const layout = resolveLayout(next, sessions);
     const b = next.areas.b;
     // a workspace's window may go to another area
@@ -282,6 +289,100 @@ describe("a workspace's size", () => {
   });
 });
 
+describe("a workspace's size preset", () => {
+  it("is the one whose cols × rows it holds, not its exact pixels", () => {
+    const { l, sessions } = twoAreas();
+    const at = (h: number, w = M.w) => {
+      const next = { ...l, workspaces: { s1: { x: AREA_PAD, y: AREA_HEADER, w, h } } };
+      const layout = resolveLayout(next, sessions);
+      return tileSize(layout.tiles[0], layout, title).current;
+    };
+    expect(at(M.h)).toBe("M");
+    // a few px over M (a different rounding) holds M's cols × rows still
+    expect(at(M.h + 5, M.w + 3)).toBe("M");
+    // one sized when the frame took 16 px less holds a row fewer: no preset
+    expect(at(M.h - 16)).toBe(null);
+    expect(WORKSPACE_CHROME.h).toBe(56);
+    expect(at(S.h, S.w)).toBe("S");
+  });
+});
+
+describe("an artifact card's shelf", () => {
+  const card = (shelf: string) => ({ area: "a", shelf, artifact: "X".repeat(22) });
+  const room = "R".repeat(22);
+  it("is the one it was placed from: its area's on this Mac, a room's while this Mac is in it", () => {
+    expect(cardShelf(card("area:a"), new Set([room]))).toEqual({ shelf: { id: "area:a", groupKey: "a", local: true } });
+    expect(cardShelf(card(room), new Set([room]))).toEqual({ shelf: { id: room, groupKey: "a", local: false } });
+    // the room left: gone, and said why
+    expect(cardShelf(card(room), new Set())).toEqual({ gone: expect.stringMatching(/You left the room/) });
+    // the rooms not known yet: the room's is read, and what it says shown
+    expect(cardShelf(card(room), null)).toEqual({ shelf: { id: room, groupKey: "a", local: false } });
+  });
+  it("moves to the room's copy when its area is shared, for the artifacts copied only", () => {
+    const l: Landscape = {
+      ...emptyLandscape(),
+      cards: {
+        c1: { area: "a", shelf: "area:a", artifact: "A".repeat(22) },
+        c2: { area: "a", shelf: "area:a", artifact: "B".repeat(22) },
+        c3: { area: "b", shelf: "area:b", artifact: "A".repeat(22) },
+      },
+    };
+    const patch = cardsAfterShare(l, "a", room, { ["A".repeat(22)]: "N".repeat(22) });
+    expect(patch).toEqual({ cards: { c1: { area: "a", shelf: room, artifact: "N".repeat(22) } } });
+    expect(parseLandscape(JSON.parse(JSON.stringify(applyPatch(l, parsePatch(patch!))))).cards).toEqual({ ...l.cards, c1: { area: "a", shelf: room, artifact: "N".repeat(22) } });
+    expect(cardsAfterShare(l, "a", room, {})).toBe(null);
+    // an id named like Object's own isn't a copy
+    expect(cardsAfterShare({ ...l, cards: { c1: { area: "a", shelf: "area:a", artifact: "constructor" } } }, "a", room, {})).toBe(null);
+  });
+});
+
+describe("mentioning an artifact", () => {
+  const name = (s: SessionInfo) => s.title ?? s.id;
+  it("goes to the selected session when it's this Mac's, in the artifact's area, and its agent reads that shelf", () => {
+    const s1 = session("s1", { taskGroup: "a" });
+    expect(mentionTarget(s1, "a", true, false, title, name)).toEqual({ session: "s1" });
+    expect(mentionTarget(s1, "a", false, true, title, name)).toEqual({ session: "s1" });
+    expect(mentionTarget(null, "a", true, false, title, name)).toEqual({ no: expect.stringMatching(/select one of this Mac's/) });
+    expect(mentionTarget(theirs("t1", "a"), "a", false, true, title, name)).toEqual({ no: expect.stringMatching(/select one of this Mac's/) });
+    expect(mentionTarget(session("s2", { taskGroup: "b" }), "a", true, false, title, name)).toEqual({ no: expect.stringMatching(/is in b, not a/) });
+    expect(mentionTarget(session("s3"), "a", true, false, title, name)).toEqual({ no: expect.stringMatching(/in no area/) });
+    // a room's area's agents read the room's: this Mac's copy isn't theirs
+    expect(mentionTarget(s1, "a", true, true, title, name)).toEqual({ no: expect.stringMatching(/agents read the room's/) });
+  });
+});
+
+describe("windows and cards zoomed out to cards", () => {
+  const min = { w: 136, h: 50 };
+  it("are drawn under one they'd cover at their compact size, never moved where they're clear", () => {
+    const win = { id: "w", rect: { x: 0, y: 0, w: 384, h: 640 }, min };
+    const card = { id: "c", rect: { x: 400, y: 0, w: 240, h: 128 }, min };
+    // at 50% both fit their places: nothing moves
+    expect([...compactShifts([card, win], 0.5)]).toEqual([["w", 0], ["c", 0]]);
+    // at 13% the window reaches over the card beside it: the card is drawn just under the window
+    const at13 = compactShifts([card, win], 0.13);
+    expect(at13.get("w")).toBe(0);
+    expect(at13.get("c")).toBeCloseTo(640 + 4 / 0.13, 6);
+    // a second card under the first is drawn under it in turn; one far off isn't moved
+    const card2 = { id: "c2", rect: { x: 400, y: 144, w: 240, h: 128 }, min };
+    const far = { id: "f", rect: { x: 5000, y: 0, w: 240, h: 128 }, min };
+    const s = compactShifts([win, card, card2, far], 0.13);
+    const top = (id: string, y: number) => y + s.get(id)!;
+    expect(top("c2", 144)).toBeGreaterThanOrEqual(top("c", 0) + 52 / 0.13);
+    expect(s.get("f")).toBe(0);
+  });
+});
+
+describe("tool scopes", () => {
+  it("are the same workspace or area, none and none", () => {
+    expect(sameScope(null, null)).toBe(true);
+    expect(sameScope({ session: "s1" }, { session: "s1" })).toBe(true);
+    expect(sameScope({ session: "s1" }, { session: "s2" })).toBe(false);
+    expect(sameScope({ area: "a" }, { area: "a" })).toBe(true);
+    expect(sameScope({ area: "a" }, { session: "a" })).toBe(false);
+    expect(sameScope({ area: "a" }, null)).toBe(false);
+  });
+});
+
 describe("stored tool windows and cards", () => {
   it("are checked together: a docked one has no scope or place, a placed one its scope", () => {
     const ok = { ...emptyLandscape(), tools: { w1: { tool: "files", docked: true }, w2: { tool: "chat", docked: false, area: "a", placement: { x: 0, y: 0, w: 10, h: 10 } } } };
@@ -294,7 +395,8 @@ describe("stored tool windows and cards", () => {
       { tool: "files", docked: false, session: "s1", area: "../x" },
     ])
       expect(() => parseLandscape({ ...emptyLandscape(), tools: { w: bad } }), JSON.stringify(bad)).toThrow();
-    expect(() => parseLandscape({ ...emptyLandscape(), cards: { c: { area: "a" } } })).toThrow(/artifact is missing/);
+    expect(() => parseLandscape({ ...emptyLandscape(), cards: { c: { area: "a", shelf: "area:a" } } })).toThrow(/artifact is missing/);
+    expect(() => parseLandscape({ ...emptyLandscape(), cards: { c: { area: "a", shelf: "area:b", artifact: "A".repeat(22) } } })).toThrow(/neither a room.s nor area:a/);
   });
 
   it("from a version 1 file: every placement kept, and no windows or cards", () => {
@@ -310,10 +412,15 @@ describe("stored tool windows and cards", () => {
     const with2: Landscape = {
       ...l,
       tools: { w1: { tool: "files", docked: false, session: "s1", area: "a", placement: { x: 0, y: 0, w: 10, h: 10 } }, w2: { tool: "artifacts", docked: false, area: "a", placement: { x: 20, y: 0, w: 10, h: 10 } }, w3: { tool: "files", docked: true } },
-      cards: { c1: { area: "a", artifact: "A".repeat(22), placement: { x: 40, y: 0, w: 10, h: 10 } } },
+      cards: {
+        c1: { area: "a", shelf: "area:a", artifact: "A".repeat(22), placement: { x: 40, y: 0, w: 10, h: 10 } },
+        c2: { area: "a", shelf: "R".repeat(22), artifact: "B".repeat(22), placement: { x: 60, y: 0, w: 10, h: 10 } },
+      },
     };
     const renamed = applyPatch(with2, parsePatch(renameAreaPatch(with2, "a", "z", ["s1"])!));
     expect([renamed.tools.w1.area, renamed.tools.w2.area, renamed.cards.c1.area]).toEqual(["z", "z", "z"]);
+    // an area's own artifacts move with it, a room's stay the room's
+    expect([renamed.cards.c1.shelf, renamed.cards.c2.shelf]).toEqual(["area:z", "R".repeat(22)]);
     expect(renamed.tools.w1.placement).toEqual(with2.tools.w1.placement);
     expect(renamed.tools.w3).toEqual({ tool: "files", docked: true });
     const sub = applyPatch(with2, parsePatch(renameAreaPatch(with2, "a", "b/a", ["s1"])!));

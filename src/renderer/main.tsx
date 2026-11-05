@@ -98,7 +98,7 @@ import {
   takeOverAction,
   useTakeover,
 } from "./team/TakeOver";
-import { ArtifactCardFace, ArtifactsWindow, ShareAreaArtifacts, shelfOfArea } from "./team/Artifacts";
+import { ArtifactCardFace, ArtifactCardGone, ArtifactsCount, ArtifactsWindow, ShareAreaArtifacts, shelfOfArea, type ShelfInfo } from "./team/Artifacts";
 import { artifactRef } from "../shared/team/artifacts";
 import { backupOf, type LeftCopy, type ReceivedChanges, type RoomSessionBackupView } from "../shared/team/takeover";
 import { BackupConsentPrompt } from "./team/RoomBackups";
@@ -115,9 +115,9 @@ import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } fr
 // the landscape (Settings → Labs)
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type MovesFailed } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
-import { accentOf, accentsOf, areaCounts, areaSummary, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, presetFor, readProblem, renameSettled, resolveLayout, tileSize, type CardView, type GroupMove, type PendingRename, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { accentOf, accentsOf, areaCounts, areaSummary, cardShelf, cardsAfterShare, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, presetFor, readProblem, renameSettled, resolveLayout, sameScope, tileSize, type CardView, type GroupMove, type PendingRename, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
-import { inSection, menuOf, workspaceActions, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { actionOf, inSection, menuOf, workspaceActions, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
 import { AreaHeader, GroupBar, messageModeEntries, stageChip, type GroupBarProps } from "./GroupBar";
@@ -351,7 +351,9 @@ function App() {
   // team rooms: which groups are shared, and the share / join dialogs
   const teamStatus = useTeamStatus();
   const teamRooms = useMemo(() => (teamStatus && !isErr(teamStatus) ? teamStatus.rooms : []), [teamStatus]);
-  const [shareDlg, setShareDlg] = useState<{ key: string; title: string } | null>(null);
+  // `fresh`: the room is made by this dialog, so the area's artifacts on this Mac are offered to it (once: an Invite
+  // to the room later doesn't offer them again)
+  const [shareDlg, setShareDlg] = useState<{ key: string; title: string; fresh: boolean } | null>(null);
   // a room dialog asked for from an area's Members ▾: shown here, so it outlives the header it came from
   const [memberDlg, setMemberDlg] = useState<MemberDialog | null>(null);
   const [joinDlg, setJoinDlg] = useState(false);
@@ -529,12 +531,34 @@ function App() {
     // on the landscape the side bar is the area tree, and the other views are tool windows
     const tool = landscapeOn ? toolOfView(v) : null;
     if (tool) return showTool(tool, sessions.find((s) => s.id === focused) ?? null);
+    if (v === "sessions") setLsTeam(false);
     setSideView(v);
     setSideCollapsed(false);
     if (v === "search") setSearchFocus((n) => n + 1);
   };
-  // team rooms: team chat — a clicked mention notification opens the room's chat
-  useRoomChatOpen(() => showView("room"));
+  // on the landscape the side bar shows the Team view's room list in place of the area tree (the Connected line)
+  const [lsTeam, setLsTeam] = useState(false);
+  /**
+   * A room's chat, from a clicked mention notification or the Connected line. On the landscape: the room's area, flown
+   * to, with its Chat window; with no room named (the line, with several rooms), the Team view's room list in the side
+   * bar, where each room's Leave and join requests are. On the grid: the Team view, on the room.
+   */
+  const openRoom = (roomId: string | null) => {
+    const room = roomId && teamStatus && !isErr(teamStatus) ? teamStatus.rooms.find((r) => r.id === roomId) : undefined;
+    if (!landscapeOn) {
+      openTeamView(roomId);
+      return showView("room");
+    }
+    setTab("sessions");
+    if (room?.groupKey) {
+      goToArea(room.groupKey);
+      return showTool("chat", null, room.groupKey);
+    }
+    openTeamView(roomId);
+    setLsTeam(true);
+    setSideCollapsed(false);
+  };
+  useRoomChatOpen(openRoom);
 
   // inline editing is session titles only — group and workspace names are
   // renamed through RenameDialog (a second mounted input stole its focus)
@@ -1669,6 +1693,11 @@ function App() {
     const error = await landscapeStore.update(patch, what);
     if (error) lsSay(`${what}: not saved, ${error}`);
   };
+  // a menu's pick (or a dialog's) acts on the landscape as it is then, not as it was when the menu opened
+  const lsNow = useRef(landscapeState);
+  lsNow.current = landscapeState;
+  const layoutNow = useRef(landscapeLayout);
+  layoutNow.current = landscapeLayout;
   const selectedAny = sessions.find((s) => s.id === focused) ?? null;
   /** The selected session's area; null when it's loose or nothing is selected. */
   const selectedArea = selectedAny && areaKeyOf(selectedAny) !== LOOSE_GROUP ? areaKeyOf(selectedAny) : null;
@@ -1682,45 +1711,62 @@ function App() {
    * (planOpenWindow). With nothing to open it on, or no room for it in a locked area, it's docked instead, and said.
    */
   const openWindow = (tool: ToolKind, scope: ToolScope | null, id?: string) => {
-    const l = landscapeState?.landscape;
-    if (!l || !landscapeLayout) return;
+    const l = lsNow.current?.landscape;
+    const layout = layoutNow.current;
+    if (!l || !layout) return;
     const wid = id ?? newExtraId(l, "w");
     const dock = () => void lsChange({ tools: { [wid]: { tool, docked: true } } }, `docking ${TOOL_NAME[tool]}`);
     if (!scope) return dock();
-    const plan = planOpenWindow(l, landscapeLayout, wid, tool, scope, areaTitle);
+    const plan = planOpenWindow(l, layout, wid, tool, scope, areaTitle);
     if ("refused" in plan) {
       lsSay(`${plan.refused}: ${TOOL_NAME[tool]} is docked instead`);
       return dock();
     }
     void lsChange(plan.patch, `opening ${TOOL_NAME[tool]}`);
   };
-  /** Whether window `w` is `tool` open where `scope` would open it: docked (it follows the selection), or placed on that scope. */
-  const openOn = (w: ToolWindowRecord, tool: ToolKind, scope: ToolScope | null) =>
-    w.tool === tool && (w.docked || (!!scope && ("session" in scope ? w.session === scope.session : w.area === scope.area)));
+  /**
+   * Whether window `w` is `tool` open where `scope` would open it: placed on that scope, or docked while the selection
+   * (`sel`) is that scope, since a docked window shows the selection's.
+   */
+  const openOn = (w: ToolWindowRecord, tool: ToolKind, scope: ToolScope | null, sel: SessionInfo | null = selectedAny) =>
+    w.tool === tool && (w.docked ? sameScope(scope, scopeOf(tool, sel)) : !!scope && ("session" in scope ? w.session === scope.session : w.area === scope.area));
+  /**
+   * Why `tool` can't open from session `s` (in `area`, by default its), or null: the one rule the rail, the keys, a
+   * docked window's ⧉ and the menus keep. A workspace tool is the session's actions' row (workspaceActions: none on a
+   * teammate's session, only Search on an exited one); Chat is a room's area's only.
+   */
+  const toolGate = (tool: ToolKind, s: SessionInfo | null, area?: string | null): string | null => {
+    if (isWorkspaceTool(tool) && s) {
+      const row = actionOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))), `tool:${tool}`);
+      if (!row || row.disabled) return row?.title ?? `${TOOL_NAME[tool]} doesn't open on ${titleOf(s)}`;
+    }
+    const scope = scopeOf(tool, s, area ?? (s ? areaKeyOf(s) : null));
+    if (tool === "chat" && scope && "area" in scope && !roomOfGroup(teamStatus, scope.area)) return `${areaTitle(scope.area)} isn't a team room: share it as one from its ⋯ to chat with teammates`;
+    return null;
+  };
   /** The rail's tool buttons and keys on the landscape: open the tool beside the selected workspace (or in its area), or close it where it's open. */
   const toggleTool = (tool: ToolKind) => {
-    const l = landscapeState?.landscape;
+    const l = lsNow.current?.landscape;
     if (!l) return;
     const scope = scopeOf(tool, selectedAny);
     const open = Object.entries(l.tools).filter(([, w]) => openOn(w, tool, scope));
     if (open.length) return void lsChange({ tools: Object.fromEntries(open.map(([id]) => [id, null])) }, `closing ${TOOL_NAME[tool]}`);
-    if (notARoom(tool, scope)) return;
+    const no = toolGate(tool, selectedAny);
+    if (no) return lsSay(no);
     openWindow(tool, scope);
-  };
-  /** Room tools only in rooms: Chat opened on an area that isn't one is said rather than opened. */
-  const notARoom = (tool: ToolKind, scope: ToolScope | null): boolean => {
-    if (tool !== "chat" || !scope || !("area" in scope) || roomOfGroup(teamStatus, scope.area)) return false;
-    lsSay(`${areaTitle(scope.area)} isn't a team room: share it as one from its ⋯ to chat with teammates`);
-    return true;
   };
   /** A tool opened from a workspace (its chips, its ⋯) or an area (its header, its ⋯): left as it is where it's open already. */
   const showTool = (tool: ToolKind, s: SessionInfo | null, area?: string) => {
-    const l = landscapeState?.landscape;
+    const l = lsNow.current?.landscape;
     if (!l) return;
     if (s) setFocused(s.id);
     const scope = scopeOf(tool, s, area ?? (s ? areaKeyOf(s) : null));
     if (tool === "search") setSearchFocus((n) => n + 1);
-    if (!Object.values(l.tools).some((w) => openOn(w, tool, scope)) && !notARoom(tool, scope)) openWindow(tool, scope);
+    // opened from a workspace, that's the selection now: a docked window follows it there
+    if (Object.values(l.tools).some((w) => openOn(w, tool, scope, s ?? selectedAny))) return;
+    const no = toolGate(tool, s, area);
+    if (no) return lsSay(no);
+    openWindow(tool, scope);
   };
   const closeWindow = (id: string) => void lsChange({ tools: { [id]: null } }, "closing the window");
   /** Whether `tool` is open where the rail would open it: docked, or placed on the selected workspace (or its area). */
@@ -1733,18 +1779,29 @@ function App() {
   const searchOf = (key: string): [SearchState, (st: SearchState) => void] =>
     key === "side" ? [search, setSearch] : [winSearch[key] ?? { ...search, q: "" }, (st) => setWinSearch((m) => ({ ...m, [key]: st }))];
   const activePathOf = (s: SessionInfo | null) => (activeTab && s && activeTab.root === s.cwd ? activeTab.path : null);
-  /** Mention an artifact to the selected workspace: its reference typed into the prompt, which its agent reads with its artifact tools. */
-  const mentionArtifact = (a: { id: string; name: string }) => {
-    if (!focusedSession) return lsSay("Select one of this Mac's workspaces to mention it to");
-    typeInto(focusedSession.id, `${artifactRef(a.id, a.name)} `);
+  /**
+   * Mention artifact `a` of `shelf` (area `area`'s) to the selected workspace: its reference typed into the prompt, which
+   * its agent reads with its artifact tools. Refused (and said) unless that's one of this Mac's in the area, whose agent
+   * reads that shelf (mentionTarget).
+   */
+  const mentionArtifact = (a: { id: string; name: string }, shelf: ShelfInfo, area: string) => {
+    const to = mentionTarget(selectedAny, area, shelf.local, !!roomOfGroup(teamStatus, area), areaTitle, titleOf);
+    if ("no" in to) return lsSay(`Couldn't mention ${a.name}: ${to.no}`);
+    typeInto(to.session, `${artifactRef(a.id, a.name)} `);
   };
-  /** An artifact of area `area` placed as a card beside `beside` (its Artifacts window), or in the area's first free spot. */
-  const placeCard = (area: string, artifact: string, beside: Rect | null) => {
-    const l = landscapeState?.landscape;
-    if (!l || !landscapeLayout) return;
-    const plan = planPlaceCard(l, landscapeLayout, newExtraId(l, "c"), area, artifact, beside, areaTitle);
+  /** Artifact `artifact` of `shelf`, area `area`'s, placed as a card beside `beside` (its Artifacts window), or in the area's first free spot. */
+  const placeCard = (area: string, shelf: string, artifact: string, beside: Rect | null) => {
+    const l = lsNow.current?.landscape;
+    const layout = layoutNow.current;
+    if (!l || !layout) return;
+    const plan = planPlaceCard(l, layout, newExtraId(l, "c"), area, shelf, artifact, beside, areaTitle);
     if ("refused" in plan) return lsSay(plan.refused);
     void lsChange(plan.patch, "placing the artifact");
+  };
+  /** Sharing area `key` as room `roomId` copied its artifacts (`ids`): its cards move to the room's copies. */
+  const cardsShared = (key: string, roomId: string, ids: Record<string, string>) => {
+    const l = lsNow.current?.landscape;
+    if (l) void lsChange(cardsAfterShare(l, key, roomId, ids), "moving the area's cards to the room's copies");
   };
   const shelfFor = (area: string) => shelfOfArea(area, roomOfGroup(teamStatus, area) ?? null);
 
@@ -1753,7 +1810,7 @@ function App() {
    * session it works on (one of this Mac's), `area` the area it's of; `beside` is the window's place, where a card it
    * places goes next to.
    */
-  const toolBody = (tool: ToolKind, s: SessionInfo | null, area: string | null, key: string, beside: Rect | null = null): React.ReactNode => {
+  const toolBody = (tool: ToolKind, s: SessionInfo | null, area: string | null, key: string, beside: Rect | null = null, seen = true): React.ReactNode => {
     const own = s && !isRemote(s) ? s : null;
     switch (tool) {
       case "files":
@@ -1804,7 +1861,7 @@ function App() {
             room={room}
             rooms={[room]}
             selfName={teamStatus && !isErr(teamStatus) ? teamStatus.self?.name ?? "you" : "you"}
-            visible
+            visible={seen}
             hooks={teamHooks}
             sessions={ownSessions}
             focusedSessionId={focusedSession?.id ?? null}
@@ -1815,7 +1872,7 @@ function App() {
       case "artifacts": {
         if (!area) return <div className="fp-note">Select a workspace in an area: the area's artifacts show here.</div>;
         const shelf = shelfFor(area);
-        const placed = new Set(Object.values(landscapeState?.landscape.cards ?? {}).filter((c) => c.area === area).map((c) => c.artifact));
+        const placed = new Set(Object.values(landscapeState?.landscape.cards ?? {}).filter((c) => c.area === area && c.shelf === shelf.id).map((c) => c.artifact));
         return (
           <ArtifactsWindow
             key={shelf.id}
@@ -1823,36 +1880,45 @@ function App() {
             sessions={ownSessions}
             focusedSessionId={focusedSession?.id ?? null}
             onOpenRepoFile={openRepoFile}
-            onMention={mentionArtifact}
-            onPlace={(a) => placeCard(area, a.id, beside)}
+            onMention={(a) => mentionArtifact(a, shelf, area)}
+            onPlace={(a) => placeCard(area, shelf.id, a.id, beside)}
             placed={placed}
           />
         );
       }
     }
   };
-  /** A placed tool window's scope, as its title names it (design O: the area, and the workspace's branch), and its view. */
-  const windowFor = (w: WindowView) => {
+  /**
+   * A placed tool window's scope, as its title names it (design O: the area, and the workspace's branch), and its view.
+   * `seen`: it's on screen in the live band, so what it shows is being looked at.
+   */
+  const windowFor = (w: WindowView, seen: boolean) => {
     const s = w.win.session ? sessions.find((x) => x.id === w.win.session) ?? null : null;
     const area = w.area ?? (s && areaKeyOf(s) !== LOOSE_GROUP ? areaKeyOf(s) : null);
     if (isWorkspaceTool(w.win.tool)) {
       if (!s) return { scope: "Its workspace closed", body: <div className="fp-note">The workspace this window was opened on has closed. Close the window, or dock it to follow the selected workspace.</div> };
-      return { scope: [area && areaTitle(area), s.branch ?? titleOf(s)].filter(Boolean).join(" · "), body: toolBody(w.win.tool, s, area, w.id, w.rect) };
+      return { scope: [area && areaTitle(area), s.branch ?? titleOf(s)].filter(Boolean).join(" · "), body: toolBody(w.win.tool, s, area, w.id, w.rect, seen) };
     }
-    return { scope: area ? areaTitle(area) : null, body: toolBody(w.win.tool, null, area, w.id, w.rect) };
+    const count = w.win.tool === "artifacts" && area ? <ArtifactsCount shelf={shelfFor(area).id} /> : undefined;
+    return { scope: area ? areaTitle(area) : null, body: toolBody(w.win.tool, null, area, w.id, w.rect, seen), count };
   };
-  const cardFor = (c: CardView, inv: number) => (
-    <ArtifactCardFace
-      shelf={shelfFor(c.card.area)}
-      artifactId={c.card.artifact}
-      inv={inv}
-      sessions={ownSessions}
-      focusedSessionId={focusedSession?.id ?? null}
-      onOpenRepoFile={openRepoFile}
-      onMention={mentionArtifact}
-      onRemoveCard={() => void lsChange({ cards: { [c.id]: null } }, "taking the card off")}
-    />
-  );
+  const roomIds = teamStatus && !isErr(teamStatus) ? new Set(teamStatus.rooms.map((r) => r.id)) : null;
+  const cardFor = (c: CardView) => {
+    const takeOff = () => void lsChange({ cards: { [c.id]: null } }, "taking the card off");
+    const at = cardShelf(c.card, roomIds);
+    if ("gone" in at) return <ArtifactCardGone why={at.gone} onRemoveCard={takeOff} />;
+    return (
+      <ArtifactCardFace
+        shelf={at.shelf}
+        artifactId={c.card.artifact}
+        sessions={ownSessions}
+        focusedSessionId={focusedSession?.id ?? null}
+        onOpenRepoFile={openRepoFile}
+        onMention={(a) => mentionArtifact(a, at.shelf, c.card.area)}
+        onRemoveCard={takeOff}
+      />
+    );
+  };
   /** The docked tool windows, at the landscape's right edge: each on the selected workspace, or its area. */
   const dockColumn = () => {
     const docked = landscapeLayout?.docked ?? [];
@@ -1872,6 +1938,8 @@ function App() {
               onPlace={() => {
                 const to = scopeOf(win.tool, selectedAny);
                 if (!to) return lsSay(ws ? "Select one of this Mac's workspaces to place it beside" : "Select a workspace in an area to place it there");
+                const no = toolGate(win.tool, selectedAny);
+                if (no) return lsSay(no);
                 openWindow(win.tool, to, id);
               }}
               onClose={() => closeWindow(id)}
@@ -1915,10 +1983,12 @@ function App() {
     return null;
   };
   /** Workspace `t` at size preset `p` (Size S/M/L), where it is when that's clear (planResizeTile); a refusal is said. */
-  const resizeWorkspace = (t: Tile, p: SizePreset) => {
-    const l = landscapeState?.landscape;
-    if (!l || !landscapeLayout) return;
-    const plan = planResizeTile(l, landscapeLayout, t.key, presetFor(t, p), areaTitle);
+  const resizeWorkspace = (key: string, p: SizePreset) => {
+    const l = lsNow.current?.landscape;
+    const layout = layoutNow.current;
+    const t = layout?.tiles.find((x) => x.key === key);
+    if (!l || !layout || !t) return lsSay("That workspace isn't on the landscape any more");
+    const plan = planResizeTile(l, layout, key, presetFor(t, p), areaTitle);
     if ("refused" in plan) return lsSay(plan.refused);
     void lsChange(plan.patch, `${titleOf(t.front)}'s size`);
   };
@@ -1941,7 +2011,7 @@ function App() {
       rename: () => setRenameDlg({ kind: "session", key: s.id, initial: titleOf(s) }),
       mute: () => void toggleMute(s),
       move: () => setGroupDlg(s),
-      resize: (p) => t && resizeWorkspace(t, p),
+      resize: (p) => t && resizeWorkspace(t.key, p),
       tool: (k) => (landscapeOn ? showTool(k, s) : (setFocused(s.id), showView(({ files: "explorer", changes: "scm", search: "search", run: "run" } as const)[k]))),
       repaint: () => void resyncTerm(s.id),
       hidePanel: () => {
@@ -1992,6 +2062,8 @@ function App() {
       onAsk: () => askGroupStatus(key),
     };
   };
+  /** Share area `key` as a room, or invite a teammate to its room: the area's artifacts are offered only as the room is made. */
+  const shareDialog = (key: string, title: string) => setShareDlg({ key, title, fresh: !!teamStatus && !isErr(teamStatus) && !roomOfGroup(teamStatus, key) });
   /** Join requests for `roomId` this install answers: shown again now, any put off with Later included. */
   const reviewJoins = (roomId: string) => {
     setLaterJoins((l) => l.filter((k) => !k.startsWith(`${roomId}:`)));
@@ -2008,11 +2080,15 @@ function App() {
     const a = l ? own(l.areas, key) : undefined;
     const room = roomOfGroup(teamStatus, key);
     const flag = (fields: { collapsed: boolean } | { locked: boolean }, what: string) => void landscapeStore.update({ areas: { [key]: fields } }, what);
-    // removing an area takes its tool windows and artifact cards with it; its artifacts on this Mac stay, under its key
-    const extras = (): LandscapePatch => ({
-      tools: Object.fromEntries(Object.entries(l?.tools ?? {}).filter(([, w]) => !w.docked && w.area === key).map(([id]) => [id, null])),
-      cards: Object.fromEntries(Object.entries(l?.cards ?? {}).filter(([, c]) => c.area === key).map(([id]) => [id, null])),
-    });
+    // removing an area takes its tool windows and artifact cards with it (those there when it's picked); its artifacts
+    // on this Mac stay, under its key
+    const extras = (): LandscapePatch => {
+      const now = lsNow.current?.landscape;
+      return {
+        tools: Object.fromEntries(Object.entries(now?.tools ?? {}).filter(([, w]) => !w.docked && w.area === key).map(([id]) => [id, null])),
+        cards: Object.fromEntries(Object.entries(now?.cards ?? {}).filter(([, c]) => c.area === key).map(([id]) => [id, null])),
+      };
+    };
     const empty = !!a && !sessionsOfGroup(key).length;
     return [
       ...inSection("area", tidyMenu([
@@ -2032,7 +2108,7 @@ function App() {
         { key: "log", label: "Message log", menuLabel: "Agent message log…", title: "What sessions told each other", onPick: () => setMsgLogFor({}) },
       ]),
       ...inSection("room", [
-        { key: "share", label: room ? "Invite" : "Share", menuLabel: room ? "Invite a teammate…" : "Share as a team room…", onPick: () => setShareDlg({ key, title }) },
+        { key: "share", label: room ? "Invite" : "Share", menuLabel: room ? "Invite a teammate…" : "Share as a team room…", onPick: () => shareDialog(key, title) },
         { key: "new", label: "New session", menuLabel: room ? "New connected session here…" : "New session here…", onPick: () => newSessionIn(key) },
         { key: "ask", label: "Ask for status", onPick: () => askGroupStatus(key) },
       ]),
@@ -2060,7 +2136,7 @@ function App() {
                 sessions={sessions}
                 follow={follow}
                 takeover={takeoverView}
-                onInvite={() => setShareDlg({ key: a.key, title: p.title })}
+                onInvite={() => shareDialog(a.key, p.title)}
                 onReviewJoins={() => reviewJoins(p.room!.id)}
                 onSettings={() => {
                   setSettingsJump((j) => ({ section: "team", n: (j?.n ?? 0) + 1 }));
@@ -2678,9 +2754,9 @@ function App() {
   const teamHooks: TeamViewHooks = {
     sessionCount: (groupKey) => roomSessions(groupKey).length,
     renderSessions: (groupKey) => groupBody(groupKey, roomSessions(groupKey)),
-    onShowGroup: (groupKey) => focusGroup(groupKey, roomSessions(groupKey)),
+    onShowGroup: (groupKey) => (landscapeOn ? goToArea(groupKey) : focusGroup(groupKey, roomSessions(groupKey))),
     onOpenBoard: setBoardDlg,
-    onInvite: (groupKey, title) => setShareDlg({ key: groupKey, title }),
+    onInvite: (groupKey, title) => shareDialog(groupKey, title),
     onNewSession: newSessionIn,
     onJoinRoom: () => setJoinDlg(true),
   };
@@ -2866,16 +2942,19 @@ function App() {
             const tool = landscapeOn ? (id === "artifacts" ? "artifacts" : toolOfView(id)) : null;
             const label = tool ? TOOL_NAME[tool] : viewLabel;
             const where = tool === "artifacts" || tool === "chat" ? "a window in the selected workspace's area" : "a window beside the selected workspace";
-            const on = tool ? toolOpen(tool) : (landscapeOn ? id === "sessions" : sideView === id) && !sideCollapsed;
+            const on = tool ? toolOpen(tool) : (landscapeOn ? id === "sessions" && !lsTeam : sideView === id) && !sideCollapsed;
+            // what the selection's menu has off is off here too (a click says why)
+            const no = tool && !on ? toolGate(tool, selectedAny) : null;
             const badge =
               id === "sessions" ? counts.waiting : id === "scm" ? scmCount : id === "run" ? runStates.filter((s) => s.status === "running" || s.status === "starting").length : 0;
             return (
               <button
                 key={id}
-                className={`ab-btn ${on ? "on" : ""}`}
-                title={tool ? `${label}${keys ? ` (${keys})` : ""} — ${on ? "close its window" : where}` :`${label}${keys ? ` (${keys})` : ""}${on ? ` — click to hide the side bar (${landscapeOn ? "⌘\\" : "⌘B"})` : ""}`}
+                className={`ab-btn ${on ? "on" : ""} ${no ? "off" : ""}`}
+                title={tool ? `${label}${keys ? ` (${keys})` : ""} — ${on ? "close its window" : no ?? where}` :`${label}${keys ? ` (${keys})` : ""}${on ? ` — click to hide the side bar (${landscapeOn ? "⌘\\" : "⌘B"})` : ""}`}
                 aria-label={label}
                 aria-pressed={on}
+                aria-disabled={no ? true : undefined}
                 onClick={() => (tool ? toggleTool(tool) : on ? setSideCollapsed(true) : showView(id as SideView))}
               >
                 <Icon />
@@ -2897,7 +2976,12 @@ function App() {
           <div className="side-inner" ref={sideInner} style={{ width: sideW }}>
           <div className="side-head">
             {/* the Sessions view is the area tree while the landscape shows (designs B and L) */}
-            <span className="side-title">{landscapeOn ? "Landscape" : SIDE_VIEWS.find((v) => v.id === sideView)?.label}</span>
+            <span className="side-title">{landscapeOn ? (lsTeam ? "Team rooms" : "Landscape") : SIDE_VIEWS.find((v) => v.id === sideView)?.label}</span>
+            {landscapeOn && lsTeam && (
+              <button type="button" className="link side-back" title="Back to the area tree" onClick={() => setLsTeam(false)}>
+                ‹ Areas
+              </button>
+            )}
           </div>
           {/* the grid's views; on the landscape they're tool windows, and the side bar is the area tree */}
           {!landscapeOn && (sideView === "explorer" || sideView === "scm" || sideView === "search" || sideView === "run") && toolBody(toolOfView(sideView)!, focusedSession, activeGroup, "side")}
@@ -2993,7 +3077,7 @@ function App() {
                         onClick={(e) => {
                           e.stopPropagation();
                           cancelClick();
-                          setShareDlg({ key, title: groupTitle(key, list) });
+                          shareDialog(key, groupTitle(key, list));
                         }}
                       >
                         ⇪
@@ -3028,7 +3112,18 @@ function App() {
             {previousList()}
           </div>
           )}
-          {landscapeOn && (
+          {landscapeOn && lsTeam && (
+            <RoomChatPanel
+              status={teamStatus}
+              activeGroup={null}
+              visible={!sideCollapsed}
+              hooks={teamHooks}
+              sessions={ownSessions}
+              focusedSessionId={focusedSession?.id ?? null}
+              onOpenRepoFile={openRepoFile}
+            />
+          )}
+          {landscapeOn && !lsTeam && (
             <AreaTree
               areas={treeAreas}
               filter={filter}
@@ -3052,14 +3147,7 @@ function App() {
                   {/* team rooms: the way into the Team view, as in the Sessions view */}
                   {teamRooms.length > 0 && (
                     <div className="lt-connected">
-                      <ConnectedLine
-                        summary={connected}
-                        problem={roomLive.viewError}
-                        onOpen={() => {
-                          openTeamView(connected.roomId);
-                          showView("room");
-                        }}
-                      />
+                      <ConnectedLine summary={connected} problem={roomLive.viewError} onOpen={() => openRoom(connected.roomId)} landscape />
                     </div>
                   )}
                 </>
@@ -3475,7 +3563,7 @@ function App() {
               ? [
                   {
                     label: roomOfGroup(teamStatus, activeGroup) ? `Invite a teammate to ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))}` : `Share ${groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))} as a team room`,
-                    run: () => setShareDlg({ key: activeGroup, title: groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup)) }),
+                    run: () => shareDialog(activeGroup, groupTitle(activeGroup, workSessions.filter((s) => topOf(s) === activeGroup))),
                   },
                 ]
               : []),
@@ -3618,7 +3706,14 @@ function App() {
         />
       )}
 
-      {shareDlg && <ShareRoomDialog groupKey={shareDlg.key} title={shareDlg.title} onClose={() => setShareDlg(null)} shared={(roomId) => <ShareAreaArtifacts areaKey={shareDlg.key} roomId={roomId} />} />}
+      {shareDlg && (
+        <ShareRoomDialog
+          groupKey={shareDlg.key}
+          title={shareDlg.title}
+          onClose={() => setShareDlg(null)}
+          shared={shareDlg.fresh ? (roomId) => <ShareAreaArtifacts areaKey={shareDlg.key} roomId={roomId} onShared={(ids) => cardsShared(shareDlg.key, roomId, ids)} /> : undefined}
+        />
+      )}
       <MemberDialogs dialog={memberDlg} rooms={teamRooms} onClose={() => setMemberDlg(null)} />
       {joinDlg && <JoinRoomDialog onClose={() => setJoinDlg(false)} />}
       {/* team rooms: the House board */}

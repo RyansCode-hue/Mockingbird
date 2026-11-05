@@ -46,6 +46,22 @@ export function artifactMeta(a: ArtifactSummary, self: string, now = Date.now())
   }
 }
 
+/** What kind of artifact it is, in a word or two: "PNG file", "Note", "Repo file", "Link". */
+export function artifactKind(a: Pick<ArtifactSummary, "kind" | "name">): string {
+  switch (a.kind) {
+    case "file": {
+      const ext = /\.([A-Za-z0-9]{1,8})$/.exec(a.name)?.[1];
+      return ext ? `${ext.toUpperCase()} file` : "File";
+    }
+    case "note":
+      return "Note";
+    case "repo":
+      return "Repo file";
+    case "link":
+      return "Link";
+  }
+}
+
 /** Who added it and when, for a tooltip or the viewer's header. */
 export function addedLine(a: ArtifactSummary, self: string, now = Date.now()): string {
   const by = a.addedBy === self ? "you" : a.addedByName;

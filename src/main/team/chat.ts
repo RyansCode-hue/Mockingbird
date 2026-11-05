@@ -149,7 +149,7 @@ export class TeamChat {
   private team: Team | null = null;
   private offs: Unsubscribe[] = [];
   private marks: Record<RoomId, ReadMarks>;
-  private viewing: RoomId | null = null;
+  private viewing = new Set<RoomId>();
   private emitQueued = new Set<RoomId>();
   private emitTimer: ReturnType<typeof setTimeout> | null = null;
   private mentionQueue = new Map<RoomId, RoomEvent<"chat.message">[]>();
@@ -252,15 +252,18 @@ export class TeamChat {
     return unreadCounts(room.ext.chat?.entries ?? [], team.self.id, marks, this.joinedAt(room, team.self.id));
   }
 
-  /** The room the window shows right now (its mentions don't notify while the window has focus). */
-  setViewing(roomId: RoomId | null): void {
-    this.viewing = roomId;
+  /**
+   * The rooms whose chat the window shows on screen right now (their mentions don't notify while the window has
+   * focus): every chat view on screen counts, so one closing leaves the others viewed.
+   */
+  setViewing(roomIds: RoomId | readonly RoomId[] | null): void {
+    this.viewing = new Set(roomIds === null ? [] : typeof roomIds === "string" ? [roomIds] : roomIds);
   }
 
   /** This install left the room: its read marks and gathering mentions go. Returns what couldn't be cleaned up. */
   roomLeft(roomId: RoomId): string[] {
     this.mentionQueue.delete(roomId);
-    if (this.viewing === roomId) this.viewing = null;
+    this.viewing.delete(roomId);
     if (!(roomId in this.marks)) return [];
     const { [roomId]: _gone, ...rest } = this.marks;
     try {
@@ -320,7 +323,7 @@ export class TeamChat {
   }
 
   private notifyMentions(roomId: RoomId, events: RoomEvent<"chat.message">[]): void {
-    if (this.viewing === roomId && this.d.windowFocused()) return;
+    if (this.viewing.has(roomId) && this.d.windowFocused()) return;
     const room = this.team?.room(roomId);
     if (!room) return;
     const names = [...new Set(events.map((e) => room.members.find((m) => m.id === e.author)?.name ?? "A teammate"))];

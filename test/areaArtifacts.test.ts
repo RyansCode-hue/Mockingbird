@@ -82,6 +82,27 @@ describe("an area's folder", () => {
     await expect(r2.arts.list("docs")).rejects.toThrow(/link/);
     expect(fs.readdirSync(elsewhere)).toEqual([]);
   });
+
+  it("is never read or written through a link inside it either: area.json or a store folder", async () => {
+    const r = rig();
+    r.arts.addNote("docs", "Plan", "x");
+    const elsewhere = tempDir("elsewhere");
+    fs.writeFileSync(path.join(elsewhere, "area.json"), JSON.stringify({ v: 1, key: "docs", items: [] }));
+    fs.rmSync(path.join(areaDir(r, "docs"), "area.json"));
+    fs.symlinkSync(path.join(elsewhere, "area.json"), path.join(areaDir(r, "docs"), "area.json"));
+    await expect(rig(r.root).arts.list("docs")).rejects.toThrow(/area\.json is a symbolic link/);
+
+    const r2 = rig();
+    const file = path.join(tempDir("src"), "shot.png");
+    fs.writeFileSync(file, PNG);
+    await r2.arts.addFiles("docs", [file]);
+    const blobs = path.join(areaDir(r2, "docs"), "artifacts", "blobs");
+    fs.renameSync(blobs, path.join(elsewhere, "blobs"));
+    fs.symlinkSync(path.join(elsewhere, "blobs"), blobs);
+    const again = rig(r2.root);
+    await expect(again.arts.list("docs")).rejects.toThrow(/blobs is a symbolic link/);
+    expect(() => again.arts.addNote("docs", "More", "y")).toThrow(/symbolic link/);
+  });
 });
 
 describe("an area's artifacts on this Mac", () => {
@@ -158,6 +179,51 @@ describe("an area's artifacts on this Mac", () => {
     expect(again.logs).toHaveLength(1);
   });
 
+  it("keep a newer Mockingbird's file as it is: shown as far as it reads, never written, and why said", async () => {
+    const r = rig();
+    const plan = r.arts.addNote("Docs", "Plan", "x");
+    const at = path.join(areaDir(r, "Docs"), "area.json");
+    const f = JSON.parse(fs.readFileSync(at, "utf8"));
+    const future = { id: "F".repeat(22), kind: "sketch", name: "Board", addedAt: 1, rev: "r" };
+    fs.writeFileSync(at, JSON.stringify({ ...f, v: 2, items: [...f.items, future] }));
+    const before = fs.readFileSync(at, "utf8");
+    const again = rig(r.root);
+    const view = await again.arts.list("Docs");
+    expect(view.items.map((a) => a.name)).toEqual(["Plan"]);
+    expect(view.problems).toEqual(expect.arrayContaining([expect.stringMatching(/written by a newer Mockingbird \(its version 2, this one reads 1\): update Mockingbird/)]));
+    expect(() => again.arts.addNote("Docs", "New", "y")).toThrow(/newer Mockingbird/);
+    expect(() => again.arts.rename("Docs", plan.id, "Renamed")).toThrow(/newer Mockingbird/);
+    expect(fs.readFileSync(at, "utf8")).toBe(before);
+  });
+
+  it("write back the records this version can't read, as they were, with each save", async () => {
+    const r = rig();
+    r.arts.addNote("Docs", "Keep", "x");
+    const at = path.join(areaDir(r, "Docs"), "area.json");
+    const f = JSON.parse(fs.readFileSync(at, "utf8"));
+    const future = { id: "F".repeat(22), kind: "sketch", name: "Future", addedAt: 1, rev: "r", strokes: [1, 2] };
+    fs.writeFileSync(at, JSON.stringify({ ...f, items: [...f.items, future] }));
+    const again = rig(r.root);
+    expect((await again.arts.list("Docs")).problems).toEqual([expect.stringMatching(/1 of the artifacts .* kept in the file as they are/)]);
+    again.arts.addNote("Docs", "New", "y");
+    const after = JSON.parse(fs.readFileSync(at, "utf8"));
+    expect(after.v).toBe(1);
+    expect(after.items.map((x: { name: string }) => x.name)).toEqual(["Keep", "New", "Future"]);
+    expect(after.items[2]).toEqual(future);
+  });
+
+  it("move a file that isn't a list of them aside before anything is written over it", async () => {
+    const r = rig();
+    r.arts.addNote("Docs", "Plan", "x");
+    const at = path.join(areaDir(r, "Docs"), "area.json");
+    fs.writeFileSync(at, JSON.stringify({ v: 1, key: "Docs", things: [1] }));
+    const again = rig(r.root);
+    expect((await again.arts.list("Docs")).problems).toEqual([expect.stringMatching(/isn't an area's artifacts list \(no list of artifacts\), moved to .*area\.json\.bad-/)]);
+    again.arts.addNote("Docs", "New", "y");
+    const aside = fs.readdirSync(areaDir(r, "Docs")).find((n) => n.startsWith("area.json.bad-"))!;
+    expect(JSON.parse(fs.readFileSync(path.join(areaDir(r, "Docs"), aside), "utf8"))).toEqual({ v: 1, key: "Docs", things: [1] });
+  });
+
   it("leaves out a record that isn't one, and says which", async () => {
     const r = rig();
     r.arts.addNote("Docs", "Plan", "x");
@@ -191,6 +257,57 @@ describe("an area's artifacts on this Mac", () => {
     expect(fs.existsSync(areaDir(r, "Other"))).toBe(false);
   });
 
+  it("merge what they can from an old name they can't read whole, keeping it and saying so on the new one", async () => {
+    // not JSON: nothing comes along, and the old folder stays with the file set aside in it
+    const r = rig();
+    const file = path.join(tempDir("src"), "shot.png");
+    fs.writeFileSync(file, PNG);
+    await r.arts.addFiles("Old", [file]);
+    r.arts.addNote("New", "Mine", "x");
+    fs.writeFileSync(path.join(areaDir(r, "Old"), "area.json"), "{ not json");
+    const fresh = rig(r.root);
+    fresh.arts.areaRenamed("Old", "New");
+    const old = areaDir(r, "Old");
+    expect(fs.readdirSync(old).some((n) => n.startsWith("area.json.bad-"))).toBe(true);
+    expect(fs.readdirSync(path.join(old, "artifacts", "blobs")).length).toBeGreaterThan(0);
+    const view = await fresh.arts.list("New");
+    expect(view.items.map((a) => a.name)).toEqual(["Mine"]);
+    expect(view.problems).toEqual(expect.arrayContaining([expect.stringMatching(/Old.*wasn't readable/), expect.stringMatching(/Not everything of Old's could come along.* is kept as it was/)]));
+
+    // partly unreadable: what reads comes along, and the old folder, with what didn't, stays
+    const r2 = rig();
+    r2.arts.addNote("Old", "Plan", "x");
+    r2.arts.addNote("New", "Mine", "y");
+    const at = path.join(areaDir(r2, "Old"), "area.json");
+    const f = JSON.parse(fs.readFileSync(at, "utf8"));
+    fs.writeFileSync(at, JSON.stringify({ ...f, items: [...f.items, { id: "F".repeat(22), kind: "sketch", name: "Future", addedAt: 1, rev: "r" }] }));
+    const fresh2 = rig(r2.root);
+    fresh2.arts.areaRenamed("Old", "New");
+    expect(fresh2.arts.records("New").map((a) => a.name)).toEqual(["Mine", "Plan"]);
+    expect(JSON.parse(fs.readFileSync(at, "utf8")).items.map((x: { name: string }) => x.name)).toEqual(["Plan", "Future"]);
+    expect((await fresh2.arts.list("New")).problems).toEqual(expect.arrayContaining([expect.stringMatching(/is kept as it was/)]));
+  });
+
+  it("merge a record whose file is missing without its bytes, said by name, and the rest whole", async () => {
+    const r = rig();
+    const a = path.join(tempDir("src"), "a.png");
+    const b = path.join(tempDir("src"), "b.txt");
+    fs.writeFileSync(a, PNG);
+    fs.writeFileSync(b, "plain text");
+    await r.arts.addFiles("Old", [a, b]);
+    r.arts.addNote("New", "Mine", "x");
+    const gone = r.arts.records("Old").find((x) => x.name === "a.png")! as Extract<ReturnType<typeof r.arts.records>[number], { kind: "file" }>;
+    const blobs = path.join(areaDir(r, "Old"), "artifacts", "blobs");
+    const blobFile = fs.readdirSync(blobs, { recursive: true, withFileTypes: true }).find((e) => e.isFile() && e.name.includes(gone.sha256.slice(4, 20)));
+    fs.rmSync(path.join(blobFile!.parentPath, blobFile!.name));
+    r.arts.areaRenamed("Old", "New");
+    expect(r.arts.records("New").map((x) => x.name)).toEqual(["Mine", "a.png", "b.txt"]);
+    expect(await r.arts.read("New", r.arts.records("New")[2].id)).toMatchObject({ text: "plain text" });
+    const view = await r.arts.list("New");
+    expect(view.problems).toEqual([expect.stringMatching(/1 of Old's files weren't in its folder, so they came along without their bytes: a\.png/)]);
+    expect(fs.existsSync(areaDir(r, "Old"))).toBe(false);
+  });
+
   it("share into a room through the room's own adds, keeping anything secret back", async () => {
     const r = rig();
     r.arts.addNote("Docs", "Plan", "x");
@@ -216,9 +333,38 @@ describe("an area's artifacts on this Mac", () => {
     const out = await r.arts.shareTo("Docs", room, "R".repeat(22));
     expect(out.shared).toBe(3);
     expect(out.refused).toEqual([{ name: ".env", reason: expect.stringMatching(/add it to the room yourself/) }]);
+    // each one shared, by its id here: its id in the room, for the area's cards to follow
+    const byName = (n: string) => r.arts.records("Docs").find((a) => a.name === n)!.id;
+    expect(out.ids).toEqual({ [byName("Plan")]: "b".repeat(22), [byName("Spec")]: "c".repeat(22), [byName("shot.png")]: "a".repeat(22) });
     expect(got).toEqual([`${"R".repeat(22)} note Plan x`, `${"R".repeat(22)} link Spec https://example.com`, `${"R".repeat(22)} file shot.png ${PNG.length} false`]);
     // they stay here too
     expect(r.arts.records("Docs")).toHaveLength(4);
+  });
+
+  it("share what a room takes, and say what it refuses, one by one", async () => {
+    const r = rig();
+    r.arts.addNote("Docs", "Plan", "x");
+    r.arts.addNote("Docs", "Big", "y");
+    const file = path.join(tempDir("src"), "shot.png");
+    fs.writeFileSync(file, PNG);
+    await r.arts.addFiles("Docs", [file]);
+    const room: RoomAdds = {
+      addBytes: async (_roomId, name) => ({ added: [], refused: [{ name, reason: "The room is full" }] }),
+      newNote: (_roomId, name) => {
+        if (name === "Big") throw new Error("Notes are at most 100,000 characters");
+        return { id: "b".repeat(22), name, warnings: [] };
+      },
+      addLink: () => ({ id: "c".repeat(22), name: "x", warnings: [] }),
+      addRepoRecord: () => ({ id: "d".repeat(22), name: "x", warnings: [] }),
+    };
+    const out = await r.arts.shareTo("Docs", room, "R".repeat(22));
+    expect(out.shared).toBe(1);
+    expect(out.refused).toEqual([
+      { name: "Big", reason: "Notes are at most 100,000 characters" },
+      { name: "shot.png", reason: "The room is full" },
+    ]);
+    expect(Object.values(out.ids)).toEqual(["b".repeat(22)]);
+    expect(r.logs.filter((l) => l.includes("sharing"))).toHaveLength(2);
   });
 });
 
@@ -235,6 +381,14 @@ describe("shelves", () => {
     s.newNote(areaShelf("Docs"), "Plan", "x", false);
     expect(calls).toHaveLength(1);
     expect(s.records(areaShelf("Docs")).map((a) => a.name)).toEqual(["Plan"]);
+    // a room's area changes only the room's: this Mac's are still read (its cards), never changed
+    r.rooms.set("Docs", "R".repeat(22));
+    const plan = s.records(areaShelf("Docs"))[0];
+    expect(() => s.newNote(areaShelf("Docs"), "Late", "x", false)).toThrow(/Docs is a team room's area/);
+    expect(() => s.rename(areaShelf("Docs"), plan.id, "Renamed")).toThrow(/team room's area/);
+    expect(() => s.remove(areaShelf("Docs"), plan.id)).toThrow(/team room's area/);
+    expect((await s.list(areaShelf("Docs"))).items.map((a) => a.name)).toEqual(["Plan"]);
+    expect(r.arts.records("Docs").map((a) => a.name)).toEqual(["Plan"]);
   });
 });
 

@@ -56,7 +56,7 @@ describe("the landscape store", () => {
         w1: { tool: "run", docked: false, session: "s1", area: "5101", placement: { x: 820, y: 0, w: 440, h: 600 } },
         w2: { tool: "search", docked: true },
       },
-      cards: { c1: { area: "5101", artifact: "Atagnotesaaaaaaaaaaaaa", placement: { x: 820, y: 620, w: 240, h: 128 } } },
+      cards: { c1: { area: "5101", shelf: "area:5101", artifact: "Atagnotesaaaaaaaaaaaaa", placement: { x: 820, y: 620, w: 240, h: 128 } } },
     });
     // placed again from the dock: a window is replaced whole, taking the scope and place it's given
     store.update({ tools: { w2: { tool: "search", docked: false, session: "s2", area: "5101", placement: { x: 1280, y: 0, w: 420, h: 600 } } } });

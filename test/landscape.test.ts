@@ -525,7 +525,7 @@ const FORMATS: Record<number, typeof LANDSCAPE_FORMAT> = {
     },
     conversation: { fields: ["agent", "id"], required: ["agent", "id"] },
     tool: { fields: ["area", "docked", "placement", "session", "tool"], required: ["docked", "tool"] },
-    card: { fields: ["area", "artifact", "placement"], required: ["area", "artifact"] },
+    card: { fields: ["area", "artifact", "placement", "shelf"], required: ["area", "artifact", "shelf"] },
   },
 };
 

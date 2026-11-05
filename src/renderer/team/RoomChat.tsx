@@ -6,6 +6,7 @@ import { roleIn } from "./rolesModel";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type MenuEntry } from "../ContextMenu";
 import { BackIcon, ChatIcon, ChevronIcon, CloseIcon, GridIcon, InviteIcon, KanbanIcon, PlusIcon } from "../Icons";
 import { roomPresence } from "./connectedModel";
+import { chatViewing } from "./chatViewing";
 import { presenceTurn, useChatArrivals, useTurns } from "../motion";
 import { chatSegments } from "./chatText";
 import { renderSegment, type InlineContext } from "./markdownView";
@@ -105,18 +106,11 @@ export function RoomChatChip({ room, onOpen, area }: { room: TeamRoomSummary; on
   );
 }
 
-/** A clicked mention notification opens that room's chat. */
-export function useRoomChatOpen(open: () => void): void {
+/** A clicked mention notification: `open` shows that room's chat. */
+export function useRoomChatOpen(open: (roomId: string) => void): void {
   const ref = useRef(open);
   ref.current = open;
-  useEffect(
-    () =>
-      window.mb.onTeamChatOpen((roomId: string) => {
-        openTeamView(roomId);
-        ref.current();
-      }),
-    []
-  );
+  useEffect(() => window.mb.onTeamChatOpen((roomId: string) => ref.current(roomId)), []);
 }
 
 /** What the room's artifacts need from the window: this Mac's sessions, for repo files. */
@@ -151,7 +145,7 @@ export interface TeamViewHooks {
 function roomActions(room: TeamRoomSummary, hooks: TeamViewHooks, o: { onChat?: () => void; chatLabel?: string; onLeave: () => void }): MenuEntry[] {
   return tidyMenu([
     o.onChat && { key: "chat", label: o.chatLabel ?? "Chat", menuLabel: "Open the room's chat", icon: <ChatIcon />, title: "The room's chat: teammates, their agents' updates, @assistant", onPick: o.onChat },
-    !!room.groupKey && { key: "show", label: "Show", menuLabel: "Show its sessions in the grid", icon: <GridIcon />, onPick: () => hooks.onShowGroup(room.groupKey) },
+    !!room.groupKey && { key: "show", label: "Show", menuLabel: "Show its sessions", icon: <GridIcon />, onPick: () => hooks.onShowGroup(room.groupKey) },
     { key: "board", label: "Board", menuLabel: "House board", icon: <KanbanIcon />, title: "House board — the room's Radley House tickets and who has each", onPick: () => hooks.onOpenBoard(room.id) },
     !!room.groupKey && { key: "invite", label: "Invite", menuLabel: "Invite a teammate…", icon: <InviteIcon />, title: "A one-time invite code for a teammate", onPick: () => hooks.onInvite(room.groupKey, room.name) },
     !!room.groupKey && { key: "new", label: "New", menuLabel: "New session in this room…", icon: <PlusIcon />, title: `New connected session in ${room.name} — teammates see it`, onPick: () => hooks.onNewSession(room.groupKey) },
@@ -404,10 +398,12 @@ export function RoomChat({
     load();
     return window.mb.onTeamChatChanged((id: string) => (id === room.id || id === "*") && load());
   }, [load]);
-  // a collapsed side bar keeps the view mounted but off screen: not viewing, and nothing gets read
+  // a collapsed side bar, or a window off screen or zoomed out, keeps the view mounted but not seen: not viewing, and
+  // nothing gets read. Each view counts on its own (chatViewing), so one closing leaves another's room viewed
+  const viewToken = useRef(Symbol("room chat"));
   useEffect(() => {
-    window.mb.teamChatViewing(visible ? room.id : null);
-    return () => void window.mb.teamChatViewing(null);
+    chatViewing(viewToken.current, visible ? room.id : null);
+    return () => chatViewing(viewToken.current, null);
   }, [room.id, visible]);
   useEffect(() => {
     const on = () => setFocused(true);
