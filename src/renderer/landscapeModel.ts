@@ -21,7 +21,6 @@ import {
   boundsOf,
   clearOf,
   fitAreaTo,
-  fixedInWay,
   fitView,
   MAX_COORD,
   kindOf,
@@ -298,8 +297,6 @@ export interface ResolvedLayout {
   patch: LandscapePatch | null;
   /** The session placed where a right-click's New workspace was clicked (`hint`), until its place is saved. */
   hinted?: string | null;
-  /** The click's area had no room for it: every way it could grow reaches these locked areas (placeAt's PlaceRefusal). */
-  hintRefused?: { area: string; lockedBy: string[] } | null;
 }
 
 /**
@@ -470,8 +467,9 @@ const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(mem
  * named a group) gets its area around them. Areas never overlap: one formed so
  * is moved clear of the others (clearOf), its workspaces with it, and one that
  * grows to hold a new workspace pushes the areas in its way aside (pushAside),
- * theirs with them, every place stored inside them included. A locked area
- * never moves: one that grows into it moves clear of everything instead.
+ * theirs with them, every place stored inside them included. A locked area is
+ * pushed too, as a whole: lock keeps what's inside it where it is. An area
+ * that grows never moves.
  *
  * `renames` are this window's renames still on their way (PendingRename).
  */
@@ -570,10 +568,13 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   const firstArea = (): Area | null => [...areas.values()].sort((a, b) => a.y - b.y || a.x - b.x)[0] ?? null;
 
   const grew = new Set<string>();
+  const growTo = (key: string, grown: Area) => {
+    setArea(key, grown, { w: grown.w, h: grown.h });
+    grew.add(key);
+  };
   const tiles: Tile[] = [];
   const placed = new Set<string>();
   let hinted: string | null = null;
-  let hintRefused: ResolvedLayout["hintRefused"] = null;
   for (const [key, g] of groups) {
     let rect = stored.get(key);
     if (!rect) {
@@ -583,20 +584,12 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
       if (here) hinted = fronts.get(key)!.id;
       if (g.area === LOOSE_GROUP) {
         const loose = [...occupied, ...areas.values()];
-        const p = here ? placeAt(size, hint!.at, loose, null, firstArea()) : null;
-        rect = p && !("blockedBy" in p) ? p : placeNew(size, loose, null, firstArea());
+        rect = here ? placeAt(size, hint!.at, loose, null, firstArea()) : placeNew(size, loose, null, firstArea());
       } else {
         const area = areas.get(g.area) ?? addArea(g.area);
-        const p = here ? placeAt(size, hint!.at, occupied, area, null, [...areas].filter(([k]) => k !== g.area).map(([k, r]) => ({ ...r, key: k }))) : null;
-        // every way out locked (main.tsx's right-click asks first, so only a change since then lands here): placed as a
-        // new workspace of the area is, and reported for main.tsx to say
-        if (p && "blockedBy" in p) hintRefused = { area: g.area, lockedBy: p.blockedBy.map((o) => o.key) };
-        rect = p && !("blockedBy" in p) ? p : placeNew(size, occupied, area);
+        rect = here ? placeAt(size, hint!.at, occupied, area, null, [...areas].filter(([k]) => k !== g.area).map(([, r]) => r)) : placeNew(size, occupied, area);
         const grown = fitAreaTo(area, [rect]);
-        if (grown !== area) {
-          setArea(g.area, grown, { w: grown.w, h: grown.h });
-          grew.add(g.area);
-        }
+        if (grown !== area) growTo(g.area, grown);
       }
       occupied.push(rect);
       stored.set(key, rect);
@@ -631,10 +624,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     if (!a) return placeNew(size, [...occupied, ...areas.values()], null, firstArea());
     const r = placeNew(size, occupied, a);
     const grown = fitAreaTo(a, [r]);
-    if (grown !== a) {
-      setArea(area!, grown, { w: grown.w, h: grown.h });
-      grew.add(area!);
-    }
+    if (grown !== a) growTo(area!, grown);
     return r;
   };
   for (const [id, t] of Object.entries(l.tools)) {
@@ -650,18 +640,12 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     put(patch.cards, id, { ...c, placement: r });
   }
 
-  // an area that grew moves the ones in its way aside, with everything in them; a locked one stays where it is, and an
-  // area that grew into one moves clear of everything instead
-  const locked = new Set([...areas].filter(([, a]) => a.locked).map(([k]) => k));
+  // an area that grew stays where it is and moves the ones in its way aside, each with everything in it, a locked one
+  // as a whole
   for (const key of grew) {
     const rects: Record<string, Rect> = {};
     for (const [k, a] of areas) put(rects, k, a);
-    if (fixedInWay(rects, key, locked)) {
-      const { dx, dy } = clearOf(areas.get(key)!, [...areas].filter(([k]) => k !== key).map(([, a]) => a));
-      moveAreaBy(key, dx, dy);
-      continue;
-    }
-    for (const [k, m] of Object.entries(pushAside(rects, key, AREA_GAP, locked))) moveAreaBy(k, m.dx, m.dy);
+    for (const [k, m] of Object.entries(pushAside(rects, key, AREA_GAP))) moveAreaBy(k, m.dx, m.dy);
   }
 
   for (const t of tiles) {
@@ -688,36 +672,9 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     const card = own(patch.cards, id) ?? stored;
     if (card.placement) cards.push({ id, card, rect: card.placement, hidden: areas.get(card.area)?.collapsed === true });
   }
-  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), windows, docked, cards, patch: finish(patch), hinted, hintRefused };
+  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), windows, docked, cards, patch: finish(patch), hinted };
 }
 
-/**
- * The locked areas a right-click's New workspace in area `area` at `at` would find in every way out (resolveLayout's
- * hintRefused, for a workspace that isn't made yet: a terminal's size when `shell`), or null when it has a place.
- */
-export function rightClickRefusal(l: Landscape, sessions: readonly SessionInfo[], renames: readonly PendingRename[], area: string, at: { x: number; y: number }, shell: boolean): string[] | null {
-  if (area === LOOSE_GROUP) return null;
-  const since = Math.max(0, ...sessions.map((s) => s.createdAt)) + 1;
-  const probe: SessionInfo = {
-    id: "\u0000right-click",
-    title: "",
-    repoPath: null,
-    cwd: "",
-    branch: null,
-    ticketId: null,
-    ticketTitle: null,
-    taskGroup: area,
-    status: "idle",
-    createdAt: since,
-    kind: "work",
-    extraDirs: [],
-    waitingReason: null,
-    waitingSince: null,
-    ...(shell ? { shell: true } : { agent: "claude" as const }),
-  };
-  const r = resolveLayout(l, [...sessions, probe], undefined, renames, { area, at, since });
-  return r.hintRefused?.area === area ? r.hintRefused.lockedBy : null;
-}
 
 /** How big a collapsed area's pill counts for fitting the view and the minimap, in landscape px at 100%. */
 export const PILL_SIZE: Size = { w: 320, h: 48 };
@@ -1061,22 +1018,15 @@ function moveArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: strin
 }
 
 /**
- * Area `key` now `grown`: the areas in its way pushed aside (pushAside), with everything in them, but not the
- * workspaces in `leaving`, which are moving into it and have their places in `p` already. A locked area doesn't move:
- * growing into one is refused, with the locked area's key returned; null once it's done.
+ * Area `key` now `grown`: the areas in its way pushed aside (pushAside), a locked one too as a whole, with everything
+ * in them, but not the workspaces in `leaving`, which are moving into it and have their places in `p` already.
  */
-function growArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, grown: Area, leaving: ReadonlySet<string>): string | null {
+function growArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, grown: Area, leaving: ReadonlySet<string>): void {
   const rects: Record<string, Rect> = {};
   for (const a of layout.areas) put(rects, a.key, a.key === key ? grown : a.rect);
-  const locked = new Set(layout.areas.filter((a) => a.rect.locked).map((a) => a.key));
-  const blocked = fixedInWay(rects, key, locked);
-  if (blocked) return blocked;
   put(p.areas, key, { ...(own(p.areas, key) ?? {}), w: grown.w, h: grown.h });
-  for (const [k, m] of Object.entries(pushAside(rects, key, AREA_GAP, locked))) moveArea(p, l, layout, k, m.dx, m.dy, leaving);
-  return null;
+  for (const [k, m] of Object.entries(pushAside(rects, key, AREA_GAP))) moveArea(p, l, layout, k, m.dx, m.dy, leaving);
 }
-/** Why a growth into a locked area is refused. */
-const lockedInWay = (titleOf: (key: string) => string, locked: string, key: string) => `${titleOf(locked)} is locked, so ${titleOf(key)} can't grow into its space: drop it further in, or unlock ${titleOf(locked)}`;
 
 /** A stack moving to area `area`: its new key, and its old one let go after the move (AreaPlan). */
 function restack(p: FullPatch, after: FullPatch, l: Landscape, t: Tile, area: string, r: Rect): void {
@@ -1124,8 +1074,7 @@ export function planMakeArea(l: Landscape, layout: ResolvedLayout, picked: reado
       area = fitAreaTo(area, [r]);
       place(t, r);
     }
-    const blocked = area !== target.rect ? growArea(p, l, layout, key, area, moving) : null;
-    if (blocked) return { refused: lockedInWay(titleOf, blocked, key) };
+    if (area !== target.rect) growArea(p, l, layout, key, area, moving);
   } else {
     const around = areaAround(tiles.map((t) => t.rect))!;
     const { dx, dy } = clearOf(around, layout.areas.map((a) => a.rect));
@@ -1176,8 +1125,7 @@ export function planMoveTile(l: Landscape, layout: ResolvedLayout, tileKey: stri
   if (into) {
     r = { ...r, x: Math.max(r.x, snapUp(into.x + AREA_PAD)), y: Math.max(r.y, snapUp(into.y + AREA_HEADER)) };
     const grown = fitAreaTo(into, [r]);
-    const blocked = grown !== into ? growArea(p, l, layout, target, grown, new Set([t.key])) : null;
-    if (blocked) return { refused: lockedInWay(titleOf, blocked, target) };
+    if (grown !== into) growArea(p, l, layout, target, grown, new Set([t.key]));
   } else {
     // a loose workspace stays out of every area, a collapsed one's whole rectangle too (it's all there once it opens):
     // one dropped partly over an area's edge is moved clear of it
@@ -1344,8 +1292,7 @@ export function planOpenWindow(l: Landscape, layout: ResolvedLayout, id: string,
   if (area) {
     const movedAlong = [...Object.values(p.workspaces), ...Object.values(p.stacks).map((s) => s?.placement), ...Object.values(p.tools).map((w) => w?.placement), ...Object.values(p.cards).map((c) => c?.placement), ...Object.values(p.ghosts).map((g) => g?.placement)];
     const grown = fitAreaTo(area.rect, [r, ...movedAlong.filter((x): x is Rect => !!x)]);
-    const blocked = grown !== area.rect ? growArea(p, l, layout, area.key, grown, new Set()) : null;
-    if (blocked) return { refused: lockedInWay(titleOf, blocked, area.key) };
+    if (grown !== area.rect) growArea(p, l, layout, area.key, grown, new Set());
   }
   return { patch: finish(p), moves: [], after: null };
 }
@@ -1399,8 +1346,7 @@ export function planMoveExtra(l: Landscape, layout: ResolvedLayout, kind: "windo
   if (into) {
     r = { ...r, x: Math.max(r.x, snapUp(into.x + AREA_PAD)), y: Math.max(r.y, snapUp(into.y + AREA_HEADER)) };
     const grown = fitAreaTo(into, [r]);
-    const blocked = grown !== into ? growArea(p, l, layout, toKey!, grown, new Set()) : null;
-    if (blocked) return { refused: lockedInWay(titleOf, blocked, toKey!) };
+    if (grown !== into) growArea(p, l, layout, toKey!, grown, new Set());
   } else {
     const { dx, dy } = clearOf(r, layout.areas.map((a) => a.rect), GAP);
     r = shifted(r, dx, dy);
@@ -1424,8 +1370,7 @@ export function planPlaceCard(l: Landscape, layout: ResolvedLayout, id: string, 
   const p = emptyPatch();
   put(p.cards, id, { area: key, shelf, artifact, placement: r });
   const grown = fitAreaTo(area.rect, [r]);
-  const blocked = grown !== area.rect ? growArea(p, l, layout, key, grown, new Set()) : null;
-  if (blocked) return { refused: lockedInWay(titleOf, blocked, key) };
+  if (grown !== area.rect) growArea(p, l, layout, key, grown, new Set());
   return { patch: finish(p), moves: [], after: null };
 }
 
@@ -1522,8 +1467,7 @@ export function planResizeTile(l: Landscape, layout: ResolvedLayout, key: string
   else put(p.workspaces, t.front.id, r);
   if (area) {
     const grown = fitAreaTo(area.rect, [r]);
-    const blocked = grown !== area.rect ? growArea(p, l, layout, area.key, grown, new Set([key])) : null;
-    if (blocked) return { refused: lockedInWay(titleOf, blocked, area.key) };
+    if (grown !== area.rect) growArea(p, l, layout, area.key, grown, new Set([key]));
   }
   return { patch: finish(p), moves: [], after: null };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectedSummary, firstName, listNames, roomPresence, roomRowLine } from "../src/renderer/team/connectedModel";
+import { connectedSummary, firstName, listNames, roomPresence, roomRowLine, takenOverNoteTitle } from "../src/renderer/team/connectedModel";
 import type { RoomSessionTag } from "../src/shared/team/livePanes";
 import type { TeamRoomSummary } from "../src/shared/team/types";
 
@@ -68,6 +68,12 @@ describe("a room session's second line", () => {
     expect(roomRowLine(tag({ remote: false, ownerName: "Ryan", takenOver: { by: "nick", byName: "Nick Smith", at: 0 } }))).toBe("Your session · continued by Nick");
     // taken back since, into another session here: Nick no longer continues it
     expect(roomRowLine(tag({ remote: false, ownerName: "Ryan", takenOver: { by: "nick", byName: "Nick Smith", at: 0, back: true } }))).toBe("Your session · taken back into another session");
+  });
+  it("says in a taken-over copy's pane note who goes on with it, or that it was taken back here", () => {
+    expect(takenOverNoteTitle({ by: "sam", byName: "Sam", at: 0 })).toMatch(/^Sam continues this session on their laptop\. This copy has left the room/);
+    const back = takenOverNoteTitle({ by: "nick", byName: "Nick Smith", at: 0, back: true });
+    expect(back).toMatch(/^This session was taken back into another session here, which goes on with it\. This copy has left the room/);
+    expect(back).not.toMatch(/Nick|teammate continued/);
   });
 });
 

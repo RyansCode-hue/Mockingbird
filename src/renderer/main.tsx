@@ -51,8 +51,9 @@ import {
   type Side as EdgeSide,
 } from "./layoutTree";
 import { GridPreview } from "./GridPreview";
+import { resumeExited } from "./resumeFlow";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
-import { cellKeyFor, cellKeyOf, closeWaits, frontOf, groupChoices, inReadingOrder, nextToClose, queueClose, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
+import { cellKeyFor, cellKeyOf, closeStep, closeWaits, frontOf, groupChoices, inReadingOrder, queueClose, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon, MinusIcon, GridIcon, PencilIcon, MoveIcon, CloseIcon, PlusIcon, NoteIcon } from "./Icons";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
@@ -116,7 +117,7 @@ import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } fr
 // the landscape (Settings → Labs)
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type MovesFailed } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
-import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, rightClickRefusal, cardShelf, cardsAfterShare, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, presetFor, readProblem, renameSettled, resolveLayout, sameScope, selectionFor, tileSize, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, presetFor, readProblem, renameSettled, resolveLayout, sameScope, selectionFor, tileSize, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
 import { actionOf, areaActions as areaModel, artifactsOf, createActions, menuOf, paneRow, takenOverWhy, workspaceActions, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
@@ -1016,14 +1017,6 @@ function App() {
     const t = setTimeout(() => setPlaceHint((h) => (h === placeHint ? null : h)), Math.max(0, placeHint.until - Date.now()));
     return () => clearTimeout(t);
   }, [placeHint, landscapeLayout, landscapeState]);
-  // a right-click's place refused after its dialog asked (an area locked meanwhile): it went where a new one of its
-  // area goes, said once for that layout
-  const refusedHint = landscapeLayout?.hintRefused ? JSON.stringify(landscapeLayout.hintRefused) : null;
-  useEffect(() => {
-    if (!refusedHint) return;
-    const r = JSON.parse(refusedHint) as { area: string; lockedBy: string[] };
-    lsSay(`${noRoomIn(r.area, r.lockedBy)}, so it went with the area's other workspaces`);
-  }, [refusedHint]);
   // new workspaces keep the places they were given: saved, unless the file has a problem (what's shown stands in for it)
   // or the grid's layout isn't read in yet (it would place them)
   const placesToSave = landscapeLayout?.patch && migration.step.kind === "done" && !readProblem(landscapeState) ? JSON.stringify(landscapeLayout.patch) : null;
@@ -1568,10 +1561,10 @@ function App() {
   const queuedNow = useRef<string | null>(null);
   const [closeTurn, setCloseTurn] = useState(0);
   useEffect(() => {
-    if (closingNow.current || closeDlg || !closeQueue.length) return;
-    const { next, rest } = nextToClose(closeQueue, sessions);
+    const step = closeStep(closeQueue, sessions, { closing: closingNow.current, dialog: !!closeDlg });
+    if (!step) return;
+    const { next, taken } = step;
     // taken off as a function of the queue then, so ones another Close… adds meanwhile stay in it
-    const taken = closeQueue.slice(0, closeQueue.length - rest.length);
     setCloseQueue((q) => q.filter((id) => !taken.includes(id)));
     if (!next) return;
     closingNow.current = true;
@@ -1607,15 +1600,18 @@ function App() {
   };
 
   const resumeDead = async (s: SessionInfo) => {
-    // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed)
-    const taken = takenOverWhy(s, "rather than resuming this copy");
-    if (taken) return alert(taken);
-    // drop the dead pty, keep the store entry
-    if (!(await costGate.resume(s))) return;
-    if (failed(`Couldn't resume ${titleOf(s)}`, await window.mb.killSession(s.id, false))) return;
-    disposeTerm(s.id);
-    const info = await window.mb.relaunchSession(s.id);
-    if (isErr(info)) return alert(`Couldn't resume: ${info.error}`);
+    // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed); main is
+    // asked too, before its pty is dropped, for a take-over this window hasn't heard of
+    const info = await resumeExited(titleOf(s), {
+      refusal: takenOverWhy(s, "rather than resuming this copy"),
+      mainRefusal: () => window.mb.relaunchRefusal(s.id),
+      costOk: () => costGate.resume(s),
+      kill: () => window.mb.killSession(s.id, false),
+      dispose: () => disposeTerm(s.id),
+      relaunch: () => window.mb.relaunchSession(s.id),
+      say: alert,
+    });
+    if (info === undefined) return;
     hide(s.id);
     await refresh();
     if (info) jumpToSession(info);
@@ -2185,8 +2181,6 @@ function App() {
   // ---- the landscape's areas (S4): each group's bar, ⋯ menu and tree row, and what its gestures ask ----
   const sessionsOfGroup = (key: string) => workSessions.filter((s) => topOf(s) === key);
   const areaTitle = (key: string) => groupTitle(key, sessionsOfGroup(key));
-  /** Why area `key` has no room for a right-click's workspace: every way it could grow reaches the locked areas `locked`. */
-  const noRoomIn = (key: string, locked: readonly string[]) => `No room in ${areaTitle(key)}: ${locked.map(areaTitle).join(" and ")} ${locked.length === 1 ? "is" : "are"} locked`;
   /** A group's bar, on the grid over its panes and on the landscape as its area's header: the same parts and handlers. */
   const groupBarProps = (key: string): GroupBarProps => {
     const ticket = ticketOfGroup(key);
@@ -2290,9 +2284,6 @@ function App() {
    * clicked (resolveLayout's PlaceHint).
    */
   const newAt = (area: string | null, at: { x: number; y: number }, seed: { launch?: LaunchKind; ticket?: boolean; mode?: "new" | "import" }) => {
-    // an area hemmed in by locked areas has no place for it: said, and nothing is made
-    const locked = area && landscapeState ? rightClickRefusal(landscapeState.landscape, workSessions, lsRenames, area, at, seed.launch === "shell") : null;
-    if (locked) return lsSay(noRoomIn(area!, locked));
     setNewGroup(area ?? "");
     setNewLaunch(seed.launch ?? "claude");
     setNewSeed({ ...(area ? areaSeed(area) : {}), ticket: seed.ticket, mode: seed.mode });
@@ -3649,8 +3640,6 @@ function App() {
             </span>
           );
         })}
-        {/* following a teammate: said here once, whichever room's, rooms' bars only offering Follow */}
-        <FollowingNow follow={follow} />
         <UsageMeter usage={usage} meters={meters} focused={sessions.find((s) => s.id === focused) ?? null} />
         <span className="right">
           {readError && (
@@ -3704,12 +3693,15 @@ function App() {
               ⚠ install hooks
             </span>
           )}
+          {/* following a teammate: said here once, whichever room's (rooms' bars only offer Follow); after the notes, so
+              it never takes their room */}
+          <FollowingNow follow={follow} />
           {(() => {
             const theirs = workSessions.filter(isRemote).length;
-            return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {groupCount} groups</span>;
+            return <span className="sb-info">{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {groupCount} groups</span>;
           })()}
-          <span>⌘K commands</span>
-          <span className="help-link" onClick={() => setModal("help")}>? help</span>
+          <span className="sb-info">⌘K commands</span>
+          <span className="sb-info help-link" onClick={() => setModal("help")}>? help</span>
         </span>
       </div>
 

@@ -36,6 +36,7 @@ import {
   type RefusedTakeover,
   type TakeoverGrant,
   continuation,
+  takenOverOwn,
   NOT_ALLOWED,
   DROP_REASONS,
   HANDOVER_TURN_MS,
@@ -1733,14 +1734,10 @@ export class TakeoverService {
    * window's rule too (its sessions' `room.takenOver`, livePanes.ts), so what the window offers, main does.
    */
   takenOverRefusal(sessionId: string, doing: string): string | null {
-    for (const room of this.d.team.rooms()) {
-      const e = room.ext.takeover?.sessions[sessionId];
-      if (!e?.takenOver || e.owner !== this.d.team.self.id) continue;
-      const now = continuation(room.ext.takeover, sessionId);
-      if (now?.owner === this.d.team.self.id) return `“${e.session.title}” was taken back into another session here: this copy doesn't run again`;
-      return `“${e.session.title}” continues on ${this.nameOf(room.id, now?.owner ?? e.takenOver.by)}'s laptop — take it back rather than ${doing}`;
-    }
-    return null;
+    const t = takenOverOwn(this.d.team.rooms(), this.d.team.self.id, sessionId);
+    if (!t) return null;
+    if (t.now === this.d.team.self.id) return `“${t.title}” was taken back into another session here: this copy doesn't run again`;
+    return `“${t.title}” continues on ${this.nameOf(t.roomId, t.now)}'s laptop — take it back rather than ${doing}`;
   }
 
   /**

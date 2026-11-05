@@ -18,6 +18,7 @@ import { terminalLines } from "../shared/terminalText";
 import { useFolderRefresh } from "./folderWatch";
 import { anchorToContent, attachTerm, dataPump, fitTerm, followFixedSize, followPlacement, followSize, followsBottom, jumpToLatest, makeTerm, measuredCell, noteUserScroll, onFollowChange, repaintTerm, replay, syncViewport, termThemeListeners, trackUserInput, type CachedTerm, type SizedTerm } from "./cachedTerm";
 import { Lookers, OwnerTag } from "./team/RoomLive";
+import { takenOverNoteTitle } from "./team/connectedModel";
 import { TypingAsks, TypingChip, TypingRefused, Typists, typingOn } from "./team/Typing";
 import { localOverlapTitle, overlapChips } from "./overlapChips";
 import { BackupFreshness, TakeOverButton } from "./team/TakeOver";
@@ -1345,7 +1346,7 @@ export function TerminalPane({
             {room && <TypingAsks session={session} room={room} />}
             {room && <TypingRefused session={session} room={room} />}
             {room?.takenOver && !remote && (
-              <div className="team-pane-note" data-handover title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
+              <div className="team-pane-note" data-handover title={takenOverNoteTitle(room.takenOver)}>
                 {room.takenOver.back ? "Taken back into another session here — this copy doesn't run again" : `Continued on ${room.takenOver.byName}'s laptop ${ago(room.takenOver.at)} — this copy is stopping`}; its files stay as they are
               </div>
             )}

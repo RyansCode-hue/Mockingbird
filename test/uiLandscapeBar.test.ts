@@ -74,9 +74,8 @@ interface G {
   appended: { left: string[]; dialog: boolean };
   error?: string;
 }
-type Strip = { rows: string[] | null; note: string | null; dialog: boolean; made: number };
 interface H {
-  hem: { hemmed: Strip; unlocked: Strip; relocked: Strip & { group: string | null; inHem: boolean } };
+  hem: { dialog: boolean; note: string | null; group: string | null; inHem: boolean; byClick: boolean; hemStayed: boolean; cPushed: { dy: boolean; dx: number; locked: boolean; c1Along: boolean }; bStayed: boolean };
   waits: { single: string | null; meanwhile: { dialog: string | null; left: string[] }; next: string | null; left: string[]; dialog: boolean };
   error?: string;
 }
@@ -345,14 +344,12 @@ describe.skipIf(!local)("the selection bar", () => {
     expect(g.appended).toEqual({ left: [], dialog: false });
   }, 120_000);
 
-  it("makes nothing in an area hemmed in by locked ones, saying so; and closing several waits while a single Close's dialog is open", async () => {
+  it("makes a workspace in an area hemmed in by locked ones, pushing the one in the way whole; and closing several waits while a single Close's dialog is open", async () => {
     const h = await run<H>("h", "gitSlow=5101-orgDropdowns&gitFail=5110-donor-entities");
     expect(h.error).toBeUndefined();
-    // every way out of Hem is a locked area: Claude… opens nothing and says which; with HemB unlocked, it asks as ever
-    expect(h.hem.hemmed).toEqual({ rows: ["Claude…", "Terminal…"], note: "No room in Hem: HemB and HemC are locked", dialog: false, made: 0 });
-    expect(h.hem.unlocked).toMatchObject({ dialog: true, made: 0 });
-    // HemB locked again while the dialog's open: the session it makes goes with Hem's other workspaces, and that's said
-    expect(h.hem.relocked).toMatchObject({ dialog: true, made: 1, group: "Hem", inHem: true, note: "No room in Hem: HemB and HemC are locked, so it went with the area's other workspaces" });
+    // locked areas all round: Claude… asks as ever, and the workspace goes in a new row by the click; Hem stays put, and
+    // locked HemC below moves down whole, hemC1 where it was in it; HemB, not in the way, stays; nothing's said
+    expect(h.hem).toEqual({ dialog: true, note: null, group: "Hem", inHem: true, byClick: true, hemStayed: true, cPushed: { dy: true, dx: 0, locked: true, c1Along: true }, bStayed: true });
     // s8's state read while y1's own Close asks: y1's dialog stays, nothing else closes, and s8 is asked after it, then s6
     expect(h.waits.single).toBe("Close Donor entity model?");
     expect(h.waits.meanwhile).toEqual({ dialog: "Close Donor entity model?", left: ["s8", "s6", "y1"] });

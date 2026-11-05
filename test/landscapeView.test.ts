@@ -18,7 +18,6 @@ import {
   panBy,
   readProblem,
   resolveLayout,
-  rightClickRefusal,
   revealTile,
   toLandscape,
   wheelPixels,
@@ -315,34 +314,48 @@ describe("where each session's workspace sits", () => {
       expect(overlaps(n, rect("B")), String(locked)).toBe(false);
     }
   });
-  it("grows a hemmed-in area towards an unlocked neighbour, which moves aside, never moving the area itself; refuses with both locked", () => {
-    const layout = (bLocked: boolean, cLocked: boolean) => {
+  it("grows a hemmed-in area towards the edge nearer the click, never moving it; neighbours in the way, locked or not, move aside whole", () => {
+    const layout = (bLocked: boolean, cLocked: boolean, at: { x: number; y: number }) => {
       const l = emptyLandscape();
       l.migratedAt = "2026-11-01T00:00:00.000Z";
       l.areas.A = { x: 0, y: 0, w: 2400, h: 2000, repos: [] };
       l.areas.B = { x: 2464, y: 0, w: 1200, h: 2000, repos: [], locked: bLocked };
       l.areas.C = { x: 0, y: 2064, w: 2400, h: 1200, repos: [], locked: cLocked };
       l.workspaces.a1 = { x: 24, y: 48, w: 2352, h: 1928 };
-      const shown = [session("a1", { taskGroup: "A" }), session("n", { taskGroup: "A", createdAt: 600 })];
-      const r = resolveLayout(l, shown, undefined, [], { area: "A", at: { x: 2000, y: 900 }, since: 500 });
-      return { l, r, rect: (k: string) => r.areas.find((a) => a.key === k)!.rect, n: r.tiles.find((t) => t.key === "n")!.rect };
+      l.workspaces.b1 = { x: 2488, y: 48, w: 1000, h: 800 };
+      l.workspaces.c1 = { x: 24, y: 2112, w: 1000, h: 600 };
+      const shown = [session("a1", { taskGroup: "A" }), session("b1", { taskGroup: "B" }), session("c1", { taskGroup: "C" }), session("n", { taskGroup: "A", createdAt: 600 })];
+      const r = resolveLayout(l, shown, undefined, [], { area: "A", at, since: 500 });
+      return { l, r, rect: (k: string) => r.areas.find((a) => a.key === k)!.rect, tile: (k: string) => r.tiles.find((t) => t.key === k)!.rect };
     };
-    for (const [bLocked, cLocked] of [[false, false], [false, true]]) {
-      const { r, rect, n } = layout(bLocked, cLocked);
-      const what = `B ${bLocked ? "locked" : "unlocked"}, C ${cLocked ? "locked" : "unlocked"}`;
-      // by the click, growing A right; B moves aside, keeping the gap; A and C stay where they are
-      expect(n, what).toMatchObject({ x: 2392, y: 904 });
-      expect(rect("A"), what).toMatchObject({ x: 0, y: 0, h: 2000 });
-      expect(rect("B").x, what).toBe(rect("A").x + rect("A").w + 64);
-      expect(rect("C"), what).toMatchObject({ x: 0, y: 2064 });
-      expect(r.hintRefused, what).toBeNull();
+    for (const [bLocked, cLocked] of [[false, false], [true, false], [false, true], [true, true]]) {
+      for (const [at, edge] of [[{ x: 2000, y: 900 }, "right"], [{ x: 1000, y: 1800 }, "bottom"]] as const) {
+        const { l, r, rect, tile } = layout(bLocked, cLocked, at);
+        const what = `B ${bLocked ? "locked" : "unlocked"}, C ${cLocked ? "locked" : "unlocked"}, nearer the ${edge}`;
+        const n = tile("n");
+        // a new column right of a1, by the click's y; or a new row below it, by its x
+        if (edge === "right") expect([n.x, Math.abs(n.y - at.y) <= n.h], what).toEqual([2392, true]);
+        else expect([n.y, Math.abs(n.x - at.x) <= n.w], what).toEqual([1992, true]);
+        // A never moves, and nothing is refused
+        expect(rect("A"), what).toMatchObject({ x: 0, y: 0 });
+        expect(r.hinted, what).toBe("n");
+        // the one in the way moves aside as a whole, locked or not: its workspace where it was inside it
+        for (const [k, w] of [["B", "b1"], ["C", "c1"]] as const) {
+          const was = l.areas[k];
+          const d = { dx: rect(k).x - was.x, dy: rect(k).y - was.y };
+          expect(tile(w), `${what}: ${w} inside ${k}`).toEqual({ ...l.workspaces[w], x: l.workspaces[w].x + d.dx, y: l.workspaces[w].y + d.dy });
+          expect(rect(k).locked ?? false, what).toBe(k === "B" ? bLocked : cLocked);
+          expect(overlaps(rect("A"), rect(k), 64 - 1e-6), `${what}: A and ${k}`).toBe(false);
+        }
+        expect(rect(edge === "right" ? "B" : "C").x + rect(edge === "right" ? "B" : "C").y, what).toBeGreaterThan(edge === "right" ? 2464 : 2064);
+        // no workspace on another, and each still in its area
+        for (const [k, area] of [["a1", "A"], ["n", "A"], ["b1", "B"], ["c1", "C"]]) {
+          const t = tile(k);
+          expect(t.x >= rect(area).x && t.x + t.w <= rect(area).x + rect(area).w && t.y >= rect(area).y && t.y + t.h <= rect(area).y + rect(area).h, `${what}: ${k} in ${area}`).toBe(true);
+          for (const j of ["a1", "n", "b1", "c1"]) if (j !== k) expect(overlaps(t, tile(j)), `${what}: ${k} on ${j}`).toBe(false);
+        }
+      }
     }
-    // both locked: no way out, said (main.tsx's right-click asks this first and makes nothing)
-    expect(layout(true, true).r.hintRefused).toEqual({ area: "A", lockedBy: ["B", "C"] });
-    const a1 = [session("a1", { taskGroup: "A" })];
-    expect(rightClickRefusal(layout(true, true).l, a1, [], "A", { x: 2000, y: 900 }, false)).toEqual(["B", "C"]);
-    expect(rightClickRefusal(layout(true, true).l, a1, [], "A", { x: 2000, y: 900 }, true)).toEqual(["B", "C"]);
-    expect(rightClickRefusal(layout(false, true).l, a1, [], "A", { x: 2000, y: 900 }, false)).toBeNull();
   });
   it("grows a full area down for a right-clicked workspace rather than into the area beside it, locked or not", () => {
     for (const locked of [false, true]) {

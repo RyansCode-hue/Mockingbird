@@ -299,35 +299,24 @@ export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | nul
   return first(spots.sort((a, b) => a.y - b.y || a.x - b.x));
 }
 
-/** Why a right-click's New workspace has no place in its area: every way it could grow reaches these locked areas. */
-export interface PlaceRefusal<O> {
-  blockedBy: O[];
-}
-
 /**
  * A new workspace `size` big placed as near point `at` as there's room: what a right-click's New workspace makes.
  * Its corner is the point, snapped, when that's free; otherwise the free spot nearest it among those along the edges
  * of what's there. In `area` it keeps inside the padding and under the header, as a drop does. Then, in turn:
  * 1. a spot inside the area within its own size of the point (one moved in from an edge it would cross);
  * 2. the nearest spot the area can grow to hold while keeping the gap from every other area (`others`);
- * 3. the nearest it can grow to towards unlocked areas only (resolveLayout pushes those aside), never a locked one,
- *    and never moving the area itself;
- * 4. none: a PlaceRefusal naming the locked areas in every way out.
- * A spot the area holds without growing needs nothing of the others (the area may already lie closer to one). With no
- * area there's no refusal: failing 1 and 2 it's placeNew's. `occupied` is as placeNew's.
+ * 3. the area grows towards its edge nearer the point: at the bottom, a new row just below what's in it at the point's
+ *    x kept inside its padding; at the right, a new column just right of what's in it at the point's y kept inside
+ *    (moved on, either way, only past what nothing pushes: its own and loose workspaces).
+ * The area never moves: resolveLayout pushes the areas in its way aside, a locked one too, as a whole. A spot the area
+ * holds without growing needs nothing of the others. With no area, failing 1 and 2 it's placeNew's. `occupied` is as
+ * placeNew's.
  */
-export function placeAt<O extends Rect & { locked?: boolean }>(
-  size: Size,
-  at: { x: number; y: number },
-  occupied: readonly Rect[],
-  area: Rect | null,
-  near: Rect | null = null,
-  others: readonly O[] = []
-): Placement | PlaceRefusal<O> {
+export function placeAt(size: Size, at: { x: number; y: number }, occupied: readonly Rect[], area: Rect | null, near: Rect | null = null, others: readonly Rect[] = []): Placement {
   const apart = AREA_PAD + AREA_GAP;
   const free = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6));
   // the area as it would grow to hold `p` keeps the gap from each of `among`; one it holds already needs nothing more
-  const keepsGap = (p: Rect, among: readonly O[]) => {
+  const keepsGap = (p: Rect, among: readonly Rect[]) => {
     if (!area) return !among.some((o) => overlaps(p, o, apart - 1e-6));
     const grown = fitAreaTo(area, [p]);
     return grown === area || !among.some((o) => overlaps(grown, o, AREA_GAP - 1e-6));
@@ -359,18 +348,23 @@ export function placeAt<O extends Rect & { locked?: boolean }>(
     return best;
   };
   const close = (p: Rect) => Math.abs(p.x - x) <= size.w && Math.abs(p.y - y) <= size.h;
-  const locked = others.filter((o) => o.locked);
-  const found =
-    nearest((p) => p.x + p.w <= right && p.y + p.h <= bottom && close(p)) ??
-    nearest((p) => keepsGap(p, others)) ??
-    (area ? nearest((p) => keepsGap(p, locked)) : null);
+  const found = nearest((p) => p.x + p.w <= right && p.y + p.h <= bottom && close(p)) ?? nearest((p) => keepsGap(p, others));
   if (found) return found;
-  if (area) {
-    const grown = spots.map((p) => fitAreaTo(area, [p]));
-    const blockedBy = locked.filter((o) => grown.some((g) => overlaps(g, o, AREA_GAP - 1e-6)));
-    if (blockedBy.length) return { blockedBy };
+  if (!area) return placeNew(size, [...occupied, ...others], area, near);
+  const mine = occupied.filter((o) => within(o, area));
+  const unpushed = occupied.filter((o) => !others.some((a) => within(o, a)));
+  /** `p` moved on by `step` past each of `unpushed` it would overlap; each step goes right or down past one, so it ends. */
+  const past = (p: Placement, step: (q: Placement, o: Rect) => Placement): Placement => {
+    let q = p;
+    for (let o = unpushed.find((r) => overlaps(q, r, GAP - 1e-6)); o; o = unpushed.find((r) => overlaps(q, r, GAP - 1e-6))) q = step(q, o);
+    return q;
+  };
+  if (area.y + area.h - at.y <= area.x + area.w - at.x) {
+    const inX = Math.min(x, Math.max(left, snapDown(right - size.w)));
+    return past({ x: inX, y: mine.length ? snapUp(Math.max(...mine.map((o) => o.y + o.h)) + GAP) : top, ...size }, (q, o) => ({ ...q, x: snapUp(o.x + o.w + GAP) }));
   }
-  return placeNew(size, [...occupied, ...others], area, near);
+  const inY = Math.min(y, Math.max(top, snapDown(bottom - size.h)));
+  return past({ x: mine.length ? snapUp(Math.max(...mine.map((o) => o.x + o.w)) + GAP) : left, y: inY, ...size }, (q, o) => ({ ...q, y: snapUp(o.y + o.h + GAP) }));
 }
 
 /** `area` grown rightward and downward, never shrunk, to hold `rects` inside its padding (they lie right of and below its corner, as placeNew puts them). */
@@ -434,12 +428,12 @@ export function clearOf(r: Rect, others: readonly Rect[], gap = AREA_GAP): { dx:
 
 /**
  * Rectangles moved out of the way of `key`'s, which stays where it is (an area that grew): each that comes closer
- * than `gap` to one that's fixed or already moved goes right or down, whichever is the shorter way, and pushes on in
- * turn. Those in `fixed` (locked areas) never move: one pushed into them, or back into `key`'s, goes on past. Only rightward
- * and downward, so it always ends. The moves made, by key; none when nothing was in the way. `key`'s own rectangle
- * coming too close to a fixed one is the caller's to prevent (fixedInWay).
+ * than `gap` to one already moved goes right or down, whichever is the shorter way, and pushes on in turn; one pushed
+ * back into `key`'s goes on past it. Every other rectangle can be pushed, a locked area's too: lock keeps what's inside
+ * an area where it is, and the area moves as a whole. Only rightward and downward, so it always ends. The moves made,
+ * by key; none when nothing was in the way.
  */
-export function pushAside(rects: Readonly<Record<string, Rect>>, key: string, gap = AREA_GAP, fixed: ReadonlySet<string> = new Set()): Record<string, { dx: number; dy: number }> {
+export function pushAside(rects: Readonly<Record<string, Rect>>, key: string, gap = AREA_GAP): Record<string, { dx: number; dy: number }> {
   const at: Record<string, Rect> = {};
   for (const [k, r] of Object.entries(rects)) put(at, k, r);
   const moves: Record<string, { dx: number; dy: number }> = {};
@@ -464,9 +458,9 @@ export function pushAside(rects: Readonly<Record<string, Rect>>, key: string, ga
       if (j === k) continue;
       const b = own(at, j)!;
       if (!overlaps(a, b, gap - 1e-6)) continue;
-      if (j === key || fixed.has(j)) {
-        if (k === key || fixed.has(k)) continue;
-        // pushed into one that stays (a fixed one, or `key`'s): on past it, and it pushes on from there
+      if (j === key) {
+        if (k === key) continue;
+        // pushed back into `key`'s, which stays: on past it, and it pushes on from there
         push(k, ...away(b, a));
         queue.push(k);
         break;
@@ -478,11 +472,7 @@ export function pushAside(rects: Readonly<Record<string, Rect>>, key: string, ga
   return moves;
 }
 
-/** The first of `fixed` (locked areas) other than `key` that `key`'s rectangle comes closer than `gap` to: pushAside can't move it. */
-export function fixedInWay(rects: Readonly<Record<string, Rect>>, key: string, fixed: ReadonlySet<string>, gap = AREA_GAP): string | null {
-  const r = own(rects, key);
-  return (r && [...fixed].find((k) => k !== key && Object.hasOwn(rects, k) && overlaps(r, own(rects, k)!, gap - 1e-6))) || null;
-}
+
 
 /** The view: the landscape point at the viewport's top-left, and the zoom (1 = 100%). */
 export interface Camera {

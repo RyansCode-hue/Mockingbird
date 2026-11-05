@@ -1292,6 +1292,8 @@ const api: Record<string, (...a: any[]) => any> = {
     }
     return s;
   },
+  // main's relaunch guard: a copy the window marks taken over is refused there too
+  relaunchRefusal: async (id: string) => (live.own[id]?.takenOver ? `“${byId(id)?.title ?? id}” continues on ${live.own[id]!.takenOver!.byName}'s laptop — take it back rather than running this copy again` : null),
   // a relaunch starts a new process under the same id, stamped with a new createdAt, as main's create() does
   relaunchSession: async (id: string) => {
     const p = previous.find((x) => x.id === id) ?? byId(id);
@@ -1329,7 +1331,9 @@ const api: Record<string, (...a: any[]) => any> = {
       const outcome = !s || s.status === "dead" || s.shell || s.debrief ? "skipped" : s.status === "idle" ? "delivered" : "queued";
       return { id, outcome };
     }),
-  hooksInstalled: async () => true,
+  // ?statusNotes: everything the status bar can say at once (a read that failed, a failed update and its outcome, the
+  // hooks missing); =few: only the update's link and the hooks
+  hooksInstalled: async () => !params.has("statusNotes"),
   appVersion: async () => version,
   getSettings: async () => settings,
   setSettings: async (patch: Partial<Settings>) => {
@@ -1383,7 +1387,7 @@ const api: Record<string, (...a: any[]) => any> = {
     cwd.includes("5101")
       ? { branch: "5101-orgDropdowns", pr: { id: 88, url: "https://dev.azure.com/acme/Backoffice/_git/backoffice/pullrequest/88", title: "#5101 Org dropdowns remember the last org", base: "dev", state: "approved", conflicts: false, reviews: ["Sam: approved"] }, at: Date.now() }
       : { branch: null, pr: null, at: Date.now() },
-  overlapsGet: async () => ({ s1: [{ other: "s5", otherTitle: "Pathways quick view freezes", otherBranch: "5102-quickViewFreeze", files: ["src/org/Dropdown.tsx"] }, { other: `team:${NICK}:5101-lastOrgApi`, otherTitle: "Nick Smith's pushed branch", otherBranch: "5101-lastOrgApi", files: ["src/org/Dropdown.tsx"], teammate: { id: NICK, name: "Nick Smith", roomId: ROOM_5101 } }], s5: [{ other: "s1", otherTitle: "Org dropdowns remember the last org", otherBranch: "5101-orgDropdowns", files: ["src/org/Dropdown.tsx"] }] }),
+  overlapsGet: async () => (params.has("statusNotes") && params.get("statusNotes") !== "few" ? err("git diff --name-only: fatal: bad object HEAD") : { s1: [{ other: "s5", otherTitle: "Pathways quick view freezes", otherBranch: "5102-quickViewFreeze", files: ["src/org/Dropdown.tsx"] }, { other: `team:${NICK}:5101-lastOrgApi`, otherTitle: "Nick Smith's pushed branch", otherBranch: "5101-lastOrgApi", files: ["src/org/Dropdown.tsx"], teammate: { id: NICK, name: "Nick Smith", roomId: ROOM_5101 } }], s5: [{ other: "s1", otherTitle: "Org dropdowns remember the last org", otherBranch: "5101-orgDropdowns", files: ["src/org/Dropdown.tsx"] }] }),
   healthUpdates: async () => [{ agent: "claude", installed: "2.1.290", sessions: [{ id: "s1", title: "Org dropdowns remember the last org", version: "2.1.289" }] }],
   messagesList: async () => [
     { at: now - 25 * min, from: "s1", fromTitle: "Org dropdowns remember the last org", to: "s2", toTitle: "API: last org per user", text: "The dropdown reads GET /api/users/me/last-org — return { org } or { org: null }.", outcome: "delivered" },
@@ -1634,8 +1638,8 @@ const api: Record<string, (...a: any[]) => any> = {
     return { hits, conversations: 128, files: 131, indexing: null, lastSync: now, problem: null };
   },
   updateCheck: async () => later({ latest: nextVersion, current: version, newer: true, url: "https://github.com/", source: "branch" }, 600),
-  updateStatus: async () => ({ state: "idle", done: [], log: [] }),
-  updateOutcome: async () => null,
+  updateStatus: async () => (params.has("statusNotes") ? { state: "failed", step: "build", done: ["pull"], log: [] } : { state: "idle", done: [], log: [] }),
+  updateOutcome: async () => (params.has("statusNotes") && params.get("statusNotes") !== "few" ? { ok: false, from: "1.6.0", to: "1.7.0", message: "The build failed: tsc exited 2", sessions: [], logPath: "/Users/you/.mockingbird/update.log" } : null),
   updateSource: async () => ({ configured: null, found: "/Users/you/Code/Mockingbird" }),
   // What's new → Suggest something: nothing reaches GitHub. ?suggest=gh-missing|signed-out|no-access picks a problem,
   // =create the first suggestion on a repo without its labels, =posted a filing that worked, =list-error a failed read
@@ -5037,7 +5041,8 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   // failing, one closing. =g (with ?gitSlow=5102-quickViewFreeze): Close… on several
   // stopped with Cancel all, and a second Close… on several added after the first's rest. =h (with
   // ?gitSlow=5101-orgDropdowns&gitFail=5110-donor-entities): a right-click in an area hemmed in by locked ones making
-  // nothing, saying so, until one is unlocked; Close… on several waiting while a single Close's dialog is open. Into
+  // its workspace there, the locked one in the way pushed aside whole; Close… on several waiting while a single Close's
+  // dialog is open. Into
   // <script id="mb-landscape-bar-audit-<part>">.
   if (params.has("landscapeBarAudit")) waitFor(".ls-world .ls-node", async () => {
     const part = params.get("landscapeBarAudit") || "a";
@@ -5599,15 +5604,16 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       }
 
       if (part === "h") {
-        // "Hem", full but for a strip too low for a workspace, right of everything, locked areas right of it and below
-        // it: a right-click in the strip, then Claude…, makes nothing and says why; with one unlocked, it opens New
-        // session, and one made after that one is locked again goes with the area's other workspaces, said
+        // "Hem", full but for a strip too low for a workspace, right of everything, locked "HemB" right of it and locked
+        // "HemC" below it, each holding a workspace: a right-click in the strip, then Claude…, makes it there all the
+        // same; Hem grows down towards the nearer edge, staying where it is, and HemC moves down whole, hemC1 with it
         const right = Math.max(...Object.values(landscape.areas).map((a) => a.x + a.w), ...Object.values(landscape.workspaces).map((w) => w.x + w.w)) + 3000;
-        sessions = [...sessions, { ...sessions.find((s) => s.id === "s6")!, id: "hem1", title: "Hemmed in", taskGroup: "Hem", status: "idle", exitCode: undefined }];
+        const like = sessions.find((s) => s.id === "s6")!;
+        sessions = [...sessions, ...(["hem1", "hemB1", "hemC1"] as const).map((id, i) => ({ ...like, id, title: ["Hemmed in", "Right of it", "Below it"][i], taskGroup: ["Hem", "HemB", "HemC"][i], status: "idle" as const, exitCode: undefined }))];
         sessionsChanged();
         await api.landscapeUpdate({
           areas: { Hem: { x: right, y: 0, w: 2400, h: 2000, repos: [] }, HemB: { x: right + 2464, y: 0, w: 1200, h: 2000, repos: [], locked: true }, HemC: { x: right, y: 2064, w: 2400, h: 1200, repos: [], locked: true } },
-          workspaces: { hem1: { x: right + 24, y: 48, w: 2352, h: 1400 } },
+          workspaces: { hem1: { x: right + 24, y: 48, w: 2352, h: 1400 }, hemB1: { x: right + 2488, y: 48, w: 1000, h: 800 }, hemC1: { x: right + 24, y: 2112, w: 1000, h: 600 } },
         });
         await sleep(600);
         const toWorld = (p: { x: number; y: number }) => {
@@ -5615,42 +5621,43 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
           const c = camera()!;
           return { x: Math.round(c.x + (p.x - v.left) / c.zoom), y: Math.round(c.y + (p.y - v.top) / c.zoom) };
         };
-        const strip = async (relock = false) => {
-          await fitView();
-          await zoomOnArea("Hem", 0.25);
-          const rectOf = (sel: string) => ((r) => r && { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) })(document.querySelector(sel)?.getBoundingClientRect());
-          let p: ReturnType<typeof bareAt>;
-          try {
-            p = bareAt("Hem");
-          } catch (err) {
-            throw new Error(`${err}: Hem ${JSON.stringify(rectOf('.ls-world .ls-area[data-area="Hem"]'))}, hem1 ${JSON.stringify(rectOf('.ls-world [data-front="hem1"]'))}, view ${JSON.stringify(rectOf(".ls-viewport"))}, stored ${JSON.stringify(landscape.areas.Hem)}`);
-          }
-          p.el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: p.x, clientY: p.y }));
-          await sleep(300);
-          const rows = ctxRows();
-          const ids = new Set(sessions.map((s) => s.id));
-          if (!rows?.includes("Claude…")) throw new Error(`the right-click at ${JSON.stringify(toWorld(p))} offered ${JSON.stringify(rows)}`);
-          await ctxPick("Claude…");
-          await sleep(300);
-          const res = { rows: rows?.filter((r) => /^(Claude|Terminal)…/.test(r)) ?? null, note: noteText(), dialog: !!document.querySelector(".modal.ns"), made: sessions.filter((s) => !ids.has(s.id)).length };
-          if (relock && res.dialog) {
-            await api.landscapeUpdate({ areas: { HemB: { locked: true } } });
-            await sleep(400);
-            document.querySelector<HTMLElement>(".modal.ns button.primary.cta")!.click();
-            await sleep(1500);
-            const s = sessions.find((x) => !ids.has(x.id));
-            const w = s ? landscape.workspaces[s.id] : undefined;
-            const hem = landscape.areas.Hem;
-            return { ...res, made: s ? 1 : 0, group: s?.taskGroup ?? null, note: noteText(), inHem: !!w && !!hem && w.x >= hem.x && w.x + w.w <= hem.x + hem.w && w.y >= hem.y && w.y + w.h <= hem.y + hem.h };
-          }
-          esc();
-          await sleep(300);
-          return res;
+        const before = structuredClone({ hem: landscape.areas.Hem, c: landscape.areas.HemC, c1: landscape.workspaces.hemC1, b: landscape.areas.HemB, b1: landscape.workspaces.hemB1 });
+        await fitView();
+        await zoomOnArea("Hem", 0.25);
+        const rectOf = (sel: string) => ((r) => r && { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) })(document.querySelector(sel)?.getBoundingClientRect());
+        let p: ReturnType<typeof bareAt>;
+        try {
+          p = bareAt("Hem");
+        } catch (err) {
+          throw new Error(`${err}: Hem ${JSON.stringify(rectOf('.ls-world .ls-area[data-area="Hem"]'))}, hem1 ${JSON.stringify(rectOf('.ls-world [data-front="hem1"]'))}, view ${JSON.stringify(rectOf(".ls-viewport"))}, stored ${JSON.stringify(landscape.areas.Hem)}`);
+        }
+        const click = toWorld(p);
+        p.el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: p.x, clientY: p.y }));
+        await sleep(300);
+        const rows = ctxRows();
+        const ids = new Set(sessions.map((s) => s.id));
+        if (!rows?.includes("Claude…")) throw new Error(`the right-click at ${JSON.stringify(click)} offered ${JSON.stringify(rows)}`);
+        await ctxPick("Claude…");
+        await sleep(300);
+        const dialog = !!document.querySelector(".modal.ns");
+        document.querySelector<HTMLElement>(".modal.ns button.primary.cta")?.click();
+        await sleep(1500);
+        const made = sessions.find((x) => !ids.has(x.id));
+        const w = made ? landscape.workspaces[made.id] : undefined;
+        const hem = landscape.areas.Hem;
+        const c = landscape.areas.HemC;
+        const dy = c.y - before.c.y;
+        out.hem = {
+          dialog,
+          note: noteText(),
+          group: made?.taskGroup ?? null,
+          inHem: !!w && w.x >= hem.x && w.x + w.w <= hem.x + hem.w && w.y >= hem.y && w.y + w.h <= hem.y + hem.h,
+          // a new row just below hem1, the area's lowest, and within its own width of the click across
+          byClick: !!w && Math.abs(w.x - click.x) <= w.w && w.y > landscape.workspaces.hem1.y + landscape.workspaces.hem1.h && w.y <= landscape.workspaces.hem1.y + landscape.workspaces.hem1.h + 24,
+          hemStayed: hem.x === before.hem.x && hem.y === before.hem.y,
+          cPushed: { dy: dy > 0, dx: c.x - before.c.x, locked: c.locked === true, c1Along: JSON.stringify(landscape.workspaces.hemC1) === JSON.stringify({ ...before.c1, y: before.c1.y + dy }) },
+          bStayed: JSON.stringify([landscape.areas.HemB, landscape.workspaces.hemB1]) === JSON.stringify([before.b, before.b1]),
         };
-        const hemmed = await strip();
-        await api.landscapeUpdate({ areas: { HemB: { locked: false } } });
-        await sleep(400);
-        out.hem = { hemmed, unlocked: await strip(), relocked: await strip(true) };
 
         // s8 (its worktree read slowly, ?gitSlow) and s6 closing; while s8 is read, y1 closed on its own: its dialog
         // (?gitFail) stays until it's answered, s8's asked after it, then s6
@@ -6517,6 +6524,75 @@ if (params.get("ctxAudit")) {
     const tag = document.createElement("script");
     tag.type = "application/json";
     tag.id = "mb-ctx-audit";
+    tag.textContent = JSON.stringify(out);
+    document.body.appendChild(tag);
+  })();
+}
+// ?statusAudit (with ?statusNotes): the status bar saying what ?statusNotes gives it, before following Nick from ⌘K,
+// while following him, and once he shows nothing (its "waiting for a shared session" wording): how much of each note,
+// the update link, the hooks warning and Stop shows inside the bar, and whether Following's words were cut. Into
+// <script id="mb-status-audit"> for test/uiStatusBar.test.ts.
+if (params.has("statusAudit")) {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const until = async (ok: () => boolean, ms: number) => {
+    for (const end = Date.now() + ms; !ok() && Date.now() < end; ) await sleep(100);
+    return ok();
+  };
+  (async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      const notes = params.get("statusNotes") === "few" ? 0 : 2;
+      if (!(await until(() => !!document.querySelector(".statusbar .hooks-bad") && !!document.querySelector(".statusbar .update-link") && document.querySelectorAll(".statusbar .update-note.bad").length === notes, 8000))) throw new Error("the status bar's notes didn't all show");
+      await sleep(300);
+      const measure = () => {
+        const bar = document.querySelector<HTMLElement>(".statusbar")!.getBoundingClientRect();
+        // how much of it shows inside the bar, in px; null when it isn't there
+        const shown = (el: Element | null) => {
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return Math.max(0, Math.round(Math.min(r.right, bar.right) - Math.max(r.left, bar.left)));
+        };
+        const whole = (el: Element | null) => {
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.left >= bar.left - 0.5 && r.right <= bar.right + 0.5;
+        };
+        const who = document.querySelector<HTMLElement>(".statusbar .team-follow .tf-who");
+        return {
+          notes: [...document.querySelectorAll(".statusbar .update-note.bad"), document.querySelector(".statusbar .update-link"), document.querySelector(".statusbar .hooks-bad")].map(shown),
+          stop: whole(document.querySelector(".statusbar .team-follow button")),
+          words: who?.textContent ?? null,
+          cut: !!who && who.scrollWidth > who.clientWidth + 0.5,
+          title: document.querySelector<HTMLElement>(".statusbar .team-follow")?.title ?? null,
+          // what takes the bar's width, for a failure to say
+          parts: [...document.querySelector<HTMLElement>(".statusbar")!.querySelectorAll(":scope > *, :scope > .right > *")].map((c) => `${c.className || c.tagName}: ${Math.round(c.getBoundingClientRect().width)} ${c.textContent?.slice(0, 30)}`),
+          width: Math.round(bar.width),
+        };
+      };
+      out.before = measure();
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
+      if (!(await until(() => !!document.querySelector(".palette"), 2000))) throw new Error("⌘K opened no palette");
+      typeInto(".palette input", "Follow Nick");
+      await sleep(300);
+      const row = [...document.querySelectorAll<HTMLElement>(".palette .results .row")].find((r) => r.querySelector(".lab")?.textContent?.startsWith("Follow Nick"));
+      if (!row) throw new Error("⌘K offers no Follow Nick");
+      row.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      if (!(await until(() => !!document.querySelector(".statusbar .team-follow.on"), 3000))) throw new Error("following Nick isn't said in the status bar");
+      await sleep(400);
+      out.following = measure();
+      live.views = live.views.filter((v) => v.member !== NICK);
+      emit("onTeamLive", clone(live));
+      await sleep(600);
+      out.waiting = measure();
+      document.querySelector<HTMLElement>(".statusbar .team-follow button")?.click();
+      await sleep(300);
+      out.stopped = !document.querySelector(".statusbar .team-follow");
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    const tag = document.createElement("script");
+    tag.type = "application/json";
+    tag.id = "mb-status-audit";
     tag.textContent = JSON.stringify(out);
     document.body.appendChild(tag);
   })();

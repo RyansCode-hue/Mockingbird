@@ -22,6 +22,12 @@ export function listNames(names: string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
+/** The tooltip of a taken-over copy's pane note: who goes on with it (`byName`: whoever continues it now), and that it left the room. */
+export function takenOverNoteTitle(t: NonNullable<RoomSessionTag["takenOver"]>): string {
+  const what = t.back ? "This session was taken back into another session here, which goes on with it." : `${t.byName} continues this session on their laptop.`;
+  return `${what} This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.`;
+}
+
 /**
  * A room session's second line: whose it is, whether it runs, and who's
  * looking at it — "Nick's session · live · Nick is in it". The owner's

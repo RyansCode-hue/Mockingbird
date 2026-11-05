@@ -265,6 +265,11 @@ describe("take-over over live panes", () => {
     turn(t.ryan.sessions, t.s.id);
     await t.ryanRun.tk.settled();
     expect(backupIn(t.ryanM, t.roomId, t.s.id)!.latest.sha).toBe(before);
+    // moved to a group that isn't the room's: the window still has it taken over, from the room that took it, as main does
+    t.ryan.sessions.setGroup(t.s.id, "elsewhere");
+    expect(t.ryanRun.live.state().own[t.s.id]).toMatchObject({ roomId: t.roomId, takenOver: { by: t.nickM.id, byName: "Nick" } });
+    expect(t.ryanRun.tk.takenOverRefusal(t.s.id, "handing this copy on")).toMatch(/continues on Nick's laptop — take it back rather than handing this copy on$/);
+    await expect(t.ryan.sessions.relaunch(t.s.id)).rejects.toThrow(/continues on Nick's laptop/);
   });
 
   it("tells the window when a session's owner goes away, so Take over can lead", async () => {

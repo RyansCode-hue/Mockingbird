@@ -171,15 +171,20 @@ export function Lookers({ room }: { room: RoomSessionTag }) {
 }
 
 /** Following someone, or who can be followed, for the group bar: who to follow only in a shared group. */
-/** Following a teammate, said once for the whole window (its status bar), whichever room they're in: who, and Stop. */
+/**
+ * Following a teammate, said once for the whole window (its status bar), whichever room they're in: who, and Stop.
+ * Short of room, its words give way (cut with an ellipsis, in full on hover) before anything else in the bar does;
+ * Stop always shows.
+ */
 export function FollowingNow({ follow }: { follow: Follow }) {
   if (!follow.leader) return null;
   const away = !follow.leader.view;
   const who = firstName(follow.leader.name);
+  const said = away ? `Following ${who} — waiting for a shared session` : `Following ${who}`;
   return (
-    <span className="team-follow on" title={`Your grid mirrors what ${follow.leader.name} shows. Changing your grid stops it.`}>
+    <span className="team-follow on" title={`${said}. Your grid mirrors what ${follow.leader.name} shows. Changing your grid stops it.`}>
       <ReadIcon />
-      {away ? `Following ${who} — waiting for a shared session` : `Following ${who}`}
+      <span className="tf-who">{said}</span>
       <button className="gb-btn" onClick={follow.stop}>
         Stop
       </button>

@@ -8,6 +8,8 @@ const api = {
   resumableSessions: () => ipcRenderer.invoke("sessions:resumable"),
   createSession: (req: unknown) => ipcRenderer.invoke("sessions:create", req),
   relaunchSession: (id: string) => ipcRenderer.invoke("sessions:relaunch", id),
+  /** Why session `id` mustn't run again here (a teammate took it over), or null: asked before a resume undoes anything. */
+  relaunchRefusal: (id: string): Promise<string | null | { error: string }> => ipcRenderer.invoke("sessions:relaunchRefusal", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),
   restartAllSessions: (includeBusy: boolean) => ipcRenderer.invoke("sessions:restartAll", includeBusy),
   sessionWrite: (id: string, data: string) => ipcRenderer.send("session:write", id, data),

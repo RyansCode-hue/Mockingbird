@@ -72,7 +72,7 @@ import { TeamRoom } from "./team/teamRoom";
 import { forgetViewsWith } from "./team/chat";
 // team rooms: take-over
 import { liveRoomHost, TakeoverService } from "./team/takeover";
-import { refuseTakenOver, type UntakenCall } from "./takenOverGuard";
+import { untakenHandler, type UntakenDeps } from "./takenOverGuard";
 import type { TakeoverView } from "../shared/team/takeover";
 import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
@@ -749,6 +749,7 @@ handle("sessions:create", async (req) => {
   return info;
 });
 handle("sessions:relaunch", (id) => sessions.relaunch(id));
+handle("sessions:relaunchRefusal", (id) => sessions.relaunchGuard?.(String(id)) ?? null);
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {
   // a pane closed to resume isn't live any more, but forgetting it later must still find it
@@ -821,12 +822,8 @@ function sessionOf(id: string): SessionInfo {
   if (!s) throw new Error("Session is no longer running");
   return s;
 }
-/** Session `id` for IPC call `call`, refused for a copy a teammate took over (takenOverGuard.ts). */
-function untakenSessionOf(id: string, call: UntakenCall): SessionInfo {
-  const s = sessionOf(id);
-  refuseTakenOver(s.id, call, takeover ? (sid, doing) => takeover!.takenOverRefusal(sid, doing) : null);
-  return s;
-}
+/** What the handlers that refuse a copy a teammate took over look sessions up with (takenOverGuard.ts). */
+const untaken: UntakenDeps<SessionInfo> = { sessionOf, refusal: () => (takeover ? (sid, doing) => takeover!.takenOverRefusal(sid, doing) : null) };
 // The explorer addresses files by session id + relative path, so the renderer
 // can only reach into folders a live session actually runs in.
 const sessionRoot = (sessionId: string) => sessionOf(sessionId).cwd;
@@ -975,12 +972,14 @@ handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
   }
 });
 // a session of the same agent in the same folder and group, started from the brief
-handle("usage:briefStart", (id: string, brief: string) => {
-  const s = untakenSessionOf(String(id), "usage:briefStart");
-  const text = String(brief ?? "").trim();
-  if (!text) throw new Error("The brief is empty");
-  return companionSession(s, s.agent ?? "claude", `${s.ticketTitle ?? s.title} · fresh`, text);
-});
+handle(
+  "usage:briefStart",
+  untakenHandler("usage:briefStart", untaken, (s, brief: unknown) => {
+    const text = String(brief ?? "").trim();
+    if (!text) throw new Error("The brief is empty");
+    return companionSession(s, s.agent ?? "claude", `${s.ticketTitle ?? s.title} · fresh`, text);
+  })
+);
 handle("hooks:installed", async () => hooksInstalled(await installedBin("codex")));
 handle("hooks:install", async () => installHooks(await installedBin("codex")));
 handle("app:version", () => app.getVersion());
@@ -1423,14 +1422,16 @@ handle("handoff:draft", async (id) => {
   return { handoff, from, to };
 });
 // a session of the other agent in the same folder and group, started with the handoff
-handle("handoff:start", (id, handoff) => {
-  const s = untakenSessionOf(String(id), "handoff:start");
-  const text = String(handoff ?? "").trim();
-  if (!text) throw new Error("The handoff is empty");
-  const from: AgentKind = s.agent ?? "claude";
-  const to = otherAgent(from);
-  return companionSession(s, to, `${s.ticketTitle ?? s.title} · ${to}`, handoffKickoff(from, text));
-});
+handle(
+  "handoff:start",
+  untakenHandler("handoff:start", untaken, (s, handoff: unknown) => {
+    const text = String(handoff ?? "").trim();
+    if (!text) throw new Error("The handoff is empty");
+    const from: AgentKind = s.agent ?? "claude";
+    const to = otherAgent(from);
+    return companionSession(s, to, `${s.ticketTitle ?? s.title} · ${to}`, handoffKickoff(from, text));
+  })
+);
 
 // ---- editor intelligence: language servers per session folder ----
 const lsp = new LspManager({
@@ -1713,23 +1714,25 @@ handle("turns:changes", (id, n) => {
   const s = sessionOf(String(id));
   return changesSince(s.cwd, s.id, Number(n));
 });
-handle("turns:restore", (id, n) => {
-  const s = untakenSessionOf(String(id), "turns:restore");
-  return restoreSnapshot(s.cwd, s.id, Number(n));
-});
+handle(
+  "turns:restore",
+  untakenHandler("turns:restore", untaken, (s, n: unknown) => restoreSnapshot(s.cwd, s.id, Number(n)))
+);
 
 // ---- cross-agent review: the other agent reviews this session's branch and reports back ----
-handle("review:start", async (id) => {
-  const s = untakenSessionOf(String(id), "review:start");
-  if (s.shell) throw new Error("A terminal has no agent's work to review");
-  if (!s.repoPath) throw new Error("This session isn't in a repository");
-  const author: AgentKind = s.agent ?? "claude";
-  const reviewer = otherAgent(author);
-  if (!(await installedBin(reviewer))) throw new Error(`${agentLabel(reviewer)} isn't installed — set it up in Settings → Agents`);
-  const base = await baseRef(s.cwd);
-  const prompt = reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base });
-  return companionSession(s, reviewer, `Review · ${s.ticketTitle ?? s.title}`, prompt);
-});
+handle(
+  "review:start",
+  untakenHandler("review:start", untaken, async (s) => {
+    if (s.shell) throw new Error("A terminal has no agent's work to review");
+    if (!s.repoPath) throw new Error("This session isn't in a repository");
+    const author: AgentKind = s.agent ?? "claude";
+    const reviewer = otherAgent(author);
+    if (!(await installedBin(reviewer))) throw new Error(`${agentLabel(reviewer)} isn't installed — set it up in Settings → Agents`);
+    const base = await baseRef(s.cwd);
+    const prompt = reviewPrompt({ author, authorId: s.id, authorTitle: s.ticketTitle ?? s.title, branch: s.branch, base });
+    return companionSession(s, reviewer, `Review · ${s.ticketTitle ?? s.title}`, prompt);
+  })
+);
 
 // a short announcement for the people who use the system, from the ticket and its PRs
 handle("pipeline:comms", async (ticketId, title, details) => {

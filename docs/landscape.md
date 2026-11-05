@@ -82,7 +82,9 @@ together so work and context flow between them.
   **Codex**, **Terminal**, **Collab**, **Browser**, **From a ticket…** (today's ticket
   popover), **Import…**. It's created where you clicked (or the nearest free
   spot). Inside an area, it joins that area's group and defaults to the area's
-  repo, and the menu goes on with the area's own actions.
+  repo, and the menu goes on with the area's own actions. A full area grows
+  towards its edge nearer the click, and any area in the way moves out of the
+  way; the area clicked never moves.
 - **Size is the terminal's size.** A workspace's width and height at 100% zoom
   set its pty's columns and rows. Zooming only scales it, as a teammate's pane
   is scaled today (`followFixedSize`), so zooming never makes the agent
@@ -154,7 +156,9 @@ together so work and context flow between them.
   stack moves, wires and focuses as one. A wire to a stacked workspace attaches
   to the stack and names its tab.
 - **Collapse** shrinks an area to a pill showing its name, its number of
-  workspaces and its waiting count. **Lock** freezes an area's layout.
+  workspaces and its waiting count. **Lock** freezes an area's layout: its
+  workspaces keep their places. The area itself still moves out of the way,
+  as a whole, when another grows into it.
 
 ## Focus
 

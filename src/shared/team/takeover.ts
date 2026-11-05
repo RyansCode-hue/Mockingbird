@@ -450,6 +450,36 @@ export function continuation(state: TakeoverRoomState | undefined, sessionId: st
   throw new Error(`session ${sessionId}'s take-overs go round in a circle`);
 }
 
+/**
+ * Whether a teammate took over session `sessionId` of `self`'s, in any of `rooms`: the room, who took it and when, its
+ * title, and who continues it now (the end of its take-overs: `self` once it was taken back into another session
+ * here). Null when no one did. Main's refusals (TakeoverService.takenOverRefusal) and the window's flag (livePanes'
+ * `room.takenOver`) both come from this, wherever the session's group is now, so the two never disagree.
+ */
+export function takenOverOwn(
+  rooms: Iterable<{ id: RoomId; ext: { takeover?: TakeoverRoomState } }>,
+  self: MemberId,
+  sessionId: string
+): { roomId: RoomId; by: MemberId; at: number; title: string; now: MemberId } | null {
+  for (const room of rooms) {
+    const e = room.ext.takeover?.sessions[sessionId];
+    if (!e?.takenOver || e.owner !== self) continue;
+    return { roomId: room.id, by: e.takenOver.by, at: e.takenOver.at, title: e.session.title, now: continuation(room.ext.takeover, sessionId)?.owner ?? e.takenOver.by };
+  }
+  return null;
+}
+
+/**
+ * The window's `room.takenOver` tag for copy `t` (takenOverOwn's): who continues it now, at the end of its take-overs
+ * (Ryan's taken by Nick, then from Nick by Sam: Sam), named by `nameOf`; once it was taken back here, `back` and who
+ * took it.
+ */
+export function takenOverTag(t: { by: MemberId; at: number; now: MemberId }, self: MemberId, nameOf: (m: MemberId) => string): { by: MemberId; byName: string; at: number; back?: true } {
+  const back = t.now === self;
+  const by = back ? t.by : t.now;
+  return { by, byName: nameOf(by), at: t.at, ...(back ? { back: true as const } : {}) };
+}
+
 /** The words for a left copy's state, for its row and pane. */
 export function leftCopyText(l: Pick<LeftCopy, "now" | "byName">): string {
   return l.now.self ? "Taken back: it continues in another session here" : `Continued on ${l.now.ownerName}'s laptop`;

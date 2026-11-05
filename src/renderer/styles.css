@@ -2116,6 +2116,15 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .statusbar { overflow-x: clip; overflow-y: visible; }
 .statusbar > * { white-space: nowrap; flex-shrink: 0; }
 .statusbar > .sb-update { flex-shrink: 0; max-width: none; }
+/* short of room, the counts and hints at the end give way first, then following a teammate's words (cut, in full on
+   hover); the notes before them (a read that failed, an update's trouble, the hooks) never give way, and what's past
+   the bar's end is clipped after them, never them first */
+.statusbar > .right { flex-shrink: 1; min-width: 0; }
+.statusbar > .right > * { flex-shrink: 0; }
+.statusbar > .right > .sb-info { flex-shrink: 1000; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusbar > .right > .team-follow { flex-shrink: 10; min-width: 0; overflow: hidden; }
+.statusbar > .right > .team-follow .tf-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusbar > .right > .team-follow > .ico, .statusbar > .right > .team-follow > button { flex-shrink: 0; }
 /* the folder cell clips its name, never its Files button (after the cell's own inline-flex rule) */
 .rail .cell.folder .v { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rail .cell.folder .v .fn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }

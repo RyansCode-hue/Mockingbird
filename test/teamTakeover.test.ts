@@ -17,7 +17,7 @@ import { grantProblem, signGrant } from "../src/main/team/takeoverGrants";
 import { offlineTakeoverRefusal } from "../src/main/team/takeover";
 import { refuseTakenOver, UNTAKEN_CALLS, type UntakenCall } from "../src/main/takenOverGuard";
 import { ConnectionLog, connectedThen, CONNECTED_KEEP_MS } from "../src/main/team/connectionLog";
-import { backupFreshness, HANDOVER_GRANT_MS, NOT_ALLOWED, NOT_PUSHED, remoteLabel, type TakeoverGrant, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
+import { backupFreshness, HANDOVER_GRANT_MS, NOT_ALLOWED, NOT_PUSHED, remoteLabel, takenOverOwn, takenOverTag, type TakeoverGrant, type TakeoverRoomState, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
 import type { NewSessionRequest, SessionInfo } from "../src/shared/types";
 
 const CONV = "7f3c2a10-1b2c-4d5e-8f90-a1b2c3d4e5f6";
@@ -195,6 +195,30 @@ const rejectPushes = (bare: string, on: boolean) => {
   if (on) fs.writeFileSync(hook, "#!/bin/sh\necho 'backups are switched off here' >&2\nexit 1\n", { mode: 0o755 });
   else fs.rmSync(hook, { force: true });
 };
+
+describe("a copy a teammate took over (takenOverOwn: main's refusals and the window's flag)", () => {
+  // Ryan's s1, taken over by Nick (n5), then from Nick by Sam (m9)
+  const backup = (sessionId: string, owner: string, title: string, takenOver: { by: string; newSessionId: string } | null) => ({ sessionId, owner, session: { title }, takenOver: takenOver && { ...takenOver, at: 100 } });
+  const state = (sessions: ReturnType<typeof backup>[]) => ({ sessions: Object.fromEntries(sessions.map((b) => [b.sessionId, b])) }) as unknown as TakeoverRoomState;
+  const chain = state([backup("s1", "ryan", "Donor entities", { by: "nick", newSessionId: "n5" }), backup("n5", "nick", "Donor entities", { by: "sam", newSessionId: "m9" }), backup("m9", "sam", "Donor entities", null)]);
+  it("is found in whichever room took it over, and names who continues it now, at the end of its take-overs", () => {
+    const rooms = [{ id: "other", ext: {} }, { id: "r1", ext: { takeover: chain } }];
+    expect(takenOverOwn(rooms, "ryan", "s1")).toEqual({ roomId: "r1", by: "nick", at: 100, title: "Donor entities", now: "sam" });
+    // Nick's copy, from Nick's side: Sam has it
+    expect(takenOverOwn(rooms, "nick", "n5")).toMatchObject({ by: "sam", now: "sam" });
+    // not this install's, or not taken over: none
+    expect(takenOverOwn(rooms, "nick", "s1")).toBeNull();
+    expect(takenOverOwn(rooms, "sam", "m9")).toBeNull();
+    // the window's tag names Sam, not Nick who took it from Ryan
+    expect(takenOverTag(takenOverOwn(rooms, "ryan", "s1")!, "ryan", (m) => m.toUpperCase())).toEqual({ by: "sam", byName: "SAM", at: 100 });
+  });
+  it("taken back into another session here: it continues with this install", () => {
+    const back = state([backup("s1", "ryan", "Donor entities", { by: "nick", newSessionId: "n5" }), backup("n5", "nick", "Donor entities", { by: "ryan", newSessionId: "s2" }), backup("s2", "ryan", "Donor entities", null)]);
+    expect(takenOverOwn([{ id: "r1", ext: { takeover: back } }], "ryan", "s1")).toMatchObject({ by: "nick", now: "ryan" });
+    // the tag says it's back, and who had taken it
+    expect(takenOverTag(takenOverOwn([{ id: "r1", ext: { takeover: back } }], "ryan", "s1")!, "ryan", (m) => m.toUpperCase())).toEqual({ by: "nick", byName: "NICK", at: 100, back: true });
+  });
+});
 
 describe("room session backups", () => {
   it("pushes each turn's snapshot to a hidden ref on origin — never a branch — and records it in the room", async () => {

@@ -147,6 +147,17 @@ export function nextToClose(queue: readonly string[], sessions: readonly Session
 }
 
 /**
+ * The close queue's next step: none while one of it is being closed or a close dialog is open (a queued close waits
+ * for it, never replacing it), nor with nothing queued; else the next of `queue` as it is now (nextToClose), with the
+ * ids it takes off the queue (those closed meanwhile, and it).
+ */
+export function closeStep(queue: readonly string[], sessions: readonly SessionInfo[], busy: { closing: boolean; dialog: boolean }): { next: SessionInfo | null; taken: string[] } | null {
+  if (busy.closing || busy.dialog || !queue.length) return null;
+  const { next, rest } = nextToClose(queue, sessions);
+  return { next, taken: queue.slice(0, queue.length - rest.length) };
+}
+
+/**
  * Session `id`'s close, needing its dialog while `open` is the session whose close dialog is open (null: none): null
  * to ask now, or the queue with `id` first, to be asked once that one's answered. One dialog never replaces another's.
  */

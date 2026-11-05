@@ -13,6 +13,24 @@ export const UNTAKEN_CALLS = {
 
 export type UntakenCall = keyof typeof UNTAKEN_CALLS;
 
+/** What the guarded handlers need: a session by id (throwing once it's gone), and the take-over check (null when team rooms didn't start). */
+export interface UntakenDeps<S extends { id: string }> {
+  sessionOf: (id: string) => S;
+  refusal: () => ((id: string, doing: string) => string | null) | null;
+}
+
+/**
+ * The IPC handler for `call`: it looks its session up by its first argument and refuses a copy a teammate took over
+ * (refuseTakenOver) before `body` runs with it and the call's other arguments.
+ */
+export function untakenHandler<S extends { id: string }, A extends unknown[], R>(call: UntakenCall, deps: UntakenDeps<S>, body: (s: S, ...args: A) => R): (id: unknown, ...args: A) => R {
+  return (id, ...args) => {
+    const s = deps.sessionOf(String(id));
+    refuseTakenOver(s.id, call, deps.refusal());
+    return body(s, ...args);
+  };
+}
+
 /**
  * Throws why session `id` can't have `call` done to it when a teammate took it over (`refusal`: TakeoverService's
  * takenOverRefusal; null when team rooms didn't start, so nothing was taken over). A copy from a take-over its owner

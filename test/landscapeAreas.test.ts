@@ -41,7 +41,6 @@ import {
   areaAround,
   clearOf,
   emptyLandscape,
-  fixedInWay,
   overlaps,
   parseLandscape,
   presetSize,
@@ -127,20 +126,13 @@ describe("areas' rectangles", () => {
     expect(pushAside({ a: area(0, 0, 100, 100), b: area(400, 0, 100, 100) }, "a")).toEqual({});
   });
 
-  it("never pushes a fixed (locked) rectangle: one pushed into it goes on past it, and the grown one's own clash is reported", () => {
-    // b is pushed right, into locked c: c stays, b goes past it
-    const rects = { a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400), c: area(1490, 0, 300, 300) };
-    const m = pushAside(rects, "a", AREA_GAP, new Set(["c"]));
-    expect(m.c).toBeUndefined();
-    const b = shiftedBy(rects.b, m.b);
-    expect(overlaps(b, rects.c, AREA_GAP - 1e-6)).toBe(false);
-    expect(overlaps(b, rects.a, AREA_GAP - 1e-6)).toBe(false);
-    // a grown into locked b itself: pushAside can't help, fixedInWay says which
-    expect(fixedInWay({ a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400) }, "a", new Set(["b"]))).toBe("b");
-    expect(fixedInWay({ a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400) }, "a", new Set())).toBeNull();
-    function shiftedBy(r: Rect, d: { dx: number; dy: number } | undefined) {
-      return d ? { ...r, x: r.x + d.dx, y: r.y + d.dy } : r;
-    }
+  it("pushes a locked area like any other, the grown one staying where it is, so they all end apart", () => {
+    const rects = { a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400, { locked: true }), c: area(1490, 0, 300, 300, { locked: true }) };
+    const m = pushAside(rects, "a");
+    expect(m.a).toBeUndefined();
+    expect(m).toEqual({ b: { dx: 44, dy: 0 }, c: { dx: 38, dy: 0 } });
+    const at = Object.fromEntries(Object.entries(rects).map(([k, r]) => [k, m[k] ? { ...r, x: r.x + m[k].dx, y: r.y + m[k].dy } : r]));
+    for (const [j, k] of [["a", "b"], ["a", "c"], ["b", "c"]]) expect(overlaps(at[j], at[k], AREA_GAP - 1e-6), `${j} and ${k}`).toBe(false);
   });
 
   it("follows a group's rename: its area, stacks and ghosts under the new name, folded and locked as they were", () => {
@@ -552,25 +544,35 @@ describe("making and moving areas", () => {
     expect(overlaps(p.patch!.workspaces!.loose1!, l2.workspaces.prev)).toBe(false);
   });
 
-  it("never pushes a locked area aside: a drop that would grow into one is refused, and an area growing into one moves clear", () => {
+  it("pushes a locked area aside as a whole, what's in it kept where it is in it: a drop that grows into one, and an area growing into one", () => {
     const l = base();
     const a = l.areas.A;
     l.areas.L = area(a.x + a.w + AREA_GAP, 0, 1000, a.h, { locked: true });
     l.workspaces.l1 = { x: l.areas.L.x + AREA_PAD, y: AREA_HEADER, ...M };
-    const layout = resolveLayout(l, shown);
-    // dropped past A's right edge, A would grow into L
-    expect(planMoveTile(l, layout, "loose1", { x: a.x + a.w - 100, y: AREA_HEADER }, "A", (k) => `area ${k}`)).toEqual({
-      refused: "area L is locked, so area A can't grow into its space: drop it further in, or unlock area L",
-    });
-    // a new session in a full A grows it downward, into locked L below: L stays, and A moves clear with its workspaces
+    const both = [...shown, session("l1", { taskGroup: "L" })];
+    const layout = resolveLayout(l, both);
+    // dropped past A's right edge: A grows into L's space, and L moves right with l1 the same way, still locked
+    const drop = ready(planMoveTile(l, layout, "loose1", { x: a.x + a.w - 100, y: AREA_HEADER }, "A", (k) => `area ${k}`));
+    const after = applyPatch(l, drop.patch!);
+    expect(after.areas.A).toMatchObject({ x: a.x, y: a.y });
+    const dx = after.areas.L.x - l.areas.L.x;
+    expect(dx).toBeGreaterThan(0);
+    expect(after.areas.L).toMatchObject({ y: l.areas.L.y, w: l.areas.L.w, h: l.areas.L.h, locked: true });
+    expect(after.workspaces.l1).toEqual({ ...l.workspaces.l1, x: l.workspaces.l1.x + dx });
+    expect(overlaps(after.areas.A, after.areas.L, AREA_GAP - 1e-6)).toBe(false);
+    // a new session in a full A grows it downward, into locked L below: A stays, L moves down with l1
     l.areas.L = area(0, a.y + a.h + AREA_GAP, a.w, a.h, { locked: true });
     l.workspaces.l1 = { x: AREA_PAD, y: l.areas.L.y + AREA_HEADER, ...M };
-    const grown = resolveLayout(l, [...shown, session("a9", { taskGroup: "A" }), session("l1", { taskGroup: "L" })]);
+    const grown = resolveLayout(l, [...both, session("a9", { taskGroup: "A" })]);
     apart(grown);
-    expect(grown.patch?.areas?.L).toBeUndefined();
-    expect(grown.patch?.workspaces?.l1).toBeUndefined();
     const ga = grown.areas.find((x) => x.key === "A")!.rect;
+    expect(ga).toMatchObject({ x: a.x, y: a.y });
     expect(ga.h).toBeGreaterThan(a.h);
+    const gl = grown.areas.find((x) => x.key === "L")!.rect;
+    const dy = gl.y - l.areas.L.y;
+    expect(dy).toBeGreaterThan(0);
+    expect(gl).toMatchObject({ x: l.areas.L.x, locked: true });
+    expect(grown.tiles.find((t) => t.key === "l1")!.rect).toEqual({ ...l.workspaces.l1, y: l.workspaces.l1.y + dy });
     for (const t of grown.tiles.filter((x) => x.area === "A")) expect(inside(t.rect, ga)).toBe(true);
   });
 

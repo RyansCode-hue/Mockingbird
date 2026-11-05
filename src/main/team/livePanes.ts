@@ -38,7 +38,7 @@ import {
   TYPING_MINUTES,
 } from "../../shared/team/livePanes";
 import { quoted } from "../../shared/team/agentText";
-import { continuation } from "../../shared/team/takeover";
+import { takenOverOwn, takenOverTag } from "../../shared/team/takeover";
 import type { RemoteAudit } from "./remoteAudit";
 import type { MemberId, RoomId, RoomState } from "../../shared/team/types";
 import type { LaunchTarget, RemotePanes, RoomLaunch, SessionManager } from "../sessions";
@@ -360,7 +360,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   /** The room a session of this install's is in: its group's, unless a teammate took it over (then this copy has left the room). */
   private roomOfInfo(s: SessionInfo): RoomId | null {
     const roomId = this.groupRoomOf(s);
-    return roomId && !this.takenOverOwn(roomId, s.id) ? roomId : null;
+    return roomId && !this.takenOverInRoom(roomId, s.id) ? roomId : null;
   }
 
   /** The room a session's group is shared as, taken over or not. */
@@ -369,7 +369,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
   }
 
   /** A teammate took this install's session `sessionId` over in `roomId`: who and when; null when not. */
-  private takenOverOwn(roomId: RoomId, sessionId: string): { by: MemberId; at: number } | null {
+  private takenOverInRoom(roomId: RoomId, sessionId: string): { by: MemberId; at: number } | null {
     const team = this.d.team();
     const b = team?.room(roomId)?.ext.takeover?.sessions[sessionId];
     return b?.takenOver && b.owner === team!.self.id ? b.takenOver : null;
@@ -632,7 +632,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const id = (params as { session?: unknown })?.session;
     if (typeof id !== "string" || !roomId) throw new PeerError("name a session and its room");
     const s = this.d.sessions.list().find((x) => x.id === id);
-    const taken = s && this.groupRoomOf(s) === roomId ? this.takenOverOwn(roomId, s.id) : null;
+    const taken = s && this.groupRoomOf(s) === roomId ? this.takenOverInRoom(roomId, s.id) : null;
     if (taken) throw new PeerError(`that session was taken over by ${memberNameIn(this.d.team(), roomId, taken.by)}: it runs on their Mac now`);
     if (!s || this.roomOfInfo(s) !== roomId) throw new PeerError("that session isn't running in this room");
     return s;
@@ -1412,11 +1412,13 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     };
     for (const s of [...this.d.sessions.list(), ...this.d.sessions.resumable()]) {
       if (own[s.id]) continue;
-      const roomId = this.groupRoomOf(s);
+      // a copy a teammate took over is tagged so from the room it was taken over in, wherever its group is now: main
+      // refuses what it refuses by the same rule (takenOverOwn)
+      const taken = takenOverOwn(team.rooms(), self, s.id);
+      const roomId = this.groupRoomOf(s) ?? taken?.roomId ?? null;
       if (!roomId) continue;
       const pub = this.published.get(`${roomId}\n${s.id}`)?.rec;
       const out = this.d.sessions.paneOutput(s.id);
-      const taken = this.takenOverOwn(roomId, s.id);
       own[s.id] = {
         roomId,
         sessionId: s.id,
@@ -1435,16 +1437,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         inlineOnStart: this.d.settings().roomSessionsInline !== false,
         typists: [...(this.grants.get(s.id)?.values() ?? [])].filter((g) => roomId === g.roomId && (g.until === null || g.until > this.now())).map(({ roomId: _r, ...g }) => g),
         typingAsks: [...(this.asks.get(s.id)?.values() ?? [])].filter((a) => roomId === a.roomId).map(({ roomId: _r, ...a }) => a),
-        ...(taken
-          ? {
-              takenOver: {
-                by: taken.by,
-                byName: memberNameIn(team, roomId, taken.by),
-                at: taken.at,
-                ...(continuation(team.room(roomId)?.ext.takeover, s.id)?.owner === self ? { back: true as const } : {}),
-              },
-            }
-          : {}),
+        ...(taken ? { takenOver: takenOverTag(taken, self, (m) => memberNameIn(team, taken.roomId, m)) } : {}),
       };
     }
     return { remote, own, views, problems: this.problems };
