@@ -52,7 +52,7 @@ import {
 } from "./layoutTree";
 import { GridPreview } from "./GridPreview";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
-import { cellKeyFor, cellKeyOf, frontOf, groupChoices, inReadingOrder, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
+import { cellKeyFor, cellKeyOf, frontOf, groupChoices, inReadingOrder, nextToClose, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon, MinusIcon, GridIcon, PencilIcon, MoveIcon, CloseIcon, PlusIcon, NoteIcon } from "./Icons";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
@@ -115,12 +115,12 @@ import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } fr
 // the landscape (Settings → Labs)
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type MovesFailed } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
-import { accentOf, accentsOf, areaCounts, areaSummary, cardShelf, cardsAfterShare, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, presetFor, readProblem, renameSettled, resolveLayout, sameScope, selectionFor, tileSize, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, presetFor, readProblem, renameSettled, resolveLayout, sameScope, selectionFor, tileSize, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
-import { actionOf, createActions, inSection, menuOf, workspaceActions, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { actionOf, areaActions as areaModel, createActions, menuOf, workspaceActions, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
-import { AreaHeader, GroupBar, messageModeEntries, stageChip, type GroupBarProps } from "./GroupBar";
+import { AreaHeader, GroupBar, stageChip, type GroupBarProps } from "./GroupBar";
 import { AreaTree, treeCounts, treeOf, type TreeArea } from "./AreaTree";
 import { MembersMenu } from "./team/MembersMenu";
 import { settled } from "./settled";
@@ -308,7 +308,7 @@ function App() {
   const [placeHint, setPlaceHint] = useState<(PlaceHint & { created?: boolean; took?: string; until?: number }) | null>(null);
   // several workspaces' Close…: asked once (closeMany), then each closed as its own Close would, one dialog at a time
   const [closeMany, setCloseMany] = useState<SessionInfo[] | null>(null);
-  const [closeQueue, setCloseQueue] = useState<SessionInfo[]>([]);
+  const [closeQueue, setCloseQueue] = useState<string[]>([]);
   // a lone pane's "+" promotes it to a workspace, but only once the new session
   // actually exists — cancelling the dialog must leave the pane exactly as it was
   const [pendingWs, setPendingWs] = useState<{ id: string; key: string } | null>(null);
@@ -1043,6 +1043,13 @@ function App() {
   useEffect(() => {
     if (focused) setSelArea(null);
   }, [focused]);
+  // an area renamed or merged stays selected under its new key; one removed is let go, so no tool, key or Esc acts on
+  // an area that isn't there
+  useEffect(() => {
+    if (!selArea || !landscapeLayout) return;
+    const now = areaSelectionNow(selArea, landscapeLayout.areas.map((a) => a.key), lsRenames);
+    if (now !== selArea) setSelArea(now);
+  }, [selArea, landscapeLayout, lsRenames]);
   const landscapeHandled = (n: number) => {
     setReveal((r) => (r?.n === n ? null : r));
     setGoTo((g) => (g?.n === n ? null : g));
@@ -1534,22 +1541,28 @@ function App() {
     if (!st.dirty && st.ahead === 0) return closeNow(s, true);
     setCloseDlg({ session: s, wt: st });
   };
-  // several closed at once (the selection bar's Close…): one at a time, each waiting for the dialog the one before it
-  // opened; cancelling one's dialog keeps that one and goes on with the rest
+  // several closed at once (the selection bar's Close…): one at a time, each as it is now (one closed meanwhile is
+  // skipped), each waiting for the dialog the one before it opened; cancelling one's dialog keeps that one and goes on
+  // with the rest, and one that fails is said and the rest go on
   const closingNow = useRef(false);
   const [closeTurn, setCloseTurn] = useState(0);
   useEffect(() => {
     if (closingNow.current || closeDlg || !closeQueue.length) return;
-    const [next, ...rest] = closeQueue;
-    closingNow.current = true;
+    const { next, rest } = nextToClose(closeQueue, sessions);
     setCloseQueue(rest);
+    if (!next) return;
+    closingNow.current = true;
     void requestClose(next)
-      .catch((err) => alert(`Couldn't close ${titleOf(next)}: ${err instanceof Error ? err.message : String(err)}`))
+      .catch((err) => {
+        const why = err instanceof Error ? err.message : String(err);
+        console.error(`[mockingbird] closing ${next.id} with several others failed:`, err);
+        lsSay(`Couldn't close ${titleOf(next)} (${why}); the others go on closing`);
+      })
       .finally(() => {
         closingNow.current = false;
         setCloseTurn((n) => n + 1);
       });
-  }, [closeQueue, closeDlg, closeTurn]);
+  }, [closeQueue, closeDlg, closeTurn, sessions]);
 
   /** A session continued in a new one (a handoff, or a fresh session from a brief): beside it, or in its place when it's closed. */
   const placeContinuation = async (old: SessionInfo, next: SessionInfo, closeOld: boolean) => {
@@ -2102,6 +2115,7 @@ function App() {
       move: () => setGroupDlg(s),
       resize: (p) => t && resizeWorkspace(t.key, p),
       tool: (k) => (landscapeOn ? showTool(k, s) : (setFocused(s.id), showView(({ files: "explorer", changes: "scm", search: "search", run: "run" } as const)[k]))),
+      artifacts: !landscapeOn ? null : areaKeyOf(s) === LOOSE_GROUP ? { no: "It's in no area: artifacts are kept by area" } : () => showTool("artifacts", null, areaKeyOf(s)),
       repaint: () => void resyncTerm(s.id),
       hidePanel: () => {
         if (!hideAgentPanel(s.id)) lsSay("The agent's diff panel isn't open any more");
@@ -2118,6 +2132,21 @@ function App() {
   const tileOfSession = (id: string) => landscapeLayout?.tiles.find((t) => t.members.some((m) => m.id === id)) ?? null;
   /** A landscape workspace's actions: its front session's, with its size. */
   const actionsFor = (t: Tile): ModelAction[] => workspaceActions(t.front, wsEnv(t.front, t));
+  /**
+   * Session `s`'s action `key` as its model has it, for what offers it outside the model's menus (the context chip,
+   * the grid's pane header, ⌘K): its handler only while the model allows it (not on a copy a teammate took over, a
+   * teammate's session or a terminal), so none of them can run what the menus refuse.
+   */
+  const sessionAction = (s: SessionInfo, key: string): ModelAction | undefined => actionOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))), key);
+  const offered = (s: SessionInfo, key: string): (() => void) | undefined => {
+    const a = sessionAction(s, key);
+    return a && !a.disabled ? () => a.onPick() : undefined;
+  };
+  /** Its context warning chip, with the model's Fresh session from a brief row (off, saying why, where it can't be). */
+  const contextChipFor = (s: SessionInfo) => {
+    const brief = sessionAction(s, "brief");
+    return !s.shell && !isRemote(s) && brief ? <ContextWarning session={s} brief={brief} /> : undefined;
+  };
   /** What a workspace's header chips and footer show (WorkspaceNode). */
   const chromeFor = (s: SessionInfo): WorkspaceChrome => ({
     chips: {
@@ -2126,7 +2155,7 @@ function App() {
       onJump: jumpTo,
       onOpenBoard: setBoardDlg,
       backup: backupFor(s),
-      contextChip: !s.shell && !isRemote(s) ? <ContextWarning session={s} onBrief={() => setBriefFor(s)} /> : undefined,
+      contextChip: contextChipFor(s),
       onRestart: () => void restartSession(s),
     },
     rail: { messages: messagesOf(s), onShowMessages: () => setMsgLogFor({ id: s.id, title: titleOf(s) }), meter: meters?.sessions[s.id] },
@@ -2178,40 +2207,28 @@ function App() {
         cards: Object.fromEntries(Object.entries(now?.cards ?? {}).filter(([, c]) => c.area === key).map(([id]) => [id, null])),
       };
     };
-    const empty = !!a && !sessionsOfGroup(key).length;
-    return [
-      ...inSection("area", tidyMenu([
-        { key: "rename", label: "Rename", menuLabel: "Rename…", onPick: () => setRenameDlg({ kind: "group", key, initial: key }) },
-        a && { key: "collapse", label: a.collapsed ? "Open" : "Collapse", menuLabel: a.collapsed ? "Open the area" : "Collapse to a pill", onPick: () => flag({ collapsed: !a.collapsed }, `${title} ${a.collapsed ? "opened" : "collapsed"}`) },
-        a && { key: "lock", label: a.locked ? "Locked" : "Lock", menuLabel: a.locked ? "Unlock its layout" : "Lock its layout", pressed: !!a.locked, onPick: () => flag({ locked: !a.locked }, `${title} ${a.locked ? "unlocked" : "locked"}`) },
-      ])),
-      ...(landscapeOn
-        ? inSection("tools", [
-            { key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: room ? "The room's artifacts" : "The area's artifacts, on this Mac", onPick: () => showTool("artifacts", null, key) },
-            // room tools only in rooms
-            ...(room ? [{ key: "tool:chat", label: "Chat", icon: <TeamRoomIcon />, title: "The room's chat", onPick: () => showTool("chat", null, key) }] : []),
-          ])
-        : []),
-      ...inSection("messages", [
-        ...messageModeEntries(msgModes[key], msgDefaultSend, (mode) => void setMsgMode(key, mode)),
-        { key: "log", label: "Message log", menuLabel: "Agent message log…", title: "What sessions told each other", onPick: () => setMsgLogFor({}) },
-      ]),
-      ...inSection("room", [
-        // room tools only in rooms: the House board, and following a teammate (FollowControls' handlers); while
-        // following, every area offers Stop, as every area's header says so
-        ...(room && landscapeOn ? [{ key: "board", label: "Board", menuLabel: "House board…", title: "House board — the room's Radley House tickets and who has each", onPick: () => setBoardDlg(room.id) }] : []),
-        ...(landscapeOn && follow.leader
-          ? [{ key: "follow:stop", label: `Stop following ${firstName(follow.leader.name)}`, title: `Stop mirroring ${follow.leader.name}'s view`, onPick: follow.stop }]
-          : room && landscapeOn
-            ? follow.candidates.map((v) => ({ key: `follow:${v.member}`, label: `Follow ${firstName(v.name)}`, title: `Mirror ${v.name}'s view: the shared workspace they're in is brought into view and selected`, onPick: () => follow.follow(v.member) }))
-            : []),
-        { key: "share", label: room ? "Invite" : "Share", menuLabel: room ? "Invite a teammate…" : "Share as a team room…", onPick: () => shareDialog(key, title) },
-        { key: "new", label: "New session", menuLabel: room ? "New connected session here…" : "New session here…", onPick: () => newSessionIn(key) },
-        { key: "ask", label: "Ask for status", onPick: () => askGroupStatus(key) },
-      ]),
+    return areaModel({
+      title,
+      stored: a ?? null,
+      room: !!room,
+      landscape: landscapeOn,
       // an area outlives its sessions (their ghosts come back to it); one with none can go
-      ...(empty ? inSection("end", [{ key: "remove", label: "Remove", menuLabel: "Remove the area", danger: true, onPick: () => void landscapeStore.update({ areas: { [key]: null }, ...extras() }, `removing ${title}`) }]) : []),
-    ];
+      empty: !!a && !sessionsOfGroup(key).length,
+      messages: { mode: msgModes[key], defaultSend: msgDefaultSend, set: (mode) => void setMsgMode(key, mode), log: () => setMsgLogFor({}) },
+      // following one of the room's teammates (FollowControls' handlers): a room's area's only
+      follow: { leader: follow.leader?.name ?? null, candidates: follow.candidates.filter((v) => room?.members.some((m) => m.id === v.member)), stop: follow.stop, start: (member) => follow.follow(member) },
+      rename: () => setRenameDlg({ kind: "group", key, initial: key }),
+      collapse: () => a && flag({ collapsed: !a.collapsed }, `${title} ${a.collapsed ? "opened" : "collapsed"}`),
+      lock: () => a && flag({ locked: !a.locked }, `${title} ${a.locked ? "unlocked" : "locked"}`),
+      artifacts: () => showTool("artifacts", null, key),
+      chat: () => showTool("chat", null, key),
+      board: () => room && setBoardDlg(room.id),
+      share: () => shareDialog(key, title),
+      newSession: () => newSessionIn(key),
+      ask: () => askGroupStatus(key),
+      remove: () => void landscapeStore.update({ areas: { [key]: null }, ...extras() }, `removing ${title}`),
+      chatIcon: <TeamRoomIcon />,
+    });
   };
   /** An area's ⋯ (and right-click): its actions as a menu. */
   const areaMenu = (key: string): MenuEntry[] => menuOf(areaActions(key));
@@ -2238,16 +2255,20 @@ function App() {
       )
     );
   };
+  /** New Session's repo and base for a session made in area `key`: its first repo, with the base it keeps for it. */
+  const areaSeed = (key: string): { repo?: string; base?: string | null } => {
+    const repo = landscapeLayout?.areas.find((a) => a.key === key)?.rect.repos[0];
+    return repo ? { repo: repo.path, base: repo.base } : {};
+  };
   /**
    * New session's dialog for a right-click on the landscape at `at`, in area `area` when it's in one: seeded with the
    * area's group and its first repo (with the base the area keeps for it), and the new workspace placed where it was
    * clicked (resolveLayout's PlaceHint).
    */
   const newAt = (area: string | null, at: { x: number; y: number }, seed: { launch?: LaunchKind; ticket?: boolean; mode?: "new" | "import" }) => {
-    const repo = area ? landscapeLayout?.areas.find((a) => a.key === area)?.rect.repos[0] : undefined;
     setNewGroup(area ?? "");
     setNewLaunch(seed.launch ?? "claude");
-    setNewSeed({ repo: repo?.path, base: repo?.base, ticket: seed.ticket, mode: seed.mode });
+    setNewSeed({ ...(area ? areaSeed(area) : {}), ticket: seed.ticket, mode: seed.mode });
     setPlaceHint({ area: area ?? LOOSE_GROUP, at, since: Date.now() });
     setModal("new");
   };
@@ -2438,10 +2459,14 @@ function App() {
     setModal(null);
   };
 
-  /** New session seeded with group `key` (a group or "top/sub" workspace path; "ungrouped" seeds none). */
+  /**
+   * New Session's dialog seeded with group `key` (a group or "top/sub" workspace path; "ungrouped" seeds none) and, on
+   * the landscape, its area's first repo and base, as a right-click's Create has them.
+   */
   const newSessionIn = (key: string) => {
     setNewGroup(key === "ungrouped" ? "" : key);
     setNewLaunch("claude");
+    setNewSeed(areaSeed(areaKeyOf({ taskGroup: key })));
     setModal("new");
   };
 
@@ -3401,8 +3426,8 @@ function App() {
                     pinNote={visitor(s)}
                     onResume={() => resumeDead(s)}
                     onCleanup={() => requestClose(s)}
-                    onHandoff={s.shell ? undefined : () => setHandoffFor(s)}
-                    onUndoTurn={s.shell || !s.repoPath || isRemote(s) ? undefined : () => setUndoFor(s)}
+                    onHandoff={offered(s, "handoff")}
+                    onUndoTurn={offered(s, "undo")}
                     overlaps={overlaps[s.id]}
                     onJump={jumpTo}
                     onOpenBoard={setBoardDlg}
@@ -3414,7 +3439,7 @@ function App() {
                       return l && <LeftCopyPanel left={l} onTakeBack={() => takeBack(l)} onClose={() => requestClose(s)} />;
                     })()}
                     teamNotice={<ReceivedNotice received={receivedFor(s)} onReview={setReviewing} />}
-                    contextChip={!s.shell && !isRemote(s) ? <ContextWarning session={s} onBrief={() => setBriefFor(s)} /> : undefined}
+                    contextChip={contextChipFor(s)}
                     messages={(() => {
                       const mine = agentMessages.filter((m) => m.from === s.id || m.to === s.id);
                       return mine.length ? { in: mine.filter((m) => m.to === s.id).length, out: mine.filter((m) => m.from === s.id).length } : undefined;
@@ -3725,12 +3750,8 @@ function App() {
                   },
                   { label: `Change group of ${titleOf(focusedSession)}…`, run: () => setGroupDlg(focusedSession) },
                   { label: `${focusedSession.muted ? "Unmute" : "Mute"} notifications from ${titleOf(focusedSession)}`, run: () => toggleMute(focusedSession) },
-                  ...(!focusedSession.shell && focusedSession.repoPath
-                    ? [{ label: `Undo a turn of ${titleOf(focusedSession)} — put its files back`, run: () => setUndoFor(focusedSession) }]
-                    : []),
-                  ...(!focusedSession.shell
-                    ? [{ label: `Continue in ${AGENT_NAME[otherAgent(focusedSession.agent)]} — hand ${titleOf(focusedSession)} over with a summary`, run: () => setHandoffFor(focusedSession) }]
-                    : []),
+                  ...((undo) => (undo ? [{ label: `Undo a turn of ${titleOf(focusedSession)} — put its files back`, run: undo }] : []))(offered(focusedSession, "undo")),
+                  ...((handoff) => (handoff ? [{ label: `Continue in ${AGENT_NAME[otherAgent(focusedSession.agent)]} — hand ${titleOf(focusedSession)} over with a summary`, run: handoff }] : []))(offered(focusedSession, "handoff")),
                   ...(ticketOfGroup(topOf(focusedSession))
                     ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]
                     : []),
@@ -3766,7 +3787,7 @@ function App() {
           sessions={closeMany}
           onCancel={() => setCloseMany(null)}
           onConfirm={() => {
-            setCloseQueue(closeMany);
+            setCloseQueue(closeMany.map((s) => s.id));
             setCloseMany(null);
           }}
         />

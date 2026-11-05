@@ -47,7 +47,7 @@ export function AreaFrame({
   hot: boolean;
   /** It's the selection: the selection bar shows its actions (Landscape.tsx). */
   selected?: boolean;
-  /** A right-click on it (its header, name or pill) selects it, as one on its patch does. */
+  /** A right-click on it (its header, name or pill), or a click on its pill, selects it, as one on its patch does. */
   onSelect?: () => void;
   menu: () => MenuEntry[];
   onCollapse: (collapsed: boolean) => void;
@@ -72,7 +72,10 @@ export function AreaFrame({
           data-area={area.key}
           style={{ left: a.x, top: a.y, ["--aw" as string]: a.w }}
           title={`${title}: collapsed — click to open it again`}
-          onClick={() => onCollapse(false)}
+          onClick={() => {
+            onSelect?.();
+            onCollapse(false);
+          }}
           onContextMenuCapture={onSelect}
           onContextMenu={openMenu}
         >

@@ -4,6 +4,7 @@ import {
   ZOOM_MAX,
   ZOOM_MIN,
   afterChange,
+  areaSelectionNow,
   cameraFrom,
   centreOn,
   clampZoom,
@@ -261,10 +262,11 @@ describe("where each session's workspace sits", () => {
     const r = resolveLayout(l, shown, undefined, [], hint);
     expect(r.hinted).toBe("n1");
     const n1 = r.tiles.find((t) => t.key === "n1")!.rect;
-    // on the grid at the click, which is free; the area grows to hold it
-    expect([n1.x, n1.y]).toEqual([1304, 904]);
+    // on the grid at the click, up the few px that keep it inside the area, which then needn't grow for it
+    expect([n1.x, n1.y]).toEqual([1304, 864]);
     const area = r.areas.find((a) => a.key === "A")!.rect;
     expect(n1.y + n1.h + AREA_PAD).toBeLessThanOrEqual(area.y + area.h);
+    expect(area).toEqual(resolveLayout(l, shown).areas.find((a) => a.key === "A")!.rect);
     // the ones before it and after it go where they'd go anyway, clear of it
     const plain = resolveLayout(l, shown);
     expect(r.tiles.find((t) => t.key === "old")!.rect).toEqual(plain.tiles.find((t) => t.key === "old")!.rect);
@@ -291,6 +293,41 @@ describe("where each session's workspace sits", () => {
     const loose = resolveLayout(l, [session("a1", { taskGroup: "A" }), session("n", { createdAt: 600 })], undefined, [], { area: LOOSE_GROUP, at: { x: -1500, y: 200 }, since: 500 });
     expect(loose.hinted).toBe("n");
     expect(loose.tiles.find((t) => t.key === "n")!.rect).toMatchObject({ x: -1496, y: 200 });
+  });
+  it("keeps a right-clicked workspace inside the area clicked, the area beside it left where it is, locked or not", () => {
+    for (const locked of [false, true]) {
+      const l = emptyLandscape();
+      l.migratedAt = "2026-11-01T00:00:00.000Z";
+      l.areas.A = { x: 0, y: 0, w: 2400, h: 2000, repos: [] };
+      l.areas.B = { x: 2464, y: 0, w: 1200, h: 2000, repos: [], locked };
+      l.workspaces.a1 = { x: 24, y: 48, w: 1072, h: 800 };
+      l.workspaces.b1 = { x: 2488, y: 48, w: 1072, h: 800 };
+      const shown = [session("a1", { taskGroup: "A" }), session("b1", { taskGroup: "B" }), session("n", { taskGroup: "A", createdAt: 600 })];
+      // near A's right edge: a workspace with its corner at the click would reach into B
+      const r = resolveLayout(l, shown, undefined, [], { area: "A", at: { x: 2000, y: 900 }, since: 500 });
+      expect(r.hinted, String(locked)).toBe("n");
+      const n = r.tiles.find((t) => t.key === "n")!.rect;
+      const rect = (k: string) => r.areas.find((a) => a.key === k)!.rect;
+      expect(rect("A"), String(locked)).toMatchObject({ x: 0, y: 0, w: 2400, h: 2000 });
+      expect(rect("B"), String(locked)).toMatchObject({ x: 2464, y: 0, w: 1200, h: 2000 });
+      expect(n, String(locked)).toMatchObject({ x: 2400 - AREA_PAD - n.w, y: 904 });
+      expect(overlaps(n, rect("B")), String(locked)).toBe(false);
+    }
+  });
+});
+
+describe("the area selected as a whole", () => {
+  it("follows a rename or a merge to the key it's under now, and is let go once its area is gone", () => {
+    expect(areaSelectionNow("A", ["A", "B"], [])).toBe("A");
+    // renamed, while the rename is still pending and once the layout has it under its new name
+    expect(areaSelectionNow("A", ["Pathways", "B"], [{ from: "A", to: "Pathways" }])).toBe("Pathways");
+    // merged into B
+    expect(areaSelectionNow("A", ["B"], [{ from: "A", to: "B" }])).toBe("B");
+    // removed, or renamed away with nothing pending: nothing selected that can't be seen
+    expect(areaSelectionNow("A", ["B"], [])).toBeNull();
+    expect(areaSelectionNow("A", ["B"], [{ from: "C", to: "A" }])).toBeNull();
+    expect(areaSelectionNow("A", ["B"], [{ from: "A", to: "Gone" }])).toBeNull();
+    expect(areaSelectionNow(null, ["A"], [])).toBeNull();
   });
 });
 

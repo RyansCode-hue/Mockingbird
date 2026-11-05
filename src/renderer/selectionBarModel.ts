@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
 import type { Camera, Rect, Size } from "../shared/landscape";
 import { readPref, writePref, type PrefStore } from "./prefs";
-import { tidyMenu, type Action, type MenuEntry } from "./ContextMenu";
+import { tidyMenu, type MenuEntry } from "./ContextMenu";
 import { actionOf, type ModelAction } from "./workspaceActions";
+
+export { STACK_COMING } from "./workspaceActions";
 
 /**
  * The selection bar's buttons and geometry (design Q, sized as Q2): which buttons a selection has, which of them fit,
@@ -50,7 +52,7 @@ export function areaBarItems(actions: readonly ModelAction[], o: { chatCount: st
     chat && fromRow(chat, 1, { label: o.chatCount ? `Chat · ${o.chatCount}` : "Chat", tone: o.chatCount ? "teal" : undefined }),
     chat && fromRow(actionOf(actions, "board"), 1),
     chat && !!o.members && { key: "members", label: "Members", element: o.members, rank: 1 },
-    ...actions.filter((a) => a.key.startsWith("follow:")).map((a) => fromRow(a, 2)),
+    ...(chat ? actions.filter((a) => a.key.startsWith("follow:")).map((a) => fromRow(a, 2)) : []),
     fromRow(actionOf(actions, "ask"), 2),
     tools.length > 0 && { key: "tools", label: "Tools", title: "Open one of the area's tool windows", menu: () => tidyMenu(tools), rank: 2, sep: true },
   ]);
@@ -58,33 +60,35 @@ export function areaBarItems(actions: readonly ModelAction[], o: { chatCount: st
 
 /**
  * A workspace's buttons, from its model (workspaceActions.tsx): Focus, Δ Changes and ▶ Run, which stay longest; then
- * Files and Artifacts (`artifacts`, its area's row), which fold first. `changes` and `runs` are the counts its header
- * chips show.
+ * Files and Artifacts, which fold first. `changes` and `runs` are the counts its header chips show; `changes` is the
+ * error when its worktree's state couldn't be read, so it reads "Δ ?" saying why, never as no changes.
  */
-export function workspaceBarItems(actions: readonly ModelAction[], o: { onFocus: () => void; changes: number; runs: number; artifacts: ModelAction | undefined }): BarItem[] {
+export function workspaceBarItems(actions: readonly ModelAction[], o: { onFocus: () => void; changes: number | { error: string }; runs: number }): BarItem[] {
+  const unread = typeof o.changes === "number" ? null : o.changes.error;
+  const changes = fromRow(actionOf(actions, "tool:changes"), 1, { label: unread !== null ? "Δ ?" : o.changes ? `Δ ${o.changes} Changes` : "Δ Changes" });
   return present([
     { key: "focus", label: "Focus", kbd: "⌘E", title: "Fill the window with it (Enter or ⌘E)", onPick: o.onFocus, rank: 1 },
-    fromRow(actionOf(actions, "tool:changes"), 1, { label: o.changes ? `Δ ${o.changes} Changes` : "Δ Changes" }),
+    changes && unread !== null && !changes.disabled ? { ...changes, title: `Couldn't read its changes: ${unread}` } : changes,
     fromRow(actionOf(actions, "tool:run"), 1, { label: o.runs ? `▶ ${o.runs} Run` : "▶ Run" }),
     fromRow(actionOf(actions, "tool:files"), 2),
-    fromRow(o.artifacts, 2, { key: "tool:artifacts", label: "Artifacts" }),
+    fromRow(actionOf(actions, "tool:artifacts"), 2),
   ]);
 }
 
-/** Why Stack is off until stacks come (S6b). */
-export const STACK_COMING = "Stacking them into one card with a tab each (⌘G) is coming in a later version";
-
 /**
- * Several workspaces' buttons: Make area… (M) and Move to area ▾ stay longest; Stack (coming) and Close… fold first.
- * `close` is every one's Close row together: off, saying why, while any of them can't be closed here.
+ * Several workspaces' buttons, from their model (workspaceActions.tsx's severalActions): Make area… (M) and Move to
+ * area ▾ (the model's Move rows, as a menu) stay longest; Stack (coming) and Close… fold first.
  */
-export function severalBarItems(o: { makeArea: () => void; move: () => MenuEntry[]; close: Pick<Action, "onPick" | "disabled" | "title"> }): BarItem[] {
-  return [
-    { key: "makeArea", label: "Make area…", kbd: "M", title: "Make an area of them (M)", onPick: o.makeArea, rank: 1 },
-    { key: "stack", label: "Stack", kbd: "⌘G", disabled: true, title: STACK_COMING, rank: 2 },
-    { key: "move", label: "Move to area", title: "Move them into one of the areas", menu: o.move, rank: 1 },
-    { key: "close", label: "Close…", tone: "danger", rank: 2, onPick: () => o.close.onPick(), disabled: o.close.disabled, title: o.close.disabled ? o.close.title : "Close them, asking first about any with uncommitted or unpushed work" },
-  ];
+export function severalBarItems(actions: readonly ModelAction[]): BarItem[] {
+  const moves = actions.filter((a) => a.section === "move");
+  const make = actionOf(actions, "makeArea");
+  const stack = actionOf(actions, "stack");
+  return present([
+    fromRow(make, 1, { kbd: make?.kbd }),
+    fromRow(stack, 2, { kbd: stack?.kbd }),
+    moves.length > 0 && { key: "move", label: "Move to area", title: "Move them into one of the areas", menu: () => tidyMenu(moves), rank: 1 },
+    fromRow(actionOf(actions, "close"), 2, { label: "Close…", tone: "danger" }),
+  ]);
 }
 
 /** An area's status in its bar: what its sessions are doing, or how many workspaces it has when nothing is. */
@@ -93,10 +97,14 @@ export function areaStatus(c: { waiting: number; working: number; dead: number; 
   return parts.length ? parts.join(" · ") : `${c.workspaces} workspace${c.workspaces === 1 ? "" : "s"}`;
 }
 
-/** What the bar floats over: the selection's rectangle on the landscape, and what's drawn above it. */
+/**
+ * What the bar floats over: the selection's rectangle on the landscape, and what's drawn above it; for workspaces, the
+ * area they're in (`within`), whose name line or header the bar goes above rather than over (barAnchorFor).
+ */
 export interface BarTarget {
   rect: Rect;
   chrome: BarChrome;
+  within?: { rect: Rect; chrome: BarChrome };
 }
 
 /** How far the bar keeps from the window's edges, and from the selection it floats over, in screen px. */
@@ -164,6 +172,22 @@ export function barAnchor(r: Rect, cam: Camera, chrome: BarChrome): Rect {
   if (chrome === "pill") return { x: s.x, y: s.y, w: s.w, h: AREA_PILL_PX * hs * z };
   const above = chrome === "areaHeader" ? AREA_HEAD_PX * (hs - 1) * z + 1 : chrome === "areaName" ? AREA_NAME_PX : 0;
   return { x: s.x, y: s.y - above, w: s.w, h: s.h + above };
+}
+
+/**
+ * The box on screen the bar floats over for `t` at camera `cam`, the bar `barH` px tall: the selection's (barAnchor),
+ * unless above it the bar would reach onto the name line or header of the area it's in (the header's bottom is
+ * AREA_HEAD_PX × zoom under the area's top edge at every zoom; the name line is wholly above it); then the selection
+ * taken up to the top of those, so the bar sits above the area's name instead of on it.
+ */
+export function barAnchorFor(t: BarTarget, cam: Camera, barH: number, gap = BAR_GAP): Rect {
+  const a = barAnchor(t.rect, cam, t.chrome);
+  if (!t.within) return a;
+  const edge = onScreen(t.within.rect, cam).y;
+  const chromeFoot = t.within.chrome === "areaHeader" ? edge + AREA_HEAD_PX * cam.zoom - 1 : edge;
+  if (a.y - gap - barH >= chromeFoot) return a;
+  const top = barAnchor(t.within.rect, cam, t.within.chrome).y;
+  return top < a.y ? { x: a.x, y: top, w: a.w, h: a.y + a.h - top } : a;
 }
 
 /**

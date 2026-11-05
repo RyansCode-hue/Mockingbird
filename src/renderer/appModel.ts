@@ -133,3 +133,15 @@ export function groupChoices(sessions: readonly Pick<SessionInfo, "taskGroup">[]
   const keys = [...sessions.map((s) => s.taskGroup), ...roomGroups];
   return [...new Set(keys.filter((g): g is string => !!g && g !== "assistant"))];
 }
+
+/**
+ * The next of several sessions queued to close together (`queue`, ids in order), as it is now in `sessions`: those
+ * closed meanwhile are dropped, never closed from a stale copy. `next` is null once none of them is left.
+ */
+export function nextToClose(queue: readonly string[], sessions: readonly SessionInfo[]): { next: SessionInfo | null; rest: string[] } {
+  for (let i = 0; i < queue.length; i++) {
+    const s = sessions.find((x) => x.id === queue[i]);
+    if (s) return { next: s, rest: queue.slice(i + 1) };
+  }
+  return { next: null, rest: [] };
+}

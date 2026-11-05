@@ -9,7 +9,7 @@ import { useChatUnread } from "./team/RoomChat";
 import { titleOf } from "./appModel";
 import { enter, motion } from "./motion";
 import { OVERLAYS } from "./keys";
-import { BAR_MARGIN, areaBarItems, barAnchor, barPlace, escapeClears, foldBar, workspaceBarItems, type BarItem, type BarTarget } from "./selectionBarModel";
+import { BAR_MARGIN, areaBarItems, barAnchorFor, barPlace, escapeClears, foldBar, workspaceBarItems, type BarItem, type BarTarget } from "./selectionBarModel";
 import { menuOf, type ModelAction } from "./workspaceActions";
 
 /**
@@ -45,17 +45,18 @@ const DOTS = `${MEASURE}dots`;
 /**
  * The bar itself: the selection's name, its buttons and ⋯ (`more`, the selection's whole menu). A right-click on the
  * bar opens `menu` (by default `more`), the menu a right-click on the selection opens. Its width comes from its
- * buttons; when they don't fit the view, buttons fold behind » (measured once for each set of buttons and width of
- * view, before it's painted). It's placed by the camera's listener, every frame the camera moves, never by a render.
+ * buttons; when they don't fit the view, buttons fold behind » (measured once for each set of buttons, `idText` — the
+ * text `identity` shows — and width of view, before it's painted). It's placed by the camera's listener, every frame
+ * the camera moves, never by a render.
  */
-export function SelectionBar({ label, identity, items, more, menu = more, place }: { label: string; identity: ReactNode; items: readonly BarItem[]; more: (() => MenuEntry[]) | null; menu?: (() => MenuEntry[]) | null; place: BarPlace }) {
+export function SelectionBar({ label, identity, idText, items, more, menu = more, place }: { label: string; identity: ReactNode; idText: string; items: readonly BarItem[]; more: (() => MenuEntry[]) | null; menu?: (() => MenuEntry[]) | null; place: BarPlace }) {
   const el = useRef<HTMLDivElement>(null);
   const row = useRef<HTMLDivElement>(null);
   const size = useRef<Size>({ w: 0, h: 0 });
   const now = useRef(place);
   now.current = place;
   const ctx = useContextMenu(label);
-  const sig = [...items.map((i) => `${i.key}:${i.label}:${i.disabled ? 1 : 0}`), more ? "more" : "", place.vp.w].join("\n");
+  const sig = [idText, ...items.map((i) => `${i.key}:${i.label}:${i.disabled ? 1 : 0}`), more ? "more" : "", place.vp.w].join("\n");
   const [fold, setFold] = useState<{ sig: string; folded: string[] } | null>(null);
   const measuring = fold?.sig !== sig;
   const folded = measuring ? [] : fold.folded;
@@ -66,7 +67,7 @@ export function SelectionBar({ label, identity, items, more, menu = more, place 
     const e = el.current;
     const p = now.current;
     if (!e || !p.vp.w) return;
-    const at = barPlace(barAnchor(p.target.rect, cam, p.target.chrome), size.current, p.vp, p.minTop);
+    const at = barPlace(barAnchorFor(p.target, cam, size.current.h), size.current, p.vp, p.minTop);
     e.style.translate = `${Math.round(at.x)}px ${Math.round(at.y)}px`;
   };
   useEffect(() => {
@@ -194,6 +195,7 @@ export function AreaBar({ name, title, accent, status, actions, roomId, members,
   return (
     <SelectionBar
       label={`${title}: actions`}
+      idText={`${name} ${status}`}
       identity={
         <span className={`ls-sb-who a${accent}`} title={title}>
           <span className="ls-sb-dot" aria-hidden="true" />
@@ -209,20 +211,21 @@ export function AreaBar({ name, title, accent, status, actions, roomId, members,
 }
 
 /** A workspace's bar (Q): its status and name, Focus, Δ Changes, ▶ Run, Files, Artifacts and ⋯. */
-export function WorkspaceBar({ session, actions, runs, artifacts, onFocus, place }: { session: SessionInfo; actions: readonly ModelAction[]; runs: number; artifacts: ModelAction | undefined; onFocus: () => void; place: BarPlace }) {
-  // its changes as its header's Δ chip counts them, read for the selected workspace only
-  const { git } = usePaneGit(session, true);
-  const changes = git?.dirty ? git.dirtyFiles : 0;
+export function WorkspaceBar({ session, actions, runs, onFocus, place }: { session: SessionInfo; actions: readonly ModelAction[]; runs: number; onFocus: () => void; place: BarPlace }) {
+  // its changes as its header's Δ chip counts them, read for the selected workspace only; a failed read says so
+  const { git, gitErr } = usePaneGit(session, true);
+  const changes = gitErr !== null ? { error: gitErr } : git?.dirty ? git.dirtyFiles : 0;
   return (
     <SelectionBar
       label={`${titleOf(session)}: actions`}
+      idText={titleOf(session)}
       identity={
         <span className="ls-sb-who" title={titleOf(session)}>
           <StatusDot status={session.status} />
           <span className="ls-sb-name plain">{titleOf(session)}</span>
         </span>
       }
-      items={workspaceBarItems(actions, { onFocus, changes, runs, artifacts })}
+      items={workspaceBarItems(actions, { onFocus, changes, runs })}
       more={() => menuOf(actions)}
       place={place}
     />
@@ -234,6 +237,7 @@ export function SeveralBar({ count, items, menu, place }: { count: number; items
   return (
     <SelectionBar
       label="Selected workspaces"
+      idText={`${count} selected`}
       identity={
         <span className="ls-sb-who">
           <span className="ls-sb-name plain">{count} selected</span>

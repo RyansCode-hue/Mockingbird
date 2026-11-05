@@ -31,6 +31,7 @@ import {
   looseStop,
   minimapBlocks,
   minimapFit,
+  moveTargets,
   nearestInDirection,
   nextBand,
   panBy,
@@ -69,13 +70,13 @@ import {
 import { WorkspaceNode, type NodeMode, type WorkspaceChrome } from "./WorkspaceNode";
 import { ToolWindow } from "./ToolWindow";
 import { LiftOut } from "./lift";
-import { actionOf, menuOf, type ModelAction } from "./workspaceActions";
+import { menuOf, severalActions, severalMenu, type ModelAction } from "./workspaceActions";
 import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
 import { AreaSwitcher } from "./AreaTree";
 import { menuHeading, tidyMenu, useContextMenu, type MenuEntry } from "./ContextMenu";
 import { AreaBar, SeveralBar, WorkspaceBar, type BarPlace } from "./SelectionBar";
-import { AREA_NAME_PX, STACK_COMING, areaStatus, escapeClears, readBarExtended, saveBarExtended, severalBarItems } from "./selectionBarModel";
+import { AREA_NAME_PX, areaStatus, escapeClears, readBarExtended, saveBarExtended, severalBarItems, type BarChrome, type BarTarget } from "./selectionBarModel";
 import { focusTerm, lendTerm, screenText, scrollTerm } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
@@ -1221,22 +1222,25 @@ export function Landscape({
       }
       const t = e.target as Element;
       const off = offTerm(e);
+      // Shift adds to the selection, as in Figma: to those picked, or to the one workspace selected
+      const base = pickedNow.current.length || !e.shiftKey || !selKey.current ? pickedNow.current : [selKey.current];
+      const toggled = (key: string) => (base.includes(key) ? base.filter((k) => k !== key) : [...base, key]);
       if (off) {
-        // the terminal never sees it: its workspace is selected, and the keyboard goes to its terminal as a click on
-        // it would, while the band lets terminals take keys; below that the landscape keeps it
+        // the terminal never sees it: its workspace is selected (Shift: picked, or let go, as a Shift-click on its
+        // header does), and the keyboard goes to its terminal as a click on it would, while the band lets terminals
+        // take keys; below that the landscape keeps it
         e.preventDefault();
         e.stopPropagation();
         if (e.button !== 0) return;
         const tile = layoutNow.current.tiles.find((x) => x.key === off.dataset.ws);
         if (!tile) return;
+        if (e.shiftKey) return selRefs.current.pickTiles(toggled(tile.key));
         selectRef.current(tile);
         setTimeout(() => (tile.front.status !== "dead" && takesKeys(bandNow.current) ? focusTerm(tile.front.id) : surface()), 0);
         return;
       }
       if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const node = t.closest<HTMLElement>(".ls-world .ls-node");
-        // Shift adds to the selection, as in Figma: to those picked, or to the one workspace selected
-        const base = pickedNow.current.length || !e.shiftKey || !selKey.current ? pickedNow.current : [selKey.current];
         const press = { id: e.pointerId, x0: e.clientX, y0: e.clientY, add: e.shiftKey, base };
         const win = t.closest<HTMLElement>(".ls-world .ls-window");
         const card = t.closest<HTMLElement>(".ls-world .ls-acard");
@@ -1246,7 +1250,7 @@ export function Landscape({
           // otherwise its header (or its card) moves it
           if (e.shiftKey) {
             e.stopPropagation();
-            selRefs.current.pickTiles(base.includes(key) ? base.filter((k) => k !== key) : [...base, key]);
+            selRefs.current.pickTiles(toggled(key));
           } else startRef.current({ ...press, kind: "tile", key });
         } else if (win && (win.classList.contains("compact") || t.closest(".ls-win-head")) && !t.closest("button")) {
           // a tool window moves by its head (or, zoomed out, by its whole compact self)
@@ -1395,38 +1399,22 @@ export function Landscape({
     if ("refused" in plan) return say(plan.refused);
     if (await carryOut(plan, `moving them to ${asks.current.areaTitle(key)}`)) setPicked([]);
   };
-  /** Move to area's rows for the picked workspaces: each area, off where it can't take them. */
-  const moveRows = (): MenuEntry[] => {
+  /**
+   * The picked workspaces' actions, one model their bar and their right-click render: Move to area's rows say why an
+   * area can't take them as moving them would (planMakeArea, tried first), and Close… closes every one of this Mac's
+   * sessions in them, a stack's tabs included (a teammate's tab is theirs to close).
+   */
+  const pickedActions = (): ModelAction[] => {
     const tiles = pickedTiles();
-    return layoutNow.current.areas.map((a) => {
-      const title = asks.current.areaTitle(a.key);
-      const why = tiles.every((t) => t.area === a.key) ? `They're in ${title} already` : a.rect.locked ? `${title} is locked: unlock it to add workspaces` : null;
-      return { key: `move:${a.key}`, label: title, onPick: () => void moveTo(a.key), ...(why ? { disabled: true, title: why } : {}) };
+    const ids = tiles.flatMap((t) => t.members.filter((m) => !isRemote(m)).map((m) => m.id));
+    return severalActions({
+      makeArea: () => void makeArea(),
+      areas: moveTargets(storedNow.current, layoutNow.current, pickedNow.current, asks.current.areaTitle).map((a) => ({ ...a, pick: () => void moveTo(a.key) })),
+      close: ids.length ? () => onCloseMany(ids) : { no: tiles.length ? "They're teammates' sessions: theirs to close" : "Nothing to close" },
     });
   };
-  /** The picked workspaces' Close rows as one: off, saying why, while any of them can't be closed here. */
-  const closeRow = () => {
-    const tiles = pickedTiles();
-    const off = tiles.map((t) => actionOf(tileActions(t), "close")).find((r) => !r || r.disabled);
-    return {
-      onPick: () => onCloseMany(tiles.map((t) => t.front.id)),
-      ...(off !== undefined || !tiles.length ? { disabled: true, title: off?.title ?? "Nothing to close" } : {}),
-    };
-  };
-  /** Several picked: their actions as a menu, the bar's (a right-click on one of them, or on the bar). */
-  const severalMenu = (): MenuEntry[] => {
-    const n = pickedTiles().length;
-    return tidyMenu([
-      menuHeading(`${n} selected`),
-      { key: "makeArea", label: "Make area…", kbd: "M", onPick: () => void makeArea() },
-      { key: "stack", label: "Stack", kbd: "⌘G", disabled: true, title: STACK_COMING, onPick: () => {} },
-      "-",
-      menuHeading("Move to area"),
-      ...moveRows(),
-      "-",
-      { key: "close", label: "Close…", danger: true, ...closeRow() },
-    ]);
-  };
+  /** Several picked: their actions as a menu (a right-click on one of them, or on their bar). */
+  const pickedMenu = (): MenuEntry[] => severalMenu(pickedTiles().length, pickedActions());
   /**
    * A right-click on the bare landscape at landscape point `p`: what can be made there (placed where it was clicked),
    * and inside an area that area's own actions, its New session row aside (the kinds above make one there).
@@ -1451,7 +1439,7 @@ export function Landscape({
       const tile = (inFocus ? layout.tiles.find((x) => x.key === focusNow.current) : null) ?? layout.tiles.find((x) => x.key === el.dataset.ws);
       if (!tile) return;
       e.preventDefault();
-      if (!inFocus && pickedNow.current.includes(tile.key)) return ctx.openAt({ x: e.clientX, y: e.clientY }, severalMenu());
+      if (!inFocus && pickedNow.current.includes(tile.key)) return ctx.openAt({ x: e.clientX, y: e.clientY }, pickedMenu());
       select(tile);
       ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(tileActions(tile)));
       return;
@@ -1483,8 +1471,8 @@ export function Landscape({
    */
   const selectionBar = () => {
     if (!vp || focusTile) return null;
-    const place = (rect: Rect, chrome: BarPlace["target"]["chrome"]): BarPlace => ({
-      target: { rect, chrome },
+    const place = (rect: Rect, chrome: BarChrome, within?: BarTarget["within"]): BarPlace => ({
+      target: { rect, chrome, within },
       listeners: listeners.current,
       cam,
       vp,
@@ -1496,10 +1484,16 @@ export function Landscape({
         surface();
       },
     });
+    // workspaces' bar goes above their area's name line or header, rather than on it, when they're in its first row
+    const areaChrome: BarChrome = band === "cards" ? "areaName" : "areaHeader";
+    const within = (top: Tile): BarTarget["within"] => {
+      const a = layout.areas.find((x) => x.key === top.area);
+      return a && !a.rect.collapsed ? { rect: a.rect, chrome: areaChrome } : undefined;
+    };
     const several = layout.tiles.filter((t) => !t.hidden && pickedSet.has(t.key));
     if (several.length) {
-      const items = severalBarItems({ makeArea: () => void makeArea(), move: moveRows, close: closeRow() });
-      return <SeveralBar key="several" count={several.length} items={items} menu={severalMenu} place={place(boundsOf(several.map((t) => t.rect))!, "none")} />;
+      const top = several.reduce((m, t) => (t.rect.y < m.rect.y ? t : m));
+      return <SeveralBar key="several" count={several.length} items={severalBarItems(pickedActions())} menu={pickedMenu} place={place(boundsOf(several.map((t) => t.rect))!, "none", within(top))} />;
     }
     const a = selectedArea ? layout.areas.find((x) => x.key === selectedArea) : undefined;
     if (a) {
@@ -1515,27 +1509,13 @@ export function Landscape({
           actions={b.actions}
           roomId={b.roomId}
           members={b.members}
-          place={place(a.rect, a.rect.collapsed ? "pill" : band === "cards" ? "areaName" : "areaHeader")}
+          place={place(a.rect, a.rect.collapsed ? "pill" : areaChrome)}
         />
       );
     }
     if (!sel || sel.hidden || band === "live") return null;
     const t = sel;
-    const artifacts =
-      t.area === LOOSE_GROUP
-        ? ({ key: "tool:artifacts", label: "Artifacts", section: "tools", disabled: true, title: "It's in no area: artifacts are kept by area", onPick: () => {} } satisfies ModelAction)
-        : actionOf(areaHooks.bar(t.area).actions, "tool:artifacts");
-    return (
-      <WorkspaceBar
-        key={`ws:${t.key}`}
-        session={t.front}
-        actions={tileActions(t)}
-        runs={chromeFor(t.front).chips.runCount ?? 0}
-        artifacts={artifacts}
-        onFocus={() => enterFocus(t)}
-        place={place(t.rect, "none")}
-      />
-    );
+    return <WorkspaceBar key={`ws:${t.key}`} session={t.front} actions={tileActions(t)} runs={chromeFor(t.front).chips.runCount ?? 0} onFocus={() => enterFocus(t)} place={place(t.rect, "none", within(t))} />;
   };
 
   const node = (t: Tile, mode: NodeMode, size: Size) => (

@@ -430,6 +430,20 @@ describe("windows and cards zoomed out to cards", () => {
     // the name line takes that strip of the area's foot across its width; a card above it isn't moved
     expect(compactPlaces([{ ...card, rect: { ...card.rect, y: 200 } }], z, [name]).get("c")).toMatchObject({ dx: 0, dy: 0 });
   });
+
+  it("are never squeezed out of sight by the next area's name line: with too little room left, drawn over it", () => {
+    const z = 0.13;
+    // an area holding only a 200 px card, another area 64 px below it, whose name line at screen size covers nearly
+    // all of the first area's room
+    const a = { x: 0, y: 0, w: 600, h: AREA_HEADER + 200 + AREA_PAD };
+    const name = { x: 0, y: a.y + a.h + AREA_GAP - 28 / z, w: 600, h: 28 / z };
+    const card = { id: "c", rect: { x: AREA_PAD, y: AREA_HEADER, w: 240, h: 200 }, min, bounds: a };
+    const p = compactPlaces([card], z, [name]).get("c")!;
+    // the area's whole room inside its padding, as with no name line over it
+    expect(p.h).toBeCloseTo(a.h - 8 / z, 6);
+    expect(p.h).toBeCloseTo(compactPlaces([card], z).get("c")!.h, 6);
+    expect(card.rect.y + p.dy + p.h).toBeLessThanOrEqual(a.y + a.h + 1e-6);
+  });
 });
 
 describe("a window an area refuses a place", () => {

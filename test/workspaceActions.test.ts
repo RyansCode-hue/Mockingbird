@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { actionOf, createActions, inSection, menuOf, usable, workspaceActions, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { actionOf, areaActions, createActions, inSection, menuOf, usable, workspaceActions, type AreaEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -32,6 +32,7 @@ const env = (over: Partial<WorkspaceEnv> = {}): WorkspaceEnv => ({
   move: vi.fn(),
   resize: vi.fn(),
   tool: vi.fn(),
+  artifacts: vi.fn<() => void>(),
   repaint: vi.fn(),
   hidePanel: vi.fn(),
   undo: vi.fn<() => void>(),
@@ -52,7 +53,7 @@ describe("a workspace's actions", () => {
     const acts = workspaceActions(sess(), env());
     expect(keys(acts)).toEqual([
       "rename", "notify", "move", "size:S", "size:M", "size:L",
-      "tool:files", "tool:changes", "tool:search", "tool:run",
+      "tool:files", "tool:changes", "tool:search", "tool:run", "tool:artifacts",
       "repaint", "diff", "undo", "handoff", "brief", "review", "close",
     ]);
     expect(enabled(acts)).toEqual(keys(acts));
@@ -95,8 +96,8 @@ describe("a workspace's actions", () => {
     expect(actionOf(acts, "resume")).toMatchObject({ primary: true });
     expect(actionOf(acts, "close")?.menuLabel).toBe("Close & clean up…");
     expect(actionOf(acts, "repaint")).toMatchObject({ disabled: true, title: "Its session has exited" });
-    // it has no folder to open tools on; Search looks everywhere
-    expect(enabled(acts.filter((a) => a.section === "tools"))).toEqual(["tool:search"]);
+    // it has no folder to open tools on; Search looks everywhere, and its area's artifacts outlive it
+    expect(enabled(acts.filter((a) => a.section === "tools"))).toEqual(["tool:search", "tool:artifacts"]);
     usable(acts, "resume")!.onPick();
     expect(e.resume).toHaveBeenCalledOnce();
   });
@@ -129,7 +130,7 @@ describe("a workspace's actions as a menu", () => {
     const menu = rows(menuOf(workspaceActions(sess(), env({ room: [{ key: "takeover", label: "Take over", onPick: vi.fn() }] }))));
     expect(menu).toEqual([
       "# Session", "rename", "notify", "move", "size:S", "size:M", "size:L",
-      "-", "# Tools", "tool:files", "tool:changes", "tool:search", "tool:run",
+      "-", "# Tools", "tool:files", "tool:changes", "tool:search", "tool:run", "tool:artifacts",
       "-", "# Terminal", "repaint", "diff", "undo",
       "-", "# Hand on", "handoff", "brief", "review",
       "-", "# Team room", "takeover",
@@ -160,5 +161,74 @@ describe("a right-click on the empty landscape", () => {
     for (const k of ["new:claude", "new:codex", "new:shell", "new:ticket", "new:import"]) usable(acts, k)!.onPick(null as unknown as HTMLElement);
     expect(launch.mock.calls).toEqual([["claude"], ["codex"], ["shell"]]);
     expect([ticket.mock.calls.length, importIt.mock.calls.length]).toEqual([1, 1]);
+  });
+});
+
+describe("a workspace's Artifacts", () => {
+  it("is in its Tools, its area's window, off saying why for a loose one, and absent off the landscape", () => {
+    const e = env();
+    const row = actionOf(workspaceActions(sess(), e), "tool:artifacts")!;
+    expect(row).toMatchObject({ section: "tools", label: "Artifacts" });
+    row.onPick();
+    expect(e.artifacts).toHaveBeenCalledOnce();
+    expect(actionOf(workspaceActions(sess(), env({ artifacts: { no: "It's in no area: artifacts are kept by area" } })), "tool:artifacts")).toMatchObject({ disabled: true, title: "It's in no area: artifacts are kept by area" });
+    expect(actionOf(workspaceActions(sess(), env({ artifacts: null })), "tool:artifacts")).toBeUndefined();
+  });
+});
+
+describe("an area's actions", () => {
+  const area = (over: Partial<AreaEnv> = {}): AreaEnv => ({
+    title: "#5102 Pathways",
+    stored: { collapsed: false, locked: false },
+    room: false,
+    landscape: true,
+    empty: false,
+    messages: { mode: undefined, defaultSend: true, set: vi.fn(), log: vi.fn() },
+    follow: { leader: null, candidates: [], stop: vi.fn(), start: vi.fn() },
+    rename: vi.fn(),
+    collapse: vi.fn(),
+    lock: vi.fn(),
+    artifacts: vi.fn(),
+    chat: vi.fn(),
+    board: vi.fn(),
+    share: vi.fn(),
+    newSession: vi.fn(),
+    ask: vi.fn(),
+    remove: vi.fn(),
+    ...over,
+  });
+  const labels = (a: AreaEnv) => menuOf(areaActions(a)).map((e) => (e === "-" ? "-" : e.heading ? `# ${e.label}` : `${e.menuLabel ?? e.label}${e.pressed ? " ✓" : ""}`));
+
+  it("group an area that isn't a room's with no Team room heading: its sessions under Sessions, sharing on its own", () => {
+    expect(labels(area())).toEqual([
+      "# Area", "Rename…", "Collapse to a pill", "Lock its layout",
+      "-", "# Tools", "Artifacts",
+      "-", "# Agent messages", "As in Settings (auto-send) ✓", "Always auto-send", "Always leave in prompt", "Agent message log…",
+      "-", "# Sessions", "New session here…", "Ask for status",
+      "-", "Share as a team room…",
+    ]);
+  });
+
+  it("put a room's tools under Team room, and only a room's", () => {
+    const room = labels(area({ room: true, follow: { leader: null, candidates: [{ member: "m2", name: "Nick Smith" }], stop: vi.fn(), start: vi.fn() } }));
+    expect(room.slice(room.indexOf("# Sessions"))).toEqual(["# Sessions", "New connected session here…", "Ask for status", "-", "# Team room", "House board…", "Follow Nick", "Invite a teammate…"]);
+    expect(room).toContain("Chat");
+  });
+
+  it("offer agents' messages as three different choices, the one in force marked, none reading as another", () => {
+    for (const defaultSend of [true, false]) {
+      for (const mode of [undefined, "send", "prompt"] as const) {
+        const rows = areaActions(area({ messages: { mode, defaultSend, set: vi.fn(), log: vi.fn() } })).filter((a) => a.key.startsWith("msg:"));
+        const words = rows.map((r) => r.label.replace(/\s*\(.*\)$/, "").toLowerCase());
+        expect(new Set(words).size, `${defaultSend} ${mode}`).toBe(3);
+        expect(rows.filter((r) => r.pressed).map((r) => r.key)).toEqual([`msg:${mode ?? "default"}`]);
+      }
+    }
+  });
+
+  it("can be removed only once it has no sessions and a place on the landscape", () => {
+    expect(actionOf(areaActions(area({ empty: true })), "remove")).toMatchObject({ section: "end", danger: true });
+    expect(actionOf(areaActions(area({ empty: true, stored: null })), "remove")).toBeUndefined();
+    expect(actionOf(areaActions(area()), "remove")).toBeUndefined();
   });
 });

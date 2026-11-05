@@ -1,7 +1,8 @@
-import { AGENT_NAME, otherAgent, type SessionInfo } from "../shared/types";
+import { AGENT_NAME, otherAgent, type MessageMode, type SessionInfo } from "../shared/types";
 import { SIZE_PRESETS, type SizePreset } from "../shared/landscape";
 import { menuHeading, tidyMenu, type Action, type MenuEntry } from "./ContextMenu";
-import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, PanelRightIcon, PencilIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
+import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, NoteIcon, PanelRightIcon, PencilIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
+import { firstName } from "./team/connectedModel";
 
 /**
  * A workspace's actions, said once (and an area's the same way): every surface that offers them — the workspace
@@ -9,7 +10,7 @@ import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, Pan
  * of them can offer what the others don't, or word it differently. Each action has its label, whether it can be done
  * now and why not (`disabled`, `title`), its shortcut (`kbd`) and its handler; `section` groups the menu's rows.
  */
-export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "messages" | "create" | "end";
+export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "messages" | "sessions" | "share" | "create" | "several" | "move" | "end";
 
 /** A section's heading in a menu; null: its rows follow a separator only. */
 const SECTION_NAME: Record<ActionSection, string | null> = {
@@ -20,7 +21,11 @@ const SECTION_NAME: Record<ActionSection, string | null> = {
   room: "Team room",
   area: "Area",
   messages: "Agent messages",
+  sessions: "Sessions",
+  share: null,
   create: "New workspace",
+  several: null,
+  move: "Move to area",
   end: null,
 };
 
@@ -52,6 +57,8 @@ export interface WorkspaceEnv {
   move: () => void;
   resize: (p: SizePreset) => void;
   tool: (t: WorkspaceTool) => void;
+  /** Its area's Artifacts window, or why there's none (a loose workspace); null where there are no tool windows (the grid). */
+  artifacts: Can | null;
   repaint: () => void;
   hidePanel: () => void;
   undo: Can;
@@ -64,6 +71,15 @@ export interface WorkspaceEnv {
 
 const can = (c: Can): Pick<Action, "onPick" | "disabled" | "title"> => (typeof c === "function" ? { onPick: c } : { onPick: () => {}, disabled: true, title: c.no });
 
+/**
+ * Why `what` can't be done to session `s` here because a teammate took it over and continues it on their laptop (its
+ * turns, its branch and its conversation go on there; this copy is taken back, never worked on), or null.
+ */
+export const takenOverWhy = (s: SessionInfo, what: string): string | null => {
+  const by = s.room?.takenOver?.byName;
+  return by ? `${by} continues it on their laptop: take it back ${what}` : null;
+};
+
 /** Every action of session `s`'s workspace, in menu order. */
 export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction[] {
   const dead = s.status === "dead";
@@ -71,8 +87,10 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
   const theirs = (what: string) => (env.owner ? { disabled: true, title: `${env.owner}'s session: theirs to ${what}` } : {});
   // a copy a teammate took over and continues on their laptop is taken back, never worked on here: its turns, its
   // branch and its conversation go on there
-  const by = s.room?.takenOver?.byName ?? null;
-  const tookIt = (c: Can, what: string): Can => (by ? { no: `${by} continues it on their laptop: take it back ${what}` } : c);
+  const tookIt = (c: Can, what: string): Can => {
+    const no = takenOverWhy(s, what);
+    return no ? { no } : c;
+  };
   const out: ModelAction[] = [
     { section: "session", key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: env.rename, ...theirs("rename") },
     {
@@ -113,6 +131,7 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
     ...(noFolder && (t !== "search" || !local) ? { disabled: true, title: noFolder } : {}),
   });
   out.push(tool("files", "Files", <FilesIcon />), tool("changes", "Changes", <SourceControlIcon />), tool("search", "Search", <SearchIcon />), tool("run", "Run & debug", <RunDebugIcon />));
+  if (env.artifacts) out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: "Its area's artifacts", ...can(env.artifacts) });
   out.push(
     { section: "terminal", key: "repaint", label: "Repaint", icon: <RepaintIcon />, title: "Have the session redraw its screen (its scrollback stays)", onPick: env.repaint, ...(dead ? { disabled: true, title: "Its session has exited" } : {}) },
     {
@@ -157,6 +176,106 @@ export function createActions(env: CreateEnv): ModelAction[] {
     coming("new:pipeline", "Pipeline from a ticket…", "Pipeline templates come in a later version"),
   ];
 }
+
+/** What an area's actions need to know about it, and do (main.tsx's `areaActions` makes it). */
+export interface AreaEnv {
+  title: string;
+  /** Its record on the landscape (collapsed, locked); null where it has none (the grid). */
+  stored: { collapsed?: boolean; locked?: boolean } | null;
+  /** A team room's area: the room tools (Chat, Board, Members, Follow) are only ever a room's. */
+  room: boolean;
+  /** The landscape is on: tool windows, the House board and following live there. */
+  landscape: boolean;
+  /** No session is in it, so it can go (its ghosts come back to it otherwise). */
+  empty: boolean;
+  /** How agents' messages to its sessions are delivered: its own choice (undefined: Settings'), and Settings'. */
+  messages: { mode: MessageMode | undefined; defaultSend: boolean; set: (mode: MessageMode | "") => void; log: () => void };
+  /** Following a teammate's view: the one followed (null: no one), and the room's teammates who can be. */
+  follow: { leader: string | null; candidates: readonly { member: string; name: string }[]; stop: () => void; start: (member: string) => void };
+  rename: () => void;
+  collapse: () => void;
+  lock: () => void;
+  artifacts: () => void;
+  chat: () => void;
+  board: () => void;
+  share: () => void;
+  newSession: () => void;
+  ask: () => void;
+  remove: () => void;
+  /** The room's Chat icon (team/RoomChat.tsx), kept out of this model's imports. */
+  chatIcon?: JSX.Element;
+}
+
+/** A group's choices for agents' messages (its area's menu, the grid's group bar): one is on, so each says what it does differently. */
+export const messageModes = (defaultSend: boolean): { value: MessageMode | ""; label: string; title: string }[] => [
+  { value: "", label: `As in Settings (${defaultSend ? "auto-send" : "leave in prompt"})`, title: "What Settings → Agents says, for every group" },
+  { value: "send", label: "Always auto-send", title: "Sent as a prompt as soon as it arrives" },
+  { value: "prompt", label: "Always leave in prompt", title: "Typed into the prompt; you press Enter" },
+];
+
+/**
+ * Every action of an area, in menu order: its ⋯, its right-click (header, name line, patch, pill, tree row), its
+ * header's buttons and its selection bar all render this list. Room tools (Chat, Board, Follow, Invite) are only a
+ * room's; another area offers to become one instead.
+ */
+export function areaActions(env: AreaEnv): ModelAction[] {
+  const st = env.stored;
+  const out: ModelAction[] = [{ section: "area", key: "rename", label: "Rename", menuLabel: "Rename…", onPick: env.rename }];
+  if (st)
+    out.push(
+      { section: "area", key: "collapse", label: st.collapsed ? "Open" : "Collapse", menuLabel: st.collapsed ? "Open the area" : "Collapse to a pill", onPick: env.collapse },
+      { section: "area", key: "lock", label: st.locked ? "Locked" : "Lock", menuLabel: st.locked ? "Unlock its layout" : "Lock its layout", pressed: !!st.locked, onPick: env.lock }
+    );
+  if (env.landscape) {
+    out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: env.room ? "The room's artifacts" : "The area's artifacts, on this Mac", onPick: env.artifacts });
+    if (env.room) out.push({ section: "tools", key: "tool:chat", label: "Chat", icon: env.chatIcon, title: "The room's chat", onPick: env.chat });
+  }
+  for (const m of messageModes(env.messages.defaultSend)) {
+    const on = (env.messages.mode ?? "") === m.value;
+    out.push({ section: "messages", key: `msg:${m.value || "default"}`, label: m.label, title: m.title, icon: on ? "✓" : undefined, pressed: on, onPick: () => env.messages.set(m.value) });
+  }
+  out.push(
+    { section: "messages", key: "log", label: "Message log", menuLabel: "Agent message log…", title: "What sessions told each other", onPick: env.messages.log },
+    { section: "sessions", key: "new", label: "New session", menuLabel: env.room ? "New connected session here…" : "New session here…", onPick: env.newSession },
+    { section: "sessions", key: "ask", label: "Ask for status", onPick: env.ask }
+  );
+  if (env.room) {
+    if (env.landscape) {
+      out.push({ section: "room", key: "board", label: "Board", menuLabel: "House board…", title: "House board — the room's Radley House tickets and who has each", onPick: env.board });
+      const f = env.follow;
+      if (f.leader) out.push({ section: "room", key: "follow:stop", label: `Stop following ${firstName(f.leader)}`, title: `Stop mirroring ${f.leader}'s view`, onPick: f.stop });
+      else for (const v of f.candidates) out.push({ section: "room", key: `follow:${v.member}`, label: `Follow ${firstName(v.name)}`, title: `Mirror ${v.name}'s view: the shared workspace they're in is brought into view and selected`, onPick: () => f.start(v.member) });
+    }
+    out.push({ section: "room", key: "share", label: "Invite", menuLabel: "Invite a teammate…", onPick: env.share });
+  } else out.push({ section: "share", key: "share", label: "Share", menuLabel: "Share as a team room…", onPick: env.share });
+  if (env.empty && st) out.push({ section: "end", key: "remove", label: "Remove", menuLabel: "Remove the area", danger: true, onPick: env.remove });
+  return out;
+}
+
+/** Why Stack is off until stacks come (S6b). */
+export const STACK_COMING = "Stacking them into one card with a tab each (⌘G) is coming in a later version";
+
+/** What several workspaces' actions need (Landscape.tsx makes it from the picked ones). */
+export interface SeveralEnv {
+  makeArea: () => void;
+  /** Move to area's rows: each area, with why it can't take them (null: it can), as moving them would say. */
+  areas: readonly { key: string; title: string; refused: string | null; pick: () => void }[];
+  /** Close…: every session of this Mac's in them (a stack's tabs each), asked about once; or why it can't be done here. */
+  close: Can;
+}
+
+/** Several picked workspaces' actions, in menu order: their selection bar and their right-click render this list. */
+export function severalActions(env: SeveralEnv): ModelAction[] {
+  return [
+    { section: "several", key: "makeArea", label: "Make area…", kbd: "M", title: "Make an area of them", onPick: env.makeArea },
+    { section: "several", key: "stack", label: "Stack", kbd: "⌘G", disabled: true, title: STACK_COMING, onPick: () => {} },
+    ...env.areas.map((a): ModelAction => ({ section: "move", key: `move:${a.key}`, label: a.title, onPick: a.pick, ...(a.refused ? { disabled: true, title: a.refused } : {}) })),
+    { section: "end", key: "close", label: "Close", menuLabel: "Close…", danger: true, title: "Close them, asking first about any with uncommitted or unpushed work", ...can(env.close) },
+  ];
+}
+
+/** Several workspaces' actions as a menu: under how many are picked, Move to area's rows under their own heading. */
+export const severalMenu = (count: number, actions: readonly ModelAction[]): MenuEntry[] => [menuHeading(`${count} selected`), ...menuOf(actions)];
 
 /** A model's actions as a menu: each section under its heading, the last after a separator. */
 export function menuOf(actions: readonly ModelAction[]): MenuEntry[] {

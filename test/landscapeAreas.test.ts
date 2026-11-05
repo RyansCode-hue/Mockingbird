@@ -15,6 +15,7 @@ import {
   fromMinimap,
   keysOnScreen,
   looseStop,
+  moveTargets,
   minimapBlocks,
   minimapFit,
   planMakeArea,
@@ -410,6 +411,27 @@ describe("making and moving areas", () => {
     expect(planMakeArea(l, layout, ["loose1"], "", (k) => k)).toEqual({ refused: "An area needs a name" });
     expect(planMakeArea(l, layout, ["loose1"], "ungrouped", (k) => k)).toHaveProperty("refused");
     expect(planMakeArea(l, layout, ["a1"], "A", (k) => k)).toEqual({ refused: "They're in A already" });
+  });
+
+  it("offers Move to area's targets each with the reason a move there would be refused, tried without being made", () => {
+    const l = base();
+    l.areas.A.locked = true;
+    l.areas.R = area(0, 2000, 2000, 900);
+    l.areas.C = area(2400, 2000, 1200, 900);
+    l.workspaces["n7"] = { x: 24, y: 2048, w: 800, h: 600 };
+    const layout = resolveLayout(l, [...shown, theirs("n7", "R")]);
+    const before = structuredClone(l);
+    const targets = (picked: string[]) => Object.fromEntries(moveTargets(l, layout, picked, (k) => `area ${k}`).map((t) => [t.key, t.refused]));
+    // a teammate's workspace alone: no area takes it, an open one either, each saying why as Make area would
+    const theirsOnly = targets(["n7"]);
+    expect(Object.keys(theirsOnly).sort()).toEqual(["A", "C", "R"]);
+    for (const [k, why] of Object.entries(theirsOnly)) expect(why, k).toBe((planMakeArea(l, layout, ["n7"], k, (x) => `area ${x}`) as { refused: string }).refused);
+    expect(theirsOnly.C).toMatch(/^Nothing to move/);
+    expect(theirsOnly.R).toBe("They're in area R already");
+    // a loose one: the locked area refuses it, the others take it
+    expect(targets(["loose1"])).toEqual({ A: "area A is locked: unlock it to add workspaces", R: null, C: null });
+    // nothing is moved or saved by asking
+    expect(l).toEqual(before);
   });
 
   it("moves a workspace within its area on the grid, kept inside its padding and under its header", () => {

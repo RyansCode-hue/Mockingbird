@@ -201,6 +201,12 @@ const contexts: Record<string, ContextWindow> = {
   s5: { state: "reading", agent: "claude", tokens: 760_400, window: 1_000_000, at: now - 9 * min, model: "claude-opus-5-5", cache: { warm: false, expiresAt: now - 4 * min, recacheTokens: 758_000 } },
   s3: { state: "reading", agent: "codex", tokens: 64_210, window: 272_000, at: now - 3 * min },
 };
+// ?ctxAudit=takenOver: y1, which Nick took over, still running here (its stop not yet reported) with its context past
+// 90%, so its warning shows
+if (new URLSearchParams(location.search).get("ctxAudit") === "takenOver") {
+  sessions = sessions.map((s) => (s.id === "y1" ? { ...s, status: "idle" } : s));
+  contexts.y1 = { state: "reading", agent: "claude", tokens: 160_000, window: 200_000, at: now - 20_000, model: "claude-sonnet-5" };
+}
 const tokens = (input: number, output: number, cacheRead: number) => ({ input, output, cacheRead, cacheWrite: Math.round(input / 3), replies: 40 });
 const meters: Meters = {
   at: now,
@@ -1355,8 +1361,13 @@ const api: Record<string, (...a: any[]) => any> = {
       400
     ),
   contextBriefStart: async () => err("UI preview: no session starts"),
-  worktreeState: async (cwd: string) =>
-    cwd.includes("5101") ? { dirty: true, dirtyFiles: 2, branch: "5101-orgDropdowns", upstream: "origin/5101-orgDropdowns", ahead: 1, behind: 0, insertions: 18, deletions: 3 } : { dirty: false, dirtyFiles: 0, branch: "dev", upstream: "origin/dev", ahead: 0, behind: 2, insertions: 0, deletions: 0 },
+  // ?gitFail=<part of a folder>: that folder's git state can't be read (main's error); ?closeFail=<part>: reading it
+  // throws, as an IPC call whose handler threw does
+  worktreeState: async (cwd: string) => {
+    if (params.get("closeFail") && cwd.includes(params.get("closeFail")!)) throw new Error("EIO: i/o error, read");
+    if (params.get("gitFail") && cwd.includes(params.get("gitFail")!)) return err("git status: fatal: unable to read index");
+    return cwd.includes("5101") ? { dirty: true, dirtyFiles: 2, branch: "5101-orgDropdowns", upstream: "origin/5101-orgDropdowns", ahead: 1, behind: 0, insertions: 18, deletions: 3 } : { dirty: false, dirtyFiles: 0, branch: "dev", upstream: "origin/dev", ahead: 0, behind: 2, insertions: 0, deletions: 0 };
+  },
   watchFolders: async () => ({ watching: [] }),
   prStatus: async (cwd: string) =>
     cwd.includes("5101")
@@ -5006,8 +5017,12 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   // right-click on it and on its area; sliding inside the window; hidden while dragging and in focus; Esc after a menu.
   // =b: a workspace's bar, three selected, a taken-over session's, and a right-click on the empty landscape making a
   // workspace where it was clicked, in an area and in none. =c (640 px wide): buttons folded behind », the second
-  // row, remembered. =d (with ?lsWindows): zoomed out to cards, windows and cards inside their areas, and a peek taking
-  // Esc before the selection. Into <script id="mb-landscape-bar-audit-<part>">.
+  // row, remembered, and measured again when the area's status grows. =d (with ?lsWindows): zoomed out to cards, windows
+  // and cards inside their areas, and a peek taking Esc before the selection. =e: the area ⋯ menus of a room's area and
+  // another's; New session here… with the area's repo and base; an area renamed staying selected, one removed let go,
+  // a pill's click selecting it. =f (with ?gitFail=5102-quickViewFreeze&closeFail=5110-donor-entities): a Shift-click on
+  // a terminal at 60%; the bar above the area's name over workspaces at its top; Δ ? for changes that can't be read;
+  // Close… on three, one asking, one failing, one closing. Into <script id="mb-landscape-bar-audit-<part>">.
   if (params.has("landscapeBarAudit")) waitFor(".ls-world .ls-node", async () => {
     const part = params.get("landscapeBarAudit") || "a";
     const out: Record<string, unknown> = { part };
@@ -5281,6 +5296,22 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await pick("s1");
         await sleep(200);
         out.foldWs = barNow();
+        // 5101's status grows while it's selected (three waiting, one working, one exited): the bar measures itself
+        // again, folding more, and stays inside the window with ⋯ in it
+        await fitView();
+        await selectAreaAt("5101");
+        await zoomOnArea("5101", 0.3);
+        if (localStorage.getItem("mb.landscape.barExtended") === "true") barBtn("more-buttons")!.click();
+        await sleep(200);
+        const was = barNow();
+        sessions = sessions.map((s) =>
+          ["s1", "s8"].includes(s.id) ? { ...s, status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: Date.now() } : s.id === "s3" ? { ...s, status: "working" } : s.id === "s4" ? { ...s, status: "dead", exitCode: 1 } : s
+        );
+        sessionsChanged();
+        await sleep(800);
+        const grown = barNow();
+        const dots = selbar()?.querySelector(".ls-sb-dots")?.getBoundingClientRect();
+        out.grown = { was, grown, dotsInView: !!dots && dots.right <= vp().getBoundingClientRect().right - 7 };
       }
 
       if (part === "d") {
@@ -5327,6 +5358,156 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         esc(vp());
         await sleep(300);
         out.peek = { peekOpen, bar, first, second: { bar: !!selbar(), selected: !!document.querySelector(".ls-area.selected") } };
+      }
+
+      const selectedArea = () => document.querySelector<HTMLElement>(".ls-world .ls-area.selected")?.dataset.area ?? null;
+      if (part === "e") {
+        // the area ⋯ of one that isn't a room's, and of a room's
+        await fitView();
+        await selectAreaAt("5102");
+        await zoomOnArea("5102", 0.3);
+        const plain = await menuAfter(() => barBtn("more")!.click());
+        await fitView();
+        await selectAreaAt("5101");
+        await zoomOnArea("5101", 0.3);
+        const room = await menuAfter(() => barBtn("more")!.click());
+        out.menus = { plain: plain.rows, room: room.rows };
+
+        // New session here… from 5102's ⋯, its first repo now client-portal on main: the dialog has them, and makes it there
+        await api.landscapeUpdate({ areas: { "5102": { repos: [{ path: "/Users/you/Code/client-portal", base: "main" }] } } });
+        await sleep(300);
+        await fitView();
+        await selectAreaAt("5102");
+        barBtn("more")!.click();
+        await sleep(300);
+        await ctxPick("New session here…");
+        await sleep(400);
+        const dlg = document.querySelector<HTMLElement>(".modal.ns");
+        const repo = dlg?.querySelector(".ns-chosen .t")?.textContent ?? null;
+        const mark = calls.length;
+        dlg?.querySelector<HTMLElement>("button.primary.cta")?.click();
+        await sleep(1200);
+        const made = callsSince(mark, "createSession").map((a) => {
+          const o = a[0] as { repoPath?: string; baseBranch?: string; taskGroup?: string };
+          return { repoPath: o.repoPath ?? null, baseBranch: o.baseBranch ?? null, taskGroup: o.taskGroup ?? null };
+        });
+        out.newHere = { repo, made };
+
+        // 5102 renamed from its ⋯: still selected, under its new name, its bar there
+        await fitView();
+        await selectAreaAt("5102");
+        barBtn("more")!.click();
+        await sleep(300);
+        await ctxPick("Rename…");
+        await nameIt("Pathways");
+        await sleep(600);
+        out.renamed = { selected: selectedArea(), bar: barNow()?.name ?? null, title: document.querySelector('.ls-world .ls-area[data-area="Pathways"] .ls-area-title')?.textContent ?? null };
+
+        // an empty area removed from its ⋯: let go, so one made again under its name isn't selected
+        const all = Object.values(landscape.areas);
+        const spare = { x: Math.max(...all.map((a) => a.x + a.w)) + 400, y: 0, w: 800, h: 400, repos: [] };
+        await api.landscapeUpdate({ areas: { Spare: spare } });
+        await sleep(300);
+        await fitView();
+        await selectAreaAt("Spare");
+        const spareSelected = selectedArea();
+        barBtn("more")!.click();
+        await sleep(300);
+        await ctxPick("Remove the area");
+        await sleep(500);
+        const afterRemove = { area: !!landscape.areas.Spare, selected: selectedArea(), bar: barNow()?.name ?? null };
+        await api.landscapeUpdate({ areas: { Spare: spare } });
+        await sleep(500);
+        out.removed = { spareSelected, afterRemove, madeAgain: { selected: selectedArea(), bar: barNow()?.name ?? null } };
+        await api.landscapeUpdate({ areas: { Spare: null } });
+        await sleep(300);
+
+        // 5101 collapsed from its ⋯, the selection let go: a click on its pill opens it and selects it
+        await fitView();
+        await selectAreaAt("5101");
+        barBtn("more")!.click();
+        await sleep(300);
+        await ctxPick("Collapse to a pill");
+        await sleep(400);
+        vp().focus();
+        esc(vp());
+        await sleep(300);
+        const before = { selected: selectedArea(), collapsed: !!landscape.areas["5101"]?.collapsed };
+        document.querySelector<HTMLElement>('.ls-world .ls-area-pill[data-area="5101"], .ls-world [data-area="5101"] .ls-area-pill, .ls-world .ls-area-pill')?.click();
+        await sleep(500);
+        out.pill = { before, after: { selected: selectedArea(), collapsed: !!landscape.areas["5101"]?.collapsed, bar: barNow()?.name ?? null } };
+      }
+
+      if (part === "f") {
+        // at 60%, s1 picked, then a Shift-click on s8's terminal: both selected
+        await fitView();
+        await zoomOnArea("5101", 0.6);
+        await pick("s1");
+        const term = node("s8")?.querySelector(".ls-term");
+        pointer(term!, "pointerdown", { button: 0, shiftKey: true, ...at(term!, 0.5, 0.5) });
+        pointer(term!, "pointerup", { button: 0, shiftKey: true, ...at(term!, 0.5, 0.5) });
+        await sleep(300);
+        out.shiftOnTerm = { bar: barNow()?.name ?? null };
+        vp().focus();
+        esc(vp());
+        await sleep(300);
+
+        // a workspace at its area's top, alone and with another: the bar above the area's name line or header, not on it
+        const clearOf = (key: string) => {
+          const b = barNow();
+          return b && { bar: b.name, gap: areaTop(key) - (b.rect.y + b.rect.h), inView: b.inView };
+        };
+        const above: Record<string, unknown> = {};
+        for (const z of [0.3, 0.6]) {
+          await fitView();
+          await zoomOnArea("5101", z);
+          await pick("s1");
+          above[`one@${z}`] = clearOf("5101");
+          pointer(node("s8")!.querySelector(".ls-head") ?? node("s8")!, "pointerdown", { button: 0, shiftKey: true });
+          await sleep(300);
+          above[`two@${z}`] = clearOf("5101");
+          vp().focus();
+          esc(vp());
+          await sleep(300);
+        }
+        out.above = above;
+
+        // s5's changes can't be read (?gitFail): Δ ?, saying why
+        await fitView();
+        await pick("s5");
+        await sleep(600);
+        const changes = barBtn("tool:changes");
+        out.gitFail = { label: changes ? [...changes.childNodes].map((n) => n.textContent?.trim() ?? "").filter(Boolean).join(" ") : null, title: changes?.title ?? null };
+        vp().focus();
+        esc(vp());
+        await sleep(300);
+
+        // Close… on s8 (uncommitted work: its own dialog, cancelled), y1 (?closeFail: reading it throws, said) and s6
+        // (exited: closes): one at a time, the rest going on
+        await fitView();
+        for (const id of ["s8", "y1", "s6"]) {
+          pointer(node(id)!.querySelector(".ls-head") ?? node(id)!, "pointerdown", { button: 0, shiftKey: true });
+          await sleep(150);
+        }
+        const picked = barNow()?.name ?? null;
+        barBtn("close")!.click();
+        await sleep(400);
+        const many = { title: document.querySelector(".modal.close-many h3")?.textContent ?? null, list: [...document.querySelectorAll(".modal.close-many .close-many-list li")].map((li) => li.textContent) };
+        const notes = new Set<string>();
+        const dialogs: string[] = [];
+        document.querySelector<HTMLElement>(".modal.close-many button.primary")!.click();
+        for (const end = Date.now() + 6000; Date.now() < end; ) {
+          await sleep(100);
+          const n = noteText();
+          if (n) notes.add(n);
+          const one = document.querySelector(".modal.close-dlg:not(.close-many)");
+          if (one) {
+            dialogs.push(one.querySelector("h3")?.textContent ?? "");
+            [...one.querySelectorAll<HTMLButtonElement>("button.outline")].find((b) => b.textContent === "Cancel")!.click();
+            await sleep(300);
+          }
+        }
+        out.closeMany = { picked, many, dialogs, notes: [...notes], left: ["s8", "y1", "s6"].filter((id) => sessions.some((s) => s.id === id)) };
       }
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);
@@ -6057,6 +6238,43 @@ if (params.get("ctxAudit")) {
       button(document.querySelector(".cost-dlg"), "Continue")?.click();
       await until(() => count("relaunchSession") > 0, 3000);
       out.afterContinue = { dialog: !!document.querySelector(".cost-dlg"), relaunched: count("relaunchSession") };
+    } else if (mode === "takenOver") {
+      // y1, which Nick took over, and then s1: what its pane header, its context warning and ⌘K offer for each
+      const paneOf = (title: string) => [...document.querySelectorAll<HTMLElement>(".pane")].find((p) => p.querySelector(".pane-header")?.textContent?.includes(title)) ?? null;
+      const Y1 = "Donor entity model";
+      const S1 = "Org dropdowns remember the last org";
+      const controls = async (title: string) => {
+        const read = () => [...(paneOf(title)?.querySelectorAll(".pane-header button") ?? [])].map((b) => b.textContent?.trim() ?? "").filter(Boolean);
+        await until(() => read().length > 0, 5000);
+        return read();
+      };
+      const y1Controls = await controls(Y1);
+      out.shown = await until(() => !!paneOf(Y1)?.querySelector(".ctx-chip"), 5000);
+      paneOf(Y1)?.querySelector<HTMLElement>(".ctx-chip")?.click();
+      await until(() => !!pop(), 2000);
+      const brief = button(pop(), "Fresh session with a brief");
+      out.brief = brief ? { disabled: brief.disabled, title: brief.title } : null;
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      await sleep(300);
+      // ⌘K with each focused: the actions it lists
+      const palette = async (title: string) => {
+        paneOf(title)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+        await sleep(200);
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
+        if (!(await until(() => !!document.querySelector(".palette"), 2000))) return ["⌘K opened no palette"];
+        const rows = [...document.querySelectorAll(".palette .results .row .lab")].map((e) => e.textContent ?? "");
+        if (!rows.length) return ["the palette lists nothing"];
+        document.querySelector(".palette input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        await until(() => !document.querySelector(".palette"), 2000);
+        return rows.filter((r) => /^(Undo a turn|Continue in)/.test(r));
+      };
+      const y1Palette = await palette(Y1);
+      // s1, from its row in the Sessions list: its group's panes come up with it
+      document.querySelector<HTMLElement>('.sess-item[data-sid="s1"]')?.click();
+      await sleep(600);
+      out.controls = { y1: y1Controls, s1: await controls(S1) };
+      out.palette = { y1: y1Palette, s1: await palette(S1) };
     } else {
       out.shown = await until(() => !!chip(), 5000);
       out.tone = chip()?.classList.contains("firm") ? "firm" : chip()?.classList.contains("heads") ? "heads" : null;

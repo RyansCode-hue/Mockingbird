@@ -152,7 +152,10 @@ const explain = (agent: AgentKind, b: ContextBudget) =>
     .filter(Boolean)
     .join("\n");
 
-function Actions({ w, agent, onBrief }: { w: WarningState; agent: AgentKind; onBrief: () => void }) {
+/** The session's "Fresh session from a brief" row, from its action model: off, saying why, where it can't be done. */
+export type BriefRow = { onPick: () => void; disabled?: boolean; title?: string };
+
+function Actions({ w, agent, brief }: { w: WarningState; agent: AgentKind; brief: BriefRow }) {
   return (
     <>
       <button
@@ -168,10 +171,11 @@ function Actions({ w, agent, onBrief }: { w: WarningState; agent: AgentKind; onB
       </button>
       <button
         className="outline"
-        title="Start a new session in this worktree from a brief of this one"
+        disabled={!!brief.disabled}
+        title={brief.disabled ? brief.title : "Start a new session in this worktree from a brief of this one"}
         onClick={(e) => {
           e.stopPropagation();
-          onBrief();
+          brief.onPick();
         }}
       >
         Fresh session with a brief
@@ -186,7 +190,7 @@ function Actions({ w, agent, onBrief }: { w: WarningState; agent: AgentKind; onB
  * what that means and the actions: Compact, Fresh session with a brief, and
  * Dismiss (until the next threshold).
  */
-export function ContextWarning({ session, onBrief }: { session: SessionInfo; onBrief: () => void }) {
+export function ContextWarning({ session, brief }: { session: SessionInfo; brief: BriefRow }) {
   const cw = useContextReading(session);
   const w = useWarning(session, cw);
   const [open, setOpen] = useState(false);
@@ -226,9 +230,12 @@ export function ContextWarning({ session, onBrief }: { session: SessionInfo; onB
             <Actions
               w={w}
               agent={agent}
-              onBrief={() => {
-                setOpen(false);
-                onBrief();
+              brief={{
+                ...brief,
+                onPick: () => {
+                  setOpen(false);
+                  brief.onPick();
+                },
               }}
             />
             <span style={{ flex: 1 }} />

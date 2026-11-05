@@ -11,6 +11,7 @@ import {
   areaBarItems,
   areaStatus,
   barAnchor,
+  barAnchorFor,
   barPlace,
   escapeClears,
   foldBar,
@@ -19,7 +20,8 @@ import {
   severalBarItems,
   workspaceBarItems,
 } from "../src/renderer/selectionBarModel";
-import { actionOf, inSection, workspaceActions, type ModelAction, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { actionOf, areaActions, severalActions, severalMenu, workspaceActions, type AreaEnv, type ModelAction, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import type { MenuEntry } from "../src/renderer/ContextMenu";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -50,6 +52,7 @@ const env = (over: Partial<WorkspaceEnv> = {}): WorkspaceEnv => ({
   move: vi.fn(),
   resize: vi.fn(),
   tool: vi.fn(),
+  artifacts: vi.fn<() => void>(),
   repaint: vi.fn(),
   hidePanel: vi.fn(),
   undo: vi.fn<() => void>(),
@@ -61,85 +64,131 @@ const env = (over: Partial<WorkspaceEnv> = {}): WorkspaceEnv => ({
   ...over,
 });
 
-/** An area's model as main.tsx's areaActions makes it: a room's has Chat, Board and Follow; any has Ask and Artifacts. */
-function areaModel(room: boolean, h: Record<string, () => void> = {}): ModelAction[] {
-  const f = (k: string) => (h[k] ??= vi.fn());
-  return [
-    ...inSection("area", [{ key: "rename", label: "Rename", menuLabel: "Rename…", onPick: f("rename") }]),
-    ...inSection("tools", [
-      { key: "tool:artifacts", label: "Artifacts", onPick: f("tool:artifacts") },
-      ...(room ? [{ key: "tool:chat", label: "Chat", onPick: f("tool:chat") }] : []),
-    ]),
-    ...inSection("room", [
-      ...(room ? [{ key: "board", label: "Board", onPick: f("board") }, { key: "follow:nick", label: "Follow Nick", onPick: f("follow:nick") }] : []),
-      { key: "share", label: room ? "Invite" : "Share", onPick: f("share") },
-      { key: "ask", label: "Ask for status", onPick: f("ask") },
-    ]),
-  ];
-}
+/** An area's env as main.tsx's areaActions makes it, every handler a spy. */
+const areaEnv = (over: Partial<AreaEnv> = {}): AreaEnv => ({
+  title: "#5101 Org dropdowns",
+  stored: { collapsed: false, locked: false },
+  room: true,
+  landscape: true,
+  empty: false,
+  messages: { mode: undefined, defaultSend: true, set: vi.fn(), log: vi.fn() },
+  follow: { leader: null, candidates: [{ member: "m2", name: "Nick Smith" }], stop: vi.fn(), start: vi.fn() },
+  rename: vi.fn(),
+  collapse: vi.fn(),
+  lock: vi.fn(),
+  artifacts: vi.fn(),
+  chat: vi.fn(),
+  board: vi.fn(),
+  share: vi.fn(),
+  newSession: vi.fn(),
+  ask: vi.fn(),
+  remove: vi.fn(),
+  ...over,
+});
 
 const keys = (items: readonly { key: string }[]) => items.map((i) => i.key);
+const rows = (menu: MenuEntry[]) => menu.map((e) => (e === "-" ? "-" : e.heading ? `# ${e.label}` : (e.menuLabel ?? e.label)));
 
 describe("the selection bar's buttons come from the action model", () => {
   it("a room's area: Chat, Board, Members and Follow, then Ask for status and Tools ▾", () => {
-    const h: Record<string, () => void> = {};
-    const items = areaBarItems(areaModel(true, h), { chatCount: "2", members: "Members ▾" });
-    expect(keys(items)).toEqual(["tool:chat", "board", "members", "follow:nick", "ask", "tools"]);
+    const e = areaEnv();
+    const items = areaBarItems(areaActions(e), { chatCount: "2", members: "Members ▾" });
+    expect(keys(items)).toEqual(["tool:chat", "board", "members", "follow:m2", "ask", "tools"]);
     // the unread count rides on Chat, which is teal while there's any
     expect(items[0]).toMatchObject({ label: "Chat · 2", tone: "teal" });
+    expect(items[3].label).toBe("Follow Nick");
     // the room's tools stay longest in a narrow window; Follow, Ask and Tools fold first
     expect(items.map((i) => i.rank)).toEqual([1, 1, 1, 2, 2, 2]);
     // a button runs the model row's own handler
     items.find((i) => i.key === "board")!.onPick!(null as unknown as HTMLElement);
     items.find((i) => i.key === "ask")!.onPick!(null as unknown as HTMLElement);
-    expect(h.board).toHaveBeenCalledOnce();
-    expect(h.ask).toHaveBeenCalledOnce();
+    items.find((i) => i.key === "follow:m2")!.onPick!(null as unknown as HTMLElement);
+    expect(e.board).toHaveBeenCalledOnce();
+    expect(e.ask).toHaveBeenCalledOnce();
+    expect(e.follow.start).toHaveBeenCalledWith("m2");
     // Tools ▾ is the model's Tools rows, as a menu
     expect(keys(items.at(-1)!.menu!() as { key: string }[])).toEqual(["tool:artifacts", "tool:chat"]);
   });
 
-  it("an area that isn't a room's has no room tools at all", () => {
-    const items = areaBarItems(areaModel(false), { chatCount: "3", members: "Members ▾" });
-    expect(keys(items)).toEqual(["ask", "tools"]);
-    expect(keys(items[1].menu!() as { key: string }[])).toEqual(["tool:artifacts"]);
+  it("an area that isn't a room's has no room tools at all, while following a teammate too", () => {
+    for (const leader of [null, "Nick Smith"]) {
+      const acts = areaActions(areaEnv({ room: false, follow: { leader, candidates: [{ member: "m2", name: "Nick Smith" }], stop: vi.fn(), start: vi.fn() } }));
+      expect(acts.filter((a) => /^(tool:chat|board|follow:)/.test(a.key)), String(leader)).toEqual([]);
+      const items = areaBarItems(acts, { chatCount: "3", members: "Members ▾" });
+      expect(keys(items), String(leader)).toEqual(["ask", "tools"]);
+      expect(keys(items[1].menu!() as { key: string }[])).toEqual(["tool:artifacts"]);
+    }
+    // in a room's area, following: Stop following, and no one else to follow
+    const following = areaActions(areaEnv({ follow: { leader: "Nick Smith", candidates: [{ member: "m2", name: "Nick Smith" }], stop: vi.fn(), start: vi.fn() } }));
+    expect(following.filter((a) => a.key.startsWith("follow:")).map((a) => a.label)).toEqual(["Stop following Nick"]);
   });
 
   it("a workspace: Focus, Δ Changes and ▶ Run, then Files and Artifacts, each the model's row with its reason", () => {
     const e = env();
     const acts = workspaceActions(sess(), e);
     const focus = vi.fn();
-    const artifacts: ModelAction = { section: "tools", key: "tool:artifacts", label: "Artifacts", onPick: vi.fn() };
-    const items = workspaceBarItems(acts, { onFocus: focus, changes: 3, runs: 1, artifacts });
+    const items = workspaceBarItems(acts, { onFocus: focus, changes: 3, runs: 1 });
     expect(keys(items)).toEqual(["focus", "tool:changes", "tool:run", "tool:files", "tool:artifacts"]);
     expect(items.map((i) => i.label)).toEqual(["Focus", "Δ 3 Changes", "▶ 1 Run", "Files", "Artifacts"]);
     expect(items.map((i) => i.rank)).toEqual([1, 1, 1, 2, 2]);
     expect(items[0].kbd).toBe("⌘E");
     items[0].onPick!(null as unknown as HTMLElement);
     items[2].onPick!(null as unknown as HTMLElement);
+    items[4].onPick!(null as unknown as HTMLElement);
     expect(focus).toHaveBeenCalledOnce();
     expect(e.tool).toHaveBeenCalledWith("run");
+    expect(e.artifacts).toHaveBeenCalledOnce();
     // its shortcut in its tooltip, as the menu shows it
     expect(items[1].title).toMatch(/⌃⇧G/);
     // nothing to count reads plainly
-    expect(workspaceBarItems(acts, { onFocus: focus, changes: 0, runs: 0, artifacts }).map((i) => i.label).slice(1, 3)).toEqual(["Δ Changes", "▶ Run"]);
+    expect(workspaceBarItems(acts, { onFocus: focus, changes: 0, runs: 0 }).map((i) => i.label).slice(1, 3)).toEqual(["Δ Changes", "▶ Run"]);
     // a teammate's session: its tools are off, saying why, as its menu's rows are
-    const theirs = workspaceBarItems(workspaceActions(sess({ room: { remote: true } as SessionInfo["room"] }), env({ owner: "Nick Smith" })), { onFocus: focus, changes: 0, runs: 0, artifacts });
+    const theirs = workspaceBarItems(workspaceActions(sess({ room: { remote: true } as SessionInfo["room"] }), env({ owner: "Nick Smith" })), { onFocus: focus, changes: 0, runs: 0 });
     for (const k of ["tool:changes", "tool:run", "tool:files"]) expect(theirs.find((i) => i.key === k)).toMatchObject({ disabled: true, title: "Nick Smith's session has no folder on this Mac" });
+    // a loose one's Artifacts is off, saying why
+    const loose = workspaceBarItems(workspaceActions(sess(), env({ artifacts: { no: "It's in no area: artifacts are kept by area" } })), { onFocus: focus, changes: 0, runs: 0 });
+    expect(loose.at(-1)).toMatchObject({ key: "tool:artifacts", disabled: true, title: "It's in no area: artifacts are kept by area" });
   });
 
-  it("several: Make area… M, Stack ⌘G (coming), Move to area ▾ and Close…", () => {
+  it("a workspace whose changes couldn't be read says so, never as no changes", () => {
+    const items = workspaceBarItems(workspaceActions(sess(), env()), { onFocus: vi.fn(), changes: { error: "EACCES: permission denied" }, runs: 0 });
+    expect(items[1]).toMatchObject({ key: "tool:changes", label: "Δ ?", title: "Couldn't read its changes: EACCES: permission denied" });
+    expect(items[1].disabled).toBeFalsy();
+  });
+
+  it("several: Make area… M, Stack ⌘G (coming), Move to area ▾ and Close…, one model with their right-click", () => {
     const make = vi.fn();
     const close = vi.fn();
-    const items = severalBarItems({ makeArea: make, move: () => [], close: { onPick: close } });
+    const to = vi.fn();
+    const acts = severalActions({
+      makeArea: make,
+      areas: [
+        { key: "5101", title: "#5101", refused: "They're in #5101 already", pick: vi.fn() },
+        { key: "5102", title: "#5102", refused: null, pick: to },
+      ],
+      close,
+    });
+    const items = severalBarItems(acts);
     expect(keys(items)).toEqual(["makeArea", "stack", "move", "close"]);
-    expect(items[0]).toMatchObject({ label: "Make area…", kbd: "M" });
+    expect(items[0]).toMatchObject({ label: "Make area…", kbd: "M", title: "Make an area of them (M)" });
     expect(items[1]).toMatchObject({ disabled: true, title: STACK_COMING, kbd: "⌘G" });
-    expect(items[2].menu).toBeTypeOf("function");
+    expect(items[3]).toMatchObject({ label: "Close…", tone: "danger" });
     items[0].onPick!(null as unknown as HTMLElement);
     items[3].onPick!(null as unknown as HTMLElement);
     expect([make.mock.calls.length, close.mock.calls.length]).toEqual([1, 1]);
-    // one that can't be closed here keeps the lot's Close off, saying why
-    expect(severalBarItems({ makeArea: make, move: () => [], close: { onPick: close, disabled: true, title: "Nick Smith's session: theirs to close" } })[3]).toMatchObject({ disabled: true, title: "Nick Smith's session: theirs to close" });
+    // Move to area ▾ is the model's Move rows, the area they're in off saying why
+    const moves = items[2].menu!() as ModelAction[];
+    expect(moves.map((m) => [m.label, !!m.disabled, m.title ?? null])).toEqual([
+      ["#5101", true, "They're in #5101 already"],
+      ["#5102", false, null],
+    ]);
+    moves[1].onPick();
+    expect(to).toHaveBeenCalledOnce();
+    // their right-click: the same rows and titles, under how many are picked
+    expect(rows(severalMenu(3, acts))).toEqual(["# 3 selected", "Make area…", "Stack", "-", "# Move to area", "#5101", "#5102", "-", "Close…"]);
+    expect(actionOf(acts, "makeArea")!.title).toBe("Make an area of them");
+    // none that can be closed here: Close is off, saying why
+    expect(severalBarItems(severalActions({ makeArea: make, areas: [], close: { no: "They're teammates' sessions: theirs to close" } })).at(-1)).toMatchObject({ disabled: true, title: "They're teammates' sessions: theirs to close" });
   });
 
   it("an area's status says what its sessions do, or how many workspaces it has", () => {
@@ -260,6 +309,28 @@ describe("the selection bar floats over its selection", () => {
     expect(barAnchor(r, { x: 0, y: 0, zoom: 0.2 }, "areaName")).toEqual({ x: 20, y: 40 - AREA_NAME_PX, w: 200, h: 160 + AREA_NAME_PX });
     expect(barAnchor(r, { x: 0, y: 0, zoom: 0.2 }, "pill")).toEqual({ x: 20, y: 40, w: 200, h: 34 });
     expect(barAnchor(r, { x: 50, y: 50, zoom: 0.5 }, "none")).toEqual({ x: 25, y: 75, w: 500, h: 400 });
+  });
+
+  it("goes above the area's name line or header, never onto it, over workspaces at the area's top", () => {
+    const area = { x: 0, y: 0, w: 2400, h: 1200 };
+    const ws = { x: 24, y: 48, w: 1072, h: 800 };
+    const cards = { x: 0, y: 0, zoom: 0.3 };
+    const t = { rect: ws, chrome: "none" as const, within: { rect: area, chrome: "areaName" as const } };
+    // above the workspace the bar would reach past the area's top edge onto its name line: it goes above that
+    const a = barAnchorFor(t, cards, 38);
+    expect(a.y).toBe(-AREA_NAME_PX);
+    expect(a.y + a.h).toBeCloseTo((48 + 800) * 0.3, 9);
+    // one further down has room above it inside the area: just above it, as before
+    const low = { ...t, rect: { ...ws, y: 600 } };
+    expect(barAnchorFor(low, cards, 38)).toEqual(barAnchor(low.rect, cards, "none"));
+    // at 100% the header is inside the area: a workspace just under it has the bar above the header, not over it
+    const live = { ...t, within: { rect: area, chrome: "areaHeader" as const } };
+    expect(barAnchorFor(live, { x: 0, y: 0, zoom: 1 }, 38).y).toBe(-1);
+    expect(barAnchorFor({ ...live, rect: { ...ws, y: 200 } }, { x: 0, y: 0, zoom: 1 }, 38).y).toBe(200);
+    // below 100%, the header reaching up past the area's edge: above that
+    expect(barAnchorFor(live, { x: 0, y: 0, zoom: 0.5 }, 38).y).toBe(barAnchor(area, { x: 0, y: 0, zoom: 0.5 }, "areaHeader").y);
+    // in no area: as before
+    expect(barAnchorFor({ rect: ws, chrome: "none" }, cards, 38)).toEqual(barAnchor(ws, cards, "none"));
   });
 });
 

@@ -10,6 +10,7 @@ import { FollowControls, type Follow } from "./team/RoomLive";
 import { Select } from "./Menu";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { AskIcon, KanbanIcon, LockIcon, MoreIcon } from "./Icons";
+import { messageModes } from "./workspaceActions";
 
 /**
  * A group's bar: the grid's group bar over the panes, and on the landscape each area's header along its top edge
@@ -34,11 +35,7 @@ export interface GroupBarProps {
   onAsk: () => void;
 }
 
-const MSG_OPTIONS = (defaultSend: boolean) => [
-  { value: "", label: `Agent messages: ${defaultSend ? "Auto-send" : "Leave in prompt"} (default)`, description: "What Settings → Agents says, for every group" },
-  { value: "send", label: "Agent messages: Auto-send", description: "Sent as a prompt as soon as it arrives" },
-  { value: "prompt", label: "Agent messages: Leave in prompt", description: "Typed into the prompt; you press Enter" },
-];
+const MSG_OPTIONS = (defaultSend: boolean) => messageModes(defaultSend).map((m) => ({ value: m.value, label: `Agent messages: ${m.label}`, description: m.title }));
 
 /** The grid's group bar, over the active group's panes. */
 export function GroupBar(p: GroupBarProps & { statusNote: string; msgMode: MessageMode | undefined; msgDefaultSend: boolean; onMsgMode: (mode: MessageMode | "") => void; count: string }) {
@@ -88,14 +85,6 @@ export function GroupBar(p: GroupBarProps & { statusNote: string; msgMode: Messa
 /** A ticket's stage as an area shows it beside its name: "Build", or "#4182 · Build" when the name doesn't say the number. */
 export const stageChip = (title: string, ticketId: string, p: TicketPipeline): string =>
   title.startsWith(`#${ticketId}`) ? stageLabel(p.stage) : `#${ticketId} · ${stageLabel(p.stage)}`;
-
-/** The agent-message mode as menu rows (the area's ⋯): the three choices, the one in force pressed. */
-export function messageModeEntries(mode: MessageMode | undefined, defaultSend: boolean, onMode: (mode: MessageMode | "") => void): MenuEntry[] {
-  return MSG_OPTIONS(defaultSend).map((o) => {
-    const on = (mode ?? "") === o.value;
-    return { key: `msg:${o.value || "default"}`, label: o.label, title: o.description, icon: on ? "✓" : undefined, pressed: on, onPick: () => onMode(o.value as MessageMode | "") };
-  });
-}
 
 /** A group's usage as B's header says it: "212k tokens · ≈9% of Claude's 5h", with the breakdown on hover. */
 function AreaUsage({ g, what }: { g: GroupMeter | undefined; what: string }) {

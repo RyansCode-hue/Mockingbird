@@ -86,7 +86,7 @@ interface Review {
 /** A workspace's menu, as every place that offers it shows it. */
 const WORKSPACE_MENU = [
   "# Session", "Rename…", "Mute notifications", "Move to area…", "Size S", "Size M", "Size L",
-  "-", "# Tools", "Files [⇧⌘E]", "Changes [⌃⇧G]", "Search [⇧⌘F]", "Run & debug [⇧⌘D]",
+  "-", "# Tools", "Files [⇧⌘E]", "Changes [⌃⇧G]", "Search [⇧⌘F]", "Run & debug [⇧⌘D]", "Artifacts",
   "-", "# Terminal", "Repaint", "Hide the agent's diff panel (off)", "Undo the last turn…",
   "-", "# Hand on", "Continue in Codex…", "Fresh session from a brief…", "Second opinion from Codex",
   "-", "Close…",

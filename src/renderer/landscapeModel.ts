@@ -373,9 +373,12 @@ export function compactPlaces(items: readonly { id: string; rect: Rect; min: Siz
       for (let hit = drawn.find((d) => overlaps(r, d)); hit; hit = drawn.find((d) => overlaps(r, d))) r.y = hit.y + hit.h + gap;
     } else {
       const inner = { x: b.x + pad, y: b.y + pad, w: Math.max(0, b.w - 2 * pad), h: Math.max(0, b.h - 2 * pad) };
-      // what another area draws over this one's foot takes that part away
+      // what another area draws over this one's foot takes that part away, never leaving less than a squeezed card's
+      // height: then it's drawn over that name line rather than not at all
       for (const a of avoid) {
-        if (a.x < inner.x + inner.w && a.x + a.w > inner.x && a.y < inner.y + inner.h && a.y + a.h > inner.y) inner.h = Math.max(0, Math.min(inner.h, a.y - gap - inner.y));
+        if (!(a.x < inner.x + inner.w && a.x + a.w > inner.x && a.y < inner.y + inner.h && a.y + a.h > inner.y)) continue;
+        const left = a.y - gap - inner.y;
+        if (left >= COMPACT_SQUEEZE / zoom) inner.h = Math.min(inner.h, left);
       }
       const right = inner.x + inner.w;
       const foot = inner.y + inner.h;
@@ -428,6 +431,17 @@ const extraPlaces = (l: Landscape, except?: string): Rect[] => [
 export interface PendingRename {
   from: string;
   to: string;
+}
+
+/**
+ * The area selected as a whole (`selected`), as the layout has its areas now (`areas`): the same key while it's there;
+ * the key a pending rename moves it to once it's there under that (a rename, or a merge into another area); and none
+ * once it's gone (removed, or renamed away with nothing pending), so nothing is selected that can't be seen.
+ */
+export function areaSelectionNow(selected: string | null, areas: readonly string[], renames: readonly PendingRename[]): string | null {
+  if (selected === null || areas.includes(selected)) return selected;
+  const to = renames.find((r) => r.from === selected)?.to;
+  return to !== undefined && areas.includes(to) ? to : null;
 }
 
 /** Whether a pending rename is over: the landscape holds nothing under `from` any more, and no session shown is in it. */
@@ -567,7 +581,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
       if (g.area === LOOSE_GROUP) rect = here ? placeAt(size, hint!.at, [...occupied, ...areas.values()], null, firstArea()) : placeNew(size, [...occupied, ...areas.values()], null, firstArea());
       else {
         const area = areas.get(g.area) ?? addArea(g.area);
-        rect = here ? placeAt(size, hint!.at, occupied, area) : placeNew(size, occupied, area);
+        rect = here ? placeAt(size, hint!.at, occupied, area, null, [...areas].filter(([k]) => k !== g.area).map(([, r]) => r)) : placeNew(size, occupied, area);
         const grown = fitAreaTo(area, [rect]);
         if (grown !== area) {
           setArea(g.area, grown, { w: grown.w, h: grown.h });
@@ -1085,6 +1099,17 @@ export function planMakeArea(l: Landscape, layout: ResolvedLayout, picked: reado
   }
   const moves = tiles.flatMap((t) => t.members.filter((s) => !isTheirs(s)).map((s) => ({ id: s.id, group: t.stack ? `${key}/${subOf(t)}` : key })));
   return { patch: finish(p), moves, after: finish(after), note: left.length ? left.join("; ") : undefined };
+}
+
+/**
+ * Move to area's targets for the picked workspaces `picked`: each area, with the reason moving them there would be
+ * refused (planMakeArea, tried without carrying it out), or null when it would go ahead.
+ */
+export function moveTargets(l: Landscape, layout: ResolvedLayout, picked: readonly string[], titleOf: (key: string) => string): { key: string; title: string; refused: string | null }[] {
+  return layout.areas.map((a) => {
+    const plan = planMakeArea(l, layout, picked, a.key, titleOf);
+    return { key: a.key, title: titleOf(a.key), refused: "refused" in plan ? plan.refused : null };
+  });
 }
 
 /**

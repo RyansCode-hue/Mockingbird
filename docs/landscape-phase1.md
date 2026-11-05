@@ -1372,37 +1372,56 @@ Design O, with Artifacts as a window, and N's workspace header.
     rules in `selectionBarModel.ts`):
     - **What can be selected:** one workspace (its header or card, its tree
       row, its terminal clicked into), one area (a click on its bare patch,
-      its name line, header or pill, its tree row, or a right-click on it),
-      or several workspaces (Shift-click adds or takes one out; a marquee
-      picks what it touches). One kind at a time: selecting one lets go of
-      the others. A click on the bare landscape outside every area clears
-      it. The selected area draws a 2 px outline in its colour (inset zoomed
-      out to cards), a collapsed one's pill too.
+      its name line, header or pill — a pill's click opens it too — its tree
+      row, or a right-click on it), or several workspaces (Shift-click on a
+      header, a card or, below 75%, a terminal adds or takes one out; a
+      marquee picks what it touches). One kind at a time: selecting one lets
+      go of the others. A click on the bare landscape outside every area
+      clears it. An area renamed or merged into another stays selected under
+      its new key; one removed is let go (`areaSelectionNow`). The selected
+      area draws a 2 px outline in its colour (inset zoomed out to cards), a
+      collapsed one's pill too.
     - **Its buttons are the action model's rows**, never a second list, so
       each runs its row's handler, is off with the row's reason as its
       tooltip, and goes through the one tool gate:
-      - an area's (`areaActions` in `main.tsx`): Chat · n (teal while
-        unread, @n for mentions), Board, Members ▾ and Follow ⟨name⟩ only in
-        a room's area, then Ask for status, Tools ▾ (the model's Tools rows as
-        a menu) and ⋯. Board (House board…) and Follow ⟨name⟩ / Stop following
-        are new rows in the model's Team room section, so the area's menu has
-        them too;
+      - an area's (`areaActions` in `workspaceActions.tsx`; `main.tsx` gives
+        it its handlers): Chat · n (teal while unread, @n for mentions),
+        Board, Members ▾ and Follow ⟨name⟩ only in a room's area, then Ask for
+        status, Tools ▾ (the model's Tools rows as a menu) and ⋯. Its menu's
+        sections: Area (Rename…, Collapse, Lock); Tools (Artifacts, and a
+        room's Chat); Agent messages (As in Settings (…), Always auto-send,
+        Always leave in prompt — the grid's group bar offers the same three —
+        and the log); Sessions (New session here…, Ask for status); and in a
+        room's area Team room (House board…, Follow ⟨name⟩ or Stop following,
+        Invite a teammate…). Another area has no room rows at all, following
+        or not, and ends with Share as a team room… on its own;
       - a workspace's: Focus ⌘E, Δ n Changes and ▶ n Run (the header's
-        counts), Files, Artifacts (its area's row; off for a loose one) and ⋯;
-      - several's: n selected, Make area… M, Stack ⌘G (off, coming), Move to
-        area ▾ (an area they're all in, or a locked one, off saying why) and
-        Close…, which lists them in one dialog, then closes them one at a
-        time through each one's own Close (its dialog for uncommitted or
-        unpushed work; cancelling one keeps it and goes on). Off while any of
-        them can't be closed here.
+        counts; "Δ ?" with the error as its tooltip when its git state can't
+        be read), Files, Artifacts and ⋯. Artifacts (its area's window; off
+        for a loose one) is a row of the workspace's Tools, so its ⋯ and
+        right-click have it too;
+      - several's (`severalActions`, one model for the bar and the
+        right-click): n selected, Make area… M, Stack ⌘G (off, coming), Move
+        to area ▾ (each area off with the reason Make area would refuse it,
+        tried without being carried out: they're all in it, it's locked, or
+        only teammates' workspaces are picked) and Close…, which lists every
+        session of this Mac's in them (a picked stack's tabs each) in one
+        dialog, "Close n sessions?", then closes them one at a time, each as
+        it is then (one closed meanwhile is skipped), through its own Close
+        (its dialog for uncommitted or unpushed work; cancelling one keeps it
+        and goes on; one that fails is said in a notice and the rest go on).
+        Off when none of them is this Mac's.
     - **A right-click** on the bar or on the selection opens ⋯'s menu (for
       several, the same Make area / Stack / Move to / Close menu).
     - **Size and place:** at screen size at every zoom (outside the scaled
       world), 38 px tall, as wide as its buttons (measured once for each set
-      of buttons and width of view, before it's painted). It floats 8 px
+      of buttons, name and status, and width of view, before it's painted).
+      It floats 8 px
       above the selection, lined up with its left edge: above an area's header
       in the live and read-only bands, above its name line zoomed out to
-      cards, above its pill when it's collapsed. It slides along the window's
+      cards, above its pill when it's collapsed. Over workspaces at the top of
+      their area, where it would land on the area's name line or header, it
+      goes above those instead (`barAnchorFor`). It slides along the window's
       edges to stay 8 px inside, never over the area switcher's strip. With no
       room above, it stays along the top edge over the selection's top rather
       than jumping below, so panning moves it continuously. It's placed in the
@@ -1438,14 +1457,19 @@ Design O, with Artifacts as a window, and N's workspace header.
     create rows) and the area is selected. Each opens today's New Session
     dialog: the agent picked, the area's group, its first repo and that
     repo's base preselected, the ticket field open (From a ticket…), or
-    importing (Import…).
+    importing (Import…). The area's ⋯ New session here… seeds the same repo
+    and base, and goes in the nearest free spot as before.
     - **Placed where it was clicked:** the first session of this Mac made in
       that area after the click (`createdAt`) goes at the click (`placeAt`:
       on the grid, inside the area's padding and under its header, or the
       nearest free spot by the edges of what's there), and its place is saved
-      like any new one's. The hint lasts until that place is saved, 10 s
-      after the dialog makes it, or the dialog closing without one. A click
-      outside every area places a loose one there.
+      like any new one's. One that would reach past the area's edge is moved
+      in to fit when that's within its own size of the click; otherwise the
+      area grows for it. Other areas' frames count as taken (with the padding
+      the area would grow by and the gap areas keep), so it never lands in a
+      neighbour or pushes one aside. The hint lasts until that place is
+      saved, 10 s after the dialog makes it, or the dialog closing without
+      one. A click outside every area places a loose one there.
     - Browser isn't offered: this plan's list doesn't have it (the spec's
       does), and there's no browser workspace yet.
   - **Left from S5, done:**
@@ -1453,11 +1477,16 @@ Design O, with Artifacts as a window, and N's workspace header.
       area's frame, 4 px in, shrunk to the area when the area is smaller, and
       clear of the next area's name line (`compactPlaces`): one that would
       cover another goes under it, beside it, or squeezed into what's left
-      under it, and stays over it only when there's no room at all;
+      under it, and stays over it only when there's no room at all. A name
+      line never leaves an area less than a squeezed card's height (28 px):
+      with less room than that, the card is drawn over the name line;
     - a session a teammate took over has Undo the last turn…, Continue in …,
       Fresh session from a brief…, Second opinion and Resume off in its
       model, saying "⟨name⟩ continues it on their laptop: take it back …",
-      so its header, menus, bar and keys agree.
+      so its header, menus, bar and keys agree. The grid's pane header (Undo,
+      the other agent), the context warning's Fresh session with a brief and
+      ⌘K take those rows from the model too (`offered` in `main.tsx`), so
+      none of them offers what the model refuses.
   - **Differences from Q and Q2:**
     - Q2's bar far out names the area in full ("#5102 Pathways quick
       view"); Q, the chosen design, uses the short name, as built.

@@ -18,6 +18,18 @@ async function audit(query: string): Promise<Record<string, any>> {
 }
 
 describe.skipIf(!local)("a pane's context warning", () => {
+  it("of a session a teammate took over: its brief off saying why, as its header and ⌘K offer no turns or hand-on for it", async () => {
+    const a = await audit("shown=y1,s1&ctxAudit=takenOver");
+    expect(a.shown).toBe(true);
+    expect(a.brief).toEqual({ disabled: true, title: expect.stringMatching(/^Nick Smith continues it on their laptop: take it back/) });
+    // the pane header beside it, a session of this Mac's own, has them
+    expect(a.controls.s1, JSON.stringify(a)).toEqual(expect.arrayContaining(["Undo", "Codex"]));
+    expect(a.controls.y1).not.toContain("Undo");
+    expect(a.controls.y1).not.toContain("Codex");
+    expect(a.palette.s1).toEqual([expect.stringMatching(/^Undo a turn of /), expect.stringMatching(/^Continue in Codex — /)]);
+    expect(a.palette.y1).toEqual([]);
+  }, 120_000);
+
   it("past 75% and idle: an amber chip in the pane header; its popover's Compact sends /compact on the click only, and the chip goes once the context drops", async () => {
     const a = await audit("shown=s5&ctxAudit=idle");
     expect(a.shown).toBe(true);

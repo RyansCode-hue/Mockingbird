@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { reachesBroadcast, cellKeyFor, frontOf, groupChoices, inReadingOrder, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, sessionOutline, worktreeGone, type GridCell, type OutlineEntry } from "../src/renderer/appModel";
+import { reachesBroadcast, cellKeyFor, frontOf, groupChoices, inReadingOrder, nextToClose, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, sessionOutline, worktreeGone, type GridCell, type OutlineEntry } from "../src/renderer/appModel";
 import { keysOf, leaf, split } from "../src/renderer/layoutTree";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
@@ -186,5 +186,16 @@ describe("the groups New Session offers", () => {
     const sessions = [session("a", { taskGroup: "5101" }), session("b", { taskGroup: "5101/api" }), session("c", { taskGroup: null }), session("d", { taskGroup: "assistant" }), session("e", { taskGroup: "5101" })];
     expect(groupChoices(sessions, ["5110", "5101"])).toEqual(["5101", "5101/api", "5110"]);
     expect(groupChoices([], ["5110"])).toEqual(["5110"]);
+  });
+});
+
+describe("several sessions closing one after another", () => {
+  it("each closes as it is now, those already gone skipped, and none is left once all are", () => {
+    const now = [session("a", { status: "idle" }), session("c", { status: "dead" })];
+    // b closed meanwhile: a first, then c as it is now, never a stale copy
+    expect(nextToClose(["a", "b", "c"], now)).toEqual({ next: now[0], rest: ["b", "c"] });
+    expect(nextToClose(["b", "c"], now)).toEqual({ next: now[1], rest: [] });
+    expect(nextToClose(["b"], now)).toEqual({ next: null, rest: [] });
+    expect(nextToClose([], now)).toEqual({ next: null, rest: [] });
   });
 });

@@ -302,29 +302,44 @@ export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | nul
 /**
  * A new workspace `size` big placed as near point `at` as there's room: what a right-click's New workspace makes.
  * Its corner is the point, snapped, when that's free; otherwise the free spot nearest it among those along the edges
- * of what's there, and failing those placeNew's. In `area` it keeps inside the padding and under the header, as a drop
- * does, and may lie past its right or bottom edge (the area grows to hold it, fitAreaTo). `occupied` is as placeNew's.
+ * of what's there. In `area` it keeps inside the padding and under the header, as a drop does, and clear of the other
+ * areas (`others`, by the padding the area would grow by and the gap areas keep). A spot inside the area within its own
+ * size of the point comes first (one moved in from an edge it would cross), then the nearest anywhere, the area growing
+ * to hold it, and failing those placeNew's. `occupied` is as placeNew's.
  */
-export function placeAt(size: Size, at: { x: number; y: number }, occupied: readonly Rect[], area: Rect | null, near: Rect | null = null): Placement {
-  const free = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6));
+export function placeAt(size: Size, at: { x: number; y: number }, occupied: readonly Rect[], area: Rect | null, near: Rect | null = null, others: readonly Rect[] = []): Placement {
+  const apart = AREA_PAD + AREA_GAP;
+  const clear = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6)) && !others.some((o) => overlaps(p, o, apart - 1e-6));
   const left = area ? snapUp(area.x + AREA_PAD) : -Infinity;
   const top = area ? snapUp(area.y + AREA_HEADER) : -Infinity;
+  const right = area ? area.x + area.w - AREA_PAD : Infinity;
+  const bottom = area ? area.y + area.h - AREA_PAD : Infinity;
   const x = Math.max(snap(at.x), left);
   const y = Math.max(snap(at.y), top);
-  if (free({ x, y, ...size })) return { x, y, ...size };
-  const xs = [x, ...occupied.flatMap((o) => [snapUp(o.x + o.w + GAP), snapDown(o.x - GAP - size.w)])].filter((v) => v >= left);
-  const ys = [y, ...occupied.flatMap((o) => [snapUp(o.y + o.h + GAP), snapDown(o.y - GAP - size.h)])].filter((v) => v >= top);
-  let best: Placement | null = null;
-  let bestD = Infinity;
-  for (const sx of new Set(xs))
-    for (const sy of new Set(ys)) {
-      const d = Math.hypot(sx - x, sy - y);
-      if (d < bestD && free({ x: sx, y: sy, ...size })) {
-        best = { x: sx, y: sy, ...size };
-        bestD = d;
+  // the spots along the edges of what's there: beside each workspace by the gap, beside each other area by `apart`
+  const edges = (lo: (o: Rect) => number, len: (o: Rect) => number, own: number) => [
+    ...occupied.flatMap((o) => [snapUp(lo(o) + len(o) + GAP), snapDown(lo(o) - GAP - own)]),
+    ...others.flatMap((o) => [snapUp(lo(o) + len(o) + apart), snapDown(lo(o) - apart - own)]),
+  ];
+  const xs = new Set([x, snapDown(right - size.w), ...edges((o) => o.x, (o) => o.w, size.w)].filter((v) => Number.isFinite(v) && v >= left));
+  const ys = new Set([y, snapDown(bottom - size.h), ...edges((o) => o.y, (o) => o.h, size.h)].filter((v) => Number.isFinite(v) && v >= top));
+  const close = (p: Rect) => Math.abs(p.x - x) <= size.w && Math.abs(p.y - y) <= size.h;
+  const tiers: ((p: Rect) => boolean)[] = [(p) => p.x + p.w <= right && p.y + p.h <= bottom && close(p), () => true];
+  for (const fits of tiers) {
+    let best: Placement | null = null;
+    let bestD = Infinity;
+    for (const sx of xs)
+      for (const sy of ys) {
+        const p = { x: sx, y: sy, ...size };
+        const d = Math.hypot(sx - x, sy - y);
+        if (d < bestD && fits(p) && clear(p)) {
+          best = p;
+          bestD = d;
+        }
       }
-    }
-  return best ?? placeNew(size, occupied, area, near);
+    if (best) return best;
+  }
+  return placeNew(size, [...occupied, ...others], area, near);
 }
 
 /** `area` grown rightward and downward, never shrunk, to hold `rects` inside its padding (they lie right of and below its corner, as placeNew puts them). */
