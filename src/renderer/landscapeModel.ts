@@ -27,6 +27,7 @@ import {
   kindOf,
   overlaps,
   own,
+  placeAt,
   placeNew,
   presetSize,
   SIZE_PRESETS,
@@ -295,6 +296,19 @@ export interface ResolvedLayout {
   cards: CardView[];
   /** Places made here for workspaces that had none, and areas added or grown to hold them; null when there were none. */
   patch: LandscapePatch | null;
+  /** The session placed where a right-click's New workspace was clicked (`hint`), until its place is saved. */
+  hinted?: string | null;
+}
+
+/**
+ * Where the next workspace made from a right-click on the landscape goes: the area clicked in (LOOSE_GROUP outside
+ * every area) and the point, in landscape px. It's for the first of this Mac's sessions made since `since` that lands
+ * in that area; one the dialog put in another area is placed as any new one is.
+ */
+export interface PlaceHint {
+  area: string;
+  at: Point;
+  since: number;
 }
 
 /** A tool window's size when it opens, in px at 100%: as tall as the workspace it opens beside, within these. */
@@ -318,15 +332,78 @@ const COMPACT_GAP = 4;
  * name. Only how they're drawn: their places don't change.
  */
 export function compactShifts(items: readonly { id: string; rect: Rect; min: Size }[], zoom: number): Map<string, number> {
-  const out = new Map<string, number>();
+  return new Map([...compactPlaces(items, zoom)].map(([id, p]) => [id, p.dy]));
+}
+
+/** How far a tool window or artifact card is kept inside its area's edges zoomed out to cards, in screen px. */
+const COMPACT_PAD = 4;
+/** The least height worth giving one squeezed under another at its area's foot: its name's line, in screen px. */
+const COMPACT_SQUEEZE = 28;
+
+/** Where a tool window or an artifact card is drawn zoomed out to cards, against its place: moved by dx, dy, w × h big (landscape px). */
+export interface CompactPlace {
+  dx: number;
+  dy: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Where each tool window and artifact card is drawn zoomed out to cards, at `zoom` (compactShifts' rule, kept inside
+ * areas). Each is drawn at least its compact size (`min`, screen px) from its top-left; one that would then cover one
+ * drawn before it in reading order goes just under that one, so a card placed beside its window reads under it.
+ *
+ * One in an area (`bounds`, its rectangle) stays inside it, a few px in from its edges, and clear of `avoid` (what
+ * other areas draw over it zoomed out: an area's name line, kept at screen size, reaches up past its top edge into the
+ * area above it). It's shrunk to fit when its area is smaller than its compact size, moved in from an edge it would
+ * cross, and, when there's no room under the one it would cover, put beside it, or squeezed into what's left under
+ * it; when there's no room even for that, it stays where it is inside its area, over the other. Only how they're
+ * drawn changes: their places don't.
+ */
+export function compactPlaces(items: readonly { id: string; rect: Rect; min: Size; bounds?: Rect | null }[], zoom: number, avoid: readonly Rect[] = []): Map<string, CompactPlace> {
+  const out = new Map<string, CompactPlace>();
   const drawn: Rect[] = [];
   const gap = COMPACT_GAP / zoom;
+  const pad = COMPACT_PAD / zoom;
   for (const it of [...items].sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x)) {
     const r: Rect = { x: it.rect.x, y: it.rect.y, w: Math.max(it.rect.w, it.min.w / zoom), h: Math.max(it.rect.h, it.min.h / zoom) };
-    // each move puts it below one it covered, so it ends below every one it would cover
-    for (let hit = drawn.find((d) => overlaps(r, d)); hit; hit = drawn.find((d) => overlaps(r, d))) r.y = hit.y + hit.h + gap;
-    drawn.push(r);
-    out.set(it.id, r.y - it.rect.y);
+    const b = it.bounds;
+    if (!b) {
+      // each move puts it below one it covered, so it ends below every one it would cover
+      for (let hit = drawn.find((d) => overlaps(r, d)); hit; hit = drawn.find((d) => overlaps(r, d))) r.y = hit.y + hit.h + gap;
+    } else {
+      const inner = { x: b.x + pad, y: b.y + pad, w: Math.max(0, b.w - 2 * pad), h: Math.max(0, b.h - 2 * pad) };
+      // what another area draws over this one's foot takes that part away
+      for (const a of avoid) {
+        if (a.x < inner.x + inner.w && a.x + a.w > inner.x && a.y < inner.y + inner.h && a.y + a.h > inner.y) inner.h = Math.max(0, Math.min(inner.h, a.y - gap - inner.y));
+      }
+      const right = inner.x + inner.w;
+      const foot = inner.y + inner.h;
+      const fit = (q: Rect): Rect => {
+        const w = Math.min(q.w, inner.w);
+        const h = Math.min(q.h, inner.h);
+        return { w, h, x: Math.max(inner.x, Math.min(q.x, right - w)), y: Math.max(inner.y, Math.min(q.y, foot - h)) };
+      };
+      const free = (q: Rect) => !drawn.some((d) => overlaps(q, d));
+      let at = fit(r);
+      for (let tries = drawn.length + 1, hit = drawn.find((d) => overlaps(at, d)); hit && tries > 0; tries--, hit = drawn.find((d) => overlaps(at, d))) {
+        const under = { ...at, y: hit.y + hit.h + gap };
+        const beside = [
+          { ...at, x: hit.x + hit.w + gap },
+          { ...at, x: hit.x - gap - at.w },
+        ].filter((q) => q.x >= inner.x - 1e-6 && q.x + q.w <= right + 1e-6 && free(q));
+        if (under.y + under.h <= foot + 1e-6) at = under;
+        else if (beside.length) at = beside[0];
+        else if (foot - under.y >= COMPACT_SQUEEZE / zoom) at = { ...under, h: foot - under.y };
+        else break;
+      }
+      r.x = at.x;
+      r.y = at.y;
+      r.w = at.w;
+      r.h = at.h;
+    }
+    drawn.push({ ...r });
+    out.set(it.id, { dx: r.x - it.rect.x, dy: r.y - it.rect.y, w: r.w, h: r.h });
   }
   return out;
 }
@@ -382,7 +459,7 @@ const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(mem
  *
  * `renames` are this window's renames still on their way (PendingRename).
  */
-export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], cell: Cell = CELL_ESTIMATE, renames: readonly PendingRename[] = []): ResolvedLayout {
+export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], cell: Cell = CELL_ESTIMATE, renames: readonly PendingRename[] = [], hint: PlaceHint | null = null): ResolvedLayout {
   /**
    * A group key under a rename still on its way: the key the landscape holds it under, the old one or the new. The
    * session list and the landscape's re-keying (main's renameAreaPatch) arrive one after the other, and a teammate's
@@ -479,14 +556,18 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   const grew = new Set<string>();
   const tiles: Tile[] = [];
   const placed = new Set<string>();
+  let hinted: string | null = null;
   for (const [key, g] of groups) {
     let rect = stored.get(key);
     if (!rect) {
       const size = presetSize(tileKind(g.members), "M", cell);
-      if (g.area === LOOSE_GROUP) rect = placeNew(size, [...occupied, ...areas.values()], null, firstArea());
+      // the first of this Mac's sessions made since a right-click's New workspace, in the area clicked, goes where it was clicked
+      const here = !hinted && !!hint && g.area === hint.area && g.members.some((s) => !s.room?.remote && s.createdAt >= hint.since);
+      if (here) hinted = fronts.get(key)!.id;
+      if (g.area === LOOSE_GROUP) rect = here ? placeAt(size, hint!.at, [...occupied, ...areas.values()], null, firstArea()) : placeNew(size, [...occupied, ...areas.values()], null, firstArea());
       else {
         const area = areas.get(g.area) ?? addArea(g.area);
-        rect = placeNew(size, occupied, area);
+        rect = here ? placeAt(size, hint!.at, occupied, area) : placeNew(size, occupied, area);
         const grown = fitAreaTo(area, [rect]);
         if (grown !== area) {
           setArea(g.area, grown, { w: grown.w, h: grown.h });
@@ -583,7 +664,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     const card = own(patch.cards, id) ?? stored;
     if (card.placement) cards.push({ id, card, rect: card.placement, hidden: areas.get(card.area)?.collapsed === true });
   }
-  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), windows, docked, cards, patch: finish(patch) };
+  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), windows, docked, cards, patch: finish(patch), hinted };
 }
 
 /** How big a collapsed area's pill counts for fitting the view and the minimap, in landscape px at 100%. */

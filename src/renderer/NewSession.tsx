@@ -32,6 +32,9 @@ export function NewSessionModal({
   signalingUrl,
   initialLaunch,
   initialGroup,
+  initialRepo,
+  initialBase,
+  initialTicket,
   initialMode,
   presets,
   onStartPreset,
@@ -49,6 +52,11 @@ export function NewSessionModal({
   signalingUrl?: string;
   initialLaunch?: LaunchKind;
   initialGroup?: string; // "5038" or "5038/backend" — a workspace path adds a tab there; a room's group starts it connected
+  /** The repo it starts in (a landscape area's), picked until another is, and the base its new worktree is cut from. */
+  initialRepo?: string;
+  initialBase?: string;
+  /** Opens with the ticket picker showing (New workspace → From a ticket…). */
+  initialTicket?: boolean;
   /** New starts a fresh session; Import resumes a conversation from this Mac. */
   initialMode?: "new" | "import";
   presets: SessionPreset[];
@@ -154,16 +162,26 @@ export function NewSessionModal({
   };
   const suggested = room ? roomRepos[room.groupKey] ?? [] : [];
   const choices = repoChoices(repos, q, suggested);
-  // a room working in exactly one repo here starts there, until a repo is picked by hand
+  // the repo it was opened for (its area's) starts picked; else a room working in exactly one repo here starts there,
+  // until a repo is picked by hand
   useEffect(() => {
     if (repoTouched.current || sel) return;
+    const seeded = initialRepo ? repos.find((r) => r.path === initialRepo) : undefined;
+    if (seeded) return setSel(seeded);
     const own = repos.filter((r) => suggested.includes(r.name));
     if (own.length === 1) setSel(own[0]);
   }, [repos, room?.groupKey]);
 
   const [ticketId, setTicketId] = useState("");
   const [ticketTitle, setTicketTitle] = useState("");
-  const [ticketOpen, setTicketOpen] = usePersisted("mb.newTicketOpen", false);
+  const [ticketPref, setTicketPref] = usePersisted("mb.newTicketOpen", false);
+  // opened for a ticket (From a ticket…), the picker shows this time without changing what's remembered
+  const [ticketAsked, setTicketAsked] = useState(!!initialTicket);
+  const ticketOpen = ticketPref || ticketAsked;
+  const setTicketOpen = (open: boolean) => {
+    setTicketPref(open);
+    if (!open) setTicketAsked(false);
+  };
   // Picking a ticket defaults to an isolated worktree under
   // <parent>/worktrees/<repo>/<branch>; unticked, the branch is checked out in
   // the repo itself. An explicit choice is remembered and wins.
@@ -187,6 +205,13 @@ export function NewSessionModal({
   const [sendTicket, setSendTicket] = useState(true);
   // base-branch options follow the chosen repo (new branch is cut off origin/<base>)
   const { branches: branchInfo, base: baseBranch, setBase: setBaseBranch, error: branchError } = useRepoBranches(sel?.path);
+  // the base its area keeps for the repo it was opened for, once that repo's branches are read, if the repo has it
+  const baseSeeded = useRef(false);
+  useEffect(() => {
+    if (baseSeeded.current || !initialBase || !branchInfo || sel?.path !== initialRepo) return;
+    baseSeeded.current = true;
+    if (branchInfo.branches.includes(initialBase)) setBaseBranch(initialBase);
+  }, [branchInfo, sel?.path]);
 
   useEffect(() => {
     if (reposError) setError(`Repo scan failed: ${reposError}`);

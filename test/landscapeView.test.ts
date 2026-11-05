@@ -25,7 +25,7 @@ import {
   zoomAbout,
   type ListsLoaded,
 } from "../src/renderer/landscapeModel";
-import { AREA_PAD, GAP, MAX_COORD, WORKSPACE_CHROME, applyPatch, colsRows, emptyLandscape, overlaps, parseLandscape, presetSize, sizeFor, type Landscape, type LandscapeProblem, type LandscapeState, type Rect } from "../src/shared/landscape";
+import { AREA_PAD, GAP, LOOSE_GROUP, MAX_COORD, WORKSPACE_CHROME, applyPatch, colsRows, emptyLandscape, overlaps, parseLandscape, presetSize, sizeFor, type Landscape, type LandscapeProblem, type LandscapeState, type Rect } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
 
 const session = (id: string, over: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -252,6 +252,45 @@ describe("where each session's workspace sits", () => {
     expect(Object.hasOwn(saved.workspaces, "__proto__")).toBe(true);
     expect(Object.keys(saved.stacks)).toEqual(["constructor/__proto__"]);
     expect(contentRects(resolveLayout(saved, [session("__proto__", { taskGroup: "constructor" })]))).toHaveLength(2);
+  });
+  it("puts the first session made since a right-click's New workspace where it was clicked, in the area clicked", () => {
+    const l = base();
+    const at = { x: 1300, y: 900 };
+    const hint = { area: "A", at, since: 500 };
+    const shown = [session("a1", { taskGroup: "A" }), session("old", { taskGroup: "A", createdAt: 100 }), session("n1", { taskGroup: "A", createdAt: 600 }), session("n2", { taskGroup: "A", createdAt: 700 })];
+    const r = resolveLayout(l, shown, undefined, [], hint);
+    expect(r.hinted).toBe("n1");
+    const n1 = r.tiles.find((t) => t.key === "n1")!.rect;
+    // on the grid at the click, which is free; the area grows to hold it
+    expect([n1.x, n1.y]).toEqual([1304, 904]);
+    const area = r.areas.find((a) => a.key === "A")!.rect;
+    expect(n1.y + n1.h + AREA_PAD).toBeLessThanOrEqual(area.y + area.h);
+    // the ones before it and after it go where they'd go anyway, clear of it
+    const plain = resolveLayout(l, shown);
+    expect(r.tiles.find((t) => t.key === "old")!.rect).toEqual(plain.tiles.find((t) => t.key === "old")!.rect);
+    for (const t of r.tiles) if (t.key !== "n1") expect(overlaps(t.rect, n1)).toBe(false);
+    // its place is saved like any new one's, and once saved the hint changes nothing
+    const saved = applyPatch(l, r.patch!);
+    expect(saved.workspaces.n1).toEqual(n1);
+    expect(resolveLayout(saved, shown, undefined, [], hint).patch).toBeNull();
+  });
+  it("places a session by a right-click only when it's this Mac's, new since, and in the area clicked", () => {
+    const l = base();
+    const hint = { area: "A", at: { x: 1300, y: 900 }, since: 500 };
+    const plain = (s: SessionInfo) => resolveLayout(l, [session("a1", { taskGroup: "A" }), s]).tiles.find((t) => t.key === s.id)!.rect;
+    for (const s of [
+      session("before", { taskGroup: "A", createdAt: 499 }),
+      session("elsewhere", { taskGroup: "B", createdAt: 600 }),
+      session("theirs", { taskGroup: "A", createdAt: 600, room: { remote: true } as SessionInfo["room"] }),
+    ]) {
+      const r = resolveLayout(l, [session("a1", { taskGroup: "A" }), s], undefined, [], hint);
+      expect(r.hinted, s.id).toBeNull();
+      expect(r.tiles.find((t) => t.key === s.id)!.rect, s.id).toEqual(plain(s));
+    }
+    // a click outside every area places a loose one where it was clicked
+    const loose = resolveLayout(l, [session("a1", { taskGroup: "A" }), session("n", { createdAt: 600 })], undefined, [], { area: LOOSE_GROUP, at: { x: -1500, y: 200 }, since: 500 });
+    expect(loose.hinted).toBe("n");
+    expect(loose.tiles.find((t) => t.key === "n")!.rect).toMatchObject({ x: -1496, y: 200 });
   });
 });
 

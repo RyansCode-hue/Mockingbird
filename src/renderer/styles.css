@@ -682,6 +682,8 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 
 /* close-session dialog (1e) */
 .modal.close-dlg { width: 420px; }
+.close-many-list { max-height: 220px; overflow: auto; margin: 4px 0 12px; padding-left: 18px; font-size: 12.5px; color: var(--text-2); }
+.close-many-list li { padding: 2px 0; }
 .opt {
   display: block; width: 100%; text-align: left; padding: 9px 10px; margin-top: 7px;
   border: 1px solid var(--line-strong); border-radius: 6px; background: transparent; cursor: pointer;
@@ -3166,15 +3168,51 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   background: color-mix(in srgb, var(--pane-focus) 10%, transparent);
 }
 .ls-viewport.ls-gesture, .ls-viewport.ls-gesture * { user-select: none; }
-.ls-pickbar {
-  position: absolute; left: 50%; top: 14px; z-index: 9; transform: translateX(-50%); display: flex; align-items: center; gap: 6px;
-  padding: 4px 4px 4px 12px; border-radius: 9px; background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2), 0 6px 18px rgba(0, 0, 0, .28);
-  font: 400 12px var(--ui); color: var(--text-2);
+/* an area selected (its patch, name or tree row clicked): its outline in its accent, the selection bar over it */
+.ls-area.selected { border: calc(2px * var(--ls-inv, 1)) solid var(--acc); }
+.ls-viewport.ls-band-cards .ls-area.selected { border-color: transparent; box-shadow: inset 0 0 0 calc(2px * var(--ls-inv, 1)) var(--acc); }
+.ls-area-pill.selected { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc); }
+/* the selection bar (designs Q and Q2; SelectionBar.tsx): the selection's actions at normal size at any zoom, floating
+   just above it, placed every frame by the camera (translate, so its entrance's scale composes with it); its width
+   comes from its buttons, and it never leaves the view (max-width), folding buttons behind » when they don't fit */
+.ls-selbar {
+  position: absolute; left: 0; top: 0; z-index: 8; display: flex; flex-direction: column; gap: 6px; box-sizing: border-box;
+  max-width: calc(100% - 16px); padding: 7px 8px 7px 12px; border-radius: 9px;
+  background: color-mix(in srgb, var(--text-1) 4%, var(--bg-chrome)); box-shadow: 0 0 0 1px var(--line-strong2), 0 10px 28px rgba(0, 0, 0, .4);
+  font: 400 12px var(--ui); color: var(--text-2); white-space: nowrap; user-select: none; transform-origin: 0 100%;
 }
-.ls-pickbar .n { margin-right: 4px; }
-.ls-pickbar button.primary { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; font-size: 12px; }
-.ls-pickbar kbd { padding: 0 4px; border-radius: 3px; background: rgba(0, 0, 0, .18); font: 500 10px var(--ui); }
-.ls-pickbar button.icon { padding: 3px 8px; }
+/* measured with every button in its row before it's painted: as wide as that, wherever it is */
+.ls-selbar.measuring { max-width: none; visibility: hidden; }
+/* put away while anything is dragged; it comes back where the drop leaves its selection */
+.ls-viewport.ls-dragging .ls-selbar { visibility: hidden; }
+.ls-sb-row, .ls-sb-row2 { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+.ls-sb-row2 { flex-wrap: wrap; padding-left: 14px; }
+.ls-sb-i, .ls-sb-id { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.ls-sb-who { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.ls-sb-dot { width: 8px; height: 8px; flex-shrink: 0; border-radius: 2px; background: var(--acc); }
+.ls-sb-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: var(--acc-text, var(--text-1)); }
+.ls-sb-name.plain { max-width: 150px; color: var(--text-1); }
+.ls-sb-status { max-width: 180px; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: color-mix(in srgb, var(--acc-text, var(--text-3)) 62%, var(--text-4)); }
+.ls-sb-sep { width: 1px; height: 18px; flex-shrink: 0; background: var(--line-strong); }
+.ls-sb-btn, .ls-selbar .ls-ah-btn {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--line-strong2); border-radius: 5px;
+  background: none; font: 400 12px var(--ui); color: var(--text-2); white-space: nowrap; cursor: pointer;
+}
+.ls-sb-btn:hover:not(:disabled), .ls-selbar .ls-ah-btn:hover { color: var(--text-1); background: var(--fill-subtle); }
+.ls-sb-btn:disabled { color: var(--text-4); cursor: default; }
+.ls-sb-btn.teal { color: var(--teal-text); border-color: color-mix(in srgb, var(--teal) 45%, transparent); }
+.ls-sb-btn.danger { border-color: transparent; color: var(--red); }
+.ls-sb-btn.danger:disabled { color: var(--text-4); }
+.ls-sb-btn.more { border-color: color-mix(in srgb, var(--text-1) 20%, transparent); background: var(--fill-selected); color: var(--text-1); }
+.ls-sb-btn .caret { font-size: 9px; color: var(--text-3); }
+.ls-sb-btn kbd { font: 400 11px var(--ui); color: var(--text-3); }
+.ls-sb-probe { position: absolute; }
+.ls-sb-dots {
+  display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 24px; padding: 0; border: none; border-radius: 5px;
+  background: none; color: var(--text-3); cursor: pointer;
+}
+.ls-sb-dots:hover { color: var(--text-1); background: var(--fill-subtle); }
+.ls-sb-dots svg { width: 14px; height: 14px; }
 .ls-note {
   position: absolute; left: 50%; top: 56px; z-index: 9; transform: translateX(-50%); max-width: min(560px, 80%); padding: 6px 12px; border-radius: 7px;
   background: var(--bg-chrome); box-shadow: 0 0 0 1px var(--line-strong2), 0 6px 18px rgba(0, 0, 0, .28);
@@ -3459,8 +3497,14 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-window.compact .ls-win-ico svg { width: calc(14 * var(--u)); height: calc(14 * var(--u)); }
 .ls-window.compact .ls-win-n { font-weight: 500; color: var(--text-3); }
 .ls-window.compact .ls-win-btn, .ls-window.compact .ls-spacer, .ls-window.compact .ls-win-docked { display: none; }
-/* drawn under one it would cover at that size (compactShifts, Landscape.tsx's paintCompact) */
-.ls-band-cards .ls-window.compact, .ls-band-cards .ls-acard { translate: 0 var(--ls-dy, 0px); }
+/* drawn under one it would cover at that size, inside its area and clear of the next area's name line, shrunk when the
+   area is smaller than that (compactPlaces, Landscape.tsx's paintCompact) */
+.ls-band-cards .ls-window.compact, .ls-band-cards .ls-acard {
+  translate: var(--ls-dx, 0px) var(--ls-dy, 0px);
+  min-width: var(--ls-cw, calc(136 * var(--u))); max-width: var(--ls-cw, none);
+  min-height: var(--ls-ch, calc(50 * var(--u))); max-height: var(--ls-ch, none);
+}
+.ls-band-cards .ls-acard { min-height: var(--ls-ch, calc(52 * var(--u))); }
 .ls-dock { flex: 0 0 auto; width: 320px; display: flex; flex-direction: column; gap: 1px; min-height: 0; background: var(--line-soft); border-left: 1px solid var(--line-soft); }
 .ls-dock .ls-window { position: static; flex: 1 1 0; min-height: 0; border-radius: 0; box-shadow: none; }
 
@@ -3483,7 +3527,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .acard-kind { display: none; }
 /* zoomed out the card is its name over its kind, as a workspace card is, their type at screen size, and the card at
    least that size on screen */
-.ls-band-cards .ls-acard { --u: calc(1px * var(--ls-inv, 1)); min-width: calc(136 * var(--u)); min-height: calc(52 * var(--u)); }
+.ls-band-cards .ls-acard { --u: calc(1px * var(--ls-inv, 1)); }
 .ls-band-cards .acard {
   gap: calc(4 * var(--u)); padding: calc(9 * var(--u)) calc(11 * var(--u)); border-radius: calc(10 * var(--u));
   box-shadow: 0 0 0 var(--u) color-mix(in srgb, var(--teal) 45%, transparent), 0 calc(4 * var(--u)) calc(14 * var(--u)) rgba(0, 0, 0, .22);

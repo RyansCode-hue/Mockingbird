@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { actionOf, inSection, menuOf, usable, workspaceActions, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { actionOf, createActions, inSection, menuOf, usable, workspaceActions, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -141,5 +141,24 @@ describe("a workspace's actions as a menu", () => {
     const area = inSection("area", [{ key: "rename", label: "Rename", onPick: vi.fn() }, "-", { key: "lock", label: "Lock", onPick: vi.fn() }]);
     expect(area.map((a) => [a.key, a.section])).toEqual([["rename", "area"], ["lock", "area"]]);
     expect(rows(menuOf(area))).toEqual(["# Area", "rename", "lock"]);
+  });
+});
+
+describe("a right-click on the empty landscape", () => {
+  it("offers today's ways to make a workspace, Collab and Pipeline off as coming, under New workspace", () => {
+    const launch = vi.fn();
+    const ticket = vi.fn();
+    const importIt = vi.fn();
+    const acts = createActions({ launch, ticket, importIt });
+    expect(rows(menuOf(acts))).toEqual(["# New workspace", "new:claude", "new:codex", "new:shell", "new:ticket", "new:import", "new:collab", "new:pipeline"]);
+    expect(acts.filter((a) => a.disabled).map((a) => [a.key, a.menuLabel])).toEqual([
+      ["new:collab", "Collab… (coming)"],
+      ["new:pipeline", "Pipeline from a ticket… (coming)"],
+    ]);
+    for (const a of acts.filter((x) => x.disabled)) expect(a.title).toMatch(/later version/);
+    // each runs today's flow: the New Session dialog for its kind, the ticket popover, Import
+    for (const k of ["new:claude", "new:codex", "new:shell", "new:ticket", "new:import"]) usable(acts, k)!.onPick(null as unknown as HTMLElement);
+    expect(launch.mock.calls).toEqual([["claude"], ["codex"], ["shell"]]);
+    expect([ticket.mock.calls.length, importIt.mock.calls.length]).toEqual([1, 1]);
   });
 });

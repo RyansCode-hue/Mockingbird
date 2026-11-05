@@ -200,6 +200,33 @@ export function RestartAllDialog({
   );
 }
 
+/**
+ * Several workspaces' Close… (the landscape's selection bar): asked once, then each is closed as its own Close… would
+ * (`onConfirm`), so one with uncommitted or unpushed work still gets its own dialog, one at a time.
+ */
+export function CloseManyDialog({ sessions, onCancel, onConfirm }: { sessions: readonly SessionInfo[]; onCancel: () => void; onConfirm: () => void }) {
+  return (
+    <Modal className="modal close-dlg close-many" onClose={onCancel} onKeyDown={(e) => e.key === "Enter" && enterConfirms(e.target as Element) && (e.preventDefault(), onConfirm())}>
+      <h3>Close {plural(sessions.length, "workspace")}?</h3>
+      <div className="sub-h">Each closes as its own Close… does: one with uncommitted or unpushed work asks what to do with it first.</div>
+      <ul className="close-many-list">
+        {sessions.map((s) => (
+          <li key={s.id}>{titleOf(s)}</li>
+        ))}
+      </ul>
+      <div className="row">
+        <span className="kbd foot-hint">⏎ to confirm</span>
+        <button className="outline" onClick={onCancel}>
+          Cancel
+        </button>
+        <button className="primary" onClick={onConfirm}>
+          Close {sessions.length}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 // ---- close-session dialog (design 1e) ----
 type CleanupMode = "keep" | "push" | "discard";
 

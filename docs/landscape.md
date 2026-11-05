@@ -80,8 +80,9 @@ together so work and context flow between them.
 
 - **Create.** Right-click empty landscape → New workspace: **Claude**,
   **Codex**, **Terminal**, **Collab**, **Browser**, **From a ticket…** (today's ticket
-  popover), **Import…**. It's created where you clicked. Inside an area, it joins that
-  area's group and defaults to the area's repo.
+  popover), **Import…**. It's created where you clicked (or the nearest free
+  spot). Inside an area, it joins that area's group and defaults to the area's
+  repo, and the menu goes on with the area's own actions.
 - **Size is the terminal's size.** A workspace's width and height at 100% zoom
   set its pty's columns and rows. Zooming only scales it, as a teammate's pane
   is scaled today (`followFixedSize`), so zooming never makes the agent
@@ -417,23 +418,35 @@ The rail keeps today's views and badges. On the landscape each opens as a
 selected, at every zoom:
 
 - **Selecting.** Click an area's patch, name or tree row, a workspace or its
-  tree row, or drag a marquee over several. Esc clears the selection.
+  tree row, or drag a marquee over several; Shift-click adds a workspace to
+  several or takes it out. One kind is selected at a time. Esc clears the
+  selection, after a peek, an open menu or a dialog has had the first Esc;
+  a click on the bare landscape outside every area clears it too.
 - **What it shows.**
   - An area: its name and status, the room tools if it's a room (Chat,
     Board, Members ▾, Follow), Ask for status, Tools ▾ and ⋯.
   - A workspace: Focus, Changes, Run, Files, Artifacts and ⋯.
   - Several workspaces: Make area…, Stack, Move to area ▾ and Close….
 - **Size.** Its width comes from its buttons, never from the selection's width
-  on screen. It sits just above the selection at normal size and slides to
-  stay inside the window, so far out it overhangs a small area.
+  on screen. It sits just above the selection at normal size (above an area's
+  header, or its name line zoomed out to cards) and slides to stay inside the
+  window, so far out it overhangs a small area. With no room above it stays
+  along the window's top edge, over the selection's top, rather than jumping
+  below it.
 - **When it doesn't fit.** In a narrow window, buttons fold behind **» n more**
   in priority order (an area's room tools stay; Follow, Ask for status and
-  Tools fold first; a workspace's Focus, Changes and Run stay; ⋯ never folds).
-  » extends the bar onto a second row until « Less, and the choice is
-  remembered.
-- **Right-click** gives the same actions as a menu, at every zoom.
+  Tools fold first; a workspace's Focus, Changes and Run stay; ⋯ never folds),
+  only as many as don't fit. » extends the bar onto a second row until
+  « Less, and the choice is remembered for the window.
+- **When there's none.** A workspace at 75% and up has no bar: its header is
+  at normal size there and carries the same actions. An area's bar shows at
+  every zoom. In focus there's no bar, and while anything is dragged it's
+  put away until the drop.
+- **Right-click** gives the same actions as a menu, at every zoom: on the
+  selection, and on the bar itself.
 - The bar, the headers, the ⋯ menus and right-click all draw from one list of
-  actions per area and per workspace.
+  actions per area and per workspace: a button is that list's row, with its
+  handler, and off with the row's reason when it can't be done.
 
 **The workspace** carries what the pane header and its rail carry today
 (design N):

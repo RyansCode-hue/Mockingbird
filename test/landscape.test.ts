@@ -22,6 +22,7 @@ import {
   own,
   parseLandscape,
   parsePatch,
+  placeAt,
   placeNew,
   presetSize,
   put,
@@ -216,6 +217,37 @@ describe("placeNew", () => {
     const one = placeNew(size, [], null, null);
     expect(one).toEqual({ x: 0, y: 0, ...size });
     expect(placeNew(size, [one], null, null).y).toBe(304 + GAP);
+  });
+});
+
+describe("placeAt", () => {
+  const size = { w: 400, h: 304 };
+
+  it("puts a workspace where a right-click was, on the grid, when that's free", () => {
+    expect(placeAt(size, { x: 603, y: 397 }, [], area({ w: 2000, h: 2000 }))).toEqual({ x: 600, y: 400, ...size });
+    expect(placeAt(size, { x: -1203, y: 51 }, [], null)).toEqual({ x: -1200, y: 48, ...size });
+  });
+
+  it("keeps it inside the area's padding and under its header, never over its top-left corner", () => {
+    const a = area({ x: 64, y: 128, w: 2000, h: 2000 });
+    expect(placeAt(size, { x: 66, y: 130 }, [], a)).toEqual({ x: 64 + AREA_PAD, y: 128 + AREA_HEADER, ...size });
+  });
+
+  it("takes the nearest free spot beside what's there when the click is on it, never overlapping", () => {
+    const a = area({ w: 4000, h: 4000 });
+    const there = { x: 600, y: 400, w: 400, h: 304 };
+    const p = placeAt(size, { x: 640, y: 420 }, [there], a);
+    expect(overlaps(p, there, GAP - 1e-6)).toBe(false);
+    expect([p.x % 8, p.y % 8]).toEqual([0, 0]);
+    // just under it, where the click is nearest an edge it can go past
+    expect(p).toEqual({ x: 640, y: 400 + 304 + GAP, ...size });
+    // a crowd of them: still clear of every one
+    let seed = 11;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const crowd: Rect[] = [];
+    for (let i = 0; i < 30; i++) crowd.push(placeAt({ w: 8 * Math.ceil(10 + rnd() * 60), h: 8 * Math.ceil(10 + rnd() * 40) }, { x: 400 + rnd() * 400, y: 400 + rnd() * 400 }, crowd, a));
+    expect(noneOverlap(crowd)).toBe(true);
+    for (const c of crowd) expect(c.x >= a.x + AREA_PAD && c.y >= a.y + AREA_HEADER).toBe(true);
   });
 });
 

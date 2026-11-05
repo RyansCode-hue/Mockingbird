@@ -24,6 +24,8 @@ export function AreaFrame({
   summary,
   counts,
   hot,
+  selected = false,
+  onSelect,
   menu,
   onCollapse,
   onLock,
@@ -43,6 +45,10 @@ export function AreaFrame({
   counts: AreaCounts;
   /** A workspace dragged over it would move into it. */
   hot: boolean;
+  /** It's the selection: the selection bar shows its actions (Landscape.tsx). */
+  selected?: boolean;
+  /** A right-click on it (its header, name or pill) selects it, as one on its patch does. */
+  onSelect?: () => void;
   menu: () => MenuEntry[];
   onCollapse: (collapsed: boolean) => void;
   onLock: (locked: boolean) => void;
@@ -62,11 +68,12 @@ export function AreaFrame({
       <>
         <button
           type="button"
-          className={`ls-area-pill ${cls}`}
+          className={`ls-area-pill ${cls} ${selected ? "selected" : ""}`}
           data-area={area.key}
           style={{ left: a.x, top: a.y, ["--aw" as string]: a.w }}
           title={`${title}: collapsed — click to open it again`}
           onClick={() => onCollapse(false)}
+          onContextMenuCapture={onSelect}
           onContextMenu={openMenu}
         >
           <span className="n">{title}</span>
@@ -100,9 +107,10 @@ export function AreaFrame({
   );
   return (
     <div
-      className={`ls-area ${cls} ${hot ? "drop-on" : ""} ${a.locked ? "locked" : ""}`}
+      className={`ls-area ${cls} ${hot ? "drop-on" : ""} ${a.locked ? "locked" : ""} ${selected ? "selected" : ""}`}
       data-area={area.key}
       style={{ left: a.x, top: a.y, width: a.w, height: a.h, ["--aw" as string]: a.w }}
+      onContextMenuCapture={onSelect}
       onContextMenu={openMenu}
     >
       {band === "cards" ? (

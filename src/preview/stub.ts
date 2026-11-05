@@ -2608,7 +2608,7 @@ if (lsPick)
       }
       const name = params.get("lsMakeArea");
       if (!name) return;
-      setTimeout(() => click(".ls-pickbar button.primary"), 150);
+      setTimeout(() => click('.ls-selbar [data-act="makeArea"]'), 150);
       setTimeout(() => {
         const input = document.querySelector<HTMLInputElement>(".modal input[type=text]");
         if (!input) return console.error("[preview] ?lsMakeArea found no name field");
@@ -2617,6 +2617,49 @@ if (lsPick)
         input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
       }, 450);
     }, 400)
+  );
+// the selection bar (S6a): ?lsSelect=area:<key> clicks that area's bare patch (its lower right corner) as a person
+// would, =ws:<id> that workspace's header (or card), =pick:<id,…> Shift-clicks those after Esc lets the selection go;
+// ?lsBarMenu=more|tools|move then opens the bar's ⋯, Tools ▾ or Move to area ▾; ?lsBarExtended starts with the bar's
+// folded buttons on a second row
+if (params.has("lsBarExtended")) set("mb.landscape.barExtended", true);
+const lsSelect = params.get("lsSelect");
+if (lsSelect)
+  waitFor(".ls-world .ls-node", () =>
+    setTimeout(() => {
+      const [kind, what = ""] = lsSelect.split(":");
+      const viewport = document.querySelector<HTMLElement>(".ls-viewport")!;
+      const press = (x: number, y: number, on: Element, init: PointerEventInit = {}) => {
+        on.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, buttons: 1, pointerId: 4, clientX: x, clientY: y, ...init }));
+        window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, button: 0, pointerId: 4, clientX: x, clientY: y }));
+      };
+      if (kind === "area") {
+        const r = document.querySelector(`.ls-area[data-area="${CSS.escape(what)}"]`)?.getBoundingClientRect();
+        if (!r) return console.error(`[preview] ?lsSelect found no area ${what}`);
+        press(r.right - 6, r.bottom - 6, viewport);
+      } else if (kind === "ws") {
+        const el = document.querySelector<HTMLElement>(`.ls-world [data-front="${CSS.escape(what)}"]`);
+        const on = el?.querySelector(".ls-head") ?? el;
+        if (!on) return console.error(`[preview] ?lsSelect found no workspace ${what}`);
+        const r = on.getBoundingClientRect();
+        press(r.left + 8, r.top + 8, on);
+      } else if (kind === "pick") {
+        viewport.focus();
+        viewport.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        // one Shift-click a moment, as a person makes them: each adds to what the one before left
+        what.split(",").forEach((id, i) =>
+          setTimeout(() => {
+            const el = document.querySelector<HTMLElement>(`.ls-world [data-front="${CSS.escape(id)}"]`);
+            const on = el?.querySelector(".ls-head") ?? el;
+            if (!on) return console.error(`[preview] ?lsSelect found no workspace ${id}`);
+            const r = on.getBoundingClientRect();
+            press(r.left + 8, r.top + 8, on, { shiftKey: true });
+          }, 100 * (i + 1))
+        );
+      }
+      const menu = params.get("lsBarMenu");
+      if (menu) setTimeout(() => document.querySelector<HTMLElement>(`.ls-selbar [data-act="${menu}"]`)?.click(), 600);
+    }, 500)
   );
 const typeArea = (area: HTMLTextAreaElement, text: string) => {
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(area, text);
@@ -2649,7 +2692,7 @@ if (openArtifact) {
 }
 const addWhat = params.get("artifactAdd");
 // headless Chrome resizes the page as it takes the screenshot, and a resize closes an open menu
-if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu"))) {
+if (params.has("shot") && ((params.has("artifactAdd") && !addWhat) || (params.has("chatMenu") && !params.get("chatMenu")) || params.has("ctx") || params.has("lsMenu") || params.has("lsBarMenu"))) {
   window.addEventListener("resize", (e) => e.stopImmediatePropagation(), true);
 }
 if (params.has("artifactAdd")) {
@@ -3092,7 +3135,7 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit", "landscapeReviewAudit", "landscapeReadOnlyAudit"].some((k) => params.has(k)) || flyAudit) {
+if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit", "landscapeReviewAudit", "landscapeReadOnlyAudit", "landscapeBarAudit"].some((k) => params.has(k)) || flyAudit) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
@@ -4155,7 +4198,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const during = { marquee: !document.querySelector<HTMLElement>(".ls-marquee")!.hidden, picked: [...document.querySelectorAll<HTMLElement>(".ls-world .ls-node.picked")].map((n) => n.dataset.front) };
       upAt(s7.right + 10, s7.bottom + 10);
       await sleep(200);
-      const bar = document.querySelector(".ls-pickbar")?.textContent ?? null;
+      const bar = document.querySelector(".ls-selbar")?.textContent ?? null;
       key(vp(), "m");
       await sleep(300);
       const dialog = document.querySelector(".modal h3")?.textContent ?? null;
@@ -4169,7 +4212,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         inside: !!landscape.areas.Spike && inRect(landscape.workspaces.s7, landscape.areas.Spike),
         group: sessions.find((s) => s.id === "s7")?.taskGroup ?? null,
         drawn: !!document.querySelector(areaEl("Spike")),
-        cleared: !document.querySelector(".ls-pickbar"),
+        cleared: !document.querySelector(".ls-selbar"),
         apart: apartAll(),
         minimap: minimap(),
       };
@@ -4864,6 +4907,433 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     report("mb-landscape-tools-audit", out);
   });
 
+  // ---- the selection bar (S6a) ----
+  const selbar = () => document.querySelector<HTMLElement>(".ls-selbar");
+  const rectOf = (el: Element | null) => {
+    const r = el?.getBoundingClientRect();
+    return r ? { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) } : null;
+  };
+  /** A bar item as it reads: its text pieces joined ("Tools ▾", "Focus ⌘E"), ⋯ for the menu, "(off)" when it's off. */
+  const barLabel = (i: Element) => {
+    const b = i.querySelector("button");
+    if (!b) return "";
+    const text = b.classList.contains("ls-sb-dots") ? "⋯" : [...b.childNodes].map((n) => n.textContent?.trim() ?? "").filter(Boolean).join(" ");
+    return `${text}${b.disabled ? " (off)" : ""}`;
+  };
+  /** What the bar shows: its name and status, its row's items, its second row's, and each off item's reason. */
+  const barNow = () => {
+    const b = selbar();
+    if (!b) return null;
+    const v = vp().getBoundingClientRect();
+    const r = b.getBoundingClientRect();
+    return {
+      name: b.querySelector(".ls-sb-name")?.textContent ?? null,
+      status: b.querySelector(".ls-sb-status")?.textContent ?? null,
+      row: [...b.querySelectorAll(".ls-sb-row > .ls-sb-i:not(.ls-sb-id)")].map(barLabel),
+      row2: [...b.querySelectorAll(".ls-sb-row2 > .ls-sb-i")].map(barLabel),
+      why: Object.fromEntries([...b.querySelectorAll<HTMLButtonElement>("button:disabled")].map((x) => [barLabel(x.parentElement!), x.title])),
+      rect: { x: Math.round(r.left - v.left), y: Math.round(r.top - v.top), w: Math.round(r.width), h: Math.round(r.height) },
+      inView: r.left >= v.left + 7 && r.right <= v.right - 7 && r.top >= v.top - 1 && r.bottom <= v.bottom + 1,
+      inWorld: !!b.closest(".ls-world"),
+      visible: getComputedStyle(b).visibility,
+    };
+  };
+  const barBtn = (act: string) => selbar()?.querySelector<HTMLButtonElement>(`[data-act="${CSS.escape(act)}"]`) ?? null;
+  /** The top of what an area draws on screen, relative to the viewport: its frame, header bar or name line. */
+  const areaTop = (key: string) => {
+    const v = vp().getBoundingClientRect();
+    const tops = [...document.querySelectorAll<HTMLElement>(`${areaEl(key)}, ${areaEl(key)} .ls-area-head, ${areaEl(key)} .ls-area-title`)]
+      .filter((e) => e.offsetParent && getComputedStyle(e).display !== "none" && getComputedStyle(e).visibility !== "hidden" && e.getBoundingClientRect().width > 0)
+      .map((e) => e.getBoundingClientRect().top - v.top);
+    return Math.round(Math.min(...tops));
+  };
+  const COVERS = ".ls-node, .ls-window, .ls-acard, .ls-hud, .ls-minimap, .ls-switcher, .ls-selbar, .ls-area-head, .ls-area-title, .ls-area-pill, .ls-banners, .ls-peek, .ls-note, .ls-marquee";
+  /** A point of the bare landscape on screen: in area `key` and no other, or (null) in none. */
+  const bareAt = (key: string | null) => {
+    const v = vp().getBoundingClientRect();
+    const areas = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-area")].map((a) => ({ key: a.dataset.area, r: a.getBoundingClientRect() }));
+    const r = key ? areas.find((a) => a.key === key)?.r : v;
+    if (!r) throw new Error(`no area ${key} on the landscape`);
+    for (let fy = 0.92; fy > 0.04; fy -= 0.04)
+      for (let fx = 0.92; fx > 0.04; fx -= 0.04) {
+        const x = r.left + r.width * fx;
+        const y = r.top + r.height * fy;
+        if (x < v.left + 4 || x > v.right - 4 || y < v.top + 60 || y > v.bottom - 4) continue;
+        const el = document.elementFromPoint(x, y);
+        if (!el || !vp().contains(el) || el.closest(COVERS)) continue;
+        const inAreas = areas.filter((a) => x >= a.r.left && x <= a.r.right && y >= a.r.top && y <= a.r.bottom).map((a) => a.key);
+        if (key ? inAreas.length === 1 && inAreas[0] === key : inAreas.length === 0) return { x, y, el };
+      }
+    throw new Error(`no bare point ${key ? `in ${key}` : "outside every area"} on screen`);
+  };
+  /** A click on the bare landscape at `p`, as a mouse makes it. */
+  const clickBare = async (p: { x: number; y: number; el: Element }) => {
+    pressAt(p.x, p.y, p.el);
+    upAt(p.x, p.y);
+    await sleep(300);
+  };
+  const selectAreaAt = (key: string) => clickBare(bareAt(key));
+  /** Area `key` brought to zoom `z` by a pinch about its top edge, so its top stays where it was on screen (60 px down at least). */
+  const zoomOnArea = async (key: string, z: number) => {
+    const v = vp().getBoundingClientRect();
+    const r = box(areaEl(key))!;
+    const p = { x: Math.max(10, Math.min(v.width - 10, r.left + 40 - v.left)), y: Math.max(60, Math.min(v.height - 10, r.top - v.top)) };
+    await pinchTo(z, p);
+    await sleep(500);
+  };
+  /** The bar where it is now, against its area's top and left edges on screen. */
+  const barOver = (key: string) => {
+    const b = barNow();
+    const v = vp().getBoundingClientRect();
+    const a = box(areaEl(key))!;
+    return b && { zoom: Math.round(zoomNow() * 1000) / 1000, band: [...vp().classList].find((c) => c.startsWith("ls-band-")) ?? null, bar: b, areaW: Math.round(a.width), gap: areaTop(key) - (b.rect.y + b.rect.h), left: b.rect.x - Math.max(8, Math.round(a.left - v.left)) };
+  };
+  const esc = (on: Element = document.activeElement ?? document.body) => on.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  const ctxTitles = () => Object.fromEntries([...document.querySelectorAll<HTMLButtonElement>(".mb-ctx button:disabled")].map((b) => [b.querySelector(".mb-ctx-t")?.textContent ?? "", b.title]));
+  const menuAfter = async (open: () => void) => {
+    open();
+    await sleep(300);
+    const rows = ctxRows();
+    const why = ctxTitles();
+    await closeCtx();
+    return { rows, why };
+  };
+  const callsSince = (mark: number, fn: string) => calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
+
+  // ?landscapeBarAudit=a|b|c|d (with ?motion=off): the selection bar (S6a), worked as a person would, in pages that
+  // each stay well inside the preview's minute. =a: an area's bar at 12%, 30%, 60% and 100%, at screen size above its
+  // area, a room's with its tools and one that isn't without; its buttons and ⋯ running the model's handlers; the
+  // right-click on it and on its area; sliding inside the window; hidden while dragging and in focus; Esc after a menu.
+  // =b: a workspace's bar, three selected, a taken-over session's, and a right-click on the empty landscape making a
+  // workspace where it was clicked, in an area and in none. =c (640 px wide): buttons folded behind », the second
+  // row, remembered. =d (with ?lsWindows): zoomed out to cards, windows and cards inside their areas, and a peek taking
+  // Esc before the selection. Into <script id="mb-landscape-bar-audit-<part>">.
+  if (params.has("landscapeBarAudit")) waitFor(".ls-world .ls-node", async () => {
+    const part = params.get("landscapeBarAudit") || "a";
+    const out: Record<string, unknown> = { part };
+    try {
+      await sleep(900);
+      if (part === "a") {
+        await fitView();
+        // an area that's a room's, and one that isn't, at each zoom: the bar the same size, above the area
+        const zooms: Record<string, unknown[]> = { "5101": [], "5102": [] };
+        for (const key of ["5101", "5102"]) {
+          await fitView();
+          await selectAreaAt(key);
+          for (const z of [0.12, 0.3, 0.6, 1]) {
+            await zoomOnArea(key, z);
+            zooms[key].push(barOver(key));
+          }
+        }
+        out.zooms = zooms;
+
+        // 5102 at 30%: Ask for status from its button and from ⋯ makes the same call; Tools ▾ is the model's tools
+        await fitView();
+        await selectAreaAt("5102");
+        await zoomOnArea("5102", 0.3);
+        let mark = calls.length;
+        barBtn("ask")!.click();
+        await sleep(300);
+        const fromButton = callsSince(mark, "groupStatusCheck");
+        mark = calls.length;
+        barBtn("more")!.click();
+        await sleep(300);
+        const more = ctxRows();
+        await ctxPick("Ask for status");
+        const fromMenu = callsSince(mark, "groupStatusCheck");
+        const tools = await menuAfter(() => barBtn("tools")!.click());
+        // the bar's right-click, and the area's own (on its name line or header), are ⋯'s rows
+        const onBar = await menuAfter(() => selbar()!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(selbar()!, 0.3, 0.5) })));
+        const head = document.querySelector(`${areaEl("5102")} .ls-area-head`) ?? document.querySelector(`${areaEl("5102")} .ls-area-title`);
+        const onArea = await menuAfter(() => head!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(head!, 0.2, 0.5) })));
+        out.handlers = { fromButton, fromMenu, more, tools: tools.rows, onBar: onBar.rows, onArea: onArea.rows };
+
+        // 5101's Board from the bar and House board… from ⋯: the room's board both ways
+        await fitView();
+        await selectAreaAt("5101");
+        await zoomOnArea("5101", 0.3);
+        const boardOpen = () => !!document.querySelector(".modal.house-modal");
+        barBtn("board")!.click();
+        await sleep(500);
+        const boardFromButton = boardOpen();
+        esc();
+        await sleep(300);
+        const closed = !boardOpen();
+        barBtn("more")!.click();
+        await sleep(300);
+        await ctxPick("House board…");
+        const boardFromMenu = boardOpen();
+        esc();
+        await sleep(300);
+        out.board = { boardFromButton, closed, boardFromMenu, stillSelected: barNow()?.name ?? null };
+
+        // the bar slides along the window's right edge with its area; back with the area again
+        const v = vp().getBoundingClientRect();
+        const leftNow = () => box(areaEl("5101"))!.left;
+        const before = barNow();
+        for (let i = 0; i < 6 && Math.abs(leftNow() - (v.right - 120)) > 20; i++) {
+          vp().dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ...at(vp(), 0.5, 0.5), deltaX: Math.max(-600, Math.min(600, leftNow() - (v.right - 120))) }));
+          await sleep(80);
+        }
+        await sleep(200);
+        const slid = { bar: barNow(), areaLeft: Math.round(leftNow() - v.left), viewW: Math.round(v.width) };
+        out.slide = { before: before?.rect ?? null, slid };
+
+        // hidden while the area is dragged by its name, there again after
+        await fitView();
+        await selectAreaAt("5102");
+        const name = document.querySelector(`${areaEl("5102")} .ls-area-title .n`) ?? document.querySelector(`${areaEl("5102")} .ls-area-title`)!;
+        const nb = name.getBoundingClientRect();
+        let during: string | null = null;
+        await dragAlong(mid(nb), { x: mid(nb).x + 40, y: mid(nb).y + 24 }, () => (during = barNow()?.visible ?? null), name);
+        out.drag = { during, after: barNow()?.visible ?? null, name: barNow()?.name ?? null };
+
+        // Esc: an open ⋯ menu takes the first, the selection the next; Esc in the bar clears it too
+        barBtn("more")!.click();
+        await sleep(300);
+        const menuOpen = !!document.querySelector(".mb-ctx");
+        esc();
+        await sleep(200);
+        const afterFirst = { menu: !!document.querySelector(".mb-ctx"), bar: !!selbar(), selected: !!document.querySelector(`${areaEl("5102")}.selected`) };
+        vp().focus();
+        esc(vp());
+        await sleep(200);
+        const afterSecond = { bar: !!selbar(), selected: !!document.querySelector(".ls-area.selected") };
+        await selectAreaAt("5102");
+        barBtn("ask")!.focus();
+        esc(barBtn("ask")!);
+        await sleep(200);
+        out.esc = { menuOpen, afterFirst, afterSecond, inBar: { bar: !!selbar(), selected: !!document.querySelector(".ls-area.selected") } };
+      }
+
+      if (part === "b") {
+        // a workspace at 30%: its bar; Files from the bar and from ⋯ the same window on it; Focus fills the window
+        await fitView();
+        await pick("s1");
+        await zoomOnArea("5101", 0.3);
+        const ws30 = barNow();
+        const wsMore = await menuAfter(() => barBtn("more")!.click());
+        const wsRight = await menuAfter(() => node("s1")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(node("s1")!, 0.5, 0.5) })));
+        barBtn("tool:files")!.click();
+        await sleep(800);
+        const filesFromBar = { windows: stored("files").length, session: stored("files")[0]?.session ?? null, scope: scopeOf(placedWin("files")) };
+        // the window's own close, then Files from ⋯
+        placedWin("files")!.querySelector<HTMLElement>('[aria-label="Close Files"]')!.click();
+        await sleep(500);
+        const closedFiles = stored("files").length;
+        await pick("s1");
+        barBtn("more")!.click();
+        await sleep(300);
+        await ctxPick("Files");
+        await sleep(300);
+        const filesFromMenu = { windows: stored("files").length, session: stored("files")[0]?.session ?? null, scope: scopeOf(placedWin("files")) };
+        await pick("s1");
+        barBtn("focus")!.click();
+        await sleep(500);
+        const inFocus = { focus: !!document.querySelector(".ls-focus .ls-node"), bar: !!selbar() };
+        pointer(document.querySelector(".ls-focus .ls-head")!, "pointerdown", { button: 0 });
+        await sleep(100);
+        esc();
+        await sleep(400);
+        const leftFocus = { focus: !!document.querySelector(".ls-focus .ls-node"), bar: barNow()?.name ?? null };
+        // at 100% the workspace's own header carries its tools: no bar
+        await zoomOnArea("5101", 1);
+        await pick("s1");
+        const at100 = { band: [...vp().classList].find((c) => c.startsWith("ls-band-")) ?? null, bar: !!selbar(), selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-front") ?? null };
+        out.workspace = { ws30, more: wsMore.rows, right: wsRight.rows, filesFromBar, closedFiles, filesFromMenu, inFocus, leftFocus, at100 };
+
+        // a taken-over session: its turns and hand-on off in its bar's ⋯, saying why
+        await fitView();
+        await pick("y1");
+        await zoomOnArea("5110", 0.3);
+        const y1 = await menuAfter(() => barBtn("more")!.click());
+        out.takenOver = { bar: barNow()?.name ?? null, rows: y1.rows, why: y1.why };
+
+        // three selected with Shift: their bar, its right-click and the one on a picked card, and Move to area ▾
+        await fitView();
+        vp().focus();
+        esc(vp());
+        await sleep(200);
+        const cleared = { bar: barNow()?.name ?? null, selected: document.querySelector(".ls-world .ls-node.selected")?.getAttribute("data-front") ?? null, active: document.activeElement?.className ?? null };
+        for (const id of ["s1", "s2", "s4"]) {
+          pointer(node(id)!.querySelector(".ls-head") ?? node(id)!, "pointerdown", { button: 0, shiftKey: true });
+          await sleep(150);
+        }
+        await sleep(200);
+        const three = barNow();
+        const onPicked = await menuAfter(() => node("s2")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(node("s2")!, 0.5, 0.5) })));
+        const onBar = await menuAfter(() => selbar()!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(selbar()!, 0.2, 0.5) })));
+        const moveTo = await menuAfter(() => barBtn("move")!.click());
+        barBtn("close")!.click();
+        await sleep(400);
+        const closeDlg = document.querySelector(".modal.close-many h3")?.textContent ?? null;
+        const closeList = [...document.querySelectorAll(".modal.close-many .close-many-list li")].map((li) => li.textContent);
+        esc();
+        await sleep(300);
+        out.several = { cleared, three, onPicked: onPicked.rows, onBar: onBar.rows, move: moveTo.rows, closeDlg, closeList, closeKept: !document.querySelector(".modal.close-many") && sessions.filter((s) => ["s1", "s2", "s4"].includes(s.id)).length };
+        // Move to area ▾ → 5102: they join it, each placed inside it, and the selection is let go; the api stack, which
+        // holds a teammate's tab, stays, and the note says so
+        const moveMark = calls.length;
+        barBtn("move")!.click();
+        await sleep(300);
+        await ctxPick("#5102 Pathways quick view freezes");
+        await sleep(800);
+        const placeOf = (id: string) => {
+          const s = sessions.find((x) => x.id === id)!;
+          const stack = stackKeyOf(s);
+          return stack ? landscape.stacks[stack]?.placement : landscape.workspaces[id];
+        };
+        out.moved = {
+          groups: ["s1", "s2", "s4"].map((id) => sessions.find((s) => s.id === id)?.taskGroup ?? null),
+          inside: ["s1", "s4"].every((id) => !!placeOf(id) && inRect(placeOf(id)!, landscape.areas["5102"])),
+          bar: !!selbar(),
+          apart: apartAll(),
+          setGroup: callsSince(moveMark, "setGroup"),
+          note: noteText(),
+        };
+        vp().focus();
+        esc(vp());
+        await sleep(200);
+
+        // a right-click on 5102's bare patch: the create rows and its area's; Claude… opens New session for 5102
+        await fitView();
+        const cam = () => camera()!;
+        const toLs = (p: { x: number; y: number }) => {
+          const v = vp().getBoundingClientRect();
+          return { x: cam().x + (p.x - v.left) / cam().zoom, y: cam().y + (p.y - v.top) / cam().zoom };
+        };
+        const create = async (key: string | null, row: string) => {
+          const p = bareAt(key);
+          p.el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: p.x, clientY: p.y }));
+          await sleep(300);
+          const rows = ctxRows();
+          const why = ctxTitles();
+          const selected = document.querySelector(".ls-area.selected")?.getAttribute("data-area") ?? null;
+          await ctxPick(row);
+          await sleep(300);
+          const dlg = document.querySelector<HTMLElement>(".modal.ns");
+          const group = dlg?.querySelector(`button.mb-select[title="Group"]`)?.textContent?.trim() ?? null;
+          const dialog = {
+            title: dlg?.querySelector("h3")?.textContent ?? null,
+            launch: dlg?.querySelector(".ns-launch button.on")?.textContent ?? null,
+            mode: dlg?.querySelector(".ns-mode button.on")?.textContent ?? null,
+            group,
+            repo: dlg?.querySelector(".ns-chosen .t")?.textContent ?? null,
+            ticketOpen: [...(dlg?.querySelectorAll("button.link") ?? [])].some((b) => b.textContent === "Hide"),
+          };
+          return { at: toLs(p), rows, why, selected, dialog };
+        };
+        const made = async () => {
+          const ids = new Set(sessions.map((s) => s.id));
+          document.querySelector<HTMLElement>(".modal.ns button.primary.cta")!.click();
+          await sleep(1500);
+          const s = sessions.find((x) => !ids.has(x.id));
+          const placed = s ? landscape.workspaces[s.id] ?? null : null;
+          return { id: s?.id ?? null, group: s?.taskGroup ?? null, placed };
+        };
+        const inArea = await create("5102", "Claude…");
+        const madeIn = await made();
+        out.createIn = { ...inArea, made: madeIn, area: landscape.areas["5102"] ?? null, firstRepo: landscape.areas["5102"]?.repos[0]?.path ?? null };
+        // outside every area: only the create rows; Terminal… makes a loose terminal where it was clicked
+        await fitView();
+        const loose = await create(null, "Terminal…");
+        const madeLoose = await made();
+        out.createLoose = { ...loose, made: madeLoose };
+        // From a ticket… and Import… open the same dialog with the ticket field, or importing
+        await fitView();
+        const ticket = await create("5102", "From a ticket…");
+        esc();
+        await sleep(300);
+        const importing = await create("5102", "Import…");
+        esc();
+        await sleep(300);
+        out.createOther = { ticket: ticket.dialog, importing: importing.dialog };
+      }
+
+      if (part === "c") {
+        // 640 px wide: 5101's bar folds its last buttons behind », whose second row is remembered
+        await fitView();
+        await selectAreaAt("5101");
+        await zoomOnArea("5101", 0.3);
+        const folded = barNow();
+        barBtn("more-buttons")!.click();
+        await sleep(300);
+        const extended = { bar: barNow(), stored: localStorage.getItem("mb.landscape.barExtended") };
+        // another tab and back, the area selected again: still on two rows
+        await topTab("Dashboard");
+        await topTab("Sessions");
+        await sleep(500);
+        await fitView();
+        await selectAreaAt("5101");
+        await zoomOnArea("5101", 0.3);
+        const remembered = barNow();
+        barBtn("more-buttons")!.click();
+        await sleep(300);
+        const less = { bar: barNow(), stored: localStorage.getItem("mb.landscape.barExtended") };
+        // a folded button on the second row runs its handler as in the row
+        barBtn("more-buttons")!.click();
+        await sleep(300);
+        const mark = calls.length;
+        barBtn("ask")!.click();
+        await sleep(300);
+        out.fold = { viewW: vp().clientWidth, folded, extended, remembered, less, askFromRow2: callsSince(mark, "groupStatusCheck") };
+        // a workspace's bar at this width
+        await pick("s1");
+        await sleep(200);
+        out.foldWs = barNow();
+      }
+
+      if (part === "d") {
+        // zoomed out to cards with every area's windows and a card: each inside its area, clear of the others' names
+        await fitView();
+        await pinchTo(0.13);
+        await sleep(600);
+        const areaBoxes = Object.fromEntries([...document.querySelectorAll<HTMLElement>(".ls-world .ls-area")].map((a) => [a.dataset.area!, a.getBoundingClientRect()]));
+        const names = [...document.querySelectorAll<HTMLElement>(".ls-world .ls-area")].map((a) => ({ key: a.dataset.area!, r: a.querySelector(".ls-area-title")?.getBoundingClientRect() ?? null }));
+        const within = (r: DOMRect, a: DOMRect) => r.left >= a.left - 1 && r.top >= a.top - 1 && r.right <= a.right + 1 && r.bottom <= a.bottom + 1;
+        const hits = (r: DOMRect, a: DOMRect | null) => !!a && r.left < a.right - 1 && r.right > a.left + 1 && r.top < a.bottom - 1 && r.bottom > a.top + 1;
+        const areaOfWin = (id: string) => {
+          const t = landscape.tools[id];
+          return t?.area ?? (t?.session ? areaKeyOf(sessions.find((s) => s.id === t.session)!) : null);
+        };
+        const items = [
+          ...[...document.querySelectorAll<HTMLElement>(".ls-world .ls-window[data-win]")].map((e) => ({ id: `win:${e.dataset.win}`, area: areaOfWin(e.dataset.win!), r: e.getBoundingClientRect() })),
+          ...[...document.querySelectorAll<HTMLElement>(".ls-world .ls-acard[data-card]")].map((e) => ({ id: `card:${e.dataset.card}`, area: landscape.cards[e.dataset.card!]?.area ?? null, r: e.getBoundingClientRect() })),
+        ];
+        out.cards = {
+          zoom: Math.round(zoomNow() * 1000) / 1000,
+          band: [...vp().classList].find((c) => c.startsWith("ls-band-")) ?? null,
+          items: items.map((it) => ({
+            id: it.id,
+            area: it.area,
+            inside: !!it.area && !!areaBoxes[it.area] && within(it.r, areaBoxes[it.area]),
+            overName: names.filter((n) => n.key !== it.area && hits(it.r, n.r)).map((n) => n.key),
+            overArea: Object.entries(areaBoxes).filter(([k, a]) => k !== it.area && hits(it.r, a)).map(([k]) => k),
+          })),
+        };
+        // a peek over a card, the area selected: Esc closes the peek, and only the next clears the selection
+        await zoomOnArea("5102", 0.3);
+        await selectAreaAt("5102");
+        const card = node("s4")!;
+        const c = at(card, 0.5, 0.5);
+        for (const type of ["pointerover", "pointermove"]) card.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerType: "mouse", pointerId: 7, ...c }));
+        await sleep(PEEK_HOVER_MS + 300);
+        const peekOpen = !!document.querySelector(".ls-peek");
+        const bar = barNow()?.name ?? null;
+        vp().focus();
+        esc(vp());
+        await sleep(300);
+        const first = { peek: !!document.querySelector(".ls-peek"), bar: barNow()?.name ?? null };
+        esc(vp());
+        await sleep(300);
+        out.peek = { peekOpen, bar, first, second: { bar: !!selbar(), selected: !!document.querySelector(".ls-area.selected") } };
+      }
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report(`mb-landscape-bar-audit-${part}`, out);
+  });
+
   // ?landscapeReviewAudit (with ?motion=off&lsPersist): the S5 review's fixes, worked as a person would, in two pages
   // so each stays well inside the preview's minute. =a: placed and docked windows and a card kept through a real
   // reload; a Chat window viewing its room only while it's on screen in the live band; a mention notification going to
@@ -5220,9 +5690,9 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
 // and 30% (=<zoom>,… picks others), then zoomed from 100% to 25% and back in one sweep, into
 // <script id="mb-landscape-perf">. Each step is one wheel event a frame, as a trackpad sends them. For every frame it
 // keeps the interval since the last (rAF to rAF: what a person sees drop) and its main-thread time (from rAF to the
-// first task after the frame, so past style, layout and paint), and with each zoom what was attached meanwhile and
-// how busy the main thread is at rest there. Frames of 50 ms and more (long animation frames) are counted too, from
-// the page's load on.
+// first task after the frame, so past style, layout and paint), and with each zoom what was attached meanwhile, whether
+// a selection bar rode along (?lsSelect) and how busy the main thread is at rest there. Frames of 50 ms and more (long
+// animation frames) are counted too, from the page's load on.
 if (params.has("landscapePerf")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const zooms = (params.get("landscapePerf") || "1,0.6,0.3").split(",").map(Number).filter((z) => z > 0);
@@ -5309,7 +5779,7 @@ if (params.has("landscapePerf")) {
         // ±8% about z: 30 frames in, 60 out, 30 back in
         const pinch = await run(120, (i) => pinchBy(i < 30 || i >= 90 ? Math.exp(0.0025) : Math.exp(-0.0025)));
         await sleep(800);
-        (out.zooms as unknown[]).push({ zoom: z, reached: round(zoomNow() * 1000) / 1000, attached: before, idle, pan, pinch });
+        (out.zooms as unknown[]).push({ zoom: z, reached: round(zoomNow() * 1000) / 1000, attached: before, selectionBar: !!document.querySelector(".ls-selbar"), idle, pan, pinch });
       }
       await zoomTo(1);
       await sleep(1500);

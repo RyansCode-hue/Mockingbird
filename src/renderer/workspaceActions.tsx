@@ -9,7 +9,7 @@ import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, Pan
  * of them can offer what the others don't, or word it differently. Each action has its label, whether it can be done
  * now and why not (`disabled`, `title`), its shortcut (`kbd`) and its handler; `section` groups the menu's rows.
  */
-export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "messages" | "end";
+export type ActionSection = "session" | "tools" | "terminal" | "handon" | "room" | "area" | "messages" | "create" | "end";
 
 /** A section's heading in a menu; null: its rows follow a separator only. */
 const SECTION_NAME: Record<ActionSection, string | null> = {
@@ -20,6 +20,7 @@ const SECTION_NAME: Record<ActionSection, string | null> = {
   room: "Team room",
   area: "Area",
   messages: "Agent messages",
+  create: "New workspace",
   end: null,
 };
 
@@ -68,6 +69,10 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
   const dead = s.status === "dead";
   const other = AGENT_NAME[otherAgent(s.agent)];
   const theirs = (what: string) => (env.owner ? { disabled: true, title: `${env.owner}'s session: theirs to ${what}` } : {});
+  // a copy a teammate took over and continues on their laptop is taken back, never worked on here: its turns, its
+  // branch and its conversation go on there
+  const by = s.room?.takenOver?.byName ?? null;
+  const tookIt = (c: Can, what: string): Can => (by ? { no: `${by} continues it on their laptop: take it back ${what}` } : c);
   const out: ModelAction[] = [
     { section: "session", key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: env.rename, ...theirs("rename") },
     {
@@ -119,15 +124,38 @@ export function workspaceActions(s: SessionInfo, env: WorkspaceEnv): ModelAction
       onPick: env.hidePanel,
       ...(env.diffPanel ? { title: "Close the agent's diff side panel (same as its × or /diff)" } : { disabled: true, title: "The agent's diff panel isn't open" }),
     },
-    { section: "terminal", key: "undo", label: "Undo", menuLabel: "Undo the last turn…", icon: <UndoIcon />, ...can(env.undo) },
-    { section: "handon", key: "handoff", label: other, menuLabel: `Continue in ${other}…`, icon: <HandoffIcon />, ...can(env.handoff) },
-    { section: "handon", key: "brief", label: "Brief", menuLabel: "Fresh session from a brief…", ...can(env.brief) },
-    { section: "handon", key: "review", label: "Second opinion", menuLabel: `Second opinion from ${other}`, ...can(env.secondOpinion) },
+    { section: "terminal", key: "undo", label: "Undo", menuLabel: "Undo the last turn…", icon: <UndoIcon />, ...can(tookIt(env.undo, "before undoing a turn here")) },
+    { section: "handon", key: "handoff", label: other, menuLabel: `Continue in ${other}…`, icon: <HandoffIcon />, ...can(tookIt(env.handoff, "to hand it on")) },
+    { section: "handon", key: "brief", label: "Brief", menuLabel: "Fresh session from a brief…", ...can(tookIt(env.brief, "to hand it on")) },
+    { section: "handon", key: "review", label: "Second opinion", menuLabel: `Second opinion from ${other}`, ...can(tookIt(env.secondOpinion, "to have its branch reviewed")) },
     ...env.room.map((a): ModelAction => ({ ...a, section: "room" }))
   );
-  if (dead && local) out.push({ section: "end", key: "resume", label: "Resume", menuLabel: "Resume", primary: true, title: "Start it again, resuming its conversation", ...can(env.resume) });
+  if (dead && local) out.push({ section: "end", key: "resume", label: "Resume", menuLabel: "Resume", primary: true, title: "Start it again, resuming its conversation", ...can(tookIt(env.resume, "rather than resuming this copy")) });
   out.push({ section: "end", key: "close", label: "Close", menuLabel: dead ? "Close & clean up…" : "Close…", icon: <CloseIcon />, danger: true, onPick: env.close, ...theirs("close") });
   return out;
+}
+
+/** What making a workspace needs (right-click on empty landscape): today's New Session dialog, opened for each kind. */
+export interface CreateEnv {
+  launch: (kind: "claude" | "codex" | "shell") => void;
+  /** The dialog with its ticket picker open. */
+  ticket: () => void;
+  /** The dialog's Import, resuming a conversation from this Mac. */
+  importIt: () => void;
+}
+
+/** The kinds of workspace that can be made here, and those still to come (docs/landscape.md, Workspaces: Create). */
+export function createActions(env: CreateEnv): ModelAction[] {
+  const coming = (key: string, label: string, title: string): ModelAction => ({ section: "create", key, label, menuLabel: `${label} (coming)`, disabled: true, title, onPick: () => {} });
+  return [
+    { section: "create", key: "new:claude", label: "Claude", menuLabel: "Claude…", onPick: () => env.launch("claude") },
+    { section: "create", key: "new:codex", label: "Codex", menuLabel: "Codex…", onPick: () => env.launch("codex") },
+    { section: "create", key: "new:shell", label: "Terminal", menuLabel: "Terminal…", onPick: () => env.launch("shell") },
+    { section: "create", key: "new:ticket", label: "From a ticket", menuLabel: "From a ticket…", onPick: env.ticket },
+    { section: "create", key: "new:import", label: "Import", menuLabel: "Import…", onPick: env.importIt },
+    coming("new:collab", "Collab…", "Collab workspaces, where several agents talk a change through, come in a later version"),
+    coming("new:pipeline", "Pipeline from a ticket…", "Pipeline templates come in a later version"),
+  ];
 }
 
 /** A model's actions as a menu: each section under its heading, the last after a separator. */

@@ -299,6 +299,34 @@ export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | nul
   return first(spots.sort((a, b) => a.y - b.y || a.x - b.x));
 }
 
+/**
+ * A new workspace `size` big placed as near point `at` as there's room: what a right-click's New workspace makes.
+ * Its corner is the point, snapped, when that's free; otherwise the free spot nearest it among those along the edges
+ * of what's there, and failing those placeNew's. In `area` it keeps inside the padding and under the header, as a drop
+ * does, and may lie past its right or bottom edge (the area grows to hold it, fitAreaTo). `occupied` is as placeNew's.
+ */
+export function placeAt(size: Size, at: { x: number; y: number }, occupied: readonly Rect[], area: Rect | null, near: Rect | null = null): Placement {
+  const free = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6));
+  const left = area ? snapUp(area.x + AREA_PAD) : -Infinity;
+  const top = area ? snapUp(area.y + AREA_HEADER) : -Infinity;
+  const x = Math.max(snap(at.x), left);
+  const y = Math.max(snap(at.y), top);
+  if (free({ x, y, ...size })) return { x, y, ...size };
+  const xs = [x, ...occupied.flatMap((o) => [snapUp(o.x + o.w + GAP), snapDown(o.x - GAP - size.w)])].filter((v) => v >= left);
+  const ys = [y, ...occupied.flatMap((o) => [snapUp(o.y + o.h + GAP), snapDown(o.y - GAP - size.h)])].filter((v) => v >= top);
+  let best: Placement | null = null;
+  let bestD = Infinity;
+  for (const sx of new Set(xs))
+    for (const sy of new Set(ys)) {
+      const d = Math.hypot(sx - x, sy - y);
+      if (d < bestD && free({ x: sx, y: sy, ...size })) {
+        best = { x: sx, y: sy, ...size };
+        bestD = d;
+      }
+    }
+  return best ?? placeNew(size, occupied, area, near);
+}
+
 /** `area` grown rightward and downward, never shrunk, to hold `rects` inside its padding (they lie right of and below its corner, as placeNew puts them). */
 export function fitAreaTo(area: Area, rects: readonly Rect[]): Area {
   const b = boundsOf(rects);

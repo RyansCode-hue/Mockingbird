@@ -15,6 +15,7 @@ import {
   resolveLayout,
   cardShelf,
   cardsAfterShare,
+  compactPlaces,
   compactShifts,
   mentionTarget,
   sameScope,
@@ -378,6 +379,56 @@ describe("windows and cards zoomed out to cards", () => {
     const top = (id: string, y: number) => y + s.get(id)!;
     expect(top("c2", 144)).toBeGreaterThanOrEqual(top("c", 0) + 52 / 0.13);
     expect(s.get("f")).toBe(0);
+  });
+
+  it("stay inside their area's frame, a few px in from its edges, shrunk when the area is smaller than they are", () => {
+    const area = { x: 0, y: 0, w: 2400, h: 1200 };
+    const z = 0.13;
+    const inside = (p: { dx: number; dy: number; w: number; h: number }, r: Rect) => {
+      const x = r.x + p.dx;
+      const y = r.y + p.dy;
+      return x >= area.x + 4 / z - 1e-6 && y >= area.y + 4 / z - 1e-6 && x + p.w <= area.x + area.w - 4 / z + 1e-6 && y + p.h <= area.y + area.h - 4 / z + 1e-6;
+    };
+    // a card at the area's foot, drawn at its compact size, would reach out past it: it's moved up inside
+    const card = { id: "c", rect: { x: 1800, y: 1100, w: 240, h: 96 }, min, bounds: area };
+    const p = compactPlaces([card], z).get("c")!;
+    expect(p.h).toBeCloseTo(50 / z, 6);
+    expect(inside(p, card.rect)).toBe(true);
+    expect(p.dy).toBeLessThan(0);
+    // an area smaller than a compact card: the card is shrunk to the area
+    const tiny = { x: 0, y: 0, w: 600, h: 300 };
+    const t = compactPlaces([{ id: "t", rect: { x: 24, y: 48, w: 240, h: 96 }, min, bounds: tiny }], z).get("t")!;
+    expect(t.w).toBeCloseTo(600 - 8 / z, 6);
+    expect(t.h).toBeCloseTo(300 - 8 / z, 6);
+    // with no area, as before
+    expect(compactPlaces([{ ...card, bounds: null }], z).get("c")).toMatchObject({ dx: 0, dy: 0 });
+  });
+
+  it("go beside, or squeezed under, one they'd cover when there's no room under it inside the area", () => {
+    const area = { x: 0, y: 0, w: 4000, h: 1000 };
+    const z = 0.13;
+    const win = { id: "w", rect: { x: 40, y: 60, w: 384, h: 640 }, min, bounds: area };
+    const card = { id: "c", rect: { x: 400, y: 60, w: 240, h: 128 }, min, bounds: area };
+    const s = compactPlaces([win, card], z);
+    const w = s.get("w")!;
+    const c = s.get("c")!;
+    const box = (p: { dx: number; dy: number; w: number; h: number }, r: Rect): Rect => ({ x: r.x + p.dx, y: r.y + p.dy, w: p.w, h: p.h });
+    expect(overlaps(box(w, win.rect), box(c, card.rect))).toBe(false);
+    // under the window is past the area's foot: the card is drawn beside it, inside the area
+    expect(card.rect.x + c.dx).toBeGreaterThanOrEqual(win.rect.x + w.w);
+    expect(card.rect.y + c.dy + c.h).toBeLessThanOrEqual(area.h);
+  });
+
+  it("keep clear of another area's name line reaching over their area's foot", () => {
+    const area = { x: 0, y: 0, w: 2400, h: 1200 };
+    const z = 0.13;
+    // the area below's name line, at screen size, reaches 30 px up past its top edge at 1250
+    const name = { x: 0, y: 1250 - 30 / z, w: 1600, h: 30 / z };
+    const card = { id: "c", rect: { x: 200, y: 1000, w: 240, h: 96 }, min, bounds: area };
+    const p = compactPlaces([card], z, [name]).get("c")!;
+    expect(card.rect.y + p.dy + p.h).toBeLessThanOrEqual(name.y);
+    // the name line takes that strip of the area's foot across its width; a card above it isn't moved
+    expect(compactPlaces([{ ...card, rect: { ...card.rect, y: 200 } }], z, [name]).get("c")).toMatchObject({ dx: 0, dy: 0 });
   });
 });
 

@@ -19,7 +19,7 @@ import {
   cameraFrom,
   cameraForOpened,
   centreOn,
-  compactShifts,
+  compactPlaces,
   COMPACT_MIN,
   centredAt,
   contentRects,
@@ -69,11 +69,13 @@ import {
 import { WorkspaceNode, type NodeMode, type WorkspaceChrome } from "./WorkspaceNode";
 import { ToolWindow } from "./ToolWindow";
 import { LiftOut } from "./lift";
-import { menuOf, type ModelAction } from "./workspaceActions";
+import { actionOf, menuOf, type ModelAction } from "./workspaceActions";
 import { kindLabel } from "./WorkspaceCard";
 import { AreaFrame } from "./AreaFrame";
 import { AreaSwitcher } from "./AreaTree";
-import { useContextMenu, type MenuEntry } from "./ContextMenu";
+import { menuHeading, tidyMenu, useContextMenu, type MenuEntry } from "./ContextMenu";
+import { AreaBar, SeveralBar, WorkspaceBar, type BarPlace } from "./SelectionBar";
+import { AREA_NAME_PX, STACK_COMING, areaStatus, escapeClears, readBarExtended, saveBarExtended, severalBarItems } from "./selectionBarModel";
 import { focusTerm, lendTerm, screenText, scrollTerm } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
@@ -104,6 +106,13 @@ export interface AreaHooks {
   /** Beside its name zoomed out: its ticket's "#5101 · Local test", and "Shared room with Nick" for a room's. */
   info: (key: string) => { ticketChip: string | null; shared: string | null };
   menu: (key: string) => MenuEntry[];
+  /**
+   * What its selection bar shows: its actions (the model its ⋯ renders), its room's id when it's a room's (whose
+   * unread chat the Chat button counts), and the room's Members ▾ (the header's, with the same handlers).
+   */
+  bar: (key: string) => { actions: ModelAction[]; roomId: string | null; members: React.ReactNode };
+  /** The kinds of workspace a right-click on empty landscape makes, placed at `at` (landscape px), in area `area` when it's in one. */
+  create: (area: string | null, at: Point) => ModelAction[];
 }
 
 /** A gesture's plan that can be carried out. */
@@ -202,6 +211,9 @@ export function Landscape({
   stored,
   selected,
   onSelect,
+  selectedArea,
+  onSelectArea,
+  onCloseMany,
   onTab,
   reveal,
   goTo,
@@ -230,7 +242,13 @@ export function Landscape({
   stored: Stored;
   /** The selected session (the window's focused one); its workspace is selected. */
   selected: string | null;
-  onSelect: (id: string) => void;
+  /** A workspace selected (its session's id), or null: none is. */
+  onSelect: (id: string | null) => void;
+  /** The area selected as a whole (its patch, name or tree row clicked), or null; the selection bar shows its actions. */
+  selectedArea: string | null;
+  onSelectArea: (key: string | null) => void;
+  /** Close these sessions (several selected): asked first, then each as its own Close would. */
+  onCloseMany: (ids: string[]) => void;
   onTab: (tile: Tile, id: string) => void;
   /** Bring this session's workspace into view and select it, with `focus` filling the window with it. */
   reveal: { id: string; n: number; focus?: boolean } | null;
@@ -302,13 +320,19 @@ export function Landscape({
   layoutNow.current = layout;
   const storedNow = useRef(stored);
   storedNow.current = stored;
-  const asks = useRef({ onPatch, onMoves, askAreaName, areaTitle, onSeen, onHandled });
-  asks.current = { onPatch, onMoves, askAreaName, areaTitle, onSeen, onHandled };
+  const asks = useRef({ onPatch, onMoves, askAreaName, areaTitle, onSeen, onHandled, selected, selectedArea });
+  asks.current = { onPatch, onMoves, askAreaName, areaTitle, onSeen, onHandled, selected, selectedArea };
 
   // areas: the marquee's selection, the area a dragged workspace would join, and a note on the last gesture
-  const [picked, setPicked] = useState<string[]>([]);
+  const [picked, setPickedState] = useState<string[]>([]);
   const pickedNow = useRef(picked);
   pickedNow.current = picked;
+  /** The picked set, kept current at once: two Shift-clicks before a render each add to what the one before left. */
+  const setPicked = (next: string[] | ((p: string[]) => string[])) => {
+    const v = typeof next === "function" ? next(pickedNow.current) : next;
+    pickedNow.current = v;
+    setPickedState(v);
+  };
   const [hot, setHot] = useState<string | null>(null);
   const [note, setNote] = useState<{ text: string; n: number } | null>(null);
   const say = (text: string) => setNote((p) => ({ text, n: (p?.n ?? 0) + 1 }));
@@ -325,6 +349,10 @@ export function Landscape({
   const gesture = useRef<Gesture | null>(null);
   const marquee = useRef<HTMLDivElement>(null);
   const settling = useRef<Settling[]>([]);
+  /** No drag going and no drop settling: the selection bar shows again (styles.css hides it under .ls-dragging). */
+  const dragDone = () => {
+    if (!gesture.current?.on && !settling.current.length) viewport.current?.classList.remove("ls-dragging");
+  };
   // a flight to an area: the clock animation whose progress moves the camera, and the frame that reads it
   const flight = useRef<{ anim: Animation; raf: number } | null>(null);
   const clock = useRef<HTMLDivElement>(null);
@@ -415,22 +443,30 @@ export function Landscape({
     if (bandNow.current === "cards") paintCompact(zoom);
   };
   /**
-   * Zoomed out to cards, windows and cards are drawn at least their compact size, so one may reach over another: each
-   * is drawn under those before it (compactShifts), by --ls-dy, which React never sets. Outside the cards band it's
+   * Zoomed out to cards, windows and cards are drawn at least their compact size, so one may reach over another or
+   * past its area: each is drawn under those before it and kept inside its area, clear of the next area's name line
+   * (compactPlaces), by --ls-dx, --ls-dy, --ls-cw and --ls-ch, which React never sets. Outside the cards band they're
    * unused (styles.css).
    */
   const paintCompact = (zoom: number) => {
     const l = layoutNow.current;
-    const shifts = compactShifts(
+    const areaRect = (key: string | null) => (key === null ? null : (l.areas.find((a) => a.key === key && !a.rect.collapsed)?.rect ?? null));
+    const names = l.areas.filter((a) => !a.rect.collapsed).map((a) => ({ x: a.rect.x, y: a.rect.y - AREA_NAME_PX / zoom, w: a.rect.w, h: AREA_NAME_PX / zoom }));
+    const places = compactPlaces(
       [
-        ...l.windows.filter((w) => !w.hidden).map((w) => ({ id: `w:${w.id}`, rect: w.rect, min: COMPACT_MIN.window })),
-        ...l.cards.filter((c) => !c.hidden).map((c) => ({ id: `c:${c.id}`, rect: c.rect, min: COMPACT_MIN.card })),
+        ...l.windows.filter((w) => !w.hidden).map((w) => ({ id: `w:${w.id}`, rect: w.rect, min: COMPACT_MIN.window, bounds: areaRect(w.area) })),
+        ...l.cards.filter((c) => !c.hidden).map((c) => ({ id: `c:${c.id}`, rect: c.rect, min: COMPACT_MIN.card, bounds: areaRect(c.card.area) })),
       ],
-      zoom
+      zoom,
+      names
     );
     for (const el of world.current?.querySelectorAll<HTMLElement>(".ls-window[data-win], .ls-acard[data-card]") ?? []) {
-      const dy = shifts.get(el.dataset.win ? `w:${el.dataset.win}` : `c:${el.dataset.card}`) ?? 0;
-      el.style.setProperty("--ls-dy", `${dy}px`);
+      const p = places.get(el.dataset.win ? `w:${el.dataset.win}` : `c:${el.dataset.card}`);
+      if (!p) continue;
+      el.style.setProperty("--ls-dx", `${p.dx}px`);
+      el.style.setProperty("--ls-dy", `${p.dy}px`);
+      el.style.setProperty("--ls-cw", `${p.w}px`);
+      el.style.setProperty("--ls-ch", `${p.h}px`);
     }
   };
   const apply = useCallback((next: Camera) => {
@@ -574,6 +610,7 @@ export function Landscape({
       release(s.els);
       return false;
     });
+    dragDone();
   }, [layout]);
   useLayoutEffect(() => paintScale(cam.current.zoom), [band]);
 
@@ -582,7 +619,36 @@ export function Landscape({
     apply(zoomAbout(cam.current, at ?? { x: vpNow.current.w / 2, y: vpNow.current.h / 2 }, zoom));
   };
 
-  const select = (t: Tile) => onSelect(t.front.id);
+  // ---- the selection: one workspace (the window's selected session), one area, or several workspaces (`picked`) ----
+  // One at a time, as in Figma: selecting one kind lets the others go, and the selection bar shows its actions.
+  const select = (t: Tile) => {
+    onSelect(t.front.id);
+    onSelectArea(null);
+    if (pickedNow.current.length) setPicked([]);
+  };
+  const selectArea = (key: string) => {
+    onSelectArea(key);
+    if (pickedNow.current.length) setPicked([]);
+  };
+  /** Several picked (a marquee, Shift-clicks): the workspace and the area selected before are let go. */
+  const pickTiles = (keys: string[]) => {
+    setPicked(keys);
+    if (!keys.length) return;
+    if (asks.current.selected) onSelect(null);
+    if (asks.current.selectedArea) onSelectArea(null);
+  };
+  /** Nothing selected: Esc, or a click on the bare landscape outside every area. */
+  const clearSelection = () => {
+    if (pickedNow.current.length) setPicked([]);
+    if (asks.current.selected) onSelect(null);
+    if (asks.current.selectedArea) onSelectArea(null);
+  };
+  const selRefs = useRef({ pickTiles, selectArea, clearSelection });
+  selRefs.current = { pickTiles, selectArea, clearSelection };
+  // a workspace selected from elsewhere (its terminal clicked into, the tree, a notification) is the selection now
+  useEffect(() => {
+    if (selected && pickedNow.current.length) setPicked([]);
+  }, [selected]);
   /** The keyboard to the landscape: the surface, or in focus the focused workspace's frame (so Esc reaches it). */
   const surface = () => (focusNow.current ? overlay.current : viewport.current)?.focus({ preventScroll: true });
   const enterFocus = (t: Tile) => {
@@ -736,6 +802,7 @@ export function Landscape({
       if (!settle) return;
       settling.current = settling.current.filter((s) => s !== settle);
       release(settle.els);
+      dragDone();
     };
     if (settle) settling.current.push(settle);
     const before = storedNow.current;
@@ -808,9 +875,9 @@ export function Landscape({
     } else if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "m" && pickedNow.current.length) {
       handled();
       void makeArea();
-    } else if (e.key === "Escape" && !e.metaKey && pickedNow.current.length) {
+    } else if (e.key === "Escape" && !e.metaKey && escapeClears({ selected: !!(pickedNow.current.length || selected || selectedArea), peek: !!peekNow.current, overlay: !!document.querySelector(OVERLAYS) })) {
       handled();
-      setPicked([]);
+      clearSelection();
     }
   };
 
@@ -923,6 +990,8 @@ export function Landscape({
       if (Math.hypot(dx, dy) < DRAG_PX) return;
       if (!begin(g)) return endGesture();
       g.on = true;
+      // the selection bar is put away while anything is dragged, and comes back where the drop leaves its selection
+      viewport.current?.classList.add("ls-dragging");
     }
     e.preventDefault();
     if (g.kind === "marquee") {
@@ -932,7 +1001,7 @@ export function Landscape({
       if (m) Object.assign(m.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
       const keys = tilesIn(layoutNow.current.tiles, rectFrom(atPoint({ clientX: g.x0, clientY: g.y0 }), atPoint(e)));
       const next = g.add ? [...new Set([...g.base, ...keys])] : keys;
-      if (next.join("\n") !== pickedNow.current.join("\n")) setPicked(next);
+      if (next.join("\n") !== pickedNow.current.join("\n")) pickTiles(next);
       return;
     }
     const z = cam.current.zoom;
@@ -954,11 +1023,20 @@ export function Landscape({
     const dx = (e.clientX - g.x0) / z;
     const dy = (e.clientY - g.y0) / z;
     if (g.kind === "marquee") {
-      // a click on the bare landscape lets the selection go
-      if (!g.on && !g.add) setPicked([]);
+      // a click on the bare landscape selects the area it's in, as a click on a section does in Figma; outside every
+      // area it lets the selection go
+      if (!g.on && !g.add) {
+        const a = areaAt(l.areas, atPoint(e));
+        if (a) selectArea(a.key);
+        else clearSelection();
+      }
       return;
     }
-    if (!g.on) return;
+    if (!g.on) {
+      // a click on an area's bare header, or its name zoomed out, selects it; a drag moves it
+      if (g.kind === "area") selectArea(g.key);
+      return;
+    }
     if (g.kind === "window" || g.kind === "card") {
       const v = g.kind === "window" ? l.windows.find((x) => x.id === g.key) : l.cards.find((x) => x.id === g.key);
       if (!v) return release(g.els);
@@ -1035,6 +1113,8 @@ export function Landscape({
     if (marquee.current) marquee.current.hidden = true;
     setHot(null);
     viewport.current?.classList.remove("ls-gesture");
+    // a drop's settling starts as it's carried out, just after this: the bar waits for it
+    requestAnimationFrame(dragDone);
     window.removeEventListener("pointermove", listen.move, true);
     window.removeEventListener("pointerup", listen.up, true);
     window.removeEventListener("pointercancel", listen.up, true);
@@ -1155,25 +1235,30 @@ export function Landscape({
       }
       if (e.button === 0 && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const node = t.closest<HTMLElement>(".ls-world .ls-node");
-        const press = { id: e.pointerId, x0: e.clientX, y0: e.clientY, add: e.shiftKey, base: pickedNow.current };
+        // Shift adds to the selection, as in Figma: to those picked, or to the one workspace selected
+        const base = pickedNow.current.length || !e.shiftKey || !selKey.current ? pickedNow.current : [selKey.current];
+        const press = { id: e.pointerId, x0: e.clientX, y0: e.clientY, add: e.shiftKey, base };
         const win = t.closest<HTMLElement>(".ls-world .ls-window");
         const card = t.closest<HTMLElement>(".ls-world .ls-acard");
         if (node && (node.classList.contains("card") || t.closest(".ls-head")) && !t.closest("button")) {
           const key = node.dataset.ws!;
-          // Shift-click picks it for Make area…, or lets it go; otherwise its header (or its card) moves it
-          if (e.shiftKey) setPicked((p) => (p.includes(key) ? p.filter((k) => k !== key) : [...p, key]));
-          else startRef.current({ ...press, kind: "tile", key });
+          // Shift-click picks it, or lets it go, and selects nothing else (its own press would select it alone);
+          // otherwise its header (or its card) moves it
+          if (e.shiftKey) {
+            e.stopPropagation();
+            selRefs.current.pickTiles(base.includes(key) ? base.filter((k) => k !== key) : [...base, key]);
+          } else startRef.current({ ...press, kind: "tile", key });
         } else if (win && (win.classList.contains("compact") || t.closest(".ls-win-head")) && !t.closest("button")) {
           // a tool window moves by its head (or, zoomed out, by its whole compact self)
           startRef.current({ ...press, kind: "window", key: win.dataset.win! });
         } else if (card && !t.closest("button, a, input")) {
           startRef.current({ ...press, kind: "card", key: card.dataset.card! });
-        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-pickbar, .ls-note, .ls-empty")) {
+        } else if (!node && !win && !card && !t.closest(".ls-hud, .ls-banners, .ls-peek, .ls-ah, .ls-area-title, .ls-area-tools, .ls-area-pill, .ls-switcher, .ls-minimap, .ls-selbar, .ls-note, .ls-empty")) {
           startRef.current({ ...press, kind: "marquee", key: "" });
         }
       }
       // a press on the landscape between workspaces gives it the keyboard
-      if (e.button === 0 && !t.closest(".ls-node, .ls-window, .ls-acard, .ls-hud, .ls-banners, .ls-peek, .ls-switcher, .ls-minimap, .ls-pickbar")) surface();
+      if (e.button === 0 && !t.closest(".ls-node, .ls-window, .ls-acard, .ls-hud, .ls-banners, .ls-peek, .ls-switcher, .ls-minimap, .ls-selbar")) surface();
     };
     // Below 75% a terminal on the landscape takes no keys, nor ever one lent to a peek: one that still has the
     // keyboard (it had it as the zoom went down) gives it to the landscape, before xterm sees the key.
@@ -1300,9 +1385,61 @@ export function Landscape({
   const stops = useMemo(() => (loose ? [...layout.areas, loose] : layout.areas), [loose, layout]);
 
   const tileActions = (t: Tile): ModelAction[] => actionsFor(t);
+  /** The picked workspaces still drawn, in layout order. */
+  const pickedTiles = (): Tile[] => layoutNow.current.tiles.filter((t) => !t.hidden && pickedNow.current.includes(t.key));
+  /** The picked workspaces moved into area `key`, as Make area… with that area's name does (planMakeArea). */
+  const moveTo = async (key: string) => {
+    const keys = pickedNow.current;
+    if (!keys.length) return;
+    const plan = planMakeArea(storedNow.current, layoutNow.current, keys, key, asks.current.areaTitle);
+    if ("refused" in plan) return say(plan.refused);
+    if (await carryOut(plan, `moving them to ${asks.current.areaTitle(key)}`)) setPicked([]);
+  };
+  /** Move to area's rows for the picked workspaces: each area, off where it can't take them. */
+  const moveRows = (): MenuEntry[] => {
+    const tiles = pickedTiles();
+    return layoutNow.current.areas.map((a) => {
+      const title = asks.current.areaTitle(a.key);
+      const why = tiles.every((t) => t.area === a.key) ? `They're in ${title} already` : a.rect.locked ? `${title} is locked: unlock it to add workspaces` : null;
+      return { key: `move:${a.key}`, label: title, onPick: () => void moveTo(a.key), ...(why ? { disabled: true, title: why } : {}) };
+    });
+  };
+  /** The picked workspaces' Close rows as one: off, saying why, while any of them can't be closed here. */
+  const closeRow = () => {
+    const tiles = pickedTiles();
+    const off = tiles.map((t) => actionOf(tileActions(t), "close")).find((r) => !r || r.disabled);
+    return {
+      onPick: () => onCloseMany(tiles.map((t) => t.front.id)),
+      ...(off !== undefined || !tiles.length ? { disabled: true, title: off?.title ?? "Nothing to close" } : {}),
+    };
+  };
+  /** Several picked: their actions as a menu, the bar's (a right-click on one of them, or on the bar). */
+  const severalMenu = (): MenuEntry[] => {
+    const n = pickedTiles().length;
+    return tidyMenu([
+      menuHeading(`${n} selected`),
+      { key: "makeArea", label: "Make area…", kbd: "M", onPick: () => void makeArea() },
+      { key: "stack", label: "Stack", kbd: "⌘G", disabled: true, title: STACK_COMING, onPick: () => {} },
+      "-",
+      menuHeading("Move to area"),
+      ...moveRows(),
+      "-",
+      { key: "close", label: "Close…", danger: true, ...closeRow() },
+    ]);
+  };
+  /**
+   * A right-click on the bare landscape at landscape point `p`: what can be made there (placed where it was clicked),
+   * and inside an area that area's own actions, its New session row aside (the kinds above make one there).
+   */
+  const emptyMenu = (area: string | null, p: Point): MenuEntry[] => {
+    const create = menuOf(areaHooks.create(area, p));
+    if (!area) return create;
+    return tidyMenu([...create, "-", ...menuOf(areaHooks.bar(area).actions.filter((a) => a.key !== "new"))]);
+  };
   /**
    * Right-click anywhere on the landscape that has no menu of its own: on a workspace (header, footer, card, or its
-   * terminal while that doesn't take the mouse), its actions; zoomed out to cards, on an area's patch, the area's.
+   * terminal while that doesn't take the mouse), its actions, or the several's when it's one of those picked; on the
+   * bare landscape, what can be made there, and inside an area (which it selects) the area's actions too.
    */
   const onContextMenu = (e: React.MouseEvent) => {
     const t = e.target as Element;
@@ -1310,23 +1447,95 @@ export function Landscape({
     if (el) {
       // a terminal that takes the mouse (at 100%, and in focus) keeps its own right-click
       if ((mouseAt(cam.current.zoom) || el.closest(".ls-focus")) && t.closest(".term-holder")) return;
-      const tile = (focusNow.current && el.closest(".ls-focus") ? layout.tiles.find((x) => x.key === focusNow.current) : null) ?? layout.tiles.find((x) => x.key === el.dataset.ws);
+      const inFocus = focusNow.current && el.closest(".ls-focus");
+      const tile = (inFocus ? layout.tiles.find((x) => x.key === focusNow.current) : null) ?? layout.tiles.find((x) => x.key === el.dataset.ws);
       if (!tile) return;
       e.preventDefault();
+      if (!inFocus && pickedNow.current.includes(tile.key)) return ctx.openAt({ x: e.clientX, y: e.clientY }, severalMenu());
       select(tile);
       ctx.openAt({ x: e.clientX, y: e.clientY }, menuOf(tileActions(tile)));
       return;
     }
-    if (bandNow.current !== "cards" || t.closest(".ls-window, .ls-acard, .ls-hud, .ls-minimap, .ls-switcher, .ls-peek, .ls-pickbar, .ls-banners")) return;
-    const a = areaAt(layout.areas, atPoint(e));
-    if (!a) return;
+    if (t.closest(".ls-window, .ls-acard, .ls-hud, .ls-minimap, .ls-switcher, .ls-peek, .ls-selbar, .ls-banners, .ls-focus, .ls-note")) return;
     e.preventDefault();
-    ctx.openAt({ x: e.clientX, y: e.clientY }, areaHooks.menu(a.key));
+    const p = atPoint(e);
+    const a = areaAt(layout.areas, p);
+    if (a) selectArea(a.key);
+    ctx.openAt({ x: e.clientX, y: e.clientY }, emptyMenu(a?.key ?? null, p));
   };
   const dockWindow = (id: string) => {
     const plan = planDockWindow(storedNow.current, id);
     if ("refused" in plan) return say(plan.refused);
     void carryOut(plan, "docking the window");
+  };
+
+  // ---- the selection bar (designs Q and Q2): the selection's actions at normal size, whatever the zoom ----
+  const [barExtended, setBarExtended] = useState(readBarExtended);
+  const extendBar = (on: boolean) => {
+    setBarExtended(on);
+    saveBarExtended(on);
+  };
+  /**
+   * The bar over what's selected: several picked workspaces, else an area, else a workspace. Not in focus, which fills
+   * the window with the workspace and its header; nor for a workspace in the live band, whose header carries Focus,
+   * its chips and ⋯ near full size, and is typed in there (the bar would cover the row above it, often its area's
+   * header). Put away while anything is dragged (styles.css, .ls-dragging).
+   */
+  const selectionBar = () => {
+    if (!vp || focusTile) return null;
+    const place = (rect: Rect, chrome: BarPlace["target"]["chrome"]): BarPlace => ({
+      target: { rect, chrome },
+      listeners: listeners.current,
+      cam,
+      vp,
+      minTop: topNow.current,
+      extended: barExtended,
+      onExtended: extendBar,
+      onClear: () => {
+        clearSelection();
+        surface();
+      },
+    });
+    const several = layout.tiles.filter((t) => !t.hidden && pickedSet.has(t.key));
+    if (several.length) {
+      const items = severalBarItems({ makeArea: () => void makeArea(), move: moveRows, close: closeRow() });
+      return <SeveralBar key="several" count={several.length} items={items} menu={severalMenu} place={place(boundsOf(several.map((t) => t.rect))!, "none")} />;
+    }
+    const a = selectedArea ? layout.areas.find((x) => x.key === selectedArea) : undefined;
+    if (a) {
+      const b = areaHooks.bar(a.key);
+      const title = areaTitle(a.key);
+      return (
+        <AreaBar
+          key={`area:${a.key}`}
+          name={shortAreaName(a.key, title)}
+          title={title}
+          accent={accents.get(a.key) ?? accentOf(a.key)}
+          status={areaStatus(areaCounts(layout.tiles, a.key))}
+          actions={b.actions}
+          roomId={b.roomId}
+          members={b.members}
+          place={place(a.rect, a.rect.collapsed ? "pill" : band === "cards" ? "areaName" : "areaHeader")}
+        />
+      );
+    }
+    if (!sel || sel.hidden || band === "live") return null;
+    const t = sel;
+    const artifacts =
+      t.area === LOOSE_GROUP
+        ? ({ key: "tool:artifacts", label: "Artifacts", section: "tools", disabled: true, title: "It's in no area: artifacts are kept by area", onPick: () => {} } satisfies ModelAction)
+        : actionOf(areaHooks.bar(t.area).actions, "tool:artifacts");
+    return (
+      <WorkspaceBar
+        key={`ws:${t.key}`}
+        session={t.front}
+        actions={tileActions(t)}
+        runs={chromeFor(t.front).chips.runCount ?? 0}
+        artifacts={artifacts}
+        onFocus={() => enterFocus(t)}
+        place={place(t.rect, "none")}
+      />
+    );
   };
 
   const node = (t: Tile, mode: NodeMode, size: Size) => (
@@ -1382,6 +1591,8 @@ export function Landscape({
               summary={areaSummary(counts)}
               counts={counts}
               hot={hot === a.key}
+              selected={selectedArea === a.key && !pickedCount}
+              onSelect={() => selectArea(a.key)}
               menu={() => areaHooks.menu(a.key)}
               onCollapse={(on) => setAreaFlag(a.key, "collapsed", on)}
               onLock={(on) => setAreaFlag(a.key, "locked", on)}
@@ -1455,17 +1666,7 @@ export function Landscape({
             onShowTree={onShowTree}
           />
         )}
-        {pickedCount > 0 && (
-          <div className="ls-pickbar" role="toolbar" aria-label="Selected workspaces">
-            <span className="n">{pickedCount} selected</span>
-            <button type="button" className="primary" onClick={() => void makeArea()} title="Make an area of them (M)">
-              Make area… <kbd>M</kbd>
-            </button>
-            <button type="button" className="icon" aria-label="Clear the selection" title="Clear the selection (Esc)" onClick={() => setPicked([])}>
-              ✕
-            </button>
-          </div>
-        )}
+        {selectionBar()}
         {note && (
           <div key={note.n} className="ls-note" role="status">
             {note.text}

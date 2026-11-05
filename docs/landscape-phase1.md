@@ -1,8 +1,9 @@
 # Landscape, phase 1: build plan
 
 Status: S1 (model, store, migration), S2 (the surface, behind Settings →
-Labs → Landscape), S3 (semantic zoom and peek), S4 (areas) and S5 (tools and
-the workspace header) built; S6 next.
+Labs → Landscape), S3 (semantic zoom and peek), S4 (areas), S5 (tools and
+the workspace header) and S6a (the selection bar and right-click create)
+built; S6b (moving, resizing, stacks, Tidy, ghost cards) next.
 The spec is [landscape.md](landscape.md); this file is how its phase 1 gets
 built.
 
@@ -1365,6 +1366,155 @@ Design O, with Artifacts as a window, and N's workspace header.
   - stack create, switch and unstack;
   - Tidy and its undo;
   - ghost written on close and resumed on Reopen.
+- **S6a — As built** (the selection bar and right-click create; moving,
+  resizing, stacks, Tidy and ghost cards are S6b):
+  - **The selection bar** (design Q, sized as Q2; `SelectionBar.tsx`, its
+    rules in `selectionBarModel.ts`):
+    - **What can be selected:** one workspace (its header or card, its tree
+      row, its terminal clicked into), one area (a click on its bare patch,
+      its name line, header or pill, its tree row, or a right-click on it),
+      or several workspaces (Shift-click adds or takes one out; a marquee
+      picks what it touches). One kind at a time: selecting one lets go of
+      the others. A click on the bare landscape outside every area clears
+      it. The selected area draws a 2 px outline in its colour (inset zoomed
+      out to cards), a collapsed one's pill too.
+    - **Its buttons are the action model's rows**, never a second list, so
+      each runs its row's handler, is off with the row's reason as its
+      tooltip, and goes through the one tool gate:
+      - an area's (`areaActions` in `main.tsx`): Chat · n (teal while
+        unread, @n for mentions), Board, Members ▾ and Follow ⟨name⟩ only in
+        a room's area, then Ask for status, Tools ▾ (the model's Tools rows as
+        a menu) and ⋯. Board (House board…) and Follow ⟨name⟩ / Stop following
+        are new rows in the model's Team room section, so the area's menu has
+        them too;
+      - a workspace's: Focus ⌘E, Δ n Changes and ▶ n Run (the header's
+        counts), Files, Artifacts (its area's row; off for a loose one) and ⋯;
+      - several's: n selected, Make area… M, Stack ⌘G (off, coming), Move to
+        area ▾ (an area they're all in, or a locked one, off saying why) and
+        Close…, which lists them in one dialog, then closes them one at a
+        time through each one's own Close (its dialog for uncommitted or
+        unpushed work; cancelling one keeps it and goes on). Off while any of
+        them can't be closed here.
+    - **A right-click** on the bar or on the selection opens ⋯'s menu (for
+      several, the same Make area / Stack / Move to / Close menu).
+    - **Size and place:** at screen size at every zoom (outside the scaled
+      world), 38 px tall, as wide as its buttons (measured once for each set
+      of buttons and width of view, before it's painted). It floats 8 px
+      above the selection, lined up with its left edge: above an area's header
+      in the live and read-only bands, above its name line zoomed out to
+      cards, above its pill when it's collapsed. It slides along the window's
+      edges to stay 8 px inside, never over the area switcher's strip. With no
+      room above, it stays along the top edge over the selection's top rather
+      than jumping below, so panning moves it continuously. It's placed in the
+      camera's per-frame listener (`translate`), never by a render.
+    - **Folding:** buttons that don't fit go behind "» n more" by rank: an
+      area's Follow, Ask for status and Tools, a workspace's Files and
+      Artifacts, and several's Stack and Close first, the rightmost first;
+      then the rest only if it still doesn't fit; the name and ⋯ never. »
+      puts them on a second row until « Less. That's a view preference of the
+      window (`mb.landscape.barExtended`, through `prefs.ts`: storage that
+      can't be read gives the default, and storage that can't be written
+      keeps the choice for the run, both said in the console), never part of
+      `landscape.json`.
+    - **Esc:** a peek (kept open or not), an open menu or popover, or a
+      dialog takes the first Esc; the next clears the selection. Esc with the
+      keyboard in the bar clears it too.
+    - **Decided here:**
+      - at 75% and up a workspace has no bar: its header is at screen size
+        there with the same chips and ⋯. An area's bar shows at every zoom;
+      - in focus there's no bar;
+      - while anything is dragged (a workspace, an area by its name, a window,
+        a marquee) the bar is put away (`.ls-dragging`) and comes back where
+        the drop leaves the selection;
+      - a marquee round one workspace is a pick of one ("1 selected", so M
+        makes an area of it), as in S4;
+      - a workspace's name in its bar is cut at 150 px (Q's "Org
+        dropdowns…"), with its full title on hover; an area's is its short
+        name (#5101), as in Q.
+  - **Right-click on the empty landscape** (`createActions` in
+    `workspaceActions.tsx`): New workspace — Claude…, Codex…, Terminal…, From
+    a ticket… and Import…, then Collab… and Pipeline from a ticket… off as
+    coming. In an area, its own rows follow (its New session here… is the
+    create rows) and the area is selected. Each opens today's New Session
+    dialog: the agent picked, the area's group, its first repo and that
+    repo's base preselected, the ticket field open (From a ticket…), or
+    importing (Import…).
+    - **Placed where it was clicked:** the first session of this Mac made in
+      that area after the click (`createdAt`) goes at the click (`placeAt`:
+      on the grid, inside the area's padding and under its header, or the
+      nearest free spot by the edges of what's there), and its place is saved
+      like any new one's. The hint lasts until that place is saved, 10 s
+      after the dialog makes it, or the dialog closing without one. A click
+      outside every area places a loose one there.
+    - Browser isn't offered: this plan's list doesn't have it (the spec's
+      does), and there's no browser workspace yet.
+  - **Left from S5, done:**
+    - zoomed out to cards, a tool window or an artifact card stays inside its
+      area's frame, 4 px in, shrunk to the area when the area is smaller, and
+      clear of the next area's name line (`compactPlaces`): one that would
+      cover another goes under it, beside it, or squeezed into what's left
+      under it, and stays over it only when there's no room at all;
+    - a session a teammate took over has Undo the last turn…, Continue in …,
+      Fresh session from a brief…, Second opinion and Resume off in its
+      model, saying "⟨name⟩ continues it on their laptop: take it back …",
+      so its header, menus, bar and keys agree.
+  - **Differences from Q and Q2:**
+    - Q2's bar far out names the area in full ("#5102 Pathways quick
+      view"); Q, the chosen design, uses the short name, as built.
+    - Q2's ⋯ is a short list (Rename…, Collapse, Lock, Message mode ▸,
+      Message log, Share as a room…, New session here); the bar's ⋯ is the
+      area's whole menu with its headings, the one its right-click opens.
+    - Q2's second row has Share settings, which neither the spec nor the
+      model has; not built.
+    - Q2 shows "» 4 more" at 640 px; the bar folds only what doesn't fit, so
+      at 640 px (596 px of landscape beside the rail) Follow Nick stays and
+      it's "» 2 more" (Ask for status, Tools ▾).
+    - The fixture's accents (5101 pink, not Q's amber) are S4's.
+  - **Performance**, 30 workspaces (`?landscapeMany=30&landscapePerf`, one
+    run each on a loaded machine): frame interval p95 16.7–16.8 ms and no
+    interval over 25 ms panning, pinching and sweeping at 100%, 60% and 30%,
+    with no selection, an area's bar (`&lsSelect=area:601`), a workspace's
+    (`&lsSelect=ws:w01`, none at 100% by design), and with `&lsWindows`
+    with and without the area's bar. Main thread per pan frame p95: 7.9 /
+    10.1 / 8.8 ms (100 / 60 / 30%) without a selection, 8.8 / 11.4 / 8.8 with
+    the area's bar, 8.5 / 11.1 / 9.1 with the workspace's; with windows 7.3 /
+    10.1 / 9.7 without and 6.5 / 10.5 / 10.2 with the area's bar: within run
+    to run noise. One 27 ms main-thread frame at 60% with windows, with and
+    without the bar.
+  - **Preview:** `?lsSelect=area:<key>` (a click on its bare patch),
+    `=ws:<id>` and `=pick:<id,…>` (Shift-clicks); `?lsBarMenu=more|tools|move`;
+    `?lsBarExtended`; `?landscapeBarAudit=a|b|c|d` (four pages, each well
+    inside the preview's minute); `?landscapePerf` records whether a bar rode
+    along.
+  - **Tests:**
+    - `test/selectionBar.test.ts`: which buttons a room's area, another
+      area, a workspace and several get, and their handlers and reasons; fold
+      order, width from the buttons, rank 0 never folding; placing above,
+      sliding, pinning, the switcher's strip; above a header, a name line, a
+      pill; the remembered second row, with storage that throws; Esc; a
+      taken-over session's rows.
+    - `test/workspaceActions.test.ts`: the create rows.
+    - `test/landscape.test.ts`: `placeAt`.
+    - `test/landscapeView.test.ts`: a right-click's placement hint (own,
+      new since, in the area clicked; loose).
+    - `test/landscapeTools.test.ts`: `compactPlaces` inside areas, beside or
+      squeezed, and clear of another area's name line.
+    - `test/uiLandscapeBar.test.ts` drives `?landscapeBarAudit`: =a an
+      area's bar at 12%, 30%, 60% and 100% (size, place, room tools only in
+      a room's), its buttons and ⋯ making the same calls, right-clicks,
+      sliding, hidden while dragging, Esc after a menu; =b a workspace's bar
+      (Files both ways, Focus, none at 100%), a taken-over session's ⋯,
+      three selected and moved to another area (a stack holding a
+      teammate's tab staying, the note saying so), and right-click create
+      in an area and in none; =c
+      folding and the remembered second row at 640 px; =d (`&lsWindows`)
+      windows and cards inside their areas at 13%, and a peek taking Esc
+      first.
+    - `?landscapeAreasAudit` reads the several bar where it read S4's pick
+      bar.
+  - **Left for S6b:** moving and resizing with snapping and guides; stacks
+    (the bar's Stack is off until then); Tidy; ghost cards, Reopen all and
+    Clear ghosts, with S2's and S4's leftovers above.
 
 ### S7 · Needs you
 - **The tray** drops down from the top-bar button. Phase 1 items:
