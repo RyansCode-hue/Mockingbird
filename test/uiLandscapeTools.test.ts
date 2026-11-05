@@ -291,7 +291,7 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     expect(r.team.left.leaveRows).toContain("Leave room…");
     expect(r.team.backToTree).toBe(true);
 
-    // following a teammate is said on an area that isn't a room's too
-    expect(r.follow).toEqual({ offered: true, on5102: ["Following Nick"], on5101: 1 });
+    // following a teammate is said, with Stop, on a room's area only, as its menu and bar have it
+    expect(r.follow).toEqual({ offered: true, on5102: [], on5101: 1 });
   }, 120_000);
 });

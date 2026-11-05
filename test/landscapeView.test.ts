@@ -314,6 +314,26 @@ describe("where each session's workspace sits", () => {
       expect(overlaps(n, rect("B")), String(locked)).toBe(false);
     }
   });
+  it("grows a full area down for a right-clicked workspace rather than into the area beside it, locked or not", () => {
+    for (const locked of [false, true]) {
+      const l = emptyLandscape();
+      l.migratedAt = "2026-11-01T00:00:00.000Z";
+      l.areas.A = { x: 0, y: 0, w: 2400, h: 2000, repos: [] };
+      l.areas.B = { x: 2464, y: 0, w: 1200, h: 600, repos: [], locked };
+      l.workspaces.a1 = { x: 24, y: 48, w: 2352, h: 1928 };
+      l.workspaces.b1 = { x: 2488, y: 48, w: 800, h: 528 };
+      const shown = [session("a1", { taskGroup: "A" }), session("b1", { taskGroup: "B" }), session("n", { taskGroup: "A", createdAt: 600 })];
+      const r = resolveLayout(l, shown, undefined, [], { area: "A", at: { x: 2000, y: 100 }, since: 500 });
+      const rect = (k: string) => r.areas.find((a) => a.key === k)!.rect;
+      const n = r.tiles.find((t) => t.key === "n")!.rect;
+      // A stays where it is and keeps its width, growing down; B isn't pushed aside, and A isn't moved off a locked B
+      expect(rect("A"), String(locked)).toMatchObject({ x: 0, y: 0, w: 2400 });
+      expect(rect("A").h, String(locked)).toBeGreaterThan(2000);
+      expect(rect("B"), String(locked)).toMatchObject({ x: 2464, y: 0, w: 1200, h: 600 });
+      expect(n, String(locked)).toMatchObject({ x: 2400 - AREA_PAD - n.w, y: 1992 });
+      expect(overlaps(rect("A"), rect("B"), 64 - 1e-6), String(locked)).toBe(false);
+    }
+  });
 });
 
 describe("the area selected as a whole", () => {

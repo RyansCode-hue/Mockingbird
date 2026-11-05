@@ -52,7 +52,7 @@ import {
 } from "./layoutTree";
 import { GridPreview } from "./GridPreview";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
-import { cellKeyFor, cellKeyOf, frontOf, groupChoices, inReadingOrder, nextToClose, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
+import { cellKeyFor, cellKeyOf, frontOf, groupChoices, inReadingOrder, nextToClose, queueClose, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon, MinusIcon, GridIcon, PencilIcon, MoveIcon, CloseIcon, PlusIcon, NoteIcon } from "./Icons";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
@@ -103,7 +103,7 @@ import { artifactRef } from "../shared/team/artifacts";
 import { backupOf, type LeftCopy, type ReceivedChanges, type RoomSessionBackupView } from "../shared/team/takeover";
 import { BackupConsentPrompt } from "./team/RoomBackups";
 // team rooms: live panes
-import { LiveProblems, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
+import { LiveProblems, isRemote, useFollow, useRoomLive, type Follow } from "./team/RoomLive";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { roomRepoNames } from "./newSessionModel";
 import { ago, fmtElapsed, plural } from "../shared/format";
@@ -1545,13 +1545,18 @@ function App() {
   // skipped), each waiting for the dialog the one before it opened; cancelling one's dialog keeps that one and goes on
   // with the rest, and one that fails is said and the rest go on
   const closingNow = useRef(false);
+  /** The queue's session being closed now, or last: its dialog offers Cancel all while others wait. */
+  const queuedNow = useRef<string | null>(null);
   const [closeTurn, setCloseTurn] = useState(0);
   useEffect(() => {
     if (closingNow.current || closeDlg || !closeQueue.length) return;
     const { next, rest } = nextToClose(closeQueue, sessions);
-    setCloseQueue(rest);
+    // taken off as a function of the queue then, so ones another Close… adds meanwhile stay in it
+    const taken = closeQueue.slice(0, closeQueue.length - rest.length);
+    setCloseQueue((q) => q.filter((id) => !taken.includes(id)));
     if (!next) return;
     closingNow.current = true;
+    queuedNow.current = next.id;
     void requestClose(next)
       .catch((err) => {
         const why = err instanceof Error ? err.message : String(err);
@@ -1938,7 +1943,7 @@ function App() {
             onOpenDiff={(path, source, status) => openInEditor(path, { mode: "diff", source, status: status === "C" ? "M" : status }, own)}
             onOpenFile={(path) => openInEditor(path, {}, own)}
             onAskSession={(text) => typeInto(own.id, text)}
-            review={own.shell ? undefined : { agent: otherAgent(own.agent), start: () => startReview(own) }}
+            review={((row) => (own.shell || !row ? undefined : { agent: otherAgent(own.agent), start: () => startReview(own), off: row.disabled ? row.title : undefined }))(sessionAction(own, "review"))}
           />
         ) : (
           <div className="fp-note">Click into a session to see its changes.</div>
@@ -2115,7 +2120,7 @@ function App() {
       move: () => setGroupDlg(s),
       resize: (p) => t && resizeWorkspace(t.key, p),
       tool: (k) => (landscapeOn ? showTool(k, s) : (setFocused(s.id), showView(({ files: "explorer", changes: "scm", search: "search", run: "run" } as const)[k]))),
-      artifacts: !landscapeOn ? null : areaKeyOf(s) === LOOSE_GROUP ? { no: "It's in no area: artifacts are kept by area" } : () => showTool("artifacts", null, areaKeyOf(s)),
+      artifacts: !landscapeOn || !t ? null : t.area === LOOSE_GROUP ? { no: "It's in no area: artifacts are kept by area" } : () => showTool("artifacts", null, t.area),
       repaint: () => void resyncTerm(s.id),
       hidePanel: () => {
         if (!hideAgentPanel(s.id)) lsSay("The agent's diff panel isn't open any more");
@@ -2134,13 +2139,17 @@ function App() {
   const actionsFor = (t: Tile): ModelAction[] => workspaceActions(t.front, wsEnv(t.front, t));
   /**
    * Session `s`'s action `key` as its model has it, for what offers it outside the model's menus (the context chip,
-   * the grid's pane header, ⌘K): its handler only while the model allows it (not on a copy a teammate took over, a
-   * teammate's session or a terminal), so none of them can run what the menus refuse.
+   * the Changes tool, the grid's pane header, ⌘K), so none of them can run what the menus refuse.
    */
   const sessionAction = (s: SessionInfo, key: string): ModelAction | undefined => actionOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))), key);
-  const offered = (s: SessionInfo, key: string): (() => void) | undefined => {
+  /**
+   * Its row for the grid's pane header and ⌘K: shown while it can be done, and off saying why while a teammate has
+   * taken the session over (a state it leaves when it's taken back); not shown where it never applies (a terminal, a
+   * teammate's session, a folder outside git), as those places never showed it.
+   */
+  const paneAction = (s: SessionInfo, key: string): ModelAction | undefined => {
     const a = sessionAction(s, key);
-    return a && !a.disabled ? () => a.onPick() : undefined;
+    return a && (!a.disabled || !!s.room?.takenOver) ? a : undefined;
   };
   /** Its context warning chip, with the model's Fresh session from a brief row (off, saying why, where it can't be). */
   const contextChipFor = (s: SessionInfo) => {
@@ -2164,6 +2173,8 @@ function App() {
   const sessionsOfGroup = (key: string) => workSessions.filter((s) => topOf(s) === key);
   const areaTitle = (key: string) => groupTitle(key, sessionsOfGroup(key));
   /** A group's bar, on the grid over its panes and on the landscape as its area's header: the same parts and handlers. */
+  /** Following as a room's group or area offers it: only that room's members to follow (none outside a room). */
+  const followIn = (room: ReturnType<typeof roomOfGroup>): Follow => ({ ...follow, candidates: follow.candidates.filter((v) => !!room?.members.some((m) => m.id === v.member)) });
   const groupBarProps = (key: string): GroupBarProps => {
     const ticket = ticketOfGroup(key);
     return {
@@ -2176,7 +2187,7 @@ function App() {
       room: roomOfGroup(teamStatus, key),
       onChat: landscapeOn ? () => showTool("chat", null, key) : () => showView("room"),
       onBoard: setBoardDlg,
-      follow,
+      follow: followIn(roomOfGroup(teamStatus, key)),
       onAsk: () => askGroupStatus(key),
     };
   };
@@ -2216,7 +2227,7 @@ function App() {
       empty: !!a && !sessionsOfGroup(key).length,
       messages: { mode: msgModes[key], defaultSend: msgDefaultSend, set: (mode) => void setMsgMode(key, mode), log: () => setMsgLogFor({}) },
       // following one of the room's teammates (FollowControls' handlers): a room's area's only
-      follow: { leader: follow.leader?.name ?? null, candidates: follow.candidates.filter((v) => room?.members.some((m) => m.id === v.member)), stop: follow.stop, start: (member) => follow.follow(member) },
+      follow: { leader: follow.leader?.name ?? null, candidates: followIn(room).candidates, stop: follow.stop, start: (member) => follow.follow(member) },
       rename: () => setRenameDlg({ kind: "group", key, initial: key }),
       collapse: () => a && flag({ collapsed: !a.collapsed }, `${title} ${a.collapsed ? "opened" : "collapsed"}`),
       lock: () => a && flag({ locked: !a.locked }, `${title} ${a.locked ? "unlocked" : "locked"}`),
@@ -3426,8 +3437,8 @@ function App() {
                     pinNote={visitor(s)}
                     onResume={() => resumeDead(s)}
                     onCleanup={() => requestClose(s)}
-                    onHandoff={offered(s, "handoff")}
-                    onUndoTurn={offered(s, "undo")}
+                    handoff={paneAction(s, "handoff")}
+                    undoTurn={paneAction(s, "undo")}
                     overlaps={overlaps[s.id]}
                     onJump={jumpTo}
                     onOpenBoard={setBoardDlg}
@@ -3750,8 +3761,8 @@ function App() {
                   },
                   { label: `Change group of ${titleOf(focusedSession)}…`, run: () => setGroupDlg(focusedSession) },
                   { label: `${focusedSession.muted ? "Unmute" : "Mute"} notifications from ${titleOf(focusedSession)}`, run: () => toggleMute(focusedSession) },
-                  ...((undo) => (undo ? [{ label: `Undo a turn of ${titleOf(focusedSession)} — put its files back`, run: undo }] : []))(offered(focusedSession, "undo")),
-                  ...((handoff) => (handoff ? [{ label: `Continue in ${AGENT_NAME[otherAgent(focusedSession.agent)]} — hand ${titleOf(focusedSession)} over with a summary`, run: handoff }] : []))(offered(focusedSession, "handoff")),
+                  ...((a) => (a ? [{ label: `Undo a turn of ${titleOf(focusedSession)} — put its files back`, run: () => a.onPick(), off: a.disabled ? a.title : undefined }] : []))(paneAction(focusedSession, "undo")),
+                  ...((a) => (a ? [{ label: `Continue in ${AGENT_NAME[otherAgent(focusedSession.agent)]} — hand ${titleOf(focusedSession)} over with a summary`, run: () => a.onPick(), off: a.disabled ? a.title : undefined }] : []))(paneAction(focusedSession, "handoff")),
                   ...(ticketOfGroup(topOf(focusedSession))
                     ? [{ label: `Ticket pipeline — #${topOf(focusedSession)}`, run: () => setPipelineFor(ticketOfGroup(topOf(focusedSession))) }]
                     : []),
@@ -3775,6 +3786,7 @@ function App() {
           session={closeDlg.session}
           wt={closeDlg.wt}
           onCancel={() => setCloseDlg(null)}
+          cancelAll={closeDlg.session.id === queuedNow.current && closeQueue.some((id) => sessions.some((s) => s.id === id)) ? () => (setCloseQueue([]), setCloseDlg(null)) : undefined}
           onDone={() => {
             setCloseDlg(null);
             refresh();
@@ -3787,7 +3799,8 @@ function App() {
           sessions={closeMany}
           onCancel={() => setCloseMany(null)}
           onConfirm={() => {
-            setCloseQueue(closeMany.map((s) => s.id));
+            // added after any still waiting, each once, never the one being closed now
+            setCloseQueue((q) => queueClose(q, closeMany.map((s) => s.id), closingNow.current || closeDlg?.session.id === queuedNow.current ? queuedNow.current : null));
             setCloseMany(null);
           }}
         />

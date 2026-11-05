@@ -60,7 +60,8 @@ interface D {
 }
 
 interface E {
-  menus: { plain: Menu; room: Menu };
+  menus: { plain: Menu; room: Menu; follow5110: { menu: string[]; header: string[] }; header5101: string[] };
+  artifactsMidRename: { group: string | null; held: boolean; opened: (string | null)[]; after: (string | null)[] };
   newHere: { repo: string | null; made: { repoPath: string | null; baseBranch: string | null; taskGroup: string | null }[] };
   renamed: { selected: string | null; bar: string | null; title: string | null };
   removed: { spareSelected: string | null; afterRemove: { area: boolean; selected: string | null; bar: string | null }; madeAgain: { selected: string | null; bar: string | null } };
@@ -68,6 +69,11 @@ interface E {
   error?: string;
 }
 type Clear = { bar: string | null; gap: number; inView: boolean } | null;
+interface G {
+  cancelAll: { first: { title: string | null; buttons: string[] }; askedAfter: number; left: string[] };
+  appended: { left: string[]; dialog: boolean };
+  error?: string;
+}
 interface F {
   shiftOnTerm: { bar: string | null };
   above: Record<string, Clear>;
@@ -256,7 +262,7 @@ describe.skipIf(!local)("the selection bar", () => {
   }, 120_000);
 
   it("has area menus without a room's rows outside rooms, makes New session here… in the area's repo, and keeps the selection true to the areas there are", async () => {
-    const e = await run<E>("e");
+    const e = await run<E>("e", "samView");
     expect(e.error).toBeUndefined();
     // an area that isn't a room's: no Team room heading; its sessions under Sessions; one choice each for messages
     expect(e.menus.plain).toEqual([
@@ -272,8 +278,11 @@ describe.skipIf(!local)("the selection bar", () => {
       "-", "# Tools", "Artifacts", "Chat",
       "-", "# Agent messages", "As in Settings (auto-send)", "Always auto-send", "Always leave in prompt", "Agent message log…",
       "-", "# Sessions", "New connected session here…", "Ask for status",
-      "-", "# Team room", "House board…", "Follow Nick", "Invite a teammate…",
+      "-", "# Team room", "House board…", "Follow Nick", "Follow Sam", "Invite a teammate…",
     ]);
+    // a room's area offers only its own members to follow, in its menu and its header alike: Sam isn't in 5110's room
+    expect(e.menus.follow5110).toEqual({ menu: ["Follow Nick"], header: ["Follow Nick"] });
+    expect(e.menus.header5101).toEqual(["Follow Nick", "Follow Sam"]);
     // New session here… opens on the area's first repo and makes it there, on its base
     expect(e.newHere.repo).toBe("client-portal");
     expect(e.newHere.made).toEqual([{ repoPath: "/Users/you/Code/client-portal", baseBranch: "main", taskGroup: "5102" }]);
@@ -281,6 +290,9 @@ describe.skipIf(!local)("the selection bar", () => {
     expect(e.renamed.selected).toBe("Pathways");
     expect(e.renamed.bar).not.toBeNull();
     expect(e.renamed.title).toContain(e.renamed.bar!);
+    // renamed again, before the landscape has caught up: a workspace's Artifacts opens the area the landscape holds,
+    // which the rename then carries to its new name
+    expect(e.artifactsMidRename).toEqual({ group: "Quick view", held: true, opened: ["Pathways"], after: ["Quick view"] });
     // removed: let go, so an area made again under its name isn't selected
     expect(e.removed.spareSelected).toBe("Spare");
     expect(e.removed.afterRemove).toEqual({ area: false, selected: null, bar: null });
@@ -313,5 +325,17 @@ describe.skipIf(!local)("the selection bar", () => {
     expect(c.dialogs).toEqual(["Close Release notes for #5101?"]);
     expect(c.notes).toEqual(expect.arrayContaining([expect.stringMatching(/^Couldn't close Donor entity model \(EIO: i\/o error, read\); the others go on closing$/)]));
     expect(c.left).toEqual(["s8", "y1"]);
+  }, 120_000);
+
+  it("stops closing several with Cancel all, and adds a second Close… on several after the first's rest", async () => {
+    const g = await run<G>("g", "gitSlow=5102-quickViewFreeze");
+    expect(g.error).toBeUndefined();
+    // the first one's dialog, others still to come: Cancel all keeps it and the rest, and nothing more is asked
+    expect(g.cancelAll.first.title).toMatch(/^Close /);
+    expect(g.cancelAll.first.buttons).toEqual(expect.arrayContaining(["Cancel all", "Cancel"]));
+    expect(g.cancelAll.askedAfter).toBe(0);
+    expect(g.cancelAll.left).toEqual(["s1", "s8"]);
+    // s5 read slowly while s4 and y1 are closed as well: s6, waiting behind s5, still closes, and so do they
+    expect(g.appended).toEqual({ left: [], dialog: false });
   }, 120_000);
 });

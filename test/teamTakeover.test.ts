@@ -1128,6 +1128,9 @@ describe("take-over: the owner's hand-over when they're online, none when they'r
     expect(t.ryan.takenOver).toEqual(["s1 by Nick"]);
     expect(t.nick.refused).toEqual([]);
     expect(t.ryan.svc.relaunchRefusal("s1")).toMatch(/continues on Nick's laptop/);
+    // nor is it handed on, reviewed or put back here (main's handoff:start, review:start, turns:restore refuse with it)
+    expect(t.ryan.svc.relaunchRefusal("s1", "handing this copy on")).toMatch(/continues on Nick's laptop — take it back rather than handing this copy on$/);
+    expect(t.ryan.svc.relaunchRefusal("s1", "putting this copy's files back")).toMatch(/take it back rather than putting this copy's files back$/);
   }, 30_000);
 
   it("an offline take-over stamped while the owner's Mac was connected to the taker is refused: every log puts the session back, the taker's copy stops", async () => {

@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { reachesBroadcast, cellKeyFor, frontOf, groupChoices, inReadingOrder, nextToClose, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, sessionOutline, worktreeGone, type GridCell, type OutlineEntry } from "../src/renderer/appModel";
+import { reachesBroadcast, cellKeyFor, frontOf, groupChoices, inReadingOrder, nextToClose, queueClose, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, sessionOutline, worktreeGone, type GridCell, type OutlineEntry } from "../src/renderer/appModel";
 import { keysOf, leaf, split } from "../src/renderer/layoutTree";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
@@ -197,5 +197,10 @@ describe("several sessions closing one after another", () => {
     expect(nextToClose(["b", "c"], now)).toEqual({ next: now[1], rest: [] });
     expect(nextToClose(["b"], now)).toEqual({ next: null, rest: [] });
     expect(nextToClose([], now)).toEqual({ next: null, rest: [] });
+  });
+  it("a second Close… on several goes after those still waiting, each once, never the one being closed now", () => {
+    expect(queueClose(["b", "c"], ["c", "d", "a"], "a")).toEqual(["b", "c", "d"]);
+    expect(queueClose([], ["a", "b"], null)).toEqual(["a", "b"]);
+    expect(queueClose(["b"], ["b"], null)).toEqual(["b"]);
   });
 });

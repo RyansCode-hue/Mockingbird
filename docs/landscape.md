@@ -473,7 +473,7 @@ selected, at every zoom:
 | Sessions view (groups, sub-groups, rows, filter) | The area tree |
 | Connected line, the Team view's room list | Room areas in the area tree, marked shared, with who's online. The Connected line stays under the tree: with one room it goes to the room's area and its Chat; with several it shows the Team view's room list in the side bar (each room's Leave, Join, Invite, Board), ‹ Areas going back |
 | A mention notification | The room's area, flown to, with its Chat window |
-| Following a teammate | Follow buttons in a room's area header; while following, every area's header says so, with Stop |
+| Following a teammate | Follow buttons in a room's area header, for that room's members; while following, a room's area header says so, with Stop |
 | Room header: Show, Invite, New session, Join, Leave | The area header and its ⋯ and Members menus; right-click create |
 | A room's artifact shelf | The Artifacts window, in every area |
 | Members and roles (chat header, Settings → Team) | Members ▾ in the area header; Settings → Team unchanged |

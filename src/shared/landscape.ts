@@ -303,13 +303,16 @@ export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | nul
  * A new workspace `size` big placed as near point `at` as there's room: what a right-click's New workspace makes.
  * Its corner is the point, snapped, when that's free; otherwise the free spot nearest it among those along the edges
  * of what's there. In `area` it keeps inside the padding and under the header, as a drop does, and clear of the other
- * areas (`others`, by the padding the area would grow by and the gap areas keep). A spot inside the area within its own
+ * areas (`others`: the area grown to hold it keeps the gap areas keep from each). A spot inside the area within its own
  * size of the point comes first (one moved in from an edge it would cross), then the nearest anywhere, the area growing
  * to hold it, and failing those placeNew's. `occupied` is as placeNew's.
  */
 export function placeAt(size: Size, at: { x: number; y: number }, occupied: readonly Rect[], area: Rect | null, near: Rect | null = null, others: readonly Rect[] = []): Placement {
   const apart = AREA_PAD + AREA_GAP;
-  const clear = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6)) && !others.some((o) => overlaps(p, o, apart - 1e-6));
+  // in an area, the area as it would grow to hold it (fitAreaTo) keeps the gap from every other area, so growing for it
+  // never reaches a neighbour (resolveLayout would push that aside, or move a locked one's neighbour away)
+  const clearOfOthers = (p: Rect) => (area ? !others.some((o) => overlaps(fitAreaTo(area, [p]), o, AREA_GAP - 1e-6)) : !others.some((o) => overlaps(p, o, apart - 1e-6)));
+  const clear = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6)) && clearOfOthers(p);
   const left = area ? snapUp(area.x + AREA_PAD) : -Infinity;
   const top = area ? snapUp(area.y + AREA_HEADER) : -Infinity;
   const right = area ? area.x + area.w - AREA_PAD : Infinity;
@@ -343,7 +346,7 @@ export function placeAt(size: Size, at: { x: number; y: number }, occupied: read
 }
 
 /** `area` grown rightward and downward, never shrunk, to hold `rects` inside its padding (they lie right of and below its corner, as placeNew puts them). */
-export function fitAreaTo(area: Area, rects: readonly Rect[]): Area {
+export function fitAreaTo<T extends Rect>(area: T, rects: readonly Rect[]): T {
   const b = boundsOf(rects);
   if (!b) return area;
   const w = Math.max(area.w, snapUp(b.x + b.w + AREA_PAD - area.x));

@@ -235,6 +235,7 @@ export function CloseSessionDialog({
   session,
   wt,
   onCancel,
+  cancelAll,
   onDone,
   forceClose,
 }: {
@@ -242,6 +243,8 @@ export function CloseSessionDialog({
   /** The worktree's state, or why it couldn't be read — then the only choice is to keep it. */
   wt: WorktreeStateInfo | { error: string };
   onCancel: () => void;
+  /** While it's one of several closing in turn with others still to come: keep it and stop closing the rest. */
+  cancelAll?: () => void;
   onDone: () => void;
   /** Closes the session's pane and process; answers why it couldn't. */
   forceClose: (s: SessionInfo, forget: boolean) => Promise<string | null>;
@@ -350,6 +353,11 @@ export function CloseSessionDialog({
       {error && <div className="err">{error}</div>}
       <div className="row">
         <span className="kbd foot-hint">⏎ to confirm</span>
+        {cancelAll && (
+          <button className="outline" onClick={cancelAll} title="Keep this one and every other session still waiting to close">
+            Cancel all
+          </button>
+        )}
         <button className="outline" onClick={onCancel}>Cancel</button>
         <button className="primary" disabled={busy} onClick={confirm}>
           {busy ? "Closing…" : "Close session"}

@@ -599,6 +599,8 @@ body.rz-x.rz-y, body.rz-x.rz-y * { cursor: nwse-resize !important; }
 .palette .row .kbd { margin-left: auto; flex-shrink: 0; }
 .palette .row.sel { background: var(--fill-selected); border-left-color: var(--text-2); }
 .palette .row.sel .lab { color: var(--text-1); }
+.palette .row.off .lab { color: var(--text-4); }
+.palette .row.off { cursor: default; }
 .palette .pfoot {
   display: flex; gap: 14px; padding: 9px 14px; background: var(--bg-chrome);
   border-top: 1px solid var(--line-med); font: 400 9.5px var(--mono); color: var(--text-4);

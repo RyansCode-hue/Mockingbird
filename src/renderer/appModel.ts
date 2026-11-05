@@ -145,3 +145,13 @@ export function nextToClose(queue: readonly string[], sessions: readonly Session
   }
   return { next: null, rest: [] };
 }
+
+/**
+ * Sessions `ids` queued to close after those already waiting in `queue`: each once, and never `closing`, the one
+ * being closed now (its own dialog asks about it), so a second Close… on several never drops the first's rest.
+ */
+export function queueClose(queue: readonly string[], ids: readonly string[], closing: string | null): string[] {
+  const out = [...queue];
+  for (const id of ids) if (id !== closing && !out.includes(id)) out.push(id);
+  return out;
+}

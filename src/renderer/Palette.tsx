@@ -16,6 +16,8 @@ interface PaletteAction {
   label: string;
   kbd?: string;
   run: () => void;
+  /** Why it can't be done now: listed, dimmed, with this beside it, and choosing it does nothing. */
+  off?: string;
 }
 
 export function CommandPalette({
@@ -42,7 +44,7 @@ export function CommandPalette({
   };
 
   const rows = useMemo(() => {
-    const acts = rankMatches(q, actions, (a) => [a.label]).map((a) => ({ kind: "action" as const, label: a.label, kbd: a.kbd, run: a.run }));
+    const acts = rankMatches(q, actions, (a) => [a.label]).map((a) => ({ kind: "action" as const, label: a.label, kbd: a.kbd, run: a.run, off: a.off }));
     const sess = rankMatches(q, sessions, (s) => [titleOf(s), s.branch]).map((s) => {
       const n = shortcuts.get(s.id);
       return {
@@ -61,7 +63,7 @@ export function CommandPalette({
 
   const runRow = (i: number) => {
     const r = rows.flat[i];
-    if (!r) return;
+    if (!r || ("off" in r && r.off)) return;
     onClose();
     r.run();
   };
@@ -95,8 +97,9 @@ export function CommandPalette({
             flatIndex++;
             const i = flatIndex;
             return (
-              <div key={`a${r.label}`} className={`row ${i === sel ? "sel" : ""}`} onMouseDown={() => runRow(i)}>
+              <div key={`a${r.label}`} className={`row ${i === sel ? "sel" : ""} ${r.off ? "off" : ""}`} title={r.off} onMouseDown={() => runRow(i)}>
                 <span className="lab">{r.label}</span>
+                {r.off && <span className="state">{r.off}</span>}
                 {r.kbd && <span className="kbd">{r.kbd}</span>}
               </div>
             );

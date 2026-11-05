@@ -766,8 +766,8 @@ export function TerminalPane({
   onPin,
   pinNote,
   tabDrop,
-  onHandoff,
-  onUndoTurn,
+  handoff,
+  undoTurn,
   overlaps,
   onJump,
   onOpenBoard,
@@ -817,10 +817,10 @@ export function TerminalPane({
   pinNote?: string;
   /** A session dropped on the header joins this pane as a tab (the grid handles drops on the body). */
   tabDrop?: { over: (e: React.DragEvent) => void; drop: (e: React.DragEvent) => void; cue?: string };
-  /** Continue this session's task in the other agent. */
-  onHandoff?: () => void;
-  /** Put the files back as they were before one of the agent's turns. */
-  onUndoTurn?: () => void;
+  /** Continue this session's task in the other agent: its action model's row, off saying why where it can't be now. */
+  handoff?: Pick<Action, "onPick" | "disabled" | "title">;
+  /** Put the files back as they were before one of the agent's turns: its action model's row, as `handoff`. */
+  undoTurn?: Pick<Action, "onPick" | "disabled" | "title">;
   /** Files another worktree of this repository has also changed. */
   overlaps?: FileOverlap[];
   onJump?: (sessionId: string) => void;
@@ -1149,14 +1149,23 @@ export function TerminalPane({
     !dead && { key: "repaint", label: "Repaint", icon: <RepaintIcon />, title: "Repaint — have the session redraw its screen (its scrollback stays)", onPick: () => resyncTerm(session.id) },
     !!panelClose && !dead && { key: "diff", label: "Hide diff", menuLabel: "Hide the diff panel", icon: <PanelRightIcon open />, title: "Hide the CLI's diff side panel (same as its × or /diff)", onPick: () => panelClose && clickCell(session.id, panelClose) },
     !!onAddTab && !dead && !remote && { key: "tab", label: "Tab", menuLabel: "New tab…", icon: <PlusIcon />, title: "New tab — turn this pane into a workspace and open another session in it", onPick: () => onAddTab?.() },
-    !!onUndoTurn && { key: "undo", label: "Undo", menuLabel: "Undo a turn…", icon: <UndoIcon />, title: "Undo a turn — put the files back as they were before one of the agent's recent turns", onPick: () => onUndoTurn?.() },
-    !!onHandoff && !remote && {
+    !!undoTurn && {
+      key: "undo",
+      label: "Undo",
+      menuLabel: "Undo a turn…",
+      icon: <UndoIcon />,
+      title: undoTurn.disabled ? undoTurn.title : "Undo a turn — put the files back as they were before one of the agent's recent turns",
+      disabled: undoTurn.disabled,
+      onPick: () => undoTurn.onPick(),
+    },
+    !!handoff && !remote && {
       key: "handoff",
       label: AGENT_NAME[otherAgent(session.agent)],
       menuLabel: `Continue in ${AGENT_NAME[otherAgent(session.agent)]}…`,
       icon: <HandoffIcon />,
-      title: `Continue in ${AGENT_NAME[otherAgent(session.agent)]} — hand this task over with a summary of what's done and what's next`,
-      onPick: () => onHandoff?.(),
+      title: handoff.disabled ? handoff.title : `Continue in ${AGENT_NAME[otherAgent(session.agent)]} — hand this task over with a summary of what's done and what's next`,
+      disabled: handoff.disabled,
+      onPick: () => handoff.onPick(),
     },
     !!onPin && {
       key: "pin",

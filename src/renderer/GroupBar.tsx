@@ -62,8 +62,8 @@ export function GroupBar(p: GroupBarProps & { statusNote: string; msgMode: Messa
           </button>
         </>
       )}
-      {/* team rooms: live panes */}
-      <FollowControls follow={p.follow} shared={!!p.room} />
+      {/* team rooms: following, only in a room's group, its own members to follow (changing the grid stops it) */}
+      {p.room && <FollowControls follow={p.follow} shared />}
       <span style={{ marginLeft: "auto" }} />
       {p.statusNote && <span className="flbl-info">{p.statusNote}</span>}
       <Select
@@ -169,8 +169,8 @@ export function AreaHeader(
           {p.members}
         </>
       )}
-      {/* Follow buttons only in a room's area; while following, every area's header says so, with Stop */}
-      <FollowControls follow={p.follow} shared={!!p.room} />
+      {/* following, as the area's menu and bar have it: only in a room's area, its own members to follow */}
+      {p.room && <FollowControls follow={p.follow} shared />}
       <span className="ls-ah-gap" />
       <AreaUsage g={p.meter} what={p.title} />
       <button type="button" className="ls-ah-btn" data-tip="Ask every agent session here for a three-line status report — each answers when its current turn ends" onClick={p.onAsk}>

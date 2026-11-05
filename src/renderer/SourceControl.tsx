@@ -59,8 +59,11 @@ export function SourceControl({
   onOpenFile: (path: string) => void;
   /** Type a request into the session's prompt — to hand a git failure to the agent. */
   onAskSession?: (text: string) => void;
-  /** A second opinion: the other agent reviews this branch and messages its findings back. */
-  review?: { agent: AgentKind; start: () => Promise<string | null> };
+  /**
+   * A second opinion: the other agent reviews this branch and messages its findings back. `off` is why it can't be
+   * started now (its session's action model refuses it): the button stays, off, saying so.
+   */
+  review?: { agent: AgentKind; start: () => Promise<string | null>; off?: string };
 }) {
   const [status, setStatus] = useState<IpcResult<ScmStatus> | null>(null);
   const [message, setMessage] = useState("");
@@ -306,8 +309,9 @@ export function SourceControl({
       {review && (
         <button
           className="outline sc-review"
-          disabled={!!busy}
-          data-tip={`Starts a ${AGENT_NAME[review.agent]} session in this folder that reviews the branch (committed and uncommitted) for bugs, security, silent failures and missing tests, then sends its findings back to this session. It changes nothing.`}
+          disabled={!!busy || !!review.off}
+          title={review.off}
+          data-tip={review.off ?? `Starts a ${AGENT_NAME[review.agent]} session in this folder that reviews the branch (committed and uncommitted) for bugs, security, silent failures and missing tests, then sends its findings back to this session. It changes nothing.`}
           onClick={() => {
             setFailed(""); // not a git failure: nothing to hand the agent
             run("review", async () => {

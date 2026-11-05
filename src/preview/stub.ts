@@ -878,7 +878,8 @@ const live: LivePanesState = {
     s8: roomTag({ sessionId: "s8", ...(teamTypingQ.has("typingAsk") ? { typingAsks: [{ member: NICK, name: "Nick Smith", at: now - 20_000 }] } : {}) }),
     y1: roomTag({ roomId: ROOM_5110, sessionId: "y1", live: true, takenOver: { by: NICK, byName: "Nick Smith", at: now - 12 * min } }),
   },
-  views: [{ member: NICK, name: "Nick Smith", shown: ["s1", NICK_PANE], focused: "s1", at: now }],
+  // ?samView: Sam, a member of 5101's room only, connected and showing his session too (someone to follow there, never in 5110)
+  views: [{ member: NICK, name: "Nick Smith", shown: ["s1", NICK_PANE], focused: "s1", at: now }, ...(new URLSearchParams(location.search).has("samView") ? [{ member: SAM, name: "Sam", shown: [SAM_PANE], focused: SAM_PANE, at: now }] : [])],
   problems: [],
 };
 buffers[SAM_PANE] = `${C.dim}codex${C.reset}\r\n› Cover the last-org endpoint's error cases\r\n\r\n• Added 3 tests for 404 and 403\r\n`;
@@ -1198,6 +1199,9 @@ const unifiedDiff = (path: string) => {
 
 // ---- the API -------------------------------------------------------------------
 
+/** How long a group rename's landscape change trails its sessions' (an audit sets it; 0: at once). */
+let renameLag = 0;
+
 const api: Record<string, (...a: any[]) => any> = {
   // sessions and the grid
   listSessions: async () => sessions.map((s) => ({ ...s })),
@@ -1239,23 +1243,28 @@ const api: Record<string, (...a: any[]) => any> = {
   renameGroup: async (from: string, to: string) => {
     const members = sessions.filter((s) => areaKeyOf(s) === from).map((s) => s.id);
     sessions = sessions.map((s) => (s.taskGroup === from || s.taskGroup?.startsWith(`${from}/`) ? { ...s, taskGroup: to + s.taskGroup.slice(from.length) } : s));
-    // the sessions' change goes out first, then the area's, as main's renameGroup sends them (LandscapeStore.groupRenamed)
+    // the sessions' change goes out first, then the area's, as main's renameGroup sends them (LandscapeStore.groupRenamed);
+    // an audit's renameLag holds the area's back that long, as a slow write would
     sessionsChanged();
-    const patch = standIn ? null : renameAreaPatch(landscape, from, to, members);
-    if (patch) {
-      landscape = applyPatch(landscape, patch);
-      landscapeRev++;
-      emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
-    }
-    // its artifacts on this Mac go with it, merged into `to`'s when it has some (main's AreaArtifacts.areaRenamed)
-    const shelf = artifactRooms[`area:${from}`];
-    if (shelf && !to.includes("/") && from !== to) {
-      const into = artifactRooms[`area:${to}`];
-      artifactRooms[`area:${to}`] = into ? { ...into, items: [...into.items, ...shelf.items.filter((a) => !into.items.some((m) => m.id === a.id))] } : { ...shelf, roomId: `area:${to}` };
-      delete artifactRooms[`area:${from}`];
-      artifactsChanged(`area:${from}`);
-      artifactsChanged(`area:${to}`);
-    }
+    const rekey = () => {
+      const patch = standIn ? null : renameAreaPatch(landscape, from, to, members);
+      if (patch) {
+        landscape = applyPatch(landscape, patch);
+        landscapeRev++;
+        emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
+      }
+      // its artifacts on this Mac go with it, merged into `to`'s when it has some (main's AreaArtifacts.areaRenamed)
+      const shelf = artifactRooms[`area:${from}`];
+      if (shelf && !to.includes("/") && from !== to) {
+        const into = artifactRooms[`area:${to}`];
+        artifactRooms[`area:${to}`] = into ? { ...into, items: [...into.items, ...shelf.items.filter((a) => !into.items.some((m) => m.id === a.id))] } : { ...shelf, roomId: `area:${to}` };
+        delete artifactRooms[`area:${from}`];
+        artifactsChanged(`area:${from}`);
+        artifactsChanged(`area:${to}`);
+      }
+    };
+    if (renameLag) setTimeout(rekey, renameLag);
+    else rekey();
   },
   killSession: async (id: string) => {
     sessions = sessions.filter((s) => s.id !== id);
@@ -1362,8 +1371,9 @@ const api: Record<string, (...a: any[]) => any> = {
     ),
   contextBriefStart: async () => err("UI preview: no session starts"),
   // ?gitFail=<part of a folder>: that folder's git state can't be read (main's error); ?closeFail=<part>: reading it
-  // throws, as an IPC call whose handler threw does
+  // throws, as an IPC call whose handler threw does; ?gitSlow=<part>: reading it takes 4 s
   worktreeState: async (cwd: string) => {
+    if (params.get("gitSlow") && cwd.includes(params.get("gitSlow")!)) await new Promise((r) => setTimeout(r, 4000));
     if (params.get("closeFail") && cwd.includes(params.get("closeFail")!)) throw new Error("EIO: i/o error, read");
     if (params.get("gitFail") && cwd.includes(params.get("gitFail")!)) return err("git status: fatal: unable to read index");
     return cwd.includes("5101") ? { dirty: true, dirtyFiles: 2, branch: "5101-orgDropdowns", upstream: "origin/5101-orgDropdowns", ahead: 1, behind: 0, insertions: 18, deletions: 3 } : { dirty: false, dirtyFiles: 0, branch: "dev", upstream: "origin/dev", ahead: 0, behind: 2, insertions: 0, deletions: 0 };
@@ -5011,7 +5021,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   };
   const callsSince = (mark: number, fn: string) => calls.slice(mark).filter((c) => c.fn === fn).map((c) => c.args);
 
-  // ?landscapeBarAudit=a|b|c|d (with ?motion=off): the selection bar (S6a), worked as a person would, in pages that
+  // ?landscapeBarAudit=a…g (with ?motion=off): the selection bar (S6a), worked as a person would, in pages that
   // each stay well inside the preview's minute. =a: an area's bar at 12%, 30%, 60% and 100%, at screen size above its
   // area, a room's with its tools and one that isn't without; its buttons and ⋯ running the model's handlers; the
   // right-click on it and on its area; sliding inside the window; hidden while dragging and in focus; Esc after a menu.
@@ -5020,9 +5030,13 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   // row, remembered, and measured again when the area's status grows. =d (with ?lsWindows): zoomed out to cards, windows
   // and cards inside their areas, and a peek taking Esc before the selection. =e: the area ⋯ menus of a room's area and
   // another's; New session here… with the area's repo and base; an area renamed staying selected, one removed let go,
-  // a pill's click selecting it. =f (with ?gitFail=5102-quickViewFreeze&closeFail=5110-donor-entities): a Shift-click on
-  // a terminal at 60%; the bar above the area's name over workspaces at its top; Δ ? for changes that can't be read;
-  // Close… on three, one asking, one failing, one closing. Into <script id="mb-landscape-bar-audit-<part>">.
+  // a pill's click selecting it; with ?samView, a room's area offering only its own members to follow; a workspace's
+  // Artifacts during a rename the landscape hasn't caught up with. =f (with
+  // ?gitFail=5102-quickViewFreeze&closeFail=5110-donor-entities): a Shift-click on a terminal at 60%; the bar above the
+  // area's name over workspaces at its top; Δ ? for changes that can't be read; Close… on three, one asking, one
+  // failing, one closing. =g (with ?gitSlow=5102-quickViewFreeze): Close… on several
+  // stopped with Cancel all, and a second Close… on several added after the first's rest. Into
+  // <script id="mb-landscape-bar-audit-<part>">.
   if (params.has("landscapeBarAudit")) waitFor(".ls-world .ls-node", async () => {
     const part = params.get("landscapeBarAudit") || "a";
     const out: Record<string, unknown> = { part };
@@ -5371,7 +5385,15 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await selectAreaAt("5101");
         await zoomOnArea("5101", 0.3);
         const room = await menuAfter(() => barBtn("more")!.click());
-        out.menus = { plain: plain.rows, room: room.rows };
+        // 5110's room (Nick and this Mac, not Sam): its header and ⋯ offer only Nick to follow (with ?samView)
+        await fitView();
+        await selectAreaAt("5110");
+        const r5110 = await menuAfter(() => barBtn("more")!.click());
+        await zoomOnArea("5110", 1);
+        const header = [...document.querySelectorAll(`${areaEl("5110")} .ls-ah .team-follow button`)].map((b) => b.textContent?.trim() ?? "");
+        await zoomOnArea("5101", 1);
+        const header5101 = [...document.querySelectorAll(`${areaEl("5101")} .ls-ah .team-follow button`)].map((b) => b.textContent?.trim() ?? "");
+        out.menus = { plain: plain.rows, room: room.rows, follow5110: { menu: (r5110.rows ?? []).filter((r) => r.startsWith("Follow")), header }, header5101 };
 
         // New session here… from 5102's ⋯, its first repo now client-portal on main: the dialog has them, and makes it there
         await api.landscapeUpdate({ areas: { "5102": { repos: [{ path: "/Users/you/Code/client-portal", base: "main" }] } } });
@@ -5402,6 +5424,24 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await nameIt("Pathways");
         await sleep(600);
         out.renamed = { selected: selectedArea(), bar: barNow()?.name ?? null, title: document.querySelector('.ls-world .ls-area[data-area="Pathways"] .ls-area-title')?.textContent ?? null };
+
+        // renamed again, the landscape's change held back: meanwhile s5's Artifacts opens the area the landscape holds
+        renameLag = 2500;
+        await fitView();
+        await selectAreaAt("Pathways");
+        barBtn("more")!.click();
+        await sleep(300);
+        await ctxPick("Rename…");
+        await nameIt("Quick view");
+        await pick("s5");
+        await sleep(300);
+        const lagging = { group: sessions.find((s) => s.id === "s5")?.taskGroup ?? null, held: Object.keys(landscape.areas).includes("Pathways") };
+        barBtn("tool:artifacts")?.click();
+        await sleep(600);
+        const opened = Object.values(landscape.tools).filter((w) => w.tool === "artifacts").map((w) => w.area ?? null);
+        await sleep(2500);
+        renameLag = 0;
+        out.artifactsMidRename = { ...lagging, opened, after: Object.values(landscape.tools).filter((w) => w.tool === "artifacts").map((w) => w.area ?? null) };
 
         // an empty area removed from its ⋯: let go, so one made again under its name isn't selected
         const all = Object.values(landscape.areas);
@@ -5509,6 +5549,52 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         }
         out.closeMany = { picked, many, dialogs, notes: [...notes], left: ["s8", "y1", "s6"].filter((id) => sessions.some((s) => s.id === id)) };
       }
+
+      if (part === "g") {
+        const shiftPick = async (ids: string[]) => {
+          vp().focus();
+          esc(vp());
+          await sleep(200);
+          await fitView();
+          for (const id of ids) {
+            pointer(node(id)!.querySelector(".ls-head") ?? node(id)!, "pointerdown", { button: 0, shiftKey: true });
+            await sleep(150);
+          }
+        };
+        const closeThem = async () => {
+          barBtn("close")!.click();
+          await sleep(400);
+          document.querySelector<HTMLElement>(".modal.close-many button.primary")!.click();
+        };
+        const oneDialog = () => document.querySelector(".modal.close-dlg:not(.close-many)");
+        const left = (ids: string[]) => ids.filter((id) => sessions.some((s) => s.id === id));
+
+        // s1 and s8, both with uncommitted work: the first one's dialog offers Cancel all, which keeps both and asks no more
+        await shiftPick(["s1", "s8"]);
+        await closeThem();
+        for (const end = Date.now() + 3000; !oneDialog() && Date.now() < end; ) await sleep(100);
+        const first = { title: oneDialog()?.querySelector("h3")?.textContent ?? null, buttons: [...(oneDialog()?.querySelectorAll("button.outline, button.primary") ?? [])].map((b) => b.textContent?.trim() ?? "").filter((t) => !/^(Keep|Push|Discard)/.test(t)) };
+        [...(oneDialog()?.querySelectorAll<HTMLButtonElement>("button.outline") ?? [])].find((b) => b.textContent === "Cancel all")?.click();
+        let asked = 0;
+        for (const end = Date.now() + 2000; Date.now() < end; ) {
+          await sleep(100);
+          if (oneDialog()) {
+            asked++;
+            [...oneDialog()!.querySelectorAll<HTMLButtonElement>("button.outline")].find((b) => b.textContent === "Cancel")?.click();
+          }
+        }
+        out.cancelAll = { first, askedAfter: asked, left: left(["s1", "s8"]) };
+
+        // s5 (its worktree read slowly, ?gitSlow) and s6 closing; while s5 is read, s4 and y1 closed too: added after s6,
+        // so all four close
+        await shiftPick(["s5", "s6"]);
+        await closeThem();
+        await sleep(300);
+        await shiftPick(["s4", "y1"]);
+        await closeThem();
+        await sleep(7000);
+        out.appended = { left: left(["s5", "s6", "s4", "y1"]), dialog: !!oneDialog() };
+      }
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);
     }
@@ -5523,7 +5609,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   // menu opened before the area was locked; a mention refused outside the artifact's area; zoomed out to cards, the
   // windows' and card's heads at screen size; sharing an area as a room offering its artifacts once, its card following
   // them, and gone once the room is left from the Team view's list, which the Connected line opens; the Follow
-  // indicator on an area that isn't a room's. Into <script id="mb-landscape-review-audit-a"> (or -b).
+  // indicator on a room's area only. Into <script id="mb-landscape-review-audit-a"> (or -b).
   if (params.has("landscapeReviewAudit")) waitFor(".ls-world .ls-node", async () => {
     const part = params.get("landscapeReviewAudit") === "b" ? "b" : "a";
     const PHASE = "mb.preview.reviewAudit";
@@ -5791,7 +5877,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(400);
         out.team = { list, left, backToTree: !!document.querySelector(".sidebar .area-tree") };
 
-        // following a teammate: said on an area that isn't a room's too
+        // following a teammate: said, with Stop, on a room's area only
         await at100("5101");
         const follow = [...document.querySelectorAll<HTMLElement>(`${areaEl("5101")} .ls-ah .team-follow button`)].find((b) => b.textContent?.includes("Follow")) ?? null;
         follow?.click();
@@ -6239,14 +6325,22 @@ if (params.get("ctxAudit")) {
       await until(() => count("relaunchSession") > 0, 3000);
       out.afterContinue = { dialog: !!document.querySelector(".cost-dlg"), relaunched: count("relaunchSession") };
     } else if (mode === "takenOver") {
-      // y1, which Nick took over, and then s1: what its pane header, its context warning and ⌘K offer for each
+      // y1, which Nick took over, and then s1: what its pane header, its context warning, ⌘K and the Changes tool's
+      // Second opinion (with ?view=scm) offer for each, and which are off saying why
       const paneOf = (title: string) => [...document.querySelectorAll<HTMLElement>(".pane")].find((p) => p.querySelector(".pane-header")?.textContent?.includes(title)) ?? null;
       const Y1 = "Donor entity model";
       const S1 = "Org dropdowns remember the last org";
       const controls = async (title: string) => {
-        const read = () => [...(paneOf(title)?.querySelectorAll(".pane-header button") ?? [])].map((b) => b.textContent?.trim() ?? "").filter(Boolean);
+        const read = () =>
+          [...(paneOf(title)?.querySelectorAll<HTMLButtonElement>(".pane-header button") ?? [])]
+            .map((b) => ({ t: b.textContent?.trim() ?? "", off: b.disabled, why: b.disabled ? b.title : null }))
+            .filter((b) => b.t === "Undo" || b.t === "Codex");
         await until(() => read().length > 0, 5000);
         return read();
+      };
+      const review = () => {
+        const b = document.querySelector<HTMLButtonElement>(".sc-review");
+        return b ? { off: b.disabled, why: b.disabled ? b.title : null } : null;
       };
       const y1Controls = await controls(Y1);
       out.shown = await until(() => !!paneOf(Y1)?.querySelector(".ctx-chip"), 5000);
@@ -6256,25 +6350,31 @@ if (params.get("ctxAudit")) {
       out.brief = brief ? { disabled: brief.disabled, title: brief.title } : null;
       document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
       await sleep(300);
-      // ⌘K with each focused: the actions it lists
+      // ⌘K with each focused: its Undo and Continue entries, and why one's off
       const palette = async (title: string) => {
         paneOf(title)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
-        await sleep(200);
+        await sleep(300);
         document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
-        if (!(await until(() => !!document.querySelector(".palette"), 2000))) return ["⌘K opened no palette"];
-        const rows = [...document.querySelectorAll(".palette .results .row .lab")].map((e) => e.textContent ?? "");
-        if (!rows.length) return ["the palette lists nothing"];
+        if (!(await until(() => !!document.querySelector(".palette"), 2000))) return [{ label: "⌘K opened no palette", off: null }];
+        const rows = [...document.querySelectorAll(".palette .results .row")].map((r) => ({ label: r.querySelector(".lab")?.textContent ?? "", off: r.classList.contains("off") ? (r.querySelector(".state")?.textContent ?? "") : null }));
+        if (!rows.length) return [{ label: "the palette lists nothing", off: null }];
         document.querySelector(".palette input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
         document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
         await until(() => !document.querySelector(".palette"), 2000);
-        return rows.filter((r) => /^(Undo a turn|Continue in)/.test(r));
+        return rows.filter((r) => /^(Undo a turn|Continue in)/.test(r.label));
       };
       const y1Palette = await palette(Y1);
-      // s1, from its row in the Sessions list: its group's panes come up with it
-      document.querySelector<HTMLElement>('.sess-item[data-sid="s1"]')?.click();
-      await sleep(600);
+      await until(() => !!review(), 3000);
+      const y1Review = review();
+      // s1, jumped to from ⌘K (the side bar shows Changes): its group's panes come up with it
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true, cancelable: true }));
+      await until(() => !!document.querySelector(".palette"), 2000);
+      [...document.querySelectorAll<HTMLElement>(".palette .results .row")].find((r) => r.querySelector(".lab")?.textContent === S1)?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      await sleep(800);
       out.controls = { y1: y1Controls, s1: await controls(S1) };
       out.palette = { y1: y1Palette, s1: await palette(S1) };
+      await until(() => review()?.off === false, 3000);
+      out.review = { y1: y1Review, s1: review() };
     } else {
       out.shown = await until(() => !!chip(), 5000);
       out.tone = chip()?.classList.contains("firm") ? "firm" : chip()?.classList.contains("heads") ? "heads" : null;

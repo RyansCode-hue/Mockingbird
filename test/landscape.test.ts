@@ -259,12 +259,16 @@ describe("placeAt", () => {
     expect(p).toEqual({ x: 2400 - AREA_PAD - big.w, y: 904, ...big });
     // near the foot: up into the area rather than growing it
     expect(placeAt(big, { x: 200, y: 1900 }, [], a, null, [beside])).toEqual({ x: 200, y: 2000 - AREA_PAD - big.h, ...big });
-    // no room inside over the click: the nearest spot clear of the area beside, the area growing for it, never into
-    // that area's space
+    // no room inside: the nearest spot the area can grow to hold while keeping the gap from every other area — here
+    // under it, growing down, rather than past its right edge into the area beside
     const full = [{ x: AREA_PAD, y: AREA_HEADER, w: a.w - 2 * AREA_PAD, h: a.h - AREA_HEADER - AREA_PAD }];
-    const q = placeAt(big, { x: 2000, y: 900 }, full, a, null, [beside]);
-    expect(overlaps(q, beside, AREA_PAD + AREA_GAP - 1e-6)).toBe(false);
-    expect(overlaps(q, full[0], GAP - 1e-6)).toBe(false);
+    const short = { x: a.w + AREA_GAP, y: 0, w: 1200, h: 600 };
+    for (const [b, click] of [[beside, { x: 2000, y: 900 }], [short, { x: 2000, y: 100 }]] as const) {
+      const q = placeAt(big, click, full, a, null, [b]);
+      expect(q).toEqual({ x: 2400 - AREA_PAD - big.w, y: 1992, ...big });
+      expect(overlaps(fitAreaTo(a, [q]), b, AREA_GAP - 1e-6)).toBe(false);
+      expect(overlaps(q, full[0], GAP - 1e-6)).toBe(false);
+    }
     // an area too small to hold it anywhere: at the click, the area growing, as before
     const small = area({ w: 1200, h: 600 });
     expect(placeAt(big, { x: 1000, y: 500 }, [], small, null, [{ ...beside, x: small.w + 2000 }])).toEqual({ x: 1000, y: 504, ...big });

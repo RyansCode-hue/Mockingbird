@@ -928,7 +928,8 @@ Design O, with Artifacts as a window, and N's workspace header.
         Team view in the side bar, on that room.
     - **Following a teammate** is said on every area's header, as on the
       grid's group bars, with Stop; the Follow buttons are only on a room's
-      area.
+      area. (Changed in S6a's review fixes: both only in a room's area, as
+      its menu and selection bar have them.)
     - **Where one opens** (`planOpenWindow`):
       1. right of its workspace, top-aligned;
       2. else just below it;
@@ -1394,11 +1395,15 @@ Design O, with Artifacts as a window, and N's workspace header.
         and the log); Sessions (New session here…, Ask for status); and in a
         room's area Team room (House board…, Follow ⟨name⟩ or Stop following,
         Invite a teammate…). Another area has no room rows at all, following
-        or not, and ends with Share as a team room… on its own;
+        or not, and ends with Share as a team room… on its own. The area's
+        header (and the grid's group bar) agree: Follow and Following ⟨name⟩
+        — Stop show only in a room's area, which offers only that room's
+        members to follow (`followIn`);
       - a workspace's: Focus ⌘E, Δ n Changes and ▶ n Run (the header's
         counts; "Δ ?" with the error as its tooltip when its git state can't
-        be read), Files, Artifacts and ⋯. Artifacts (its area's window; off
-        for a loose one) is a row of the workspace's Tools, so its ⋯ and
+        be read), Files, Artifacts and ⋯. Artifacts (its area's window, by
+        the area the layout has it in, which a rename not yet reached keeps;
+        off for a loose one) is a row of the workspace's Tools, so its ⋯ and
         right-click have it too;
       - several's (`severalActions`, one model for the bar and the
         right-click): n selected, Make area… M, Stack ⌘G (off, coming), Move
@@ -1409,8 +1414,11 @@ Design O, with Artifacts as a window, and N's workspace header.
         dialog, "Close n sessions?", then closes them one at a time, each as
         it is then (one closed meanwhile is skipped), through its own Close
         (its dialog for uncommitted or unpushed work; cancelling one keeps it
-        and goes on; one that fails is said in a notice and the rest go on).
-        Off when none of them is this Mac's.
+        and goes on; its Cancel all, there while others are still to come,
+        keeps it and stops closing the rest; one that fails is said in a
+        notice and the rest go on). A second Close… on several while the
+        first's are closing adds its sessions after those still waiting, each
+        once (`queueClose`). Off when none of them is this Mac's.
     - **A right-click** on the bar or on the selection opens ⋯'s menu (for
       several, the same Make area / Stack / Move to / Close menu).
     - **Size and place:** at screen size at every zoom (outside the scaled
@@ -1465,9 +1473,10 @@ Design O, with Artifacts as a window, and N's workspace header.
       nearest free spot by the edges of what's there), and its place is saved
       like any new one's. One that would reach past the area's edge is moved
       in to fit when that's within its own size of the click; otherwise the
-      area grows for it. Other areas' frames count as taken (with the padding
-      the area would grow by and the gap areas keep), so it never lands in a
-      neighbour or pushes one aside. The hint lasts until that place is
+      area grows for it, to the nearest spot where the area, grown to hold
+      it, still keeps the gap from every other area (a full area grows down
+      rather than into the area beside it), so it never lands in a neighbour,
+      pushes one aside, or moves the area off a locked one. The hint lasts until that place is
       saved, 10 s after the dialog makes it, or the dialog closing without
       one. A click outside every area places a loose one there.
     - Browser isn't offered: this plan's list doesn't have it (the spec's
@@ -1484,9 +1493,14 @@ Design O, with Artifacts as a window, and N's workspace header.
       Fresh session from a brief…, Second opinion and Resume off in its
       model, saying "⟨name⟩ continues it on their laptop: take it back …",
       so its header, menus, bar and keys agree. The grid's pane header (Undo,
-      the other agent), the context warning's Fresh session with a brief and
-      ⌘K take those rows from the model too (`offered` in `main.tsx`), so
-      none of them offers what the model refuses.
+      the other agent), the context warning's Fresh session with a brief, the
+      Changes tool's Second opinion and ⌘K take those rows from the model too
+      (`sessionAction`, `paneAction` in `main.tsx`): each shows them off with
+      the reason (⌘K dims the entry and says why beside it), so none of them
+      offers what the model refuses. Main refuses them as well, for a window
+      that hasn't heard of the take-over yet: `handoff:start`,
+      `review:start`, `turns:restore` and `usage:briefStart` throw
+      `relaunchRefusal`'s reason, as relaunching does.
   - **Differences from Q and Q2:**
     - Q2's bar far out names the area in full ("#5102 Pathways quick
       view"); Q, the chosen design, uses the short name, as built.

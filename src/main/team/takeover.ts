@@ -1727,14 +1727,18 @@ export class TakeoverService {
     return now ? this.nameOf(roomId, now.owner) : "the teammate";
   }
 
-  /** Why one of this install's sessions mustn't run again here: a teammate continues it (or it was taken back into another session). Null when it may. */
-  relaunchRefusal(sessionId: string): string | null {
+  /**
+   * Why one of this install's sessions mustn't run again here, nor be handed on, reviewed or have its files put back
+   * (`doing`, said in the refusal): a teammate continues it (or it was taken back into another session). Null when it
+   * may.
+   */
+  relaunchRefusal(sessionId: string, doing = "running this copy again"): string | null {
     for (const room of this.d.team.rooms()) {
       const e = room.ext.takeover?.sessions[sessionId];
       if (!e?.takenOver || e.owner !== this.d.team.self.id) continue;
       const now = continuation(room.ext.takeover, sessionId);
       if (now?.owner === this.d.team.self.id) return `“${e.session.title}” was taken back into another session here: this copy doesn't run again`;
-      return `“${e.session.title}” continues on ${this.nameOf(room.id, now?.owner ?? e.takenOver.by)}'s laptop — take it back rather than running this copy again`;
+      return `“${e.session.title}” continues on ${this.nameOf(room.id, now?.owner ?? e.takenOver.by)}'s laptop — take it back rather than ${doing}`;
     }
     // this install's copy from a take-over its owner refused: the session stayed theirs
     for (const room of this.d.team.rooms()) {
