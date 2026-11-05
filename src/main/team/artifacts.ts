@@ -89,11 +89,16 @@ export const cleanName = (name: string, fallback: string) => name.replace(/[\u00
 export const normalizeText = (text: string) => String(text ?? "").replace(/\r\n?/g, "\n");
 const KEY_IN_NOTE: SecretConfirm = { needsConfirm: "secret", reason: "It holds a private key. Everyone in the room gets a copy; room agents never read it" };
 
-/** What the viewer shows of a file that's here: an image's bytes, text (cut at MAX_VIEW_TEXT), or what it is. */
-export function fileContent(store: ArtifactStore, a: FileRecord, sniff: Sniff): ArtifactContent {
-  if (sniff.view === "image") return { view: "image", mime: sniff.mime, bytes: new Uint8Array(fs.readFileSync(store.blobPath(a.sha256))) };
+/**
+ * What the viewer shows of a file that's here: an image's bytes, text (cut at MAX_VIEW_TEXT), or what it is. `read`
+ * gives up to a length of its bytes from the start, for a caller that reads them its own way (an area's, never
+ * through a link); by default they're read from the store's blob.
+ */
+export function fileContent(store: ArtifactStore, a: FileRecord, sniff: Sniff, read?: (length: number) => Buffer): ArtifactContent {
+  if (sniff.view === "image") return { view: "image", mime: sniff.mime, bytes: new Uint8Array(read ? read(a.size) : fs.readFileSync(store.blobPath(a.sha256))) };
   if (sniff.view === "markdown" || sniff.view === "text" || sniff.view === "csv") {
-    const buf = store.readBlob(a.sha256, 0, Math.min(a.size, MAX_VIEW_TEXT));
+    const length = Math.min(a.size, MAX_VIEW_TEXT);
+    const buf = read ? read(length) : store.readBlob(a.sha256, 0, length);
     return { view: sniff.view, text: new TextDecoder("utf-8").decode(buf), truncated: a.size > MAX_VIEW_TEXT };
   }
   return { view: sniff.view, mime: sniff.mime, size: a.size };

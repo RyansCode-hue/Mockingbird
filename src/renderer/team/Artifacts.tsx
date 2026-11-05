@@ -284,6 +284,36 @@ type Adding =
   | { step: "repo-file"; session: SessionInfo }
   | { step: "repo-form"; session: SessionInfo; path: string; line: number | null };
 
+/** A change offered on a shelf that can't be changed (`readOnly`: why, an area's file a newer Mockingbird wrote): shown off, saying why. */
+export const offWhenReadOnly = (readOnly: string | null | undefined): { disabled?: true; title?: string } => (readOnly ? { disabled: true, title: readOnly } : {});
+
+/**
+ * What a viewer opened from a shelf or a card changes its artifact with: Rename and Remove that say why not (`fail`)
+ * on a shelf that can't be changed, and why (`readOnly`), so it offers neither, nor Edit.
+ */
+export function viewerEdits(readOnly: string | null, fail: (why: string) => void, edits: { setRenaming: (a: ArtifactSummary) => void; setRemoving: (a: ArtifactSummary) => void }) {
+  const unless = (fn: (a: ArtifactSummary) => void) => (a: ArtifactSummary) => (readOnly ? fail(readOnly) : fn(a));
+  return { readOnly, onRename: unless(edits.setRenaming), onRemove: unless(edits.setRemoving) };
+}
+
+/** A card's menu and action bar (`a`: its artifact, while it's there): Rename and Remove shown off on a shelf that can't be changed. */
+export function cardMenu(
+  a: ArtifactSummary | undefined,
+  o: { local: boolean; readOnly: string | null },
+  on: { open: (a: ArtifactSummary) => void; mention: (a: ArtifactSummary) => void; rename: (a: ArtifactSummary) => void; remove: (a: ArtifactSummary) => void; uncard: () => void }
+) {
+  const off = offWhenReadOnly(o.readOnly);
+  return tidyMenu([
+    a && { key: "open", label: "Open", icon: <ReadIcon />, onPick: () => on.open(a) },
+    a && { key: "mention", label: "Mention", menuLabel: "Mention to the selected workspace", icon: <HashIcon />, onPick: () => on.mention(a) },
+    a && { key: "link", label: "Link", menuLabel: "Link to a workspace… (coming)", icon: <LinkIcon />, disabled: true, title: "Linking it to a workspace comes with context links in a later version", onPick: () => {} },
+    a && { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: () => on.rename(a), ...off },
+    "-",
+    { key: "uncard", label: "Take off", menuLabel: "Take the card off the landscape", title: "The artifact stays in the area's Artifacts", onPick: on.uncard },
+    a && { key: "remove", label: "Remove", menuLabel: o.local ? "Remove the artifact…" : "Remove the artifact for everyone…", icon: <CloseIcon />, danger: true, onPick: () => on.remove(a), ...off },
+  ]);
+}
+
 export function ArtifactShelf({
   shelf,
   self,
@@ -337,9 +367,9 @@ export function ArtifactShelf({
   const edits = useArtifactEdits(shelf, call, (id) => viewing === id && setViewing(null));
   // a shelf main won't change (an area's file a newer Mockingbird wrote): its problems say why, and nothing offers to
   const readOnly = view?.readOnly ?? null;
-  const unless = <T,>(fn: (a: T) => void) => (a: T) => (readOnly ? actions.fail(readOnly) : fn(a));
-  const setRenaming = unless(edits.setRenaming);
-  const setRemoving = unless(edits.setRemoving);
+  const gated = viewerEdits(readOnly, actions.fail, edits);
+  const setRenaming = gated.onRename;
+  const setRemoving = gated.onRemove;
   const addRepoFile = () => {
     const options = repoSessionsFor(sessions, focusedSessionId, shelf.groupKey);
     if (!options.length) return actions.fail(`No session on this Mac is in a repo — open one in this ${local ? "area" : "room's group"}, then reference a file from it.`);
@@ -456,10 +486,8 @@ export function ArtifactShelf({
           onClose={() => setViewing(null)}
           onOpen={setViewing}
           onOpenRepoFile={onOpenRepoFile}
-          onRename={setRenaming}
-          onRemove={setRemoving}
+          {...gated}
           onMention={onMention}
-          readOnly={readOnly}
         />
       )}
       {edits.dialogs}
@@ -604,17 +632,9 @@ export function ArtifactCardFace({ artifactId, onRemoveCard, ...p }: ArtifactSur
   };
   const edits = useArtifactEdits(p.shelf, call, () => setViewing(null));
   const readOnly = arts.view?.readOnly ?? null;
-  const unless = (fn: (x: ArtifactSummary) => void) => (x: ArtifactSummary) => (readOnly ? setError(readOnly) : fn(x));
+  const gated = viewerEdits(readOnly, setError, edits);
   const menu = useContextMenu(a?.name ?? "Artifact card");
-  const acts = tidyMenu([
-    a && { key: "open", label: "Open", icon: <ReadIcon />, onPick: () => setViewing(a.id) },
-    a && { key: "mention", label: "Mention", menuLabel: "Mention to the selected workspace", icon: <HashIcon />, onPick: () => p.onMention(a) },
-    a && { key: "link", label: "Link", menuLabel: "Link to a workspace… (coming)", icon: <LinkIcon />, disabled: true, title: "Linking it to a workspace comes with context links in a later version", onPick: () => {} },
-    a && { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: () => edits.setRenaming(a), ...(arts.view?.readOnly ? { disabled: true, title: arts.view.readOnly } : {}) },
-    "-",
-    { key: "uncard", label: "Take off", menuLabel: "Take the card off the landscape", title: "The artifact stays in the area's Artifacts", onPick: onRemoveCard },
-    a && { key: "remove", label: "Remove", menuLabel: p.shelf.local ? "Remove the artifact…" : "Remove the artifact for everyone…", icon: <CloseIcon />, danger: true, onPick: () => edits.setRemoving(a), ...(arts.view?.readOnly ? { disabled: true, title: arts.view.readOnly } : {}) },
-  ]);
+  const acts = cardMenu(a, { local: p.shelf.local, readOnly }, { open: (x) => setViewing(x.id), mention: p.onMention, rename: gated.onRename, remove: gated.onRemove, uncard: onRemoveCard });
   const self = arts.view?.self ?? "";
   return (
     <div
@@ -664,10 +684,8 @@ export function ArtifactCardFace({ artifactId, onRemoveCard, ...p }: ArtifactSur
           onClose={() => setViewing(null)}
           onOpen={setViewing}
           onOpenRepoFile={p.onOpenRepoFile}
-          onRename={unless(edits.setRenaming)}
-          onRemove={unless(edits.setRemoving)}
+          {...gated}
           onMention={p.onMention}
-          readOnly={readOnly}
         />
       )}
       {edits.dialogs}

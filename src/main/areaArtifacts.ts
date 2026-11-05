@@ -5,11 +5,11 @@ import { checkAdd, checkArtifactName, checkLinkUrl, checkNoteText } from "./team
 import { AgentCopies } from "./team/agentCopies";
 import { RepoRefs, type FetchPolicy } from "./team/artifactRepo";
 import { baseSummary, blockedReasonOf, cleanName, exportArtifact, exportName, fileContent, normalizeText, type TeamArtifacts } from "./team/artifacts";
-import { ArtifactStore, checkAddable, holdsPrivateKey, inside, type Sniff } from "./team/artifactStore";
+import { ArtifactStore, checkAddable, holdsPrivateKey, inside, quarantine, type Sniff } from "./team/artifactStore";
 import { dirInside, isMissing, readRegularFile, writeFileAtomic } from "./fileOps";
 import { homeSecretPlace, isSecretFileName } from "./secrets";
 import { AREA_SELF, areaOfShelf, areaShelf } from "../shared/areaArtifacts";
-import { LOOSE_GROUP } from "../shared/landscape";
+import { LOOSE_GROUP, areaKeyOf } from "../shared/landscape";
 import {
   ARTIFACT_ID_RE,
   MAX_ARTIFACTS,
@@ -131,27 +131,26 @@ function noLinksInside(dir: string): void {
 }
 
 /**
- * Every blob hash and artifact id area `dir`'s files may name: the records this version reads, and anything in
- * area.json as it is on disk (records it keeps but can't read, fields of those it reads that it doesn't know, keys of
- * the file's own) and in the copies of it set aside (`area.json.bad-*`). They're found by their shape anywhere in the
- * text, so what this version can't parse still keeps its bytes (keeping one too many is harmless; sweeping one is a
- * loss). Throws when one of the files can't be read: never through a link, never past MAX_AREA_FILE.
+ * Whether a blob, a download or a view copy named `name` (a hash, or an artifact's id) may still be named by area
+ * `dir`'s records: those held (all of each one's object, those it can't read, the file's own keys) or anything in
+ * area.json as it is on disk and in the copies of it set aside (`area.json.bad-*`). A name counts when any of them
+ * holds it, in any case, so a hash inside a longer run or in capitals still keeps its bytes, and a file changed on
+ * disk behind what's held can't sweep what's held (keeping one too many is harmless; sweeping one is a loss). Throws
+ * when one of the files can't be read: never through a link, never past MAX_AREA_FILE.
  */
-function liveRefs(dir: string, held: Held): { shas: Set<string>; ids: Set<string> } {
-  const shas = new Set(held.items.flatMap((a) => (a.kind === "file" ? [a.sha256] : [])));
-  const ids = new Set(held.items.map((a) => a.id));
-  const texts: string[] = [];
+function liveIn(dir: string, held: Held): (name: string) => boolean {
+  const texts = [JSON.stringify([...held.items, ...held.raw.values(), ...held.kept, held.extra])];
   for (const n of fs.readdirSync(dir)) {
     if (n !== "area.json" && !n.startsWith("area.json.bad-")) continue;
     const f = readRegularFile(path.join(dir, n), dir, MAX_AREA_FILE);
     if (f) texts.push(f.text);
   }
-  for (const t of texts) {
-    for (const m of t.matchAll(/[0-9a-f]{64}/g)) shas.add(m[0]);
-    for (const m of t.matchAll(/"([A-Za-z0-9_-]{22})"/g)) ids.add(m[1]);
-  }
-  return { shas, ids };
+  const all = texts.join("\n").toLowerCase();
+  return (name) => all.includes(name.toLowerCase());
 }
+
+/** What Finder leaves in a folder it shows: never a reason to keep one. */
+const FINDER_FILE = ".DS_Store";
 
 /**
  * What in `src`, an area's folder a merge took the records of, isn't area.json, its store's own folders and files or
@@ -159,15 +158,16 @@ function liveRefs(dir: string, held: Held): { shas: Set<string>; ids: Set<string
  */
 function leftIn(src: string, shas: ReadonlySet<string>): string[] {
   const out: string[] = [];
-  for (const n of fs.readdirSync(src)) {
+  const names = (dir: string) => fs.readdirSync(dir).filter((n) => n !== FINDER_FILE);
+  for (const n of names(src)) {
     if (n === "area.json") continue;
     if (n !== "artifacts") {
       out.push(n);
       continue;
     }
     const store = path.join(src, n);
-    for (const m of fs.readdirSync(store)) {
-      if (m === "blobs") out.push(...fs.readdirSync(path.join(store, m)).filter((b) => !shas.has(b)).map((b) => `artifacts/blobs/${b}`));
+    for (const m of names(store)) {
+      if (m === "blobs") out.push(...names(path.join(store, m)).filter((b) => !shas.has(b)).map((b) => `artifacts/blobs/${b}`));
       else if (!["partial", "tmp", "view", "sniff.json"].includes(m)) out.push(`artifacts/${m}`);
     }
   }
@@ -206,9 +206,20 @@ function readNoFollow(file: string, length: number): Buffer {
   }
 }
 
-/** Whether a merge's record and the target's of the same id are one artifact as it is now (same rev, name and bytes). */
-function sameRecord(a: ArtifactRecord, b: ArtifactRecord): boolean {
-  return a.kind === b.kind && a.rev === b.rev && a.name === b.name && (a.kind !== "file" || (b.kind === "file" && a.sha256 === b.sha256 && a.size === b.size));
+/**
+ * Whether a merge's record and the target's of the same id are one artifact as it is now: the same rev, name and
+ * bytes, and the same fields this version doesn't read (`aRaw`, `bRaw`: each one's object as its file had it).
+ */
+function sameRecord(a: ArtifactRecord, aRaw: Record<string, unknown> | undefined, b: ArtifactRecord, bRaw: Record<string, unknown> | undefined): boolean {
+  const unknown = (raw: Record<string, unknown> | undefined, known: ArtifactRecord) =>
+    JSON.stringify(Object.entries(raw ?? {}).filter(([k]) => !(k in known)).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0)));
+  return (
+    a.kind === b.kind &&
+    a.rev === b.rev &&
+    a.name === b.name &&
+    (a.kind !== "file" || (b.kind === "file" && a.sha256 === b.sha256 && a.size === b.size)) &&
+    unknown(aRaw, a) === unknown(bRaw, b)
+  );
 }
 
 /** What sharing an area's artifacts into a room adds them with: the room's own adds, and their checks (TeamArtifacts). */
@@ -236,6 +247,11 @@ export class AreaArtifacts {
   private readonly gens = new Map<string, number>();
   /** The areas whose tmp/ (adds cut short by quitting) was cleared in this run. */
   private readonly tmpCleared = new Set<string>();
+  /**
+   * Keys renamed away in this run, to the key each became: a change that reaches main for one after the rename (sent
+   * before it) is refused, rather than making the old name's folder again where no area shows it.
+   */
+  private readonly renamedAway = new Map<string, string>();
   private readonly now: () => number;
 
   constructor(private readonly d: AreaArtifactsDeps) {
@@ -251,6 +267,43 @@ export class AreaArtifacts {
 
   stop(): void {
     if (active === this) active = null;
+  }
+
+  /**
+   * The area folders no area of `live` (the keys of the areas there are) has, each logged with the key its file names:
+   * one a rename or merge kept, and its reason said only until a restart, isn't forgotten. Returns their paths.
+   */
+  unclaimed(live: Iterable<string>): string[] {
+    const top = path.join(this.d.root, AREAS_DIR);
+    const mine = new Set<string>();
+    for (const k of live) {
+      try {
+        mine.add(folderOf(k));
+      } catch {
+        // Loose, or a key no area can have: no folder of its own
+      }
+    }
+    let names: string[];
+    try {
+      names = dirInside(this.d.root, AREAS_DIR) ? fs.readdirSync(top) : [];
+    } catch (err) {
+      this.d.log("area artifacts: looking for areas' folders", err);
+      return [];
+    }
+    const out: string[] = [];
+    for (const n of names.filter((x) => x !== FINDER_FILE && !mine.has(x))) {
+      const at = path.join(top, n);
+      let key = "a key this version can't read";
+      try {
+        const k = JSON.parse(readRegularFile(path.join(at, "area.json"), at, MAX_AREA_FILE)?.text ?? "{}").key;
+        if (typeof k === "string") key = `“${k}”`;
+      } catch {
+        // its key stays unknown; the folder is still said
+      }
+      this.d.log("area artifacts: a folder no area has", `${at} keeps artifacts of ${key}, and no area is called that now: they're kept there; name an area that to see them`);
+      out.push(at);
+    }
+    return out;
   }
 
   roomOfArea(key: string): string | null {
@@ -328,6 +381,11 @@ export class AreaArtifacts {
    * folder, its store or its area.json isn't what it must be (a link planted since it was opened). Returns its folder.
    */
   private writable(key: string): string {
+    // renamed away, and no folder or workspace of this Mac's has the name since: nothing is made under it
+    const now = this.renamedAway.get(key);
+    if (now !== undefined && !this.dir(key, false) && !this.d.sessions().some((s) => s.status !== "dead" && areaKeyOf(s) === key)) {
+      throw new Error(`${key} was renamed to ${now}, so nothing was kept under ${key}: add it to ${now}`);
+    }
     const { readOnly } = this.file(key);
     if (readOnly) throw new Error(readOnly);
     const dir = this.dir(key, true)!;
@@ -404,6 +462,8 @@ export class AreaArtifacts {
       try {
         const r = x as Partial<ArtifactRecord>;
         if (typeof r.id !== "string" || !ARTIFACT_ID_RE.test(r.id)) throw new Error("its id isn't an artifact's");
+        // the first of an id is the one read: a second is kept as it is, its own fields with it
+        if (raw.has(r.id)) throw new Error("its id is another artifact's here too");
         if (typeof r.addedAt !== "number" || typeof r.rev !== "string") throw new Error("it has no addedAt or rev");
         items.push({ ...checkAdd(x), id: r.id, addedBy: AREA_SELF, addedAt: r.addedAt, lamport: 0, rev: r.rev, ...(typeof r.updatedAt === "number" ? { updatedBy: AREA_SELF, updatedAt: r.updatedAt } : {}) });
         raw.set(r.id, x as Record<string, unknown>);
@@ -586,9 +646,11 @@ export class AreaArtifacts {
   }
 
   async addRepo(key: string, req: AddRepoRequest): Promise<ArtifactAdded> {
+    const gen = this.gen(key);
     const session = this.d.sessions().find((s) => s.id === req?.sessionId && s.status !== "dead");
     if (!session) throw new Error("That session isn't running here");
     const { body, warnings } = await this.repos.reference(session, req);
+    if (this.gen(key) !== gen) throw new Error(`${key} was renamed while ${body.name} was being found, so it wasn't added: add it again where it is now`);
     return this.add(key, body, warnings);
   }
 
@@ -645,8 +707,8 @@ export class AreaArtifacts {
     const sniff = await this.sniffOf(key, a);
     if (!sniff) return { view: "missing", local: { state: "failed", problem: `${a.name}'s file isn't in this area's folder any more` } };
     const store = this.store(key);
-    this.blobAt(store, a);
-    return fileContent(store, a, sniff);
+    const blob = this.blobAt(store, a);
+    return fileContent(store, a, sniff, (length) => readNoFollow(blob, length));
   }
 
   /** An area's files are all on this Mac: there's nothing to fetch. */
@@ -686,8 +748,16 @@ export class AreaArtifacts {
 
   async exportTo(key: string, id: string, dest: string): Promise<string | null> {
     const a = this.item(key, id);
-    if (a.kind === "file") this.blobAt(this.store(key), a);
-    const warning = await exportArtifact(this.store(key), a, dest);
+    let warning: string | null;
+    if (a.kind === "file") {
+      // its bytes read without following a link, then written where the person chose, marked as downloaded
+      const store = this.store(key);
+      const blob = this.blobAt(store, a);
+      if (store.blobSize(a.sha256) !== a.size) throw new Error(`${a.name}'s file in this area's folder isn't the one that was added`);
+      fs.writeFileSync(dest, readNoFollow(blob, a.size));
+      fs.chmodSync(dest, 0o644);
+      warning = await quarantine(dest);
+    } else warning = await exportArtifact(this.store(key), a, dest);
     if (warning) this.d.log("area artifacts: Save as", warning);
     return warning;
   }
@@ -746,8 +816,11 @@ export class AreaArtifacts {
    */
   areaRenamed(from: string, to: string): void {
     if (from === to) return;
-    // an add to either that's still reading its file in is refused when it's done (ingest)
+    // an add to either that's still reading its file in is refused when it's done (ingest, addRepo)
     for (const k of [from, to]) this.gens.set(k, this.gen(k) + 1);
+    // and a change for from that reaches main after this (writable); to is an area's name again
+    this.renamedAway.set(from, to);
+    this.renamedAway.delete(to);
     let src: string | null;
     try {
       src = this.dir(from, false);
@@ -758,18 +831,22 @@ export class AreaArtifacts {
     this.files.delete(from);
     this.stores.delete(from);
     this.linkFree.delete(from);
-    // where from's artifacts are: src until its folder is renamed
+    // how far it got, which a failure is said by: where from's artifacts are, and what was done with them
     let at = src;
+    let done: "nothing" | "moved" | "read" | "merged" = "nothing";
     const fail = (err: unknown) => {
       const why = (err as Error).message;
-      const text =
-        at === src
-          ? `${from}'s artifacts couldn't move to ${to}: ${why}. They're still in ${src}`
-          : `${from}'s artifacts moved to ${at} with ${to}, but its area.json couldn't be written with the new name (${why}): they're all there, read as ${to}'s`;
+      const text = {
+        nothing: `${from}'s artifacts couldn't move to ${to}: ${why}. They're still in ${src}`,
+        moved: `${from}'s artifacts moved to ${at} with ${to}, but its area.json there couldn't be read (${why}): none of them show until it can be`,
+        read: `${from}'s artifacts moved to ${at} with ${to}, but its area.json couldn't be written with the new name (${why}): they're all there, read as ${to}'s`,
+        merged: `${from}'s artifacts were merged into ${to}'s, but ${src} couldn't be tidied away after (${why}): it's kept as it was, under the old name`,
+      }[done];
       this.said(to, "rename", text);
       this.changed(to);
       return new Error(text);
     };
+    // agents' copies follow the records as soon as they're to's, whatever fails after
     const relabel = () => {
       const p = this.copies.rename(areaShelf(from), areaShelf(to));
       if (p) this.said(to, "copies", p);
@@ -780,18 +857,20 @@ export class AreaArtifacts {
         const moved = path.join(path.dirname(src), folderOf(to));
         fs.renameSync(src, moved);
         at = moved;
+        done = "moved";
         this.files.delete(to);
         this.stores.delete(to);
         this.linkFree.delete(to);
-        // agents' copies follow the folder, so they're to's even when the save below fails
         relabel();
         // its key written anew; a newer Mockingbird's file is left as it is
         const f = this.file(to);
+        done = "read";
         if (!f.readOnly && (f.items.length || f.kept.length)) this.save(to, f.items);
-      } else {
-        this.merge(from, src, to);
-        relabel();
-      }
+      } else
+        this.merge(from, src, to, () => {
+          done = "merged";
+          relabel();
+        });
     } catch (err) {
       throw fail(err);
     }
@@ -804,8 +883,9 @@ export class AreaArtifacts {
    * bytes are missing as a record without them (said, one by one). `src` goes only once every record was read, every
    * file copied, and it holds nothing else (a set-aside copy, a blob no record names); otherwise it's kept as it is,
    * under the old name, and said on `to` (the problems of its file apart from `to`'s own), so nothing is lost.
+   * `saved` is told once `to`'s file holds them.
    */
-  private merge(from: string, src: string, to: string): void {
+  private merge(from: string, src: string, to: string, saved: () => void): void {
     this.files.delete(from);
     // a target this build can't change, or one not as it must be: nothing is copied into it
     this.writable(to);
@@ -815,15 +895,19 @@ export class AreaArtifacts {
     checkStore(old);
     const store = this.store(to, true);
     store.ensure();
-    // a record of the same id here already comes along only as the same artifact; another version of it stays in src
-    const mine = this.file(to).items;
+    // a record of an id here already comes along only as the same artifact; another version of it, or one of an id a
+    // record here this version can't read has, stays in src (two of an id in one file would lose one's own fields)
+    const held = this.file(to);
+    const mine = held.items;
+    const keptIds = new Set(held.kept.flatMap((k) => (k && typeof k === "object" && typeof (k as { id?: unknown }).id === "string" ? [(k as { id: string }).id] : [])));
     const taken: ArtifactRecord[] = [];
     const same: ArtifactRecord[] = [];
     const clash: string[] = [];
     for (const a of theirs.items) {
       const m = mine.find((x) => x.id === a.id);
-      if (!m) taken.push(a);
-      else if (sameRecord(a, m)) same.push(a);
+      if (keptIds.has(a.id)) clash.push(a.name);
+      else if (!m) taken.push(a);
+      else if (sameRecord(a, theirs.raw.get(a.id), m, held.raw.get(m.id))) same.push(a);
       else clash.push(a.name);
     }
     const missing: string[] = [];
@@ -838,10 +922,11 @@ export class AreaArtifacts {
       }
     }
     this.save(to, [...mine, ...taken], theirs.raw);
+    saved();
     this.said(to, `${tag}missing`, missing.length ? `${missing.length} of ${from}'s files weren't in its folder, so they came along without their bytes: ${missing.join(", ")}` : null);
     const unknownKeys = Object.keys(theirs.extra);
     const whole = theirs.complete && !failed.length && !clash.length && !unknownKeys.length;
-    const left = whole ? leftIn(src, new Set([...taken, ...same].flatMap((a) => (a.kind === "file" ? [a.sha256] : [])))) : [];
+    const left = whole ? leftIn(src, new Set(theirs.items.flatMap((a) => (a.kind === "file" ? [a.sha256] : [])))) : [];
     if (whole && !left.length) {
       this.said(to, `${tag}merge`, null);
       return void fs.rmSync(src, { recursive: true, force: true });
@@ -849,7 +934,7 @@ export class AreaArtifacts {
     const why = failed.length
       ? ` (${failed.join("; ")})`
       : clash.length
-        ? ` (${clash.length === 1 ? "one of its artifacts is" : `${clash.length} of its artifacts are`} here already as another version: ${clash.join(", ")})`
+        ? ` (${clash.length === 1 ? "one of its artifacts is" : `${clash.length} of its artifacts are`} here already as another version, or as one this version can't read: ${clash.join(", ")})`
         : unknownKeys.length
           ? ` (its area.json also holds what this version doesn't read: ${unknownKeys.join(", ")})`
           : left.length
@@ -893,19 +978,19 @@ export class AreaArtifacts {
     const dir = this.dir(key, false);
     if (!dir) return;
     const problems: string[] = [];
-    let live: { shas: Set<string>; ids: Set<string> } | null = null;
+    let live: ((name: string) => boolean) | null = null;
     try {
-      live = liveRefs(dir, held);
+      live = liveIn(dir, held);
     } catch (err) {
       problems.push(`nothing was cleaned up, since what's kept couldn't all be read: ${(err as Error).message}`);
     }
     if (live) {
-      const { ids } = live;
+      const named = { has: live };
       const store = this.store(key);
-      if (fs.existsSync(store.dir)) problems.push(...store.gc(live.shas, ids));
+      if (fs.existsSync(store.dir)) problems.push(...store.gc(named, named));
       // an agent's copy goes with its artifact, or once agents may not read it; one of a record kept but not read stays
       const byId = new Map(held.items.map((a) => [a.id, a]));
-      problems.push(...this.copies.drop((c) => c.roomId === areaShelf(key) && (!ids.has(c.id) || (byId.has(c.id) && !!this.blockedReason(key, byId.get(c.id)!)))));
+      problems.push(...this.copies.drop((c) => c.roomId === areaShelf(key) && (!named.has(c.id) || (byId.has(c.id) && !!this.blockedReason(key, byId.get(c.id)!)))));
     }
     this.said(key, "cleanup", problems.length ? `Some of the area's files couldn't be cleaned up: ${problems.join("; ")}` : null);
   }

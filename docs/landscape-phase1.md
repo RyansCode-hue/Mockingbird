@@ -1029,13 +1029,16 @@ Design O, with Artifacts as a window, and N's workspace header.
         a link (`readRegularFile`, at most 256 MB), and `area.json` must be a
         regular file before each write (`writeFileAtomic` would write where
         a link points); each blob, its blobs folder and the store's folder
-        are checked just before the blob is read or copied (the viewer,
-        Quick Look, Save as, agents' copies, sharing, a merge), and the
-        reads here open it without following a link. An add checks all of
-        this before it writes a byte, and again before it keeps one. Node
-        has no `openat`, so a link swapped in between a check and a copy
-        isn't caught; one there already always is. Added files must be
-        regular files, never from `~/.mockingbird/team` or the area folders.
+        are checked just before the blob is read or copied. The blob itself
+        is then opened without following a link (`O_NOFOLLOW`) for every
+        read of its bytes: the viewer, content sniffing, Save as, agents'
+        text reads and sharing. Its copies are made by path after that
+        check (Quick Look's view copy, agents' file copies, a merge's), so a
+        link swapped in between the check and a copy isn't caught (Node has
+        no `openat`); one there already always is. An add checks all of this
+        before it writes a byte, and again before it keeps one. Added files
+        must be regular files, never from `~/.mockingbird/team` or the area
+        folders.
       - **`area.json` follows S1's version rule.** It carries `v` (now 1),
         read before its shape. One written by a newer Mockingbird is read as
         far as it can be and never written, whatever its shape: the shelf is
@@ -1043,7 +1046,8 @@ Design O, with Artifacts as a window, and N's workspace header.
         its cards and their viewers offer no Add, Rename, Remove or Edit, and
         refuse a drop; main refuses an add, or a merge into it, before
         anything is kept or copied, and writes no content types or view
-        copies there (Quick Look and Finder say why). Nothing is dropped:
+        copies there (Quick Look and Finder say why), nor moves aside a
+        content types file it can't parse. Nothing is dropped:
         - a file that isn't JSON, or has no version or no list of artifacts,
           is moved aside to `.bad-<ts>`, said on the shelf, and the shelf
           starts over; one that can't be moved is left as it is, said, and
@@ -1052,13 +1056,18 @@ Design O, with Artifacts as a window, and N's workspace header.
           written back as they were with every save;
         - each record it reads is written over its object as the file had
           it, and the file's own keys besides `v`, `key` and `items` as they
-          were, so the fields a newer build added without raising `v` stay.
+          were, so the fields a newer build added without raising `v` stay;
+        - a second record of an id is kept as it is, its own fields with it,
+          and said.
       - **What's kept but can't be read keeps its bytes.** Cleaning up after
-        a remove (or a failed add) counts as in use every blob hash and
-        artifact id found anywhere in `area.json` as it is on disk (records
-        it can't read, fields it doesn't know) and in the set-aside copies,
-        besides the records it reads. Agents' copies go only with an id
-        that's in none of them, or a record agents may not read. Nothing is
+        a remove (or a failed add) keeps every blob, download and view copy
+        whose name (a hash, or an artifact's id) appears, in any case and
+        anywhere, in the records held (each one's whole object, those it
+        can't read, the file's own keys), in `area.json` as it is on disk and
+        in the set-aside copies, so a hash inside a longer run, in capitals,
+        or held while the file changed behind it, keeps its bytes. Agents'
+        copies go only with an id none of them holds, or a record agents may
+        not read. Nothing is
         cleaned up on a read-only shelf, or when one of those files can't be
         read (said), agents' copies included. A cleanup that fails after a
         failed add is logged, and the add's own reason is the one said.
@@ -1075,24 +1084,34 @@ Design O, with Artifacts as a window, and N's workspace header.
       folder, or moved with the new name but its `area.json` not rewritten);
       the rename itself isn't refused. A rename to a sub-group or Loose
       leaves them under the old key and logs where they are. An add still
-      reading its file when the area is renamed is refused (each area counts
-      its renames in a run), rather than kept in the old folder; reading an
+      reading its file, or finding a repo file, when the area is renamed is
+      refused (each area counts its renames in a run), rather than kept in
+      the old folder; one sent before the rename that reaches main after it
+      is refused, with the new name, while nothing has the old name since (no
+      folder, no workspace of this Mac's in an area of that name); reading an
       area never makes its folder, so a list still running doesn't make the
-      old name's again.
+      old name's again. A failure is said by how far it got: not moved
+      (still in the old folder), moved but its `area.json` unreadable there,
+      moved and read but not rewritten (all there, read as the new name's),
+      or merged but the old folder not tidied away (kept as it was); agents'
+      copies follow as soon as the records are the new name's.
       - **A merge never loses what it couldn't move.** Each record is copied
         with its file; a file missing from the old folder is skipped and
         named once on the new shelf, and its record comes along, with the
         fields this version doesn't know. A record of an id the new name has
-        already comes along only as the same artifact (rev, name and bytes);
-        another version of it stays in the old folder. The old folder is
-        removed only when every record was read and copied, none was another
-        version, its file has no keys this version doesn't know, and it
-        holds nothing else: no set-aside copy (one made before the merge
-        too), no blob the merged records don't name. Otherwise it's kept as
+        already comes along only as the same artifact (rev, name, bytes and
+        the fields this version doesn't know); another version of it, or one
+        of an id a record there this version can't read has, stays in the
+        old folder. The old folder is removed only when every record was
+        read and copied, none stayed, its file has no keys this version
+        doesn't know, and it holds nothing else (Finder's `.DS_Store` aside):
+        no set-aside copy (one made before the merge too), no blob the
+        merged records don't name. Otherwise it's kept as
         it is, under the old name, and the new shelf says so; the problems of
         the old file are said apart from the new shelf's own, so neither
-        wipes the other. They're kept in memory: after a restart the kept
-        folder's message is in the log only.
+        wipes the other. They're kept in memory: after a restart, each area
+        folder no area has (no workspace's, none on the landscape) is logged
+        as the app starts, with the key its file names.
     - **Sharing the area as a room offers to share them, once.** The share
       dialog shows `ShareAreaArtifacts` only when its own call made the room
       (`team:share` answers `created`), whether or not the team status had
@@ -1239,6 +1258,17 @@ Design O, with Artifacts as a window, and N's workspace header.
         where nothing writes content types or view copies;
       - a file whose bytes are gone said so by name for Save as, agents and
         sharing;
+      - changes for a name renamed away refused (a note, a link, a file, a
+        repo reference found across the rename) and taken again once a
+        workspace is in an area of that name; a second record of an id kept
+        as it is; a hash inside a longer run, in capitals, or held while the
+        file changed behind it, kept; a newer Mockingbird's content types
+        file left as it is;
+      - a merge keeping the old folder for an id a record it can't read has
+        and for other unknown fields, letting it go past Finder's
+        `.DS_Store`, and its failures said by how far it got (read but not
+        rewritten; merged but not tidied away, agents' copies following);
+        an area folder no area has logged as the app starts;
       - add, read, rename and remove, and a secret asked about first;
       - an area's rename and merge;
       - `shareTo`, refusing secrets;
@@ -1262,7 +1292,11 @@ Design O, with Artifacts as a window, and N's workspace header.
     - the read-only audit (`?landscapeReadOnlyAudit` with `?areaReadOnly`):
       a newer Mockingbird's area shelf saying why, with Add, Rename and
       Remove off, in the window, on a card and in the viewer from both (no
-      Edit), and a file dropped on the window said and never sent;
+      Edit), and a file dropped on the window said and never sent. Under CI,
+      where the preview doesn't run, `test/teamArtifactsView.test.ts` checks
+      the same gating in the menus a card and the viewer show (`cardMenu`,
+      `viewerMore`) and in what a card or a shelf gives its viewer
+      (`viewerEdits`);
     - and the review audit (`=a` and `=b`, two pages, each well inside the
       preview's minute):
       - placed and docked windows and a card through a real reload;

@@ -1,11 +1,12 @@
 import * as fs from "fs";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { makeRepo, tempDir } from "./helpers";
+import { git, makeRepo, tempDir } from "./helpers";
 import { sides } from "./artifactSides";
 import { AREAS_DIR, AreaArtifacts, artifactShelves, folderOf, type RoomAdds } from "../src/main/areaArtifacts";
 import { artifactToolCall } from "../src/main/team/artifactTools";
 import { areaShelf, areaOfShelf } from "../src/shared/areaArtifacts";
+import { LOOSE_GROUP } from "../src/shared/landscape";
 import { ARTIFACT_TOOL } from "../src/shared/team/artifacts";
 import type { SessionInfo } from "../src/shared/types";
 
@@ -640,6 +641,23 @@ const fileOf = (r: Rig, key: string) => JSON.parse(fs.readFileSync(path.join(are
 const writeFileOf = (r: Rig, key: string, f: unknown) => fs.writeFileSync(path.join(areaDir(r, key), "area.json"), JSON.stringify(f));
 
 describe("what a newer build wrote into area.json", () => {
+  it("keeps a second record of an id as it is, its own fields with it, and says so", async () => {
+    const r = rig();
+    const plan = r.arts.addNote("Docs", "Plan", "x");
+    const f = fileOf(r, "Docs");
+    writeFileOf(r, "Docs", { ...f, items: [{ ...f.items[0], pinned: "teal" }, { ...f.items[0], name: "Plan again", pinned: "red" }] });
+    const again = rig(r.root);
+    const view = await again.arts.list("Docs");
+    expect(view.items.map((a) => a.name)).toEqual(["Plan"]);
+    expect(view.problems).toEqual([expect.stringMatching(/#2: its id is another artifact's here too/)]);
+    again.arts.addNote("Docs", "More", "y");
+    expect(fileOf(r, "Docs").items).toEqual([
+      expect.objectContaining({ id: plan.id, name: "Plan", pinned: "teal" }),
+      expect.objectContaining({ name: "More" }),
+      expect.objectContaining({ id: plan.id, name: "Plan again", pinned: "red" }),
+    ]);
+  });
+
   it("is written back: the fields and keys this build doesn't know, and the bytes only they name kept", async () => {
     const r = rig();
     const shot = (await r.arts.addBytes("Docs", "shot.png", PNG)).added[0];
@@ -691,7 +709,7 @@ describe("a merge onto a name that has artifacts already", () => {
     expect(fresh.arts.saveNote("Old", plan.id, "edited under the old name", fresh.arts.records("Old")[0].rev, "save")).toEqual({ rev: expect.any(String) });
     fresh.arts.areaRenamed("Old", "New");
     expect(fileOf(r, "Old").items[0].text).toBe("edited under the old name");
-    expect((await fresh.arts.list("New")).problems).toEqual([expect.stringMatching(/one of its artifacts is here already as another version: Plan\).*kept as it was/)]);
+    expect((await fresh.arts.list("New")).problems).toEqual([expect.stringMatching(/one of its artifacts is here already as another version, or as one this version can.t read: Plan\).*kept as it was/)]);
   });
 
   it("lets the old name's folder go when what it has of the new name's is the same", () => {
@@ -736,12 +754,110 @@ describe("a merge onto a name that has artifacts already", () => {
     await r.arts.copyForAgent("Old", rec, tempDir("agent"), "a.txt");
     fs.chmodSync(path.join(areaDir(r, "Old"), "area.json"), 0o000);
     try {
-      expect(() => r.arts.areaRenamed("Old", "New")).toThrow(/Old's artifacts moved to .* with New, but its area\.json couldn't be written with the new name .*: they're all there, read as New's/);
+      expect(() => r.arts.areaRenamed("Old", "New")).toThrow(/Old's artifacts moved to .* with New, but its area\.json there couldn't be read .*: none of them show until it can be/);
     } finally {
       fs.chmodSync(path.join(areaDir(r, "New"), "area.json"), 0o600);
     }
     const copies = JSON.parse(fs.readFileSync(path.join(r.root, "artifacts", "area-agent-copies.json"), "utf8"));
     expect(copies.map((c: { roomId: string }) => c.roomId)).toEqual(["area:New"]);
+  });
+});
+
+describe("a merge or a rename that fails part way", () => {
+  it("says where the artifacts are when the folder moved and its file was read but couldn't be written", async () => {
+    const r = rig();
+    r.arts.addNote("Old", "Plan", "x");
+    fs.chmodSync(areaDir(r, "Old"), 0o500);
+    try {
+      expect(() => r.arts.areaRenamed("Old", "New")).toThrow(/Old's artifacts moved to .* with New, but its area\.json couldn't be written with the new name .*: they're all there, read as New's/);
+    } finally {
+      fs.chmodSync(areaDir(r, "New"), 0o700);
+    }
+  });
+
+  it("says the artifacts were merged when only tidying the old folder away failed, and agents' copies follow", async () => {
+    const r = rig();
+    await r.arts.addBytes("Old", "a.txt", Buffer.from("a"));
+    r.arts.addNote("New", "Mine", "y");
+    const [rec] = r.arts.records("Old") as FileRecord[];
+    await r.arts.copyForAgent("Old", rec, tempDir("agent"), "a.txt");
+    // its folder can be read through but not listed: the merge reads its files, then can't see what else it holds
+    fs.chmodSync(areaDir(r, "Old"), 0o300);
+    try {
+      expect(() => r.arts.areaRenamed("Old", "New")).toThrow(/Old's artifacts were merged into New's, but .* couldn't be tidied away after .*: it's kept as it was, under the old name/);
+    } finally {
+      fs.chmodSync(areaDir(r, "Old"), 0o700);
+    }
+    expect(r.arts.records("New").map((a) => a.name)).toEqual(["Mine", "a.txt"]);
+    const copies = JSON.parse(fs.readFileSync(path.join(r.root, "artifacts", "area-agent-copies.json"), "utf8"));
+    expect(copies.map((c: { roomId: string }) => c.roomId)).toEqual(["area:New"]);
+  });
+
+  it("keeps the old name's folder when one of its records has the id of one here this build can't read", () => {
+    const r = rig();
+    const plan = r.arts.addNote("Old", "Plan", "x");
+    r.arts.addNote("New", "Mine", "y");
+    const g = fileOf(r, "New");
+    writeFileOf(r, "New", { ...g, items: [...g.items, { ...fileOf(r, "Old").items[0], kind: "sketch" }] });
+    rig(r.root).arts.areaRenamed("Old", "New");
+    expect(fileOf(r, "New").items.filter((a: { id: string }) => a.id === plan.id)).toHaveLength(1);
+    expect(fs.existsSync(areaDir(r, "Old"))).toBe(true);
+  });
+
+  it("keeps the old name's folder when the same artifact there has other fields this build doesn't know", async () => {
+    const r = rig();
+    r.arts.addNote("Old", "Plan", "first");
+    fs.cpSync(areaDir(r, "Old"), areaDir(r, "New"), { recursive: true });
+    const f = fileOf(r, "Old");
+    f.items[0] = { ...f.items[0], pinned: "teal" };
+    writeFileOf(r, "Old", f);
+    const fresh = rig(r.root);
+    fresh.arts.areaRenamed("Old", "New");
+    expect(fileOf(r, "Old").items[0].pinned).toBe("teal");
+    expect((await fresh.arts.list("New")).problems).toEqual([expect.stringMatching(/here already as another version.*: Plan\).*kept as it was/)]);
+  });
+
+  it("lets the old name's folder go with what Finder left in it", async () => {
+    const r = rig();
+    await r.arts.addBytes("Old", "a.txt", Buffer.from("a"));
+    r.arts.addNote("New", "Mine", "y");
+    for (const d of ["", "artifacts", path.join("artifacts", "blobs")]) fs.writeFileSync(path.join(areaDir(r, "Old"), d, ".DS_Store"), "Finder's");
+    r.arts.areaRenamed("Old", "New");
+    expect(fs.existsSync(areaDir(r, "Old"))).toBe(false);
+  });
+});
+
+describe("changes for a name renamed away", () => {
+  it("are refused while nothing has the name since, rather than making its folder again", async () => {
+    const r = rig();
+    r.arts.addNote("Old", "Plan", "x");
+    r.arts.areaRenamed("Old", "New");
+    expect(() => r.arts.addNote("Old", "Late", "sent before the rename")).toThrow(/Old was renamed to New, so nothing was kept under Old: add it to New/);
+    expect(() => r.arts.addLink("Old", "https://example.com/late", "Late")).toThrow(/renamed to New/);
+    expect((await r.arts.addBytes("Old", "late.txt", Buffer.from("late"))).refused).toEqual([{ name: "late.txt", reason: expect.stringMatching(/renamed to New/) }]);
+    expect(fs.existsSync(areaDir(r, "Old"))).toBe(false);
+    expect(r.arts.records("New").map((a) => a.name)).toEqual(["Plan"]);
+    // a workspace in an area of the name again: it's an area's name once more
+    r.sessions.push(session("s9", { taskGroup: "Old" }));
+    expect(r.arts.addNote("Old", "Fresh", "y")).toMatchObject({ name: "Fresh" });
+  });
+
+  it("refuse a repo reference the area was renamed under while its file was found", async () => {
+    const r = rig();
+    const origin = tempDir("origin");
+    git(origin, "-c", "init.defaultBranch=main", "init", "-q", "--bare", "app.git");
+    const repo = makeRepo({ "src/a.ts": "export const a = 1;\n" });
+    git(repo, "remote", "add", "origin", `file://${path.join(fs.realpathSync(origin), "app.git")}`);
+    git(repo, "push", "-q", "origin", "main");
+    r.sessions.push(session("s1", { taskGroup: "New", repoPath: repo, cwd: repo }));
+    r.arts.addNote("Old", "Plan", "x");
+    r.arts.addNote("New", "Mine", "y");
+    // a set-aside copy keeps Old's folder through the merge
+    fs.writeFileSync(path.join(areaDir(r, "Old"), "area.json.bad-1"), "{ not json");
+    const adding = r.arts.addRepo("Old", { sessionId: "s1", path: "src/a.ts" });
+    r.arts.areaRenamed("Old", "New");
+    await expect(adding).rejects.toThrow(/Old was renamed while a\.ts was being found, so it wasn't added/);
+    expect(fileOf(r, "Old").items.map((a: { name: string }) => a.name)).toEqual(["Plan"]);
   });
 });
 
@@ -772,6 +888,49 @@ describe("an area renamed while it's being read", () => {
 });
 
 describe("cleaning up an area", () => {
+  it("keeps a blob named inside a longer run of hex, or in capitals", async () => {
+    const r = rig();
+    const shot = (await r.arts.addBytes("Docs", "shot.png", PNG)).added[0];
+    r.arts.addNote("Docs", "Plan", "x");
+    const [a, b] = ["a1".repeat(32), "b2".repeat(32)];
+    for (const s of [a, b]) fs.writeFileSync(path.join(areaDir(r, "Docs"), "artifacts", "blobs", s), s);
+    const f = fileOf(r, "Docs");
+    f.items[1] = { ...f.items[1], thumbs: `0${a}`, poster: b.toUpperCase() };
+    writeFileOf(r, "Docs", f);
+    rig(r.root).arts.remove("Docs", shot.id);
+    expect(blobsIn(r, "Docs")).toEqual([a, b]);
+  });
+
+  it("keeps what's held when the file on disk changed behind it", () => {
+    const r = rig();
+    r.arts.addNote("Docs", "Plan", "x");
+    const thumb = "c3".repeat(32);
+    const blobs = path.join(areaDir(r, "Docs"), "artifacts", "blobs");
+    fs.mkdirSync(blobs, { recursive: true });
+    fs.writeFileSync(path.join(blobs, thumb), "a thumbnail");
+    const f = fileOf(r, "Docs");
+    writeFileOf(r, "Docs", { ...f, items: [{ ...f.items[0], thumbnail: thumb }] });
+    const again = rig(r.root);
+    expect(again.arts.records("Docs")).toHaveLength(1);
+    writeFileOf(r, "Docs", f);
+    again.arts.gc("Docs");
+    expect(blobsIn(r, "Docs")).toEqual([thumb]);
+  });
+
+  it("logs, as the app starts, an area folder no area has", () => {
+    const r = rig();
+    for (const k of ["Docs", "Gone"]) r.arts.addNote(k, "Plan", "x");
+    expect(r.arts.unclaimed(["Docs", LOOSE_GROUP])).toEqual([areaDir(r, "Gone")]);
+    expect(r.logs).toEqual(expect.arrayContaining([expect.stringMatching(/a folder no area has: .* keeps artifacts of “Gone”, and no area is called that now/)]));
+  });
+
+  // the Electron entry can't load under Vitest, so its wiring is read from its source
+  it("is asked for, as the app starts, with every workspace's area and the landscape's (index.ts)", () => {
+    const src = fs.readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+    const start = src.slice(src.indexOf("areaArtifacts.start();"), src.indexOf("const shelves = artifactShelves("));
+    expect(start).toMatch(/areaArtifacts\.unclaimed\(\[\.\.\.sessions\.list\(\)\.map\(areaKeyOf\), \.\.\.Object\.keys\(landscape\.get\(\)\.landscape\.areas\)\]\)/);
+  });
+
   it("sweeps nothing, and keeps agents' copies, when a set-aside copy can't be read", async () => {
     const r = rig();
     const added = (await r.arts.addBytes("Docs", "a.txt", Buffer.from("text"))).added[0];
@@ -850,6 +1009,23 @@ describe("a file whose bytes aren't in the area's folder", () => {
 });
 
 describe("a newer Mockingbird's shelf", () => {
+  it("leaves a content types file it can't parse as it is", async () => {
+    const r = rig();
+    await r.arts.addBytes("Docs", "a.txt", Buffer.from("text"));
+    const store = path.join(areaDir(r, "Docs"), "artifacts");
+    fs.writeFileSync(path.join(store, "sniff.json"), "{ not json");
+    writeFileOf(r, "Docs", { ...fileOf(r, "Docs"), v: 2 });
+    const said = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      expect((await rig(r.root).arts.list("Docs")).items[0].local).toMatchObject({ state: "present" });
+      expect(said).toHaveBeenCalledWith(expect.stringMatching(/sniff\.json was unreadable and is left as it is/), expect.anything());
+    } finally {
+      said.mockRestore();
+    }
+    expect(fs.readdirSync(store).filter((n) => n.startsWith("sniff.json"))).toEqual(["sniff.json"]);
+    expect(fs.readFileSync(path.join(store, "sniff.json"), "utf8")).toBe("{ not json");
+  });
+
   it("writes no content types or view copies", async () => {
     const r = rig();
     const file = (await r.arts.addBytes("Docs", "a.txt", Buffer.from("text"))).added[0];

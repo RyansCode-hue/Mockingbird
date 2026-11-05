@@ -230,6 +230,12 @@ const areaArtifacts = new AreaArtifacts({
   log: logError,
 });
 areaArtifacts.start();
+// a folder kept by a rename or merge says why only until a restart: one no area has is logged as the app starts
+try {
+  areaArtifacts.unclaimed([...sessions.list().map(areaKeyOf), ...Object.keys(landscape.get().landscape.areas)]);
+} catch (err) {
+  logError("area artifacts: looking for folders no area has", err);
+}
 // the window's artifact calls name a shelf: a room's id, or an area's (shared/areaArtifacts.ts)
 const shelves = artifactShelves(teamArtifacts, areaArtifacts);
 const artifactUi = artifactViewer(shelves, {

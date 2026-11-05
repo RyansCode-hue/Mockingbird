@@ -116,6 +116,16 @@ describe("adding a file", () => {
     expect(store.knownSniff(kept.sha256, "renamed.md")).toMatchObject({ view: "markdown" });
   });
 
+  it("never sniffs a blob through a link", async () => {
+    const store = new ArtifactStore(tempDir("room"));
+    store.ensure();
+    const bytes = Buffer.from("theirs");
+    const elsewhere = path.join(tempDir("elsewhere"), "x");
+    fs.writeFileSync(elsewhere, bytes);
+    fs.symlinkSync(elsewhere, store.blobPath(crypto.createHash("sha256").update(bytes).digest("hex")));
+    await expect(store.sniffOf(crypto.createHash("sha256").update(bytes).digest("hex"), "x.txt")).rejects.toThrow(/ELOOP/);
+  });
+
   it("keeps a finished download only when its hash matches", async () => {
     const store = new ArtifactStore(tempDir("room"));
     const good = Buffer.from("the real bytes");

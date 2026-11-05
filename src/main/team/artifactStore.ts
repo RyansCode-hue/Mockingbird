@@ -2,7 +2,7 @@ import { execFile } from "child_process";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import { isMissing, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
+import { isMissing, readJsonFile, readJsonOrSetAside, writeFileAtomic } from "../fileOps";
 import { MAX_ARTIFACT_FILE, SHA256_RE, ARTIFACT_ID_RE, safeArtifactFileName, type ArtifactView } from "../../shared/team/artifacts";
 
 /**
@@ -368,8 +368,10 @@ export class ArtifactStore {
     const known = this.loadSniffs()[sha];
     if (known) return this.byName(known, name);
     const scan = new ContentScan();
+    // opened without following a link: a blob is only ever a file the store made
+    const fd = fs.openSync(this.blobPath(sha), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     await new Promise<void>((resolve, reject) => {
-      fs.createReadStream(this.blobPath(sha))
+      fs.createReadStream("", { fd })
         .on("data", (c) => scan.push(c as Buffer))
         .on("error", reject)
         .on("end", resolve);
@@ -394,7 +396,18 @@ export class ArtifactStore {
 
   private loadSniffs(): Record<string, Sniff> {
     if (!this.sniffs) {
-      const v = readJsonOrSetAside(path.join(this.dir, "sniff.json"), {}, "the room artifacts' content types");
+      const file = path.join(this.dir, "sniff.json");
+      let v: unknown;
+      if (!this.readOnly) v = readJsonOrSetAside(file, {}, "the room artifacts' content types");
+      else {
+        // nothing of a store this build mustn't change is moved aside: one it can't parse is left, and sniffed afresh
+        try {
+          v = readJsonFile(file, {});
+        } catch (err) {
+          console.error(`[mockingbird] ${file} was unreadable and is left as it is (its store can't be changed here):`, err);
+          v = {};
+        }
+      }
       this.sniffs = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Sniff>) : {};
     }
     return this.sniffs;
@@ -455,7 +468,7 @@ export class ArtifactStore {
    * Delete blobs and downloads no live file artifact uses, and view copies of
    * artifacts that are gone. Returns what couldn't be deleted.
    */
-  gc(liveShas: ReadonlySet<string>, liveIds: ReadonlySet<string>): string[] {
+  gc(liveShas: Pick<ReadonlySet<string>, "has">, liveIds: Pick<ReadonlySet<string>, "has">): string[] {
     const problems: string[] = [];
     const sweep = (dir: string, keep: (name: string) => boolean, isOurs: (name: string) => boolean) => {
       let names: string[];

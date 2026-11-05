@@ -1,10 +1,12 @@
 import { readFileSync } from "fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MarkdownView, inlineSegments, markdownBlocks } from "../src/renderer/team/markdownView";
 import { artifactCompletions, artifactKind, artifactMeta, mentionLabel, parseCsv, parseLines, REMOVE_ARTIFACT_NOTE, repoDefaultName, repoSessionsFor, transferLine } from "../src/renderer/team/artifactModel";
 import { TeamSection } from "../src/renderer/Team";
+import { cardMenu, viewerEdits } from "../src/renderer/team/Artifacts";
+import { viewerMore } from "../src/renderer/team/ArtifactViewer";
 import type { Settings } from "../src/shared/types";
 import { artifactRef, type ArtifactSummary } from "../src/shared/team/artifacts";
 
@@ -222,5 +224,41 @@ describe("what removing an artifact and inline room sessions are said to do", ()
   it("says inline room sessions hand teammates everything the terminal keeps", () => {
     const html = renderToStaticMarkup(createElement(TeamSection, { settings: {} as Settings, onChange: () => {} }));
     expect(html).toContain("Inline also hands teammates everything a session&#x27;s terminal keeps");
+  });
+});
+
+describe("a shelf that can't be changed (an area's file a newer Mockingbird wrote)", () => {
+  const WHY = "area.json was written by a newer Mockingbird (its version 2, this one reads 1): update Mockingbird to change this area's artifacts";
+  const note = summary({ id: "N".repeat(22), kind: "note", name: "Plan" });
+  const on = { open: vi.fn(), mention: vi.fn(), rename: vi.fn(), remove: vi.fn(), uncard: vi.fn(), close: vi.fn() };
+  const offs = (items: readonly unknown[]) =>
+    items.flatMap((i) => (i && typeof i === "object" && ["rename", "remove"].includes((i as { key: string }).key) ? [[(i as { key: string }).key, !!(i as { disabled?: boolean }).disabled, (i as { title?: string }).title ?? null]] : []));
+
+  it("shows Rename and Remove off, saying why, on a card's menu and in the viewer's", () => {
+    for (const items of [cardMenu(note, { local: true, readOnly: WHY }, on), viewerMore(note, { local: true, readOnly: WHY }, on)])
+      expect(offs(items)).toEqual([
+        ["rename", true, WHY],
+        ["remove", true, WHY],
+      ]);
+    // and offers them on one that can be
+    for (const items of [cardMenu(note, { local: true, readOnly: null }, on), viewerMore(note, { local: true, readOnly: null }, on)])
+      expect(offs(items)).toEqual([
+        ["rename", false, null],
+        ["remove", false, null],
+      ]);
+  });
+
+  it("gives the viewer a card or a shelf opens why, and a Rename and a Remove that say it", () => {
+    const fail = vi.fn();
+    const edits = { setRenaming: vi.fn(), setRemoving: vi.fn() };
+    const gated = viewerEdits(WHY, fail, edits);
+    expect(gated.readOnly).toBe(WHY);
+    gated.onRename(note);
+    gated.onRemove(note);
+    expect(fail.mock.calls).toEqual([[WHY], [WHY]]);
+    expect([edits.setRenaming, edits.setRemoving].map((f) => f.mock.calls.length)).toEqual([0, 0]);
+    const open = viewerEdits(null, fail, edits);
+    open.onRename(note);
+    expect(edits.setRenaming).toHaveBeenCalledWith(note);
   });
 });

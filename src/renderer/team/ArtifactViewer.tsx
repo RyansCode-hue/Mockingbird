@@ -5,7 +5,7 @@ import { externalUrlAllowed } from "../../shared/links";
 import { tildePath } from "../../shared/paths";
 import type { ArtifactContent, ArtifactSummary, RepoResolution, SaveNoteMode, SaveNoteResult } from "../../shared/team/artifacts";
 import { Modal } from "../Modal";
-import { MenuButton } from "../Menu";
+import { MenuButton, type MenuItem } from "../Menu";
 import { FileGlyph } from "../FilePanel";
 import { LinkIcon, LockIcon, NoteIcon, RepoFileIcon } from "../Icons";
 import { settled } from "../settled";
@@ -172,6 +172,20 @@ function Transfer({ item, onDownload }: { item: ArtifactSummary; onDownload: () 
 
 type Loaded = ArtifactContent | { error: string } | null;
 type Resolved = RepoResolution | { error: string } | null;
+
+/** The viewer's ⋯ menu for `item`: Rename and Remove shown off, saying why, on a shelf that can't be changed (`readOnly`). */
+export function viewerMore(
+  item: ArtifactSummary,
+  o: { local: boolean; readOnly: string | null },
+  on: { mention: (a: ArtifactSummary) => void; rename: (a: ArtifactSummary) => void; remove: (a: ArtifactSummary) => void; close: () => void }
+): MenuItem[] {
+  const off = o.readOnly ? { disabled: true, title: o.readOnly } : {};
+  return [
+    { key: "mention", label: o.local ? "Mention to the selected workspace" : "Mention in a message", onPick: () => (on.mention(item), on.close()) },
+    { key: "rename", label: "Rename…", onPick: () => on.rename(item), ...off },
+    { key: "remove", label: o.local ? "Remove…" : "Remove for everyone…", onPick: () => on.remove(item), ...off },
+  ];
+}
 
 export function ArtifactViewer({
   roomId,
@@ -343,18 +357,7 @@ export function ArtifactViewer({
       </button>
     </>
   );
-  const more = (
-    <MenuButton
-      className="outline art-more"
-      label="⋯"
-      title="More for this artifact"
-      items={[
-        { key: "mention", label: local ? "Mention to the selected workspace" : "Mention in a message", onPick: () => (onMention(item), onClose()) },
-        { key: "rename", label: "Rename…", onPick: () => onRename(item), ...(readOnly ? { disabled: true, title: readOnly } : {}) },
-        { key: "remove", label: local ? "Remove…" : "Remove for everyone…", onPick: () => onRemove(item), ...(readOnly ? { disabled: true, title: readOnly } : {}) },
-      ]}
-    />
-  );
+  const more = <MenuButton className="outline art-more" label="⋯" title="More for this artifact" items={viewerMore(item, { local, readOnly }, { mention: onMention, rename: onRename, remove: onRemove, close: onClose })} />;
 
   const body = (() => {
     if (item.kind === "repo") {
