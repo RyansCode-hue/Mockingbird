@@ -40,6 +40,8 @@ describe("the team service", () => {
     const a = await s.shareGroup("5110", "#5110 Donor entities");
     const b = await s.shareGroup("5110", "#5110 Donor entities");
     expect(b.roomId).toBe(a.roomId);
+    // the first made the room; the second invites to it (the share dialog offers the area's artifacts only to the first)
+    expect([a.created, b.created]).toEqual([true, false]);
     expect(b.invite).not.toBe(a.invite);
     const st = s.status();
     expect(st.self).toMatchObject({ name: "Ryan" });

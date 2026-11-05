@@ -69,6 +69,7 @@ import { TeamChanges } from "./team/teamChanges";
 import { mergeOverlaps, teammateOverlaps } from "./conflicts";
 // team rooms: team chat
 import { TeamRoom } from "./team/teamRoom";
+import { forgetViewsWith } from "./team/chat";
 // team rooms: take-over
 import { liveRoomHost, TakeoverService } from "./team/takeover";
 import type { TakeoverView } from "../shared/team/takeover";
@@ -492,6 +493,8 @@ function createWindow(): void {
     if (mainWindow === win) mainWindow = null;
     stopTeam();
   });
+  // a reload, a renderer that went, or the window closing: the room chats it said were on screen are no longer
+  forgetViewsWith(win.webContents, () => teamRoom.chat.setViewing(null));
   win.loadFile(path.join(__dirname, "index.html"));
   // the editor holds unsaved changes: the window says so (beforeunload), and
   // quitting asks first. A signal quits regardless: the question would hold

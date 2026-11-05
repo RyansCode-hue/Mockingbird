@@ -271,7 +271,7 @@ export class TeamService {
    * refuses the room (this key isn't on ALLOWED_CREATORS) says so here, with
    * the fix, instead of handing out a code that can't work.
    */
-  async shareGroup(groupKey: string, title: string, waitMs = 10_000): Promise<{ roomId: string; invite: string; warning?: string }> {
+  async shareGroup(groupKey: string, title: string, waitMs = 10_000): Promise<{ roomId: string; invite: string; warning?: string; created: boolean }> {
     const core = this.need();
     if (!isShareableGroup(groupKey)) throw new Error("Only a named group can be shared — name it first");
     const existing = core.roomForGroup(groupKey);
@@ -287,9 +287,11 @@ export class TeamService {
     }
     if (st?.problem) throw new Error(st.problem);
     const invite = core.createInvite(room.id);
+    // `created`: this call made the room (what the share dialog offers the group's area's artifacts to)
+    const created = !existing;
     return st?.signaling === "online"
-      ? { roomId: room.id, invite }
-      : { roomId: room.id, invite, warning: "The signaling server hasn't answered yet: the code works once this Mockingbird reaches it." };
+      ? { roomId: room.id, invite, created }
+      : { roomId: room.id, invite, created, warning: "The signaling server hasn't answered yet: the code works once this Mockingbird reaches it." };
   }
 
   createInvite(roomId: string): string {

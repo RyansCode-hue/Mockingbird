@@ -72,6 +72,7 @@ interface Review {
   gate: { s6: Gate; teammate: Gate };
   menus: { y1: string[]; s4: string[]; teammate: string[] };
   dockedFollows: { opened: number; docked: boolean; placed: boolean; scope: string | null };
+  hiddenRoom: { collapsed: { open: boolean; placed: number; docked: number }; locked: { placed: number; docked: number; scope: string | null } };
   dockedChat: { stillDocked: boolean; said: string | null };
   staleMenu: { menuOpen: boolean; unchanged: boolean; said: string | null };
   mention: { refused: { writes: number; said: string | null }; typed: string[][] };
@@ -169,6 +170,16 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     expect([...a.artifacts.room.rows].sort()).toEqual([...(a.artifacts.room.expected ?? [])].sort());
   }, 120_000);
 
+  it("say why an area's shelf a newer Mockingbird wrote can't be changed, and offer nothing that would", async () => {
+    type ReadOnly = { shelf: { add: { disabled: boolean; title: string }; said: string[]; rowMenu: string[] | null; rows: number }; error?: string };
+    const r = await run<ReadOnly>("areaReadOnly=5102&landscapeReadOnlyAudit", "mb-landscape-read-only-audit");
+    expect(r.error).toBeUndefined();
+    expect(r.shelf.rows).toBe(3);
+    expect(r.shelf.add).toEqual({ disabled: true, title: expect.stringMatching(/newer Mockingbird .* update Mockingbird to change this area's artifacts/) });
+    expect(r.shelf.said).toEqual([expect.stringMatching(/newer Mockingbird/)]);
+    expect(r.shelf.rowMenu).toEqual(expect.arrayContaining(["Rename… (off)", "Remove… (off)"]));
+  }, 120_000);
+
   it("keep the review's fixes: a reload, a Chat's viewing, routing, one gate, the menus", async () => {
     const r = await run<Review>("lsPersist&landscapeReviewAudit=a", "mb-landscape-review-audit-a");
     expect(r.error).toBeUndefined();
@@ -210,6 +221,10 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     );
     // a docked Chat's ⧉ keeps the room rule
     expect(r.dockedChat).toEqual({ stillDocked: true, said: expect.stringMatching(/isn't a team room/) });
+    // a mention for a room whose area is collapsed opens the area and places its Chat there; one locked with no room
+    // shows it in the docked Chat already there, the selection moved into the room's area, never another room's
+    expect(r.hiddenRoom.collapsed).toEqual({ open: true, placed: 1, docked: 0 });
+    expect(r.hiddenRoom.locked).toEqual({ placed: 0, docked: 1, scope: "#5110" });
   }, 120_000);
 
   it("keep the review's fixes: menus picked late, mentions, the cards band, sharing, the room list, following", async () => {

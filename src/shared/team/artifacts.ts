@@ -147,6 +147,8 @@ export interface RoomArtifactsView {
   notices: ArtifactNotice[];
   /** Problems worth showing (a store that can't be written, a cleanup that failed). */
   problems: string[];
+  /** Why nothing here can be changed (an area's file a newer Mockingbird wrote); absent when it can. */
+  readOnly?: string;
 }
 
 /** An artifact's content for the viewer. */

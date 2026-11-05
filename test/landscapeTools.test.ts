@@ -18,6 +18,7 @@ import {
   compactShifts,
   mentionTarget,
   sameScope,
+  selectionFor,
   tileSize,
   toolSize,
   type AreaPlan,
@@ -339,15 +340,23 @@ describe("an artifact card's shelf", () => {
 describe("mentioning an artifact", () => {
   const name = (s: SessionInfo) => s.title ?? s.id;
   it("goes to the selected session when it's this Mac's, in the artifact's area, and its agent reads that shelf", () => {
+    const ROOM = "R".repeat(22);
     const s1 = session("s1", { taskGroup: "a" });
-    expect(mentionTarget(s1, "a", true, false, title, name)).toEqual({ session: "s1" });
-    expect(mentionTarget(s1, "a", false, true, title, name)).toEqual({ session: "s1" });
-    expect(mentionTarget(null, "a", true, false, title, name)).toEqual({ no: expect.stringMatching(/select one of this Mac's/) });
-    expect(mentionTarget(theirs("t1", "a"), "a", false, true, title, name)).toEqual({ no: expect.stringMatching(/select one of this Mac's/) });
-    expect(mentionTarget(session("s2", { taskGroup: "b" }), "a", true, false, title, name)).toEqual({ no: expect.stringMatching(/is in b, not a/) });
-    expect(mentionTarget(session("s3"), "a", true, false, title, name)).toEqual({ no: expect.stringMatching(/in no area/) });
+    const inRoom = session("s1", { taskGroup: "a", room: { roomId: ROOM, sessionId: "s1", owner: "me", ownerName: "You", remote: false, live: true } as SessionInfo["room"] });
+    // an area on this Mac: its own shelf
+    expect(mentionTarget(s1, "a", "area:a", "area:a", null, title, name)).toEqual({ session: "s1" });
+    // a room's area: the room's shelf, to one of the room's sessions
+    expect(mentionTarget(inRoom, "a", ROOM, ROOM, ROOM, title, name)).toEqual({ session: "s1" });
+    expect(mentionTarget(null, "a", "area:a", "area:a", null, title, name)).toEqual({ no: expect.stringMatching(/select one of this Mac's/) });
+    expect(mentionTarget(theirs("t1", "a"), "a", ROOM, ROOM, ROOM, title, name)).toEqual({ no: expect.stringMatching(/select one of this Mac's/) });
+    expect(mentionTarget(session("s2", { taskGroup: "b" }), "a", "area:a", "area:a", null, title, name)).toEqual({ no: expect.stringMatching(/is in b, not a/) });
+    expect(mentionTarget(session("s3"), "a", "area:a", "area:a", null, title, name)).toEqual({ no: expect.stringMatching(/in no area/) });
     // a room's area's agents read the room's: this Mac's copy isn't theirs
-    expect(mentionTarget(s1, "a", true, true, title, name)).toEqual({ no: expect.stringMatching(/agents read the room's/) });
+    expect(mentionTarget(inRoom, "a", "area:a", ROOM, ROOM, title, name)).toEqual({ no: expect.stringMatching(/agents read the room's/) });
+    // a room's artifact in an area no longer shared as it
+    expect(mentionTarget(s1, "a", ROOM, "area:a", null, title, name)).toEqual({ no: expect.stringMatching(/was a room's/) });
+    // in a room's area, a session outside the room reads none of the room's
+    expect(mentionTarget(s1, "a", ROOM, ROOM, ROOM, title, name)).toEqual({ no: expect.stringMatching(/isn't one of the room's sessions/) });
   });
 });
 
@@ -369,6 +378,17 @@ describe("windows and cards zoomed out to cards", () => {
     const top = (id: string, y: number) => y + s.get(id)!;
     expect(top("c2", 144)).toBeGreaterThanOrEqual(top("c", 0) + 52 / 0.13);
     expect(s.get("f")).toBe(0);
+  });
+});
+
+describe("a window an area refuses a place", () => {
+  it("is docked with the selection moved into that area, unless it's there already; with none to select, nowhere", () => {
+    const { l, sessions } = twoAreas();
+    const layout = resolveLayout(l, sessions);
+    expect(selectionFor(layout, "a", sessions[0])).toEqual({ select: null });
+    expect(selectionFor(layout, "a", session("z", { taskGroup: "b" }))).toEqual({ select: "s1" });
+    expect(selectionFor(layout, "a", null)).toEqual({ select: "s1" });
+    expect(selectionFor(layout, "b", sessions[0])).toBe(null);
   });
 });
 

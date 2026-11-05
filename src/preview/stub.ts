@@ -554,6 +554,10 @@ artifactRooms["area:5102"] = {
 };
 const artBytes: Record<string, Uint8Array> = {};
 const artifactsChanged = (roomId: string) => emit("onArtifactsChanged", roomId);
+// ?areaReadOnly=<key>: that area's artifacts file was written by a newer Mockingbird, so its shelf can't be changed
+const AREA_READ_ONLY = new URLSearchParams(location.search).get("areaReadOnly");
+const readOnlyOf = (roomId: string) =>
+  AREA_READ_ONLY && roomId === `area:${AREA_READ_ONLY}` ? `/Users/you/.mockingbird/artifacts/areas/${AREA_READ_ONLY}/area.json was written by a newer Mockingbird (its version 2, this one reads 1): update Mockingbird to change this area's artifacts` : null;
 const artifactRoom = (roomId: string) =>
   artifactRooms[roomId] ??
   (roomId.startsWith("area:") || team.rooms.some((r) => r.id === roomId) ? (artifactRooms[roomId] = { roomId, self: roomId.startsWith("area:") ? AREA_SELF : ME, items: [], notices: [], problems: [] }) : null);
@@ -1666,12 +1670,13 @@ const api: Record<string, (...a: any[]) => any> = {
       return later(err(`This signaling Worker doesn't allow new rooms yet — add your fingerprint (${team.self!.fingerprint}) to ALLOWED_CREATORS.\n\nOn the Worker, once: …`), 300);
     }
     let room = team.rooms.find((r) => r.groupKey === groupKey);
+    const created = !room;
     if (!room) {
       room = { id: `R${groupKey}`.padEnd(22, "c").slice(0, 22), name: title, groupKey, members: [{ id: ME, name: "You", self: true }], online: [], signalingUrl: SIGNAL, signaling: "online" };
       team.rooms.push(room);
       teamChanged();
     }
-    return later({ roomId: room.id, invite: inviteCode(room.id) }, 300);
+    return later({ roomId: room.id, invite: inviteCode(room.id), created }, 300);
   },
   teamCreateInvite: async (roomId: string) => ({ invite: inviteCode(roomId) }),
   // the inviter passes it on to the room's admin (Sam), who accepts after a moment;
@@ -1944,7 +1949,12 @@ const api: Record<string, (...a: any[]) => any> = {
   },
 
   // team rooms: artifacts — adds, edits and transfers apply to the fixtures; Quick Look, Reveal and Save as only log
-  artifactsList: async (roomId: string) => (artifactRoom(roomId) ? clone(artifactRoom(roomId)) : err("You're not in that room")),
+  artifactsList: async (roomId: string) => {
+    const room = artifactRoom(roomId);
+    if (!room) return err("You're not in that room");
+    const readOnly = readOnlyOf(roomId);
+    return readOnly ? { ...clone(room), readOnly, problems: [...room.problems, readOnly] } : clone(room);
+  },
   artifactsPickFiles: async () => later(["/Users/you/Desktop/org-picker-v2.png", "/Users/you/Desktop/.env.local"], 200),
   artifactsAddFiles: async (roomId: string, paths: string[], confirmSecret?: boolean) => {
     const room = artifactRoom(roomId);
@@ -3082,7 +3092,7 @@ if (params.has("termAudit")) {
 // and middle-drag) and zoomed (pinch, ⌘-scroll, ⌘0, ⌘1), and whether the point under the cursor stayed put; keys
 // and a wheel inside a terminal; a placement changed; focus on your own workspace and back (Esc typed in its
 // terminal, ⌘Esc), and on a teammate's; ⌥→. Sizes are read after each step settles, never mid-gesture.
-if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit", "landscapeReviewAudit"].some((k) => params.has(k)) || flyAudit) {
+if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePeekAudit", "landscapeRemoteAudit", "landscapeRestartAudit", "landscapeAreasAudit", "landscapeAreaEdgesAudit", "landscapeFlyAudit", "landscapeToolsAudit", "landscapeReviewAudit", "landscapeReadOnlyAudit"].some((k) => params.has(k)) || flyAudit) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   type Term = import("@xterm/xterm").Terminal;
   const term = (id: string) => (w.__mbTerms as Map<string, { term: Term }> | undefined)?.get(id)?.term;
@@ -4926,6 +4936,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       }
       if (part === "a") {
         sessionStorage.removeItem(PHASE);
+        const area5110Was = { ...landscape.areas["5110"] };
         out.reload = { before: was!.shot, after: shot(), storedSame: kept() === was!.stored, card: document.querySelector(".ls-world .ls-acard .acard-name")?.textContent ?? null };
 
         // a Chat window views its room, and reads it, only on screen in the live band
@@ -4993,6 +5004,28 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         out.dockedChat = { stillDocked: landscape.tools[dockedChat[0]]?.docked === true, said: noteText() };
         dockedWin("chat")!.querySelector<HTMLElement>('[aria-label="Close Chat"]')!.click();
         await sleep(400);
+
+        // a mention for a room whose area is collapsed, a workspace elsewhere selected: the area opened, its Chat in it
+        const chats = (area: string | null) => Object.values(landscape.tools).filter((t) => t.tool === "chat" && (area === null ? t.docked : t.area === area));
+        await api.landscapeUpdate({ areas: { "5110": { collapsed: true } } });
+        await sleep(400);
+        await fitView();
+        await pick("s1");
+        emit("onTeamChatOpen", ROOM_5110);
+        await sleep(1500);
+        const collapsed = { open: !landscape.areas["5110"]?.collapsed, placed: chats("5110").length, docked: chats(null).length };
+        // locked with no room (its size from before, just its workspaces): the docked Chat, the one already docked,
+        // with the selection moved into the room's area
+        const placedIds = Object.entries(landscape.tools).filter(([, t]) => t.tool === "chat").map(([id]) => id);
+        await api.landscapeUpdate({ areas: { "5110": { ...area5110Was, collapsed: false, locked: true } }, tools: { ...Object.fromEntries(placedIds.map((id) => [id, null])), wd: { tool: "chat", docked: true } } });
+        await sleep(400);
+        await pick("s1");
+        emit("onTeamChatOpen", ROOM_5110);
+        await sleep(1200);
+        const locked = { placed: chats("5110").length, docked: chats(null).length, scope: scopeOf(dockedWin("chat")) };
+        out.hiddenRoom = { collapsed, locked };
+        await api.landscapeUpdate({ areas: { "5110": { locked: false } }, tools: { wd: null } });
+        await sleep(300);
       } else {
         // Files beside s1, and a card of 5102's link
         let mark = calls.length;
@@ -5124,6 +5157,30 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       out.error = String(err instanceof Error ? err.stack : err);
     }
     report(`mb-landscape-review-audit-${part}`, out);
+  });
+
+  // ?landscapeReadOnlyAudit (with ?areaReadOnly=5102): an area's shelf a newer Mockingbird wrote, in its Artifacts
+  // window: why it can't be changed, and nothing offering to. Into <script id="mb-landscape-read-only-audit">.
+  if (params.has("landscapeReadOnlyAudit")) waitFor(".ls-world .ls-node", async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      await sleep(900);
+      await at100("5102");
+      headBtn("5102", "Artifacts")!.click();
+      await sleep(800);
+      const win = placedWin("artifacts")!;
+      const add = [...win.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "+ Add")!;
+      const row = win.querySelector<HTMLElement>(".art-row")!;
+      out.shelf = {
+        add: { disabled: add.disabled, title: add.title },
+        said: [...win.querySelectorAll(".art-line.warn")].map((l) => l.textContent),
+        rowMenu: await rightClick(row),
+        rows: artRows(win).length,
+      };
+    } catch (err) {
+      out.error = String(err instanceof Error ? err.stack : err);
+    }
+    report("mb-landscape-read-only-audit", out);
   });
 }
 // ?landscapePerf (with ?landscapeMany=<n>): frame times while the landscape is panned and pinch-zoomed at 100%, 60%

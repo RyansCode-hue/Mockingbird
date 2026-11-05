@@ -145,6 +145,20 @@ export interface TeamChatDeps {
   notifyGatherMs?: number;
 }
 
+/** What forgetViewsWith listens to: the app window's page (Electron's WebContents). */
+export interface PageEvents {
+  on(event: "did-start-loading" | "render-process-gone" | "destroyed", listener: () => void): unknown;
+}
+
+/**
+ * The room chats on screen are the page's to say: when it starts loading again (a reload), its renderer goes, or the
+ * window closes, what it said is forgotten (`forget`), and a new page says it again. Otherwise a reload would leave
+ * main holding rooms no view shows, and mentions in them would never notify.
+ */
+export function forgetViewsWith(page: PageEvents, forget: () => void): void {
+  for (const event of ["did-start-loading", "render-process-gone", "destroyed"] as const) page.on(event, forget);
+}
+
 export class TeamChat {
   private team: Team | null = null;
   private offs: Unsubscribe[] = [];

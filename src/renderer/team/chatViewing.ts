@@ -4,16 +4,25 @@
  * rooms while the window has focus. A view going away takes only its own room with it.
  */
 const views = new Map<symbol, string>();
-let told = "";
+/**
+ * The last report sent (rooms, one a line), taken or on its way; null before this page has sent any, so its first
+ * always goes, and after one main didn't take, so the next goes again.
+ */
+let sentKey: string | null = null;
+let sent = 0;
 
 export function chatViewing(view: symbol, roomId: string | null): void {
   if (roomId) views.set(view, roomId);
   else views.delete(view);
   const rooms = viewedRooms();
   const key = rooms.join("\n");
-  if (key === told) return;
-  told = key;
-  Promise.resolve(window.mb.teamChatViewing(rooms)).catch((err: unknown) => console.warn("[mockingbird] couldn't tell main which room chats are on screen", err));
+  if (key === sentKey) return;
+  sentKey = key;
+  const n = ++sent;
+  Promise.resolve(window.mb.teamChatViewing(rooms)).catch((err: unknown) => {
+    console.warn("[mockingbird] couldn't tell main which room chats are on screen", err);
+    if (n === sent) sentKey = null;
+  });
 }
 
 /** The rooms viewed now, sorted. */

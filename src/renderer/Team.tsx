@@ -171,8 +171,19 @@ function AdminAccepts({ room, self }: { room: TeamRoomSummary; self?: string }) 
 }
 
 /** Share a group as a room: shows a one-time invite code to send a teammate. */
-export function ShareRoomDialog({ groupKey, title, onClose, shared }: { groupKey: string; title: string; onClose: () => void; /** Shown once the room exists: what else the group's area offers it (its artifacts). */ shared?: (roomId: string) => React.ReactNode }) {
-  const [code, setCode] = useState<{ roomId: string; invite: string; warning?: string } | null>(null);
+export function ShareRoomDialog({
+  groupKey,
+  title,
+  onClose,
+  shared,
+}: {
+  groupKey: string;
+  title: string;
+  onClose: () => void;
+  /** Shown once this dialog made the room (not for an Invite to one there already): what else the group's area offers it (its artifacts). */
+  shared?: (roomId: string) => React.ReactNode;
+}) {
+  const [code, setCode] = useState<{ roomId: string; invite: string; warning?: string; created?: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const status = useTeamStatus();
@@ -180,7 +191,7 @@ export function ShareRoomDialog({ groupKey, title, onClose, shared }: { groupKey
   const room = code ? st?.rooms.find((r) => r.id === code.roomId) : undefined;
   useEffect(() => {
     setError(null);
-    window.mb.teamShareGroup(groupKey, title).then((r: { roomId: string; invite: string; warning?: string } | { error: string }) => (isErr(r) ? setError(r.error) : setCode(r)));
+    window.mb.teamShareGroup(groupKey, title).then((r: { roomId: string; invite: string; warning?: string; created: boolean } | { error: string }) => (isErr(r) ? setError(r.error) : setCode(r)));
   }, [groupKey, title, attempt]);
   const fresh = async () => {
     if (!code) return;
@@ -197,7 +208,7 @@ export function ShareRoomDialog({ groupKey, title, onClose, shared }: { groupKey
       {error && <ShareError error={error} />}
       {!code && !error && <div className="hint">Creating the room and checking with the signaling server…</div>}
       {code && <InviteCode invite={code.invite} warning={code.warning} />}
-      {code && shared?.(code.roomId)}
+      {code?.created && shared?.(code.roomId)}
       {room && <AdminAccepts room={room} self={st?.self?.id} />}
       <div className="row">
         {error && (

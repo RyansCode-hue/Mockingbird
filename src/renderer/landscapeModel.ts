@@ -1285,27 +1285,42 @@ export function planPlaceCard(l: Landscape, layout: ResolvedLayout, id: string, 
   return { patch: finish(p), moves: [], after: null };
 }
 
+/**
+ * Where the selection goes so a docked window shows area `key`, which refused it a place (collapsed, or locked and
+ * full): nowhere when the selected session is in it already (`select` null), else one of its workspaces' front
+ * session. Null when it has none, so no docked window can show it.
+ */
+export function selectionFor(layout: ResolvedLayout, key: string, selected: SessionInfo | null): { select: string | null } | null {
+  if (selected && areaKeyOf(selected) === key) return { select: null };
+  const t = layout.tiles.find((x) => x.area === key);
+  return t ? { select: t.front.id } : null;
+}
+
 /** Whether two tool scopes are the same workspace or area (none and none are). */
 export const sameScope = (a: ToolScope | null, b: ToolScope | null): boolean =>
   !a || !b ? a === b : "session" in a ? "session" in b && a.session === b.session : "area" in b && a.area === b.area;
 
 /**
- * Who an artifact of area `area` is mentioned to: the selected session `s`, when it's one of this Mac's in that area
- * and its agent reads the artifact's shelf — a room's area's agents read the room's, so this Mac's copies (`local`)
- * aren't theirs (`roomArea`). Else why not, to say.
+ * Who an artifact of shelf `shelf`, in area `area`, is mentioned to: the selected session `s`, when its agent reads
+ * that shelf. That's one of this Mac's in the area, the shelf being the one the area shows now (`areaShelf`: its room's
+ * while it's shared as room `roomId`, else its own on this Mac), and in a room's area one of the room's sessions (an
+ * agent outside the room reads none of its artifacts). Else why not, to say.
  */
 export function mentionTarget(
   s: SessionInfo | null,
   area: string,
-  local: boolean,
-  roomArea: boolean,
+  shelf: string,
+  areaShelf: string,
+  roomId: string | null,
   titleOf: (key: string) => string,
   nameOf: (s: SessionInfo) => string
 ): { session: string } | { no: string } {
   if (!s || isTheirs(s)) return { no: "select one of this Mac's workspaces to mention it to" };
   const its = areaKeyOf(s);
   if (its !== area) return { no: `${nameOf(s)} is ${its === LOOSE_GROUP ? "in no area" : `in ${titleOf(its)}`}, not ${titleOf(area)}: select a workspace there` };
-  if (local && roomArea) return { no: `it's kept on this Mac, and ${titleOf(area)}'s agents read the room's artifacts: add it to the room first` };
+  if (shelf !== areaShelf)
+    return { no: roomId ? `it's kept on this Mac, and ${titleOf(area)}'s agents read the room's artifacts: add it to the room first` : `it was a room's, and ${titleOf(area)} isn't shared as that room now` };
+  if (roomId && s.room?.roomId !== roomId) return { no: `${nameOf(s)} isn't one of the room's sessions, so its agent can't read the room's artifacts` };
   return { session: s.id };
 }
 

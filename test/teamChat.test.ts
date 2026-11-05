@@ -1,3 +1,5 @@
+import { EventEmitter } from "events";
+import { forgetViewsWith } from "../src/main/team/chat";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
 import { makeRepo, tempDir } from "./helpers";
@@ -176,6 +178,19 @@ describe("mentions", () => {
     nick.room.chat.post(roomId, "@Ryan second");
     await until(() => ryan.notes.length === 1, "a notification once it isn't viewed");
     expect(ryan.notes[0].body).toMatch(/second/);
+  });
+
+  it("notify after the window's page reloads, whatever the page before said was on screen", async () => {
+    const { roomId, sides } = await setup();
+    const [ryan, nick] = sides;
+    ryan.focused = true;
+    const page = new EventEmitter();
+    forgetViewsWith(page as never, () => ryan.room.chat.setViewing(null));
+    ryan.room.chat.setViewing([roomId]);
+    page.emit("did-start-loading");
+    nick.room.chat.post(roomId, "@Ryan after the reload");
+    await until(() => ryan.notes.length === 1, "a notification after the reload");
+    expect(ryan.notes[0].body).toMatch(/after the reload/);
   });
 });
 

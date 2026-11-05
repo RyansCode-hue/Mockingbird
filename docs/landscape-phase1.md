@@ -818,6 +818,12 @@ Design O, with Artifacts as a window, and N's workspace header.
       picked from a workspace's menu while it's docked shows that workspace
       in the dock (the pick selects it), and none is added; asked for on
       another area (a notification's Chat), a placed one opens there.
+    - **A docked window never shows another area than the one asked for.**
+      An area that refuses a window a place (collapsed, or locked and full)
+      gets it docked, the one docked already if there is one, and the
+      selection moves to one of its workspaces first (`selectionFor`), since
+      a docked window shows the selection's area. An area with no workspace
+      to select refuses it, and says so.
     - **An area** has its own list, the same way (`areaActions` in
       `main.tsx`, through `inSection`): Area (Rename, Collapse, Lock), Tools
       (Artifacts, plus Chat in a room), Agent messages, Team room (Share or
@@ -896,12 +902,23 @@ Design O, with Artifacts as a window, and N's workspace header.
       views on its own (`team/chatViewing.ts`); main keeps the set of viewed
       rooms (`TeamChat.viewing`), so two views of a room don't fight, and
       closing one leaves the other's room viewed.
+      - **The page's word is the only word.** A page's first report always
+        goes, even "nothing", and one main didn't take goes again with the
+        next change. Main forgets every view when the app window's page
+        starts loading again, its renderer goes, or the window closes
+        (`forgetViewsWith`), so a reload never leaves a room viewed that no
+        view shows, and mentions in it notify.
     - **A mention notification, and the Connected line** (under the area
       tree), go to the room's area, flown to, and open its Chat there. With
       several rooms the Connected line names none, so it shows the Team
       view's room list in the side bar instead of the area tree (‹ Areas goes
       back): each room's Leave, Join, Invite and House board are there, as on
       the grid. A room's Show goes to its area.
+      - **Never another room's chat.** A collapsed area is opened first, and
+        its Chat placed once the layout has it open. One locked and full
+        shows the room in the docked Chat (see above). A room whose area
+        isn't on the landscape, or has no workspace to select, opens in the
+        Team view in the side bar, on that room.
     - **Following a teammate** is said on every area's header, as on the
       grid's group bars, with Stop; the Follow buttons are only on a room's
       area.
@@ -997,17 +1014,32 @@ Design O, with Artifacts as a window, and N's workspace header.
       - **No symbolic link is followed.** The way to an area's folder is
         checked every time (`dirInside`, then a realpath check); the first
         time a run opens an area, everything inside its folder is walked and
-        a link anywhere refuses it; and `area.json` must be a regular file
-        each time it's read (lstat). Added files must be regular files,
-        never from `~/.mockingbird/team` or the area folders.
-      - **`area.json` follows S1's version rule.** It carries `v` (now 1).
-        One written by a newer Mockingbird is read but never written: the
-        shelf is read-only and says to update. Nothing is dropped:
-        - a file that isn't JSON, has no list of artifacts or no version is
-          moved aside to `.bad-<ts>`, said on the shelf, and the shelf
-          starts over;
+        a link anywhere refuses it; `area.json` must be a regular file each
+        time it's read and before each write (lstat: `writeFileAtomic` would
+        write where a link points); and each blob, its blobs folder and the
+        store's folder are checked the same way just before the blob is read
+        or copied (the viewer, Quick Look, Save as, agents' copies, sharing,
+        a merge), so a link planted after the first walk is never followed.
+        Added files must be regular files, never from `~/.mockingbird/team`
+        or the area folders.
+      - **`area.json` follows S1's version rule.** It carries `v` (now 1),
+        read before its shape. One written by a newer Mockingbird is read as
+        far as it can be and never written, whatever its shape: the shelf is
+        read-only (`readOnly` in its view), says to update, and the window
+        offers no Add, Rename or Remove, and refuses a drop; main refuses an
+        add before anything is kept. Nothing is dropped:
+        - a file that isn't JSON, or has no version or no list of artifacts,
+          is moved aside to `.bad-<ts>`, said on the shelf, and the shelf
+          starts over; one that can't be moved is left as it is, said, and
+          the shelf is read-only until it's moved or fixed;
         - records this version can't read aren't shown, are said, and are
           written back as they were with every save.
+      - **What's kept but can't be read keeps its bytes.** Cleaning up after
+        a remove (or a failed add) counts as in use every blob hash and
+        artifact id found in the records this version can't read and in the
+        set-aside copies, besides the records it reads; nothing is cleaned
+        up on a read-only shelf, or when a set-aside copy can't be read
+        (said).
     - **Renaming the area moves them.** The `sessions:renameGroup` hook
       renames the folder, or merges it into the new name's, and its agents'
       copies follow. A failure is logged and said on the shelf; the rename
@@ -1016,12 +1048,17 @@ Design O, with Artifacts as a window, and N's workspace header.
       - **A merge never loses what it couldn't move.** Each record is copied
         with its file; a file missing from the old folder is skipped and
         named once on the new shelf, and its record comes along. The old
-        folder is removed only when every record was read and copied;
-        otherwise it's kept as it is (its `.bad` copies with it) and the new
-        shelf says so.
+        folder is removed only when every record was read and copied and it
+        holds nothing else: no set-aside copy (one made before the merge
+        too), no blob the merged records don't name. Otherwise it's kept as
+        it is, under the old name, and the new shelf says so; the problems of
+        the old file are said apart from the new shelf's own, so neither
+        wipes the other. They're kept in memory: after a restart the kept
+        folder's message is in the log only.
     - **Sharing the area as a room offers to share them, once.** The share
-      dialog shows `ShareAreaArtifacts` only when it makes the room (an
-      Invite to the room later doesn't offer them again). It calls
+      dialog shows `ShareAreaArtifacts` only when its own call made the room
+      (`team:share` answers `created`), whether or not the team status had
+      loaded; an Invite to the room later doesn't offer them again. It calls
       `artifacts:shareArea(key, roomId)` (`AreaArtifacts.shareTo`), which
       copies each artifact in through the room's own add paths and answers
       what it shared, what the room refused and why (each by itself), and
@@ -1031,10 +1068,11 @@ Design O, with Artifacts as a window, and N's workspace header.
     - **The window's actions:**
       - Add (file, note, repo file, link, or a drop);
       - Open; Mention, which types `#[name](artifact:<id>)` into the selected
-        workspace's prompt, only when that's one of this Mac's in the
-        artifact's area whose agent reads that shelf (`mentionTarget`: a
-        room's area's agents read the room's, not this Mac's copies);
-        otherwise it's said why;
+        workspace's prompt, only when its agent reads that shelf
+        (`mentionTarget`): one of this Mac's in the artifact's area, the shelf
+        the one the area shows now (its room's while it's a room's, else its
+        own), and in a room's area one of the room's sessions; otherwise it's
+        said why;
       - Rename, Download and Remove ("Remove…", for this Mac);
       - **Place**, which puts a card in the area that opens or mentions it,
         and tags the row "on the landscape";
@@ -1112,7 +1150,15 @@ Design O, with Artifacts as a window, and N's workspace header.
       shelf and its cards following a share, `mentionTarget`, `sameScope`,
       `compactShifts`.
     - `test/chatViewing.test.ts` and `test/teamChat.test.ts`: viewing per
-      view, and mentions notified once no view of their room is seen.
+      view, and mentions notified once no view of their room is seen; a
+      page's first report, a failed one sent again, and main's set forgotten
+      across a reload, the renderer going and the window closing, with the
+      renderer's registry and main's `TeamChat` together, and a mention
+      notifying after a reload.
+    - `test/landscapeTools.test.ts` also: `selectionFor`; `mentionTarget`'s
+      shelf and room-session rules.
+    - `test/teamService.test.ts`: sharing a group says whether it made the
+      room.
     - `test/contextMenu.test.ts`: headings.
     - `test/landscapeStore.test.ts`: windows and cards saved and read back.
     - `test/areaArtifacts.test.ts`:
@@ -1124,6 +1170,15 @@ Design O, with Artifacts as a window, and N's workspace header.
       - `shareTo`'s ids, and a room refusing some items;
       - a room's area refusing changes to this Mac's shelf, and still
         reading it;
+      - the bytes and view copies of records this build can't read kept
+        through a remove; a newer Mockingbird's shelf taking no add and
+        sweeping nothing; a set-aside copy's blobs kept; a newer file with
+        no list left as it is; a file that can't be moved aside left as it is,
+        read-only; a set-aside made before a merge surviving it; a merge
+        source's problems apart from the shelf's own;
+      - links planted after the first walk: at `area.json` on a save and on a
+        merge's read, and at a blob for the viewer, an agent's copy, the
+        list, sharing and a merge;
       - add, read, rename and remove, and a secret asked about first;
       - an area's rename and merge;
       - `shareTo`, refusing secrets;
@@ -1144,12 +1199,17 @@ Design O, with Artifacts as a window, and N's workspace header.
       - a dead card's Resume and Close & clean up;
       - an area's artifacts added to, placed, renamed with the area and
         removed from, and a room's area showing the room's.
+    - the read-only audit (`?landscapeReadOnlyAudit` with `?areaReadOnly`):
+      a newer Mockingbird's area shelf saying why, with Add, Rename and
+      Remove off;
     - and the review audit (`=a` and `=b`, two pages, each well inside the
       preview's minute):
       - placed and docked windows and a card through a real reload;
       - a Chat window viewing and reading its room on screen in the live
         band, and not off screen or zoomed out to cards;
-      - a mention notification going to its room's area and Chat;
+      - a mention notification going to its room's area and Chat, and for a
+        collapsed area (opened, the Chat placed) and a locked full one (the
+        docked Chat already there, showing that room);
       - the keys and rail against the menu for an exited session and a
         teammate's, and a docked Chat's ⧉ in an area that isn't a room's;
       - the menus `main.tsx` builds for a taken-over session (Resume off),

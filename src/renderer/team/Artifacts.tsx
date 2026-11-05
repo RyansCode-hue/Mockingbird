@@ -335,7 +335,11 @@ export function ArtifactShelf({
     return true;
   };
   const edits = useArtifactEdits(shelf, call, (id) => viewing === id && setViewing(null));
-  const { setRenaming, setRemoving } = edits;
+  // a shelf main won't change (an area's file a newer Mockingbird wrote): its problems say why, and nothing offers to
+  const readOnly = view?.readOnly ?? null;
+  const unless = <T,>(fn: (a: T) => void) => (a: T) => (readOnly ? actions.fail(readOnly) : fn(a));
+  const setRenaming = unless(edits.setRenaming);
+  const setRemoving = unless(edits.setRemoving);
   const addRepoFile = () => {
     const options = repoSessionsFor(sessions, focusedSessionId, shelf.groupKey);
     if (!options.length) return actions.fail(`No session on this Mac is in a repo — open one in this ${local ? "area" : "room's group"}, then reference a file from it.`);
@@ -359,7 +363,8 @@ export function ArtifactShelf({
         <MenuButton
           className="rc-new-session"
           label="+ Add"
-          title={local ? "Keep a file, a note, a repo file or a link in this area" : "Share a file, a note, a repo file or a link with the room"}
+          disabled={!!readOnly}
+          title={readOnly ?? (local ? "Keep a file, a note, a repo file or a link in this area" : "Share a file, a note, a repo file or a link with the room")}
           items={[
             { key: "file", label: "File…", onPick: () => actions.pick() },
             { key: "note", label: "Note", onPick: () => setAdding({ step: "note" }) },
@@ -424,6 +429,7 @@ export function ArtifactShelf({
                   a={a}
                   self={self}
                   local={local}
+                  readOnly={readOnly}
                   placed={!!placed?.has(a.id)}
                   onOpen={() => setViewing(a.id)}
                   onMention={() => onMention(a)}
@@ -552,10 +558,11 @@ export function ArtifactsWindow({ onPlace, placed, ...p }: ArtifactSurfaceProps 
   const arts = useArtifacts(p.shelf.id);
   const actions = useArtifactActions(p.shelf.id, p.shelf.local);
   const [viewing, setViewing] = useState<string | null>(null);
-  const drop = useFileDrop((files) => void actions.addFiles(files));
+  const readOnly = arts.view?.readOnly ?? null;
+  const drop = useFileDrop((files) => (readOnly ? actions.fail(readOnly) : void actions.addFiles(files)));
   const ctx = useMemo<InlineContext>(() => ({ artifact: (id, label, key) => <ArtifactChip key={key} item={arts.view?.items.find((a) => a.id === id)} label={label} onOpen={setViewing} /> }), [arts.view]);
   return (
-    <div className={`art-window ${drop.over ? "drop-on" : ""}`} {...drop.handlers}>
+    <div className={`art-window ${drop.over && !readOnly ? "drop-on" : ""}`} {...drop.handlers}>
       <ArtifactShelf
         shelf={p.shelf}
         self={arts.view?.self ?? ""}
@@ -600,10 +607,10 @@ export function ArtifactCardFace({ artifactId, onRemoveCard, ...p }: ArtifactSur
     a && { key: "open", label: "Open", icon: <ReadIcon />, onPick: () => setViewing(a.id) },
     a && { key: "mention", label: "Mention", menuLabel: "Mention to the selected workspace", icon: <HashIcon />, onPick: () => p.onMention(a) },
     a && { key: "link", label: "Link", menuLabel: "Link to a workspace… (coming)", icon: <LinkIcon />, disabled: true, title: "Linking it to a workspace comes with context links in a later version", onPick: () => {} },
-    a && { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: () => edits.setRenaming(a) },
+    a && { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: () => edits.setRenaming(a), ...(arts.view?.readOnly ? { disabled: true, title: arts.view.readOnly } : {}) },
     "-",
     { key: "uncard", label: "Take off", menuLabel: "Take the card off the landscape", title: "The artifact stays in the area's Artifacts", onPick: onRemoveCard },
-    a && { key: "remove", label: "Remove", menuLabel: p.shelf.local ? "Remove the artifact…" : "Remove the artifact for everyone…", icon: <CloseIcon />, danger: true, onPick: () => edits.setRemoving(a) },
+    a && { key: "remove", label: "Remove", menuLabel: p.shelf.local ? "Remove the artifact…" : "Remove the artifact for everyone…", icon: <CloseIcon />, danger: true, onPick: () => edits.setRemoving(a), ...(arts.view?.readOnly ? { disabled: true, title: arts.view.readOnly } : {}) },
   ]);
   const self = arts.view?.self ?? "";
   return (
@@ -740,6 +747,7 @@ function ArtifactRow({
   a,
   self,
   local,
+  readOnly = null,
   placed,
   onOpen,
   onMention,
@@ -751,6 +759,8 @@ function ArtifactRow({
   a: ArtifactSummary;
   self: string;
   local: boolean;
+  /** Why its shelf can't be changed (Rename and Remove are off), or null. */
+  readOnly?: string | null;
   /** It has a card on the landscape. */
   placed: boolean;
   onOpen: () => void;
@@ -773,12 +783,14 @@ function ArtifactRow({
       : { key: "mention", label: "Mention", menuLabel: "Mention in a message (#)", icon: <HashIcon />, title: "Mention it in a message (#)", onPick: onMention },
     !!onPlace && { key: "place", label: "Place", menuLabel: placed ? "Place another card on the landscape" : "Place on the landscape", title: "A card for it in the area, that opens or mentions it", onPick: onPlace },
     !!onPlace && { key: "link", label: "Link", menuLabel: "Link to a workspace… (coming)", icon: <LinkIcon />, disabled: true, title: "Linking it to a workspace, so its agent always has it, comes with context links in a later version", onPick: () => {} },
-    { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: onRename },
+    { key: "rename", label: "Rename", menuLabel: "Rename…", icon: <PencilIcon />, onPick: onRename, ...(readOnly ? { disabled: true, title: readOnly } : {}) },
     !!x?.action && { key: "download", label: x.action, icon: <DownloadIcon />, title: x.tip, onPick: onDownload },
     "-",
-    local
-      ? { key: "remove", label: "Remove", menuLabel: "Remove…", icon: <CloseIcon />, danger: true, title: "Remove it from this area", onPick: onRemove }
-      : { key: "remove", label: "Remove", menuLabel: "Remove for everyone…", icon: <CloseIcon />, danger: true, title: "Remove for everyone in the room", onPick: onRemove },
+    readOnly
+      ? { key: "remove", label: "Remove", menuLabel: "Remove…", icon: <CloseIcon />, danger: true, disabled: true, title: readOnly, onPick: onRemove }
+      : local
+        ? { key: "remove", label: "Remove", menuLabel: "Remove…", icon: <CloseIcon />, danger: true, title: "Remove it from this area", onPick: onRemove }
+        : { key: "remove", label: "Remove", menuLabel: "Remove for everyone…", icon: <CloseIcon />, danger: true, title: "Remove for everyone in the room", onPick: onRemove },
   ]);
   return (
     <div
