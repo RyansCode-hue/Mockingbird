@@ -254,6 +254,7 @@ describe("take-over over live panes", () => {
     expect(t.ryan.takenOver).toEqual([`${t.s.id} by Nick`]);
     expect(t.ryanRun.live.roomOfSession(t.s.id)).toBeNull();
     expect(t.ryanRun.live.state().own[t.s.id]).toMatchObject({ takenOver: { by: t.nickM.id, byName: "Nick" } });
+    expect(t.ryanRun.live.state().own[t.s.id]?.takenOver).not.toHaveProperty("back");
     // Nick's session shows on Ryan's side instead
     await until(() => t.ryanRun.live.state().remote.some((x) => x.id === remotePaneId(t.nickM.id, r.sessionId)), "Nick's session at Ryan's");
     // nobody types into Ryan's old copy, and its turns are no longer backed up
@@ -436,6 +437,10 @@ describe("the copy a take-over leaves behind", () => {
     expect(brief).toContain("src/nick.ts (new, untracked)");
     // Ryan's old copy now says it continues here; Nick's says it continues on Ryan's laptop
     expect(left()).toMatchObject({ now: { self: true, sessionId: mine.sessionId }, takeBack: false });
+    // and the window is told so, rather than that Nick continues it (its rows' reasons, its pane's line)
+    await until(() => !!t.ryanRun.live.state().own[t.s.id]?.takenOver?.back, "the window to hear it was taken back");
+    expect(t.ryanRun.live.state().own[t.s.id]?.takenOver).toMatchObject({ by: t.nickM.id, back: true });
+    expect(t.ryanRun.live.state().own[mine.sessionId]?.takenOver).toBeUndefined();
     await until(() => !!t.nickRun.tk.view().left.some((l) => l.sessionId === r.sessionId && l.now.owner === t.ryanM.id), "Nick's copy to know");
     await expect(t.ryan.sessions.relaunch(t.s.id)).rejects.toThrow(/was taken back into another session here/);
     // the session taken back backs up its own conversation, not the stopped copy's (same conversation, another worktree)

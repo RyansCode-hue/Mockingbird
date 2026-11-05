@@ -171,21 +171,28 @@ export function Lookers({ room }: { room: RoomSessionTag }) {
 }
 
 /** Following someone, or who can be followed, for the group bar: who to follow only in a shared group. */
-export function FollowControls({ follow, shared }: { follow: Follow; shared: boolean }) {
-  if (follow.leader) {
-    const away = !follow.leader.view;
-    const who = firstName(follow.leader.name);
-    return (
-      <span className="team-follow on" title={`Your grid mirrors what ${follow.leader.name} shows. Changing your grid stops it.`}>
-        <ReadIcon />
-        {away ? `Following ${who} — waiting for a shared session` : `Following ${who}`}
-        <button className="gb-btn" onClick={follow.stop}>
-          Stop
-        </button>
-      </span>
-    );
-  }
-  if (!shared || !follow.candidates.length) return null;
+/** Following a teammate, said once for the whole window (its status bar), whichever room they're in: who, and Stop. */
+export function FollowingNow({ follow }: { follow: Follow }) {
+  if (!follow.leader) return null;
+  const away = !follow.leader.view;
+  const who = firstName(follow.leader.name);
+  return (
+    <span className="team-follow on" title={`Your grid mirrors what ${follow.leader.name} shows. Changing your grid stops it.`}>
+      <ReadIcon />
+      {away ? `Following ${who} — waiting for a shared session` : `Following ${who}`}
+      <button className="gb-btn" onClick={follow.stop}>
+        Stop
+      </button>
+    </span>
+  );
+}
+
+/**
+ * A room's Follow buttons (its group's bar, its area's header), from `followIn`: its members to follow, none while one
+ * of them is followed (FollowingNow says so, and stops it).
+ */
+export function FollowButtons({ follow }: { follow: Follow }) {
+  if (follow.leader || !follow.candidates.length) return null;
   return (
     <span className="team-follow">
       {follow.candidates.map((v) => (

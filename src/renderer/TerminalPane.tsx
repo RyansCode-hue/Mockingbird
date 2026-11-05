@@ -1346,7 +1346,7 @@ export function TerminalPane({
             {room && <TypingRefused session={session} room={room} />}
             {room?.takenOver && !remote && (
               <div className="team-pane-note" data-handover title="A teammate continued this session on their laptop. This copy has left the room: teammates no longer see it or type into it, and it's no longer backed up.">
-                Continued on {room.takenOver.byName}'s laptop {ago(room.takenOver.at)} — this copy is stopping; its files stay as they are
+                {room.takenOver.back ? "Taken back into another session here — this copy doesn't run again" : `Continued on ${room.takenOver.byName}'s laptop ${ago(room.takenOver.at)} — this copy is stopping`}; its files stay as they are
               </div>
             )}
             {teamNotice}

@@ -1728,11 +1728,11 @@ export class TakeoverService {
   }
 
   /**
-   * Why one of this install's sessions mustn't run again here, nor be handed on, reviewed or have its files put back
-   * (`doing`, said in the refusal): a teammate continues it (or it was taken back into another session). Null when it
-   * may.
+   * Why one of this install's sessions that a teammate took over can't be `doing` here (said in the refusal): the
+   * teammate continues it, or it was taken back into another session here. Null when no one took it over. This is the
+   * window's rule too (its sessions' `room.takenOver`, livePanes.ts), so what the window offers, main does.
    */
-  relaunchRefusal(sessionId: string, doing = "running this copy again"): string | null {
+  takenOverRefusal(sessionId: string, doing: string): string | null {
     for (const room of this.d.team.rooms()) {
       const e = room.ext.takeover?.sessions[sessionId];
       if (!e?.takenOver || e.owner !== this.d.team.self.id) continue;
@@ -1740,6 +1740,16 @@ export class TakeoverService {
       if (now?.owner === this.d.team.self.id) return `“${e.session.title}” was taken back into another session here: this copy doesn't run again`;
       return `“${e.session.title}” continues on ${this.nameOf(room.id, now?.owner ?? e.takenOver.by)}'s laptop — take it back rather than ${doing}`;
     }
+    return null;
+  }
+
+  /**
+   * Why one of this install's sessions mustn't run again here: a teammate continues it (or it was taken back into
+   * another session), or it's this install's copy from a take-over its owner refused. Null when it may.
+   */
+  relaunchRefusal(sessionId: string): string | null {
+    const taken = this.takenOverRefusal(sessionId, "running this copy again");
+    if (taken) return taken;
     // this install's copy from a take-over its owner refused: the session stayed theirs
     for (const room of this.d.team.rooms()) {
       for (const e of Object.values(room.ext.takeover?.sessions ?? {})) {

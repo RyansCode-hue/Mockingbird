@@ -40,6 +40,11 @@ import { cellKeyFor } from "../src/renderer/appModel";
 
 const area = (over: Partial<Area> = {}): Area => ({ x: 0, y: 0, w: 2 * AREA_PAD + 2 * 400 + GAP, h: 600, repos: [], ...over });
 const inside = (r: Rect, a: Rect) => r.x >= a.x + AREA_PAD && r.y >= a.y + AREA_HEADER && r.x + r.w <= a.x + a.w - AREA_PAD;
+/** placeAt's answer as a place: a test that expects one fails on a refusal. */
+const placed = (r: ReturnType<typeof placeAt>): Rect => {
+  if ("blockedBy" in r) throw new Error(`refused: ${JSON.stringify(r.blockedBy)}`);
+  return r;
+};
 const noneOverlap = (rs: Rect[]) => rs.every((a, i) => rs.every((b, j) => i === j || !overlaps(a, b, GAP - 1e-6)));
 
 describe("snap", () => {
@@ -236,7 +241,7 @@ describe("placeAt", () => {
   it("takes the nearest free spot beside what's there when the click is on it, never overlapping", () => {
     const a = area({ w: 4000, h: 4000 });
     const there = { x: 600, y: 400, w: 400, h: 304 };
-    const p = placeAt(size, { x: 640, y: 420 }, [there], a);
+    const p = placed(placeAt(size, { x: 640, y: 420 }, [there], a));
     expect(overlaps(p, there, GAP - 1e-6)).toBe(false);
     expect([p.x % 8, p.y % 8]).toEqual([0, 0]);
     // just under it, where the click is nearest an edge it can go past
@@ -245,7 +250,7 @@ describe("placeAt", () => {
     let seed = 11;
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
     const crowd: Rect[] = [];
-    for (let i = 0; i < 30; i++) crowd.push(placeAt({ w: 8 * Math.ceil(10 + rnd() * 60), h: 8 * Math.ceil(10 + rnd() * 40) }, { x: 400 + rnd() * 400, y: 400 + rnd() * 400 }, crowd, a));
+    for (let i = 0; i < 30; i++) crowd.push(placed(placeAt({ w: 8 * Math.ceil(10 + rnd() * 60), h: 8 * Math.ceil(10 + rnd() * 40) }, { x: 400 + rnd() * 400, y: 400 + rnd() * 400 }, crowd, a)));
     expect(noneOverlap(crowd)).toBe(true);
     for (const c of crowd) expect(c.x >= a.x + AREA_PAD && c.y >= a.y + AREA_HEADER).toBe(true);
   });
@@ -264,7 +269,7 @@ describe("placeAt", () => {
     const full = [{ x: AREA_PAD, y: AREA_HEADER, w: a.w - 2 * AREA_PAD, h: a.h - AREA_HEADER - AREA_PAD }];
     const short = { x: a.w + AREA_GAP, y: 0, w: 1200, h: 600 };
     for (const [b, click] of [[beside, { x: 2000, y: 900 }], [short, { x: 2000, y: 100 }]] as const) {
-      const q = placeAt(big, click, full, a, null, [b]);
+      const q = placed(placeAt(big, click, full, a, null, [b]));
       expect(q).toEqual({ x: 2400 - AREA_PAD - big.w, y: 1992, ...big });
       expect(overlaps(fitAreaTo(a, [q]), b, AREA_GAP - 1e-6)).toBe(false);
       expect(overlaps(q, full[0], GAP - 1e-6)).toBe(false);
@@ -272,6 +277,39 @@ describe("placeAt", () => {
     // an area too small to hold it anywhere: at the click, the area growing, as before
     const small = area({ w: 1200, h: 600 });
     expect(placeAt(big, { x: 1000, y: 500 }, [], small, null, [{ ...beside, x: small.w + 2000 }])).toEqual({ x: 1000, y: 504, ...big });
+  });
+
+  it("honours the click in an area already closer than the gap to another: a spot it holds without growing needs no gap", () => {
+    const a = area({ w: 2400, h: 2000 });
+    const tight = { x: a.w + 40, y: 0, w: 1200, h: 2000 };
+    expect(placeAt(size, { x: 603, y: 397 }, [], a, null, [tight])).toEqual({ x: 600, y: 400, ...size });
+    // the click on a workspace there, the free spot inside farther than its own size from it: taken, though that
+    // neighbour is locked, rather than refused for a gap the area never had
+    const left = [{ x: AREA_PAD, y: AREA_HEADER, w: 1600, h: a.h - AREA_HEADER - AREA_PAD }];
+    expect(placeAt(size, { x: 603, y: 397 }, left, a, null, [{ ...tight, locked: true }])).toEqual({ x: 1640, y: 400, ...size });
+  });
+
+  it("with no way out that keeps the gap, grows towards an unlocked area, never a locked one, and refuses when every way out is locked", () => {
+    const a = area({ w: 2400, h: 2000 });
+    const full = [{ x: AREA_PAD, y: AREA_HEADER, w: a.w - 2 * AREA_PAD, h: a.h - AREA_HEADER - AREA_PAD }];
+    const big = { w: 1072, h: 944 };
+    const b = { x: a.w + AREA_GAP, y: 0, w: 1200, h: 2000, key: "B" };
+    const c = { x: 0, y: a.h + AREA_GAP, w: 2400, h: 1200, key: "C" };
+    const click = { x: 2000, y: 900 };
+    // B and C unlocked: the nearest spot to the click, growing right towards B (layout pushes it aside), at the click's y
+    expect(placeAt(big, click, full, a, null, [b, c])).toEqual({ x: 2400 - AREA_PAD + GAP, y: 904, ...big });
+    // C locked: still towards B, the area's foot kept where it is
+    const right = placed(placeAt(big, click, full, a, null, [b, { ...c, locked: true }]));
+    expect(right).toEqual({ x: 2400 - AREA_PAD + GAP, y: 904, ...big });
+    expect(fitAreaTo(a, [right]).h).toBe(a.h);
+    // B locked: down towards C, the area's width kept
+    const down = placed(placeAt(big, click, full, a, null, [{ ...b, locked: true }, c]));
+    expect(down).toEqual({ x: 2400 - AREA_PAD - big.w, y: 1992, ...big });
+    expect(fitAreaTo(a, [down]).w).toBe(a.w);
+    // both locked: no place, naming them
+    const lockedB = { ...b, locked: true };
+    const lockedC = { ...c, locked: true };
+    expect(placeAt(big, click, full, a, null, [lockedB, lockedC])).toEqual({ blockedBy: [lockedB, lockedC] });
   });
 });
 

@@ -72,6 +72,7 @@ import { TeamRoom } from "./team/teamRoom";
 import { forgetViewsWith } from "./team/chat";
 // team rooms: take-over
 import { liveRoomHost, TakeoverService } from "./team/takeover";
+import { refuseTakenOver, type UntakenCall } from "./takenOverGuard";
 import type { TakeoverView } from "../shared/team/takeover";
 import { knownSecretFiles } from "./secrets";
 import { ROOMS_DIR } from "./team/rooms";
@@ -820,15 +821,10 @@ function sessionOf(id: string): SessionInfo {
   if (!s) throw new Error("Session is no longer running");
   return s;
 }
-/**
- * Session `id`, for `doing` (said in the refusal), unless a teammate took it over: it continues on their laptop (or
- * was taken back into another session here), so nothing is started from this copy nor its files put back. The
- * window's action model refuses these too; this holds when a window doesn't know of the take-over yet.
- */
-function untakenSessionOf(id: string, doing: string): SessionInfo {
+/** Session `id` for IPC call `call`, refused for a copy a teammate took over (takenOverGuard.ts). */
+function untakenSessionOf(id: string, call: UntakenCall): SessionInfo {
   const s = sessionOf(id);
-  const why = takeover?.relaunchRefusal(s.id, doing);
-  if (why) throw new Error(why);
+  refuseTakenOver(s.id, call, takeover ? (sid, doing) => takeover!.takenOverRefusal(sid, doing) : null);
   return s;
 }
 // The explorer addresses files by session id + relative path, so the renderer
@@ -980,7 +976,7 @@ handle("usage:brief", async (id: string): Promise<RefreshBrief> => {
 });
 // a session of the same agent in the same folder and group, started from the brief
 handle("usage:briefStart", (id: string, brief: string) => {
-  const s = untakenSessionOf(String(id), "starting a fresh session from this copy");
+  const s = untakenSessionOf(String(id), "usage:briefStart");
   const text = String(brief ?? "").trim();
   if (!text) throw new Error("The brief is empty");
   return companionSession(s, s.agent ?? "claude", `${s.ticketTitle ?? s.title} · fresh`, text);
@@ -1428,7 +1424,7 @@ handle("handoff:draft", async (id) => {
 });
 // a session of the other agent in the same folder and group, started with the handoff
 handle("handoff:start", (id, handoff) => {
-  const s = untakenSessionOf(String(id), "handing this copy on");
+  const s = untakenSessionOf(String(id), "handoff:start");
   const text = String(handoff ?? "").trim();
   if (!text) throw new Error("The handoff is empty");
   const from: AgentKind = s.agent ?? "claude";
@@ -1718,13 +1714,13 @@ handle("turns:changes", (id, n) => {
   return changesSince(s.cwd, s.id, Number(n));
 });
 handle("turns:restore", (id, n) => {
-  const s = untakenSessionOf(String(id), "putting this copy's files back");
+  const s = untakenSessionOf(String(id), "turns:restore");
   return restoreSnapshot(s.cwd, s.id, Number(n));
 });
 
 // ---- cross-agent review: the other agent reviews this session's branch and reports back ----
 handle("review:start", async (id) => {
-  const s = untakenSessionOf(String(id), "having this copy's branch reviewed");
+  const s = untakenSessionOf(String(id), "review:start");
   if (s.shell) throw new Error("A terminal has no agent's work to review");
   if (!s.repoPath) throw new Error("This session isn't in a repository");
   const author: AgentKind = s.agent ?? "claude";

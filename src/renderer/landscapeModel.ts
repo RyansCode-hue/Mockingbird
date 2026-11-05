@@ -298,6 +298,8 @@ export interface ResolvedLayout {
   patch: LandscapePatch | null;
   /** The session placed where a right-click's New workspace was clicked (`hint`), until its place is saved. */
   hinted?: string | null;
+  /** The click's area had no room for it: every way it could grow reaches these locked areas (placeAt's PlaceRefusal). */
+  hintRefused?: { area: string; lockedBy: string[] } | null;
 }
 
 /**
@@ -571,6 +573,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   const tiles: Tile[] = [];
   const placed = new Set<string>();
   let hinted: string | null = null;
+  let hintRefused: ResolvedLayout["hintRefused"] = null;
   for (const [key, g] of groups) {
     let rect = stored.get(key);
     if (!rect) {
@@ -578,10 +581,17 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
       // the first of this Mac's sessions made since a right-click's New workspace, in the area clicked, goes where it was clicked
       const here = !hinted && !!hint && g.area === hint.area && g.members.some((s) => !s.room?.remote && s.createdAt >= hint.since);
       if (here) hinted = fronts.get(key)!.id;
-      if (g.area === LOOSE_GROUP) rect = here ? placeAt(size, hint!.at, [...occupied, ...areas.values()], null, firstArea()) : placeNew(size, [...occupied, ...areas.values()], null, firstArea());
-      else {
+      if (g.area === LOOSE_GROUP) {
+        const loose = [...occupied, ...areas.values()];
+        const p = here ? placeAt(size, hint!.at, loose, null, firstArea()) : null;
+        rect = p && !("blockedBy" in p) ? p : placeNew(size, loose, null, firstArea());
+      } else {
         const area = areas.get(g.area) ?? addArea(g.area);
-        rect = here ? placeAt(size, hint!.at, occupied, area, null, [...areas].filter(([k]) => k !== g.area).map(([, r]) => r)) : placeNew(size, occupied, area);
+        const p = here ? placeAt(size, hint!.at, occupied, area, null, [...areas].filter(([k]) => k !== g.area).map(([k, r]) => ({ ...r, key: k }))) : null;
+        // every way out locked (main.tsx's right-click asks first, so only a change since then lands here): placed as a
+        // new workspace of the area is, and reported for main.tsx to say
+        if (p && "blockedBy" in p) hintRefused = { area: g.area, lockedBy: p.blockedBy.map((o) => o.key) };
+        rect = p && !("blockedBy" in p) ? p : placeNew(size, occupied, area);
         const grown = fitAreaTo(area, [rect]);
         if (grown !== area) {
           setArea(g.area, grown, { w: grown.w, h: grown.h });
@@ -678,7 +688,35 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     const card = own(patch.cards, id) ?? stored;
     if (card.placement) cards.push({ id, card, rect: card.placement, hidden: areas.get(card.area)?.collapsed === true });
   }
-  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), windows, docked, cards, patch: finish(patch), hinted };
+  return { tiles, areas: [...areas].map(([key, rect]) => ({ key, rect })), windows, docked, cards, patch: finish(patch), hinted, hintRefused };
+}
+
+/**
+ * The locked areas a right-click's New workspace in area `area` at `at` would find in every way out (resolveLayout's
+ * hintRefused, for a workspace that isn't made yet: a terminal's size when `shell`), or null when it has a place.
+ */
+export function rightClickRefusal(l: Landscape, sessions: readonly SessionInfo[], renames: readonly PendingRename[], area: string, at: { x: number; y: number }, shell: boolean): string[] | null {
+  if (area === LOOSE_GROUP) return null;
+  const since = Math.max(0, ...sessions.map((s) => s.createdAt)) + 1;
+  const probe: SessionInfo = {
+    id: "\u0000right-click",
+    title: "",
+    repoPath: null,
+    cwd: "",
+    branch: null,
+    ticketId: null,
+    ticketTitle: null,
+    taskGroup: area,
+    status: "idle",
+    createdAt: since,
+    kind: "work",
+    extraDirs: [],
+    waitingReason: null,
+    waitingSince: null,
+    ...(shell ? { shell: true } : { agent: "claude" as const }),
+  };
+  const r = resolveLayout(l, [...sessions, probe], undefined, renames, { area, at, since });
+  return r.hintRefused?.area === area ? r.hintRefused.lockedBy : null;
 }
 
 /** How big a collapsed area's pill counts for fitting the view and the minimap, in landscape px at 100%. */

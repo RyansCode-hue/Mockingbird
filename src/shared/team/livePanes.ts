@@ -167,9 +167,11 @@ export interface RoomSessionTag {
   /**
    * A teammate took this install's session over (own only): it continues on
    * their laptop, and this copy has left the room — nothing of it is shared
-   * any more, and teammates can't type into it.
+   * any more, and teammates can't type into it. `back`: it was taken back
+   * since, into another session of this install's that goes on with it; this
+   * copy still doesn't run.
    */
-  takenOver?: { by: MemberId; byName: string; at: number };
+  takenOver?: { by: MemberId; byName: string; at: number; back?: true };
   /** Own only: teammates the owner lets type into it, and until when. */
   typists?: TypingGrant[];
   /** Own only: teammates asking to type into it, waiting for the owner's answer. */

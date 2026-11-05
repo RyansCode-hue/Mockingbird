@@ -147,6 +147,14 @@ export function nextToClose(queue: readonly string[], sessions: readonly Session
 }
 
 /**
+ * Session `id`'s close, needing its dialog while `open` is the session whose close dialog is open (null: none): null
+ * to ask now, or the queue with `id` first, to be asked once that one's answered. One dialog never replaces another's.
+ */
+export function closeWaits(open: string | null, id: string, queue: readonly string[]): string[] | null {
+  return !open || open === id ? null : [id, ...queue.filter((x) => x !== id)];
+}
+
+/**
  * Sessions `ids` queued to close after those already waiting in `queue`: each once, and never `closing`, the one
  * being closed now (its own dialog asks about it), so a second Close… on several never drops the first's rest.
  */

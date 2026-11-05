@@ -41,6 +41,9 @@ describe.skipIf(!local)("a pane's context warning", () => {
       { label: expect.stringMatching(/^Undo a turn of /), off: null },
       { label: expect.stringMatching(/^Continue in Codex — /), off: null },
     ]);
+    // its off row chosen, by Enter as the first row and by a click: nothing runs, the palette stays open
+    const stayed = { palette: true, undoDialog: false, turnsList: 0 };
+    expect(a.chosenOff).toEqual({ row: { label: expect.stringMatching(/^Undo a turn of Donor entity model/), off: true, sel: true }, enter: stayed, click: stayed });
     // the Changes tool's Second opinion: off for it, saying why; on for s1
     expect(a.review).toEqual({ y1: { off: true, why: expect.stringMatching(TAKE_BACK) }, s1: { off: false, why: null } });
   }, 120_000);

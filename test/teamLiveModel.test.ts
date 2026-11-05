@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { followPlan, mergeRoomSessions, tellLiveView } from "../src/renderer/team/roomLiveModel";
+import { followIn, followPlan, mergeRoomSessions, tellLiveView } from "../src/renderer/team/roomLiveModel";
 import { classifyTermInput, forwardTermInput } from "../src/renderer/inputGuard";
 import { isTermReply, isViewControl } from "../src/shared/termInput";
 import type { SessionInfo } from "../src/shared/types";
@@ -19,6 +19,24 @@ describe("teammates' sessions in the window", () => {
     const merged = mergeRoomSessions([s("a", "5110"), s("b", "private")], state);
     expect(merged.map((x) => [x.id, !!x.room, x.room?.remote ?? null])).toEqual([["a", true, false], ["b", false, null], ["r~nick~n1", true, true]]);
     expect(mergeRoomSessions([s("a", null)], null).map((x) => x.id)).toEqual(["a"]);
+  });
+});
+
+describe("following a teammate, as one room offers it", () => {
+  const nick = { member: "nick", name: "Nick", shown: [], focused: null, at: 0 };
+  const sam = { member: "sam", name: "Sam", shown: [], focused: null, at: 0 };
+  const follow = (leader: { id: string; name: string } | null) => ({ leader, candidates: [nick, sam], follow: vi.fn(), stop: vi.fn() });
+  const withNick = { members: [{ id: "me" }, { id: "nick" }] };
+  it("offers only its members, and has the one followed only when they're one of them", () => {
+    expect(followIn(follow(null), withNick)).toMatchObject({ leader: null, candidates: [nick] });
+    expect(followIn(follow({ id: "nick", name: "Nick" }), withNick).leader).toEqual({ id: "nick", name: "Nick" });
+    // following Sam, from another room: this one isn't following anyone of its own, and offers Nick
+    expect(followIn(follow({ id: "sam", name: "Sam" }), withNick)).toMatchObject({ leader: null, candidates: [nick] });
+    // outside a room: no one
+    for (const room of [null, undefined]) expect(followIn(follow({ id: "nick", name: "Nick" }), room)).toMatchObject({ leader: null, candidates: [] });
+    // its handlers stay the window's
+    const f = follow(null);
+    expect(followIn(f, withNick).stop).toBe(f.stop);
   });
 });
 

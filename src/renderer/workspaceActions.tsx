@@ -1,5 +1,5 @@
 import { AGENT_NAME, otherAgent, type MessageMode, type SessionInfo } from "../shared/types";
-import { SIZE_PRESETS, type SizePreset } from "../shared/landscape";
+import { LOOSE_GROUP, SIZE_PRESETS, areaKeyOf, type SizePreset } from "../shared/landscape";
 import { menuHeading, tidyMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { BellIcon, BellOffIcon, CloseIcon, FilesIcon, HandoffIcon, MoveIcon, NoteIcon, PanelRightIcon, PencilIcon, RepaintIcon, RunDebugIcon, SearchIcon, SourceControlIcon, UndoIcon } from "./Icons";
 import { firstName } from "./team/connectedModel";
@@ -72,12 +72,25 @@ export interface WorkspaceEnv {
 const can = (c: Can): Pick<Action, "onPick" | "disabled" | "title"> => (typeof c === "function" ? { onPick: c } : { onPick: () => {}, disabled: true, title: c.no });
 
 /**
+ * A workspace's Artifacts on the landscape: its area's window, the area its tile is in or, while it has no tile yet,
+ * its session's; off saying why for a loose one.
+ */
+export function artifactsOf(tile: { area: string } | null | undefined, s: Pick<SessionInfo, "taskGroup">, show: (area: string) => void): Can {
+  const area = tile?.area ?? areaKeyOf(s);
+  return area === LOOSE_GROUP ? { no: "It's in no area: artifacts are kept by area" } : () => show(area);
+}
+
+/** Why a copy that was taken back into another session here does nothing more: that session goes on with it. */
+export const TAKEN_BACK_WHY = "It was taken back into another session here, which goes on with it: this copy doesn't run again";
+
+/**
  * Why `what` can't be done to session `s` here because a teammate took it over and continues it on their laptop (its
- * turns, its branch and its conversation go on there; this copy is taken back, never worked on), or null.
+ * turns, its branch and its conversation go on there; this copy is taken back, never worked on), or because it was
+ * taken back since into another session here; null when no one took it over.
  */
 export const takenOverWhy = (s: SessionInfo, what: string): string | null => {
-  const by = s.room?.takenOver?.byName;
-  return by ? `${by} continues it on their laptop: take it back ${what}` : null;
+  const t = s.room?.takenOver;
+  return !t ? null : t.back ? TAKEN_BACK_WHY : `${t.byName} continues it on their laptop: take it back ${what}`;
 };
 
 /** Every action of session `s`'s workspace, in menu order. */
@@ -294,6 +307,17 @@ export function menuOf(actions: readonly ModelAction[]): MenuEntry[] {
 
 /** The action `key` of a model, or undefined: what a chip or a button for it does. */
 export const actionOf = (actions: readonly ModelAction[], key: string): ModelAction | undefined => actions.find((a) => a.key === key);
+
+/**
+ * Session `s`'s row `key` for what offers only what can be done (the grid's pane header, ⌘K): shown while it can be
+ * done; off with the take-over's reason while a teammate has taken the session over, where it could otherwise be done;
+ * not shown where it never applies (a terminal, a teammate's session, a folder outside git).
+ */
+export function paneRow(s: SessionInfo, env: WorkspaceEnv, key: string): ModelAction | undefined {
+  const a = actionOf(workspaceActions(s, env), key);
+  if (!a?.disabled) return a;
+  return s.room?.takenOver && usable(workspaceActions({ ...s, room: { ...s.room, takenOver: undefined } }, env), key) ? a : undefined;
+}
 
 /** An action that's offered and can be done now, or undefined. */
 export const usable = (actions: readonly ModelAction[], key: string): ModelAction | undefined => {

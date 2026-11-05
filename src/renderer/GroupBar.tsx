@@ -6,7 +6,7 @@ import { baseName } from "../shared/paths";
 import { GroupUsage, shareText, usageTitle } from "./GroupUsage";
 import { StageChip } from "./TicketPipeline";
 import { RoomChatChip } from "./team/RoomChat";
-import { FollowControls, type Follow } from "./team/RoomLive";
+import { FollowButtons, type Follow } from "./team/RoomLive";
 import { Select } from "./Menu";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { AskIcon, KanbanIcon, LockIcon, MoreIcon } from "./Icons";
@@ -63,7 +63,7 @@ export function GroupBar(p: GroupBarProps & { statusNote: string; msgMode: Messa
         </>
       )}
       {/* team rooms: following, only in a room's group, its own members to follow (changing the grid stops it) */}
-      {p.room && <FollowControls follow={p.follow} shared />}
+      {p.room && <FollowButtons follow={p.follow} />}
       <span style={{ marginLeft: "auto" }} />
       {p.statusNote && <span className="flbl-info">{p.statusNote}</span>}
       <Select
@@ -170,7 +170,7 @@ export function AreaHeader(
         </>
       )}
       {/* following, as the area's menu and bar have it: only in a room's area, its own members to follow */}
-      {p.room && <FollowControls follow={p.follow} shared />}
+      {p.room && <FollowButtons follow={p.follow} />}
       <span className="ls-ah-gap" />
       <AreaUsage g={p.meter} what={p.title} />
       <button type="button" className="ls-ah-btn" data-tip="Ask every agent session here for a three-line status report — each answers when its current turn ends" onClick={p.onAsk}>

@@ -79,7 +79,7 @@ interface Review {
   cards: { at13: { zoom: number; band: string; windows: Head[]; card: { w: number; h: number; name: string; kind: string | null; nameH: number; inv: number }; apart: boolean }; at16: { zoom: number; windows: number[]; card: number } };
   share: { shared: { offered: string | null; shelfWas: string; shelf: string; room: string | null; newId: boolean; inRoom: boolean; name: string | null }; invite: { code: boolean; offer: boolean } };
   team: { list: { title: string | null; rooms: string[] }; left: { leaveRows: string[] | null; roomGone: boolean; card: string | null; why: string | null }; backToTree: boolean };
-  follow: { offered: boolean; on5102: string[]; on5101: number };
+  follow: { offered: boolean; on5102: string[]; on5101: number; buttons5101: number; statusBar: string[]; stopped: { statusBar: string[]; offered5101: boolean } };
   error?: string;
 }
 
@@ -291,7 +291,8 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     expect(r.team.left.leaveRows).toContain("Leave room…");
     expect(r.team.backToTree).toBe(true);
 
-    // following a teammate is said, with Stop, on a room's area only, as its menu and bar have it
-    expect(r.follow).toEqual({ offered: true, on5102: [], on5101: 1 });
+    // following a teammate is offered on a room's area only, as its menu has it, and said once, with Stop, in the
+    // status bar: no area's header repeats it, and the one followed isn't offered again
+    expect(r.follow).toEqual({ offered: true, on5102: [], on5101: 0, buttons5101: 0, statusBar: ["Following Nick"], stopped: { statusBar: [], offered5101: true } });
   }, 120_000);
 });

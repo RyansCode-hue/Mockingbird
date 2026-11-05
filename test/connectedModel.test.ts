@@ -66,6 +66,8 @@ describe("a room session's second line", () => {
   });
   it("says when a teammate continued this Mac's copy", () => {
     expect(roomRowLine(tag({ remote: false, ownerName: "Ryan", takenOver: { by: "nick", byName: "Nick Smith", at: 0 } }))).toBe("Your session · continued by Nick");
+    // taken back since, into another session here: Nick no longer continues it
+    expect(roomRowLine(tag({ remote: false, ownerName: "Ryan", takenOver: { by: "nick", byName: "Nick Smith", at: 0, back: true } }))).toBe("Your session · taken back into another session");
   });
 });
 

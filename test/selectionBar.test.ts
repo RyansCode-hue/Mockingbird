@@ -20,7 +20,7 @@ import {
   severalBarItems,
   workspaceBarItems,
 } from "../src/renderer/selectionBarModel";
-import { actionOf, areaActions, severalActions, severalMenu, workspaceActions, type AreaEnv, type ModelAction, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { actionOf, areaActions, paneRow, severalActions, severalMenu, TAKEN_BACK_WHY, takenOverWhy, workspaceActions, type AreaEnv, type ModelAction, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 import type { MenuEntry } from "../src/renderer/ContextMenu";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
@@ -354,5 +354,28 @@ describe("a session a teammate took over", () => {
     expect(actionOf(acts, "close")?.disabled).toBeFalsy();
     // one not taken over does them as before
     for (const k of ["undo", "handoff", "brief", "review", "resume"]) expect(actionOf(workspaceActions(sess({ status: "dead" }), env()), k)?.disabled, k).toBeFalsy();
+  });
+
+  it("taken back since into another session here: the same rows off, saying that one goes on with it — Nick no longer continues it", () => {
+    const back = sess({ status: "dead", room: { roomId: "r", remote: false, takenOver: { by: "m2", byName: "Nick Smith", at: 0, back: true } } as unknown as SessionInfo["room"] });
+    const acts = workspaceActions(back, env());
+    for (const k of ["undo", "handoff", "brief", "review", "resume"]) expect(actionOf(acts, k), k).toMatchObject({ disabled: true, title: TAKEN_BACK_WHY });
+    expect(takenOverWhy(back, "rather than resuming this copy")).not.toMatch(/Nick/);
+  });
+
+  it("in the grid's pane header and ⌘K: off with the take-over's reason only where the row would otherwise show", () => {
+    const tag = { roomId: "r", remote: false, takenOver: { by: "m2", byName: "Nick Smith", at: 0 } } as unknown as SessionInfo["room"];
+    const outsideGit = env({ undo: { no: "It isn't in a git repository, so its turns can't be put back" } });
+    const terminal = env({ undo: { no: "A terminal has no agent turns to undo" }, handoff: { no: "A terminal has no agent to hand on" } });
+    // taken over, in git: off, saying to take it back
+    for (const k of ["undo", "handoff"]) expect(paneRow(sess({ room: tag }), env(), k), k).toMatchObject({ disabled: true, title: expect.stringMatching(/^Nick Smith continues it on their laptop: take it back/) });
+    // taken over where it never applies: not shown, as without the take-over
+    expect(paneRow(sess({ room: tag, repoPath: null }), outsideGit, "undo")).toBeUndefined();
+    expect(paneRow(sess({ room: tag }), outsideGit, "handoff")).toMatchObject({ disabled: true });
+    for (const k of ["undo", "handoff"]) expect(paneRow(sess({ room: tag, shell: true }), terminal, k), k).toBeUndefined();
+    // no one took it over: shown while it can be done, never off
+    for (const k of ["undo", "handoff"]) expect(paneRow(sess(), env(), k)?.disabled, k).toBeFalsy();
+    expect(paneRow(sess({ repoPath: null }), outsideGit, "undo")).toBeUndefined();
+    for (const k of ["undo", "handoff"]) expect(paneRow(sess({ shell: true }), terminal, k), k).toBeUndefined();
   });
 });

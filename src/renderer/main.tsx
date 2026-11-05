@@ -52,7 +52,7 @@ import {
 } from "./layoutTree";
 import { GridPreview } from "./GridPreview";
 import { OVERLAYS, escapeLeavesFullscreen, inEditor } from "./keys";
-import { cellKeyFor, cellKeyOf, frontOf, groupChoices, inReadingOrder, nextToClose, queueClose, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
+import { cellKeyFor, cellKeyOf, closeWaits, frontOf, groupChoices, inReadingOrder, nextToClose, queueClose, sessionHolding, sessionOutline, titleOf, paneShortcuts, remapGroupKeys, remapTrees, worktreeGone, type GridCell } from "./appModel";
 import { LayoutIcon, FilesIcon, FolderIcon, ChevronIcon, SessionsIcon, SourceControlIcon, SearchIcon, RunDebugIcon, PinIcon, BellIcon, BellOffIcon, UpdateIcon, MinusIcon, GridIcon, PencilIcon, MoveIcon, CloseIcon, PlusIcon, NoteIcon } from "./Icons";
 import { ActionBar, pickActions, tidyMenu, useContextMenu, type Action, type MenuEntry } from "./ContextMenu";
 import { RunView } from "./RunView";
@@ -103,7 +103,8 @@ import { artifactRef } from "../shared/team/artifacts";
 import { backupOf, type LeftCopy, type ReceivedChanges, type RoomSessionBackupView } from "../shared/team/takeover";
 import { BackupConsentPrompt } from "./team/RoomBackups";
 // team rooms: live panes
-import { LiveProblems, isRemote, useFollow, useRoomLive, type Follow } from "./team/RoomLive";
+import { FollowingNow, LiveProblems, isRemote, useFollow, useRoomLive } from "./team/RoomLive";
+import { followIn } from "./team/roomLiveModel";
 import { NewSessionModal, ImportModal, type LaunchKind } from "./NewSession";
 import { roomRepoNames } from "./newSessionModel";
 import { ago, fmtElapsed, plural } from "../shared/format";
@@ -115,9 +116,9 @@ import { LID_MS, flyTarget, gridChange, gulp, rectOf, switchDir, type FlyTo } fr
 // the landscape (Settings → Labs)
 import { FOCUS_MAX_FONT, Landscape, LandscapeBanners, type AreaHooks, type MovesFailed } from "./Landscape";
 import { useLandscape, useLandscapeMigration } from "./useLandscape";
-import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, cardShelf, cardsAfterShare, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, presetFor, readProblem, renameSettled, resolveLayout, sameScope, selectionFor, tileSize, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
+import { accentOf, accentsOf, areaCounts, areaSelectionNow, areaSummary, rightClickRefusal, cardShelf, cardsAfterShare, mentionTarget, newExtraId, planOpenWindow, planPlaceCard, planResizeTile, presetFor, readProblem, renameSettled, resolveLayout, sameScope, selectionFor, tileSize, type CardView, type GroupMove, type PendingRename, type PlaceHint, type Tile, type ToolScope, type WindowView } from "./landscapeModel";
 import { LANDSCAPE_FONT, LOOSE_GROUP, areaKeyOf, isWorkspaceTool, own, type LandscapePatch, type Rect, type Size, type SizePreset, type ToolKind, type ToolWindow as ToolWindowRecord } from "../shared/landscape";
-import { actionOf, areaActions as areaModel, createActions, menuOf, workspaceActions, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
+import { actionOf, areaActions as areaModel, artifactsOf, createActions, menuOf, paneRow, takenOverWhy, workspaceActions, type ModelAction, type WorkspaceEnv } from "./workspaceActions";
 import { TOOL_NAME, ToolWindow } from "./ToolWindow";
 import type { WorkspaceChrome } from "./WorkspaceNode";
 import { AreaHeader, GroupBar, stageChip, type GroupBarProps } from "./GroupBar";
@@ -1015,6 +1016,14 @@ function App() {
     const t = setTimeout(() => setPlaceHint((h) => (h === placeHint ? null : h)), Math.max(0, placeHint.until - Date.now()));
     return () => clearTimeout(t);
   }, [placeHint, landscapeLayout, landscapeState]);
+  // a right-click's place refused after its dialog asked (an area locked meanwhile): it went where a new one of its
+  // area goes, said once for that layout
+  const refusedHint = landscapeLayout?.hintRefused ? JSON.stringify(landscapeLayout.hintRefused) : null;
+  useEffect(() => {
+    if (!refusedHint) return;
+    const r = JSON.parse(refusedHint) as { area: string; lockedBy: string[] };
+    lsSay(`${noRoomIn(r.area, r.lockedBy)}, so it went with the area's other workspaces`);
+  }, [refusedHint]);
   // new workspaces keep the places they were given: saved, unless the file has a problem (what's shown stands in for it)
   // or the grid's layout isn't read in yet (it would place them)
   const placesToSave = landscapeLayout?.patch && migration.step.kind === "done" && !readProblem(landscapeState) ? JSON.stringify(landscapeLayout.patch) : null;
@@ -1529,6 +1538,16 @@ function App() {
     if (err) alert(`Couldn't close ${titleOf(s)}: ${err}`);
   };
 
+  /** The close dialog open now, from the moment it's opened (its state is a render behind). */
+  const closeDlgNow = useRef(closeDlg);
+  closeDlgNow.current = closeDlg;
+  /** Session `s`'s close dialog, or, while another's is open, `s` first in the queue to be asked once that's answered. */
+  const askClose = (s: SessionInfo, wt: WorktreeStateInfo | { error: string }) => {
+    const open = closeDlgNow.current?.session.id ?? null;
+    if (closeWaits(open, s.id, [])) return setCloseQueue((q) => closeWaits(open, s.id, q) ?? q);
+    closeDlgNow.current = { session: s, wt };
+    setCloseDlg({ session: s, wt });
+  };
   /** Close a session; dirty or unpushed worktrees get the dialog, clean ones close silently. */
   const requestClose = async (s: SessionInfo) => {
     const hasWorktree = s.repoPath && s.branch && s.cwd !== s.repoPath;
@@ -1536,10 +1555,10 @@ function App() {
     const st: WorktreeStateInfo | { error: string } = await window.mb.worktreeState(s.cwd);
     if ("error" in st) {
       if (worktreeGone(st.error)) return closeNow(s, true);
-      return setCloseDlg({ session: s, wt: st }); // unknown state: the dialog says why and only keeps
+      return askClose(s, st); // unknown state: the dialog says why and only keeps
     }
     if (!st.dirty && st.ahead === 0) return closeNow(s, true);
-    setCloseDlg({ session: s, wt: st });
+    askClose(s, st);
   };
   // several closed at once (the selection bar's Close…): one at a time, each as it is now (one closed meanwhile is
   // skipped), each waiting for the dialog the one before it opened; cancelling one's dialog keeps that one and goes on
@@ -1589,7 +1608,8 @@ function App() {
 
   const resumeDead = async (s: SessionInfo) => {
     // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed)
-    if (s.room?.takenOver) return alert(`${s.room.takenOver.byName} continues ${titleOf(s)} on their laptop — take it back rather than resuming this copy.`);
+    const taken = takenOverWhy(s, "rather than resuming this copy");
+    if (taken) return alert(taken);
     // drop the dead pty, keep the store entry
     if (!(await costGate.resume(s))) return;
     if (failed(`Couldn't resume ${titleOf(s)}`, await window.mb.killSession(s.id, false))) return;
@@ -2120,7 +2140,7 @@ function App() {
       move: () => setGroupDlg(s),
       resize: (p) => t && resizeWorkspace(t.key, p),
       tool: (k) => (landscapeOn ? showTool(k, s) : (setFocused(s.id), showView(({ files: "explorer", changes: "scm", search: "search", run: "run" } as const)[k]))),
-      artifacts: !landscapeOn || !t ? null : t.area === LOOSE_GROUP ? { no: "It's in no area: artifacts are kept by area" } : () => showTool("artifacts", null, t.area),
+      artifacts: landscapeOn ? artifactsOf(t, s, (area) => showTool("artifacts", null, area)) : null,
       repaint: () => void resyncTerm(s.id),
       hidePanel: () => {
         if (!hideAgentPanel(s.id)) lsSay("The agent's diff panel isn't open any more");
@@ -2142,15 +2162,8 @@ function App() {
    * the Changes tool, the grid's pane header, ⌘K), so none of them can run what the menus refuse.
    */
   const sessionAction = (s: SessionInfo, key: string): ModelAction | undefined => actionOf(workspaceActions(s, wsEnv(s, tileOfSession(s.id))), key);
-  /**
-   * Its row for the grid's pane header and ⌘K: shown while it can be done, and off saying why while a teammate has
-   * taken the session over (a state it leaves when it's taken back); not shown where it never applies (a terminal, a
-   * teammate's session, a folder outside git), as those places never showed it.
-   */
-  const paneAction = (s: SessionInfo, key: string): ModelAction | undefined => {
-    const a = sessionAction(s, key);
-    return a && (!a.disabled || !!s.room?.takenOver) ? a : undefined;
-  };
+  /** Its row for the grid's pane header and ⌘K (paneRow). */
+  const paneAction = (s: SessionInfo, key: string): ModelAction | undefined => paneRow(s, wsEnv(s, tileOfSession(s.id)), key);
   /** Its context warning chip, with the model's Fresh session from a brief row (off, saying why, where it can't be). */
   const contextChipFor = (s: SessionInfo) => {
     const brief = sessionAction(s, "brief");
@@ -2172,9 +2185,9 @@ function App() {
   // ---- the landscape's areas (S4): each group's bar, ⋯ menu and tree row, and what its gestures ask ----
   const sessionsOfGroup = (key: string) => workSessions.filter((s) => topOf(s) === key);
   const areaTitle = (key: string) => groupTitle(key, sessionsOfGroup(key));
+  /** Why area `key` has no room for a right-click's workspace: every way it could grow reaches the locked areas `locked`. */
+  const noRoomIn = (key: string, locked: readonly string[]) => `No room in ${areaTitle(key)}: ${locked.map(areaTitle).join(" and ")} ${locked.length === 1 ? "is" : "are"} locked`;
   /** A group's bar, on the grid over its panes and on the landscape as its area's header: the same parts and handlers. */
-  /** Following as a room's group or area offers it: only that room's members to follow (none outside a room). */
-  const followIn = (room: ReturnType<typeof roomOfGroup>): Follow => ({ ...follow, candidates: follow.candidates.filter((v) => !!room?.members.some((m) => m.id === v.member)) });
   const groupBarProps = (key: string): GroupBarProps => {
     const ticket = ticketOfGroup(key);
     return {
@@ -2187,7 +2200,7 @@ function App() {
       room: roomOfGroup(teamStatus, key),
       onChat: landscapeOn ? () => showTool("chat", null, key) : () => showView("room"),
       onBoard: setBoardDlg,
-      follow: followIn(roomOfGroup(teamStatus, key)),
+      follow: followIn(follow, roomOfGroup(teamStatus, key)),
       onAsk: () => askGroupStatus(key),
     };
   };
@@ -2226,8 +2239,8 @@ function App() {
       // an area outlives its sessions (their ghosts come back to it); one with none can go
       empty: !!a && !sessionsOfGroup(key).length,
       messages: { mode: msgModes[key], defaultSend: msgDefaultSend, set: (mode) => void setMsgMode(key, mode), log: () => setMsgLogFor({}) },
-      // following one of the room's teammates (FollowControls' handlers): a room's area's only
-      follow: { leader: follow.leader?.name ?? null, candidates: followIn(room).candidates, stop: follow.stop, start: (member) => follow.follow(member) },
+      // following one of the room's teammates (FollowButtons' handlers): a room's area's only
+      follow: ((f) => ({ leader: f.leader?.name ?? null, candidates: f.candidates, stop: f.stop, start: (member: string) => f.follow(member) }))(followIn(follow, room)),
       rename: () => setRenameDlg({ kind: "group", key, initial: key }),
       collapse: () => a && flag({ collapsed: !a.collapsed }, `${title} ${a.collapsed ? "opened" : "collapsed"}`),
       lock: () => a && flag({ locked: !a.locked }, `${title} ${a.locked ? "unlocked" : "locked"}`),
@@ -2277,6 +2290,9 @@ function App() {
    * clicked (resolveLayout's PlaceHint).
    */
   const newAt = (area: string | null, at: { x: number; y: number }, seed: { launch?: LaunchKind; ticket?: boolean; mode?: "new" | "import" }) => {
+    // an area hemmed in by locked areas has no place for it: said, and nothing is made
+    const locked = area && landscapeState ? rightClickRefusal(landscapeState.landscape, workSessions, lsRenames, area, at, seed.launch === "shell") : null;
+    if (locked) return lsSay(noRoomIn(area!, locked));
     setNewGroup(area ?? "");
     setNewLaunch(seed.launch ?? "claude");
     setNewSeed({ ...(area ? areaSeed(area) : {}), ticket: seed.ticket, mode: seed.mode });
@@ -2777,7 +2793,7 @@ function App() {
           const taken = roomLive.state?.own[s.id]?.takenOver;
           const left = leftFor(s);
           return (
-          <div key={s.id} data-flip={`p:${s.id}`} className="sess-item" title={taken ? `${s.cwd} — ${taken.byName} continued this session on their laptop, so this copy doesn't run again here.` : s.cwd}>
+          <div key={s.id} data-flip={`p:${s.id}`} className="sess-item" title={taken ? `${s.cwd} — ${taken.back ? "it was taken back into another session here" : `${taken.byName} continued this session on their laptop`}, so this copy doesn't run again here.` : s.cwd}>
             <span className="dot dead" />
             <span className="name">
               <span className="nm">{s.title}</span>
@@ -3633,6 +3649,8 @@ function App() {
             </span>
           );
         })}
+        {/* following a teammate: said here once, whichever room's, rooms' bars only offering Follow */}
+        <FollowingNow follow={follow} />
         <UsageMeter usage={usage} meters={meters} focused={sessions.find((s) => s.id === focused) ?? null} />
         <span className="right">
           {readError && (

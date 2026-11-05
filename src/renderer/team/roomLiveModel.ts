@@ -1,6 +1,7 @@
 import { isErr, type SessionInfo } from "../../shared/types";
 import { settled } from "../settled";
 import type { LivePanesState, MemberView } from "../../shared/team/livePanes";
+import type { MemberId } from "../../shared/team/types";
 
 /**
  * Team rooms in the window, stage 2 (live panes): the plain logic behind
@@ -13,6 +14,15 @@ export function mergeRoomSessions(own: SessionInfo[], state: LivePanesState | nu
   const tagged = own.map((s) => (state.own[s.id] ? { ...s, room: state.own[s.id] } : s));
   const ids = new Set(own.map((s) => s.id));
   return [...tagged, ...state.remote.filter((r) => !ids.has(r.id))];
+}
+
+/**
+ * Following as one room offers it (its group's bar, its area's header and menu): only its members to follow, and the
+ * one followed only when they're one of them. Outside a room, no one.
+ */
+export function followIn<F extends { leader: { id: MemberId } | null; candidates: readonly { member: MemberId }[] }>(follow: F, room: { members: readonly { id: MemberId }[] } | null | undefined): F {
+  const member = (id: MemberId) => !!room?.members.some((m) => m.id === id);
+  return { ...follow, leader: follow.leader && member(follow.leader.id) ? follow.leader : null, candidates: follow.candidates.filter((v) => member(v.member)) };
 }
 
 /** What following a teammate puts on screen: their shown room sessions in one group, and the one they're in. */

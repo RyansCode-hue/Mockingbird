@@ -32,7 +32,7 @@ export function roomRowLine(room: RoomSessionTag): string {
   const owner = firstName(room.ownerName);
   const parts = [room.remote ? `${possessive(owner)} session` : "Your session"];
   if (room.remote) parts.push(!room.online ? "offline" : !room.live ? "closed there" : "live");
-  else if (room.takenOver) parts.push(`continued by ${firstName(room.takenOver.byName)}`);
+  else if (room.takenOver) parts.push(room.takenOver.back ? "taken back into another session" : `continued by ${firstName(room.takenOver.byName)}`);
   const inIt = room.lookers.filter((l) => l.focused).map((l) => firstName(l.name));
   const watching = room.lookers.filter((l) => !l.focused).map((l) => firstName(l.name));
   if (inIt.length) parts.push(`${listNames(inIt)} ${inIt.length === 1 ? "is" : "are"} in it`);

@@ -15,6 +15,7 @@ import { rebaseTranscript } from "../src/main/transcripts";
 import { worktreeAt } from "../src/main/worktrees";
 import { grantProblem, signGrant } from "../src/main/team/takeoverGrants";
 import { offlineTakeoverRefusal } from "../src/main/team/takeover";
+import { refuseTakenOver, UNTAKEN_CALLS, type UntakenCall } from "../src/main/takenOverGuard";
 import { ConnectionLog, connectedThen, CONNECTED_KEEP_MS } from "../src/main/team/connectionLog";
 import { backupFreshness, HANDOVER_GRANT_MS, NOT_ALLOWED, NOT_PUSHED, remoteLabel, type TakeoverGrant, roomBackupRef, type IncomingAsk, type ReceivedChanges, type RoomSessionBackupView } from "../src/shared/team/takeover";
 import type { NewSessionRequest, SessionInfo } from "../src/shared/types";
@@ -1128,9 +1129,14 @@ describe("take-over: the owner's hand-over when they're online, none when they'r
     expect(t.ryan.takenOver).toEqual(["s1 by Nick"]);
     expect(t.nick.refused).toEqual([]);
     expect(t.ryan.svc.relaunchRefusal("s1")).toMatch(/continues on Nick's laptop/);
-    // nor is it handed on, reviewed or put back here (main's handoff:start, review:start, turns:restore refuse with it)
-    expect(t.ryan.svc.relaunchRefusal("s1", "handing this copy on")).toMatch(/continues on Nick's laptop — take it back rather than handing this copy on$/);
-    expect(t.ryan.svc.relaunchRefusal("s1", "putting this copy's files back")).toMatch(/take it back rather than putting this copy's files back$/);
+    // nor is anything started from it, nor its files put back: main's guarded calls refuse it, saying what was refused;
+    // a session no one took over is let through
+    const guard = (sid: string, doing: string) => t.ryan.svc.takenOverRefusal(sid, doing);
+    for (const [call, doing] of Object.entries(UNTAKEN_CALLS) as [UntakenCall, string][]) {
+      expect(() => refuseTakenOver("s1", call, guard), call).toThrow(`“Donor entities” continues on Nick's laptop — take it back rather than ${doing}`);
+      expect(() => refuseTakenOver("s9", call, guard), call).not.toThrow();
+      expect(() => refuseTakenOver("s1", call, null), call).not.toThrow();
+    }
   }, 30_000);
 
   it("an offline take-over stamped while the owner's Mac was connected to the taker is refused: every log puts the session back, the taker's copy stops", async () => {
@@ -1158,6 +1164,9 @@ describe("take-over: the owner's hand-over when they're online, none when they'r
     await until(() => t.nick.stopped.includes("n5"), "Nick's copy to stop");
     expect(t.nick.refused).toEqual(["n5: Ryan refused “Donor entities”"]);
     expect(t.nick.svc.relaunchRefusal("n5")).toMatch(/^Ryan's Mac refused this take-over of “Donor entities”: the session stayed theirs/);
+    // that copy wasn't taken over (the window offers it all): main's guarded calls let it through, as the window does
+    expect(t.nick.svc.takenOverRefusal("n5", "handing this copy on")).toBeNull();
+    for (const call of Object.keys(UNTAKEN_CALLS) as UntakenCall[]) expect(() => refuseTakenOver("n5", call, (sid, doing) => t.nick.svc.takenOverRefusal(sid, doing)), call).not.toThrow();
     expect(t.ryan.svc.relaunchRefusal("s1")).toBeNull();
     // Ryan's session goes on backing up as his, on every log
     write(t.wt, { "src/a.ts": "Ryan keeps typing\n" });

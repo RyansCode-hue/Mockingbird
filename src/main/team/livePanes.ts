@@ -38,6 +38,7 @@ import {
   TYPING_MINUTES,
 } from "../../shared/team/livePanes";
 import { quoted } from "../../shared/team/agentText";
+import { continuation } from "../../shared/team/takeover";
 import type { RemoteAudit } from "./remoteAudit";
 import type { MemberId, RoomId, RoomState } from "../../shared/team/types";
 import type { LaunchTarget, RemotePanes, RoomLaunch, SessionManager } from "../sessions";
@@ -1434,7 +1435,16 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
         inlineOnStart: this.d.settings().roomSessionsInline !== false,
         typists: [...(this.grants.get(s.id)?.values() ?? [])].filter((g) => roomId === g.roomId && (g.until === null || g.until > this.now())).map(({ roomId: _r, ...g }) => g),
         typingAsks: [...(this.asks.get(s.id)?.values() ?? [])].filter((a) => roomId === a.roomId).map(({ roomId: _r, ...a }) => a),
-        ...(taken ? { takenOver: { by: taken.by, byName: memberNameIn(team, roomId, taken.by), at: taken.at } } : {}),
+        ...(taken
+          ? {
+              takenOver: {
+                by: taken.by,
+                byName: memberNameIn(team, roomId, taken.by),
+                at: taken.at,
+                ...(continuation(team.room(roomId)?.ext.takeover, s.id)?.owner === self ? { back: true as const } : {}),
+              },
+            }
+          : {}),
       };
     }
     return { remote, own, views, problems: this.problems };

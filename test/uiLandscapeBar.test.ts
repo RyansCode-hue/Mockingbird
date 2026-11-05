@@ -74,6 +74,12 @@ interface G {
   appended: { left: string[]; dialog: boolean };
   error?: string;
 }
+type Strip = { rows: string[] | null; note: string | null; dialog: boolean; made: number };
+interface H {
+  hem: { hemmed: Strip; unlocked: Strip; relocked: Strip & { group: string | null; inHem: boolean } };
+  waits: { single: string | null; meanwhile: { dialog: string | null; left: string[] }; next: string | null; left: string[]; dialog: boolean };
+  error?: string;
+}
 interface F {
   shiftOnTerm: { bar: string | null };
   above: Record<string, Clear>;
@@ -337,5 +343,20 @@ describe.skipIf(!local)("the selection bar", () => {
     expect(g.cancelAll.left).toEqual(["s1", "s8"]);
     // s5 read slowly while s4 and y1 are closed as well: s6, waiting behind s5, still closes, and so do they
     expect(g.appended).toEqual({ left: [], dialog: false });
+  }, 120_000);
+
+  it("makes nothing in an area hemmed in by locked ones, saying so; and closing several waits while a single Close's dialog is open", async () => {
+    const h = await run<H>("h", "gitSlow=5101-orgDropdowns&gitFail=5110-donor-entities");
+    expect(h.error).toBeUndefined();
+    // every way out of Hem is a locked area: Claude… opens nothing and says which; with HemB unlocked, it asks as ever
+    expect(h.hem.hemmed).toEqual({ rows: ["Claude…", "Terminal…"], note: "No room in Hem: HemB and HemC are locked", dialog: false, made: 0 });
+    expect(h.hem.unlocked).toMatchObject({ dialog: true, made: 0 });
+    // HemB locked again while the dialog's open: the session it makes goes with Hem's other workspaces, and that's said
+    expect(h.hem.relocked).toMatchObject({ dialog: true, made: 1, group: "Hem", inHem: true, note: "No room in Hem: HemB and HemC are locked, so it went with the area's other workspaces" });
+    // s8's state read while y1's own Close asks: y1's dialog stays, nothing else closes, and s8 is asked after it, then s6
+    expect(h.waits.single).toBe("Close Donor entity model?");
+    expect(h.waits.meanwhile).toEqual({ dialog: "Close Donor entity model?", left: ["s8", "s6", "y1"] });
+    expect(h.waits.next).toBe("Close Release notes for #5101?");
+    expect(h.waits).toMatchObject({ left: ["s8", "y1"], dialog: false });
   }, 120_000);
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { actionOf, areaActions, createActions, inSection, menuOf, usable, workspaceActions, type AreaEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { actionOf, areaActions, artifactsOf, createActions, inSection, menuOf, usable, workspaceActions, type AreaEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -173,6 +173,18 @@ describe("a workspace's Artifacts", () => {
     expect(e.artifacts).toHaveBeenCalledOnce();
     expect(actionOf(workspaceActions(sess(), env({ artifacts: { no: "It's in no area: artifacts are kept by area" } })), "tool:artifacts")).toMatchObject({ disabled: true, title: "It's in no area: artifacts are kept by area" });
     expect(actionOf(workspaceActions(sess(), env({ artifacts: null })), "tool:artifacts")).toBeUndefined();
+  });
+
+  it("opens the area its tile is in, or its session's while it has no tile yet; a loose one's is off", () => {
+    const show = vi.fn<(area: string) => void>();
+    const run = (c: ReturnType<typeof artifactsOf>) => (typeof c === "function" ? c() : c);
+    expect(run(artifactsOf({ area: "5102" }, { taskGroup: "5101" }, show))).toBeUndefined();
+    expect(show).toHaveBeenLastCalledWith("5102");
+    expect(run(artifactsOf(null, { taskGroup: "5101/api" }, show))).toBeUndefined();
+    expect(show).toHaveBeenLastCalledWith("5101");
+    expect(run(artifactsOf(undefined, { taskGroup: null }, show))).toEqual({ no: "It's in no area: artifacts are kept by area" });
+    expect(run(artifactsOf({ area: "ungrouped" }, { taskGroup: "5101" }, show))).toEqual({ no: "It's in no area: artifacts are kept by area" });
+    expect(show).toHaveBeenCalledTimes(2);
   });
 });
 

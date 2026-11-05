@@ -5035,7 +5035,9 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   // ?gitFail=5102-quickViewFreeze&closeFail=5110-donor-entities): a Shift-click on a terminal at 60%; the bar above the
   // area's name over workspaces at its top; Δ ? for changes that can't be read; Close… on three, one asking, one
   // failing, one closing. =g (with ?gitSlow=5102-quickViewFreeze): Close… on several
-  // stopped with Cancel all, and a second Close… on several added after the first's rest. Into
+  // stopped with Cancel all, and a second Close… on several added after the first's rest. =h (with
+  // ?gitSlow=5101-orgDropdowns&gitFail=5110-donor-entities): a right-click in an area hemmed in by locked ones making
+  // nothing, saying so, until one is unlocked; Close… on several waiting while a single Close's dialog is open. Into
   // <script id="mb-landscape-bar-audit-<part>">.
   if (params.has("landscapeBarAudit")) waitFor(".ls-world .ls-node", async () => {
     const part = params.get("landscapeBarAudit") || "a";
@@ -5595,6 +5597,94 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(7000);
         out.appended = { left: left(["s5", "s6", "s4", "y1"]), dialog: !!oneDialog() };
       }
+
+      if (part === "h") {
+        // "Hem", full but for a strip too low for a workspace, right of everything, locked areas right of it and below
+        // it: a right-click in the strip, then Claude…, makes nothing and says why; with one unlocked, it opens New
+        // session, and one made after that one is locked again goes with the area's other workspaces, said
+        const right = Math.max(...Object.values(landscape.areas).map((a) => a.x + a.w), ...Object.values(landscape.workspaces).map((w) => w.x + w.w)) + 3000;
+        sessions = [...sessions, { ...sessions.find((s) => s.id === "s6")!, id: "hem1", title: "Hemmed in", taskGroup: "Hem", status: "idle", exitCode: undefined }];
+        sessionsChanged();
+        await api.landscapeUpdate({
+          areas: { Hem: { x: right, y: 0, w: 2400, h: 2000, repos: [] }, HemB: { x: right + 2464, y: 0, w: 1200, h: 2000, repos: [], locked: true }, HemC: { x: right, y: 2064, w: 2400, h: 1200, repos: [], locked: true } },
+          workspaces: { hem1: { x: right + 24, y: 48, w: 2352, h: 1400 } },
+        });
+        await sleep(600);
+        const toWorld = (p: { x: number; y: number }) => {
+          const v = vp().getBoundingClientRect();
+          const c = camera()!;
+          return { x: Math.round(c.x + (p.x - v.left) / c.zoom), y: Math.round(c.y + (p.y - v.top) / c.zoom) };
+        };
+        const strip = async (relock = false) => {
+          await fitView();
+          await zoomOnArea("Hem", 0.25);
+          const rectOf = (sel: string) => ((r) => r && { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) })(document.querySelector(sel)?.getBoundingClientRect());
+          let p: ReturnType<typeof bareAt>;
+          try {
+            p = bareAt("Hem");
+          } catch (err) {
+            throw new Error(`${err}: Hem ${JSON.stringify(rectOf('.ls-world .ls-area[data-area="Hem"]'))}, hem1 ${JSON.stringify(rectOf('.ls-world [data-front="hem1"]'))}, view ${JSON.stringify(rectOf(".ls-viewport"))}, stored ${JSON.stringify(landscape.areas.Hem)}`);
+          }
+          p.el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: p.x, clientY: p.y }));
+          await sleep(300);
+          const rows = ctxRows();
+          const ids = new Set(sessions.map((s) => s.id));
+          if (!rows?.includes("Claude…")) throw new Error(`the right-click at ${JSON.stringify(toWorld(p))} offered ${JSON.stringify(rows)}`);
+          await ctxPick("Claude…");
+          await sleep(300);
+          const res = { rows: rows?.filter((r) => /^(Claude|Terminal)…/.test(r)) ?? null, note: noteText(), dialog: !!document.querySelector(".modal.ns"), made: sessions.filter((s) => !ids.has(s.id)).length };
+          if (relock && res.dialog) {
+            await api.landscapeUpdate({ areas: { HemB: { locked: true } } });
+            await sleep(400);
+            document.querySelector<HTMLElement>(".modal.ns button.primary.cta")!.click();
+            await sleep(1500);
+            const s = sessions.find((x) => !ids.has(x.id));
+            const w = s ? landscape.workspaces[s.id] : undefined;
+            const hem = landscape.areas.Hem;
+            return { ...res, made: s ? 1 : 0, group: s?.taskGroup ?? null, note: noteText(), inHem: !!w && !!hem && w.x >= hem.x && w.x + w.w <= hem.x + hem.w && w.y >= hem.y && w.y + w.h <= hem.y + hem.h };
+          }
+          esc();
+          await sleep(300);
+          return res;
+        };
+        const hemmed = await strip();
+        await api.landscapeUpdate({ areas: { HemB: { locked: false } } });
+        await sleep(400);
+        out.hem = { hemmed, unlocked: await strip(), relocked: await strip(true) };
+
+        // s8 (its worktree read slowly, ?gitSlow) and s6 closing; while s8 is read, y1 closed on its own: its dialog
+        // (?gitFail) stays until it's answered, s8's asked after it, then s6
+        vp().focus();
+        esc(vp());
+        await sleep(200);
+        await fitView();
+        const oneDialog = () => document.querySelector(".modal.close-dlg:not(.close-many)");
+        const shown = () => oneDialog()?.querySelector("h3")?.textContent ?? null;
+        for (const id of ["s8", "s6"]) {
+          pointer(node(id)!.querySelector(".ls-head") ?? node(id)!, "pointerdown", { button: 0, shiftKey: true });
+          await sleep(150);
+        }
+        barBtn("close")!.click();
+        await sleep(400);
+        document.querySelector<HTMLElement>(".modal.close-many button.primary")!.click();
+        await sleep(300);
+        const y1 = node("y1")!.querySelector(".ls-head") ?? node("y1")!;
+        y1.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, ...at(y1, 0.3, 0.5) }));
+        await sleep(300);
+        await ctxPick("Close & clean up…");
+        await sleep(300);
+        const single = shown();
+        // s8's state is read meanwhile (4 s): y1's dialog stays, and nothing else closes
+        await sleep(4500);
+        const meanwhile = { dialog: shown(), left: ["s8", "s6", "y1"].filter((id) => sessions.some((s) => s.id === id)) };
+        [...(oneDialog()?.querySelectorAll<HTMLButtonElement>("button.outline") ?? [])].find((b) => b.textContent === "Cancel")?.click();
+        for (const end = Date.now() + 2000; oneDialog() && Date.now() < end; ) await sleep(100);
+        for (const end = Date.now() + 6000; !oneDialog() && Date.now() < end; ) await sleep(100);
+        const next = shown();
+        [...(oneDialog()?.querySelectorAll<HTMLButtonElement>("button.outline") ?? [])].find((b) => b.textContent === "Cancel")?.click();
+        await sleep(1200);
+        out.waits = { single, meanwhile, next, left: ["s8", "s6", "y1"].filter((id) => sessions.some((s) => s.id === id)), dialog: !!oneDialog() };
+      }
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);
     }
@@ -5877,18 +5967,22 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(400);
         out.team = { list, left, backToTree: !!document.querySelector(".sidebar .area-tree") };
 
-        // following a teammate: said, with Stop, on a room's area only
+        // following a teammate: offered on a room's area only, and said once, with Stop, in the status bar
         await at100("5101");
         const follow = [...document.querySelectorAll<HTMLElement>(`${areaEl("5101")} .ls-ah .team-follow button`)].find((b) => b.textContent?.includes("Follow")) ?? null;
         follow?.click();
         await sleep(600);
-        out.follow = {
+        const said = () => [...document.querySelectorAll(".statusbar .team-follow.on")].map((x) => x.textContent?.replace(/Stop$/, "").trim());
+        const following = {
           offered: !!follow,
           on5102: [...document.querySelectorAll(`${areaEl("5102")} .ls-ah .team-follow.on`)].map((x) => x.textContent?.replace(/Stop$/, "").trim()),
           on5101: document.querySelectorAll(`${areaEl("5101")} .ls-ah .team-follow.on`).length,
+          buttons5101: document.querySelectorAll(`${areaEl("5101")} .ls-ah .team-follow button`).length,
+          statusBar: said(),
         };
-        document.querySelector<HTMLElement>(`${areaEl("5101")} .ls-ah .team-follow.on button`)?.click();
+        document.querySelector<HTMLElement>(".statusbar .team-follow.on button")?.click();
         await sleep(400);
+        out.follow = { ...following, stopped: { statusBar: said(), offered5101: !!document.querySelector(`${areaEl("5101")} .ls-ah .team-follow button`) } };
       }
     } catch (err) {
       out.error = String(err instanceof Error ? err.stack : err);
@@ -6358,6 +6452,20 @@ if (params.get("ctxAudit")) {
         if (!(await until(() => !!document.querySelector(".palette"), 2000))) return [{ label: "⌘K opened no palette", off: null }];
         const rows = [...document.querySelectorAll(".palette .results .row")].map((r) => ({ label: r.querySelector(".lab")?.textContent ?? "", off: r.classList.contains("off") ? (r.querySelector(".state")?.textContent ?? "") : null }));
         if (!rows.length) return [{ label: "the palette lists nothing", off: null }];
+        if (title === Y1) {
+          // its off Undo row chosen, by Enter with it first and then by a click: nothing runs, and the palette stays
+          typeInto(".palette input", "Undo a turn of");
+          await sleep(300);
+          const first = () => document.querySelector<HTMLElement>(".palette .results .row");
+          const after = () => ({ palette: !!document.querySelector(".palette"), undoDialog: !!document.querySelector(".undo-dlg"), turnsList: count("turnsList") });
+          const row = { label: first()?.querySelector(".lab")?.textContent ?? null, off: !!first()?.classList.contains("off"), sel: !!first()?.classList.contains("sel") };
+          document.querySelector(".palette input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+          await sleep(400);
+          const enter = after();
+          first()?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+          await sleep(400);
+          out.chosenOff = { row, enter, click: after() };
+        }
         document.querySelector(".palette input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
         document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
         await until(() => !document.querySelector(".palette"), 2000);

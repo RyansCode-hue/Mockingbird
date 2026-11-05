@@ -299,20 +299,39 @@ export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | nul
   return first(spots.sort((a, b) => a.y - b.y || a.x - b.x));
 }
 
+/** Why a right-click's New workspace has no place in its area: every way it could grow reaches these locked areas. */
+export interface PlaceRefusal<O> {
+  blockedBy: O[];
+}
+
 /**
  * A new workspace `size` big placed as near point `at` as there's room: what a right-click's New workspace makes.
  * Its corner is the point, snapped, when that's free; otherwise the free spot nearest it among those along the edges
- * of what's there. In `area` it keeps inside the padding and under the header, as a drop does, and clear of the other
- * areas (`others`: the area grown to hold it keeps the gap areas keep from each). A spot inside the area within its own
- * size of the point comes first (one moved in from an edge it would cross), then the nearest anywhere, the area growing
- * to hold it, and failing those placeNew's. `occupied` is as placeNew's.
+ * of what's there. In `area` it keeps inside the padding and under the header, as a drop does. Then, in turn:
+ * 1. a spot inside the area within its own size of the point (one moved in from an edge it would cross);
+ * 2. the nearest spot the area can grow to hold while keeping the gap from every other area (`others`);
+ * 3. the nearest it can grow to towards unlocked areas only (resolveLayout pushes those aside), never a locked one,
+ *    and never moving the area itself;
+ * 4. none: a PlaceRefusal naming the locked areas in every way out.
+ * A spot the area holds without growing needs nothing of the others (the area may already lie closer to one). With no
+ * area there's no refusal: failing 1 and 2 it's placeNew's. `occupied` is as placeNew's.
  */
-export function placeAt(size: Size, at: { x: number; y: number }, occupied: readonly Rect[], area: Rect | null, near: Rect | null = null, others: readonly Rect[] = []): Placement {
+export function placeAt<O extends Rect & { locked?: boolean }>(
+  size: Size,
+  at: { x: number; y: number },
+  occupied: readonly Rect[],
+  area: Rect | null,
+  near: Rect | null = null,
+  others: readonly O[] = []
+): Placement | PlaceRefusal<O> {
   const apart = AREA_PAD + AREA_GAP;
-  // in an area, the area as it would grow to hold it (fitAreaTo) keeps the gap from every other area, so growing for it
-  // never reaches a neighbour (resolveLayout would push that aside, or move a locked one's neighbour away)
-  const clearOfOthers = (p: Rect) => (area ? !others.some((o) => overlaps(fitAreaTo(area, [p]), o, AREA_GAP - 1e-6)) : !others.some((o) => overlaps(p, o, apart - 1e-6)));
-  const clear = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6)) && clearOfOthers(p);
+  const free = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6));
+  // the area as it would grow to hold `p` keeps the gap from each of `among`; one it holds already needs nothing more
+  const keepsGap = (p: Rect, among: readonly O[]) => {
+    if (!area) return !among.some((o) => overlaps(p, o, apart - 1e-6));
+    const grown = fitAreaTo(area, [p]);
+    return grown === area || !among.some((o) => overlaps(grown, o, AREA_GAP - 1e-6));
+  };
   const left = area ? snapUp(area.x + AREA_PAD) : -Infinity;
   const top = area ? snapUp(area.y + AREA_HEADER) : -Infinity;
   const right = area ? area.x + area.w - AREA_PAD : Infinity;
@@ -324,23 +343,32 @@ export function placeAt(size: Size, at: { x: number; y: number }, occupied: read
     ...occupied.flatMap((o) => [snapUp(lo(o) + len(o) + GAP), snapDown(lo(o) - GAP - own)]),
     ...others.flatMap((o) => [snapUp(lo(o) + len(o) + apart), snapDown(lo(o) - apart - own)]),
   ];
-  const xs = new Set([x, snapDown(right - size.w), ...edges((o) => o.x, (o) => o.w, size.w)].filter((v) => Number.isFinite(v) && v >= left));
-  const ys = new Set([y, snapDown(bottom - size.h), ...edges((o) => o.y, (o) => o.h, size.h)].filter((v) => Number.isFinite(v) && v >= top));
-  const close = (p: Rect) => Math.abs(p.x - x) <= size.w && Math.abs(p.y - y) <= size.h;
-  const tiers: ((p: Rect) => boolean)[] = [(p) => p.x + p.w <= right && p.y + p.h <= bottom && close(p), () => true];
-  for (const fits of tiers) {
+  const xs = [...new Set([x, snapDown(right - size.w), ...edges((o) => o.x, (o) => o.w, size.w)].filter((v) => Number.isFinite(v) && v >= left))];
+  const ys = [...new Set([y, snapDown(bottom - size.h), ...edges((o) => o.y, (o) => o.h, size.h)].filter((v) => Number.isFinite(v) && v >= top))];
+  const spots = xs.flatMap((sx) => ys.map((sy) => ({ x: sx, y: sy, ...size }))).filter(free);
+  const nearest = (fits: (p: Placement) => boolean): Placement | null => {
     let best: Placement | null = null;
     let bestD = Infinity;
-    for (const sx of xs)
-      for (const sy of ys) {
-        const p = { x: sx, y: sy, ...size };
-        const d = Math.hypot(sx - x, sy - y);
-        if (d < bestD && fits(p) && clear(p)) {
-          best = p;
-          bestD = d;
-        }
+    for (const p of spots) {
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d < bestD && fits(p)) {
+        best = p;
+        bestD = d;
       }
-    if (best) return best;
+    }
+    return best;
+  };
+  const close = (p: Rect) => Math.abs(p.x - x) <= size.w && Math.abs(p.y - y) <= size.h;
+  const locked = others.filter((o) => o.locked);
+  const found =
+    nearest((p) => p.x + p.w <= right && p.y + p.h <= bottom && close(p)) ??
+    nearest((p) => keepsGap(p, others)) ??
+    (area ? nearest((p) => keepsGap(p, locked)) : null);
+  if (found) return found;
+  if (area) {
+    const grown = spots.map((p) => fitAreaTo(area, [p]));
+    const blockedBy = locked.filter((o) => grown.some((g) => overlaps(g, o, AREA_GAP - 1e-6)));
+    if (blockedBy.length) return { blockedBy };
   }
   return placeNew(size, [...occupied, ...others], area, near);
 }

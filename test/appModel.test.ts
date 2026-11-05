@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
-import { reachesBroadcast, cellKeyFor, frontOf, groupChoices, inReadingOrder, nextToClose, queueClose, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, sessionOutline, worktreeGone, type GridCell, type OutlineEntry } from "../src/renderer/appModel";
+import { reachesBroadcast, cellKeyFor, closeWaits, frontOf, groupChoices, inReadingOrder, nextToClose, queueClose, paneShortcuts, remapGroupKeys, remapTrees, sessionHolding, sessionOutline, worktreeGone, type GridCell, type OutlineEntry } from "../src/renderer/appModel";
 import { keysOf, leaf, split } from "../src/renderer/layoutTree";
 import { SessionManager } from "../src/main/sessions";
 import { worktreeState } from "../src/main/worktrees";
@@ -202,5 +202,12 @@ describe("several sessions closing one after another", () => {
     expect(queueClose(["b", "c"], ["c", "d", "a"], "a")).toEqual(["b", "c", "d"]);
     expect(queueClose([], ["a", "b"], null)).toEqual(["a", "b"]);
     expect(queueClose(["b"], ["b"], null)).toEqual(["b"]);
+  });
+  it("one needing its dialog while another's is open waits first in the queue, never replacing it", () => {
+    expect(closeWaits(null, "a", ["b"])).toBeNull();
+    // its own dialog again: asked now, as before
+    expect(closeWaits("a", "a", ["b"])).toBeNull();
+    expect(closeWaits("y1", "s8", ["s6"])).toEqual(["s8", "s6"]);
+    expect(closeWaits("y1", "s8", ["s6", "s8"])).toEqual(["s8", "s6"]);
   });
 });
