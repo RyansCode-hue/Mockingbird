@@ -156,6 +156,8 @@ interface LiveSession {
 
 export class SessionManager {
   private live = new Map<string, LiveSession>();
+  /** Panes being resumed now (resume): a second Resume of one is refused until the first has relaunched it or failed. */
+  private resuming = new Set<string>();
   /** Every pty that hasn't exited yet, closed panes' included, with its exit: quitting waits for them (shutdown). */
   private running = new Map<pty.IPty, Promise<void>>();
   /** Set by shutdown: ptys ending now are the app quitting, which leaves each pane's saved state as it was. */
@@ -773,20 +775,30 @@ export class SessionManager {
   }
 
   /**
-   * Resume an exited pane: refused before anything is undone when it's a teammate's, when it may not run again (a
-   * teammate continues it: relaunchGuard) or when its record is gone; otherwise its dead pty is let go, its record
-   * kept, and it's relaunched. Nothing is waited on between the check and letting the pty go, so a take-over heard
-   * meanwhile can't come between them. A relaunch that fails after that throws, the session resumable (Previous).
+   * Resume an exited pane: refused before anything is undone when it's a teammate's, isn't an exited pane here, is
+   * being resumed already, may not run again (a teammate continues it: relaunchGuard) or its record is gone; otherwise
+   * its dead pty is let go, its record kept, and it's relaunched. Nothing is waited on between the checks and letting
+   * the pty go, so a take-over heard meanwhile can't come between them. A relaunch that fails after that throws, the
+   * session resumable (Previous).
    */
   async resume(id: string): Promise<SessionInfo | { refused: string }> {
     if (isRemotePaneId(id)) return { refused: "That's a teammate's session: only its owner can resume it" };
+    if (this.resuming.has(id)) return { refused: "It's being resumed already" };
+    const pane = this.live.get(id);
+    if (!pane) return { refused: "It isn't an exited pane here: reopen it from Previous" };
+    if (pane.info.status !== "dead") return { refused: "It's running already" };
     const refusal = this.relaunchGuard?.(id);
     if (refusal) return { refused: refusal };
     if (!this.store.state.sessions.some((s) => s.id === id)) return { refused: "Its saved record is gone, so there's nothing to resume: close the pane" };
-    this.kill(id, false);
-    const info = await this.relaunch(id);
-    if (!info) throw new Error("its saved record went while it was being resumed");
-    return info;
+    this.resuming.add(id);
+    try {
+      this.kill(id, false);
+      const info = await this.relaunch(id);
+      if (!info) throw new Error("its saved record went while it was being resumed");
+      return info;
+    } finally {
+      this.resuming.delete(id);
+    }
   }
 
   /** Relaunch a persisted session in its old cwd, resuming the conversation. */

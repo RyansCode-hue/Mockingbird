@@ -226,15 +226,15 @@ export const messageModes = (defaultSend: boolean): { value: MessageMode | ""; l
   { value: "prompt", label: "Always leave in prompt", title: "Typed into the prompt; you press Enter" },
 ];
 
+/** What Lock does, as its button and menu row say it: an area's layout frozen, the area itself still pushed aside whole. */
+export const lockTitle = (locked: boolean): string =>
+  locked ? "Unlock: workspaces can be moved into, out of and within it again" : "Lock its layout: its workspaces keep their places, and none move in or out; it's still pushed aside whole when another area grows";
+
 /**
  * Every action of an area, in menu order: its ⋯, its right-click (header, name line, patch, pill, tree row), its
  * header's buttons and its selection bar all render this list. Room tools (Chat, Board, Follow, Invite) are only a
  * room's; another area offers to become one instead.
  */
-/** What Lock does, as its button and menu row say it: an area's layout frozen, the area itself still pushed aside whole. */
-export const lockTitle = (locked: boolean): string =>
-  locked ? "Unlock: workspaces can be moved into, out of and within it again" : "Lock its layout: its workspaces keep their places, and none move in or out; it's still pushed aside whole when another area grows";
-
 export function areaActions(env: AreaEnv): ModelAction[] {
   const st = env.stored;
   const out: ModelAction[] = [{ section: "area", key: "rename", label: "Rename", menuLabel: "Rename…", onPick: env.rename }];

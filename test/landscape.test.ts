@@ -204,16 +204,13 @@ describe("placeNew", () => {
     // D full along one row; A just below it and B just right of it, each with a workspace of its own
     const d = area({ x: 0, y: 0, w: 2400, h: 600 });
     const own = [{ x: AREA_PAD, y: AREA_HEADER, w: 1160, h: 520 }, { x: AREA_PAD + 1160 + GAP, y: AREA_HEADER, w: 1160, h: 520 }];
-    const a = area({ x: 0, y: 664, w: 2400, h: 2000 });
-    const b = area({ x: 2464, y: 0, w: 1200, h: 3000 });
+    // what's in A (just below) and in B (just right) never reaches into D, so it changes nothing
     const theirs = [{ x: 24, y: 712, w: 1000, h: 1900 }, { x: 2488, y: 48, w: 1000, h: 2900 }];
-    for (const locked of [false, true]) {
-      const others = [{ ...a, locked }, { ...b, locked }];
-      const p = placeNew(size, [...own, ...theirs], d, null, others);
-      // just below D's own row, never below what's in A
-      expect(p).toEqual({ x: AREA_PAD, y: AREA_HEADER + 520 + GAP, ...size });
-      expect(fitAreaTo(d, [p]).h).toBe(AREA_HEADER + 520 + GAP + size.h + AREA_PAD);
-    }
+    const p = placeNew(size, [...own, ...theirs], d);
+    // just below D's own row, never below what's in A
+    expect(p).toEqual({ x: AREA_PAD, y: AREA_HEADER + 520 + GAP, ...size });
+    expect(fitAreaTo(d, [p]).h).toBe(AREA_HEADER + 520 + GAP + size.h + AREA_PAD);
+    expect(placeNew(size, own, d)).toEqual(p);
   });
 
   it("stays clear of what's in the area from elsewhere: another area's workspace, a loose one", () => {

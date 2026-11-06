@@ -493,6 +493,9 @@ describe("where each session's workspace sits", () => {
       expect([after.workspaces[k].x, after.workspaces[k].w, after.workspaces[k].h], k).toEqual([l.workspaces[k].x, 800, 400]);
     }
     expect(overlaps(after.workspaces.x, after.workspaces.gone, GAP - 1e-6)).toBe(false);
+    // pushed just GAP clear of D, the gap for what's in no area (areas keep AREA_GAP between them)
+    const clearBelow = (a: Rect) => Math.ceil((a.y + a.h + GAP) / 8) * 8;
+    expect(after.workspaces.x.y).toBe(clearBelow(after.areas.D));
     // a gesture's growing: a loose workspace moved into D, which grows over the other
     const g = emptyLandscape();
     g.migratedAt = l.migratedAt;
@@ -506,7 +509,68 @@ describe("where each session's workspace sits", () => {
     const moved = applyPatch(g, plan.patch!);
     expect(overlaps(moved.workspaces.x, moved.areas.D, GAP - 1e-6)).toBe(false);
     expect(moved.workspaces.x.x).toBe(l.workspaces.x.x);
+    expect(moved.workspaces.x.y).toBe(clearBelow(moved.areas.D));
     expect(plan.moves).toEqual([{ id: "y", group: "D" }]);
+  });
+  it("for a gesture, pushes what's kept in no area aside too, and each stays in none: a hidden session's place, a ghost, a tool window", () => {
+    const g = emptyLandscape();
+    g.migratedAt = "2026-11-01T00:00:00.000Z";
+    g.areas.D = { x: 0, y: 0, w: 2400, h: 600, repos: [] };
+    g.workspaces.d1 = { x: 24, y: 48, w: 2352, h: 528 };
+    g.workspaces.y = { x: -1200, y: 0, w: 1000, h: 600 };
+    g.workspaces.gone = { x: 24, y: 664, w: 600, h: 300 };
+    g.ghosts.gh = { title: "g", agent: "claude", cwd: "/r", repoPath: null, placement: { x: 700, y: 664, w: 600, h: 300 }, group: LOOSE_GROUP, closedAt: "x" };
+    // a loose workspace's window
+    g.workspaces.z = { x: -2400, y: 0, w: 1000, h: 600 };
+    g.tools.w = { tool: "files", docked: false, session: "z", area: null, placement: { x: 1400, y: 664, w: 400, h: 300 } };
+    const shown = [session("d1", { taskGroup: "D" }), session("y"), session("z")];
+    const plan = planMakeArea(g, resolveLayout(g, shown), ["y"], "D", (k) => k);
+    if ("refused" in plan) throw new Error(plan.refused);
+    const moved = applyPatch(g, plan.patch!);
+    const placed = { gone: moved.workspaces.gone, gh: moved.ghosts.gh.placement, w: moved.tools.w.placement! };
+    for (const [k, r] of Object.entries(placed)) {
+      expect(overlaps(r, moved.areas.D, GAP - 1e-6), k).toBe(false);
+      expect(r.y, k).toBeGreaterThan(664);
+    }
+    expect([placed.gone.x, placed.gh.x, placed.w.x]).toEqual([24, 700, 1400]);
+    expect(moved.tools.w.area).toBeNull();
+    expect(moved.ghosts.gh.group).toBe(LOOSE_GROUP);
+  });
+  it("moves what's kept in an area pushed by one that grew only with that area, once, whatever area it then reaches", () => {
+    // D grows into C, which goes down into B: C's hidden place hc ends inside B's old rectangle, and stays C's
+    const l = emptyLandscape();
+    l.migratedAt = "2026-11-01T00:00:00.000Z";
+    l.areas.D = { x: 0, y: 0, w: 2400, h: 600, repos: [] };
+    l.areas.C = { x: 0, y: 664, w: 2400, h: 600, repos: [] };
+    l.areas.B = { x: 0, y: 1328, w: 2400, h: 600, repos: [] };
+    l.workspaces.d1 = { x: 24, y: 48, w: 2352, h: 528 };
+    l.workspaces.c1 = { x: 24, y: 712, w: 1000, h: 528 };
+    l.workspaces.hc = { x: 1100, y: 712, w: 800, h: 200 };
+    l.workspaces.b1 = { x: 24, y: 1376, w: 1000, h: 528 };
+    const shown = [session("d1", { taskGroup: "D" }), session("c1", { taskGroup: "C" }), session("b1", { taskGroup: "B" }), session("n", { taskGroup: "D" })];
+    const after = applyPatch(l, resolveLayout(l, shown).patch!);
+    const dC = after.areas.C.y - 664;
+    expect(dC).toBeGreaterThan(0);
+    expect(after.areas.B.y).toBeGreaterThan(1328);
+    expect(after.workspaces.hc).toEqual({ ...l.workspaces.hc, y: l.workspaces.hc.y + dC });
+    const c = after.areas.C;
+    expect(after.workspaces.hc.y + after.workspaces.hc.h).toBeLessThanOrEqual(c.y + c.h);
+  });
+  it("lets the places nobody sees be pushed, but never push: a forgotten session's place goes on past the area it's pushed into", () => {
+    const l = emptyLandscape();
+    l.migratedAt = "2026-11-01T00:00:00.000Z";
+    l.areas.D = { x: 0, y: 0, w: 2400, h: 600, repos: [] };
+    l.areas.B = { x: 0, y: 1800, w: 2400, h: 600, repos: [] };
+    l.workspaces.d1 = { x: 24, y: 48, w: 2352, h: 528 };
+    l.workspaces.b1 = { x: 24, y: 1848, w: 1000, h: 528 };
+    // no session has it any more
+    l.workspaces.gone = { x: 24, y: 664, w: 800, h: 400 };
+    const shown = [session("d1", { taskGroup: "D" }), session("b1", { taskGroup: "B" }), session("n", { taskGroup: "D" })];
+    const after = applyPatch(l, resolveLayout(l, shown).patch!);
+    expect(after.areas.B).toEqual(l.areas.B);
+    expect(after.workspaces.b1).toEqual(l.workspaces.b1);
+    for (const k of ["D", "B"]) expect(overlaps(after.workspaces.gone, after.areas[k], GAP - 1e-6), k).toBe(false);
+    expect([after.workspaces.gone.x, after.workspaces.gone.w, after.workspaces.gone.h]).toEqual([24, 800, 400]);
   });
   it("grows a full area down for a right-clicked workspace rather than into the area beside it, locked or not", () => {
     for (const locked of [false, true]) {

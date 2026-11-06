@@ -339,6 +339,43 @@ describe("resuming an exited pane", () => {
   });
 });
 
+describe("resuming twice, or a pane that isn't dead", () => {
+  it("refuses a second Resume while the first is under way, and one of a pane that's running, saying why; only one agent starts", async () => {
+    const { m } = await manager();
+    const s = await m.create(agentPane);
+    expect(await m.resume(s.id)).toEqual({ refused: "It's running already" });
+    m.stop(s.id);
+    const started = ptys.length;
+    const first = m.resume(s.id);
+    expect(await m.resume(s.id)).toEqual({ refused: "It's being resumed already" });
+    expect(await first).toMatchObject({ id: s.id });
+    expect(ptys.length).toBe(started + 1);
+    // and once it has relaunched, it's running: refused again rather than killed
+    expect(await m.resume(s.id)).toEqual({ refused: "It's running already" });
+    expect(ptys.length).toBe(started + 1);
+  });
+
+  it("checks and lets the dead pty go with nothing waited on between them", async () => {
+    const { m } = await manager();
+    const s = await m.create(agentPane);
+    m.stop(s.id);
+    // anything that waits between the check and the kill lets this microtask run first
+    let waited = false;
+    m.relaunchGuard = () => {
+      queueMicrotask(() => (waited = true));
+      return null;
+    };
+    const kill = m.kill.bind(m);
+    let waitedAtKill: boolean | null = null;
+    m.kill = (id: string, forget?: boolean) => {
+      waitedAtKill = waited;
+      return kill(id, forget);
+    };
+    await m.resume(s.id);
+    expect(waitedAtKill).toBe(false);
+  });
+});
+
 describe("a session a teammate continues", () => {
   it("isn't started by a relaunch that was already under way when the take-over arrived", async () => {
     const { m } = await manager();

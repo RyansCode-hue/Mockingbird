@@ -155,6 +155,24 @@ describe("opening a tool window", () => {
     expect(p.patch!.tools!.w1!.placement).toMatchObject({ x: col(2), y: top + M.h + GAP });
   });
 
+  it("making room beside a workspace keeps the area's own hidden places in it: they move along, never counted as loose", () => {
+    // s1 at D's left, s3 under it, and right of s1 the place kept for hp, a session not shown, filling the row
+    const top = AREA_HEADER;
+    const d = area(0, 0, AREA_PAD + 2 * M.w + GAP + AREA_PAD, top + 2 * M.h + GAP + AREA_PAD);
+    const l: Landscape = {
+      ...emptyLandscape(),
+      areas: { D: d },
+      workspaces: { s1: { x: AREA_PAD, y: top, ...M }, s3: { x: AREA_PAD, y: top + M.h + GAP, ...M }, hp: { x: AREA_PAD + M.w + GAP, y: top, ...M } },
+    };
+    const sessions = ["s1", "s3"].map((id) => session(id, { taskGroup: "D" }));
+    const next = apply(l, planOpenWindow(l, resolveLayout(l, sessions), "w1", "files", { session: "s1" }, title));
+    expect(next.tools.w1.placement).toMatchObject({ x: AREA_PAD + M.w + GAP, y: top });
+    expect(next.workspaces.hp.x - l.workspaces.hp.x).toBeGreaterThanOrEqual(TOOL_WIDTH.files + GAP);
+    expect(next.workspaces.hp.y).toBe(top);
+    expect(inside(next.workspaces.hp, next.areas.D)).toBe(true);
+    expect(next.areas.D).toMatchObject({ x: 0, y: 0 });
+  });
+
   it("in a locked area takes only room it has, and is refused when it has none", () => {
     const { l, sessions } = twoAreas({ locked: true });
     const layout = resolveLayout(l, sessions);
@@ -268,6 +286,22 @@ describe("a placed window or card", () => {
     expect(planMoveExtra(next, layout, "window", "w1", { x: next.areas.b.x + 50, y: next.areas.b.y + 80 }, "b", title)).toEqual({ refused: expect.stringMatching(/b is locked/) });
     next = { ...next, areas: { ...next.areas, a: { ...next.areas.a, locked: true } } };
     expect(planMoveExtra(next, resolveLayout(next, sessions), "window", "w1", { x: 10, y: 10 }, "a", title)).toEqual({ refused: expect.stringMatching(/a is locked/) });
+  });
+});
+
+describe("dragging a loose tool window into an area", () => {
+  it("pushes what's in the way by the area as it grew, never by where the window was", () => {
+    const l: Landscape = {
+      ...emptyLandscape(),
+      areas: { D: area(0, 0, 2400, 600), B: area(0, 800, 2400, 600) },
+      workspaces: { s1: { x: AREA_PAD, y: AREA_HEADER, w: 1000, h: 528 } },
+      tools: { w1: { tool: "files", docked: false, session: "s1", area: null, placement: { x: 1104, y: 620, w: 400, h: 160 } } },
+    };
+    const next = apply(l, planMoveExtra(l, resolveLayout(l, [session("s1", { taskGroup: "D" })]), "window", "w1", { x: 1104, y: 504 }, "D", title));
+    expect(next.tools.w1).toMatchObject({ area: "D", placement: { x: 1104, y: 504 } });
+    expect(next.areas.D).toMatchObject({ x: 0, y: 0, h: 504 + 160 + AREA_PAD });
+    // D, grown to 688, is still AREA_GAP clear of B: nothing moves it
+    expect(next.areas.B).toEqual(l.areas.B);
   });
 });
 

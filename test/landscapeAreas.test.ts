@@ -142,6 +142,14 @@ describe("areas' rectangles", () => {
     expect(pushAside({ area1: area(0, 0, 1000, 500), loose: area(0, 500, 200, 100), area2: area(0, 620, 1000, 300) }, "area1", gap)).toEqual({ loose: { dx: 0, dy: 20 }, area2: { dx: 0, dy: 20 } });
   });
 
+  it("pushes a passive one (what nobody sees) aside, which then goes on past what it reaches rather than pushing it", () => {
+    const gap = (j: string, k: string) => (j === "p" || k === "p" ? 16 : AREA_GAP);
+    const rects = { a: area(0, 0, 1000, 500), p: area(0, 505, 200, 130), b: area(0, 640, 1000, 300) };
+    expect(pushAside(rects, "a", gap, new Set(["p"]))).toEqual({ p: { dx: 0, dy: 15 + 440 } });
+    // not passive, it pushes b
+    expect(pushAside(rects, "a", gap).b).toBeDefined();
+  });
+
   it("pushes a locked area like any other, the grown one staying where it is, so they all end apart", () => {
     const rects = { a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400, { locked: true }), c: area(1490, 0, 300, 300, { locked: true }) };
     const m = pushAside(rects, "a");

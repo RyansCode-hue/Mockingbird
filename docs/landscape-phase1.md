@@ -1518,13 +1518,36 @@ Design O, with Artifacts as a window, and N's workspace header.
       what's in it, at its left. What's inside the other areas is never in
       the way of either (it used to be: a full area with another just below
       put its new workspace below everything in that one, and pushed it
-      aside). Callers grow the area between placements (`fitAreaTo`), the
+      aside), so `placeNew` isn't given them at all: only what's in the
+      area. Callers grow the area between placements (`fitAreaTo`), the
       migration's frame too.
     - **Several areas growing in one pass** (a right-click's session and
       others arriving together) are held still together: one `pushAside`
       from all of them, the one right-clicked first, so a push that runs on
       from one into another goes past it; of two that grow into each other,
       the later goes past the earlier.
+    - **One membership snapshot** (`keptIn`, `keptOf` in
+      `landscapeModel.ts`): each layout pass and each gesture's plan first
+      reads, from the stored layout before anything moves, which area each
+      thing kept beside the visible workspaces is in: the places of
+      sessions not shown and of hidden stacks (by the area holding them),
+      ghosts (by their group), tool windows and cards (by their `area`);
+      one in no area is loose. Every move in that pass reads only that:
+      an area pushed moves its own (`shiftKept`), once, wherever it ends;
+      what's loose is pushed aside (`looseOf`, `pushAll`). The layout,
+      `growArea` (a window opened or dragged in, a card placed), the
+      gesture `moveArea` and making room (`placedIn`) all use it, so an
+      area's hidden place is never taken for loose because a push moved
+      it, nor moved twice when one pushed area pushes another. What the
+      gesture itself moves (`leaving`: `tool:<id>`, `card:<id>`) is left
+      out of the loose, so a window dragged into an area pushes nothing
+      from where it was.
+    - **What nobody sees never pushes:** the places of sessions not on
+      screen (hidden, resumable or forgotten) and ghosts are passive. They
+      move with their area, or out of the way when loose, and one pushed
+      into something goes on past it rather than pushing it (`pushAside`'s
+      `passive`). They're kept, not pruned: S6b's ghosts and Reopen all may
+      need them.
     - Browser isn't offered: this plan's list doesn't have it (the spec's
       does), and there's no browser workspace yet.
   - **Left from S5, done:**
@@ -1563,10 +1586,14 @@ Design O, with Artifacts as a window, and N's workspace header.
       (Ryan → Nick → Sam is Sam's). So a copy moved into a group shared as
       another room isn't that room's either, and can't be taken over twice.
       Resume is one call to main once the cost is agreed (`sessions:resume`,
-      `SessionManager.resume`): refused, with nothing undone, for a copy a
-      teammate continues or whose record is gone; otherwise its dead pty is
-      let go and it's relaunched, nothing waited on between the check and
-      letting go. The window says a refusal and keeps the pane, says a
+      `SessionManager.resume`): refused, with nothing undone and saying why,
+      for a pane that isn't an exited one here ("It isn't an exited pane
+      here: reopen it from Previous"), one running ("It's running
+      already"), one being resumed already ("It's being resumed already":
+      main keeps the ids under way until each relaunches or fails), a copy
+      a teammate continues or one whose record is gone; otherwise its dead
+      pty is let go and it's relaunched, nothing waited on between the
+      checks and letting go. The window says a refusal and keeps the pane, says a
       relaunch that failed after that, and says a call that got no answer
       (`resumeExited` in `resumeFlow.ts`). A copy taken back since into
       another session here says so instead (`room.takenOver.back`: "It was
@@ -1633,18 +1660,25 @@ Design O, with Artifacts as a window, and N's workspace header.
     - `test/workspaceActions.test.ts`: the create rows.
     - `test/landscape.test.ts`: `placeAt`, growing towards the edge nearer
       the click past neighbours locked or not, and `placeNew` in a full area
-      with others below and beside; `test/landscapeAreas.test.ts`:
-      `pushAside` (several held still, gaps by pair) and drops pushing a
-      locked area whole.
+      with others below and beside, the same whether they're given or not;
+      `test/landscapeAreas.test.ts`: `pushAside` (several held still, gaps
+      by pair, a passive one going past what it reaches) and drops pushing
+      a locked area whole.
     - `test/landscapeView.test.ts`: a right-click's placement hint (own,
       new since, in the area clicked; loose), and an area hemmed in by
       neighbours locked and not growing towards either edge, never moving,
       its neighbours' workspaces moving with them; New session here…, a
       right-click (locked since the dialog or not) and Move to area… into a
       full area with areas below and to the right; two areas growing in one
-      pass; a loose workspace pushed aside, in the layout and for a gesture.
+      pass; a loose workspace pushed aside `GAP` clear, in the layout and
+      for a gesture; for a gesture, a loose hidden place, ghost and tool
+      window pushed aside and kept in no area; an area pushed by one pushed
+      moving its hidden place once, which stays its own; a forgotten
+      session's place pushed, going past the area it reaches.
     - `test/landscapeTools.test.ts`: `compactPlaces` inside areas, beside or
-      squeezed, and clear of another area's name line.
+      squeezed, and clear of another area's name line; making room for a
+      window keeping the area's hidden place in it; a loose window dragged
+      into an area pushing nothing from where it was.
     - `test/uiLandscapeBar.test.ts` drives `?landscapeBarAudit`: =a an
       area's bar at 12%, 30%, 60% and 100% (size, place, room tools only in
       a room's), its buttons and ⋯ making the same calls, right-clicks,
@@ -1668,7 +1702,9 @@ Design O, with Artifacts as a window, and N's workspace header.
       `test/connectedModel.test.ts`: the pane line's tooltip;
       `test/resumeFlow.test.ts`: Resume asking main once the cost is agreed,
       and saying each way it stops; `test/sessionLifecycle.test.ts`:
-      `SessionManager.resume`; `test/takenOverGuard.test.ts`: its wiring;
+      `SessionManager.resume`, refusing a second while one is under way and
+      a running pane, nothing waited on between its check and the kill;
+      `test/takenOverGuard.test.ts`: its wiring;
       `test/selfUpdate.test.ts`: a failed update isn't an `{ error }`;
       `test/appModel.test.ts`: the close queue's step (`closeStep`), waiting
       while a dialog is open.

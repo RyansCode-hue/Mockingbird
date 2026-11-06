@@ -265,8 +265,8 @@ export function boundsOf(rects: readonly Rect[]): Rect | null {
  * In an area: the first free spot in reading order, top-left first, inside the area's padding and below its header,
  * the area as it is. Spots are tried at the area's corner and just right of or below each rectangle placed. With none,
  * the area grows as it does for a right-click with no room nearby (growSpot), from where its next row would start:
- * just below what's in it, at its left edge. What's inside the other areas (`others`) is theirs: never in the way, as
- * those areas are pushed aside whole should this one grow into them. The caller grows the area to take each spot
+ * just below what reaches into it, at its left edge. Neither looks at what's in other areas, which never reaches into
+ * this one (those areas are pushed aside whole should it grow into them). The caller grows the area to take each spot
  * (fitAreaTo) before placing the next.
  *
  * Loose (no area): a column just left of `near` (the first area), going down
@@ -275,7 +275,7 @@ export function boundsOf(rects: readonly Rect[]): Rect | null {
  * `occupied` is everything already placed, other areas' frames included for a
  * loose workspace.
  */
-export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | null, near: Rect | null = null, others: readonly Rect[] = []): Placement {
+export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | null, near: Rect | null = null): Placement {
   if (!area) {
     const free = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6));
     const x = near ? snapDown(near.x - AREA_GAP - size.w) : 0;
@@ -287,19 +287,18 @@ export function placeNew(size: Size, occupied: readonly Rect[], area: Rect | nul
     if (at === undefined) throw new Error(`placeNew found no free spot for ${size.w}×${size.h} among ${occupied.length} placements`);
     return { x, y: at, ...size };
   }
-  const here = occupied.filter((o) => !others.some((a) => within(o, a)));
-  const free = (p: Rect) => !here.some((o) => overlaps(p, o, GAP - 1e-6));
+  const free = (p: Rect) => !occupied.some((o) => overlaps(p, o, GAP - 1e-6));
   const left = snapUp(area.x + AREA_PAD);
   const top = snapUp(area.y + AREA_HEADER);
   const right = area.x + area.w - AREA_PAD;
   const bottom = area.y + area.h - AREA_PAD;
-  const xs = [left, ...here.map((o) => snapUp(o.x + o.w + GAP))].filter((x) => x >= left && x + size.w <= right);
-  const ys = [top, ...here.map((o) => snapUp(o.y + o.h + GAP))].filter((y) => y >= top && y + size.h <= bottom);
+  const xs = [left, ...occupied.map((o) => snapUp(o.x + o.w + GAP))].filter((x) => x >= left && x + size.w <= right);
+  const ys = [top, ...occupied.map((o) => snapUp(o.y + o.h + GAP))].filter((y) => y >= top && y + size.h <= bottom);
   const spots = xs.flatMap((x) => ys.map((y) => ({ x, y, ...size }))).filter(free);
   const inside = spots.sort((a, b) => a.y - b.y || a.x - b.x)[0];
   if (inside) return inside;
   // from its bottom-left corner: a new row, at the left
-  return growSpot(size, { x: left, y: area.y + area.h }, here, area);
+  return growSpot(size, { x: left, y: area.y + area.h }, occupied, area);
 }
 
 /**
@@ -441,11 +440,17 @@ export function clearOf(r: Rect, others: readonly Rect[], gap = AREA_GAP): { dx:
  * closer than `gap` to one already moved goes right or down, whichever is the shorter way, and pushes on in turn; one
  * pushed back into one that stays goes on past it. Should two in `still` come too close, the later goes past the
  * earlier (the one right-clicked comes first). Every other rectangle can be pushed, a locked area's too: lock keeps
- * what's inside an area where it is, and the area moves as a whole. `gap` can differ by pair (two areas keep further
- * apart than a workspace and an area). Only rightward and downward, so it always ends. The moves made, by key; none
- * when nothing was in the way.
+ * what's inside an area where it is, and the area moves as a whole. One in `passive` (what nobody sees) is pushed but
+ * pushes nothing: it goes on past whatever it's pushed into. `gap` can differ by pair (two areas keep further apart
+ * than a workspace and an area). Only rightward and downward, so it always ends. The moves made, by key; none when
+ * nothing was in the way.
  */
-export function pushAside(rects: Readonly<Record<string, Rect>>, still: string | readonly string[], gap: number | ((a: string, b: string) => number) = AREA_GAP): Record<string, { dx: number; dy: number }> {
+export function pushAside(
+  rects: Readonly<Record<string, Rect>>,
+  still: string | readonly string[],
+  gap: number | ((a: string, b: string) => number) = AREA_GAP,
+  passive: ReadonlySet<string> = new Set()
+): Record<string, { dx: number; dy: number }> {
   const at: Record<string, Rect> = {};
   for (const [k, r] of Object.entries(rects)) put(at, k, r);
   const keep = typeof still === "string" ? [still] : [...still];
@@ -475,8 +480,8 @@ export function pushAside(rects: Readonly<Record<string, Rect>>, still: string |
       const b = own(at, j)!;
       const g = apart(k, j);
       if (!overlaps(a, b, g - 1e-6)) continue;
-      if (rank(j) < rank(k)) {
-        // pushed back into one that stays: on past it, and it pushes on from there
+      if (passive.has(k) || rank(j) < rank(k)) {
+        // pushed back into one that stays, or pushing nothing: on past it, and on from there
         push(k, ...away(b, a, g));
         queue.push(k);
         break;
