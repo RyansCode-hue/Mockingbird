@@ -154,9 +154,43 @@ interface LiveSession {
   compactSentAt: number | null; // when Compact (usage warnings) last sent /compact here
 }
 
+/** Why a pane can't be resumed, relaunched or restarted while a resume of it is under way (SessionManager.resume). */
+const BEING_RESUMED = "It's being resumed already";
+
+/** What relaunching a persisted session resumes (relaunchPlan). */
+type RelaunchPlan = {
+  /** Its last conversation, while that's still on disk. */
+  conv: { agent: AgentKind; id: string } | null;
+  /** `conv` is its own agent's, resumed by id. */
+  sameAgent: boolean;
+  /** Resume its folder's latest conversation instead (--continue). */
+  resume: boolean;
+  /** The conversation resumed by id, which something outside the pane may be running (freeConversation). */
+  freeing: { agent: AgentKind; id: string } | null;
+};
+
+/**
+ * What relaunching `old` resumes: the exact conversation it last ran when that's still on disk; otherwise its
+ * folder's most recent, which is ambiguous when several chats started in one folder (home, WorkTracker), and none
+ * when the folder has no conversation yet (a session that died at startup relaunches fresh, as --continue would exit).
+ */
+function relaunchPlan(old: SessionInfo): RelaunchPlan {
+  const conv = old.conversation && agentFor(old.conversation.agent).conversationExists(old.conversation.id) ? old.conversation : null;
+  const sameAgent = !!conv && conv.agent === (old.agent ?? "claude");
+  return {
+    conv,
+    sameAgent,
+    resume: !old.shell && !sameAgent && agentFor(old.agent).hasConversation(old.cwd),
+    freeing: old.shell || sameAgent ? conv : null,
+  };
+}
+
 export class SessionManager {
   private live = new Map<string, LiveSession>();
-  /** Panes being resumed now (resume): a second Resume of one is refused until the first has relaunched it or failed. */
+  /**
+   * Panes being resumed now (resume), until each has relaunched or failed: a second Resume, a relaunch or a restart
+   * of one is refused meanwhile, and it isn't listed as resumable (Previous), where Reopen would launch it again.
+   */
   private resuming = new Set<string>();
   /** Every pty that hasn't exited yet, closed panes' included, with its exit: quitting waits for them (shutdown). */
   private running = new Map<pty.IPty, Promise<void>>();
@@ -283,10 +317,10 @@ export class SessionManager {
     return [...this.live.values()].map((s) => ({ ...s.info, queuedCount: s.queued.length }));
   }
 
-  /** Sessions persisted from a previous app run that aren't live now. */
+  /** Sessions persisted from a previous app run that aren't live now, but those being resumed (resume). */
   resumable(): SessionInfo[] {
     const liveIds = new Set(this.live.keys());
-    return this.store.state.sessions.filter((s) => !liveIds.has(s.id));
+    return this.store.state.sessions.filter((s) => !liveIds.has(s.id) && !this.resuming.has(s.id));
   }
 
   /** Start a pane. `notice` is shown in it above the agent's output (see paneNotice). */
@@ -671,6 +705,10 @@ export class SessionManager {
     if (refusal) throw new Error(refusal);
   }
 
+  private notResuming(id: string): void {
+    if (this.resuming.has(id)) throw new Error(BEING_RESUMED);
+  }
+
   /**
    * End a live session's process and leave its pane: dead, its scrollback
    * kept, nothing in its folder touched. Returns whether it was running.
@@ -692,6 +730,7 @@ export class SessionManager {
   /** Restart one pane in place: same id, its conversation resumed. */
   async restart(id: string): Promise<SessionInfo> {
     this.ownOnly(id, "restart it");
+    this.notResuming(id);
     this.mayRun(id);
     this.kill(id, false); // keep the store entry so relaunch can resume it
     const info = await this.relaunch(id);
@@ -775,27 +814,51 @@ export class SessionManager {
   }
 
   /**
-   * Resume an exited pane: refused before anything is undone when it's a teammate's, isn't an exited pane here, is
-   * being resumed already, may not run again (a teammate continues it: relaunchGuard) or its record is gone; otherwise
-   * its dead pty is let go, its record kept, and it's relaunched. Nothing is waited on between the checks and letting
-   * the pty go, so a take-over heard meanwhile can't come between them. A relaunch that fails after that throws, the
-   * session resumable (Previous).
+   * Why exited pane `id` can't be resumed now, or null: it's a teammate's, isn't an exited pane here, is being resumed
+   * already (but by the resume asking: `asking`), is running, may not run again (a teammate continues it:
+   * relaunchGuard), or its record is gone. Checks only: nothing is waited on.
+   */
+  private resumeRefusal(id: string, asking = false): string | null {
+    if (isRemotePaneId(id)) return "That's a teammate's session: only its owner can resume it";
+    if (!asking && this.resuming.has(id)) return BEING_RESUMED;
+    const pane = this.live.get(id);
+    if (!pane) return "It isn't an exited pane here: reopen it from Previous";
+    if (pane.info.status !== "dead") return "It's running already";
+    const refusal = this.relaunchGuard?.(id);
+    if (refusal) return refusal;
+    if (!this.recordOf(id)) return "Its saved record is gone, so there's nothing to resume: close the pane";
+    return null;
+  }
+
+  /**
+   * Resume an exited pane: refused, saying why, before anything is undone (resumeRefusal). A conversation it resumes
+   * by id that something outside the pane holds (freeConversation) is let go first, the pane kept, and refused with
+   * why when it can't be; the checks are then made again. Its dead pty is let go, its record kept, and it's
+   * relaunched, nothing waited on between the last checks and letting the pty go, so a take-over heard meanwhile can't
+   * come between them. A relaunch that fails after that throws, the session resumable (Previous).
    */
   async resume(id: string): Promise<SessionInfo | { refused: string }> {
-    if (isRemotePaneId(id)) return { refused: "That's a teammate's session: only its owner can resume it" };
-    if (this.resuming.has(id)) return { refused: "It's being resumed already" };
-    const pane = this.live.get(id);
-    if (!pane) return { refused: "It isn't an exited pane here: reopen it from Previous" };
-    if (pane.info.status !== "dead") return { refused: "It's running already" };
-    const refusal = this.relaunchGuard?.(id);
+    const refusal = this.resumeRefusal(id);
     if (refusal) return { refused: refusal };
-    if (!this.store.state.sessions.some((s) => s.id === id)) return { refused: "Its saved record is gone, so there's nothing to resume: close the pane" };
+    const plan = relaunchPlan(this.recordOf(id)!);
     this.resuming.add(id);
     try {
+      let notice: string | undefined;
+      if (plan.freeing && this.freeConversation) {
+        try {
+          notice = (await this.freeConversation(plan.freeing)) ?? undefined;
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err);
+          console.warn(`[sessions] ${id}: not resumed, its conversation is held outside its pane: ${why}`);
+          return { refused: why };
+        }
+        const again = this.resumeRefusal(id, true);
+        if (again) return { refused: again };
+      }
       this.kill(id, false);
-      const info = await this.relaunch(id);
-      if (!info) throw new Error("its saved record went while it was being resumed");
-      return info;
+      const old = this.recordOf(id);
+      if (!old) throw new Error("its saved record went while it was being resumed");
+      return await this.launchAgain(old, plan, notice);
     } finally {
       this.resuming.delete(id);
     }
@@ -804,23 +867,25 @@ export class SessionManager {
   /** Relaunch a persisted session in its old cwd, resuming the conversation. */
   async relaunch(id: string): Promise<SessionInfo | null> {
     this.ownOnly(id, "relaunch it");
+    this.notResuming(id);
     this.mayRun(id);
-    const old = this.store.state.sessions.find((s) => s.id === id);
+    const old = this.recordOf(id);
     if (!old) return null;
+    const plan = relaunchPlan(old);
+    const notice = (plan.freeing && (await this.freeConversation?.(plan.freeing))) || undefined;
+    return this.launchAgain(old, plan, notice);
+  }
+
+  private recordOf(id: string): SessionInfo | undefined {
+    return this.store.state.sessions.find((s) => s.id === id);
+  }
+
+  /** Start persisted session `old` again under its id, resuming what `plan` says; `notice` is shown in its pane. */
+  private async launchAgain(old: SessionInfo, plan: RelaunchPlan, notice: string | undefined): Promise<SessionInfo> {
+    if (notice) console.warn(`[sessions] ${old.id}: ${notice}`);
+    const { conv, sameAgent, resume } = plan;
     // create() re-adds the record; only forget the old one once it has, or a
     // failed relaunch (missing worktree, spawn error) erases the session for good
-    // --continue exits immediately when the cwd has no conversation yet (a
-    // session that died at startup); such a session relaunches fresh instead
-    // Resume the exact conversation this pane last ran when it's still on disk;
-    // otherwise fall back to "most recent in this folder", which is ambiguous
-    // when several chats started in the same folder (home, WorkTracker).
-    const conv = old.conversation && agentFor(old.conversation.agent).conversationExists(old.conversation.id) ? old.conversation : null;
-    const sameAgent = conv && conv.agent === (old.agent ?? "claude");
-    const resume = !old.shell && !sameAgent && agentFor(old.agent).hasConversation(old.cwd);
-    // the conversation resumed by id, which something outside the pane may be running
-    const resuming = old.shell || sameAgent ? conv : null;
-    const notice = (resuming && (await this.freeConversation?.(resuming))) || undefined;
-    if (notice) console.warn(`[sessions] ${id}: ${notice}`);
     const info = await this.create({
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,

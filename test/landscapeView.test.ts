@@ -17,6 +17,7 @@ import {
   newer,
   panBy,
   planMakeArea,
+  planMoveArea,
   readProblem,
   resolveLayout,
   revealTile,
@@ -556,21 +557,71 @@ describe("where each session's workspace sits", () => {
     const c = after.areas.C;
     expect(after.workspaces.hc.y + after.workspaces.hc.h).toBeLessThanOrEqual(c.y + c.h);
   });
-  it("lets the places nobody sees be pushed, but never push: a forgotten session's place goes on past the area it's pushed into", () => {
+  it("lets what nobody sees be pushed, but never push: a forgotten session's place, a loose ghost and a hidden stack each go on past the area they're pushed into", () => {
+    const at: Rect = { x: 24, y: 664, w: 800, h: 400 };
+    const kinds: [string, (l: Landscape) => void, (l: Landscape) => Rect][] = [
+      // no session has it any more
+      ["place", (l) => void (l.workspaces.gone = at), (l) => l.workspaces.gone],
+      ["ghost", (l) => void (l.ghosts.gh = { title: "g", agent: "claude", cwd: "/r", repoPath: null, placement: at, group: LOOSE_GROUP, closedAt: "x" }), (l) => l.ghosts.gh.placement],
+      // no session shown is one of its tabs
+      ["stack", (l) => void (l.stacks["Q/x"] = { active: "q", placement: at }), (l) => l.stacks["Q/x"].placement],
+    ];
+    for (const [kind, add, read] of kinds) {
+      const l = emptyLandscape();
+      l.migratedAt = "2026-11-01T00:00:00.000Z";
+      l.areas.D = { x: 0, y: 0, w: 2400, h: 600, repos: [] };
+      l.areas.B = { x: 0, y: 1800, w: 2400, h: 600, repos: [] };
+      l.workspaces.d1 = { x: 24, y: 48, w: 2352, h: 528 };
+      l.workspaces.b1 = { x: 24, y: 1848, w: 1000, h: 528 };
+      add(l);
+      const shown = [session("d1", { taskGroup: "D" }), session("b1", { taskGroup: "B" }), session("n", { taskGroup: "D" })];
+      const after = applyPatch(l, resolveLayout(l, shown).patch!);
+      expect(after.areas.B, kind).toEqual(l.areas.B);
+      expect(after.workspaces.b1, kind).toEqual(l.workspaces.b1);
+      const r = read(after);
+      for (const k of ["D", "B"]) expect(overlaps(r, after.areas[k], GAP - 1e-6), `${kind} ${k}`).toBe(false);
+      expect([r.x, r.w, r.h], kind).toEqual([24, 800, 400]);
+    }
+  });
+  it("counts what's kept in an area formed in the same pass as that area's: a hidden place between a new group's workspaces stays in it as it grows", () => {
+    // s1 and s2 were loose; now both are in G, with hp, a session not shown, stored between them, and n new in G
+    const l = emptyLandscape();
+    l.migratedAt = "2026-11-01T00:00:00.000Z";
+    l.workspaces.s1 = { x: 24, y: 48, w: 1000, h: 528 };
+    l.workspaces.hp = { x: 24, y: 592, w: 1000, h: 528 };
+    l.workspaces.s2 = { x: 24, y: 1136, w: 1000, h: 528 };
+    const shown = ["s1", "s2", "n"].map((id) => session(id, { taskGroup: "G" }));
+    const layout = resolveLayout(l, shown);
+    const after = applyPatch(l, layout.patch!);
+    const g = after.areas.G;
+    expect(g.h).toBeGreaterThan(1688);
+    expect(after.workspaces.hp).toEqual(l.workspaces.hp);
+    expect(after.workspaces.hp.y + after.workspaces.hp.h).toBeLessThanOrEqual(g.y + g.h);
+    // a gesture on that layout reads it as G's too, and moves it along
+    const plan = planMoveArea(after, resolveLayout(after, shown), "G", 0, 800, (k) => k);
+    if ("refused" in plan) throw new Error(plan.refused);
+    const moved = applyPatch(after, plan.patch!);
+    expect(moved.workspaces.hp.y - after.workspaces.hp.y).toBe(moved.areas.G.y - g.y);
+  });
+  it("counts a window or a card naming an area that's gone, and a ghost whose group has no area, as loose, as they're drawn: pushed aside by an area growing into them", () => {
     const l = emptyLandscape();
     l.migratedAt = "2026-11-01T00:00:00.000Z";
     l.areas.D = { x: 0, y: 0, w: 2400, h: 600, repos: [] };
-    l.areas.B = { x: 0, y: 1800, w: 2400, h: 600, repos: [] };
     l.workspaces.d1 = { x: 24, y: 48, w: 2352, h: 528 };
-    l.workspaces.b1 = { x: 24, y: 1848, w: 1000, h: 528 };
-    // no session has it any more
-    l.workspaces.gone = { x: 24, y: 664, w: 800, h: 400 };
-    const shown = [session("d1", { taskGroup: "D" }), session("b1", { taskGroup: "B" }), session("n", { taskGroup: "D" })];
-    const after = applyPatch(l, resolveLayout(l, shown).patch!);
-    expect(after.areas.B).toEqual(l.areas.B);
-    expect(after.workspaces.b1).toEqual(l.workspaces.b1);
-    for (const k of ["D", "B"]) expect(overlaps(after.workspaces.gone, after.areas[k], GAP - 1e-6), k).toBe(false);
-    expect([after.workspaces.gone.x, after.workspaces.gone.w, after.workspaces.gone.h]).toEqual([24, 800, 400]);
+    l.workspaces.z = { x: -2400, y: 0, w: 1000, h: 600 };
+    l.tools.w = { tool: "files", docked: false, session: "z", area: "Gone", placement: { x: 24, y: 664, w: 400, h: 300 } };
+    l.cards.c = { area: "Gone", shelf: "area:Gone", artifact: "a1", placement: { x: 500, y: 664, w: 400, h: 300 } };
+    l.ghosts.gh = { title: "g", agent: "claude", cwd: "/r", repoPath: null, placement: { x: 1000, y: 664, w: 400, h: 300 }, group: "Gone", closedAt: "x" };
+    const shown = [session("d1", { taskGroup: "D" }), session("z"), session("n", { taskGroup: "D" })];
+    const layout = resolveLayout(l, shown);
+    expect(layout.windows.find((w) => w.id === "w")?.area).toBeNull();
+    const after = applyPatch(l, layout.patch!);
+    const placed = { w: after.tools.w.placement!, c: after.cards.c.placement!, gh: after.ghosts.gh.placement };
+    for (const [k, r] of Object.entries(placed)) {
+      expect(overlaps(r, after.areas.D, GAP - 1e-6), k).toBe(false);
+      expect(r.y, k).toBeGreaterThan(664);
+    }
+    expect([after.tools.w.area, after.cards.c.area, after.ghosts.gh.group]).toEqual(["Gone", "Gone", "Gone"]);
   });
   it("grows a full area down for a right-clicked workspace rather than into the area beside it, locked or not", () => {
     for (const locked of [false, true]) {

@@ -1532,7 +1532,12 @@ Design O, with Artifacts as a window, and N's workspace header.
       thing kept beside the visible workspaces is in: the places of
       sessions not shown and of hidden stacks (by the area holding them),
       ghosts (by their group), tool windows and cards (by their `area`);
-      one in no area is loose. Every move in that pass reads only that:
+      one in no area is loose, and so is a window or card naming an area
+      that's gone, or a ghost whose group has none, as each is drawn. Both
+      read the layout's own areas through `keptIn`: the layout pass once it
+      has formed those its groups need (a group's stored workspaces framed
+      in the same pass), a gesture the ones that layout ended with. Every
+      move in that pass reads only that:
       an area pushed moves its own (`shiftKept`), once, wherever it ends;
       what's loose is pushed aside (`looseOf`, `pushAll`). The layout,
       `growArea` (a window opened or dragged in, a card placed), the
@@ -1542,8 +1547,8 @@ Design O, with Artifacts as a window, and N's workspace header.
       gesture itself moves (`leaving`: `tool:<id>`, `card:<id>`) is left
       out of the loose, so a window dragged into an area pushes nothing
       from where it was.
-    - **What nobody sees never pushes:** the places of sessions not on
-      screen (hidden, resumable or forgotten) and ghosts are passive. They
+    - **What nobody sees never pushes:** the places of sessions and stacks
+      not on screen (hidden, resumable or forgotten) and ghosts are passive. They
       move with their area, or out of the way when loose, and one pushed
       into something goes on past it rather than pushing it (`pushAside`'s
       `passive`). They're kept, not pruned: S6b's ghosts and Reopen all may
@@ -1590,12 +1595,19 @@ Design O, with Artifacts as a window, and N's workspace header.
       for a pane that isn't an exited one here ("It isn't an exited pane
       here: reopen it from Previous"), one running ("It's running
       already"), one being resumed already ("It's being resumed already":
-      main keeps the ids under way until each relaunches or fails), a copy
-      a teammate continues or one whose record is gone; otherwise its dead
-      pty is let go and it's relaunched, nothing waited on between the
-      checks and letting go. The window says a refusal and keeps the pane, says a
-      relaunch that failed after that, and says a call that got no answer
-      (`resumeExited` in `resumeFlow.ts`). A copy taken back since into
+      main keeps the ids under way until each relaunches or fails, leaves
+      them out of Previous meanwhile and refuses to relaunch or restart
+      them), a copy a teammate continues or one whose record is gone. A
+      conversation it resumes by id that a Claude Code background session
+      holds is let go next, the pane kept: one that can't be (mid-turn) is
+      refused with why, so "Resume once that turn ends" still has its
+      Resume button; then everything is checked again. Then its dead pty is
+      let go and it's relaunched, nothing waited on between those last
+      checks and letting go, and nothing at all from the first check when
+      there's no conversation to let go. The window says a refusal with the
+      session's title ("Couldn't resume ⟨title⟩: It's running already") and
+      keeps the pane, says a relaunch that failed after that, and says a
+      call that got no answer (`resumeExited` in `resumeFlow.ts`). A copy taken back since into
       another session here says so instead (`room.takenOver.back`: "It was
       taken back into another session here, which goes on with it: this
       copy doesn't run again"), in its rows, its pane's line and that line's
@@ -1674,7 +1686,11 @@ Design O, with Artifacts as a window, and N's workspace header.
       for a gesture; for a gesture, a loose hidden place, ghost and tool
       window pushed aside and kept in no area; an area pushed by one pushed
       moving its hidden place once, which stays its own; a forgotten
-      session's place pushed, going past the area it reaches.
+      session's place, a loose ghost and a hidden stack pushed, each going
+      past the area it reaches; a hidden place between the workspaces of a
+      group framed in the same pass staying in it, and a gesture moving it
+      along; a window and a card naming a gone area and a ghost whose group
+      has none pushed aside as loose.
     - `test/landscapeTools.test.ts`: `compactPlaces` inside areas, beside or
       squeezed, and clear of another area's name line; making room for a
       window keeping the area's hidden place in it; a loose window dragged
@@ -1701,9 +1717,13 @@ Design O, with Artifacts as a window, and N's workspace header.
       whose group moved still tagged and refused;
       `test/connectedModel.test.ts`: the pane line's tooltip;
       `test/resumeFlow.test.ts`: Resume asking main once the cost is agreed,
-      and saying each way it stops; `test/sessionLifecycle.test.ts`:
-      `SessionManager.resume`, refusing a second while one is under way and
-      a running pane, nothing waited on between its check and the kill;
+      and saying each way it stops, refusals with the title;
+      `test/sessionLifecycle.test.ts`: `SessionManager.resume`, refusing a
+      second while one is under way and a running pane, nothing waited on
+      from its first check to the kill (or, with a conversation to let go,
+      from the checks made again), one under way left out of Previous with
+      relaunch and restart refused, a busy conversation refused with the
+      pane kept, a take-over heard while it's let go refused;
       `test/takenOverGuard.test.ts`: its wiring;
       `test/selfUpdate.test.ts`: a failed update isn't an `{ error }`;
       `test/appModel.test.ts`: the close queue's step (`closeStep`), waiting

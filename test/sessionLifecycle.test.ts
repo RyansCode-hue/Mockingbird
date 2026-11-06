@@ -303,6 +303,75 @@ describe("Claude Code's background sessions", () => {
     expect(m.resumable().map((x) => x.id)).toContain(s.id);
   });
 
+  /** A pane that ran conversation `conv`, stopped: exited, its pane still there to Resume. */
+  async function stoppedPane(m: Awaited<ReturnType<typeof manager>>["m"], conv: string) {
+    transcript(conv);
+    const s = await m.create(agentPane);
+    m.statusFromHook({ paneId: s.id, conversationId: conv, agent: "claude", status: "idle" });
+    m.stop(s.id);
+    return s;
+  }
+
+  it("that won't let go refuse a Resume with why before its pane is let go, which stays to resume once the turn ends", async () => {
+    const { m } = await manager();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await stoppedPane(m, "busy-conv");
+    const busy = "This conversation is in the middle of a turn in Claude Code background session ab12cd34, outside its Mockingbird pane. Resume once that turn ends.";
+    m.freeConversation = async () => {
+      throw new Error(busy);
+    };
+    const started = ptys.length;
+    expect(await m.resume(s.id)).toEqual({ refused: busy });
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("dead");
+    expect(ptys.length).toBe(started);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes(busy))).toBe(true);
+    // once it's free, Resume goes ahead: nothing was left under way
+    m.freeConversation = async () => null;
+    expect(await m.resume(s.id)).toMatchObject({ id: s.id });
+    expect(ptys.length).toBe(started + 1);
+  });
+
+  it("for Resume, let go of it while the pane is kept, then check again, with nothing waited on from those checks to the kill", async () => {
+    const { m } = await manager();
+    const s = await stoppedPane(m, "bg-conv");
+    let release!: (notice: string | null) => void;
+    m.freeConversation = () => new Promise((r) => (release = r));
+    let waited = false;
+    const kill = m.kill.bind(m);
+    let waitedAtKill: boolean | null = null;
+    m.kill = (id: string, forget?: boolean) => {
+      waitedAtKill = waited;
+      return kill(id, forget);
+    };
+    const resumed = m.resume(s.id);
+    await Promise.resolve();
+    // a restart meanwhile is refused before it lets the pane go
+    await expect(m.restart(s.id)).rejects.toThrow("It's being resumed already");
+    expect(waitedAtKill).toBeNull();
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("dead");
+    // the conversation is free: queued once it is, this runs at the first thing waited on after
+    release(null);
+    queueMicrotask(() => (waited = true));
+    expect(await resumed).toMatchObject({ id: s.id });
+    expect(waitedAtKill).toBe(false);
+  });
+
+  it("for Resume, refuse it when a take-over arrives while the conversation is let go, the pane kept", async () => {
+    const { m } = await manager();
+    const s = await stoppedPane(m, "bg-conv");
+    let release!: (notice: string | null) => void;
+    m.freeConversation = () => new Promise((r) => (release = r));
+    const resumed = m.resume(s.id);
+    await Promise.resolve();
+    const refusal = "“a” continues on Nick's laptop — take it back rather than running this copy again";
+    m.relaunchGuard = () => refusal;
+    const started = ptys.length;
+    release(null);
+    expect(await resumed).toEqual({ refused: refusal });
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("dead");
+    expect(ptys.length).toBe(started);
+  });
+
   it("aren't asked about a pane with no conversation to resume by id", async () => {
     const { m } = await manager();
     const s = await m.create(agentPane);
@@ -355,24 +424,44 @@ describe("resuming twice, or a pane that isn't dead", () => {
     expect(ptys.length).toBe(started + 1);
   });
 
-  it("checks and lets the dead pty go with nothing waited on between them", async () => {
+  it("checks and lets the dead pty go with nothing waited on from its first check to the kill", async () => {
     const { m } = await manager();
     const s = await m.create(agentPane);
     m.stop(s.id);
-    // anything that waits between the check and the kill lets this microtask run first
+    // queued before Resume is asked, this runs at the first thing it waits on
     let waited = false;
-    m.relaunchGuard = () => {
-      queueMicrotask(() => (waited = true));
-      return null;
-    };
+    queueMicrotask(() => (waited = true));
     const kill = m.kill.bind(m);
     let waitedAtKill: boolean | null = null;
     m.kill = (id: string, forget?: boolean) => {
       waitedAtKill = waited;
       return kill(id, forget);
     };
-    await m.resume(s.id);
+    const resumed = m.resume(s.id);
+    // let go before resume() first waits, so before it even returns
     expect(waitedAtKill).toBe(false);
+    expect(await resumed).toMatchObject({ id: s.id });
+  });
+
+  it("leaves a pane being resumed out of Previous, and refuses to relaunch or restart it meanwhile; only one agent starts", async () => {
+    const { m } = await manager();
+    const s = await m.create(agentPane);
+    m.stop(s.id);
+    const started = ptys.length;
+    const first = m.resume(s.id);
+    // its dead pty is let go and its record kept while it relaunches: not a pane, nor in Previous to reopen
+    expect(m.list().map((x) => x.id)).not.toContain(s.id);
+    expect(m.resumable().map((x) => x.id)).not.toContain(s.id);
+    const reopened = m.relaunch(s.id);
+    const restarted = m.restart(s.id);
+    await expect(reopened).rejects.toThrow("It's being resumed already");
+    await expect(restarted).rejects.toThrow("It's being resumed already");
+    expect(await first).toMatchObject({ id: s.id });
+    expect(ptys.length).toBe(started + 1);
+    m.stop(s.id);
+    // once it's done, the pane is its own again
+    expect(await m.resume(s.id)).toMatchObject({ id: s.id });
+    expect(ptys.length).toBe(started + 2);
   });
 });
 

@@ -568,8 +568,8 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   };
   const firstArea = (): Area | null => [...areas.values()].sort((a, b) => a.y - b.y || a.x - b.x)[0] ?? null;
 
-  /** What's kept besides the workspaces shown, each with the area it's in as stored: what every move below goes by. */
-  const kept = keptIn(l, Object.entries(l.areas), { ids: shownIds, stacks: shownStacks });
+  /** What's kept besides the workspaces shown, each with the area it's in before this pass moves any: what every move below goes by. */
+  const kept = keptIn(l, areas, { ids: shownIds, stacks: shownStacks });
   const othersOf = (key: string) => [...areas].filter(([k]) => k !== key).map(([, r]) => r);
   const grew = new Set<string>();
   const growTo = (key: string, grown: Area) => {
@@ -942,13 +942,16 @@ const finish = (p: FullPatch): LandscapePatch | null => {
 type Kept = { key: string; area: string; passive: boolean; at: (p: FullPatch) => Rect | null; to: (p: FullPatch, r: Rect) => void };
 
 /**
- * What's kept on `l` besides the workspaces `shown`, each with the area it's in, from `l` as stored and `areas` (the
- * areas as stored): a place by the area holding it, a ghost by its group's, a window or a card by the area it names.
- * Gestures, resolveLayout and making room beside a workspace all go by this one reading. `laid`: where the layout put
- * windows and cards the file has no place for ("tool:<id>", "card:<id>").
+ * What's kept on `l` besides the workspaces `shown`, each with the area it's in, read now from `l` as stored and
+ * `areas`, a layout's areas by key: resolveLayout's once it has formed those its groups need and before it moves any
+ * (keptOf: a gesture's, the ones that layout ended with). A place is in the area holding it; a ghost in its group's, a
+ * window or a card in the one it names, and in none when that area isn't one of `areas`, as each is drawn. Gestures,
+ * resolveLayout and making room beside a workspace all go by this one reading. `laid`: where the layout put windows
+ * and cards the file has no place for ("tool:<id>", "card:<id>").
  */
-function keptIn(l: Landscape, areas: readonly (readonly [string, Rect])[], shown: { ids: ReadonlySet<string>; stacks: ReadonlySet<string> }, laid: ReadonlyMap<string, Rect> = new Map()): Kept[] {
-  const holding = (r: Rect) => areas.find(([, a]) => within(r, a))?.[0] ?? LOOSE_GROUP;
+function keptIn(l: Landscape, areas: ReadonlyMap<string, Rect>, shown: { ids: ReadonlySet<string>; stacks: ReadonlySet<string> }, laid: ReadonlyMap<string, Rect> = new Map()): Kept[] {
+  const holding = (r: Rect) => [...areas].find(([, a]) => within(r, a))?.[0] ?? LOOSE_GROUP;
+  const named = (key: string | null) => (key !== null && areas.has(key) ? key : LOOSE_GROUP);
   const out: Kept[] = [];
   for (const [id, r] of Object.entries(l.workspaces)) {
     if (!shown.ids.has(id)) out.push({ key: `place:${id}`, area: holding(r), passive: true, at: (p) => own(p.workspaces, id) ?? r, to: (p, to) => put(p.workspaces, id, to) });
@@ -957,16 +960,16 @@ function keptIn(l: Landscape, areas: readonly (readonly [string, Rect])[], shown
     if (!shown.stacks.has(sk)) out.push({ key: `stack:${sk}`, area: holding(st.placement), passive: true, at: (p) => own(p.stacks, sk)?.placement ?? st.placement, to: (p, to) => put(p.stacks, sk, { ...st, placement: to }) });
   }
   for (const [id, g] of Object.entries(l.ghosts)) {
-    out.push({ key: `ghost:${id}`, area: areaKeyOf({ taskGroup: g.group }), passive: true, at: (p) => own(p.ghosts, id)?.placement ?? g.placement, to: (p, to) => put(p.ghosts, id, { ...g, placement: to }) });
+    out.push({ key: `ghost:${id}`, area: named(areaKeyOf({ taskGroup: g.group })), passive: true, at: (p) => own(p.ghosts, id)?.placement ?? g.placement, to: (p, to) => put(p.ghosts, id, { ...g, placement: to }) });
   }
   for (const [id, t] of Object.entries(l.tools)) {
     if (t.docked) continue;
     const now = (p: FullPatch) => own(p.tools, id) ?? t;
-    out.push({ key: `tool:${id}`, area: t.area ?? LOOSE_GROUP, passive: false, at: (p) => now(p).placement ?? laid.get(`tool:${id}`) ?? null, to: (p, to) => put(p.tools, id, { ...now(p), placement: to }) });
+    out.push({ key: `tool:${id}`, area: named(t.area ?? null), passive: false, at: (p) => now(p).placement ?? laid.get(`tool:${id}`) ?? null, to: (p, to) => put(p.tools, id, { ...now(p), placement: to }) });
   }
   for (const [id, c] of Object.entries(l.cards)) {
     const now = (p: FullPatch) => own(p.cards, id) ?? c;
-    out.push({ key: `card:${id}`, area: c.area, passive: false, at: (p) => now(p).placement ?? laid.get(`card:${id}`) ?? null, to: (p, to) => put(p.cards, id, { ...now(p), placement: to }) });
+    out.push({ key: `card:${id}`, area: named(c.area), passive: false, at: (p) => now(p).placement ?? laid.get(`card:${id}`) ?? null, to: (p, to) => put(p.cards, id, { ...now(p), placement: to }) });
   }
   return out;
 }
@@ -974,7 +977,7 @@ function keptIn(l: Landscape, areas: readonly (readonly [string, Rect])[], shown
 /** keptIn for a gesture on `layout`: its areas, the workspaces it shows, and the places it gave windows and cards. */
 function keptOf(l: Landscape, layout: ResolvedLayout): Kept[] {
   const laid = new Map<string, Rect>([...layout.windows.map((w): [string, Rect] => [`tool:${w.id}`, w.rect]), ...layout.cards.map((c): [string, Rect] => [`card:${c.id}`, c.rect])]);
-  return keptIn(l, layout.areas.map((a): [string, Rect] => [a.key, a.rect]), shownIn(layout), laid);
+  return keptIn(l, new Map(layout.areas.map((a) => [a.key, a.rect])), shownIn(layout), laid);
 }
 
 const NONE_LEAVING: ReadonlySet<string> = new Set();

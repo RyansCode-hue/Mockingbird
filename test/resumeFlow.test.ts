@@ -30,20 +30,20 @@ describe("resuming an exited session", () => {
     expect(said).toEqual([]);
   });
 
-  it("a copy the window knows a teammate took over, or one taken back since: said, and nothing else happens", async () => {
+  it("a copy the window knows a teammate took over, or one taken back since: said with its title, and nothing else happens", async () => {
     for (const refusal of ["Nick continues it on their laptop: take it back rather than resuming this copy", "It was taken back into another session here, which goes on with it: this copy doesn't run again"]) {
       const { d, ran, said } = steps({ refusal });
       await expect(resumeExited("Donor entities", d)).resolves.toBeUndefined();
       expect(ran).toEqual([]);
-      expect(said).toEqual([refusal]);
+      expect(said).toEqual([`Couldn't resume Donor entities: ${refusal}`]);
     }
   });
 
-  it("one main refuses (a take-over heard during the cost's question, or one this window hasn't heard of): said, its terminal kept", async () => {
-    const { d, ran, said } = steps({ resume: { refused: "“Donor entities” continues on Sam's laptop — take it back rather than running this copy again" } });
+  it("one main refuses (running already, a take-over this window hasn't heard of, its conversation busy elsewhere): said with its title, its terminal kept", async () => {
+    const { d, ran, said } = steps({ resume: { refused: "It's running already" } });
     await expect(resumeExited("Donor entities", d)).resolves.toBeUndefined();
     expect(ran).toEqual(["cost", "resume"]);
-    expect(said).toEqual(["“Donor entities” continues on Sam's laptop — take it back rather than running this copy again"]);
+    expect(said).toEqual(["Couldn't resume Donor entities: It's running already"]);
   });
 
   it("stops at a declined cost, unsaid; a relaunch that failed after the pty went is said, its terminal let go", async () => {
