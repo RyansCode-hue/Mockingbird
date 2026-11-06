@@ -1595,9 +1595,11 @@ Design O, with Artifacts as a window, and N's workspace header.
       for a pane that isn't an exited one here ("It isn't an exited pane
       here: reopen it from Previous"), one running ("It's running
       already"), one being resumed already ("It's being resumed already":
-      main keeps the ids under way until each relaunches or fails, leaves
-      them out of Previous meanwhile and refuses to relaunch or restart
-      them), a copy a teammate continues or one whose record is gone. A
+      main keeps the ids under way until each relaunches or fails and
+      refuses to relaunch or restart them meanwhile; one stays among this
+      Mac's sessions (`resumable()`) between its pty let go and its relaunch,
+      so the room and take-over code never see it gone), a copy a teammate
+      continues or one whose record is gone. A
       conversation it resumes by id that a Claude Code background session
       holds is let go next, the pane kept: one that can't be (mid-turn) is
       refused with why, so "Resume once that turn ends" still has its
@@ -1721,9 +1723,11 @@ Design O, with Artifacts as a window, and N's workspace header.
       `test/sessionLifecycle.test.ts`: `SessionManager.resume`, refusing a
       second while one is under way and a running pane, nothing waited on
       from its first check to the kill (or, with a conversation to let go,
-      from the checks made again), one under way left out of Previous with
-      relaunch and restart refused, a busy conversation refused with the
-      pane kept, a take-over heard while it's let go refused;
+      from the checks made again), one under way kept among this Mac's
+      sessions with relaunch and restart refused, a busy conversation
+      refused with the pane kept, a take-over heard while it's let go
+      refused with what letting it go did; a relaunch that fails after the
+      pty went rereads the sessions, so Previous shows it;
       `test/takenOverGuard.test.ts`: its wiring;
       `test/selfUpdate.test.ts`: a failed update isn't an `{ error }`;
       `test/appModel.test.ts`: the close queue's step (`closeStep`), waiting

@@ -17,6 +17,7 @@ function steps(over: Partial<{ refusal: string | null; cost: boolean; resume: Se
       return typeof r === "function" ? r() : r;
     },
     dispose: () => void ran.push("dispose"),
+    refresh: async () => void ran.push("refresh"),
     say: (t) => void said.push(t),
   };
   return { d, ran, said };
@@ -46,13 +47,13 @@ describe("resuming an exited session", () => {
     expect(said).toEqual(["Couldn't resume Donor entities: It's running already"]);
   });
 
-  it("stops at a declined cost, unsaid; a relaunch that failed after the pty went is said, its terminal let go", async () => {
+  it("stops at a declined cost, unsaid; a relaunch that failed after the pty went is said, its terminal let go and the sessions reread to show it in Previous", async () => {
     const declined = steps({ cost: false });
     await expect(resumeExited("Donor entities", declined.d)).resolves.toBeUndefined();
     expect([declined.ran, declined.said]).toEqual([["cost"], []]);
     const failed = steps({ resume: { error: "the agent CLI is missing" } });
     await expect(resumeExited("Donor entities", failed.d)).resolves.toBeUndefined();
-    expect([failed.ran, failed.said]).toEqual([["cost", "resume", "dispose"], ["Couldn't resume Donor entities: the agent CLI is missing"]]);
+    expect([failed.ran, failed.said]).toEqual([["cost", "resume", "dispose", "refresh"], ["Couldn't resume Donor entities: the agent CLI is missing"]]);
   });
 
   it("says a call that never got an answer (no handler in main) rather than leaving it unhandled, its terminal kept", async () => {

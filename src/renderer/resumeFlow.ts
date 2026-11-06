@@ -14,6 +14,8 @@ export interface ResumeSteps {
   resume: () => Promise<SessionInfo | { refused: string } | { error: string }>;
   /** Let go of its terminal in the window. */
   dispose: () => void;
+  /** Reread the sessions: a relaunch that failed after its pty went leaves it in Previous, shown only by a reread. */
+  refresh: () => Promise<unknown>;
   say: (text: string) => void;
 }
 
@@ -38,6 +40,9 @@ export async function resumeExited(title: string, d: ResumeSteps): Promise<Sessi
   if ("refused" in r) return refused(r.refused);
   // past main's check its pty was let go, so its terminal goes too, whether or not the relaunch then worked
   d.dispose();
-  if (isErr(r)) return void d.say(`Couldn't resume ${title}: ${r.error}`);
+  if (isErr(r)) {
+    d.say(`Couldn't resume ${title}: ${r.error}`);
+    return void (await d.refresh());
+  }
   return r;
 }

@@ -1607,6 +1607,7 @@ function App() {
       costOk: () => costGate.resume(s),
       resume: () => window.mb.resumeSession(s.id),
       dispose: () => disposeTerm(s.id),
+      refresh,
       say: alert,
     });
     if (!info) return;

@@ -317,10 +317,14 @@ export class SessionManager {
     return [...this.live.values()].map((s) => ({ ...s.info, queuedCount: s.queued.length }));
   }
 
-  /** Sessions persisted from a previous app run that aren't live now, but those being resumed (resume). */
+  /**
+   * Sessions persisted from a previous app run that aren't live now. A pane being resumed is among them between its
+   * pty let go and its relaunch: main reads list() and resumable() together as every session this Mac has, and a
+   * reopen meanwhile is refused (notResuming).
+   */
   resumable(): SessionInfo[] {
     const liveIds = new Set(this.live.keys());
-    return this.store.state.sessions.filter((s) => !liveIds.has(s.id) && !this.resuming.has(s.id));
+    return this.store.state.sessions.filter((s) => !liveIds.has(s.id));
   }
 
   /** Start a pane. `notice` is shown in it above the agent's output (see paneNotice). */
@@ -849,11 +853,15 @@ export class SessionManager {
           notice = (await this.freeConversation(plan.freeing)) ?? undefined;
         } catch (err) {
           const why = err instanceof Error ? err.message : String(err);
-          console.warn(`[sessions] ${id}: not resumed, its conversation is held outside its pane: ${why}`);
+          console.warn(`[sessions] ${id}: not resumed, its conversation couldn't be let go: ${why}`);
           return { refused: why };
         }
         const again = this.resumeRefusal(id, true);
-        if (again) return { refused: again };
+        if (again) {
+          // what letting it go did (a background session stopped) is said with the refusal, not lost
+          if (notice) console.warn(`[sessions] ${id}: not resumed after its conversation was let go: ${notice}`);
+          return { refused: notice ? `${again}. Meanwhile, letting its conversation go: ${notice}` : again };
+        }
       }
       this.kill(id, false);
       const old = this.recordOf(id);

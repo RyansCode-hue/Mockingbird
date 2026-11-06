@@ -372,6 +372,23 @@ describe("Claude Code's background sessions", () => {
     expect(ptys.length).toBe(started);
   });
 
+  it("for Resume, say what letting the conversation go did when a take-over then refuses it", async () => {
+    const { m } = await manager();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s = await stoppedPane(m, "bg-conv");
+    const stopped = "This conversation was running in Claude Code background session ab12cd34, outside its Mockingbird pane. Mockingbird stopped it there to resume it here.";
+    let release!: (notice: string | null) => void;
+    m.freeConversation = () => new Promise((r) => (release = r));
+    const resumed = m.resume(s.id);
+    await Promise.resolve();
+    const refusal = "“a” continues on Nick's laptop — take it back rather than running this copy again";
+    m.relaunchGuard = () => refusal;
+    release(stopped);
+    expect(await resumed).toEqual({ refused: `${refusal}. Meanwhile, letting its conversation go: ${stopped}` });
+    expect(warn.mock.calls.some((c) => String(c[0]).includes(stopped))).toBe(true);
+    warn.mockRestore();
+  });
+
   it("aren't asked about a pane with no conversation to resume by id", async () => {
     const { m } = await manager();
     const s = await m.create(agentPane);
@@ -443,15 +460,16 @@ describe("resuming twice, or a pane that isn't dead", () => {
     expect(await resumed).toMatchObject({ id: s.id });
   });
 
-  it("leaves a pane being resumed out of Previous, and refuses to relaunch or restart it meanwhile; only one agent starts", async () => {
+  it("keeps a pane being resumed among this Mac's sessions, and refuses to relaunch or restart it meanwhile; only one agent starts", async () => {
     const { m } = await manager();
     const s = await m.create(agentPane);
     m.stop(s.id);
     const started = ptys.length;
     const first = m.resume(s.id);
-    // its dead pty is let go and its record kept while it relaunches: not a pane, nor in Previous to reopen
+    // its dead pty is let go and its record kept while it relaunches: no longer a pane, but still a session here
+    // (main reads list() and resumable() as every session this Mac has), which a reopen can't start twice
     expect(m.list().map((x) => x.id)).not.toContain(s.id);
-    expect(m.resumable().map((x) => x.id)).not.toContain(s.id);
+    expect(m.resumable().map((x) => x.id)).toContain(s.id);
     const reopened = m.relaunch(s.id);
     const restarted = m.restart(s.id);
     await expect(reopened).rejects.toThrow("It's being resumed already");
