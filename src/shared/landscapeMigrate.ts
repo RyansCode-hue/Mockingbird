@@ -226,7 +226,14 @@ export function migrateLayout(prefs: LegacyPrefs, sessions: readonly SessionInfo
       at = r.rects;
       frame = { x: 0, y: 0, w: r.w, h: r.h };
     }
-    for (const t of mine) if (!at.has(t.key)) at.set(t.key, placeNew(presetSize(tileKind(t), "M", cell), [...at.values()], frame));
+    for (const t of mine) {
+      if (at.has(t.key)) continue;
+      const r = placeNew(presetSize(tileKind(t), "M", cell), [...at.values()], frame);
+      at.set(t.key, r);
+      // grown for each, as placeNew needs: its next row starts below what's in the area
+      const { x, y, w, h } = fitAreaTo({ ...frame, repos: [] }, [r]);
+      frame = { x, y, w, h };
+    }
     const { x, y, w, h } = fitAreaTo({ ...frame, repos: [] }, [...at.values()]);
     return { frame: { x, y, w, h }, at };
   };

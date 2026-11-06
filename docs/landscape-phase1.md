@@ -545,7 +545,8 @@ notes.
     - `areaAround` forms an area around workspaces;
     - `clearOf` moves an area to the nearest clear spot on the grid;
     - `pushAside` pushes the areas in a growing area's way aside, with their
-      workspaces and ghosts.
+      workspaces and ghosts (and, since S6a's review fixes, what's in no
+      area, which stays in none).
 
     An area moves with everything inside it. That includes the places of
     sessions that aren't shown (waiting to be resumed) and of stacks none of
@@ -598,7 +599,9 @@ notes.
     `locked`). A collapsed area's workspaces are `hidden`: not drawn, nothing
     attached, and off screen for `keysOnScreen` and `sessionsOnScreen` (left
     from S3). A fit uses the area's pill. A locked area draws a solid outline
-    and a lock, can't be dragged, and nothing moves into, out of or within it.
+    and a lock, can't be dragged, and nothing moves into, out of or within it;
+    since S6a's review fixes it's still pushed aside whole when another area
+    grows into it (its button and menu row say so: `lockTitle`).
   - **Going to an area** goes through `flyTo`. It plays a hidden `.ls-clock`
     element's animation (`D.l`, 460 ms, `EASE.move`), and each frame applies
     `flightAt` at that animation's progress through `apply`. The band, the
@@ -1485,7 +1488,7 @@ Design O, with Artifacts as a window, and N's workspace header.
     dialog: the agent picked, the area's group, its first repo and that
     repo's base preselected, the ticket field open (From a ticket…), or
     importing (Import…). The area's ⋯ New session here… seeds the same repo
-    and base, and goes in the nearest free spot as before.
+    and base, and goes in its first free spot (below).
     - **Placed where it was clicked:** the first session of this Mac made in
       that area after the click (`createdAt`) goes at the click (`placeAt`:
       on the grid, inside the area's padding and under its header, or the
@@ -1499,15 +1502,29 @@ Design O, with Artifacts as a window, and N's workspace header.
       its edge nearer the click: below, a new row just under its lowest
       workspace at the click's x, kept inside the padding; to the right, a
       new column just right of its rightmost workspace at the click's y, kept
-      inside it. Only workspaces nothing pushes (its own, and loose ones)
-      move it on along that edge. The layout then pushes the areas in its way
-      aside, a locked one too, each as a whole, as it does for any area that
-      grows; the area clicked never moves, and nothing is refused. New
-      session here… goes in the area's first free spot or a new row below,
-      the area growing the same way. The hint lasts until that place is
-      saved, 10 s after the dialog makes it, or the dialog closing without
-      one; an area locked meanwhile changes nothing. A click outside every
-      area places a loose one there.
+      inside it (`growSpot`). The layout then pushes what's in its way aside:
+      other areas, a locked one too, each as a whole, and what's in no area
+      (workspaces, the places kept for loose sessions not shown, loose
+      ghosts and tool windows), which moves `GAP` clear and stays in none.
+      The area clicked never moves, and nothing is refused. The hint lasts
+      until that place is saved, 10 s after the dialog makes it, or the
+      dialog closing without one; an area locked meanwhile changes nothing.
+      A click outside every area places a loose one there.
+    - **Everything else new in an area** (New session here…, a session
+      started elsewhere in its group, Move to area…/Make area… joining it, a
+      tool window or a card, a resized workspace that no longer fits):
+      `placeNew` takes the first free spot inside it in reading order; with
+      none, `growSpot` from its bottom-left corner, a new row just below
+      what's in it, at its left. What's inside the other areas is never in
+      the way of either (it used to be: a full area with another just below
+      put its new workspace below everything in that one, and pushed it
+      aside). Callers grow the area between placements (`fitAreaTo`), the
+      migration's frame too.
+    - **Several areas growing in one pass** (a right-click's session and
+      others arriving together) are held still together: one `pushAside`
+      from all of them, the one right-clicked first, so a push that runs on
+      from one into another goes past it; of two that grow into each other,
+      the later goes past the earlier.
     - Browser isn't offered: this plan's list doesn't have it (the spec's
       does), and there's no browser workspace yet.
   - **Left from S5, done:**
@@ -1536,13 +1553,21 @@ Design O, with Artifacts as a window, and N's workspace header.
       up and throws `takenOverRefusal`'s reason, saying what was refused,
       before the call's body runs. That's the taken-over check alone;
       `relaunchRefusal` adds to it the copy from a refused take-over, which
-      only relaunching refuses. Main's check and the window's flag
-      (`room.takenOver`, from `LivePanes.state`) both come from one function,
-      `takenOverOwn` (`shared/team/takeover.ts`): a copy of this Mac's that a
-      teammate took over in any room, whichever group the session is in now,
-      with its current owner along the continuation chain (Ryan → Nick → Sam
-      is Sam's). Resume asks main first (`sessions:relaunchRefusal`) and
-      stops, saying why, before it kills or disposes anything
+      only relaunching refuses. Main's check, the window's flag
+      (`room.takenOver`, from `LivePanes.state`), the room a copy is shared
+      in (`roomOfInfo`) and what a teammate's Mac may ask of it
+      (`ownRoomSession`) all come from one function, `takenOverOwn`
+      (`shared/team/takeover.ts`, through `LivePanes.takenOver`): a copy of
+      this Mac's that a teammate took over in any room, whichever group the
+      session is in now, with its current owner along the continuation chain
+      (Ryan → Nick → Sam is Sam's). So a copy moved into a group shared as
+      another room isn't that room's either, and can't be taken over twice.
+      Resume is one call to main once the cost is agreed (`sessions:resume`,
+      `SessionManager.resume`): refused, with nothing undone, for a copy a
+      teammate continues or whose record is gone; otherwise its dead pty is
+      let go and it's relaunched, nothing waited on between the check and
+      letting go. The window says a refusal and keeps the pane, says a
+      relaunch that failed after that, and says a call that got no answer
       (`resumeExited` in `resumeFlow.ts`). A copy taken back since into
       another session here says so instead (`room.takenOver.back`: "It was
       taken back into another session here, which goes on with it: this
@@ -1551,18 +1576,25 @@ Design O, with Artifacts as a window, and N's workspace header.
       continues it; otherwise they name the current owner.
   - **Following ⟨name⟩ — Stop in the status bar** (`FollowingNow`) sits in
     the bar's right-hand part after its notes (a read that failed, an
-    update's trouble, the hooks missing), so it never takes their room.
-    Short of room, the counts and hints at the end (sessions · groups, ⌘K
-    commands, ? help) give way first, then Following's words, cut with an
-    ellipsis and in full on hover; the notes never shrink, and what's past
-    the bar's end is clipped after them. Measured (`?statusNotes=few
-    &statusAudit`, the update link and the hooks warning): at 1024 px both
-    show whole, and so does Stop beside the cut words (77 px), with "—
-    waiting for a shared session" too; at 900 px the notes show whole and
-    Following is clipped away (⌘K's Stop following, or changing the grid,
-    still stops it). With every note at once (`?statusNotes=all`: a read
-    error, a failed build, its link, the hooks) the first note alone is
-    wider than the room at either width, following or not.
+    update's trouble, the update link, the hooks missing). The right-hand
+    part is `display: contents`, so everything in the bar gives way in one
+    row, in turn: the hints at the end (sessions · groups, ⌘K commands, ?
+    help, one box), then Following's words (a grid whose middle column goes
+    down to nothing; its icon and Stop never shrink), then the notes' words
+    (cut with an ellipsis down to 64 px, in full on hover; their ✕ stays),
+    then the plan usage meter (down to 48 px). The update link and the hooks
+    warning never shrink. Measured (`?statusAudit`), Stop always shows:
+    - every note (`?statusNotes=all`): at 900 px both notes at 64 px and the
+      meter at 48; at 1024 px the notes at 64 and the meter at 167; at 1400
+      px the notes at 292 and 109, the meter whole, Following's words cut to
+      nothing (on hover);
+    - the link and the hooks only (`=few`): at 900 px Following's words cut
+      to nothing and the meter at 199; at 1024 px the words cut (106 px with
+      Stop); at 1400 px whole, "— waiting for a shared session" cut.
+  - **A failed update shows as one** (older code): `UpdateProgress` names
+    its reason `problem`, not `error`, which `isErr` took for a call that
+    failed, so the status bar said "Couldn't read the update's progress…"
+    instead of "update failed", and the update panel said it twice.
   - **Differences from Q and Q2:**
     - Q2's bar far out names the area in full ("#5102 Pathways quick
       view"); Q, the chosen design, uses the short name, as built.
@@ -1600,12 +1632,17 @@ Design O, with Artifacts as a window, and N's workspace header.
       taken-over session's rows.
     - `test/workspaceActions.test.ts`: the create rows.
     - `test/landscape.test.ts`: `placeAt`, growing towards the edge nearer
-      the click past neighbours locked or not; `test/landscapeAreas.test.ts`:
-      `pushAside` and drops pushing a locked area whole.
+      the click past neighbours locked or not, and `placeNew` in a full area
+      with others below and beside; `test/landscapeAreas.test.ts`:
+      `pushAside` (several held still, gaps by pair) and drops pushing a
+      locked area whole.
     - `test/landscapeView.test.ts`: a right-click's placement hint (own,
       new since, in the area clicked; loose), and an area hemmed in by
       neighbours locked and not growing towards either edge, never moving,
-      its neighbours' workspaces moving with them.
+      its neighbours' workspaces moving with them; New session here…, a
+      right-click (locked since the dialog or not) and Move to area… into a
+      full area with areas below and to the right; two areas growing in one
+      pass; a loose workspace pushed aside, in the layout and for a gesture.
     - `test/landscapeTools.test.ts`: `compactPlaces` inside areas, beside or
       squeezed, and clear of another area's name line.
     - `test/uiLandscapeBar.test.ts` drives `?landscapeBarAudit`: =a an
@@ -1629,10 +1666,14 @@ Design O, with Artifacts as a window, and N's workspace header.
       `test/teamTakenOver.test.ts`: a copy taken back tagged `back`, and one
       whose group moved still tagged and refused;
       `test/connectedModel.test.ts`: the pane line's tooltip;
-      `test/resumeFlow.test.ts`: Resume asking main before it kills;
+      `test/resumeFlow.test.ts`: Resume asking main once the cost is agreed,
+      and saying each way it stops; `test/sessionLifecycle.test.ts`:
+      `SessionManager.resume`; `test/takenOverGuard.test.ts`: its wiring;
+      `test/selfUpdate.test.ts`: a failed update isn't an `{ error }`;
       `test/appModel.test.ts`: the close queue's step (`closeStep`), waiting
       while a dialog is open.
-    - `test/uiStatusBar.test.ts` drives `?statusAudit` at 900 and 1024 px;
+    - `test/uiStatusBar.test.ts` drives `?statusAudit` at 900, 1024 and 1400
+      px, every note and the link and hooks only;
       `test/followingNow.test.ts`: what Following says, its parts, and Follow
       offered only while no one is followed.
     - `?landscapeAreasAudit` reads the several bar where it read S4's pick

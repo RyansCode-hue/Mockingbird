@@ -314,6 +314,31 @@ describe("Claude Code's background sessions", () => {
   });
 });
 
+describe("resuming an exited pane", () => {
+  it("lets its dead pty go and relaunches it under its id; refused, with nothing undone, for one a teammate continues or whose record is gone", async () => {
+    const { m, store } = await manager();
+    const s = await m.create(agentPane);
+    m.stop(s.id);
+    let refusal: string | null = "“a” continues on Nick's laptop — take it back rather than running this copy again";
+    m.relaunchGuard = () => refusal;
+    const started = ptys.length;
+    expect(await m.resume(s.id)).toEqual({ refused: refusal });
+    // the pane is as it was: dead, still listed, its pty never started again
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("dead");
+    expect(ptys.length).toBe(started);
+    refusal = null;
+    const back = await m.resume(s.id);
+    expect(back).toMatchObject({ id: s.id });
+    expect(m.list().find((x) => x.id === s.id)?.status).not.toBe("dead");
+    expect(ptys.length).toBe(started + 1);
+    // a dead pane whose record went: said, nothing killed
+    m.stop(s.id);
+    store.state.sessions.splice(0);
+    expect(await m.resume(s.id)).toEqual({ refused: expect.stringMatching(/record is gone/) });
+    expect(m.list().find((x) => x.id === s.id)?.status).toBe("dead");
+  });
+});
+
 describe("a session a teammate continues", () => {
   it("isn't started by a relaunch that was already under way when the take-over arrived", async () => {
     const { m } = await manager();

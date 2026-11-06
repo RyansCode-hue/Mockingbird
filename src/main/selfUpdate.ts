@@ -109,7 +109,7 @@ export class UpdateRunner {
   async prepare(): Promise<UpdateProgress> {
     if (this.progress.state === "preparing" || this.progress.state === "installing") return this.progress;
     this.ac = new AbortController();
-    this.set({ state: "preparing", done: [], log: [], error: undefined, step: undefined, version: undefined, appPath: undefined });
+    this.set({ state: "preparing", done: [], log: [], problem: undefined, step: undefined, version: undefined, appPath: undefined });
     const done = (id: UpdateStepId) => this.set({ done: [...this.progress.done, id] });
     try {
       this.step("check");
@@ -165,9 +165,9 @@ export class UpdateRunner {
       this.log(`ready: ${version} at ${appPath}`);
       this.set({ state: "ready", step: undefined, version, appPath });
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      this.log(`✕ ${error}`);
-      this.set({ state: "failed", error });
+      const problem = err instanceof Error ? err.message : String(err);
+      this.log(`✕ ${problem}`);
+      this.set({ state: "failed", problem });
     } finally {
       this.ac = null;
     }

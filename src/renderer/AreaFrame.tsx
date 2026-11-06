@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { AreaCounts, AreaView, Band } from "./landscapeModel";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { LockIcon } from "./Icons";
+import { lockTitle } from "./workspaceActions";
 import { plural } from "../shared/format";
 
 /**
@@ -103,7 +104,7 @@ export function AreaFrame({
       <button type="button" onClick={() => onCollapse(true)} title="Collapse to a pill that keeps its counts">
         Collapse
       </button>
-      <button type="button" className={a.locked ? "on" : ""} aria-pressed={!!a.locked} onClick={() => onLock(!a.locked)} title={a.locked ? "Unlock: workspaces can be moved in, out and around it again" : "Lock its layout: nothing moves in, out or around it"}>
+      <button type="button" className={a.locked ? "on" : ""} aria-pressed={!!a.locked} onClick={() => onLock(!a.locked)} title={lockTitle(!!a.locked)}>
         {a.locked ? "Locked" : "Lock"}
       </button>
     </div>

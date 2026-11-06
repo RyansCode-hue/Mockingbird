@@ -90,7 +90,7 @@ describe.skipIf(!local)("resuming a big conversation whose cache is cold", () =>
     expect(a.asked).toBe(true);
     expect(a.say).toBe("Resuming this re-reads about 380k tokens, roughly 7.5% of your 5-hour limit.");
     expect(a.why).toMatch(/^Cold: its cache went cold 3 hr ago, so they're written to the cache again at about 1\.25× the input price/);
-    expect(a.afterCancel).toEqual({ dialog: false, killed: 0, relaunched: 0 });
-    expect(a.afterContinue).toEqual({ dialog: false, relaunched: 1 });
+    expect(a.afterCancel).toEqual({ dialog: false, resumed: 0 });
+    expect(a.afterContinue).toEqual({ dialog: false, resumed: 1 });
   }, 120_000);
 });

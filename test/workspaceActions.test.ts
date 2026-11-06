@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import type { Action, MenuEntry } from "../src/renderer/ContextMenu";
-import { actionOf, areaActions, artifactsOf, createActions, inSection, menuOf, usable, workspaceActions, type AreaEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
+import { actionOf, areaActions, artifactsOf, createActions, inSection, lockTitle, menuOf, usable, workspaceActions, type AreaEnv, type WorkspaceEnv } from "../src/renderer/workspaceActions";
 
 const sess = (over: Partial<SessionInfo> = {}): SessionInfo => ({
   id: "s1",
@@ -210,6 +210,12 @@ describe("an area's actions", () => {
     ...over,
   });
   const labels = (a: AreaEnv) => menuOf(areaActions(a)).map((e) => (e === "-" ? "-" : e.heading ? `# ${e.label}` : `${e.menuLabel ?? e.label}${e.pressed ? " ✓" : ""}`));
+
+  it("say what Lock does now: the layout frozen, the area still pushed aside whole", () => {
+    expect(actionOf(areaActions(area()), "lock")?.title).toMatch(/^Lock its layout: its workspaces keep their places, and none move in or out; it's still pushed aside whole/);
+    expect(actionOf(areaActions(area({ stored: { collapsed: false, locked: true } })), "lock")?.title).toMatch(/^Unlock: /);
+    expect(lockTitle(false)).not.toMatch(/around it/);
+  });
 
   it("group an area that isn't a room's with no Team room heading: its sessions under Sessions, sharing on its own", () => {
     expect(labels(area())).toEqual([

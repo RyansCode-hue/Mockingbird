@@ -466,10 +466,11 @@ const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(mem
  * A group with no area whose workspaces already have places (loose ones just
  * named a group) gets its area around them. Areas never overlap: one formed so
  * is moved clear of the others (clearOf), its workspaces with it, and one that
- * grows to hold a new workspace pushes the areas in its way aside (pushAside),
- * theirs with them, every place stored inside them included. A locked area is
- * pushed too, as a whole: lock keeps what's inside it where it is. An area
- * that grows never moves.
+ * grows to hold a new workspace pushes what's in its way aside (pushAside):
+ * other areas, theirs with them, every place stored inside them included, and
+ * what's in no area, which stays in none. A locked area is pushed too, as a
+ * whole: lock keeps what's inside it where it is. An area that grows never
+ * moves; of two that grow into each other, the one right-clicked stays.
  *
  * `renames` are this window's renames still on their way (PendingRename).
  */
@@ -567,6 +568,9 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   };
   const firstArea = (): Area | null => [...areas.values()].sort((a, b) => a.y - b.y || a.x - b.x)[0] ?? null;
 
+  /** The areas before any grows: what a place kept for a session not shown is in, or that it's in none. */
+  const before = [...areas.values()];
+  const othersOf = (key: string) => [...areas].filter(([k]) => k !== key).map(([, r]) => r);
   const grew = new Set<string>();
   const growTo = (key: string, grown: Area) => {
     setArea(key, grown, { w: grown.w, h: grown.h });
@@ -587,7 +591,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
         rect = here ? placeAt(size, hint!.at, loose, null, firstArea()) : placeNew(size, loose, null, firstArea());
       } else {
         const area = areas.get(g.area) ?? addArea(g.area);
-        rect = here ? placeAt(size, hint!.at, occupied, area, null, [...areas].filter(([k]) => k !== g.area).map(([, r]) => r)) : placeNew(size, occupied, area);
+        rect = here ? placeAt(size, hint!.at, occupied, area, null, othersOf(g.area)) : placeNew(size, occupied, area, null, othersOf(g.area));
         const grown = fitAreaTo(area, [rect]);
         if (grown !== area) growTo(g.area, grown);
       }
@@ -622,7 +626,7 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
   const placeExtra = (area: string | null, size: Size): Rect => {
     const a = area === null ? undefined : areas.get(area);
     if (!a) return placeNew(size, [...occupied, ...areas.values()], null, firstArea());
-    const r = placeNew(size, occupied, a);
+    const r = placeNew(size, occupied, a, null, othersOf(area!));
     const grown = fitAreaTo(a, [r]);
     if (grown !== a) growTo(area!, grown);
     return r;
@@ -640,12 +644,18 @@ export function resolveLayout(l: Landscape, sessions: readonly SessionInfo[], ce
     put(patch.cards, id, { ...c, placement: r });
   }
 
-  // an area that grew stays where it is and moves the ones in its way aside, each with everything in it, a locked one
-  // as a whole
-  for (const key of grew) {
-    const rects: Record<string, Rect> = {};
-    for (const [k, a] of areas) put(rects, k, a);
-    for (const [k, m] of Object.entries(pushAside(rects, key, AREA_GAP))) moveAreaBy(k, m.dx, m.dy);
+  // the areas that grew stay where they are, all together (the one right-clicked first), and what's in their way moves
+  // aside: other areas, each with everything in it (a locked one as a whole), and what's in no area, which stays in none
+  if (grew.size) {
+    const loose: Pushed[] = [
+      ...tiles.filter((t) => t.area === LOOSE_GROUP).map((t) => ({ rect: stored.get(t.key)!, move: (dx: number, dy: number) => shiftTile(t.key, dx, dy) })),
+      ...looseKept(l, patch, { ids: shownIds, stacks: shownStacks }, (r) => !before.some((a) => within(r, a))),
+    ];
+    const still = [...grew].sort((a, b) => Number(b === hint?.area) - Number(a === hint?.area));
+    for (const [k, m] of Object.entries(pushAside(pushRects(areas, loose), still.map((k) => AREA_KEY + k), apartOf))) {
+      if (k.startsWith(AREA_KEY)) moveAreaBy(k.slice(AREA_KEY.length), m.dx, m.dy);
+      else loose[Number(k.slice(LOOSE_KEY.length))].move(m.dx, m.dy);
+    }
   }
 
   for (const t of tiles) {
@@ -997,12 +1007,7 @@ function moveArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: strin
   const a = layout.areas.find((x) => x.key === key)!.rect;
   const was = own(p.areas, key);
   put(p.areas, key, { ...(was ?? {}), x: (was?.x ?? a.x) + dx, y: (was?.y ?? a.y) + dy });
-  for (const t of layout.tiles) {
-    if (t.area !== key || leaving.has(t.key)) continue;
-    const r = shifted((t.stack ? own(p.stacks, t.stack)?.placement : own(p.workspaces, t.front.id)) ?? t.rect, dx, dy);
-    if (t.stack) put(p.stacks, t.stack, { active: t.front.id, placement: r });
-    else put(p.workspaces, t.front.id, r);
-  }
+  for (const t of layout.tiles) if (t.area === key && !leaving.has(t.key)) moveTile(p, t, dx, dy);
   for (const [id, g] of Object.entries(l.ghosts)) {
     if (areaKeyOf({ taskGroup: g.group }) !== key) continue;
     put(p.ghosts, id, { ...g, placement: shifted(own(p.ghosts, id)?.placement ?? g.placement, dx, dy) });
@@ -1017,15 +1022,76 @@ function moveArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: strin
   moveExtras(p, l, key, dx, dy);
 }
 
+/** Workspace `t` moved by `dx`, `dy` in `p`, from where `p` has it already. */
+function moveTile(p: FullPatch, t: Tile, dx: number, dy: number): void {
+  const r = shifted((t.stack ? own(p.stacks, t.stack)?.placement : own(p.workspaces, t.front.id)) ?? t.rect, dx, dy);
+  if (t.stack) put(p.stacks, t.stack, { active: t.front.id, placement: r });
+  else put(p.workspaces, t.front.id, r);
+}
+
+/** Something pushAside can push that isn't an area, and how it moves. */
+type Pushed = { rect: Rect; move: (dx: number, dy: number) => void };
+const AREA_KEY = "area\n";
+const LOOSE_KEY = "loose\n";
+/** pushAside's gap between two of its keys: areas keep AREA_GAP apart, what's in no area GAP from anything. */
+const apartOf = (a: string, b: string) => (a.startsWith(AREA_KEY) && b.startsWith(AREA_KEY) ? AREA_GAP : GAP);
+/** The areas and the loose things as pushAside takes them, keyed apart so a name can't collide. */
+function pushRects(areas: Iterable<[string, Rect]>, loose: readonly Pushed[]): Record<string, Rect> {
+  const rects: Record<string, Rect> = {};
+  for (const [k, a] of areas) put(rects, AREA_KEY + k, a);
+  loose.forEach((x, i) => put(rects, LOOSE_KEY + i, x.rect));
+  return rects;
+}
+
 /**
- * Area `key` now `grown`: the areas in its way pushed aside (pushAside), a locked one too as a whole, with everything
- * in them, but not the workspaces in `leaving`, which are moving into it and have their places in `p` already.
+ * What's in no area besides the workspaces shown, each moving in `p` from where `p` has it already: the places kept
+ * for sessions and stacks not shown that are in none (`inNone`), loose ghosts and loose tool windows. An area growing
+ * into one pushes it aside, and it stays in no area.
+ */
+function looseKept(l: Landscape, p: FullPatch, shown: { ids: ReadonlySet<string>; stacks: ReadonlySet<string> }, inNone: (r: Rect) => boolean): Pushed[] {
+  const out: Pushed[] = [];
+  for (const [id, r] of Object.entries(l.workspaces)) {
+    const at = own(p.workspaces, id) ?? r;
+    if (!shown.ids.has(id) && inNone(at)) out.push({ rect: at, move: (dx, dy) => put(p.workspaces, id, shifted(own(p.workspaces, id) ?? r, dx, dy)) });
+  }
+  for (const [sk, st] of Object.entries(l.stacks)) {
+    const at = own(p.stacks, sk)?.placement ?? st.placement;
+    if (!shown.stacks.has(sk) && inNone(at)) out.push({ rect: at, move: (dx, dy) => put(p.stacks, sk, { ...st, placement: shifted(own(p.stacks, sk)?.placement ?? st.placement, dx, dy) }) });
+  }
+  for (const [id, g] of Object.entries(l.ghosts)) {
+    if (areaKeyOf({ taskGroup: g.group }) !== LOOSE_GROUP) continue;
+    out.push({ rect: own(p.ghosts, id)?.placement ?? g.placement, move: (dx, dy) => put(p.ghosts, id, { ...g, placement: shifted(own(p.ghosts, id)?.placement ?? g.placement, dx, dy) }) });
+  }
+  for (const [id, t] of Object.entries(l.tools)) {
+    const now = own(p.tools, id) ?? t;
+    if (!now || now.docked || now.area || !now.placement) continue;
+    out.push({
+      rect: now.placement,
+      move: (dx, dy) => {
+        const w = own(p.tools, id) ?? t;
+        put(p.tools, id, { ...w, placement: shifted(w.placement!, dx, dy) });
+      },
+    });
+  }
+  return out;
+}
+
+/**
+ * Area `key` now `grown`: what's in its way pushed aside (pushAside), other areas (a locked one too, as a whole) with
+ * everything in them, and what's in no area, which stays in none; but not the workspaces in `leaving`, which are
+ * moving into it and have their places in `p` already.
  */
 function growArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, grown: Area, leaving: ReadonlySet<string>): void {
-  const rects: Record<string, Rect> = {};
-  for (const a of layout.areas) put(rects, a.key, a.key === key ? grown : a.rect);
   put(p.areas, key, { ...(own(p.areas, key) ?? {}), w: grown.w, h: grown.h });
-  for (const [k, m] of Object.entries(pushAside(rects, key, AREA_GAP))) moveArea(p, l, layout, k, m.dx, m.dy, leaving);
+  const loose: Pushed[] = [
+    ...layout.tiles.filter((t) => t.area === LOOSE_GROUP && !leaving.has(t.key)).map((t) => ({ rect: t.rect, move: (dx: number, dy: number) => moveTile(p, t, dx, dy) })),
+    ...looseKept(l, p, shownIn(layout), (r) => !layout.areas.some((a) => within(r, a.rect))),
+  ];
+  const areas = layout.areas.map((a): [string, Rect] => [a.key, a.key === key ? grown : a.rect]);
+  for (const [k, m] of Object.entries(pushAside(pushRects(areas, loose), AREA_KEY + key, apartOf))) {
+    if (k.startsWith(AREA_KEY)) moveArea(p, l, layout, k.slice(AREA_KEY.length), m.dx, m.dy, leaving);
+    else loose[Number(k.slice(LOOSE_KEY.length))].move(m.dx, m.dy);
+  }
 }
 
 /** A stack moving to area `area`: its new key, and its old one let go after the move (AreaPlan). */
@@ -1069,7 +1135,7 @@ export function planMakeArea(l: Landscape, layout: ResolvedLayout, picked: reado
     const occupied = [...layout.tiles.filter((t) => !moving.has(t.key)).map((t) => t.rect), ...unshownPlaces(l, layout), ...Object.values(l.ghosts).map((g) => g.placement), ...extraPlaces(l)];
     let area: Area = target.rect;
     for (const t of tiles) {
-      const r = placeNew({ w: t.rect.w, h: t.rect.h }, occupied, area);
+      const r = placeNew({ w: t.rect.w, h: t.rect.h }, occupied, area, null, layout.areas.filter((a) => a.key !== key).map((a) => a.rect));
       occupied.push(r);
       area = fitAreaTo(area, [r]);
       place(t, r);
@@ -1237,7 +1303,7 @@ function spotBeside(occupied: readonly Rect[], area: Area | null, size: Size, be
   for (const c of candidates) if (inside(c) && free(c) && (!area.locked || within(c, room))) return c;
   const made = !area.locked && makeRoom ? makeRoom() : null;
   if (made) return made;
-  const r = placeNew(size, occupied, area);
+  const r = placeNew(size, occupied, area, null, others.filter((o) => o !== area));
   return !area.locked || within(r, room) ? r : null;
 }
 
@@ -1457,7 +1523,7 @@ export function planResizeTile(l: Landscape, layout: ResolvedLayout, key: string
   const occupied = placedBut(l, layout, key);
   const others = layout.areas.map((a) => a.rect);
   let r: Rect = { ...t.rect, ...size };
-  if (occupied.some((o) => overlaps(r, o, GAP - 1e-6))) r = area ? placeNew(size, occupied, area.rect) : placeNew(size, [...occupied, ...others], null, others[0] ?? null);
+  if (occupied.some((o) => overlaps(r, o, GAP - 1e-6))) r = area ? placeNew(size, occupied, area.rect, null, others.filter((o) => o !== area.rect)) : placeNew(size, [...occupied, ...others], null, others[0] ?? null);
   else if (!area) {
     const { dx, dy } = clearOf(r, others, GAP);
     r = shifted(r, dx, dy);

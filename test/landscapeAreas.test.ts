@@ -126,6 +126,22 @@ describe("areas' rectangles", () => {
     expect(pushAside({ a: area(0, 0, 100, 100), b: area(400, 0, 100, 100) }, "a")).toEqual({});
   });
 
+  it("holds several still at once, pushing what reaches one past it, the later of two that meet past the earlier; gaps by pair", () => {
+    // a pushes b, which pushes d on into c, which stays too: d goes on past c rather than moving it
+    const rects = { a: area(0, 0, 1000, 500), b: area(0, 520, 1000, 300), d: area(0, 884, 1000, 100), c: area(0, 1090, 1000, 300) };
+    const m = pushAside(rects, ["a", "c"]);
+    expect(m.a).toBeUndefined();
+    expect(m.c).toBeUndefined();
+    expect(m.b && m.d).toBeTruthy();
+    const at = Object.fromEntries(Object.entries(rects).map(([k, r]) => [k, m[k] ? { ...r, x: r.x + m[k].dx, y: r.y + m[k].dy } : r]));
+    for (const [j, k] of [["a", "b"], ["a", "c"], ["b", "c"], ["b", "d"], ["c", "d"], ["a", "d"]]) expect(overlaps(at[j], at[k], AREA_GAP - 1e-6), `${j} and ${k}`).toBe(false);
+    // two that stay and meet: the later goes past the earlier
+    expect(pushAside({ a: area(0, 0, 1000, 500), b: area(0, 520, 1000, 300) }, ["b", "a"])).toEqual({ a: { dx: 0, dy: 888 } });
+    // a small gap for what's in no area, the areas' own between areas
+    const gap = (j: string, k: string) => (j.startsWith("area") && k.startsWith("area") ? AREA_GAP : 16);
+    expect(pushAside({ area1: area(0, 0, 1000, 500), loose: area(0, 500, 200, 100), area2: area(0, 620, 1000, 300) }, "area1", gap)).toEqual({ loose: { dx: 0, dy: 20 }, area2: { dx: 0, dy: 20 } });
+  });
+
   it("pushes a locked area like any other, the grown one staying where it is, so they all end apart", () => {
     const rects = { a: area(0, 0, 1000, 500), b: area(1020, 0, 400, 400, { locked: true }), c: area(1490, 0, 300, 300, { locked: true }) };
     const m = pushAside(rects, "a");

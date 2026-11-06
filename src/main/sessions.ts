@@ -772,6 +772,23 @@ export class SessionManager {
     return out;
   }
 
+  /**
+   * Resume an exited pane: refused before anything is undone when it's a teammate's, when it may not run again (a
+   * teammate continues it: relaunchGuard) or when its record is gone; otherwise its dead pty is let go, its record
+   * kept, and it's relaunched. Nothing is waited on between the check and letting the pty go, so a take-over heard
+   * meanwhile can't come between them. A relaunch that fails after that throws, the session resumable (Previous).
+   */
+  async resume(id: string): Promise<SessionInfo | { refused: string }> {
+    if (isRemotePaneId(id)) return { refused: "That's a teammate's session: only its owner can resume it" };
+    const refusal = this.relaunchGuard?.(id);
+    if (refusal) return { refused: refusal };
+    if (!this.store.state.sessions.some((s) => s.id === id)) return { refused: "Its saved record is gone, so there's nothing to resume: close the pane" };
+    this.kill(id, false);
+    const info = await this.relaunch(id);
+    if (!info) throw new Error("its saved record went while it was being resumed");
+    return info;
+  }
+
   /** Relaunch a persisted session in its old cwd, resuming the conversation. */
   async relaunch(id: string): Promise<SessionInfo | null> {
     this.ownOnly(id, "relaunch it");

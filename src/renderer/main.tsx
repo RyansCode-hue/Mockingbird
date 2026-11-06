@@ -1600,21 +1600,19 @@ function App() {
   };
 
   const resumeDead = async (s: SessionInfo) => {
-    // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed); main is
-    // asked too, before its pty is dropped, for a take-over this window hasn't heard of
+    // team rooms: a teammate continues it, so this copy doesn't run again (its pane stays until it's closed); main
+    // checks too, for a take-over this window hasn't heard of, before it lets the pty go
     const info = await resumeExited(titleOf(s), {
       refusal: takenOverWhy(s, "rather than resuming this copy"),
-      mainRefusal: () => window.mb.relaunchRefusal(s.id),
       costOk: () => costGate.resume(s),
-      kill: () => window.mb.killSession(s.id, false),
+      resume: () => window.mb.resumeSession(s.id),
       dispose: () => disposeTerm(s.id),
-      relaunch: () => window.mb.relaunchSession(s.id),
       say: alert,
     });
-    if (info === undefined) return;
+    if (!info) return;
     hide(s.id);
     await refresh();
-    if (info) jumpToSession(info);
+    jumpToSession(info);
   };
 
   // ⌥⇥ cycles waiting sessions, oldest wait first — the primary motion for a busy grid
@@ -3644,7 +3642,7 @@ function App() {
         <span className="right">
           {readError && (
             <span className="update-note bad" title={readError}>
-              ✕ {readError}
+              <span className="un-text">✕ {readError}</span>
               <button className="icon" title="Dismiss" onClick={() => setReadError(null)}>✕</button>
             </span>
           )}
@@ -3658,7 +3656,7 @@ function App() {
                 `Log: ${updOutcome.logPath}`,
               ].filter(Boolean).join("\n")}
             >
-              {updOutcome.ok ? `✕ ${plural(updOutcome.restoreErrors!.length, "session")} couldn't come back after the update` : `✕ ${updOutcome.message}`}
+              <span className="un-text">{updOutcome.ok ? `✕ ${plural(updOutcome.restoreErrors!.length, "session")} couldn't come back after the update` : `✕ ${updOutcome.message}`}</span>
               <button className="icon" title="Dismiss" onClick={() => setUpdOutcome(null)}>✕</button>
             </span>
           )}
@@ -3693,15 +3691,16 @@ function App() {
               ⚠ install hooks
             </span>
           )}
-          {/* following a teammate: said here once, whichever room's (rooms' bars only offer Follow); after the notes, so
-              it never takes their room */}
+          {/* following a teammate: said here once, whichever room's (rooms' bars only offer Follow) */}
           <FollowingNow follow={follow} />
-          {(() => {
-            const theirs = workSessions.filter(isRemote).length;
-            return <span className="sb-info">{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {groupCount} groups</span>;
-          })()}
-          <span className="sb-info">⌘K commands</span>
-          <span className="sb-info help-link" onClick={() => setModal("help")}>? help</span>
+          <span className="sb-info">
+            {(() => {
+              const theirs = workSessions.filter(isRemote).length;
+              return <span>{workSessions.length - theirs} sessions{theirs ? ` (+${theirs} teammates')` : ""} · {groupCount} groups</span>;
+            })()}
+            <span>⌘K commands</span>
+            <span className="help-link" onClick={() => setModal("help")}>? help</span>
+          </span>
         </span>
       </div>
 

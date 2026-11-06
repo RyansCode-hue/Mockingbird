@@ -3,6 +3,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { describe, expect, it } from "vitest";
+import { createActions } from "../src/renderer/useAction";
+import { isErr } from "../src/shared/types";
 import { UpdateRunner, findSourceClone, loginShellExec, remoteMatches, startInstaller, takeUpdateOutcome, newestBuild, type Exec } from "../src/main/selfUpdate";
 import type { UpdateProgress } from "../src/shared/types";
 
@@ -115,24 +117,37 @@ describe("preparing an update", () => {
   it("stops before touching anything when the clone has uncommitted changes or is on another branch", async () => {
     const clone = cloneWithBuild();
     const dirty = runner(fakeExec([[/^git status/, { out: " M src/a.ts\n M src/b.ts" }]]).exec, clone);
-    expect(await dirty.r.prepare()).toMatchObject({ state: "failed", step: "check", error: expect.stringMatching(/uncommitted changes \(2 file/) });
+    expect(await dirty.r.prepare()).toMatchObject({ state: "failed", step: "check", problem: expect.stringMatching(/uncommitted changes \(2 file/) });
     const branch = runner(fakeExec([[/rev-parse --abbrev-ref/, { out: "feature/x" }], [/symbolic-ref/, { out: "origin/main" }]]).exec, clone);
-    expect((await branch.r.prepare()).error).toMatch(/on the branch "feature\/x"\. Switch it to main/);
+    expect((await branch.r.prepare()).problem).toMatch(/on the branch "feature\/x"\. Switch it to main/);
+  });
+
+  it("never has a failed update's progress taken for a call that failed: the window says it once, as the update's", async () => {
+    const clone = cloneWithBuild();
+    const failed = await runner(fakeExec([[/^git status/, { out: " M src/a.ts" }]]).exec, clone).r.prepare();
+    expect(failed.state).toBe("failed");
+    // what main.tsx's unlessError and the panel's useAction both go by: the panel's own error line stays empty, and
+    // the reason shows once, as the update's (progress.problem)
+    expect(isErr(failed)).toBe(false);
+    const errors: string[] = [];
+    await createActions(() => {}, (e) => e && errors.push(e)).run("prepare", () => failed);
+    expect(errors).toEqual([]);
+    expect(failed.problem).toMatch(/uncommitted changes/);
   });
 
   it("explains a missing clone, old Node, and a clone that can't fast-forward", async () => {
-    expect((await runner(fakeExec([]).exec, null).r.prepare()).error).toMatch(/No clone of Mockingbird was found/);
+    expect((await runner(fakeExec([]).exec, null).r.prepare()).problem).toMatch(/No clone of Mockingbird was found/);
     const clone = cloneWithBuild();
     const old = runner(fakeExec([[/^node -v/, { out: "v18.20.8" }], ...happy()]).exec, clone);
-    expect(await old.r.prepare()).toMatchObject({ step: "node", error: expect.stringMatching(/needs Node 22; your shell has v18\.20\.8/) });
+    expect(await old.r.prepare()).toMatchObject({ step: "node", problem: expect.stringMatching(/needs Node 22; your shell has v18\.20\.8/) });
     const diverged = runner(fakeExec([[/merge --ff-only/, { code: 128, out: "fatal: Not possible to fast-forward" }], ...happy()]).exec, clone);
-    expect(await diverged.r.prepare()).toMatchObject({ step: "pull", error: expect.stringMatching(/commits GitHub's main doesn't/) });
+    expect(await diverged.r.prepare()).toMatchObject({ step: "pull", problem: expect.stringMatching(/commits GitHub's main doesn't/) });
   });
 
   it("refuses a build that isn't newer than what's running", async () => {
     const clone = cloneWithBuild();
     const { r } = runner(fakeExec(happy()).exec, clone, "1.2.0");
-    expect(await r.prepare()).toMatchObject({ state: "failed", step: "verify", error: expect.stringMatching(/nothing newer to install/) });
+    expect(await r.prepare()).toMatchObject({ state: "failed", step: "verify", problem: expect.stringMatching(/nothing newer to install/) });
   });
 
   it("can be cancelled mid-step, leaving nothing installed", async () => {
@@ -142,7 +157,7 @@ describe("preparing an update", () => {
     const done = r.prepare();
     await until(() => r.progress.step === "install");
     r.cancel();
-    expect(await done).toMatchObject({ state: "failed", step: "install", error: "Cancelled — nothing was installed." });
+    expect(await done).toMatchObject({ state: "failed", step: "install", problem: "Cancelled — nothing was installed." });
   });
 
   it("stays ready to install when the restart is called off", async () => {

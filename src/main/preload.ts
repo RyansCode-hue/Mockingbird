@@ -1,4 +1,4 @@
-import type { IpcResult, UiCommand, WorktreeCleanupMode } from "../shared/types";
+import type { IpcResult, SessionInfo, UiCommand, WorktreeCleanupMode } from "../shared/types";
 import type { LandscapeChange, LandscapePatch, LandscapeState } from "../shared/landscape";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
@@ -8,8 +8,8 @@ const api = {
   resumableSessions: () => ipcRenderer.invoke("sessions:resumable"),
   createSession: (req: unknown) => ipcRenderer.invoke("sessions:create", req),
   relaunchSession: (id: string) => ipcRenderer.invoke("sessions:relaunch", id),
-  /** Why session `id` mustn't run again here (a teammate took it over), or null: asked before a resume undoes anything. */
-  relaunchRefusal: (id: string): Promise<string | null | { error: string }> => ipcRenderer.invoke("sessions:relaunchRefusal", id),
+  /** Resume exited session `id` (SessionManager.resume): `{ refused }` before anything is undone, `{ error }` for a relaunch that failed after its pty was let go. */
+  resumeSession: (id: string): Promise<SessionInfo | { refused: string } | { error: string }> => ipcRenderer.invoke("sessions:resume", id),
   killSession: (id: string, forget: boolean) => ipcRenderer.invoke("sessions:kill", id, forget),
   restartAllSessions: (includeBusy: boolean) => ipcRenderer.invoke("sessions:restartAll", includeBusy),
   sessionWrite: (id: string, data: string) => ipcRenderer.send("session:write", id, data),

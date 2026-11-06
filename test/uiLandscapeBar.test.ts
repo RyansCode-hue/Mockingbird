@@ -212,11 +212,12 @@ describe.skipIf(!local)("the selection bar", () => {
     expect(i.why).toEqual({ "Collab… (coming)": expect.stringMatching(/later version/), "Pipeline from a ticket… (coming)": expect.stringMatching(/later version/) });
     expect(i.selected).toBe("5102");
     expect(i.dialog).toMatchObject({ title: "New session", launch: "Claude", mode: "New", group: "group: 5102▾", repo: path.basename(i.firstRepo!) });
-    // made, it's in that area, over where it was clicked (near its foot and right edge: moved in from them to fit)
+    // made, it's in that area, by where it was clicked (near its foot and right edge, where an agent doesn't fit in the
+    // area as it is: within its own size of the click, the area grown to hold it)
     expect(i.made.group).toBe("5102");
     const p = i.made.placed!;
     expect(p.x >= i.area.x && p.y >= i.area.y && p.x + p.w <= i.area.x + i.area.w && p.y + p.h <= i.area.y + i.area.h).toBe(true);
-    expect(i.at.x >= p.x && i.at.x <= p.x + p.w && i.at.y >= p.y && i.at.y <= p.y + p.h, JSON.stringify({ at: i.at, p })).toBe(true);
+    expect(Math.abs(p.x - i.at.x) <= p.w && Math.abs(p.y - i.at.y) <= p.h, JSON.stringify({ at: i.at, p })).toBe(true);
     // in no area: only the create rows; Terminal… makes a loose terminal where it was clicked
     const l = b.createLoose;
     expect(l.rows).toEqual(CREATE_ROWS);

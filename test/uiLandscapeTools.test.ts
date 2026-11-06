@@ -147,7 +147,8 @@ describe.skipIf(!local)("tool windows and the workspace's actions", () => {
     // one a teammate took over is taken back, not resumed: its card has no Resume
     expect(a.dead.y1).toEqual(["Close & clean up"]);
     expect(a.dead.costAsked).toMatch(/Resume Crashed session/);
-    expect(a.dead.resumed).toEqual(expect.arrayContaining(['killSession ["s6",false]', 'relaunchSession ["s6"]']));
+    // one call to main, which checks, lets the dead pty go and relaunches
+    expect(a.dead.resumed).toEqual(expect.arrayContaining(['resumeSession ["s6"]']));
     expect(a.dead.s6Now).not.toBe("dead");
     expect(a.dead.cleaned).toContain('killSession ["y1",true]');
     expect(a.dead.y1Gone).toBe(true);

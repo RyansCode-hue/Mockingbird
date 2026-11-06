@@ -749,7 +749,7 @@ handle("sessions:create", async (req) => {
   return info;
 });
 handle("sessions:relaunch", (id) => sessions.relaunch(id));
-handle("sessions:relaunchRefusal", (id) => sessions.relaunchGuard?.(String(id)) ?? null);
+handle("sessions:resume", (id) => sessions.resume(String(id)));
 handle("sessions:mute", (id, muted) => sessions.setMuted(String(id), !!muted));
 handle("sessions:kill", (id, forget) => {
   // a pane closed to resume isn't live any more, but forgetting it later must still find it

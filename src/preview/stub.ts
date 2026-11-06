@@ -947,10 +947,12 @@ const landscapeFixture = (): Landscape => {
   /** An area two M workspaces wide at (x, y): `ids` in reading order (a stack once, its first member in front), then its ghosts. */
   const area = (key: string, x: number, y: number, ids: string[], ghosts: Record<string, Omit<Ghost, "placement" | "group">> = {}): Area => {
     const inside: Rect[] = [];
-    const frame: Area = { x, y, w: 2 * AREA_PAD + 2 * M.w + GAP, h: AREA_PAD, repos: [{ path: REPO, base: "dev" }] };
+    let frame: Area = { x, y, w: 2 * AREA_PAD + 2 * M.w + GAP, h: AREA_PAD, repos: [{ path: REPO, base: "dev" }] };
+    // grown for each, as placeNew needs: its next row starts below what's in the area
     const put = (size: { w: number; h: number }) => {
       const p = placeNew(size, inside, frame);
       inside.push(p);
+      frame = fitAreaTo(frame, [p]);
       return p;
     };
     for (const id of ids) {
@@ -1292,8 +1294,11 @@ const api: Record<string, (...a: any[]) => any> = {
     }
     return s;
   },
-  // main's relaunch guard: a copy the window marks taken over is refused there too
-  relaunchRefusal: async (id: string) => (live.own[id]?.takenOver ? `“${byId(id)?.title ?? id}” continues on ${live.own[id]!.takenOver!.byName}'s laptop — take it back rather than running this copy again` : null),
+  // main's resume: a copy the window marks taken over is refused there too, before anything is undone
+  resumeSession: async (id: string) =>
+    live.own[id]?.takenOver
+      ? { refused: `“${byId(id)?.title ?? id}” continues on ${live.own[id]!.takenOver!.byName}'s laptop — take it back rather than running this copy again` }
+      : ((await api.relaunchSession(id)) ?? err("Its saved record is gone, so there's nothing to resume: close the pane")),
   // a relaunch starts a new process under the same id, stamped with a new createdAt, as main's create() does
   relaunchSession: async (id: string) => {
     const p = previous.find((x) => x.id === id) ?? byId(id);
@@ -1638,7 +1643,7 @@ const api: Record<string, (...a: any[]) => any> = {
     return { hits, conversations: 128, files: 131, indexing: null, lastSync: now, problem: null };
   },
   updateCheck: async () => later({ latest: nextVersion, current: version, newer: true, url: "https://github.com/", source: "branch" }, 600),
-  updateStatus: async () => (params.has("statusNotes") ? { state: "failed", step: "build", done: ["pull"], log: [] } : { state: "idle", done: [], log: [] }),
+  updateStatus: async () => (params.has("statusNotes") ? { state: "failed", step: "build", done: ["pull"], log: [], problem: "npm run build exited 2" } : { state: "idle", done: [], log: [] }),
   updateOutcome: async () => (params.has("statusNotes") && params.get("statusNotes") !== "few" ? { ok: false, from: "1.6.0", to: "1.7.0", message: "The build failed: tsc exited 2", sessions: [], logPath: "/Users/you/.mockingbird/update.log" } : null),
   updateSource: async () => ({ configured: null, found: "/Users/you/Code/Mockingbird" }),
   // What's new → Suggest something: nothing reaches GitHub. ?suggest=gh-missing|signed-out|no-access picks a problem,
@@ -6419,12 +6424,12 @@ if (params.get("ctxAudit")) {
       out.why = document.querySelector(".cost-dlg .cost-why")?.textContent ?? null;
       button(document.querySelector(".cost-dlg"), "Cancel")?.click();
       await sleep(400);
-      out.afterCancel = { dialog: !!document.querySelector(".cost-dlg"), killed: count("killSession"), relaunched: count("relaunchSession") };
+      out.afterCancel = { dialog: !!document.querySelector(".cost-dlg"), resumed: count("resumeSession") };
       resume();
       await until(() => !!document.querySelector(".cost-dlg"), 3000);
       button(document.querySelector(".cost-dlg"), "Continue")?.click();
-      await until(() => count("relaunchSession") > 0, 3000);
-      out.afterContinue = { dialog: !!document.querySelector(".cost-dlg"), relaunched: count("relaunchSession") };
+      await until(() => count("resumeSession") > 0, 3000);
+      out.afterContinue = { dialog: !!document.querySelector(".cost-dlg"), resumed: count("resumeSession") };
     } else if (mode === "takenOver") {
       // y1, which Nick took over, and then s1: what its pane header, its context warning, ⌘K and the Changes tool's
       // Second opinion (with ?view=scm) offer for each, and which are off saying why
@@ -6529,9 +6534,10 @@ if (params.get("ctxAudit")) {
   })();
 }
 // ?statusAudit (with ?statusNotes): the status bar saying what ?statusNotes gives it, before following Nick from ⌘K,
-// while following him, and once he shows nothing (its "waiting for a shared session" wording): how much of each note,
-// the update link, the hooks warning and Stop shows inside the bar, and whether Following's words were cut. Into
-// <script id="mb-status-audit"> for test/uiStatusBar.test.ts.
+// while following him, and once he shows nothing (its "waiting for a shared session" wording): how much of each note
+// shows inside the bar and whether its words were cut with their whole on hover, whether the update link, the hooks
+// warning and Stop show whole, and whether Following's words were cut. Into <script id="mb-status-audit"> for
+// test/uiStatusBar.test.ts.
 if (params.has("statusAudit")) {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const until = async (ok: () => boolean, ms: number) => {
@@ -6558,8 +6564,15 @@ if (params.has("statusAudit")) {
           return r.width > 0 && r.left >= bar.left - 0.5 && r.right <= bar.right + 0.5;
         };
         const who = document.querySelector<HTMLElement>(".statusbar .team-follow .tf-who");
+        const cutOf = (el: HTMLElement | null) => !!el && el.scrollWidth > el.clientWidth + 0.5;
         return {
-          notes: [...document.querySelectorAll(".statusbar .update-note.bad"), document.querySelector(".statusbar .update-link"), document.querySelector(".statusbar .hooks-bad")].map(shown),
+          notes: [...document.querySelectorAll<HTMLElement>(".statusbar .update-note.bad")].map((n) => {
+            const words = n.querySelector<HTMLElement>(".un-text");
+            return { shown: shown(n), whole: whole(n), cut: cutOf(words), onHover: !!words && n.title.includes((words.textContent ?? "").replace(/^✕ /, "")) };
+          }),
+          link: whole(document.querySelector(".statusbar .update-link")),
+          hooks: whole(document.querySelector(".statusbar .hooks-bad")),
+          usage: shown(document.querySelector(".statusbar .usage-wrap")),
           stop: whole(document.querySelector(".statusbar .team-follow button")),
           words: who?.textContent ?? null,
           cut: !!who && who.scrollWidth > who.clientWidth + 0.5,

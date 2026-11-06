@@ -486,7 +486,8 @@ export interface UpdateProgress {
   state: "idle" | "preparing" | "ready" | "failed" | "installing";
   step?: UpdateStepId; // running, or where it failed
   done: UpdateStepId[];
-  error?: string;
+  /** Why it failed. Never `error`: isErr would take a failed update's progress for a call that failed. */
+  problem?: string;
   log: string[]; // the tail of the steps' output
   clone?: string;
   version?: string; // the built version, once ready

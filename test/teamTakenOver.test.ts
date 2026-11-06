@@ -248,6 +248,7 @@ describe("take-over over live panes", () => {
     await until(() => statusOf(t.ryan.sessions, t.s.id) === "dead", "Ryan's copy to stop");
     expect(files(t.wt)).toEqual(filesBefore);
     await expect(t.ryan.sessions.relaunch(t.s.id)).rejects.toThrow(/continues on Nick's laptop — take it back/);
+    expect(await t.ryan.sessions.resume(t.s.id)).toEqual({ refused: expect.stringMatching(/continues on Nick's laptop — take it back/) });
     await expect(t.ryan.sessions.restart(t.s.id)).rejects.toThrow(/continues on Nick's laptop/);
     expect(statusOf(t.ryan.sessions, t.s.id)).toBe("dead"); // the refused restart didn't close the pane either
     await until(() => !recordIn(t.nickM, t.roomId, t.ryanM.id, t.s.id), "Ryan's record to be removed from the room");
@@ -270,6 +271,21 @@ describe("take-over over live panes", () => {
     expect(t.ryanRun.live.state().own[t.s.id]).toMatchObject({ roomId: t.roomId, takenOver: { by: t.nickM.id, byName: "Nick" } });
     expect(t.ryanRun.tk.takenOverRefusal(t.s.id, "handing this copy on")).toMatch(/continues on Nick's laptop — take it back rather than handing this copy on$/);
     await expect(t.ryan.sessions.relaunch(t.s.id)).rejects.toThrow(/continues on Nick's laptop/);
+    // moved into a group shared as another room both are in: it isn't that room's either, and can't be taken over again there
+    const other = t.ryanM.team.createRoom({ name: "Attom", groupKey: "attom", signalingUrl: "http://loopback.invalid" });
+    t.nickM.team.join(t.ryanM.team.createInvite(other.id));
+    await until(() => t.nickM.team.room(other.id)?.members.length === 2 && t.nickM.team.presence(other.id).length === 1, "Nick to join the second room");
+    t.ryan.sessions.setGroup(t.s.id, "attom");
+    const later = await t.ryan.sessions.create({ repoPath: t.ryanClone, cwd: t.wt, useWorktree: false, agent: "claude", taskGroup: "attom", title: "Attom work" });
+    await until(() => !!recordIn(t.nickM, other.id, t.ryanM.id, later.id), "Ryan's other session in the second room");
+    expect(recordIn(t.nickM, other.id, t.ryanM.id, t.s.id)).toBeUndefined();
+    expect(t.ryanRun.live.roomOfSession(t.s.id)).toBeNull();
+    expect(t.ryanRun.live.state().own[t.s.id]).toMatchObject({ roomId: other.id, takenOver: { by: t.nickM.id, byName: "Nick" } });
+    await expect(t.nickM.team.request(t.ryanM.id, LIVE_METHODS.input, { session: t.s.id, data: "hi\r" }, { roomId: other.id })).rejects.toThrow(/taken over by Nick/);
+    turn(t.ryan.sessions, t.s.id);
+    await t.ryanRun.tk.settled();
+    expect(backupIn(t.ryanM, other.id, t.s.id)).toBeUndefined();
+    expect(t.nickRun.tk.view().sessions.some((v) => v.roomId === other.id && v.sessionId === t.s.id)).toBe(false);
   });
 
   it("tells the window when a session's owner goes away, so Take over can lead", async () => {

@@ -60,7 +60,7 @@ export function UpdatePanel({
         </ol>
       )}
       {progress.clone && <div className="upd-clone">Clone: {progress.clone}</div>}
-      {state === "failed" && progress.error && <div className="err">{progress.error}</div>}
+      {state === "failed" && progress.problem && <div className="err">{progress.problem}</div>}
       {state === "ready" && (
         <div className="upd-ready">
           {progress.version} is built. Restarting closes Mockingbird for a few seconds; your sessions come back and resume their

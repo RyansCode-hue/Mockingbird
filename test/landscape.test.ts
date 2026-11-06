@@ -137,10 +137,13 @@ describe("placeNew", () => {
     expect(placeNew(size, [], area({ x: 64, y: 128 }))).toEqual({ x: 64 + AREA_PAD, y: 128 + AREA_HEADER, ...size });
   });
 
-  it("fills an area in reading order: across first, then the next row", () => {
-    const a = area();
+  it("fills an area in reading order: across first, then the next row, the area grown for each as its callers do", () => {
+    let a = area();
     const placed: Rect[] = [];
-    for (let i = 0; i < 4; i++) placed.push(placeNew(size, placed, a));
+    for (let i = 0; i < 4; i++) {
+      placed.push(placeNew(size, placed, a));
+      a = fitAreaTo(a, placed);
+    }
     expect(placed.map((p) => [p.x, p.y])).toEqual([
       [AREA_PAD, AREA_HEADER],
       [AREA_PAD + 400 + GAP, AREA_HEADER],
@@ -169,12 +172,13 @@ describe("placeNew", () => {
   it("never overlaps anything, whatever is placed and in whatever sizes", () => {
     let seed = 7;
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-    const a = area({ w: 1600 });
+    let a = area({ w: 1600 });
     const placed: Rect[] = [];
     for (let i = 0; i < 40; i++) {
       const p = placeNew({ w: 8 * Math.ceil(10 + rnd() * 80), h: 8 * Math.ceil(10 + rnd() * 50) }, placed, a);
       expect(inside(p, a)).toBe(true);
       placed.push(p);
+      a = fitAreaTo(a, [p]);
     }
     expect(noneOverlap(placed)).toBe(true);
   });
@@ -194,6 +198,22 @@ describe("placeNew", () => {
     const wide = placeNew({ w: 2000, h: 100 }, [first], a);
     expect(wide.x).toBe(AREA_PAD);
     expect(wide.y).toBeGreaterThanOrEqual(first.y + first.h + GAP);
+  });
+
+  it("full, with other areas below and to the right holding workspaces: a new row just below its own, at its left, whatever the others hold", () => {
+    // D full along one row; A just below it and B just right of it, each with a workspace of its own
+    const d = area({ x: 0, y: 0, w: 2400, h: 600 });
+    const own = [{ x: AREA_PAD, y: AREA_HEADER, w: 1160, h: 520 }, { x: AREA_PAD + 1160 + GAP, y: AREA_HEADER, w: 1160, h: 520 }];
+    const a = area({ x: 0, y: 664, w: 2400, h: 2000 });
+    const b = area({ x: 2464, y: 0, w: 1200, h: 3000 });
+    const theirs = [{ x: 24, y: 712, w: 1000, h: 1900 }, { x: 2488, y: 48, w: 1000, h: 2900 }];
+    for (const locked of [false, true]) {
+      const others = [{ ...a, locked }, { ...b, locked }];
+      const p = placeNew(size, [...own, ...theirs], d, null, others);
+      // just below D's own row, never below what's in A
+      expect(p).toEqual({ x: AREA_PAD, y: AREA_HEADER + 520 + GAP, ...size });
+      expect(fitAreaTo(d, [p]).h).toBe(AREA_HEADER + 520 + GAP + size.h + AREA_PAD);
+    }
   });
 
   it("stays clear of what's in the area from elsewhere: another area's workspace, a loose one", () => {
@@ -311,7 +331,7 @@ describe("placeAt", () => {
     }
   });
 
-  it("goes on past a loose workspace in the new row, which nothing pushes aside", () => {
+  it("with no other area to keep the gap from, takes the nearest free spot beside a loose workspace rather than on it", () => {
     const a = area({ w: 2400, h: 2000 });
     const full = [{ x: AREA_PAD, y: AREA_HEADER, w: a.w - 2 * AREA_PAD, h: a.h - AREA_HEADER - AREA_PAD }];
     const big = { w: 1072, h: 944 };

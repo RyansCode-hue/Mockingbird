@@ -57,4 +57,14 @@ describe("the calls a copy a teammate took over refuses (main)", () => {
     }
     expect(src).toMatch(/const untaken\s*:\s*UntakenDeps<SessionInfo>\s*=\s*\{\s*sessionOf\s*,\s*refusal\s*:\s*\(\)\s*=>\s*\(?\s*takeover\s*\?\s*\(sid,\s*doing\)\s*=>\s*takeover!\.takenOverRefusal\(sid,\s*doing\)\s*:\s*null\s*\)?\s*\}/);
   });
+
+  it("Resume's one call is registered in index.ts as SessionManager.resume, and the window's bridge invokes it", () => {
+    const src = fs.readFileSync(new URL("../src/main/index.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/\bhandle\(\s*"sessions:resume"\s*,\s*\(\s*id\s*\)\s*=>\s*sessions\.resume\(\s*String\(\s*id\s*\)\s*\)\s*\)/);
+    expect(src.match(/\bhandle\(\s*"sessions:resume"/g)).toHaveLength(1);
+    // the relaunch guard main checks it with is the take-over service's
+    expect(src).toMatch(/sessions\.relaunchGuard\s*=\s*\(\s*id\s*\)\s*=>\s*takeover\?\.relaunchRefusal\(\s*id\s*\)\s*\?\?\s*null/);
+    const preload = fs.readFileSync(new URL("../src/main/preload.ts", import.meta.url), "utf8");
+    expect(preload).toMatch(/\bresumeSession\s*:\s*\(\s*id\s*:\s*string\s*\)[^=]*=>\s*ipcRenderer\.invoke\(\s*"sessions:resume"\s*,\s*id\s*\)/);
+  });
 });

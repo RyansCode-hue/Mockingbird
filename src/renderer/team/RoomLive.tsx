@@ -170,11 +170,10 @@ export function Lookers({ room }: { room: RoomSessionTag }) {
   );
 }
 
-/** Following someone, or who can be followed, for the group bar: who to follow only in a shared group. */
 /**
  * Following a teammate, said once for the whole window (its status bar), whichever room they're in: who, and Stop.
- * Short of room, its words give way (cut with an ellipsis, in full on hover) before anything else in the bar does;
- * Stop always shows.
+ * Short of room, its words give way after the bar's hints (cut with an ellipsis, in full on hover); its icon and Stop
+ * always show.
  */
 export function FollowingNow({ follow }: { follow: Follow }) {
   if (!follow.leader) return null;

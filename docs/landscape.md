@@ -83,8 +83,8 @@ together so work and context flow between them.
   popover), **Import…**. It's created where you clicked (or the nearest free
   spot). Inside an area, it joins that area's group and defaults to the area's
   repo, and the menu goes on with the area's own actions. A full area grows
-  towards its edge nearer the click, and any area in the way moves out of the
-  way; the area clicked never moves.
+  towards its edge nearer the click, and whatever is in the way (another area,
+  or a workspace in none) moves out of the way; the area clicked never moves.
 - **Size is the terminal's size.** A workspace's width and height at 100% zoom
   set its pty's columns and rows. Zooming only scales it, as a teammate's pane
   is scaled today (`followFixedSize`), so zooming never makes the agent

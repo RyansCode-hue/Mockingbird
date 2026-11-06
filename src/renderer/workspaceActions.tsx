@@ -231,13 +231,17 @@ export const messageModes = (defaultSend: boolean): { value: MessageMode | ""; l
  * header's buttons and its selection bar all render this list. Room tools (Chat, Board, Follow, Invite) are only a
  * room's; another area offers to become one instead.
  */
+/** What Lock does, as its button and menu row say it: an area's layout frozen, the area itself still pushed aside whole. */
+export const lockTitle = (locked: boolean): string =>
+  locked ? "Unlock: workspaces can be moved into, out of and within it again" : "Lock its layout: its workspaces keep their places, and none move in or out; it's still pushed aside whole when another area grows";
+
 export function areaActions(env: AreaEnv): ModelAction[] {
   const st = env.stored;
   const out: ModelAction[] = [{ section: "area", key: "rename", label: "Rename", menuLabel: "Rename…", onPick: env.rename }];
   if (st)
     out.push(
       { section: "area", key: "collapse", label: st.collapsed ? "Open" : "Collapse", menuLabel: st.collapsed ? "Open the area" : "Collapse to a pill", onPick: env.collapse },
-      { section: "area", key: "lock", label: st.locked ? "Locked" : "Lock", menuLabel: st.locked ? "Unlock its layout" : "Lock its layout", pressed: !!st.locked, onPick: env.lock }
+      { section: "area", key: "lock", label: st.locked ? "Locked" : "Lock", menuLabel: st.locked ? "Unlock its layout" : "Lock its layout", title: lockTitle(!!st.locked), pressed: !!st.locked, onPick: env.lock }
     );
   if (env.landscape) {
     out.push({ section: "tools", key: "tool:artifacts", label: "Artifacts", icon: <NoteIcon />, title: env.room ? "The room's artifacts" : "The area's artifacts, on this Mac", onPick: env.artifacts });

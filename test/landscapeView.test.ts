@@ -16,6 +16,7 @@ import {
   nearestInDirection,
   newer,
   panBy,
+  planMakeArea,
   readProblem,
   resolveLayout,
   revealTile,
@@ -356,6 +357,156 @@ describe("where each session's workspace sits", () => {
         }
       }
     }
+  });
+  // D full along one row; A just below it and B just right of it, each holding a workspace of its own
+  const hemmed = (aLocked: boolean, bLocked: boolean): Landscape => {
+    const l = emptyLandscape();
+    l.migratedAt = "2026-11-01T00:00:00.000Z";
+    l.areas.D = { x: 0, y: 0, w: 2400, h: 600, repos: [] };
+    l.areas.A = { x: 0, y: 664, w: 2400, h: 1200, repos: [], locked: aLocked };
+    l.areas.B = { x: 2464, y: 0, w: 1200, h: 2000, repos: [], locked: bLocked };
+    l.workspaces.d1 = { x: 24, y: 48, w: 2352, h: 528 };
+    l.workspaces.a1 = { x: 24, y: 712, w: 1000, h: 600 };
+    l.workspaces.b1 = { x: 2488, y: 48, w: 1000, h: 800 };
+    return l;
+  };
+  const hemmedShown = [session("d1", { taskGroup: "D" }), session("a1", { taskGroup: "A" }), session("b1", { taskGroup: "B" })];
+  const LOCKS = [[false, false], [true, false], [false, true], [true, true]] as const;
+  /** Where `l` ends up: each area, and each workspace, by key. */
+  const placesOf = (l: Landscape, r: ReturnType<typeof resolveLayout>) => ({
+    area: (k: string) => r.areas.find((a) => a.key === k)?.rect ?? l.areas[k],
+    tile: (k: string) => r.tiles.find((t) => t.key === k)?.rect ?? l.workspaces[k],
+  });
+  /** No workspace on another, each inside its area, the areas `AREA_GAP` apart: what any growing leaves. */
+  const tidy = (l: Landscape, keys: Record<string, string>, what: string) => {
+    for (const [k, a] of Object.entries(keys)) {
+      const t = l.workspaces[k];
+      const r = l.areas[a];
+      expect(t.x >= r.x && t.x + t.w <= r.x + r.w && t.y >= r.y && t.y + t.h <= r.y + r.h, `${what}: ${k} in ${a}`).toBe(true);
+      for (const j of Object.keys(keys)) if (j !== k) expect(overlaps(t, l.workspaces[j], GAP - 1e-6), `${what}: ${k} on ${j}`).toBe(false);
+    }
+    const areas = Object.entries(l.areas);
+    for (const [k, a] of areas) for (const [j, b] of areas) if (j !== k) expect(overlaps(a, b, 64 - 1e-6), `${what}: ${k} and ${j}`).toBe(false);
+  };
+  it("puts New session here… in a full area with areas below and to the right in a new row just below its own, locked or not: the area never moves, the one below moves whole", () => {
+    for (const [aLocked, bLocked] of LOCKS) {
+      const what = `A ${aLocked ? "locked" : "unlocked"}, B ${bLocked ? "locked" : "unlocked"}`;
+      const l = hemmed(aLocked, bLocked);
+      const r = resolveLayout(l, [...hemmedShown, session("n", { taskGroup: "D" })]);
+      const after = applyPatch(l, r.patch!);
+      const n = after.workspaces.n;
+      // just below d1, at D's left: never below what's in A
+      expect([n.x, n.y], what).toEqual([AREA_PAD, 48 + 528 + GAP]);
+      expect(after.areas.D, what).toMatchObject({ x: 0, y: 0, w: 2400, h: n.y + n.h + AREA_PAD });
+      // A pushed down as a whole, a1 with it, its lock kept; B, clear of D's growing, stays
+      const dy = after.areas.A.y - 664;
+      expect([after.areas.A.x, dy > 0], what).toEqual([0, true]);
+      expect(after.workspaces.a1, what).toEqual({ ...l.workspaces.a1, y: l.workspaces.a1.y + dy });
+      expect(after.areas.A.locked ?? false, what).toBe(aLocked);
+      expect(after.areas.B, what).toEqual(l.areas.B);
+      tidy(after, { d1: "D", n: "D", a1: "A", b1: "B" }, what);
+    }
+  });
+  it("places a right-click's workspace in the same full area by the click, neighbours locked since the dialog opened or not: the area never moves, those in the way move whole", () => {
+    for (const [aLocked, bLocked] of LOCKS) {
+      for (const at of [{ x: 1000, y: 500 }, { x: 2300, y: 300 }]) {
+        const what = `A ${aLocked ? "locked" : "unlocked"}, B ${bLocked ? "locked" : "unlocked"}, click ${at.x},${at.y}`;
+        const l = hemmed(aLocked, bLocked);
+        const r = resolveLayout(l, [...hemmedShown, session("n", { taskGroup: "D", createdAt: 600 })], undefined, [], { area: "D", at, since: 500 });
+        expect(r.hinted, what).toBe("n");
+        const after = applyPatch(l, r.patch!);
+        const n = after.workspaces.n;
+        // by the click along the edge it grew from: a new row at its x, or a new column at its y
+        expect(Math.abs(n.x - at.x) <= n.w && Math.abs(n.y - at.y) <= n.h, what).toBe(true);
+        expect(after.areas.D, what).toMatchObject({ x: 0, y: 0 });
+        for (const [k, w] of [["A", "a1"], ["B", "b1"]] as const) {
+          const d = { dx: after.areas[k].x - l.areas[k].x, dy: after.areas[k].y - l.areas[k].y };
+          expect(after.workspaces[w], `${what}: ${w} with ${k}`).toEqual({ ...l.workspaces[w], x: l.workspaces[w].x + d.dx, y: l.workspaces[w].y + d.dy });
+          expect(after.areas[k].locked ?? false, what).toBe(k === "A" ? aLocked : bLocked);
+        }
+        tidy(after, { d1: "D", n: "D", a1: "A", b1: "B" }, what);
+      }
+    }
+  });
+  it("moves picked workspaces into the same full area in a new row just below its own, locked neighbours or not, pushing what's in the way whole", () => {
+    for (const [aLocked, bLocked] of LOCKS) {
+      const what = `A ${aLocked ? "locked" : "unlocked"}, B ${bLocked ? "locked" : "unlocked"}`;
+      const l = hemmed(aLocked, bLocked);
+      l.workspaces.x = { x: -1200, y: 0, w: 1000, h: 600 };
+      const shown = [...hemmedShown, session("x")];
+      const plan = planMakeArea(l, resolveLayout(l, shown), ["x"], "D", (k) => k);
+      if ("refused" in plan) throw new Error(plan.refused);
+      expect(plan.moves, what).toEqual([{ id: "x", group: "D" }]);
+      const after = applyPatch(l, plan.patch!);
+      expect(after.workspaces.x, what).toEqual({ x: AREA_PAD, y: 48 + 528 + GAP, w: 1000, h: 600 });
+      expect(after.areas.D, what).toMatchObject({ x: 0, y: 0, w: 2400, h: 592 + 600 + AREA_PAD });
+      const dy = after.areas.A.y - 664;
+      expect(dy > 0 && after.workspaces.a1.y === l.workspaces.a1.y + dy, what).toBe(true);
+      expect(after.areas.B, what).toEqual(l.areas.B);
+      tidy(after, { d1: "D", x: "D", a1: "A", b1: "B" }, what);
+    }
+  });
+  it("holds every area that grew in the same pass where it is, pushing from all of them together; of two that grow into each other, the one right-clicked stays", () => {
+    // A, C and D stacked, each full; A gets a new session (a new row, which pushes C down into D), D a right-click's
+    const stacked = (cH: number) => {
+      const l = emptyLandscape();
+      l.migratedAt = "2026-11-01T00:00:00.000Z";
+      const dY = 664 + cH + 64;
+      l.areas.A = { x: 0, y: 0, w: 2400, h: 600, repos: [] };
+      l.areas.C = { x: 0, y: 664, w: 2400, h: cH, repos: [] };
+      l.areas.D = { x: 0, y: dY, w: 2400, h: 600, repos: [] };
+      l.workspaces.a1 = { x: 24, y: 48, w: 2352, h: 528 };
+      l.workspaces.c1 = { x: 24, y: 712, w: 2352, h: cH - 72 };
+      l.workspaces.d1 = { x: 24, y: dY + 48, w: 2352, h: 528 };
+      const shown = [session("a1", { taskGroup: "A" }), session("c1", { taskGroup: "C" }), session("d1", { taskGroup: "D" }), session("n", { taskGroup: "D", createdAt: 600 }), session("m", { taskGroup: "A", createdAt: 600 })];
+      const r = resolveLayout(l, shown, undefined, [], { area: "D", at: { x: 1000, y: dY + 500 }, since: 500 });
+      expect(r.hinted).toBe("n");
+      return { l, r, dY, ...placesOf(l, r) };
+    };
+    // A's new row reaches C, which goes on into D: A and D both stay, and C goes past D
+    const far = stacked(900);
+    expect(far.area("A")).toMatchObject({ x: 0, y: 0 });
+    expect(far.area("D")).toMatchObject({ x: 0, y: far.dY });
+    expect(far.area("A").h).toBeGreaterThan(600);
+    expect(far.area("D").h).toBeGreaterThan(600);
+    tidy(applyPatch(far.l, far.r.patch!), { a1: "A", m: "A", c1: "C", d1: "D", n: "D" }, "C between");
+    // A's new row reaches D itself: D, right-clicked, stays, and A goes past it
+    const near = stacked(600);
+    expect(near.area("D")).toMatchObject({ x: 0, y: near.dY });
+    expect(near.tile("n").y).toBeGreaterThan(near.dY + 48 + 528);
+    tidy(applyPatch(near.l, near.r.patch!), { a1: "A", m: "A", c1: "C", d1: "D", n: "D" }, "D right below");
+  });
+  it("pushes a workspace in no area aside when an area grows over it, and it stays in none: in the layout, and for a gesture", () => {
+    const l = emptyLandscape();
+    l.migratedAt = "2026-11-01T00:00:00.000Z";
+    l.areas.D = { x: 0, y: 0, w: 2400, h: 600, repos: [] };
+    l.workspaces.d1 = { x: 24, y: 48, w: 2352, h: 528 };
+    l.workspaces.x = { x: 24, y: 700, w: 800, h: 400 };
+    // a session waiting to be resumed, its place loose below D too
+    l.workspaces.gone = { x: 1000, y: 700, w: 800, h: 400 };
+    const shown = [session("d1", { taskGroup: "D" }), session("x")];
+    const r = resolveLayout(l, [...shown, session("n", { taskGroup: "D" })]);
+    const after = applyPatch(l, r.patch!);
+    expect(r.tiles.find((t) => t.key === "x")!.area).toBe(LOOSE_GROUP);
+    for (const k of ["x", "gone"]) {
+      expect(overlaps(after.workspaces[k], after.areas.D, GAP - 1e-6), k).toBe(false);
+      expect([after.workspaces[k].x, after.workspaces[k].w, after.workspaces[k].h], k).toEqual([l.workspaces[k].x, 800, 400]);
+    }
+    expect(overlaps(after.workspaces.x, after.workspaces.gone, GAP - 1e-6)).toBe(false);
+    // a gesture's growing: a loose workspace moved into D, which grows over the other
+    const g = emptyLandscape();
+    g.migratedAt = l.migratedAt;
+    g.areas.D = l.areas.D;
+    g.workspaces.d1 = l.workspaces.d1;
+    g.workspaces.x = l.workspaces.x;
+    g.workspaces.y = { x: -1200, y: 0, w: 1000, h: 600 };
+    const gShown = [session("d1", { taskGroup: "D" }), session("x"), session("y")];
+    const plan = planMakeArea(g, resolveLayout(g, gShown), ["y"], "D", (k) => k);
+    if ("refused" in plan) throw new Error(plan.refused);
+    const moved = applyPatch(g, plan.patch!);
+    expect(overlaps(moved.workspaces.x, moved.areas.D, GAP - 1e-6)).toBe(false);
+    expect(moved.workspaces.x.x).toBe(l.workspaces.x.x);
+    expect(plan.moves).toEqual([{ id: "y", group: "D" }]);
   });
   it("grows a full area down for a right-clicked workspace rather than into the area beside it, locked or not", () => {
     for (const locked of [false, true]) {

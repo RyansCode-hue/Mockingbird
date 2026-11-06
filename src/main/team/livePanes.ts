@@ -357,10 +357,13 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     return this.ownRooms.get(id) ?? null;
   }
 
-  /** The room a session of this install's is in: its group's, unless a teammate took it over (then this copy has left the room). */
+  /**
+   * The room a session of this install's is in: its group's, unless a teammate took it over, in that room or any other
+   * (then this copy has left every room: it's never shared again, wherever its group goes).
+   */
   private roomOfInfo(s: SessionInfo): RoomId | null {
     const roomId = this.groupRoomOf(s);
-    return roomId && !this.takenOverInRoom(roomId, s.id) ? roomId : null;
+    return roomId && !this.takenOver(s.id) ? roomId : null;
   }
 
   /** The room a session's group is shared as, taken over or not. */
@@ -368,11 +371,10 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     return s.debrief ? null : this.roomForGroup(topOfKey(s.taskGroup ?? "ungrouped"));
   }
 
-  /** A teammate took this install's session `sessionId` over in `roomId`: who and when; null when not. */
-  private takenOverInRoom(roomId: RoomId, sessionId: string): { by: MemberId; at: number } | null {
+  /** Whether a teammate took this install's session `sessionId` over, in any room: the one rule main and the window go by (takenOverOwn). */
+  private takenOver(sessionId: string): ReturnType<typeof takenOverOwn> {
     const team = this.d.team();
-    const b = team?.room(roomId)?.ext.takeover?.sessions[sessionId];
-    return b?.takenOver && b.owner === team!.self.id ? b.takenOver : null;
+    return team ? takenOverOwn(team.rooms(), team.self.id, sessionId) : null;
   }
 
   /**
@@ -632,8 +634,9 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
     const id = (params as { session?: unknown })?.session;
     if (typeof id !== "string" || !roomId) throw new PeerError("name a session and its room");
     const s = this.d.sessions.list().find((x) => x.id === id);
-    const taken = s && this.groupRoomOf(s) === roomId ? this.takenOverInRoom(roomId, s.id) : null;
-    if (taken) throw new PeerError(`that session was taken over by ${memberNameIn(this.d.team(), roomId, taken.by)}: it runs on their Mac now`);
+    const taken = s ? this.takenOver(s.id) : null;
+    if (taken && taken.now === this.d.team()?.self.id) throw new PeerError("that copy was taken back into another session: it doesn't run in the room any more");
+    if (taken) throw new PeerError(`that session was taken over by ${memberNameIn(this.d.team(), taken.roomId, taken.now)}: it runs on their Mac now`);
     if (!s || this.roomOfInfo(s) !== roomId) throw new PeerError("that session isn't running in this room");
     return s;
   }
@@ -1414,7 +1417,7 @@ export class LivePanes implements RemotePanes, RoomSessionSource {
       if (own[s.id]) continue;
       // a copy a teammate took over is tagged so from the room it was taken over in, wherever its group is now: main
       // refuses what it refuses by the same rule (takenOverOwn)
-      const taken = takenOverOwn(team.rooms(), self, s.id);
+      const taken = this.takenOver(s.id);
       const roomId = this.groupRoomOf(s) ?? taken?.roomId ?? null;
       if (!roomId) continue;
       const pub = this.published.get(`${roomId}\n${s.id}`)?.rec;

@@ -1,30 +1,32 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SessionInfo } from "../src/shared/types";
 import { resumeExited, type ResumeSteps } from "../src/renderer/resumeFlow";
 
 const relaunched = { id: "s1", title: "Donor entities" } as SessionInfo;
 
-/** The steps, each recording that it ran; `over` picks what each answers. */
-function steps(over: Partial<{ refusal: string | null; main: string | null | { error: string }; cost: boolean; kill: unknown; relaunch: SessionInfo | null | { error: string } }> = {}) {
+/** The steps, each recording that it ran; `over` picks what each answers (`resume` a function to throw). */
+function steps(over: Partial<{ refusal: string | null; cost: boolean; resume: SessionInfo | { refused: string } | { error: string } | (() => never) }> = {}) {
   const ran: string[] = [];
   const said: string[] = [];
   const d: ResumeSteps = {
     refusal: over.refusal ?? null,
-    mainRefusal: async () => (ran.push("main"), over.main ?? null),
     costOk: async () => (ran.push("cost"), over.cost ?? true),
-    kill: async () => (ran.push("kill"), over.kill ?? null),
+    resume: async () => {
+      ran.push("resume");
+      const r = over.resume ?? relaunched;
+      return typeof r === "function" ? r() : r;
+    },
     dispose: () => void ran.push("dispose"),
-    relaunch: async () => (ran.push("relaunch"), over.relaunch === undefined ? relaunched : over.relaunch),
     say: (t) => void said.push(t),
   };
   return { d, ran, said };
 }
 
 describe("resuming an exited session", () => {
-  it("asks main before it drops the pty or lets go of the terminal, then relaunches", async () => {
+  it("asks main only once the cost is agreed, in one call that checks, lets the pty go and relaunches; then lets the terminal go", async () => {
     const { d, ran, said } = steps();
     await expect(resumeExited("Donor entities", d)).resolves.toBe(relaunched);
-    expect(ran).toEqual(["main", "cost", "kill", "dispose", "relaunch"]);
+    expect(ran).toEqual(["cost", "resume", "dispose"]);
     expect(said).toEqual([]);
   });
 
@@ -37,30 +39,33 @@ describe("resuming an exited session", () => {
     }
   });
 
-  it("one main refuses (a take-over this window hasn't heard of): said, its pty and terminal kept", async () => {
-    const { d, ran, said } = steps({ main: "“Donor entities” continues on Sam's laptop — take it back rather than running this copy again" });
+  it("one main refuses (a take-over heard during the cost's question, or one this window hasn't heard of): said, its terminal kept", async () => {
+    const { d, ran, said } = steps({ resume: { refused: "“Donor entities” continues on Sam's laptop — take it back rather than running this copy again" } });
     await expect(resumeExited("Donor entities", d)).resolves.toBeUndefined();
-    expect(ran).toEqual(["main"]);
+    expect(ran).toEqual(["cost", "resume"]);
     expect(said).toEqual(["“Donor entities” continues on Sam's laptop — take it back rather than running this copy again"]);
-    // main's answer failing stops it too, said
-    const failing = steps({ main: { error: "IPC timed out" } });
-    await resumeExited("Donor entities", failing.d);
-    expect(failing.ran).toEqual(["main"]);
-    expect(failing.said).toEqual(["Couldn't resume Donor entities: IPC timed out"]);
   });
 
-  it("stops at a declined cost, a failed kill or a failed relaunch, each said but the declined cost", async () => {
+  it("stops at a declined cost, unsaid; a relaunch that failed after the pty went is said, its terminal let go", async () => {
     const declined = steps({ cost: false });
     await expect(resumeExited("Donor entities", declined.d)).resolves.toBeUndefined();
-    expect([declined.ran, declined.said]).toEqual([["main", "cost"], []]);
-    const kill = steps({ kill: { error: "no such pty" } });
-    await expect(resumeExited("Donor entities", kill.d)).resolves.toBeUndefined();
-    expect([kill.ran, kill.said]).toEqual([["main", "cost", "kill"], ["Couldn't resume Donor entities: no such pty"]]);
-    const relaunch = steps({ relaunch: { error: "the agent CLI is missing" } });
-    await expect(resumeExited("Donor entities", relaunch.d)).resolves.toBeUndefined();
-    expect(relaunch.said).toEqual(["Couldn't resume: the agent CLI is missing"]);
-    // main had nothing to relaunch: null, the pane goes as before
-    const none = steps({ relaunch: null });
-    await expect(resumeExited("Donor entities", none.d)).resolves.toBeNull();
+    expect([declined.ran, declined.said]).toEqual([["cost"], []]);
+    const failed = steps({ resume: { error: "the agent CLI is missing" } });
+    await expect(resumeExited("Donor entities", failed.d)).resolves.toBeUndefined();
+    expect([failed.ran, failed.said]).toEqual([["cost", "resume", "dispose"], ["Couldn't resume Donor entities: the agent CLI is missing"]]);
+  });
+
+  it("says a call that never got an answer (no handler in main) rather than leaving it unhandled, its terminal kept", async () => {
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { d, ran, said } = steps({
+      resume: () => {
+        throw new Error("No handler registered for 'sessions:resume'");
+      },
+    });
+    await expect(resumeExited("Donor entities", d)).resolves.toBeUndefined();
+    expect(ran).toEqual(["cost", "resume"]);
+    expect(said).toEqual(["Couldn't resume Donor entities: No handler registered for 'sessions:resume'"]);
+    expect(quiet).toHaveBeenCalled();
+    quiet.mockRestore();
   });
 });
