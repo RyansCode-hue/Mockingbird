@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { git, makeRepo, tempDir } from "./helpers";
+import { worktreeRoot } from "../src/main/worktrees";
 
 /** Every pty the manager starts: what it was asked to run and with what environment, what was written to it, and a way to end it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; killed: boolean; signals: string[]; emit(d: string): void; exit(code: number): void };
@@ -550,6 +551,81 @@ describe("a session a teammate continues", () => {
     expect(ptys.length).toBe(started);
     expect(m.list().some((x) => x.id === s.id && x.status !== "dead")).toBe(false);
     expect(m.resumable().map((x) => x.id)).toContain(s.id);
+  });
+});
+
+describe("relaunching a session in the checkout itself", () => {
+  const branches = (repo: string) => git(repo, "branch", "--format=%(refname:short)").split("\n").sort();
+  async function closedInCheckout(over: Record<string, unknown> = {}) {
+    const { m } = await manager();
+    const repo = makeRepo();
+    const s = await m.create({ repoPath: repo, ticketId: "123", ticketTitle: "Fix thing", useWorktree: false, agent: "claude", title: "t", ...over });
+    m.kill(s.id, false);
+    return { m, repo, s };
+  }
+
+  it("never makes its ticket's branch again once it's deleted: it runs on what's out", async () => {
+    const { m, repo, s } = await closedInCheckout();
+    expect(s.branch).toMatch(/^123-/);
+    git(repo, "switch", "-q", "main");
+    git(repo, "branch", "-q", "-D", s.branch!);
+    const again = await m.relaunch(s.id);
+    expect(again).toMatchObject({ cwd: repo, branch: "main" });
+    expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(branches(repo)).toEqual(["main"]);
+  });
+
+  it("never switches a checkout that's since moved to other work", async () => {
+    const { m, repo, s } = await closedInCheckout();
+    git(repo, "switch", "-q", "main");
+    git(repo, "switch", "-q", "-c", "users-own-work");
+    const before = branches(repo);
+    const again = await m.relaunch(s.id);
+    expect(again).toMatchObject({ cwd: repo, branch: "users-own-work" });
+    expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("users-own-work");
+    expect(branches(repo)).toEqual(before);
+  });
+
+  it("with a branch name of its own and a ticket, makes neither branch nor the ticket's, and switches to neither", async () => {
+    const { m, repo, s } = await closedInCheckout({ branchName: "mine" });
+    expect(s.branch).toBe("mine");
+    // still on its own branch: it stays there, the ticket's never made
+    const stay = await m.relaunch(s.id);
+    expect(stay).toMatchObject({ cwd: repo, branch: "mine" });
+    expect(branches(repo)).toEqual(["main", "mine"]);
+    m.kill(s.id, false);
+    // moved off and its branch deleted: neither comes back
+    git(repo, "switch", "-q", "main");
+    git(repo, "branch", "-q", "-D", "mine");
+    const moved = await m.relaunch(s.id);
+    expect(moved).toMatchObject({ cwd: repo, branch: "main" });
+    expect(git(repo, "rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(branches(repo)).toEqual(["main"]);
+  });
+
+  it("refuses once the checkout is gone", async () => {
+    const { m, repo, s } = await closedInCheckout();
+    fs.rmSync(repo, { recursive: true, force: true });
+    await expect(m.relaunch(s.id)).rejects.toThrow(/doesn't exist any more/);
+  });
+});
+
+describe("relaunching a session in a worktree whose folder isn't called after its branch (a take-over's)", () => {
+  it("runs in that folder while it's there, and once it's gone makes it again at its branch's usual place", async () => {
+    const { m } = await manager();
+    const repo = makeRepo();
+    git(repo, "branch", "feat");
+    const root = worktreeRoot(repo);
+    const folder = path.join(root, "feat-2");
+    git(repo, "worktree", "add", "-q", folder, "feat");
+    const s = await m.create({ repoPath: repo, cwd: folder, branchName: "feat", useWorktree: false, agent: "claude", title: "t" });
+    m.kill(s.id, false);
+    expect(await m.relaunch(s.id)).toMatchObject({ cwd: folder, branch: "feat" });
+    expect(fs.existsSync(path.join(root, "feat"))).toBe(false);
+    m.kill(s.id, false);
+    git(repo, "worktree", "remove", folder);
+    expect(await m.relaunch(s.id)).toMatchObject({ cwd: path.join(root, "feat"), branch: "feat" });
+    expect(git(path.join(root, "feat"), "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
   });
 });
 

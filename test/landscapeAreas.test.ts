@@ -21,6 +21,8 @@ import {
   planMakeArea,
   planMoveArea,
   planMoveTile,
+  renamedKeys,
+  areaSelectionNow,
   renameSettled,
   resolveLayout,
   sessionsOnScreen,
@@ -228,6 +230,72 @@ describe("areas' rectangles", () => {
     expect(inside(merged.workspaces.c1, merged.areas.C)).toBe(true);
   });
 
+  /** A folds into B, whose room under b1 is too little for closed session g1: B grows down over whatever's below it. */
+  const growing = () => {
+    const l = emptyLandscape();
+    const M = { w: 800, h: 600 };
+    l.areas.A = area(0, 0, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+    l.areas.B = area(1000, 0, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+    l.workspaces.g1 = { x: AREA_PAD, y: AREA_HEADER, ...M };
+    l.workspaces.b1 = { x: 1000 + AREA_PAD, y: AREA_HEADER, ...M };
+    return { l, M, below: { x: 1000 + AREA_PAD, y: l.areas.B.h + AREA_GAP + 8, ...M } };
+  };
+  const g1 = session("g1", { taskGroup: "A", status: "dead" });
+
+  it("folding into an area that grows never brings back a place it let go: a member's or a stack's, lying in the way", () => {
+    const { l, below } = growing();
+    l.workspaces.a1 = below;
+    l.stacks["A/api"] = { active: "a2", placement: { ...below, x: below.x + 900 } };
+    const p = renameAreaPatch(l, "A", "B", ["a1"], [g1])!;
+    expect(p.workspaces?.a1).toBeNull();
+    expect(p.stacks?.["A/api"]).toBeNull();
+    const merged = applyPatch(l, p);
+    expect(Object.hasOwn(merged.workspaces, "a1")).toBe(false);
+    expect(Object.hasOwn(merged.stacks, "A/api")).toBe(false);
+  });
+
+  it("folding into an area that grows pushes loose windows and cards aside, as the layout does", () => {
+    const { l, below } = growing();
+    l.tools.t1 = { tool: "files", docked: false, session: "x", area: null, placement: below };
+    l.cards.c1 = { area: "Nowhere", shelf: "area:Nowhere", artifact: "a", placement: { ...below, x: below.x + 900 } };
+    const merged = applyPatch(l, renameAreaPatch(l, "A", "B", [], [g1])!);
+    const b = merged.areas.B;
+    for (const r of [merged.tools.t1.placement!, merged.cards.c1.placement!]) expect(overlaps(r, b, GAP - 1e-6)).toBe(false);
+    // what's named an area that isn't there is in none, as it's drawn: pushed, and not pushed if it's clear already
+    expect(merged.tools.t1.placement!.y).toBeGreaterThanOrEqual(b.y + b.h + GAP);
+  });
+
+  it("folding into an area that grows moves what's in the areas it pushes by one reading of what's in them", () => {
+    const { l, below } = growing();
+    l.areas.C = area(below.x - AREA_PAD, below.y, 2000, 1000);
+    const c = l.areas.C;
+    // inside C, each by what makes it C's: where it lies, or the area it names
+    l.workspaces.c1 = { x: c.x + AREA_PAD, y: c.y + AREA_HEADER, w: 400, h: 300 };
+    l.stacks["C/s"] = { active: "c2", placement: { x: c.x + 500, y: c.y + AREA_HEADER, w: 400, h: 300 } };
+    l.tools.t1 = { tool: "files", docked: false, session: "x", area: "C", placement: { x: c.x + 1000, y: c.y + AREA_HEADER, w: 400, h: 300 } };
+    l.cards.c1 = { area: "C", shelf: "area:C", artifact: "a", placement: { x: c.x + 1500, y: c.y + AREA_HEADER, w: 400, h: 300 } };
+    const merged = applyPatch(l, renameAreaPatch(l, "A", "B", [], [g1])!);
+    const [dx, dy] = [merged.areas.C.x - c.x, merged.areas.C.y - c.y];
+    expect(dx + dy).toBeGreaterThan(0);
+    const by = (r: { x: number; y: number }, was: { x: number; y: number }) => [r.x - was.x, r.y - was.y];
+    expect(by(merged.workspaces.c1, l.workspaces.c1)).toEqual([dx, dy]);
+    expect(by(merged.stacks["C/s"].placement, l.stacks["C/s"].placement)).toEqual([dx, dy]);
+    expect(by(merged.tools.t1.placement!, l.tools.t1.placement!)).toEqual([dx, dy]);
+    expect(by(merged.cards.c1.placement!, l.cards.c1.placement!)).toEqual([dx, dy]);
+  });
+
+  it("folding into another area keeps a closed session lying inside the old one whatever its own group, as it's that area's", () => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 2000, 900);
+    l.areas.B = area(2100, 0, 2000, 900);
+    l.workspaces.other = { x: 24, y: 48, w: 800, h: 600 };
+    const p = renameAreaPatch(l, "A", "B", [], [session("other", { taskGroup: "G", status: "dead" })])!;
+    expect(p.workspaces?.other).toEqual({ x: 2124, y: 48, w: 800, h: 600 });
+    // and main asks with every closed session, of any group
+    const handler = fs.readFileSync(path.join(__dirname, "../src/main/index.ts"), "utf8").split('handle("sessions:renameGroup"')[1];
+    expect(handler).toMatch(/const closed = sessions\.resumable\(\)\.map\(/);
+  });
+
   it("folding into another area also lets go of the places of teammates' and resumable sessions inside the old one", () => {
     const l = emptyLandscape();
     l.areas.A = area(0, 0, 2000, 900);
@@ -264,6 +332,28 @@ describe("areas in the layout", () => {
     expect(r.patch?.areas?.N).toEqual(n);
     const saved = applyPatch(l, r.patch!);
     expect(resolveLayout(saved, [session("a1", { taskGroup: "A" }), session("n1", { taskGroup: "N" }), session("n2", { taskGroup: "N" })]).patch).toBeNull();
+  });
+
+  it("follows a chain of renames on their way: A→B then B→C all name one group", () => {
+    const chain = [{ from: "A", to: "B" }, { from: "B", to: "C" }];
+    expect(renamedKeys("C", chain)).toEqual(["B", "A"]);
+    expect(renamedKeys("A/api", chain)).toEqual(["B/api", "C/api"]);
+    expect(renamedKeys("B", chain)).toEqual(["A", "C"]);
+    // back to where it began: it ends
+    expect(renamedKeys("A", [{ from: "A", to: "B" }, { from: "B", to: "A" }])).toEqual(["B"]);
+    expect(renamedKeys("Z", chain)).toEqual([]);
+    // the session list has C; the landscape still has A, and its stack under A: nothing's formed, nothing's saved
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 2000, 900);
+    l.workspaces.s1 = { x: 24, y: 48, w: 800, h: 600 };
+    l.stacks["A/api"] = { active: "s2", placement: { x: 900, y: 48, w: 800, h: 600 } };
+    const r = resolveLayout(l, [session("s1", { taskGroup: "C" }), session("s2", { taskGroup: "C/api" })], undefined, chain);
+    expect(r.areas.map((a) => a.key)).toEqual(["A"]);
+    expect(r.tiles.map((t) => [t.key, t.area])).toEqual([["s1", "A"], ["ws:A/api", "A"]]);
+    expect(r.patch).toBeNull();
+    // an area selected follows it too
+    expect(areaSelectionNow("A", ["C"], chain)).toBe("C");
+    expect(areaSelectionNow("A", ["D"], chain)).toBeNull();
   });
 
   it("keeps a group renamed here in its area while the rename's changes arrive, whichever comes first, saving nothing", () => {
@@ -491,6 +581,7 @@ describe("making and moving areas", () => {
 
   it("moves a workspace within its area on the grid, kept inside its padding and under its header", () => {
     const l = base();
+    l.workspaces.a1 = { ...l.workspaces.a1, x: AREA_PAD + 16, y: AREA_HEADER + 16 };
     const layout = resolveLayout(l, shown);
     const p = ready(planMoveTile(l, layout, "a1", { x: -50, y: 13 }, "A", (k) => k));
     expect(p.moves).toEqual([]);

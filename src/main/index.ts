@@ -1090,8 +1090,9 @@ handle("sessions:rename", (id, title) => sessions.rename(id, title));
 handle("sessions:renameGroup", (oldKey, newKey) => {
   const [from, to] = [String(oldKey), String(newKey)];
   const members = sessions.list().filter((s) => areaKeyOf(s) === from).map((s) => s.id);
-  // read before the rename, which changes the records' groups in place
-  const closed = sessions.resumable().filter((s) => areaKeyOf(s) === from).map((s) => ({ id: s.id, taskGroup: s.taskGroup }));
+  // every group's: a ghost lying inside the area is in it, whatever its own group. Read before the rename, which changes
+  // the records' groups in place
+  const closed = sessions.resumable().map((s) => ({ id: s.id, taskGroup: s.taskGroup }));
   sessions.renameGroup(oldKey, newKey);
   team.groupRenamed(from, to); // a shared group stays its room
   // its area on the landscape follows; the rename itself is done, so a failure here is logged rather than refused

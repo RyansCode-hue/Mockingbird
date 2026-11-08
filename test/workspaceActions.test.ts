@@ -276,6 +276,7 @@ describe("an area's actions", () => {
       ["clearGhosts", true, "No closed workspaces here"],
     ]);
     // two closed, neither reopenable here (taken over, or their folders gone): Reopen all is off, saying why; Clear isn't
+    expect(actionOf(ghostsActions({ count: 2, reopenable: 2, running: false, reopenAll, clear }, { what: "closed session" }), "clearGhosts")?.title).toBe("Forget all the closed sessions here: they can't be reopened after");
     const stuck = ghostsActions({ count: 2, reopenable: 0, running: false, reopenAll, clear });
     expect([actionOf(stuck, "reopenAll")?.disabled, actionOf(stuck, "reopenAll")?.menuLabel, actionOf(stuck, "reopenAll")?.title]).toEqual([true, "Reopen all", expect.stringMatching(/^None of these can be reopened here/)]);
     expect(usable(stuck, "clearGhosts")).toBeDefined();

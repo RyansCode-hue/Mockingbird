@@ -48,7 +48,7 @@ describe.skipIf(!local)("the Closed sessions list (UI preview)", () => {
     expect(a.error).toBeUndefined();
     // the closed sessions with no place: o1 and o2 left in Previous, y1 closed off the landscape; the ghosts aren't listed
     expect(a.rows).toEqual(["o1", "o2", "y1"]);
-    expect(a.head).toBe("Closed sessions (3)");
+    expect(a.head).toBe("Closed (3)");
     expect(a.subs).toEqual({ o1: "Closed · #5102", o2: "Closed", y1: "Continued by Nick Smith on their laptop · 5110-donor-entities" });
     // y1, which Nick continues, is taken back, never reopened: as its ghost would be
     expect(a.acts.o1).toEqual([
@@ -79,13 +79,26 @@ describe.skipIf(!local)("the Closed sessions list (UI preview)", () => {
   }, 120_000);
 
   it("says a failed read of the closed sessions and tries it again until they're read", async () => {
-    const a = await run<{ early: { rows: number; error: string | null; reads: number }; later: { rows: string[]; error: string | null; reads: number }; error?: string }>("closed", "retry", "&lsClosedReadFails=2");
+    type Retry = { early: { rows: number; error: string | null; reads: number; goneReads: number }; later: { rows: string[]; error: string | null; reads: number; goneReads: number }; head: { text: string | null; cut: boolean; countShown: boolean; aria: string | null; title: string | null }; error?: string };
+    const a = await run<Retry>("closed", "retry", "&lsClosedReadFails=2");
     expect(a.error).toBeUndefined();
     expect(a.early).toMatchObject({ rows: 0, error: expect.stringMatching(/Couldn't read the previous sessions: sessions\.json couldn't be read/) });
     // tried again (after 1 s, then 2): read on the third try, the list there and the error gone
     expect(a.later.rows).toEqual(["o1", "o2"]);
     expect(a.later.error).toBeNull();
     expect(a.later.reads).toBeGreaterThanOrEqual(3);
+    expect(a.head).toEqual(expect.objectContaining({ text: "Closed (2)", cut: false, countShown: true, aria: "Closed sessions (2)", title: "Closed sessions (2)" }));
+    // which of their folders are gone: said, tried again, and cleared, the same way
+    const g = await run<Retry>("closed", "retry", "&lsGoneReadFails=2");
+    expect(g.error).toBeUndefined();
+    expect(g.early.error).toMatch(/Couldn't read which closed sessions' folders are gone: sessions\.json couldn't be read/);
+    expect(g.later.error).toBeNull();
+    expect(g.later.goneReads).toBeGreaterThanOrEqual(3);
+    // both failing: each read clears its own, so neither's error outlasts it, whichever showed last
+    const both = await run<Retry>("closed", "retry", "&lsClosedReadFails=1&lsGoneReadFails=2");
+    expect(both.error).toBeUndefined();
+    expect(both.later.error).toBeNull();
+    expect(both.later.rows).toEqual(["o1", "o2"]);
   }, 120_000);
 
   it("keeps a long list's header on one line, rings each row as a ghost, titles it with its status, and offers Forget all from a ⋯ headed as the list", async () => {
@@ -101,8 +114,8 @@ describe.skipIf(!local)("the Closed sessions list (UI preview)", () => {
     }>("closed", "many", "&lsClosed=y1,s7&lsUnplaced=y1&lsManyClosed=12");
     expect(a.error).toBeUndefined();
     expect(a.rows.length).toBe(15);
-    // a two-digit count: one line, the words cut with an ellipsis if they must be, the count always shown
-    expect(a.head).toMatchObject({ text: "Closed sessions (15)", wrap: "nowrap", ellipsis: "ellipsis", countShown: true });
+    // a two-digit count: one line, whole at the sidebar's default width, and called what it is in full for a screen reader and on hover
+    expect(a.head).toMatchObject({ text: "Closed (15)", wrap: "nowrap", ellipsis: "ellipsis", cut: false, countShown: true, aria: "Closed sessions (15)", title: "Closed sessions (15)" });
     expect(a.head.height).toBeLessThan(20);
     // closed reads as the ghost's hollow ring, not the red dot of an exited workspace
     expect(a.ring).toEqual({ cls: "lg-dot", border: "solid", fill: "rgba(0, 0, 0, 0)" });
@@ -187,10 +200,52 @@ describe.skipIf(!local)("the S6b review's gesture and look fixes (UI preview)", 
     expect(bar.x + bar.w <= mm.x || mm.x + mm.w <= bar.x || bar.y + bar.h <= mm.y || mm.y + mm.h <= bar.y).toBe(true);
   }, 120_000);
 
+  // a stack card's head, zoomed out as far as the landscape goes: the title keeps room, the chip stays in the card and clear of the ⋯
+  type CardHead = { zoom: number; card: number; title: number; chipInside: boolean; long: number; short: number; ticket: number | null; clearOfMore: boolean; ticketLast: boolean };
+  for (const size of ["1024x768", "1440x900"]) {
+    it(`keeps a stack card's title and count readable zoomed out far, at ${size}: the ticket gives way, the chip goes to ×N, and the ⋯ never covers it`, async () => {
+      const c = await run<{ fit: CardHead; at: Record<string, CardHead>; noTicket: Record<string, CardHead>; pastTop: Record<"back" | "far", { startTop: number; heldTop: number; bound: number; releasedSoon: boolean; topSoon: number; topLater: number; updates: number }>; error?: string }>("fix", "c", "", size);
+      expect(c.error).toBeUndefined();
+      const say = (h: CardHead) => JSON.stringify(h);
+      for (const h of [c.fit, c.at["0.1"], c.at["0.11"], c.at["0.12"], c.at["0.13"], c.noTicket["0.12"]]) {
+        expect(h.chipInside, say(h)).toBe(true);
+        expect(h.clearOfMore, say(h)).toBe(true);
+        // at least four characters of its title, on screen, at the narrowest
+        expect(h.title, say(h)).toBeGreaterThanOrEqual(28);
+        expect(h.card, say(h)).toBeLessThan(200);
+        expect([h.long, h.short > 0], say(h)).toEqual([0, true]);
+        if (h.ticket !== null) expect(h.ticket, say(h)).toBe(0);
+      }
+      // with room: the chip in full, then the ticket, which the ⋯ covers as on any card
+      for (const h of [c.at["0.25"], c.at["0.3"]]) {
+        expect(h.card, say(h)).toBeGreaterThan(200);
+        expect(h.long, say(h)).toBeGreaterThan(0);
+        expect(h.short, say(h)).toBe(0);
+        expect(h.ticket, say(h)).toBeGreaterThan(0);
+        expect(h.clearOfMore, say(h)).toBe(true);
+        expect(h.ticketLast, say(h)).toBe(true);
+      }
+      // no ticket for the ⋯ to cover: the count stays clear of it all the same
+      expect(c.noTicket["0.25"].long).toBeGreaterThan(0);
+      expect(c.noTicket["0.25"].clearOfMore).toBe(true);
+      // dragged past the area's inside top, it's held inside; let go where it started, it's released at once, with nothing saved
+      const { back, far } = c.pastTop;
+      expect(back.heldTop).toBeGreaterThanOrEqual(back.bound - 1);
+      expect(back.heldTop).toBeCloseTo(back.startTop, 0);
+      expect(back.releasedSoon).toBe(true);
+      expect(back.topLater).toBeCloseTo(back.startTop, 0);
+      expect(back.updates).toBe(0);
+      // let go somewhere new past the inside top: held inside too, and it lands where it was held
+      expect(far.heldTop).toBeGreaterThanOrEqual(far.bound - 1);
+      expect(far.topSoon).toBeCloseTo(far.heldTop, 0);
+      expect(far.topLater).toBeCloseTo(far.heldTop, 0);
+    }, 120_000);
+  }
+
   it("brings a slipped tab to the front; a tab dragged off is put back by Undo; Esc cancels a move, a resize and a tab drag; ghosts read whole", async () => {
     const b = await run<{
       tabsBefore: string[];
-      slip: { setGroup: unknown[][]; tabs: string[]; half: { id: string; front: string | null }; full: { id: string; front: string | null } };
+      slip: { setGroup: unknown[][]; tabs: string[]; half: { id: string; front: string | null }; up: { id: string; front: string | null }; down: { id: string; front: string | null }; full: { id: string; front: string | null } };
       dragOut: { peekAtDrop: boolean; peekMovedOn: boolean; said: string | null; groups: unknown[][]; undo: boolean; back: unknown[][]; tabs: string[]; s3: R | null };
       esc: Record<"move" | "resize" | "tab", { updates: number; same?: boolean; resized?: number; setGroup?: unknown[][]; guides: number; box: boolean; dragging: number }>;
       ghosts: { status: Record<string, { text: string; whole: boolean }[]>; sizes: Record<string, number> };
@@ -220,6 +275,9 @@ describe.skipIf(!local)("the S6b review's gesture and look fixes (UI preview)", 
     expect(b.tabsBefore.slice(0, 2)).toEqual(["s2", "s3"]);
     expect(b.slip.tabs).toEqual(b.tabsBefore);
     expect(b.slip.half.front).toBe(b.slip.half.id);
+    // 9 px up and down at 50%, off a header 16 px tall, is still a slip
+    expect(b.slip.up.front).toBe(b.slip.up.id);
+    expect(b.slip.down.front).toBe(b.slip.down.id);
     expect(b.slip.full.front).toBe(b.slip.full.id);
     expect(b.slip.full.id).not.toBe(b.slip.half.id);
     // pulled off the header: taken out, and the note's Undo puts it back in the stack, its own place let go

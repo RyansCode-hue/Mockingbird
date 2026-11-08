@@ -12,6 +12,7 @@ import {
   newStackName,
   notePlacement,
   NOTE_BOTTOM,
+  planMoveArea,
   planMoveTile,
   planResizeTo,
   planStack,
@@ -26,7 +27,7 @@ import {
   withoutGone,
   type AreaPlan,
 } from "../src/renderer/landscapeModel";
-import { AREA_HEADER, AREA_PAD, GAP, GRID, LOOSE_GROUP, applyPatch, emptyLandscape, overlaps, presetSize, renameAreaPatch, type Area, type Landscape, type Rect } from "../src/shared/landscape";
+import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, GRID, LOOSE_GROUP, applyPatch, emptyLandscape, overlaps, presetSize, renameAreaPatch, type Area, type Landscape, type Rect } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
 
 // S6b: moving and resizing by hand, stacks, Tidy and ghosts — the pure rules Landscape.tsx and main.tsx carry out.
@@ -94,6 +95,25 @@ describe("a workspace dragged by hand", () => {
     expect(snapRect({ x: 100, y: 97, w: 300, h: 200 }, MOVE_EDGES, [ghost], 1).rect.y).toBe(ghost.y);
     // resizing the top edge likewise
     expect(snapRect({ x: 100, y: 97, w: 300, h: 300 }, { left: false, right: false, top: true, bottom: false }, [ghost], 1, inner).rect.y).toBe(inner.y);
+  });
+
+  it("keeps to its area's inside on the plain grid too, drawn where a drop would leave it", () => {
+    const inner = { x: 20, y: 100, w: 1000, h: 800 };
+    const moved = snapRect({ x: -200, y: 30, w: 300, h: 200 }, MOVE_EDGES, [], 1, inner);
+    expect([moved.rect.x, moved.rect.y]).toEqual([24, 104]);
+    expect(moved.guides).toEqual([]);
+    // its top or left edge dragged past stops there; the opposite edge stays where it was
+    const resized = snapRect({ x: 100, y: 30, w: 300, h: 500 }, { left: false, right: false, top: true, bottom: false }, [], 1, inner);
+    expect([resized.rect.y, resized.rect.y + resized.rect.h]).toEqual([104, 530]);
+    // with no area to keep to, the grid's it
+    expect(snapRect({ x: -200, y: 30, w: 300, h: 200 }, MOVE_EDGES, [], 1).rect).toMatchObject({ x: -200, y: 32 });
+    // what's held while dragging is where a drop leaves it
+    const l = base();
+    const layout = resolveLayout(l, two);
+    const a = layout.areas[0].rect;
+    const held = snapRect({ ...rectOf(layout, "a2"), y: -40 }, MOVE_EDGES, [], 1, { x: a.x + AREA_PAD, y: a.y + AREA_HEADER, w: a.w - 2 * AREA_PAD, h: a.h - AREA_HEADER - AREA_PAD }).rect;
+    const { r } = settle(l, ready(planMoveTile(l, layout, "a2", held, "A", T)), two);
+    expect([rectOf(r, "a2").x, rectOf(r, "a2").y]).toEqual([held.x, held.y]);
   });
 
   it("puts an edge with no neighbour near on the 8 px grid, drawing no guide", () => {
@@ -200,7 +220,44 @@ describe("a workspace resized", () => {
   });
 });
 
+describe("an area dragged over what's in no area", () => {
+  it("pushes it aside and on past any other area, moving nothing else", () => {
+    const l = base();
+    const a = l.areas.A;
+    const end = a.x + 2800 + a.w;
+    // loose, under A's right end where it lands, and a third area just past that
+    l.workspaces.loose = { x: end - 500, y: AREA_HEADER, w: 400, h: 200 };
+    l.areas.B = area(end + AREA_GAP, 0, 1000, 1000);
+    const live = [...two, session("loose")];
+    const layout = resolveLayout(l, live);
+    const p = ready(planMoveArea(l, layout, "A", 2800, 0, T));
+    const { r } = settle(l, p, live);
+    const moved = r.areas.find((x) => x.key === "A")!.rect;
+    expect(moved.x).toBe(a.x + 2800);
+    const loose = rectOf(r, "loose");
+    expect(overlaps(loose, moved, GAP - 1e-6)).toBe(false);
+    expect(overlaps(loose, l.areas.B)).toBe(false);
+    expect(r.tiles.find((t) => t.key === "loose")!.area).toBe(LOOSE_GROUP);
+    // the other area stays; A's own come with it
+    expect(r.areas.find((x) => x.key === "B")!.rect.x).toBe(l.areas.B.x);
+    expect(rectOf(r, "a1").x).toBe(l.workspaces.a1.x + 2800);
+  });
+});
+
 describe("a workspace moved onto others", () => {
+  it("let go where it started has nothing to save, so nothing waits to see it land", () => {
+    const l = base();
+    const layout = resolveLayout(l, two);
+    const none = { patch: null, moves: [], after: null };
+    expect(planMoveTile(l, layout, "a1", { x: AREA_PAD, y: AREA_HEADER }, "A", T)).toEqual(none);
+    // past the inside's top or left, the drop comes back to the same place
+    expect(planMoveTile(l, layout, "a1", { x: AREA_PAD - 40, y: AREA_HEADER - 40 }, "A", T)).toEqual(none);
+    // in another area it's a move, even at the same spot
+    l.areas.B = area(l.areas.A.w + 400, 0, 1000, 1000);
+    const two2 = resolveLayout(l, two);
+    expect(ready(planMoveTile(l, two2, "a1", { x: AREA_PAD, y: AREA_HEADER }, "B", T)).moves).toEqual([{ id: "a1", group: "B" }]);
+  });
+
   it("pushes them aside and stays where it's dropped", () => {
     const l = base();
     const layout = resolveLayout(l, two);

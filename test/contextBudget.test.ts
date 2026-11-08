@@ -95,10 +95,17 @@ describe("what re-reading a conversation costs", () => {
     const cold = rereadCost({ agent: "claude", model: "claude-opus-5-5", tokens: 380_000, cache: { warm: false, expiresAt: now - 3 * 60 * min }, now, unitsPerPct: rate });
     const warm = rereadCost({ agent: "claude", model: "claude-opus-5-5", tokens: 20_000, cache: { warm: true, expiresAt: now + min }, now, unitsPerPct: rate });
     const both = sumEstimates([cold, warm]);
-    expect(both).toMatchObject({ tokens: 400_000, cold: true, fresh: false, why: cold.why, ask: true });
+    expect(both).toMatchObject({ tokens: 400_000, cold: true, fresh: false, why: "some of their caches are cold", ask: true });
     expect(both.units).toBeCloseTo(cold.units + warm.units);
     expect(both.sharePct).toBeCloseTo(cold.sharePct! + warm.sharePct!);
     expect(sumEstimates([warm, warm]).ask).toBe(false);
+    // its why speaks of them all, not of any one's "its cache"; one alone says its own
+    expect(sumEstimates([cold, cold]).why).toBe("their caches are cold");
+    expect(sumEstimates([warm, warm]).why).toBe("their caches are still warm");
+    expect(sumEstimates([cold]).why).toBe(cold.why);
+    expect(sumEstimates([]).why).toBe("");
+    expect(costWhy(both, "claude")).toMatch(/^Cold: some of their caches are cold, so they're written to the cache again/);
+    expect(costWhy(sumEstimates([warm, warm]), "claude")).toMatch(/^It's cheap now: their caches are still warm/);
     expect(sumEstimates([cold, { ...warm, sharePct: null }]).sharePct).toBeNull();
   });
 

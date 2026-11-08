@@ -139,9 +139,10 @@ describe("the design tokens' contrast", () => {
       return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
     };
     const dE = (a: string, b: string) => Math.hypot(...lab(parse(a)).map((v, i) => v - lab(parse(b))[i]));
+    // what areas are drawn in: --ls-a0, --ls-a1… each naming a theme's token
+    const accents = [...css.matchAll(/--ls-a\d:\s*var\((--[\w-]+)\)/g)].map((m) => m[1]);
+    expect(accents).toEqual(["--amber", "--teal", "--git-mod", "--m-2", "--m-4", "--m-5"]);
     for (const t of Object.values(themes)) {
-      const accents = Object.keys(t).filter((k) => /^--m-\d+$/.test(k));
-      expect(accents.length).toBeGreaterThanOrEqual(6);
       expect(accents.filter((k) => dE(t["--snap-guide"], t[k]) < 50).map((k) => `${k} ΔE ${Math.round(dE(t["--snap-guide"], t[k]))}`)).toEqual([]);
     }
   });

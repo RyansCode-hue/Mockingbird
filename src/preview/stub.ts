@@ -41,7 +41,7 @@ import { remotePaneId, type LivePanesState, type RoomSessionTag } from "../share
 import { artifactRef, linkLabel, parseArtifactRefs, type ArtifactContent, type ArtifactLocal, type ArtifactSummary, type ArtifactView, type RoomArtifactsView } from "../shared/team/artifacts";
 // the landscape
 import { LEGACY_PREF_KEYS } from "../shared/landscapeMigrate";
-import { AREA_GAP, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
+import { AREA_GAP, AREA_HEADER, AREA_PAD, GAP, LandscapeShapeError, WORKSPACE_CHROME, applyPatch, areaKeyOf, colsRows, emptyLandscape, fitAreaTo, kindOf, parseLandscape, parsePatch, placeNew, presetSize, renameAreaPatch, sameLandscape, stackKeyOf, type Area, type Landscape, type LandscapePatch, type LandscapeProblem, type LandscapeState, type Rect } from "../shared/landscape";
 
 const w = window as any;
 const calls: { fn: string; args: unknown[] }[] = (w.__mbCalls = []);
@@ -1078,6 +1078,7 @@ const lsHold = new URLSearchParams(location.search).has("lsHold");
 // second throws (a broken call); later ones go through
 const relaunchFails = new Map((new URLSearchParams(location.search).get("lsRelaunchFails")?.split(",") ?? []).map((id) => [id, 0]));
 let closedReadFails = Number(new URLSearchParams(location.search).get("lsClosedReadFails") ?? 0);
+let goneReadFails = Number(new URLSearchParams(location.search).get("lsGoneReadFails") ?? 0);
 // ?lsBigResume=<id,…>: resuming those costs a lot too, so Reopen asks first (as s6 always does)
 const bigResume = new Set(new URLSearchParams(location.search).get("lsBigResume")?.split(",") ?? []);
 const rereadMs = Number(new URLSearchParams(location.search).get("lsRereadMs"));
@@ -1262,7 +1263,14 @@ const api: Record<string, (...a: any[]) => any> = {
   // main's sessions:closedOutput: a closed session's saved output (its scrollback), "" when it has none
   closedOutput: async (id: string) => closedOutput[id] ?? buffers[id] ?? "",
   // main's sessions:missingFolders: the closed sessions whose folders are gone, and whether each still reopens
-  missingFolders: async () => previous.filter((p) => goneFolders.has(p.id)).map((p) => ({ id: p.id, ...goneFolders.get(p.id)! })),
+  // ?lsGoneReadFails=<n>: the first n reads fail
+  missingFolders: async () => {
+    if (goneReadFails > 0) {
+      goneReadFails--;
+      return err("sessions.json couldn't be read: EMFILE, too many open files");
+    }
+    return previous.filter((p) => goneFolders.has(p.id)).map((p) => ({ id: p.id, ...goneFolders.get(p.id)! }));
+  },
   openExternal: async (url: string) => console.info(`[preview] would open ${url} in the browser`),
   collabProblems: async () => [],
   // main answers { path, content } (the path with ~ expanded), or { error }; ?claudeMd=error rejects the call outright
@@ -1301,7 +1309,7 @@ const api: Record<string, (...a: any[]) => any> = {
   },
   renameGroup: async (from: string, to: string) => {
     const members = sessions.filter((s) => areaKeyOf(s) === from).map((s) => s.id);
-    const closed = previous.filter((p) => areaKeyOf(p) === from && !sessions.some((s) => s.id === p.id)).map((p) => ({ id: p.id, taskGroup: p.taskGroup }));
+    const closed = previous.filter((p) => !sessions.some((s) => s.id === p.id)).map((p) => ({ id: p.id, taskGroup: p.taskGroup }));
     sessions = sessions.map((s) => (s.taskGroup === from || s.taskGroup?.startsWith(`${from}/`) ? { ...s, taskGroup: to + s.taskGroup.slice(from.length) } : s));
     // closed sessions too, as main's renameGroup remaps the stored ones
     previous = previous.map((s) => (s.taskGroup === from || s.taskGroup?.startsWith(`${from}/`) ? { ...s, taskGroup: to + s.taskGroup.slice(from.length) } : s));
@@ -6111,6 +6119,24 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const list = () => document.querySelector<HTMLElement>(".area-tree [data-closed-list]");
       const row = (id: string) => list()?.querySelector<HTMLElement>(`[data-closed-sid="${CSS.escape(id)}"]`) ?? null;
       const rows = () => [...(list()?.querySelectorAll<HTMLElement>("[data-closed-sid]") ?? [])].map((r) => r.dataset.closedSid);
+      /** The list's header at the sidebar's width: its words, whether any are cut, and what it's called in full. */
+      const headOf = () => {
+        const label = list()?.querySelector<HTMLElement>(".lt-closed-label");
+        const word = list()?.querySelector<HTMLElement>(".lt-closed-word");
+        const count = list()?.querySelector<HTMLElement>(".lt-closed-n")?.getBoundingClientRect();
+        const toggle = list()?.querySelector<HTMLElement>(".lt-closed-toggle");
+        const tr = toggle?.getBoundingClientRect();
+        return {
+          text: label?.textContent ?? null,
+          height: Math.round(label?.getBoundingClientRect().height ?? 0),
+          wrap: label ? getComputedStyle(label).whiteSpace : null,
+          ellipsis: word ? getComputedStyle(word).textOverflow : null,
+          cut: !!word && word.scrollWidth > word.clientWidth,
+          countShown: !!count && !!tr && count.width > 0 && count.left >= tr.left && count.right <= tr.right + 0.5,
+          aria: toggle?.getAttribute("aria-label") ?? null,
+          title: toggle?.title ?? null,
+        };
+      };
       const acts = (id: string) => [...(row(id)?.querySelectorAll<HTMLButtonElement>("button[data-act]") ?? [])].map((b) => ({ act: b.dataset.act, disabled: b.disabled }));
       const sub = (id: string) => row(id)?.querySelector(".lt-closed-sub")?.textContent ?? null;
       const inside = (r: Rect | undefined, a: Rect | undefined) => !!r && !!a && r.x >= a.x && r.y >= a.y && r.x + r.w <= a.x + a.w && r.y + r.h <= a.y + a.h;
@@ -6136,24 +6162,17 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         out.reopenAll = { ...asked, dialogsAfter: document.querySelectorAll(".cost-dlg").length, relaunch: callsSince(mark, "relaunchSession").map((c) => c[0]), said: alerts };
       } else if (part === "retry") {
         // the closed sessions' reads failing at first (&lsClosedReadFails=2): said, then tried again until they're read
+        // (&lsGoneReadFails=2: the read of which of their folders are gone likewise); the header at a count of 2
         const err = () => document.querySelector<HTMLElement>(".update-note.bad")?.textContent ?? null;
-        out.early = { rows: rows().length, error: err(), reads: calls.filter((c) => c.fn === "resumableSessions").length };
+        const reads = (fn: string) => calls.filter((c) => c.fn === fn).length;
+        out.early = { rows: rows().length, error: err(), reads: reads("resumableSessions"), goneReads: reads("missingFolders") };
         await sleep(4500);
-        out.later = { rows: rows(), error: err(), reads: calls.filter((c) => c.fn === "resumableSessions").length };
+        out.later = { rows: rows(), error: err(), reads: reads("resumableSessions"), goneReads: reads("missingFolders") };
+        out.head = headOf();
       } else if (part === "many") {
         // a long list: its header on one line at a two-digit count; each row's ring a ghost's, its status in its title;
         // the header's ⋯ (Reopen all, Forget all, headed as the list); a row's right-click; Forget all's question
-        const label = list()?.querySelector<HTMLElement>(".lt-closed-label");
-        const word = list()?.querySelector<HTMLElement>(".lt-closed-word");
-        const count = list()?.querySelector<HTMLElement>(".lt-closed-n")?.getBoundingClientRect();
-        const toggle = list()?.querySelector<HTMLElement>(".lt-closed-toggle")?.getBoundingClientRect();
-        out.head = {
-          text: label?.textContent ?? null,
-          height: Math.round(label?.getBoundingClientRect().height ?? 0),
-          wrap: label ? getComputedStyle(label).whiteSpace : null,
-          ellipsis: word ? getComputedStyle(word).textOverflow : null,
-          countShown: !!count && !!toggle && count.width > 0 && count.left >= toggle.left && count.right <= toggle.right + 0.5,
-        };
+        out.head = headOf();
         const ring = row("o1")?.firstElementChild as HTMLElement | null;
         out.ring = ring ? { cls: ring.className, border: getComputedStyle(ring).borderTopStyle, fill: getComputedStyle(ring).backgroundColor } : null;
         out.titles = { y1: row("y1")?.title ?? null, o1: row("o1")?.title ?? null };
@@ -6238,7 +6257,9 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     report(`mb-landscape-closed-audit-${part}`, out);
   });
 
-  // ?landscapeFixAudit=a|b|n (with ?motion=off): the S6b reviews' gesture and look fixes, worked as a person would. =a:
+  // ?landscapeFixAudit=a|b|c|n (with ?motion=off): the S6b reviews' gesture and look fixes, worked as a person would. =c:
+  // a stack's card zoomed out far (at Fit and 10% to 30%: what each part of its head takes on screen, with a ticket and
+  // without), and a workspace dragged past its area's inside top, let go somewhere new and where it started. =a:
   // the hover toolbar's order; a toolbar Tidy undone with ⌘Z while the keyboard is on its button, but not from the code
   // editor; a Tidy whose Undo is refused after a drag, after a lock, and when another window's change is told before its
   // save answers (__mbRaceUpdate); a snap guide's colour and reach. =n (1024 px wide, the area tree open): the note kept
@@ -6252,7 +6273,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     const out: Record<string, unknown> = { part };
     try {
       await sleep(900);
-      if (part !== "n") await fitView();
+      if (part !== "n" && part !== "c") await fitView();
       const ws = (key: string) => document.querySelector<HTMLElement>(`.ls-world .ls-node[data-ws="${CSS.escape(key)}"]`);
       const spacer = (el: HTMLElement) => el.querySelector<HTMLElement>(".ls-head .ls-spacer")!;
       const bareHead = (el: HTMLElement) => mid(spacer(el).getBoundingClientRect());
@@ -6381,6 +6402,81 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
           return { colour: getComputedStyle(g).backgroundColor, focus, border, past: { top: Math.min(...tops) - gr.top, bottom: gr.bottom - Math.max(...bottoms) }, width: gr.width };
         });
         await sleep(400);
+      } else if (part === "c") {
+        // a stack's card zoomed out far: what each part of its head takes, on screen
+        const stack = () => ws("ws:5101/api")!;
+        const head = () => {
+          const el = stack();
+          const rect = (sel: string) => el.querySelector<HTMLElement>(sel)?.getBoundingClientRect() ?? null;
+          const [card, title, more, long, short] = [rect(".ls-card")!, rect(".ls-card-title")!, rect(".ls-more"), rect(".ls-chip-long")!, rect(".ls-chip-short")!];
+          const ticket = rect(".ls-card-ticket");
+          const chip = long.width > 0 ? long : short;
+          return {
+            zoom: Math.round(zoomNow() * 100) / 100,
+            card: Math.round(card.width),
+            title: Math.round(title.width),
+            chipInside: chip.left >= card.left - 0.5 && chip.right <= card.right + 0.5,
+            long: Math.round(long.width),
+            short: Math.round(short.width),
+            ticket: ticket ? Math.round(ticket.width) : null,
+            clearOfMore: !!more && chip.right <= more.left + 0.5,
+            ticketLast: !!ticket && ticket.left >= long.right,
+          };
+        };
+        await fitView();
+        await sleep(500);
+        out.fit = head();
+        const at: Record<string, unknown> = {};
+        for (const z of [0.1, 0.11, 0.12, 0.13, 0.25, 0.3]) {
+          await pinchTo(z);
+          await sleep(400);
+          at[String(z)] = head();
+        }
+        out.at = at;
+        // with no ticket on its front tab, nothing else sits under the ⋯ but the chip
+        const front = stack().dataset.front!;
+        const had = byId(front);
+        sessions = sessions.map((x): SessionInfo => (x.id === front ? { ...x, ticketId: null } : x));
+        sessionsChanged();
+        await sleep(500);
+        const none: Record<string, unknown> = {};
+        for (const z of [0.25, 0.12]) {
+          await pinchTo(z);
+          await sleep(400);
+          none[String(z)] = head();
+        }
+        out.noTicket = none;
+        sessions = sessions.map((x) => (x.id === front && had ? had : x));
+        sessionsChanged();
+        await sleep(400);
+
+        // dragged past the inside top of its area, a workspace stays inside it while it's dragged and lands where it was
+        // held; dragged past it again from there, the drop leaves it where it started, and it's let go at once
+        await zoomOnArea("5101", 0.5);
+        tidyBtn("5101")!.click();
+        await sleep(800);
+        const insideTop = () => document.querySelector<HTMLElement>(areaEl("5101"))!.getBoundingClientRect().top + AREA_HEADER * zoomNow();
+        const [high] = [ws("ws:5101/api")!, node("s8")!].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+        const pastTop = async (el: HTMLElement, dy: number) => {
+          const from = bareHead(el);
+          const startTop = el.getBoundingClientRect().top;
+          const mark = calls.length;
+          pressAt(from.x, from.y, spacer(el));
+          for (let i = 1; i <= 6; i++) {
+            moveTo(from.x, from.y + (dy * i) / 6);
+            await sleep(16);
+          }
+          const heldTop = el.getBoundingClientRect().top;
+          const bound = insideTop();
+          upAt(from.x, from.y + dy);
+          await sleep(60);
+          const releasedSoon = !el.classList.contains("dragging");
+          const topSoon = el.getBoundingClientRect().top;
+          await sleep(1800);
+          return { startTop, heldTop, bound, releasedSoon, topSoon, topLater: el.getBoundingClientRect().top, updates: updates(mark) };
+        };
+        const far = await pastTop(high, insideTop() - high.getBoundingClientRect().top - 15);
+        out.pastTop = { far, back: await pastTop(high, -15) };
       } else {
         await zoomOnArea("5101", 0.5);
         const stack = () => ws("ws:5101/api")!;
@@ -6407,10 +6503,12 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
           return { id, front: stack().dataset.front ?? null };
         };
         const half = await slip(6, 1);
+        const up = await slip(0, -9);
+        const down = await slip(0, 9);
         await zoomOnArea("5101", 1);
         const full = await slip(0, 12);
         await zoomOnArea("5101", 0.5);
-        out.slip = { setGroup: callsSince(mark, "setGroup"), tabs: tabsNow(), half, full, other };
+        out.slip = { setGroup: callsSince(mark, "setGroup"), tabs: tabsNow(), half, up, down, full, other };
         let t0: { x: number; y: number };
 
         // dragged off the header: taken out, said with Undo, which puts it back in the stack
@@ -6486,7 +6584,7 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
           const seen = rr ? names.reduce((n, x) => n + Math.max(0, Math.min(x.getBoundingClientRect().right, rr.right) - Math.max(x.getBoundingClientRect().left, rr.left)), 0) : 0;
           return {
             zoom: Math.round(zoomNow() * 100) / 100,
-            chip: el.querySelector(".ls-card-head .ls-card-chip")?.textContent ?? null,
+            chip: el.querySelector(".ls-card-head .ls-chip-long")?.textContent ?? null,
             first: row?.firstElementChild?.className ?? null,
             needs: row?.querySelector(".ls-card-needs")?.textContent ?? null,
             names: names.map((x) => x.textContent ?? ""),
@@ -7389,6 +7487,14 @@ if (params.has("statusAudit")) {
           hooks: whole(document.querySelector(".statusbar .hooks-bad")),
           usage: shown(document.querySelector(".statusbar .usage-wrap")),
           stop: whole(document.querySelector(".statusbar .team-follow button")),
+          meter: [...document.querySelectorAll<HTMLElement>(".statusbar .usage > .dim, .statusbar .usage .usage-agent > span")].map((p) => {
+            const box = document.querySelector<HTMLElement>(".statusbar .usage")!.getBoundingClientRect();
+            const end = document.querySelector<HTMLElement>(".statusbar")!.getBoundingClientRect().right;
+            const r = p.getBoundingClientRect();
+            const seenW = Math.min(r.right, box.right, end) - Math.max(r.left, box.left);
+            const seenH = Math.min(r.bottom, box.bottom) - Math.max(r.top, box.top);
+            return { text: p.textContent ?? "", seen: seenW <= 0 || seenH <= 0 ? "dropped" : seenW >= r.width - 0.5 && seenH >= r.height - 0.5 ? "whole" : "cut" };
+          }),
           words: who?.textContent ?? null,
           cut: !!who && who.scrollWidth > who.clientWidth + 0.5,
           title: document.querySelector<HTMLElement>(".statusbar .team-follow")?.title ?? null,

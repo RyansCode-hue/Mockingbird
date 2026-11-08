@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { describe, expect, it, vi } from "vitest";
-import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranches, listWorktrees, migrateWorktree, parseShortstat, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
+import { checkoutBranch, cleanupWorktree, createWorktree, forgetState, listBranches, listWorktrees, migrateWorktree, parseShortstat, unregisterMissing, worktreeRoot, legacyWorktreeRoot, worktreeState } from "../src/main/worktrees";
 import { pickDefaultBase } from "../src/main/git";
 import { changedPaths, scmStatus } from "../src/main/scm";
 import { git, makeRepo } from "./helpers";
@@ -145,6 +145,108 @@ describe("branches on origin", () => {
     const { mine, pushed } = pushedSinceFetch();
     await checkoutBranch(mine, "feat/shared", "main");
     expect(git(mine, "rev-parse", "HEAD")).toBe(pushed);
+  });
+});
+
+describe("a worktree's folder gone, or seeming to be", () => {
+  /** A worktree on `branch` holding a file git ignores, as a .env is. */
+  async function withIgnored(branch: string) {
+    const repo = makeRepo();
+    fs.writeFileSync(path.join(repo, ".git", "info", "exclude"), ".env\n");
+    const wt = await createWorktree(repo, branch);
+    const env = path.join(wt, ".env");
+    fs.writeFileSync(env, "KEY=1\n");
+    return { repo, wt, env, listed: () => git(repo, "worktree", "list", "--porcelain").includes(`/${branch}\n`) };
+  }
+
+  it("unregisters only a path git itself calls prunable: one that's there keeps its registration and its files, ignored ones too", async () => {
+    const { repo, wt, env, listed } = await withIgnored("keep");
+    await unregisterMissing(repo, worktreeRoot(repo), "keep", wt);
+    expect(fs.existsSync(env)).toBe(true);
+    expect(listed()).toBe(true);
+  });
+
+  it("takes a folder it can't look at for neither there nor gone: it refuses, unregistering nothing", async () => {
+    const { repo, env, listed } = await withIgnored("shut");
+    const root = worktreeRoot(repo);
+    fs.chmodSync(root, 0o000);
+    try {
+      await expect(createWorktree(repo, "shut")).rejects.toThrow(/EACCES/);
+    } finally {
+      fs.chmodSync(root, 0o755);
+    }
+    expect(fs.existsSync(env)).toBe(true);
+    expect(listed()).toBe(true);
+  });
+
+  it("leaves one locked alone, its folder gone: git says why it can't be added", async () => {
+    const { repo, wt, listed } = await withIgnored("locked");
+    git(repo, "worktree", "lock", wt);
+    fs.rmSync(wt, { recursive: true, force: true });
+    await expect(createWorktree(repo, "locked")).rejects.toThrow(/locked/);
+    expect(listed()).toBe(true);
+  });
+
+  it("makes one folder's worktree one at a time: several at once on a stale registration all get it, and it's there", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { repo, wt } = await withIgnored("race");
+    fs.rmSync(wt, { recursive: true, force: true });
+    const all = await Promise.all([createWorktree(repo, "race"), createWorktree(repo, "race"), createWorktree(repo, "race")]);
+    expect(all).toEqual([wt, wt, wt]);
+    expect(git(wt, "rev-parse", "--abbrev-ref", "HEAD")).toBe("race");
+    expect(warn.mock.calls.filter((c) => /still registered/.test(String(c[0])))).toHaveLength(1);
+    warn.mockRestore();
+    // one that failed doesn't hold up the next, and tells its own caller
+    const [failed, next] = await Promise.allSettled([createWorktree(repo, "gone", undefined, { mustExist: true }), createWorktree(repo, "gone")]);
+    expect(failed).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/isn't here or on origin/) }) });
+    expect(next).toMatchObject({ status: "fulfilled" });
+    expect(fs.existsSync(path.join(worktreeRoot(repo), "gone"))).toBe(true);
+  });
+});
+
+describe("a relaunch's worktree, its branch only on origin", () => {
+  /** A clone that's fetched origin's `feat`, with no local branch of it. */
+  function fetched() {
+    const origin = makeRepo({ "a.txt": "1" }, "origin");
+    const clone = path.join(path.dirname(origin), "clone");
+    git(path.dirname(origin), "clone", "-q", origin, clone);
+    git(origin, "branch", "feat");
+    git(clone, "fetch", "-q", "origin");
+    return { origin, clone, head: git(clone, "rev-parse", "origin/feat") };
+  }
+
+  it("is made from the last fetch when origin can't be reached, without trying a fetch that would only time out", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { origin, clone, head } = fetched();
+    fs.renameSync(origin, `${origin}-moved`);
+    const wt = await createWorktree(clone, "feat", undefined, { mustExist: true });
+    expect(git(wt, "rev-parse", "HEAD")).toBe(head);
+    expect(git(wt, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/feat");
+    expect(log.mock.calls.some((c) => /couldn't ask origin about feat/.test(String(c[0])))).toBe(true);
+    expect(log.mock.calls.some((c) => /couldn't fetch/.test(String(c[0])))).toBe(false);
+    log.mockRestore();
+  });
+
+  it("is made from the last fetch when origin answers but the fetch fails, and says so; a new session's fetch still fails aloud", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { clone, head } = fetched();
+    // a fetch can't write what it fetched; asking origin needs no such thing
+    const fetchHead = path.join(clone, ".git", "FETCH_HEAD");
+    fs.writeFileSync(fetchHead, "");
+    fs.chmodSync(fetchHead, 0o444);
+    await expect(createWorktree(clone, "feat")).rejects.toThrow(/FETCH_HEAD/);
+    const wt = await createWorktree(clone, "feat", undefined, { mustExist: true });
+    expect(git(wt, "rev-parse", "HEAD")).toBe(head);
+    expect(log.mock.calls.some((c) => /couldn't fetch feat, going by the last fetch/.test(String(c[0])))).toBe(true);
+    log.mockRestore();
+  });
+
+  it("is made from a ref left by a remote that's gone, tracking nothing, as there's nothing to track", async () => {
+    const repo = makeRepo();
+    git(repo, "update-ref", "refs/remotes/origin/feat", "HEAD");
+    const wt = await createWorktree(repo, "feat", undefined, { mustExist: true });
+    expect(git(wt, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
+    expect(() => git(wt, "config", "--get", "branch.feat.remote")).toThrow();
   });
 });
 

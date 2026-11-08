@@ -37,10 +37,10 @@ export function ClosedSessions({
   return (
     <section className="lt-closed" data-closed-list aria-label="Closed sessions">
       <div className="lt-closed-head" onContextMenu={(e) => (e.preventDefault(), menu.openAt({ x: e.clientX, y: e.clientY }, listMenu(all)))}>
-        <button type="button" className="lt-closed-toggle" aria-expanded={open} title={`Closed sessions (${list.length})`} onClick={() => setOpen((o) => !o)}>
+        <button type="button" className="lt-closed-toggle" aria-expanded={open} aria-label={`Closed sessions (${list.length})`} title={`Closed sessions (${list.length})`} onClick={() => setOpen((o) => !o)}>
           <ChevronIcon open={open} />
           <span className="lt-closed-label">
-            <span className="lt-closed-word">Closed sessions</span> <span className="lt-closed-n">({list.length})</span>
+            <span className="lt-closed-word">Closed</span> <span className="lt-closed-n">({list.length})</span>
           </span>
         </button>
         {reopenAll && (

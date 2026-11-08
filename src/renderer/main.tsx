@@ -175,6 +175,8 @@ const PLACE_HINT_MS = 10_000;
 const SIDE_WORDS: Record<EdgeSide, string> = { left: "to the left of", right: "to the right of", top: "above", bottom: "below" };
 /** What readClosed reads, as a failed read says it. */
 const CLOSED_READ = "the previous sessions";
+/** What a failed read of the closed sessions' missing folders is called in the status bar's error. */
+const GONE_READ = "which closed sessions' folders are gone";
 /** The longest wait before a failed read of the closed sessions is tried again. */
 const CLOSED_RETRY_MAX_MS = 30_000;
 /** Words that follow others in a sentence ("in 5101"), with their space; none, nothing. */
@@ -201,6 +203,8 @@ function App() {
   const [listsLoaded, setListsLoaded] = useState({ live: false, resumable: false });
   /** Reads of the closed sessions that failed in a row (readClosed): each is tried again, later each time. */
   const [closedFails, setClosedFails] = useState(0);
+  /** Likewise for reads of which closed sessions' folders are gone (readGone). */
+  const [goneFails, setGoneFails] = useState(0);
   const listLoaded = (which: "live" | "resumable") => setListsLoaded((p) => (p[which] ? p : { ...p, [which]: true }));
   const [shown, setShown] = usePersisted<string[]>("mb.shown", []);
   const [focused, setFocused] = useState<string | null>(null);
@@ -271,6 +275,8 @@ function App() {
     console.error(`[mockingbird] couldn't read ${what}:`, r.error);
     setReadError(`Couldn't read ${what}: ${r.error}`);
   };
+  /** `what` has been read: its error goes from the status bar, and any other's stays. */
+  const readCleared = (what: string) => setReadError((e) => (e?.startsWith(`Couldn't read ${what}:`) ? null : e));
   const unlessError =
     <T,>(what: string, apply: (v: T) => void) =>
     (r: T | { error: string }) =>
@@ -639,8 +645,20 @@ function App() {
     setResumable(previous.filter((s) => !s.debrief));
     listLoaded("resumable");
     setClosedFails(0);
-    setReadError((e) => (e?.startsWith(`Couldn't read ${CLOSED_READ}:`) ? null : e));
+    readCleared(CLOSED_READ);
     return true;
+  };
+  /** Read which closed sessions' folders are gone: those that can't run where they ran offer to start fresh instead. A failed read is said, and tried again (goneFails). */
+  const readGone = async () => {
+    const gone: MissingFolder[] | { error: string } = await window.mb.missingFolders();
+    if (isErr(gone)) {
+      readFailed(GONE_READ, gone);
+      setGoneFails((n) => n + 1);
+      return;
+    }
+    setGoneFolders((p) => (p.size === gone.length && gone.every((g) => JSON.stringify(p.get(g.id)) === JSON.stringify(g)) ? p : new Map(gone.map((g) => [g.id, g]))));
+    setGoneFails(0);
+    readCleared(GONE_READ);
   };
   /** Re-read the session lists; the live list comes back (the one on screen when the read fails). */
   const refresh = async (): Promise<SessionInfo[]> => {
@@ -651,10 +669,7 @@ function App() {
       listLoaded("live");
     }
     await readClosed();
-    // the closed sessions whose folders are gone: those that can't run where they ran offer to start fresh instead
-    const gone: MissingFolder[] | { error: string } = await window.mb.missingFolders();
-    if (isErr(gone)) readFailed("which closed sessions' folders are gone", gone);
-    else setGoneFolders((p) => (p.size === gone.length && gone.every((g) => JSON.stringify(p.get(g.id)) === JSON.stringify(g)) ? p : new Map(gone.map((g) => [g.id, g]))));
+    await readGone();
     return isErr(live) ? ownSessions : live;
   };
 
@@ -683,12 +698,19 @@ function App() {
     });
   }, []);
 
-  // a failed read of the closed sessions is tried again, after 1 s, then 2, 4… up to 30 s, until it's read
+  // a failed read of the closed sessions, or of their missing folders, is tried again, after 1 s, then 2, 4… up to 30 s,
+  // until it's read
+  const retryIn = (fails: number) => Math.min(CLOSED_RETRY_MAX_MS, 1000 * 2 ** (fails - 1));
   useEffect(() => {
     if (!closedFails) return;
-    const t = setTimeout(() => void readClosed(), Math.min(CLOSED_RETRY_MAX_MS, 1000 * 2 ** (closedFails - 1)));
+    const t = setTimeout(() => void readClosed(), retryIn(closedFails));
     return () => clearTimeout(t);
   }, [closedFails]);
+  useEffect(() => {
+    if (!goneFails) return;
+    const t = setTimeout(() => void readGone(), retryIn(goneFails));
+    return () => clearTimeout(t);
+  }, [goneFails]);
   useEffect(() => {
     refresh();
     window.mb.hooksInstalled().then(unlessError("whether the status hooks are installed", (ok: unknown) => setHooksOk(ok === true)));

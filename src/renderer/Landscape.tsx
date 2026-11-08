@@ -159,6 +159,8 @@ const DRAG_PX = 4;
  * click on a tab that slips a few px brings it to the front rather than taking it out.
  */
 const TAB_DRAG_PX = 14;
+/** How far off its header, in screen px, a press on a tab can slip and stay a click, however thin the header is zoomed out. */
+const TAB_SLIP_PX = 8;
 /** How far a snap guide runs past the edges it lines up, in screen px. */
 const GUIDE_PAST_PX = 16;
 /** The area switcher's strip along the view's top (styles.css .ls-switcher: 14px down, 32px tall), and a gap under it. */
@@ -1147,7 +1149,7 @@ export function Landscape({
       const far = Math.hypot(dx, dy);
       if (far < DRAG_PX) return;
       const s = g.strip;
-      if (g.kind === "tab" && far < TAB_DRAG_PX && s && e.clientX >= s.left && e.clientX <= s.right && e.clientY >= s.top && e.clientY <= s.bottom) return;
+      if (g.kind === "tab" && far < TAB_DRAG_PX && s && e.clientX >= s.left && e.clientX <= s.right && e.clientY >= s.top - TAB_SLIP_PX && e.clientY <= s.bottom + TAB_SLIP_PX) return;
       if (!begin(g)) return endGesture();
       g.on = true;
       // the selection bar is put away while anything is dragged, and comes back where the drop leaves its selection

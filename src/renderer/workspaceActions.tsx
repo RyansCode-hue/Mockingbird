@@ -290,7 +290,7 @@ export function ghostsActions(g: GhostsEnv, o: { what?: string; clearLabel?: str
   const clearLabel = o.clearLabel ?? "Clear ghosts";
   return [
     { section: "ghosts", key: "reopenAll", label: "Reopen all", menuLabel: g.reopenable ? `Reopen all (${g.reopenable})` : "Reopen all", title: `Start every ${what} here again, resuming its conversation`, ...can(reopen) },
-    { section: "ghosts", key: "clearGhosts", label: clearLabel, menuLabel: n ? `${clearLabel} (${n})…` : clearLabel, danger: true, title: `Forget every ${what} here: they can't be reopened after`, ...can(n ? (g.running ? { no: "Wait for Reopen all to finish" } : g.clear) : none) },
+    { section: "ghosts", key: "clearGhosts", label: clearLabel, menuLabel: n ? `${clearLabel} (${n})…` : clearLabel, danger: true, title: `Forget all the ${what}s here: they can't be reopened after`, ...can(n ? (g.running ? { no: "Wait for Reopen all to finish" } : g.clear) : none) },
   ];
 }
 

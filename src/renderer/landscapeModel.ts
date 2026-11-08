@@ -27,14 +27,22 @@ import {
   MAX_COORD,
   kindOf,
   overlaps,
+  emptyPatch,
+  finishPatch as finish,
+  holdingArea,
+  keptIn,
+  looseOf,
+  NONE_LEAVING,
   own,
   placeAt,
   placeNew,
   presetSize,
   SIZE_PRESETS,
   type SizePreset,
+  pushAll,
   pushAside,
   put,
+  shiftKept,
   shifted,
   snap,
   snapUp,
@@ -42,8 +50,15 @@ import {
   within,
   PATCH_RECORDS,
   isWorkspaceTool,
+  AREA_KEY,
+  LOOSE_KEY,
+  apartOf,
+  pushRects,
   type Area,
   type AreaRepo,
+  type FullPatch,
+  type Kept,
+  type Pushed,
   type ArtifactCard,
   type ToolKind,
   type ToolWindow,
@@ -479,8 +494,7 @@ export interface PendingRename {
  */
 export function areaSelectionNow(selected: string | null, areas: readonly string[], renames: readonly PendingRename[]): string | null {
   if (selected === null || areas.includes(selected)) return selected;
-  const to = renames.find((r) => r.from === selected)?.to;
-  return to !== undefined && areas.includes(to) ? to : null;
+  return renamedKeys(selected, renames).find((k) => areas.includes(k)) ?? null;
 }
 
 /** Whether a pending rename is over: the landscape holds nothing under `from` any more, and no session shown is in it. */
@@ -499,12 +513,24 @@ export function renamesLeft(renames: readonly PendingRename[], l: Landscape, sho
   return renames.filter((r) => !renameSettled(r, l, all));
 }
 
-/** Group key `key` on the other side of each pending rename it's under: the new key for one under `from`, the old for one under `to`. */
+/**
+ * Group key `key` on the other side of the pending renames it's under, nearest first: the new key for one under `from`,
+ * the old for one under `to`, and on through a chain of them (A→B, B→C: A, B and C all name one group while they're on
+ * their way).
+ */
 export function renamedKeys(key: string, renames: readonly PendingRename[]): string[] {
+  const seen = new Set([key]);
   const out: string[] = [];
-  for (const { from, to } of renames) {
-    if (key === to || key.startsWith(`${to}/`)) out.push(from + key.slice(to.length));
-    else if (key === from || key.startsWith(`${from}/`)) out.push(to + key.slice(from.length));
+  const queue = [key];
+  while (queue.length) {
+    const k = queue.shift()!;
+    for (const { from, to } of renames) {
+      const other = k === to || k.startsWith(`${to}/`) ? from + k.slice(to.length) : k === from || k.startsWith(`${from}/`) ? to + k.slice(from.length) : null;
+      if (other === null || seen.has(other)) continue;
+      seen.add(other);
+      out.push(other);
+      queue.push(other);
+    }
   }
   return out;
 }
@@ -639,7 +665,7 @@ export function resolveLayout(
     const r = stored.get(key);
     const mine = areas.get(g.area);
     if (mine && r && within(r, mine)) continue;
-    g.area = (r && [...areas].find(([, a]) => within(r, a))?.[0]) ?? LOOSE_GROUP;
+    g.area = r ? holdingArea(areas, r) : LOOSE_GROUP;
   }
 
   // everything stored is taken (sessions waiting to be resumed, closed ones' ghosts), where it is now
@@ -1096,56 +1122,6 @@ export interface GroupMove {
  */
 export type AreaPlan = { patch: LandscapePatch | null; moves: GroupMove[]; after: LandscapePatch | null; note?: string } | { refused: string };
 
-type FullPatch = Required<Pick<LandscapePatch, (typeof PATCH_RECORDS)[number]>>;
-const emptyPatch = (): FullPatch => ({ workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} });
-const finish = (p: FullPatch): LandscapePatch | null => {
-  const out: LandscapePatch = {};
-  for (const k of PATCH_RECORDS) if (Object.keys(p[k]).length) Object.assign(out, { [k]: p[k] });
-  return Object.keys(out).length ? out : null;
-};
-
-/**
- * Something kept on the landscape besides an area and the workspaces shown: the place of a session or stack not shown,
- * a ghost, a tool window or an artifact card. `area` is the area it's in as stored (LOOSE_GROUP for none), judged once
- * for a layout pass or a gesture, so no move is judged from where another has already put it. `at` is where `p` has it
- * now, else where it's laid out (`laid`) or stored; `to` puts it at a place in `p`. Places of sessions not shown and
- * ghosts are `passive`: nothing draws them, so they're pushed aside but push nothing.
- */
-type Kept = { key: string; area: string; passive: boolean; at: (p: FullPatch) => Rect | null; to: (p: FullPatch, r: Rect) => void };
-
-/**
- * What's kept on `l` besides the workspaces `shown`, each with the area it's in, read now from `l` as stored and
- * `areas`, a layout's areas by key: resolveLayout's once it has formed those its groups need and before it moves any
- * (keptOf: a gesture's, the ones that layout ended with). A place is in the area holding it; a ghost in its group's, a
- * window or a card in the one it names, and in none when that area isn't one of `areas`, as each is drawn. Gestures,
- * resolveLayout and making room beside a workspace all go by this one reading. `laid`: where the layout put windows
- * and cards the file has no place for ("tool:<id>", "card:<id>").
- */
-function keptIn(l: Landscape, areas: ReadonlyMap<string, Rect>, shown: { ids: ReadonlySet<string>; stacks: ReadonlySet<string> }, laid: ReadonlyMap<string, Rect> = new Map()): Kept[] {
-  const holding = (r: Rect) => [...areas].find(([, a]) => within(r, a))?.[0] ?? LOOSE_GROUP;
-  const named = (key: string | null) => (key !== null && areas.has(key) ? key : LOOSE_GROUP);
-  const out: Kept[] = [];
-  for (const [id, r] of Object.entries(l.workspaces)) {
-    if (!shown.ids.has(id)) out.push({ key: `place:${id}`, area: holding(r), passive: true, at: (p) => own(p.workspaces, id) ?? r, to: (p, to) => put(p.workspaces, id, to) });
-  }
-  for (const [sk, st] of Object.entries(l.stacks)) {
-    if (!shown.stacks.has(sk)) out.push({ key: `stack:${sk}`, area: holding(st.placement), passive: true, at: (p) => own(p.stacks, sk)?.placement ?? st.placement, to: (p, to) => put(p.stacks, sk, { ...st, placement: to }) });
-  }
-  for (const [id, g] of Object.entries(l.ghosts)) {
-    out.push({ key: `ghost:${id}`, area: named(areaKeyOf({ taskGroup: g.group })), passive: true, at: (p) => own(p.ghosts, id)?.placement ?? g.placement, to: (p, to) => put(p.ghosts, id, { ...g, placement: to }) });
-  }
-  for (const [id, t] of Object.entries(l.tools)) {
-    if (t.docked) continue;
-    const now = (p: FullPatch) => own(p.tools, id) ?? t;
-    out.push({ key: `tool:${id}`, area: named(t.area ?? null), passive: false, at: (p) => now(p).placement ?? laid.get(`tool:${id}`) ?? null, to: (p, to) => put(p.tools, id, { ...now(p), placement: to }) });
-  }
-  for (const [id, c] of Object.entries(l.cards)) {
-    const now = (p: FullPatch) => own(p.cards, id) ?? c;
-    out.push({ key: `card:${id}`, area: named(c.area), passive: false, at: (p) => now(p).placement ?? laid.get(`card:${id}`) ?? null, to: (p, to) => put(p.cards, id, { ...now(p), placement: to }) });
-  }
-  return out;
-}
-
 /**
  * keptIn for a gesture on `layout`: its areas, the workspaces it shows, and the places it gave windows and cards. Its
  * ghosts are kept too, each in the area the layout drew it in (its group's, as a running workspace's), passive, at the
@@ -1167,27 +1143,6 @@ function ghostKept(g: GhostView, area: string): Kept {
   return { key: `place:${id}`, area, passive: true, at: (p) => own(p.workspaces, id) ?? g.rect, to: (p, to) => put(p.workspaces, id, to) };
 }
 
-const NONE_LEAVING: ReadonlySet<string> = new Set();
-
-/** What's kept in area `key` (`kept`), but what's in `leaving`, moved by `dx`, `dy` in `p`, from where `p` has it already. */
-function shiftKept(p: FullPatch, kept: readonly Kept[], key: string, dx: number, dy: number, leaving: ReadonlySet<string>): void {
-  if (!dx && !dy) return;
-  for (const k of kept) {
-    if (k.area !== key || leaving.has(k.key)) continue;
-    const r = k.at(p);
-    if (r) k.to(p, shifted(r, dx, dy));
-  }
-}
-
-/** What's kept in no area (`kept`), but what's in `leaving`, as pushAside pushes it, moving in `p`. */
-function looseOf(p: FullPatch, kept: readonly Kept[], leaving: ReadonlySet<string>): Pushed[] {
-  const out: Pushed[] = [];
-  for (const k of kept) {
-    const r = k.area === LOOSE_GROUP && !leaving.has(k.key) ? k.at(p) : null;
-    if (r) out.push({ rect: r, passive: k.passive, move: (dx, dy) => k.to(p, shifted(k.at(p)!, dx, dy)) });
-  }
-  return out;
-}
 /**
  * What puts back what `patch` changed in `l`: each workspace, area, stack and ghost it touched as `l` had it, or gone
  * where `l` had none. Limited to `ids` (session ids), only those sessions' own places: what a gesture takes back for
@@ -1293,32 +1248,6 @@ function moveTile(p: FullPatch, t: Tile, dx: number, dy: number): void {
   else put(p.workspaces, t.front.id, r);
 }
 
-/** Something pushAside can push that isn't an area, whether it's `passive` (pushed, pushing nothing), and how it moves. */
-type Pushed = { rect: Rect; passive: boolean; move: (dx: number, dy: number) => void };
-const AREA_KEY = "area\n";
-const LOOSE_KEY = "loose\n";
-/** pushAside's gap between two of its keys: areas keep AREA_GAP apart, what's in no area GAP from anything. */
-const apartOf = (a: string, b: string) => (a.startsWith(AREA_KEY) && b.startsWith(AREA_KEY) ? AREA_GAP : GAP);
-/** The areas and the loose things as pushAside takes them, keyed apart so a name can't collide. */
-function pushRects(areas: Iterable<[string, Rect]>, loose: readonly Pushed[]): Record<string, Rect> {
-  const rects: Record<string, Rect> = {};
-  for (const [k, a] of areas) put(rects, AREA_KEY + k, a);
-  loose.forEach((x, i) => put(rects, LOOSE_KEY + i, x.rect));
-  return rects;
-}
-
-/**
- * Push from areas `still` (which stay where they are, the first first): other `areas`, each moved by `moveArea` with
- * everything in it, and the `loose` things, each moving itself (a passive one pushes nothing).
- */
-function pushAll(areas: Iterable<[string, Rect]>, loose: readonly Pushed[], still: readonly string[], moveArea: (key: string, dx: number, dy: number) => void): void {
-  const passive = new Set(loose.flatMap((x, i) => (x.passive ? [LOOSE_KEY + i] : [])));
-  for (const [k, m] of Object.entries(pushAside(pushRects(areas, loose), still.map((s) => AREA_KEY + s), apartOf, passive))) {
-    if (k.startsWith(AREA_KEY)) moveArea(k.slice(AREA_KEY.length), m.dx, m.dy);
-    else loose[Number(k.slice(LOOSE_KEY.length))].move(m.dx, m.dy);
-  }
-}
-
 /**
  * Area `key` now `grown`: what's in its way pushed aside (pushAside), other areas (a locked one too, as a whole) with
  * everything in them, and what's in no area, which stays in none; but not what's in `leaving` (tile keys,
@@ -1328,12 +1257,16 @@ function pushAll(areas: Iterable<[string, Rect]>, loose: readonly Pushed[], stil
 function growArea(p: FullPatch, l: Landscape, layout: ResolvedLayout, key: string, grown: Area, leaving: ReadonlySet<string>): void {
   put(p.areas, key, { ...(own(p.areas, key) ?? {}), w: grown.w, h: grown.h });
   const kept = keptOf(l, layout);
-  const loose: Pushed[] = [
+  const areas = layout.areas.map((a): [string, Rect] => [a.key, a.key === key ? grown : a.rect]);
+  pushAll(areas, looseThings(p, layout, kept, leaving), [key], (k, dx, dy) => moveArea(p, layout, kept, k, dx, dy, leaving));
+}
+
+/** What's in no area, as pushAll pushes it: the workspaces and what's kept (`kept`), but what's in `leaving`. */
+function looseThings(p: FullPatch, layout: ResolvedLayout, kept: readonly Kept[], leaving: ReadonlySet<string>): Pushed[] {
+  return [
     ...layout.tiles.filter((t) => t.area === LOOSE_GROUP && !leaving.has(t.key)).map((t) => ({ rect: t.rect, passive: false, move: (dx: number, dy: number) => moveTile(p, t, dx, dy) })),
     ...looseOf(p, kept, leaving),
   ];
-  const areas = layout.areas.map((a): [string, Rect] => [a.key, a.key === key ? grown : a.rect]);
-  pushAll(areas, loose, [key], (k, dx, dy) => moveArea(p, layout, kept, k, dx, dy, leaving));
 }
 
 const STILL_KEY = "still\n";
@@ -1483,6 +1416,8 @@ export function planMoveTile(l: Landscape, layout: ResolvedLayout, tileKey: stri
     const { dx, dy } = clearOf(r, layout.areas.map((a) => a.rect), GAP);
     r = shifted(r, dx, dy);
   }
+  // back where it started, there's nothing to save or to wait for
+  if (!crossing && r.x === t.rect.x && r.y === t.rect.y) return { patch: null, moves: [], after: null };
   // what it's dropped on is pushed aside, and its area grows to hold it all (it never moves itself)
   pushFrom(p, l, layout, target, r, new Set([t.key]));
   if (t.stack && crossing) restack(p, after, l, t, target, r);
@@ -1493,7 +1428,11 @@ export function planMoveTile(l: Landscape, layout: ResolvedLayout, tileKey: stri
   return { patch: finish(p), moves: crossing ? [...t.members, ...(t.closed ?? [])].map((s) => ({ id: s.id, group })) : [], after: finish(after) };
 }
 
-/** Area `key` dragged by `dx`, `dy`: snapped, moved clear of the others (clearOf), its workspaces and ghosts with it. Refused while it's locked. */
+/**
+ * Area `key` dragged by `dx`, `dy`: snapped, moved clear of the others (clearOf), its workspaces and ghosts with it, and
+ * what's in no area pushed aside where it lands (one pushed into another area goes on past it, which stays). Refused
+ * while it's locked.
+ */
 export function planMoveArea(l: Landscape, layout: ResolvedLayout, key: string, dx: number, dy: number, titleOf: (key: string) => string): AreaPlan {
   const a = layout.areas.find((x) => x.key === key);
   if (!a) return { refused: `${titleOf(key)} isn't on the landscape any more` };
@@ -1504,7 +1443,10 @@ export function planMoveArea(l: Landscape, layout: ResolvedLayout, key: string, 
   const my = snap(dy) + clear.dy;
   if (!mx && !my) return { patch: null, moves: [], after: null };
   const p = emptyPatch();
-  moveArea(p, layout, keptOf(l, layout), key, mx, my);
+  const kept = keptOf(l, layout);
+  moveArea(p, layout, kept, key, mx, my);
+  const areas = layout.areas.map((x): [string, Rect] => [x.key, x.key === key ? shifted(a.rect, mx, my) : x.rect]);
+  pushAll(areas, looseThings(p, layout, kept, NONE_LEAVING), [key, ...layout.areas.filter((x) => x.key !== key).map((x) => x.key)], (k, ddx, ddy) => moveArea(p, layout, kept, k, ddx, ddy));
   return { patch: finish(p), moves: [], after: null };
 }
 
@@ -1895,6 +1837,8 @@ export function snapRect(want: Rect, edges: Edges, others: readonly Rect[], zoom
   // never to a spot past the inside's left or top, which a drop moves it back in from (past its right or bottom the
   // area grows to hold it): what's lined up with there, a loose ghost's edge say, would put it through the header
   const keepsIn = (p: "x" | "y") => (c: Candidate) => !inner || c.pos >= inner[p] - 1e-6;
+  // nor the plain grid: what's drawn while dragging is where a drop leaves it (planMoveTile, planResizeTo)
+  const onGrid = (p: "x" | "y", v: number) => (inner ? Math.max(snap(v), snapUp(inner[p])) : snap(v));
   const targets: Rect[] = [...others];
   // the area's inside lines up like a neighbour's edges, without the gap beside it
   const insideCands = (lo: number, hi: number, len: number, start: boolean, end: boolean): Candidate[] => {
@@ -1922,13 +1866,13 @@ export function snapRect(want: Rect, edges: Edges, others: readonly Rect[], zoom
         ...insideCands(innerLo, innerHi, r[s], true, true),
       ].filter(keepsIn(p));
       const c = nearestOf(cands, r[p], within);
-      return { start: c ? c.pos : snap(r[p]), size: r[s], guide: c };
+      return { start: c ? c.pos : onGrid(p, r[p]), size: r[s], guide: c };
     }
     if (lo) {
       const end = r[p] + r[s];
       const cands: Candidate[] = [...targets.flatMap((o) => [{ pos: o[p], line: o[p], other: o }, { pos: o[p] + o[s] + GAP, line: o[p] + o[s] + GAP, other: o }]), ...(inner ? [{ pos: innerLo, line: innerLo, other: inner }] : [])].filter(keepsIn(p));
       const c = nearestOf(cands, r[p], within);
-      const start = Math.min(c ? c.pos : snap(r[p]), end - min[s]);
+      const start = Math.min(c ? c.pos : onGrid(p, r[p]), end - min[s]);
       return { start, size: end - start, guide: c && c.pos === start ? c : null };
     }
     if (hi) {

@@ -51,7 +51,7 @@
   --on-primary: #1a1917;
   --focus-ring: #b9b3a8;
   --pane-focus: rgba(255, 255, 255, .5);
-  /* the lines a dragged workspace snaps along: apart from every border and outline and from every area accent (--m-*),
+  /* the lines a dragged workspace snaps along: apart from every border and outline and from every area accent (--ls-a*),
      in both themes (contrast.test.ts) */
   --snap-guide: #c44dff;
   --bg-pane-header-focus: #2b2a26;
@@ -2135,8 +2135,11 @@ button.ns-ghost:hover { background: none; color: var(--text-1); }
 .statusbar > .right > .update-note { flex-shrink: 10; min-width: 64px; }
 .statusbar > .right > .update-note > .un-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .statusbar > .right > .update-note > button { flex-shrink: 0; }
-.statusbar > .usage-wrap { flex-shrink: 1; min-width: 48px; }
-.statusbar > .usage-wrap > .usage { min-width: 0; overflow: hidden; }
+.statusbar > .usage-wrap { flex-shrink: 1; min-width: 56px; }
+/* short of room it drops what doesn't fit whole, the last first (each wraps to a row its height hides), never cutting
+   into one. A part goes as a whole unless it's the first and alone wider than the meter, then what's in it goes last first */
+.statusbar > .usage-wrap > .usage { min-width: 0; flex-wrap: wrap; align-content: flex-start; box-sizing: border-box; height: calc(1lh + 4px); overflow: hidden; }
+.statusbar > .usage-wrap > .usage > .usage-agent { flex-wrap: wrap; }
 /* the folder cell clips its name, never its Files button (after the cell's own inline-flex rule) */
 .rail .cell.folder .v { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .rail .cell.folder .v .fn { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
@@ -3362,7 +3365,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   font: 400 11px var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--text-4); cursor: pointer; text-align: left;
 }
 .lt-closed-toggle svg { flex-shrink: 0; width: 9px; height: 9px; }
-/* one line at any count: the words give way, the count stays */
+/* one line at any count: the word gives way before the count, at a sidebar far narrower than its default */
 .lt-closed-label { display: flex; gap: .4em; min-width: 0; white-space: nowrap; }
 .lt-closed-word { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lt-closed-n { flex-shrink: 0; }
@@ -3460,10 +3463,13 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-card {
   display: flex; flex-direction: column; gap: calc(6 * var(--u)); box-sizing: border-box; height: 100%; overflow: hidden;
   padding: calc(9 * var(--u)) calc(11 * var(--u)); user-select: none;
+  /* a card's px don't change with the zoom but its type does (each --u is a screen px), so a container query's fixed
+     width can't tell how wide it is on screen. This length can: far above 0 under 200 screen px, far below 0 over them */
+  container-type: inline-size; --ls-narrow: calc((200 * var(--u) - 100cqw) * 1000);
 }
 .ls-card-head { display: flex; align-items: center; gap: calc(7 * var(--u)); min-width: 0; flex-shrink: 0; }
 .ls-card-head .dot { width: calc(8 * var(--u)); height: calc(8 * var(--u)); }
-.ls-card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 calc(12.5 * var(--u))/1.25 var(--ui); color: var(--text-1); }
+.ls-card-title { flex: 1; min-width: 4ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 calc(12.5 * var(--u))/1.25 var(--ui); color: var(--text-1); }
 .ls-node.st-dead .ls-card-title { color: var(--text-3); }
 .ls-card-ticket { flex-shrink: 0; font: 400 calc(10 * var(--u)) var(--mono); color: var(--text-3); }
 .ls-card-line {
@@ -3487,6 +3493,14 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 /* a stack's card (the Zoomed board): its stack · N chip in the title row, and its other tabs' names on a row of their
    own under it, those waiting on you first; the row ends in an ellipsis, never taking the title's width */
 .ls-card-head .ls-card-chip { flex-shrink: 0; font: 500 calc(9.5 * var(--u)) var(--ui); padding: calc(2 * var(--u)) calc(5 * var(--u)); border-radius: calc(3 * var(--u)); }
+/* narrow on screen, a stack card's title keeps the room: its ticket, which its area names, gives way, and its chip goes
+   to ×N before the title, where the ⋯ over the head's end never reaches it. With room it's `stack · N` after the title;
+   the ⋯ covers the ticket there, as on any card, and with no ticket a margin keeps the chip clear of it. What gives way
+   has no width, padding or room beside it (a margin takes back the head's gap) */
+.ls-card-head .ls-chip-long { max-width: clamp(0px, calc(var(--ls-narrow) * -1), 9999px); padding-inline: clamp(0px, calc(var(--ls-narrow) * -1), calc(5 * var(--u))); margin-left: clamp(calc(-7 * var(--u)), calc(var(--ls-narrow) * -1), 0px); }
+.ls-card-head .ls-chip-short { max-width: clamp(0px, var(--ls-narrow), 9999px); padding-inline: clamp(0px, var(--ls-narrow), calc(5 * var(--u))); margin-right: clamp(calc(-7 * var(--u)), var(--ls-narrow), 0px); }
+.ls-chip-long:not(:has(+ .ls-card-ticket)) { margin-right: clamp(0px, calc(var(--ls-narrow) * -1), calc(19 * var(--u))); }
+.ls-chip-long + .ls-card-ticket { overflow: hidden; max-width: clamp(0px, calc(var(--ls-narrow) * -1), 9999px); margin-left: clamp(calc(-7 * var(--u)), calc(var(--ls-narrow) * -1), 0px); }
 .ls-card-tabs {
   flex-shrink: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 500 calc(10.5 * var(--u))/1.3 var(--ui); color: var(--text-2);

@@ -2058,6 +2058,97 @@ Design O, with Artifacts as a window, and N's workspace header.
       all (the sidebar is narrow), as well as the header's right-click.
     - A failed read of the closed sessions is retried with backoff, forever,
       while it keeps failing; each failure is in the status bar.
+- **S6b review fixes (round 3) — As built:**
+  - **M1 (zoomed out far):** a card's width in landscape px doesn't change with
+    the zoom, so a container query's fixed width can't tell how wide it is on
+    screen. `.ls-card` is a size container with `--ls-narrow`, a length that's
+    far above 0 under 200 screen px (`200 * var(--u) - 100cqw`, times 1000) and
+    far below it over them, and clamps on it do the giving way: under 200 px a
+    stack card's ticket goes (its area names it) and `×N` before the title
+    takes over from `stack · N` after it, where the ⋯ over the head's end can't
+    reach it (there are two chips, one with no width at any time). No render and
+    no JS: it follows the camera. `.ls-card-title` has a floor of `4ch`. 200
+    rather than the review's 170, as the title was still "API: las…" at 1440
+    Fit, about 190 px wide. At 10% a stack card is 97 px wide on screen: a
+    reserved margin for the ⋯ after the chip would leave its title under 4ch.
+  - **M2:** the list's header reads **Closed (n)**, whole at every count at the
+    default sidebar; `aria-label` and `title` say Closed sessions (n), and the
+    word still gives way before the count at a far narrower sidebar.
+  - **M3:** `launchAgain` asks `whereAgain` where a closed session runs. In the
+    checkout itself: `{cwd}` and whichever branch is out now, so `create` never
+    reaches `slugBranch` or `checkoutBranch`. A relaunch never switches a
+    branch or makes one, whatever its ticket or `branchName`. `branchName` there
+    is `currentBranch`'s, as what a session says it's on is what stops another
+    switching the checkout under it (`create`'s `other`). Tried against real
+    repos: its branch deleted, the checkout moved on, and a custom branch.
+  - **Worktrees, one folder at a time:** `unregisterMissing` runs `git worktree
+    remove` only on a path `worktree list --porcelain` itself marks `prunable`;
+    that command deletes a folder that's there, ignored files (a `.env`)
+    included. `folderThere` tells gone (ENOENT, ENOTDIR) from can't-look
+    (EACCES throws), where `existsSync` said false to both, and `createWorktree`
+    runs one at a time per path (`oneAtATime`), so several at once on a stale
+    registration all get the one folder. Locked and missing stays registered,
+    and `worktree add` says why.
+  - **`startPoint` with origin in trouble:** `onOrigin` says whether origin
+    answered (`asked`). A relaunch that found origin unreachable goes straight
+    to the last fetch's ref, without a fetch that would only wait out its
+    timeout; one whose fetch fails after origin answered logs it and uses the
+    ref. `--track` is left off with no `origin` remote (a ref a removed remote
+    left), where git refuses it. A new session's fetch still fails aloud.
+  - **Suffixed folders:** a worktree session runs in `old.cwd` while that's there
+    (a take-over's can be `<branch>-2`); only one that's gone is made again, at
+    `worktreeRoot/<branch>`.
+  - **One reading of what's where:** `keptIn`, `shiftKept`, `looseOf`, `pushAll`
+    and `FullPatch` moved to `shared/landscape.ts`, and `mergeClosedInto` now uses
+    them instead of its own `within` loops and `moveAreaWhole`. `holdingArea` is
+    the one place "the area holding this place" is decided (`keptIn`, a ghost's
+    area in `resolveLayout`, `renameAreaPatch`'s "inside `from`"). That gives
+    a merge's growth the loose windows and cards it missed, and its push no longer
+    brings back what it dropped: a Kept's `at` is null once the patch has dropped
+    it, in gestures too. Main has no layout, so in a merge every place counts as
+    not shown: pushed aside, pushing nothing.
+  - **Merges keep every ghost inside the old area:** `sessions:renameGroup` passes
+    all resumable sessions, as a ghost from group G lying inside A is A's; the
+    `inFrom` check limits which places move.
+  - **Reads retried, errors by their own source:** `readGone` retries like
+    `readClosed` (`goneFails`), and `readCleared(what)` takes only that read's
+    error off the status bar.
+  - **Chained renames:** `renamedKeys` follows them both ways, nearest first, and
+    ends on a cycle; `areaSelectionNow` goes by it too.
+  - **Layout fuzz (`test/landscapeFuzz.test.ts`):** 40 fixed seeds of 120 random
+    steps, in about 2 s: moves, area moves, resizes, presets, stacks, unstacks,
+    Tidy, forget, reopen, close, a session gone from both lists, new sessions,
+    merges, renames, locks and windows. After each step: one pass settles, areas
+    keep AREA_GAP, nothing overlaps (places nothing draws included), a workspace
+    in an area is inside it and one in none is over none, a locked area moves
+    whole with its insides where they were, the mover stays, and membership is
+    the same on a second pass. A last test fails if any gesture went untried. A
+    wider one-off (600 seeds of 200 steps) found nothing more. Collapsed areas
+    aren't in it.
+  - **What the fuzz found:** dragging an area dropped it over what's in no area.
+    `planMoveArea` now pushes that aside (`looseThings`, shared with `growArea`),
+    the other areas staying put, as one pushed into an area goes on past it.
+  - **LOW:**
+    - `stack · N` comes before the ticket, so the ⋯ covers the ticket, as on any
+      card; with no ticket a margin keeps the chip clear of it, and `×N` is left
+      of the title. So a selected stack card always shows its count.
+    - A tab's slip off its header has 8 screen px of slop (`TAB_SLIP_PX`), since
+      the header is 16 px at 50%.
+    - The guide's colour is checked against `--ls-a*`, what areas are really drawn
+      in (amber, teal, `--git-mod`, m-2, m-4, m-5). It passes unchanged: ΔE at
+      least 68 dark, 66 light.
+    - `sumEstimates` says "their caches…" or "some of their caches…" for several;
+      Forget all reads "Forget all the closed sessions here: they can't…".
+    - `snapRect` keeps the plain grid inside an area's top and left too, a move's
+      and a top or left edge's, so what's held is where a drop leaves it; a drop
+      back where it started has an empty plan (`planMoveTile`, as `planMoveArea`
+      and `planResizeTo` had), so it's let go at once rather than waiting out
+      `SETTLE_MS`.
+    - The status bar's meter drops its parts whole, last first (they wrap to a
+      row its height hides), so nothing is cut into, and today's word and number
+      go together. Its floor went from 48 to 56 px, room for "5h 100%". The closed
+      list's failing read still re-shows its note on each retry: that's a real
+      failure, still happening.
 
 ### S7 · Needs you
 - **The tray** drops down from the top-bar button. Phase 1 items:

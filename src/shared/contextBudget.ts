@@ -172,15 +172,17 @@ export interface CostEstimate {
 
 /**
  * Several resumes' estimates as one, so a batch (a stack's tabs, Reopen all) asks once: tokens and units added, a
- * share only when every one has one, cold when any is, and asked about when any would be alone.
+ * share only when every one has one, cold when any is, and asked about when any would be alone. Its why speaks of them
+ * all: any one's own would say "its cache" under a count of several.
  */
 export function sumEstimates(es: readonly CostEstimate[]): CostEstimate {
   const add = (f: (e: CostEstimate) => number) => es.reduce((n, e) => n + f(e), 0);
+  const colds = es.filter((e) => e.cold).length;
   return {
     tokens: add((e) => e.tokens),
     cold: es.some((e) => e.cold),
     fresh: es.length > 0 && es.every((e) => e.fresh),
-    why: (es.find((e) => e.cold) ?? es[0])?.why ?? "",
+    why: es.length === 1 ? es[0].why : !es.length ? "" : !colds ? "their caches are still warm" : colds === es.length ? "their caches are cold" : "some of their caches are cold",
     units: add((e) => e.units),
     warmUnits: add((e) => e.warmUnits),
     sharePct: es.every((e) => e.sharePct !== null) ? add((e) => e.sharePct!) : null,

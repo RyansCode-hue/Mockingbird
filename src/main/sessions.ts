@@ -7,7 +7,7 @@ import { WebContents } from "electron";
 import { SessionInfo, SessionStatus, NewSessionRequest, slugBranch, ticketIdOf, AgentKind, type AgentUpdateNotice, type BroadcastOutcome, type MissingFolder } from "../shared/types";
 import { Store, expandHome, MB_DIR } from "./store";
 import { createWorktree, checkoutBranch } from "./worktrees";
-import { git } from "./git";
+import { currentBranch, git } from "./git";
 import { adoEnv } from "./ado";
 import { agentFor, agentLabel, AgentAdapter, type LaunchContext } from "./agents";
 import { which, whichSync, quote } from "./shell";
@@ -988,6 +988,27 @@ export class SessionManager {
     return this.store.state.sessions.find((s) => s.id === id);
   }
 
+  /**
+   * Where closed session `old` runs again. A relaunch never switches a checkout's branch or makes one, so it's never
+   * asked for one by name or by ticket there: in the checkout itself it runs on whatever branch is out now. A worktree
+   * session runs in its own folder while that's there, whatever the folder's called (a take-over's can be
+   * <branch>-2), and one that's gone is made again from its branch at the usual place. A detached one's has no branch
+   * to make it from, so create refuses it.
+   */
+  private async whereAgain(old: SessionInfo): Promise<Pick<NewSessionRequest, "cwd" | "branchName" | "useWorktree">> {
+    const repo = old.repoPath ? expandHome(old.repoPath) : null;
+    if (!repo) return { useWorktree: false };
+    const there = fs.existsSync(old.cwd);
+    if (old.cwd !== repo) return there || !old.branch ? { cwd: old.cwd, branchName: old.branch ?? undefined, useWorktree: false } : { branchName: old.branch, useWorktree: true };
+    if (!there || !old.branch) return { cwd: old.cwd, useWorktree: false };
+    // what's out now is what it says it's on, and what keeps another session from switching the checkout under it
+    const out = await currentBranch(old.cwd).catch((err: unknown) => {
+      console.error(`[sessions] ${old.id}: couldn't read the branch out in ${old.cwd}:`, err);
+      return null;
+    });
+    return { cwd: old.cwd, branchName: out ?? undefined, useWorktree: false };
+  }
+
   /** Start persisted session `old` again under its id, resuming what `plan` says; `notice` is shown in its pane. */
   private async launchAgain(old: SessionInfo, plan: RelaunchPlan, notice: string | undefined): Promise<SessionInfo> {
     if (notice) console.warn(`[sessions] ${old.id}: ${notice}`);
@@ -998,13 +1019,7 @@ export class SessionManager {
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
       ticketTitle: old.ticketTitle ?? undefined,
-      // a worktree session has cwd ≠ repoPath and is recreated as one from its branch (a detached one runs in its
-      // folder while that's there); an in-checkout session just runs where it was, on whatever branch is out
-      ...(old.repoPath && old.cwd !== expandHome(old.repoPath)
-        ? old.branch
-          ? { branchName: old.branch, useWorktree: true }
-          : { cwd: old.cwd, useWorktree: false }
-        : { useWorktree: false }),
+      ...(await this.whereAgain(old)),
       taskGroup: old.taskGroup ?? undefined,
       extraDirs: old.extraDirs,
       resume,

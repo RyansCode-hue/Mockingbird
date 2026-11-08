@@ -70,21 +70,27 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
   // a stack's other tabs, by name under its title, those waiting on you counted first (the front one's status is its own)
   const others = tile.members.filter((m) => m.id !== s.id);
   const waiting = others.filter((m) => m.status === "waiting").length;
+  const tabs = tile.members.length + (tile.closed?.length ?? 0);
   const resume = usable(actions, "resume");
   const close = s.status === "dead" ? usable(actions, "close") : undefined;
   return (
     <div className="ls-card">
       <div className="ls-card-head">
         <StatusDot status={s.status} />
+        {tile.stack && (
+          <span className="chip ls-card-chip ls-chip-short" title={name ?? undefined} aria-hidden="true">
+            ×{tabs}
+          </span>
+        )}
         <span className="ls-card-title" title={titleOf(s)}>
           {titleOf(s)}
         </span>
-        {s.ticketId && <span className="ls-card-ticket">#{ticketIdOf(s.ticketId)}</span>}
         {tile.stack && (
-          <span className="chip ls-card-chip" data-stack={tile.stack} title={name ?? undefined}>
-            stack · {tile.members.length + (tile.closed?.length ?? 0)}
+          <span className="chip ls-card-chip ls-chip-long" data-stack={tile.stack} title={name ?? undefined}>
+            stack · {tabs}
           </span>
         )}
+        {s.ticketId && <span className="ls-card-ticket">#{ticketIdOf(s.ticketId)}</span>}
         {more}
       </div>
       {tile.stack && (others.length > 0 || !!tile.closed?.length) && (

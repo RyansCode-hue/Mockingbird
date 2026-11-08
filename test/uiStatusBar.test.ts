@@ -10,8 +10,8 @@ const chrome = process.env.CHROME ?? "/Applications/Google Chrome.app/Contents/M
 const local = !process.env.CI && fs.existsSync(chrome);
 
 type Note = { shown: number | null; whole: boolean | null; cut: boolean; onHover: boolean };
-/** The read error and the update's outcome when there (px shown, cut, whole on hover), the update link, the hooks warning, the usage meter (px), and Following's parts. */
-type Measured = { notes: Note[]; link: boolean | null; hooks: boolean | null; usage: number | null; stop: boolean | null; words: string | null; cut: boolean; title: string | null; parts: string[]; width: number };
+/** The read error and the update's outcome when there (px shown, cut, whole on hover), the update link, the hooks warning, the usage meter (px, and each of its parts as it shows), and Following's parts. */
+type Measured = { notes: Note[]; link: boolean | null; hooks: boolean | null; usage: number | null; meter: { text: string; seen: "whole" | "cut" | "dropped" }[]; stop: boolean | null; words: string | null; cut: boolean; title: string | null; parts: string[]; width: number };
 
 async function audit(size: string, notes: "all" | "few"): Promise<{ before: Measured; following: Measured; waiting: Measured; stopped: boolean; error?: string }> {
   // @ts-expect-error — a plain .mjs build script, no type declarations
@@ -39,6 +39,11 @@ describe.skipIf(!local)("the status bar while following a teammate", () => {
           // each note whole, or cut down no further than its least, its words in full on hover
           for (const n of m.notes) expect(n.whole || (n.cut && (n.shown ?? 0) >= 60 && n.onHover), say(m)).toBe(true);
           expect(m.usage ?? 0, say(m)).toBeGreaterThanOrEqual(40);
+          // the meter's parts are whole or gone, never cut into; it always says something; today's word and number go together
+          expect(m.meter.filter((p) => p.seen === "cut"), say(m)).toEqual([]);
+          expect(m.meter.filter((p) => p.seen === "whole").length, say(m)).toBeGreaterThan(0);
+          const today = m.meter.findIndex((p) => p.text === "today");
+          if (today >= 0) expect(m.meter[today + 1].seen, say(m)).toBe(m.meter[today].seen);
         }
         for (const m of [a.following, a.waiting]) {
           expect(m.stop, say(m)).toBe(true);

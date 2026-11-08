@@ -153,7 +153,8 @@ together so work and context flow between them.
   its group's area, formed again if it's gone: reopening never changes its
   group) and Forget, and the list has Reopen all, with Forget all in its ⋯; a
   copy a teammate continues offers Take it back, as its ghost would. Its rows
-  carry a ghost's hollow ring.
+  carry a ghost's hollow ring. Its header reads **Closed (n)**, and is called
+  Closed sessions for a screen reader and on hover.
 
 ## Finding what needs you
 
@@ -198,9 +199,10 @@ together so work and context flow between them.
   fits the result.
 - **Stacks** (⌘G on a selection) pile workspaces into one card with tabs. A
   stack moves, wires and focuses as one. Zoomed out, its card has a
-  `stack · N` chip in its title row and its other tabs' names on a row under
-  it, those waiting on you first. A wire to a stacked workspace attaches
-  to the stack and names its tab.
+  `stack · N` chip in its title row (`×N` before the title when the card is
+  under 200 px on screen, its ticket giving way too) and its other tabs' names
+  on a row under it, those waiting on you first. A wire to a stacked workspace
+  attaches to the stack and names its tab.
   - Several picked in one area become a stack (`area/tabs`, `tabs-2`…) where
     the first of them was; a stack among them takes the others in. A
     teammate's workspace stays out.
