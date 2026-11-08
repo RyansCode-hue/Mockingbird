@@ -1090,11 +1090,13 @@ handle("sessions:rename", (id, title) => sessions.rename(id, title));
 handle("sessions:renameGroup", (oldKey, newKey) => {
   const [from, to] = [String(oldKey), String(newKey)];
   const members = sessions.list().filter((s) => areaKeyOf(s) === from).map((s) => s.id);
+  // read before the rename, which changes the records' groups in place
+  const closed = sessions.resumable().filter((s) => areaKeyOf(s) === from).map((s) => ({ id: s.id, taskGroup: s.taskGroup }));
   sessions.renameGroup(oldKey, newKey);
   team.groupRenamed(from, to); // a shared group stays its room
   // its area on the landscape follows; the rename itself is done, so a failure here is logged rather than refused
   try {
-    landscape.groupRenamed(from, to, members);
+    landscape.groupRenamed(from, to, members, closed);
   } catch (err) {
     logError(`landscape: moving ${from}'s area to ${to}`, err);
   }

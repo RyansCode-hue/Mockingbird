@@ -286,6 +286,18 @@ describe("the selection bar floats over its selection", () => {
     expect(barPlace({ x: 300, y: 300, w: 60, h: 40 }, bar, view)).toEqual({ x: 300, y: 300 - BAR_GAP - 38 });
   });
 
+  it("keeps clear of the minimap: left of it at the same height, or above it when the view has no room left of it", () => {
+    const minimap = { x: 1000 - 12 - 196, y: 700 - 12 - 124, w: 196, h: 124 };
+    // a selection low and right, whose bar would lie over the minimap
+    const at = barPlace({ x: 700, y: 640, w: 200, h: 40 }, bar, view, 0, BAR_MARGIN, BAR_GAP, minimap);
+    expect(at).toEqual({ x: minimap.x - BAR_GAP - bar.w, y: 640 - BAR_GAP - 38 });
+    // one clear of it is where it'd be anyway
+    expect(barPlace({ x: 100, y: 640, w: 200, h: 40 }, bar, view, 0, BAR_MARGIN, BAR_GAP, minimap)).toEqual(barPlace({ x: 100, y: 640, w: 200, h: 40 }, bar, view));
+    // a bar too wide to go left of it goes above it
+    const wide = { w: 900, h: 38 };
+    expect(barPlace({ x: 50, y: 680, w: 200, h: 10 }, wide, view, 0, BAR_MARGIN, BAR_GAP, minimap).y).toBe(minimap.y - BAR_GAP - 38);
+  });
+
   it("slides along the view's edges to stay inside it, never jumping", () => {
     expect(barPlace({ x: 800, y: 300, w: 60, h: 40 }, bar, view).x).toBe(1000 - 420 - BAR_MARGIN);
     expect(barPlace({ x: -500, y: 300, w: 60, h: 40 }, bar, view).x).toBe(BAR_MARGIN);

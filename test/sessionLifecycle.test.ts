@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { tempDir } from "./helpers";
+import { git, makeRepo, tempDir } from "./helpers";
 
 /** Every pty the manager starts: what it was asked to run and with what environment, what was written to it, and a way to end it. */
 type FakePty = { args: string[]; env: Record<string, string>; writes: string[]; killed: boolean; signals: string[]; emit(d: string): void; exit(code: number): void };
@@ -550,5 +550,71 @@ describe("a session a teammate continues", () => {
     expect(ptys.length).toBe(started);
     expect(m.list().some((x) => x.id === s.id && x.status !== "dead")).toBe(false);
     expect(m.resumable().map((x) => x.id)).toContain(s.id);
+  });
+});
+
+describe("relaunching a worktree session whose worktree was removed", () => {
+  /** A clone of an origin, with a worktree session on `feat`, a commit of its own pushed and fetched, then its worktree removed and its local branch deleted. */
+  async function removedWorktree() {
+    const { m, store } = await manager();
+    const origin = makeRepo({ "a.txt": "1" }, "origin");
+    const clone = path.join(path.dirname(origin), "clone");
+    git(path.dirname(origin), "clone", "-q", origin, clone);
+    const s = await m.create({ repoPath: clone, useWorktree: true, branchName: "feat", agent: "claude", title: "w" });
+    git(s.cwd, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "its work");
+    const work = git(s.cwd, "rev-parse", "HEAD");
+    git(s.cwd, "push", "-q", "origin", "feat");
+    m.kill(s.id, false);
+    git(clone, "worktree", "remove", s.cwd);
+    git(clone, "branch", "-q", "-D", "feat");
+    return { m, store, s, origin, clone, work };
+  }
+
+  it("makes it again from what origin last had of its branch, once origin has deleted it", async () => {
+    const { m, s, origin, work } = await removedWorktree();
+    git(origin, "branch", "-q", "-D", "feat");
+    const again = await m.relaunch(s.id);
+    expect(again?.cwd).toBe(s.cwd);
+    expect(git(s.cwd, "rev-parse", "HEAD")).toBe(work);
+    expect(git(s.cwd, "rev-parse", "--abbrev-ref", "HEAD")).toBe("feat");
+  });
+
+  it("refuses, starting nothing and keeping the session, when its branch is gone from here and origin alike", async () => {
+    const { m, store, s, origin, clone } = await removedWorktree();
+    git(origin, "branch", "-q", "-D", "feat");
+    git(clone, "fetch", "-q", "--prune", "origin");
+    const started = ptys.length;
+    await expect(m.relaunch(s.id)).rejects.toThrow("Its branch, feat, isn't here or on origin any more: start fresh");
+    expect(ptys.length).toBe(started);
+    expect(git(clone, "branch", "--list", "feat")).toBe("");
+    expect(store.state.sessions.some((x: any) => x.id === s.id)).toBe(true);
+  });
+
+  it("makes it again when its folder was deleted outside git, still registered, its branch kept", async () => {
+    const { m } = await manager();
+    const repo = makeRepo();
+    const s = await m.create({ repoPath: repo, useWorktree: true, branchName: "kept", agent: "claude", title: "k" });
+    m.kill(s.id, false);
+    fs.rmSync(s.cwd, { recursive: true, force: true });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await m.relaunch(s.id))?.cwd).toBe(s.cwd);
+    expect(git(s.cwd, "rev-parse", "--abbrev-ref", "HEAD")).toBe("kept");
+    expect(warn.mock.calls.some((c) => /deleted outside git but still registered/.test(String(c[0])))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("runs a detached worktree's session in its own folder, never the main checkout", async () => {
+    const { m } = await manager();
+    const repo = makeRepo();
+    const detached = path.join(path.dirname(repo), "detached");
+    git(repo, "worktree", "add", "-q", "--detach", detached);
+    const s = await m.create({ repoPath: repo, cwd: detached, useWorktree: false, agent: "claude", title: "d" });
+    expect(s.branch).toBeNull();
+    m.kill(s.id, false);
+    expect((await m.relaunch(s.id))?.cwd).toBe(detached);
+    // and refuses once that folder is gone, rather than running in the repo
+    m.kill(s.id, false);
+    git(repo, "worktree", "remove", "--force", detached);
+    await expect(m.relaunch(s.id)).rejects.toThrow(/doesn't exist any more/);
   });
 });

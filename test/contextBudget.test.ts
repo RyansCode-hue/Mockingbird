@@ -9,6 +9,7 @@ import {
   keepDismissal,
   rereadCost,
   shownLevel,
+  sumEstimates,
   unitsPerPct,
   usableWindow,
 } from "../src/shared/contextBudget";
@@ -88,6 +89,17 @@ describe("what re-reading a conversation costs", () => {
     expect(warm.ask).toBe(false); // a warm cache is never worth asking about
     // Sonnet costs a fifth of Opus
     expect(rereadCost({ agent: "claude", model: "claude-sonnet-5", tokens: 380_000, fresh: true, now, unitsPerPct: rate }).sharePct).toBeCloseTo(1.5);
+  });
+
+  it("adds several resumes up into one estimate, so a batch asks once: a share only when each has one", () => {
+    const cold = rereadCost({ agent: "claude", model: "claude-opus-5-5", tokens: 380_000, cache: { warm: false, expiresAt: now - 3 * 60 * min }, now, unitsPerPct: rate });
+    const warm = rereadCost({ agent: "claude", model: "claude-opus-5-5", tokens: 20_000, cache: { warm: true, expiresAt: now + min }, now, unitsPerPct: rate });
+    const both = sumEstimates([cold, warm]);
+    expect(both).toMatchObject({ tokens: 400_000, cold: true, fresh: false, why: cold.why, ask: true });
+    expect(both.units).toBeCloseTo(cold.units + warm.units);
+    expect(both.sharePct).toBeCloseTo(cold.sharePct! + warm.sharePct!);
+    expect(sumEstimates([warm, warm]).ask).toBe(false);
+    expect(sumEstimates([cold, { ...warm, sharePct: null }]).sharePct).toBeNull();
   });
 
   it("takes the cache to be cold five minutes after the last reply when the agent doesn't say", () => {

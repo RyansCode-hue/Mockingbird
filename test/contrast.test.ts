@@ -130,6 +130,22 @@ describe("the design tokens' contrast", () => {
     for (const t of Object.values(themes)) expect(contrast(parse(t["--primary"]), parse(t["--bg-sidebar"]))).toBeGreaterThanOrEqual(3);
   });
 
+  it("draws snap guides in a colour no area accent is near (CIE76 ΔE 50 or more), so a guide never reads as an area's edge: both themes", () => {
+    const lab = ([r, g, b]: RGBA) => {
+      const lin = (c: number) => ((c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+      const [R, G, B] = [lin(r), lin(g), lin(b)];
+      const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+      const [x, y, z] = [(R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047, R * 0.2126 + G * 0.7152 + B * 0.0722, (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883].map(f);
+      return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+    };
+    const dE = (a: string, b: string) => Math.hypot(...lab(parse(a)).map((v, i) => v - lab(parse(b))[i]));
+    for (const t of Object.values(themes)) {
+      const accents = Object.keys(t).filter((k) => /^--m-\d+$/.test(k));
+      expect(accents.length).toBeGreaterThanOrEqual(6);
+      expect(accents.filter((k) => dE(t["--snap-guide"], t[k]) < 50).map((k) => `${k} ΔE ${Math.round(dE(t["--snap-guide"], t[k]))}`)).toEqual([]);
+    }
+  });
+
   it("reads the colours it checks", () => {
     expect(contrast(parse("#000000"), parse("#ffffff"))).toBeCloseTo(21, 5);
     expect(contrast(over(parse("rgba(0, 0, 0, .5)"), parse("#ffffff")), parse("#ffffff"))).toBeGreaterThan(3);

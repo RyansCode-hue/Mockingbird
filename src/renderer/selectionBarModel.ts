@@ -196,10 +196,14 @@ export function barAnchorFor(t: BarTarget, cam: Camera, barH: number, gap = BAR_
  * no room above, it stays along the top edge over the selection's top, so panning moves it continuously. A bar wider
  * than the view keeps its left edge in.
  */
-export function barPlace(anchor: Rect, bar: Size, view: Size, minTop = 0, margin = BAR_MARGIN, gap = BAR_GAP): { x: number; y: number } {
+export function barPlace(anchor: Rect, bar: Size, view: Size, minTop = 0, margin = BAR_MARGIN, gap = BAR_GAP, avoid: Rect | null = null): { x: number; y: number } {
   const x = Math.max(margin, Math.min(anchor.x, view.w - bar.w - margin));
   const top = Math.max(margin, minTop);
-  return { x, y: Math.max(top, Math.min(anchor.y - gap - bar.h, view.h - bar.h - margin)) };
+  const at = { x, y: Math.max(top, Math.min(anchor.y - gap - bar.h, view.h - bar.h - margin)) };
+  // clear of `avoid` (the minimap): left of it at the same height while the view has room there, else above it
+  if (!avoid || !(at.x < avoid.x + avoid.w + gap && avoid.x < at.x + bar.w + gap && at.y < avoid.y + avoid.h + gap && avoid.y < at.y + bar.h + gap)) return at;
+  const left = avoid.x - gap - bar.w;
+  return left >= margin ? { ...at, x: left } : { ...at, y: Math.max(top, avoid.y - gap - bar.h) };
 }
 
 /**

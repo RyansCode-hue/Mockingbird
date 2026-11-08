@@ -170,6 +170,24 @@ export interface CostEstimate {
   ask: boolean;
 }
 
+/**
+ * Several resumes' estimates as one, so a batch (a stack's tabs, Reopen all) asks once: tokens and units added, a
+ * share only when every one has one, cold when any is, and asked about when any would be alone.
+ */
+export function sumEstimates(es: readonly CostEstimate[]): CostEstimate {
+  const add = (f: (e: CostEstimate) => number) => es.reduce((n, e) => n + f(e), 0);
+  return {
+    tokens: add((e) => e.tokens),
+    cold: es.some((e) => e.cold),
+    fresh: es.length > 0 && es.every((e) => e.fresh),
+    why: (es.find((e) => e.cold) ?? es[0])?.why ?? "",
+    units: add((e) => e.units),
+    warmUnits: add((e) => e.warmUnits),
+    sharePct: es.every((e) => e.sharePct !== null) ? add((e) => e.sharePct!) : null,
+    ask: es.some((e) => e.ask),
+  };
+}
+
 /** Ask before an action estimated at this much of the 5-hour limit or more… */
 export const ASK_SHARE_PCT = 5;
 /** …or, with no plan reading to estimate from, this many tokens re-read cold. */

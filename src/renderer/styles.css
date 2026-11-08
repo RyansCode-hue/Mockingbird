@@ -51,8 +51,9 @@
   --on-primary: #1a1917;
   --focus-ring: #b9b3a8;
   --pane-focus: rgba(255, 255, 255, .5);
-  /* the lines a dragged workspace snaps along: apart from every border and outline, in both themes */
-  --snap-guide: #ff4f9a;
+  /* the lines a dragged workspace snaps along: apart from every border and outline and from every area accent (--m-*),
+     in both themes (contrast.test.ts) */
+  --snap-guide: #c44dff;
   --bg-pane-header-focus: #2b2a26;
   --chip-on-bg: #c9c3b8;
   --chip-on-fg: #1a1917;
@@ -114,7 +115,7 @@
   --on-primary: #fbf9f5;
   --focus-ring: #4f4a3f;
   --pane-focus: rgba(0, 0, 0, .55);
-  --snap-guide: #e0186f;
+  --snap-guide: #9d1fff;
   --bg-pane-header-focus: #e6e1d6;
   --chip-on-bg: #454034;
   --chip-on-fg: #f4f1e9;
@@ -3361,6 +3362,10 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   font: 400 11px var(--ui); letter-spacing: .06em; text-transform: uppercase; color: var(--text-4); cursor: pointer; text-align: left;
 }
 .lt-closed-toggle svg { flex-shrink: 0; width: 9px; height: 9px; }
+/* one line at any count: the words give way, the count stays */
+.lt-closed-label { display: flex; gap: .4em; min-width: 0; white-space: nowrap; }
+.lt-closed-word { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.lt-closed-n { flex-shrink: 0; }
 .lt-closed-toggle:hover { color: var(--text-2); }
 .lt-closed-all {
   flex-shrink: 0; padding: 2px 8px; border: 1px solid var(--line-med); border-radius: 5px; background: none;
@@ -3371,7 +3376,8 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .lt-closed-rows { overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 1px; }
 .lt-closed-row { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 6px; color: var(--text-3); min-width: 0; }
 .lt-closed-row:hover { background: var(--fill-subtle); }
-.lt-closed-row .dot { flex-shrink: 0; }
+/* a ghost's hollow ring (.ls-ghost .lg-dot): closed reads the same in the list and on the landscape */
+.lt-closed-row .lg-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; border: 1.5px solid var(--text-4); }
 .lt-closed-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .lt-closed-name .lt-t { color: var(--text-2); }
 .lt-closed-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--text-4); }
@@ -3380,6 +3386,7 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
   border: 1px solid transparent; border-radius: 5px; background: none; font: 400 12px var(--ui); color: var(--text-3); cursor: pointer;
 }
 .lt-closed-act svg { width: 10px; height: 10px; }
+.lt-closed-head .lt-closed-act svg { width: 13px; height: 13px; }
 .lt-closed-act:hover:not(:disabled) { color: var(--text-1); border-color: var(--line-med); }
 .lt-closed-act.danger:hover:not(:disabled) { color: var(--red); }
 /* a workspace (design B): a card, its header bar over its terminal. Its outline is a shadow, never a border,
@@ -3476,7 +3483,17 @@ button.chip.ctx-chip:hover { color: var(--text-1); }
 .ls-card-status.st-working { color: var(--teal-text); }
 .ls-card-status.st-waiting { color: var(--amber-text); }
 .ls-card-status.st-dead { color: var(--red); }
-.ls-card-stack, .ls-card-owner { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ls-card-owner { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* a stack's card (the Zoomed board): its stack · N chip in the title row, and its other tabs' names on a row of their
+   own under it, those waiting on you first; the row ends in an ellipsis, never taking the title's width */
+.ls-card-head .ls-card-chip { flex-shrink: 0; font: 500 calc(9.5 * var(--u)) var(--ui); padding: calc(2 * var(--u)) calc(5 * var(--u)); border-radius: calc(3 * var(--u)); }
+.ls-card-tabs {
+  flex-shrink: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 500 calc(10.5 * var(--u))/1.3 var(--ui); color: var(--text-2);
+}
+.ls-card-tabs > span + span { margin-left: calc(8 * var(--u)); }
+.ls-card-needs { color: var(--amber-text); }
+.ls-card-tab.closed { color: var(--text-4); }
 .ls-card-tokens { flex-shrink: 0; margin-left: auto; font: 400 calc(10 * var(--u)) var(--mono); }
 
 /* S5: the workspace header's chips and ⋯ and its footer (design N): the pane header's chips, the rail's cells in a line */

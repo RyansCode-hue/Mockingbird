@@ -174,8 +174,8 @@ const BEING_RELAUNCHED = "It's being reopened already";
 
 /**
  * What closed session `s`'s missing folder means for reopening it (SessionManager.missingFolders). A worktree session
- * is one relaunch makes again (launchAgain): from its branch while that's still here (or on origin as last fetched),
- * else on a new branch of that name with none of its work, which isn't reopening it.
+ * is one relaunch makes again (launchAgain): from its branch while that's still here, on origin, or as origin last had
+ * it (createWorktree's mustExist); with none of those a relaunch is refused rather than making the branch anew.
  */
 export async function folderGone(s: Pick<SessionInfo, "cwd" | "repoPath" | "branch">): Promise<Omit<MissingFolder, "id">> {
   const volume = /^\/Volumes\/([^/]+)\//.exec(s.cwd);
@@ -412,8 +412,11 @@ export class SessionManager {
     return out;
   }
 
-  /** Start a pane. `notice` is shown in it above the agent's output (see paneNotice). */
-  async create(req: NewSessionRequest, opts: { notice?: string } = {}): Promise<SessionInfo> {
+  /**
+   * Start a pane. `notice` is shown in it above the agent's output (see paneNotice). `relaunch`: a closed session
+   * started again, whose worktree is made from its own branch, never a new one (createWorktree's mustExist).
+   */
+  async create(req: NewSessionRequest, opts: { notice?: string; relaunch?: boolean } = {}): Promise<SessionInfo> {
     this.refuseWhileQuitting();
     const settings = this.store.settings;
     let cwd: string;
@@ -429,7 +432,7 @@ export class SessionManager {
       branch = req.branchName?.trim() || null;
     } else if (repoPath && req.useWorktree) {
       branch = wanted || `mb-${Date.now().toString(36)}`;
-      cwd = await createWorktree(repoPath, branch, req.baseBranch);
+      cwd = await createWorktree(repoPath, branch, req.baseBranch, { mustExist: opts.relaunch });
     } else if (repoPath && wanted) {
       // ticket branch in the checkout itself — one branch per checkout, so
       // another live session there on a different branch blocks this
@@ -995,10 +998,12 @@ export class SessionManager {
       repoPath: old.repoPath,
       ticketId: old.ticketId ?? undefined,
       ticketTitle: old.ticketTitle ?? undefined,
-      // a worktree session has cwd ≠ repoPath and is recreated as one; an
-      // in-checkout session just runs where it was, on whatever branch is out
-      ...(old.branch && old.repoPath && old.cwd !== expandHome(old.repoPath)
-        ? { branchName: old.branch, useWorktree: true }
+      // a worktree session has cwd ≠ repoPath and is recreated as one from its branch (a detached one runs in its
+      // folder while that's there); an in-checkout session just runs where it was, on whatever branch is out
+      ...(old.repoPath && old.cwd !== expandHome(old.repoPath)
+        ? old.branch
+          ? { branchName: old.branch, useWorktree: true }
+          : { cwd: old.cwd, useWorktree: false }
         : { useWorktree: false }),
       taskGroup: old.taskGroup ?? undefined,
       extraDirs: old.extraDirs,
@@ -1011,7 +1016,7 @@ export class SessionManager {
       model: old.model ?? undefined,
       effort: old.effort ?? undefined,
       agent: old.agent,
-    }, { notice });
+    }, { notice, relaunch: true });
     // a muted pane stays muted through restarts
     if (old.muted) {
       info.muted = true;

@@ -854,30 +854,47 @@ export function applyPatch(l: Landscape, patch: LandscapePatch): Landscape {
  * "to/sub"): its area and stacks are keyed by the new name where they sit, and its ghosts' groups follow. Renaming
  * onto a group that has an area already merges into it: `from`'s area goes, and the places of its workspaces and
  * stacks are dropped, so each is placed in the area it joined as a new one is. Those are `members` (the sessions that
- * were in it, wherever they sit) and every place inside its area: teammates' sessions and ones waiting to be resumed,
- * which `members` can't name, included. A name that can't key an area (loose, or a sub-group) drops the area and
- * leaves the places. Null when the landscape holds nothing of `from`'s.
+ * were in it, wherever they sit) and every place inside its area: teammates' sessions, which `members` can't name,
+ * included. A name that can't key an area (loose, or a sub-group) drops the area and leaves the places. Null when the
+ * landscape holds nothing of `from`'s.
+ *
+ * `closed` are this Mac's closed sessions that were in it (their ghosts): in a merge their places inside its area,
+ * and the stacks their tabs are in, are kept, moved into the area joined (mergeClosedInto), so they stay ghosts there
+ * rather than going to the Closed sessions list.
  *
  * Its placed tool windows and artifact cards go with it: their area is the new name, and in a merge they're placed
  * anew in the area they joined. Where the new name can't key an area, its cards and its Artifacts and Chat windows
  * go (they're the area's), and its other windows stay where they are, loose.
  */
-export function renameAreaPatch(l: Landscape, from: string, to: string, members: readonly string[]): LandscapePatch | null {
+export function renameAreaPatch(l: Landscape, from: string, to: string, members: readonly string[], closed: readonly Pick<SessionInfo, "id" | "taskGroup">[] = []): LandscapePatch | null {
   const remap = (g: string) => (g === from ? to : g.startsWith(`${from}/`) ? to + g.slice(from.length) : g);
   const patch: Required<Pick<LandscapePatch, (typeof PATCH_RECORDS)[number]>> = { workspaces: {}, areas: {}, stacks: {}, ghosts: {}, tools: {}, cards: {} };
   const area = own(l.areas, from);
   const merge = !!area && Object.hasOwn(l.areas, to);
+  const closedIds = new Set(closed.map((s) => s.id));
+  const closedStacks = new Set(closed.map(stackKeyOf).filter((k): k is string => !!k));
+  /** Closed sessions' places, and their stacks', moving into the area joined in a merge: each with how it's put there. */
+  const moving: { r: Rect; to: (r: Rect) => void }[] = [];
   if (area && from !== to) {
     put(patch.areas, from, null);
     if (!merge && areaKey(to) === null) put(patch.areas, to, area);
-    if (merge) for (const [id, r] of Object.entries(l.workspaces)) if (members.includes(id) || within(r, area)) put(patch.workspaces, id, null);
+    if (merge) {
+      for (const [id, r] of Object.entries(l.workspaces)) {
+        if (!members.includes(id) && !within(r, area)) continue;
+        if (closedIds.has(id) && within(r, area)) moving.push({ r, to: (at) => put(patch.workspaces, id, at) });
+        else put(patch.workspaces, id, null);
+      }
+    }
   }
   for (const [k, s] of Object.entries(l.stacks)) {
     const nk = remap(k);
     if (nk === k) continue;
     put(patch.stacks, k, null);
-    if (!merge && stackKeyOf({ taskGroup: nk }) === nk && !Object.hasOwn(l.stacks, nk)) put(patch.stacks, nk, s);
+    const keyed = stackKeyOf({ taskGroup: nk }) === nk && !Object.hasOwn(l.stacks, nk);
+    if (!merge && keyed) put(patch.stacks, nk, s);
+    else if (merge && keyed && area && closedStacks.has(k) && within(s.placement, area)) moving.push({ r: s.placement, to: (at) => put(patch.stacks, nk, { ...s, placement: at }) });
   }
+  if (merge && moving.length) mergeClosedInto(l, patch, from, to, moving);
   for (const [id, g] of Object.entries(l.ghosts)) {
     const ng = remap(g.group);
     if (ng !== g.group) put(patch.ghosts, id, { ...g, group: ng });
@@ -903,6 +920,65 @@ export function renameAreaPatch(l: Landscape, from: string, to: string, members:
   const out: LandscapePatch = {};
   for (const k of PATCH_RECORDS) if (Object.keys(patch[k]).length) Object.assign(out, { [k]: patch[k] });
   return Object.keys(out).length ? out : null;
+}
+
+/**
+ * A merge's closed sessions' places (`moving`, inside area `from`) moved into area `to`, written into `patch`: each
+ * where it sat in `from` as measured from its corner, when that's inside `to`'s padding and clear of what's there;
+ * otherwise where a new workspace goes (placeNew), `to` growing to hold it. Grown, `to` stays where it is and what's in
+ * its way is pushed aside: other areas with everything in them, and what's in no area (pushAside), as resolveLayout
+ * does for an area that grows.
+ */
+function mergeClosedInto(l: Landscape, patch: Required<Pick<LandscapePatch, (typeof PATCH_RECORDS)[number]>>, from: string, to: string, moving: readonly { r: Rect; to: (r: Rect) => void }[]): void {
+  const src = l.areas[from];
+  const target = l.areas[to];
+  const placed = (r: Rect | undefined): r is Rect => !!r;
+  const occupied: Rect[] = [
+    ...Object.values(l.workspaces),
+    ...Object.values(l.stacks).map((s) => s.placement),
+    ...Object.values(l.tools).map((t) => (t.docked ? undefined : t.placement)).filter(placed),
+    ...Object.values(l.cards).map((c) => c.placement).filter(placed),
+  ].filter((r) => overlaps(r, target, 0));
+  let grown: Area = target;
+  for (const m of [...moving].sort((a, b) => a.r.y - b.r.y || a.r.x - b.r.x)) {
+    const same = shifted(m.r, target.x - src.x, target.y - src.y);
+    const insideTo = same.x >= target.x + AREA_PAD && same.y >= target.y + AREA_HEADER && same.x + same.w <= target.x + target.w - AREA_PAD && same.y + same.h <= target.y + target.h - AREA_PAD;
+    const at = insideTo && !occupied.some((o) => overlaps(same, o, GAP - 1e-6)) ? same : placeNew({ w: m.r.w, h: m.r.h }, occupied, grown);
+    m.to(at);
+    occupied.push(at);
+    grown = fitAreaTo(grown, [at]);
+  }
+  if (grown === target) return;
+  put(patch.areas, to, { w: grown.w, h: grown.h });
+  // what's in the way of `to` grown: other areas (each moving with what's in it) and what's in no area
+  const others = Object.entries(l.areas).filter(([k]) => k !== from && k !== to);
+  const inArea = (r: Rect) => others.some(([, a]) => within(r, a)) || within(r, src) || within(r, target);
+  const rects: Record<string, Rect> = {};
+  put(rects, `area\n${to}`, grown);
+  for (const [k, a] of others) put(rects, `area\n${k}`, a);
+  for (const [id, r] of Object.entries(l.workspaces)) if (!inArea(r)) put(rects, `ws\n${id}`, r);
+  for (const [k, s] of Object.entries(l.stacks)) if (!inArea(s.placement)) put(rects, `stack\n${k}`, s.placement);
+  const gap = (a: string, b: string) => (a.startsWith("area\n") && b.startsWith("area\n") ? AREA_GAP : GAP);
+  for (const [key, m] of Object.entries(pushAside(rects, `area\n${to}`, gap))) {
+    const [kind, k] = [key.slice(0, key.indexOf("\n")), key.slice(key.indexOf("\n") + 1)];
+    if (kind === "ws") put(patch.workspaces, k, shifted(l.workspaces[k], m.dx, m.dy));
+    else if (kind === "stack") put(patch.stacks, k, { ...l.stacks[k], placement: shifted(l.stacks[k].placement, m.dx, m.dy) });
+    else moveAreaWhole(l, patch, k, m.dx, m.dy);
+  }
+}
+
+/** Area `k` moved by `dx`, `dy` in `patch`, with everything in it: places inside it, its ghosts, and its placed windows and cards. */
+function moveAreaWhole(l: Landscape, patch: Required<Pick<LandscapePatch, (typeof PATCH_RECORDS)[number]>>, k: string, dx: number, dy: number): void {
+  const a = l.areas[k];
+  put(patch.areas, k, { ...(own(patch.areas, k) ?? {}), x: a.x + dx, y: a.y + dy });
+  for (const [id, r] of Object.entries(l.workspaces)) if (within(r, a)) put(patch.workspaces, id, shifted(r, dx, dy));
+  for (const [sk, s] of Object.entries(l.stacks)) if (within(s.placement, a)) put(patch.stacks, sk, { ...s, placement: shifted(s.placement, dx, dy) });
+  for (const [id, g] of Object.entries(l.ghosts)) {
+    const now = own(patch.ghosts, id) ?? g;
+    if (now && areaKeyOf({ taskGroup: now.group }) === k) put(patch.ghosts, id, { ...now, placement: shifted(now.placement, dx, dy) });
+  }
+  for (const [id, t] of Object.entries(l.tools)) if (!t.docked && t.area === k && t.placement) put(patch.tools, id, { ...t, placement: shifted(t.placement, dx, dy) });
+  for (const [id, c] of Object.entries(l.cards)) if (c.area === k && c.placement) put(patch.cards, id, { ...c, placement: shifted(c.placement, dx, dy) });
 }
 
 /** The same value: objects by their entries in any order, arrays in order. */

@@ -26,7 +26,7 @@ import {
   withoutGone,
   type AreaPlan,
 } from "../src/renderer/landscapeModel";
-import { AREA_HEADER, AREA_PAD, GAP, GRID, LOOSE_GROUP, applyPatch, emptyLandscape, overlaps, presetSize, type Area, type Landscape, type Rect } from "../src/shared/landscape";
+import { AREA_HEADER, AREA_PAD, GAP, GRID, LOOSE_GROUP, applyPatch, emptyLandscape, overlaps, presetSize, renameAreaPatch, type Area, type Landscape, type Rect } from "../src/shared/landscape";
 import type { SessionInfo } from "../src/shared/types";
 
 // S6b: moving and resizing by hand, stacks, Tidy and ghosts — the pure rules Landscape.tsx and main.tsx carry out.
@@ -84,6 +84,17 @@ const rectOf = (r: ReturnType<typeof resolveLayout>, key: string) => [...r.tiles
 
 describe("a workspace dragged by hand", () => {
   const nb: Rect = { x: 1000, y: 200, w: 400, h: 304 };
+
+  it("never snaps past its area's inside top or left: an edge there (a loose ghost's) would put it through the header", () => {
+    const inner = { x: 0, y: 100, w: 1000, h: 800 };
+    const ghost = { x: 500, y: 96, w: 200, h: 200 };
+    const s = snapRect({ x: 100, y: 97, w: 300, h: 200 }, MOVE_EDGES, [ghost], 1, inner);
+    expect(s.rect.y).toBe(inner.y);
+    // without its area, it lines up with the ghost
+    expect(snapRect({ x: 100, y: 97, w: 300, h: 200 }, MOVE_EDGES, [ghost], 1).rect.y).toBe(ghost.y);
+    // resizing the top edge likewise
+    expect(snapRect({ x: 100, y: 97, w: 300, h: 300 }, { left: false, right: false, top: true, bottom: false }, [ghost], 1, inner).rect.y).toBe(inner.y);
+  });
 
   it("puts an edge with no neighbour near on the 8 px grid, drawing no guide", () => {
     expect(snapRect({ x: 13, y: 21, w: 400, h: 304 }, MOVE_EDGES, [], 1)).toEqual({ rect: { x: 16, y: 24, w: 400, h: 304 }, guides: [] });
@@ -323,17 +334,25 @@ describe("a tab dragged out of its stack", () => {
     expect(r.ghosts).toEqual([]);
   });
 
-  it("is put back by its Undo: its group, then the stack's place and what it pushed, as they were", () => {
+  it("is put back by its Undo: the stack's entry and what it pushed, then the groups, then the tabs' own places let go, nothing saved between", () => {
     for (const ids of [["t1", "t2", "t3"], ["t1", "t2"]]) {
       const l = withStack();
       const shown = tabs(ids);
       const p = ready(planUnstack(l, resolveLayout(l, shown), "t2", { x: AREA_PAD + 160, y: AREA_HEADER + 80 }, "A", T));
       const out = settle(l, p, shown);
-      // as Landscape's unstack carries it out: the groups back first, then the places (undoOfPlan) as `after`
+      // as Landscape's unstack carries Undo out: undoOfPlan's patch, the groups back, then its after
       const groups = new Map(shown.map((s) => [s.id, s.taskGroup]));
-      const back = settle(out.l, { patch: null, moves: p.moves.map((m) => ({ id: m.id, group: groups.get(m.id) ?? null })), after: undoOfPlan(l, p) }, out.sessions);
+      const u = undoOfPlan(l, p);
+      const moves = p.moves.map((m) => ({ id: m.id, group: groups.get(m.id) ?? null }));
+      const back = settle(out.l, { patch: u.patch, moves, after: u.after }, out.sessions);
       expect([ids.length, back.l]).toEqual([ids.length, l]);
       expect(back.r.tiles.find((t) => t.stack === "A/tabs")!.members.map((m) => m.id)).toEqual(ids);
+      // each step's layout, as the window renders it between them, has nothing to place and save (a two-tab stack that
+      // dissolved included: its entry is back before its tabs are)
+      const first = u.patch ? applyPatch(out.l, u.patch) : out.l;
+      const regrouped = out.sessions.map((s) => (groups.has(s.id) ? { ...s, taskGroup: groups.get(s.id) ?? null } : s));
+      expect([ids.length, resolveLayout(first, out.sessions).patch]).toEqual([ids.length, null]);
+      expect([ids.length, resolveLayout(first, regrouped).patch]).toEqual([ids.length, null]);
     }
   });
 
@@ -479,22 +498,48 @@ describe("ghosts", () => {
     expect(closedIn(r, LOOSE_GROUP).map((s) => s.id)).toEqual(["g1"]);
   });
 
+  it("are in the area they lie in: loose ones stay put when their group's area forms, and one inside another area is that area's", () => {
+    const l = base();
+    // g1 loose far right; G's running workspace g0 has a place but no area yet, and its area would form over there
+    l.workspaces.g0 = { x: 4000, y: 2000, ...M };
+    const loose = { x: 6000, y: 0, ...M };
+    l.workspaces.g1 = loose;
+    // h1, in group G too, lies inside A
+    l.areas.A.h += M.h + GAP;
+    l.workspaces.h1 = { x: AREA_PAD, y: AREA_HEADER + M.h + GAP, ...M };
+    const live = [...two, session("g0", { taskGroup: "G" })];
+    const shut = [session("g1", { taskGroup: "G", status: "dead" }), session("h1", { taskGroup: "G", status: "dead" })];
+    const r = resolveLayout(l, live, undefined, [], null, shut);
+    expect(r.areas.map((a) => a.key).sort()).toEqual(["A", "G"]);
+    expect(r.ghosts.map((g) => [g.key, g.area, g.rect])).toEqual([
+      ["ghost:g1", LOOSE_GROUP, loose],
+      ["ghost:h1", "A", l.workspaces.h1],
+    ]);
+    // nothing saved for either: neither moved with G's area as it formed
+    expect(Object.keys(r.patch?.workspaces ?? {})).not.toContain("g1");
+    expect(Object.keys(r.patch?.workspaces ?? {})).not.toContain("h1");
+  });
+
   it("stay in an area renamed, or merged into another, until the closed list follows the rename", () => {
     for (const merge of [false, true]) {
       const l = base();
       l.workspaces.g1 = { x: AREA_PAD, y: AREA_HEADER + M.h + GAP, ...M };
       l.areas.A.h += M.h + GAP;
-      // the landscape re-keyed A as B (a merge: into B, which was there already), and the live list followed
-      const renamed: Landscape = { ...l, areas: merge ? { B: { ...l.areas.A, w: l.areas.A.w + 400 } } : { B: l.areas.A } };
-      const live = two.map((s) => ({ ...s, taskGroup: "B" }));
+      // a merge: into B, there already, right of A
+      if (merge) l.areas.B = area(l.areas.A.w + 200, 0, l.areas.A.w, l.areas.A.h);
       const stale = [session("g1", { taskGroup: "A", status: "dead" })];
+      // main re-keyed the landscape (renameAreaPatch), and the live list followed
+      const renamed = applyPatch(l, renameAreaPatch(l, "A", "B", two.map((s) => s.id), stale)!);
+      const live = two.map((s) => ({ ...s, taskGroup: "B" }));
       const pending = [{ from: "A", to: "B" }];
       // the closed list is reread after the live one: the rename stays on its way while a ghost is in A
       expect(renamesLeft(pending, renamed, live, stale)).toEqual(pending);
       const r = resolveLayout(renamed, live, undefined, renamesLeft(pending, renamed, live, stale), null, stale);
       expect(r.areas.map((a) => a.key)).toEqual(["B"]);
       expect(r.ghosts.map((g) => [g.key, g.area])).toEqual([["ghost:g1", "B"]]);
-      expect(r.patch).toBeNull();
+      // the ghost keeps the place the rename gave it; in a merge, a1 and a2 are placed anew in B
+      expect(Object.keys(r.patch?.workspaces ?? {}).sort()).toEqual(merge ? ["a1", "a2"] : []);
+      expect(inside(rectOf(r, "ghost:g1"), r.areas[0].rect)).toBe(true);
       // once it follows, the rename is over
       expect(renamesLeft(pending, renamed, live, [{ ...stale[0], taskGroup: "B" }])).toEqual([]);
     }
@@ -567,6 +612,25 @@ describe("ghosts", () => {
     // Tidy packs only what's there
     const p = ready(planTidy(placed, resolveLayout(placed, two), "A", T));
     expect(p.patch?.areas?.A?.h).toBe(AREA_HEADER + M.h + AREA_PAD);
+  });
+
+  it("forgotten elsewhere never include a stack a rename on its way keys differently in the landscape and the sessions", () => {
+    const pending = [{ from: "A", to: "B" }];
+    const at = { x: AREA_PAD, y: AREA_HEADER, ...M };
+    for (const sessionsFirst of [true, false]) {
+      const l = emptyLandscape();
+      const [held, sent] = sessionsFirst ? ["A", "B"] : ["B", "A"];
+      l.areas[held] = area(0, 0, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+      l.stacks[`${held}/tabs`] = { active: "a1", placement: at };
+      const tabs = [session("a1", { taskGroup: `${sent}/tabs` }), session("a2", { taskGroup: `${sent}/tabs` })];
+      const placed = withoutGone(l, tabs, pending);
+      expect(Object.keys(placed.stacks)).toEqual([`${held}/tabs`]);
+      const r = resolveLayout(placed, tabs, undefined, pending);
+      expect(r.tiles.map((t) => [t.stack, t.rect])).toEqual([[`${held}/tabs`, at]]);
+      expect(r.patch).toBeNull();
+      // with nothing on its way, a stack no session is in is passed over
+      expect(withoutGone(l, tabs).stacks).toEqual({});
+    }
   });
 
   it("zoomed out, keep their foot clear of the next area's name line, unless that leaves too little of them", () => {

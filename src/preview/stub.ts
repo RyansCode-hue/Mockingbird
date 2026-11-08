@@ -97,6 +97,10 @@ let previous: SessionInfo[] = [
   session("o1", { title: "Tag list notes", ticketId: "5102", taskGroup: "5102", status: "dead", conversation: { agent: "claude", id: "conv-o1" }, createdAt: now - 26 * 60 * min }),
   session("o2", { title: "Export spike", taskGroup: "5150", status: "dead", conversation: { agent: "claude", id: "conv-o2" }, createdAt: now - 50 * 60 * min }),
 ];
+// ?lsManyClosed=<n>: n more closed sessions with no place, for a long Closed sessions list
+for (let i = 1; i <= Number(new URLSearchParams(location.search).get("lsManyClosed") ?? 0); i++) {
+  previous.push(session(`c${i}`, { title: `Closed spike ${i}`, taskGroup: "5102", status: "dead", conversation: { agent: "claude", id: `conv-c${i}` }, createdAt: now - (60 + i) * 60 * min }));
+}
 /** The closed sessions whose folders are gone (main's sessions:missingFolders): g2's worktree and branch were removed. */
 const goneFolders = new Map([["g2", { reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" }]]);
 // ?lsClosed=<id,…>: those sessions are closed, as if closed with their places kept (y1, which Nick took over, shows Take it back)
@@ -1070,6 +1074,12 @@ const readAgain = (pending: number) => {
   emit("onLandscapeChanged", clone({ rev: landscapeRev, patch: null, landscape, problems: landscapeProblems }));
 };
 const lsHold = new URLSearchParams(location.search).has("lsHold");
+// ?lsRelaunchFails=<id,…>: each one's first relaunch answers an error, as main's does when its launch fails, and its
+// second throws (a broken call); later ones go through
+const relaunchFails = new Map((new URLSearchParams(location.search).get("lsRelaunchFails")?.split(",") ?? []).map((id) => [id, 0]));
+let closedReadFails = Number(new URLSearchParams(location.search).get("lsClosedReadFails") ?? 0);
+// ?lsBigResume=<id,…>: resuming those costs a lot too, so Reopen asks first (as s6 always does)
+const bigResume = new Set(new URLSearchParams(location.search).get("lsBigResume")?.split(",") ?? []);
 const rereadMs = Number(new URLSearchParams(location.search).get("lsRereadMs"));
 if (rereadMs > 0) w.__mbLandscapeRereadMs = rereadMs;
 // ?teamLiveFail: reading teammates' room sessions fails the first time (=always: until a script calls
@@ -1241,7 +1251,14 @@ const api: Record<string, (...a: any[]) => any> = {
   // sessions and the grid
   listSessions: async () => sessions.map((s) => ({ ...s })),
   // as main's resumable(): the closed ones it keeps, never one running now
-  resumableSessions: async () => previous.filter((p) => !sessions.some((s) => s.id === p.id)).map((p) => ({ ...p })),
+  resumableSessions: async () => {
+    // ?lsClosedReadFails=<n>: the first n reads fail, as main's would with its store unreadable
+    if (closedReadFails > 0) {
+      closedReadFails--;
+      return err("sessions.json couldn't be read: EMFILE, too many open files");
+    }
+    return previous.filter((p) => !sessions.some((s) => s.id === p.id)).map((p) => ({ ...p }));
+  },
   // main's sessions:closedOutput: a closed session's saved output (its scrollback), "" when it has none
   closedOutput: async (id: string) => closedOutput[id] ?? buffers[id] ?? "",
   // main's sessions:missingFolders: the closed sessions whose folders are gone, and whether each still reopens
@@ -1284,6 +1301,7 @@ const api: Record<string, (...a: any[]) => any> = {
   },
   renameGroup: async (from: string, to: string) => {
     const members = sessions.filter((s) => areaKeyOf(s) === from).map((s) => s.id);
+    const closed = previous.filter((p) => areaKeyOf(p) === from && !sessions.some((s) => s.id === p.id)).map((p) => ({ id: p.id, taskGroup: p.taskGroup }));
     sessions = sessions.map((s) => (s.taskGroup === from || s.taskGroup?.startsWith(`${from}/`) ? { ...s, taskGroup: to + s.taskGroup.slice(from.length) } : s));
     // closed sessions too, as main's renameGroup remaps the stored ones
     previous = previous.map((s) => (s.taskGroup === from || s.taskGroup?.startsWith(`${from}/`) ? { ...s, taskGroup: to + s.taskGroup.slice(from.length) } : s));
@@ -1291,7 +1309,7 @@ const api: Record<string, (...a: any[]) => any> = {
     // an audit's renameLag holds the area's back that long, as a slow write would
     sessionsChanged();
     const rekey = () => {
-      const patch = standIn ? null : renameAreaPatch(landscape, from, to, members);
+      const patch = standIn ? null : renameAreaPatch(landscape, from, to, members, closed);
       if (patch) {
         landscape = applyPatch(landscape, patch);
         landscapeRev++;
@@ -1357,6 +1375,12 @@ const api: Record<string, (...a: any[]) => any> = {
     if (taken) return err(taken);
     const running = byId(id);
     if (running && running.status !== "dead") return err("It's running already");
+    const failed = relaunchFails.get(id);
+    if (failed !== undefined && failed < 2) {
+      relaunchFails.set(id, failed + 1);
+      if (!failed) return err("Its terminal couldn't start: spawn /bin/zsh EAGAIN");
+      throw new Error("the relaunch call broke off");
+    }
     const p = previous.find((x) => x.id === id) ?? byId(id);
     if (!p) return null;
     const next: SessionInfo = { ...p, status: "idle", exitCode: undefined, createdAt: Date.now() };
@@ -1420,7 +1444,7 @@ const api: Record<string, (...a: any[]) => any> = {
   // the crashed session's conversation is big and cold: resuming it asks first; others go straight ahead
   resumeCost: async (id: string) =>
     later(
-      id === "s6"
+      id === "s6" || bigResume.has(id)
         ? { agent: "claude", estimate: rereadCost({ agent: "claude", model: "claude-opus-5-5", tokens: 380_000, cache: { warm: false, expiresAt: now - 3 * 60 * min }, now: Date.now(), unitsPerPct: 0.95 }) }
         : null
     ),
@@ -1643,7 +1667,16 @@ const api: Record<string, (...a: any[]) => any> = {
       if (standIn) standInChanges++;
       emit("onLandscapeChanged", clone({ rev: landscapeRev, patch, problems: landscapeProblems }));
     }
-    return clone({ landscape, rev: landscapeRev, problems: landscapeProblems });
+    const answer = clone({ landscape, rev: landscapeRev, problems: landscapeProblems });
+    // a script's __mbRaceUpdate: another window's change lands before this one's answer, as main can tell it first
+    if (w.__mbRaceUpdate) {
+      w.__mbRaceUpdate = false;
+      const other: LandscapePatch = { workspaces: { "race-elsewhere": { x: -9000, y: -9000, w: 400, h: 300 } } };
+      landscape = applyPatch(landscape, other);
+      landscapeRev++;
+      emit("onLandscapeChanged", clone({ rev: landscapeRev, patch: other, problems: landscapeProblems }));
+    }
+    return answer;
   },
   pipelineAll: async () => JSON.parse(JSON.stringify(pipelines)),
   pipelineStage: async (id: string, stage: TicketStage) => setStage(id, stage),
@@ -6064,11 +6097,12 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
   });
 
   // ?landscapeClosedAudit=list|hold (with ?motion=off): the Closed sessions list (S6b review), worked as a person would.
-  // =list (with &lsClosed=y1&lsUnplaced=y1): its rows (o1 in 5102, o2 in 5150, which has no area, and y1, which Nick
-  // took over, closed off the landscape), each one's status; ⌘K's rows for it; o1's ↺ pressed twice (one relaunch), o1
-  // placed in 5102; o2's ↺ (its group let go first, placed loose, no area made); Reopen all off with only y1 left; y1's
-  // ✕ forgetting it, the list gone. =hold (with &lsHold): the landscape not read yet, every closed session listed, and
-  // g1's ↺ relaunching it. Into <script id="mb-landscape-closed-audit-<part>">.
+  // =list (with &lsClosed=y1&lsUnplaced=y1&lsRelaunchFails=o2): its rows (o1 in 5102, o2 in 5150, which has no area,
+  // and y1, which Nick took over, closed off the landscape), each one's status; ⌘K's rows for it; o1's ↺ pressed twice
+  // (one relaunch), o1 placed in 5102; o2's ↺ failing, then throwing, then reopening it in 5150's area formed again, its
+  // group never changed; Reopen all off with only y1 left; y1's ✕ forgetting it, the list gone. =hold (with &lsHold
+  // and &lsBigResume): the landscape not read yet, every closed session listed, g1's ↺ relaunching it, and Reopen all
+  // asking once about what it costs. Into <script id="mb-landscape-closed-audit-<part>">.
   if (params.has("landscapeClosedAudit")) waitFor(".area-tree", async () => {
     const part = params.get("landscapeClosedAudit") || "list";
     const out: Record<string, unknown> = { part };
@@ -6080,15 +6114,68 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
       const acts = (id: string) => [...(row(id)?.querySelectorAll<HTMLButtonElement>("button[data-act]") ?? [])].map((b) => ({ act: b.dataset.act, disabled: b.disabled }));
       const sub = (id: string) => row(id)?.querySelector(".lt-closed-sub")?.textContent ?? null;
       const inside = (r: Rect | undefined, a: Rect | undefined) => !!r && !!a && r.x >= a.x && r.y >= a.y && r.x + r.w <= a.x + a.w && r.y + r.h <= a.y + a.h;
-      const inAnArea = (r: Rect | undefined) => Object.values(landscape.areas).some((a) => inside(r, a));
       out.rows = rows();
       out.head = list()?.querySelector(".lt-closed-toggle")?.textContent ?? null;
       if (part === "hold") {
         out.landscapeShown = !!document.querySelector(".ls-world");
-        const mark = calls.length;
+        let mark = calls.length;
         row("g1")!.querySelector<HTMLButtonElement>('[data-act="reopen"]')!.click();
         await sleep(900);
         out.reopened = { relaunch: callsSince(mark, "relaunchSession"), setGroup: callsSince(mark, "setGroup"), listed: rows() };
+        // Reopen all with two that cost a lot to resume (&lsBigResume): asked once for all of them, nothing relaunched
+        // until Continue (off the landscape, what it did is said in a dialog)
+        const alerts: string[] = [];
+        w.alert = (m?: unknown) => void alerts.push(String(m));
+        mark = calls.length;
+        list()!.querySelector<HTMLButtonElement>('[data-act="reopenAll"]')!.click();
+        await sleep(900);
+        const dialogs = [...document.querySelectorAll<HTMLElement>(".cost-dlg")];
+        const asked = { dialogs: dialogs.length, title: dialogs[0]?.querySelector("h3")?.textContent ?? null, note: dialogs[0]?.querySelector(".cost-note")?.textContent ?? null, relaunchedMeanwhile: callsSince(mark, "relaunchSession").length };
+        [...(dialogs[0]?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((b) => b.textContent === "Continue")?.click();
+        await sleep(1500);
+        out.reopenAll = { ...asked, dialogsAfter: document.querySelectorAll(".cost-dlg").length, relaunch: callsSince(mark, "relaunchSession").map((c) => c[0]), said: alerts };
+      } else if (part === "retry") {
+        // the closed sessions' reads failing at first (&lsClosedReadFails=2): said, then tried again until they're read
+        const err = () => document.querySelector<HTMLElement>(".update-note.bad")?.textContent ?? null;
+        out.early = { rows: rows().length, error: err(), reads: calls.filter((c) => c.fn === "resumableSessions").length };
+        await sleep(4500);
+        out.later = { rows: rows(), error: err(), reads: calls.filter((c) => c.fn === "resumableSessions").length };
+      } else if (part === "many") {
+        // a long list: its header on one line at a two-digit count; each row's ring a ghost's, its status in its title;
+        // the header's ⋯ (Reopen all, Forget all, headed as the list); a row's right-click; Forget all's question
+        const label = list()?.querySelector<HTMLElement>(".lt-closed-label");
+        const word = list()?.querySelector<HTMLElement>(".lt-closed-word");
+        const count = list()?.querySelector<HTMLElement>(".lt-closed-n")?.getBoundingClientRect();
+        const toggle = list()?.querySelector<HTMLElement>(".lt-closed-toggle")?.getBoundingClientRect();
+        out.head = {
+          text: label?.textContent ?? null,
+          height: Math.round(label?.getBoundingClientRect().height ?? 0),
+          wrap: label ? getComputedStyle(label).whiteSpace : null,
+          ellipsis: word ? getComputedStyle(word).textOverflow : null,
+          countShown: !!count && !!toggle && count.width > 0 && count.left >= toggle.left && count.right <= toggle.right + 0.5,
+        };
+        const ring = row("o1")?.firstElementChild as HTMLElement | null;
+        out.ring = ring ? { cls: ring.className, border: getComputedStyle(ring).borderTopStyle, fill: getComputedStyle(ring).backgroundColor } : null;
+        out.titles = { y1: row("y1")?.title ?? null, o1: row("o1")?.title ?? null };
+        const menuText = () => (document.querySelector<HTMLElement>(".mb-menu")?.innerText ?? "").split("\n").map((t) => t.trim()).filter(Boolean);
+        list()!.querySelector<HTMLButtonElement>('[data-act="more"]')!.click();
+        await sleep(300);
+        out.more = menuText();
+        esc();
+        await sleep(250);
+        const at = row("o1")!.getBoundingClientRect();
+        row("o1")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: at.left + 20, clientY: at.top + 5 }));
+        await sleep(300);
+        out.rowMenu = menuText();
+        esc();
+        await sleep(250);
+        const asked: string[] = [];
+        w.confirm = (q: string) => (asked.push(q), false);
+        list()!.querySelector<HTMLButtonElement>('[data-act="more"]')!.click();
+        await sleep(300);
+        [...document.querySelectorAll<HTMLElement>(".mb-menu [role=menuitem]")].find((b) => b.textContent?.startsWith("Forget all"))?.click();
+        await sleep(300);
+        out.asked = asked;
       } else {
         out.subs = Object.fromEntries(["o1", "o2", "y1"].map((id) => [id, sub(id)]));
         // s7 closed with its place kept: a loose ghost, and no running workspace loose, yet the tree has its Loose row
@@ -6120,11 +6207,21 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(1000);
         out.o1 = { relaunch: callsSince(mark, "relaunchSession"), setGroup: callsSince(mark, "setGroup"), inArea: inside(landscape.workspaces.o1, landscape.areas["5102"]), listed: rows() };
 
-        // o2's ↺: 5150 has no area, so its group is let go and it's placed loose; no area is made
-        mark = calls.length;
-        row("o2")!.querySelector<HTMLButtonElement>('[data-act="reopen"]')!.click();
-        await sleep(1000);
-        out.o2 = { relaunch: callsSince(mark, "relaunchSession"), setGroup: callsSince(mark, "setGroup"), placed: !!landscape.workspaces.o2, inArea: inAnArea(landscape.workspaces.o2), area5150: Object.hasOwn(landscape.areas, "5150"), listed: rows() };
+        // o2's ↺ (5150 has no area; &lsRelaunchFails=o2): its first relaunch fails and its second throws, each said, its
+        // group never changed and it still listed; the third reopens it as a new workspace in 5150's area, formed again
+        const pressO2 = async () => {
+          const at = calls.length;
+          row("o2")!.querySelector<HTMLButtonElement>('[data-act="reopen"]')!.click();
+          await sleep(1000);
+          return at;
+        };
+        const groupOf = (id: string) => (byId(id) ?? previous.find((x) => x.id === id))?.taskGroup ?? null;
+        mark = await pressO2();
+        out.o2fail = { relaunch: callsSince(mark, "relaunchSession"), setGroup: callsSince(mark, "setGroup"), group: groupOf("o2"), said: noteText(), listed: rows() };
+        mark = await pressO2();
+        out.o2throw = { relaunch: callsSince(mark, "relaunchSession"), group: groupOf("o2"), said: noteText(), enabled: row("o2")?.querySelector<HTMLButtonElement>('[data-act="reopen"]')?.disabled === false };
+        mark = await pressO2();
+        out.o2 = { relaunch: callsSince(mark, "relaunchSession"), setGroup: callsSince(mark, "setGroup"), group: groupOf("o2"), inItsArea: inside(landscape.workspaces.o2, landscape.areas["5150"]), listed: rows() };
 
         // only y1 left, which Nick continues: Reopen all is off, saying why
         out.allAfter = { disabled: all()?.disabled ?? null, title: all()?.title ?? null };
@@ -6141,13 +6238,15 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
     report(`mb-landscape-closed-audit-${part}`, out);
   });
 
-  // ?landscapeFixAudit=a|b (with ?motion=off): the S6b review's gesture and look fixes, worked as a person would. =a
-  // (at 1024 px wide, the area tree open): the hover toolbar's order; a toolbar Tidy undone with ⌘Z while the keyboard
-  // is on its button; a Tidy whose Undo is refused after a drag, and after a lock; a snap guide's colour and reach; the
-  // note kept clear of a low selection bar and of the minimap. =b: a stack's tab pressed and moved 6 px (brought to the
-  // front, not taken out), then dragged off the header (taken out, the note's Undo putting it back); Esc cancelling a
-  // move, a resize and a tab drag; ghosts' status zoomed out, and their type's size on screen either side of 75%.
-  // Into <script id="mb-landscape-fix-audit-<part>">.
+  // ?landscapeFixAudit=a|b|n (with ?motion=off): the S6b reviews' gesture and look fixes, worked as a person would. =a:
+  // the hover toolbar's order; a toolbar Tidy undone with ⌘Z while the keyboard is on its button, but not from the code
+  // editor; a Tidy whose Undo is refused after a drag, after a lock, and when another window's change is told before its
+  // save answers (__mbRaceUpdate); a snap guide's colour and reach. =n (1024 px wide, the area tree open): the note kept
+  // clear of a low selection bar and of the minimap, and the bar clear of the minimap. =b: a stack's tab pressed and let
+  // go after slipping 6 px at 50% and 12 px down at 100% (brought to the front, not taken out), then dragged off the
+  // header (no peek where it's let go until the pointer moves on; taken out, the note's Undo putting it back); Esc
+  // cancelling a move, a resize and a tab drag; the stack's card at Fit and at 30%; ghosts' status zoomed out, and their
+  // type's size on screen either side of 75%. Into <script id="mb-landscape-fix-audit-<part>">.
   if (params.has("landscapeFixAudit")) waitFor(".ls-world .ls-node", async () => {
     const part = params.get("landscapeFixAudit") || "a";
     const out: Record<string, unknown> = { part };
@@ -6215,9 +6314,19 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await sleep(800);
         const tidied = places() !== before;
         const focusOnButton = document.activeElement === b;
+        // ⌘Z in what reads keys itself (the code editor's undo) isn't the note's
+        const editor = document.createElement("div");
+        editor.className = "cm-editor";
+        editor.innerHTML = '<div class="cm-content" tabindex="0"></div>';
+        document.body.append(editor);
+        cmdZ(editor.firstElementChild!);
+        await sleep(500);
+        const editorKept = places() !== before;
+        editor.remove();
+        b.focus();
         cmdZ(document.activeElement ?? b);
         await sleep(800);
-        out.undoKey = { tidied, focusOnButton, back: places() === before };
+        out.undoKey = { tidied, focusOnButton, editorKept, back: places() === before };
 
         // Tidy, then a drag: ⌘Z can't put the old places back over the new one, and says so
         b = tidyBtn("5101")!;
@@ -6240,6 +6349,17 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         out.afterLock = { said: noteText(), unchanged: places() === tidiedAgain };
         document.querySelector<HTMLButtonElement>(`${areaEl("5101")} .ls-area-tools button[data-act="lock"]`)!.click();
         await sleep(400);
+
+        // Tidy whose save is answered after another window's change (main tells every window of it, and that can come
+        // first): the note's Undo is refused, judged by the revision the Tidy's save made, not the newest when it answered
+        await stepDrag(bareHead(node("s8")!), 60, 50, spacer(node("s8")!));
+        w.__mbRaceUpdate = true;
+        tidyBtn("5101")!.click();
+        await sleep(800);
+        const raced = places();
+        [...document.querySelectorAll<HTMLButtonElement>(".ls-note .ls-note-act")].find((x) => x.textContent === "Undo")?.click();
+        await sleep(600);
+        out.afterRace = { raced: !w.__mbRaceUpdate, said: noteText(), unchanged: places() === raced };
 
         // a guide while s8 is dragged to the api stack's left edge: a colour of its own, reaching past both
         const s8 = node("s8")!;
@@ -6269,18 +6389,29 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         const tabsNow = () => [...stack().querySelectorAll<HTMLElement>(".ls-tab[data-sid]")].map((t) => t.dataset.sid);
         out.tabsBefore = tabsNow();
 
-        // pressed and moved 6 px, then let go: the click a browser makes then brings it to the front; it stays in its stack
+        // pressed and let go after slipping, never dragged out: brought to the front, though the browser's click lands on
+        // the header the press and the release share rather than the tab, and it stays in its stack; 6 px at 50%, then
+        // 12 px down at 100%
         let mark = calls.length;
-        let t0 = mid(tabOf(other).getBoundingClientRect());
-        pressAt(t0.x, t0.y, tabOf(other));
-        moveTo(t0.x + 3, t0.y + 1);
-        await sleep(16);
-        moveTo(t0.x + 6, t0.y + 1);
-        await sleep(16);
-        upAt(t0.x + 6, t0.y + 1);
-        tabOf(other).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: t0.x + 6, clientY: t0.y + 1 }));
-        await sleep(700);
-        out.slip = { setGroup: callsSince(mark, "setGroup"), tabs: [...stack().querySelectorAll<HTMLElement>(".ls-tab[data-sid]")].map((t) => t.dataset.sid), front: stack().dataset.front, other };
+        const slip = async (dx: number, dy: number) => {
+          const id = stack().dataset.front === "s2" ? "s3" : "s2";
+          const p = mid(tabOf(id).getBoundingClientRect());
+          pressAt(p.x, p.y, tabOf(id));
+          moveTo(p.x + dx / 2, p.y + dy / 2);
+          await sleep(16);
+          moveTo(p.x + dx, p.y + dy);
+          await sleep(16);
+          upAt(p.x + dx, p.y + dy);
+          stack().querySelector(".ls-head")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: p.x + dx, clientY: p.y + dy }));
+          await sleep(700);
+          return { id, front: stack().dataset.front ?? null };
+        };
+        const half = await slip(6, 1);
+        await zoomOnArea("5101", 1);
+        const full = await slip(0, 12);
+        await zoomOnArea("5101", 0.5);
+        out.slip = { setGroup: callsSince(mark, "setGroup"), tabs: tabsNow(), half, full, other };
+        let t0: { x: number; y: number };
 
         // dragged off the header: taken out, said with Undo, which puts it back in the stack
         mark = calls.length;
@@ -6288,11 +6419,24 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await stepDrag(t0, 30, 120, tabOf("s3"));
         const said = noteText();
         const outGroups = callsSince(mark, "setGroup");
+        // the pointer resting where it let go: no peek opens over what it left there (the hover rest is 600 ms); once it
+        // moves on, a peek opens as ever
+        const drop = { x: t0.x + 30, y: t0.y + 120 };
+        const under = document.elementFromPoint(drop.x, drop.y) ?? vp();
+        under.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, cancelable: true, pointerId: PID, clientX: drop.x, clientY: drop.y }));
+        await sleep(900);
+        const peekAtDrop = !!document.querySelector(".ls-peek");
+        under.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, cancelable: true, pointerId: PID, clientX: drop.x + 20, clientY: drop.y }));
+        await sleep(900);
+        const peekMovedOn = !!document.querySelector(".ls-peek");
+        under.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, cancelable: true, pointerId: PID, clientX: drop.x + 20, clientY: drop.y }));
+        vp().dispatchEvent(new PointerEvent("pointerleave", { bubbles: false, cancelable: true, pointerId: PID }));
+        await sleep(200);
         const undo = [...document.querySelectorAll<HTMLButtonElement>(".ls-note .ls-note-act")].find((x) => x.textContent === "Undo");
         mark = calls.length;
         undo?.click();
         await sleep(900);
-        out.dragOut = { said, groups: outGroups, undo: !!undo, back: callsSince(mark, "setGroup"), tabs: [...stack().querySelectorAll<HTMLElement>(".ls-tab[data-sid]")].map((t) => t.dataset.sid), s3: landscape.workspaces.s3 ?? null };
+        out.dragOut = { peekAtDrop, peekMovedOn, said, groups: outGroups, undo: !!undo, back: callsSince(mark, "setGroup"), tabs: [...stack().querySelectorAll<HTMLElement>(".ls-tab[data-sid]")].map((t) => t.dataset.sid), s3: landscape.workspaces.s3 ?? null };
 
         // Esc during a move, a resize and a tab drag: nothing saved, nothing moved, nothing left drawn
         const left = () => ({ guides: document.querySelectorAll(".ls-guides .ls-guide").length, box: !document.querySelector<HTMLElement>(".ls-sizebox")?.hidden, dragging: document.querySelectorAll(".ls-world .dragging").length });
@@ -6328,10 +6472,36 @@ if (["landscapeAudit", "landscapeMouseAudit", "landscapeZoomAudit", "landscapePe
         await pinchTo(0.4);
         await sleep(400);
         out.layers = { zoom: zoomNow(), shadow: getComputedStyle(stack()).boxShadow };
-        // zoomed out to cards, the stack's card: a stack · N chip, then its tabs' names
-        await pinchTo(0.2);
-        await sleep(400);
-        out.chip = { chip: stack().querySelector(".ls-card-chip")?.textContent ?? null, tabs: stack().querySelector(".ls-card-stack")?.textContent ?? null };
+        // zoomed out to cards (Fit, then 30%), the stack's card: a stack · N chip in its title row, and its other tabs'
+        // names on a row of their own, one waiting on you counted first; how much of the names shows on screen
+        const back = stack().dataset.front === "s2" ? "s3" : "s2";
+        const backWas = byId(back);
+        sessions = sessions.map((x): SessionInfo => (x.id === back ? { ...x, status: "waiting", waitingReason: "Claude needs your permission to use Bash", waitingSince: Date.now() } : x));
+        sessionsChanged();
+        const card = () => {
+          const el = stack();
+          const row = el.querySelector<HTMLElement>(".ls-card-tabs");
+          const rr = row?.getBoundingClientRect();
+          const names = [...(row?.querySelectorAll<HTMLElement>(".ls-card-tab") ?? [])];
+          const seen = rr ? names.reduce((n, x) => n + Math.max(0, Math.min(x.getBoundingClientRect().right, rr.right) - Math.max(x.getBoundingClientRect().left, rr.left)), 0) : 0;
+          return {
+            zoom: Math.round(zoomNow() * 100) / 100,
+            chip: el.querySelector(".ls-card-head .ls-card-chip")?.textContent ?? null,
+            first: row?.firstElementChild?.className ?? null,
+            needs: row?.querySelector(".ls-card-needs")?.textContent ?? null,
+            names: names.map((x) => x.textContent ?? ""),
+            title: el.querySelector(".ls-card-title")?.textContent ?? null,
+            seen: Math.round(seen),
+          };
+        };
+        await fitView();
+        await sleep(500);
+        const fit = card();
+        await pinchTo(0.3);
+        await sleep(500);
+        out.chip = { fit, at30: card() };
+        sessions = sessions.map((x) => (x.id === back && backWas ? backWas : x));
+        sessionsChanged();
         const sizes: Record<string, number> = {};
         for (const z of [0.9, 0.76, 0.74, 0.6]) {
           await pinchTo(z);

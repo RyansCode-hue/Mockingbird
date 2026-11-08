@@ -499,6 +499,16 @@ export function renamesLeft(renames: readonly PendingRename[], l: Landscape, sho
   return renames.filter((r) => !renameSettled(r, l, all));
 }
 
+/** Group key `key` on the other side of each pending rename it's under: the new key for one under `from`, the old for one under `to`. */
+export function renamedKeys(key: string, renames: readonly PendingRename[]): string[] {
+  const out: string[] = [];
+  for (const { from, to } of renames) {
+    if (key === to || key.startsWith(`${to}/`)) out.push(from + key.slice(to.length));
+    else if (key === from || key.startsWith(`${from}/`)) out.push(to + key.slice(from.length));
+  }
+  return out;
+}
+
 const tileKind = (members: readonly SessionInfo[]): WorkspaceKind => (members.some((s) => kindOf(s) === "agent") ? "agent" : "terminal");
 
 
@@ -527,7 +537,8 @@ const reposOf = (members: readonly SessionInfo[]): AreaRepo[] => [...new Set(mem
  * `closed` are this Mac's sessions that are closed but can be reopened (main's resumable ones): one whose place (or
  * its stack's) is kept is a ghost (GhostView) there; one with none isn't drawn, and nothing is placed for it (the
  * Closed sessions list holds it: closedListOf). A closed tab of a stack that's shown is one of its `closed` tabs
- * instead. A ghost never makes an area: one whose group has none is drawn loose. Ghosts move with their area and are
+ * instead. A ghost never makes an area. It's in its group's area while it lies inside it, else in the area holding it,
+ * else loose (where it sits decides, so one loose isn't carried off by its group's area forming). Ghosts move with their area and are
  * pushed aside like the places of sessions not shown (passive: one pushed goes on past what it reaches rather than
  * pushing it).
  */
@@ -545,14 +556,7 @@ export function resolveLayout(
    * room sessions take the new name later still, so for a while the two disagree; formed anew, the group's area would
    * be pushed clear of its own old one, and that place saved over the re-keyed one.
    */
-  const held = (key: string, has: (k: string) => boolean): string => {
-    if (has(key)) return key;
-    for (const { from, to } of renames) {
-      const other = key === to || key.startsWith(`${to}/`) ? from + key.slice(to.length) : key === from || key.startsWith(`${from}/`) ? to + key.slice(from.length) : null;
-      if (other !== null && has(other)) return other;
-    }
-    return key;
-  };
+  const held = (key: string, has: (k: string) => boolean): string => (has(key) ? key : (renamedKeys(key, renames).find(has) ?? key));
   const groups = new Map<string, { area: string; stack: string | null; members: SessionInfo[]; ghost: boolean; closed: SessionInfo[] }>();
   const stackOf = (s: SessionInfo) => {
     const sk = stackKeyOf(s);
@@ -629,7 +633,14 @@ export function resolveLayout(
     setArea(key, a, a);
     for (const k of keys) shiftTile(k, dx, dy);
   }
-  for (const g of groups.values()) if (g.ghost && !areas.has(g.area)) g.area = LOOSE_GROUP;
+  // a ghost is in its group's area while it lies inside it; otherwise in the area holding it, or loose
+  for (const [key, g] of groups) {
+    if (!g.ghost) continue;
+    const r = stored.get(key);
+    const mine = areas.get(g.area);
+    if (mine && r && within(r, mine)) continue;
+    g.area = (r && [...areas].find(([, a]) => within(r, a))?.[0]) ?? LOOSE_GROUP;
+  }
 
   // everything stored is taken (sessions waiting to be resumed, closed ones' ghosts), where it is now
   const movedIds = new Set<string>();
@@ -949,13 +960,16 @@ export function closedListOf(closed: readonly SessionInfo[], layout: Pick<Resolv
  * Mac's live and resumable sessions and teammates' room sessions) nor a teammate's, and a stack none of `known` is in.
  * Placing new workspaces and Tidy go by this, so those places take no room. Null `known` (the lists haven't all been
  * read yet, and a session missing from one may only not be read yet) keeps every place. Nothing is removed from the file.
+ *
+ * A stack is known by its key on either side of a rename still on its way (`renames`): the sessions and the
+ * landscape's re-keying arrive one after the other, and a stack passed over meanwhile would be placed anew and saved.
  */
-export function withoutGone(l: Landscape, known: readonly SessionInfo[] | null): Landscape {
+export function withoutGone(l: Landscape, known: readonly SessionInfo[] | null, renames: readonly PendingRename[] = []): Landscape {
   if (!known) return l;
   const ids = new Set(known.map((s) => s.id));
   const stacks = new Set(known.map(stackKeyOf).filter((k): k is string => !!k));
   const goneIds = Object.keys(l.workspaces).filter((id) => !ids.has(id) && !isRemotePaneId(id));
-  const goneStacks = Object.keys(l.stacks).filter((k) => !stacks.has(k));
+  const goneStacks = Object.keys(l.stacks).filter((k) => !stacks.has(k) && !renamedKeys(k, renames).some((o) => stacks.has(o)));
   if (!goneIds.length && !goneStacks.length) return l;
   const workspaces = { ...l.workspaces };
   for (const id of goneIds) delete workspaces[id];
@@ -1211,14 +1225,24 @@ export function notePlacement(view: Size, note: Size, minimap: Rect | null, bar:
   return { left, bottom: under ? view.h - bar!.y + NOTE_CLEAR : NOTE_BOTTOM, maxWidth };
 }
 
-/** What puts back everything plan `p` changed in `l`, its patch and then its `after`, as undoOf does for one patch. */
-export function undoOfPlan(l: Landscape, p: { patch: LandscapePatch | null; after: LandscapePatch | null }): LandscapePatch | null {
+/**
+ * What puts back everything plan `p` changed in `l` (its patch, then its `after`, as undoOf does for one patch), as a
+ * plan's two patches: `patch` puts back what it changed or let go (a dissolved stack's entry, what it pushed aside),
+ * to be saved before the sessions' groups go back; `after` lets go of the places it made (the tabs' own), saved once
+ * they have. In that order nothing is drawn with no place in between, which the layout would place and save.
+ */
+export function undoOfPlan(l: Landscape, p: { patch: LandscapePatch | null; after: LandscapePatch | null }): { patch: LandscapePatch | null; after: LandscapePatch | null } {
   const a = p.patch ? undoOf(l, p.patch) : null;
   const b = p.after ? undoOf(l, p.after) : null;
-  if (!a || !b) return a ?? b;
-  const out = emptyPatch();
-  for (const k of PATCH_RECORDS) Object.assign(out[k], a[k] ?? {}, b[k] ?? {});
-  return finish(out);
+  const first = emptyPatch();
+  const then = emptyPatch();
+  for (const k of PATCH_RECORDS) Object.assign(first[k], a?.[k] ?? {}, b?.[k] ?? {});
+  for (const [id, r] of Object.entries(first.workspaces)) {
+    if (r !== null) continue;
+    delete first.workspaces[id];
+    put(then.workspaces, id, null);
+  }
+  return { patch: finish(first), after: finish(then) };
 }
 
 const isTheirs = (s: SessionInfo) => !!s.room?.remote;
@@ -1868,6 +1892,9 @@ const nearestOf = (cands: readonly Candidate[], want: number, within: number): C
 export function snapRect(want: Rect, edges: Edges, others: readonly Rect[], zoom: number, inner: Rect | null = null, min: Size = { w: 1, h: 1 }): { rect: Rect; guides: Guide[] } {
   const within = SNAP_PX / zoom;
   const moving = edges.left && edges.right;
+  // never to a spot past the inside's left or top, which a drop moves it back in from (past its right or bottom the
+  // area grows to hold it): what's lined up with there, a loose ghost's edge say, would put it through the header
+  const keepsIn = (p: "x" | "y") => (c: Candidate) => !inner || c.pos >= inner[p] - 1e-6;
   const targets: Rect[] = [...others];
   // the area's inside lines up like a neighbour's edges, without the gap beside it
   const insideCands = (lo: number, hi: number, len: number, start: boolean, end: boolean): Candidate[] => {
@@ -1893,13 +1920,13 @@ export function snapRect(want: Rect, edges: Edges, others: readonly Rect[], zoom
           { pos: o[p] - GAP - r[s], line: o[p] - GAP, other: o },
         ]),
         ...insideCands(innerLo, innerHi, r[s], true, true),
-      ];
+      ].filter(keepsIn(p));
       const c = nearestOf(cands, r[p], within);
       return { start: c ? c.pos : snap(r[p]), size: r[s], guide: c };
     }
     if (lo) {
       const end = r[p] + r[s];
-      const cands: Candidate[] = [...targets.flatMap((o) => [{ pos: o[p], line: o[p], other: o }, { pos: o[p] + o[s] + GAP, line: o[p] + o[s] + GAP, other: o }]), ...(inner ? [{ pos: innerLo, line: innerLo, other: inner }] : [])];
+      const cands: Candidate[] = [...targets.flatMap((o) => [{ pos: o[p], line: o[p], other: o }, { pos: o[p] + o[s] + GAP, line: o[p] + o[s] + GAP, other: o }]), ...(inner ? [{ pos: innerLo, line: innerLo, other: inner }] : [])].filter(keepsIn(p));
       const c = nearestOf(cands, r[p], within);
       const start = Math.min(c ? c.pos : snap(r[p]), end - min[s]);
       return { start, size: end - start, guide: c && c.pos === start ? c : null };

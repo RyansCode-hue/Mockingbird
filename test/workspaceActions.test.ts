@@ -291,7 +291,7 @@ describe("an area's actions", () => {
 });
 
 describe("a ghost's actions", () => {
-  const genv = (over: Partial<GhostEnv> = {}): GhostEnv => ({ gone: null, tabs: 1, busy: false, room: [], reopen: vi.fn(), fresh: vi.fn(), forget: vi.fn(), ...over });
+  const genv = (over: Partial<GhostEnv> = {}): GhostEnv => ({ gone: null, tabs: 1, reopenable: 1, busy: false, room: [], reopen: vi.fn(), fresh: vi.fn(), forget: vi.fn(), ...over });
   const removed = { reopens: false, short: "Its worktree was removed", why: "Its worktree was removed, and its branch with it, so it can't run where it ran: start fresh instead" };
   const closed = sess({ status: "dead" });
 
@@ -327,8 +327,15 @@ describe("a ghost's actions", () => {
     ]);
   });
 
+  it("of a stack's ghost none of whose tabs can be reopened here: Reopen off, saying why; Forget still offered", () => {
+    const acts = ghostActions(closed, genv({ tabs: 3, reopenable: 0 }));
+    expect(actionOf(acts, "reopen")).toMatchObject({ disabled: true, title: "None of its 3 tabs can be reopened here: taken over by a teammate, their folders gone, or being reopened or forgotten" });
+    expect(usable(acts, "forget")).toBeDefined();
+    expect(usable(ghostActions(closed, genv({ tabs: 3, reopenable: 1 })), "reopen")).toBeDefined();
+  });
+
   it("of a stack's ghost of several tabs: Reopen and Forget name the tabs they act on", () => {
-    const acts = ghostActions(closed, genv({ tabs: 3 }));
+    const acts = ghostActions(closed, genv({ tabs: 3, reopenable: 3 }));
     expect([actionOf(acts, "reopen")?.menuLabel, actionOf(acts, "forget")?.menuLabel]).toEqual(["Reopen its 3 tabs", "Forget its 3 tabs"]);
     expect(actionOf(acts, "forget")?.title).toBe("Let this stack's 3 closed tabs go for good: they can't be reopened after");
   });

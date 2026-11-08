@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ticketIdOf, type SessionInfo } from "../shared/types";
 import { titleOf } from "./appModel";
-import { ChevronIcon, CloseIcon } from "./Icons";
+import { ChevronIcon, CloseIcon, MoreIcon } from "./Icons";
 import { useContextMenu } from "./ContextMenu";
 import { actionOf, menuOf, type ModelAction } from "./workspaceActions";
 
@@ -9,9 +9,10 @@ import { actionOf, menuOf, type ModelAction } from "./workspaceActions";
  * The Closed sessions list (docs/landscape.md, Ghost cards): this Mac's closed sessions with no ghost on the landscape
  * (left in the grid's Previous, or closed off the landscape), under the area tree above the Connected line; every closed
  * session while the landscape has no layout yet, so each can always be reached. A row reopens its session (placed as a
- * new workspace in its group's area, or loose when that's gone) or forgets it; Reopen all reopens every one that can be.
- * Its rows' actions are the ghost model's (ghostActions), so a copy a teammate continues is taken back, never reopened,
- * exactly as its ghost would be; right-click offers every action.
+ * new workspace in its group's area, which is formed again if it's gone) or forgets it; Reopen all reopens every one
+ * that can be, and the header's ⋯ (or a right-click on it) has Forget all too. Its rows' actions are the ghost model's
+ * (ghostActions), so a copy a teammate continues is taken back, never reopened, exactly as its ghost would be;
+ * right-click offers every action. A row's ring is a ghost's: closed reads the same here and on the landscape.
  */
 export function ClosedSessions({
   list,
@@ -31,24 +32,43 @@ export function ClosedSessions({
   const menu = useContextMenu("Closed sessions");
   if (!list.length) return null;
   const reopenAll = actionOf(all, "reopenAll");
+  /** The list's own menu: its rows' sections are headed as the list, not as ghosts. */
+  const listMenu = (acts: readonly ModelAction[]) => menuOf(acts, { ghosts: "Closed sessions" });
   return (
     <section className="lt-closed" data-closed-list aria-label="Closed sessions">
-      <div className="lt-closed-head" onContextMenu={(e) => (e.preventDefault(), menu.openAt({ x: e.clientX, y: e.clientY }, menuOf(all)))}>
-        <button type="button" className="lt-closed-toggle" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <div className="lt-closed-head" onContextMenu={(e) => (e.preventDefault(), menu.openAt({ x: e.clientX, y: e.clientY }, listMenu(all)))}>
+        <button type="button" className="lt-closed-toggle" aria-expanded={open} title={`Closed sessions (${list.length})`} onClick={() => setOpen((o) => !o)}>
           <ChevronIcon open={open} />
-          <span>Closed sessions ({list.length})</span>
+          <span className="lt-closed-label">
+            <span className="lt-closed-word">Closed sessions</span> <span className="lt-closed-n">({list.length})</span>
+          </span>
         </button>
         {reopenAll && (
           <button type="button" className="lt-closed-all" data-act="reopenAll" disabled={reopenAll.disabled} title={reopenAll.title} onClick={() => reopenAll.onPick()}>
             ↺ Reopen all
           </button>
         )}
+        <button
+          type="button"
+          className="lt-closed-act"
+          data-act="more"
+          aria-label="Closed sessions: Reopen all, Forget all"
+          title="Reopen all, Forget all"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            menu.openAt({ x: r.left, y: r.bottom + 4 }, listMenu(all));
+          }}
+        >
+          <MoreIcon />
+        </button>
       </div>
       {open && (
         <div className="lt-closed-rows">
           {list.map((s) => {
             const acts = actionsFor(s);
             const where = [s.ticketId ? `#${ticketIdOf(s.ticketId)}` : null, s.branch && s.branch !== titleOf(s) ? s.branch : null].filter(Boolean).join(" · ");
+            // its status in full on hover too: Take it back and Start fresh leave the line little room
+            const sub = [statusFor(s), where].filter(Boolean).join(" · ");
             const reopen = actionOf(acts, "reopen");
             const forget = actionOf(acts, "forget");
             // what it offers instead of Reopen: Start fresh (its folder can't run), Take it back (a teammate continues it)
@@ -58,13 +78,13 @@ export function ClosedSessions({
                 key={s.id}
                 className="lt-closed-row"
                 data-closed-sid={s.id}
-                title={`${titleOf(s)}\n${s.cwd}`}
-                onContextMenu={(e) => (e.preventDefault(), menu.openAt({ x: e.clientX, y: e.clientY }, menuOf(acts)))}
+                title={`${titleOf(s)}\n${sub}\n${s.cwd}`}
+                onContextMenu={(e) => (e.preventDefault(), menu.openAt({ x: e.clientX, y: e.clientY }, listMenu(acts)))}
               >
-                <span className="dot dead" aria-hidden="true" />
+                <span className="lg-dot" aria-hidden="true" />
                 <span className="lt-closed-name">
                   <span className="lt-t">{titleOf(s)}</span>
-                  <span className="lt-closed-sub">{[statusFor(s), where].filter(Boolean).join(" · ")}</span>
+                  <span className="lt-closed-sub">{sub}</span>
                 </span>
                 {instead.length
                   ? instead.map((a) => (

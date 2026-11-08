@@ -103,7 +103,9 @@ together so work and context flow between them.
     resize it.
   - Workspaces snap to an 8 px grid and to their neighbours' edges (lined up,
     or a gap apart) and their area's inside edges, within 6 px on screen, with
-    a guide drawn along each line they snap to. A resize shows its outline and
+    a guide drawn along each line they snap to, never to a spot past the
+    area's inside top or left. Guides have a colour of their own, apart from
+    every area's. A resize shows its outline and
     the terminal size it would hold; the terminal takes that size only on the
     drop, and zooming never resizes it.
   - What a moved or resized workspace lands on is pushed aside, its area
@@ -122,8 +124,10 @@ together so work and context flow between them.
   (design option A): a ghost is a closed session this Mac can still resume
   whose place the landscape kept, so in practice one closed on the landscape.
   One with no place (left in the grid's Previous, or closed elsewhere) is in
-  the **Closed sessions** list instead (below). A ghost whose group has no
-  area is drawn loose where it was; it never makes an area.
+  the **Closed sessions** list instead (below). A ghost is in its group's
+  area while it lies inside it, otherwise in the area it lies in, or loose;
+  it never makes an area. A rename that merges its group into another area
+  moves its ghosts in with it.
   - It shows the title, with **↺ Reopen** and Forget right under it, then the
     last line it wrote, and its status with the ticket and branch. Zoomed out
     it keeps its type at screen size inside its place, and a ghost too small
@@ -135,7 +139,8 @@ together so work and context flow between them.
     relaunched under its own id).
   - **Forget** lets it go for good; an area's ⋯ has **Reopen all** and
     **Clear ghosts** (asked first), and so do the loose ones (the tree's Loose
-    row, a right-click outside every area) and ⌘K, over every ghost.
+    row, a right-click outside every area) and ⌘K, over every ghost. Reopening
+    several asks once when any would cost a lot to resume.
   - A ghost whose worktree has been removed offers **Start fresh**: New
     session for its agent, area and repo, the new workspace taking the ghost's
     place exactly. One a teammate continues shows **Take it back**.
@@ -145,9 +150,10 @@ together so work and context flow between them.
 - **Closed sessions** list, under the area tree above the Connected line (and
   in ⌘K): the closed sessions with no ghost, every closed session while the
   landscape is still being read in. Each row has Reopen (a new workspace in
-  its group's area, or loose when that area is gone) and Forget, and the list
-  has Reopen all; a copy a teammate continues offers Take it back, as its
-  ghost would.
+  its group's area, formed again if it's gone: reopening never changes its
+  group) and Forget, and the list has Reopen all, with Forget all in its ⋯; a
+  copy a teammate continues offers Take it back, as its ghost would. Its rows
+  carry a ghost's hollow ring.
 
 ## Finding what needs you
 
@@ -184,13 +190,16 @@ together so work and context flow between them.
 
 - **Tidy** (T, the area's hover toolbar or its ⋯) lays an area out left to
   right along its wires; loose workspaces go below. Undo (the note's, or ⌘Z
-  while it shows, wherever the keyboard is but a terminal or a text field)
+  while it shows, wherever the keyboard is but a terminal, a text field or
+  the code editor)
   puts them back, while nothing else has changed the landscape since. Until
   phase 3 brings wires it packs the area in rows in the order its workspaces
   and ghosts were made, each tool window after its workspace, and the area
   fits the result.
 - **Stacks** (⌘G on a selection) pile workspaces into one card with tabs. A
-  stack moves, wires and focuses as one. A wire to a stacked workspace attaches
+  stack moves, wires and focuses as one. Zoomed out, its card has a
+  `stack · N` chip in its title row and its other tabs' names on a row under
+  it, those waiting on you first. A wire to a stacked workspace attaches
   to the stack and names its tab.
   - Several picked in one area become a stack (`area/tabs`, `tabs-2`…) where
     the first of them was; a stack among them takes the others in. A

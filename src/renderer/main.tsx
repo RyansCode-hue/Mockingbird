@@ -173,6 +173,12 @@ const EXPECT_MS = 10_000;
 /** How long a right-click's place waits, once its session is made, for the session to reach the landscape. */
 const PLACE_HINT_MS = 10_000;
 const SIDE_WORDS: Record<EdgeSide, string> = { left: "to the left of", right: "to the right of", top: "above", bottom: "below" };
+/** What readClosed reads, as a failed read says it. */
+const CLOSED_READ = "the previous sessions";
+/** The longest wait before a failed read of the closed sessions is tried again. */
+const CLOSED_RETRY_MAX_MS = 30_000;
+/** Words that follow others in a sentence ("in 5101"), with their space; none, nothing. */
+const spaced = (words: string): string => (words ? ` ${words}` : "");
 const asRecord = (v: unknown): Record<string, any> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, any>) : {});
 
 /** The layout prefs from before split trees, read once at startup for groups that have no tree yet. */
@@ -193,6 +199,8 @@ function App() {
   const [goneFolders, setGoneFolders] = useState<ReadonlyMap<string, MissingFolder>>(() => new Map());
   // which session lists have been read at least once (the landscape reads the grid's layout in only once they have)
   const [listsLoaded, setListsLoaded] = useState({ live: false, resumable: false });
+  /** Reads of the closed sessions that failed in a row (readClosed): each is tried again, later each time. */
+  const [closedFails, setClosedFails] = useState(0);
   const listLoaded = (which: "live" | "resumable") => setListsLoaded((p) => (p[which] ? p : { ...p, [which]: true }));
   const [shown, setShown] = usePersisted<string[]>("mb.shown", []);
   const [focused, setFocused] = useState<string | null>(null);
@@ -616,6 +624,24 @@ function App() {
   /** Auto-name for a workspace created by dropping one session onto another. */
   const nextSubName = (top: string): string => freeSubName(workSessions.filter((s) => topOf(s) === top).map(subOf));
 
+  /**
+   * Read the closed sessions (main's resumable ones) again: whether it could be. A failed read is said, and tried again
+   * (closedFails), as the Closed sessions list, the ghosts and a rename on its way (renamesLeft) all wait on it.
+   */
+  const readClosed = async (): Promise<boolean> => {
+    const previous: SessionInfo[] | { error: string } = await window.mb.resumableSessions();
+    if (isErr(previous)) {
+      readFailed(CLOSED_READ, previous);
+      setClosedFails((n) => n + 1);
+      return false;
+    }
+    // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
+    setResumable(previous.filter((s) => !s.debrief));
+    listLoaded("resumable");
+    setClosedFails(0);
+    setReadError((e) => (e?.startsWith(`Couldn't read ${CLOSED_READ}:`) ? null : e));
+    return true;
+  };
   /** Re-read the session lists; the live list comes back (the one on screen when the read fails). */
   const refresh = async (): Promise<SessionInfo[]> => {
     const live: SessionInfo[] | { error: string } = await window.mb.listSessions();
@@ -624,13 +650,7 @@ function App() {
       setSessions(live);
       listLoaded("live");
     }
-    const previous: SessionInfo[] | { error: string } = await window.mb.resumableSessions();
-    if (isErr(previous)) readFailed("the previous sessions", previous);
-    // debriefs aren't restored with the grid's sessions: they live on the WorkTracker tab
-    else {
-      setResumable(previous.filter((s) => !s.debrief));
-      listLoaded("resumable");
-    }
+    await readClosed();
     // the closed sessions whose folders are gone: those that can't run where they ran offer to start fresh instead
     const gone: MissingFolder[] | { error: string } = await window.mb.missingFolders();
     if (isErr(gone)) readFailed("which closed sessions' folders are gone", gone);
@@ -663,6 +683,12 @@ function App() {
     });
   }, []);
 
+  // a failed read of the closed sessions is tried again, after 1 s, then 2, 4… up to 30 s, until it's read
+  useEffect(() => {
+    if (!closedFails) return;
+    const t = setTimeout(() => void readClosed(), Math.min(CLOSED_RETRY_MAX_MS, 1000 * 2 ** (closedFails - 1)));
+    return () => clearTimeout(t);
+  }, [closedFails]);
   useEffect(() => {
     refresh();
     window.mb.hooksInstalled().then(unlessError("whether the status hooks are installed", (ok: unknown) => setHooksOk(ok === true)));
@@ -1010,7 +1036,7 @@ function App() {
     () => (listsLoaded.live && listsLoaded.resumable && roomLive.state !== null ? [...sessions, ...resumable] : null),
     [listsLoaded.live, listsLoaded.resumable, roomLive.state, sessions, resumable]
   );
-  const lsPlaced = useMemo(() => (landscapeState ? withoutGone(landscapeState.landscape, knownSessions) : null), [landscapeState, knownSessions]);
+  const lsPlaced = useMemo(() => (landscapeState ? withoutGone(landscapeState.landscape, knownSessions, lsRenames) : null), [landscapeState, knownSessions, lsRenames]);
   const landscapeLayout = useMemo(
     () => (landscapeShown && lsPlaced ? resolveLayout(lsPlaced, workSessions, undefined, lsRenames, placeHint, closedSessions) : null),
     [landscapeShown, lsPlaced, workSessions, lsRenames, placeHint, closedSessions]
@@ -2206,15 +2232,19 @@ function App() {
   /** Say what happened to closed sessions: over the landscape when it's shown, else in a dialog (it's still being read in). */
   const closedSay = (text: string) => (landscapeShown ? lsSay(text) : window.alert(text));
   /**
-   * Run `work` on closed sessions `ids` with their Reopen and Forget off meanwhile (closedBusy); refused, saying so,
-   * while any of them is being reopened or forgotten already, so a second press can't start it again.
+   * Run `work` (`what`: "reopening Tag list notes") on closed sessions `ids` with their Reopen and Forget off meanwhile
+   * (closedBusy); refused, saying so, while any of them is being reopened or forgotten already, so a second press can't
+   * start it again. Its callers don't wait for it: what it throws is logged and said here.
    */
-  const whileClosedBusy = async (ids: readonly string[], work: () => Promise<void>): Promise<void> => {
+  const whileClosedBusy = async (ids: readonly string[], what: string, work: () => Promise<void>): Promise<void> => {
     if (ids.some((id) => closedBusyNow.current.has(id))) return closedSay(CLOSED_BUSY_WHY);
     for (const id of ids) closedBusyNow.current.add(id);
     setClosedBusy(new Set(closedBusyNow.current));
     try {
       await work();
+    } catch (err) {
+      console.error(`[mockingbird] ${what} (${ids.join(", ")}):`, err);
+      closedSay(`Couldn't finish ${what}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       for (const id of ids) closedBusyNow.current.delete(id);
       setClosedBusy(new Set(closedBusyNow.current));
@@ -2223,30 +2253,14 @@ function App() {
   /** Whether closed session `s` can be reopened here now: not a copy a teammate continues, its folder runnable, and not under way. */
   const reopenableHere = (s: SessionInfo, busy: ReadonlySet<string> = closedBusy) => !takenOverWhy(s, "") && goneFolders.get(s.id)?.reopens !== false && !busy.has(s.id);
   /**
-   * Before relaunching closed session `s` from the Closed sessions list (it has no ghost): it's placed as a new workspace
-   * in its group's area while the landscape has it, else loose, its group let go, so reopening never makes an area. A
-   * room's session keeps its group, which is its room. Returns why it couldn't be made loose.
-   */
-  const placeReopened = async (s: SessionInfo): Promise<string | null> => {
-    const l = lsNow.current?.landscape;
-    const layout = layoutNow.current;
-    const area = areaKeyOf(s);
-    if (!landscapeOn || !l || !layout || area === LOOSE_GROUP || s.room) return null;
-    if (closedIn(layout, null).some((c) => c.id === s.id)) return null;
-    if (own(l.areas, area) || lsRenames.some((r) => r.from === area && own(l.areas, r.to))) return null;
-    const r = await window.mb.setGroup(s.id, null);
-    return isErr(r) ? `its area is gone, and it couldn't be made loose: ${r.error}` : null;
-  };
-  /**
-   * Reopen closed session `s`: where its ghost is, or (from the list) in its area or loose (placeReopened); asking first
-   * when resuming it would cost a lot. Main refuses one a teammate continues (relaunchGuard) for a window that hasn't
+   * Reopen closed session `s`: where its ghost is, or (from the list) as a new workspace in its group's area, which is
+   * formed around it again if it's gone, as for any running session; its group is never changed. Asking first when
+   * resuming it would cost a lot. Main refuses one a teammate continues (relaunchGuard) for a window that hasn't
    * heard of the take-over yet, and one being reopened already.
    */
   const reopenGhost = (s: SessionInfo) =>
-    whileClosedBusy([s.id], async () => {
+    whileClosedBusy([s.id], `reopening ${titleOf(s)}`, async () => {
       if (!(await costGate.resume(s))) return;
-      const moved = await placeReopened(s);
-      if (moved) return closedSay(`Couldn't reopen ${titleOf(s)}: ${moved}`);
       const info: SessionInfo | null | { error: string } = await window.mb.relaunchSession(s.id);
       await refresh();
       if (isErr(info)) return closedSay(`Couldn't reopen ${titleOf(s)}: ${info.error}`);
@@ -2259,8 +2273,8 @@ function App() {
     });
   /**
    * Reopen every one of `list` that can be (Reopen all): one at a time, skipping copies a teammate continues, ones
-   * whose folders can't be run and ones under way, saying what was skipped and what failed. One at a time: a second
-   * waits for it (reopeningAll).
+   * whose folders can't be run and ones under way, saying what was skipped and what failed (`where`: "in 5101", none
+   * for the Closed sessions list). One at a time: a second waits for it (reopeningAll).
    */
   const reopenGhosts = async (list: readonly SessionInfo[], where: string) => {
     if (reopeningAllNow.current) return closedSay("Reopening them already: wait for that to finish");
@@ -2269,21 +2283,23 @@ function App() {
     reopeningAllNow.current = true;
     setReopeningAll(true);
     try {
+      // one question for all of them when any would cost a lot to resume, as Reopen asks for one
+      if (!(await costGate.resumeAll(can))) return;
       await whileClosedBusy(
         can.map((s) => s.id),
+        `reopening ${can.length === 1 ? titleOf(can[0]) : `${can.length} closed sessions`}${spaced(where)}`,
         async () => {
           const failures: string[] = [];
           let reopened = 0;
           for (const s of can) {
-            const moved = await placeReopened(s);
-            const info: SessionInfo | null | { error: string } = moved ? { error: moved } : await window.mb.relaunchSession(s.id);
+            const info: SessionInfo | null | { error: string } = await window.mb.relaunchSession(s.id);
             if (isErr(info)) failures.push(`${titleOf(s)}: ${info.error}`);
             else if (!info) failures.push(`${titleOf(s)}: its saved record is gone`);
             else reopened++;
           }
           await refresh();
-          if (failures.length) console.error(`[mockingbird] reopening ${where}'s closed sessions:`, failures);
-          const parts = [`Reopened ${reopened} of ${list.length} in ${where}`, skipped ? `${skipped} left closed (taken over, their folders gone, or under way)` : "", failures.length ? `couldn't reopen ${failures.join("; ")}` : ""];
+          if (failures.length) console.error(`[mockingbird] reopening closed sessions${spaced(where)}:`, failures);
+          const parts = [`Reopened ${reopened} of ${list.length}${spaced(where)}`, skipped ? `${skipped} left closed (taken over, their folders gone, or under way)` : "", failures.length ? `couldn't reopen ${failures.join("; ")}` : ""];
           closedSay(parts.filter(Boolean).join(" · "));
         }
       );
@@ -2301,6 +2317,7 @@ function App() {
   const forgetGhosts = (list: readonly SessionInfo[], what: string, placesFirst = false) =>
     whileClosedBusy(
       list.map((s) => s.id),
+      what,
       async () => {
         const l = lsNow.current?.landscape;
         const layout = layoutNow.current;
@@ -2348,33 +2365,39 @@ function App() {
     return {
       gone: goneFolders.get(s.id) ?? null,
       tabs: tabs.length,
+      reopenable: tabs.filter((t) => reopenableHere(t)).length,
       busy: tabs.some((t) => closedBusy.has(t.id)),
       room: leftCopyActions(left, () => left && takeBack(left), (err) => err && closedSay(`Couldn't send the changes: ${err}`)),
-      reopen: () => void (several ? reopenGhosts(tabs, `${titleOf(s)}'s stack`) : reopenGhost(s)),
+      reopen: () => void (several ? reopenGhosts(tabs, `in ${titleOf(s)}'s stack`) : reopenGhost(s)),
       fresh: () => startFresh(s, fromGhost),
       forget: () => void forgetGhosts(tabs, several ? `forgetting ${titleOf(s)}'s ${tabs.length} closed tabs` : `forgetting ${titleOf(s)}`),
     };
   };
   /** A ghost's actions (its card's buttons, ⋯ and right-click; a stack's closed tab's): `tabs` a stack ghost's closed tabs. */
   const ghostActionsFor = (s: SessionInfo, tabs?: readonly SessionInfo[]): ModelAction[] => ghostActions(s, ghostEnv(s, tabs));
-  /** Reopen all and Clear over closed sessions `list` (GhostsEnv), `title` where they are. */
-  const closedRowsOf = (list: readonly SessionInfo[], title: string, what: string): GhostsEnv => ({
+  /**
+   * Reopen all and Clear over closed sessions `list` (GhostsEnv), each a `what` ("closed workspace"), `where` the
+   * words saying where they are ("in 5101"; none for the Closed sessions list, which is where they are).
+   */
+  const closedRowsOf = (list: readonly SessionInfo[], where: string, what: string): GhostsEnv => ({
     count: list.length,
     reopenable: list.filter((s) => reopenableHere(s)).length,
     running: reopeningAll,
-    reopenAll: () => void reopenGhosts(list, title),
+    reopenAll: () => void reopenGhosts(list, where),
     clear: () => {
-      if (!window.confirm(`Forget ${list.length === 1 ? `the ${what}` : `the ${list.length} ${what}s`} in ${title}? They can't be reopened after.`)) return;
-      void forgetGhosts(list, `clearing ${title}'s ${what}s`);
+      const one = list.length === 1 ? titleOf(list[0]) : null;
+      if (!window.confirm(one ? `Forget ${one}? It can't be reopened after.` : `Forget all ${list.length} ${what}s${spaced(where)}? They can't be reopened after.`)) return;
+      void forgetGhosts(list, one ? `forgetting ${one}` : `forgetting ${list.length} ${what}s${spaced(where)}`);
     },
   });
   /**
    * Area `key`'s (LOOSE_GROUP: the loose ones'; null: every one's) Reopen all and Clear ghosts, over the closed sessions
    * the layout draws there now.
    */
-  const ghostRows = (key: string | null, title: string): GhostsEnv => closedRowsOf(landscapeLayout ? closedIn(landscapeLayout, key) : [], title, "closed workspace");
-  /** The Closed sessions list's Reopen all and Clear all. */
-  const closedListRows = (): GhostsEnv => closedRowsOf(closedList, "Closed sessions", "closed session");
+  const ghostRows = (key: string | null, title: string): GhostsEnv =>
+    closedRowsOf(landscapeLayout ? closedIn(landscapeLayout, key) : [], key === null ? "on the landscape" : key === LOOSE_GROUP ? "outside every area" : `in ${title}`, "closed workspace");
+  /** The Closed sessions list's Reopen all and Forget all. */
+  const closedListRows = (): GhostsEnv => closedRowsOf(closedList, "", "closed session");
   /** The loose closed workspaces' Reopen all and Clear ghosts, while there are any: the tree's Loose row, a right-click outside every area. */
   const looseGhostRows = (): ModelAction[] => {
     const g = ghostRows(LOOSE_GROUP, "Loose");
@@ -2382,7 +2405,7 @@ function App() {
   };
   /**
    * Tidy area `key` (planTidy); the note says so with Undo, which puts every place back while nothing else has changed
-   * the landscape since (its revision is still the one the Tidy saved): after a drag, a lock or a new workspace placed,
+   * the landscape since (its revision is still the one the Tidy made, as its save answered): after a drag, a lock or a new workspace placed,
    * putting the old places back could overlap them, so Undo says it can't.
    */
   const tidyArea = (key: string) => {
@@ -2395,11 +2418,10 @@ function App() {
     if ("refused" in plan) return lsSay(plan.refused);
     if (!plan.patch) return lsSay(`${title} is tidy already`);
     const back = undoOf(now.landscape, plan.patch);
-    void landscapeStore.update(plan.patch, `tidying ${title}`).then((error) => {
-      if (error) return lsSay(`Tidying ${title}: not saved, ${error}`);
-      const saved = landscapeStore.revNow();
+    void landscapeStore.save(plan.patch, `tidying ${title}`).then((r) => {
+      if ("error" in r) return lsSay(`Tidying ${title}: not saved, ${r.error}`);
       const undo = () => {
-        if (landscapeStore.revNow() !== saved) return lsSay(`Can't undo tidying ${title}: the landscape has changed since`);
+        if (landscapeStore.revNow() !== r.rev) return lsSay(`Can't undo tidying ${title}: the landscape has changed since`);
         void lsChange(back, `putting ${title} back as it was`);
       };
       lsSay(`Tidied ${title} in the order its workspaces were made`, back ? { label: "Undo", run: undo } : undefined);
@@ -2659,7 +2681,7 @@ function App() {
           meters={meters?.sessions}
           termKey={termKey}
           body={landscapeBody}
-          onPatch={landscapeStore.update}
+          onPatch={landscapeStore.save}
           revNow={landscapeStore.revNow}
           onMoves={runMoves}
           askAreaName={askAreaName}

@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import type { Camera, Size } from "../shared/landscape";
+import type { Camera, Rect, Size } from "../shared/landscape";
 import type { SessionInfo } from "../shared/types";
 import { useContextMenu, type MenuEntry } from "./ContextMenu";
 import { MoreIcon } from "./Icons";
@@ -30,6 +30,8 @@ export interface BarPlace {
   vp: Size;
   /** The strip along the view's top the bar stays under (the area switcher's). */
   minTop: number;
+  /** What it keeps clear of, in the view (the minimap); null for nothing. */
+  avoid: Rect | null;
   /** Folded buttons on a second row (» … « Less), remembered (selectionBarModel.ts). */
   extended: boolean;
   onExtended: (on: boolean) => void;
@@ -67,7 +69,7 @@ export function SelectionBar({ label, identity, idText, items, more, menu = more
     const e = el.current;
     const p = now.current;
     if (!e || !p.vp.w) return;
-    const at = barPlace(barAnchorFor(p.target, cam, size.current.h), size.current, p.vp, p.minTop);
+    const at = barPlace(barAnchorFor(p.target, cam, size.current.h), size.current, p.vp, p.minTop, undefined, undefined, p.avoid);
     e.style.translate = `${Math.round(at.x)}px ${Math.round(at.y)}px`;
   };
   useEffect(() => {

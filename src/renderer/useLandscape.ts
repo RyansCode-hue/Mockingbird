@@ -14,13 +14,19 @@ export interface LandscapeStore {
   error: string | null;
   /** Send a change; why it was refused or never answered (also said in `error`), or null once it's made. */
   update: (patch: LandscapePatch, what: string) => Promise<string | null>;
+  /** update, answering the revision the change made once it's made: a change's Undo is offered while that's still the newest (revNow). */
+  save: (patch: LandscapePatch, what: string) => Promise<LandscapeSave>;
   reload: () => void;
   /**
    * The revision of the newest landscape this window has, as of now (ahead of `state` until it renders): a change's
-   * Undo goes by it, offered only while nothing else has changed the landscape since that change was saved.
+   * Undo goes by it, offered only while it's still the revision that change made (save's answer). Read after the save
+   * instead, it could already be a later change's: main tells every window of a change, and that can come first.
    */
   revNow: () => number | null;
 }
+
+/** A change saved: the revision it made, or why it wasn't. */
+export type LandscapeSave = { rev: number } | { error: string };
 
 /** How often a layout file that couldn't be read is read again; the UI preview shortens it. */
 const REREAD_MS = 20_000;
@@ -71,19 +77,23 @@ export function useLandscape(on: boolean): LandscapeStore {
     const t = setInterval(reload, rereadMs());
     return () => clearInterval(t);
   }, [on, unreadable]);
-  const update = useCallback(async (patch: LandscapePatch, what: string): Promise<string | null> => {
+  const save = useCallback(async (patch: LandscapePatch, what: string): Promise<LandscapeSave> => {
     const r = await settled(window.mb.landscapeUpdate(patch));
     if (isErr(r)) {
       console.error(`[mockingbird] the landscape refused ${what}:`, r.error, patch);
       setError(`Couldn't save ${what}: ${r.error}`);
-      return r.error;
+      return { error: r.error };
     }
     setError(null);
     take(r);
-    return null;
+    return { rev: r.rev };
+  }, []);
+  const update = useCallback(async (patch: LandscapePatch, what: string): Promise<string | null> => {
+    const r = await save(patch, what);
+    return "error" in r ? r.error : null;
   }, []);
   const revNow = useCallback(() => cur.current?.rev ?? null, []);
-  return { state, error, update, reload, revNow };
+  return { state, error, update, save, reload, revNow };
 }
 
 /** The grid's layout prefs as the grid left them in localStorage, each parsed; the keys stay as they are. */

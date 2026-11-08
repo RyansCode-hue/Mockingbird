@@ -67,7 +67,9 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
   const { line, error } = useLastLine(s);
   const meter = meters?.[s.id];
   const tokens = meter ? totalTokens(meter.tokens) : 0;
-  const waiting = tile.members.filter((m) => m.status === "waiting").length;
+  // a stack's other tabs, by name under its title, those waiting on you counted first (the front one's status is its own)
+  const others = tile.members.filter((m) => m.id !== s.id);
+  const waiting = others.filter((m) => m.status === "waiting").length;
   const resume = usable(actions, "resume");
   const close = s.status === "dead" ? usable(actions, "close") : undefined;
   return (
@@ -78,24 +80,30 @@ export function WorkspaceCard({ tile, name, meters, actions, more }: { tile: Til
           {titleOf(s)}
         </span>
         {s.ticketId && <span className="ls-card-ticket">#{ticketIdOf(s.ticketId)}</span>}
+        {tile.stack && (
+          <span className="chip ls-card-chip" data-stack={tile.stack} title={name ?? undefined}>
+            stack · {tile.members.length + (tile.closed?.length ?? 0)}
+          </span>
+        )}
         {more}
       </div>
+      {tile.stack && (others.length > 0 || !!tile.closed?.length) && (
+        <div className="ls-card-tabs" title={[...tile.members, ...(tile.closed ?? [])].map(titleOf).join("\n")}>
+          {waiting > 0 && <span className="ls-card-needs">{waiting} need{waiting === 1 ? "s" : ""} you</span>}
+          {others.map((m) => (
+            <span key={m.id} className="ls-card-tab">
+              {titleOf(m)}
+            </span>
+          ))}
+          {!!tile.closed?.length && <span className="ls-card-tab closed">{tile.closed.length} closed</span>}
+        </div>
+      )}
       <div className={`ls-card-line ${error ? "bad" : ""}`} title={error ?? line ?? undefined}>
         {error ? "Couldn't read its output" : line ?? (s.status === "dead" ? `process exited${typeof s.exitCode === "number" ? ` · code ${s.exitCode}` : ""}` : "No output yet")}
       </div>
       <div className="ls-card-foot">
         <span className="chip ls-kind">{kindLabel(s)}</span>
         <span className={`ls-card-status st-${s.status}`}>{STATUS[s.status]}</span>
-        {tile.stack && (
-          <>
-            <span className="chip ls-card-chip" data-stack={tile.stack} title={name ?? undefined}>
-              stack · {tile.members.length + (tile.closed?.length ?? 0)}
-            </span>
-            <span className="ls-card-stack" title={[...tile.members, ...(tile.closed ?? [])].map(titleOf).join("\n")}>
-              {[tile.members.map(titleOf).join(" · "), waiting && s.status !== "waiting" ? `${waiting} need${waiting === 1 ? "s" : ""} you` : "", tile.closed?.length ? `${tile.closed.length} closed` : ""].filter(Boolean).join(" · ")}
-            </span>
-          </>
-        )}
         {isRemote(s) && s.room && <span className="ls-card-owner">{s.room.ownerName}'s</span>}
         {tokens > 0 && <span className="ls-card-tokens">{formatTokens(tokens)}</span>}
       </div>

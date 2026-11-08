@@ -88,7 +88,7 @@ describe.skipIf(!local)("ghosts on the landscape (UI preview)", () => {
     // the area's Clear ghosts, asked first
     // (its one ghost can't be reopened here, so Reopen all is there, off)
     expect(a.cleared.menu).toEqual(expect.arrayContaining(["Tidy [T]", "# Ghosts", "Reopen all (off)", "Clear ghosts (1)…"]));
-    expect(a.cleared).toMatchObject({ asked: [expect.stringMatching(/^Forget the closed workspace in #5101 .*can't be reopened after/)], kill: [["g2", true]], ghost: false });
+    expect(a.cleared).toMatchObject({ asked: ["Forget Spike: org cache? It can't be reopened after."], kill: [["g2", true]], ghost: false });
     // the loose ones' Reopen all, from the tree's Loose row
     expect(a.loose).toEqual({ menu: ["# Ghosts", "Reopen all (1)", "Clear ghosts (1)…"], relaunch: [["p1"]], ghost: false, node: true });
   }, 120_000);

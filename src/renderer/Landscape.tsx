@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { formatTokens, sanitizeSegment, totalTokens, type SessionInfo, type SessionMeter } from "../shared/types";
 import { AREA_HEADER, AREA_PAD, CELL_ESTIMATE, LANDSCAPE_FONT, LOOSE_GROUP, boundsOf, colsRows, type Camera, type Landscape as Stored, type LandscapePatch, type LandscapeProblem, type Rect, type Size } from "../shared/landscape";
-import type { Migrating } from "./useLandscape";
+import type { LandscapeSave, Migrating } from "./useLandscape";
 import {
   BAND_SETTLE_MS,
   PEEK_HOVER_MS,
@@ -93,7 +93,7 @@ import { focusTerm, lendTerm, screenText, scrollTerm } from "./TerminalPane";
 import { StatusDot } from "./StatusDot";
 import { titleOf } from "./appModel";
 import { D, EASE, fromKeyboard, motion, play } from "./motion";
-import { OVERLAYS, escapeLeavesFullscreen } from "./keys";
+import { OVERLAYS, escapeLeavesFullscreen, ownsKeys } from "./keys";
 import { readPref, writePref } from "./prefs";
 import { isRemote } from "./team/RoomLive";
 
@@ -309,9 +309,9 @@ export function Landscape({
   termKey: (id: string) => string;
   /** A session's terminal at `size`; in focus, filling the window, `home` is its workspace's own size, which it goes back to. */
   body: (s: SessionInfo, size: Size, home: Size | null) => React.ReactNode;
-  /** Change landscape.json; why it was refused (also in the banners), or null once it's made. */
-  onPatch: (patch: LandscapePatch, what: string) => Promise<string | null>;
-  /** The landscape's newest revision here (LandscapeStore.revNow): a note's Undo is offered while it's the one its change saved. */
+  /** Change landscape.json (LandscapeStore.save): the revision it made, or why it was refused (also in the banners). */
+  onPatch: (patch: LandscapePatch, what: string) => Promise<LandscapeSave>;
+  /** The landscape's newest revision here (LandscapeStore.revNow): a note's Undo is offered while it's the one its change made. */
   revNow: () => number | null;
   /** Set these sessions' groups, in order, stopping at the first that can't be: what to say and how many were, or null. */
   onMoves: (moves: readonly GroupMove[], what: string) => Promise<MovesFailed | null>;
@@ -419,14 +419,14 @@ export function Landscape({
     const at = notePlacement(view, { w: el.offsetWidth, h: el.offsetHeight }, minimap, inVp(".ls-selbar"));
     Object.assign(el.style, { left: `${at.left}px`, bottom: `${at.bottom}px` });
   }, [note?.n]);
-  // ⌘Z: the note's action (Tidy's Undo, a tab's) while it's up, wherever the keyboard is but a terminal, a text field,
-  // a menu or a dialog: a Tidy from the hover toolbar or a menu leaves the keyboard on the button, not the landscape
+  // ⌘Z: the note's action (Tidy's Undo, a tab's) while it's up, wherever the keyboard is but what reads keys itself (a
+  // terminal, a text field, the code editor: ownsKeys), a menu or a dialog: a Tidy from the hover toolbar or a menu
+  // leaves the keyboard on the button, not the landscape
   useEffect(() => {
     if (!note?.action) return;
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.key.toLowerCase() !== "z") return;
-      const t = e.target instanceof HTMLElement ? e.target : null;
-      if (t?.closest(".xterm, input, textarea, select, [contenteditable]") || document.querySelector(OVERLAYS)) return;
+      if (ownsKeys(e.target as Element | null) || document.querySelector(OVERLAYS)) return;
       const a = noteNow.current?.action;
       if (!a) return;
       e.preventDefault();
@@ -438,6 +438,8 @@ export function Landscape({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [note?.n, !!note?.action]);
   const gesture = useRef<Gesture | null>(null);
+  /** Where the last drag was let go, until the pointer moves on from it: no peek opens on what it left there. */
+  const droppedAt = useRef<{ x: number; y: number } | null>(null);
   const marquee = useRef<HTMLDivElement>(null);
   /** While a workspace is moved or resized: the guides it snapped along, and (resizing, or a tab dragged out) where it lands. */
   const guidesEl = useRef<HTMLDivElement>(null);
@@ -825,7 +827,8 @@ export function Landscape({
       if (opening.current === t.area) return;
       opening.current = t.area;
       const title = asks.current.areaTitle(t.area);
-      void asks.current.onPatch({ areas: { [t.area]: { collapsed: false } } }, `${title} opened`).then((error) => {
+      void asks.current.onPatch({ areas: { [t.area]: { collapsed: false } } }, `${title} opened`).then((r) => {
+        const error = "error" in r ? r.error : null;
         if (!error || pendingReveal.current !== p) return;
         pendingReveal.current = null;
         opening.current = null;
@@ -892,13 +895,21 @@ export function Landscape({
   const setAreaFlag = (key: string, flag: "collapsed" | "locked", on: boolean) => {
     const title = areaTitle(key);
     const what = flag === "collapsed" ? `${title} ${on ? "collapsed" : "opened"}` : `${title} ${on ? "locked" : "unlocked"}`;
-    void onPatch({ areas: { [key]: flag === "collapsed" ? { collapsed: on } : { locked: on } } }, what).then((error) => error && say(`${what}: not saved, ${error}`));
+    void onPatch({ areas: { [key]: flag === "collapsed" ? { collapsed: on } : { locked: on } } }, what).then((r) => "error" in r && say(`${what}: not saved, ${r.error}`));
   };
   /**
    * A plan carried out: its patch, the sessions' groups, then `after` (AreaPlan). `settle`, a drop's elements, keeps
-   * them where they were dropped until the layout has them there. Whatever fails is said, and nothing after it is done.
+   * them where they were dropped until the layout has them there. Whatever fails is said, and nothing after it is done:
+   * null. Done, the revision its last change to the landscape made (null: it made none), for an Undo to go by.
    */
-  const carryOut = async (plan: ReadyPlan, what: string, settle?: Settling): Promise<boolean> => {
+  const carryOut = async (plan: ReadyPlan, what: string, settle?: Settling): Promise<{ rev: number | null } | null> => {
+    let rev: number | null = null;
+    const send = async (patch: LandscapePatch, doing: string): Promise<string | null> => {
+      const r = await asks.current.onPatch(patch, doing);
+      if ("error" in r) return r.error;
+      rev = r.rev;
+      return null;
+    };
     const unsettle = () => {
       if (!settle) return;
       settling.current = settling.current.filter((s) => s !== settle);
@@ -907,12 +918,12 @@ export function Landscape({
     };
     if (settle) settling.current.push(settle);
     const before = storedNow.current;
-    const error = plan.patch ? await asks.current.onPatch(plan.patch, what) : null;
+    const error = plan.patch ? await send(plan.patch, what) : null;
     if (error || !plan.patch) unsettle();
     else setTimeout(unsettle, SETTLE_MS);
     if (error) {
       say(`${what}: not saved, ${error}`);
-      return false;
+      return null;
     }
     if (plan.moves.length) {
       const failed = await asks.current.onMoves(plan.moves, what);
@@ -920,30 +931,31 @@ export function Landscape({
         // the places went first: put back those of the sessions still in their old groups (everything, when none moved),
         // or they'd sit in an area they aren't in
         const back = plan.patch && undoOf(before, plan.patch, failed.moved ? plan.moves.slice(failed.moved).map((m) => m.id) : undefined);
-        const undoError = back ? await asks.current.onPatch(back, `${what} (putting it back)`) : null;
+        const undoError = back ? await send(back, `${what} (putting it back)`) : null;
         say(undoError ? `${failed.said}; and its places couldn't be put back: ${undoError}` : failed.said);
-        return false;
+        return null;
       }
     }
-    const afterError = plan.after ? await asks.current.onPatch(plan.after, what) : null;
+    const afterError = plan.after ? await send(plan.after, what) : null;
     if (afterError) say(`${what}: its stack's old place wasn't let go, ${afterError}`);
     if (plan.note) say(plan.note);
-    return !afterError;
+    return afterError ? null : { rev };
   };
   /**
    * Tab `s` taken out of stack `t` (planUnstack), said with an Undo that puts it back in the stack and what it pushed
-   * aside back where it was, while nothing else has changed the landscape since (revNow). Its group goes back first,
-   * then the places, so it's never a workspace with no place in between (which the layout would place, and save).
+   * aside back where it was, while the landscape's revision is still the one the unstack made (revNow). Undo puts the
+   * stack's entry back first, then the groups, then lets the tabs' own places go (undoOfPlan), so nothing is ever drawn
+   * with no place in between (which the layout would place, and save).
    */
   const unstack = async (plan: ReadyPlan, s: SessionInfo, t: Tile) => {
     const before = storedNow.current;
     const groups = new Map([...t.members, ...(t.closed ?? [])].map((m) => [m.id, m.taskGroup ?? null]));
-    if (!(await carryOut(plan, `taking ${titleOf(s)} out of the stack`))) return;
-    const saved = revNow();
+    const done = await carryOut(plan, `taking ${titleOf(s)} out of the stack`);
+    if (!done) return;
     const back = undoOfPlan(before, plan);
     const undo = () => {
-      if (revNow() !== saved) return say(`Can't put ${titleOf(s)} back in its stack: the landscape has changed since`);
-      void carryOut({ patch: null, moves: plan.moves.map((m) => ({ id: m.id, group: groups.get(m.id) ?? null })), after: back }, `putting ${titleOf(s)} back in its stack`);
+      if (done.rev === null || revNow() !== done.rev) return say(`Can't put ${titleOf(s)} back in its stack: the landscape has changed since`);
+      void carryOut({ patch: back.patch, moves: plan.moves.map((m) => ({ id: m.id, group: groups.get(m.id) ?? null })), after: back.after }, `putting ${titleOf(s)} back in its stack`);
     };
     say(plan.note ?? `Took ${titleOf(s)} out of its stack`, { label: "Undo", run: undo });
   };
@@ -1241,6 +1253,7 @@ export function Landscape({
     const g = gesture.current;
     if (!g || e.pointerId !== g.id) return;
     endGesture();
+    if (g.on) droppedAt.current = { x: e.clientX, y: e.clientY };
     if (e.type === "pointercancel") return release(g.els);
     const l = layoutNow.current;
     const z = cam.current.zoom;
@@ -1259,6 +1272,14 @@ export function Landscape({
     if (!g.on) {
       // a click on an area's bare header, or its name zoomed out, selects it; a drag moves it
       if (g.kind === "area") selectArea(g.key);
+      else if (g.kind === "tab") {
+        // a tab pressed and let go without being dragged out is a click on it, however the pointer slipped: the
+        // browser's click lands where the press and the release meet (its header, or past it), so it's brought to the
+        // front here and that click taken
+        swallowClick();
+        const t = l.tiles.find((x) => x.key === g.key);
+        if (t && g.sid && t.front.id !== g.sid && t.members.some((m) => m.id === g.sid)) onTab(t, g.sid);
+      }
       return;
     }
     if (g.kind === "window" || g.kind === "card") {
@@ -1542,8 +1563,12 @@ export function Landscape({
     // It covers its workspace, so over it what counts is what's under it at the pointer: hovering it holds nothing
     // open, and moving across it onto another workspace closes it and starts that one's rest. A kept-open one stays.
     const onHover = (e: PointerEvent) => {
-      // a marquee or a drag holds the peek off while it lasts
+      // a marquee or a drag holds the peek off while it lasts, and what a drop leaves under the pointer (a tab taken out,
+      // a workspace moved) doesn't peek until the pointer moves on
       if (gesture.current) return;
+      const dropped = droppedAt.current;
+      if (dropped && Math.hypot(e.clientX - dropped.x, e.clientY - dropped.y) < DRAG_PX) return;
+      droppedAt.current = null;
       const p = peekNow.current;
       const over = e.target as Element | null;
       const t = p && !p.pinned && over?.closest?.(".ls-peek") ? (document.elementsFromPoint(e.clientX, e.clientY).find((el) => !el.closest(".ls-peek")) ?? null) : over;
@@ -1763,6 +1788,8 @@ export function Landscape({
       cam,
       vp,
       minTop: topNow.current,
+      // the minimap, bottom right (styles.css .ls-minimap): shown whenever there's a selection to have a bar for
+      avoid: { x: vp.w - MINIMAP_INSET - MINIMAP.w, y: vp.h - MINIMAP_INSET - MINIMAP.h, ...MINIMAP },
       extended: barExtended,
       onExtended: extendBar,
       onClear: () => {
@@ -2115,6 +2142,8 @@ function LiveSwitcher({
 
 /** The minimap's box, in px. */
 const MINIMAP: Size = { w: 196, h: 124 };
+/** How far the minimap sits in from the view's right and bottom edges (styles.css .ls-minimap). */
+const MINIMAP_INSET = 12;
 
 /**
  * The minimap (bottom right): areas as blocks in their accents, each workspace in no area as a neutral block of its

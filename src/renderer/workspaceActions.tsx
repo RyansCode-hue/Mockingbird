@@ -203,6 +203,8 @@ export interface GhostEnv {
   gone: Omit<MissingFolder, "id"> | null;
   /** How many closed tabs it is: a stack's ghost of more than one, which Reopen and Forget act on together. */
   tabs: number;
+  /** How many of those can be reopened here now (not taken over, their folders runnable, not under way): a stack's ghost with none has Reopen off. */
+  reopenable: number;
   /** Being reopened or forgotten now: Reopen and Forget wait for that to finish. */
   busy: boolean;
   /** Take it back, Send (team rooms): a copy a teammate continues on their laptop. */
@@ -233,6 +235,7 @@ export function ghostActions(s: SessionInfo, env: GhostEnv): ModelAction[] {
   const taken = several ? null : takenOverWhy(s, "rather than reopening this copy");
   const cantRun = !several && env.gone && !env.gone.reopens ? env.gone.why : null;
   const busy = env.busy ? { no: CLOSED_BUSY_WHY } : null;
+  const noTab = several && !env.reopenable ? `None of its ${env.tabs} tabs can be reopened here: taken over by a teammate, their folders gone, or being reopened or forgotten` : null;
   const reopenTitle = several ? `Start its ${env.tabs} tabs again where it was, resuming their conversations` : env.gone?.reopens ? env.gone.why : "Start it again where it was, resuming its conversation";
   const out: ModelAction[] = [
     {
@@ -242,7 +245,7 @@ export function ghostActions(s: SessionInfo, env: GhostEnv): ModelAction[] {
       menuLabel: several ? `Reopen its ${env.tabs} tabs` : undefined,
       primary: true,
       title: reopenTitle,
-      ...can(busy ?? (taken ? { no: taken } : cantRun ? { no: cantRun } : env.reopen)),
+      ...can(busy ?? (taken ? { no: taken } : cantRun ? { no: cantRun } : noTab ? { no: noTab } : env.reopen)),
     },
   ];
   if (cantRun && !taken) out.push({ section: "end", key: "fresh", label: "Start fresh", menuLabel: "Start fresh…", title: "A new session where it was: its repo, ticket and area, on a new worktree", onPick: env.fresh });
@@ -400,14 +403,14 @@ export function severalActions(env: SeveralEnv): ModelAction[] {
 /** Several workspaces' actions as a menu: under how many are picked, Move to area's rows under their own heading. */
 export const severalMenu = (count: number, actions: readonly ModelAction[]): MenuEntry[] => [menuHeading(`${count} selected`), ...menuOf(actions)];
 
-/** A model's actions as a menu: each section under its heading, the last after a separator. */
-export function menuOf(actions: readonly ModelAction[]): MenuEntry[] {
+/** A model's actions as a menu: each section under its heading (`names` renames some, for where they're offered), the last after a separator. */
+export function menuOf(actions: readonly ModelAction[], names: Partial<Record<ActionSection, string | null>> = {}): MenuEntry[] {
   const out: (MenuEntry | null)[] = [];
   let at: ActionSection | null = null;
   for (const a of actions) {
     if (a.section !== at) {
       at = a.section;
-      const name = SECTION_NAME[a.section];
+      const name = Object.hasOwn(names, a.section) ? names[a.section] : SECTION_NAME[a.section];
       out.push("-", name ? menuHeading(name) : null);
     }
     out.push(a);

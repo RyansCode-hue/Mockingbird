@@ -9,6 +9,7 @@ import {
   keepDismissal,
   roughTokens,
   shownLevel,
+  sumEstimates,
   type ContextBudget,
   type CostEstimate,
   type Dismissal,
@@ -275,11 +276,12 @@ export function CostLine({ doing, e, agent, what }: { doing: string; e: CostEsti
  * multipliers (CostEstimate); a share of the limit only when the plan's
  * reading can give one.
  */
-export function CostDialog({ title, doing, e, agent, onAnswer }: { title: string; doing: string; e: CostEstimate; agent: AgentKind; onAnswer: (go: boolean) => void }) {
+export function CostDialog({ title, doing, e, agent, note, onAnswer }: { title: string; doing: string; e: CostEstimate; agent: AgentKind; note?: string; onAnswer: (go: boolean) => void }) {
   return (
     <Modal className="modal cost-dlg" onClose={() => onAnswer(false)}>
       <h3>{title}</h3>
       <CostLine doing={doing} e={e} agent={agent} />
+      {note && <div className="sub-h cost-note">{note}</div>}
       <div className="sub-h">An estimate from this Mac's sessions: use elsewhere (claude.ai, another computer) isn't counted, so shares can read high.</div>
       <div className="row">
         <button className="outline" onClick={() => onAnswer(false)}>
@@ -296,33 +298,45 @@ export function CostDialog({ title, doing, e, agent, onAnswer }: { title: string
 /**
  * Asks with a CostDialog before an action whose estimate says to; returns the
  * gate and the dialog to render. An estimate that can't be read lets the
- * action go ahead (logged): it's a courtesy, not a lock.
+ * action go ahead (logged): it's a courtesy, not a lock. `resumeAll` asks once
+ * for several (a stack's tabs, Reopen all), when any would be asked about alone.
  */
-export function useCostGate(): { resume: (s: SessionInfo) => Promise<boolean>; dialog: JSX.Element | null } {
-  const [ask, setAsk] = useState<{ s: SessionInfo; e: CostEstimate; agent: AgentKind; answer: (go: boolean) => void } | null>(null);
-  const resume = async (s: SessionInfo): Promise<boolean> => {
-    if (s.shell || s.room?.remote) return true;
+export function useCostGate(): { resume: (s: SessionInfo) => Promise<boolean>; resumeAll: (list: readonly SessionInfo[]) => Promise<boolean>; dialog: JSX.Element | null } {
+  const [ask, setAsk] = useState<{ title: string; doing: string; note?: string; e: CostEstimate; agent: AgentKind; answer: (go: boolean) => void } | null>(null);
+  const estimate = async (s: SessionInfo): Promise<{ agent: AgentKind; estimate: CostEstimate } | null> => {
+    if (s.shell || s.room?.remote) return null;
     const r: { agent: AgentKind; estimate: CostEstimate } | null | { error: string } = await window.mb.resumeCost(s.id).catch((err: unknown) => ({ error: (err as Error)?.message ?? String(err) }));
-    if (isErr(r)) {
-      console.warn(`couldn't estimate resuming ${s.id}, resuming anyway: ${r.error}`);
-      return true;
-    }
+    if (!isErr(r)) return r;
+    console.warn(`couldn't estimate resuming ${s.id}, resuming anyway: ${r.error}`);
+    return null;
+  };
+  const resume = async (s: SessionInfo): Promise<boolean> => {
+    const r = await estimate(s);
     if (!r?.estimate.ask) return true;
-    return new Promise<boolean>((answer) => setAsk({ s, e: r.estimate, agent: r.agent, answer }));
+    return new Promise<boolean>((answer) => setAsk({ title: `Resume ${s.title}?`, doing: "Resuming this", e: r.estimate, agent: r.agent, answer }));
+  };
+  const resumeAll = async (list: readonly SessionInfo[]): Promise<boolean> => {
+    if (list.length === 1) return resume(list[0]);
+    const read = (await Promise.all(list.map(async (s) => ({ s, r: await estimate(s) })))).flatMap((x) => (x.r ? [{ s: x.s, r: x.r }] : []));
+    const big = read.filter((x) => x.r.estimate.ask);
+    if (!big.length) return true;
+    const note = `Big to resume: ${big.map((x) => x.s.title).join(", ")}`;
+    return new Promise<boolean>((answer) => setAsk({ title: `Reopen ${list.length} sessions?`, doing: "Resuming them", note, e: sumEstimates(read.map((x) => x.r.estimate)), agent: big[0].r.agent, answer }));
   };
   const dialog = ask ? (
     <CostDialog
-      title={`Resume ${ask.s.title}?`}
-      doing="Resuming this"
+      title={ask.title}
+      doing={ask.doing}
       e={ask.e}
       agent={ask.agent}
+      note={ask.note}
       onAnswer={(go) => {
         setAsk(null);
         ask.answer(go);
       }}
     />
   ) : null;
-  return { resume, dialog };
+  return { resume, resumeAll, dialog };
 }
 
 /**

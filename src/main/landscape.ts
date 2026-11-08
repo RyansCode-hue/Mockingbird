@@ -14,6 +14,7 @@ import {
   type LandscapeProblem,
   type LandscapeState,
 } from "../shared/landscape";
+import type { SessionInfo } from "../shared/types";
 import { isMissing, writeFileAtomic } from "./fileOps";
 
 /** How long changes gather before they're written: a drag's patches land in one write. */
@@ -113,19 +114,20 @@ export class LandscapeStore {
 
   /**
    * Group `from` was renamed to `to` (renameGroup): its area, stacks and ghosts follow it (renameAreaPatch), and
-   * `members`, the sessions that were in it, are placed again when it merges into an area that's there already. The
+   * `members`, the sessions that were in it, are placed again when it merges into an area that's there already; the
+   * places of `closed`, its closed sessions, move into that area. The
    * file is read for this if no window has asked for it yet (the landscape is off this run), so a later run doesn't
    * find the group without its area; with no file there's nothing to change and nothing is written. A file that
    * can't be read is left as it is and said: the rename can't follow it. Throws LandscapeShapeError, as update does,
    * if the patch can't be made.
    */
-  groupRenamed(from: string, to: string, members: readonly string[]): void {
+  groupRenamed(from: string, to: string, members: readonly string[], closed: readonly Pick<SessionInfo, "id" | "taskGroup">[] = []): void {
     const l = this.load();
     if (l.standIn) {
       this.o.log(`landscape: ${from}'s area couldn't follow its rename to ${to}`, new Error("landscape.json couldn't be read"));
       return;
     }
-    const patch = renameAreaPatch(l.landscape, from, to, members);
+    const patch = renameAreaPatch(l.landscape, from, to, members, closed);
     if (patch) this.update(patch);
   }
 

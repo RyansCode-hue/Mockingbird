@@ -189,6 +189,45 @@ describe("areas' rectangles", () => {
     expect(renameAreaPatch(emptyLandscape(), "A", "B", [])).toBeNull();
   });
 
+  it("folding into another area keeps its closed sessions' places and their stacks, moved into it where they sat", () => {
+    const l = emptyLandscape();
+    l.areas.A = area(0, 0, 2000, 1400);
+    l.areas.B = area(2100, 0, 2000, 1400);
+    l.workspaces.a1 = { x: 24, y: 48, w: 800, h: 600 };
+    l.workspaces.g1 = { x: 900, y: 48, w: 800, h: 600 };
+    l.stacks["A/old"] = { active: "g2", placement: { x: 24, y: 700, w: 800, h: 600 } };
+    const closed = [session("g1", { taskGroup: "A", status: "dead" }), session("g2", { taskGroup: "A/old", status: "dead" })];
+    const p = renameAreaPatch(l, "A", "B", ["a1"], closed)!;
+    expect(p.workspaces).toEqual({ a1: null, g1: { x: 3000, y: 48, w: 800, h: 600 } });
+    expect(p.stacks).toEqual({ "A/old": null, "B/old": { active: "g2", placement: { x: 2124, y: 700, w: 800, h: 600 } } });
+    expect(p.areas).toEqual({ A: null });
+    // drawn as ghosts in B once the closed sessions follow the rename
+    const merged = applyPatch(l, p);
+    const r = resolveLayout(merged, [session("a1", { taskGroup: "B" })], undefined, [], null, closed.map((s) => ({ ...s, taskGroup: s.taskGroup!.replace(/^A/, "B") })));
+    expect(r.ghosts.map((g) => [g.key, g.area]).sort()).toEqual([["ghost:g1", "B"], ["ghost:ws:B/old", "B"]]);
+  });
+
+  it("folding into an area with no room where they sat places them as new workspaces, the area growing and pushing what's below aside", () => {
+    const l = emptyLandscape();
+    const M = { w: 800, h: 600 };
+    l.areas.A = area(0, 0, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+    l.areas.B = area(1000, 0, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+    l.areas.C = area(1000, l.areas.B.h + AREA_GAP, 2 * AREA_PAD + M.w, AREA_HEADER + M.h + AREA_PAD);
+    l.workspaces.g1 = { x: AREA_PAD, y: AREA_HEADER, ...M };
+    l.workspaces.b1 = { x: 1000 + AREA_PAD, y: AREA_HEADER, ...M };
+    l.workspaces.c1 = { x: 1000 + AREA_PAD, y: l.areas.C.y + AREA_HEADER, ...M };
+    const p = renameAreaPatch(l, "A", "B", [], [session("g1", { taskGroup: "A", status: "dead" })])!;
+    const merged = applyPatch(l, p);
+    const b = merged.areas.B;
+    // a new row under b1, inside B grown to hold it
+    expect(merged.workspaces.g1).toEqual({ x: 1000 + AREA_PAD, y: AREA_HEADER + M.h + GAP, ...M });
+    expect(inside(merged.workspaces.g1, b)).toBe(true);
+    expect(overlaps(merged.workspaces.g1, merged.workspaces.b1, GAP - 1e-6)).toBe(false);
+    // C pushed clear of B, its workspace with it
+    expect(merged.areas.C.y).toBeGreaterThanOrEqual(b.y + b.h + AREA_GAP);
+    expect(inside(merged.workspaces.c1, merged.areas.C)).toBe(true);
+  });
+
   it("folding into another area also lets go of the places of teammates' and resumable sessions inside the old one", () => {
     const l = emptyLandscape();
     l.areas.A = area(0, 0, 2000, 900);

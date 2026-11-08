@@ -41,12 +41,19 @@ type StartPoint = { existing: true } | { existing: false; track: boolean; from?:
  *  - new branch + base → fetch origin/<base> first and branch off it
  *    (falls back to the local base if the fetch fails, e.g. offline)
  *  - new branch, no base → branch off the repo's current HEAD
+ * With `mustExist` (a relaunch, which makes a session's worktree again) the branch is never made anew: one origin no
+ * longer has comes from what the last fetch kept of it (origin/<branch>), and with none of that it throws, so the
+ * session isn't resumed on a branch holding none of its work.
  */
-async function startPoint(repo: string, branch: string, base?: string): Promise<StartPoint> {
+async function startPoint(repo: string, branch: string, base?: string, mustExist = false): Promise<StartPoint> {
   if (await git(repo, ["branch", "--list", branch])) return { existing: true };
   if (await onOrigin(repo, branch)) {
     await git(repo, ["fetch", "origin", branch]);
     return { existing: false, track: true, from: `origin/${branch}` };
+  }
+  if (mustExist) {
+    if (await git(repo, ["rev-parse", "--verify", "-q", `refs/remotes/origin/${branch}`], { okCodes: [0, 1] })) return { existing: false, track: true, from: `origin/${branch}` };
+    throw new Error(`Its branch, ${branch}, isn't here or on origin any more: start fresh`);
   }
   if (!base) return { existing: false, track: false };
   try {
@@ -60,8 +67,28 @@ async function startPoint(repo: string, branch: string, base?: string): Promise<
   }
 }
 
-/** Create a worktree for a session on `branch`, made as startPoint says. Returns the worktree path. */
-export async function createWorktree(repoPath: string, branch: string, baseBranch?: string): Promise<string> {
+/**
+ * Unregister the worktree git lists at `wtPath` (under `wtRoot`) when its folder was deleted outside git (Finder,
+ * rm), so one can be added there again: `worktree add` refuses a path still registered. Only that one: `worktree
+ * prune` would also unregister worktrees on volumes that aren't connected.
+ */
+async function unregisterMissing(repo: string, wtRoot: string, branch: string, wtPath: string): Promise<void> {
+  const real = path.join(fs.realpathSync(wtRoot), branch);
+  const listed = (await git(repo, ["worktree", "list", "--porcelain"]))
+    .split("\n")
+    .filter((l) => l.startsWith("worktree "))
+    .map((l) => l.slice("worktree ".length))
+    .find((p) => p === wtPath || p === real);
+  if (!listed) return;
+  console.warn(`[worktrees] ${listed} was deleted outside git but still registered: unregistering it to add it again`);
+  await git(repo, ["worktree", "remove", listed]);
+}
+
+/**
+ * Create a worktree for a session on `branch`, made as startPoint says (`mustExist`: a relaunch, which never makes
+ * the branch anew). Returns the worktree path.
+ */
+export async function createWorktree(repoPath: string, branch: string, baseBranch?: string, opts: { mustExist?: boolean } = {}): Promise<string> {
   // a branch can only be checked out once: if the old layout already holds it,
   // keep using that checkout rather than failing on `worktree add`
   const legacy = path.join(legacyWorktreeRoot(repoPath), branch);
@@ -70,8 +97,9 @@ export async function createWorktree(repoPath: string, branch: string, baseBranc
   fs.mkdirSync(wtRoot, { recursive: true });
   const wtPath = path.join(wtRoot, branch);
   if (fs.existsSync(wtPath)) return wtPath; // reuse (multiple sessions per task)
+  await unregisterMissing(repoPath, wtRoot, branch, wtPath);
 
-  const sp = await startPoint(repoPath, branch, baseBranch);
+  const sp = await startPoint(repoPath, branch, baseBranch, opts.mustExist);
   await git(
     repoPath,
     sp.existing

@@ -1900,9 +1900,9 @@ Design O, with Artifacts as a window, and N's workspace header.
     there's no layout yet (the landscape still being read in). Rows run the
     ghost model (`ghostActions`), so the take-over rule is the same: a copy a
     teammate continues offers Take it back, never Reopen. Reopen from the
-    list (`placeReopened`) lets its group go first when the landscape has no
-    area for it (a room's session keeps its group), so it's placed loose. A
-    ghost's group with no area draws it loose; ghosts never form areas (M4).
+    list placed it loose when its area was gone (round 2 changed that: it
+    never changes the group). A ghost's group with no area draws it loose;
+    ghosts never form areas (M4).
     The migration (`migrateLayout`'s `closed`) no longer places a closed
     session the grid's layout didn't name: Previous stays a list.
   - **H1:** pending renames settle only when the closed list has followed
@@ -1967,8 +1967,7 @@ Design O, with Artifacts as a window, and N's workspace header.
       Previous when the landscape was first turned on stay ghosts; only new
       migrations leave them listed. Clear ghosts in an area or the Loose row
       clears them.
-    - Reopen from the list makes a session loose (its group dropped) when
-      its area is gone, as asked; a room's session keeps its room group.
+    - (Superseded in round 2: Reopen never changes the group.)
     - Start fresh from the list opens New session seeded as from a ghost but
       leaves the closed one listed, to forget by hand (there's no place to
       take over).
@@ -1979,6 +1978,86 @@ Design O, with Artifacts as a window, and N's workspace header.
       by field.
     - Orphan places are ignored, not pruned, so a list read wrongly can't
       delete anything.
+- **S6b review fixes (round 2) — As built:**
+  - **H1:** `withoutGone` takes the pending renames: a stack is known by its
+    key on either side of one (`renamedKeys`, shared with `resolveLayout`'s
+    hold), so a stack isn't passed over, placed anew and saved while the
+    sessions and the landscape's re-keying disagree, in either order.
+  - **M1:** a relaunch never makes a branch (`createWorktree`'s `mustExist`,
+    from `launchAgain` through `create`'s `relaunch`): a branch origin has
+    deleted is made again from what the last fetch kept (`--track -b b path
+    origin/b`); with none of that it throws "Its branch, b, isn't here or on
+    origin any more: start fresh", starting nothing. Every relaunch path
+    (ghosts, the list, the grid's Previous, NewSession restore, transcript
+    open, post-update restore) goes through `launchAgain`.
+  - **M2 (the coordinator's rule):** Reopen never changes the group
+    (`placeReopened` removed). The session lands in its group's area, which
+    the layout forms around it again if it's gone, as for any running
+    session; a failed relaunch leaves everything as it was.
+  - **M3:** a merge keeps this Mac's closed sessions' places inside the old
+    area, and the stacks of closed tabs, moved into the area joined
+    (`renameAreaPatch`'s `closed`, from main's resumable list read before
+    the rename; `mergeClosedInto`): each where it sat measured from the
+    area's corner when that's free inside, else where a new workspace goes,
+    the area growing and pushing what's in its way aside (`pushAside`, areas
+    with what's in them).
+  - **M4:** a stack's card zoomed out has its `stack · N` chip in the title
+    row and a row of its own for the other tabs' names (`.ls-card-tabs`), "N
+    needs you" first, ending in an ellipsis; the footer keeps its tokens.
+  - **Low:** a worktree folder deleted outside git is unregistered
+    (`git worktree remove`, that path only) before it's added again; a
+    stack's ghost has Reopen off when none of its tabs can reopen; Reopen of
+    several (a stack's, Reopen all) asks once about cost (`useCostGate`'s
+    `resumeAll`, `sumEstimates`); ⌘Z's check is `ownsKeys` (the code editor
+    too); a tab pressed and let go without being dragged out is brought to
+    the front by the gesture itself, the browser's click taken; Undo of a
+    tab-out puts the stack's entry back first, then the groups, then lets the
+    tabs' own places go (`undoOfPlan` → `{ patch, after }`), saving nothing
+    between; Undo goes by the revision the change's own save made
+    (`LandscapeStore.save`, `carryOut`'s `rev`); a failed read of the closed
+    sessions is said and tried again (1 s, doubling to 30 s) until it's read,
+    the error cleared then; a ghost is in its group's area only while it lies
+    inside it, else the area holding it, else loose; a move never snaps past
+    its area's inside top or left; the list's header is one line with an
+    ellipsis, its rows' titles carry their status, its menus are headed
+    "Closed sessions" (`menuOf`'s names), its wording agrees in number
+    ("Forget all 15 closed sessions? They can't be reopened after."), its ⋯
+    holds Reopen all and Forget all, and its rows carry the ghost's hollow
+    ring; the guide colour is violet (#c44dff dark, #9d1fff light), ΔE 50 or
+    more from every area accent; `whileClosedBusy` catches, logs and says
+    what its work throws; the selection bar keeps clear of the minimap
+    (`barPlace`'s `avoid`); no peek opens on what a drop leaves under the
+    resting pointer; a detached worktree's session relaunches in its own
+    folder (refused once that's gone), never the main checkout.
+  - **Preview:** `?lsRelaunchFails`, `?lsBigResume`, `?lsManyClosed`,
+    `?lsClosedReadFails`, `window.__mbRaceUpdate` (another window's change
+    told before a save's answer). Audits: `?landscapeClosedAudit=retry|many`;
+    the list, hold, fix a and fix b audits extended.
+  - **Tests:** `landscapeArrange` (renamed stacks in `withoutGone` both
+    ways; ghosts in the area they lie in; the merge test on the real
+    `renameAreaPatch`; no snapping past the inside; Undo's order with
+    nothing saved between), `landscapeAreas` (a merge keeping closed places
+    and stacks; growing and pushing aside), `sessionLifecycle` (relaunch from
+    the tracking ref, refused with no branch, a folder deleted outside git, a
+    detached worktree), `workspaceActions`, `contextBudget`
+    (`sumEstimates`), `contrast` (guide vs accents), `selectionBar`
+    (`barPlace` clear of the minimap), `uiLandscapeClosed` (Reopen into a
+    gone area with a failing and a throwing relaunch; Reopen all asking once;
+    the read retried; a long list; ⌘Z in the code editor; Undo refused on a
+    race; slips at 50% and 100%; the stack card at Fit and 30%; no peek after
+    a drop; the bar clear of the minimap), `uiLandscapeGhosts` (wording).
+  - **Decisions for Ryan:**
+    - Reopen never changes a session's group (the coordinator's call, as
+      you hadn't said): one whose area is gone gets it back around it.
+    - A move snaps nowhere past its area's inside top or left (a drop moves
+      it back in from there); past the right or bottom it still snaps, as the
+      area grows to hold it.
+    - The guide is violet; it reads apart from every accent and the focus
+      outline.
+    - The Closed sessions header's Forget all lives in a ⋯ beside Reopen
+      all (the sidebar is narrow), as well as the header's right-click.
+    - A failed read of the closed sessions is retried with backoff, forever,
+      while it keeps failing; each failure is in the status bar.
 
 ### S7 · Needs you
 - **The tray** drops down from the top-bar button. Phase 1 items:
